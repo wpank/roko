@@ -26,7 +26,9 @@ use crate::tui::state::TuiState;
 // ---------------------------------------------------------------------------
 
 /// Block element characters mapped to 0..7 intensity levels.
-const BLOCKS: [char; 8] = ['\u{2581}', '\u{2582}', '\u{2583}', '\u{2584}', '\u{2585}', '\u{2586}', '\u{2587}', '\u{2588}'];
+const BLOCKS: [char; 8] = [
+    '\u{2581}', '\u{2582}', '\u{2583}', '\u{2584}', '\u{2585}', '\u{2586}', '\u{2587}', '\u{2588}',
+];
 
 /// Map a value in `0.0..=max` to a block character.
 fn block_char(value: f64, max: f64) -> char {
@@ -140,7 +142,12 @@ fn infer_provider(model: &str) -> String {
     let lower = trimmed.to_ascii_lowercase();
     if lower.contains("claude") || lower.contains("anthropic") {
         "anthropic".to_string()
-    } else if lower.contains("gpt") || lower.contains("openai") || lower.contains("o1") || lower.contains("o3") || lower.contains("o4") {
+    } else if lower.contains("gpt")
+        || lower.contains("openai")
+        || lower.contains("o1")
+        || lower.contains("o3")
+        || lower.contains("o4")
+    {
         "openai".to_string()
     } else if lower.contains("gemini") || lower.contains("google") {
         "google".to_string()
@@ -194,7 +201,9 @@ fn aggregate_providers(tui_state: &TuiState) -> BTreeMap<String, ProviderAgg> {
         if entry.error_history.len() >= HISTORY_CAP {
             entry.error_history.remove(0);
         }
-        entry.error_history.push(if event.output_tokens > 0 { 0.0 } else { 1.0 });
+        entry
+            .error_history
+            .push(if event.output_tokens > 0 { 0.0 } else { 1.0 });
     }
     providers
 }
@@ -222,7 +231,11 @@ fn aggregate_global_waveforms(tui_state: &TuiState) -> GlobalWaveforms {
         error.push(if event.output_tokens > 0 { 0.0 } else { 1.0 });
     }
 
-    GlobalWaveforms { cost, latency, error }
+    GlobalWaveforms {
+        cost,
+        latency,
+        error,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -233,15 +246,34 @@ fn pattern_status(providers: &BTreeMap<String, ProviderAgg>) -> (&'static str, S
     if providers.is_empty() {
         return ("STANDBY", Style::default().fg(Theme::TEXT_GHOST));
     }
-    let any_unhealthy = providers.values().any(|p| p.total_calls > 0 && p.success_rate() < 70.0);
-    let any_degraded = providers.values().any(|p| p.total_calls > 0 && p.success_rate() < 90.0);
+    let any_unhealthy = providers
+        .values()
+        .any(|p| p.total_calls > 0 && p.success_rate() < 70.0);
+    let any_degraded = providers
+        .values()
+        .any(|p| p.total_calls > 0 && p.success_rate() < 90.0);
     if any_unhealthy {
-        return ("ALERT", Style::default().fg(Theme::EMBER).add_modifier(Modifier::BOLD));
+        return (
+            "ALERT",
+            Style::default()
+                .fg(Theme::EMBER)
+                .add_modifier(Modifier::BOLD),
+        );
     }
     if any_degraded {
-        return ("CAUTION", Style::default().fg(Theme::WARNING).add_modifier(Modifier::BOLD));
+        return (
+            "CAUTION",
+            Style::default()
+                .fg(Theme::WARNING)
+                .add_modifier(Modifier::BOLD),
+        );
     }
-    ("NOMINAL", Style::default().fg(Theme::SAGE).add_modifier(Modifier::BOLD))
+    (
+        "NOMINAL",
+        Style::default()
+            .fg(Theme::SAGE)
+            .add_modifier(Modifier::BOLD),
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -282,14 +314,14 @@ pub(crate) fn render(
     // Vertical layout: header | unit array | waveforms | detail table | footer.
     let _provider_count = providers.len().max(1);
     let unit_array_height = 6_u16; // 4 content rows + 2 border
-    let waveform_height = 5_u16;   // 3 rows + 2 border
+    let waveform_height = 5_u16; // 3 rows + 2 border
     let footer_height = 1_u16;
 
     let sections = Layout::vertical([
-        Constraint::Length(2),                // header
+        Constraint::Length(2),                 // header
         Constraint::Length(unit_array_height), // unit array
         Constraint::Length(waveform_height),   // waveforms
-        Constraint::Min(4),                   // detail table
+        Constraint::Min(4),                    // detail table
         Constraint::Length(footer_height),     // footer
     ])
     .split(inner);
@@ -344,12 +376,9 @@ fn render_header(
         ),
     ];
 
-    let header = Paragraph::new(vec![
-        Line::from(title_spans),
-        Line::from(stats_spans),
-    ])
-    .style(Style::default().bg(Theme::BG_RAISED))
-    .alignment(Alignment::Center);
+    let header = Paragraph::new(vec![Line::from(title_spans), Line::from(stats_spans)])
+        .style(Style::default().bg(Theme::BG_RAISED))
+        .alignment(Alignment::Center);
 
     frame.render_widget(header, area);
 }
@@ -484,9 +513,30 @@ fn render_waveforms(
     .split(inner);
 
     let wave_width = (inner.width as usize).saturating_sub(14); // label column ~14 chars
-    render_waveform_line(frame, rows[0], "COST $/call", &waveforms.cost, Theme::ROSE, wave_width);
-    render_waveform_line(frame, rows[1], "LATENCY ms ", &waveforms.latency, Theme::DREAM, wave_width);
-    render_waveform_line(frame, rows[2], "ERROR rate ", &waveforms.error, Theme::EMBER, wave_width);
+    render_waveform_line(
+        frame,
+        rows[0],
+        "COST $/call",
+        &waveforms.cost,
+        Theme::ROSE,
+        wave_width,
+    );
+    render_waveform_line(
+        frame,
+        rows[1],
+        "LATENCY ms ",
+        &waveforms.latency,
+        Theme::DREAM,
+        wave_width,
+    );
+    render_waveform_line(
+        frame,
+        rows[2],
+        "ERROR rate ",
+        &waveforms.error,
+        Theme::EMBER,
+        wave_width,
+    );
 }
 
 fn render_waveform_line(
@@ -537,12 +587,7 @@ fn render_detail_table(
     frame.render_widget(block, area);
 
     if providers.is_empty() {
-        crate::tui::empty_state::render_pane_empty_compact(
-            frame,
-            inner,
-            "No provider data",
-            theme,
-        );
+        crate::tui::empty_state::render_pane_empty_compact(frame, inner, "No provider data", theme);
         return;
     }
 
@@ -618,23 +663,20 @@ fn render_detail_table(
                 Cell::from(Span::styled(latency_display, latency_style)),
                 Cell::from(Span::styled(format!("{rate:.0}%"), rate_style)),
                 Cell::from(Span::styled(format!("{err_rate:.0}%"), err_style)),
-                Cell::from(Span::styled(
-                    format!("{icon} {status_label}"),
-                    status_style,
-                )),
+                Cell::from(Span::styled(format!("{icon} {status_label}"), status_style)),
             ])
         })
         .collect();
 
     let widths = [
-        Constraint::Min(12),     // provider
-        Constraint::Min(16),     // models
-        Constraint::Length(10),  // requests
-        Constraint::Length(10),  // cost
-        Constraint::Length(10),  // latency
-        Constraint::Length(8),   // rate
-        Constraint::Length(8),   // errors
-        Constraint::Length(14),  // status
+        Constraint::Min(12),    // provider
+        Constraint::Min(16),    // models
+        Constraint::Length(10), // requests
+        Constraint::Length(10), // cost
+        Constraint::Length(10), // latency
+        Constraint::Length(8),  // rate
+        Constraint::Length(8),  // errors
+        Constraint::Length(14), // status
     ];
 
     let table = Table::new(rows, widths)

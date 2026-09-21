@@ -205,6 +205,7 @@ impl DreamAgentConfig {
             gemini_safety_settings: Vec::new(),
             cancel_token: None,
             tool_audit: None,
+            max_turns: None,
         }
     }
 }
@@ -1590,6 +1591,22 @@ fn block_on<F>(future: F) -> F::Output
 where
     F: Future,
 {
+    // `tokio::task::block_in_place` parks the current async *worker* thread
+    // while the closure runs, which is correct when called from a
+    // `tokio::spawn` task on a multi-thread runtime.  However it **panics**
+    // when called from a `tokio::task::spawn_blocking` task because
+    // `spawn_blocking` threads are not async worker threads — they carry a
+    // runtime handle but have no worker context to yield from.
+    //
+    // Call sites that run inside `spawn_blocking` must NOT call sync dream
+    // APIs that ultimately invoke this helper with `block_in_place`.  Instead,
+    // they should use `tokio::spawn` with `consolidate_async().await` — see
+    // `roko-serve/src/routes/dream.rs` and `roko-acp/src/bridge_events/cost.rs`
+    // for the corrected pattern.
+    //
+    // The remaining legitimate callers of `consolidate_now` are:
+    //   - CLI `cmd_dream` (async, multi-thread runtime, worker thread) → block_in_place OK
+    //   - no runtime context (e.g. integration tests)                  → build fresh runtime
     if tokio::runtime::Handle::try_current().is_ok() {
         tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(future))
     } else {

@@ -261,8 +261,8 @@ pub fn append_calibration_record(path: &Path, record: &CalibrationRecord) -> io:
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let line = serde_json::to_string(record)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    let line =
+        serde_json::to_string(record).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
     let mut file = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -348,10 +348,10 @@ mod tests {
     fn precision_recall_computation() {
         // tp=2, fp=1, fn=1, tn=1  →  precision=2/3, recall=2/3
         let preds = vec![
-            (true, true),  // tp
-            (true, true),  // tp
-            (true, false), // fp
-            (false, true), // fn
+            (true, true),   // tp
+            (true, true),   // tp
+            (true, false),  // fp
+            (false, true),  // fn
             (false, false), // tn
         ];
         let cal = compute_calibration(&preds);
@@ -393,14 +393,20 @@ mod tests {
     fn precision_nan_when_judge_never_predicts_pass() {
         let preds = vec![(false, true), (false, false)];
         let cal = compute_calibration(&preds);
-        assert!(cal.precision.is_nan(), "precision should be NaN with no positive predictions");
+        assert!(
+            cal.precision.is_nan(),
+            "precision should be NaN with no positive predictions"
+        );
     }
 
     #[test]
     fn recall_nan_when_no_actual_positives() {
         let preds = vec![(true, false), (false, false)];
         let cal = compute_calibration(&preds);
-        assert!(cal.recall.is_nan(), "recall should be NaN when no actual positives");
+        assert!(
+            cal.recall.is_nan(),
+            "recall should be NaN when no actual positives"
+        );
     }
 
     #[test]
@@ -425,7 +431,10 @@ mod tests {
         // precision=NaN because no predicted positives, recall=NaN because no
         // actual positives → f1 = NaN
         let f1 = cal.f1();
-        assert!(f1.is_nan() || f1 == 0.0, "f1 should be NaN or 0 with no positives");
+        assert!(
+            f1.is_nan() || f1 == 0.0,
+            "f1 should be NaN or 0 with no positives"
+        );
     }
 
     // ── detect_length_bias ──────────────────────────────────────────────────
@@ -475,12 +484,7 @@ mod tests {
     fn length_bias_near_zero_for_uncorrelated() {
         // Same length for all true cases and all false cases but equal
         // representation means no length signal: r should be 0.
-        let examples = vec![
-            (100, true),
-            (100, false),
-            (100, true),
-            (100, false),
-        ];
+        let examples = vec![(100, true), (100, false), (100, true), (100, false)];
         // All lengths identical → None (zero variance).
         assert!(detect_length_bias(&examples).is_none());
     }
@@ -489,15 +493,18 @@ mod tests {
     fn length_bias_range_is_bounded() {
         let examples = vec![(10, true), (20, false), (30, true), (40, false)];
         let r = detect_length_bias(&examples).expect("correlation");
-        assert!(r >= -1.0 && r <= 1.0, "Pearson r must be in [-1, 1], got {r}");
+        assert!(
+            r >= -1.0 && r <= 1.0,
+            "Pearson r must be in [-1, 1], got {r}"
+        );
     }
 
     // ── load_golden_set ─────────────────────────────────────────────────────
 
     #[test]
     fn load_golden_set_parses_fixture() {
-        let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/fixtures/judge-golden-set.json");
+        let fixture =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/judge-golden-set.json");
         let examples = load_golden_set(&fixture).expect("failed to load golden set");
         assert_eq!(examples.len(), 20, "golden set should contain 20 examples");
 
@@ -510,13 +517,23 @@ mod tests {
 
     #[test]
     fn load_golden_set_fields_populated() {
-        let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/fixtures/judge-golden-set.json");
+        let fixture =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/judge-golden-set.json");
         let examples = load_golden_set(&fixture).expect("load golden set");
         for ex in &examples {
-            assert!(!ex.task_description.is_empty(), "task_description must not be empty");
-            assert!(!ex.agent_output.is_empty(), "agent_output must not be empty");
-            assert!(!ex.reasoning.is_empty(), "reasoning must not be empty for id={}", ex.id);
+            assert!(
+                !ex.task_description.is_empty(),
+                "task_description must not be empty"
+            );
+            assert!(
+                !ex.agent_output.is_empty(),
+                "agent_output must not be empty"
+            );
+            assert!(
+                !ex.reasoning.is_empty(),
+                "reasoning must not be empty for id={}",
+                ex.id
+            );
         }
     }
 

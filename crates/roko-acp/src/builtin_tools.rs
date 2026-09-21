@@ -27,7 +27,7 @@ use roko_core::tool::{ToolCategory, ToolConcurrency, ToolDef, ToolPermission, To
 pub fn derive_tool_permissions(tool_name: &str) -> ToolPermission {
     match tool_name {
         // Read-only tools — no side effects.
-        "read_file" | "glob" | "grep" | "ls" => ToolPermission::read_only(),
+        "read_file" | "glob" | "grep" | "ls" | "retrieve" => ToolPermission::read_only(),
         // Write tools — read + write, no exec/git/network.
         "write_file" | "edit_file" => ToolPermission::writes(),
         // Exec tools — read + exec, no write/git/network.
@@ -71,7 +71,10 @@ pub fn compute_session_capabilities(tools: &[ToolDef]) -> ToolPermission {
     caps
 }
 
-/// Returns the 8 builtin tool definitions for ACP sessions.
+/// Returns the builtin tool definitions for ACP sessions.
+///
+/// Includes the 8 original tools plus the `retrieve` tool (RAG-16) that
+/// searches the workspace knowledge store, code index, and episode history.
 #[must_use]
 pub fn acp_builtin_tools() -> Vec<ToolDef> {
     vec![
@@ -83,6 +86,7 @@ pub fn acp_builtin_tools() -> Vec<ToolDef> {
         bash(),
         ls(),
         web_fetch(),
+        retrieve(),
     ]
 }
 
@@ -225,6 +229,39 @@ fn web_fetch() -> ToolDef {
         .with_timeout_ms(60_000)
 }
 
+/// RAG-16: `retrieve` — search the workspace knowledge store, code index, and episode history.
+fn retrieve() -> ToolDef {
+    ToolDef::new(
+        "retrieve",
+        "Search the workspace knowledge store, code index, and episode history for relevant context.",
+        ToolCategory::Read,
+        ToolPermission::read_only(),
+    )
+    .with_parameters(ToolSchema::from_value(serde_json::json!({
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "The search query string."
+            },
+            "limit": {
+                "type": "integer",
+                "description": "Maximum number of results to return (default 10)."
+            },
+            "source": {
+                "type": "string",
+                "enum": ["knowledge", "episodes", "all"],
+                "description": "Which source to search: 'knowledge' (durable store), 'episodes' (agent turns), or 'all' (default)."
+            }
+        },
+        "required": ["query"],
+        "additionalProperties": false
+    })))
+    .with_concurrency(ToolConcurrency::Parallel)
+    .with_idempotent(true)
+    .with_timeout_ms(30_000)
+}
+
 // ── Tool execution ──────────────────────────────────────────────────
 
 /// Whether a tool is auto-approved (read-only / safe) or needs user permission.
@@ -242,6 +279,7 @@ fn tool_call_kind(name: &str) -> ToolCallKind {
         "bash" => ToolCallKind::Terminal,
         "ls" => ToolCallKind::Read,
         "web_fetch" => ToolCallKind::Fetch,
+        "retrieve" => ToolCallKind::Search,
         _ => ToolCallKind::Other,
     }
 }
@@ -355,6 +393,7 @@ pub async fn execute_acp_builtin_tool(
         "bash" => exec_bash(args, workdir).await,
         "ls" => exec_ls(args, workdir).await,
         "web_fetch" => exec_web_fetch(args).await,
+        "retrieve" => exec_retrieve(args, workdir).await,
         _ => Err(format!("unknown builtin tool: {name}")),
     };
 
@@ -406,7 +445,10 @@ pub fn tool_permission_request(
         "write_file" => "Allow this ACP turn to write the requested file?",
         "edit_file" => "Allow this ACP turn to edit the requested file?",
         "bash" => "Allow this ACP turn to run the requested terminal command?",
-        _ => unreachable!("permission metadata is defined only for mutation tools"),
+        // The first match already returned `None` for all other names; this arm
+        // is unreachable in practice.  Use `return None` instead of `unreachable!`
+        // so that a future refactor cannot accidentally introduce a panic here.
+        _ => return None,
     };
 
     Some((action, format_tool_title(name, args), detail.to_owned()))
@@ -442,7 +484,7 @@ pub fn slash_command_allowed_tools(command: &str) -> Option<Vec<String>> {
         "research" | "search" | "knowledge" | "explain" | "replay" | "status" | "doctor"
         | "config" | "models" | "learn" | "prd-list" | "prd-status" | "plan-list" | "plan-show"
         | "agents" | "learn-router" | "learn-episodes" | "knowledge-stats" | "index"
-        | "analyze" => Some(read_only()),
+        | "analyze" | "affect" | "dream-status" => Some(read_only()),
         // Read + write: PRD/plan editing but no bash
         "enhance-prd" | "prd-draft" | "prd-plan" | "prd-consolidate" | "plan-generate"
         | "plan-regenerate" => Some(read_write()),
@@ -475,7 +517,8 @@ pub fn command_tool_ceiling(command: &str) -> Option<ToolPermission> {
         // Read-only: status/diagnostic/inspection commands.
         "status" | "doctor" | "config" | "models" | "learn" | "knowledge" | "explain"
         | "replay" | "prd-list" | "prd-status" | "plan-list" | "plan-show" | "agents"
-        | "learn-router" | "learn-episodes" | "knowledge-stats" | "index" | "analyze" => {
+        | "learn-router" | "learn-episodes" | "knowledge-stats" | "index" | "analyze"
+        | "affect" | "dream-status" => {
             Some(ToolPermission {
                 read: true,
                 write: false,
@@ -1012,6 +1055,85 @@ async fn exec_web_fetch(args: &serde_json::Value) -> Result<String, String> {
 }
 
 // ── Safety integration tests ─────────────────────────────────────────────────
+
+// ─── RAG-16: retrieve tool executor ─────────────────────────────────────────
+
+/// Execute the `retrieve` builtin tool.
+///
+/// Searches the workspace knowledge store (and optionally the episode log)
+/// for context relevant to `query`. Returns results formatted as a readable
+/// text block suitable for injection into an agent's context window.
+async fn exec_retrieve(args: &serde_json::Value, workdir: &Path) -> Result<String, String> {
+    let query = require_str(args, "query")?;
+    let limit = args
+        .get("limit")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(10) as usize;
+    let source = opt_str(args, "source").unwrap_or_else(|| "all".to_string());
+
+    let mut sections: Vec<String> = Vec::new();
+
+    // ── Knowledge store search ──────────────────────────────────────────────
+    if source == "all" || source == "knowledge" {
+        let store = roko_neuro::knowledge_store::KnowledgeStore::for_workdir(workdir);
+        match store.query(&query, limit) {
+            Ok(results) if !results.is_empty() => {
+                let mut block = format!("## Knowledge Store ({} result(s))\n\n", results.len());
+                for (i, entry) in results.iter().enumerate() {
+                    block.push_str(&format!(
+                        "### [{i}] {kind:?} (tier: {tier:?}, relevance: {rel:.2})\n{content}\n\n",
+                        i = i + 1,
+                        kind = entry.kind,
+                        tier = entry.tier,
+                        rel = entry.confidence,
+                        content = entry.content.trim(),
+                    ));
+                }
+                sections.push(block);
+            }
+            Ok(_) => {}
+            Err(e) => {
+                warn!("retrieve: knowledge store query failed: {e}");
+            }
+        }
+    }
+
+    // ── Episode log search ──────────────────────────────────────────────────
+    if source == "all" || source == "episodes" {
+        let episodes_path = workdir.join(".roko").join("episodes.jsonl");
+        if let Ok(text) = std::fs::read_to_string(&episodes_path) {
+            let query_lower = query.to_lowercase();
+            let matches: Vec<&str> = text
+                .lines()
+                .filter(|line| line.to_lowercase().contains(&query_lower))
+                .take(limit)
+                .collect();
+            if !matches.is_empty() {
+                let mut block =
+                    format!("## Episode History ({} match(es))\n\n", matches.len());
+                for line in &matches {
+                    // Show a trimmed version — full lines may be very long JSON.
+                    let trimmed = if line.len() > 400 {
+                        format!("{}…", &line[..400])
+                    } else {
+                        line.to_string()
+                    };
+                    block.push_str(&format!("{trimmed}\n\n"));
+                }
+                sections.push(block);
+            }
+        }
+    }
+
+    if sections.is_empty() {
+        return Ok(format!(
+            "No results found for query: {query:?}\n\n\
+             Searched: {source} (limit {limit})"
+        ));
+    }
+
+    Ok(sections.join("\n---\n\n"))
+}
 
 #[cfg(test)]
 mod tests {

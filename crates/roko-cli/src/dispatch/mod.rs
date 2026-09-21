@@ -138,6 +138,24 @@ pub struct DispatchContext {
     /// agents dispatched later in the same plan run benefit from error
     /// patterns discovered by earlier agents.
     pub error_patterns_context: String,
+    /// Pre-computed workspace map (indented crate/src tree).
+    ///
+    /// When non-empty, `PromptContext::from_task` uses this value instead of
+    /// calling `generate_workspace_map` on the Tokio reactor thread.
+    /// Populated once per plan run by `GraphTaskDispatcher` via its
+    /// `static_prompt_cache` field.
+    pub cached_workspace_map: String,
+    /// Pre-computed workspace context (git state + crate descriptions).
+    ///
+    /// When non-empty, `PromptContext::from_task` uses this value instead of
+    /// calling `generate_workspace_context` (which spawns `git` subprocesses
+    /// and reads Cargo.toml files) on the Tokio reactor thread.
+    pub cached_workspace_context: String,
+    /// Pre-computed C-Factor policy context.
+    ///
+    /// When non-empty, `PromptContext::from_task` uses this value instead of
+    /// reading `.roko/learn/c-factor.jsonl` on the Tokio reactor thread.
+    pub cached_cfactor_context: String,
 }
 
 // ─── Dispatcher facade ─────────────────────────────────────────────────
@@ -209,7 +227,9 @@ impl Dispatcher {
     /// replaced with the default fallback.
     #[must_use]
     pub fn with_tool_capability_filter(mut self, models_without_tools: HashSet<String>) -> Self {
-        self.router = self.router.with_tool_capability_filter(models_without_tools);
+        self.router = self
+            .router
+            .with_tool_capability_filter(models_without_tools);
         self
     }
 
@@ -488,6 +508,9 @@ mod tests {
             routing_bias: None,
             dependency_outputs: Vec::new(),
             error_patterns_context: String::new(),
+            cached_workspace_map: String::new(),
+            cached_workspace_context: String::new(),
+            cached_cfactor_context: String::new(),
         }
     }
 

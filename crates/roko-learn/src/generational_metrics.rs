@@ -201,7 +201,10 @@ mod tests {
 
         let deltas = gen2.improvement_vs(&gen1);
         let success_delta = deltas.iter().find(|d| d.name == "success_rate").unwrap();
-        assert!(success_delta.improvement > 0.0, "success rate should improve");
+        assert!(
+            success_delta.improvement > 0.0,
+            "success rate should improve"
+        );
     }
 
     #[test]

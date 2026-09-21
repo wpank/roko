@@ -8,6 +8,8 @@
 //! to select models, assemble context, and verify results.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::fs;
+use std::io::Write;
 use std::path::Path;
 
 use crate::orchestrator::{ReplanStrategy, detect_cycle_nodes};
@@ -1075,6 +1077,187 @@ impl TasksFile {
     }
 }
 
+// ─── Typed plan mutation protocol ────────────────────────────────────────────
+
+/// A typed, auditable mutation to a [`TasksFile`].
+///
+/// Using this enum instead of ad-hoc string assignments ensures all status
+/// changes are consistent, searchable, and validated at compile time.
+///
+/// # Usage
+///
+/// ```rust,ignore
+/// use roko_cli::task_parser::{PlanMutation, TasksFile};
+///
+/// let mut tasks = TasksFile::parse(path)?;
+/// let changed = tasks.apply_mutation(PlanMutation::MarkTaskDone {
+///     task_id: "T1".to_string(),
+/// });
+/// if changed {
+///     tasks.write(path)?;
+/// }
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PlanMutation {
+    /// Mark a task as successfully completed.
+    MarkTaskDone {
+        /// The `id` field of the task to mark done.
+        task_id: String,
+    },
+    /// Mark a task as having failed (terminal failure, retries exhausted).
+    MarkTaskFailed {
+        /// The `id` field of the task to mark failed.
+        task_id: String,
+        /// Human-readable reason for the failure.
+        reason: String,
+    },
+    /// Skip a task without executing it.
+    SkipTask {
+        /// The `id` field of the task to skip.
+        task_id: String,
+    },
+    /// Reset a task back to `pending` so the runner will retry it.
+    RetryTask {
+        /// The `id` field of the task to retry.
+        task_id: String,
+    },
+    /// Set an arbitrary status string on a task.
+    ///
+    /// Prefer the typed variants above when possible.  This escape hatch
+    /// is provided for callers that need to set intermediate states (e.g.
+    /// `"active"`) that are not terminal lifecycle events.
+    UpdateTaskStatus {
+        /// The `id` field of the task to update.
+        task_id: String,
+        /// Raw status string (e.g. `"active"`, `"blocked"`).
+        status: String,
+    },
+}
+
+impl PlanMutation {
+    /// The canonical status string this mutation produces.
+    #[must_use]
+    pub fn target_status(&self) -> Option<&str> {
+        match self {
+            Self::MarkTaskDone { .. } => Some("done"),
+            Self::MarkTaskFailed { .. } => Some("failed"),
+            Self::SkipTask { .. } => Some("skipped"),
+            Self::RetryTask { .. } => Some("pending"),
+            Self::UpdateTaskStatus { status, .. } => Some(status.as_str()),
+        }
+    }
+
+    /// The task ID targeted by this mutation.
+    #[must_use]
+    pub fn task_id(&self) -> &str {
+        match self {
+            Self::MarkTaskDone { task_id }
+            | Self::MarkTaskFailed { task_id, .. }
+            | Self::SkipTask { task_id }
+            | Self::RetryTask { task_id }
+            | Self::UpdateTaskStatus { task_id, .. } => task_id.as_str(),
+        }
+    }
+}
+
+impl TasksFile {
+    /// Apply a [`PlanMutation`] to this [`TasksFile`] in memory.
+    ///
+    /// Returns `true` if the mutation changed any task, `false` if the
+    /// targeted task was not found or was already in the target state.
+    ///
+    /// After applying mutations, call [`TasksFile::write`] to persist to disk.
+    pub fn apply_mutation(&mut self, mutation: PlanMutation) -> bool {
+        let task_id = mutation.task_id().to_string();
+        let target_status = match mutation.target_status() {
+            Some(s) => s.to_string(),
+            None => return false,
+        };
+
+        let Some(task) = self.tasks.iter_mut().find(|t| t.id == task_id) else {
+            tracing::warn!(
+                task_id = %task_id,
+                "apply_mutation: task not found, skipping"
+            );
+            return false;
+        };
+
+        if task.status == target_status {
+            return false;
+        }
+
+        tracing::debug!(
+            task_id = %task_id,
+            from = %task.status,
+            to = %target_status,
+            "apply_mutation: task status transition"
+        );
+        task.status = target_status;
+
+        // Keep meta counters consistent after any mutation.
+        self.recount_meta();
+        true
+    }
+
+    /// Apply multiple [`PlanMutation`]s to this [`TasksFile`] in memory.
+    ///
+    /// Returns the number of tasks actually changed.
+    pub fn apply_mutations(&mut self, mutations: impl IntoIterator<Item = PlanMutation>) -> usize {
+        mutations
+            .into_iter()
+            .filter(|m| self.apply_mutation(m.clone()))
+            .count()
+    }
+
+    /// Recompute `[meta]` counters (`total`, `done`, `status`) from current tasks.
+    ///
+    /// Call this after any in-memory status change to keep the file consistent.
+    pub fn recount_meta(&mut self) {
+        self.meta.total = self.tasks.len() as u32;
+        self.meta.done = self
+            .tasks
+            .iter()
+            .filter(|t| t.status.eq_ignore_ascii_case("done"))
+            .count() as u32;
+        self.meta.status =
+            if self.meta.total > 0 && self.meta.done == self.meta.total {
+                "complete".to_string()
+            } else {
+                "ready".to_string()
+            };
+    }
+
+    /// Atomically write this [`TasksFile`] to `path` using a tmp-then-rename
+    /// strategy so a crash mid-write does not corrupt the plan file.
+    pub fn write(&self, path: &Path) -> Result<()> {
+        let serialized =
+            toml::to_string_pretty(self).context("serialize TasksFile to TOML")?;
+
+        let parent = path
+            .parent()
+            .with_context(|| format!("no parent directory for {}", path.display()))?;
+
+        // Write to a sibling tmp file, then rename for crash safety.
+        let tmp_path = parent.join(".tasks.toml.tmp");
+        {
+            let mut f = fs::File::create(&tmp_path)
+                .with_context(|| format!("create tmp file {}", tmp_path.display()))?;
+            f.write_all(serialized.as_bytes())
+                .with_context(|| format!("write tmp file {}", tmp_path.display()))?;
+            f.flush()
+                .with_context(|| format!("flush tmp file {}", tmp_path.display()))?;
+        }
+        fs::rename(&tmp_path, path).with_context(|| {
+            format!(
+                "rename {} -> {}",
+                tmp_path.display(),
+                path.display()
+            )
+        })?;
+        Ok(())
+    }
+}
+
 fn validate_modern_fields_content(content: &str) -> Result<Vec<ModernFieldIssue>> {
     let raw: toml::Value = toml::from_str(content).context("parse tasks.toml")?;
     let Some(tasks) = raw.get("task").and_then(toml::Value::as_array) else {
@@ -1205,13 +1388,13 @@ pub fn repair_toml(raw: &str) -> String {
         return s;
     }
 
-    // Strip trailing prose after last ]]
-    if let Some(pos) = s.rfind("]]") {
-        let line_end = s[pos..].find('\n').map(|i| pos + i + 1).unwrap_or(pos + 2);
-        let trailing = s[line_end..].trim();
-        if !trailing.is_empty() && !trailing.starts_with('[') && !trailing.starts_with('#') {
-            s.truncate(line_end);
-        }
+    // Strip trailing prose after last ]] or last key=value line. The fallback
+    // checks both `]]` (end of array-of-tables entry) and prose patterns.
+    s = strip_trailing_prose(&s);
+    if toml::from_str::<toml::Value>(&s).is_ok() {
+        let elapsed_us = t0.elapsed().as_micros();
+        tracing::info!(elapsed_us, "repair_toml: fixed by stripping trailing prose");
+        return s;
     }
 
     s = split_merged_fields(&s);
@@ -1222,6 +1405,97 @@ pub fn repair_toml(raw: &str) -> String {
         tracing::info!(elapsed_us, "repair_toml: applied deterministic fixes");
     }
     s
+}
+
+/// Fix the common LLM mistake of using `name = "<slug>"` instead of
+/// `plan = "<slug>"` in the `[meta]` section.
+///
+/// Called by the validation layer after `repair_toml`, because `name =` is
+/// syntactically valid TOML (so `repair_toml` leaves it unchanged) but is
+/// semantically wrong for plan generation output.
+pub fn fix_meta_name_to_plan(s: &str) -> String {
+    fix_meta_name_field(s)
+}
+
+fn fix_meta_name_field(s: &str) -> String {
+    // Only apply inside the [meta] section: between `[meta]` and the next
+    // top-level section header (a line starting with `[`).
+    let Some(meta_pos) = s.find("[meta]") else {
+        return s.to_string();
+    };
+    // Find the next section header after [meta].
+    let after_meta = &s[meta_pos + 6..]; // skip "[meta]"
+    let next_section = after_meta
+        .find("\n[")
+        .map(|i| meta_pos + 6 + i + 1)
+        .unwrap_or(s.len());
+    let meta_section = &s[meta_pos..next_section];
+
+    // If the meta section already has `plan =`, nothing to do.
+    if meta_section.contains("\nplan =") || meta_section.contains("\nplan=") {
+        return s.to_string();
+    }
+
+    // Replace the first `name = ` occurrence inside the meta block.
+    let fixed_meta = meta_section.replacen("name = ", "plan = ", 1);
+    if fixed_meta == meta_section {
+        return s.to_string();
+    }
+
+    format!("{}{}{}", &s[..meta_pos], fixed_meta, &s[next_section..])
+}
+
+/// Strip trailing non-TOML prose that follows the last recognizable TOML
+/// content. Works on both `]]` (end of array-of-tables) and plain key=value
+/// endings, stopping at lines that look like markdown/explanation text.
+fn strip_trailing_prose(s: &str) -> String {
+    // Walk backwards: find the last line that looks like TOML.
+    let lines: Vec<&str> = s.lines().collect();
+    let mut last_toml_line = 0usize;
+    let mut in_multiline = false;
+
+    for (i, line) in lines.iter().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        // Track multi-line strings.
+        if in_multiline {
+            if trimmed.contains("\"\"\"") || trimmed.contains("'''") {
+                in_multiline = false;
+            }
+            last_toml_line = i;
+            continue;
+        }
+        if (trimmed.contains("= \"\"\"") || trimmed.contains("= '''"))
+            && !trimmed.ends_with("\"\"\"")
+            && !trimmed.ends_with("'''")
+        {
+            in_multiline = true;
+            last_toml_line = i;
+            continue;
+        }
+        // Lines that are clearly TOML.
+        if trimmed.starts_with('[')   // section header or array
+            || trimmed.contains('=')  // key = value
+            || trimmed.starts_with('#')
+        // comment
+        {
+            last_toml_line = i;
+            continue;
+        }
+        // Lines that are clearly prose — stop here.
+        if trimmed.starts_with("Note")
+            || trimmed.starts_with("This")
+            || trimmed.starts_with("The ")
+            || trimmed.starts_with("You ")
+            || trimmed.starts_with("Please")
+        {
+            break;
+        }
+    }
+
+    lines[..=last_toml_line].join("\n")
 }
 
 fn split_merged_fields(s: &str) -> String {
@@ -1253,20 +1527,57 @@ fn split_merged_fields(s: &str) -> String {
 }
 
 fn close_unclosed_strings(s: &str) -> String {
-    s.lines()
-        .map(|line| {
-            if line.trim_start().starts_with('#') {
-                return line.to_string();
+    let mut out = Vec::new();
+    let mut in_multiline = false;
+    let mut ml_delim: &str = "";
+
+    for line in s.lines() {
+        let trimmed = line.trim_start();
+
+        // Skip TOML comments entirely.
+        if trimmed.starts_with('#') {
+            out.push(line.to_string());
+            continue;
+        }
+
+        // Track multi-line string state so we don't miscount quotes inside them.
+        if in_multiline {
+            out.push(line.to_string());
+            if trimmed.contains(ml_delim) {
+                in_multiline = false;
             }
-            let quote_count = line.chars().filter(|&c| c == '"').count();
-            if quote_count % 2 != 0 {
-                format!("{line}\"")
-            } else {
-                line.to_string()
+            continue;
+        }
+
+        // Detect opening of a multi-line TOML string on an assignment line.
+        for delim in &["\"\"\"", "'''"] {
+            if let Some(pos) = line.find(&format!("= {delim}")) {
+                let after = &line[pos + 2 + delim.len()..];
+                // Only multi-line if the closing delimiter doesn't appear on
+                // the same line after the opening one.
+                if !after.contains(delim) {
+                    in_multiline = true;
+                    ml_delim = delim;
+                    break;
+                }
             }
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
+        }
+        if in_multiline {
+            out.push(line.to_string());
+            continue;
+        }
+
+        // Count unescaped double-quotes outside of triple-quote sequences.
+        // A simple parity check: odd count means an unclosed string.
+        let quote_count = line.chars().filter(|&c| c == '"').count();
+        if quote_count % 2 != 0 {
+            out.push(format!("{line}\""));
+        } else {
+            out.push(line.to_string());
+        }
+    }
+
+    out.join("\n")
 }
 
 /// Strip nested fenced code blocks and obvious non-TOML lines (Rust keywords,
@@ -2534,5 +2845,275 @@ And that's the plan.
         let tasks = parsed.unwrap();
         assert_eq!(tasks.meta.plan, "wire-prompt");
         assert_eq!(tasks.tasks[0].id, "T1");
+    }
+
+    // ─── fix_meta_name_field tests ────────────────────────────────────────
+
+    #[test]
+    fn fix_meta_name_field_replaces_name_with_plan() {
+        let input = "[meta]\nname = \"my-feature\"\ntotal = 1\n\n[[task]]\nid = \"T1\"\n";
+        let fixed = fix_meta_name_field(input);
+        assert!(
+            fixed.contains("plan = \"my-feature\""),
+            "should replace name with plan: {fixed}"
+        );
+        assert!(
+            !fixed.contains("name = "),
+            "should remove name key: {fixed}"
+        );
+    }
+
+    #[test]
+    fn fix_meta_name_field_no_op_when_plan_already_present() {
+        let input = "[meta]\nplan = \"my-feature\"\ntotal = 1\n\n[[task]]\nid = \"T1\"\n";
+        let fixed = fix_meta_name_field(input);
+        // Should be unchanged.
+        assert_eq!(fixed, input);
+    }
+
+    #[test]
+    fn fix_meta_name_field_no_op_when_no_meta() {
+        let input = "[[task]]\nid = \"T1\"\nname = \"value\"\n";
+        let fixed = fix_meta_name_field(input);
+        // Should not touch task fields named 'name'.
+        assert_eq!(fixed, input);
+    }
+
+    // ─── strip_trailing_prose tests ───────────────────────────────────────
+
+    #[test]
+    fn strip_trailing_prose_removes_explanation_after_toml() {
+        let input = "[meta]\nplan = \"test\"\ntotal = 1\n\n[[task]]\nid = \"T1\"\nstatus = \"ready\"\n\nNote: this plan should be executed in order.\n";
+        let stripped = strip_trailing_prose(input);
+        assert!(
+            !stripped.contains("Note:"),
+            "should strip trailing note: {stripped}"
+        );
+        assert!(
+            stripped.contains("[[task]]"),
+            "should keep task block: {stripped}"
+        );
+    }
+
+    #[test]
+    fn strip_trailing_prose_keeps_valid_toml_only() {
+        let input =
+            "[meta]\nplan = \"p\"\ntotal = 1\n\n[[task]]\nid = \"T1\"\nstatus = \"ready\"\n";
+        let stripped = strip_trailing_prose(input);
+        // Should include all the TOML lines.
+        assert!(stripped.contains("[[task]]"), "task block should survive");
+        assert!(
+            stripped.contains("status = \"ready\""),
+            "value should survive"
+        );
+    }
+
+    // ─── close_unclosed_strings multi-line string safety ─────────────────
+
+    #[test]
+    fn close_unclosed_strings_does_not_mangle_multiline_string() {
+        // A TOML multi-line string: the internal content may have odd quote counts
+        // but they must not be closed prematurely.
+        let input = "description = \"\"\"\nThis has a \"quoted\" word.\nAnd another line.\n\"\"\"\nstatus = \"ready\"";
+        let output = close_unclosed_strings(input);
+        // The output should still be parseable TOML.
+        let parsed = toml::from_str::<toml::Value>(&format!("[t]\n{output}"));
+        assert!(
+            parsed.is_ok(),
+            "multi-line string should survive close_unclosed_strings: {parsed:?}\nOutput:\n{output}"
+        );
+    }
+
+    // --- fix_meta_name_to_plan: semantic-level name->plan conversion ---
+
+    #[test]
+    fn fix_meta_name_to_plan_converts_name_to_plan() {
+        // repair_toml leaves `name =` alone because it is syntactically valid TOML.
+        // fix_meta_name_to_plan converts it at the semantic level.
+        let raw = "[meta]\nname = \"my-feature\"\ntotal = 1\nstatus = \"ready\"\n\n[[task]]\nid = \"T1\"\ntitle = \"Do work\"\nstatus = \"ready\"\n";
+        let fixed = fix_meta_name_to_plan(raw);
+        assert!(
+            fixed.contains("plan = \"my-feature\""),
+            "should have plan key: {fixed}"
+        );
+        assert!(
+            !fixed.contains("name = "),
+            "should remove name key: {fixed}"
+        );
+        // Should still parse as TOML.
+        let parsed = toml::from_str::<toml::Value>(&fixed);
+        assert!(parsed.is_ok(), "fixed TOML should parse: {parsed:?}");
+    }
+
+    // ─── PlanMutation tests ───────────────────────────────────────────────
+
+    const MUTATION_TEST_TASKS: &str = r#"
+[meta]
+plan = "test-plan"
+total = 3
+done = 1
+status = "ready"
+
+[[task]]
+id = "T1"
+title = "First task"
+status = "pending"
+tier = "focused"
+depends_on = []
+
+[[task]]
+id = "T2"
+title = "Second task"
+status = "pending"
+tier = "mechanical"
+depends_on = ["T1"]
+
+[[task]]
+id = "T3"
+title = "Third task"
+status = "done"
+tier = "mechanical"
+depends_on = ["T2"]
+"#;
+
+    #[test]
+    fn mutation_mark_task_done_changes_status_and_updates_meta() {
+        let mut tasks = TasksFile::parse_str(MUTATION_TEST_TASKS).unwrap();
+        let changed = tasks.apply_mutation(PlanMutation::MarkTaskDone {
+            task_id: "T1".to_string(),
+        });
+        assert!(changed, "T1 should have changed from pending to done");
+        let t1 = tasks.tasks.iter().find(|t| t.id == "T1").unwrap();
+        assert_eq!(t1.status, "done");
+        // meta.done should have incremented (T1=done, T3=done → 2)
+        assert_eq!(tasks.meta.done, 2, "meta.done should be 2 after T1 marked done");
+        assert_eq!(tasks.meta.status, "ready", "not all tasks are done yet");
+    }
+
+    #[test]
+    fn mutation_mark_task_done_is_idempotent() {
+        let mut tasks = TasksFile::parse_str(MUTATION_TEST_TASKS).unwrap();
+        let first = tasks.apply_mutation(PlanMutation::MarkTaskDone {
+            task_id: "T3".to_string(),
+        });
+        assert!(!first, "T3 is already done; apply_mutation should return false");
+        assert_eq!(tasks.meta.done, 1, "meta.done should still be 1");
+    }
+
+    #[test]
+    fn mutation_mark_task_failed_sets_failed_status() {
+        let mut tasks = TasksFile::parse_str(MUTATION_TEST_TASKS).unwrap();
+        let changed = tasks.apply_mutation(PlanMutation::MarkTaskFailed {
+            task_id: "T2".to_string(),
+            reason: "cargo test failed".to_string(),
+        });
+        assert!(changed);
+        let t2 = tasks.tasks.iter().find(|t| t.id == "T2").unwrap();
+        assert_eq!(t2.status, "failed");
+    }
+
+    #[test]
+    fn mutation_skip_task_sets_skipped_status() {
+        let mut tasks = TasksFile::parse_str(MUTATION_TEST_TASKS).unwrap();
+        let changed = tasks.apply_mutation(PlanMutation::SkipTask {
+            task_id: "T1".to_string(),
+        });
+        assert!(changed);
+        let t1 = tasks.tasks.iter().find(|t| t.id == "T1").unwrap();
+        assert_eq!(t1.status, "skipped");
+    }
+
+    #[test]
+    fn mutation_retry_task_resets_to_pending() {
+        let mut tasks = TasksFile::parse_str(MUTATION_TEST_TASKS).unwrap();
+        // First mark T3 as failed, then retry it.
+        tasks.apply_mutation(PlanMutation::MarkTaskFailed {
+            task_id: "T3".to_string(),
+            reason: "flaky".to_string(),
+        });
+        let changed = tasks.apply_mutation(PlanMutation::RetryTask {
+            task_id: "T3".to_string(),
+        });
+        assert!(changed, "T3 should have changed from failed to pending");
+        let t3 = tasks.tasks.iter().find(|t| t.id == "T3").unwrap();
+        assert_eq!(t3.status, "pending");
+    }
+
+    #[test]
+    fn mutation_unknown_task_id_returns_false() {
+        let mut tasks = TasksFile::parse_str(MUTATION_TEST_TASKS).unwrap();
+        let changed = tasks.apply_mutation(PlanMutation::MarkTaskDone {
+            task_id: "DOES_NOT_EXIST".to_string(),
+        });
+        assert!(!changed, "unknown task id should return false without panicking");
+    }
+
+    #[test]
+    fn mutation_target_status_returns_correct_strings() {
+        assert_eq!(
+            PlanMutation::MarkTaskDone { task_id: "T".into() }.target_status(),
+            Some("done")
+        );
+        assert_eq!(
+            PlanMutation::MarkTaskFailed { task_id: "T".into(), reason: String::new() }
+                .target_status(),
+            Some("failed")
+        );
+        assert_eq!(
+            PlanMutation::SkipTask { task_id: "T".into() }.target_status(),
+            Some("skipped")
+        );
+        assert_eq!(
+            PlanMutation::RetryTask { task_id: "T".into() }.target_status(),
+            Some("pending")
+        );
+        assert_eq!(
+            PlanMutation::UpdateTaskStatus { task_id: "T".into(), status: "active".into() }
+                .target_status(),
+            Some("active")
+        );
+    }
+
+    #[test]
+    fn apply_mutations_batch_marks_all_done_and_updates_meta_once() {
+        let mut tasks = TasksFile::parse_str(MUTATION_TEST_TASKS).unwrap();
+        let mutations = vec![
+            PlanMutation::MarkTaskDone { task_id: "T1".to_string() },
+            PlanMutation::MarkTaskDone { task_id: "T2".to_string() },
+            // T3 is already done — this one is a no-op.
+            PlanMutation::MarkTaskDone { task_id: "T3".to_string() },
+        ];
+        let changed = tasks.apply_mutations(mutations);
+        // Only T1 and T2 actually changed (T3 was already done).
+        assert_eq!(changed, 2);
+        assert_eq!(tasks.meta.done, 3);
+        assert_eq!(tasks.meta.status, "complete");
+    }
+
+    #[test]
+    fn write_round_trips_via_tmp_rename() {
+        use std::fs;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("tasks.toml");
+
+        let mut tasks = TasksFile::parse_str(MUTATION_TEST_TASKS).unwrap();
+        tasks.apply_mutation(PlanMutation::MarkTaskDone {
+            task_id: "T1".to_string(),
+        });
+        tasks.write(&path).expect("write should succeed");
+
+        // Verify the file was created and the tmp file was cleaned up.
+        assert!(path.exists(), "tasks.toml should exist");
+        assert!(
+            !dir.path().join(".tasks.toml.tmp").exists(),
+            "tmp file should be cleaned up after rename"
+        );
+
+        // Parse the written file back and verify the mutation persisted.
+        let reloaded = TasksFile::parse(&path).expect("parse round-trip");
+        let t1 = reloaded.tasks.iter().find(|t| t.id == "T1").unwrap();
+        assert_eq!(t1.status, "done");
+        assert_eq!(reloaded.meta.done, 2); // T1 + T3
+        fs::remove_dir_all(dir).ok();
     }
 }

@@ -27,7 +27,7 @@ impl FeedAgent for AgentMonitorAgent {
     fn feeds(&self) -> Vec<FeedDescriptor> {
         vec![FeedDescriptor {
             feed_id: "meta-agents".into(),
-            topic: "feed:meta:agents".into(),
+            topic: "feed.meta.agents".into(),
             name: "Agent Monitor".into(),
             description: "Agent count and heartbeat status".into(),
             kind: "meta".into(),
@@ -61,7 +61,7 @@ impl FeedAgent for AgentMonitorAgent {
                         ctx.publish_tick(
                             self.agent_id(),
                             "meta-agents",
-                            "feed:meta:agents",
+                            "feed.meta.agents",
                             payload,
                         );
                     }
@@ -90,7 +90,7 @@ impl FeedAgent for RelayStatsAgent {
     fn feeds(&self) -> Vec<FeedDescriptor> {
         vec![FeedDescriptor {
             feed_id: "meta-relay".into(),
-            topic: "feed:meta:relay".into(),
+            topic: "feed.meta.relay".into(),
             name: "Relay Stats".into(),
             description: "Relay connection health and throughput stats".into(),
             kind: "meta".into(),
@@ -126,7 +126,7 @@ impl FeedAgent for RelayStatsAgent {
                         ctx.publish_tick(
                             self.agent_id(),
                             "meta-relay",
-                            "feed:meta:relay",
+                            "feed.meta.relay",
                             payload,
                         );
                     }
@@ -155,7 +155,7 @@ impl FeedAgent for SystemHeartbeatAgent {
     fn feeds(&self) -> Vec<FeedDescriptor> {
         vec![FeedDescriptor {
             feed_id: "meta-heartbeat".into(),
-            topic: "feed:meta:heartbeat".into(),
+            topic: "feed.meta.heartbeat".into(),
             name: "System Heartbeat".into(),
             description: "Aggregate system health: uptime, feed agent count, event throughput"
                 .into(),
@@ -193,7 +193,7 @@ impl FeedAgent for SystemHeartbeatAgent {
                             "est_msgs_per_sec": msgs_per_sec,
                             "heartbeat_seq": tick_count,
                         });
-                        ctx.publish_tick(self.agent_id(), "meta-heartbeat", "feed:meta:heartbeat", payload);
+                        ctx.publish_tick(self.agent_id(), "meta-heartbeat", "feed.meta.heartbeat", payload);
                     }
                 }
             }

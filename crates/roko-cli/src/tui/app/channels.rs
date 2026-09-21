@@ -265,62 +265,176 @@ impl App {
             }
         }
         for event in events {
-            let roko_core::DashboardEvent::AgentOutput {
-                agent_id, content, ..
-            } = event
-            else {
-                continue;
-            };
-            let Some(record) =
-                content.strip_prefix(crate::runner::tui_bridge::STREAM_RECORD_PREFIX)
-            else {
-                continue;
-            };
-            let Ok(record) = serde_json::from_str::<serde_json::Value>(record) else {
-                continue;
-            };
-            let kind = record
-                .get("kind")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("text");
-            let payload = record.get("payload").cloned().unwrap_or_default();
-            match kind {
-                "text" => {
-                    if let Some(text) = payload.get("text").and_then(serde_json::Value::as_str) {
-                        self.tui_state.push_agent_chunk(&agent_id, text.to_string());
+            // RC-1: Unified data model — the DashboardSnapshot (updated inside
+            // StateHub::publish *before* the event is broadcast) is the single
+            // source of truth for all plan/task/gate state.  drain_snapshot_channel()
+            // always runs before drain_state_events(), so by the time we process
+            // a lifecycle event here the TuiState has already been reconciled via
+            // update_from_dashboard_snapshot().
+            //
+            // The inline handlers below update ONLY TUI-local state that the
+            // snapshot cannot carry (Instant timers), or mark render_dirty so
+            // the frame redraws immediately rather than waiting until the next
+            // animation tick.  They MUST NOT mutate derived counters (tasks_done,
+            // tasks_failed) because those are owned by the snapshot path and
+            // double-counting would corrupt the progress display.
+            match &event {
+                roko_core::DashboardEvent::PlanStarted { plan_id, .. } => {
+                    // The snapshot has already set plan.active = true.  Set
+                    // started_at (a TUI-local Instant not carried by the
+                    // snapshot) so tick_elapsed() can advance the live timer.
+                    if let Some(plan) =
+                        self.tui_state.plans.iter_mut().find(|p| p.id == *plan_id)
+                    {
+                        if plan.started_at.is_none() {
+                            plan.started_at = Some(std::time::Instant::now());
+                        }
+                    }
+                    self.render_dirty.insert(RenderDirty::SNAPSHOT);
+                }
+                roko_core::DashboardEvent::PlanCompleted { plan_id, .. } => {
+                    // Freeze the elapsed timer before the snapshot clears active.
+                    // elapsed_secs is TUI-local (derived from started_at Instant);
+                    // the snapshot does not carry it.
+                    if let Some(plan) =
+                        self.tui_state.plans.iter_mut().find(|p| p.id == *plan_id)
+                    {
+                        if let Some(started) = plan.started_at.take() {
+                            plan.elapsed_secs = started.elapsed().as_secs_f64();
+                        }
+                    }
+                    self.render_dirty.insert(RenderDirty::SNAPSHOT);
+                }
+                roko_core::DashboardEvent::TaskStarted { .. }
+                | roko_core::DashboardEvent::TaskCompleted { .. }
+                | roko_core::DashboardEvent::GateResult { .. } => {
+                    // State already applied to TuiState via update_from_dashboard_snapshot().
+                    // Only mark dirty so the render fires immediately.
+                    self.render_dirty.insert(RenderDirty::SNAPSHOT);
+                }
+                roko_core::DashboardEvent::AgentOutput {
+                    agent_id, content, ..
+                } => {
+                    // Streaming text/tool records — handled below.
+                    // Each record is pushed into the canonical AgentOutputHistory
+                    // (P1-TUI-G4) so the structured semantic renderer sees typed
+                    // records rather than raw text.  The legacy agent_streams
+                    // chunk path is retained to keep the Live Stream panel alive.
+                    let Some(record) =
+                        content.strip_prefix(crate::runner::tui_bridge::STREAM_RECORD_PREFIX)
+                    else {
+                        // Non-prefixed line: push as plain text record.
+                        self.tui_state.push_agent_output_record(
+                            agent_id,
+                            super::super::state::OutputRecordKind::Text,
+                            content.clone(),
+                            None,
+                            None,
+                        );
+                        self.tui_state.push_agent_chunk(agent_id, content.clone());
+                        continue;
+                    };
+                    let Ok(record) =
+                        serde_json::from_str::<serde_json::Value>(record)
+                    else {
+                        continue;
+                    };
+                    let kind = record
+                        .get("kind")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("text");
+                    let payload = record.get("payload").cloned().unwrap_or_default();
+                    match kind {
+                        "text" => {
+                            if let Some(text) =
+                                payload.get("text").and_then(serde_json::Value::as_str)
+                            {
+                                self.tui_state.push_agent_output_record(
+                                    agent_id,
+                                    super::super::state::OutputRecordKind::Text,
+                                    text.to_string(),
+                                    None,
+                                    None,
+                                );
+                                self.tui_state
+                                    .push_agent_chunk(agent_id, text.to_string());
+                            }
+                        }
+                        "reasoning" => {
+                            if let Some(text) =
+                                payload.get("text").and_then(serde_json::Value::as_str)
+                            {
+                                self.tui_state.push_agent_output_record(
+                                    agent_id,
+                                    super::super::state::OutputRecordKind::Reasoning,
+                                    text.to_string(),
+                                    None,
+                                    None,
+                                );
+                                self.tui_state
+                                    .push_agent_chunk(agent_id, format!("[thinking] {text}"));
+                            }
+                        }
+                        "tool_start" => {
+                            let tool = payload
+                                .get("tool")
+                                .and_then(serde_json::Value::as_str)
+                                .unwrap_or("tool");
+                            let id = payload
+                                .get("tool_id")
+                                .and_then(serde_json::Value::as_str)
+                                .unwrap_or("");
+                            self.tui_state.push_agent_output_record(
+                                agent_id,
+                                super::super::state::OutputRecordKind::ToolCall,
+                                String::new(),
+                                if id.is_empty() { None } else { Some(id.to_string()) },
+                                Some(tool.to_string()),
+                            );
+                            self.tui_state
+                                .push_agent_chunk(agent_id, format!("[tool ⏵ {tool} {id}]"));
+                        }
+                        "tool_result" => {
+                            let output = payload
+                                .get("output")
+                                .and_then(serde_json::Value::as_str)
+                                .unwrap_or("");
+                            let id = payload
+                                .get("tool_id")
+                                .and_then(serde_json::Value::as_str)
+                                .unwrap_or("");
+                            self.tui_state.push_agent_output_record(
+                                agent_id,
+                                super::super::state::OutputRecordKind::ToolResult,
+                                output.to_string(),
+                                if id.is_empty() { None } else { Some(id.to_string()) },
+                                None,
+                            );
+                            self.tui_state
+                                .push_agent_chunk(agent_id, format!("[tool ✓ {id}]\n{output}"));
+                        }
+                        _ => {}
                     }
                 }
-                "reasoning" => {
-                    if let Some(text) = payload.get("text").and_then(serde_json::Value::as_str) {
-                        self.tui_state
-                            .push_agent_chunk(&agent_id, format!("[thinking] {text}"));
-                    }
+                roko_core::DashboardEvent::AgentTopologyUpdated { .. } => {
+                    // Topology changes (node/edge additions and state transitions)
+                    // are already applied to the DashboardSnapshot inside
+                    // StateHub::publish.  Mark dirty here so the Agents tab
+                    // redraws immediately on push rather than waiting for the
+                    // next animation tick (P3-TUI-1).
+                    self.render_dirty.insert(RenderDirty::SNAPSHOT);
                 }
-                "tool_start" => {
-                    let tool = payload
-                        .get("tool")
-                        .and_then(serde_json::Value::as_str)
-                        .unwrap_or("tool");
-                    let id = payload
-                        .get("tool_id")
-                        .and_then(serde_json::Value::as_str)
-                        .unwrap_or("");
-                    self.tui_state
-                        .push_agent_chunk(&agent_id, format!("[tool ⏵ {tool} {id}]"));
+                roko_core::DashboardEvent::AgentSpawned { .. }
+                | roko_core::DashboardEvent::AgentCompleted { .. } => {
+                    // Agent lifecycle events are reflected in the snapshot;
+                    // mark dirty for immediate redraw.
+                    self.render_dirty.insert(RenderDirty::SNAPSHOT);
                 }
-                "tool_result" => {
-                    let output = payload
-                        .get("output")
-                        .and_then(serde_json::Value::as_str)
-                        .unwrap_or("");
-                    let id = payload
-                        .get("tool_id")
-                        .and_then(serde_json::Value::as_str)
-                        .unwrap_or("");
-                    self.tui_state
-                        .push_agent_chunk(&agent_id, format!("[tool ✓ {id}]\n{output}"));
+                _ => {
+                    // All other events (EfficiencyEvent, etc.) are reflected
+                    // in the DashboardSnapshot and handled by
+                    // drain_snapshot_channel().  No inline action needed.
                 }
-                _ => {}
             }
         }
     }
@@ -500,34 +614,87 @@ impl App {
                         self.tui_state.mark_agent_stream_connected(&agent_id);
                     }
                     Ok(StreamChunk::Text(text)) => {
+                        // Push typed record into canonical history (P1-TUI-G4).
+                        self.tui_state.push_agent_output_record(
+                            &agent_id,
+                            super::super::state::OutputRecordKind::Text,
+                            text.clone(),
+                            None,
+                            None,
+                        );
                         self.tui_state.push_agent_chunk(&agent_id, text);
                     }
                     Ok(StreamChunk::Reasoning(text)) => {
+                        self.tui_state.push_agent_output_record(
+                            &agent_id,
+                            super::super::state::OutputRecordKind::Reasoning,
+                            text.clone(),
+                            None,
+                            None,
+                        );
                         self.tui_state
                             .push_agent_chunk(&agent_id, format!("[reasoning] {text}"));
                     }
                     Ok(StreamChunk::ToolCall(tool_call)) => {
+                        // Extract name and id from the tool_call JSON for semantic record.
+                        let tool_name = tool_call
+                            .get("name")
+                            .or_else(|| tool_call.get("tool"))
+                            .and_then(serde_json::Value::as_str)
+                            .map(str::to_string);
+                        let tool_id = tool_call
+                            .get("tool_id")
+                            .or_else(|| tool_call.get("id"))
+                            .and_then(serde_json::Value::as_str)
+                            .map(str::to_string);
+                        self.tui_state.push_agent_output_record(
+                            &agent_id,
+                            super::super::state::OutputRecordKind::ToolCall,
+                            String::new(),
+                            tool_id,
+                            tool_name,
+                        );
                         if let Ok(text) = serde_json::to_string(&tool_call) {
                             self.tui_state
                                 .push_agent_chunk(&agent_id, format!("[tool_call] {text}"));
                         }
                     }
                     Ok(StreamChunk::Usage(usage)) => {
+                        // Usage events are informational; push as system records.
                         if let Ok(text) = serde_json::to_string(&usage) {
+                            self.tui_state.push_agent_output_record(
+                                &agent_id,
+                                super::super::state::OutputRecordKind::System,
+                                format!("[usage] {text}"),
+                                None,
+                                None,
+                            );
                             self.tui_state
                                 .push_agent_chunk(&agent_id, format!("[usage] {text}"));
                         }
                     }
                     Ok(StreamChunk::Error(error)) => {
+                        self.tui_state.push_agent_output_record(
+                            &agent_id,
+                            super::super::state::OutputRecordKind::Error,
+                            error.clone(),
+                            None,
+                            None,
+                        );
                         self.tui_state
                             .push_agent_chunk(&agent_id, format!("[error] {error}"));
                     }
                     Ok(StreamChunk::Done { session }) => {
                         if let Some(session_id) = session {
-                            self.tui_state.push_agent_chunk(
+                            let msg = format!("[done] session {session_id}");
+                            self.tui_state.push_agent_output_record(
                                 &agent_id,
-                                format!("[done] session {session_id}"),
+                                super::super::state::OutputRecordKind::System,
+                                msg.clone(),
+                                None,
+                                None,
                             );
+                            self.tui_state.push_agent_chunk(&agent_id, msg);
                         }
                         self.tui_state.mark_agent_stream_done(&agent_id);
                     }
@@ -583,5 +750,4 @@ impl App {
 
         self.tui_state.process_metrics = merged;
     }
-
 }

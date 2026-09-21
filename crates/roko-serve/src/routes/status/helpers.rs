@@ -32,7 +32,6 @@ pub async fn read_jsonl_entries(path: &std::path::Path) -> Result<Vec<Value>, Ap
     Ok(entries)
 }
 
-
 pub async fn read_cfactor_history(path: &std::path::Path) -> Result<Vec<CFactor>, ApiError> {
     let content = match tokio::fs::read_to_string(path).await {
         Ok(c) => c,
@@ -53,6 +52,8 @@ pub async fn read_cfactor_history(path: &std::path::Path) -> Result<Vec<CFactor>
     Ok(history)
 }
 
+// Available for future endpoint refactors that read efficiency events directly.
+#[allow(dead_code)]
 pub async fn read_efficiency_events(
     path: &std::path::Path,
 ) -> Result<Vec<AgentEfficiencyEvent>, ApiError> {
@@ -132,6 +133,7 @@ pub fn extract_gate_duration_ms(entry: &Value) -> Option<u64> {
         .or_else(|| entry.pointer("/tags/duration_ms").and_then(Value::as_u64))
 }
 
+#[allow(dead_code)]
 pub fn extract_gate_rung(entry: &Value) -> Option<u32> {
     let raw = entry
         .pointer("/tags/rung")

@@ -13,9 +13,9 @@ use std::path::Path;
 use std::sync::Arc;
 
 use axum::Json;
+use axum::Router;
 use axum::extract::State;
 use axum::routing::get;
-use axum::Router;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -37,6 +37,7 @@ pub enum DoctorStatus {
 }
 
 impl DoctorStatus {
+    #[allow(dead_code)]
     fn label(self) -> &'static str {
         match self {
             Self::Ok => "ok",
@@ -208,7 +209,10 @@ fn check_layout_dirs(workdir: &Path) -> Vec<DoctorCheck> {
     let mut checks = Vec::new();
 
     if roko_dir.is_dir() {
-        checks.push(DoctorCheck::ok("layout_roko_dir", ".roko/ directory present"));
+        checks.push(DoctorCheck::ok(
+            "layout_roko_dir",
+            ".roko/ directory present",
+        ));
     } else {
         checks.push(
             DoctorCheck::warn("layout_roko_dir", ".roko/ directory missing (first run?)")
@@ -260,7 +264,10 @@ fn check_disk_health(workdir: &Path) -> DoctorCheck {
     }
     if let Some(warning) = monitor.check_warning(workdir) {
         return DoctorCheck::warn("disk_space", "disk space is low")
-            .with_detail(format!("{} MiB free (threshold {} MiB)", warning.free_mb, warning.threshold_mb))
+            .with_detail(format!(
+                "{} MiB free (threshold {} MiB)",
+                warning.free_mb, warning.threshold_mb
+            ))
             .with_path(workdir.display().to_string());
     }
 
@@ -294,7 +301,10 @@ fn check_provider_keys(config: &roko_core::config::schema::RokoConfig) -> Vec<Do
         let key_present = has_provider_key(provider);
         let id = format!("provider_key_{name}");
         if key_present {
-            checks.push(DoctorCheck::ok(id, format!("provider '{name}' key configured")));
+            checks.push(DoctorCheck::ok(
+                id,
+                format!("provider '{name}' key configured"),
+            ));
         } else {
             checks.push(
                 DoctorCheck::warn(id, format!("provider '{name}' has no API key set"))
@@ -328,10 +338,7 @@ fn check_default_model(config: &roko_core::config::schema::RokoConfig) -> Doctor
         )
         .with_fix("roko config set agent.default_model <model-key>")
     } else {
-        DoctorCheck::ok(
-            "default_model",
-            format!("default model is '{key}'"),
-        )
+        DoctorCheck::ok("default_model", format!("default model is '{key}'"))
     }
 }
 
@@ -344,10 +351,7 @@ fn check_budget(config: &roko_core::config::schema::RokoConfig) -> DoctorCheck {
         )
         .with_fix("roko config preset budget")
     } else {
-        DoctorCheck::ok(
-            "budget",
-            format!("plan budget ${max_plan:.2} USD"),
-        )
+        DoctorCheck::ok("budget", format!("plan budget ${max_plan:.2} USD"))
     }
 }
 
@@ -434,6 +438,10 @@ mod tests {
         let dir = tempdir().expect("tempdir");
         let check = check_disk_health(dir.path());
         // On any reasonable dev machine tempdir should not be critically low.
-        assert_ne!(check.status, DoctorStatus::Fail, "tempdir should have enough space");
+        assert_ne!(
+            check.status,
+            DoctorStatus::Fail,
+            "tempdir should have enough space"
+        );
     }
 }

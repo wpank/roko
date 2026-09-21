@@ -198,6 +198,7 @@ pub(super) async fn fetch_git_diff(workdir: &Path) -> Option<String> {
 /// untracked owned bytes. Reflex promotion reuses the same attribution proof
 /// as the gate so an isolated replay can be compared with the Premium source
 /// attempt without inventing a weaker diff format.
+#[allow(dead_code)] // used only in test code
 pub(crate) async fn reflex_input_fingerprint(
     workdir: std::path::PathBuf,
 ) -> Result<(String, [u8; 32], bool), String> {

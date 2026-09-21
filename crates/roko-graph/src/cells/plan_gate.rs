@@ -88,8 +88,7 @@ impl PlanGateCell {
             plan_dir: self.plan_dir.clone(),
             worktree_path: worktree,
             changed_files: self.files.clone(),
-            context: [("plan_id".to_owned(), self.plan_id.clone())]
-                .into_iter()
+            context: std::iter::once(("plan_id".to_owned(), self.plan_id.clone()))
                 .collect(),
         }
     }
@@ -110,11 +109,11 @@ impl PlanGateCell {
 
 #[async_trait]
 impl Cell for PlanGateCell {
-    fn cell_id(&self) -> &str {
+    fn cell_id(&self) -> &'static str {
         "plan.gate"
     }
 
-    fn cell_name(&self) -> &str {
+    fn cell_name(&self) -> &'static str {
         "PlanGateCell"
     }
 
@@ -251,7 +250,7 @@ impl Cell for PlanGateCell {
 mod tests {
     use std::sync::Arc;
 
-    use roko_core::{SharedGateEvaluator, SharedGateError, SharedGateRequest, SharedGateVerdict};
+    use roko_core::{SharedGateError, SharedGateEvaluator, SharedGateRequest, SharedGateVerdict};
 
     use super::*;
     use crate::cell::CellResources;
@@ -340,13 +339,18 @@ mod tests {
     }
 
     fn input_signals() -> Vec<Signal> {
-        vec![Signal::builder(Kind::AgentOutput)
-            .body(Body::text("task output"))
-            .build()]
+        vec![
+            Signal::builder(Kind::AgentOutput)
+                .body(Body::text("task output"))
+                .build(),
+        ]
     }
 
     fn decode_gate_result(signal: &Signal) -> GateResult {
-        signal.body.as_json::<GateResult>().expect("decode GateResult")
+        signal
+            .body
+            .as_json::<GateResult>()
+            .expect("decode GateResult")
     }
 
     // ── Tests ───────────────────────────────────────────────────────────────
@@ -419,10 +423,12 @@ mod tests {
         // All 3 rungs should have error evidence.
         assert_eq!(result.rung_results.len(), 3);
         assert!(result.rung_results.iter().all(|r| !r.passed));
-        assert!(result
-            .rung_results
-            .iter()
-            .all(|r| r.evidence.as_deref().unwrap_or("").contains("evaluator crash")));
+        assert!(result.rung_results.iter().all(|r| {
+            r.evidence
+                .as_deref()
+                .unwrap_or("")
+                .contains("evaluator crash")
+        }));
     }
 
     #[tokio::test]

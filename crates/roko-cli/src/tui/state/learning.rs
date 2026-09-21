@@ -14,8 +14,8 @@ use super::super::dashboard::{
     CascadeRouterState, DashboardData, ExperimentSummary, PlaybookSummary,
 };
 use super::{
-    AgentRow, ProviderStatus, RouteMetrics, SafetyIncident, SmoothedValue, TuiState,
-    MAX_TOKEN_SAMPLES,
+    AgentRow, MAX_TOKEN_SAMPLES, ProviderStatus, RouteMetrics, SafetyIncident, SmoothedValue,
+    TuiState,
 };
 use roko_core::OperatingFrequency;
 
@@ -52,8 +52,9 @@ impl TuiState {
             if !self.efficiency_events.is_empty() {
                 // Event-derived summary has real pass counts and latencies;
                 // prefer it over the approximation from pushed trend buckets.
-                self.efficiency_summary =
-                    super::super::dashboard::efficiency_summary_from_events(&self.efficiency_events);
+                self.efficiency_summary = super::super::dashboard::efficiency_summary_from_events(
+                    &self.efficiency_events,
+                );
             }
             if self.efficiency_trend.is_empty() {
                 self.efficiency_trend = roko_learn::aggregate::efficiency_trend(
@@ -99,7 +100,10 @@ impl TuiState {
             if let Ok(entries) = std::fs::read_dir(&immune_dir) {
                 for entry in entries.flatten() {
                     let path = entry.path();
-                    if path.extension().is_some_and(|ext| ext == "json" || ext == "jsonl") {
+                    if path
+                        .extension()
+                        .is_some_and(|ext| ext == "json" || ext == "jsonl")
+                    {
                         if let Ok(text) = std::fs::read_to_string(&path) {
                             for line in text.lines() {
                                 if let Ok(val) = serde_json::from_str::<serde_json::Value>(line) {
@@ -198,11 +202,14 @@ pub(super) fn populate_provider_statuses(
     workdir: &Path,
     efficiency_events: &[roko_learn::efficiency::AgentEfficiencyEvent],
 ) -> Vec<ProviderStatus> {
-    use roko_learn::provider_health::{CircuitState, ErrorClass};
     use super::{CreditStatus, ProviderHealth};
+    use roko_learn::provider_health::{CircuitState, ErrorClass};
 
     // --- 1. Load provider health from disk ---
-    let health_path = workdir.join(".roko").join("learn").join("provider-health.json");
+    let health_path = workdir
+        .join(".roko")
+        .join("learn")
+        .join("provider-health.json");
     let health_map: HashMap<String, roko_learn::provider_health::ProviderHealth> =
         std::fs::read_to_string(&health_path)
             .ok()
@@ -384,13 +391,13 @@ pub(super) fn populate_provider_statuses(
 
         // Last error from health registry.
         let last_error = health_entry.and_then(|h| {
-            h.failure_window.back().map(|f| format!("{:?}", f.error_class))
+            h.failure_window
+                .back()
+                .map(|f| format!("{:?}", f.error_class))
         });
 
         // Kind from config, or "unknown".
-        let kind = config_kind
-            .clone()
-            .unwrap_or_else(|| "unknown".to_string());
+        let kind = config_kind.clone().unwrap_or_else(|| "unknown".to_string());
 
         statuses.push(ProviderStatus {
             name: name.clone(),
@@ -420,7 +427,12 @@ pub(super) fn infer_provider_name(model: &str) -> String {
     let lower = model.to_ascii_lowercase();
     if lower.contains("claude") || lower.contains("anthropic") {
         "anthropic".to_string()
-    } else if lower.contains("gpt") || lower.contains("openai") || lower.contains("o1") || lower.contains("o3") || lower.contains("o4") {
+    } else if lower.contains("gpt")
+        || lower.contains("openai")
+        || lower.contains("o1")
+        || lower.contains("o3")
+        || lower.contains("o4")
+    {
         "openai".to_string()
     } else if lower.contains("gemini") || lower.contains("google") {
         "google".to_string()
@@ -697,9 +709,7 @@ pub(super) fn plan_is_active(status: &str) -> bool {
 }
 
 /// Extract output text from an episode's extra fields.
-pub(super) fn extract_episode_output(
-    episode: &roko_learn::episode_logger::Episode,
-) -> String {
+pub(super) fn extract_episode_output(episode: &roko_learn::episode_logger::Episode) -> String {
     for key in [
         "stderr",
         "agent_stderr",
@@ -748,9 +758,7 @@ pub(super) fn route_tier_label_for_model(model: &str) -> &'static str {
     }
 }
 
-pub(super) fn prompt_focus_score(
-    event: &roko_learn::efficiency::AgentEfficiencyEvent,
-) -> f64 {
+pub(super) fn prompt_focus_score(event: &roko_learn::efficiency::AgentEfficiencyEvent) -> f64 {
     if event.prompt_sections.is_empty() {
         return if event.total_prompt_tokens > 0 {
             1.0
@@ -833,6 +841,7 @@ pub(super) fn fallback_route_metrics_for_agent(agent: &AgentRow) -> RouteMetrics
 }
 
 /// Load playbook rule count from disk.
+#[allow(dead_code)] // pre-wired TUI learning view helper; P2-TUI-7
 pub(super) fn load_playbook_rule_count(learn_dir: &Path) -> usize {
     let playbooks_path = learn_dir.join("playbooks.json");
     std::fs::read_to_string(&playbooks_path)
@@ -850,6 +859,7 @@ pub(super) fn load_playbook_rule_count(learn_dir: &Path) -> usize {
 }
 
 /// Load playbook summaries from disk.
+#[allow(dead_code)] // pre-wired TUI learning view helper; P2-TUI-7
 pub(super) fn load_playbook_summaries(learn_dir: &Path) -> Vec<PlaybookSummary> {
     let playbooks_dir = learn_dir.join("playbooks");
     let entries = match std::fs::read_dir(&playbooks_dir) {
@@ -868,7 +878,11 @@ pub(super) fn load_playbook_summaries(learn_dir: &Path) -> Vec<PlaybookSummary> 
         let Ok(pb) = serde_json::from_str::<serde_json::Value>(&contents) else {
             continue;
         };
-        let id = pb.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let id = pb
+            .get("id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
         let name = pb
             .get("name")
             .and_then(|v| v.as_str())
@@ -913,6 +927,7 @@ pub(super) fn load_playbook_summaries(learn_dir: &Path) -> Vec<PlaybookSummary> 
 }
 
 /// Compute routing coverage from cascade router state.
+#[allow(dead_code)] // pre-wired TUI learning view helper; P2-TUI-7
 pub(super) fn compute_routing_coverage(router: &CascadeRouterState) -> f64 {
     if router.model_slugs.is_empty() {
         return 0.0;
@@ -926,6 +941,7 @@ pub(super) fn compute_routing_coverage(router: &CascadeRouterState) -> f64 {
 }
 
 /// Load gate thresholds summary from disk.
+#[allow(dead_code)] // pre-wired TUI learning view helper; P2-TUI-7
 pub(super) fn load_gate_thresholds_summary(learn_dir: &Path) -> Vec<(String, f64)> {
     let path = learn_dir.join("gate-thresholds.json");
     std::fs::read_to_string(&path)
@@ -949,6 +965,7 @@ pub(super) fn load_gate_thresholds_summary(learn_dir: &Path) -> Vec<(String, f64
 ///
 /// Returns `(tokens_per_role, context_utilization)` where each role maps to
 /// an average token count and an estimated context utilisation ratio.
+#[allow(dead_code)] // pre-wired TUI learning view helper; P2-TUI-7
 pub(super) fn aggregate_prompt_stats(
     events: &[roko_learn::efficiency::AgentEfficiencyEvent],
 ) -> (Vec<(String, u64)>, Vec<(String, f64)>) {

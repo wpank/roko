@@ -11,9 +11,8 @@ impl App {
             super::super::hit_test::FocusZone::AgentOutput => FocusZone::AgentOutput,
             super::super::hit_test::FocusZone::CommandOutput => FocusZone::CommandOutput,
             super::super::hit_test::FocusZone::RightContent => FocusZone::RightPanel,
-            super::super::hit_test::FocusZone::HeaderTab(_) | super::super::hit_test::FocusZone::DetailTab(_) => {
-                FocusZone::RightPanel
-            }
+            super::super::hit_test::FocusZone::HeaderTab(_)
+            | super::super::hit_test::FocusZone::DetailTab(_) => FocusZone::RightPanel,
             super::super::hit_test::FocusZone::LeftPane => match self.tui_state.active_tab {
                 Tab::Git => FocusZone::GitBranches,
                 Tab::Logs => FocusZone::LogList,
@@ -76,7 +75,11 @@ impl App {
     /// Each target maps to exactly one scroll state field, avoiding the old
     /// pattern of temporarily swapping focus and falling through to a generic
     /// diff_scroll fallback.
-    pub(super) fn scroll_by_target(&mut self, target: super::super::hit_test::ScrollTarget, delta: i32) {
+    pub(super) fn scroll_by_target(
+        &mut self,
+        target: super::super::hit_test::ScrollTarget,
+        delta: i32,
+    ) {
         use super::super::hit_test::ScrollTarget;
         match target {
             ScrollTarget::PlanTree => {
@@ -148,7 +151,6 @@ impl App {
             }
         }
     }
-
 
     pub(super) fn scroll_focused(&mut self, delta: i32) {
         match (self.tui_state.active_tab, self.tui_state.focus) {
@@ -256,13 +258,8 @@ impl App {
             }
             (Tab::Providers, FocusZone::ProviderList) => {
                 let current = self.tui_state.providers_selected as i32;
-                let max = self
-                    .tui_state
-                    .provider_statuses
-                    .len()
-                    .saturating_sub(1) as i32;
-                self.tui_state.providers_selected =
-                    (current + delta).clamp(0, max) as usize;
+                let max = self.tui_state.provider_statuses.len().saturating_sub(1) as i32;
+                self.tui_state.providers_selected = (current + delta).clamp(0, max) as usize;
             }
             // Providers detail pane scroll (P6.3).
             (Tab::Providers, FocusZone::ProviderDetail) => {
@@ -274,7 +271,6 @@ impl App {
             _ => {}
         }
     }
-
 
     pub(super) fn set_focused_scroll(&mut self, offset: usize) {
         match (self.tui_state.active_tab, self.tui_state.focus) {
@@ -411,7 +407,6 @@ impl App {
         }
     }
 
-
     pub(super) fn apply_signed_scroll(current: usize, delta: i16) -> usize {
         if delta < 0 {
             current.saturating_sub(delta.saturating_abs() as usize)
@@ -420,18 +415,15 @@ impl App {
         }
     }
 
-
     pub(super) fn page_scroll_lines(&self) -> i32 {
         i32::from(self.terminal_size.1.saturating_sub(4).max(1))
     }
-
 
     pub(super) fn current_agent_scroll_offset(&self) -> usize {
         self.tui_state
             .agent_scroll
             .unwrap_or_else(|| self.current_agent_max_scroll())
     }
-
 
     pub(super) fn current_agent_topology_max_scroll(&self) -> usize {
         views::agents_view::agent_topology_lines(&self.tui_state)
@@ -440,13 +432,11 @@ impl App {
             .min(u16::MAX as usize)
     }
 
-
     pub(super) fn current_agent_max_scroll(&self) -> usize {
         self.current_agent_output_line_count()
             .saturating_sub(self.current_agent_output_viewport_height())
             .min(u16::MAX as usize)
     }
-
 
     pub(super) fn current_log_max_scroll(&self) -> usize {
         let content_area = self.current_content_area();
@@ -457,7 +447,6 @@ impl App {
             .saturating_sub(viewport_height)
             .min(u16::MAX as usize)
     }
-
 
     pub(super) fn current_git_max_scroll(&self) -> usize {
         let content_area = self.current_content_area();
@@ -472,7 +461,6 @@ impl App {
             .map_or(0, |git| git.commits.len().saturating_sub(viewport_height))
             .min(u16::MAX as usize)
     }
-
 
     pub(super) fn scroll_agent_output_by(&mut self, delta: i32) {
         if self.tui_state.agent_topology_visible {
@@ -601,8 +589,7 @@ impl App {
             Tab::Providers => {
                 if !self.tui_state.provider_statuses.is_empty() {
                     let max = self.tui_state.provider_statuses.len().saturating_sub(1);
-                    self.tui_state.providers_selected =
-                        self.tui_state.providers_selected.min(max);
+                    self.tui_state.providers_selected = self.tui_state.providers_selected.min(max);
                 }
             }
         }
@@ -710,5 +697,4 @@ impl App {
             (area, None)
         }
     }
-
 }

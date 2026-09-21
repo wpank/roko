@@ -989,11 +989,7 @@ fn load_error_patterns(root: &Path, max_items: usize) -> Vec<Value> {
     // Filter to unresolved patterns only, then take max_items.
     patterns
         .into_iter()
-        .filter(|p| {
-            !p.get("resolved")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false)
-        })
+        .filter(|p| !p.get("resolved").and_then(|v| v.as_bool()).unwrap_or(false))
         .take(max_items)
         .map(|p| {
             json!({
@@ -2103,8 +2099,8 @@ mod tests {
     #[test]
     fn get_plan_context_returns_empty_without_plans() {
         let (_root, index) = make_workspace(&[("src/lib.rs", "pub fn hello() {}\n")]);
-        let result = dispatch_tool_call("get_plan_context", json!({}), &index)
-            .expect("tool result");
+        let result =
+            dispatch_tool_call("get_plan_context", json!({}), &index).expect("tool result");
 
         let payload: Value =
             serde_json::from_str(result["content"][0]["text"].as_str().expect("payload text"))
@@ -2158,9 +2154,12 @@ depends_on = ["T1"]
         fs::write(src_dir.join("lib.rs"), "pub fn stub() {}\n").expect("write lib.rs");
         let index = WorkspaceIndex::load(root.path()).expect("load workspace index");
 
-        let result =
-            dispatch_tool_call("get_plan_context", json!({ "plan_id": "test-plan" }), &index)
-                .expect("tool result");
+        let result = dispatch_tool_call(
+            "get_plan_context",
+            json!({ "plan_id": "test-plan" }),
+            &index,
+        )
+        .expect("tool result");
 
         let payload: Value =
             serde_json::from_str(result["content"][0]["text"].as_str().expect("payload text"))

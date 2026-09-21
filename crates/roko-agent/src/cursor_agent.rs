@@ -52,6 +52,7 @@ use crate::usage::{Usage, UsageObservation, UsageSource};
 use async_trait::async_trait;
 use futures::stream::BoxStream;
 use roko_core::defaults::DEFAULT_REQUEST_TIMEOUT_MS;
+use roko_core::sse::extract_sse_data;
 use roko_core::tool::{ToolCall, ToolContext, ToolResult};
 use roko_core::{Body, Context, Kind, Provenance, Signal};
 use serde::{Deserialize, Serialize};
@@ -342,14 +343,13 @@ impl CursorAgent {
     }
 
     fn capture_stream_metadata(line: &[u8], metadata: &mut StreamResponseMetadata) {
-        let line = String::from_utf8_lossy(line);
-        let line = line.trim_end_matches(['\r', '\n']);
-        let Some(line) = line.strip_prefix("data:").map(str::trim_start) else {
+        let raw = String::from_utf8_lossy(line);
+        let trimmed = raw.trim_end_matches(['\r', '\n']);
+        // extract_sse_data strips "data:" with RFC 8895-correct whitespace and
+        // returns None for non-data: lines, empty values, and the [DONE] sentinel.
+        let Some(line) = extract_sse_data(trimmed).filter(|v| !v.is_empty()) else {
             return;
         };
-        if line.is_empty() || line == "[DONE]" {
-            return;
-        }
 
         let Ok(json) = serde_json::from_str::<Value>(line) else {
             return;
@@ -381,9 +381,8 @@ impl CursorAgent {
             return;
         }
 
-        if let Some(data) = line.strip_prefix("data:").map(str::trim_start)
+        if let Some(data) = extract_sse_data(line)
             && !data.is_empty()
-            && data != "[DONE]"
         {
             tracing::warn!("dropping malformed Cursor SSE frame: {}", data);
         }

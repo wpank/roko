@@ -474,8 +474,11 @@ mod tests {
         let sub = FileSubstrate::open(tmp.path()).await.unwrap();
         let s = sig(Kind::Task, "hi", 0);
         let id = sub.put(s.clone()).await.unwrap();
-        let got = sub.get(&id).await.unwrap();
-        assert_eq!(got, Some(s));
+        let got = sub.get(&id).await.unwrap().expect("signal must exist");
+        // put() may attach an HDC fingerprint which changes the id and tags.
+        // Verify the essential semantic content, not the full signal identity.
+        assert_eq!(got.kind, s.kind);
+        assert_eq!(got.body, s.body);
     }
 
     #[tokio::test]
@@ -515,15 +518,18 @@ mod tests {
     async fn persistence_survives_restart() {
         let tmp = TempDir::new().unwrap();
         let s = sig(Kind::Episode, "survives reboot", 42);
-        let id = s.id;
-        {
+        let id = {
             let sub = FileSubstrate::open(tmp.path()).await.unwrap();
-            sub.put(s.clone()).await.unwrap();
-        }
+            // put() may attach an HDC fingerprint and recompute the id.
+            // Capture the returned id (post-fingerprinting) for the retrieval check.
+            sub.put(s.clone()).await.unwrap()
+        };
         // New instance — must replay the log.
         let sub2 = FileSubstrate::open(tmp.path()).await.unwrap();
         assert_eq!(sub2.len().await.unwrap(), 1);
-        assert_eq!(sub2.get(&id).await.unwrap(), Some(s));
+        let got = sub2.get(&id).await.unwrap().expect("signal must exist");
+        assert_eq!(got.kind, s.kind);
+        assert_eq!(got.body, s.body);
     }
 
     #[tokio::test]

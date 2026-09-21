@@ -20,8 +20,8 @@ use roko_core::metric::TaskMetric;
 use super::episode_helpers::{
     GateCounts, episode_model, episode_provider, episode_role, episode_run_id, episode_source_id,
     extra_bool, extra_f64, extra_string, extra_string_vec, extra_u64, gate_counts_from_episode,
-    non_empty_string, nonzero_u64, prompt_section_count_from_episode,
-    ratio_u64, retry_status_from_episode, stable_hash_hex,
+    non_empty_string, nonzero_u64, prompt_section_count_from_episode, ratio_u64,
+    retry_status_from_episode, stable_hash_hex,
 };
 
 // ── Schema version ────────────────────────────────────────────────────

@@ -11,7 +11,6 @@ const FG_RED: &str = "\x1b[31m";
 const FG_YELLOW: &str = "\x1b[33m";
 const FG_CYAN: &str = "\x1b[36m";
 const FG_MAGENTA: &str = "\x1b[35m";
-const FG_WHITE: &str = "\x1b[97m";
 const FG_GRAY: &str = "\x1b[90m";
 
 pub fn bold(s: &str) -> String {

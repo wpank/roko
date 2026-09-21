@@ -64,7 +64,9 @@ impl DurationWindow {
         // At least 5s, at most observed max + 50%.
         let min_timeout = 5_000.0;
         let max_timeout = self.max_ms as f64 * 1.5;
-        p99_approx.max(min_timeout).min(max_timeout.max(min_timeout)) as u64
+        p99_approx
+            .max(min_timeout)
+            .min(max_timeout.max(min_timeout)) as u64
     }
 
     /// Headroom: how much slack between the suggested timeout and configured.
@@ -121,10 +123,7 @@ impl TimeoutTracker {
     }
 
     /// Generate suggestions for all tracked categories.
-    pub fn suggestions(
-        &self,
-        configured: &HashMap<String, u64>,
-    ) -> Vec<TimeoutSuggestion> {
+    pub fn suggestions(&self, configured: &HashMap<String, u64>) -> Vec<TimeoutSuggestion> {
         self.categories
             .iter()
             .map(|(category, window)| {
@@ -145,15 +144,13 @@ impl TimeoutTracker {
     /// Load from a JSON file.
     pub fn load(path: &std::path::Path) -> std::io::Result<Self> {
         let contents = std::fs::read_to_string(path)?;
-        serde_json::from_str(&contents).map_err(|e| {
-            std::io::Error::new(std::io::ErrorKind::InvalidData, e)
-        })
+        serde_json::from_str(&contents)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
     }
 
     /// Persist to a JSON file.
     pub fn save(&self, path: &std::path::Path) -> std::io::Result<()> {
-        let contents = serde_json::to_string_pretty(self)
-            .map_err(|e| std::io::Error::other(e))?;
+        let contents = serde_json::to_string_pretty(self).map_err(|e| std::io::Error::other(e))?;
         std::fs::write(path, contents)
     }
 }

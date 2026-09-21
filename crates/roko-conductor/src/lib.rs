@@ -71,4 +71,8 @@ pub use stuck_detection::{
     StuckDetector, StuckKind, StuckSignal, StuckThresholds,
 };
 pub use threshold_learner::{AdaptiveThreshold, InterventionOutcome, ThresholdLearner};
+pub use watchers::retrieval_precision::{
+    RetrievalPrecisionWatcher, RETRIEVAL_PRECISION_METRIC,
+    WATCHER_NAME as RETRIEVAL_PRECISION_WATCHER_NAME,
+};
 pub use yerkes_dodson::YerkesDodson;

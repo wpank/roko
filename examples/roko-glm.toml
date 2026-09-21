@@ -9,7 +9,6 @@ fresh_base_branch = "main"
 model = "glm-5-1"
 effort = "high"
 bare_mode = true
-fallback_model = "kimi-k2-5"
 timeout_ms = 300000
 
 [agent.tier_models]

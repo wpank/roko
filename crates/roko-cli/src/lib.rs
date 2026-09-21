@@ -12,7 +12,7 @@
 // These lints are suppressed crate-wide because they are pervasive and stylistic
 // across ~200 modules and ~80K lines of CLI/runner/TUI code.
 #![allow(
-    dead_code,
+    // dead_code, TEMPORARILY DISABLED FOR AUDIT
     missing_docs,
     // --- clippy pedantic / nursery / style lints that are pervasive ---
     clippy::approx_constant,
@@ -177,6 +177,7 @@ pub mod note_cluster;
 // The legacy 21K-line orchestrate.rs engine was deleted in E12-T07.
 // The Runner-v2 event_loop.rs was deleted; the Graph engine is the sole execution engine.
 pub mod cli_output;
+pub mod cli_reporter;
 pub mod orchestrator;
 pub mod output_format;
 pub mod pipe;

@@ -4,7 +4,7 @@
 > and outstanding work. For agent execution protocols and task-level checklists, see
 > `tmp/status-quo/MASTER-EXECUTION-CHECKLIST.md`.
 >
-> Last updated: 2026-09-15
+> Last updated: 2026-09-19
 
 ---
 
@@ -220,17 +220,14 @@ wave hierarchy widget (#125), plan DAG (#117), queue manifest (#116), push-mode 
 (#41), F7 inspect view (#127), daimon view (#10), screenshots (#112), overlap analysis
 (#195), validate --dag (#200), merge proof (#140), live feedback (#108).
 
-### Partial (13)
+### Partial (10)
 
 | Item | Gap |
 |------|-----|
 | #122 Legacy page removal | PageId/PageScaffold still active for text-mode compat |
-| #196 Critical path ETA | Computation+field+display exist; field never written |
 | #57 Crash retry/escalation | Only on prd plan path, not plan generate |
 | #119 Recovery keybindings | Keys+modal wired; runner doesn't act on signals |
 | #179 Batch controller | Flag+events exist; event loop stub never triggers |
-| #217 Log search/filter | Input/state done; render doesn't use log_search |
-| #219 Plan tree filter | Input/state done; widget uses old filter fields |
 | #109 TUI streaming RC-7 | No live gate-rung-in-progress indicator |
 | #121 Data model unification | Phase A done; Phases B/C (migration) not started |
 | #178 Conductor supervisor | Tick+thresholds wired; actions only log |
@@ -834,6 +831,19 @@ remaining capacity. See `crates/roko-graph/src/` for details.
 
 ## Recently Resolved
 
+### Batch 2026-09-19 (P2-TUI-6: built-but-not-rendered TUI features)
+
+- **#196 Critical path ETA**: `GraphTuiBridge` now maintains an `EtaTracker` and publishes
+  `CriticalPathEtaUpdated` events after each node completes (proportional estimate: elapsed /
+  done * remaining). `build_timing_lines()` in `plans_view.rs` also renders an inline "eta"
+  line in the F2 plan timing panel using the same formula from `PlanEntry::elapsed_secs`.
+- **#217 Log search/filter status bar**: `logs_view.rs` now renders the active search pattern
+  in all three states: `[/pat/ N/M]` (matches, with current/total), `[/pat/ 0]` (no matches,
+  warning color), `[/pat/ invalid regex]` (error color). Previously only shown when
+  `match_count > 0`.
+- **#219 Plan tree filter**: confirmed already wired in `plan_tree.rs` — entry was stale;
+  removed from Partial table.
+
 ### Batch 2026-09-10 (stability, correctness, parity)
 
 | Commit | What | Details |
@@ -845,7 +855,7 @@ remaining capacity. See `crates/roko-graph/src/` for details.
 | `5ce3c3fd2` | TUI parity 38/38 complete + clippy clean | P1.1 command-channel warning, P5.5 elapsed timer, P6.3 tab-focus, P6.4 help overlay fixed |
 | `27cdff78e` | Doc reconciliation 3/71 → 13/71 (P2-J) | 23 files across 00-index through 17-security sections reconciled |
 
-Items #75 (graph example drift), #78 (efficiency gate_passed), #82 (graph stub cell warnings), #83 (dream consolidation deadlock), #84 (cascade router task category), #85 (plan generation TOML reliability), #90 (UX34 override learning isolation) archived.
+Items #75 (graph example drift), #78 (efficiency gate_passed), #81 (layer-check false positives — `--version` probe exclusion + `claude_cli_available()` helper, PR #60), #82 (graph stub cell warnings), #83 (dream consolidation deadlock), #84 (cascade router task category), #85 (plan generation TOML reliability), #90 (UX34 override learning isolation) archived.
 
 ### Batch 2026-09-07 (dispatch, config, gates, MCP code intelligence)
 
@@ -1012,11 +1022,11 @@ Item 90 (UX34 override learning isolation / force_backend) was fixed in commit `
 | 35 | CLI output redesign (structured reporter) | M |
 | 37 | Multi-process locking (.roko/ concurrent writer safety) | S |
 | 39 | ACP learning-pipeline parity (experiment receipts) | M |
-| 40 | Gate rung input completion (diff, fact-check, builder) | S |
+| ~~40~~ | ~~Gate rung input completion (diff, fact-check, builder)~~ | ~~S~~ | **Closed 2026-09-17**: `diff_signal` added to `RungExecutionInputs`; `DiffGate` invoked as standalone post-pipeline check; `verify_chain_fallback` wired to `TestGate` in `build_rung_execution_config`; 10 new tests added |
 | 43 | Clippy suppression removal (blanket allows in lib.rs) | M |
 | 44 | Calibration feedback loop (3 loops, Loop 1 partial) | M |
 | 46 | ACP test coverage (Gap 1 done; MCP crash + tool matrix open) | S |
-| 47 | ConfigLayer elimination (~1500 LOC legacy dual-loader) | L |
+| ~~47~~ | ~~ConfigLayer elimination (~1500 LOC legacy dual-loader)~~ | ~~L~~ | **Closed 2026-09-20**: `compat.rs` (482 LOC Mori reader, never called from production) deleted; `load_effective_roko_config` + `load_roko_config_file` in `serve_runtime.rs` replaced with `load_config_unified` / `load_config_file` from the core unified loader; repo-specific config now routes through `load_config_file` with full LoadOptions instead of bare `RokoConfig::from_toml`. Workspace builds clean; 358 config tests pass |
 | 52 | MCP stderr capture & CostTable gaps | S |
 | 53 | Immune system adaptive screening (memory + provider visibility) | L |
 | 54 | Graph Engine Runner-v2 parity (gates/replan/worktree/merge) | XL |
@@ -1032,7 +1042,6 @@ Item 90 (UX34 override learning isolation / force_backend) was fixed in commit `
 | 70 | ACP novel workflow gaps (affect/mood, dream journal, tournament mode) | M |
 | 72 | Pool architecture reconciliation (3 overlapping pools, no migration plan) | S |
 | 80 | Learning subsystem data quality (7 issues: stale temps, empty receipts, per-model staging) | M |
-| 81 | Layer-check false positives (8 violations, all false: --version probes + test code) | S |
 | 82 | Graph stub cell warnings (no user indication that cells are PassthroughCell no-ops) | S |
 | 83 | Dream consolidation deadlock (tokio spawn_blocking + nested block_on) | S |
 | 84 | Cascade router task category awareness (stages 2-3 ignore task_category) | M |
@@ -1054,7 +1063,7 @@ Item 90 (UX34 override learning isolation / force_backend) was fixed in commit `
 | 65 | CLI verb consolidation (42 top-level verbs → ~20, 165 total paths) | L |
 | 66 | Context sources & editor integration (--context gap, ACP editor push, VS Code) | L |
 | 71 | TUI design system alignment (theme RGB drift, 81 inline color literals) | S |
-| 73 | UX backlog rollup (13 uncovered items across 4 themes) | M |
+| 73 | UX/TUI partial items (10 partial from PR #73 tracker; 2 not-started now done via #69/#77) | M |
 | 74 | Unified evaluation framework (EvidenceCollector/Criterion/Profile) | XL |
 
 Items 06, 07, 08, 36 (output budgeting, inference cache, key rotation, atomic file I/O)
@@ -1116,7 +1125,7 @@ These GAPS.md entries are independently corroborated by audit evidence.
 | Backlog #20 event loop decomposition | All three audits independently flag the 23K-line god object | cli-audit/24-runner-v2.md, engine-audit/08-runner-extractable.md |
 | Backlog #43 clippy suppression removal | CLI audit identifies the blanket allow as Critical Finding #3 | cli-audit/22-stubs-unimplemented.md |
 | Backlog #61 agent dispatch consolidation | Engine audit identifies 7 distinct agent dispatch paths with divergent safety/enrichment | engine-audit/05-duplicate-paths.md |
-| Backlog #47 ConfigLayer elimination | Engine audit identifies 9 config loading functions from the Config/RokoConfig structural split | engine-audit/05-duplicate-paths.md |
+| ~~Backlog #47 ConfigLayer elimination~~ | **Closed 2026-09-20**. `compat.rs` deleted; `serve_runtime.rs` legacy loader replaced. | engine-audit/05-duplicate-paths.md |
 | Backlog #85 plan generation TOML reliability | UX parity audit confirms this as PX.7 (plan generate crash retry/escalation) | tui-parity/00-INDEX.md |
 | UX/TUI Parity section (13 partial, 2 not started) | UX parity audit provides the detailed 55-item breakdown, root cause analysis, and effort estimates that ground this section. Count updated: 4 previously partial items fixed in commit `5ce3c3fd2` (2026-09-10) → now 13 partial | tui-parity/00-INDEX.md |
 
@@ -1142,7 +1151,7 @@ These findings from the audits are not currently tracked as named entries in GAP
 | `roko inject` is a complete stub | Critical | Prints `"status": "queued"` but never sends the signal anywhere; misleads users and tools | cli-audit/14-status-replay-inject.md |
 | 6/9 `roko new` scaffold types generate non-compiling code | Critical | Engram-to-Signal rename left stale identifiers in templates; only composer, template, and event-source produce working output | cli-audit/15-index-new-explain-completions.md |
 | `knowledge sync` can corrupt version vectors | Critical | Invalid `--direction` values silently skip both sync phases but still corrupt version vectors; no validation on the direction parameter | cli-audit/06-knowledge.md |
-| 5 marketplace serve stubs return 200/201 instead of 501 | High | `publish`, `fork`, etc. return success status codes with `"stub": true` in the body, misleading clients | cli-audit/09-serve.md |
+| ~~5 marketplace serve stubs return 200/201 instead of 501~~ | ~~High~~ | Resolved (2026-09-15): all 5 handlers return `ApiError::not_implemented()` → 501 with structured error envelope; 8 unit tests + 1 integration test cover every path | cli-audit/09-serve.md |
 | ~~No `deny_unknown_fields` on RokoConfig~~ | ~~High~~ | Resolved (2026-09-07, #340): strict schema validation and live config repair | cli-audit/21-config-schema.md |
 | `--json` flag ignored by ~15+ subcommands | Medium | PRD (all 9), knowledge (6), learn tune, agent status silently ignore the flag | cli-audit/08-config.md |
 | `--role` flag hardcoded by research and PRD commands | Medium | Global flag ignored; roles are hardcoded instead | cli-audit/03-prd.md, cli-audit/05-research.md |

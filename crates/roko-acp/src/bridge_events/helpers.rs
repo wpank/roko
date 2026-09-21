@@ -109,12 +109,18 @@ pub(crate) fn format_acp_error_for_user(error: &str) -> String {
     error.to_string()
 }
 
-pub(crate) async fn emit_dispatch_failure(event_sender: &mpsc::Sender<CognitiveEvent>, message: String) {
+pub(crate) async fn emit_dispatch_failure(
+    event_sender: &mpsc::Sender<CognitiveEvent>,
+    message: String,
+) {
     let message = format_acp_error_for_user(&message);
     send_cognitive_event(event_sender, CognitiveEvent::Failure { message }).await;
 }
 
-pub(crate) async fn send_cognitive_event(event_sender: &mpsc::Sender<CognitiveEvent>, event: CognitiveEvent) {
+pub(crate) async fn send_cognitive_event(
+    event_sender: &mpsc::Sender<CognitiveEvent>,
+    event: CognitiveEvent,
+) {
     if event_sender.send(event).await.is_err() {
         debug!("cognitive event receiver dropped before event could be delivered");
     }
@@ -139,7 +145,6 @@ where
         .await
         .map_err(BridgeEventsError::from)
 }
-
 
 pub(crate) fn workflow_template_name(template: &crate::pipeline::WorkflowTemplate) -> &'static str {
     match template {

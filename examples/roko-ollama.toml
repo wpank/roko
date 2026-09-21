@@ -9,7 +9,6 @@ fresh_base_branch = "main"
 model = "llama3-1-8b"
 effort = "medium"
 bare_mode = true
-fallback_model = "glm-5-1"
 timeout_ms = 300000
 
 [agent.tier_models]

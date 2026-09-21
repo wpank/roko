@@ -11,6 +11,7 @@
 //! - `event_loop` -- entry points and main event loop
 
 mod commands;
+mod decompose;
 mod dispatch;
 mod event_loop;
 mod input;
@@ -26,9 +27,7 @@ pub use event_loop::{run_chat_inline, run_unified_inline};
 #[cfg(test)]
 pub(crate) use dispatch::dispatch_prompt;
 #[cfg(test)]
-pub(crate) use input::{
-    fuzzy_match, CommandPalette, CompletionState, HistorySearch, InputState,
-};
+pub(crate) use input::{CommandPalette, CompletionState, HistorySearch, InputState, fuzzy_match};
 #[cfg(test)]
 pub(crate) use output::{error_suggestions, reading_time};
 #[cfg(test)]
@@ -37,9 +36,7 @@ pub(crate) use session::{
     turn_result_to_dispatch_result,
 };
 #[cfg(test)]
-pub(crate) use types::{
-    ChatInlineDispatchError, ChatSession, DispatchMode, Phase, SLASH_COMMANDS,
-};
+pub(crate) use types::{ChatInlineDispatchError, ChatSession, DispatchMode, Phase, SLASH_COMMANDS};
 
 #[cfg(test)]
 mod tests;

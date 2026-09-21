@@ -10,7 +10,8 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use parking_lot::Mutex;
 use roko_core::{
     EfficiencyPayload, LatencyPayload, LensScope, ObservableEvent, ObservableEventKind,
-    PassFailCounts, QualityPayload, Result, RokoError, Signal, TelemetryObserve,
+    PassFailCounts, QualityPayload, RagPerformancePayload, Result, RokoError, Signal,
+    TelemetryObserve,
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -732,8 +733,14 @@ pub struct VerifyLens {
 
 #[derive(Clone)]
 enum VerifySample {
-    Pre { vetoed: bool },
-    Post { passed: bool, reward: f64, gate: String },
+    Pre {
+        vetoed: bool,
+    },
+    Post {
+        passed: bool,
+        reward: f64,
+        gate: String,
+    },
 }
 
 impl VerifyLens {
@@ -777,15 +784,17 @@ impl TelemetryObserve for VerifyLens {
         }
         let sample = match event {
             ObservableEvent::VerifyPreResult { verdict, .. } if !verdict.skipped => {
-                VerifySample::Pre { vetoed: !verdict.passed }
-            }
-            ObservableEvent::VerifyPostResult { verdict, reward, .. } if !verdict.skipped => {
-                VerifySample::Post {
-                    passed: verdict.passed,
-                    reward: *reward,
-                    gate: verdict.gate.clone(),
+                VerifySample::Pre {
+                    vetoed: !verdict.passed,
                 }
             }
+            ObservableEvent::VerifyPostResult {
+                verdict, reward, ..
+            } if !verdict.skipped => VerifySample::Post {
+                passed: verdict.passed,
+                reward: *reward,
+                gate: verdict.gate.clone(),
+            },
             _ => return Ok(Vec::new()),
         };
 
@@ -821,7 +830,11 @@ fn verify_payload(target: String, samples: &VecDeque<VerifySample>) -> QualityPa
                     pre_vetoes += 1;
                 }
             }
-            VerifySample::Post { passed, reward, gate } => {
+            VerifySample::Post {
+                passed,
+                reward,
+                gate,
+            } => {
                 let counts = rung_breakdown.entry(gate.clone()).or_default();
                 if *passed {
                     post_passed += 1;
@@ -844,8 +857,168 @@ fn verify_payload(target: String, samples: &VecDeque<VerifySample>) -> QualityPa
         post_verify_passed: post_passed,
         post_verify_failed: post_failed,
         pass_rate: ratio(post_passed, total),
-        avg_reward: if reward_count == 0 { 0.0 } else { reward_sum / reward_count as f64 },
+        avg_reward: if reward_count == 0 {
+            0.0
+        } else {
+            reward_sum / reward_count as f64
+        },
         hard_criteria_failures: 0,
         rung_breakdown,
+    }
+}
+
+// ─── RAG-05: RagPerformanceLens ─────────────────────────────────────────────
+
+/// Rolling retrieval precision, p95 latency, and miss-rate Lens.
+///
+/// Driven by [`ObservableEvent::MemoryRetrieved`] events. Each event carries
+/// the number of results returned and the retrieval duration in milliseconds.
+///
+/// Metrics:
+/// - **precision**: fraction of queries that returned `results > 0`.
+/// - **miss_rate**: complementary fraction (queries with zero results / total).
+/// - **p95_latency_ms**: 95th-percentile retrieval latency over the window.
+/// - **mean_latency_ms**: mean retrieval latency over the window.
+///
+/// When no events have been observed all metrics are zero, matching the
+/// "return zero metrics when the JSONL file does not exist yet" requirement.
+pub struct RagPerformanceLens {
+    name: String,
+    scope: LensScope,
+    observes: Vec<ObservableEventKind>,
+    window_size: usize,
+    state: Mutex<RagPerfState>,
+}
+
+#[derive(Default)]
+struct RagPerfState {
+    /// Buffered retrieval duration samples (ms), newest at the back.
+    latencies: VecDeque<u64>,
+    /// Total queries observed within the current window.
+    total_queries: u64,
+    /// Queries that returned zero results within the current window.
+    zero_result_queries: u64,
+    /// Per-sample zero flag so we can recompute after eviction.
+    was_zero: VecDeque<bool>,
+}
+
+impl RagPerformanceLens {
+    /// Construct a Lens from its declarative registration fields.
+    pub fn new<P: Serialize>(
+        name: impl Into<String>,
+        scope: LensScope,
+        observes: Vec<ObservableEventKind>,
+        params: P,
+    ) -> Result<Self> {
+        let name = validate_registration(
+            name,
+            &observes,
+            &[ObservableEventKind::MemoryLifecycle],
+            "RagPerformanceLens",
+        )?;
+        let mut params = parse_params(params, "RagPerformanceLens")?;
+        let window_size = take_usize(
+            &mut params,
+            "window_size",
+            DEFAULT_WINDOW_SIZE,
+            MAX_WINDOW_SIZE,
+            "RagPerformanceLens",
+        )?;
+        reject_unknown_params(params, "RagPerformanceLens")?;
+        Ok(Self {
+            name,
+            scope,
+            observes,
+            window_size,
+            state: Mutex::new(RagPerfState::default()),
+        })
+    }
+}
+
+#[async_trait::async_trait]
+impl TelemetryObserve for RagPerformanceLens {
+    async fn observe(&self, event: &ObservableEvent) -> Result<Vec<Signal>> {
+        if !event.matches_any(&self.observes) {
+            return Ok(Vec::new());
+        }
+        let (results_count, duration_ms) = match event {
+            ObservableEvent::MemoryRetrieved {
+                results,
+                duration_ms,
+                ..
+            } => (*results, *duration_ms),
+            _ => return Ok(Vec::new()),
+        };
+
+        let payload = {
+            let mut state = self.state.lock();
+
+            // Evict the oldest sample if the window is full.
+            if state.latencies.len() == self.window_size {
+                state.latencies.pop_front();
+                if let Some(evicted_zero) = state.was_zero.pop_front() {
+                    state.total_queries = state.total_queries.saturating_sub(1);
+                    if evicted_zero {
+                        state.zero_result_queries =
+                            state.zero_result_queries.saturating_sub(1);
+                    }
+                }
+            }
+
+            let is_zero = results_count == 0;
+            state.latencies.push_back(duration_ms);
+            state.was_zero.push_back(is_zero);
+            state.total_queries += 1;
+            if is_zero {
+                state.zero_result_queries += 1;
+            }
+
+            rag_perf_payload(scope_target(&self.scope), &state)
+        };
+
+        encode(
+            &self.name,
+            LensPayload::RagPerformance(payload),
+            "RagPerformanceLens",
+        )
+    }
+
+    fn observes(&self) -> &[ObservableEventKind] {
+        &self.observes
+    }
+
+    fn scope(&self) -> LensScope {
+        self.scope.clone()
+    }
+}
+
+fn rag_perf_payload(target: String, state: &RagPerfState) -> RagPerformancePayload {
+    let total = state.total_queries;
+    let zero = state.zero_result_queries;
+    let miss_rate = if total == 0 {
+        0.0
+    } else {
+        zero as f64 / total as f64
+    };
+
+    let mut sorted = state.latencies.iter().copied().collect::<Vec<_>>();
+    sorted.sort_unstable();
+    let p95 = percentile(&sorted, 95);
+    let mean_ms = if sorted.is_empty() {
+        0
+    } else {
+        let sum = sorted.iter().copied().map(u128::from).sum::<u128>();
+        u64::try_from(sum / sorted.len() as u128).unwrap_or(u64::MAX)
+    };
+
+    RagPerformancePayload {
+        target,
+        interval_ms: 0,
+        total_queries: total,
+        queries_with_zero_results: zero,
+        miss_rate,
+        precision: 1.0 - miss_rate,
+        p95_latency_ms: p95,
+        mean_latency_ms: mean_ms,
     }
 }

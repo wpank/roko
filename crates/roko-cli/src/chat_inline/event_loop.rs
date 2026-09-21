@@ -11,9 +11,11 @@ use ratatui::{
 };
 
 use super::commands::{handle_agent_session_slash_command, handle_slash_command};
-use super::dispatch::{cost_from_result, dispatch_prompt, naive_opus_cost};
+use super::dispatch::{cost_from_result, dispatch_prompt_decomposed, naive_opus_cost};
 use super::input::InputState;
-use super::output::{push_agent_response, push_error_with_suggestions, push_tool_outputs, push_usage_line};
+use super::output::{
+    push_agent_response, push_error_with_suggestions, push_tool_outputs, push_usage_line,
+};
 use super::render::render_viewport;
 use super::session::{
     build_unified_inline_agent_session, format_time, load_history, load_last_session_summary,
@@ -21,6 +23,7 @@ use super::session::{
 };
 use super::types::{ChatSession, ConversationMessage, DispatchMode, Phase};
 
+use crate::auth;
 use crate::auth_detect::AuthMethod;
 use crate::chat;
 use crate::inline::primitives::{CostMeter, StreamingState};
@@ -28,7 +31,6 @@ use crate::inline::styled;
 use crate::inline::symbols;
 use crate::inline::terminal::InlineTerminal;
 use crate::tui::Theme;
-use crate::auth as auth;
 
 use roko_learn::cost_table::CostTable;
 
@@ -333,25 +335,26 @@ async fn run_main_loop(
                             session.phase = Phase::Input;
                         }
                     }
-                    Phase::Error { ref prompt, .. } => {
-                        match key.code {
-                            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                                session.phase = Phase::Done;
-                                break;
-                            }
-                            KeyCode::Char('r') => {
-                                let retry_prompt = prompt.clone();
-                                session.phase = Phase::Thinking;
-                                session.thinking_started = Some(Instant::now());
-                                dispatch_prompt(session, &retry_prompt);
-                            }
-                            KeyCode::Char('q') | KeyCode::Esc => {
-                                term.push_blank()?;
-                                session.phase = Phase::Input;
-                            }
-                            _ => {}
+                    Phase::Error { ref prompt, .. } => match key.code {
+                        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                            session.phase = Phase::Done;
+                            break;
                         }
-                    }
+                        KeyCode::Char('r') => {
+                            let retry_prompt = prompt.clone();
+                            session.phase = Phase::Thinking;
+                            session.thinking_started = Some(Instant::now());
+                            // Retry goes through the same decomposed path so
+                            // multi-task retries behave identically to the
+                            // original dispatch.
+                            dispatch_prompt_decomposed(session, &retry_prompt);
+                        }
+                        KeyCode::Char('q') | KeyCode::Esc => {
+                            term.push_blank()?;
+                            session.phase = Phase::Input;
+                        }
+                        _ => {}
+                    },
                     Phase::Done => break,
                 }
             }
@@ -501,12 +504,7 @@ async fn run_main_loop(
                 session.cost.total_cost,
             )
         };
-        term.push_lines(&[styled::section_start(
-            theme,
-            "session",
-            &summary_line,
-            None,
-        )])?;
+        term.push_lines(&[styled::section_start(theme, "session", &summary_line, None)])?;
     }
 
     term.push_blank()?;
@@ -712,7 +710,10 @@ async fn handle_input_key(
 
             session.phase = Phase::Thinking;
             session.thinking_started = Some(Instant::now());
-            dispatch_prompt(session, &text);
+            // Use decomposed dispatch — if the message contains multiple
+            // sub-tasks they are dispatched sequentially and merged; otherwise
+            // this falls back to the standard single-prompt path.
+            dispatch_prompt_decomposed(session, &text);
         }
 
         // --- Escape: dismiss dropdown ---

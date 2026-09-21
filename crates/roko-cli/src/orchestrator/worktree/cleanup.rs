@@ -7,8 +7,8 @@ use std::time::Duration;
 use super::creation_journal::{OperationLifecycle, retain_lock_if_cleanup_unproved};
 use super::git_ops::{await_owned_operation, is_stale_lock, read_gitdir};
 use super::{
-    WorktreeError, WorktreeHealth, WorktreeIsolationStatus, WorktreeManager,
-    REPOSITORY_MUTATION_LOCK, STUCK_MUTATION_LOCK_AGE_SECS,
+    REPOSITORY_MUTATION_LOCK, STUCK_MUTATION_LOCK_AGE_SECS, WorktreeError, WorktreeHealth,
+    WorktreeIsolationStatus, WorktreeManager,
 };
 
 impl WorktreeManager {

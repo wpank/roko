@@ -473,7 +473,11 @@ fn resolve_bearer_auth(args: &AgentServeArgs) -> Result<Option<BearerAuth>> {
         let raw = std::fs::read_to_string(path)
             .with_context(|| format!("read token file {}", path.display()))?;
         // Strip trailing newlines but preserve internal whitespace.
-        Some(raw.trim_end_matches('\n').trim_end_matches('\r').to_string())
+        Some(
+            raw.trim_end_matches('\n')
+                .trim_end_matches('\r')
+                .to_string(),
+        )
     } else {
         None
     };
@@ -1119,8 +1123,6 @@ pub async fn run(
                         resume: None,
                         json: false,
                         quiet: false,
-                        no_replan: false,
-                        skip_validate: false,
                         headless: false,
                         no_serve: false,
                         color_enabled: true,
@@ -2802,8 +2804,6 @@ generation = 0
                 resume: None,
                 json: false,
                 quiet: false,
-                no_replan: false,
-                skip_validate: false,
                 headless: false,
                 no_serve: false,
                 color_enabled: true,
@@ -2827,8 +2827,6 @@ generation = 0
                 resume: None,
                 json: false,
                 quiet: false,
-                no_replan: false,
-                skip_validate: false,
                 headless: false,
                 no_serve: false,
                 color_enabled: true,

@@ -52,9 +52,7 @@ impl TraceCollector {
     }
 
     fn arena_dir(&self, arena_id: &[u8; 32]) -> PathBuf {
-        self.traces_dir
-            .join(format_hex(arena_id))
-            .join("traces")
+        self.traces_dir.join(format_hex(arena_id)).join("traces")
     }
 
     fn trace_path(&self, arena_id: &[u8; 32], attempt_id: &[u8; 32]) -> PathBuf {
@@ -80,8 +78,8 @@ impl TraceCollector {
         let dir = self.arena_dir(arena_id);
         fs::create_dir_all(&dir)?;
         let path = self.trace_path(arena_id, attempt_id);
-        let line =
-            serde_json::to_string(trace).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        let line = serde_json::to_string(trace)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
         fs::write(path, format!("{line}\n"))
     }
 
@@ -153,11 +151,7 @@ impl TraceCollector {
                 entries
                     .filter_map(Result::ok)
                     .filter(|entry| {
-                        entry
-                            .path()
-                            .extension()
-                            .and_then(|ext| ext.to_str())
-                            == Some("jsonl")
+                        entry.path().extension().and_then(|ext| ext.to_str()) == Some("jsonl")
                     })
                     .count()
             })
@@ -216,10 +210,7 @@ impl GradeResult {
         } else if pass_rate >= 0.30 {
             (
                 "D".to_string(),
-                format!(
-                    "Pass rate {:.0}% — most gates failed.",
-                    pass_rate * 100.0
-                ),
+                format!("Pass rate {:.0}% — most gates failed.", pass_rate * 100.0),
             )
         } else {
             (
@@ -322,7 +313,11 @@ mod tests {
             attempt_id: [attempt_id; 32],
             episode_id: None,
             gate_verdicts: verdicts,
-            scoring_dimensions: dims.into_iter().enumerate().map(|(i, v)| (format!("dim_{i}"), v)).collect(),
+            scoring_dimensions: dims
+                .into_iter()
+                .enumerate()
+                .map(|(i, v)| (format!("dim_{i}"), v))
+                .collect(),
             hdc_fingerprint: None,
         }
     }

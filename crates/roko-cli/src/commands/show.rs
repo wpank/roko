@@ -110,6 +110,10 @@ pub(crate) async fn cmd_show(
     }
 
     let workdir = workdir.unwrap_or_else(|| resolve_workdir(cli));
+    // Read-only state inspection: shared lock allows coexistence with an
+    // active plan runner (which holds only the runner lock, not the workspace
+    // lock).
+    let _lock = roko_cli::workspace_lock::acquire_workspace_lock_shared(&workdir.join(".roko"))?;
     let state = load_show_state(&workdir);
     let output = match ShowTarget::parse(subject) {
         ShowTarget::Subject(ShowSubject::Overview) => render_overview(&state),

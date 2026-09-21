@@ -280,10 +280,53 @@ pub struct GateThresholds {
     pub rungs: HashMap<u32, GateThresholdStats>,
 }
 
+/// Per-rung conservative EMA priors used when no observations have been
+/// recorded for a rung.  Higher = gate is expected to pass easily;
+/// lower = gate is expected to need more retries.
+///
+/// Indices correspond to the canonical `roko_gate::rung_selector::Rung` enum:
+///  0 = Compile, 1 = Lint, 2 = Test, 3 = Symbol,
+///  4 = GeneratedTest, 5 = PropertyTest, 6 = Integration
+const RUNG_DEFAULT_EMA: [(u32, f64); 7] = [
+    (0, 0.85), // Compile — code usually compiles on first attempt
+    (1, 0.75), // Lint — clippy warnings are common early in a run
+    (2, 0.70), // Test — tests occasionally fail; leave room to learn
+    (3, 0.80), // Symbol — symbol manifests are generally stable
+    (4, 0.70), // GeneratedTest — generated tests are unpredictable initially
+    (5, 0.90), // PropertyTest / fact-check — conservative; rare failures
+    (6, 0.70), // Integration / LLM-judge — judge results vary by model
+];
+
 impl GateThresholds {
     fn load(path: &Path) -> Result<Self> {
         let file = fs::File::open(path).with_context(|| format!("opening {}", path.display()))?;
         serde_json::from_reader(file).with_context(|| format!("parsing {}", path.display()))
+    }
+
+    /// Audit #80: Ensure all 7 canonical gate rungs have an entry so that
+    /// external readers (TUI, serve, `roko learn gates`) always see a full
+    /// picture rather than only the rungs observed during the most recent run.
+    ///
+    /// This is a **fill-in** operation: rungs that already have observations
+    /// are never overwritten.  The conservative priors are used only for rungs
+    /// with `total_count == 0`, matching the same guard used by
+    /// `GateThresholds::apply_profile`.
+    pub fn fill_default_rungs(&mut self) {
+        for (rung, prior) in RUNG_DEFAULT_EMA {
+            let stats = self
+                .rungs
+                .entry(rung)
+                .or_insert_with(|| GateThresholdStats {
+                    pass_count: 0,
+                    total_count: 0,
+                    ema_pass_rate: prior,
+                });
+            // Only update the EMA when this rung truly has no observations.
+            // Never clobber learned data.
+            if stats.total_count == 0 {
+                stats.ema_pass_rate = prior;
+            }
+        }
     }
 
     /// Sum of `total_count` across all observed rungs.
@@ -313,6 +356,10 @@ impl GateThresholds {
     /// residual tightens the gate threshold for the corresponding rung.
     /// Uses a softer alpha (0.05) to avoid over-reacting to single
     /// observations.
+    ///
+    /// Wired in tests; production caller (oracle residual feedback path) not
+    /// yet connected.
+    #[allow(dead_code)]
     pub(crate) fn observe_residual(&mut self, rung: u32, residual: f64) {
         let stats = self.rungs.entry(rung).or_default();
         let abs_residual = residual.abs().clamp(0.0, 1.0);
@@ -346,7 +393,11 @@ impl GateThresholds {
     ///
     /// Sets rung priors from the profile when the rung has no prior
     /// observations, giving domain-appropriate initial expectations.
-    pub(crate) fn apply_profile(&mut self, profile: &roko_gate::adaptive_threshold::ThresholdProfile) {
+    #[allow(dead_code)] // wired in tests; production caller not yet connected
+    pub(crate) fn apply_profile(
+        &mut self,
+        profile: &roko_gate::adaptive_threshold::ThresholdProfile,
+    ) {
         for (&rung, &prior) in &profile.rung_priors {
             let stats = self.rungs.entry(rung).or_default();
             // Only override the EMA if the rung has zero observations so
@@ -357,6 +408,7 @@ impl GateThresholds {
         }
     }
 
+    #[allow(dead_code)] // wired in tests; production caller (runner event loop) not yet connected
     pub(crate) fn suggested_max_retries(&self, rung: u32) -> u32 {
         let Some(stats) = self.rungs.get(&rung) else {
             return DEFAULT_GATE_RETRY_COLD_START;
@@ -381,6 +433,7 @@ impl GateThresholds {
     /// - Balanced / Exploratory: skip if consecutive passes exceed
     ///   `SKIP_STREAK_THRESHOLD` (20, matching `AdaptiveThresholds`).
     /// - Aggressive: skip at half the threshold (10).
+    #[allow(dead_code)] // wired in tests; production caller (runner event loop) not yet connected
     pub(crate) fn should_skip_rung_for_temperament(
         &self,
         _rung: u32,
@@ -410,11 +463,57 @@ impl GateThresholds {
             serde_json::to_string_pretty(self).context("serializing adaptive gate thresholds")?;
         atomic_write(path, json.as_bytes())
     }
+
+    /// P2-LRN-6 Loop 1: Load thresholds from disk (or return defaults if the
+    /// file does not exist yet). Always calls `fill_default_rungs` so all 7
+    /// canonical rungs are present regardless of prior observation coverage.
+    pub(crate) fn load_or_default(path: &Path) -> Result<Self> {
+        let mut thresholds = match Self::load(path) {
+            Ok(t) => t,
+            Err(err)
+                if err.chain().any(|e| {
+                    e.downcast_ref::<std::io::Error>()
+                        .is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound)
+                }) =>
+            {
+                tracing::debug!(
+                    path = %path.display(),
+                    "gate-thresholds.json not found; starting from defaults"
+                );
+                Self::default()
+            }
+            Err(err) => return Err(err),
+        };
+        thresholds.fill_default_rungs();
+        Ok(thresholds)
+    }
 }
 
-/// Load persisted gate thresholds from disk.
+/// Load persisted gate thresholds from disk, or create a fresh default set.
+///
+/// Audit #80: always calls [`GateThresholds::fill_default_rungs`] after
+/// loading so that all 7 canonical rungs are present regardless of which
+/// rungs have been exercised in past runs.  If the file does not exist yet
+/// (fresh workspace), a fully defaulted set is returned.
 pub fn load_gate_thresholds(paths: &PersistPaths) -> Result<GateThresholds> {
-    GateThresholds::load(&paths.gate_thresholds_json)
+    let mut thresholds = match GateThresholds::load(&paths.gate_thresholds_json) {
+        Ok(t) => t,
+        Err(err)
+            if err.chain().any(|e| {
+                e.downcast_ref::<std::io::Error>()
+                    .is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound)
+            }) =>
+        {
+            tracing::debug!(
+                path = %paths.gate_thresholds_json.display(),
+                "gate-thresholds.json not found; starting from defaults"
+            );
+            GateThresholds::default()
+        }
+        Err(err) => return Err(err),
+    };
+    thresholds.fill_default_rungs();
+    Ok(thresholds)
 }
 
 /// Atomically write the adaptive gate thresholds to the standalone
@@ -1506,5 +1605,167 @@ mod tests {
         assert_eq!(loaded, snapshot);
         assert!(loaded.cascade_router_json.is_some());
         assert!(loaded.gate_thresholds_json.is_some());
+    }
+
+    /// Audit #80: `fill_default_rungs` must populate all 7 canonical rung
+    /// indices with conservative EMA priors for rungs that have no
+    /// observations, without overwriting rungs that already have data.
+    #[test]
+    fn fill_default_rungs_populates_all_seven_rungs() {
+        let mut gt = GateThresholds::default();
+        assert!(
+            gt.rungs.is_empty(),
+            "fresh GateThresholds should have no rungs"
+        );
+
+        gt.fill_default_rungs();
+
+        // All 7 canonical rungs must be present.
+        for rung_idx in 0u32..7 {
+            assert!(
+                gt.rungs.contains_key(&rung_idx),
+                "rung {rung_idx} must be present after fill_default_rungs"
+            );
+            let stats = &gt.rungs[&rung_idx];
+            assert_eq!(
+                stats.total_count, 0,
+                "default rung {rung_idx} must have 0 observations"
+            );
+            assert!(
+                stats.ema_pass_rate > 0.0 && stats.ema_pass_rate <= 1.0,
+                "default rung {rung_idx} EMA must be in (0, 1]"
+            );
+        }
+    }
+
+    /// Audit #80: `fill_default_rungs` must not clobber rungs that already
+    /// have observed data.
+    #[test]
+    fn fill_default_rungs_preserves_existing_observations() {
+        let mut gt = GateThresholds::default();
+        // Record 5 successes on rung 0 (Compile).
+        for _ in 0..5 {
+            gt.observe(0, true);
+        }
+        let original_stats = gt.rungs[&0].clone();
+
+        gt.fill_default_rungs();
+
+        // Rung 0 must keep its learned EMA and count.
+        let after_stats = &gt.rungs[&0];
+        assert_eq!(after_stats.total_count, original_stats.total_count);
+        assert_eq!(after_stats.pass_count, original_stats.pass_count);
+        assert_eq!(after_stats.ema_pass_rate, original_stats.ema_pass_rate);
+
+        // All other rungs must have been filled with defaults.
+        for rung_idx in 1u32..7 {
+            assert!(gt.rungs.contains_key(&rung_idx));
+            assert_eq!(gt.rungs[&rung_idx].total_count, 0);
+        }
+    }
+
+    /// Audit #80: `load_gate_thresholds` on a fresh workspace (no file)
+    /// must not error and must return a set that covers all 7 canonical rungs.
+    #[test]
+    fn load_gate_thresholds_missing_file_returns_defaults() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = PersistPaths::from_workdir(tmp.path()).unwrap();
+
+        // File does not exist — must succeed.
+        let thresholds = load_gate_thresholds(&paths)
+            .expect("load_gate_thresholds must not error on missing file");
+
+        assert_eq!(
+            thresholds.rungs.len(),
+            7,
+            "missing file must produce 7 default rungs"
+        );
+        for rung_idx in 0u32..7 {
+            assert!(thresholds.rungs.contains_key(&rung_idx));
+        }
+    }
+
+    /// Audit #80: `load_gate_thresholds` on a file with only 3 rungs
+    /// must fill in the remaining 4 without clobbering the existing data.
+    #[test]
+    fn load_gate_thresholds_partial_file_fills_missing_rungs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = PersistPaths::from_workdir(tmp.path()).unwrap();
+
+        // Write a partial file covering only rungs 0, 1, 2.
+        let mut partial = GateThresholds::default();
+        partial.observe(0, true);
+        partial.observe(1, false);
+        partial.observe(2, true);
+        save_gate_thresholds(&paths, &partial).unwrap();
+
+        let loaded = load_gate_thresholds(&paths).unwrap();
+        assert_eq!(loaded.rungs.len(), 7, "must have 7 rungs after fill");
+
+        // Rungs 0, 1, 2 must keep their observation counts.
+        assert_eq!(loaded.rungs[&0].total_count, 1);
+        assert_eq!(loaded.rungs[&1].total_count, 1);
+        assert_eq!(loaded.rungs[&2].total_count, 1);
+
+        // Rungs 3-6 must be defaults.
+        for rung_idx in 3u32..7 {
+            assert_eq!(
+                loaded.rungs[&rung_idx].total_count, 0,
+                "rung {rung_idx} must be a default with 0 observations"
+            );
+        }
+    }
+
+    /// P2-LRN-6 Loop 1: `load_or_default` returns defaults when the file is
+    /// missing, and correctly restores existing observations after a round-trip.
+    #[test]
+    fn p2_lrn6_loop1_load_or_default_and_ema_roundtrip() {
+        let tmp = tempfile::tempdir().unwrap();
+        let gt_path = tmp.path().join("gate-thresholds.json");
+
+        // Missing file → defaults with all 7 rungs filled.
+        let fresh = GateThresholds::load_or_default(&gt_path).unwrap();
+        assert_eq!(fresh.rungs.len(), 7, "defaults must cover all 7 rungs");
+        for rung_idx in 0u32..7 {
+            assert_eq!(
+                fresh.rungs[&rung_idx].total_count, 0,
+                "fresh defaults must have 0 observations for rung {rung_idx}"
+            );
+        }
+
+        // Observe compile (rung 0) passing and lint (rung 1) failing.
+        let mut gt = GateThresholds::load_or_default(&gt_path).unwrap();
+        gt.observe(0, true);   // compile pass
+        gt.observe(1, false);  // lint fail
+        gt.save(&gt_path).unwrap();
+
+        // Reload confirms the EMA was updated and persisted.
+        let reloaded = GateThresholds::load_or_default(&gt_path).unwrap();
+        assert_eq!(
+            reloaded.rungs[&0].total_count, 1,
+            "compile rung must have 1 observation"
+        );
+        assert_eq!(
+            reloaded.rungs[&0].pass_count, 1,
+            "compile rung pass_count must be 1"
+        );
+        assert_eq!(
+            reloaded.rungs[&1].total_count, 1,
+            "lint rung must have 1 observation"
+        );
+        assert_eq!(
+            reloaded.rungs[&1].pass_count, 0,
+            "lint rung pass_count must be 0 (it failed)"
+        );
+        // The compile rung EMA should be 1.0 (first observation is the value).
+        assert!(
+            (reloaded.rungs[&0].ema_pass_rate - 1.0).abs() < 1e-9,
+            "compile EMA should be 1.0 after one passing observation"
+        );
+        // The lint rung EMA should be 0.0 (first observation is the value).
+        assert!(
+            reloaded.rungs[&1].ema_pass_rate.abs() < 1e-9,
+            "lint EMA should be 0.0 after one failing observation"
+        );
     }
 }

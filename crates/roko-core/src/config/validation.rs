@@ -1,5 +1,10 @@
 //! Strict config validation helpers for safety-sensitive settings.
 
+// Several helpers here back the config doctor / config validate commands
+// which call through the CLI but don't yet reach this module's low-level
+// helpers in every compile path.
+#![allow(dead_code)]
+
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};

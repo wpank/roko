@@ -114,7 +114,11 @@ pub struct TopologyReport {
 impl ProductionPlanTopology {
     /// Create a new topology builder.
     #[must_use]
-    pub fn new(plan_id: impl Into<String>, plan_dir: impl Into<String>, max_parallel: usize) -> Self {
+    pub fn new(
+        plan_id: impl Into<String>,
+        plan_dir: impl Into<String>,
+        max_parallel: usize,
+    ) -> Self {
         Self {
             plan_id: plan_id.into(),
             plan_dir: plan_dir.into(),
@@ -130,10 +134,7 @@ impl ProductionPlanTopology {
     /// - A task's `depends_on` references a task ID not present in the plan
     /// - The resulting graph contains a cycle
     /// - Two tasks share the same ID
-    pub fn build(
-        &self,
-        tasks: &[TopologyTaskInfo],
-    ) -> Result<(Graph, TopologyReport), GraphError> {
+    pub fn build(&self, tasks: &[TopologyTaskInfo]) -> Result<(Graph, TopologyReport), GraphError> {
         let known_ids: HashSet<&str> = tasks.iter().map(|t| t.task_id.as_str()).collect();
 
         // Validate all dependencies exist.
@@ -475,9 +476,14 @@ impl ProductionPlanTopology {
 
 /// Register the production plan topology cells in a registry.
 ///
-/// These are stub/passthrough cells for the enrichment pipeline stages.
-/// Real implementations will be provided by host adapters; these stubs
-/// allow the graph to load, validate, and execute in test environments.
+/// Wires real implementations for the three core topology cells:
+/// - `plan.task-context` → [`TaskContextCell`]: assembles task metadata and predecessor state.
+/// - `plan.compose` → [`PlanComposeCell`]: fan-in enricher merge into a single Prompt signal.
+/// - `plan.gate` → [`PlanGateCell`]: runs the gate pipeline via `SharedGateEvaluator`.
+///
+/// The six enricher cells (`plan.enricher.*`) and the `plan.success-boundary` anchor
+/// remain [`PassthroughCell`] stubs; real enricher implementations are injected by
+/// host adapters that have access to the knowledge store, episode log, etc.
 pub fn register_topology_cells(registry: &mut crate::registry::CellRegistry) {
     use crate::cells::stubs::PassthroughCell;
     use crate::registry::CellDescriptor;
@@ -502,10 +508,7 @@ pub fn register_topology_cells(registry: &mut crate::registry::CellRegistry) {
     for suffix in ENRICHER_SUFFIXES {
         let cell_type = format!("plan.enricher.{suffix}");
         let cell_type_clone = cell_type.clone();
-        let display = format!(
-            "{}Enricher",
-            suffix[..1].to_uppercase() + &suffix[1..]
-        );
+        let display = format!("{}Enricher", suffix[..1].to_uppercase() + &suffix[1..]);
         registry.register_with_descriptor(
             // leak the string for 'static lifetime -- these are registered once at startup
             Box::leak(cell_type.clone().into_boxed_str()),
@@ -786,10 +789,7 @@ mod tests {
         use crate::engine::GraphEngine;
 
         let topo = ProductionPlanTopology::new("valid", "/tmp", 2);
-        let tasks = vec![
-            make_task("T1", &[]),
-            make_task("T2", &["T1"]),
-        ];
+        let tasks = vec![make_task("T1", &[]), make_task("T2", &["T1"])];
         let (graph, _) = topo.build(&tasks).unwrap();
 
         let mut registry = crate::engine::default_registry();

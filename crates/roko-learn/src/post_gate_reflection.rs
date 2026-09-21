@@ -59,10 +59,81 @@ use std::io;
 use std::path::Path;
 
 use chrono::{DateTime, Utc};
+use roko_agent::Agent;
+use roko_core::{Body, Context, Kind, Signal};
 use serde::{Deserialize, Serialize};
 
 use crate::episode_logger::Episode;
 use crate::playbook_rules::{ReflectionPlaybookCandidate, Triggers};
+
+const REFLECTION_PROMPT_RAW_LIMIT: usize = 3_000;
+const REFLECTION_PROMPT_TASK_LIMIT: usize = 800;
+const REFLECTION_OUTPUT_LIMIT: usize = 600;
+
+/// Ask a cheap LLM to reflect on a gate failure and return a bounded lesson
+/// string suitable for [`ReflectionInput::proposed_lesson`].
+///
+/// The supplied `agent` should be the cheapest available model (e.g. a
+/// mechanical-tier or haiku-class model). If the call fails or returns empty
+/// output, a deterministic fallback is produced from the raw failure text so
+/// callers always receive a non-empty lesson string.
+///
+/// The returned string is truncated to [`REFLECTION_OUTPUT_LIMIT`] characters.
+pub async fn generate_post_gate_reflection(
+    agent: &dyn Agent,
+    task_description: &str,
+    gate_name: &str,
+    raw_failure: &str,
+) -> String {
+    let prompt = build_reflection_prompt(task_description, gate_name, raw_failure);
+    let input = Signal::builder(Kind::Prompt)
+        .body(Body::text(prompt))
+        .build();
+    let result = agent.run(&input, &Context::now()).await;
+
+    if result.success
+        && let Ok(text) = result.output.body.as_text()
+    {
+        let trimmed = text.trim();
+        if !trimmed.is_empty() {
+            return truncate_chars(trimmed, REFLECTION_OUTPUT_LIMIT);
+        }
+    }
+
+    fallback_reflection(gate_name, raw_failure)
+}
+
+fn build_reflection_prompt(task_description: &str, gate_name: &str, raw_failure: &str) -> String {
+    format!(
+        "A code task failed the `{gate}` gate. Write one concise sentence (max 120 words) \
+         explaining the root cause and what the implementer should change on the next attempt.\n\n\
+         Task: {task}\n\n\
+         Gate failure output:\n{failure}\n\n\
+         Lesson (one sentence):",
+        gate = gate_name,
+        task = truncate_chars(task_description, REFLECTION_PROMPT_TASK_LIMIT),
+        failure = truncate_chars(raw_failure, REFLECTION_PROMPT_RAW_LIMIT),
+    )
+}
+
+fn fallback_reflection(gate_name: &str, raw_failure: &str) -> String {
+    let headline = raw_failure
+        .lines()
+        .map(str::trim)
+        .find(|line| {
+            !line.is_empty()
+                && (line.starts_with("error")
+                    || line.starts_with("FAIL")
+                    || line.contains("failed")
+                    || line.contains("panicked"))
+        })
+        .map(|line| truncate_chars(line, 160));
+
+    match headline {
+        Some(detail) => format!("Investigate {gate_name} failure: {detail}"),
+        None => format!("Investigate {gate_name} failure before retrying"),
+    }
+}
 
 const MAX_LESSON_CHARS: usize = 600;
 const MAX_EVIDENCE_ITEMS: usize = 10;
@@ -672,5 +743,38 @@ mod tests {
             CandidateAdmissionDecision::RejectedLowEvidence { .. }
         ));
         assert_eq!(rules.count(), 0);
+    }
+
+    #[tokio::test]
+    async fn generate_llm_reflection_returns_agent_response() {
+        let agent = roko_agent::MockAgent::reply(
+            "The compile gate failed because of a type mismatch in the return type; \
+             change the function to return String instead of &str.",
+        );
+        let lesson = generate_post_gate_reflection(
+            &agent,
+            "Implement error enrichment for gate failures",
+            "compile",
+            "error[E0308]: mismatched types\n  --> src/lib.rs:42:5",
+        )
+        .await;
+        assert!(!lesson.is_empty());
+        assert!(lesson.contains("type mismatch") || lesson.contains("compile"));
+        assert!(lesson.len() <= REFLECTION_OUTPUT_LIMIT);
+    }
+
+    #[tokio::test]
+    async fn generate_llm_reflection_falls_back_on_agent_failure() {
+        let agent = roko_agent::MockAgent::fail_with("timeout");
+        let lesson = generate_post_gate_reflection(
+            &agent,
+            "Some task",
+            "compile",
+            "error[E0308]: mismatched types\n  --> src/lib.rs:10:3",
+        )
+        .await;
+        assert!(!lesson.is_empty());
+        // Fallback contains gate name or a recognizable fragment.
+        assert!(lesson.contains("compile") || lesson.contains("error"));
     }
 }

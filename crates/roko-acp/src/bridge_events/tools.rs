@@ -9,11 +9,13 @@ use std::{
 
 use async_trait::async_trait;
 use roko_agent::dispatcher::HandlerResolver;
+use roko_agent::mcp::handler::capability_for_tool;
 use roko_agent::mcp::{McpClient, StdioTransport as McpStdioTransport, mcp_to_tool_def};
+use roko_agent::safety::capabilities::{PluginTier, check_plugin_tier};
+use roko_agent::safety::contract::{AgentContract, ContractLoadMode};
 use roko_core::defaults::DEFAULT_MCP_DISCOVERY_TIMEOUT_SECS;
 use roko_core::tool::{
-    ToolCall, ToolContext, ToolDef,
-    ToolError, ToolHandler, ToolResult, ToolSource,
+    ToolCall, ToolContext, ToolDef, ToolError, ToolHandler, ToolResult, ToolSource,
 };
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
@@ -21,11 +23,12 @@ use tracing::{debug, info, warn};
 use crate::builtin_tools::tool_permission_request;
 use crate::session::CancelToken;
 use crate::types::{
-    ContentBlock, McpInitStatus, McpServerStatus, PermissionDecision,
-    ToolCallKind, ToolCallStatus,
+    ContentBlock, McpInitStatus, McpServerStatus, PermissionDecision, ToolCallKind, ToolCallStatus,
 };
 
-use super::{CognitiveEvent, PermissionReplyChannel, PermissionRequestPayload, send_cognitive_event};
+use super::{
+    CognitiveEvent, PermissionReplyChannel, PermissionRequestPayload, send_cognitive_event,
+};
 
 pub(crate) fn write_session_mcp_config(
     mcp_servers: &[crate::types::McpServerConfig],
@@ -82,9 +85,16 @@ pub(crate) struct SessionMcpRuntime {
     pub(crate) handlers: HashMap<String, Arc<dyn ToolHandler>>,
 }
 
+/// Set up MCP tool handlers for a session.
+///
+/// `plugin_tier` is the trust tier applied to every discovered tool in this
+/// session's MCP servers. ACP sessions default to [`PluginTier::Sandboxed`]
+/// because MCP servers connect over stdio and may be third-party. Callers that
+/// have verified server provenance may pass a higher tier.
 pub(crate) async fn setup_session_mcp_tools(
     session_id: &str,
     mcp_servers: &[crate::types::McpServerConfig],
+    plugin_tier: PluginTier,
     event_sender: mpsc::Sender<CognitiveEvent>,
 ) -> (SessionMcpRuntime, Vec<McpServerStatus>) {
     let mut tools = Vec::new();
@@ -232,6 +242,7 @@ pub(crate) async fn setup_session_mcp_tools(
                     exposed_name,
                     remote_name: tool.name.clone(),
                     event_sender: event_sender.clone(),
+                    plugin_tier,
                 }),
             );
             tools.push(def);
@@ -302,6 +313,10 @@ pub(crate) struct AcpMcpToolHandler {
     exposed_name: String,
     remote_name: String,
     event_sender: mpsc::Sender<CognitiveEvent>,
+    /// Plugin trust tier for this MCP server. Controls which capabilities the
+    /// tool may exercise: `Sandboxed` allows only reads, `Standard` and above
+    /// permit writes/exec/network according to the `check_plugin_tier` policy.
+    pub(crate) plugin_tier: PluginTier,
 }
 
 #[async_trait]
@@ -311,6 +326,23 @@ impl ToolHandler for AcpMcpToolHandler {
     }
 
     async fn execute(&self, call: ToolCall, ctx: &ToolContext) -> ToolResult {
+        // Plugin-tier gate: check whether this server's tier permits the
+        // capability implied by the remote tool name.
+        let required_capability = capability_for_tool(&self.remote_name);
+        if let Err(reason) = check_plugin_tier(self.plugin_tier, &required_capability) {
+            warn!(
+                tool = %self.exposed_name,
+                remote_tool = %self.remote_name,
+                tier = ?self.plugin_tier,
+                reason = %reason,
+                "ACP MCP tool call denied by plugin tier"
+            );
+            return ToolResult::err(ToolError::PermissionDenied(format!(
+                "MCP tool '{}' denied: {reason}",
+                self.exposed_name
+            )));
+        }
+
         let tool_call_id = if call.id.is_empty() {
             format!("mcp-{}", uuid::Uuid::new_v4())
         } else {
@@ -377,6 +409,9 @@ pub(crate) struct AcpBuiltinToolHandler {
     pub(crate) session_id: String,
     pub(crate) workdir: PathBuf,
     pub(crate) event_sender: mpsc::Sender<CognitiveEvent>,
+    /// Agent role used to load the `AgentContract` for capability checking.
+    /// When empty, the default role contract is used.
+    pub(crate) role: String,
 }
 
 #[async_trait]
@@ -416,9 +451,36 @@ impl ToolHandler for AcpBuiltinToolHandler {
                 self.tool_name
             )));
         }
+
+        // AgentContract gate: verify the role's behavioral contract permits
+        // this tool. Unknown roles fall back to a deny-everything restricted
+        // contract so that unrecognised modes fail closed rather than open.
+        let role = if self.role.trim().is_empty() {
+            "default"
+        } else {
+            self.role.trim()
+        };
+        let contract =
+            AgentContract::load_for_role_with_mode(role, ContractLoadMode::RestrictedFallback)
+                .unwrap_or_else(|_| AgentContract::restricted(role));
+        if !contract.permits_tool(&self.tool_name) {
+            warn!(
+                tool = %self.tool_name,
+                session_id = %self.session_id,
+                role = %role,
+                reason = "contract_denied",
+                "ACP tool call denied by role contract"
+            );
+            return ToolResult::err(ToolError::PermissionDenied(format!(
+                "tool '{}' is not permitted for role '{role}'",
+                self.tool_name
+            )));
+        }
+
         debug!(
             tool = %self.tool_name,
             session_id = %self.session_id,
+            role = %role,
             "ACP tool call allowed"
         );
 
@@ -484,7 +546,10 @@ impl HandlerResolver for AcpBuiltinHandlerResolver {
     }
 }
 
-pub(crate) fn tool_result_from_mcp(tool_name: &str, result: &roko_agent::mcp::McpToolResult) -> ToolResult {
+pub(crate) fn tool_result_from_mcp(
+    tool_name: &str,
+    result: &roko_agent::mcp::McpToolResult,
+) -> ToolResult {
     let text = mcp_result_text(result);
     if result.is_error {
         let message = if text.is_empty() {
@@ -519,6 +584,3 @@ pub(crate) fn tool_result_for_editor(result: &ToolResult) -> (ToolCallStatus, St
         ToolResult::Err(error) => (ToolCallStatus::Failed, format!("error: {error}")),
     }
 }
-
-
-

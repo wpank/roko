@@ -347,7 +347,7 @@ pub fn parse_event_filter(value: Option<&str>) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use roko_core::{Body, ContentHash, Signal, Kind};
+    use roko_core::{Body, ContentHash, Kind, Signal};
 
     /// Build a test signal with a given body text, author, and lineage.
     fn make_signal(body_text: &str, author: &str, lineage: Vec<ContentHash>) -> Signal {

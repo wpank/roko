@@ -1,14 +1,11 @@
 use std::time::Duration;
 
-use super::*;
-use super::episode_helpers::gate_counts_from_episode;
 use super::cfactor_snapshot::{
-    ContextAttributionRecord,
-    KnowledgeConfirmationRecord,
-    social_perceptiveness_from_attribution,
-    knowledge_integration_rate,
-    convergence_velocity_from_agreement,
+    ContextAttributionRecord, KnowledgeConfirmationRecord, convergence_velocity_from_agreement,
+    knowledge_integration_rate, social_perceptiveness_from_attribution,
 };
+use super::episode_helpers::gate_counts_from_episode;
+use super::*;
 use crate::model_router::compute_routing_reward_v2;
 use crate::prompt_experiment::{PromptExperiment, PromptVariant};
 use crate::regression::RegressionThresholds;
@@ -141,12 +138,7 @@ fn episode_at(task_id: &str, minutes_ago: i64, success: bool) -> Episode {
     ep
 }
 
-fn episode_with_agent(
-    task_id: &str,
-    minutes_ago: i64,
-    success: bool,
-    agent_id: &str,
-) -> Episode {
+fn episode_with_agent(task_id: &str, minutes_ago: i64, success: bool, agent_id: &str) -> Episode {
     let mut ep = episode_at(task_id, minutes_ago, success);
     ep.agent_id = agent_id.to_string();
     ep
@@ -234,8 +226,8 @@ async fn completed_run_updates_episode_cost_provider_and_skill() {
     assert_eq!(pass_rates.actions[0].task_types, vec!["bugfix"]);
 
     let episodes_jsonl = std::fs::read_to_string(&runtime.paths().episodes_jsonl).unwrap();
-    let persisted: Episode = serde_json::from_str(episodes_jsonl.lines().next().unwrap())
-        .expect("persisted episode");
+    let persisted: Episode =
+        serde_json::from_str(episodes_jsonl.lines().next().unwrap()).expect("persisted episode");
     assert_eq!(persisted.backend, "claude_cli");
     let pad = persisted
         .extra
@@ -465,8 +457,7 @@ async fn project_learning_snapshot_reads_episode_efficiency_router_and_knowledge
     write_jsonl(learn_dir.join("efficiency.jsonl"), &[efficiency_event]);
     std::fs::write(
         learn_dir.join("cascade-router.json"),
-        serde_json::json!({"confidence_stats": {"claude-sonnet-4-5": {"trials": 1}}})
-            .to_string(),
+        serde_json::json!({"confidence_stats": {"claude-sonnet-4-5": {"trials": 1}}}).to_string(),
     )
     .unwrap();
     std::fs::write(
@@ -500,8 +491,13 @@ async fn completed_runs_append_cfactor_history() {
         .record_completed_run(CompletedRunInput::from_episode(sample_episode(true)))
         .await
         .unwrap();
+    // Use a different task_id so both episodes survive deduplicate_episodes.
+    // Dedup key is "{plan_id}:{task_id}:{attempt}"; same key → second episode
+    // replaces the first, causing the 2nd snapshot to report episode_count=1.
     runtime
-        .record_completed_run(CompletedRunInput::from_episode(sample_episode(true)))
+        .record_completed_run(CompletedRunInput::from_episode(
+            sample_pattern_episode(true, "2"),
+        ))
         .await
         .unwrap();
 
@@ -731,8 +727,7 @@ fn convergence_velocity_uses_agreement_across_agents() {
         },
     ];
 
-    let score =
-        convergence_velocity_from_agreement(&records, &episodes, Duration::from_secs(60));
+    let score = convergence_velocity_from_agreement(&records, &episodes, Duration::from_secs(60));
     assert!(score > 0.0);
     assert!(score <= 1.0);
 }
@@ -1088,12 +1083,10 @@ async fn completed_gate_run_persists_post_gate_reflection() {
     let runtime = LearningRuntime::open_under(tmp.path()).await.unwrap();
     let mut ep = sample_episode(false);
     ep.gate_verdicts.push(
-        crate::episode_logger::EpisodeGateVerdict::new("compile", false)
-            .with_signature("E0308"),
+        crate::episode_logger::EpisodeGateVerdict::new("compile", false).with_signature("E0308"),
     );
-    ep.reflection = Some(
-        "Fix crates/roko-learn/src/lib.rs before retrying E0308 type_mismatch".to_string(),
-    );
+    ep.reflection =
+        Some("Fix crates/roko-learn/src/lib.rs before retrying E0308 type_mismatch".to_string());
 
     let update = runtime
         .record_completed_run(CompletedRunInput::from_episode(ep))
@@ -1340,13 +1333,8 @@ async fn latency_aware_reward_uses_latency_registry_fallback() {
         .expect("latency stats");
     assert_eq!(stats.p50_ms(), 20_000.0);
 
-    let reward = reloaded.compute_routing_reward_with_latency(
-        true,
-        0.25,
-        0,
-        "claude-opus-4-6",
-        "anthropic",
-    );
+    let reward =
+        reloaded.compute_routing_reward_with_latency(true, 0.25, 0, "claude-opus-4-6", "anthropic");
     let expected = compute_routing_reward_v2(1.0, 0.25_f64 / 5.0, 20_000.0, 120_000.0);
     assert!((reward - expected).abs() < 1e-9);
 }

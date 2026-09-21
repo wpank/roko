@@ -165,8 +165,8 @@ pub async fn select_compose_verify_persist(
 mod tests {
     use super::*;
     use crate::{
-        Body, Budget, ContentHash, Context, Kind, Provenance, Query, Result, Score, Signal,
-        Selection, verdict::Verdict,
+        Body, Budget, ContentHash, Context, Kind, Provenance, Query, Result, Score, Selection,
+        Signal, verdict::Verdict,
     };
     use async_trait::async_trait;
     use parking_lot::Mutex;

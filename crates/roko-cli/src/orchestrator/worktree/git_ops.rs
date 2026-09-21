@@ -153,10 +153,7 @@ impl WorktreeManager {
         Ok(())
     }
 
-    pub(super) async fn validate_git_policy(
-        &self,
-        checkout: bool,
-    ) -> Result<(), WorktreeError> {
+    pub(super) async fn validate_git_policy(&self, checkout: bool) -> Result<(), WorktreeError> {
         roko_agent::process::validate_no_descendant_context().map_err(|error| {
             WorktreeError::UnsafeGitExecution {
                 reason: error.to_string(),

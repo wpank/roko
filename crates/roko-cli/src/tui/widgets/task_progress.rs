@@ -1,18 +1,19 @@
-//! Task progress widget with semantic progress bar and scrollable task list.
+//! Task progress widget with semantic progress bar and dependency-tree task list.
 //!
 //! Ported from Mori's task_progress.rs — uses MoriTheme, Atmosphere, TuiState.
+//! Renders tasks as an authored dependency graph (tree-drawing characters) instead
+//! of a synthesized flat wave list, so the actual `depends_on` structure from
+//! tasks.toml is visible during execution (P1-TUI-G3).
 //!
 //! Layout:
 //! ```text
 //! ┌ Tasks · plan-001 (5/12) ────────────────────────┐
 //! │ ████████░░░░░░░░░░░░░  5/12  ETA:~8m            │
 //! │  RUN  2 active · 5 queued · phase implementing   │
-//! │ ▲ more                                           │
 //! │ ✓ t-001  Wire SystemPromptBuilder                │
-//! │ ► t-002  ⏱2m  Add episode logging         [impl]│
-//! │ · t-003  ⏱~5m Refactor gate pipeline             │
+//! │ ├── ► t-002  ⏱2m  Add episode logging           │
+//! │ │   └── · t-003  Refactor gate pipeline          │
 //! │ ✗ t-004  Fix clippy warnings                     │
-//! │ ▼ more                                           │
 //! └─────────────────────────────────────────────────┘
 //! ```
 
@@ -23,10 +24,165 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{
     Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
 };
+use std::collections::{HashMap, HashSet};
 
 use super::super::state::{TaskRow, TaskRowStatus, TuiState};
 use crate::tui::Theme;
 use crate::tui::util::truncate_middle;
+
+// ---------------------------------------------------------------------------
+// Dependency tree helpers
+// ---------------------------------------------------------------------------
+
+/// One entry in the flattened dependency-tree render list.
+struct TreeRow<'a> {
+    task: &'a TaskRow,
+    /// Indentation depth (0 = root).
+    depth: usize,
+    /// Per-depth "is last child" flags for drawing connector lines.
+    /// `connector[i]` is true when this subtree's ancestor at depth `i` is
+    /// the last child of its parent (so we draw a space instead of │).
+    connector: Vec<bool>,
+}
+
+/// Build a topological dependency tree from a flat task list.
+///
+/// Returns tasks in topological order (parents before children), with tree
+/// position metadata.  Tasks whose `depends_on` list is empty or whose
+/// dependencies are not found in the set are treated as roots.
+///
+/// If no task has any dependencies the list is returned as-is (flat, depth 0)
+/// so we don't pay any cost on simple plans.
+fn build_dep_tree<'a>(tasks: &'a [TaskRow]) -> Vec<TreeRow<'a>> {
+    // Fast path: if no task declares dependencies, emit flat list.
+    let has_deps = tasks.iter().any(|t| !t.depends_on.is_empty());
+    if !has_deps {
+        return tasks
+            .iter()
+            .map(|t| TreeRow {
+                task: t,
+                depth: 0,
+                connector: vec![],
+            })
+            .collect();
+    }
+
+    // Index tasks by id for O(1) lookup.
+    let id_to_idx: HashMap<&str, usize> = tasks
+        .iter()
+        .enumerate()
+        .map(|(i, t)| (t.id.as_str(), i))
+        .collect();
+
+    // Build a child map: parent_id → [child_idx, ...] in original order.
+    let mut children: HashMap<usize, Vec<usize>> = HashMap::new();
+    let mut has_parent: HashSet<usize> = HashSet::new();
+    for (child_idx, task) in tasks.iter().enumerate() {
+        for dep_id in &task.depends_on {
+            if let Some(&parent_idx) = id_to_idx.get(dep_id.as_str()) {
+                children.entry(parent_idx).or_default().push(child_idx);
+                has_parent.insert(child_idx);
+            }
+        }
+    }
+
+    // Roots are tasks that are not children of any other task (in this plan).
+    let roots: Vec<usize> = (0..tasks.len())
+        .filter(|i| !has_parent.contains(i))
+        .collect();
+
+    // DFS to emit TreeRows in pre-order (parent before children).
+    let mut result: Vec<TreeRow<'a>> = Vec::with_capacity(tasks.len());
+    let mut visited: HashSet<usize> = HashSet::new();
+
+    fn visit<'a>(
+        idx: usize,
+        depth: usize,
+        connector: Vec<bool>,
+        tasks: &'a [TaskRow],
+        children: &HashMap<usize, Vec<usize>>,
+        visited: &mut HashSet<usize>,
+        result: &mut Vec<TreeRow<'a>>,
+    ) {
+        if visited.contains(&idx) {
+            return; // Guard against cycles.
+        }
+        visited.insert(idx);
+        result.push(TreeRow {
+            task: &tasks[idx],
+            depth,
+            connector: connector.clone(),
+        });
+        let kids = children.get(&idx).map(|v| v.as_slice()).unwrap_or(&[]);
+        for (i, &kid_idx) in kids.iter().enumerate() {
+            let is_last = i + 1 == kids.len();
+            let mut kid_connector = connector.clone();
+            kid_connector.push(is_last);
+            visit(
+                kid_idx,
+                depth + 1,
+                kid_connector,
+                tasks,
+                children,
+                visited,
+                result,
+            );
+        }
+    }
+
+    for root_idx in roots {
+        visit(
+            root_idx,
+            0,
+            vec![],
+            tasks,
+            &children,
+            &mut visited,
+            &mut result,
+        );
+    }
+
+    // Any tasks not reached (e.g. dependency cycles) are appended flat.
+    for (idx, task) in tasks.iter().enumerate() {
+        if !visited.contains(&idx) {
+            result.push(TreeRow {
+                task,
+                depth: 0,
+                connector: vec![],
+            });
+        }
+    }
+
+    result
+}
+
+/// Build the tree-connector prefix string for a given `TreeRow`.
+///
+/// Produces strings like `"    ├── "` or `"    └── "`.
+/// `connector[i]` true → ancestor at depth i was last child → print space, not │.
+fn tree_prefix(row: &TreeRow<'_>) -> String {
+    if row.depth == 0 {
+        return String::new();
+    }
+    let mut prefix = String::new();
+    // For each ancestor level except the immediate parent, draw │ or space.
+    for depth_i in 0..row.depth.saturating_sub(1) {
+        let ancestor_is_last = row.connector.get(depth_i).copied().unwrap_or(true);
+        if ancestor_is_last {
+            prefix.push_str("    ");
+        } else {
+            prefix.push_str("\u{2502}   "); // │
+        }
+    }
+    // Immediate parent connector: └── or ├──
+    let is_last = row.connector.last().copied().unwrap_or(true);
+    if is_last {
+        prefix.push_str("\u{2514}\u{2500}\u{2500} "); // └──
+    } else {
+        prefix.push_str("\u{251C}\u{2500}\u{2500} "); // ├──
+    }
+    prefix
+}
 
 // ---------------------------------------------------------------------------
 // Public render entry-point
@@ -104,16 +260,20 @@ pub fn render_task_progress(frame: &mut Frame<'_>, area: Rect, state: &TuiState,
     let has_bar = inner_width > 8 && total > 0;
     let header_rows: u16 = if has_bar { 2 } else { 1 };
 
+    // Build the dependency tree (flat list when no deps exist).
+    let tree_rows = build_dep_tree(tasks);
+    let tree_len = tree_rows.len();
+
     // Visible task slots
     let visible = area.height.saturating_sub(2 + header_rows) as usize;
-    let max_scroll = tasks.len().saturating_sub(visible);
+    let max_scroll = tree_len.saturating_sub(visible);
     let scroll = state.task_scroll.min(max_scroll);
     let start = scroll;
-    let end = (scroll + visible).min(tasks.len());
+    let end = (scroll + visible).min(tree_len);
 
     // Append scroll position to title
-    if tasks.len() > visible && visible > 0 {
-        title.push_str(&format!(" [{}-{} of {}]", start + 1, end, tasks.len()));
+    if tree_len > visible && visible > 0 {
+        title.push_str(&format!(" [{}-{} of {}]", start + 1, end, tree_len));
     }
 
     let block = Block::default()
@@ -185,13 +345,14 @@ pub fn render_task_progress(frame: &mut Frame<'_>, area: Rect, state: &TuiState,
         )));
     }
 
-    // ── Task rows ────────────────────────────────────────────────────────
-    for (i, task) in tasks[start..end].iter().enumerate() {
+    // ── Task rows (dependency-tree order) ────────────────────────────────
+    for (i, row) in tree_rows[start..end].iter().enumerate() {
+        let task = row.task;
         let global_idx = start + i;
         let is_selected = global_idx == scroll && focused;
         let is_active = task.status == TaskRowStatus::Active;
 
-        // Status icons: ✓ done (green bold), ✗ failed (red bold), ⚡ active (yellow bold), ○ pending (dim)
+        // Status icons
         let active_spinner;
         let (icon, icon_style) = match task.status {
             TaskRowStatus::Done => (
@@ -246,7 +407,11 @@ pub fn render_task_progress(frame: &mut Frame<'_>, area: Rect, state: &TuiState,
             icon_style
         };
 
-        // Time tag
+        // Tree-connector prefix (e.g. "    ├── " or "    └── ").
+        let prefix = tree_prefix(row);
+        let prefix_len = prefix.chars().count();
+
+        // Time tag for active tasks
         let time_tag = match task.status {
             TaskRowStatus::Done => String::new(),
             TaskRowStatus::Active if task.elapsed_secs > 0.0 => {
@@ -255,24 +420,29 @@ pub fn render_task_progress(frame: &mut Frame<'_>, area: Rect, state: &TuiState,
             _ => String::new(),
         };
 
-        // Smart truncation: keep first segment + end (matches plan_tree style)
+        // Column layout: [space][icon][space][prefix][id][time_tag][title]
         let time_tag_len = time_tag.chars().count();
         let id_col_w = 8;
-        let prefix_len = 4 + id_col_w + time_tag_len;
-        let max_title = (inner.width as usize).saturating_sub(prefix_len + 2);
+        let fixed = 4 + prefix_len + id_col_w + time_tag_len;
+        let max_title = (inner.width as usize).saturating_sub(fixed + 2);
         let title_display = truncate_middle(&task.title, max_title);
 
-        // Task ID uses label() style, task name uses value() for active / text for others.
+        let connector_style = Style::default().fg(Theme::TEXT_PHANTOM);
         let id_style = if let Some(bg_color) = bg {
             theme.label().bg(bg_color)
         } else {
             theme.label()
         };
 
-        let mut task_spans = vec![
-            Span::styled(format!(" {icon} "), effective_icon_style),
-            Span::styled(format!("{:<width$}", &task.id, width = id_col_w), id_style),
-        ];
+        let mut task_spans: Vec<Span<'_>> =
+            vec![Span::styled(format!(" {icon} "), effective_icon_style)];
+        if !prefix.is_empty() {
+            task_spans.push(Span::styled(prefix, connector_style));
+        }
+        task_spans.push(Span::styled(
+            format!("{:<width$}", &task.id, width = id_col_w),
+            id_style,
+        ));
         if !time_tag.is_empty() {
             let time_style = if let Some(bg_color) = bg {
                 Style::default().fg(Theme::TEXT_DIM).bg(bg_color)
@@ -287,7 +457,7 @@ pub fn render_task_progress(frame: &mut Frame<'_>, area: Rect, state: &TuiState,
     }
 
     // ── Scroll-down indicator ────────────────────────────────────────────
-    if end < tasks.len() {
+    if end < tree_len {
         lines.push(Line::from(Span::styled(
             " \u{25bc} more",
             Style::default().fg(Theme::TEXT_DIM),
@@ -306,14 +476,14 @@ pub fn render_task_progress(frame: &mut Frame<'_>, area: Rect, state: &TuiState,
     frame.render_widget(paragraph, inner);
 
     // ── Scrollbar ────────────────────────────────────────────────────────
-    if tasks.len() > visible && visible > 0 {
+    if tree_len > visible && visible > 0 {
         let sb_area = Rect::new(
             inner.x,
             inner.y + header_rows,
             inner.width,
             inner.height.saturating_sub(header_rows),
         );
-        let mut sb_state = ScrollbarState::new(tasks.len()).position(scroll);
+        let mut sb_state = ScrollbarState::new(tree_len).position(scroll);
         let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
             .thumb_style(Style::default().fg(Theme::ROSE))
             .track_style(Style::default().fg(Theme::TEXT_PHANTOM))
@@ -474,17 +644,10 @@ fn compact_duration(total_seconds: u64) -> String {
     }
 }
 
-/// Modulate ROSE color brightness with heartbeat oscillator.
+/// Modulate the ROSE_PULSE theme color with heartbeat oscillator.
 fn pulse_rose(heartbeat: f64) -> Color {
-    let base_r = 170.0;
-    let base_g = 112.0;
-    let base_b = 136.0;
     let scale = heartbeat.clamp(0.9, 1.1);
-    Color::Rgb(
-        (base_r * scale).min(255.0) as u8,
-        (base_g * scale).min(255.0) as u8,
-        (base_b * scale).min(255.0) as u8,
-    )
+    super::super::theme::brighten(Theme::ROSE_PULSE, scale)
 }
 
 // ---------------------------------------------------------------------------

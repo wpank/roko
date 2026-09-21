@@ -69,11 +69,7 @@ impl ToolCapLearner {
         let bucket_min = (tool_count / 5) * 5;
         let bucket_max = bucket_min + 4;
 
-        let bucket = if let Some(b) = obs
-            .buckets
-            .iter_mut()
-            .find(|b| b.min_tools == bucket_min)
-        {
+        let bucket = if let Some(b) = obs.buckets.iter_mut().find(|b| b.min_tools == bucket_min) {
             b
         } else {
             obs.buckets.push(ToolCountBucket {
@@ -117,8 +113,12 @@ impl ToolCapLearner {
             }
             let drop = baseline_rate - bucket.success_rate();
             if drop > DEGRADATION_DROP_THRESHOLD {
+                // Cap at one below the degrading bucket's lower bound so that
+                // tasks using exactly `min_tools` still enter the degraded zone.
+                // The first bucket is the baseline so drop is always 0 there;
+                // `saturating_sub` is safe since min_tools >= 5 in practice.
                 self.learned_caps
-                    .insert(model.to_string(), bucket.min_tools);
+                    .insert(model.to_string(), bucket.min_tools.saturating_sub(1));
                 return;
             }
         }

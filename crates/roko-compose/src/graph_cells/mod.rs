@@ -37,6 +37,8 @@ pub mod experiment;
 pub mod knowledge;
 pub mod modulation;
 pub mod playbook;
+/// RAG-19: RetrievalCell wrapping UnifiedRetrievalContextBidder as a graph node.
+pub mod retrieval;
 pub mod safety;
 pub mod signals;
 pub mod task_context;
@@ -51,6 +53,7 @@ pub use experiment::{
 pub use knowledge::{KnowledgeCell, KnowledgeProvider, NoopKnowledgeProvider};
 pub use modulation::{ModulationCell, ModulationProvider, NoopModulationProvider};
 pub use playbook::{NoopPlaybookProvider, PlaybookCell, PlaybookProvider};
+pub use retrieval::{RETRIEVAL_CELL_TYPE, RetrievalCell, register_retrieval_cell};
 pub use safety::{NoopSafetyContextProvider, SafetyCell, SafetyContextProvider};
 pub use signals::{
     CodeIndexSections, ComposeRequest, ComposeScope, ComposedPrompt, EpisodeSections,

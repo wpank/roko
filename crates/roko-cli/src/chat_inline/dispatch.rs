@@ -6,6 +6,7 @@ use anyhow::{Context as _, Result, bail};
 use serde::Deserialize;
 use serde_json::json;
 
+use super::decompose::{SubTask, decompose_message, merge_results};
 use super::session::{clone_chat_agent_session, turn_result_to_dispatch_result};
 use super::types::{ChatInlineDispatchError, ChatSession, DispatchMode};
 use crate::chat::extract_clean_text;
@@ -76,6 +77,112 @@ pub(crate) fn dispatch_prompt(session: &mut ChatSession, prompt: &str) {
                 };
                 let _ = tx.send(mapped).await;
             });
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Decomposed dispatch
+// ---------------------------------------------------------------------------
+
+/// Wrapper around `dispatch_prompt` that transparently handles multi-task
+/// messages.
+///
+/// When `msg` decomposes into two or more sub-tasks the function dispatches
+/// each one sequentially in a background task, merges the results, and sends
+/// the merged `DispatchResult` through the session's `response_rx` channel —
+/// identical to a single-task turn from the event loop's perspective.
+///
+/// When the message is a single task (no decomposition), this delegates
+/// directly to `dispatch_prompt` so there is zero overhead on the common path.
+pub(crate) fn dispatch_prompt_decomposed(session: &mut ChatSession, msg: &str) {
+    let subtasks = decompose_message(msg);
+
+    match subtasks {
+        None => {
+            // Fast path: single task — use the existing code unchanged.
+            dispatch_prompt(session, msg);
+        }
+        Some(tasks) => {
+            // Multi-task path: dispatch each sub-task sequentially and merge.
+            use crate::inline::primitives::StreamingState;
+            session.streaming = StreamingState::new("decomposing tasks...");
+            let (tx, rx) = tokio::sync::mpsc::channel(1);
+            session.response_rx = Some(rx);
+
+            // Clone everything we need for the background task.
+            let dispatch = session.dispatch.clone();
+            let agent_id = session.agent_id.clone();
+            let agent_session_opt = session.agent_session.as_ref().map(clone_chat_agent_session);
+
+            tokio::spawn(async move {
+                let result =
+                    run_decomposed(tasks, dispatch, &agent_id, agent_session_opt).await;
+                let _ = tx
+                    .send(result.map_err(|e| e.to_string()))
+                    .await;
+            });
+        }
+    }
+}
+
+/// Execute each sub-task sequentially and return the merged result.
+async fn run_decomposed(
+    tasks: Vec<SubTask>,
+    dispatch: DispatchMode,
+    agent_id: &str,
+    agent_session_opt: Option<crate::chat_session::ChatAgentSession>,
+) -> Result<DispatchResult> {
+    let mut collected: Vec<(SubTask, DispatchResult)> = Vec::with_capacity(tasks.len());
+
+    for task in tasks {
+        let result = dispatch_single(&dispatch, agent_id, &task.text, &agent_session_opt).await?;
+        collected.push((task, result));
+    }
+
+    Ok(merge_results(collected))
+}
+
+/// Dispatch a single sub-task text using the session's dispatch mode and
+/// return the `DispatchResult`.
+async fn dispatch_single(
+    dispatch: &DispatchMode,
+    agent_id: &str,
+    text: &str,
+    agent_session_opt: &Option<crate::chat_session::ChatAgentSession>,
+) -> Result<DispatchResult> {
+    match dispatch {
+        DispatchMode::Http {
+            client,
+            backend_url,
+            is_sidecar,
+        } => {
+            let resp =
+                send_and_receive(client, backend_url, agent_id, text, *is_sidecar).await?;
+            Ok(resp.into())
+        }
+        DispatchMode::Direct { .. } => {
+            Err(anyhow::anyhow!(
+                ChatInlineDispatchError::DirectDispatchDisabled.to_string()
+            ))
+        }
+        DispatchMode::Session => {
+            let Some(agent_session) = agent_session_opt.as_ref() else {
+                anyhow::bail!("agent session unavailable for decomposed dispatch");
+            };
+            let mut session_clone = clone_chat_agent_session(agent_session);
+            // We don't wire live streaming events for sub-tasks; each result is
+            // collected atomically before the merged response is surfaced.
+            let (event_tx, _event_rx) =
+                tokio::sync::mpsc::channel::<roko_agent::AgentRuntimeEvent>(256);
+            let turn = session_clone
+                .send_turn_streaming(text, event_tx)
+                .await
+                .context("sub-task dispatch")?;
+            if turn.cancelled {
+                anyhow::bail!("__cancelled__");
+            }
+            Ok(turn_result_to_dispatch_result(turn))
         }
     }
 }
@@ -159,7 +266,9 @@ async fn send_and_receive(
     let response = client
         .post(&url)
         .json(&body)
-        .timeout(Duration::from_secs(roko_core::config::timeouts::DEFAULT_AGENT_TIMEOUT_SECS))
+        .timeout(Duration::from_secs(
+            roko_core::config::timeouts::DEFAULT_AGENT_TIMEOUT_SECS,
+        ))
         .send()
         .await
         .with_context(|| format!("POST {url} — is `roko serve` running?"))?;

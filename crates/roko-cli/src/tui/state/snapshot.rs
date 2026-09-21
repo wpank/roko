@@ -15,15 +15,14 @@ use super::super::dashboard::{
 use super::learning::{
     build_token_samples, compute_token_rate, compute_windowed_token_rate, current_epoch_ms,
     extract_episode_output, fallback_route_metrics_for_agent, latest_agent_events,
-    latest_route_metrics, plan_is_active, populate_provider_statuses,
-    route_tier_label_for_model, sum_costs,
+    latest_route_metrics, plan_is_active, populate_provider_statuses, route_tier_label_for_model,
+    sum_costs,
 };
 use super::{
+    AgentRow, AgentStatus, AgentTopologyStatus, CANONICAL_PHASES, GateResultEntry, MAX_GATE_LINES,
+    PhaseStep, PlanEntry, PlanPhase, TaskEntry, TaskRow, TaskStatus, TuiState, Wave,
     bounded_output_lines, count_online_from_files, derive_topology_from_agents, gate_pass_rate,
     is_online_agent_status, model_context_limit, snapshot_gate_pass_rate,
-    AgentRow, AgentStatus, AgentTopologyStatus, GateResultEntry, PhaseStep,
-    PlanEntry, PlanPhase, TaskEntry, TaskRow, TaskStatus, TuiState, Wave, CANONICAL_PHASES,
-    MAX_GATE_LINES,
 };
 use crate::plan::{PlanSummary, plans_dir};
 use crate::task_parser::{TaskDef, TasksFile};
@@ -461,8 +460,7 @@ impl TuiState {
         }
 
         // -- provider statuses (F11) --
-        self.provider_statuses =
-            populate_provider_statuses(&self.workdir, &self.efficiency_events);
+        self.provider_statuses = populate_provider_statuses(&self.workdir, &self.efficiency_events);
         if !self.provider_statuses.is_empty()
             && self.providers_selected >= self.provider_statuses.len()
         {
@@ -1415,7 +1413,9 @@ fn restore_selected_agent_idx(
 }
 
 /// Build the canonical 9-phase pipeline, inferring status from active tasks.
-pub(super) fn build_phase_pipeline(active_tasks: &[super::super::dashboard::TaskSummary]) -> Vec<PhaseStep> {
+pub(super) fn build_phase_pipeline(
+    active_tasks: &[super::super::dashboard::TaskSummary],
+) -> Vec<PhaseStep> {
     #[derive(Clone, Copy, Default)]
     struct PhaseTaskCounts {
         total: usize,
@@ -1490,7 +1490,9 @@ fn canonical_phase_index_for_task(task: &super::super::dashboard::TaskSummary) -
     CANONICAL_PHASES.iter().position(|&name| name == phase_name)
 }
 
-fn canonical_phase_name_for_task(task: &super::super::dashboard::TaskSummary) -> Option<&'static str> {
+fn canonical_phase_name_for_task(
+    task: &super::super::dashboard::TaskSummary,
+) -> Option<&'static str> {
     let status = task.status.to_ascii_lowercase();
 
     match status.as_str() {
@@ -1859,7 +1861,6 @@ fn populate_task_row_details(checklist: &mut [TaskRow], plans: &[PlanEntry]) {
         }
     }
 }
-
 
 /// Parse a duration string like "5s", "2m 30s", "120ms" into seconds.
 fn parse_duration_to_secs(duration: &str) -> f64 {

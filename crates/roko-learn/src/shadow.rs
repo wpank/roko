@@ -453,12 +453,17 @@ fn compute_summary(results: &[ShadowResult]) -> ShadowSummary {
     let total_f = total as f64;
     let avg_production_cost_usd =
         results.iter().map(|r| r.production_cost_usd).sum::<f64>() / total_f;
-    let avg_shadow_cost_usd =
-        results.iter().map(|r| r.shadow_cost_usd).sum::<f64>() / total_f;
-    let avg_production_duration_ms =
-        results.iter().map(|r| r.production_duration_ms as f64).sum::<f64>() / total_f;
-    let avg_shadow_duration_ms =
-        results.iter().map(|r| r.shadow_duration_ms as f64).sum::<f64>() / total_f;
+    let avg_shadow_cost_usd = results.iter().map(|r| r.shadow_cost_usd).sum::<f64>() / total_f;
+    let avg_production_duration_ms = results
+        .iter()
+        .map(|r| r.production_duration_ms as f64)
+        .sum::<f64>()
+        / total_f;
+    let avg_shadow_duration_ms = results
+        .iter()
+        .map(|r| r.shadow_duration_ms as f64)
+        .sum::<f64>()
+        / total_f;
 
     ShadowSummary {
         total_results: total,
@@ -549,7 +554,10 @@ mod tests {
         let runner = make_runner(&tmp).with_every_n(1);
 
         for i in 1..=10 {
-            assert!(runner.should_shadow(), "call {i}: expected true with every_n=1");
+            assert!(
+                runner.should_shadow(),
+                "call {i}: expected true with every_n=1"
+            );
         }
     }
 
@@ -619,10 +627,17 @@ mod tests {
     #[tokio::test]
     async fn record_result_creates_parent_directories() {
         let tmp = TempDir::new().expect("tempdir");
-        let path = tmp.path().join("nested").join("dirs").join("shadow-results.jsonl");
+        let path = tmp
+            .path()
+            .join("nested")
+            .join("dirs")
+            .join("shadow-results.jsonl");
         let runner = ShadowRunner::new(config(), &path);
 
-        runner.record_result(result("task-nested", true, true)).await.expect("record");
+        runner
+            .record_result(result("task-nested", true, true))
+            .await
+            .expect("record");
         assert!(path.exists(), "JSONL file should be created");
     }
 
@@ -657,7 +672,10 @@ mod tests {
         for i in 0..25 {
             let prod = i < 20; // 80%
             let shad = i < 22; // 88%
-            runner.record_result(result(&format!("task-{i:03}"), prod, shad)).await.expect("record");
+            runner
+                .record_result(result(&format!("task-{i:03}"), prod, shad))
+                .await
+                .expect("record");
         }
 
         let alert = runner
@@ -675,7 +693,10 @@ mod tests {
         // Only 10 results — well below default min of 20.
         for i in 0..10 {
             // Shadow passes everything, production passes nothing — extreme gap.
-            runner.record_result(result(&format!("task-{i:03}"), false, true)).await.expect("record");
+            runner
+                .record_result(result(&format!("task-{i:03}"), false, true))
+                .await
+                .expect("record");
         }
 
         let alert = runner
@@ -701,7 +722,10 @@ mod tests {
         for i in 0..20 {
             let prod = i < 12; // 60%
             let shad = i < 18; // 90%
-            runner.record_result(result(&format!("task-{i:03}"), prod, shad)).await.expect("record");
+            runner
+                .record_result(result(&format!("task-{i:03}"), prod, shad))
+                .await
+                .expect("record");
         }
 
         let alert = runner

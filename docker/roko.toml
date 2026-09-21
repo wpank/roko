@@ -43,4 +43,4 @@ max_agents = 2
 auto_playbook_refresh = false
 
 [runner]
-max_parallel_tasks = 2
+max_concurrent_tasks = 2

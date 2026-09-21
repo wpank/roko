@@ -25,11 +25,11 @@ use tokio::task;
 use tracing::{debug, error, info, warn};
 
 use crate::session::AcpSession;
-use roko_core::tool::ToolPermission;
 use crate::types::{ClientCapabilities, PermissionAction, StopReason};
+use roko_core::tool::ToolPermission;
 
-use super::experiments::AcpCascadeSelection;
 use super::StreamResult;
+use super::experiments::AcpCascadeSelection;
 
 /// Maximum assistant response bytes stored in one history turn.
 pub(crate) const MAX_HISTORY_ASSISTANT_BYTES: usize = 10_240;
@@ -310,11 +310,14 @@ pub(crate) fn maybe_spawn_dream_consolidation(workdir: &Path, config: &RokoConfi
         },
     };
 
-    // `consolidate_now` internally calls `block_on`, so it must run on a
-    // blocking thread rather than the async runtime.
-    tokio::task::spawn_blocking(move || {
-        let mut runner = roko_dreams::DreamRunner::new(&workdir, dream_config);
-        if let Err(err) = runner.consolidate_now() {
+    // Use `consolidate_async` with `tokio::spawn` rather than
+    // `consolidate_now` with `spawn_blocking`.  `consolidate_now` calls
+    // `block_in_place` internally, which panics when invoked from a
+    // `spawn_blocking` thread because blocking threads are not async workers
+    // and carry no reactor context to yield from.
+    let _handle = tokio::spawn(async move {
+        let mut runner = roko_dreams::DreamRunner::new(workdir, dream_config);
+        if let Err(err) = runner.consolidate_async().await {
             warn!(?err, "background dream consolidation failed");
         }
     });
@@ -451,7 +454,12 @@ pub(crate) fn derive_acp_tool_capabilities(
     }
 }
 
-pub(crate) fn acp_routing_context(mode: &str, prompt: &str, effort: &str, workdir: &Path) -> RoutingContext {
+pub(crate) fn acp_routing_context(
+    mode: &str,
+    prompt: &str,
+    effort: &str,
+    workdir: &Path,
+) -> RoutingContext {
     let _prompt_len = prompt.len();
     let task_category = if mode == "research" {
         TaskCategory::Research
@@ -529,7 +537,6 @@ pub(crate) fn acp_dispatch_succeeded(
             .map(|sr| matches!(sr.prompt_result.stop_reason, StopReason::EndTurn))
             .unwrap_or(false)
 }
-
 
 pub(crate) fn truncate_to_title(text: &str, max_len: usize) -> String {
     let trimmed = text.trim();

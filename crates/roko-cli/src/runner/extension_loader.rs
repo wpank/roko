@@ -267,6 +267,7 @@ impl PluginConfinement {
         }
     }
 
+    #[allow(dead_code)] // used only in test helper
     fn is_supported(&self) -> bool {
         !matches!(self, Self::Unsupported { .. })
     }

@@ -103,7 +103,7 @@ impl TopicHandler for ChannelTopicHandler {
 /// let (handler, mut rx) = RelaySubscriber::make_handler();
 /// // pass handler to relay_client::connect(…, Some(handler))
 /// let subscriber = RelaySubscriber::from_handle(relay_handle);
-/// subscriber.subscribe("agent:updates")?;
+/// subscriber.subscribe("agent.updates")?;
 /// while let Some(msg) = rx.recv().await {
 ///     println!("topic={} seq={}", msg.topic, msg.seq);
 ///     msg.commit()?;

@@ -1,8 +1,8 @@
 //! Property-based tests for roko-agent core types.
 
 use proptest::prelude::*;
-use roko_core::agent::ProviderKind;
 use roko_core::agent::AgentBackend;
+use roko_core::agent::ProviderKind;
 
 // ─── ProviderKind: serde roundtrip ──────────────────────────────────────────
 

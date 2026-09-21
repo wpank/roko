@@ -20,7 +20,6 @@ use validator::Validate;
 
 use roko_agent::GatewayEventWriter;
 use roko_core::agent::{AgentRole, resolve_model};
-use roko_core::config::schema::RokoConfig;
 use roko_core::foundation::{
     CachePolicy, ChatMessage as CoreChatMessage, MessageRole as CoreMessageRole,
     ModelCallRequest as CoreModelCallRequest, ModelCallResponse as CoreModelCallResponse,
@@ -114,6 +113,7 @@ struct CompletionRequest {
 
     /// Optional tool definitions to pass to the model.
     #[serde(default)]
+    #[allow(dead_code)]
     tools: Option<Vec<Value>>,
 
     /// Calling agent identifier. Used for attribution and event tagging.
@@ -141,8 +141,10 @@ struct CompletionRequest {
     #[serde(default)]
     iteration: Option<u32>,
 
-    /// Crate name hint for familiarity-based routing.
+    /// Crate name hint for familiarity-based routing. Accepted in the request
+    /// body but not currently consumed by the routing logic.
     #[serde(default)]
+    #[allow(dead_code)]
     crate_name: Option<String>,
 
     /// Whether a prior attempt at this task failed.
@@ -317,7 +319,6 @@ async fn inference_complete(
         complexity: body.complexity.clone(),
         role: body.role.clone(),
         iteration: body.iteration,
-        crate_name: body.crate_name.clone(),
         has_prior_failure: body.has_prior_failure,
     };
 
@@ -872,7 +873,6 @@ struct RoutingHints {
     complexity: Option<String>,
     role: Option<String>,
     iteration: Option<u32>,
-    crate_name: Option<String>,
     has_prior_failure: Option<bool>,
 }
 
@@ -926,7 +926,11 @@ fn parse_agent_role(s: &str) -> AgentRole {
     }
 }
 
-fn provider_id_for_model(config: &RokoConfig, model_key_or_slug: &str) -> Option<String> {
+#[cfg(test)]
+fn provider_id_for_model(
+    config: &roko_core::config::schema::RokoConfig,
+    model_key_or_slug: &str,
+) -> Option<String> {
     let models = config.effective_models();
     if let Some(profile) = models.get(model_key_or_slug) {
         return Some(profile.provider.clone());

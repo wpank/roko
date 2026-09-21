@@ -22,6 +22,7 @@ pub(crate) const REASONING_DELTA_PREFIX: &str = "\u{001f}roko.reasoning.v1 ";
 
 /// Streaming chunk from a provider session, used for agent event bridging.
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // all variants are produced but not all fields/payloads are consumed yet
 pub(crate) enum StreamChunk {
     /// Plain content delta from the agent.
     ContentDelta(String),
@@ -1847,6 +1848,7 @@ impl AgentDispatcherV2 {
             bare_mode: request.bare_mode,
             dangerously_skip_permissions: request.dangerously_skip_permissions,
             name: request.agent_id.clone(),
+            max_turns: request.max_turns,
             // Thread the runtime-scoped rate limiter through to provider adapters.
             // HTTP-backed adapters (OpenAI-compat, Anthropic API, Gemini) will call
             // `limiter.acquire(provider_id)` before each live LLM request so that
@@ -2011,6 +2013,13 @@ pub struct AgentDispatchRequest {
     pub bare_mode: bool,
     /// Whether provider permission prompts/sandboxing should be bypassed.
     pub dangerously_skip_permissions: bool,
+    /// Optional maximum agent turn count override.
+    ///
+    /// When `Some`, overrides the provider's built-in default turn limit.
+    /// Currently wired for Claude CLI via `AgentOptions::max_turns`.
+    /// `None` means use the provider default (Theta = 10 for Claude CLI).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_turns: Option<u32>,
 }
 
 impl AgentDispatchRequest {
@@ -2621,6 +2630,7 @@ mod tests {
                 agent_contract: None,
                 bare_mode: false,
                 dangerously_skip_permissions: false,
+                max_turns: None,
             };
             let error = request.validate().expect_err("invalid identity must fail");
             assert_eq!(error, DispatchV2Error::InvalidAgentId);
@@ -3085,6 +3095,7 @@ mod tests {
             }),
             bare_mode: false,
             dangerously_skip_permissions: false,
+            max_turns: None,
         };
         // All provider kinds are now in the contract support whitelist,
         // so OpenClaw with a contract should pass validation.
@@ -3150,6 +3161,7 @@ printf '%s\n' '{"type":"content_block_delta","delta":{"text":"dispatch-ok"}}'
             agent_contract: None,
             bare_mode: false,
             dangerously_skip_permissions: false,
+            max_turns: None,
         };
         let health_path = tmp.path().join(".roko/learn/provider-health.json");
         let registry = Arc::new(ProviderHealthRegistry::new());

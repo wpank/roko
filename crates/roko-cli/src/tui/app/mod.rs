@@ -30,11 +30,11 @@ use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode, size,
 };
+use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::widgets::Paragraph;
-use ratatui::Terminal;
 
 use roko_runtime::process::ProcessSupervisor;
 use sysinfo::{Disks, Networks, Pid, ProcessStatus, ProcessesToUpdate, System};
@@ -822,7 +822,12 @@ fn tab_to_page(tab: Tab) -> Option<PageId> {
         Tab::Agents => Some(PageId::AgentStatus),
         Tab::Logs => Some(PageId::LogView),
         Tab::Config => Some(PageId::ConfigView),
-        Tab::Git | Tab::Inspect | Tab::Marketplace | Tab::Atelier | Tab::Learning | Tab::Providers => None,
+        Tab::Git
+        | Tab::Inspect
+        | Tab::Marketplace
+        | Tab::Atelier
+        | Tab::Learning
+        | Tab::Providers => None,
     }
 }
 

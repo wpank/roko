@@ -7,8 +7,8 @@
 use std::io;
 use std::path::{Path, PathBuf};
 
-use serde::de::DeserializeOwned;
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 use tokio::io::{AsyncBufReadExt, BufReader};
 
 use crate::efficiency::AgentEfficiencyEvent;
@@ -392,9 +392,7 @@ pub async fn read_project_learning_snapshot(
 
 // ── Query & filtering ─────────────────────────────────────────────────
 
-use super::episode_helpers::{
-    episode_model, episode_provider, episode_source_id, extra_string,
-};
+use super::episode_helpers::{episode_model, episode_provider, episode_source_id, extra_string};
 
 /// Query canonical feedback logs under `paths`.
 ///

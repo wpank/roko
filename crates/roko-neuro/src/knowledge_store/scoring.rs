@@ -145,10 +145,7 @@ pub(crate) fn emotional_retrieval_boost(entry: &KnowledgeEntry) -> f64 {
 /// knowledge entry's emotional provenance. Returns 0.0 if the entry
 /// has no emotional provenance. Returns a value in [0.0, 1.0] where
 /// 1.0 = identical PAD vectors.
-pub(crate) fn pad_affinity(
-    current: &roko_core::affect::PadVector,
-    entry: &KnowledgeEntry,
-) -> f64 {
+pub(crate) fn pad_affinity(current: &roko_core::affect::PadVector, entry: &KnowledgeEntry) -> f64 {
     let Some(provenance) = entry.emotional_provenance.as_ref() else {
         return 0.0;
     };
@@ -283,10 +280,7 @@ pub(crate) fn jaccard_similarity(left: &HashSet<String>, right: &HashSet<String>
 /// Compare two knowledge entries for topic-level similarity using tag
 /// overlap and content keyword matching. This is deliberately lightweight
 /// (no ML, no embedding) to keep `ingest()` fast.
-pub(crate) fn entries_are_similar(
-    existing: &KnowledgeEntry,
-    new_entry: &KnowledgeEntry,
-) -> bool {
+pub(crate) fn entries_are_similar(existing: &KnowledgeEntry, new_entry: &KnowledgeEntry) -> bool {
     // Skip AntiKnowledge entries -- they are refutations, not confirmations.
     if existing.kind == KnowledgeKind::AntiKnowledge
         || new_entry.kind == KnowledgeKind::AntiKnowledge
@@ -366,9 +360,7 @@ pub(crate) fn fingerprint_content(content: &str) -> HdcVector {
 // ── Ingest helpers ───────────────────────────────────────────────────
 
 #[cfg(feature = "hdc")]
-pub(crate) fn prepare_entries_for_ingest(
-    entries: Vec<KnowledgeEntry>,
-) -> Vec<KnowledgeEntry> {
+pub(crate) fn prepare_entries_for_ingest(entries: Vec<KnowledgeEntry>) -> Vec<KnowledgeEntry> {
     entries
         .into_iter()
         .map(normalize_entry_for_ingest)
@@ -376,9 +368,7 @@ pub(crate) fn prepare_entries_for_ingest(
 }
 
 #[cfg(not(feature = "hdc"))]
-pub(crate) fn prepare_entries_for_ingest(
-    entries: Vec<KnowledgeEntry>,
-) -> Vec<KnowledgeEntry> {
+pub(crate) fn prepare_entries_for_ingest(entries: Vec<KnowledgeEntry>) -> Vec<KnowledgeEntry> {
     entries
         .into_iter()
         .map(normalize_entry_for_ingest)

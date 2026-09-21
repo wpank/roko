@@ -1,6 +1,8 @@
 # TUI Parity: Consolidated Audit & Implementation Index
 
-> **ARCHIVAL NOTICE (2026-09-04):** This index is nearing completion. Eight additional items moved to DONE in the latest session (P0.5, P1.5, P2.1-P2.3, P3.1, P5.1-P5.4, P6.5, P7.1, P7.3), leaving only P6.3 (focus zones) as partially open. The P0-P7 baseline (38 items) is substantially complete; medium-term items (MX) and long-term vision (L1-L7) remain separate product work. See session notes for live-verified status updates.
+> **ARCHIVAL NOTICE (2026-09-18):** The P0-P7 baseline (38 items) is now complete. All partial items (P1.1, P5.5, P6.3, P6.4) have been resolved: P1.1/P5.5/P6.3 were source-verified as already implemented (index not updated); P6.4 fixed by adding C/I Dashboard sub-tabs, agent output search bindings, Providers tab section, and corrected recovery/executor wording. Medium-term items (MX) and long-term vision (L1-L7) remain separate product work.
+>
+> **Previous notice (2026-09-04):** Eight additional items moved to DONE in that session (P0.5, P1.5, P2.1-P2.3, P3.1, P5.1-P5.4, P6.5, P7.1, P7.3), leaving only P6.3 (focus zones) as partially open at that time.
 
 > **Current implementation handoff (2026-09-01):** TUI work that intersects the CLI audit is scheduled in [`../cli-audit/IMPLEMENTATION-CHECKLIST.md`](../cli-audit/IMPLEMENTATION-CHECKLIST.md). It serializes #128/#365–#369 with #232–#237/#248/#266 and the current dirty TUI paths; do not dispatch directly from historical completion counts below.
 
@@ -108,7 +110,7 @@ Fixes RC-1. Makes the TUI actually show live data during `plan run`.
 
 Fixes RC-2 and RC-5. Makes keybindings do something real.
 
-- [ ] **P1.1** `#119` Add TUI-to-runner command channel (Pause/Resume/Retry/Skip) (1d) -- **partial**; channel exists, several runner effects do not
+- [x] **P1.1** `#119` Add TUI-to-runner command channel (Pause/Resume/Retry/Skip) (1d) -- DONE (TogglePause sends Pause/Resume; all recovery confirms send ExecutionCommand via send_tui_command_for_confirm; disconnect warning shown when no executor connected)
 - [x] **P1.2** `#217` Wire log search render in `logs_view.rs` (0.5d) -- v2/07, parity/batch-4
 - [x] **P1.3** `#219` Wire plan tree filter render (0.5d) -- v2/01, parity/batch-4
 - [x] **P1.4** `NEW-004` Make F3 role tabs actually switch agent output (0.25d) -- v2/03
@@ -149,14 +151,14 @@ Data already exists; just needs rendering.
 - [x] **P5.2** `NEW-019` Add `acceptance`/`verify` to `TaskEntry` (0.25d) -- DONE (acceptance and verify fields populated from tasks.toml)
 - [x] **P5.3** `NEW-020` Add files-modified/diff stats to plan detail modal (0.5d) -- DONE (files populated from tasks.toml)
 - [x] **P5.4** `NEW-021` Add branch/worktree/commit to plan detail (0.5d) -- DONE (branch/worktree/commit populated from tasks.toml)
-- [ ] **P5.5** `NEW-022` Add per-plan elapsed time (timer updates during run) (0.25d) -- **partial**; terminal run duration now freezes correctly, but per-plan starts still need proof
+- [x] **P5.5** `NEW-022` Add per-plan elapsed time (timer updates during run) (0.25d) -- DONE (PlanEntry.started_at: Option<Instant> set on active plans; plan_tree.rs uses started_at.elapsed().as_secs_f64() for live display, falls back to elapsed_secs when frozen)
 
 ### P6: Keyboard model fixes (~1.5d)
 
 - [x] **P6.1** `NEW-023` Fix global number key shadowing per-tab handlers (0.25d) -- v2/09
 - [x] **P6.2** `NEW-024` Move `v` from effects cycle to verify (match mori) (trivial) -- v2/09
-- [ ] **P6.3** `NEW-025` Add tab focus on remaining 7 tabs (1d) -- **partial**; several zones do not consume focus
-- [ ] **P6.4** `NEW-026` Update help overlay with correct bindings (0.25d) -- **partial**; stale effects/recovery claims remain
+- [x] **P6.3** `NEW-025` Add tab focus on remaining 7 tabs (1d) -- DONE (FocusZone enum has per-tab zones for Git/Logs/Config/Inspect/Marketplace/Atelier/Learning/Providers; next()/prev() cycle all tabs; focus.rs routes scroll actions per zone)
+- [x] **P6.4** `NEW-026` Update help overlay with correct bindings (0.25d) -- DONE (added C/I Dashboard sub-tabs, agent output search bindings, Providers tab section, corrected recovery note to say "sends live command to executor", added - key for Providers tab)
 - [x] **P6.5** `NEW-027` Fix shared scroll state between Diff and Procs sub-tabs (trivial) -- DONE (focus set to RightPanel on sub-tab switch)
 
 ### P7: Sub-tab specific fixes (~0.75d)

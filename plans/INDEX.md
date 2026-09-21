@@ -9,16 +9,11 @@
 
 | Plan | Tasks | Done | Ready | Status | Parallel |
 |------|-------|------|-------|--------|----------|
-| `disabled-providers-list` | 1 | 0 | 1 | 📋 ready | 1 |
-| `gate-failures-jsonl` | 1 | 0 | 1 | 📋 ready | 1 |
-| `hardcoded-backend-strings` | 1 | 0 | 1 | 📋 ready | 1 |
-| `legacy-page-removal` | 1 | 0 | 1 | 📋 ready | 1 |
-| `override-learning-isolation` | 1 | 0 | 1 | 📋 ready | 1 |
-| `plugin-load-verification` | 2 | 0 | 2 | 📋 ready | 1 |
+| _(none)_ | | | | | |
 
-**Executable Total**: 6 plans, 7 tasks, 0 done (0%), 7 remaining
+**Executable Total**: 0 plans, 0 tasks, 0 done (0%), 0 remaining
 **Complete Plans**: 0
-**Ready/In-Progress Plans**: 6
+**Ready/In-Progress Plans**: 0
 
 ## Fixtures / Examples
 

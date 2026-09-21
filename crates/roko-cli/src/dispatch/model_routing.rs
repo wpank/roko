@@ -399,8 +399,7 @@ impl ModelRouter {
                 // Guard: reject models whose provider is statically disabled
                 // via `[routing] disabled_providers`.
                 if !self.disabled_providers.is_empty() {
-                    if let Some(provider_id) =
-                        self.model_providers.get(&cascade_model.primary.slug)
+                    if let Some(provider_id) = self.model_providers.get(&cascade_model.primary.slug)
                     {
                         if self.disabled_providers.contains(provider_id) {
                             tracing::info!(
@@ -520,6 +519,7 @@ impl ModelRouter {
 }
 
 /// Map a task tier string to a [`TaskComplexityBand`].
+#[allow(dead_code)] // used only in tests
 pub(crate) fn tier_to_complexity(tier: &str) -> TaskComplexityBand {
     match tier {
         "focused" | "quick" | "trivial" => TaskComplexityBand::Fast,
@@ -582,6 +582,9 @@ mod tests {
             routing_bias: None,
             dependency_outputs: Vec::new(),
             error_patterns_context: String::new(),
+            cached_workspace_map: String::new(),
+            cached_workspace_context: String::new(),
+            cached_cfactor_context: String::new(),
         }
     }
 

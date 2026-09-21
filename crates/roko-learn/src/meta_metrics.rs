@@ -47,9 +47,11 @@ impl LearningEffectivenessReport {
         let stability_score = (1.0 - self.avg_lift_stability).clamp(0.0, 1.0);
         let playbook_score = self.playbook_success_rate;
 
-        self.overall_score =
-            (precision_score * 0.3 + convergence_score * 0.2 + stability_score * 0.2 + playbook_score * 0.3)
-                .clamp(0.0, 1.0);
+        self.overall_score = (precision_score * 0.3
+            + convergence_score * 0.2
+            + stability_score * 0.2
+            + playbook_score * 0.3)
+            .clamp(0.0, 1.0);
         self.overall_score
     }
 }
@@ -76,10 +78,7 @@ impl LiftStabilityTracker {
 
     /// Record a lift observation for a section.
     pub fn record(&mut self, section: &str, lift: f64) {
-        let history = self
-            .history
-            .entry(section.to_string())
-            .or_default();
+        let history = self.history.entry(section.to_string()).or_default();
         history.push(lift);
         if history.len() > self.max_history {
             history.remove(0);
@@ -94,7 +93,8 @@ impl LiftStabilityTracker {
             return None;
         }
         let mean = history.iter().sum::<f64>() / history.len() as f64;
-        let variance = history.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / history.len() as f64;
+        let variance =
+            history.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / history.len() as f64;
         Some(variance.sqrt())
     }
 
@@ -103,9 +103,7 @@ impl LiftStabilityTracker {
     pub fn all_stabilities(&self) -> HashMap<String, f64> {
         self.history
             .keys()
-            .filter_map(|section| {
-                self.stability(section).map(|s| (section.clone(), s))
-            })
+            .filter_map(|section| self.stability(section).map(|s| (section.clone(), s)))
             .collect()
     }
 
@@ -127,7 +125,8 @@ impl LiftStabilityTracker {
 /// Returns an error if the file cannot be read or parsed.
 pub fn load_report(path: &Path) -> Result<LearningEffectivenessReport, std::io::Error> {
     let contents = std::fs::read_to_string(path)?;
-    serde_json::from_str(&contents).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+    serde_json::from_str(&contents)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
 }
 
 /// Save a learning effectiveness report to disk.
@@ -135,7 +134,10 @@ pub fn load_report(path: &Path) -> Result<LearningEffectivenessReport, std::io::
 /// # Errors
 ///
 /// Returns an error if the report cannot be serialized or written.
-pub fn save_report(path: &Path, report: &LearningEffectivenessReport) -> Result<(), std::io::Error> {
+pub fn save_report(
+    path: &Path,
+    report: &LearningEffectivenessReport,
+) -> Result<(), std::io::Error> {
     roko_fs::atomic_write_json(path, report)
 }
 
@@ -151,7 +153,10 @@ mod tests {
         tracker.record("section_a", 0.5);
 
         let stability = tracker.stability("section_a").unwrap();
-        assert!(stability < 0.001, "identical values should have near-zero std dev");
+        assert!(
+            stability < 0.001,
+            "identical values should have near-zero std dev"
+        );
     }
 
     #[test]
@@ -174,7 +179,10 @@ mod tests {
             ..Default::default()
         };
         let score = report.compute_overall();
-        assert!(score > 0.5, "good metrics should yield high overall score: {score}");
+        assert!(
+            score > 0.5,
+            "good metrics should yield high overall score: {score}"
+        );
     }
 
     #[test]

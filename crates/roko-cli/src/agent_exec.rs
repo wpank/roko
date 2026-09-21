@@ -332,8 +332,13 @@ pub enum AgentCrashClass {
 
 impl AgentCrashClass {
     /// Whether this crash class is worth retrying automatically.
+    ///
+    /// `Unknown` is treated as retriable because the agent process can crash
+    /// for transient reasons (OOM kill, signal, subprocess race) that a fresh
+    /// invocation will not reproduce. Callers should cap Unknown retries lower
+    /// than the cap used for `RateLimited`/`NetworkError`.
     pub fn is_retriable(&self) -> bool {
-        matches!(self, Self::RateLimited | Self::NetworkError)
+        matches!(self, Self::RateLimited | Self::NetworkError | Self::Unknown)
     }
 
     /// Human-readable hint for recovering from this crash class.
@@ -635,7 +640,9 @@ tool_format = "openai_json"
         assert!(!AgentCrashClass::ContextOverflow.is_retriable());
         assert!(!AgentCrashClass::ModelNotFound.is_retriable());
         assert!(AgentCrashClass::NetworkError.is_retriable());
-        assert!(!AgentCrashClass::Unknown.is_retriable());
+        // Unknown is retriable: agent can crash for transient reasons (OOM,
+        // signal) that a fresh invocation will not reproduce.
+        assert!(AgentCrashClass::Unknown.is_retriable());
     }
 
     #[test]

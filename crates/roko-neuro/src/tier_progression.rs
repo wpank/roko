@@ -308,7 +308,9 @@ impl Heuristic {
             task_tags
                 .iter()
                 .map(|tag| tag.trim().to_ascii_lowercase())
-                .any(|tag| !tag.is_empty() && (tag == when || when.contains(&tag) || tag.contains(&when)))
+                .any(|tag| {
+                    !tag.is_empty() && (tag == when || when.contains(&tag) || tag.contains(&when))
+                })
         }
     }
 

@@ -19,12 +19,11 @@
 //! Raw `ToolCall.arguments` are never written — only bounded, scrubbed
 //! representations land on disk.
 
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
-use tokio::io::{AsyncWriteExt, BufWriter};
-use tokio::sync::Mutex;
 
 use roko_core::obs::LogScrubber;
 use roko_core::tool::{ToolCall, ToolResult};
@@ -90,11 +89,18 @@ enum RawAuditLine<'a> {
 
 /// Append-only JSONL audit log for tool dispatches.
 ///
+/// Each write acquires a per-file advisory lock (`tool_audit.jsonl.lock`) via
+/// [`fs2::FileExt::lock_exclusive`] before opening, writing, syncing, and
+/// closing the target file.  This ensures that concurrent processes writing to
+/// the same workspace `.roko/tool_audit.jsonl` never interleave bytes.
+///
+/// In-process serialization is provided by the same lock: a `spawn_blocking`
+/// call serializes the blocking I/O onto the thread pool.
+///
 /// Cheap to clone via [`std::sync::Arc`]; wrap in `Arc<ToolAuditLog>` to
 /// share across tasks.
 pub struct ToolAuditLog {
     path: PathBuf,
-    writer: Mutex<BufWriter<tokio::fs::File>>,
 }
 
 impl std::fmt::Debug for ToolAuditLog {
@@ -108,13 +114,12 @@ impl std::fmt::Debug for ToolAuditLog {
 impl ToolAuditLog {
     /// Open (or create) the audit log under `<root>/.roko/tool_audit.jsonl`.
     ///
-    /// Creates `.roko/` if it does not exist. Opens the file with
-    /// `create(true).append(true)` so existing records are preserved.
+    /// Creates `.roko/` if it does not exist.  The file is written lazily
+    /// on the first record — `open` only ensures the parent directory exists.
     ///
     /// # Errors
     ///
-    /// Returns an error if the directory cannot be created or the file
-    /// cannot be opened.
+    /// Returns an error if the directory cannot be created.
     pub async fn open(root: impl AsRef<Path>) -> std::io::Result<Self> {
         let path = root.as_ref().join(DEFAULT_AUDIT_PATH);
         Self::open_at(path).await
@@ -126,22 +131,13 @@ impl ToolAuditLog {
     ///
     /// # Errors
     ///
-    /// Returns an error if the directory cannot be created or the file
-    /// cannot be opened.
+    /// Returns an error if the directory cannot be created.
     pub async fn open_at(path: impl AsRef<Path>) -> std::io::Result<Self> {
         let path = path.as_ref().to_path_buf();
         if let Some(parent) = path.parent() {
             tokio::fs::create_dir_all(parent).await?;
         }
-        let file = tokio::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)
-            .await?;
-        Ok(Self {
-            path,
-            writer: Mutex::new(BufWriter::new(file)),
-        })
+        Ok(Self { path })
     }
 
     /// Path to the underlying JSONL file.
@@ -152,7 +148,8 @@ impl ToolAuditLog {
 
     /// Record that a call was admitted for dispatch.
     ///
-    /// Writes one `{"kind":"admit","ts_ms":…,"call":…}` line and flushes.
+    /// Writes one `{"kind":"admit","ts_ms":…,"call":…}` line and syncs to
+    /// disk under an exclusive per-file advisory lock.
     ///
     /// # Errors
     ///
@@ -167,8 +164,7 @@ impl ToolAuditLog {
     /// Record the terminal result of a dispatched call.
     ///
     /// Writes one `{"kind":"result","ts_ms":…,"call_id":…,"call_name":…,"result":…}` line
-    /// and flushes. The `call_id` and `call_name` are copied out of the
-    /// `ToolCall` so consumers can correlate without loading the full call.
+    /// and syncs under an exclusive per-file advisory lock.
     ///
     /// # Errors
     ///
@@ -198,37 +194,54 @@ impl ToolAuditLog {
         self.write_line(bytes).await
     }
 
-    /// Flush the internal buffer to the OS.
+    /// No-op flush kept for API compatibility.
     ///
-    /// `record_admit` and `record_result` flush automatically after each
-    /// write. This method is exposed for callers that need a guaranteed
-    /// flush at a specific point (e.g. before process exit).
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the flush fails.
+    /// `record_admit`, `record_result`, and `record_scrubbed` all sync to
+    /// disk before returning, so there is no in-memory buffer to flush.
     pub async fn flush(&self) -> std::io::Result<()> {
-        self.writer.lock().await.flush().await
+        Ok(())
     }
 
     // ─── private ─────────────────────────────────────────────────────────────
 
-    /// Serialize `value` to JSONL bytes (with trailing `\n`) synchronously,
-    /// then write + flush under the async mutex.
-    ///
-    /// Serialization happens before the `.await` point so the future holds
-    /// only `Vec<u8>` across the await, which is `Send`.
-    async fn write_line(&self, bytes: Vec<u8>) -> std::io::Result<()> {
-        let mut guard = self.writer.lock().await;
-        guard.write_all(&bytes).await?;
-        guard.flush().await
-    }
-
+    /// Serialize `value` to JSONL bytes with a trailing newline.
     fn serialize_line(value: &impl Serialize) -> std::io::Result<Vec<u8>> {
         let mut bytes = serde_json::to_vec(value)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
         bytes.push(b'\n');
         Ok(bytes)
+    }
+
+    /// Write `bytes` to the audit JSONL file while holding the per-file
+    /// advisory lock (`<path>.lock`) so that concurrent processes cannot
+    /// interleave partial records.
+    ///
+    /// The sequence is:
+    ///   1. acquire `<path>.lock` (blocking, via `fs2::FileExt::lock_exclusive`)
+    ///   2. open (or create) the target file in append mode
+    ///   3. write all bytes
+    ///   4. sync_data
+    ///   5. drop file handle (close)
+    ///   6. drop lock file handle (unlock)
+    async fn write_line(&self, bytes: Vec<u8>) -> std::io::Result<()> {
+        let path = self.path.clone();
+        tokio::task::spawn_blocking(move || {
+            // Ensure parent directory exists (in case it was removed after open).
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            // Acquire exclusive advisory lock for this file.
+            let _lock = crate::log_rotation::lock_jsonl(&path)?;
+            // Append under the lock.
+            let mut file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)?;
+            file.write_all(&bytes)?;
+            file.sync_data()
+        })
+        .await
+        .map_err(|e| std::io::Error::other(format!("tool audit write task failed: {e}")))?
     }
 }
 
@@ -356,8 +369,12 @@ mod tests {
         let log = ToolAuditLog::open(dir.path()).await.expect("open");
 
         assert_eq!(log.path(), dir.path().join(".roko/tool_audit.jsonl"));
-        // File is created eagerly (on open, not on first write).
-        assert!(log.path().exists(), "file should exist after open");
+        // The parent directory is created eagerly; the file itself is created
+        // lazily on the first write.
+        assert!(
+            log.path().parent().expect("parent dir").exists(),
+            "parent .roko dir should exist after open"
+        );
     }
 
     // ── 2 ──────────────────────────────────────────────────────────────────

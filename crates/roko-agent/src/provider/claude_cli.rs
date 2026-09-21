@@ -8,6 +8,7 @@ pub use stream::{
 use crate::Agent;
 use crate::ExecAgent;
 use crate::claude_cli_agent::{ClaudeCliAgent, build_settings_json};
+use crate::exec::CodexOperationPolicy;
 use crate::provider::current_safety_layer;
 use crate::provider::{
     AgentCreationError, AgentOptions, ProviderAdapter, ProviderError, configured_resource_limits,
@@ -100,6 +101,9 @@ impl ProviderAdapter for ClaudeCliAdapter {
         if !options.extra_args.is_empty() {
             agent = agent.with_extra_args(options.extra_args.clone());
         }
+        if let Some(max_turns) = options.max_turns {
+            agent = agent.with_max_turns(max_turns);
+        }
         for (key, value) in &options.env {
             agent = agent.with_env_var(key.clone(), value.clone());
         }
@@ -178,12 +182,58 @@ impl ProviderAdapter for CodexCliAdapter {
 
         args.push("-".to_string()); // Read prompt from stdin
 
-        let safety = current_safety_layer().unwrap_or_else(SafetyLayer::with_defaults);
+        let safety = options
+            .safety_layer
+            .clone()
+            .or_else(current_safety_layer)
+            .unwrap_or_else(|| {
+                // CodexCliAdapter requires an explicit SafetyLayer at agent construction time.
+                // No scoped layer was found in AgentOptions or the thread-local — this
+                // usually means the adapter is being called outside a `with_safety_layer`
+                // scope. The conservative `with_defaults` posture is applied. Production
+                // callers should pass a role-specific layer via `AgentOptions::safety_layer`.
+                tracing::warn!(
+                    command = command,
+                    "CodexCliAdapter: no safety layer in options or scope; \
+                 applying SafetyLayer::with_defaults — attach a role-scoped \
+                 layer via AgentOptions::safety_layer for explicit enforcement"
+                );
+                SafetyLayer::with_defaults()
+            });
+
+        // ── Operation policy broker (RG-2) ──────────────────────────────────
+        // Derive a CodexOperationPolicy from the AgentContract so that Codex
+        // built-in operations (command_execution, file_change) are screened
+        // against the configured deny/allow list.  The broker fires on the
+        // JSONL output stream, which is the only post-execution enforcement
+        // boundary available for a subprocess provider.
+        let operation_policy = options
+            .agent_contract
+            .as_ref()
+            .map(|contract| {
+                let policy = CodexOperationPolicy::from_contract(contract);
+                tracing::debug!(
+                    role = %contract.role,
+                    has_constraints = policy.has_constraints(),
+                    "CodexCliAdapter: derived operation policy from contract"
+                );
+                policy
+            })
+            .unwrap_or_else(|| {
+                // No contract — apply a permissive policy so the broker is
+                // present but does not block anything.  A future hardening pass
+                // could make this deny-all for untrusted callers.
+                tracing::debug!(
+                    "CodexCliAdapter: no agent contract; using permissive operation policy"
+                );
+                CodexOperationPolicy::allow_all()
+            });
 
         let mut agent = ExecAgent::new(command, args, safety)
             .with_timeout_ms(timeout_ms)
             .with_current_dir(&current_dir)
-            .with_extract_codex_jsonl(true);
+            .with_extract_codex_jsonl(true)
+            .with_codex_operation_policy(operation_policy);
 
         // Codex lacks --system-prompt; fold it into stdin prefix.
         if let Some(system_prompt) = &options.system_prompt {
@@ -369,6 +419,7 @@ printf '%s\n' '{{"type":"content_block_delta","delta":{{"text":"adapter-ok"}}}}'
             gemini_safety_settings: Vec::new(),
             cancel_token: None,
             tool_audit: None,
+            max_turns: None,
         };
         let model = claude_model();
 

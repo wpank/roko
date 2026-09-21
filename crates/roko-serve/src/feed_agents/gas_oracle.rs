@@ -1,7 +1,7 @@
 //! Gas price feed agent (#7).
 //!
 //! Derives a simple gas price EMA from recent block headers and publishes
-//! on `feed:chain:gas` every 5 seconds.
+//! on `feed.chain.gas` every 5 seconds.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -26,7 +26,7 @@ impl FeedAgent for GasOracleAgent {
     fn feeds(&self) -> Vec<FeedDescriptor> {
         vec![FeedDescriptor {
             feed_id: "chain-gas".into(),
-            topic: "feed:chain:gas".into(),
+            topic: "feed.chain.gas".into(),
             name: "Gas Price Oracle".into(),
             description: "EMA gas price derived from recent block headers".into(),
             kind: "derived".into(),
@@ -77,7 +77,7 @@ impl FeedAgent for GasOracleAgent {
                         ctx.publish_tick(
                             self.agent_id(),
                             "chain-gas",
-                            "feed:chain:gas",
+                            "feed.chain.gas",
                             payload,
                         );
                     }

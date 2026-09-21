@@ -191,12 +191,30 @@ impl ProviderAdapter for GeminiAdapter {
         let needs_native = model.supports_grounding || model.supports_code_execution;
 
         if needs_native {
+            let safety = options
+                .safety_layer
+                .clone()
+                .or_else(current_safety_layer)
+                .unwrap_or_else(|| {
+                    // GeminiNativeAgent requires an explicit SafetyLayer at construction time.
+                    // No scoped layer was found in AgentOptions or the thread-local — this
+                    // usually means the adapter is being called outside a `with_safety_layer`
+                    // scope. The conservative `with_defaults` posture is used. Production callers
+                    // should pass a role-specific layer via `AgentOptions::safety_layer`.
+                    tracing::warn!(
+                        model = %model.slug,
+                        "GeminiNativeAgent: no safety layer in options or scope; \
+                         applying SafetyLayer::with_defaults — attach a role-scoped \
+                         layer via AgentOptions::safety_layer for explicit enforcement"
+                    );
+                    SafetyLayer::with_defaults()
+                });
             Ok(Box::new(GeminiNativeAgent::new(
                 api_key,
                 base_url,
                 model.clone(),
                 &options,
-                current_safety_layer().unwrap_or_else(SafetyLayer::with_defaults),
+                safety,
             )))
         } else if model.supports_tools && model.tool_format == "gemini_native" {
             gemini_native_tool_loop_agent(provider, model, &options)

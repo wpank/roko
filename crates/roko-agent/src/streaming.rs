@@ -192,14 +192,25 @@ impl StreamJsonParser for ClaudeCliParser {
 ///
 /// Returns a [`StreamEvent`] ready for direct use with [`crate::tool_loop::collect_stream_to_response`]
 /// and the `stream_turn` API.
+///
+/// Uses [`roko_core::sse::extract_sse_data`] for consistent `data:` prefix
+/// stripping (RFC 8895: exactly one leading space stripped). `[DONE]` lines
+/// are handled here before the call to produce a `Done` event.
 #[must_use]
 pub fn parse_sse_line(line: &str) -> Option<StreamEvent> {
-    let line = line.strip_prefix("data:")?.trim_start();
-    if line == "[DONE]" {
+    // Strip "data:" prefix; return None for non-data: lines.
+    let rest = line.strip_prefix("data:")?;
+    // Strip exactly one leading space per RFC 8895 §9.2.6, matching the
+    // shared sse::extract_sse_data / strip_one_space behaviour.
+    let value = rest.strip_prefix(' ').unwrap_or(rest);
+
+    if value == "[DONE]" {
         return Some(StreamEvent::now(StreamEventKind::Done {
             finish_reason: "stop".to_string(),
         }));
     }
+
+    let line = value;
 
     let json: Value = serde_json::from_str(line).ok()?;
     let delta = json.pointer("/choices/0/delta").unwrap_or(&Value::Null);

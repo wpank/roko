@@ -23,8 +23,8 @@ use tracing::{debug, info, warn};
 
 use roko_core::agent::ResolvedModel;
 
-use super::cost::acp_routing_context;
 use super::cost::acp_role_for_mode;
+use super::cost::acp_routing_context;
 use super::protocol::{CASCADE_ROUTER_IO_LOCK, EXPERIMENT_STORE_IO_LOCK};
 
 #[derive(Clone)]
@@ -220,10 +220,12 @@ pub(crate) fn replace_experiment_section(
                 // Heading not present in the prompt -- fall back to append.
                 debug!(
                     section = section_name,
-                    heading,
-                    "experiment section heading not found in system prompt; appending"
+                    heading, "experiment section heading not found in system prompt; appending"
                 );
-                crate::knowledge::append_context(system_prompt, &render_experiment_context(assignment))
+                crate::knowledge::append_context(
+                    system_prompt,
+                    &render_experiment_context(assignment),
+                )
             }
         }
         None => {
@@ -269,49 +271,82 @@ pub(crate) fn record_acp_experiment_outcome(
     assignment: &AcpExperimentAssignment,
     success: bool,
 ) -> std::io::Result<()> {
-    let _guard = experiment_store_lock();
-    ExperimentStore::transaction(path, |store| {
-        if !store.record_outcome_for_experiment(
-            &assignment.experiment_id,
-            &assignment.variant_id,
-            success,
-        ) {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                format!(
-                    "experiment '{}' variant '{}' disappeared before outcome recording",
-                    assignment.experiment_id, assignment.variant_id
-                ),
-            ));
-        }
-        store.record_metric(
-            &assignment.experiment_id,
-            &assignment.variant_id,
-            if success { 1.0 } else { 0.0 },
-        );
-        Ok(())
-    })?;
-
-    // P1-21: Also settle via the canonical receipt protocol so durable
-    // assignment buckets reflect ACP outcomes.
-    if let Some(attempt_key) = assignment.attempt_key.as_ref() {
-        let settlement = if success {
-            AssignmentSettlement::Observed { success: true }
-        } else {
-            AssignmentSettlement::Observed { success: false }
-        };
-        if let Err(err) = ExperimentStore::settle_attempt(path, attempt_key, settlement) {
-            tracing::debug!(
-                error = %err,
-                "P1-21: ACP experiment receipt settlement failed (non-fatal)"
+    // P2-ACP-1: Experiment receipt parity with the runner.
+    //
+    // The graph engine runner uses `settle_attempt` as the sole stats writer:
+    // `settle_attempt_unlocked` calls `record_outcome_for_experiment` internally
+    // for every Dispatched assignment in the bucket.  Calling
+    // `record_outcome_for_experiment` here *and* then calling `settle_attempt`
+    // would double-count every trial when the canonical receipt protocol is
+    // active (i.e. `attempt_key` is Some).
+    //
+    // Decision matrix:
+    //
+    // | attempt_key | mark_dispatched? | settlement action       |
+    // |-------------|-----------------|-------------------------|
+    // | None        | n/a             | direct legacy fallback  |
+    // | Some        | succeeded       | settle_attempt (stats)  |
+    // | Some        | failed/skipped  | settle_attempt (Abandoned, no stats) |
+    //
+    // The last row intentionally matches the runner: if the experiment content
+    // was never durably dispatched to the provider, the result is discarded.
+    if assignment.attempt_key.is_none() {
+        // Legacy fallback: the prepare phase failed; directly update stats so
+        // outcomes are never silently lost when no receipt bucket exists.
+        let _guard = experiment_store_lock();
+        ExperimentStore::transaction(path, |store| {
+            if !store.record_outcome_for_experiment(
+                &assignment.experiment_id,
+                &assignment.variant_id,
+                success,
+            ) {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!(
+                        "experiment '{}' variant '{}' disappeared before outcome recording",
+                        assignment.experiment_id, assignment.variant_id
+                    ),
+                ));
+            }
+            store.record_metric(
+                &assignment.experiment_id,
+                &assignment.variant_id,
+                if success { 1.0 } else { 0.0 },
             );
-        }
+            Ok(())
+        })?;
+        return Ok(());
+    }
+
+    // Canonical receipt protocol: settle_attempt is the sole stats writer,
+    // matching the graph engine runner path exactly.
+    // attempt_key.is_none() was handled by the early-return above; this
+    // branch is only reached when attempt_key is Some.
+    let Some(attempt_key) = assignment.attempt_key.as_ref() else {
+        // Defensive: the early-return above should have caught this, but
+        // avoid a panic under any future refactor that changes the control flow.
+        tracing::warn!(
+            experiment_id = %assignment.experiment_id,
+            variant_id = %assignment.variant_id,
+            "record_acp_experiment_outcome: attempt_key unexpectedly None after is_none check (non-fatal)"
+        );
+        return Ok(());
+    };
+    let settlement = AssignmentSettlement::Observed { success };
+    if let Err(err) = ExperimentStore::settle_attempt(path, attempt_key, settlement) {
+        tracing::debug!(
+            error = %err,
+            "P2-ACP-1: ACP experiment receipt settlement failed (non-fatal)"
+        );
     }
 
     Ok(())
 }
 
-pub(crate) fn cascade_router_model_slugs(roko_config: &RokoConfig, resolved_slug: &str) -> Vec<String> {
+pub(crate) fn cascade_router_model_slugs(
+    roko_config: &RokoConfig,
+    resolved_slug: &str,
+) -> Vec<String> {
     let mut model_slugs = roko_config.models.keys().cloned().collect::<Vec<_>>();
     if model_slugs.is_empty() {
         model_slugs.push(resolved_slug.to_owned());
@@ -320,7 +355,10 @@ pub(crate) fn cascade_router_model_slugs(roko_config: &RokoConfig, resolved_slug
     model_slugs
 }
 
-pub(crate) fn acp_model_providers(roko_config: &RokoConfig, model_keys: &[String]) -> HashMap<String, String> {
+pub(crate) fn acp_model_providers(
+    roko_config: &RokoConfig,
+    model_keys: &[String],
+) -> HashMap<String, String> {
     let models = roko_config.effective_models();
     model_keys
         .iter()
@@ -594,9 +632,12 @@ pub(crate) fn mark_acp_experiment_dispatched(
         .collect();
 
     let _guard = experiment_store_lock();
-    if let Err(err) =
-        ExperimentStore::mark_attempt_dispatched(experiment_path, attempt_key, prompt_hash, &included_ids)
-    {
+    if let Err(err) = ExperimentStore::mark_attempt_dispatched(
+        experiment_path,
+        attempt_key,
+        prompt_hash,
+        &included_ids,
+    ) {
         debug!(
             experiment_id = %assignment.experiment_id,
             variant_id = %assignment.variant_id,
@@ -605,4 +646,3 @@ pub(crate) fn mark_acp_experiment_dispatched(
         );
     }
 }
-

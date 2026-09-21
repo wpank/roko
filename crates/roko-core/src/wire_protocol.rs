@@ -419,7 +419,7 @@ mod tests {
         let mut invalid_publisher = WireEnvelope {
             seq: 1,
             ts: 1,
-            room: "room:a".to_owned(),
+            room: "room.a".to_owned(),
             msg_type: "heartbeat".to_owned(),
             payload: Value::Null,
             publisher_id: Some(" ".to_owned()),

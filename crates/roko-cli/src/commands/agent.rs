@@ -41,6 +41,26 @@ pub(crate) async fn cmd_agent(cli: &Cli, cmd: AgentCmd) -> Result<i32> {
         _ => None,
     };
 
+    // P2-FLG-1: Propagate the global --json flag into per-subcommand json fields
+    // so that `roko --json agent list` is equivalent to `roko agent list --json`.
+    let cmd = if cli.json {
+        match cmd {
+            AgentCmd::List { workdir, name, .. } => AgentCmd::List {
+                workdir,
+                json: true,
+                name,
+            },
+            AgentCmd::Status { name, workdir, .. } => AgentCmd::Status {
+                name,
+                workdir,
+                json: true,
+            },
+            other => other,
+        }
+    } else {
+        cmd
+    };
+
     agent_serve::run(cmd, overrides.as_ref()).await?;
     Ok(EXIT_SUCCESS)
 }

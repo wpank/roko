@@ -219,9 +219,8 @@ pub(crate) fn apply_model_switch(
             let Some(agent_session) = session.agent_session.as_mut() else {
                 return Err(ModelSwitchError::new("ChatAgentSession unavailable"));
             };
-            let next_selection =
-                resolve_model_selection_for_workdir(&agent_session.workdir, arg)
-                    .map_err(|err| ModelSwitchError::new(err.to_string()))?;
+            let next_selection = resolve_model_selection_for_workdir(&agent_session.workdir, arg)
+                .map_err(|err| ModelSwitchError::new(err.to_string()))?;
             agent_session.model = next_selection.effective_model_key.clone();
             agent_session.model_selection = next_selection.clone();
             Ok(next_selection.effective_model_key)

@@ -47,7 +47,7 @@ domain_context = "This is for the HTTP API layer in roko-serve"
 [[nodes]]
 id = "agent_implement"
 name = "Implementation Agent"
-cell_type = "agent"
+cell_type = "claude-agent"
 
 [nodes.config]
 model = "claude-sonnet-4-20250514"
@@ -60,19 +60,17 @@ temperature = 0.3
 [[nodes]]
 id = "compile_gate"
 name = "Compilation Check"
-cell_type = "gate"
+cell_type = "gate.compile"
 
 [nodes.config]
-gate_type = "compile"
 command = "cargo check --workspace"
 
 [[nodes]]
 id = "test_gate"
 name = "Test Suite"
-cell_type = "gate"
+cell_type = "gate.test"
 
 [nodes.config]
-gate_type = "test"
 command = "cargo test --workspace"
 
 [[nodes]]
@@ -104,7 +102,7 @@ Please fix the issues and try again.
 [[nodes]]
 id = "retry_agent"
 name = "Retry Agent"
-cell_type = "agent"
+cell_type = "claude-agent"
 
 [nodes.config]
 model = "claude-sonnet-4-20250514"

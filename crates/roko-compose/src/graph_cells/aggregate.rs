@@ -870,10 +870,7 @@ mod tests {
         assert!(safety_pos < knowledge_pos, "safety before knowledge");
         // Knowledge and code_index are in the same aggregate group (KnowledgeCodeContext).
         assert!(safety_pos < code_index_pos, "safety before code_index");
-        assert!(
-            code_index_pos < episodes_pos,
-            "code_index before episodes"
-        );
+        assert!(code_index_pos < episodes_pos, "code_index before episodes");
         assert!(episodes_pos < playbook_pos, "episodes before playbook");
         assert!(playbook_pos < task_pos, "playbook before task");
         assert!(task_pos < modulation_pos, "task before modulation");

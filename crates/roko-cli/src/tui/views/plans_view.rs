@@ -12,6 +12,7 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table, Wrap};
+use std::collections::{HashMap, HashSet};
 
 use super::ViewState;
 use crate::tui::dashboard::{DashboardData, Theme};
@@ -19,6 +20,145 @@ use crate::tui::empty_state::render_pane_empty_compact;
 use crate::tui::input::FocusZone;
 use crate::tui::state::{AgentStatus, PlanEntry, TaskEntry, TaskStatus, TuiState};
 use crate::tui::util::truncate_middle;
+
+// ---------------------------------------------------------------------------
+// Task dependency tree (F2 right panel, P1-TUI-G3)
+// ---------------------------------------------------------------------------
+
+/// Flattened entry produced by the dependency-tree DFS.
+struct TaskTreeRow<'a> {
+    task: &'a TaskEntry,
+    /// Tree depth (0 = root task with no parents in this plan).
+    depth: usize,
+    /// `connector[i]` is true when the ancestor at depth i was the last child
+    /// of its parent — controls whether we draw │ or space at that column.
+    connector: Vec<bool>,
+}
+
+/// Build a topological dependency tree from the plan's task list.
+///
+/// Returns tasks in DFS pre-order (parent before children).  Tasks whose
+/// `depends_on` entries are absent from the plan are treated as roots.
+/// Falls back to flat order (depth=0) when no dependencies are declared.
+fn build_task_dep_tree<'a>(tasks: &'a [TaskEntry]) -> Vec<TaskTreeRow<'a>> {
+    let has_deps = tasks.iter().any(|t| !t.depends_on.is_empty());
+    if !has_deps {
+        return tasks
+            .iter()
+            .map(|t| TaskTreeRow {
+                task: t,
+                depth: 0,
+                connector: vec![],
+            })
+            .collect();
+    }
+
+    let id_to_idx: HashMap<&str, usize> = tasks
+        .iter()
+        .enumerate()
+        .map(|(i, t)| (t.id.as_str(), i))
+        .collect();
+
+    // children[parent_idx] = [child_idx, ...]
+    let mut children: HashMap<usize, Vec<usize>> = HashMap::new();
+    let mut has_parent: HashSet<usize> = HashSet::new();
+    for (child_idx, task) in tasks.iter().enumerate() {
+        for dep_id in &task.depends_on {
+            if let Some(&parent_idx) = id_to_idx.get(dep_id.as_str()) {
+                children.entry(parent_idx).or_default().push(child_idx);
+                has_parent.insert(child_idx);
+            }
+        }
+    }
+
+    let roots: Vec<usize> = (0..tasks.len())
+        .filter(|i| !has_parent.contains(i))
+        .collect();
+
+    let mut result: Vec<TaskTreeRow<'a>> = Vec::with_capacity(tasks.len());
+    let mut visited: HashSet<usize> = HashSet::new();
+
+    fn visit<'a>(
+        idx: usize,
+        depth: usize,
+        connector: Vec<bool>,
+        tasks: &'a [TaskEntry],
+        children: &HashMap<usize, Vec<usize>>,
+        visited: &mut HashSet<usize>,
+        result: &mut Vec<TaskTreeRow<'a>>,
+    ) {
+        if visited.contains(&idx) {
+            return;
+        }
+        visited.insert(idx);
+        result.push(TaskTreeRow {
+            task: &tasks[idx],
+            depth,
+            connector: connector.clone(),
+        });
+        let kids = children.get(&idx).map(|v| v.as_slice()).unwrap_or(&[]);
+        for (i, &kid_idx) in kids.iter().enumerate() {
+            let is_last = i + 1 == kids.len();
+            let mut kid_connector = connector.clone();
+            kid_connector.push(is_last);
+            visit(
+                kid_idx,
+                depth + 1,
+                kid_connector,
+                tasks,
+                children,
+                visited,
+                result,
+            );
+        }
+    }
+
+    for root_idx in roots {
+        visit(
+            root_idx,
+            0,
+            vec![],
+            tasks,
+            &children,
+            &mut visited,
+            &mut result,
+        );
+    }
+    // Append any tasks not reached (cycles / orphan refs) flat.
+    for (idx, task) in tasks.iter().enumerate() {
+        if !visited.contains(&idx) {
+            result.push(TaskTreeRow {
+                task,
+                depth: 0,
+                connector: vec![],
+            });
+        }
+    }
+    result
+}
+
+/// Build the tree-connector prefix for one `TaskTreeRow` (e.g. `"    ├── "`).
+fn task_tree_prefix(row: &TaskTreeRow<'_>) -> String {
+    if row.depth == 0 {
+        return String::new();
+    }
+    let mut prefix = String::new();
+    for depth_i in 0..row.depth.saturating_sub(1) {
+        let ancestor_is_last = row.connector.get(depth_i).copied().unwrap_or(true);
+        if ancestor_is_last {
+            prefix.push_str("    ");
+        } else {
+            prefix.push_str("\u{2502}   ");
+        }
+    }
+    let is_last = row.connector.last().copied().unwrap_or(true);
+    if is_last {
+        prefix.push_str("\u{2514}\u{2500}\u{2500} ");
+    } else {
+        prefix.push_str("\u{251C}\u{2500}\u{2500} ");
+    }
+    prefix
+}
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -1063,6 +1203,10 @@ fn render_plan_tasks(
         return;
     }
 
+    // Build the dependency tree; falls back to flat order when no deps exist.
+    let tree_rows = build_task_dep_tree(tasks);
+    let tree_len = tree_rows.len();
+
     // Use Paragraph-based rendering for scrollable task list.
     let visible_height = inner.height as usize;
     let header_lines = 1usize;
@@ -1071,11 +1215,11 @@ fn render_plan_tasks(
     // Compute scroll offset to keep selected task visible.
     let selected = view_state
         .secondary_selected
-        .min(task_count.saturating_sub(1));
-    let scroll_offset = if task_count > available_rows {
+        .min(tree_len.saturating_sub(1));
+    let scroll_offset = if tree_len > available_rows {
         selected
             .saturating_sub(available_rows / 2)
-            .min(task_count.saturating_sub(available_rows))
+            .min(tree_len.saturating_sub(available_rows))
     } else {
         0
     };
@@ -1084,34 +1228,37 @@ fn render_plan_tasks(
     let has_deps = tasks.iter().any(|t| !t.depends_on.is_empty());
     let mut lines: Vec<Line<'_>> = Vec::with_capacity(visible_height);
 
-    // Column header
-    let fourth_label = if has_deps { "deps" } else { "agent" };
+    // Column header — when showing deps as tree, omit the old "deps" column
+    // (the hierarchy itself conveys the dependency structure).
+    let header_agent_col = if has_deps { "dep-tree" } else { "agent" };
     lines.push(Line::from(vec![Span::styled(
         format!(
             " {:<3}  {:<title_w$} {:<8} {:<10} {:>8}",
             " ",
             "task",
             "status",
-            fourth_label,
+            header_agent_col,
             "cost",
             title_w = content_w.saturating_sub(38).max(8)
         ),
         theme.section_header(),
     )]));
 
-    for (i, task) in tasks
+    for (i, row) in tree_rows
         .iter()
         .enumerate()
         .skip(scroll_offset)
         .take(available_rows)
     {
+        let task = row.task;
         let (icon, icon_color) = task_status_icon(task, theme);
         let task_title = if task.name.is_empty() {
             task.id.as_str()
         } else {
             task.name.as_str()
         };
-        let is_selected = i == selected;
+        let global_idx = scroll_offset + i;
+        let is_selected = global_idx == selected;
         let bg = if is_selected {
             theme.selection_background
         } else {
@@ -1129,24 +1276,29 @@ fn render_plan_tasks(
             "\u{00b7}".to_string()
         };
 
-        // Fourth column: deps or agent
-        let fourth_col = if has_deps && !task.depends_on.is_empty() {
-            let dep_str = task
-                .depends_on
-                .iter()
-                .map(|d| d.split(':').last().unwrap_or(d).to_string())
-                .collect::<Vec<_>>()
-                .join(",");
-            (truncate(&dep_str, 10), theme.muted)
-        } else if let Some(agent) = &task.agent_id {
+        // Agent column (rightmost detail column).
+        let agent_col = if let Some(agent) = &task.agent_id {
             (truncate(agent, 10), theme.foreground)
         } else {
             ("-".to_string(), theme.muted)
         };
 
-        let title_budget = content_w.saturating_sub(38).max(8);
-        let spans = vec![
-            Span::styled(format!(" {icon} "), Style::default().fg(icon_color).bg(bg)),
+        // Tree-connector prefix: "    ├── " or "    └── " etc.
+        let prefix = task_tree_prefix(row);
+        let prefix_len = prefix.chars().count();
+
+        // Budget title column — prefix consumes some of the name width.
+        let title_budget = content_w.saturating_sub(38 + prefix_len).max(4);
+
+        let connector_style = Style::default().fg(theme.muted);
+        let mut spans: Vec<Span<'_>> = vec![Span::styled(
+            format!(" {icon} "),
+            Style::default().fg(icon_color).bg(bg),
+        )];
+        if !prefix.is_empty() {
+            spans.push(Span::styled(prefix, connector_style.bg(bg)));
+        }
+        spans.extend([
             Span::styled(
                 format!(
                     "{:<width$}",
@@ -1172,8 +1324,8 @@ fn render_plan_tasks(
                 .bg(bg),
             ),
             Span::styled(
-                format!(" {:<10}", fourth_col.0),
-                Style::default().fg(fourth_col.1).bg(bg),
+                format!(" {:<10}", agent_col.0),
+                Style::default().fg(agent_col.1).bg(bg),
             ),
             Span::styled(
                 format!(" {:>8}", cost),
@@ -1185,29 +1337,13 @@ fn render_plan_tasks(
                     })
                     .bg(bg),
             ),
-        ];
+        ]);
         lines.push(Line::from(spans));
-
-        // Show dependency details for selected task
-        if is_selected && !task.depends_on.is_empty() && available_rows > 2 {
-            let dep_label = task.depends_on.join(", ");
-            lines.push(Line::from(vec![
-                Span::styled("    ", Style::default().bg(bg)),
-                Span::styled(
-                    "\u{2514}\u{2500} deps: ",
-                    Style::default().fg(theme.muted).bg(bg),
-                ),
-                Span::styled(
-                    truncate(&dep_label, content_w.saturating_sub(14)),
-                    Style::default().fg(theme.muted).bg(bg),
-                ),
-            ]));
-        }
     }
 
     // Scroll indicator when tasks are clipped
-    if task_count > available_rows {
-        let remaining = task_count.saturating_sub(scroll_offset + available_rows);
+    if tree_len > available_rows {
+        let remaining = tree_len.saturating_sub(scroll_offset + available_rows);
         if remaining > 0 && lines.len() < visible_height {
             lines.push(Line::from(Span::styled(
                 format!("  \u{25be} {remaining} more"),
@@ -1220,15 +1356,8 @@ fn render_plan_tasks(
     frame.render_widget(paragraph, inner);
 
     // Scrollbar for task list
-    if task_count > available_rows {
-        render_scrollbar(
-            frame,
-            inner,
-            task_count,
-            available_rows,
-            scroll_offset,
-            theme,
-        );
+    if tree_len > available_rows {
+        render_scrollbar(frame, inner, tree_len, available_rows, scroll_offset, theme);
     }
 }
 
@@ -1439,6 +1568,8 @@ fn build_timing_lines(
 ) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     let tasks_done = plan.tasks_done;
+    let tasks_total = plan.tasks_total;
+    let tasks_remaining = tasks_total.saturating_sub(tasks_done);
 
     if plan.elapsed_secs > 0.0 {
         lines.push(Line::from(vec![
@@ -1453,6 +1584,21 @@ fn build_timing_lines(
             Span::styled(
                 format_duration_secs(plan.elapsed_secs / tasks_done as f64),
                 theme.value(),
+            ),
+        ]));
+    }
+
+    // ETA: proportional estimate from elapsed time and completed task ratio.
+    // Only shown when the plan is active (tasks remaining > 0) and we have
+    // enough data (at least one task done) to project forward.
+    if plan.elapsed_secs > 0.0 && tasks_done > 0 && tasks_remaining > 0 {
+        let per_task_secs = plan.elapsed_secs / tasks_done as f64;
+        let eta_secs = per_task_secs * tasks_remaining as f64;
+        lines.push(Line::from(vec![
+            Span::styled(" eta ", theme.label()),
+            Span::styled(
+                format_duration_secs(eta_secs),
+                Style::default().fg(theme.warning),
             ),
         ]));
     }

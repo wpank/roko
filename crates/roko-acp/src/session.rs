@@ -23,8 +23,9 @@ use uuid::Uuid;
 
 use crate::types::{
     ClientCapabilities, CommandInput, ConfigOption, ConfigOptionType, ConfigOptionValue,
-    McpServerConfig, ModeInfo, ModesInfo, SESSION_NOT_FOUND, SessionBudgetStatus, SessionInfo,
-    SessionListResult, SessionNewParams, SessionNewResult, SlashCommand,
+    McpServerConfig, ModeInfo, ModesInfo, ResolvedToolCapabilities, SESSION_NOT_FOUND,
+    SessionBudgetStatus, SessionInfo, SessionListResult, SessionNewParams, SessionNewResult,
+    SlashCommand,
 };
 use crate::workflow::WorkflowRun;
 
@@ -564,12 +565,29 @@ impl AcpSession {
         } else {
             Some(self.config_options.clone())
         };
+        // Compute the resolved tool capability flags so the client knows exactly
+        // which tool types are active for this session without needing to
+        // re-derive the server's intersection logic client-side.
+        let perm = crate::bridge_events::cost::derive_acp_tool_capabilities(
+            &self.config_state.agent_mode,
+            &self.client_capabilities,
+            !self.mcp_servers.is_empty(),
+            &self.always_allowed,
+        );
+        let resolved_tool_capabilities = ResolvedToolCapabilities {
+            read: perm.read,
+            write: perm.write,
+            exec: perm.exec,
+            git: perm.git,
+            network: perm.network,
+        };
         SessionNewResult {
             session_id: self.session_id.clone(),
             modes: Some(default_modes(&self.config_state.agent_mode)),
             config_options: options,
             warnings: self.warnings.clone(),
             budget_status: self.budget_status(),
+            resolved_tool_capabilities,
         }
     }
 
@@ -1977,8 +1995,20 @@ pub fn build_slash_commands(bare_mode: bool) -> Vec<SlashCommand> {
             None,
         ),
         slash_command(
+            "affect",
+            "Show current Daimon affect state (PAD vector, behavioral state, confidence)",
+            "knowledge",
+            None,
+        ),
+        slash_command(
             "dream",
             "Run dream consolidation cycle (NREM -> REM -> integration)",
+            "knowledge",
+            None,
+        ),
+        slash_command(
+            "dream-status",
+            "Show latest dream consolidation report (insights, knowledge written, playbooks)",
             "knowledge",
             None,
         ),

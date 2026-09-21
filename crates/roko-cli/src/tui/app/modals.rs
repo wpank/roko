@@ -15,7 +15,6 @@ impl App {
         });
     }
 
-
     pub(super) fn resolve_active_approval(&mut self, approved: bool) -> bool {
         if !matches!(
             self.tui_state.active_modal,
@@ -35,7 +34,6 @@ impl App {
         }
         true
     }
-
 
     pub(super) fn accept_approval_request(&mut self, request: ApprovalRequest) {
         let ApprovalRequest {
@@ -61,7 +59,6 @@ impl App {
         self.tui_state.input_mode = InputMode::Confirm;
         self.tui_state.active_modal = Some(ModalState::Approval { role, command });
     }
-
 
     pub(super) fn drain_approval_requests(&mut self) {
         let Some(mut rx) = self.approval_rx.take() else {
@@ -93,7 +90,6 @@ impl App {
         }
     }
 
-
     pub(super) fn resolve_confirm_action(&self, action: ConfirmAction) -> ConfirmAction {
         match action {
             ConfirmAction::DiagnosePlan(plan_id) if plan_id.is_empty() => {
@@ -122,6 +118,22 @@ impl App {
             }
             ConfirmAction::ResetSelectedPlan(plan_id) if plan_id.is_empty() => {
                 ConfirmAction::ResetSelectedPlan(self.selected_plan_id().unwrap_or_default())
+            }
+            // P3-TUI-4: fill in plan_id/task_id from the selected agent row
+            // when the key handler fires with empty fields.
+            ConfirmAction::CancelAgent { plan_id, task_id }
+                if plan_id.is_empty() || task_id.is_empty() =>
+            {
+                let selected = self
+                    .tui_state
+                    .agents
+                    .get(self.tui_state.selected_agent)
+                    .map(|a| (a.current_plan.clone(), a.current_task.clone()))
+                    .unwrap_or_default();
+                ConfirmAction::CancelAgent {
+                    plan_id: if plan_id.is_empty() { selected.0 } else { plan_id },
+                    task_id: if task_id.is_empty() { selected.1 } else { task_id },
+                }
             }
             other => other,
         }
@@ -182,6 +194,13 @@ impl App {
             ConfirmAction::ResetSelectedPlan(plan_id) => {
                 (ExecutionCommandKind::Cancel, Some(plan_id.clone()), None)
             }
+            // P3-TUI-4: skip the specific task, causing the graph engine to
+            // terminate the associated agent and mark the task skipped.
+            ConfirmAction::CancelAgent { plan_id, task_id } => (
+                ExecutionCommandKind::Skip,
+                Some(plan_id.clone()),
+                Some(task_id.clone()),
+            ),
             // Other confirm actions don't map to executor commands.
             _ => return false,
         };
@@ -194,6 +213,4 @@ impl App {
             false
         }
     }
-
-
 }

@@ -4348,8 +4348,9 @@ mod tests {
             .unwrap(),
         )
         .unwrap();
+        // The canonical signal file is signals.jsonl (Workspace::signals_path).
         std::fs::write(
-            roko_dir.join("engrams.jsonl"),
+            roko_dir.join("signals.jsonl"),
             format!(
                 "{}\n",
                 serde_json::json!({

@@ -23,6 +23,7 @@ use crate::ContextChunk;
 use crate::prompt::{AttentionBidder, CacheLayer, Placement, PromptSection, SectionPriority};
 use crate::symbol_resolver::SymbolResolver;
 use crate::task_brief::TaskBriefGenerator;
+use roko_core::config::RetrievalConfig;
 use roko_core::{Body, InclusionMode, Kind, OperatingFrequency, PromptPolicy, RoleProfile, Signal};
 use roko_learn::error_pattern_store::{ErrorPatternStore, FailurePatternQuery};
 use roko_learn::section_effect::{
@@ -1276,6 +1277,27 @@ impl Default for ContextBudgets {
 }
 
 impl ContextBudgets {
+    /// Build a `ContextBudgets` from a [`RetrievalConfig`], capping all tier
+    /// budgets to the per-role limit for `role`.
+    ///
+    /// The effective cap is `retrieval.effective_token_budget_for_role(role)`.
+    /// Each tier budget is clamped to `min(tier_default, role_cap)` so that a
+    /// role-specific retrieval limit is always respected without exceeding the
+    /// tier defaults.
+    ///
+    /// When `retrieval` has no per-role entry the global `token_budget` is used
+    /// as the cap.
+    #[must_use]
+    pub fn from_retrieval_config_for_role(retrieval: &RetrievalConfig, role: &str) -> Self {
+        let role_cap = retrieval.effective_token_budget_for_role(role);
+        let defaults = Self::default();
+        Self {
+            surgical: defaults.surgical.min(role_cap),
+            focused: defaults.focused.min(role_cap),
+            full: defaults.full.min(role_cap),
+        }
+    }
+
     /// Get the budget for a given tier.
     #[must_use]
     pub const fn for_tier(&self, tier: ContextTier) -> usize {
@@ -3478,5 +3500,50 @@ mod tests {
         assert_eq!(high.placement, Placement::End);
         assert_eq!(normal.placement, Placement::Middle);
         assert_eq!(low.placement, Placement::Middle);
+    }
+
+    // ── RAG-15: ContextBudgets::from_retrieval_config_for_role ────────────
+
+    #[test]
+    fn context_budgets_from_retrieval_config_no_role_overrides() {
+        // When no per-role overrides are set, all tier budgets are capped to
+        // the global token_budget (4000 default < tier defaults).
+        let retrieval = RetrievalConfig::default();
+        let budgets = ContextBudgets::from_retrieval_config_for_role(&retrieval, "implementer");
+        // Surgical default = 4000, global cap = 4000 → min(4000, 4000) = 4000.
+        assert_eq!(budgets.surgical, 4_000);
+        // Focused default = 12000 → min(12000, 4000) = 4000.
+        assert_eq!(budgets.focused, 4_000);
+        // Full default = 24000 → min(24000, 4000) = 4000.
+        assert_eq!(budgets.full, 4_000);
+    }
+
+    #[test]
+    fn context_budgets_from_retrieval_config_with_role_override() {
+        let mut retrieval = RetrievalConfig::default();
+        retrieval
+            .role_token_budgets
+            .insert("researcher".to_string(), 15_000);
+
+        let budgets = ContextBudgets::from_retrieval_config_for_role(&retrieval, "researcher");
+        // Surgical default = 4000 → min(4000, 15000) = 4000.
+        assert_eq!(budgets.surgical, 4_000);
+        // Focused default = 12000 → min(12000, 15000) = 12000.
+        assert_eq!(budgets.focused, 12_000);
+        // Full default = 24000 → min(24000, 15000) = 15000.
+        assert_eq!(budgets.full, 15_000);
+    }
+
+    #[test]
+    fn context_budgets_from_retrieval_config_unknown_role_uses_global() {
+        let mut retrieval = RetrievalConfig::default();
+        // Set a high global budget so it doesn't cap tier defaults.
+        retrieval.token_budget = 100_000;
+
+        let budgets = ContextBudgets::from_retrieval_config_for_role(&retrieval, "unknown-role");
+        // No per-role override; global cap = 100000 > all tier defaults.
+        assert_eq!(budgets.surgical, ContextTier::Surgical.default_token_budget());
+        assert_eq!(budgets.focused, ContextTier::Focused.default_token_budget());
+        assert_eq!(budgets.full, ContextTier::Full.default_token_budget());
     }
 }

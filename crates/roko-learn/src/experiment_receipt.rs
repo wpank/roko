@@ -1,6 +1,6 @@
 //! `ExperimentReceipt` — crash-durable prompt-experiment receipt for all surfaces.
 //!
-//! The runner (event_loop.rs) already uses the three-phase protocol:
+//! The graph engine runner already uses the three-phase protocol:
 //!   1. `prepare_attempt_assignments` — idempotent assignment preparation
 //!   2. `mark_attempt_dispatched` — record exact prompt hash before provider launch
 //!   3. `settle_attempt` — record terminal outcome after durable terminal fact

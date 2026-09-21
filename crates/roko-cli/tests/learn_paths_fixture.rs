@@ -118,6 +118,7 @@ fn write_learn_fixture(workdir: &Path) {
     efficiency_b.was_warm_start = false;
     efficiency_b.iteration = 2;
     efficiency_b.gate_passed = Some(false);
+    efficiency_b.outcome = "gate_failure".into();
     efficiency_b.model_used = String::new();
     efficiency_b.timestamp = efficiency_last.to_rfc3339();
 

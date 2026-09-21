@@ -412,7 +412,16 @@ fn complete_jsonl_lines(contents: &str) -> Vec<&str> {
         .collect()
 }
 
-fn lock_jsonl(path: &Path) -> std::io::Result<std::fs::File> {
+/// Acquire an exclusive per-file advisory lock for a JSONL path.
+///
+/// Opens (or creates) `<path>.lock` and blocks until the lock is obtained.
+/// The returned file handle must be kept alive for the duration of the
+/// critical section; dropping it releases the lock.
+///
+/// This function is intentionally synchronous and blocking — it is designed
+/// to be called from `spawn_blocking` or other non-async contexts.  Callers
+/// that need async locking should wrap this in `tokio::task::spawn_blocking`.
+pub fn lock_jsonl(path: &Path) -> std::io::Result<std::fs::File> {
     let lock_path = path.with_extension("jsonl.lock");
     let lock = std::fs::OpenOptions::new()
         .create(true)

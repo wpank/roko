@@ -1,5 +1,10 @@
 //! Payload contracts carried by Roko's MCP, A2A, and x402 exoskeleton.
 
+// MCP cell payload/response types and A2A AgentCardV2 are protocol contracts
+// used by the exoskeleton layer; production callers are in roko-serve which
+// does not yet re-import these from roko-core directly.
+#![allow(dead_code)]
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;

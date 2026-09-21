@@ -229,7 +229,7 @@ impl BlockWatcher {
                     .collect::<Vec<_>>();
                 if !orphaned_block_hashes.is_empty() {
                     publish(
-                        "chain:reorg",
+                        "chain.reorg",
                         serde_json::to_value(ChainReorgInfo {
                             orphaned_block_hashes,
                         })
@@ -361,7 +361,7 @@ impl BlockWatcher {
         };
 
         publish(
-            "chain:block",
+            "chain.block",
             serde_json::to_value(&block_info).unwrap_or_default(),
         );
         Some(block_info)
@@ -435,7 +435,7 @@ impl BlockWatcher {
                             success: true,
                         };
                         publish(
-                            "chain:tx",
+                            "chain.tx",
                             serde_json::to_value(&tx_info).unwrap_or_default(),
                         );
                         count += 1;
@@ -498,7 +498,7 @@ impl BlockWatcher {
         };
 
         publish(
-            "chain:tx",
+            "chain.tx",
             serde_json::to_value(&tx_info).unwrap_or_default(),
         );
 
@@ -520,7 +520,7 @@ impl BlockWatcher {
                 topics,
                 &log.inner.data.data,
             );
-            publish("chain:log", serde_json::to_value(&raw).unwrap_or_default());
+            publish("chain.log", serde_json::to_value(&raw).unwrap_or_default());
             let (event_name, decoded) = decode_event(&topic0, topics, &log.inner.data.data);
 
             let event_info = ContractEventInfo {
@@ -534,7 +534,7 @@ impl BlockWatcher {
             };
 
             publish(
-                "chain:event",
+                "chain.event",
                 serde_json::to_value(&event_info).unwrap_or_default(),
             );
         }

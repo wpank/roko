@@ -38,9 +38,9 @@ pub use backup::compute_merkle_root;
 pub use memory_index::{MemoryHit, MemoryIndex};
 pub use scoring::is_dead;
 pub use types::{
-    AntiKnowledgeConflict, BackupHeader, ContextAssemblyWeights, DEFAULT_GC_MIN_CONFIDENCE,
-    DEATH_THRESHOLD, ExportBundle, ExportFilter, FalsifierOutcome, ImportOptions, ImportResult,
-    KNOWLEDGE_BACKUP_VERSION, KnowledgeConfirmationRecord, KnowledgeQueryBreakdown,
+    AntiKnowledgeConflict, BackupHeader, ContextAssemblyWeights, DEATH_THRESHOLD,
+    DEFAULT_GC_MIN_CONFIDENCE, ExportBundle, ExportFilter, FalsifierOutcome, ImportOptions,
+    ImportResult, KNOWLEDGE_BACKUP_VERSION, KnowledgeConfirmationRecord, KnowledgeQueryBreakdown,
     KnowledgeQueryHit, KnowledgeSimilarityHit, KnowledgeStats, QUERY_SCORE_FLOOR,
     RESURRECTION_CONFIDENCE,
 };

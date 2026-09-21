@@ -553,7 +553,10 @@ impl AgentDispatcher for TemplateAgentDispatcher {
             Some(&signal),
             experiment_variant
                 .as_ref()
-                .map(|(_, content)| content.as_str()),
+                .map(|(_, section_name, content)| TemplateExperimentVariant {
+                    section_name: section_name.as_str(),
+                    content: content.as_str(),
+                }),
         );
         // 4B.06: Inject cross-repo context so the agent knows about
         // the multi-repo setup.
@@ -579,7 +582,7 @@ impl AgentDispatcher for TemplateAgentDispatcher {
         )?;
         let ctx = dispatch_context(&template, &signal);
         let mut result = agent.run(&signal, &ctx).await;
-        if let Some((variant_id, _)) = experiment_variant {
+        if let Some((variant_id, _, _)) = experiment_variant {
             result
                 .output
                 .tags
@@ -1625,27 +1628,17 @@ pub async fn dispatch_loop(state: Arc<AppState>, dispatcher: Arc<dyn AgentDispat
         // dispatch continues below for any additional template-driven work.
         match signal.kind.as_str() {
             roko_core::signal_kinds::GITHUB_PLAN_EXECUTION_REQUESTED => {
-                let plan_id = signal
-                    .tags
-                    .get("plan_id")
-                    .cloned()
-                    .unwrap_or_default();
+                let plan_id = signal.tags.get("plan_id").cloned().unwrap_or_default();
                 info!(
                     plan_id = %plan_id,
                     "graduated trigger: plan execution requested"
                 );
-                state
-                    .event_bus
-                    .publish(ServerEvent::PlanStarted {
-                        plan_id: plan_id.clone(),
-                    });
+                state.event_bus.publish(ServerEvent::PlanStarted {
+                    plan_id: plan_id.clone(),
+                });
             }
             roko_core::signal_kinds::GITHUB_REPLAN_REQUESTED => {
-                let plan_id = signal
-                    .tags
-                    .get("plan_id")
-                    .cloned()
-                    .unwrap_or_default();
+                let plan_id = signal.tags.get("plan_id").cloned().unwrap_or_default();
                 // P1-26: Extract the review body from the graduated signal's
                 // body so it can be surfaced in replan context. The review
                 // body is stored at `body.context.review.body` by the
@@ -1666,11 +1659,7 @@ pub async fn dispatch_loop(state: Arc<AppState>, dispatcher: Arc<dyn AgentDispat
                 );
             }
             roko_core::signal_kinds::GITHUB_CI_FAILED => {
-                let plan_id = signal
-                    .tags
-                    .get("plan_id")
-                    .cloned()
-                    .unwrap_or_default();
+                let plan_id = signal.tags.get("plan_id").cloned().unwrap_or_default();
                 info!(
                     plan_id = %plan_id,
                     "graduated trigger: CI failure recorded"
@@ -2052,6 +2041,7 @@ fn build_agent(
             gemini_safety_settings: Vec::new(),
             cancel_token: None,
             tool_audit: None,
+            max_turns: None,
         },
     )
     .with_context(|| format!("create agent for template '{}'", template.name))
@@ -2173,10 +2163,18 @@ fn template_cascade_model_slugs(config: &RokoConfig, model_slug: &str) -> Vec<St
     model_slugs
 }
 
+/// One resolved experiment variant to inject into a template system prompt.
+struct TemplateExperimentVariant<'a> {
+    /// Canonical prompt section name (e.g. `"constraints"`, `"conventions"`).
+    section_name: &'a str,
+    /// Replacement content for that section.
+    content: &'a str,
+}
+
 fn build_template_system_prompt(
     template: &AgentTemplate,
     signal: Option<&Signal>,
-    experiment_variant: Option<&str>,
+    experiment_variant: Option<TemplateExperimentVariant<'_>>,
 ) -> String {
     let role_prompt = match signal {
         Some(signal) => {
@@ -2184,16 +2182,10 @@ fn build_template_system_prompt(
         }
         None => TemplateRegistry::render_prompt(template, &HashMap::new()),
     };
+    // Append format instructions before experiment replacement so that the
+    // final assembled string is a complete prompt that section replacement
+    // can navigate.
     let mut prompt = role_prompt;
-    if let Some(variant) = experiment_variant
-        && !variant.trim().is_empty()
-    {
-        if !prompt.is_empty() {
-            prompt.push_str("\n\n");
-        }
-        prompt.push_str("## Experiment Variant\n\n");
-        prompt.push_str(variant);
-    }
     if let Some(format_instructions) = output_format_instructions(&template.output_format) {
         if !format_instructions.is_empty() {
             if !prompt.is_empty() {
@@ -2202,7 +2194,77 @@ fn build_template_system_prompt(
             prompt.push_str(&format_instructions);
         }
     }
-    SystemPromptBuilder::new(prompt).build()
+    let prompt = SystemPromptBuilder::new(prompt).build();
+
+    // P1-ACP-2: Use canonical section replacement instead of appending a new
+    // "## Experiment Variant" heading so that serve template dispatches match
+    // the runner's replacement + receipt protocol.
+    if let Some(variant) = experiment_variant
+        && !variant.content.trim().is_empty()
+    {
+        let section_name = variant.section_name;
+        let variant_content = variant.content.trim();
+        match roko_compose::section_heading_for_name(section_name) {
+            Some(heading) => {
+                if let Some(heading_start) = prompt.find(heading) {
+                    let content_start = heading_start + heading.len();
+                    let rest = &prompt[content_start..];
+                    let next_heading_offset = serve_find_next_heading(rest);
+                    let content_end = content_start + next_heading_offset;
+                    let mut result = String::with_capacity(prompt.len());
+                    result.push_str(&prompt[..content_start]);
+                    result.push_str("\n\n");
+                    result.push_str(variant_content);
+                    result.push_str("\n\n");
+                    result.push_str(prompt[content_end..].trim_start());
+                    return result;
+                }
+                // Heading not present — fall back to append with a labeled section.
+                tracing::debug!(
+                    section = section_name,
+                    heading,
+                    "serve experiment section heading not found; appending"
+                );
+                let mut result = prompt;
+                if !result.is_empty() {
+                    result.push_str("\n\n");
+                }
+                result.push_str("## Experiment Variant\n\n");
+                result.push_str(variant_content);
+                result
+            }
+            None => {
+                // Heading-less section (e.g. `role_identity`): replace content
+                // before the first heading, or replace the whole prompt.
+                let first_heading = serve_find_next_heading(&prompt);
+                if first_heading > 0 {
+                    let mut result = String::with_capacity(prompt.len());
+                    result.push_str(variant_content);
+                    result.push_str("\n\n");
+                    result.push_str(prompt[first_heading..].trim_start());
+                    result
+                } else {
+                    variant_content.to_string()
+                }
+            }
+        }
+    } else {
+        prompt
+    }
+}
+
+/// Find the byte offset of the next markdown `## ` heading in `text`.
+/// Returns `text.len()` if no heading is found.
+fn serve_find_next_heading(text: &str) -> usize {
+    let trimmed = text.trim_start_matches('\n');
+    let skip = text.len() - trimmed.len();
+    if trimmed.starts_with("## ") {
+        return skip;
+    }
+    text[skip..]
+        .find("\n## ")
+        .map(|pos| skip + pos + 1)
+        .unwrap_or(text.len())
 }
 
 /// Build a cross-repo context section for the system prompt.
@@ -2261,13 +2323,18 @@ fn build_allowed_tools_csv(template: &AgentTemplate) -> String {
     names.join(",")
 }
 
+/// Load an experiment variant for a template, returning the variant id, the
+/// canonical section name, and the variant content.
+///
+/// Returning the section name allows `build_template_system_prompt` to
+/// replace the named section rather than appending a new heading.
 fn load_template_experiment_variant(
     workdir: &Path,
     experiment_name: &str,
-) -> Option<(String, String)> {
+) -> Option<(String, String, String)> {
     let path = workdir.join(".roko").join("learn").join("experiments.json");
     let store = ExperimentStore::load_or_new(&path);
-    store.assign_variant(experiment_name)
+    store.assign_variant_with_section(experiment_name)
 }
 
 fn default_allowed_tools_for_role(role_name: &str) -> Vec<String> {
@@ -3045,6 +3112,86 @@ filter = { path = "src/*.rs" }
         let prompt = build_template_system_prompt(&template, None, None);
         assert!(prompt.contains("You are the template role."));
         assert!(prompt.contains("Output valid JSON only"));
+    }
+
+    #[test]
+    fn build_template_system_prompt_replaces_named_section_not_appends() {
+        // P1-ACP-2: Serve must replace the canonical section in the prompt
+        // rather than appending a new "## Experiment Variant" heading.
+        // Use "conventions" which has a known heading "## Project Conventions".
+        let template = AgentTemplate {
+            name: "section-replace-template".into(),
+            description: "Test template".into(),
+            model: "claude-test".into(),
+            role: "implementer".into(),
+            system_prompt: "Role preamble.\n\n## Project Conventions\n\nOriginal conventions.\n\n## Other Section\n\nOther content."
+                .into(),
+            max_turns: 4,
+            output_format: crate::templates::TemplateOutputFormat::Markdown,
+            mcp_servers: Vec::new(),
+            allowed_tools: Vec::new(),
+            denied_tools: Vec::new(),
+            experiment: None,
+            provider: None,
+        };
+
+        let variant = TemplateExperimentVariant {
+            section_name: "conventions",
+            content: "Experiment conventions content.",
+        };
+        let prompt = build_template_system_prompt(&template, None, Some(variant));
+
+        // The experiment content must appear.
+        assert!(
+            prompt.contains("Experiment conventions content."),
+            "prompt should contain experiment content: {prompt}"
+        );
+        // The original conventions section must be replaced, not preserved.
+        assert!(
+            !prompt.contains("Original conventions."),
+            "prompt should not contain the original section: {prompt}"
+        );
+        // The other section should remain.
+        assert!(
+            prompt.contains("Other content."),
+            "prompt should retain other sections: {prompt}"
+        );
+        // There must not be a raw "Experiment Variant" heading — the section
+        // was replaced in-place, not appended.
+        assert!(
+            !prompt.contains("## Experiment Variant"),
+            "prompt must not contain append-style heading: {prompt}"
+        );
+    }
+
+    #[test]
+    fn build_template_system_prompt_appends_when_section_not_found() {
+        // When the named section is not present in the prompt, the serve path
+        // falls back to appending the content under "## Experiment Variant".
+        let template = AgentTemplate {
+            name: "fallback-template".into(),
+            description: "Test template".into(),
+            model: "claude-test".into(),
+            role: "implementer".into(),
+            system_prompt: "A prompt without a conventions section.".into(),
+            max_turns: 4,
+            output_format: crate::templates::TemplateOutputFormat::Markdown,
+            mcp_servers: Vec::new(),
+            allowed_tools: Vec::new(),
+            denied_tools: Vec::new(),
+            experiment: None,
+            provider: None,
+        };
+
+        let variant = TemplateExperimentVariant {
+            section_name: "conventions",
+            content: "Fallback content.",
+        };
+        let prompt = build_template_system_prompt(&template, None, Some(variant));
+        assert!(
+            prompt.contains("Fallback content."),
+            "fallback prompt should contain experiment content: {prompt}"
+        );
     }
 
     #[test]

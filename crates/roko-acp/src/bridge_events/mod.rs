@@ -22,39 +22,39 @@ mod tests;
 
 // ── Re-exports (preserve public API) ────────────────────────────────
 
-pub use protocol::{BridgeEventsError, CognitiveEvent, PermissionReplyChannel, PermissionRequestPayload, Result, StreamResult};
-pub use cost::calculate_cost_for_model_slug;
-pub use permissions::request_permission;
 pub(crate) use context::resolve_context_items;
-pub(crate) use helpers::{
-    map_event_to_update, dispatch_failure_update,
-    emit_dispatch_failure, send_cognitive_event, send_session_update,
-    workflow_template_name,
-};
-pub(crate) use cost::{
-    acp_dispatch_succeeded, acp_efficiency_event, acp_routing_context,
-    append_acp_episode,
-    derive_acp_tool_capabilities, emit_acp_efficiency_event, truncate_assistant_history, truncate_to_title,
-};
-pub(crate) use experiments::{
-    AcpCascadeRequest, applicable_acp_experiment,
-    assign_acp_experiment, cascade_router_model_slugs, cascade_select_model,
-    mark_acp_experiment_dispatched, record_acp_experiment_outcome,
-    record_cascade_observation, render_experiment_context, replace_experiment_section,
-    resolve_acp_dispatch_model,
-};
-pub(crate) use dispatch::{
-    run_anthropic_cognitive_task, run_openai_compat_cognitive_task,
-};
-pub(crate) use tools::write_session_mcp_config;
-pub(crate) use provenance::{build_provenance, emit_knowledge_card, emit_provenance_card, render_provenance_card};
-pub(crate) use permissions::request_permission_for_event;
-pub(crate) use slash_commands::run_slash_command;
 pub(crate) use context::{
-    extract_prompt_text,
-    extract_resource_uris, inject_image_parts, model_input_blocks_from_prompt,
+    extract_prompt_text, extract_resource_uris, inject_image_parts, model_input_blocks_from_prompt,
     model_input_messages_from_wire, read_file_context,
 };
+pub use cost::calculate_cost_for_model_slug;
+pub(crate) use cost::{
+    acp_dispatch_succeeded, acp_efficiency_event, acp_routing_context, append_acp_episode,
+    derive_acp_tool_capabilities, emit_acp_efficiency_event, truncate_assistant_history,
+    truncate_to_title,
+};
+pub(crate) use dispatch::{run_anthropic_cognitive_task, run_openai_compat_cognitive_task};
+pub(crate) use experiments::{
+    AcpCascadeRequest, applicable_acp_experiment, assign_acp_experiment,
+    cascade_router_model_slugs, cascade_select_model, mark_acp_experiment_dispatched,
+    record_acp_experiment_outcome, record_cascade_observation, render_experiment_context,
+    replace_experiment_section, resolve_acp_dispatch_model,
+};
+pub(crate) use helpers::{
+    dispatch_failure_update, emit_dispatch_failure, map_event_to_update, send_cognitive_event,
+    send_session_update, workflow_template_name,
+};
+pub use permissions::request_permission;
+pub(crate) use permissions::request_permission_for_event;
+pub use protocol::{
+    BridgeEventsError, CognitiveEvent, PermissionReplyChannel, PermissionRequestPayload, Result,
+    StreamResult,
+};
+pub(crate) use provenance::{
+    build_provenance, emit_knowledge_card, emit_provenance_card, render_provenance_card,
+};
+pub(crate) use slash_commands::run_slash_command;
+pub(crate) use tools::write_session_mcp_config;
 
 // ── Imports for this module ─────────────────────────────────────────
 
@@ -67,9 +67,7 @@ use std::{
 use roko_agent::safety::{DispatchSafetyContext, SafetyLayer, ViolationSeverity};
 use roko_core::agent::{ProviderKind, resolve_model};
 use roko_core::config::schema::{ModelProfile, RokoConfig};
-use roko_core::foundation::{
-    MessageRole, ModelInputMessage, validate_model_input_messages,
-};
+use roko_core::foundation::{MessageRole, ModelInputMessage, validate_model_input_messages};
 use tokio::{
     io::{AsyncRead, AsyncWrite},
     sync::mpsc,
@@ -83,18 +81,16 @@ use crate::{
     session::{AcpSession, CancelToken},
     transport::{StdioTransport, TransportResult},
     types::{
-        ContentBlock, CostInfo,
-        JsonRpcMessage,
-        SessionCancelParams, SessionPromptParams, SessionPromptResult, SessionUpdate,
-        StopReason,
-        advertised_prompt_capabilities_for_model, unsupported_prompt_content,
+        ContentBlock, CostInfo, JsonRpcMessage, SessionCancelParams, SessionPromptParams,
+        SessionPromptResult, SessionUpdate, StopReason, advertised_prompt_capabilities_for_model,
+        unsupported_prompt_content,
     },
 };
 
 /// Knowledge-card + context helper module alias (used by slash_commands).
 pub(crate) mod knowledge_helpers {
-    pub(crate) use crate::knowledge::query_dispatch_knowledge;
     pub(crate) use super::provenance::emit_knowledge_card;
+    pub(crate) use crate::knowledge::query_dispatch_knowledge;
 }
 
 // ── Core entry points ───────────────────────────────────────────────
@@ -325,23 +321,17 @@ where
             accumulated_cost_usd: session.accumulated_cost_usd,
         });
     }
-    let provider_health = session
-        .provider_health_registry
-        .as_ref()
-        .ok_or_else(|| {
-            BridgeEventsError::Pipeline(anyhow::anyhow!(
-                "provider health registry not initialized before prompt"
-            ))
-        })?;
+    let provider_health = session.provider_health_registry.as_ref().ok_or_else(|| {
+        BridgeEventsError::Pipeline(anyhow::anyhow!(
+            "provider health registry not initialized before prompt"
+        ))
+    })?;
     let provider_health = Arc::clone(provider_health);
-    let provider_rate_limiter = session
-        .provider_rate_limiter
-        .as_ref()
-        .ok_or_else(|| {
-            BridgeEventsError::Pipeline(anyhow::anyhow!(
-                "provider rate limiter not initialized before prompt"
-            ))
-        })?;
+    let provider_rate_limiter = session.provider_rate_limiter.as_ref().ok_or_else(|| {
+        BridgeEventsError::Pipeline(anyhow::anyhow!(
+            "provider rate limiter not initialized before prompt"
+        ))
+    })?;
     let provider_rate_limiter = Arc::clone(provider_rate_limiter);
     let experiment_path = workdir.join(".roko").join("learn").join("experiments.json");
     let experiment_assignment = if is_slash_command {
@@ -588,6 +578,18 @@ where
         || prompt_text.clone(),
         |assignment| append_context(&prompt_text, &render_experiment_context(assignment)),
     );
+    // P1-ACP-2: For the pipeline/workflow path, complete the Prepared ->
+    // Dispatched lifecycle transition using the combined prompt text hash.
+    // The single-agent path does this inside the `should_resolve_context`
+    // branch above (where it also has the full system prompt available for
+    // section replacement). The pipeline path only has the user prompt, so
+    // the hash covers what it actually sends to the engine.
+    if pipeline_template.is_some()
+        && let Some(assignment) = experiment_assignment.as_ref()
+    {
+        let prompt_hash = roko_core::ContentHash::of(prompt_text_for_dispatch.as_bytes()).to_hex();
+        mark_acp_experiment_dispatched(&experiment_path, assignment, &prompt_hash);
+    }
     // The actual dispatched config key must drive provider construction,
     // episode/cost attribution, and the router observation arm.
     let model_key_for_logging = model_key_for_dispatch.clone();
@@ -602,6 +604,7 @@ where
     let session_mcp_servers = session.mcp_servers.clone();
     let session_mcp_config_path = session.mcp_config_path.clone();
     let session_tools_enabled = session.tools_enabled;
+    let session_agent_role = session.config_state.agent_mode.clone();
     let session_tool_capabilities = derive_acp_tool_capabilities(
         &session.config_state.agent_mode,
         &session.client_capabilities,
@@ -806,6 +809,7 @@ where
                     &session_effort,
                     session_tools_enabled,
                     session_tool_capabilities,
+                    &session_agent_role,
                     cancel_token,
                     event_sender,
                 )
@@ -827,6 +831,7 @@ where
                     &session_effort,
                     session_tools_enabled,
                     session_tool_capabilities,
+                    &session_agent_role,
                     cancel_token,
                     event_sender,
                 )

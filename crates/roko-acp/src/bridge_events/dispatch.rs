@@ -9,24 +9,24 @@ use std::{
 };
 
 use roko_agent::ModelCallService;
+use roko_agent::ReqwestPoster;
 use roko_agent::dispatcher::{HandlerResolver, ToolDispatcher};
 use roko_agent::rate_limit::ProviderRateLimiter;
 use roko_agent::tool_loop::backends::create_openai_compat_backend_with_limiter;
 use roko_agent::tool_loop::{StopReason as ToolLoopStopReason, ToolLoop};
 use roko_agent::translate::{OpenAiTranslator, StrictOpenAiTranslator, Translator};
-use roko_agent::ReqwestPoster;
 use roko_core::agent::{ProviderKind, ResolvedModel, resolve_model};
 use roko_core::config::DEFAULT_ACP_REQUEST_MS;
 use roko_core::config::schema::{ModelProfile, RokoConfig};
 use roko_core::defaults::DEFAULT_MAX_TOOL_ITERATIONS;
 use roko_core::extension::CamelTaintLevel;
 use roko_core::foundation::{
-    ChatMessage, MessageRole, ModelCallRequest, ModelCaller, ModelInputBlock,
-    ModelStreamEvent, TokenUsage,
+    ChatMessage, MessageRole, ModelCallRequest, ModelCaller, ModelInputBlock, ModelStreamEvent,
+    TokenUsage,
 };
 use roko_core::tool::{
-    NoopAuditSink, NoopMetricsSink, NoopTraceSink, ToolContext, ToolDef,
-    ToolHandler, ToolPermission, VecToolRegistry,
+    NoopAuditSink, NoopMetricsSink, NoopTraceSink, ToolContext, ToolDef, ToolHandler,
+    ToolPermission, VecToolRegistry,
 };
 use roko_learn::provider_health::ProviderHealthRegistry;
 use tokio::sync::mpsc;
@@ -34,20 +34,19 @@ use tracing::{debug, info, warn};
 
 use crate::builtin_tools::{acp_builtin_tools, filter_tools_by_ceiling};
 use crate::session::CancelToken;
-use crate::types::{
-    StopReason, UsageInfo,
-};
-
+use crate::types::{StopReason, UsageInfo};
 
 use super::{
     BridgeEventsError, CognitiveEvent, Result,
+    context::model_input_messages_from_wire,
+    emit_dispatch_failure, send_cognitive_event,
     tools::{
         AcpBuiltinHandlerResolver, AcpBuiltinToolHandler, AcpMcpHandlerResolver,
         AcpToolCancelToken, setup_session_mcp_tools, write_session_mcp_config,
     },
-    context::model_input_messages_from_wire,
-    send_cognitive_event, emit_dispatch_failure,
 };
+
+use roko_agent::safety::capabilities::PluginTier;
 
 // ── Anthropic Messages API dispatch ──────────────────────────────────
 
@@ -67,6 +66,9 @@ pub(crate) async fn run_anthropic_cognitive_task(
     effort: &str,
     tools_enabled: bool,
     tool_capabilities: ToolPermission,
+    // Agent role used to load the AgentContract for builtin tool permission
+    // checks. Passed verbatim to run_anthropic_tool_loop.
+    role: &str,
     cancel_token: CancelToken,
     event_sender: mpsc::Sender<CognitiveEvent>,
 ) -> Result<()> {
@@ -106,6 +108,7 @@ pub(crate) async fn run_anthropic_cognitive_task(
             tools_enabled,
             tool_capabilities,
             None, // single-agent chat path: all tools allowed
+            role,
             Arc::clone(&provider_health),
             Arc::clone(&rate_limiter),
             cancel_token.clone(),
@@ -158,6 +161,8 @@ pub(crate) async fn run_anthropic_tool_loop(
     tools_enabled: bool,
     tool_capabilities: ToolPermission,
     allowed_tools: Option<Vec<String>>,
+    // Agent role for AgentContract tool permission checks in builtin handlers.
+    role: &str,
     provider_health: Arc<ProviderHealthRegistry>,
     rate_limiter: Arc<ProviderRateLimiter>,
     cancel_token: CancelToken,
@@ -221,14 +226,21 @@ pub(crate) async fn run_anthropic_tool_loop(
                     session_id: session_id.to_string(),
                     workdir: workdir.to_path_buf(),
                     event_sender: event_sender.clone(),
+                    role: role.to_string(),
                 }),
             );
         }
     }
 
     if !mcp_servers.is_empty() {
-        let (mcp_state, statuses) =
-            setup_session_mcp_tools(session_id, mcp_servers, event_sender.clone()).await;
+        // ACP sessions use Sandboxed tier by default for external MCP servers.
+        let (mcp_state, statuses) = setup_session_mcp_tools(
+            session_id,
+            mcp_servers,
+            PluginTier::Sandboxed,
+            event_sender.clone(),
+        )
+        .await;
         if !statuses.is_empty() {
             send_cognitive_event(&event_sender, CognitiveEvent::McpStatus { statuses }).await;
         }
@@ -631,6 +643,8 @@ pub(crate) async fn run_openai_compat_cognitive_task(
     effort: &str,
     tools_enabled: bool,
     tool_capabilities: ToolPermission,
+    // Agent role for AgentContract builtin tool permission checks.
+    role: &str,
     cancel_token: CancelToken,
     event_sender: mpsc::Sender<CognitiveEvent>,
 ) -> Result<()> {
@@ -683,6 +697,7 @@ pub(crate) async fn run_openai_compat_cognitive_task(
             Arc::clone(&rate_limiter),
             tool_capabilities,
             None, // single-agent chat path: all tools allowed
+            role,
             cancel_token.clone(),
             event_sender.clone(),
         )
@@ -802,8 +817,13 @@ pub(crate) async fn run_openai_compat_mcp_tool_loop(
         .into());
     };
 
-    let (mcp_state, mcp_statuses) =
-        setup_session_mcp_tools(session_id, mcp_servers, event_sender.clone()).await;
+    let (mcp_state, mcp_statuses) = setup_session_mcp_tools(
+        session_id,
+        mcp_servers,
+        PluginTier::Sandboxed,
+        event_sender.clone(),
+    )
+    .await;
     if !mcp_statuses.is_empty() {
         send_cognitive_event(
             &event_sender,
@@ -953,6 +973,8 @@ pub(crate) async fn run_openai_compat_builtin_tool_loop(
     rate_limiter: Arc<ProviderRateLimiter>,
     tool_capabilities: ToolPermission,
     allowed_tools: Option<Vec<String>>,
+    // Agent role for AgentContract builtin tool permission checks.
+    role: &str,
     cancel_token: CancelToken,
     event_sender: mpsc::Sender<CognitiveEvent>,
 ) -> Result<bool> {
@@ -990,6 +1012,7 @@ pub(crate) async fn run_openai_compat_builtin_tool_loop(
                 session_id: session_id.to_string(),
                 workdir: workdir.to_path_buf(),
                 event_sender: event_sender.clone(),
+                role: role.to_string(),
             }),
         );
     }
@@ -1135,4 +1158,3 @@ pub(crate) fn usage_info_from_tool_loop_usage(usage: &roko_core::Usage) -> Optio
         cached_write_tokens: (cached_write_tokens > 0).then_some(cached_write_tokens),
     })
 }
-

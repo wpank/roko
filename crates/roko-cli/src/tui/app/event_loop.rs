@@ -4,13 +4,13 @@ use std::io::Stdout;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
+use ratatui::Frame;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, Paragraph};
-use ratatui::Frame;
 
 use super::*;
 
@@ -58,6 +58,10 @@ pub async fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut Ap
                 || !app.notifications.is_empty();
             if animated {
                 app.tui_state.atmosphere.tick();
+                // RC-1: advance live plan elapsed timers from their started_at
+                // Instant so the timing display updates every frame without
+                // waiting for the next DashboardSnapshot push.
+                app.tui_state.tick_elapsed();
                 app.render_dirty.insert(RenderDirty::ANIMATION);
             }
         }
@@ -249,6 +253,11 @@ impl App {
                         || !self.notifications.is_empty();
                     if animated {
                         self.tui_state.atmosphere.tick();
+                        // RC-1: advance live plan elapsed timers from their
+                        // started_at Instant so the timing display updates
+                        // every frame without waiting for the next
+                        // DashboardSnapshot push.
+                        self.tui_state.tick_elapsed();
                         self.render_dirty.insert(RenderDirty::ANIMATION);
                     }
                     // Handle deferred refresh requests from dispatch_action.
@@ -365,7 +374,11 @@ impl App {
 
         // Warning bar (only when warnings are active)
         if warning_height > 0 {
-            super::super::widgets::header_bar::render_warning_bar(frame, main_layout[1], &self.tui_state);
+            super::super::widgets::header_bar::render_warning_bar(
+                frame,
+                main_layout[1],
+                &self.tui_state,
+            );
         }
 
         // Wave indicator row (only when waves exist)
@@ -378,7 +391,11 @@ impl App {
         }
 
         // Breadcrumb trail: Tab > SubView > Focus
-        super::super::widgets::header_bar::render_breadcrumb_bar(frame, main_layout[3], &self.tui_state);
+        super::super::widgets::header_bar::render_breadcrumb_bar(
+            frame,
+            main_layout[3],
+            &self.tui_state,
+        );
 
         if subview_height > 0 {
             self.render_subview_bar(frame, main_layout[4], &theme);

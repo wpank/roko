@@ -557,54 +557,41 @@ fn append_runtime_sections(items: &mut Vec<ConfigItem>, tui_state: &TuiState) {
         }
     }
 
-    // P2-31: Relay status (from .roko/relay/status.json if present).
+    // P2-31: Relay status — from the pre-loaded runtime_status_cache (RC-4).
     {
-        let relay_path = tui_state.workdir.join(".roko").join("relay").join("status.json");
-        if let Ok(text) = std::fs::read_to_string(&relay_path) {
-            if let Ok(status) = serde_json::from_str::<serde_json::Value>(&text) {
-                items.push(ConfigItem::Header("Runtime: Relay".to_string()));
-                let connected = status.get("connected").and_then(|v| v.as_bool()).unwrap_or(false);
-                let cursor = status.get("cursor").and_then(|v| v.as_u64()).unwrap_or(0);
-                let reconnects = status.get("reconnect_count").and_then(|v| v.as_u64()).unwrap_or(0);
-                let state_label = if connected { "connected" } else { "disconnected" };
-                items.push(ConfigItem::Field {
-                    meta: config_meta::ConfigFieldMeta {
-                        key: "runtime.relay",
-                        label: "status",
-                        description: "",
-                        kind: ConfigFieldKind::ReadOnly,
-                        group: "Runtime",
-                    },
-                    value: format!("{state_label}, cursor={cursor}, reconnects={reconnects}"),
-                    source: if connected { ConfigSource::File } else { ConfigSource::Default },
-                });
-            }
+        let relay = &tui_state.runtime_status_cache.relay;
+        if relay.present {
+            items.push(ConfigItem::Header("Runtime: Relay".to_string()));
+            let state_label = if relay.connected {
+                "connected"
+            } else {
+                "disconnected"
+            };
+            let cursor = relay.cursor;
+            let reconnects = relay.reconnect_count;
+            items.push(ConfigItem::Field {
+                meta: config_meta::ConfigFieldMeta {
+                    key: "runtime.relay",
+                    label: "status",
+                    description: "",
+                    kind: ConfigFieldKind::ReadOnly,
+                    group: "Runtime",
+                },
+                value: format!("{state_label}, cursor={cursor}, reconnects={reconnects}"),
+                source: if relay.connected {
+                    ConfigSource::File
+                } else {
+                    ConfigSource::Default
+                },
+            });
         }
     }
 
-    // P2-18: Lens health status
+    // P2-18: Lens health status — from the pre-loaded runtime_status_cache (RC-4).
     {
-        let telemetry_dir = tui_state.workdir.join(".roko").join("telemetry");
-        let lens_count = if telemetry_dir.exists() {
-            std::fs::read_dir(&telemetry_dir)
-                .map(|entries| entries.flatten().count())
-                .unwrap_or(0)
-        } else {
-            0
-        };
-        // Read lens-status.json if present for live health.
-        let lens_status_path = telemetry_dir.join("lens-status.json");
-        let lens_names: Vec<String> = std::fs::read_to_string(&lens_status_path)
-            .ok()
-            .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
-            .and_then(|val| val.get("lenses").cloned())
-            .and_then(|lenses| serde_json::from_value::<Vec<serde_json::Value>>(lenses).ok())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.get("name").and_then(|n| n.as_str()).map(|s| s.to_string()))
-                    .collect()
-            })
-            .unwrap_or_default();
+        let lens = &tui_state.runtime_status_cache.lens;
+        let lens_count = lens.lens_count;
+        let lens_names = &lens.lens_names;
 
         if !lens_names.is_empty() || lens_count > 0 {
             items.push(ConfigItem::Header("Runtime: Telemetry Lenses".to_string()));
@@ -616,10 +603,14 @@ fn append_runtime_sections(items: &mut Vec<ConfigItem>, tui_state: &TuiState) {
                     kind: ConfigFieldKind::ReadOnly,
                     group: "Runtime",
                 },
-                value: format!("{} lenses, {} telemetry files", lens_names.len().max(lens_count), lens_count),
+                value: format!(
+                    "{} lenses, {} telemetry files",
+                    lens_names.len().max(lens_count),
+                    lens_count
+                ),
                 source: ConfigSource::Default,
             });
-            for name in &lens_names {
+            for name in lens_names {
                 items.push(ConfigItem::Field {
                     meta: config_meta::ConfigFieldMeta {
                         key: "runtime.lenses",

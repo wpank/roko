@@ -14,9 +14,9 @@
 //! builds required bundles, and returns a typed service handle that the caller
 //! stores for the session lifetime.
 //!
-//! Neither lane edits `commands/plan.rs`, `runner/event_loop.rs`, or any plan-path
-//! type. API mismatches are reported as `SPEC_DRIFT` rather than repaired by
-//! inventing a lane-local service.
+//! Neither lane edits `commands/plan.rs` or any plan-path type. API mismatches
+//! are reported as `SPEC_DRIFT` rather than repaired by inventing a lane-local
+//! service.
 
 use std::fmt;
 use std::path::PathBuf;

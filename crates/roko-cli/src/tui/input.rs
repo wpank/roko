@@ -268,6 +268,11 @@ pub enum ConfirmAction {
     MergeBatchToMain { plan_id: String, branch: String },
     MergePlan { plan_id: String, branch: String },
     MergeAllDone { branches: Vec<String> },
+    /// Cancel (skip) a specific running agent's task (P3-TUI-4).
+    ///
+    /// `plan_id` and `task_id` are empty when fired from the key handler and
+    /// are filled in by `resolve_confirm_action` from the selected agent row.
+    CancelAgent { plan_id: String, task_id: String },
 }
 
 impl std::fmt::Display for ConfirmAction {
@@ -294,6 +299,9 @@ impl std::fmt::Display for ConfirmAction {
             }
             Self::MergeAllDone { branches } => {
                 write!(f, "Merge {} completed branches to main?", branches.len())
+            }
+            Self::CancelAgent { plan_id, task_id } => {
+                write!(f, "Cancel agent on task {task_id} (plan {plan_id})?")
             }
         }
     }
@@ -1115,6 +1123,14 @@ fn handle_agents_key(key: KeyEvent, focus: FocusZone) -> TuiAction {
         KeyCode::Char('N') => TuiAction::PrevAgentOutputMatch,
         // Fold/unfold tool output: f toggles nearest tool result
         KeyCode::Char('f') => TuiAction::ToggleAgentOutputFold,
+        // Cancel selected agent's task (P3-TUI-4): X fires a skip command
+        // scoped to the selected agent's current_plan/current_task.
+        // plan_id and task_id are empty here; resolve_confirm_action fills
+        // them in from the selected agent row.
+        KeyCode::Char('X') => TuiAction::RequestConfirm(ConfirmAction::CancelAgent {
+            plan_id: String::new(),
+            task_id: String::new(),
+        }),
         _ => TuiAction::None,
     }
 }

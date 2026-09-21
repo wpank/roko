@@ -11,7 +11,7 @@ use ratatui::text::Line;
 
 use super::super::dashboard::Theme;
 use super::super::segment::{CachedRender, output_byte_len, render_cached_output};
-use super::{LogEntry, LogEntryLevel, TuiState, MAX_AGENT_STREAM_CHUNKS, MAX_UNIFIED_LOG};
+use super::{LogEntry, LogEntryLevel, MAX_AGENT_STREAM_CHUNKS, MAX_UNIFIED_LOG, TuiState};
 use crate::tui::display_utils::truncate as truncate_log;
 
 // ---------------------------------------------------------------------------
@@ -334,6 +334,39 @@ impl TuiState {
         stream.connected = true;
         stream.completed = false;
         stream.last_chunk_at = Some(Instant::now());
+    }
+
+    /// Push a typed `AgentOutputRecord` into `agent_output_history` for the
+    /// given agent (P1-TUI-G4).  This is the canonical write path for
+    /// streaming events received via `DashboardEvent::AgentOutput` or the
+    /// per-agent sidecar WebSocket client; it ensures the structured renderer
+    /// always sees up-to-date typed records rather than falling back to legacy
+    /// raw-text collect paths.
+    pub fn push_agent_output_record(
+        &mut self,
+        agent_id: &str,
+        kind: super::OutputRecordKind,
+        text: String,
+        tool_id: Option<String>,
+        tool_name: Option<String>,
+    ) {
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        self.agent_output_history.push(
+            agent_id,
+            super::AgentOutputRecord {
+                seq: 0, // assigned by push()
+                timestamp_ms: now_ms,
+                role: "assistant".to_string(),
+                kind,
+                text,
+                redacted: false,
+                tool_id,
+                tool_name,
+            },
+        );
     }
 
     /// Mark the agent's live stream as connected.

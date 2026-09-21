@@ -9,14 +9,11 @@ use tracing::{debug, info, warn};
 use crate::session::{AcpSession, CancelToken};
 use crate::transport::StdioTransport;
 use crate::types::{
-    JsonRpcMessage, PermissionAction, PermissionDecision,
-    PermissionOptionKind, PermissionOutcome, PermissionResponse, PermissionToolCall,
-    RequestPermissionParams, SessionCancelParams,
+    JsonRpcMessage, PermissionAction, PermissionDecision, PermissionOptionKind, PermissionOutcome,
+    PermissionResponse, PermissionToolCall, RequestPermissionParams, SessionCancelParams,
 };
 
-use super::{
-    PermissionReplyChannel, PermissionRequestPayload,
-};
+use super::{PermissionReplyChannel, PermissionRequestPayload};
 
 pub async fn request_permission<R, W>(
     transport: &mut StdioTransport<R, W>,
@@ -264,4 +261,3 @@ where
         }
     }
 }
-

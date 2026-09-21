@@ -594,9 +594,7 @@ fn spawn_cleanup(entry: Arc<ManagedConnector>) {
             }
         });
     } else {
-        tracing::warn!(
-            "dropping connector entry without async runtime; skipping async cleanup"
-        );
+        tracing::warn!("dropping connector entry without async runtime; skipping async cleanup");
     }
 }
 

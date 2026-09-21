@@ -112,10 +112,7 @@ pub(crate) async fn cmd_job(cli: &Cli, cmd: JobCmd) -> Result<i32> {
             if let Some(ref pid) = plan_id {
                 if !pid.is_empty() {
                     job.plan_id = pid.clone();
-                    store
-                        .save(&job)
-                        .await
-                        .map_err(|e| anyhow::anyhow!("{e}"))?;
+                    store.save(&job).await.map_err(|e| anyhow::anyhow!("{e}"))?;
                 }
             }
 

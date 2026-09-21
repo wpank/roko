@@ -26,14 +26,14 @@ pub use cfactor_snapshot::refresh_cfactor_snapshot;
 pub use persistence::{
     ProjectLearningSnapshot, project_episode_paths, read_efficiency_events,
     read_efficiency_summaries, read_gate_outcomes, read_knowledge_seeds,
-    read_project_efficiency_events, read_project_episodes_lossy,
-    read_project_learning_snapshot, read_project_runtime_feedback_snapshot, read_retry_outcomes,
-    read_runtime_feedback_snapshot, resolve_project_episode_path,
+    read_project_efficiency_events, read_project_episodes_lossy, read_project_learning_snapshot,
+    read_project_runtime_feedback_snapshot, read_retry_outcomes, read_runtime_feedback_snapshot,
+    resolve_project_episode_path,
 };
 pub use records::{
     ApplyStatus, ArtifactValidationReport, CompletedRunInput, EfficiencyScope,
     EfficiencySummaryRecord, GateOutcomeRecord, GenerationOutcome, KnowledgeSeedEvidence,
-    KnowledgeSeedRecord, LearningPaths, LearningUpdate, LearningRuntimeError,
+    KnowledgeSeedRecord, LearningPaths, LearningRuntimeError, LearningUpdate,
     RUNTIME_FEEDBACK_SCHEMA_VERSION, RegressionConfig, RetryOutcomeRecord, RetryOutcomeStatus,
     RunnerFeedbackEvent, RuntimeFeedbackQuery, RuntimeFeedbackSnapshot, RuntimeFeedbackWrite,
     UpdateFrequency,
@@ -87,9 +87,8 @@ use crate::skill_library::{SkillLibrary, TemplatePatternGenerator};
 use crate::wal::{self, WalEntry, WalWriter};
 
 use episode_helpers::{
-    GateCounts as GateCountsInner, backfill_gate_counts, derive_cost_record,
-    extra_bool, extra_f64, extra_string, gate_counts_from_episode,
-    load_local_rewards, parse_agent_role,
+    GateCounts as GateCountsInner, backfill_gate_counts, derive_cost_record, extra_bool, extra_f64,
+    extra_string, gate_counts_from_episode, load_local_rewards, parse_agent_role,
 };
 use persistence::{
     append_cfactor_snapshot, append_jsonl_record, append_task_metric, count_episode_records,
@@ -566,41 +565,67 @@ impl LearningRuntime {
 
     /// Borrow configured paths.
     #[must_use]
-    pub const fn paths(&self) -> &LearningPaths { &self.paths }
+    pub const fn paths(&self) -> &LearningPaths {
+        &self.paths
+    }
     /// Borrow the configured subsystem update cadences.
     #[must_use]
-    pub const fn update_frequency(&self) -> &UpdateFrequency { &self.update_frequency }
+    pub const fn update_frequency(&self) -> &UpdateFrequency {
+        &self.update_frequency
+    }
     /// Override the subsystem update cadences for this runtime.
-    pub fn set_update_frequency(&mut self, update_frequency: UpdateFrequency) { self.update_frequency = update_frequency; }
+    pub fn set_update_frequency(&mut self, update_frequency: UpdateFrequency) {
+        self.update_frequency = update_frequency;
+    }
     /// Borrow in-memory costs DB.
     #[must_use]
-    pub const fn costs_db(&self) -> &CostsDb { &self.costs_db }
+    pub const fn costs_db(&self) -> &CostsDb {
+        &self.costs_db
+    }
     /// Borrow provider health tracker.
     #[must_use]
-    pub const fn provider_health(&self) -> &ProviderHealthTracker { &self.provider_health }
+    pub const fn provider_health(&self) -> &ProviderHealthTracker {
+        &self.provider_health
+    }
     /// Borrow skill library.
     #[must_use]
-    pub const fn skill_library(&self) -> &SkillLibrary { &self.skill_library }
+    pub const fn skill_library(&self) -> &SkillLibrary {
+        &self.skill_library
+    }
     /// Mutably borrow the skill library (e.g. for recording outcomes).
-    pub const fn skill_library_mut(&mut self) -> &mut SkillLibrary { &mut self.skill_library }
+    pub const fn skill_library_mut(&mut self) -> &mut SkillLibrary {
+        &mut self.skill_library
+    }
     /// Borrow playbook rules.
     #[must_use]
-    pub const fn playbook_rules(&self) -> &PlaybookRules { &self.playbook_rules }
+    pub const fn playbook_rules(&self) -> &PlaybookRules {
+        &self.playbook_rules
+    }
     /// Borrow the latency registry used for routing feedback.
     #[must_use]
-    pub const fn latency_registry(&self) -> &LatencyRegistry { &self.latency_registry }
+    pub const fn latency_registry(&self) -> &LatencyRegistry {
+        &self.latency_registry
+    }
     /// Borrow pattern miner (behind `parking_lot::Mutex` for `&mut` access).
     #[must_use]
-    pub const fn pattern_miner(&self) -> &parking_lot::Mutex<PatternMiner> { &self.pattern_miner }
+    pub const fn pattern_miner(&self) -> &parking_lot::Mutex<PatternMiner> {
+        &self.pattern_miner
+    }
     /// Borrow cascade router.
     #[must_use]
-    pub const fn cascade_router(&self) -> &CascadeRouter { &self.cascade_router }
+    pub const fn cascade_router(&self) -> &CascadeRouter {
+        &self.cascade_router
+    }
     /// Borrow context pack cache.
     #[must_use]
-    pub const fn context_pack_cache(&self) -> &ContextPackCache { &self.context_pack_cache }
+    pub const fn context_pack_cache(&self) -> &ContextPackCache {
+        &self.context_pack_cache
+    }
     /// Borrow experiment store (behind `parking_lot::Mutex`).
     #[must_use]
-    pub const fn experiment_store(&self) -> &parking_lot::Mutex<ExperimentStore> { &self.experiment_store }
+    pub const fn experiment_store(&self) -> &parking_lot::Mutex<ExperimentStore> {
+        &self.experiment_store
+    }
 
     /// Return a snapshot of the learned section-effectiveness registry.
     #[must_use]
@@ -625,7 +650,9 @@ impl LearningRuntime {
     where
         F: Fn(&str) -> String,
     {
-        let healthy_models = self.provider_health.filter_arms_or_best(all_model_slugs, provider_of);
+        let healthy_models = self
+            .provider_health
+            .filter_arms_or_best(all_model_slugs, provider_of);
         if healthy_models.is_empty() {
             all_model_slugs.to_vec()
         } else {
@@ -637,13 +664,20 @@ impl LearningRuntime {
 
     /// Query the local reward score for a subsystem decision.
     pub fn local_reward_score(&self, subsystem: &str, decision_key: &str) -> f64 {
-        self.local_rewards.lock().get(subsystem).map_or(0.5, |reward| reward.score(decision_key))
+        self.local_rewards
+            .lock()
+            .get(subsystem)
+            .map_or(0.5, |reward| reward.score(decision_key))
     }
 
     /// Record a local decision outcome against global task success for the
     /// named subsystem.
     fn observe_local_reward(&self, subsystem: &str, decision_key: &str, global_success: bool) {
-        self.local_rewards.lock().entry(subsystem.to_owned()).or_default().observe(decision_key, global_success);
+        self.local_rewards
+            .lock()
+            .entry(subsystem.to_owned())
+            .or_default()
+            .observe(decision_key, global_success);
     }
 
     /// Persist local reward functions to disk.
@@ -699,7 +733,8 @@ impl LearningRuntime {
             RunnerFeedbackEvent::EfficiencyEvent { event, scope } => {
                 let provider_model_outcome =
                     ProviderModelOutcomeRecord::from_efficiency_event(&event).is_some();
-                self.append_efficiency_event_with_scope(&event, scope).await?;
+                self.append_efficiency_event_with_scope(&event, scope)
+                    .await?;
                 write.efficiency_events = 1;
                 write.efficiency_summaries = 1;
                 write.provider_model_outcomes = usize::from(provider_model_outcome);
@@ -751,11 +786,22 @@ impl LearningRuntime {
         } else {
             None
         };
-        episode.extra.insert("process_success".to_string(), serde_json::json!(outcome.process_success));
-        episode.extra.insert("artifact_valid".to_string(), serde_json::json!(outcome.artifact_valid));
-        episode.extra.insert("generation_status".to_string(), serde_json::json!(outcome.status_label()));
+        episode.extra.insert(
+            "process_success".to_string(),
+            serde_json::json!(outcome.process_success),
+        );
+        episode.extra.insert(
+            "artifact_valid".to_string(),
+            serde_json::json!(outcome.artifact_valid),
+        );
+        episode.extra.insert(
+            "generation_status".to_string(),
+            serde_json::json!(outcome.status_label()),
+        );
         if let Some(report) = &outcome.validation_report {
-            episode.extra.insert("validation_report".to_string(), report.clone());
+            episode
+                .extra
+                .insert("validation_report".to_string(), report.clone());
         }
         episode.attach_all_fingerprints();
 
@@ -773,11 +819,19 @@ impl LearningRuntime {
     /// # Errors
     ///
     /// Returns an error on write failure.
-    pub async fn append_efficiency_event(&self, event: &AgentEfficiencyEvent) -> Result<(), LearningRuntimeError> {
-        self.append_efficiency_event_with_scope(event, EfficiencyScope::Turn).await
+    pub async fn append_efficiency_event(
+        &self,
+        event: &AgentEfficiencyEvent,
+    ) -> Result<(), LearningRuntimeError> {
+        self.append_efficiency_event_with_scope(event, EfficiencyScope::Turn)
+            .await
     }
 
-    async fn append_efficiency_event_with_scope(&self, event: &AgentEfficiencyEvent, scope: EfficiencyScope) -> Result<(), LearningRuntimeError> {
+    async fn append_efficiency_event_with_scope(
+        &self,
+        event: &AgentEfficiencyEvent,
+        scope: EfficiencyScope,
+    ) -> Result<(), LearningRuntimeError> {
         append_jsonl_record(&self.paths.efficiency_jsonl, event).await?;
         self.record_latency_from_efficiency_event(event)?;
         self.record_section_effectiveness_from_efficiency_event(event)?;
@@ -794,7 +848,10 @@ impl LearningRuntime {
     /// # Errors
     ///
     /// Returns an error on serialization or write failure.
-    pub async fn append_efficiency_summary(&self, summary: &EfficiencySummaryRecord) -> Result<(), LearningRuntimeError> {
+    pub async fn append_efficiency_summary(
+        &self,
+        summary: &EfficiencySummaryRecord,
+    ) -> Result<(), LearningRuntimeError> {
         append_jsonl_record(&self.paths.efficiency_summaries_jsonl, summary).await
     }
 
@@ -803,7 +860,10 @@ impl LearningRuntime {
     /// # Errors
     ///
     /// Returns an error on serialization or write failure.
-    pub async fn append_provider_model_outcome(&self, outcome: &ProviderModelOutcomeRecord) -> Result<(), LearningRuntimeError> {
+    pub async fn append_provider_model_outcome(
+        &self,
+        outcome: &ProviderModelOutcomeRecord,
+    ) -> Result<(), LearningRuntimeError> {
         self.provider_model_outcomes.append(outcome).await?;
         Ok(())
     }
@@ -813,7 +873,10 @@ impl LearningRuntime {
     /// # Errors
     ///
     /// Returns an error on serialization or write failure.
-    pub async fn append_gate_outcome(&self, outcome: &GateOutcomeRecord) -> Result<(), LearningRuntimeError> {
+    pub async fn append_gate_outcome(
+        &self,
+        outcome: &GateOutcomeRecord,
+    ) -> Result<(), LearningRuntimeError> {
         append_jsonl_record(&self.paths.gate_outcomes_jsonl, outcome).await
     }
 
@@ -822,8 +885,13 @@ impl LearningRuntime {
     /// # Errors
     ///
     /// Returns an error on the first serialization or write failure.
-    pub async fn append_gate_outcomes(&self, outcomes: &[GateOutcomeRecord]) -> Result<(), LearningRuntimeError> {
-        for outcome in outcomes { self.append_gate_outcome(outcome).await?; }
+    pub async fn append_gate_outcomes(
+        &self,
+        outcomes: &[GateOutcomeRecord],
+    ) -> Result<(), LearningRuntimeError> {
+        for outcome in outcomes {
+            self.append_gate_outcome(outcome).await?;
+        }
         Ok(())
     }
 
@@ -832,7 +900,10 @@ impl LearningRuntime {
     /// # Errors
     ///
     /// Returns an error on serialization or write failure.
-    pub async fn append_retry_outcome(&self, outcome: &RetryOutcomeRecord) -> Result<(), LearningRuntimeError> {
+    pub async fn append_retry_outcome(
+        &self,
+        outcome: &RetryOutcomeRecord,
+    ) -> Result<(), LearningRuntimeError> {
         append_jsonl_record(&self.paths.retry_outcomes_jsonl, outcome).await
     }
 
@@ -841,7 +912,10 @@ impl LearningRuntime {
     /// # Errors
     ///
     /// Returns an error on serialization or write failure.
-    pub async fn append_knowledge_seed(&self, seed: &KnowledgeSeedRecord) -> Result<(), LearningRuntimeError> {
+    pub async fn append_knowledge_seed(
+        &self,
+        seed: &KnowledgeSeedRecord,
+    ) -> Result<(), LearningRuntimeError> {
         append_jsonl_record(&self.paths.knowledge_seeds_jsonl, seed).await
     }
 
@@ -853,8 +927,22 @@ impl LearningRuntime {
     /// for this turn. When that timing is unavailable, the historical p50 for
     /// the same `(model, provider)` pair is used as a fallback.
     #[must_use]
-    pub fn compute_routing_reward_with_latency(&self, gate_passed: bool, cost_usd: f64, wall_time_ms: u64, model: &str, provider: &str) -> f64 {
-        compute_reward_with_latency(gate_passed, cost_usd, wall_time_ms, &self.latency_registry, model, provider)
+    pub fn compute_routing_reward_with_latency(
+        &self,
+        gate_passed: bool,
+        cost_usd: f64,
+        wall_time_ms: u64,
+        model: &str,
+        provider: &str,
+    ) -> f64 {
+        compute_reward_with_latency(
+            gate_passed,
+            cost_usd,
+            wall_time_ms,
+            &self.latency_registry,
+            model,
+            provider,
+        )
     }
 
     // ── Read helpers (delegate to persistence) ────────────────────────
@@ -862,21 +950,29 @@ impl LearningRuntime {
     /// Read all persisted efficiency events from the JSONL log.
     ///
     /// Returns an empty vec if the file does not exist.
-    pub async fn read_efficiency_events(&self) -> Result<Vec<AgentEfficiencyEvent>, LearningRuntimeError> {
+    pub async fn read_efficiency_events(
+        &self,
+    ) -> Result<Vec<AgentEfficiencyEvent>, LearningRuntimeError> {
         read_efficiency_events_impl(&self.paths.efficiency_jsonl).await
     }
 
     /// Read all persisted provider/model outcome telemetry records.
     ///
     /// Returns an empty vec if the file does not exist.
-    pub async fn read_provider_model_outcomes(&self) -> Result<Vec<ProviderModelOutcomeRecord>, LearningRuntimeError> {
-        read_provider_model_outcomes(&self.paths.provider_model_outcomes_jsonl).await.map_err(LearningRuntimeError::Io)
+    pub async fn read_provider_model_outcomes(
+        &self,
+    ) -> Result<Vec<ProviderModelOutcomeRecord>, LearningRuntimeError> {
+        read_provider_model_outcomes(&self.paths.provider_model_outcomes_jsonl)
+            .await
+            .map_err(LearningRuntimeError::Io)
     }
 
     /// Read all persisted efficiency summaries.
     ///
     /// Returns an empty vec if the file does not exist.
-    pub async fn read_efficiency_summaries(&self) -> Result<Vec<EfficiencySummaryRecord>, LearningRuntimeError> {
+    pub async fn read_efficiency_summaries(
+        &self,
+    ) -> Result<Vec<EfficiencySummaryRecord>, LearningRuntimeError> {
         read_efficiency_summaries_impl(&self.paths.efficiency_summaries_jsonl).await
     }
 
@@ -890,14 +986,18 @@ impl LearningRuntime {
     /// Read all persisted retry outcomes.
     ///
     /// Returns an empty vec if the file does not exist.
-    pub async fn read_retry_outcomes(&self) -> Result<Vec<RetryOutcomeRecord>, LearningRuntimeError> {
+    pub async fn read_retry_outcomes(
+        &self,
+    ) -> Result<Vec<RetryOutcomeRecord>, LearningRuntimeError> {
         read_retry_outcomes_impl(&self.paths.retry_outcomes_jsonl).await
     }
 
     /// Read all persisted knowledge seeds.
     ///
     /// Returns an empty vec if the file does not exist.
-    pub async fn read_knowledge_seeds(&self) -> Result<Vec<KnowledgeSeedRecord>, LearningRuntimeError> {
+    pub async fn read_knowledge_seeds(
+        &self,
+    ) -> Result<Vec<KnowledgeSeedRecord>, LearningRuntimeError> {
         read_knowledge_seeds_impl(&self.paths.knowledge_seeds_jsonl).await
     }
 
@@ -906,7 +1006,10 @@ impl LearningRuntime {
     /// # Errors
     ///
     /// Returns an error if an existing log cannot be opened or read.
-    pub async fn query_feedback(&self, query: &RuntimeFeedbackQuery) -> Result<RuntimeFeedbackSnapshot, LearningRuntimeError> {
+    pub async fn query_feedback(
+        &self,
+        query: &RuntimeFeedbackQuery,
+    ) -> Result<RuntimeFeedbackSnapshot, LearningRuntimeError> {
         persistence::read_runtime_feedback_snapshot(&self.paths, query).await
     }
 
@@ -915,7 +1018,10 @@ impl LearningRuntime {
     /// # Errors
     ///
     /// Returns an error if the outcome log cannot be opened or read.
-    pub async fn provider_model_pass_rates(&self, window_size: usize) -> Result<ProviderModelPassRateReport, LearningRuntimeError> {
+    pub async fn provider_model_pass_rates(
+        &self,
+        window_size: usize,
+    ) -> Result<ProviderModelPassRateReport, LearningRuntimeError> {
         let records = self.read_provider_model_outcomes().await?;
         Ok(summarize_provider_model_outcomes(&records, window_size))
     }
@@ -931,7 +1037,12 @@ impl LearningRuntime {
             Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
             Err(err) => return Err(LearningRuntimeError::Io(err)),
         };
-        Ok(contents.lines().rev().map(str::trim).find(|line| !line.is_empty()).and_then(|line| serde_json::from_str::<CFactor>(line).ok()))
+        Ok(contents
+            .lines()
+            .rev()
+            .map(str::trim)
+            .find(|line| !line.is_empty())
+            .and_then(|line| serde_json::from_str::<CFactor>(line).ok()))
     }
 
     /// Run the offline cross-episode consolidation pass over the persisted log.
@@ -943,7 +1054,9 @@ impl LearningRuntime {
     /// # Errors
     ///
     /// Returns an error if the episode log cannot be read.
-    pub async fn discover_cross_episode_patterns(&self) -> Result<CrossEpisodeConsolidationReport, LearningRuntimeError> {
+    pub async fn discover_cross_episode_patterns(
+        &self,
+    ) -> Result<CrossEpisodeConsolidationReport, LearningRuntimeError> {
         let episodes = EpisodeLogger::read_all(&self.paths.episodes_jsonl).await?;
         Ok(CrossEpisodeConsolidator::default().discover(&episodes))
     }
@@ -1001,15 +1114,29 @@ impl LearningRuntime {
     fn compact_wal_locked(&self, wal: &mut WalWriter) {
         let cascade_saved = match self.cascade_router.save(&self.paths.cascade_router_json) {
             Ok(()) => true,
-            Err(e) => { tracing::warn!(error = %e, "[wal] cascade-router snapshot failed during compaction"); false }
+            Err(e) => {
+                tracing::warn!(error = %e, "[wal] cascade-router snapshot failed during compaction");
+                false
+            }
         };
         let local = self.experiment_store.lock().clone();
-        let experiments_saved = match commit_experiment_snapshot(&self.paths.experiments_json, &local) {
-            Ok(committed) => { *self.experiment_store.lock() = committed; true }
-            Err(e) => { tracing::warn!(error = %e, "[wal] experiment transaction failed during compaction"); false }
+        let experiments_saved = match commit_experiment_snapshot(
+            &self.paths.experiments_json,
+            &local,
+        ) {
+            Ok(committed) => {
+                *self.experiment_store.lock() = committed;
+                true
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "[wal] experiment transaction failed during compaction");
+                false
+            }
         };
         if cascade_saved && experiments_saved {
-            if let Err(e) = wal.truncate() { tracing::warn!(error = %e, "[wal] truncate failed during compaction"); }
+            if let Err(e) = wal.truncate() {
+                tracing::warn!(error = %e, "[wal] truncate failed during compaction");
+            }
         } else {
             tracing::warn!("[wal] retaining entries because compaction snapshots did not commit");
         }
@@ -1027,7 +1154,9 @@ impl LearningRuntime {
             tracing::warn!(error = %e, "[wal] experiment transaction failed during cascade-router save");
             return;
         }
-        if let Err(e) = wal.truncate() { tracing::warn!(error = %e, "[wal] truncate failed during compaction"); }
+        if let Err(e) = wal.truncate() {
+            tracing::warn!(error = %e, "[wal] truncate failed during compaction");
+        }
     }
 
     /// Save cascade router observations to disk.
@@ -1057,12 +1186,19 @@ impl LearningRuntime {
         model_slug: &str,
         intervention: &ConductorDecision,
     ) -> bool {
-        if !matches!(intervention, ConductorDecision::Restart { .. } | ConductorDecision::Fail { .. }) {
+        if !matches!(
+            intervention,
+            ConductorDecision::Restart { .. } | ConductorDecision::Fail { .. }
+        ) {
             return false;
         }
         let context_features = routing_context.to_features();
-        let model_idx = self.cascade_router.model_index_for_slug(model_slug).unwrap_or(0);
-        self.cascade_router.record_observation(routing_context, model_slug, 0.0, false);
+        let model_idx = self
+            .cascade_router
+            .model_index_for_slug(model_slug)
+            .unwrap_or(0);
+        self.cascade_router
+            .record_observation(routing_context, model_slug, 0.0, false);
         self.wal_append(WalEntry::CascadeObservation {
             model_slug: model_slug.to_string(),
             context_features,
@@ -1151,29 +1287,48 @@ impl LearningRuntime {
         }
         if skip_only {
             input.episode.success = false;
-            if input.episode.failure_reason.as_ref().is_none_or(|reason| reason.trim().is_empty()) {
+            if input
+                .episode
+                .failure_reason
+                .as_ref()
+                .is_none_or(|reason| reason.trim().is_empty())
+            {
                 input.episode.failure_reason = Some("all gates skipped".to_string());
             }
-            input.episode.extra.insert("provider_model_outcome_status".to_string(), serde_json::json!("blocked"));
+            input.episode.extra.insert(
+                "provider_model_outcome_status".to_string(),
+                serde_json::json!("blocked"),
+            );
         }
 
         input.episode.attach_all_fingerprints();
         self.apply_affect_signature(&mut input.episode);
         self.episode_logger.append(&input.episode).await?;
         update.episode_logged = ApplyStatus::Applied;
-        if let Some(hook) = &self.episode_completion_hook { hook(input.episode.clone()); }
+        if let Some(hook) = &self.episode_completion_hook {
+            hook(input.episode.clone());
+        }
         let episode_count = self.episode_count.fetch_add(1, Ordering::Relaxed) + 1;
 
-        if !skip_only && let Some(reflection_input) = ReflectionInput::from_episode(&input.episode) {
-            let mut reflection_store = PostGateReflectionStore::load(&self.paths.post_gate_reflections_json);
-            let observation = reflection_store.observe(reflection_input, ReflectionPromotionConfig::default());
+        if !skip_only && let Some(reflection_input) = ReflectionInput::from_episode(&input.episode)
+        {
+            let mut reflection_store =
+                PostGateReflectionStore::load(&self.paths.post_gate_reflections_json);
+            let observation =
+                reflection_store.observe(reflection_input, ReflectionPromotionConfig::default());
             reflection_store.save(&self.paths.post_gate_reflections_json)?;
             update.reflection_recorded = ApplyStatus::Applied;
-            if observation.candidate.is_some() { update.reflection_candidate_updated = ApplyStatus::Applied; }
+            if observation.candidate.is_some() {
+                update.reflection_candidate_updated = ApplyStatus::Applied;
+            }
         }
 
-        if input.playbook_id.is_none() { input.playbook_id = extra_string(&input.episode, "playbook_id"); }
-        if input.playbook_rule_id.is_none() { input.playbook_rule_id = extra_string(&input.episode, "playbook_rule_id"); }
+        if input.playbook_id.is_none() {
+            input.playbook_id = extra_string(&input.episode, "playbook_id");
+        }
+        if input.playbook_rule_id.is_none() {
+            input.playbook_rule_id = extra_string(&input.episode, "playbook_rule_id");
+        }
         if input.matched_skill_id.is_none() {
             input.matched_skill_id = extra_string(&input.episode, "skill_name")
                 .or_else(|| extra_string(&input.episode, "matched_skill_id"));
@@ -1188,30 +1343,50 @@ impl LearningRuntime {
             self.costs_db.insert(record.clone());
             self.costs_log.append(&record).await?;
             update.cost_logged = ApplyStatus::Applied;
-            if input.provider.is_none() { input.provider = Some(record.provider.clone()); }
+            if input.provider.is_none() {
+                input.provider = Some(record.provider.clone());
+            }
         }
 
         let provider_for_outcome = input.provider.clone();
 
         if !skip_only && let Some(provider) = input.provider {
-            if input.episode.success { self.provider_health.record_success(&provider); }
-            else { self.provider_health.record_failure(&provider); }
+            if input.episode.success {
+                self.provider_health.record_success(&provider);
+            } else {
+                self.provider_health.record_failure(&provider);
+            }
             update.provider_updated = ApplyStatus::Applied;
         }
 
-        if let Some(outcome) = ProviderModelOutcomeRecord::from_episode(&input.episode, provider_for_outcome.as_deref()) {
+        if let Some(outcome) = ProviderModelOutcomeRecord::from_episode(
+            &input.episode,
+            provider_for_outcome.as_deref(),
+        ) {
             self.provider_model_outcomes.append(&outcome).await?;
             update.provider_model_outcome_recorded = ApplyStatus::Applied;
         }
 
-        let derived_feedback = self.append_derived_episode_feedback(&input.episode, false).await?;
-        if derived_feedback.efficiency_summaries > 0 { update.efficiency_summary_recorded = ApplyStatus::Applied; }
+        let derived_feedback = self
+            .append_derived_episode_feedback(&input.episode, false)
+            .await?;
+        if derived_feedback.efficiency_summaries > 0 {
+            update.efficiency_summary_recorded = ApplyStatus::Applied;
+        }
         update.gate_outcomes_recorded = derived_feedback.gate_outcomes;
-        if derived_feedback.retry_outcomes > 0 { update.retry_outcome_recorded = ApplyStatus::Applied; }
-        if derived_feedback.knowledge_seeds > 0 { update.knowledge_seed_recorded = ApplyStatus::Applied; }
+        if derived_feedback.retry_outcomes > 0 {
+            update.retry_outcome_recorded = ApplyStatus::Applied;
+        }
+        if derived_feedback.knowledge_seeds > 0 {
+            update.knowledge_seed_recorded = ApplyStatus::Applied;
+        }
 
         if !skip_only && let Some(playbook_id) = input.playbook_id {
-            if self.playbook_store.record_outcome(&playbook_id, input.episode.success).await? {
+            if self
+                .playbook_store
+                .record_outcome(&playbook_id, input.episode.success)
+                .await?
+            {
                 update.playbook_updated = ApplyStatus::Applied;
             }
         }
@@ -1220,7 +1395,8 @@ impl LearningRuntime {
         let local_reward_skill_id = input.matched_skill_id.clone();
 
         if !skip_only && let Some(rule_id) = input.playbook_rule_id {
-            self.playbook_rules.record_outcome(&rule_id, input.episode.success);
+            self.playbook_rules
+                .record_outcome(&rule_id, input.episode.success);
             self.playbook_rules.save()?;
             update.playbook_rule_updated = ApplyStatus::Applied;
         }
@@ -1229,7 +1405,9 @@ impl LearningRuntime {
             && let Some(skill_id) = input.matched_skill_id
             && self.skill_library.get(&skill_id).is_some()
         {
-            self.skill_library.record_outcome(&skill_id, input.episode.success).await?;
+            self.skill_library
+                .record_outcome(&skill_id, input.episode.success)
+                .await?;
             update.matched_skill_updated = ApplyStatus::Applied;
         }
 
@@ -1248,7 +1426,8 @@ impl LearningRuntime {
                 guard.push(metric);
                 guard.clone()
             };
-            update.regression_report = compute_regression_report(&metrics_snapshot, &self.regression);
+            update.regression_report =
+                compute_regression_report(&metrics_snapshot, &self.regression);
         }
 
         if !skip_only && self.update_frequency.distiller_due(episode_count) {
@@ -1257,14 +1436,21 @@ impl LearningRuntime {
 
         // Pattern mining
         let actions = EpisodeActions::from_episode(&input.episode);
-        if !skip_only && self.update_frequency.pattern_discovery_due(episode_count) && !actions.actions.is_empty() {
+        if !skip_only
+            && self.update_frequency.pattern_discovery_due(episode_count)
+            && !actions.actions.is_empty()
+        {
             self.pattern_miner.lock().ingest_episode(&actions);
             update.patterns_ingested = true;
         }
 
         // Cascade router observation
-        let artifact_valid_for_router = extra_bool(&input.episode, "artifact_valid").unwrap_or(true);
-        if !skip_only && self.update_frequency.router_due(episode_count) && artifact_valid_for_router {
+        let artifact_valid_for_router =
+            extra_bool(&input.episode, "artifact_valid").unwrap_or(true);
+        if !skip_only
+            && self.update_frequency.router_due(episode_count)
+            && artifact_valid_for_router
+        {
             update.router_updated = self.update_cascade_router(&input.episode);
         } else if !artifact_valid_for_router {
             tracing::debug!(
@@ -1275,7 +1461,9 @@ impl LearningRuntime {
         }
 
         if update.router_updated {
-            if let Err(e) = self.save_cascade_router() { eprintln!("[learn] cascade router save failed: {e}"); }
+            if let Err(e) = self.save_cascade_router() {
+                eprintln!("[learn] cascade router save failed: {e}");
+            }
         }
 
         // Prompt experiment outcome
@@ -1290,17 +1478,32 @@ impl LearningRuntime {
                 |latest| {
                     merge_missing_experiments(latest, &local);
                     let matched_id = if let Some(experiment_id) = experiment_id {
-                        let was_running = latest.get(experiment_id).is_some_and(|experiment| experiment.status == ExperimentStatus::Running);
-                        if !latest.record_outcome_for_experiment(experiment_id, variant_id, input.episode.success) {
+                        let was_running = latest.get(experiment_id).is_some_and(|experiment| {
+                            experiment.status == ExperimentStatus::Running
+                        });
+                        if !latest.record_outcome_for_experiment(
+                            experiment_id,
+                            variant_id,
+                            input.episode.success,
+                        ) {
                             return Err(io::Error::new(
                                 io::ErrorKind::NotFound,
-                                format!("experiment '{experiment_id}' variant '{variant_id}' disappeared before outcome recording"),
+                                format!(
+                                    "experiment '{experiment_id}' variant '{variant_id}' disappeared before outcome recording"
+                                ),
                             ));
                         }
                         Some((experiment_id.to_string(), was_running))
                     } else {
-                        let matched = latest.iter().find(|experiment| experiment.stats.contains_key(variant_id))
-                            .map(|experiment| (experiment.experiment_id.clone(), experiment.status == ExperimentStatus::Running));
+                        let matched = latest
+                            .iter()
+                            .find(|experiment| experiment.stats.contains_key(variant_id))
+                            .map(|experiment| {
+                                (
+                                    experiment.experiment_id.clone(),
+                                    experiment.status == ExperimentStatus::Running,
+                                )
+                            });
                         latest.record_outcome(variant_id, input.episode.success);
                         matched
                     };
@@ -1311,14 +1514,23 @@ impl LearningRuntime {
             match transaction {
                 Ok((committed, matched)) => {
                     *self.experiment_store.lock() = committed.clone();
-                    let static_table_updated = matched.is_some_and(|(experiment_id, was_running)| {
-                        was_running && committed.get(&experiment_id).is_some_and(|experiment| self.on_experiment_concluded(experiment))
-                    });
-                    if let Err(e) = sync_experiment_winner_artifact(&self.paths.experiment_winners_json, &committed) {
+                    let static_table_updated =
+                        matched.is_some_and(|(experiment_id, was_running)| {
+                            was_running
+                                && committed.get(&experiment_id).is_some_and(|experiment| {
+                                    self.on_experiment_concluded(experiment)
+                                })
+                        });
+                    if let Err(e) = sync_experiment_winner_artifact(
+                        &self.paths.experiment_winners_json,
+                        &committed,
+                    ) {
                         eprintln!("[learn] experiment winner artifact save failed: {e}");
                     }
                     if static_table_updated && let Err(e) = self.save_cascade_router() {
-                        eprintln!("[learn] cascade router save failed after experiment conclusion: {e}");
+                        eprintln!(
+                            "[learn] cascade router save failed after experiment conclusion: {e}"
+                        );
                     }
                 }
                 Err(e) => eprintln!("[learn] experiment store transaction failed: {e}"),
@@ -1336,7 +1548,9 @@ impl LearningRuntime {
         if !skip_only && let Some(ref rule_id) = local_reward_rule_id {
             self.observe_local_reward("playbook_rule", rule_id, success);
         }
-        if !skip_only { self.save_local_rewards(); }
+        if !skip_only {
+            self.save_local_rewards();
+        }
 
         // Adaptive gate threshold flush cadence
         if !skip_only && self.update_frequency.gate_thresholds_due(episode_count) {
@@ -1345,9 +1559,15 @@ impl LearningRuntime {
                 match self.flush_gate_thresholds_json(snapshot_json) {
                     Ok(()) => {
                         update.gate_thresholds_flushed = true;
-                        tracing::debug!(episode_count, "incremental adaptive threshold flush to {}", self.paths.gate_thresholds_json.display());
+                        tracing::debug!(
+                            episode_count,
+                            "incremental adaptive threshold flush to {}",
+                            self.paths.gate_thresholds_json.display()
+                        );
                     }
-                    Err(e) => { tracing::error!(error = %e, "incremental adaptive threshold flush failed"); }
+                    Err(e) => {
+                        tracing::error!(error = %e, "incremental adaptive threshold flush failed");
+                    }
                 }
             }
         }
@@ -1358,22 +1578,41 @@ impl LearningRuntime {
     // ── Affect ────────────────────────────────────────────────────────
 
     fn apply_affect_signature(&self, episode: &mut Episode) {
-        let task_key = if episode.task_id.trim().is_empty() { episode.agent_id.clone() } else { episode.task_id.clone() };
+        let task_key = if episode.task_id.trim().is_empty() {
+            episode.agent_id.clone()
+        } else {
+            episode.task_id.clone()
+        };
         let mut engine = self.affect_engine.lock();
-        let skip_only = gate_counts_from_episode(episode).is_some_and(GateCountsInner::has_only_skipped);
+        let skip_only =
+            gate_counts_from_episode(episode).is_some_and(GateCountsInner::has_only_skipped);
         if !skip_only {
             for (rung, verdict) in episode.gate_verdicts.iter().enumerate() {
-                let _ = engine.appraise(AffectEvent::GateResult { plan_id: String::new(), task_id: task_key.clone(), passed: verdict.passed, rung: rung as u32 });
+                let _ = engine.appraise(AffectEvent::GateResult {
+                    plan_id: String::new(),
+                    task_id: task_key.clone(),
+                    passed: verdict.passed,
+                    rung: rung as u32,
+                });
             }
             if episode.success {
-                let _ = engine.appraise(AffectEvent::TaskOutcome { task_id: task_key.clone(), succeeded: true });
+                let _ = engine.appraise(AffectEvent::TaskOutcome {
+                    task_id: task_key.clone(),
+                    succeeded: true,
+                });
             } else {
-                let _ = engine.appraise(AffectEvent::TaskOutcome { task_id: task_key.clone(), succeeded: false });
+                let _ = engine.appraise(AffectEvent::TaskOutcome {
+                    task_id: task_key.clone(),
+                    succeeded: false,
+                });
             }
         }
         let state = engine.query();
         episode.extra.insert("pad".to_string(), serde_json::json!({ "pleasure": state.pad.pleasure, "arousal": state.pad.arousal, "dominance": state.pad.dominance }));
-        episode.extra.insert("affect_confidence".to_string(), serde_json::json!(state.confidence));
+        episode.extra.insert(
+            "affect_confidence".to_string(),
+            serde_json::json!(state.confidence),
+        );
     }
 
     // ── Cascade router update ─────────────────────────────────────────
@@ -1382,40 +1621,101 @@ impl LearningRuntime {
         let role_str = extra_string(episode, "role");
         let model_slug = extra_string(episode, "model");
         let Some(slug) = model_slug else { return false };
-        let role = role_str.as_deref().and_then(parse_agent_role).unwrap_or(AgentRole::Implementer);
-        let category_str = extra_string(episode, "task_category").unwrap_or_else(|| "implementation".to_string());
+        let role = role_str
+            .as_deref()
+            .and_then(parse_agent_role)
+            .unwrap_or(AgentRole::Implementer);
+        let category_str =
+            extra_string(episode, "task_category").unwrap_or_else(|| "implementation".to_string());
         let cat_json = format!("\"{category_str}\"");
-        let task_category = serde_json::from_str::<TaskCategory>(&cat_json).unwrap_or(TaskCategory::Implementation);
-        let complexity_str = extra_string(episode, "complexity_band").unwrap_or_else(|| "standard".to_string());
+        let task_category =
+            serde_json::from_str::<TaskCategory>(&cat_json).unwrap_or(TaskCategory::Implementation);
+        let complexity_str =
+            extra_string(episode, "complexity_band").unwrap_or_else(|| "standard".to_string());
         let cplx_json = format!("\"{complexity_str}\"");
-        let complexity = serde_json::from_str::<TaskComplexityBand>(&cplx_json).unwrap_or(TaskComplexityBand::Standard);
+        let complexity = serde_json::from_str::<TaskComplexityBand>(&cplx_json)
+            .unwrap_or(TaskComplexityBand::Standard);
         let crate_familiarity = extra_f64(episode, "crate_familiarity").unwrap_or(0.5);
 
         let ctx = RoutingContext {
-            task_category, complexity, iteration: 0, role, crate_familiarity,
-            has_prior_failure: !episode.success, conductor_load: 0.0, active_agents: 0,
-            ready_queue_depth: 0, max_queue_wait_hours: 0.0,
-            daimon_policy: DaimonPolicy::new(extra_f64(episode, "affect_confidence").unwrap_or(0.5), roko_core::BehavioralState::Engaged),
-            thinking_level: None, temperament: None, previous_model: None, plan_context_tokens: None, tier_thresholds: None, cfactor: None,
+            task_category,
+            complexity,
+            iteration: 0,
+            role,
+            crate_familiarity,
+            has_prior_failure: !episode.success,
+            conductor_load: 0.0,
+            active_agents: 0,
+            ready_queue_depth: 0,
+            max_queue_wait_hours: 0.0,
+            daimon_policy: DaimonPolicy::new(
+                extra_f64(episode, "affect_confidence").unwrap_or(0.5),
+                roko_core::BehavioralState::Engaged,
+            ),
+            thinking_level: None,
+            temperament: None,
+            previous_model: None,
+            plan_context_tokens: None,
+            tier_thresholds: None,
+            cfactor: None,
         };
-        if episode.extra.get("cascade_router_observed").and_then(serde_json::Value::as_bool).unwrap_or(false) { return false; }
-        let provider = extra_string(episode, "provider").or_else(|| extra_string(episode, "backend")).unwrap_or_else(|| "unknown-provider".to_string());
-        let reward = self.compute_routing_reward_with_latency(episode.success, episode.usage.cost_usd, episode.usage.wall_ms, &slug, &provider);
+        if episode
+            .extra
+            .get("cascade_router_observed")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false)
+        {
+            return false;
+        }
+        let provider = extra_string(episode, "provider")
+            .or_else(|| extra_string(episode, "backend"))
+            .unwrap_or_else(|| "unknown-provider".to_string());
+        let reward = self.compute_routing_reward_with_latency(
+            episode.success,
+            episode.usage.cost_usd,
+            episode.usage.wall_ms,
+            &slug,
+            &provider,
+        );
         let context_features = ctx.to_features();
         let model_idx = self.cascade_router.model_index_for_slug(&slug).unwrap_or(0);
-        self.cascade_router.record_observation(&ctx, &slug, reward, episode.success);
+        self.cascade_router
+            .record_observation(&ctx, &slug, reward, episode.success);
         self.wal_append(WalEntry::CascadeObservation {
-            model_slug: slug, context_features, model_idx, reward, success: episode.success, ts_ms: Utc::now().timestamp_millis(),
+            model_slug: slug,
+            context_features,
+            model_idx,
+            reward,
+            success: episode.success,
+            ts_ms: Utc::now().timestamp_millis(),
         });
         true
     }
 
     fn on_experiment_concluded(&self, experiment: &PromptExperiment) -> bool {
-        let (Some(winner_id), Some(role_raw)) = (experiment.winner_id.as_deref(), experiment.role.as_deref()) else { return false };
-        let Some(role) = parse_agent_role(role_raw) else { return false };
-        let Some(winner_slug) = experiment.variants.iter().find(|variant| variant.id == winner_id).and_then(|variant| variant.slug.as_deref()) else { return false };
-        if !self.cascade_router.update_static_table(role, winner_slug) { return false; }
-        eprintln!("[learn] experiment concluded -- updated static routing table: experiment={} winner={} role={}", experiment.experiment_id, winner_slug, role_raw);
+        let (Some(winner_id), Some(role_raw)) =
+            (experiment.winner_id.as_deref(), experiment.role.as_deref())
+        else {
+            return false;
+        };
+        let Some(role) = parse_agent_role(role_raw) else {
+            return false;
+        };
+        let Some(winner_slug) = experiment
+            .variants
+            .iter()
+            .find(|variant| variant.id == winner_id)
+            .and_then(|variant| variant.slug.as_deref())
+        else {
+            return false;
+        };
+        if !self.cascade_router.update_static_table(role, winner_slug) {
+            return false;
+        }
+        eprintln!(
+            "[learn] experiment concluded -- updated static routing table: experiment={} winner={} role={}",
+            experiment.experiment_id, winner_slug, role_raw
+        );
         true
     }
 

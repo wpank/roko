@@ -3,6 +3,11 @@
 //! Free functions that query or write to the neuro knowledge store, build
 //! strategy-fragment context, record lifecycle transitions, and apply
 //! knowledge-driven gate hints.
+//!
+//! STATUS: Pre-wired infrastructure. All public functions are built but not
+//! yet connected to the graph execution or runner dispatch paths. Wiring
+//! is tracked in `.roko/GAPS.md`. The tests below exercise the logic directly.
+#![allow(dead_code)]
 
 use roko_agent::AgentResult;
 use roko_core::{AgentRole, TaskCategory};

@@ -23,8 +23,8 @@ use tokio::task::JoinSet;
 use crate::{
     AnomalyLens, CollectiveIntelligenceLens, EfficiencyLens, LatencyLens, LensOperatorStatus,
     LensPayload, LensQueueSnapshot, LensRuntimeControl, LensRuntimeSnapshot, LensSignalEnvelope,
-    QualityLens, StateHubSender, TelemetryProjectionAggregator, TelemetryProjectionError,
-    TrendLens, UsageLens, create_builtin_health_lens,
+    QualityLens, RagPerformanceLens, StateHubSender, TelemetryProjectionAggregator,
+    TelemetryProjectionError, TrendLens, UsageLens, create_builtin_health_lens,
 };
 
 /// Circuit-breaker policy applied independently to every registered Lens.
@@ -1233,6 +1233,9 @@ fn create_builtin_lens(registration: &LensRegistration) -> Result<Arc<dyn Teleme
         | "c-factor-lens" => Arc::new(CollectiveIntelligenceLens::new(
             name, scope, observes, params,
         )?),
+        "roko:rag-performance-lens" | "rag-performance-lens" => {
+            Arc::new(RagPerformanceLens::new(name, scope, observes, params)?)
+        }
         _ => {
             return Err(RokoError::config(format!(
                 "lens `{name}` uses unsupported runtime block `{}`",

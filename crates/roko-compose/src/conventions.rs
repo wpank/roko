@@ -146,11 +146,14 @@ impl ProjectConventions {
 ///
 /// # Arguments
 ///
-/// * `cargo_toml` — Contents of the project's root `Cargo.toml` (or workspace
-///   `Cargo.toml`). Pass empty string if unavailable.
-/// * `source_samples` — A handful of representative `.rs` source files. The
-///   more files provided, the more confident the detection — but even one
-///   file is enough for useful signal.
+/// * `cargo_toml` — Contents of the project manifest file (`Cargo.toml`,
+///   `pyproject.toml`, `go.mod`, `package.json`, etc.). Concatenate multiple
+///   manifest files when available. Pass empty string if unavailable. Used for
+///   dependency-based error-pattern detection (thiserror, anyhow, pydantic,
+///   pkg/errors, zod, io-ts).
+/// * `source_samples` — A handful of representative source files. The more
+///   files provided, the more confident the detection — but even one file is
+///   enough for useful signal.
 /// * `file_listing` — A list of file paths (relative to repo root). Used to
 ///   detect module organization patterns.
 #[must_use]
@@ -203,27 +206,73 @@ fn detect_naming(sources: &[&str]) -> NamingStyle {
     }
 }
 
-/// Detect error handling pattern from Cargo.toml and source.
-fn detect_error_pattern(cargo_toml: &str, sources: &[&str]) -> ErrorPattern {
+/// Detect error handling pattern from a project manifest and source samples.
+///
+/// The `manifest` parameter accepts any project manifest content — `Cargo.toml`
+/// for Rust, `pyproject.toml` / `setup.cfg` for Python, `go.mod` for Go, or
+/// `package.json` for TypeScript. Pass the concatenated content of all
+/// relevant manifest files when multiple are available, or an empty string if
+/// none are available.
+///
+/// Detection is additive: non-Rust patterns are checked first so that
+/// polyglot projects surface the richer error-library signal.
+fn detect_error_pattern(manifest: &str, sources: &[&str]) -> ErrorPattern {
+    // ── Rust: thiserror / anyhow ────────────────────────────────────────────
     let has_thiserror =
-        cargo_toml.contains("thiserror") || sources.iter().any(|s| s.contains("thiserror"));
-    let has_anyhow = cargo_toml.contains("anyhow") || sources.iter().any(|s| s.contains("anyhow"));
+        manifest.contains("thiserror") || sources.iter().any(|s| s.contains("thiserror"));
+    let has_anyhow = manifest.contains("anyhow") || sources.iter().any(|s| s.contains("anyhow"));
 
-    match (has_thiserror, has_anyhow) {
-        (true, true) => ErrorPattern::ThiserrorAndAnyhow,
-        (true, false) => ErrorPattern::Thiserror,
-        (false, true) => ErrorPattern::Anyhow,
-        (false, false) => {
-            // Check for custom error types.
-            let has_custom = sources
-                .iter()
-                .any(|s| s.contains("impl std::error::Error") || s.contains("impl Error for"));
-            if has_custom {
-                ErrorPattern::Custom
-            } else {
-                ErrorPattern::Unknown
-            }
-        }
+    if has_thiserror || has_anyhow {
+        return match (has_thiserror, has_anyhow) {
+            (true, true) => ErrorPattern::ThiserrorAndAnyhow,
+            (true, false) => ErrorPattern::Thiserror,
+            (false, true) => ErrorPattern::Anyhow,
+            _ => unreachable!(),
+        };
+    }
+
+    // ── Python: pydantic / attrs ────────────────────────────────────────────
+    let has_pydantic =
+        manifest.contains("pydantic") || sources.iter().any(|s| s.contains("pydantic"));
+    let has_attrs = manifest.contains("attrs")
+        || sources
+            .iter()
+            .any(|s| s.contains("import attrs") || s.contains("import attr"));
+    if has_pydantic || has_attrs {
+        return ErrorPattern::Custom;
+    }
+
+    // ── Go: pkg/errors ──────────────────────────────────────────────────────
+    let has_pkg_errors = manifest.contains("pkg/errors")
+        || sources
+            .iter()
+            .any(|s| s.contains("pkg/errors") || s.contains("\"github.com/pkg/errors\""));
+    if has_pkg_errors {
+        return ErrorPattern::Custom;
+    }
+
+    // ── TypeScript: zod / io-ts ─────────────────────────────────────────────
+    let has_zod = manifest.contains("\"zod\"")
+        || manifest.contains("zod:")
+        || sources
+            .iter()
+            .any(|s| s.contains("from \"zod\"") || s.contains("from 'zod'"));
+    let has_io_ts = manifest.contains("io-ts")
+        || sources
+            .iter()
+            .any(|s| s.contains("from \"io-ts\"") || s.contains("from 'io-ts'"));
+    if has_zod || has_io_ts {
+        return ErrorPattern::Custom;
+    }
+
+    // ── Rust fallback: bare impl Error ──────────────────────────────────────
+    let has_custom = sources
+        .iter()
+        .any(|s| s.contains("impl std::error::Error") || s.contains("impl Error for"));
+    if has_custom {
+        ErrorPattern::Custom
+    } else {
+        ErrorPattern::Unknown
     }
 }
 
@@ -369,5 +418,96 @@ serde = { version = "1", features = ["derive"] }
             .push("Always use Result, never panic".to_string());
         let fragment = conventions.to_prompt_fragment();
         assert!(fragment.contains("Always use Result, never panic"));
+    }
+
+    // ── P1-LANG-3: per-language error pattern detection ───────────────────
+
+    #[test]
+    fn detect_pydantic_as_custom() {
+        let pyproject = "[tool.poetry.dependencies]\npydantic = \"^2\"\n";
+        let conventions = detect_conventions(pyproject, &[], &[]);
+        assert_eq!(
+            conventions.error_handling,
+            ErrorPattern::Custom,
+            "pydantic in pyproject.toml should map to Custom"
+        );
+    }
+
+    #[test]
+    fn detect_attrs_in_source_as_custom() {
+        let src = "import attrs\n\n@attrs.define\nclass Foo:\n    x: int\n";
+        let conventions = detect_conventions("", &[src], &[]);
+        assert_eq!(
+            conventions.error_handling,
+            ErrorPattern::Custom,
+            "attrs import in source should map to Custom"
+        );
+    }
+
+    #[test]
+    fn detect_go_pkg_errors_in_source() {
+        let go_src = r#"import "github.com/pkg/errors""#;
+        let conventions = detect_conventions("", &[go_src], &[]);
+        assert_eq!(
+            conventions.error_handling,
+            ErrorPattern::Custom,
+            "pkg/errors import in Go source should map to Custom"
+        );
+    }
+
+    #[test]
+    fn detect_go_pkg_errors_in_manifest() {
+        let go_mod = "require github.com/pkg/errors v0.9.1\n";
+        let conventions = detect_conventions(go_mod, &[], &[]);
+        assert_eq!(
+            conventions.error_handling,
+            ErrorPattern::Custom,
+            "pkg/errors in go.mod should map to Custom"
+        );
+    }
+
+    #[test]
+    fn detect_zod_in_package_json() {
+        let package_json = r#"{"dependencies": {"zod": "^3"}}"#;
+        let conventions = detect_conventions(package_json, &[], &[]);
+        assert_eq!(
+            conventions.error_handling,
+            ErrorPattern::Custom,
+            "zod in package.json should map to Custom"
+        );
+    }
+
+    #[test]
+    fn detect_zod_import_in_ts_source() {
+        let ts_src = r#"import { z } from "zod";"#;
+        let conventions = detect_conventions("", &[ts_src], &[]);
+        assert_eq!(
+            conventions.error_handling,
+            ErrorPattern::Custom,
+            "zod import in TS source should map to Custom"
+        );
+    }
+
+    #[test]
+    fn detect_io_ts_in_package_json() {
+        let package_json = r#"{"dependencies": {"io-ts": "^2"}}"#;
+        let conventions = detect_conventions(package_json, &[], &[]);
+        assert_eq!(
+            conventions.error_handling,
+            ErrorPattern::Custom,
+            "io-ts in package.json should map to Custom"
+        );
+    }
+
+    #[test]
+    fn rust_thiserror_wins_over_python_pydantic_in_polyglot_manifest() {
+        // A polyglot project: both thiserror and pydantic in concatenated manifests.
+        let combined = "[dependencies]\nthiserror = \"1\"\n\npydantic = \"^2\"\n";
+        let conventions = detect_conventions(combined, &[], &[]);
+        assert_eq!(
+            conventions.error_handling,
+            ErrorPattern::Thiserror,
+            "thiserror should take precedence in a polyglot manifest"
+        );
     }
 }

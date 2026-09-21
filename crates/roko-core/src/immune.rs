@@ -18,6 +18,10 @@
 //! ImmuneResponse ────── recovery action after quarantine review
 //! ```
 
+// ImmuneCalibration and ImmuneMemory are product residuals (E34 adaptive
+// immune memory) not yet wired into the runtime; suppress until then.
+#![allow(dead_code)]
+
 use std::borrow::Borrow;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::{self, File, OpenOptions};
@@ -1101,9 +1105,11 @@ impl ImmuneMemory {
         let id = format!("sig-{:016x}", hasher.finish());
 
         // Check if we already have this signature.
-        if let Some(existing) = self.signatures.iter_mut().find(|s| {
-            s.dimensions == anomaly.dimensions
-        }) {
+        if let Some(existing) = self
+            .signatures
+            .iter_mut()
+            .find(|s| s.dimensions == anomaly.dimensions)
+        {
             existing.confirmations += 1;
             existing.affinity = (existing.affinity + 0.1).min(1.0);
             existing.last_confirmed = Some(Utc::now());
@@ -1149,7 +1155,11 @@ impl ImmuneMemory {
     ///
     /// Returns the highest-affinity match, if any exceeds the threshold.
     #[must_use]
-    pub(crate) fn check_known_threats(&self, anomaly: &AnomalyScore, threshold: f64) -> Option<&ThreatSignature> {
+    pub(crate) fn check_known_threats(
+        &self,
+        anomaly: &AnomalyScore,
+        threshold: f64,
+    ) -> Option<&ThreatSignature> {
         self.signatures
             .iter()
             .filter(|sig| sig.similarity(anomaly) >= threshold)

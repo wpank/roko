@@ -107,6 +107,10 @@ pub enum SubView {
     CFactorDetail,
     /// Dream cycle state: journal entries, archive coverage, and phase.
     DreamView,
+    /// Neuro store health: tier distribution, balance, calibration.
+    KnowledgeHealth,
+    /// Daimon affect state: PAD gauges and somatic markers.
+    DaimonView,
 
     // ── Region 8: Marketplace (F8) ──
     /// Job list browser.
@@ -133,6 +137,12 @@ pub enum SubView {
     LearningPlaybooks,
     /// Active prompt experiments panel (P2-04).
     LearningExperiments,
+    /// Knowledge store health: entry counts and tier distribution (RAG-06).
+    LearningKnowHealth,
+    /// RAG retrieval stats: precision, latency, miss rate (RAG-06).
+    LearningRagStats,
+    /// RAG retrieval A/B experiment outcomes (RAG-06).
+    LearningRagExperiments,
 
     // ── Region 5 additions ──
     /// Safety incident viewer (quarantine / taint propagation) (P2-06).
@@ -189,6 +199,8 @@ impl SubView {
                 SubView::ThreePanelInspect,
                 SubView::CFactorDetail,
                 SubView::DreamView,
+                SubView::KnowledgeHealth,
+                SubView::DaimonView,
             ],
             Tab::Marketplace => &[SubView::JobList, SubView::JobDetail, SubView::CreateJob],
             Tab::Atelier => &[SubView::PrdWorkshop, SubView::PlanExplorer],
@@ -198,6 +210,9 @@ impl SubView {
                 SubView::LearningEfficiency,
                 SubView::LearningPlaybooks,
                 SubView::LearningExperiments,
+                SubView::LearningKnowHealth,
+                SubView::LearningRagStats,
+                SubView::LearningRagExperiments,
             ],
             Tab::Providers => &[
                 SubView::ProviderOverview,
@@ -234,6 +249,8 @@ impl SubView {
             Self::ThreePanelInspect => "Runtime",
             Self::CFactorDetail => "C-Factor",
             Self::DreamView => "Dreams",
+            Self::KnowledgeHealth => "Kno.Health",
+            Self::DaimonView => "Daimon",
             Self::JobList => "Jobs",
             Self::JobDetail => "Detail",
             Self::CreateJob => "New Job",
@@ -244,6 +261,9 @@ impl SubView {
             Self::LearningEfficiency => "Efficiency",
             Self::LearningPlaybooks => "Playbooks",
             Self::LearningExperiments => "Experiments",
+            Self::LearningKnowHealth => "Kno.Health",
+            Self::LearningRagStats => "RAG Stats",
+            Self::LearningRagExperiments => "RAG Exp",
             Self::SafetyIncidents => "Safety",
             Self::ProviderOverview => "Overview",
             Self::ProviderCost => "Cost",

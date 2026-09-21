@@ -259,11 +259,7 @@ fn render_left_panel(
 
     render_progress_card(frame, sections[0], tui_state, theme);
     if affect_h > 0 {
-        widgets::affect_strip::render_affect_strip(
-            frame,
-            sections[1],
-            tui_state.affect.as_ref(),
-        );
+        widgets::affect_strip::render_affect_strip(frame, sections[1], tui_state.affect.as_ref());
     }
     widgets::phase_compact::render_phase_compact(frame, sections[2], tui_state, false);
 
@@ -468,10 +464,7 @@ fn affect_summary_line(snap: &AffectSnapshot) -> Line<'static> {
             Style::default().fg(pad_val_color(snap.dominance)),
         ),
         Span::styled("  conf:", Style::default().fg(Theme::TEXT_GHOST)),
-        Span::styled(
-            format!("{conf_pct}%"),
-            Style::default().fg(conf_color),
-        ),
+        Span::styled(format!("{conf_pct}%"), Style::default().fg(conf_color)),
     ];
 
     // P2-07: Cognitive energy and EFE tier.
@@ -2014,10 +2007,7 @@ fn render_cfactor_sparkline_with_bands(
     };
 
     let max = series_avg.iter().copied().max().unwrap_or(0).max(1);
-    let sparkline = Sparkline::default()
-        .data(series_avg)
-        .max(max)
-        .style(color);
+    let sparkline = Sparkline::default().data(series_avg).max(max).style(color);
     frame.render_widget(sparkline, spark_area);
 
     // Render p50/p95 band legend from latest non-zero bucket.

@@ -87,10 +87,7 @@ impl TaskContextConfig {
         };
 
         let opt_str = |key: &str| -> Option<String> {
-            table
-                .get(key)
-                .and_then(|v| v.as_str())
-                .map(String::from)
+            table.get(key).and_then(|v| v.as_str()).map(String::from)
         };
 
         let files = table
@@ -147,11 +144,11 @@ impl TaskContextCell {
 
 #[async_trait]
 impl Cell for TaskContextCell {
-    fn cell_id(&self) -> &str {
+    fn cell_id(&self) -> &'static str {
         "plan.task-context"
     }
 
-    fn cell_name(&self) -> &str {
+    fn cell_name(&self) -> &'static str {
         "TaskContextCell"
     }
 
@@ -177,14 +174,14 @@ impl Cell for TaskContextCell {
         let predecessor_count = input.len();
         let predecessor_tasks: Vec<serde_json::Value> = input
             .iter()
-            .filter_map(|signal| {
+            .map(|signal| {
                 // Try to extract task_id from predecessor signals' tags.
                 let task_id = signal.tag("task_id").unwrap_or("unknown");
                 let status = signal.tag("status").unwrap_or("completed");
-                Some(serde_json::json!({
+                serde_json::json!({
                     "task_id": task_id,
                     "status": status,
-                }))
+                })
             })
             .collect();
 
@@ -262,10 +259,16 @@ files = ["src/lib.rs", "src/main.rs"]
         assert_eq!(config.plan_id, "test-plan");
         assert_eq!(config.task_id, "T1");
         assert_eq!(config.title, "Implement feature X");
-        assert_eq!(config.description.as_deref(), Some("Build the feature with tests"));
+        assert_eq!(
+            config.description.as_deref(),
+            Some("Build the feature with tests")
+        );
         assert_eq!(config.role.as_deref(), Some("implementer"));
         assert_eq!(config.tier, "focused");
-        assert_eq!(config.model_hint.as_deref(), Some("claude-sonnet-4-20250514"));
+        assert_eq!(
+            config.model_hint.as_deref(),
+            Some("claude-sonnet-4-20250514")
+        );
         assert_eq!(config.domain.as_deref(), Some("coding"));
         assert_eq!(config.timeout_secs, 600);
         assert_eq!(config.sequence, 0);

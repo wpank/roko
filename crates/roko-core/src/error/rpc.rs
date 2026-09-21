@@ -6,6 +6,10 @@
 //! for wire-level transport. Standard codes follow the JSON-RPC spec; custom
 //! codes in the -32000..-32099 range encode Roko-specific failure categories.
 
+// RPC wire types and constants are used by roko-serve's JSON-RPC path which
+// hasn't been imported into this crate's lib.rs re-export yet.
+#![allow(dead_code)]
+
 use super::RokoError;
 
 /// JSON-RPC error with code, message, and optional structured data.
@@ -57,7 +61,11 @@ impl RpcError {
 
     /// Create a new RPC error with structured data.
     #[must_use]
-    pub(crate) fn with_data(code: i64, message: impl Into<String>, data: serde_json::Value) -> Self {
+    pub(crate) fn with_data(
+        code: i64,
+        message: impl Into<String>,
+        data: serde_json::Value,
+    ) -> Self {
         Self {
             code,
             message: message.into(),

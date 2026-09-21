@@ -14,7 +14,7 @@ use chrono::{DateTime, Duration, Utc};
 use regex::Regex;
 use roko_core::runtime_event::{RuntimeEvent, RuntimeEventEnvelope, WorkflowOutcome};
 use roko_core::{config::schema::RokoConfig, obs::LogScrubber};
-use roko_runtime::workflow_contract::{WorkflowConfig, WorkflowRunReport};
+use roko_runtime::workflow_contract::WorkflowRunReport;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -626,14 +626,6 @@ fn share_url_for(
         .and_then(non_empty)
         .ok_or_else(|| "public sharing requires [relay].public_url in roko.toml".to_string())?;
     Ok(format!("{}/runs/{token}", base_url.trim_end_matches('/')))
-}
-
-fn workflow_config_for_name(name: &str) -> WorkflowConfig {
-    match name {
-        "standard" => WorkflowConfig::standard(),
-        "full" => WorkflowConfig::full(),
-        _ => WorkflowConfig::express(),
-    }
 }
 
 fn transcript_from_report(token: String, report: &WorkflowRunReport) -> RunTranscript {

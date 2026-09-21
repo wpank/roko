@@ -34,13 +34,13 @@ pub use corrigibility::{
     register_corrigibility_cells,
 };
 pub use graduation::GraduationCell;
-pub use plan_compose::PlanComposeCell;
-pub use plan_gate::PlanGateCell;
 pub use immune::{
     ImmuneAssessmentCell, ImmuneCellState, ImmuneContainmentCell, ImmuneEscalationCell,
     ImmuneGraphOutput, ImmunePerceptionCell, ImmunePipelineGraph, ImmuneValidationCell,
     immune_pipeline_graph, register_immune_cells,
 };
+pub use plan_compose::PlanComposeCell;
+pub use plan_gate::PlanGateCell;
 pub use stubs::PassthroughCell;
 pub use task_context::{TaskContextCell, TaskContextConfig};
 pub use task_executor::{

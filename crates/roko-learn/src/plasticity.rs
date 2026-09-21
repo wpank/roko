@@ -90,11 +90,7 @@ impl PlasticityMonitor {
     /// Record an observation and update plasticity.
     pub fn observe(&mut self, obs: &PlasticityObservation) {
         let accepted = if obs.pattern_accepted { 1.0 } else { 0.0 };
-        let contradicted = if obs.contradicted_existing {
-            1.0
-        } else {
-            0.0
-        };
+        let contradicted = if obs.contradicted_existing { 1.0 } else { 0.0 };
 
         if self.total_observations == 0 {
             self.acceptance_ema = accepted;
@@ -103,10 +99,14 @@ impl PlasticityMonitor {
         } else {
             self.acceptance_ema = PLASTICITY_EMA_ALPHA
                 .mul_add(accepted, (1.0 - PLASTICITY_EMA_ALPHA) * self.acceptance_ema);
-            self.contradiction_ema = PLASTICITY_EMA_ALPHA
-                .mul_add(contradicted, (1.0 - PLASTICITY_EMA_ALPHA) * self.contradiction_ema);
-            self.magnitude_ema = PLASTICITY_EMA_ALPHA
-                .mul_add(obs.update_magnitude, (1.0 - PLASTICITY_EMA_ALPHA) * self.magnitude_ema);
+            self.contradiction_ema = PLASTICITY_EMA_ALPHA.mul_add(
+                contradicted,
+                (1.0 - PLASTICITY_EMA_ALPHA) * self.contradiction_ema,
+            );
+            self.magnitude_ema = PLASTICITY_EMA_ALPHA.mul_add(
+                obs.update_magnitude,
+                (1.0 - PLASTICITY_EMA_ALPHA) * self.magnitude_ema,
+            );
         }
 
         self.total_observations += 1;

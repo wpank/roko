@@ -77,9 +77,11 @@ pub(crate) struct PtySession {
     subscribers: Arc<Mutex<Vec<mpsc::Sender<Vec<u8>>>>>,
     /// Working directory the PTY was spawned in (for state persistence).
     spawn_workdir: std::path::PathBuf,
-    /// Terminal dimensions at creation.
+    /// Terminal dimensions at creation. Stored for future resize logic.
+    #[allow(dead_code)]
     spawn_cols: u16,
-    /// Terminal dimensions at creation.
+    /// Terminal dimensions at creation. Stored for future resize logic.
+    #[allow(dead_code)]
     spawn_rows: u16,
 }
 
@@ -261,6 +263,7 @@ impl TerminalCommandEventEmitter {
     }
 }
 
+#[cfg(test)]
 fn command_event_id(event: &CommandEvent) -> Option<&str> {
     match event {
         CommandEvent::Started { command_id, .. }

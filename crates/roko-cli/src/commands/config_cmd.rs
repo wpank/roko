@@ -780,8 +780,8 @@ pub(crate) async fn cmd_provider_health(workdir: &Path, check_credits: bool) -> 
 /// `"warn (no credits)"`, `"warn (unreachable)"`, or `"skip (cli provider)"`.
 async fn test_provider_credit(_provider_id: &str, provider: &ProviderConfig) -> String {
     use ProviderKind::{
-        AnthropicApi, CerebrasApi, ClaudeCli, CodexCli, CursorAcp, CursorCli, GeminiApi,
-        GeminiCli, Hermes, OpenAiCompat, OpenClaw, PerplexityApi,
+        AnthropicApi, CerebrasApi, ClaudeCli, CodexCli, CursorAcp, CursorCli, GeminiApi, GeminiCli,
+        Hermes, OpenAiCompat, OpenClaw, PerplexityApi,
     };
 
     // CLI-based providers don't have billing — skip.
@@ -834,9 +834,8 @@ async fn test_provider_credit(_provider_id: &str, provider: &ProviderConfig) -> 
                 .as_deref()
                 .unwrap_or("https://generativelanguage.googleapis.com")
                 .trim_end_matches('/');
-            let endpoint = format!(
-                "{base}/v1beta/models/gemini-2.0-flash:generateContent?key={api_key}"
-            );
+            let endpoint =
+                format!("{base}/v1beta/models/gemini-2.0-flash:generateContent?key={api_key}");
             let body = json!({
                 "contents": [{"parts": [{"text": "hi"}]}],
                 "generationConfig": {"maxOutputTokens": 1}
@@ -913,7 +912,11 @@ async fn test_provider_credit(_provider_id: &str, provider: &ProviderConfig) -> 
             } else {
                 format!(
                     "warn (unreachable — {})",
-                    e.without_url().to_string().chars().take(80).collect::<String>()
+                    e.without_url()
+                        .to_string()
+                        .chars()
+                        .take(80)
+                        .collect::<String>()
                 )
             }
         }
@@ -1181,7 +1184,7 @@ pub(crate) async fn cmd_provider_test_all(workdir: &Path, json: bool) -> Result<
 }
 
 pub(crate) fn cmd_model_list(workdir: &Path, names_only: bool) -> Result<()> {
-    use roko_core::config::model_registry::BUILTIN_MODELS;
+    use roko_core::config::model_registry::{builtin_pricing, ALIASES, BUILTIN_MODELS};
     use std::collections::BTreeSet;
 
     let config = roko_core::config::loader::load_config_unified(workdir)
@@ -1201,6 +1204,13 @@ pub(crate) fn cmd_model_list(workdir: &Path, names_only: bool) -> Result<()> {
         return Ok(());
     }
 
+    // Build alias index: slug → comma-separated aliases
+    let mut alias_index: std::collections::HashMap<&str, Vec<&str>> =
+        std::collections::HashMap::new();
+    for (alias, canonical) in ALIASES {
+        alias_index.entry(canonical).or_default().push(alias);
+    }
+
     // ── Configured models table ──────────────────────────────────────
     let configured_slugs: BTreeSet<&str> = models.values().map(|p| p.slug.as_str()).collect();
 
@@ -1208,7 +1218,7 @@ pub(crate) fn cmd_model_list(workdir: &Path, names_only: bool) -> Result<()> {
         println!("Configured models (roko.toml):");
         println!();
 
-        let mut rows: Vec<ModelsListRow> = Vec::new();
+        let mut rows: Vec<ModelListRow> = Vec::new();
         let mut model_names: Vec<String> = models.keys().cloned().collect();
         model_names.sort_unstable();
 
@@ -1216,18 +1226,20 @@ pub(crate) fn cmd_model_list(workdir: &Path, names_only: bool) -> Result<()> {
             let profile = &models[model_name];
             let key_ok = config.provider_available_for_model_key(model_name);
             let is_default = model_name == &default_model;
-            rows.push(ModelsListRow {
-                model: if is_default {
-                    format!("{model_name} *")
-                } else {
-                    model_name.clone()
-                },
-                provider: profile.provider.clone(),
-                slug: profile.slug.clone(),
-                key_status: if key_ok { "ok" } else { "missing" }.to_string(),
-            });
+            let mut row = build_model_list_row(model_name, profile);
+            if is_default {
+                row.model = format!("{model_name} *");
+            }
+            row.key_status = if key_ok { "ok".to_string() } else { "missing".to_string() };
+            // Attach aliases for this slug.
+            if let Some(aliases) = alias_index.get(profile.slug.as_str()) {
+                let mut sorted = aliases.clone();
+                sorted.sort_unstable();
+                row.aliases = sorted.join(", ");
+            }
+            rows.push(row);
         }
-        print!("{}", format_models_list_rows(&rows));
+        print!("{}", format_model_rows(&rows));
     } else {
         println!("No models configured in roko.toml.");
     }
@@ -1243,7 +1255,7 @@ pub(crate) fn cmd_model_list(workdir: &Path, names_only: bool) -> Result<()> {
         println!("Builtin models (available without config):");
         println!();
 
-        let mut rows: Vec<ModelsListRow> = Vec::new();
+        let mut rows: Vec<ModelListRow> = Vec::new();
         // Cache CLI binary probe results so we don't fork per model.
         let claude_cli_ok = roko_cli::auth_detect::claude_cli_available();
         for b in &builtins {
@@ -1268,20 +1280,41 @@ pub(crate) fn cmd_model_list(workdir: &Path, names_only: bool) -> Result<()> {
                     false
                 }
             };
-            rows.push(ModelsListRow {
+
+            // Derive cost from builtin pricing table.
+            let cost = if let Some(pricing) = builtin_pricing(b.slug) {
+                format!("${:.2}/${:.2}", pricing.input_per_m, pricing.output_per_m)
+            } else {
+                "—".to_string()
+            };
+
+            // Collect aliases for this slug.
+            let aliases = {
+                let mut a: Vec<&str> = alias_index.get(b.slug).cloned().unwrap_or_default();
+                a.sort_unstable();
+                a.join(", ")
+            };
+
+            rows.push(ModelListRow {
                 model: b.slug.to_string(),
                 provider: format!("{:?}", b.provider_kind),
                 slug: b.slug.to_string(),
+                context: format_context_window(b.context_window),
+                tools: format_bool_capability(b.supports_tools).to_string(),
+                thinking: format_bool_capability(b.supports_thinking).to_string(),
+                vision: format_bool_capability(b.supports_vision).to_string(),
+                cost,
                 key_status: if key_ok {
                     "ok".to_string()
                 } else if b.api_key_env.is_empty() {
-                    "ok (no key required)".to_string()
+                    "ok (no key needed)".to_string()
                 } else {
                     format!("missing ({})", b.api_key_env)
                 },
+                aliases,
             });
         }
-        print!("{}", format_models_list_rows(&rows));
+        print!("{}", format_model_rows(&rows));
     }
 
     // ── Legend ────────────────────────────────────────────────────────
@@ -1289,55 +1322,11 @@ pub(crate) fn cmd_model_list(workdir: &Path, names_only: bool) -> Result<()> {
         println!();
         println!("* = current default model");
     }
+    println!();
+    println!("Tools/Think/Vision: ✓ = supported, ✗ = not supported");
+    println!("Cost: input / output per million tokens (USD)");
 
     Ok(())
-}
-
-#[derive(Debug, Clone)]
-struct ModelsListRow {
-    model: String,
-    provider: String,
-    slug: String,
-    key_status: String,
-}
-
-fn format_models_list_rows(rows: &[ModelsListRow]) -> String {
-    let mut widths = ["Model".len(), "Provider".len(), "Slug".len(), "Key".len()];
-    for row in rows {
-        widths[0] = widths[0].max(row.model.len());
-        widths[1] = widths[1].max(row.provider.len());
-        widths[2] = widths[2].max(row.slug.len());
-        widths[3] = widths[3].max(row.key_status.len());
-    }
-
-    let mut out = String::new();
-    let _ = writeln!(
-        out,
-        "  {:<mw$}  {:<pw$}  {:<sw$}  {:<kw$}",
-        "Model",
-        "Provider",
-        "Slug",
-        "Key",
-        mw = widths[0],
-        pw = widths[1],
-        sw = widths[2],
-        kw = widths[3],
-    );
-    for row in rows {
-        let _ = writeln!(
-            out,
-            "  {:<mw$}  {:<pw$}  {:<sw$}  {:<kw$}",
-            row.model,
-            row.provider,
-            row.slug,
-            row.key_status,
-            mw = widths[0],
-            pw = widths[1],
-            sw = widths[2],
-            kw = widths[3],
-        );
-    }
-    out
 }
 
 fn format_effective_model_selection_summary(
@@ -2299,8 +2288,18 @@ pub(crate) fn format_provider_rows(rows: &[ProviderListRow]) -> String {
     out
 }
 
-#[cfg(test)]
 pub(crate) fn build_model_list_row(model_name: &str, profile: &ModelProfile) -> ModelListRow {
+    // Fall back to builtin pricing if the profile doesn't have explicit cost fields.
+    let cost = if profile.cost_input_per_m.is_some() || profile.cost_output_per_m.is_some() {
+        format_model_cost(profile)
+    } else {
+        use roko_core::config::model_registry::builtin_pricing;
+        if let Some(pricing) = builtin_pricing(&profile.slug) {
+            format!("${:.2}/${:.2}", pricing.input_per_m, pricing.output_per_m)
+        } else {
+            "—".to_string()
+        }
+    };
     ModelListRow {
         model: model_name.to_string(),
         provider: profile.provider.clone(),
@@ -2309,21 +2308,25 @@ pub(crate) fn build_model_list_row(model_name: &str, profile: &ModelProfile) -> 
         tools: format_bool_capability(profile.supports_tools).to_string(),
         thinking: format_bool_capability(profile.supports_thinking).to_string(),
         vision: format_bool_capability(profile.supports_vision).to_string(),
-        cost: format_model_cost(profile),
+        cost,
+        key_status: String::new(),
+        aliases: String::new(),
     }
 }
 
-#[cfg(test)]
 pub(crate) fn format_model_rows(rows: &[ModelListRow]) -> String {
+    // Compute column widths.
     let mut widths = [
         "Model".len(),
         "Provider".len(),
         "Slug".len(),
         "Context".len(),
         "Tools".len(),
-        "Thinking".len(),
+        "Think".len(),
         "Vision".len(),
         "Cost (in/out)".len(),
+        "Key".len(),
+        "Aliases".len(),
     ];
 
     for row in rows {
@@ -2335,57 +2338,63 @@ pub(crate) fn format_model_rows(rows: &[ModelListRow]) -> String {
         widths[5] = widths[5].max(row.thinking.len());
         widths[6] = widths[6].max(row.vision.len());
         widths[7] = widths[7].max(row.cost.len());
+        widths[8] = widths[8].max(row.key_status.len());
+        widths[9] = widths[9].max(row.aliases.len());
     }
 
-    let mut out = String::new();
-    let _ = writeln!(
-        out,
-        "{:<model_w$}  {:<provider_w$}  {:<slug_w$}  {:<context_w$}  {:<tools_w$}  {:<thinking_w$}  {:<vision_w$}  {:<cost_w$}",
-        "Model",
-        "Provider",
-        "Slug",
-        "Context",
-        "Tools",
-        "Thinking",
-        "Vision",
-        "Cost (in/out)",
-        model_w = widths[0],
-        provider_w = widths[1],
-        slug_w = widths[2],
-        context_w = widths[3],
-        tools_w = widths[4],
-        thinking_w = widths[5],
-        vision_w = widths[6],
-        cost_w = widths[7],
-    );
+    // Drop trailing empty-aliases column from header/rows when no row uses it.
+    let show_aliases = rows.iter().any(|r| !r.aliases.is_empty());
 
-    for row in rows {
+    let mut out = String::new();
+    if show_aliases {
         let _ = writeln!(
             out,
-            "{:<model_w$}  {:<provider_w$}  {:<slug_w$}  {:<context_w$}  {:<tools_w$}  {:<thinking_w$}  {:<vision_w$}  {:<cost_w$}",
-            row.model,
-            row.provider,
-            row.slug,
-            row.context,
-            row.tools,
-            row.thinking,
-            row.vision,
-            row.cost,
-            model_w = widths[0],
-            provider_w = widths[1],
-            slug_w = widths[2],
-            context_w = widths[3],
-            tools_w = widths[4],
-            thinking_w = widths[5],
-            vision_w = widths[6],
-            cost_w = widths[7],
+            "{:<model_w$}  {:<prov_w$}  {:<slug_w$}  {:<ctx_w$}  {:<tools_w$}  {:<think_w$}  {:<vis_w$}  {:<cost_w$}  {:<key_w$}  {:<alias_w$}",
+            "Model", "Provider", "Slug", "Context", "Tools", "Think", "Vision",
+            "Cost (in/out)", "Key", "Aliases",
+            model_w = widths[0], prov_w = widths[1], slug_w = widths[2],
+            ctx_w = widths[3], tools_w = widths[4], think_w = widths[5],
+            vis_w = widths[6], cost_w = widths[7], key_w = widths[8], alias_w = widths[9],
         );
+    } else {
+        let _ = writeln!(
+            out,
+            "{:<model_w$}  {:<prov_w$}  {:<slug_w$}  {:<ctx_w$}  {:<tools_w$}  {:<think_w$}  {:<vis_w$}  {:<cost_w$}  {:<key_w$}",
+            "Model", "Provider", "Slug", "Context", "Tools", "Think", "Vision",
+            "Cost (in/out)", "Key",
+            model_w = widths[0], prov_w = widths[1], slug_w = widths[2],
+            ctx_w = widths[3], tools_w = widths[4], think_w = widths[5],
+            vis_w = widths[6], cost_w = widths[7], key_w = widths[8],
+        );
+    }
+
+    for row in rows {
+        if show_aliases {
+            let _ = writeln!(
+                out,
+                "{:<model_w$}  {:<prov_w$}  {:<slug_w$}  {:<ctx_w$}  {:<tools_w$}  {:<think_w$}  {:<vis_w$}  {:<cost_w$}  {:<key_w$}  {:<alias_w$}",
+                row.model, row.provider, row.slug, row.context, row.tools, row.thinking,
+                row.vision, row.cost, row.key_status, row.aliases,
+                model_w = widths[0], prov_w = widths[1], slug_w = widths[2],
+                ctx_w = widths[3], tools_w = widths[4], think_w = widths[5],
+                vis_w = widths[6], cost_w = widths[7], key_w = widths[8], alias_w = widths[9],
+            );
+        } else {
+            let _ = writeln!(
+                out,
+                "{:<model_w$}  {:<prov_w$}  {:<slug_w$}  {:<ctx_w$}  {:<tools_w$}  {:<think_w$}  {:<vis_w$}  {:<cost_w$}  {:<key_w$}",
+                row.model, row.provider, row.slug, row.context, row.tools, row.thinking,
+                row.vision, row.cost, row.key_status,
+                model_w = widths[0], prov_w = widths[1], slug_w = widths[2],
+                ctx_w = widths[3], tools_w = widths[4], think_w = widths[5],
+                vis_w = widths[6], cost_w = widths[7], key_w = widths[8],
+            );
+        }
     }
 
     out
 }
 
-#[cfg(test)]
 pub(crate) fn format_context_window(tokens: u64) -> String {
     if tokens >= 1_000_000 && tokens % 1_000_000 == 0 {
         format!("{}M", tokens / 1_000_000)
@@ -2402,12 +2411,10 @@ pub(crate) fn format_context_window(tokens: u64) -> String {
     }
 }
 
-#[cfg(test)]
 pub(crate) fn format_bool_capability(value: bool) -> &'static str {
     if value { "✓" } else { "✗" }
 }
 
-#[cfg(test)]
 pub(crate) fn format_model_cost(profile: &ModelProfile) -> String {
     match (profile.cost_input_per_m, profile.cost_output_per_m) {
         (Some(input), Some(output)) => format!("${input:.2}/${output:.2}"),
@@ -3405,12 +3412,7 @@ pub(crate) fn build_provider_health_row(
         .unwrap_or_else(|| "—".to_string());
     let error_rate = health
         .filter(|snapshot| snapshot.total_requests > 0)
-        .map(|snapshot| {
-            format!(
-                "{:.1}%",
-                (snapshot.total_failures as f64 * 100.0) / snapshot.total_requests as f64
-            )
-        })
+        .map(|snapshot| format!("{:.1}%", snapshot.time_weighted_error_rate(now_ms) * 100.0))
         .unwrap_or_else(|| "—".to_string());
 
     let mut last_check_ms = health.and_then(|snapshot| snapshot.last_failure_at);
@@ -3598,7 +3600,6 @@ pub(crate) struct ProviderListRow {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg(test)]
 pub(crate) struct ModelListRow {
     pub(crate) model: String,
     pub(crate) provider: String,
@@ -3608,6 +3609,8 @@ pub(crate) struct ModelListRow {
     pub(crate) thinking: String,
     pub(crate) vision: String,
     pub(crate) cost: String,
+    pub(crate) key_status: String,
+    pub(crate) aliases: String,
 }
 
 pub(crate) const PROVIDER_FAILURE_THRESHOLD: u32 = 3;

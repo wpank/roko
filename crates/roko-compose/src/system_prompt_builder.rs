@@ -1663,7 +1663,10 @@ mod tests {
         assert!(pos_role < pos_conv, "role before conventions");
         assert!(pos_conv < pos_tools, "conventions before tools");
         assert!(pos_tools < pos_context, "tools before context");
-        assert!(pos_context < pos_domain, "context before domain (context is Critical)");
+        assert!(
+            pos_context < pos_domain,
+            "context before domain (context is Critical)"
+        );
         assert!(pos_domain < pos_task, "domain before task");
         assert!(pos_task < pos_anti, "task before anti-patterns");
         assert!(pos_task < pos_affect, "task before affect guidance");

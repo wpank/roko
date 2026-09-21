@@ -177,8 +177,7 @@ fn connected_app_refresh_does_not_replay_disk_state() {
         tasks_total: 0,
     })
     .expect("event json");
-    std::fs::write(roko_dir.join("events.jsonl"), format!("{stale_event}\n"))
-        .expect("events log");
+    std::fs::write(roko_dir.join("events.jsonl"), format!("{stale_event}\n")).expect("events log");
 
     let hub = crate::state_hub::shared_state_hub();
     let mut app = App::new_connected(dir.path(), &hub);

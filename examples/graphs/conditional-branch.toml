@@ -36,7 +36,7 @@ feature_name = "user authentication"
 [[nodes]]
 id = "agent_review"
 name = "LLM Code Review"
-cell_type = "agent"
+cell_type = "claude-agent"
 
 [nodes.config]
 model = "claude-sonnet-4-20250514"
@@ -55,7 +55,7 @@ template = "Code quality score >= 80. Auto-approving merge request."
 [[nodes]]
 id = "medium_quality_path"
 name = "Request Minor Fixes"
-cell_type = "agent"
+cell_type = "claude-agent"
 
 [nodes.config]
 model = "claude-sonnet-4-20250514"
@@ -66,7 +66,7 @@ max_response_tokens = 1024
 [[nodes]]
 id = "low_quality_path"
 name = "Request Rewrite"
-cell_type = "agent"
+cell_type = "claude-agent"
 
 [nodes.config]
 model = "claude-sonnet-4-20250514"

@@ -21,7 +21,9 @@ pub mod task_impl;
 
 pub use common::{PromptBudget, REFERENCE_CONTEXT_WINDOW_TOKENS, budget_for};
 pub use conductor::ConductorTemplate;
-pub use implementer::{ImplementerInput, ImplementerTemplate};
+pub use implementer::{
+    ImplementerInput, ImplementerLanguage, ImplementerTemplate, language_workspace_guidance,
+};
 pub use integration::{IntegrationInput, IntegrationTemplate};
 pub use quick::{QuickFixInput, QuickFixTemplate, QuickReviewerInput, QuickReviewerTemplate};
 pub use refactorer::RefactorerTemplate;

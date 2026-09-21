@@ -333,7 +333,7 @@ pub fn full_inventory() -> Vec<SurfaceEntry> {
     v.push(SurfaceEntry::cli(
         "plan run",
         SurfaceStatus::Wired,
-        "roko-cli orchestrate",
+        "roko-cli commands/plan::cmd_plan_run_engine",
         "Full orchestration loop: DAG executor, agent dispatch, gates, persistence",
     ));
     v.push(SurfaceEntry::cli(

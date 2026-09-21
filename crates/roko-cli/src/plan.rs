@@ -387,17 +387,38 @@ pub fn overlay_graph_checkpoint_status(workdir: &Path, summaries: &mut [PlanSumm
         let Some(status_str) = value.get("status").and_then(|v| v.as_str()) else {
             continue;
         };
+        // Compute age suffix from checkpoint updated_at_ms.
+        let age_suffix = value
+            .get("updated_at_ms")
+            .and_then(|v| v.as_u64())
+            .map(|ms| {
+                let now_ms = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as u64)
+                    .unwrap_or(0);
+                let age_secs = now_ms.saturating_sub(ms) / 1_000;
+                if age_secs < 60 {
+                    format!(" ({}s ago)", age_secs)
+                } else if age_secs < 3_600 {
+                    format!(" ({}m ago)", age_secs / 60)
+                } else if age_secs < 86_400 {
+                    format!(" ({}h ago)", age_secs / 3_600)
+                } else {
+                    format!(" ({}d ago)", age_secs / 86_400)
+                }
+            })
+            .unwrap_or_default();
         match status_str {
             "succeeded" => {
                 summary.completed = true;
-                summary.status = "done".to_string();
+                summary.status = format!("done{age_suffix}");
                 // If tasks.toml showed 0 done, infer all passed.
                 if summary.tasks_done == 0 && summary.task_count > 0 {
                     summary.tasks_done = summary.task_count;
                 }
             }
             "failed" => {
-                summary.status = "failed".to_string();
+                summary.status = format!("failed{age_suffix}");
                 // Mark at least one failure if tasks.toml showed 0 failed.
                 if summary.tasks_failed == 0 && summary.task_count > 0 {
                     summary.tasks_failed = 1;

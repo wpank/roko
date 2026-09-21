@@ -9,12 +9,14 @@
 use super::creation_journal::{
     CreationMarker, CreationPhase, creation_record_name, ensure_cleanup_safe, unlink_claim_file,
 };
-use super::git_ops::{isolate_worktree_config, read_gitdir, validate_id, worktree_list_contains_path};
+use super::git_ops::{
+    isolate_worktree_config, read_gitdir, validate_id, worktree_list_contains_path,
+};
 use super::{
+    CREATION_MARKER_DIR, CREATION_MARKER_SCHEMA, REPOSITORY_MUTATION_LOCK, RUNTIME_SHUTDOWN_WAIT,
     TestClaimMutationBarrier, TestClaimMutationPoint, TestPhaseBarrier, WorktreeConfig,
     WorktreeError, WorktreeHealth, WorktreeManager, format_attempt_branch_name,
     format_attempt_worktree_id, format_branch_name, validate_workspace_file_kinds_with,
-    CREATION_MARKER_DIR, CREATION_MARKER_SCHEMA, REPOSITORY_MUTATION_LOCK, RUNTIME_SHUTDOWN_WAIT,
 };
 use std::path::{Path, PathBuf};
 use std::process::Command as StdCommand;
@@ -225,10 +227,7 @@ struct GitProcessBarrier {
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
-fn install_git_process_barrier(
-    manager: &WorktreeManager,
-    tempdir: &TempDir,
-) -> GitProcessBarrier {
+fn install_git_process_barrier(manager: &WorktreeManager, tempdir: &TempDir) -> GitProcessBarrier {
     use std::os::unix::fs::PermissionsExt;
 
     let script = tempdir.path().join("blocking-git.sh");
@@ -311,9 +310,9 @@ fn assert_no_git_locks(root: &Path) {
             } else if path
                 .extension()
                 .is_some_and(|extension| extension == "lock")
-                && path.file_name().is_none_or(|name| {
-                    name != std::ffi::OsStr::new(REPOSITORY_MUTATION_LOCK)
-                })
+                && path
+                    .file_name()
+                    .is_none_or(|name| name != std::ffi::OsStr::new(REPOSITORY_MUTATION_LOCK))
             {
                 locks.push(path);
             }
@@ -484,8 +483,7 @@ async fn cancelled_remove_retains_handle_until_git_then_allows_ensure() {
     caller.abort();
     assert!(caller.await.expect_err("caller cancelled").is_cancelled());
     let ensure_manager = manager.clone();
-    let ensure =
-        tokio::spawn(async move { ensure_manager.ensure_for_plan("cancel-remove").await });
+    let ensure = tokio::spawn(async move { ensure_manager.ensure_for_plan("cancel-remove").await });
     tokio::time::sleep(Duration::from_millis(75)).await;
     assert!(
         !ensure.is_finished(),
@@ -972,10 +970,7 @@ fn parent_root_swap_returns_error_and_preserves_foreign_root_bytes() {
     let claim = manager
         .publish_creation_marker(test_creation_marker(&manager, "root-swap"))
         .unwrap();
-    let public_root = manager
-        .config
-        .worktrees_root
-        .join(CREATION_MARKER_DIR);
+    let public_root = manager.config.worktrees_root.join(CREATION_MARKER_DIR);
     let detached = tmp.path().join("detached-marker-root");
     let started = tmp.path().join("root-swap-started");
     let release = tmp.path().join("root-swap-release");
@@ -1134,13 +1129,12 @@ async fn record_symlink_is_rejected_without_following_or_removal() {
     let claim = manager
         .publish_creation_marker(test_creation_marker(&manager, "record-symlink"))
         .unwrap();
-    let record =
-        manager
-            .creation_claim_path("record-symlink")
-            .join(creation_record_name(
-                &claim.marker.claim_id,
-                CreationPhase::Prepared,
-            ));
+    let record = manager
+        .creation_claim_path("record-symlink")
+        .join(creation_record_name(
+            &claim.marker.claim_id,
+            CreationPhase::Prepared,
+        ));
     let outside = tmp.path().join("outside-record");
     std::fs::write(&outside, b"outside bytes\n").unwrap();
     let outside_bytes = std::fs::read(&outside).unwrap();
@@ -1170,13 +1164,12 @@ async fn hard_linked_record_is_rejected_and_preserved() {
     let claim = manager
         .publish_creation_marker(test_creation_marker(&manager, "record-hardlink"))
         .unwrap();
-    let record =
-        manager
-            .creation_claim_path("record-hardlink")
-            .join(creation_record_name(
-                &claim.marker.claim_id,
-                CreationPhase::Prepared,
-            ));
+    let record = manager
+        .creation_claim_path("record-hardlink")
+        .join(creation_record_name(
+            &claim.marker.claim_id,
+            CreationPhase::Prepared,
+        ));
     let outside = tmp.path().join("outside-hardlink");
     std::fs::hard_link(&record, &outside).unwrap();
     let bytes = std::fs::read(&record).unwrap();
@@ -1229,8 +1222,7 @@ async fn branch_compare_and_swap_rejects_drift_and_preserves_foreign_ref() {
         release: release.clone(),
     });
     let creating = manager.clone();
-    let task =
-        tokio::spawn(async move { creating.create("cas-drift", "feature/cas-drift").await });
+    let task = tokio::spawn(async move { creating.create("cas-drift", "feature/cas-drift").await });
     wait_for_barrier(&started).await;
     assert!(
         StdCommand::new("git")
@@ -1380,10 +1372,7 @@ async fn every_cleanup_unlink_crash_prefix_converges() {
         ensure_cleanup_safe(&claim.claim_dir_fd, &claim.marker).unwrap();
         let cleanup_order = [
             creation_record_name(&claim.marker.claim_id, CreationPhase::Prepared),
-            creation_record_name(
-                &claim.marker.claim_id,
-                CreationPhase::LinkedNoCheckout,
-            ),
+            creation_record_name(&claim.marker.claim_id, CreationPhase::LinkedNoCheckout),
             creation_record_name(&claim.marker.claim_id, CreationPhase::ResetComplete),
             "claim-id".to_string(),
             "cleanup-safe.json".to_string(),
@@ -1433,8 +1422,7 @@ fn repository_flock_serializes_cross_root_manager_instances() {
         return;
     };
     let owner = manager.acquire_repository_mutation_lock().unwrap();
-    let contender =
-        manager_with_worktrees_root(&manager, tmp.path().join("alternate-worktrees"));
+    let contender = manager_with_worktrees_root(&manager, tmp.path().join("alternate-worktrees"));
     let (started_tx, started_rx) = std::sync::mpsc::channel();
     let (acquired_tx, acquired_rx) = std::sync::mpsc::channel();
     let worker = std::thread::spawn(move || {
@@ -1521,8 +1509,7 @@ async fn cross_root_create_serializes_same_and_different_ids() {
     let Some((tmp, manager)) = make_manager() else {
         return;
     };
-    let contender =
-        manager_with_worktrees_root(&manager, tmp.path().join("alternate-worktrees"));
+    let contender = manager_with_worktrees_root(&manager, tmp.path().join("alternate-worktrees"));
 
     let same_started = tmp.path().join("same-create-started");
     let same_release = tmp.path().join("same-create-release");
@@ -1532,8 +1519,7 @@ async fn cross_root_create_serializes_same_and_different_ids() {
         release: same_release.clone(),
     });
     let owner_manager = manager.clone();
-    let owner =
-        tokio::spawn(async move { owner_manager.create_for_plan("cross-root-same").await });
+    let owner = tokio::spawn(async move { owner_manager.create_for_plan("cross-root-same").await });
     wait_for_barrier(&same_started).await;
     let same_contender = contender.clone();
     let raced =
@@ -2078,9 +2064,7 @@ async fn from_snapshot_rejects_duplicate_registry_ids() {
 
     let error = WorktreeManager::from_snapshot((*mgr.config).clone(), snapshot).unwrap_err();
 
-    assert!(
-        matches!(error, WorktreeError::AlreadyExists(ref id) if id == "09-duplicate-snapshot")
-    );
+    assert!(matches!(error, WorktreeError::AlreadyExists(ref id) if id == "09-duplicate-snapshot"));
 }
 
 #[tokio::test]
@@ -2250,10 +2234,7 @@ async fn inherited_git_environment_cannot_spoof_reattach_identity() {
         .args(["worktree", "list", "--porcelain"])
         .output()
         .unwrap();
-    assert!(!worktree_list_contains_path(
-        &listed.stdout,
-        &candidate
-    ));
+    assert!(!worktree_list_contains_path(&listed.stdout, &candidate));
 }
 
 #[tokio::test]

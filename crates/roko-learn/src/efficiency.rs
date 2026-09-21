@@ -882,6 +882,89 @@ pub fn compute_fleet_cfactor(events: &[AgentEfficiencyEvent]) -> FleetCFactor {
     }
 }
 
+/// Audit #80 / Step 6 — Data-quality migration for historical efficiency events.
+///
+/// Before item 78 (P0-GA-1) fixed the gate_passed emission ordering, every
+/// efficiency event was written with `gate_passed: Some(false)` regardless of
+/// the actual gate outcome.  Those stale `false` values degrade model routing
+/// because the cascade router treats them as genuine failures.
+///
+/// This function reads `efficiency.jsonl`, rewrites any line whose
+/// `gate_passed` is `Some(false)` AND whose `outcome` is `"success"` (or
+/// empty) to `gate_passed: null`, and atomically replaces the file.
+/// Lines that cannot be parsed are preserved verbatim.
+///
+/// # Returns
+///
+/// The number of lines that were patched.
+///
+/// # Errors
+///
+/// Returns an error if the file cannot be read or the replacement write fails.
+pub fn null_ambiguous_gate_failed_entries(
+    path: &std::path::Path,
+) -> Result<usize, Box<dyn std::error::Error + Send + Sync>> {
+    use std::io::Write as _;
+
+    let text = match std::fs::read_to_string(path) {
+        Ok(t) => t,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(err) => return Err(Box::new(err)),
+    };
+
+    let mut patched = 0usize;
+    let mut output = Vec::with_capacity(text.len());
+
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            writeln!(output, "{line}")?;
+            continue;
+        }
+
+        // Parse as a generic JSON object so we can inspect and modify fields
+        // without round-tripping through the strongly-typed struct (which would
+        // drop any unknown fields added in newer schema versions).
+        let Ok(mut value) = serde_json::from_str::<serde_json::Value>(trimmed) else {
+            writeln!(output, "{line}")?;
+            continue;
+        };
+
+        // Only patch entries where gate_passed was written as false but the
+        // outcome field signals success (or is absent/empty).  This targets
+        // exactly the pre-P0-GA-1 pattern where the field was always false.
+        let is_false_gate_passed = value
+            .get("gate_passed")
+            .and_then(|v| v.as_bool())
+            .is_some_and(|b| !b);
+
+        if is_false_gate_passed {
+            let outcome = value.get("outcome").and_then(|v| v.as_str()).unwrap_or("");
+            // If the outcome explicitly records failure or retry, keep the
+            // gate_passed=false signal as it may be genuine.
+            let is_genuine_failure = matches!(
+                outcome,
+                "failure" | "gate_failure" | "cancelled" | "timeout"
+            );
+            if !is_genuine_failure {
+                if let Some(obj) = value.as_object_mut() {
+                    obj.insert("gate_passed".to_string(), serde_json::Value::Null);
+                }
+                patched += 1;
+            }
+        }
+
+        writeln!(output, "{}", serde_json::to_string(&value)?)?;
+    }
+
+    // Write atomically using a .tmp sibling.
+    let tmp = path.with_extension("tmp");
+    std::fs::write(&tmp, &output)?;
+    std::fs::rename(&tmp, path)?;
+
+    Ok(patched)
+}
+
 #[derive(Debug, Default)]
 struct FleetPlanAggregate {
     cost_usd: f64,
@@ -1007,6 +1090,8 @@ fn make_test_event(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[allow(unused_imports)]
+    use tempfile;
 
     // ── Grade tests ─────────────────────────────────────────────────
 
@@ -1886,5 +1971,76 @@ mod tests {
     fn efficiency_turn_taking_equality_even_split() {
         let eq = turn_taking_equality_for_counts(vec![5, 5, 5]);
         assert!((eq - 1.0).abs() < 1e-9);
+    }
+
+    // ── null_ambiguous_gate_failed_entries ──────────────────────────
+
+    /// Audit #80 Step 6: entries with gate_passed=false AND a success-like
+    /// outcome must be patched to gate_passed=null.
+    #[test]
+    fn null_ambiguous_gate_failed_rewrites_false_for_empty_outcome() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("efficiency.jsonl");
+
+        // Write three entries:
+        //   1. gate_passed=false, outcome="" → should be patched
+        //   2. gate_passed=false, outcome="failure" → genuine; keep
+        //   3. gate_passed=true  → already correct; keep
+        let lines = vec![
+            serde_json::json!({"gate_passed": false, "outcome": ""}),
+            serde_json::json!({"gate_passed": false, "outcome": "failure"}),
+            serde_json::json!({"gate_passed": true,  "outcome": "success"}),
+        ];
+        let content: String = lines.iter().map(|v| format!("{v}\n")).collect();
+        std::fs::write(&path, &content).unwrap();
+
+        let patched = null_ambiguous_gate_failed_entries(&path).unwrap();
+        assert_eq!(patched, 1, "exactly one ambiguous entry should be patched");
+
+        let result = std::fs::read_to_string(&path).unwrap();
+        let parsed_lines: Vec<serde_json::Value> = result
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+
+        assert_eq!(parsed_lines.len(), 3);
+        // Entry 1: gate_passed must now be null.
+        assert!(
+            parsed_lines[0]["gate_passed"].is_null(),
+            "ambiguous entry must become null, got {:?}",
+            parsed_lines[0]["gate_passed"]
+        );
+        // Entry 2: gate_passed must remain false (genuine failure).
+        assert_eq!(parsed_lines[1]["gate_passed"], serde_json::json!(false));
+        // Entry 3: gate_passed must remain true.
+        assert_eq!(parsed_lines[2]["gate_passed"], serde_json::json!(true));
+    }
+
+    /// Audit #80 Step 6: missing file should return Ok(0) without error.
+    #[test]
+    fn null_ambiguous_gate_failed_missing_file_is_noop() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("nonexistent.jsonl");
+        let result = null_ambiguous_gate_failed_entries(&path);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), 0);
+    }
+
+    /// Audit #80 Step 6: running the migration twice must be idempotent
+    /// (second run patches 0 entries).
+    #[test]
+    fn null_ambiguous_gate_failed_idempotent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("efficiency.jsonl");
+        let content = serde_json::json!({"gate_passed": false, "outcome": ""}).to_string() + "\n";
+        std::fs::write(&path, &content).unwrap();
+
+        let first = null_ambiguous_gate_failed_entries(&path).unwrap();
+        assert_eq!(first, 1);
+
+        // Second run should see gate_passed=null and patch nothing.
+        let second = null_ambiguous_gate_failed_entries(&path).unwrap();
+        assert_eq!(second, 0, "second migration run must be idempotent");
     }
 }

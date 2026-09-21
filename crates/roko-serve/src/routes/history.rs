@@ -159,11 +159,7 @@ mod tests {
     #[tokio::test]
     async fn list_history_returns_empty_when_no_sessions() {
         let (_dir, state) = test_state();
-        let result = list_history(
-            State(state),
-            Query(HistoryQuery { limit: None }),
-        )
-        .await;
+        let result = list_history(State(state), Query(HistoryQuery { limit: None })).await;
         assert!(result.is_ok());
         let body = result.unwrap().0;
         assert_eq!(body["count"], 0);
@@ -194,15 +190,14 @@ mod tests {
         std::fs::write(&path, serde_json::to_string_pretty(&summary).unwrap())
             .expect("write session");
 
-        let result = list_history(
-            State(state),
-            Query(HistoryQuery { limit: Some(10) }),
-        )
-        .await;
+        let result = list_history(State(state), Query(HistoryQuery { limit: Some(10) })).await;
         assert!(result.is_ok());
         let body = result.unwrap().0;
         assert_eq!(body["count"], 1);
-        assert_eq!(body["sessions"][0]["session_id"], "2026-01-01T00:00:00Z-agent1");
+        assert_eq!(
+            body["sessions"][0]["session_id"],
+            "2026-01-01T00:00:00Z-agent1"
+        );
     }
 
     #[tokio::test]
@@ -210,6 +205,9 @@ mod tests {
         let (_dir, state) = test_state();
         let result = get_history_session(State(state), Path("nonexistent".into())).await;
         assert!(result.is_err());
-        assert_eq!(result.unwrap_err().status, axum::http::StatusCode::NOT_FOUND);
+        assert_eq!(
+            result.unwrap_err().status,
+            axum::http::StatusCode::NOT_FOUND
+        );
     }
 }

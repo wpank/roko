@@ -1235,12 +1235,12 @@ mod tests {
     fn initial_rooms_are_validated_deduplicated_sorted_and_capacity_bounded() {
         let config = RelayClientConfig::new("https://relay.example.test")
             .with_initial_rooms([
-                "room:b".to_owned(),
-                "room:a".to_owned(),
-                "room:b".to_owned(),
+                "room.b".to_owned(),
+                "room.a".to_owned(),
+                "room.b".to_owned(),
             ])
             .expect("valid initial rooms");
-        assert_eq!(config.initial_rooms, ["room:a", "room:b"]);
+        assert_eq!(config.initial_rooms, ["room.a", "room.b"]);
         assert!(
             RelayClientConfig::new("https://relay.example.test")
                 .with_initial_rooms(Vec::new())
@@ -1253,7 +1253,7 @@ mod tests {
         );
         assert!(
             RelayClientConfig::new("https://relay.example.test")
-                .with_initial_rooms((0..=MAX_DESIRED_ROOMS).map(|index| format!("room:{index}")))
+                .with_initial_rooms((0..=MAX_DESIRED_ROOMS).map(|index| format!("room.{index}")))
                 .is_err()
         );
         let desired = DesiredRelayState::new(config.initial_rooms, 41);
@@ -1324,8 +1324,8 @@ mod tests {
             shutdown: CancellationToken::new(),
             status_rx,
         };
-        handle.subscribe("room:first").expect("first command");
-        assert!(handle.subscribe("room:second").is_err());
+        handle.subscribe("room.first").expect("first command");
+        assert!(handle.subscribe("room.second").is_err());
     }
 
     #[test]
@@ -1376,7 +1376,7 @@ mod tests {
         ] {
             assert!(
                 handle
-                    .register_feed(feed_id, "room:a", name, description, kind, rate)
+                    .register_feed(feed_id, "room.a", name, description, kind, rate)
                     .is_err()
             );
         }
@@ -1394,7 +1394,7 @@ mod tests {
         let completion = process_delivery(
             Some(&handler),
             DeliveryWork::Topic {
-                topic: "room:a".to_owned(),
+                topic: "room.a".to_owned(),
                 msg_type: "event".to_owned(),
                 payload: Value::Null,
                 publisher_id: None,
@@ -1416,7 +1416,7 @@ mod tests {
         let completion = process_delivery(
             Some(&handler),
             DeliveryWork::Topic {
-                topic: "room:a".to_owned(),
+                topic: "room.a".to_owned(),
                 msg_type: "event".to_owned(),
                 payload: Value::Null,
                 publisher_id: None,
@@ -1429,7 +1429,7 @@ mod tests {
             DeliveryCompletion::Committed {
                 cursor: 7,
                 ack: Some((room, 7))
-            } if room == "room:a"
+            } if room == "room.a"
         ));
     }
 
@@ -1684,7 +1684,7 @@ mod tests {
             .expect("connect websocket test");
         let feed = agent_relay::protocol::FeedDescriptor {
             feed_id: "feed-a".to_owned(),
-            topic: "room:feed".to_owned(),
+            topic: "room.feed".to_owned(),
             name: "feed".to_owned(),
             description: String::new(),
             kind: String::new(),
@@ -1692,7 +1692,7 @@ mod tests {
             schema: None,
         };
         let desired = DesiredRelayState {
-            rooms: HashSet::from(["room:a".to_owned(), "room:b".to_owned()]),
+            rooms: HashSet::from(["room.a".to_owned(), "room.b".to_owned()]),
             feeds: HashMap::from([(feed.feed_id.clone(), feed.clone())]),
             durable_cursor: 41,
         };
@@ -1704,7 +1704,7 @@ mod tests {
             &frames[0],
             AgentInboundFrame::Subscribe { request, topic: None }
                 if request.last_seq == Some(41)
-                    && request.rooms == ["room:a".to_owned(), "room:b".to_owned()]
+                    && request.rooms == ["room.a".to_owned(), "room.b".to_owned()]
         ));
         assert!(matches!(
             &frames[1],
@@ -1751,7 +1751,7 @@ mod tests {
         ));
         let (_command_tx, mut command_rx) = mpsc::channel(1);
         let mut desired = DesiredRelayState {
-            rooms: HashSet::from(["room:a".to_owned()]),
+            rooms: HashSet::from(["room.a".to_owned()]),
             feeds: HashMap::new(),
             durable_cursor: 5,
         };
@@ -1795,7 +1795,7 @@ mod tests {
                     to_seq: 0,
                 },
                 RelayOutboundFrame::Ack {
-                    event: "subscribed:room:a".to_owned(),
+                    event: "subscribed:room.a".to_owned(),
                 },
                 RelayOutboundFrame::Superseded(roko_core::wire_protocol::SupersededNotice {
                     agent_id: "agent-a".to_owned(),
@@ -1825,7 +1825,7 @@ mod tests {
             None,
         ));
         let (_command_tx, mut command_rx) = mpsc::channel(1);
-        let mut desired = DesiredRelayState::new(vec!["room:a".to_owned()], 0);
+        let mut desired = DesiredRelayState::new(vec!["room.a".to_owned()], 0);
         let (status_tx, status_rx) =
             watch::channel(RelayClientStatus::Disconnected { durable_cursor: 0 });
         let exit = run_connection(

@@ -549,15 +549,19 @@ impl App {
                             self.pending_exec_commands.insert(cmd_id, kind);
                             // State changes on Completed ack; show pending.
                             self.notifications
-                                .push_back(super::super::modals::Notification::info(if requested_pause {
-                                    "Pause requested"
-                                } else {
-                                    "Resume requested"
-                                }));
+                                .push_back(super::super::modals::Notification::info(
+                                    if requested_pause {
+                                        "Pause requested"
+                                    } else {
+                                        "Resume requested"
+                                    },
+                                ));
                         }
                         Err(crate::execution_control::CommandSendError::Full(_)) => {
                             self.notifications
-                                .push_back(super::super::modals::Notification::warn("command queue full"));
+                                .push_back(super::super::modals::Notification::warn(
+                                    "command queue full",
+                                ));
                         }
                         Err(crate::execution_control::CommandSendError::Disconnected(_)) => {
                             self.notifications
@@ -611,13 +615,11 @@ impl App {
             TuiAction::ApproveCommand => {
                 // P1-40: Emit SurfaceEvent for the approval action.
                 if let Some(approval) = &self.tui_state.pending_approval {
-                    self.emit_surface_event(
-                        roko_core::runtime_event::SurfaceEvent::HumanRespond {
-                            run_id: approval.run_id.clone().unwrap_or_default(),
-                            cell_id: approval.approval_id.clone().unwrap_or_default(),
-                            response: serde_json::json!({"approved": true}),
-                        },
-                    );
+                    self.emit_surface_event(roko_core::runtime_event::SurfaceEvent::HumanRespond {
+                        run_id: approval.run_id.clone().unwrap_or_default(),
+                        cell_id: approval.approval_id.clone().unwrap_or_default(),
+                        response: serde_json::json!({"approved": true}),
+                    });
                 }
                 if !self.resolve_active_approval(true) {
                     self.tui_state.pending_approval = None;
@@ -625,13 +627,11 @@ impl App {
             }
             TuiAction::ApproveAll => {
                 if let Some(approval) = &self.tui_state.pending_approval {
-                    self.emit_surface_event(
-                        roko_core::runtime_event::SurfaceEvent::HumanRespond {
-                            run_id: approval.run_id.clone().unwrap_or_default(),
-                            cell_id: approval.approval_id.clone().unwrap_or_default(),
-                            response: serde_json::json!({"approved": true, "all": true}),
-                        },
-                    );
+                    self.emit_surface_event(roko_core::runtime_event::SurfaceEvent::HumanRespond {
+                        run_id: approval.run_id.clone().unwrap_or_default(),
+                        cell_id: approval.approval_id.clone().unwrap_or_default(),
+                        response: serde_json::json!({"approved": true, "all": true}),
+                    });
                 }
                 if !self.resolve_active_approval(true) {
                     self.tui_state.pending_approval = None;
@@ -639,13 +639,11 @@ impl App {
             }
             TuiAction::RejectCommand => {
                 if let Some(approval) = &self.tui_state.pending_approval {
-                    self.emit_surface_event(
-                        roko_core::runtime_event::SurfaceEvent::HumanRespond {
-                            run_id: approval.run_id.clone().unwrap_or_default(),
-                            cell_id: approval.approval_id.clone().unwrap_or_default(),
-                            response: serde_json::json!({"approved": false}),
-                        },
-                    );
+                    self.emit_surface_event(roko_core::runtime_event::SurfaceEvent::HumanRespond {
+                        run_id: approval.run_id.clone().unwrap_or_default(),
+                        cell_id: approval.approval_id.clone().unwrap_or_default(),
+                        response: serde_json::json!({"approved": false}),
+                    });
                 }
                 if !self.resolve_active_approval(false) {
                     self.tui_state.pending_approval = None;
@@ -660,7 +658,7 @@ impl App {
                 self.tui_state.input_mode = InputMode::Normal;
                 self.tui_state.message_input.clear();
                 if !msg.is_empty() {
-                    // Write inject signal to .roko/signals.jsonl for the orchestrator
+                    // Write inject signal to .roko/signals.jsonl for the plan runner
                     let signal_path = self.workdir.join(".roko").join("signals.jsonl");
                     let ts = std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
@@ -831,11 +829,10 @@ impl App {
                     // so the user knows the action was not forwarded.
                     let dispatched = self.send_tui_command_for_confirm(action);
                     if !dispatched {
-                        self.notifications.push_back(
-                            super::super::modals::Notification::warn(
+                        self.notifications
+                            .push_back(super::super::modals::Notification::warn(
                                 "not connected to a running executor — command not forwarded",
-                            ),
-                        );
+                            ));
                     }
                 }
                 self.tui_state.pending_confirm = None;
@@ -1022,7 +1019,8 @@ impl App {
                     self.tui_state.git_branch_cursor =
                         (self.tui_state.git_branch_cursor + 1).min(max);
                 }
-                Tab::Inspect | Tab::Marketplace | Tab::Atelier | Tab::Learning | Tab::Providers => {}
+                Tab::Inspect | Tab::Marketplace | Tab::Atelier | Tab::Learning | Tab::Providers => {
+                }
                 Tab::Agents | Tab::Logs | Tab::Config => {}
             },
             TuiAction::DrillOut => match self.tui_state.active_tab {
@@ -1039,7 +1037,8 @@ impl App {
                     self.tui_state.git_branch_cursor =
                         self.tui_state.git_branch_cursor.saturating_sub(1);
                 }
-                Tab::Inspect | Tab::Marketplace | Tab::Atelier | Tab::Learning | Tab::Providers => {}
+                Tab::Inspect | Tab::Marketplace | Tab::Atelier | Tab::Learning | Tab::Providers => {
+                }
                 Tab::Agents | Tab::Logs | Tab::Config => {}
             },
             TuiAction::WaveNext => {
@@ -1515,7 +1514,6 @@ impl App {
             .map(|plan| plan.id.clone())
     }
 
-
     pub(super) fn visible_plan_indices(&self) -> Vec<usize> {
         let filter = &self.tui_state.plan_tree_filter;
         let filtering = filter.active && !filter.pattern.is_empty();
@@ -1529,7 +1527,6 @@ impl App {
             .collect()
     }
 
-
     pub(super) fn normalize_selected_plan_for_filter(&mut self) {
         let visible = self.visible_plan_indices();
         if visible.is_empty() {
@@ -1540,7 +1537,6 @@ impl App {
             self.tui_state.plan_scroll_offset = 0;
         }
     }
-
 
     pub(super) fn move_selected_plan(&mut self, direction: i8) {
         let visible = self.visible_plan_indices();
@@ -1559,7 +1555,6 @@ impl App {
         self.tui_state.selected_plan_idx = visible[next];
     }
 
-
     pub(super) fn refresh_log_search_matches(&mut self) {
         let signals_only = self.tui_state.sub_tab_for(Tab::Logs) == 1;
         let entries = self
@@ -1576,7 +1571,6 @@ impl App {
             .collect::<Vec<_>>();
         self.tui_state.log_search.update_matches(&entries);
     }
-
 
     pub(super) fn current_log_match_display_index(&self) -> Option<usize> {
         let search = &self.tui_state.log_search;
@@ -1600,7 +1594,6 @@ impl App {
             .update_matches(&self.tui_state.agent_output_history, &selected_id);
     }
 
-
     pub(super) fn current_git_branch(&self) -> String {
         if !self.tui_state.git_branch.is_empty() {
             return self.tui_state.git_branch.clone();
@@ -1613,7 +1606,6 @@ impl App {
             .filter(|branch| !branch.is_empty())
             .unwrap_or_default()
     }
-
 
     pub(super) fn completed_plan_branches(&self) -> Vec<String> {
         self.tui_state
@@ -1665,8 +1657,10 @@ impl App {
             return;
         }
 
-        match super::super::config_meta::save_pending_edits(&self.workdir, &self.tui_state.config_pending)
-        {
+        match super::super::config_meta::save_pending_edits(
+            &self.workdir,
+            &self.tui_state.config_pending,
+        ) {
             Ok(()) => {
                 self.tui_state.config_pending.clear();
                 self.tui_state.invalidate_config_cache();
@@ -1690,7 +1684,9 @@ impl App {
         let title = self.tui_state.job_form_title.trim().to_string();
         if title.is_empty() {
             self.notifications
-                .push_back(super::super::modals::Notification::warn("Job title is required"));
+                .push_back(super::super::modals::Notification::warn(
+                    "Job title is required",
+                ));
             return;
         }
 
@@ -1870,7 +1866,10 @@ impl App {
                 search_query: String::new(),
             },
             Tab::Providers => ViewState {
-                scroll: self.tui_state.providers_detail_scroll.min(u16::MAX as usize) as u16,
+                scroll: self
+                    .tui_state
+                    .providers_detail_scroll
+                    .min(u16::MAX as usize) as u16,
                 selected: self.tui_state.providers_selected,
                 sub_tab: self.tui_state.sub_tab_for(Tab::Providers),
                 secondary_selected: 0,
@@ -1889,7 +1888,6 @@ impl App {
             })
     }
 
-
     pub(super) fn dismiss_all_modals(&mut self) {
         if matches!(
             self.tui_state.active_modal,
@@ -1903,5 +1901,4 @@ impl App {
             self.tui_state.input_mode = InputMode::Normal;
         }
     }
-
 }

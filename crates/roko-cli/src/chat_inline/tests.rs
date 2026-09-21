@@ -679,10 +679,7 @@ fn truncate_long() {
 // /model atomic switch tests
 // -----------------------------------------------------------------------
 
-fn make_session(
-    dispatch: DispatchMode,
-    agent_session: Option<ChatAgentSession>,
-) -> ChatSession {
+fn make_session(dispatch: DispatchMode, agent_session: Option<ChatAgentSession>) -> ChatSession {
     ChatSession {
         phase: Phase::Input,
         input: InputState::new(),

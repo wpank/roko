@@ -1,8 +1,8 @@
 //! Property-based tests for roko-learn core types.
 
 use proptest::prelude::*;
-use roko_learn::efficiency::{AgentEfficiencyEvent, PromptSectionMeta, ToolCallMeta};
 use roko_learn::cascade::types::CascadeStage;
+use roko_learn::efficiency::{AgentEfficiencyEvent, PromptSectionMeta, ToolCallMeta};
 
 // ─── CascadeStage serde roundtrip ────────────────────────────────────────────
 
@@ -42,15 +42,22 @@ proptest! {
 // ─── AgentEfficiencyEvent serde roundtrip ───────────────────────────────────
 
 fn arb_prompt_section() -> impl Strategy<Value = PromptSectionMeta> {
-    ("[a-z]{1,12}", 0u64..8192, any::<u8>(), any::<bool>(), any::<bool>()).prop_map(
-        |(name, tokens, priority, was_truncated, was_dropped)| PromptSectionMeta {
-            name,
-            tokens,
-            priority,
-            was_truncated,
-            was_dropped,
-        },
+    (
+        "[a-z]{1,12}",
+        0u64..8192,
+        any::<u8>(),
+        any::<bool>(),
+        any::<bool>(),
     )
+        .prop_map(
+            |(name, tokens, priority, was_truncated, was_dropped)| PromptSectionMeta {
+                name,
+                tokens,
+                priority,
+                was_truncated,
+                was_dropped,
+            },
+        )
 }
 
 fn arb_tool_call() -> impl Strategy<Value = ToolCallMeta> {
@@ -79,7 +86,16 @@ fn arb_efficiency_event() -> impl Strategy<Value = AgentEfficiencyEvent> {
         prop::collection::vec(arb_tool_call(), 0..4),
     )
         .prop_map(
-            |(agent_id, plan_id, input_tokens, output_tokens, tools_available, tools_used, prompt_sections, tool_calls)| {
+            |(
+                agent_id,
+                plan_id,
+                input_tokens,
+                output_tokens,
+                tools_available,
+                tools_used,
+                prompt_sections,
+                tool_calls,
+            )| {
                 AgentEfficiencyEvent {
                     agent_id,
                     role: "implementer".into(),

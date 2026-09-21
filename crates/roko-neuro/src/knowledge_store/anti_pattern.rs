@@ -6,10 +6,8 @@ use chrono::Utc;
 
 use crate::{KnowledgeEntry, KnowledgeKind, KnowledgeTier};
 
-use super::scoring::{
-    entry_similarity, normalize, stable_hash, truncate_snippet,
-};
 use super::KnowledgeStore;
+use super::scoring::{entry_similarity, normalize, stable_hash, truncate_snippet};
 
 pub(crate) const ANTI_PATTERN_DUPLICATE_SIMILARITY_THRESHOLD: f64 = 0.45;
 
@@ -205,10 +203,7 @@ fn entry_has_normalized_tag(entry: &KnowledgeEntry, tag: &str) -> bool {
         .any(|entry_tag| normalize(entry_tag) == normalized)
 }
 
-pub(crate) fn reinforce_anti_pattern(
-    existing: &mut KnowledgeEntry,
-    candidate: &KnowledgeEntry,
-) {
+pub(crate) fn reinforce_anti_pattern(existing: &mut KnowledgeEntry, candidate: &KnowledgeEntry) {
     existing.confidence = (existing.confidence + 0.1).clamp(0.6, 1.0);
     existing.confidence_weight = -existing.confidence;
     existing.confirmation_count = existing.confirmation_count.saturating_add(1);

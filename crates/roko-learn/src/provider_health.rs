@@ -218,12 +218,7 @@ impl ProviderHealth {
     /// P3-09: Record a failure with associated cost attribution.
     ///
     /// Delegates to [`Self::record_failure`] and adds the cost to `wasted_cost_usd`.
-    pub fn record_failure_with_cost(
-        &mut self,
-        error: ErrorClass,
-        now_ms: i64,
-        cost_usd: f64,
-    ) {
+    pub fn record_failure_with_cost(&mut self, error: ErrorClass, now_ms: i64, cost_usd: f64) {
         self.record_failure(error, now_ms);
         self.wasted_cost_usd += cost_usd;
     }
@@ -258,6 +253,94 @@ impl ProviderHealth {
             }
             CircuitState::HalfOpen => true,
         }
+    }
+
+    /// Compute a time-weighted error rate that decays stale observations.
+    ///
+    /// Observations are weighted by age:
+    /// - < 24 h:  weight 1.0 (full)
+    /// - 24–72 h: weight 0.5 (half)
+    /// - > 72 h:  weight 0.1 (stale)
+    ///
+    /// The `failure_window` holds up to 20 recent failures with timestamps.
+    /// For failures not captured in the window (older history), a single
+    /// aggregate decay factor is applied based on `last_failure_at`.
+    ///
+    /// Returns `0.0` when no requests have been recorded.
+    #[must_use]
+    pub fn time_weighted_error_rate(&self, now_ms: i64) -> f64 {
+        if self.total_requests == 0 {
+            return 0.0;
+        }
+
+        const H24_MS: i64 = 24 * 3_600_000;
+        const H72_MS: i64 = 72 * 3_600_000;
+
+        /// Decay weight for a single observation at `age_ms` milliseconds old.
+        fn decay_weight(age_ms: i64) -> f64 {
+            if age_ms < H24_MS {
+                1.0
+            } else if age_ms < H72_MS {
+                0.5
+            } else {
+                0.1
+            }
+        }
+
+        // --- weighted failure count from the timestamped failure_window ---
+        let window_len = self.failure_window.len();
+        let mut windowed_weighted_failures: f64 = 0.0;
+        for record in &self.failure_window {
+            let age_ms = (now_ms - record.timestamp_ms).max(0);
+            windowed_weighted_failures += decay_weight(age_ms);
+        }
+
+        // --- un-windowed (older) failures ---
+        // These are failures that have already been evicted from failure_window.
+        let old_failure_count = self.total_failures.saturating_sub(window_len as u64);
+        let old_failure_weight = if old_failure_count > 0 {
+            // Use last_failure_at as a proxy age for pre-window failures.  If
+            // the most recent failure is old, all pre-window failures are at
+            // least that old.
+            let proxy_age_ms = self
+                .last_failure_at
+                .map(|t| (now_ms - t).max(0))
+                .unwrap_or(H72_MS + 1);
+            #[allow(clippy::cast_precision_loss)]
+            let factor = decay_weight(proxy_age_ms);
+            old_failure_count as f64 * factor
+        } else {
+            0.0
+        };
+
+        let total_weighted_failures = windowed_weighted_failures + old_failure_weight;
+
+        // --- weighted total requests ---
+        // We don't have per-success timestamps, so apply the same overall decay
+        // factor to total_requests that we used for the older failures, blended
+        // with the window fraction at full weight.
+        #[allow(clippy::cast_precision_loss)]
+        let window_fraction = window_len as f64 / self.total_requests as f64;
+        let recent_weight = 1.0; // window observations are already at "now"
+        let old_weight = if old_failure_count < self.total_requests {
+            let proxy_age_ms = self
+                .last_failure_at
+                .map(|t| (now_ms - t).max(0))
+                .unwrap_or(H72_MS + 1);
+            decay_weight(proxy_age_ms)
+        } else {
+            0.1
+        };
+        #[allow(clippy::cast_precision_loss)]
+        let weighted_total = self.total_requests as f64
+            * (window_fraction * recent_weight + (1.0 - window_fraction) * old_weight);
+
+        if weighted_total <= 0.0 {
+            // Degenerate case: fall back to raw lifetime rate.
+            return self.total_failures as f64 / self.total_requests as f64;
+        }
+
+        (total_weighted_failures / weighted_total).min(1.0)
     }
 
     /// Error-class-specific cooldown in milliseconds.
@@ -686,15 +769,37 @@ impl ProviderStatus {
         }
     }
 
-    /// Return the observed failure rate across all lifetime attempts.
+    /// Return the observed failure rate with time-weighted decay.
+    ///
+    /// Observations older than 24h contribute at 50% weight; older than 72h
+    /// at 10%.  Prevents stale errors from permanently inflating the rate.
     #[must_use]
     pub fn error_rate(&self) -> f64 {
         if self.total_attempts == 0 {
             return 0.0;
         }
-
-        (self.total_attempts.saturating_sub(self.total_successes)) as f64
-            / self.total_attempts as f64
+        let raw = (self.total_attempts.saturating_sub(self.total_successes)) as f64
+            / self.total_attempts as f64;
+        if raw == 0.0 {
+            return 0.0;
+        }
+        let decay = match self.last_failure_at {
+            None => 0.1,
+            Some(ts) => {
+                let now = chrono::Utc::now();
+                let age_secs = (now - ts).num_seconds().max(0) as f64;
+                const H24: f64 = 24.0 * 3600.0;
+                const H72: f64 = 72.0 * 3600.0;
+                if age_secs < H24 {
+                    1.0
+                } else if age_secs < H72 {
+                    0.5
+                } else {
+                    0.1
+                }
+            }
+        };
+        raw * decay
     }
 }
 

@@ -15,9 +15,9 @@ use tracing::{info, warn};
 use crate::session::CancelToken;
 use crate::types::{ContentBlock, StopReason, ToolCallKind, ToolCallStatus};
 
-use super::{CognitiveEvent, Result};
-use super::provenance::{build_provenance, render_provenance_card};
 use super::knowledge_helpers::{emit_knowledge_card, query_dispatch_knowledge};
+use super::provenance::{build_provenance, render_provenance_card};
+use super::{CognitiveEvent, Result};
 use crate::runner::run_with_workflow_engine;
 
 // ── Slash command dispatch ───────────────────────────────────────────
@@ -254,6 +254,19 @@ pub(crate) async fn run_slash_command(
             ).await;
         }
 
+        // ── Affect / Mood ──
+        "affect" => {
+            let text = read_affect_state(workdir);
+            let _ = event_sender.send(CognitiveEvent::TokenChunk(text)).await;
+            let _ = event_sender
+                .send(CognitiveEvent::Complete {
+                    stop_reason: StopReason::EndTurn,
+                    usage: None,
+                })
+                .await;
+            return Ok(());
+        }
+
         // ── Knowledge & Dreams ──
         "knowledge" => {
             require_args!("knowledge", "<topic>");
@@ -261,6 +274,17 @@ pub(crate) async fn run_slash_command(
         }
         "knowledge-stats" => vec!["knowledge".into(), "stats".into()],
         "dream" => vec!["knowledge".into(), "dream".into(), "run".into()],
+        "dream-status" => {
+            let text = read_dream_status(workdir);
+            let _ = event_sender.send(CognitiveEvent::TokenChunk(text)).await;
+            let _ = event_sender
+                .send(CognitiveEvent::Complete {
+                    stop_reason: StopReason::EndTurn,
+                    usage: None,
+                })
+                .await;
+            return Ok(());
+        }
 
         // ── Code Intelligence ──
         "index" => {
@@ -569,12 +593,16 @@ Available commands (organized by Will's core loop):
     /enhance-prd <slug> Enrich a PRD with web research
     /analyze           Analyze execution data
 
+  Affect / Mood
+    /affect            Current Daimon affect state (PAD values, behavioral state)
+
   Knowledge & Dreams
     /knowledge <topic> Query durable knowledge store
     /knowledge-stats   Knowledge store statistics
     /knowledge-gc      Garbage collect knowledge store
     /knowledge-backup  Backup knowledge store
     /dream             Dream consolidation (NREM→REM→integration)
+    /dream-status      Latest dream report (insights, knowledge written, playbooks)
 
   Code Intelligence
     /index [cmd]       Build/search/stats code index
@@ -1053,6 +1081,179 @@ pub(crate) async fn run_shell_command(
         .await;
 
     Ok(())
+}
+
+/// Reads the current Daimon affect state from disk and formats it for display.
+///
+/// Tries the canonical path `.roko/daimon/affect.json` first, then falls back
+/// to the legacy `.roko/state/daimon.json` path. Returns a human-readable
+/// summary of the PAD vector and behavioral state.
+fn read_affect_state(workdir: &Path) -> String {
+    let canonical = workdir.join(".roko").join("daimon").join("affect.json");
+    let daimon_path = if canonical.exists() {
+        canonical
+    } else {
+        let legacy = workdir.join(".roko").join("state").join("daimon.json");
+        if legacy.exists() {
+            legacy
+        } else {
+            return "No affect state found. Run a few tasks to populate .roko/daimon/affect.json"
+                .to_string();
+        }
+    };
+
+    let text = match std::fs::read_to_string(&daimon_path) {
+        Ok(t) => t,
+        Err(e) => return format!("Failed to read affect state: {e}"),
+    };
+    let v: serde_json::Value = match serde_json::from_str(&text) {
+        Ok(v) => v,
+        Err(e) => return format!("Failed to parse affect state: {e}"),
+    };
+
+    let state = match v.get("state") {
+        Some(s) => s,
+        None => return "Affect state has unexpected format (no 'state' field)".to_string(),
+    };
+
+    let behavioral_state = state
+        .get("behavioral_state")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+    let confidence = state
+        .get("confidence")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
+    let updated_at = state
+        .get("updated_at")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+
+    let pad = state.get("pad");
+    let pleasure = pad
+        .and_then(|p| p.get("pleasure"))
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
+    let arousal = pad
+        .and_then(|p| p.get("arousal"))
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
+    let dominance = pad
+        .and_then(|p| p.get("dominance"))
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
+
+    let tick_count = state
+        .get("tick_count")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+
+    format!(
+        "Affect state (Daimon)\n\
+         ─────────────────────\n\
+         Behavioral state : {behavioral_state}\n\
+         Confidence       : {confidence:.2}\n\
+         PAD vector       : P={pleasure:+.3}  A={arousal:+.3}  D={dominance:+.3}\n\
+         Appraisal ticks  : {tick_count}\n\
+         Last updated     : {updated_at}\n"
+    )
+}
+
+/// Reads the latest dream cycle report from `.roko/dreams/` and formats it
+/// for display via ACP.
+fn read_dream_status(workdir: &Path) -> String {
+    let report_dir = workdir.join(".roko").join("dreams");
+
+    // Find the most recent `dream-<timestamp>.json` file.
+    let entries = match std::fs::read_dir(&report_dir) {
+        Ok(e) => e,
+        Err(_) => {
+            return "No dream reports found. Use /dream to run a consolidation cycle.".to_string();
+        }
+    };
+
+    let mut latest: Option<(i64, std::path::PathBuf)> = None;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        let Some(ts_str) = stem.strip_prefix("dream-") else {
+            continue;
+        };
+        if let Ok(ts) = ts_str.parse::<i64>() && latest.as_ref().is_none_or(|(cur, _)| ts > *cur) {
+            latest = Some((ts, path));
+        }
+    }
+
+    let Some((_, path)) = latest else {
+        return "No dream reports found. Use /dream to run a consolidation cycle.".to_string();
+    };
+
+    let text = match std::fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(e) => return format!("Failed to read dream report: {e}"),
+    };
+    let v: serde_json::Value = match serde_json::from_str(&text) {
+        Ok(v) => v,
+        Err(e) => return format!("Failed to parse dream report: {e}"),
+    };
+
+    let completed_at = v
+        .get("completed_at")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+    let total_episodes = v
+        .get("total_episodes")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let processed_episodes = v
+        .get("processed_episodes")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let knowledge_written = v
+        .get("knowledge_entries_written")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let playbooks_created = v
+        .get("playbooks_created")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let regressions = v
+        .get("regressions_detected")
+        .and_then(|v| v.as_array())
+        .map(|a| a.len())
+        .unwrap_or(0);
+    let routing_recs = v
+        .get("routing_recommendations")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let performance_notes: Vec<&str> = v
+        .get("performance_notes")
+        .and_then(|v| v.as_array())
+        .map(|a| a.iter().filter_map(|n| n.as_str()).collect())
+        .unwrap_or_default();
+
+    let mut out = format!(
+        "Latest dream report\n\
+         ───────────────────\n\
+         Completed       : {completed_at}\n\
+         Episodes        : {processed_episodes}/{total_episodes} processed\n\
+         Knowledge       : {knowledge_written} entries written\n\
+         Playbooks       : {playbooks_created} created\n\
+         Regressions     : {regressions} detected\n\
+         Routing hints   : {routing_recs}\n"
+    );
+    if !performance_notes.is_empty() {
+        out.push_str("\nPerformance notes:\n");
+        for note in &performance_notes {
+            out.push_str(&format!("  • {note}\n"));
+        }
+    }
+    out
 }
 
 /// Maps a Claude tool name to an ACP tool call kind.

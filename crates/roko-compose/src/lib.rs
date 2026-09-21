@@ -28,6 +28,10 @@ pub mod error;
 
 pub mod agents_md;
 pub mod attention;
+/// RAG-08: Provider-neutral dense embedding adapter, gated by retrieval config.
+pub mod dense_embedding;
+/// RAG-22: Cross-encoder reranking interface, gated by retrieval config.
+pub mod reranker;
 pub mod auction;
 pub mod budget;
 pub mod budget_predictor;
@@ -45,6 +49,8 @@ pub mod enrichment;
 pub mod foraging;
 pub mod gate_feedback;
 pub mod graph_cells;
+/// P4-08: GroupContext bidder for agent group coordination.
+pub mod group_context_bidder;
 pub mod memory_functor;
 pub mod natural_transforms;
 pub mod prompt;
@@ -53,16 +59,14 @@ pub mod prompt_hints;
 pub mod role_prompts;
 pub mod safety_functor;
 pub mod scorer;
+/// P4-10: Section-level context compression.
+pub mod section_compressor;
 pub mod strategy;
 pub mod symbol_resolver;
 pub mod system_prompt_builder;
 pub mod task_brief;
 pub mod templates;
 pub mod token_counter;
-/// P4-08: GroupContext bidder for agent group coordination.
-pub mod group_context_bidder;
-/// P4-10: Section-level context compression.
-pub mod section_compressor;
 
 pub use agents_md::AgentsMd;
 pub use attention::{
@@ -128,9 +132,22 @@ pub use scorer::{ActiveInferenceScorer, GoalDirectedHeuristicScorer, SectionScor
 pub use strategy::{CompositionStrategy, DEFAULT_VCG_WARMUP_OBSERVATIONS};
 pub use system_prompt_builder::{SystemPromptBuilder, section_heading_for_name};
 pub use templates::{
-    ConductorTemplate, PlanSlice, PromptBudget, QuickFixInput, QuickFixTemplate,
-    QuickReviewerInput, QuickReviewerTemplate, RefactorerTemplate, ResearcherTemplate, Reviewer,
-    ReviewerInput, ReviewerTemplate, RolePromptTemplate, ScribeInput, ScribeTemplate, budget_for,
+    ConductorTemplate, ImplementerInput, ImplementerLanguage, ImplementerTemplate, PlanSlice,
+    PromptBudget, QuickFixInput, QuickFixTemplate, QuickReviewerInput, QuickReviewerTemplate,
+    RefactorerTemplate, ResearcherTemplate, Reviewer, ReviewerInput, ReviewerTemplate,
+    RolePromptTemplate, ScribeInput, ScribeTemplate, budget_for, language_workspace_guidance,
     scribe::ScribeVariant,
 };
 pub use token_counter::TokenCounter;
+pub use dense_embedding::{
+    DenseEmbeddingAdapter, EmbedAdapterError, NoopEmbeddingAdapter,
+    OpenAiCompatEmbeddingAdapter, dense_embedding_adapter_for_config,
+};
+pub use reranker::{
+    HeuristicReranker, NoopReranker, Reranker, reranker_for_config,
+};
+/// RAG-09: Unified retrieval context bidder — combines episode, knowledge,
+/// code index, and dense search under one AttentionBidder.
+pub mod unified_retrieval_bidder;
+pub use unified_retrieval_bidder::UnifiedRetrievalContextBidder;
+pub use graph_cells::{RETRIEVAL_CELL_TYPE, RetrievalCell, register_retrieval_cell};

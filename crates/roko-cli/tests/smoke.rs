@@ -313,6 +313,7 @@ printf '%s\n' '{{"type":"content_block_delta","delta":{{"text":"mcp-ok"}}}}'
         gemini_safety_settings: Vec::new(),
         cancel_token: None,
         tool_audit: None,
+        max_turns: None,
     };
 
     let agent = ClaudeCliAdapter

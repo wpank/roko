@@ -276,6 +276,7 @@ mod tests {
             tools: Vec::new(),
             triggers: Vec::new(),
             sandbox: None,
+            wasm_sha256: None,
             dependencies: deps
                 .into_iter()
                 .map(|(dep_name, dep_version)| PluginDependency {

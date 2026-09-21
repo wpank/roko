@@ -258,12 +258,10 @@ fn build_active_detail(
     // Elapsed time
     if step.elapsed_secs > 0.0 {
         let time_str = format!(" {}", format_elapsed(step.elapsed_secs));
-        let time_style = {
-            let pulse = atm.heartbeat();
-            let base_r = 170.0_f64;
-            let r = (base_r * pulse).clamp(0.0, 255.0) as u8;
-            Style::default().fg(Color::Rgb(r, 112, 136))
-        };
+        let time_style = Style::default().fg(super::super::theme::brighten(
+            Theme::ROSE_PULSE,
+            atm.heartbeat(),
+        ));
         spans.push(Span::styled(time_str, time_style));
     }
 
@@ -383,17 +381,10 @@ fn format_elapsed(secs: f64) -> String {
     }
 }
 
-/// Modulate a base rose color with heartbeat pulse.
+/// Modulate the ROSE_PULSE theme color with heartbeat scale.
 fn pulse_active(heartbeat: f64) -> Color {
-    let base_r = 170.0;
-    let base_g = 112.0;
-    let base_b = 136.0;
     let scale = heartbeat.clamp(0.9, 1.1);
-    Color::Rgb(
-        (base_r * scale).min(255.0) as u8,
-        (base_g * scale).min(255.0) as u8,
-        (base_b * scale).min(255.0) as u8,
-    )
+    super::super::theme::brighten(Theme::ROSE_PULSE, scale)
 }
 
 // ---------------------------------------------------------------------------

@@ -13,6 +13,10 @@
 //! 1. Add an `EnvVarSpec` entry to the appropriate category function below.
 //! 2. Run the source-comparison check to confirm the literal is covered.
 
+// Registry helpers are called from CLI commands that aren't yet wired into a
+// single compilation path; suppress until the config env command is hooked up.
+#![allow(dead_code)]
+
 use serde::Serialize;
 use std::fmt;
 

@@ -464,6 +464,7 @@ impl ChatAgentSession {
     }
 
     /// Build the typed error used when an unsupported provider is requested.
+    #[allow(dead_code)] // error builder for future API-provider chat paths
     fn api_provider_not_implemented_error(&self) -> SessionError {
         let provider = self.model_selection.provider_kind.clone();
         let model = self.model.clone();
@@ -528,6 +529,7 @@ impl ChatAgentSession {
     /// the provider.  Maps the well-known error categories (auth, rate-limit,
     /// network) to typed variants so callers can distinguish them without
     /// parsing error messages.
+    #[allow(dead_code)] // used only in tests
     fn classify_http_error(&self, status: u16, body: &str) -> SessionError {
         let provider = self.model_selection.provider_kind.clone();
         match status {
@@ -1923,7 +1925,7 @@ where
 /// `ExecutionOverrides` and validate against the `ChatLight` profile.
 ///
 /// **Spec constraint (Lane D1):** this adapter does not edit
-/// `commands/plan.rs`, `runner/event_loop.rs`, or any plan-path type.
+/// `commands/plan.rs` or any plan-path type.
 pub struct ChatSessionServiceAdapter;
 
 impl ChatSessionServiceAdapter {

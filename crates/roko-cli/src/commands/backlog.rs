@@ -140,7 +140,7 @@ async fn cmd_backlog_import(
 
         // Create the PRD idea
         let idea_text = format!("[backlog#{}] {}", num, title);
-        match roko_cli::prd::cmd_idea(workdir, &idea_text) {
+        match roko_cli::prd::cmd_idea(workdir, &idea_text, false) {
             Ok(()) => {
                 imported += 1;
                 println!("  #{}: {}", num, title);
@@ -1310,8 +1310,7 @@ mod tests {
                         **Status**: Verified (2026-09-03) -- evidence\n\
                         **Priority**: P2\n";
 
-        let result =
-            upsert_status_line(content, "**Status**: Done (2026-09-07) -- new-evidence");
+        let result = upsert_status_line(content, "**Status**: Done (2026-09-07) -- new-evidence");
         // Blockquoted status line should be preserved.
         assert!(result.contains("> **Status: SOURCE-DONE** old blockquote"));
         // Non-blockquoted line should be replaced.
@@ -1331,10 +1330,12 @@ mod tests {
         .unwrap();
 
         let found = find_backlog_spec(&backlog_dir, 229).unwrap();
-        assert!(found
-            .to_str()
-            .unwrap()
-            .contains("229-backlog-plan-state-reconciliation.md"));
+        assert!(
+            found
+                .to_str()
+                .unwrap()
+                .contains("229-backlog-plan-state-reconciliation.md")
+        );
     }
 
     #[test]

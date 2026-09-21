@@ -5,9 +5,9 @@ use chrono::Utc;
 
 use crate::{KnowledgeEntry, KnowledgeKind, KnowledgeTier};
 
+use super::KnowledgeStore;
 use super::scoring::{effective_confidence, is_dead, recency_factor};
 use super::types::*;
-use super::KnowledgeStore;
 
 impl KnowledgeStore {
     /// Decay confidence for old entries using their configured half-life.

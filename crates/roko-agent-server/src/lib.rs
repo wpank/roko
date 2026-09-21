@@ -31,11 +31,10 @@ pub use registration::{
     AgentCard, AgentCardEndpoints, AgentCardPublisher, AgentRegistration, RegistrationOutcome,
 };
 pub use state::{
-    AgentMetrics, AgentPrediction, AgentPredictionResidual, AgentRuntimeStats,
-    AgentSidecarState, AgentState,
-    AgentStateStore, CreateTaskRequest, CreateTaskResult, DispatchLike, DispatchProfile,
-    FileStateStore, HeartbeatSnapshot, MessageContext, PredictionCreateRequest, ResearchMode,
-    SidecarDispatchError, StateEnvelope, StateStoreError,
+    AgentMetrics, AgentPrediction, AgentPredictionResidual, AgentRuntimeStats, AgentSidecarState,
+    AgentState, AgentStateStore, CreateTaskRequest, CreateTaskResult, DispatchLike,
+    DispatchProfile, FileStateStore, HeartbeatSnapshot, MessageContext, PredictionCreateRequest,
+    ResearchMode, SidecarDispatchError, StateEnvelope, StateStoreError,
 };
 
 type BoxFutureResult = Pin<Box<dyn Future<Output = Result<()>> + Send>>;

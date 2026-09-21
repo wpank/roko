@@ -190,8 +190,17 @@ fn score_sentence(sentence: &str, position: usize, total: usize) -> f64 {
     // Keyword bonus: sentences with key terms are more important.
     let lower = sentence.to_lowercase();
     let keywords = [
-        "must", "should", "important", "critical", "error", "warning",
-        "note", "required", "ensure", "always", "never",
+        "must",
+        "should",
+        "important",
+        "critical",
+        "error",
+        "warning",
+        "note",
+        "required",
+        "ensure",
+        "always",
+        "never",
     ];
     for keyword in &keywords {
         if lower.contains(keyword) {

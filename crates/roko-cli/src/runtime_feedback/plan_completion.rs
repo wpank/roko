@@ -83,10 +83,7 @@ impl FeedbackSink for DreamConsolidationSink {
 
         // Both flags must be true.
         if !self.dream_on_completion || !self.trigger_on_plan_complete {
-            tracing::debug!(
-                plan_id,
-                "dream consolidation skipped: disabled by config"
-            );
+            tracing::debug!(plan_id, "dream consolidation skipped: disabled by config");
             return Ok(());
         }
 
@@ -94,10 +91,7 @@ impl FeedbackSink for DreamConsolidationSink {
         {
             let mut guard = self.running.lock().unwrap_or_else(|e| e.into_inner());
             if *guard {
-                tracing::info!(
-                    plan_id,
-                    "dream consolidation skipped: already running"
-                );
+                tracing::info!(plan_id, "dream consolidation skipped: already running");
                 return Ok(());
             }
             *guard = true;
@@ -129,10 +123,7 @@ impl FeedbackSink for DreamConsolidationSink {
                         env: vec![],
                     },
                 };
-                let mut runner = roko_dreams::DreamRunner::new(
-                    workdir,
-                    dream_config,
-                );
+                let mut runner = roko_dreams::DreamRunner::new(workdir, dream_config);
                 runner.consolidate_async().await
             })
             .await;
@@ -193,10 +184,7 @@ impl DaimonPersistenceSink {
     /// - `affect_path`: path to `.roko/daimon/affect.json`.
     /// - `daimon_state`: shared mutable daimon state used by the runner.
     #[must_use]
-    pub fn new(
-        affect_path: PathBuf,
-        daimon_state: Arc<Mutex<roko_daimon::DaimonState>>,
-    ) -> Self {
+    pub fn new(affect_path: PathBuf, daimon_state: Arc<Mutex<roko_daimon::DaimonState>>) -> Self {
         Self {
             affect_path,
             daimon_state,
@@ -221,10 +209,7 @@ impl FeedbackSink for DaimonPersistenceSink {
 
         // Snapshot the state under the lock, then persist outside the lock.
         let snapshot = {
-            let guard = self
-                .daimon_state
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
+            let guard = self.daimon_state.lock().unwrap_or_else(|e| e.into_inner());
             guard.clone()
         };
 
@@ -491,11 +476,7 @@ mod tests {
 
     #[tokio::test]
     async fn dream_sink_skips_non_plan_events() {
-        let sink = DreamConsolidationSink::new(
-            PathBuf::from("/tmp/test"),
-            true,
-            true,
-        );
+        let sink = DreamConsolidationSink::new(PathBuf::from("/tmp/test"), true, true);
         let event = FeedbackEvent::IdleTick {
             ticks_since_last_work: 1,
         };
@@ -523,10 +504,7 @@ mod tests {
     #[tokio::test]
     async fn daimon_sink_skips_non_plan_events() {
         let state = Arc::new(Mutex::new(roko_daimon::DaimonState::new()));
-        let sink = DaimonPersistenceSink::new(
-            PathBuf::from("/tmp/test/affect.json"),
-            state,
-        );
+        let sink = DaimonPersistenceSink::new(PathBuf::from("/tmp/test/affect.json"), state);
         let event = FeedbackEvent::IdleTick {
             ticks_since_last_work: 1,
         };

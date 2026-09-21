@@ -668,13 +668,9 @@ impl DreamCycle {
                         .filter(|(eid, success)| ep_ids.contains(eid) && *success)
                         .count();
                     let rate = n_succ as f64 / n_ref as f64;
-                    let cls = if rate
-                        > _fitness_config.prior_mean + _fitness_config.prior_std
-                    {
+                    let cls = if rate > _fitness_config.prior_mean + _fitness_config.prior_std {
                         FitnessClassification::Beneficial
-                    } else if rate
-                        < _fitness_config.prior_mean - _fitness_config.prior_std
-                    {
+                    } else if rate < _fitness_config.prior_mean - _fitness_config.prior_std {
                         FitnessClassification::Harmful
                     } else {
                         FitnessClassification::Uncertain

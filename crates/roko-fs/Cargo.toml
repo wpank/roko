@@ -11,7 +11,7 @@ description = "Filesystem-backed Substrate for Roko: JSONL-append-only persisten
 workspace = true
 
 [features]
-default = []
+default = ["hdc"]
 hdc = ["dep:roko-primitives", "dep:base64"]
 
 [dependencies]

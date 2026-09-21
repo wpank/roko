@@ -519,6 +519,7 @@ mod tests {
     use super::*;
     use crate::streaming::parse_sse_line;
     use crate::tool_loop::StreamEventKind;
+    use roko_core::sse::parse_sse_text;
 
     #[test]
     fn basic_sse_fixture_parses_correctly() {
@@ -546,27 +547,24 @@ mod tests {
         let inspector = super::super::tool_progress_inspector::ToolProgressInspector;
         let mut content = String::new();
         let mut tool_events = Vec::new();
-        let mut pending_event: Option<String> = None;
 
-        for line in fixture.lines() {
-            if let Some(event_name) = line.strip_prefix("event:").map(str::trim) {
-                pending_event = Some(event_name.to_string());
-            } else if let Some(data) = line.strip_prefix("data:").map(str::trim) {
-                if let Some(event_name) = pending_event.take() {
-                    // Non-standard event -- check inspector.
-                    if data != "[DONE]" {
-                        if let Ok(json) = serde_json::from_str::<serde_json::Value>(data) {
-                            if let Some(event) = inspector.inspect(&event_name, &json) {
-                                tool_events.push(event);
-                            }
-                        }
+        // Use the shared SSE parser to accumulate complete frames, then
+        // dispatch each by its event type. This replaces the previous
+        // ad-hoc inline loop that used str::trim (both-ends) instead of
+        // the RFC 8895-correct strip_one_space (left-only).
+        for frame in parse_sse_text(fixture) {
+            if frame.event == "message" {
+                // Standard OpenAI-compatible data line.
+                if let Some(event) = parse_sse_line(&format!("data: {}", frame.data)) {
+                    if let StreamEventKind::TextDelta(delta) = &event.kind {
+                        content.push_str(delta);
                     }
-                } else {
-                    // Standard data line.
-                    if let Some(event) = parse_sse_line(line) {
-                        if let StreamEventKind::TextDelta(delta) = &event.kind {
-                            content.push_str(delta);
-                        }
+                }
+            } else if frame.data != "[DONE]" {
+                // Non-standard event — check inspector.
+                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&frame.data) {
+                    if let Some(event) = inspector.inspect(&frame.event, &json) {
+                        tool_events.push(event);
                     }
                 }
             }

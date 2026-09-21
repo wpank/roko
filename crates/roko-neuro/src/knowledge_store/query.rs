@@ -8,17 +8,17 @@ use chrono::Utc;
 use crate::{KnowledgeEntry, KnowledgeKind, KnowledgeTier};
 
 #[cfg(feature = "hdc")]
-use std::io::{self, BufRead, BufReader};
+use crate::hdc::{ResonanceDetector, ResonancePair, RoleFillerEncoder};
 #[cfg(feature = "hdc")]
 use anyhow::Context;
 #[cfg(feature = "hdc")]
-use crate::hdc::{ResonanceDetector, ResonancePair, RoleFillerEncoder};
-#[cfg(feature = "hdc")]
 use roko_primitives::hdc::HdcVector;
+#[cfg(feature = "hdc")]
+use std::io::{self, BufRead, BufReader};
 
+use super::KnowledgeStore;
 use super::scoring::*;
 use super::types::*;
-use super::KnowledgeStore;
 
 impl KnowledgeStore {
     /// Query the store for entries relevant to `topic`.
@@ -167,8 +167,7 @@ impl KnowledgeStore {
             // P3-11: Skip entries whose HDC vector was encoded with a
             // different version to avoid spurious similarity matches.
             if entry.hdc_encoder_version != 0
-                && entry.hdc_encoder_version
-                    != roko_core::engram::ENCODER_VERSION_TEXT_V1
+                && entry.hdc_encoder_version != roko_core::engram::ENCODER_VERSION_TEXT_V1
             {
                 tracing::debug!(
                     entry_id = %entry.id,
@@ -498,6 +497,8 @@ impl KnowledgeStore {
     ///
     /// Returns an error if the store cannot be read.
     pub fn memory_index(&self) -> Result<super::memory_index::MemoryIndex> {
-        Ok(super::memory_index::MemoryIndex::from_entries(self.read_all()?))
+        Ok(super::memory_index::MemoryIndex::from_entries(
+            self.read_all()?,
+        ))
     }
 }

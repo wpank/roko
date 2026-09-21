@@ -5,7 +5,7 @@
 //! O(L * k) time instead of O(n * d) brute-force, where L = number of tables,
 //! k = hash bits per table, n = indexed vectors, d = vector dimension.
 
-use crate::hdc::{HdcVector, HDC_BITS};
+use crate::hdc::{HDC_BITS, HdcVector};
 
 /// Number of hash tables (more tables = higher recall, more memory).
 const DEFAULT_NUM_TABLES: usize = 8;
@@ -27,7 +27,9 @@ impl HashTable {
         let mut rng_state = seed;
         let hyperplane_indices: Vec<usize> = (0..hash_bits)
             .map(|_| {
-                rng_state = rng_state.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+                rng_state = rng_state
+                    .wrapping_mul(6_364_136_223_846_793_005)
+                    .wrapping_add(1);
                 (rng_state >> 33) as usize % HDC_BITS
             })
             .collect();
@@ -58,10 +60,7 @@ impl HashTable {
 
     fn query(&self, vector: &HdcVector) -> Vec<usize> {
         let hash = self.hash(vector);
-        self.buckets
-            .get(&hash)
-            .cloned()
-            .unwrap_or_default()
+        self.buckets.get(&hash).cloned().unwrap_or_default()
     }
 }
 
@@ -137,9 +136,9 @@ impl LshIndex {
         let mut results: Vec<(String, f32)> = candidates
             .into_iter()
             .filter_map(|idx| {
-                self.vectors.get(idx).map(|(id, vec)| {
-                    (id.clone(), query.similarity(vec))
-                })
+                self.vectors
+                    .get(idx)
+                    .map(|(id, vec)| (id.clone(), query.similarity(vec)))
             })
             .collect();
 
@@ -200,7 +199,10 @@ mod tests {
         // The exact copy should appear with similarity 1.0.
         if let Some((id, sim)) = results.first() {
             if id == "exact" {
-                assert!(*sim > 0.99, "exact match should have high similarity: {sim}");
+                assert!(
+                    *sim > 0.99,
+                    "exact match should have high similarity: {sim}"
+                );
             }
         }
     }

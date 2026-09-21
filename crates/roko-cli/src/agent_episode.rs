@@ -189,4 +189,91 @@ mod tests {
             Some(&serde_json::json!("sess-1"))
         );
     }
+
+    /// Verify that PRD plan dispatch episodes include all fields required by
+    /// `LearningRuntime::update_cascade_router` (P2-LRN-3).
+    ///
+    /// The cascade router update path reads `extra["role"]`, `extra["model"]`,
+    /// `extra["task_category"]`, `extra["complexity_band"]`, and
+    /// `episode.usage.wall_ms`.  All must be present in the episode produced
+    /// by a `prd-plan-generate` dispatch.
+    #[test]
+    fn prd_plan_episode_has_cascade_router_fields() {
+        let (episode, _provider) = build_capture_episode(
+            "claude",
+            Some("claude-opus-4-6"),
+            "prd-plan-generate",
+            "prd:plan:my-feature",
+            "generate a plan",
+            "```toml\n[[task]]\n```",
+            true,
+            15_000,
+            None,
+        );
+
+        // role → mapped to Strategist for plan generation
+        assert_eq!(
+            episode.extra.get("role"),
+            Some(&serde_json::json!("Strategist")),
+            "cascade router needs `role` to pick the correct RoutingContext"
+        );
+
+        // model → must be the API slug so the router can look it up
+        assert_eq!(
+            episode.extra.get("model"),
+            Some(&serde_json::json!("claude-opus-4-6")),
+            "cascade router needs `model` slug to call record_observation"
+        );
+
+        // task_category → should be "scaffolding" for plan generation
+        assert_eq!(
+            episode.extra.get("task_category"),
+            Some(&serde_json::json!("scaffolding")),
+            "cascade router uses task_category for RoutingContext"
+        );
+
+        // complexity_band → should be "standard"
+        assert_eq!(
+            episode.extra.get("complexity_band"),
+            Some(&serde_json::json!("standard")),
+            "cascade router uses complexity_band for RoutingContext"
+        );
+
+        // wall_ms → latency is used in compute_routing_reward_with_latency
+        assert_eq!(
+            episode.usage.wall_ms, 15_000,
+            "cascade router uses wall_ms for latency-weighted reward"
+        );
+    }
+
+    /// Verify that PRD draft-new episodes also carry cascade router fields (P2-LRN-3).
+    #[test]
+    fn prd_draft_episode_has_cascade_router_fields() {
+        let (episode, _provider) = build_capture_episode(
+            "claude",
+            Some("claude-sonnet-4-6"),
+            "prd-draft-new",
+            "prd:draft:widget",
+            "write a draft PRD",
+            "# Widget\n\nOverview.",
+            true,
+            8_500,
+            None,
+        );
+
+        assert_eq!(
+            episode.extra.get("role"),
+            Some(&serde_json::json!("Strategist")),
+        );
+        assert_eq!(
+            episode.extra.get("model"),
+            Some(&serde_json::json!("claude-sonnet-4-6")),
+        );
+        assert_eq!(
+            episode.extra.get("task_category"),
+            Some(&serde_json::json!("docs")),
+            "draft-new is a docs task (not scaffolding)"
+        );
+        assert!(episode.usage.wall_ms > 0, "latency must be non-zero");
+    }
 }

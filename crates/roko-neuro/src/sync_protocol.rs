@@ -17,6 +17,46 @@ use sha2::{Digest, Sha256};
 
 use crate::{KnowledgeEntry, KnowledgeStore, KnowledgeTier};
 
+// ──────────────────────────── sync direction ──────────────────────────────────
+
+/// Direction for a knowledge mesh sync operation.
+///
+/// Used by non-clap call sites (HTTP handlers, tests, internal callers) that
+/// receive a raw string and need validated direction semantics. The CLI layer
+/// uses `KnowledgeSyncDirection` (a `clap::ValueEnum`); both map to the same
+/// three variants.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SyncDirection {
+    /// Send local knowledge to the peer only.
+    Send,
+    /// Receive knowledge from the peer only.
+    Receive,
+    /// Send and receive (bidirectional).
+    Both,
+}
+
+/// Validate and parse a raw direction string into a [`SyncDirection`].
+///
+/// Accepted values (case-sensitive): `"send"`, `"receive"`, `"both"`.
+/// Synonyms like `"push"`, `"pull"`, or `"bidirectional"` are **not** accepted
+/// and return an error immediately so that version vectors are never modified
+/// by a misconfigured or partially understood caller.
+///
+/// # Errors
+///
+/// Returns an error if `value` is not one of the three recognised variants.
+/// The error message lists all valid choices.
+pub fn validate_sync_direction(value: &str) -> Result<SyncDirection> {
+    match value {
+        "send" => Ok(SyncDirection::Send),
+        "receive" => Ok(SyncDirection::Receive),
+        "both" => Ok(SyncDirection::Both),
+        other => anyhow::bail!(
+            "invalid sync direction {other:?}: must be one of \"send\", \"receive\", or \"both\""
+        ),
+    }
+}
+
 // ──────────────────────────── peer name validation ────────────────────────────
 
 /// Maximum length for a peer name.
@@ -230,16 +270,26 @@ impl MeshLayout {
 
 // ──────────────────────────── sequence allocator ──────────────────────────────
 
-/// Persistent sequence counter for this workspace's origin.
+/// Persistent sequence counter and entry-to-sequence assignments for this workspace.
+///
+/// Entries are assigned a sequence number exactly once. On subsequent `send_sync`
+/// calls the same entry always receives the same sequence, preventing spurious
+/// re-sends and version-vector drift.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct SequenceState {
     /// The next sequence number to allocate.
     next_sequence: u64,
+    /// Stable mapping from entry ID to the sequence number assigned to that entry.
+    #[serde(default)]
+    assignments: std::collections::HashMap<String, u64>,
 }
 
 impl Default for SequenceState {
     fn default() -> Self {
-        Self { next_sequence: 1 }
+        Self {
+            next_sequence: 1,
+            assignments: std::collections::HashMap::new(),
+        }
     }
 }
 
@@ -372,19 +422,29 @@ pub fn send_sync(
     }
     let mut seq_state = load_sequence_state(&seq_path);
 
-    // Build sync entries. If requires_full_resend, include all entries.
-    // Otherwise, only entries with sequences > cursor's last_committed_sequence.
+    // Filter to delta: entries with sequence > last_committed,
+    // unless full resend is required.
     let last_committed = cursor
         .as_ref()
         .map(|c| c.last_committed_sequence)
         .unwrap_or(0);
 
-    // Assign sequences to all entries that don't have them yet.
-    // We use the entry's position-independent ID as the stable key.
+    // Assign stable sequence numbers: each entry ID receives a sequence exactly
+    // once and retains it across calls. Only new entries (not yet in the
+    // assignments map) consume a fresh sequence number. This prevents version-
+    // vector corruption from re-numbering the same entries on repeated sends.
+    let mut seq_changed = false;
     let mut sync_entries: Vec<SyncEntryV1> = Vec::new();
     for entry in &entries {
-        let seq = seq_state.next_sequence;
-        seq_state.next_sequence += 1;
+        let seq = if let Some(&existing) = seq_state.assignments.get(&entry.id) {
+            existing
+        } else {
+            let new_seq = seq_state.next_sequence;
+            seq_state.next_sequence += 1;
+            seq_state.assignments.insert(entry.id.clone(), new_seq);
+            seq_changed = true;
+            new_seq
+        };
         sync_entries.push(SyncEntryV1 {
             entry_id: entry.id.clone(),
             sequence: seq,
@@ -392,8 +452,10 @@ pub fn send_sync(
         });
     }
 
-    // Persist the new sequence state atomically.
-    save_sequence_state(&seq_path, &seq_state)?;
+    // Persist the updated sequence state only when new assignments were made.
+    if seq_changed {
+        save_sequence_state(&seq_path, &seq_state)?;
+    }
 
     // Filter to delta: entries with sequence > last_committed,
     // unless full resend is required.
@@ -1029,15 +1091,17 @@ mod tests {
         let result1 = send_sync(&workdir, "peer-b", "ws-local", &store, 100).unwrap();
         assert!(result1.is_some());
 
-        // Entries haven't changed, so a second send produces no delta.
-        // The sequence allocator advanced but the cursor already committed
-        // all sequences from the first send, so the delta will cover only
-        // the newly-allocated range.  Since we re-allocate for the same
-        // entries, the sequences are > last_committed, so we do get a new
-        // envelope. This is correct behavior: the receiver deduplicates by
-        // entry ID.
+        // Entries haven't changed, so a second send must produce no delta.
+        // With stable sequence assignments each entry retains the sequence it
+        // received in the first send, so all sequences are <= last_committed
+        // and the delta is empty. The version vector must NOT advance.
         let result2 = send_sync(&workdir, "peer-b", "ws-local", &store, 100).unwrap();
-        // Whether result2 is Some or None, the store is intact.
+        assert!(
+            result2.is_none(),
+            "second send with no new entries must return None"
+        );
+
+        // The knowledge store is intact.
         let entries = store.read_all().unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].id, "e1");
@@ -1046,7 +1110,6 @@ mod tests {
         let layout = MeshLayout::new(&workdir);
         let cursor = load_peer_cursor(&layout.cursor_path("peer-b")).unwrap();
         assert!(!cursor.requires_full_resend);
-        let _ = result2;
     }
 
     #[test]
@@ -1191,6 +1254,102 @@ mod tests {
         assert!(
             err_msg.contains("checksum mismatch"),
             "expected 'checksum mismatch' in error chain, got: {err_msg}"
+        );
+    }
+
+    // ── direction validation ─────────────────────────────────────────────────
+
+    #[test]
+    fn knowledge_sync_direction_valid_values_are_accepted() {
+        assert_eq!(
+            validate_sync_direction("send").unwrap(),
+            SyncDirection::Send
+        );
+        assert_eq!(
+            validate_sync_direction("receive").unwrap(),
+            SyncDirection::Receive
+        );
+        assert_eq!(
+            validate_sync_direction("both").unwrap(),
+            SyncDirection::Both
+        );
+    }
+
+    #[test]
+    fn knowledge_sync_direction_invalid_values_return_error() {
+        // Common synonyms that are NOT accepted.
+        for bad in &["push", "pull", "bidirectional", "SEND", "Both", "", "all"] {
+            let err = validate_sync_direction(bad).unwrap_err();
+            let msg = format!("{err}");
+            assert!(
+                msg.contains("invalid sync direction"),
+                "expected 'invalid sync direction' in error for {bad:?}, got: {msg}"
+            );
+            // The error must list all valid choices so callers know how to fix it.
+            assert!(
+                msg.contains("\"send\"") && msg.contains("\"receive\"") && msg.contains("\"both\""),
+                "error for {bad:?} does not list all valid directions: {msg}"
+            );
+        }
+    }
+
+    // ── stable sequence assignment ────────────────────────────────────────────
+
+    #[test]
+    fn knowledge_sync_stable_sequences_prevent_version_vector_corruption() {
+        // Each entry must receive the same sequence number on every send_sync
+        // call. Repeated calls with unchanged entries must NOT produce a new
+        // envelope (delta is empty because all sequences <= last_committed).
+        let (_tmp, workdir) = setup_workdir();
+        let store = KnowledgeStore::for_workdir(&workdir);
+        store
+            .ingest(vec![
+                make_test_entry("stable-1", "alpha"),
+                make_test_entry("stable-2", "beta"),
+            ])
+            .unwrap();
+
+        // First send: establishes stable sequence assignments.
+        let r1 = send_sync(&workdir, "peer-c", "ws-stable", &store, 100)
+            .unwrap()
+            .expect("first send must produce an envelope");
+        assert_eq!(r1.sent, 2);
+        let seq_after_first = r1.high_water_sequence;
+
+        // Second send with identical store: must return None (no new entries).
+        let r2 = send_sync(&workdir, "peer-c", "ws-stable", &store, 100).unwrap();
+        assert!(
+            r2.is_none(),
+            "second send with no new entries must return None (no version-vector corruption)"
+        );
+
+        // The sequence high-water mark on disk must not have advanced.
+        let layout = MeshLayout::new(&workdir);
+        let seq_path = layout.sequence_path();
+        let seq_bytes = std::fs::read_to_string(&seq_path).unwrap();
+        let seq_state: serde_json::Value = serde_json::from_str(&seq_bytes).unwrap();
+        // next_sequence = seq_after_first + 1 (allocated for 2 entries, counter at 3).
+        // It must remain at that value and not advance further.
+        let next_seq = seq_state["next_sequence"].as_u64().unwrap();
+        assert_eq!(
+            next_seq,
+            seq_after_first + 1,
+            "sequence counter must not advance on a no-op send (was {next_seq}, expected {})",
+            seq_after_first + 1
+        );
+
+        // Now add a new entry; only the new entry's sequence must appear in the delta.
+        store
+            .ingest(vec![make_test_entry("stable-3", "gamma")])
+            .unwrap();
+        let r3 = send_sync(&workdir, "peer-c", "ws-stable", &store, 100)
+            .unwrap()
+            .expect("send after adding new entry must produce an envelope");
+        assert_eq!(r3.sent, 1, "only the new entry must be in the delta");
+        assert_eq!(
+            r3.high_water_sequence,
+            seq_after_first + 1,
+            "new entry gets the next sequence after the first two"
         );
     }
 }

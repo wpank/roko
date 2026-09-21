@@ -329,4 +329,3 @@ pub(crate) fn convergence_velocity_from_agreement(
         (weighted_speed_sum / total_weight).clamp(0.0, 1.0)
     }
 }
-

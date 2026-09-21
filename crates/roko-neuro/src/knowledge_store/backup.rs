@@ -11,11 +11,9 @@ use sha2::{Digest, Sha256};
 
 use crate::{KnowledgeEntry, KnowledgeKind, KnowledgeTier};
 
-use super::scoring::{
-    entry_similarity, join_replayed_security_labels, normalize_entry_security,
-};
-use super::types::*;
 use super::KnowledgeStore;
+use super::scoring::{entry_similarity, join_replayed_security_labels, normalize_entry_security};
+use super::types::*;
 
 #[cfg(feature = "hdc")]
 use super::scoring::fingerprint_content;

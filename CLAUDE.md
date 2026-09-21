@@ -306,7 +306,7 @@ pre-commit checks in the Building section.
 ### Graph, feeds, recipes, and triggers
 | Command | What it does |
 |---|---|
-| `roko graph run/validate/inspect` | Execute, validate, and inspect graph definitions (DAGs of cells) |
+| `roko graph run/validate/show` | Execute, validate, and inspect graph definitions (DAGs of cells) |
 | `roko feed list/status/start/stop` | Inspect and manage runtime data feeds |
 | `roko recipe list/show/validate/run` | Manage and evaluate pure-data feed recipes |
 | `roko trigger list/show/create/fire` | Manage trigger bindings |

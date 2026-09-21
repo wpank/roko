@@ -125,6 +125,50 @@ replan_on_gate_failure = true
 use_lookahead_router = false
 warning_max_entries = 5
 
+[models.cerebras-qwen]
+context_window = 64000
+cost_input_per_m = 0.10
+cost_output_per_m = 0.10
+max_output = 8192
+provider = "cerebras"
+slug = "qwen-3.8-27b"
+supports_thinking = false
+supports_tools = true
+tool_format = "openai_json"
+
+[models.cerebras-gemma]
+context_window = 128000
+cost_input_per_m = 0.10
+cost_output_per_m = 0.10
+max_output = 8192
+provider = "cerebras"
+slug = "gemma-4-31b"
+supports_thinking = false
+supports_tools = true
+tool_format = "openai_json"
+
+[models.cerebras-gptoss]
+context_window = 128000
+cost_input_per_m = 0.50
+cost_output_per_m = 1.50
+max_output = 8192
+provider = "cerebras"
+slug = "gpt-oss-120b"
+supports_thinking = false
+supports_tools = true
+tool_format = "openai_json"
+
+[models.groq-llama70b]
+context_window = 128000
+cost_input_per_m = 0.59
+cost_output_per_m = 0.79
+max_output = 8192
+provider = "groq"
+slug = "llama-3.3-70b-versatile"
+supports_thinking = false
+supports_tools = true
+tool_format = "openai_json"
+
 [models.claude-sonnet]
 context_window = 200000
 max_tools = 32
@@ -170,8 +214,8 @@ cost_input_per_m = 1.40
 cost_output_per_m = 4.40
 max_output = 4096
 provider = "zai"
-slug = "glm-5.1"
-supports_thinking = true
+slug = "glm-5v-turbo"
+supports_thinking = false
 supports_tools = true
 
 [models.kimi-k2-5]
@@ -181,7 +225,7 @@ cost_input_per_m = 0.60
 cost_output_per_m = 3.00
 max_output = 65535
 provider = "moonshot"
-slug = "kimi-k2.5"
+slug = "kimi-k2.6"
 supports_thinking = true
 supports_tools = true
 tool_format = "openai_json"
@@ -252,6 +296,16 @@ kind = "claude_cli"
 [providers.codex_cli]
 command = "codex"
 kind = "codex_cli"
+
+[providers.cerebras]
+api_key_env = "CEREBRAS_API_KEY"
+base_url = "https://api.cerebras.ai/v1"
+kind = "openai_compat"
+
+[providers.groq]
+api_key_env = "GROQ_API_KEY"
+base_url = "https://api.groq.com/openai/v1"
+kind = "openai_compat"
 
 [providers.moonshot]
 api_key_env = "MOONSHOT_API_KEY"

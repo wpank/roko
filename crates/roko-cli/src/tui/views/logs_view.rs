@@ -48,6 +48,7 @@ pub enum LogGrouping {
 
 impl LogGrouping {
     /// Cycle to the next grouping mode (used by the G key toggle).
+    #[allow(dead_code)] // G-key log grouping toggle; pre-wired
     pub(crate) fn next(self) -> Self {
         match self {
             Self::Chronological => Self::ByPlan,
@@ -189,19 +190,44 @@ fn render_with_entries(
     ];
 
     // Show active search match info inline in the status bar.
-    if search.active && search.match_count > 0 {
-        let current_1 = search.current_match + 1;
-        let total = search.match_count;
-        status_spans.extend([
-            Span::styled(
-                format!("[{current_1}"),
-                Style::default()
-                    .fg(Theme::BONE_BRIGHT)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(format!("/{total}]"), theme.muted()),
-            Span::styled("  ", theme.muted()),
-        ]);
+    if search.active && !search.pattern.is_empty() {
+        if search.pattern_error {
+            status_spans.extend([
+                Span::styled(
+                    format!("[/{}/", search.pattern),
+                    Style::default().fg(Theme::EMBER),
+                ),
+                Span::styled(" invalid regex]", Style::default().fg(Theme::EMBER)),
+                Span::styled("  ", theme.muted()),
+            ]);
+        } else if search.match_count > 0 {
+            let current_1 = search.current_match + 1;
+            let total = search.match_count;
+            status_spans.extend([
+                Span::styled(
+                    format!("[/{}/", search.pattern),
+                    Style::default().fg(Theme::DREAM),
+                ),
+                Span::styled(
+                    format!(" {current_1}"),
+                    Style::default()
+                        .fg(Theme::BONE_BRIGHT)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(format!("/{total}]"), theme.muted()),
+                Span::styled("  ", theme.muted()),
+            ]);
+        } else {
+            // Search active, pattern valid, but zero matches.
+            status_spans.extend([
+                Span::styled(
+                    format!("[/{}/", search.pattern),
+                    Style::default().fg(Theme::WARNING),
+                ),
+                Span::styled(" 0]", Style::default().fg(Theme::WARNING)),
+                Span::styled("  ", theme.muted()),
+            ]);
+        }
     }
 
     for (key_idx, level) in LogFilterLevel::all().iter().enumerate() {
@@ -1106,12 +1132,7 @@ mod tests {
 // Sub-view 4: Safety Incidents (P2-06)
 // ---------------------------------------------------------------------------
 
-fn render_safety_incidents(
-    frame: &mut Frame<'_>,
-    area: Rect,
-    tui_state: &TuiState,
-    theme: &Theme,
-) {
+fn render_safety_incidents(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiState, theme: &Theme) {
     use ratatui::widgets::{Cell, Row, Table};
 
     let incidents = &tui_state.safety_incidents;
@@ -1124,10 +1145,7 @@ fn render_safety_incidents(
         frame.render_widget(block, area);
         let lines = vec![
             Line::from(""),
-            Line::from(Span::styled(
-                "No safety incidents recorded.",
-                theme.muted(),
-            )),
+            Line::from(Span::styled("No safety incidents recorded.", theme.muted())),
             Line::from(""),
             Line::from(Span::styled(
                 "Quarantine events, taint propagation, and immune pipeline",
@@ -1138,10 +1156,7 @@ fn render_safety_incidents(
                 theme.muted(),
             )),
             Line::from(""),
-            Line::from(Span::styled(
-                "Source: .roko/immune/",
-                theme.muted(),
-            )),
+            Line::from(Span::styled("Source: .roko/immune/", theme.muted())),
         ];
         frame.render_widget(
             Paragraph::new(lines)
@@ -1201,16 +1216,14 @@ fn render_safety_incidents(
         Constraint::Min(20),
     ];
 
-    let table = Table::new(rows, widths)
-        .header(header)
-        .block(
-            Block::bordered()
-                .title(Span::styled(
-                    format!(" Safety Incidents ({}) ", incidents.len()),
-                    theme.section_header(),
-                ))
-                .border_style(theme.muted()),
-        );
+    let table = Table::new(rows, widths).header(header).block(
+        Block::bordered()
+            .title(Span::styled(
+                format!(" Safety Incidents ({}) ", incidents.len()),
+                theme.section_header(),
+            ))
+            .border_style(theme.muted()),
+    );
 
     frame.render_widget(table, area);
 }

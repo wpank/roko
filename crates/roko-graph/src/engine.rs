@@ -1744,9 +1744,32 @@ impl GraphEngine {
     }
 
     /// Internal: execute the graph while publishing per-node status into `node_statuses`.
-    /// Respects the cancellation token -- stops after the current node if cancelled.
+    ///
+    /// Respects the cancellation token -- stops after the current node (sequential)
+    /// or between waves (parallel) if cancelled.
+    ///
+    /// When `policy.max_concurrent_nodes > 1` the graph is executed as bounded
+    /// parallel topological waves (same algorithm as `execute_parallel_at_tick_validated`).
+    /// When `max_concurrent_nodes == 1` nodes run sequentially in topological order.
     #[allow(clippy::too_many_lines)] // Keep status transitions adjacent to graph execution.
     async fn execute_with_status_tracking(
+        &self,
+        ctx: &CellContext,
+        node_statuses: &Arc<parking_lot::Mutex<HashMap<NodeId, NodeStatus>>>,
+        cancel: &CancellationToken,
+    ) -> Result<GraphOutput, GraphError> {
+        if self.graph.policy.max_concurrent_nodes > 1 {
+            self.execute_with_status_tracking_parallel(ctx, node_statuses, cancel)
+                .await
+        } else {
+            self.execute_with_status_tracking_sequential(ctx, node_statuses, cancel)
+                .await
+        }
+    }
+
+    /// Sequential variant of status-tracking execution (max_concurrent_nodes == 1).
+    #[allow(clippy::too_many_lines)]
+    async fn execute_with_status_tracking_sequential(
         &self,
         ctx: &CellContext,
         node_statuses: &Arc<parking_lot::Mutex<HashMap<NodeId, NodeStatus>>>,
@@ -1866,6 +1889,38 @@ impl GraphEngine {
                 .lock()
                 .insert(node_id.clone(), NodeStatus::Running);
 
+            // For Activity nodes: check the replayer for a pre-recorded result.
+            // `start()` always drives tick 0; skip cell instantiation when a
+            // recording is available so the provider is not called again.
+            let is_activity = node.execution_class == ExecutionClass::Activity;
+            if is_activity
+                && let Some(replayer) = &self.replayer
+                && let Some(recorded) = replayer.lookup(node_id, 0)
+            {
+                let mut recorded = recorded.clone();
+                propagate_input_taint(&input, &mut recorded, node_id);
+                let count = recorded.len();
+                info!(
+                    node_id = %node_id,
+                    outputs = count,
+                    "flow-sequential: substituting recorded Activity output"
+                );
+                outputs.insert(node_id.clone(), recorded);
+                node_statuses
+                    .lock()
+                    .insert(node_id.clone(), NodeStatus::Complete);
+                results.push(NodeResult {
+                    node_id: node_id.clone(),
+                    cell_type: node.cell_type.clone(),
+                    status: NodeStatus::Complete,
+                    duration: Duration::ZERO,
+                    error: None,
+                    output_count: count,
+                    is_stub: false,
+                });
+                continue;
+            }
+
             let cell: Box<dyn Cell> = self.registry.create(&node.cell_type, node.config.clone())?;
             let cell_is_stub = cell.is_stub();
             let estimated_cost_usd = cell.estimated_cost().unwrap_or_default();
@@ -1903,6 +1958,25 @@ impl GraphEngine {
                     let duration_ms = duration_ms(duration);
                     let count = output_signals.len();
                     total_cost_usd += estimated_cost_usd * f64::from(attempts);
+
+                    // For Activity nodes: persist the output so a future
+                    // --resume-plan can substitute it instead of re-calling
+                    // the provider.
+                    if is_activity
+                        && let Some(recorder) = &self.recorder
+                        && let Err(error) = recorder.lock().record(
+                            &graph_name,
+                            node_id,
+                            0,
+                            output_signals.clone(),
+                        )
+                    {
+                        return Err(GraphError::NodeFailed {
+                            node_id: node_id.clone(),
+                            reason: format!("persist Activity checkpoint: {error}"),
+                        });
+                    }
+
                     self.emit_telemetry(
                         &ObservableEvent::CellCompleted {
                             block: node_id.clone(),
@@ -1967,6 +2041,447 @@ impl GraphEngine {
                         output_count: 0,
                         is_stub: cell_is_stub,
                     });
+                }
+            }
+        }
+
+        let total_duration = start.elapsed();
+        let success = !was_cancelled && graph_execution_succeeded(&results);
+
+        if was_cancelled {
+            self.emit_telemetry(
+                &ObservableEvent::GraphPaused {
+                    graph: graph_name.clone(),
+                    run: run_id,
+                    reason: "cancelled".to_string(),
+                },
+                &graph_ancestry,
+            )
+            .await;
+        } else if success {
+            self.emit_telemetry(
+                &ObservableEvent::GraphCompleted {
+                    graph: graph_name.clone(),
+                    run: run_id,
+                    duration_ms: duration_ms(total_duration),
+                    cost_usd: total_cost_usd,
+                },
+                &graph_ancestry,
+            )
+            .await;
+        } else {
+            self.emit_telemetry(
+                &ObservableEvent::GraphFailed {
+                    graph: graph_name.clone(),
+                    run: run_id,
+                    error: "one or more graph nodes failed".to_string(),
+                },
+                &graph_ancestry,
+            )
+            .await;
+        }
+
+        Ok(GraphOutput {
+            graph_name,
+            success,
+            node_results: results,
+            total_duration,
+        })
+    }
+
+    /// Parallel variant of status-tracking execution (max_concurrent_nodes > 1).
+    ///
+    /// Nodes are grouped into topological waves; within each wave nodes are
+    /// dispatched concurrently via `JoinSet` bounded by a `Semaphore`.
+    /// The shared `node_statuses` Arc is updated as nodes start, complete, or fail
+    /// so `FlowHandle::status()` reflects live parallel progress.
+    /// Cancellation is honoured between waves.
+    #[allow(clippy::too_many_lines)]
+    async fn execute_with_status_tracking_parallel(
+        &self,
+        ctx: &CellContext,
+        node_statuses: &Arc<parking_lot::Mutex<HashMap<NodeId, NodeStatus>>>,
+        cancel: &CancellationToken,
+    ) -> Result<GraphOutput, GraphError> {
+        use tokio::task::JoinSet;
+
+        let start = Instant::now();
+        let graph_name = self.graph.metadata.name.clone();
+        let run_id = ctx.run_id.clone().unwrap_or_else(|| graph_name.clone());
+        let graph_ancestry = [LensScope::Graph(graph_name.clone())];
+
+        let waves = topological_waves(&self.graph)?;
+        let max_concurrent = self.graph.policy.max_concurrent_nodes.max(1);
+
+        self.emit_telemetry(
+            &ObservableEvent::GraphStarted {
+                graph: graph_name.clone(),
+                run: run_id.clone(),
+                input_hash: input_signal_hash(&self.root_inputs),
+            },
+            &graph_ancestry,
+        )
+        .await;
+
+        // Seed all nodes as Pending up front.
+        {
+            let mut statuses = node_statuses.lock();
+            for wave in &waves {
+                for node_id in wave {
+                    statuses.insert(node_id.clone(), NodeStatus::Pending);
+                }
+            }
+        }
+
+        // Shared outputs map written after each wave node completes.
+        let outputs: Arc<parking_lot::Mutex<HashMap<NodeId, Vec<roko_core::Signal>>>> =
+            Arc::new(parking_lot::Mutex::new(self.initial_tick_outputs()));
+
+        let semaphore = Arc::new(tokio::sync::Semaphore::new(max_concurrent));
+        let mut results: Vec<NodeResult> = Vec::new();
+        let mut total_cost_usd = 0.0;
+        let mut was_cancelled = false;
+        let mut any_failed = false;
+
+        'wave_loop: for wave in &waves {
+            // Honour cancellation between waves.
+            if cancel.is_cancelled() {
+                info!("flow cancelled before wave");
+                was_cancelled = true;
+                // Emit CellCancelled for every node in remaining waves that
+                // hasn't been given a terminal status yet.
+                for node_id in wave {
+                    node_statuses
+                        .lock()
+                        .insert(node_id.clone(), NodeStatus::Skipped);
+                    self.emit_telemetry(
+                        &ObservableEvent::CellCancelled {
+                            block: node_id.clone(),
+                            run: run_id.clone(),
+                        },
+                        &[
+                            LensScope::Cell(node_id.clone()),
+                            LensScope::Graph(graph_name.clone()),
+                        ],
+                    )
+                    .await;
+                }
+                break 'wave_loop;
+            }
+
+            // If a previous wave contained a failure and FailFast is set,
+            // skip all remaining waves.
+            if any_failed
+                && matches!(
+                    self.graph.policy.failure_strategy,
+                    crate::types::FailureStrategy::FailFast
+                )
+            {
+                for node_id in wave {
+                    let node_cell_type = self
+                        .graph
+                        .get_node(node_id)
+                        .map(|n| n.cell_type.clone())
+                        .unwrap_or_default();
+                    node_statuses
+                        .lock()
+                        .insert(node_id.clone(), NodeStatus::Skipped);
+                    results.push(NodeResult {
+                        node_id: node_id.clone(),
+                        cell_type: node_cell_type,
+                        status: NodeStatus::Skipped,
+                        duration: Duration::ZERO,
+                        error: Some("aborted after graph failure".to_string()),
+                        output_count: 0,
+                        is_stub: false,
+                    });
+                }
+                continue 'wave_loop;
+            }
+
+            // Dispatch all nodes in this wave concurrently.
+            // The bool in the tuple indicates whether the node is an Activity
+            // so the collection loop can persist the output to the recorder.
+            let mut join_set: JoinSet<(NodeResult, f64, Vec<roko_core::Signal>, bool)> =
+                JoinSet::new();
+
+            for node_id in wave {
+                let Some(node) = self.graph.get_node(node_id) else {
+                    continue;
+                };
+
+                // Evaluate activation using current statuses + outputs.
+                let activation = {
+                    let status_guard = node_statuses.lock();
+                    let output_guard = outputs.lock();
+                    evaluate_node_activation(&self.graph, node_id, &status_guard, &output_guard)
+                };
+
+                let input = match activation {
+                    NodeActivation::Root => {
+                        let output_guard = outputs.lock();
+                        self.root_tick_inputs(node_id, &output_guard)
+                    }
+                    NodeActivation::Ready(input) => input,
+                    NodeActivation::ConditionSkipped(reason) => {
+                        node_statuses
+                            .lock()
+                            .insert(node_id.clone(), NodeStatus::ConditionSkipped);
+                        results.push(NodeResult {
+                            node_id: node_id.clone(),
+                            cell_type: node.cell_type.clone(),
+                            status: NodeStatus::ConditionSkipped,
+                            duration: Duration::ZERO,
+                            error: Some(reason),
+                            output_count: 0,
+                            is_stub: false,
+                        });
+                        continue;
+                    }
+                    NodeActivation::UpstreamFailed(reason) => {
+                        node_statuses
+                            .lock()
+                            .insert(node_id.clone(), NodeStatus::Skipped);
+                        results.push(NodeResult {
+                            node_id: node_id.clone(),
+                            cell_type: node.cell_type.clone(),
+                            status: NodeStatus::Skipped,
+                            duration: Duration::ZERO,
+                            error: Some(reason),
+                            output_count: 0,
+                            is_stub: false,
+                        });
+                        continue;
+                    }
+                };
+
+                // Mark as Running immediately so FlowHandle sees it.
+                node_statuses
+                    .lock()
+                    .insert(node_id.clone(), NodeStatus::Running);
+
+                // For Activity nodes: check the replayer for a pre-recorded result.
+                // `start()` always drives tick 0; skip spawning when a recording
+                // is available so the provider is not called again on resume.
+                let is_activity = node.execution_class == ExecutionClass::Activity;
+                if is_activity
+                    && let Some(replayer) = &self.replayer
+                    && let Some(recorded) = replayer.lookup(node_id, 0)
+                {
+                    let mut recorded = recorded.clone();
+                    propagate_input_taint(&input, &mut recorded, node_id);
+                    let count = recorded.len();
+                    info!(
+                        node_id = %node_id,
+                        outputs = count,
+                        "flow-parallel: substituting recorded Activity output"
+                    );
+                    outputs.lock().insert(node_id.clone(), recorded);
+                    node_statuses
+                        .lock()
+                        .insert(node_id.clone(), NodeStatus::Complete);
+                    results.push(NodeResult {
+                        node_id: node_id.clone(),
+                        cell_type: node.cell_type.clone(),
+                        status: NodeStatus::Complete,
+                        duration: Duration::ZERO,
+                        error: None,
+                        output_count: count,
+                        is_stub: false,
+                    });
+                    continue;
+                }
+
+                // Clone everything the spawned task needs.
+                let cell: Arc<dyn Cell> = self
+                    .registry
+                    .create(&node.cell_type, node.config.clone())?
+                    .into();
+                let sem = semaphore.clone();
+                let node_id = node_id.clone();
+                let cell_type = node.cell_type.clone();
+                let cell_is_stub = cell.is_stub();
+                let is_activity_t = is_activity;
+                let estimated_cost_usd = cell.estimated_cost().unwrap_or_default();
+                let ctx = ctx.clone();
+                let graph_name_t = graph_name.clone();
+                let run_id_t = run_id.clone();
+                let telemetry = self.telemetry.clone();
+                let max_retries = max_retries(&self.graph.policy);
+                let input_hash = input_signal_hash(&input);
+
+                join_set.spawn(async move {
+                    let Ok(_permit) = sem.acquire().await else {
+                        return (
+                            NodeResult {
+                                node_id: node_id.clone(),
+                                cell_type,
+                                status: NodeStatus::Failed,
+                                duration: Duration::ZERO,
+                                error: Some("semaphore closed".into()),
+                                output_count: 0,
+                                is_stub: cell_is_stub,
+                            },
+                            0.0,
+                            Vec::new(),
+                            is_activity_t,
+                        );
+                    };
+
+                    let ancestry = [
+                        LensScope::Cell(node_id.clone()),
+                        LensScope::Graph(graph_name_t.clone()),
+                    ];
+                    emit_telemetry_to(
+                        telemetry.as_ref(),
+                        &ObservableEvent::CellStarted {
+                            block: node_id.clone(),
+                            run: run_id_t.clone(),
+                            input_hash,
+                        },
+                        &ancestry,
+                    )
+                    .await;
+
+                    let node_start = Instant::now();
+                    let (execution, attempts) = execute_cell_with_retries(
+                        cell.as_ref(),
+                        input,
+                        &ctx,
+                        max_retries,
+                        telemetry.as_ref(),
+                        &node_id,
+                        &run_id_t,
+                        &ancestry,
+                    )
+                    .await;
+                    let attempt_cost = estimated_cost_usd * f64::from(attempts);
+
+                    match execution {
+                        Ok(output_signals) => {
+                            let duration = node_start.elapsed();
+                            let duration_ms = duration_ms(duration);
+                            let count = output_signals.len();
+                            emit_telemetry_to(
+                                telemetry.as_ref(),
+                                &ObservableEvent::CellCompleted {
+                                    block: node_id.clone(),
+                                    run: run_id_t.clone(),
+                                    duration_ms,
+                                    cost_usd: attempt_cost,
+                                },
+                                &ancestry,
+                            )
+                            .await;
+                            emit_telemetry_to(
+                                telemetry.as_ref(),
+                                &ObservableEvent::GraphNodeCompleted {
+                                    graph: graph_name_t,
+                                    run: run_id_t,
+                                    node: node_id.clone(),
+                                    duration_ms,
+                                },
+                                &ancestry,
+                            )
+                            .await;
+                            (
+                                NodeResult {
+                                    node_id,
+                                    cell_type,
+                                    status: NodeStatus::Complete,
+                                    duration,
+                                    error: None,
+                                    output_count: count,
+                                    is_stub: cell_is_stub,
+                                },
+                                attempt_cost,
+                                output_signals,
+                                is_activity_t,
+                            )
+                        }
+                        Err(e) => {
+                            let duration = node_start.elapsed();
+                            let error = e.to_string();
+                            emit_telemetry_to(
+                                telemetry.as_ref(),
+                                &ObservableEvent::CellFailed {
+                                    block: node_id.clone(),
+                                    run: run_id_t,
+                                    error: error.clone(),
+                                },
+                                &ancestry,
+                            )
+                            .await;
+                            warn!(node_id = %node_id, error = %error, "flow: parallel node failed");
+                            (
+                                NodeResult {
+                                    node_id,
+                                    cell_type,
+                                    status: NodeStatus::Failed,
+                                    duration,
+                                    error: Some(error),
+                                    output_count: 0,
+                                    is_stub: cell_is_stub,
+                                },
+                                attempt_cost,
+                                Vec::new(),
+                                is_activity_t,
+                            )
+                        }
+                    }
+                });
+            }
+
+            // Collect all results from this wave.
+            while let Some(join_result) = join_set.join_next().await {
+                match join_result {
+                    Ok((node_result, attempt_cost, output_signals, is_activity_result)) => {
+                        total_cost_usd += attempt_cost;
+                        match node_result.status {
+                            NodeStatus::Complete => {
+                                // For Activity nodes: persist the output so a future
+                                // --resume-plan can substitute it instead of re-calling
+                                // the provider.
+                                if is_activity_result
+                                    && let Some(recorder) = &self.recorder
+                                    && let Err(error) = recorder.lock().record(
+                                        &graph_name,
+                                        &node_result.node_id,
+                                        0,
+                                        output_signals.clone(),
+                                    )
+                                {
+                                    return Err(GraphError::NodeFailed {
+                                        node_id: node_result.node_id.clone(),
+                                        reason: format!(
+                                            "persist Activity checkpoint: {error}"
+                                        ),
+                                    });
+                                }
+                                outputs
+                                    .lock()
+                                    .insert(node_result.node_id.clone(), output_signals);
+                                node_statuses
+                                    .lock()
+                                    .insert(node_result.node_id.clone(), NodeStatus::Complete);
+                            }
+                            NodeStatus::Failed => {
+                                any_failed = true;
+                                node_statuses
+                                    .lock()
+                                    .insert(node_result.node_id.clone(), NodeStatus::Failed);
+                            }
+                            _ => {
+                                node_statuses
+                                    .lock()
+                                    .insert(node_result.node_id.clone(), node_result.status);
+                            }
+                        }
+                        results.push(node_result);
+                    }
+                    Err(join_err) => {
+                        warn!(error = %join_err, "parallel flow node task panicked");
+                    }
                 }
             }
         }
@@ -4699,5 +5214,125 @@ to = "b"
         assert_eq!(snap.last_event_seq, 17);
         assert_eq!(snap.tick_count, 3);
         assert!(!snap.graph_fingerprint.is_empty());
+    }
+
+    // ─── ISSUE-27 regression: start() must dispatch independent nodes concurrently ──
+
+    /// A cell that records its start and end timestamps into a shared vec so the
+    /// test can verify that two cells ran concurrently (overlapping wall-clock
+    /// intervals) when `max_concurrent_nodes = 2`.
+    struct TimestampCell {
+        id: String,
+        intervals: Arc<parking_lot::Mutex<Vec<(String, Instant, Instant)>>>,
+        delay: Duration,
+    }
+
+    #[async_trait::async_trait]
+    impl Cell for TimestampCell {
+        fn cell_id(&self) -> &str {
+            &self.id
+        }
+
+        fn cell_name(&self) -> &str {
+            "TimestampCell"
+        }
+
+        async fn execute(
+            &self,
+            input: Vec<roko_core::Signal>,
+            _ctx: &CellContext,
+        ) -> roko_core::Result<Vec<roko_core::Signal>> {
+            let begin = Instant::now();
+            tokio::time::sleep(self.delay).await;
+            let end = Instant::now();
+            self.intervals
+                .lock()
+                .push((self.id.clone(), begin, end));
+            Ok(input)
+        }
+    }
+
+    /// ISSUE-27 regression: `start()` with `max_concurrent_nodes = 2` must run
+    /// two independent nodes concurrently. Before the fix, `execute_with_status_tracking`
+    /// always ran sequentially, so the second node didn't start until the first finished.
+    #[tokio::test]
+    async fn start_with_max_parallel_2_dispatches_independent_nodes_concurrently() {
+        // Two root nodes with no edges between them — they are in the same
+        // topological wave and must run in parallel when max_concurrent_nodes = 2.
+        let graph = load_from_str(
+            r#"
+[graph]
+name = "parallel-flow-start"
+
+[graph.policy]
+max_concurrent_nodes = 2
+
+[[nodes]]
+id = "left"
+cell_type = "timed-left"
+
+[[nodes]]
+id = "right"
+cell_type = "timed-right"
+"#,
+        )
+        .unwrap();
+
+        let intervals: Arc<parking_lot::Mutex<Vec<(String, Instant, Instant)>>> =
+            Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let iv_left = Arc::clone(&intervals);
+        let iv_right = Arc::clone(&intervals);
+
+        let delay = Duration::from_millis(50);
+
+        let mut registry = CellRegistry::new();
+        registry.register("timed-left", move |_| {
+            Box::new(TimestampCell {
+                id: "left".into(),
+                intervals: Arc::clone(&iv_left),
+                delay,
+            })
+        });
+        registry.register("timed-right", move |_| {
+            Box::new(TimestampCell {
+                id: "right".into(),
+                intervals: Arc::clone(&iv_right),
+                delay,
+            })
+        });
+
+        let output = GraphEngine::new(graph, registry)
+            .with_allow_test_stubs(true)
+            .start(CellContext::new())
+            .await_completion()
+            .await
+            .expect("flow output");
+
+        assert!(output.success, "both nodes should complete successfully");
+        assert_eq!(output.node_results.len(), 2, "both nodes must appear in results");
+        for r in &output.node_results {
+            assert_eq!(
+                r.status,
+                NodeStatus::Complete,
+                "node {} must complete",
+                r.node_id
+            );
+        }
+
+        // Verify the two cells actually ran concurrently: the start of the later-
+        // starting cell must be BEFORE the end of the earlier-ending cell.
+        let iv = intervals.lock();
+        assert_eq!(iv.len(), 2, "both cells must have recorded intervals");
+        let (_, begin_0, end_0) = &iv[0];
+        let (_, begin_1, end_1) = &iv[1];
+
+        // If they ran sequentially the second began after the first ended.
+        // If concurrent the second begins before the first ends (overlap).
+        let sequential = begin_1 >= end_0 || begin_0 >= end_1;
+        assert!(
+            !sequential,
+            "nodes ran sequentially but should have overlapped: \
+             left [{begin_0:?}..{end_0:?}] right [{begin_1:?}..{end_1:?}]"
+        );
     }
 }

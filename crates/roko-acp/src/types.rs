@@ -419,6 +419,33 @@ pub enum McpTransport {
     },
 }
 
+/// Tool capability flags resolved for the session after intersecting the
+/// client's declared capabilities with the selected role's permission ceiling.
+///
+/// Clients should use this to determine which tool types are available for
+/// the session without needing to re-derive the server's logic client-side.
+/// All flags default to `false` when the client declares no capabilities
+/// (safe text-only default).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResolvedToolCapabilities {
+    /// Whether the session can read files (e.g. `read_file`, `glob`, `grep`, `ls`).
+    #[serde(default)]
+    pub read: bool,
+    /// Whether the session can write files (e.g. `write_file`, `edit_file`).
+    #[serde(default)]
+    pub write: bool,
+    /// Whether the session can execute shell commands (e.g. `bash`).
+    #[serde(default)]
+    pub exec: bool,
+    /// Whether the session can run git operations.
+    #[serde(default)]
+    pub git: bool,
+    /// Whether the session can make network requests (e.g. `web_fetch`).
+    #[serde(default)]
+    pub network: bool,
+}
+
 /// Result returned from `session/new`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -437,6 +464,13 @@ pub struct SessionNewResult {
     /// Current persisted USD budget status for this session.
     #[serde(flatten)]
     pub budget_status: SessionBudgetStatus,
+    /// Tool capability flags active for this session.
+    ///
+    /// Computed by intersecting the client's declared [`ClientCapabilities`] with
+    /// the role's permission ceiling. A client that sends no `clientCapabilities`
+    /// receives all-`false` flags (text-only, no file/exec/network access).
+    #[serde(default)]
+    pub resolved_tool_capabilities: ResolvedToolCapabilities,
 }
 
 /// Persisted cost budget status exposed by ACP session responses.

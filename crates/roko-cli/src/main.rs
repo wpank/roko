@@ -4,8 +4,7 @@
 //! subcommands (`init`, `run`, `status`, `replay`, `dream`, `config`, `inject`,
 //! `plan`, `research`, `neuro`, `subscription`, `event-sources`, `experiment`) plus top-level flags for mode selection (`--headless`,
 //! `--role`, `--model`, `--effort`, `--json`, `--log-format`, `--quiet`,
-//! `--resume`, `--repo`, `--no-replan`, and a positional `[prompt]` for
-//! one-shot mode).
+//! `--resume`, `--repo`, and a positional `[prompt]` for one-shot mode).
 
 #![allow(missing_docs)]
 // Temporary broad allows matching lib.rs while the CLI crate is cleaned.
@@ -388,14 +387,6 @@ struct Cli {
     #[arg(long, short = 'v', global = true)]
     verbose: bool,
 
-    /// Disable all re-planning; gate failures become terminal failures.
-    #[arg(long, global = true)]
-    no_replan: bool,
-
-    /// Skip tasks.toml structure validation (for freshly-generated plans).
-    #[arg(long, global = true)]
-    skip_validate: bool,
-
     /// Run as a headless daemon (background service).
     #[arg(long, global = true)]
     headless: bool,
@@ -664,6 +655,7 @@ Examples:
     #[command(after_help = "\
 Examples:
   roko setup                        Interactive guided setup
+  roko setup --quick                Auto-detect everything, write config, no prompts
   roko setup --yes                  Non-interactive (use first available provider)
   roko setup --workdir /path        Setup in a specific directory")]
     Setup {
@@ -673,6 +665,9 @@ Examples:
         /// Non-interactive mode: skip prompts, use first available provider.
         #[arg(long)]
         yes: bool,
+        /// Auto-detect all available providers, write config, print summary — no prompts.
+        #[arg(long)]
+        quick: bool,
     },
     /// Diagnose why a plan failed. Outputs structured JSON.
     #[command(after_help = "\
@@ -2218,7 +2213,19 @@ The legacy Runner-v2 engine has been removed. --engine legacy is accepted but ex
     /// Reads the < 500 byte status file written by the runner on every tick
     /// (debounced 1/sec). This is fast because it does not require
     /// deserializing the full executor snapshot.
+    ///
+    /// When a plan directory is provided, shows task-level status for that
+    /// specific plan (from its tasks.toml and executor snapshot).
+    /// When omitted, shows the global runner status (phase, plans, agents).
+    #[command(after_help = "\
+Examples:
+  roko plan status                    Show global runner status
+  roko plan status plans/demo-hello   Show task status for a specific plan")]
     Status {
+        /// Optional plan directory to show status for (e.g. plans/my-plan).
+        /// When provided, shows task-level status for that specific plan.
+        /// When omitted, shows the global runner status.
+        plan_dir: Option<PathBuf>,
         /// Working directory.
         #[arg(long)]
         workdir: Option<PathBuf>,
@@ -3764,7 +3771,9 @@ async fn dispatch_subcommand(command: Command, cli: &Cli) -> Result<i32> {
         } => commands::util::cmd_doctor(cli, subject, workdir, serve_url).await,
         Command::Cache { cmd } => commands::cache::cmd_cache(cli, cmd).await,
         Command::RunIndex { cmd } => commands::run_index::cmd_run_index(cli, cmd).await,
-        Command::Setup { workdir, yes } => commands::setup::cmd_setup(cli, workdir, yes).await,
+        Command::Setup { workdir, yes, quick } => {
+            commands::setup::cmd_setup(cli, workdir, yes, quick).await
+        }
         Command::Diagnose {
             plan_id,
             verbose,
@@ -4098,8 +4107,6 @@ pub(crate) fn global_cli_flags(cli: &Cli) -> GlobalCliFlags<'_> {
         resume: cli.resume.as_deref(),
         json: cli.json,
         quiet: cli.quiet,
-        no_replan: cli.no_replan,
-        skip_validate: cli.skip_validate,
         headless: cli.headless,
         no_serve: cli.no_serve,
         color_enabled: cli.color.should_color(),
@@ -4242,7 +4249,13 @@ fn resolve_config_for_workdir(cli: &Cli, workdir: &Path) -> Result<Config> {
         let resolved = load_resolved_config(workdir)?;
         let fully_default = resolved.sources.agent_command == Source::Default
             && resolved.sources.prompt_token_budget == Source::Default;
-        if fully_default && resolved.config.agent.command == "cat" {
+        // Allow through if the workspace uses the provider registry (default_backend /
+        // [providers.*] table) rather than the legacy agent.command field.  When
+        // providers are configured the command field remains "cat" (its sentinel
+        // default) even though a real backend is wired, so the original check
+        // would incorrectly gate those workspaces.
+        let has_providers = !resolved.config.providers.is_empty();
+        if fully_default && resolved.config.agent.command == "cat" && !has_providers {
             eprintln!("error: no LLM provider configured.\n");
             eprintln!("To get started, either:");
             eprintln!("  1. Run `roko init` to create a workspace with default config");
@@ -5436,12 +5449,6 @@ mod tests {
     }
 
     #[test]
-    fn cli_parses_no_replan_flag() {
-        let cli = Cli::try_parse_from(["roko", "--no-replan"]).unwrap();
-        assert!(cli.no_replan);
-    }
-
-    #[test]
     fn apply_resume_session_override_adds_env_var() {
         let mut config = Config::default();
         apply_resume_session_override(&mut config, Some("sess-42".to_string()));
@@ -6515,6 +6522,8 @@ mod tests {
             thinking: "✓".to_string(),
             vision: "✗".to_string(),
             cost: "$1.40/$4.40".to_string(),
+            key_status: "ok".to_string(),
+            aliases: String::new(),
         }]);
 
         assert!(output.contains("Model"));
@@ -7688,8 +7697,8 @@ mod tests {
 
     use roko_cli::resolved_overrides::{
         ApprovalPolicy, BudgetPolicy, CascadePolicy, ConfigEditTarget, ConfigSetInput,
-        DevelopInput, DryRunPolicy, GlobalCliFlags, InteractionMode, LearnTuneInput, PlanRunInput,
-        PresentationMode, ReplanPolicy, ResolvedExecutionOverrides, ServePolicy, ValidationPolicy,
+        DevelopInput, DryRunPolicy, InteractionMode, LearnTuneInput, PlanRunInput,
+        PresentationMode, ResolvedExecutionOverrides, ServePolicy,
     };
 
     #[test]
@@ -7698,22 +7707,6 @@ mod tests {
         let cli_force = Cli::try_parse_from(["roko", "--force-model", "sonnet", "status"]).unwrap();
         assert_eq!(cli_model.model, cli_force.model);
         assert_eq!(cli_model.model.as_deref(), Some("sonnet"));
-    }
-
-    #[test]
-    fn cli_flags_no_replan_resolves() {
-        let cli = Cli::try_parse_from(["roko", "--no-replan", "status"]).unwrap();
-        let flags = global_cli_flags(&cli);
-        let overrides = ResolvedExecutionOverrides::for_do(&flags, &DoInput::default());
-        assert_eq!(overrides.replan, ReplanPolicy::DisabledByUser);
-    }
-
-    #[test]
-    fn cli_flags_skip_validate_resolves() {
-        let cli = Cli::try_parse_from(["roko", "--skip-validate", "status"]).unwrap();
-        let flags = global_cli_flags(&cli);
-        let overrides = ResolvedExecutionOverrides::for_plan_run(&flags, &PlanRunInput::default());
-        assert_eq!(overrides.validation, ValidationPolicy::SkipStructureOnly);
     }
 
     #[test]
@@ -7845,8 +7838,6 @@ mod tests {
             "high",
             "--json",
             "--quiet",
-            "--no-replan",
-            "--skip-validate",
             "--headless",
             "--no-serve",
             "status",
@@ -7858,8 +7849,6 @@ mod tests {
         assert_eq!(flags.effort, Some("high"));
         assert!(flags.json);
         assert!(flags.quiet);
-        assert!(flags.no_replan);
-        assert!(flags.skip_validate);
         assert!(flags.headless);
         assert!(flags.no_serve);
     }
@@ -7924,6 +7913,37 @@ mod tests {
         let overrides = ResolvedExecutionOverrides::for_plan_run(&flags, &plan);
         assert!(overrides.fresh);
         assert!(overrides.force_resume);
+    }
+
+    // ── P2-FLG-1: global --json wires through to subcommands ────────
+
+    #[test]
+    fn cli_flags_json_parses_globally_for_prd_list() {
+        // `roko --json prd list` must set cli.json = true.
+        let cli = Cli::try_parse_from(["roko", "--json", "prd", "list"]).unwrap();
+        assert!(cli.json, "--json must be set when passed before subcommand");
+    }
+
+    #[test]
+    fn cli_flags_json_parses_globally_for_history() {
+        let cli = Cli::try_parse_from(["roko", "--json", "history"]).unwrap();
+        assert!(
+            cli.json,
+            "--json must be set when passed before history subcommand"
+        );
+    }
+
+    // ── P2-FLG-2: --role override for prd subcommands ─────────────
+
+    #[test]
+    fn cli_flags_role_propagates_to_prd_context() {
+        // Verify that --role appears in cli.role for prd subcommands.
+        let cli = Cli::try_parse_from(["roko", "--role", "custom-writer", "prd", "list"]).unwrap();
+        assert_eq!(
+            cli.role.as_deref(),
+            Some("custom-writer"),
+            "--role must propagate to cli.role for prd subcommands"
+        );
     }
 
     // ── #326: error_hint accuracy tests ────────────────────────────

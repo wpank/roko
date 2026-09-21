@@ -228,10 +228,7 @@ impl FaultInjector {
         if contents.is_empty() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!(
-                    "chaos: cannot corrupt empty file {}",
-                    target_file.display()
-                ),
+                format!("chaos: cannot corrupt empty file {}", target_file.display()),
             ));
         }
 
@@ -316,9 +313,7 @@ impl FaultInjector {
         let now = Utc::now();
         if let Some(record) = self.fault_log.get_mut(fault_index) {
             if record.recovered_at.is_none() {
-                let delta_ms = (now - record.injected_at)
-                    .num_milliseconds()
-                    .max(0) as u64;
+                let delta_ms = (now - record.injected_at).num_milliseconds().max(0) as u64;
                 record.recovered_at = Some(now);
                 record.recovery_time_ms = Some(delta_ms);
             }
@@ -469,7 +464,10 @@ mod tests {
         injector.inject_compile_warning(&file).unwrap();
 
         let patched = fs::read_to_string(&file).unwrap();
-        assert!(patched.ends_with('\n'), "trailing newline must be preserved");
+        assert!(
+            patched.ends_with('\n'),
+            "trailing newline must be preserved"
+        );
     }
 
     #[test]

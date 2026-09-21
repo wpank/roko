@@ -9,18 +9,20 @@ mod tests {
 
     use crate::{KnowledgeEntry, KnowledgeKind, KnowledgeTier, SourceChannel};
 
+    use crate::knowledge_store::KnowledgeStore;
+    #[cfg(feature = "hdc")]
+    use crate::knowledge_store::MemoryIndex;
     use crate::knowledge_store::anti_pattern::{
         classify_compilation_error, extract_anti_pattern_from_failure,
+    };
+    #[cfg(feature = "hdc")]
+    use crate::knowledge_store::scoring::{
+        check_against_anti_knowledge, prepare_entries_for_ingest,
     };
     use crate::knowledge_store::scoring::{
         detect_confirmations, effective_confidence, entries_are_similar,
     };
-    #[cfg(feature = "hdc")]
-    use crate::knowledge_store::scoring::{check_against_anti_knowledge, prepare_entries_for_ingest};
     use crate::knowledge_store::types::*;
-    use crate::knowledge_store::KnowledgeStore;
-    #[cfg(feature = "hdc")]
-    use crate::knowledge_store::MemoryIndex;
 
     fn entry(
         kind: KnowledgeKind,
@@ -2411,12 +2413,12 @@ mod anti_pattern_tests {
 
     use std::path::Path;
 
+    use crate::knowledge_store::KnowledgeStore;
     use crate::knowledge_store::anti_pattern::extract_anti_pattern_from_failure;
     use crate::knowledge_store::backup::{
         compute_entry_merkle_root, compute_merkle_root, read_import_entries,
     };
     use crate::knowledge_store::types::*;
-    use crate::knowledge_store::KnowledgeStore;
     use crate::temporal::KnowledgeEpoch;
     use crate::{Falsifier, KnowledgeEntry, KnowledgeKind, KnowledgeTier};
     #[cfg(feature = "hdc")]

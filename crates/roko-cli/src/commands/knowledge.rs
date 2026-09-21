@@ -8,17 +8,27 @@ use sha2::{Digest, Sha256};
 pub(crate) async fn dispatch_knowledge(cli: &Cli, cmd: KnowledgeCmd) -> Result<i32> {
     match cmd {
         KnowledgeCmd::Query { topic, workdir, .. } => {
+            // Read-only search: shared lock so query can coexist with an
+            // active plan runner.
+            let wd = workdir.clone().unwrap_or_else(|| resolve_workdir(cli));
+            let _lock = roko_cli::workspace_lock::acquire_workspace_lock_shared(&wd.join(".roko"))?;
             cmd_neuro(
                 cli,
                 NeuroCmd::Query {
                     topic,
-                    workdir,
+                    workdir: Some(wd),
                     limit: 10,
                 },
             )
             .await
         }
-        KnowledgeCmd::Stats { workdir } => cmd_neuro(cli, NeuroCmd::Stats { workdir }).await,
+        KnowledgeCmd::Stats { workdir } => {
+            // Read-only stats: shared lock so stats can coexist with an
+            // active plan runner.
+            let wd = workdir.clone().unwrap_or_else(|| resolve_workdir(cli));
+            let _lock = roko_cli::workspace_lock::acquire_workspace_lock_shared(&wd.join(".roko"))?;
+            cmd_neuro(cli, NeuroCmd::Stats { workdir: Some(wd) }).await
+        }
         KnowledgeCmd::Gc { workdir, .. } => {
             cmd_neuro(
                 cli,

@@ -181,8 +181,9 @@ pub fn aggregate_nerv_providers(tui_state: &TuiState) -> Vec<ProviderNervStatus>
 
     for event in &tui_state.efficiency_events {
         let provider_name = infer_provider_name(&event.model, &event.backend);
-        let entry = map.entry(provider_name.clone()).or_insert_with(|| {
-            ProviderNervStatus {
+        let entry = map
+            .entry(provider_name.clone())
+            .or_insert_with(|| ProviderNervStatus {
                 name: provider_name,
                 total_requests: 0,
                 successes: 0,
@@ -194,8 +195,7 @@ pub fn aggregate_nerv_providers(tui_state: &TuiState) -> Vec<ProviderNervStatus>
                 models: Vec::new(),
                 circuit_state: CircuitLabel::Unknown,
                 is_cli: false,
-            }
-        });
+            });
 
         entry.total_requests += 1;
         let is_success = event.output_tokens > 0;
@@ -211,7 +211,9 @@ pub fn aggregate_nerv_providers(tui_state: &TuiState) -> Vec<ProviderNervStatus>
         entry.total_latency_ms += latency;
         entry.cost_timeline.push(event.cost_usd);
         entry.latency_timeline.push(latency as f64);
-        entry.error_timeline.push(if is_success { 0.0 } else { 1.0 });
+        entry
+            .error_timeline
+            .push(if is_success { 0.0 } else { 1.0 });
 
         // Track unique models.
         let model = event.model.trim();
@@ -365,13 +367,15 @@ fn render_unit_cell(
     let dot = provider.dot();
     let state_label = provider.circuit_state.as_str();
     let cost_str = format_cost_compact(provider.total_cost_usd);
-    let padding_len = (inner.width as usize)
-        .saturating_sub(dot.len() + 1 + state_label.len() + cost_str.len());
+    let padding_len =
+        (inner.width as usize).saturating_sub(dot.len() + 1 + state_label.len() + cost_str.len());
     let padding = " ".repeat(padding_len);
     lines.push(Line::from(vec![
         Span::styled(
             format!("{dot} {state_label}"),
-            Style::default().fg(health_color).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(health_color)
+                .add_modifier(Modifier::BOLD),
         ),
         Span::styled(padding, Style::default()),
         Span::styled(cost_str, Style::default().fg(Theme::BONE_DIM)),
@@ -461,10 +465,7 @@ pub fn render_provider_waveform(
     }
 
     if cost_data.is_empty() {
-        let empty = Paragraph::new(Span::styled(
-            "  Waiting for data\u{2026}",
-            theme.muted(),
-        ));
+        let empty = Paragraph::new(Span::styled("  Waiting for data\u{2026}", theme.muted()));
         frame.render_widget(empty, inner);
         return;
     }
@@ -513,11 +514,7 @@ pub fn render_provider_waveform(
 /// - Error history
 /// - Circuit breaker state
 /// - Model list with per-model stats
-pub fn render_provider_detail(
-    frame: &mut Frame<'_>,
-    area: Rect,
-    provider: &ProviderNervStatus,
-) {
+pub fn render_provider_detail(frame: &mut Frame<'_>, area: Rect, provider: &ProviderNervStatus) {
     let theme = Theme::dark();
     let health_color = provider.health_color();
 
@@ -525,7 +522,9 @@ pub fn render_provider_detail(
         .borders(Borders::ALL)
         .title(Span::styled(
             format!(" {} \u{2014} Detail ", provider.name),
-            Style::default().fg(health_color).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(health_color)
+                .add_modifier(Modifier::BOLD),
         ))
         .border_style(Style::default().fg(Theme::TEXT_PHANTOM))
         .style(Theme::block_style());
@@ -543,11 +542,7 @@ pub fn render_provider_detail(
     let rate = provider.success_rate() / 100.0;
     let filled = (rate * gauge_width as f64).round() as usize;
     let empty = gauge_width.saturating_sub(filled);
-    let gauge_str = format!(
-        "{}{}",
-        "\u{2588}".repeat(filled),
-        "\u{2591}".repeat(empty),
-    );
+    let gauge_str = format!("{}{}", "\u{2588}".repeat(filled), "\u{2591}".repeat(empty),);
     lines.push(Line::from(vec![
         Span::styled("Health: ", theme.label()),
         Span::styled(gauge_str, Style::default().fg(health_color)),
@@ -595,7 +590,10 @@ pub fn render_provider_detail(
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(
-            format!("  ({} consecutive failures)", provider.total_requests - provider.successes),
+            format!(
+                "  ({} consecutive failures)",
+                provider.total_requests - provider.successes
+            ),
             Style::default().fg(Theme::TEXT_GHOST),
         ),
     ]));
@@ -632,11 +630,8 @@ pub fn render_provider_detail(
     // -- Error history sparkline --
     if !provider.error_timeline.is_empty() {
         let err_spark_width = (inner.width as usize).saturating_sub(10);
-        let err_spark = build_block_sparkline(
-            &provider.error_timeline,
-            err_spark_width,
-            Theme::EMBER,
-        );
+        let err_spark =
+            build_block_sparkline(&provider.error_timeline, err_spark_width, Theme::EMBER);
         lines.push(Line::from(vec![
             Span::styled("Errors:  ", theme.label()),
             Span::styled(err_spark, Style::default().fg(Theme::EMBER)),
@@ -656,7 +651,10 @@ pub fn render_provider_detail(
         lines.push(Line::from(vec![
             Span::styled("Models: ", theme.label()),
             Span::styled(
-                truncate_str(&provider.models.join(", "), (inner.width as usize).saturating_sub(8)),
+                truncate_str(
+                    &provider.models.join(", "),
+                    (inner.width as usize).saturating_sub(8),
+                ),
                 Style::default().fg(Theme::TEXT_SOFT),
             ),
         ]));
@@ -669,10 +667,7 @@ pub fn render_provider_detail(
             let short = shorten_model_name(model);
             lines.push(Line::from(vec![
                 Span::styled("  ", Style::default()),
-                Span::styled(
-                    truncate_str(&short, 20),
-                    Style::default().fg(Theme::TEXT),
-                ),
+                Span::styled(truncate_str(&short, 20), Style::default().fg(Theme::TEXT)),
             ]));
         }
     }
@@ -702,10 +697,7 @@ pub fn render_credit_status_bar(
     let theme = Theme::dark();
 
     if providers.is_empty() {
-        let empty = Paragraph::new(Span::styled(
-            "Credits: \u{2014}",
-            theme.muted(),
-        ));
+        let empty = Paragraph::new(Span::styled("Credits: \u{2014}", theme.muted()));
         frame.render_widget(empty, area);
         return;
     }
@@ -758,10 +750,7 @@ pub fn render_nerv_panel(
         let theme = Theme::dark();
         let block = Block::default()
             .borders(Borders::ALL)
-            .title(Span::styled(
-                " Provider Monitor ",
-                theme.section_header(),
-            ))
+            .title(Span::styled(" Provider Monitor ", theme.section_header()))
             .border_style(Theme::unfocused_border_style())
             .style(Theme::block_style());
         let inner = block.inner(area);
@@ -782,9 +771,7 @@ pub fn render_nerv_panel(
     let credit_h = 1u16;
     let waveform_h = 5u16;
     let detail_h = if show_detail { 12u16 } else { 0 };
-    let unit_h = area
-        .height
-        .saturating_sub(credit_h + waveform_h + detail_h);
+    let unit_h = area.height.saturating_sub(credit_h + waveform_h + detail_h);
 
     let mut y = area.y;
 
@@ -924,10 +911,7 @@ mod tests {
                 cost_timeline: vec![0.05, 0.06, 0.04, 0.07, 0.05, 0.06, 0.08, 0.04],
                 latency_timeline: vec![120.0, 135.0, 110.0, 145.0, 125.0, 130.0, 140.0, 115.0],
                 error_timeline: vec![0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0],
-                models: vec![
-                    "gpt-4o".to_string(),
-                    "gpt-4o-mini".to_string(),
-                ],
+                models: vec!["gpt-4o".to_string(), "gpt-4o-mini".to_string()],
                 circuit_state: CircuitLabel::Closed,
                 is_cli: false,
             },

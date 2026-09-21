@@ -217,6 +217,27 @@ impl BudgetPredictor {
     pub fn has_history(&self, features: &TaskFeatures) -> bool {
         self.observations.contains_key(&features.key())
     }
+
+    /// Seed a feature key with a pre-computed EMA and success rate.
+    ///
+    /// Used by [`calibrate_from_efficiency`] to bootstrap the predictor from
+    /// historical efficiency data without going through the incremental EMA
+    /// update path.  Only inserts when the key does not already have an entry
+    /// (existing observations have higher quality and should not be overwritten).
+    pub(crate) fn seed_observation(
+        &mut self,
+        key: impl Into<String>,
+        ema_tokens: f64,
+        ema_success: f64,
+        count: u32,
+    ) {
+        let key = key.into();
+        self.observations.entry(key).or_insert(BudgetObservation {
+            ema_tokens,
+            ema_success,
+            count,
+        });
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -370,6 +391,178 @@ impl SectionInfluence {
     pub fn section_count(&self) -> usize {
         self.sections.len()
     }
+}
+
+// ---------------------------------------------------------------------------
+// Calibration from efficiency history
+// ---------------------------------------------------------------------------
+
+/// Minimal shape extracted from a single `efficiency.jsonl` row for calibration.
+///
+/// Only fields needed to compute the feature key and token/success observation
+/// are extracted; all other fields are ignored. The `schema` field is used
+/// to skip non-efficiency rows written by `FeedbackService`.
+#[derive(serde::Deserialize)]
+struct EfficiencyCalibrationRow {
+    #[serde(default)]
+    schema: String,
+    #[serde(default)]
+    role: String,
+    #[serde(default)]
+    input_tokens: u64,
+    #[serde(default)]
+    output_tokens: u64,
+    #[serde(default)]
+    gate_passed: Option<bool>,
+}
+
+/// Calibrate a fresh [`BudgetPredictor`] from historical efficiency data.
+///
+/// Reads every row from `efficiency_jsonl_path`, groups token totals by
+/// `(role, "standard", "code")` feature key (the same key used by the
+/// per-turn budget check), and sets the predictor EMA to the **median**
+/// token total for each key.  Using the median rather than the mean makes
+/// the bootstrap robust to outlier tasks with unusually large context windows.
+///
+/// Returns a predictor with zero observations when the file does not exist
+/// or contains no parseable efficiency rows.
+///
+/// # Errors
+///
+/// Returns an error only if the file exists and cannot be opened (permission
+/// errors, etc.).  Missing files and unparseable lines are silently ignored.
+pub fn calibrate_from_efficiency(
+    efficiency_jsonl_path: &std::path::Path,
+) -> std::io::Result<BudgetPredictor> {
+    let contents = match std::fs::read_to_string(efficiency_jsonl_path) {
+        Ok(c) => c,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(BudgetPredictor::new()),
+        Err(e) => return Err(e),
+    };
+
+    // Accumulate per-key token totals.
+    let mut by_key: HashMap<String, Vec<u64>> = HashMap::new();
+    // Track gate_passed per entry for the EMA success seeding.
+    let mut success_by_key: HashMap<String, Vec<bool>> = HashMap::new();
+
+    for line in contents.lines() {
+        let Ok(row) = serde_json::from_str::<EfficiencyCalibrationRow>(line) else {
+            continue;
+        };
+        // Only process agent efficiency events; skip feedback_event/v1 rows.
+        if !row.schema.is_empty() && row.schema != AGENT_EFFICIENCY_EVENT_SCHEMA {
+            continue;
+        }
+        let role = row.role.trim();
+        if role.is_empty() {
+            continue;
+        }
+        let total_tokens = row.input_tokens + row.output_tokens;
+        if total_tokens == 0 {
+            continue;
+        }
+        // Map to a normalised role label (Implementer, Reviewer, …).
+        let normalised_role = normalise_role(role);
+        let features = TaskFeatures::new(normalised_role, "standard", "code");
+        let key = features.key();
+        by_key.entry(key.clone()).or_default().push(total_tokens);
+        // gate_passed = None means the event predates the field; treat as
+        // neither success nor failure — skip the success accumulation so we
+        // don't bias toward unknown outcomes.
+        if let Some(passed) = row.gate_passed {
+            success_by_key.entry(key).or_default().push(passed);
+        }
+    }
+
+    let inflation = BudgetPredictor::new().failure_inflation;
+    let mut predictor = BudgetPredictor::new();
+    for (key, mut tokens) in by_key {
+        tokens.sort_unstable();
+        let median_tokens = median_u64(&tokens);
+        // Seed the EMA with the median value.
+        let success_rate = success_by_key
+            .get(&key)
+            .map(|v| v.iter().filter(|&&s| s).count() as f64 / v.len() as f64)
+            .unwrap_or(0.8); // optimistic prior when no gate data
+        let count = tokens.len() as u32;
+        // If the majority of tasks failed, inflate the budget so the predictor
+        // proactively allocates more headroom.
+        #[allow(clippy::cast_precision_loss)]
+        let ema_tokens = if success_rate < 0.5 {
+            median_tokens as f64 * inflation
+        } else {
+            median_tokens as f64
+        };
+        predictor.seed_observation(key, ema_tokens, success_rate, count);
+    }
+    Ok(predictor)
+}
+
+/// Return the median of a **sorted** slice of `u64`.
+fn median_u64(sorted: &[u64]) -> u64 {
+    if sorted.is_empty() {
+        return 0;
+    }
+    let mid = sorted.len() / 2;
+    if sorted.len().is_multiple_of(2) {
+        // even: average of the two middle values
+        sorted[mid - 1] / 2 + sorted[mid] / 2
+    } else {
+        sorted[mid]
+    }
+}
+
+/// Normalise a raw role string to a canonical label suitable for the feature key.
+fn normalise_role(role: &str) -> &str {
+    let r = role.trim();
+    // Map common lower-case variants to title case labels used by the runner.
+    if r.eq_ignore_ascii_case("implementer") {
+        "Implementer"
+    } else if r.eq_ignore_ascii_case("reviewer") {
+        "Reviewer"
+    } else if r.eq_ignore_ascii_case("researcher") || r.eq_ignore_ascii_case("research") {
+        "Researcher"
+    } else if r.eq_ignore_ascii_case("strategist") || r.eq_ignore_ascii_case("strategy") {
+        "Strategist"
+    } else if r.eq_ignore_ascii_case("scribe") {
+        "Scribe"
+    } else if r.eq_ignore_ascii_case("verifier") || r.eq_ignore_ascii_case("reviewer") {
+        "Verifier"
+    } else {
+        r
+    }
+}
+
+/// Agent-efficiency-event schema discriminator (mirrors the roko-learn value).
+const AGENT_EFFICIENCY_EVENT_SCHEMA: &str = "agent_efficiency_event/v1";
+
+/// Load a [`BudgetPredictor`] from the persisted JSON file, or calibrate a
+/// fresh one from the efficiency JSONL when the JSON file does not yet exist.
+///
+/// This ensures that callers get historically-calibrated predictions on a
+/// fresh workspace without requiring a full plan run to accumulate data in
+/// `budget-predictor.json` first.
+///
+/// Resolution order:
+///
+/// 1. `{learn_dir}/budget-predictor.json` — fastest path; exact EMA state.
+/// 2. Calibrate from `{learn_dir}/efficiency.jsonl` — slower; median-based.
+/// 3. Return [`BudgetPredictor::new()`] — empty predictor with fallback budget.
+///
+/// # Errors
+///
+/// Returns an error if the JSON file exists but cannot be parsed, or if the
+/// efficiency file exists but cannot be opened (permission errors, etc.).
+pub fn load_or_calibrate(learn_dir: &std::path::Path) -> std::io::Result<BudgetPredictor> {
+    // Fast path: pre-trained JSON file exists.
+    match load_predictor(learn_dir) {
+        Ok(Some(p)) => return Ok(p),
+        Ok(None) => {}
+        Err(e) => return Err(e),
+    }
+    // Slow path: calibrate from efficiency history.
+    let efficiency_path = learn_dir.join("efficiency.jsonl");
+    calibrate_from_efficiency(&efficiency_path)
 }
 
 // ---------------------------------------------------------------------------
@@ -670,6 +863,191 @@ mod tests {
 
         assert!(load_predictor(&dir).unwrap().is_none());
         assert!(load_influence(&dir).unwrap().is_none());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ── calibrate_from_efficiency ──
+
+    fn make_efficiency_row(
+        role: &str,
+        input: u64,
+        output: u64,
+        gate_passed: Option<bool>,
+    ) -> String {
+        let gp = match gate_passed {
+            Some(true) => "true",
+            Some(false) => "false",
+            None => "null",
+        };
+        format!(
+            r#"{{"schema":"agent_efficiency_event/v1","role":"{role}","input_tokens":{input},"output_tokens":{output},"gate_passed":{gp}}}"#
+        )
+    }
+
+    #[test]
+    fn calibrate_from_missing_efficiency_returns_empty_predictor() {
+        let dir = std::env::temp_dir().join("roko-test-cal-empty");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let predictor = calibrate_from_efficiency(&dir.join("efficiency.jsonl")).unwrap();
+        assert_eq!(predictor.observation_count(), 0);
+        // Should still fall back to the configured fallback budget.
+        assert_eq!(
+            predictor.predict(&TaskFeatures::new("Implementer", "standard", "code")),
+            predictor.fallback_tokens,
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn calibrate_from_efficiency_seeds_median_token_budget() {
+        let dir = std::env::temp_dir().join("roko-test-cal-seed");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // Three Implementer success rows with different token totals.
+        // Median of (50_000, 80_000, 120_000) = 80_000 total tokens.
+        let rows = vec![
+            make_efficiency_row("Implementer", 30_000, 20_000, Some(true)), // 50_000
+            make_efficiency_row("Implementer", 50_000, 30_000, Some(true)), // 80_000
+            make_efficiency_row("Implementer", 70_000, 50_000, Some(true)), // 120_000
+        ];
+        let path = dir.join("efficiency.jsonl");
+        std::fs::write(&path, rows.join("\n") + "\n").unwrap();
+
+        let predictor = calibrate_from_efficiency(&path).unwrap();
+        // Expect exactly one feature key for the normalised role.
+        assert_eq!(predictor.observation_count(), 1);
+        let features = TaskFeatures::new("Implementer", "standard", "code");
+        let predicted = predictor.predict(&features);
+        // Median 80_000 tokens, with the 20% safety margin: 96_000.
+        assert!(
+            predicted >= 80_000 && predicted <= 150_000,
+            "expected predicted tokens near 96_000, got {predicted}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn calibrate_from_efficiency_inflates_on_majority_failures() {
+        let dir = std::env::temp_dir().join("roko-test-cal-fail");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let rows = vec![
+            make_efficiency_row("Implementer", 40_000, 10_000, Some(false)),
+            make_efficiency_row("Implementer", 40_000, 10_000, Some(false)),
+            make_efficiency_row("Implementer", 40_000, 10_000, Some(true)),
+        ];
+        let path = dir.join("efficiency.jsonl");
+        std::fs::write(&path, rows.join("\n") + "\n").unwrap();
+
+        let predictor = calibrate_from_efficiency(&path).unwrap();
+        let features = TaskFeatures::new("Implementer", "standard", "code");
+        // Majority failures → budget should be inflated above the median.
+        let predicted_fail = predictor.predict(&features);
+        // 50_000 * 1.3 inflation * 1.2 safety = 78_000 (approx)
+        assert!(predicted_fail > 50_000);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn calibrate_from_efficiency_skips_feedback_event_rows() {
+        let dir = std::env::temp_dir().join("roko-test-cal-skip");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // Mix of an efficiency event and a feedback_event/v1 row that should be ignored.
+        let rows = vec![
+            make_efficiency_row("Implementer", 50_000, 20_000, Some(true)),
+            r#"{"schema":"feedback_event/v1","role":"Implementer","input_tokens":999999,"output_tokens":999999}"#.to_string(),
+        ];
+        let path = dir.join("efficiency.jsonl");
+        std::fs::write(&path, rows.join("\n") + "\n").unwrap();
+
+        let predictor = calibrate_from_efficiency(&path).unwrap();
+        // Only 1 observation — the feedback_event row was skipped.
+        assert_eq!(predictor.observation_count(), 1);
+        let features = TaskFeatures::new("Implementer", "standard", "code");
+        let predicted = predictor.predict(&features);
+        // Should not include the 999_999 token outlier from the feedback row.
+        assert!(
+            predicted < 200_000,
+            "feedback row should have been ignored; got {predicted}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn load_or_calibrate_prefers_json_file_over_efficiency_jsonl() {
+        let dir = std::env::temp_dir().join("roko-test-cal-prefer");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // Write a pre-trained predictor to budget-predictor.json.
+        let mut known = BudgetPredictor::new();
+        known.record(
+            &TaskFeatures::new("Implementer", "standard", "code"),
+            42_000,
+            true,
+        );
+        persist_predictor(&known, &dir).unwrap();
+
+        // Also write an efficiency file with very different data.
+        let rows = vec![make_efficiency_row(
+            "Implementer",
+            500_000,
+            200_000,
+            Some(true),
+        )];
+        let eff_path = dir.join("efficiency.jsonl");
+        std::fs::write(&eff_path, rows.join("\n") + "\n").unwrap();
+
+        // load_or_calibrate should use the JSON file, not calibrate from efficiency.
+        let loaded = load_or_calibrate(&dir).unwrap();
+        let features = TaskFeatures::new("Implementer", "standard", "code");
+        let predicted = loaded.predict(&features);
+        // From the JSON file: 42_000 * 1.2 = 50_400. Not the 840_000 from efficiency.
+        assert!(
+            predicted < 200_000,
+            "expected JSON file to win; predicted {predicted}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn load_or_calibrate_falls_back_to_efficiency_when_no_json() {
+        let dir = std::env::temp_dir().join("roko-test-cal-fallback");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // No budget-predictor.json; only an efficiency file.
+        let rows = vec![
+            make_efficiency_row("Implementer", 60_000, 40_000, Some(true)),
+            make_efficiency_row("Implementer", 70_000, 30_000, Some(true)),
+        ];
+        let eff_path = dir.join("efficiency.jsonl");
+        std::fs::write(&eff_path, rows.join("\n") + "\n").unwrap();
+
+        let predictor = load_or_calibrate(&dir).unwrap();
+        assert!(
+            predictor.observation_count() > 0,
+            "should have calibrated from efficiency.jsonl"
+        );
+        // Median of (100_000, 100_000) = 100_000; predicted = 100_000 * 1.2 = 120_000.
+        let features = TaskFeatures::new("Implementer", "standard", "code");
+        let predicted = predictor.predict(&features);
+        assert!(
+            predicted > 50_000,
+            "calibrated predictor should give a non-fallback budget; got {predicted}"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }

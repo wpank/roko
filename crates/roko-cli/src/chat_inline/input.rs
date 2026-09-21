@@ -467,6 +467,7 @@ impl InputState {
     }
 
     /// Number of lines in the buffer.
+    #[allow(dead_code)] // used only in tests
     pub fn line_count(&self) -> usize {
         self.buffer.lines().count().max(1)
     }

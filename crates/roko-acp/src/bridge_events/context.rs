@@ -54,7 +54,9 @@ pub(crate) fn model_input_blocks_from_prompt(prompt: &[ContentBlock]) -> Vec<Mod
 /// Builds an OpenAI-compatible content array from prompt blocks, converting
 /// `Image` blocks into `image_url` content parts with inline data URIs.
 /// Returns `None` when no images are present (caller can use a plain string).
-pub(crate) fn build_openai_content_parts(prompt: &[ContentBlock]) -> Option<Vec<serde_json::Value>> {
+pub(crate) fn build_openai_content_parts(
+    prompt: &[ContentBlock],
+) -> Option<Vec<serde_json::Value>> {
     let has_image = prompt
         .iter()
         .any(|b| matches!(b, ContentBlock::Image { .. }));
@@ -80,7 +82,9 @@ pub(crate) fn build_openai_content_parts(prompt: &[ContentBlock]) -> Option<Vec<
 
 /// Converts prompt blocks into Anthropic multi-part content (text + base64 image).
 /// Returns `None` when there are no image blocks, so the caller can skip replacement.
-pub(crate) fn build_anthropic_content_parts(prompt: &[ContentBlock]) -> Option<Vec<serde_json::Value>> {
+pub(crate) fn build_anthropic_content_parts(
+    prompt: &[ContentBlock],
+) -> Option<Vec<serde_json::Value>> {
     let has_image = prompt
         .iter()
         .any(|b| matches!(b, ContentBlock::Image { .. }));
@@ -430,7 +434,9 @@ pub(crate) fn extract_at_mentions(text: &str) -> Vec<String> {
 
         let mut end = at_index + 1;
         while end < text.len() {
-            let Some(ch) = text[end..].chars().next() else { break; };
+            let Some(ch) = text[end..].chars().next() else {
+                break;
+            };
             if ch.is_whitespace()
                 || ch == '@'
                 || matches!(
@@ -475,7 +481,10 @@ pub(crate) fn truncate_with_limit(text: &str, limit: usize, suffix: &str) -> Str
     truncated
 }
 
-pub(crate) fn ensure_git_output_success(output: &std::process::Output, command: &str) -> anyhow::Result<()> {
+pub(crate) fn ensure_git_output_success(
+    output: &std::process::Output,
+    command: &str,
+) -> anyhow::Result<()> {
     if output.status.success() {
         return Ok(());
     }
@@ -488,4 +497,3 @@ pub(crate) fn ensure_git_output_success(output: &std::process::Output, command: 
         Err(anyhow::anyhow!("{command} failed: {stderr}"))
     }
 }
-

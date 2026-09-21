@@ -20,7 +20,8 @@ use roko_core::error::Result;
 use roko_core::traits::{Connect, Observe, Store, Substrate, Trigger};
 use roko_core::{
     Body, Bus, BusErased, Cell, CellContext, CellVersion, ContentHash, Context, Engram, HdcVector,
-    Kind, MemoryBus, ProtocolId, Pulse, Query, Signal, SignalBuilder, Topic, TopicFilter, TypeSchema,
+    Kind, MemoryBus, ProtocolId, Pulse, Query, Signal, SignalBuilder, Topic, TopicFilter,
+    TypeSchema,
 };
 
 // ============================================================================

@@ -7,6 +7,8 @@
 //! observe Graph engine plan runs the same way regardless of flags.
 
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use roko_core::{LensScope, ObservableEvent, Signal, TelemetryEventSink};
 use roko_graph::engine::{GraphOutput, NodeStatus};
@@ -14,6 +16,17 @@ use roko_graph::engine::{GraphOutput, NodeStatus};
 use crate::state_hub::StateHubSender;
 
 use super::tui_bridge::TuiBridge;
+
+/// Per-plan ETA tracking state shared across polling cycles.
+#[derive(Debug)]
+struct EtaTracker {
+    /// When the plan started executing (used to compute elapsed time).
+    started_at: Instant,
+    /// Total number of tasks in the plan.
+    total: usize,
+    /// Number of tasks completed so far (success + failure + skip).
+    done: usize,
+}
 
 /// Bridges passive observable telemetry into the runner's shared StateHub.
 ///
@@ -47,28 +60,50 @@ impl TelemetryEventSink for StateHubTelemetrySink {
 /// publications through the existing [`TuiBridge`].
 ///
 /// Callers construct an instance before starting a graph plan and call its
-/// methods at well-defined lifecycle points. The adapter keeps no mutable
-/// state beyond what `TuiBridge` maintains internally.
+/// methods at well-defined lifecycle points. ETA tracking is maintained via
+/// an internal `Arc<Mutex<EtaTracker>>` so the adapter remains `Sync`.
 pub struct GraphTuiBridge {
     tui: TuiBridge,
+    /// Shared mutable ETA tracking state.
+    eta: Arc<Mutex<Option<EtaTracker>>>,
 }
 
 impl GraphTuiBridge {
     /// Create a new bridge wrapping the shared `TuiBridge`.
     pub fn new(tui: TuiBridge) -> Self {
-        Self { tui }
+        Self {
+            tui,
+            eta: Arc::new(Mutex::new(None)),
+        }
     }
 
     // ── Plan-level events ────────────────────────────────────────────
 
     /// Emit `PlanStarted` before a graph plan begins execution.
+    ///
+    /// Also initialises the ETA tracker with the plan's task count and start
+    /// time so subsequent `node_completed` calls can compute a proportional
+    /// remaining-time estimate.
     pub fn plan_started(&self, plan_id: &str, task_count: usize) {
         self.tui.plan_started(plan_id, task_count);
+        if let Ok(mut guard) = self.eta.lock() {
+            *guard = Some(EtaTracker {
+                started_at: Instant::now(),
+                total: task_count,
+                done: 0,
+            });
+        }
     }
 
     /// Emit `PlanCompleted` after a graph plan finishes.
     pub fn plan_completed(&self, plan_id: &str, success: bool) {
         self.tui.plan_completed(plan_id, success);
+        // Clear the ETA tracker so stale estimates don't linger.
+        if let Ok(mut guard) = self.eta.lock() {
+            *guard = None;
+        }
+        // Clear the ETA from the TUI (no remaining time once done).
+        self.tui.critical_path_eta(plan_id, None);
     }
 
     // ── Node-level events (pre-execution) ────────────────────────────
@@ -82,6 +117,9 @@ impl GraphTuiBridge {
     // ── Node-level events (post-execution) ───────────────────────────
 
     /// Emit `TaskCompleted` after a graph node finishes (success or failure).
+    ///
+    /// Also updates the ETA estimate and publishes a `CriticalPathEtaUpdated`
+    /// event so the TUI progress card shows a live remaining-time estimate.
     pub fn node_completed(&self, plan_id: &str, node_id: &str, status: NodeStatus) {
         let outcome = match status {
             NodeStatus::Complete => "passed",
@@ -91,6 +129,26 @@ impl GraphTuiBridge {
             NodeStatus::Pending | NodeStatus::Running => "unknown",
         };
         self.tui.task_completed(plan_id, node_id, outcome);
+
+        // Update ETA tracking.  Only publish when there is a non-trivial
+        // estimate: at least one task done and at least one remaining.  The
+        // TUI progress card's proportional fallback handles the zero-done
+        // case, so we skip publishing a None here to keep event volume low.
+        if let Ok(mut guard) = self.eta.lock() {
+            if let Some(ref mut tracker) = *guard {
+                tracker.done = tracker.done.saturating_add(1);
+                let remaining = tracker.total.saturating_sub(tracker.done);
+                if tracker.done > 0 && remaining > 0 {
+                    let elapsed_secs = tracker.started_at.elapsed().as_secs_f64();
+                    let per_task_secs = elapsed_secs / tracker.done as f64;
+                    let eta_secs = per_task_secs * remaining as f64;
+                    let eta_minutes = (eta_secs / 60.0).ceil() as u32;
+                    // Clamp to 1 minute minimum so the display is always useful.
+                    let eta_minutes = eta_minutes.max(1);
+                    self.tui.critical_path_eta(plan_id, Some(eta_minutes));
+                }
+            }
+        }
     }
 
     // ── Batch post-execution summary ─────────────────────────────────
@@ -281,8 +339,10 @@ mod tests {
             events.push(envelope.payload);
         }
 
-        // Should have: PlanStarted + 3 TaskCompleted + PlanCompleted = 5.
-        assert_eq!(events.len(), 5, "expected 5 events, got {}", events.len());
+        // PlanStarted + 3×TaskCompleted + 2×CriticalPathEtaUpdated (T01+T02 have
+        // remaining tasks; T03 is the last so no ETA) + PlanCompleted +
+        // CriticalPathEtaUpdated(None) from plan_completed = 8.
+        assert_eq!(events.len(), 8, "expected 8 events, got {}", events.len());
     }
 
     #[test]

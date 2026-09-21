@@ -479,6 +479,7 @@ impl Default for RokoConfig {
 /// Callers should merge these *under* user-defined providers so that explicit
 /// `[providers.*]` config always takes precedence.
 #[must_use]
+#[allow(dead_code)]
 pub(crate) fn synthesize_standard_providers() -> HashMap<String, ProviderConfig> {
     synthesize_standard_providers_with_env(|key| std::env::var(key).ok())
 }
@@ -1103,6 +1104,7 @@ impl RokoConfig {
 
     /// Classify a proposed configuration change.
     #[must_use]
+    #[allow(dead_code)]
     pub(crate) fn classify_changes(&self, proposed: &Self) -> ConfigChangeReport {
         let mut report = ConfigChangeReport::default();
 
@@ -1503,6 +1505,7 @@ impl RokoConfig {
 // ---- ConfigChangeReport --------------------------------------------------
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[allow(dead_code)]
 pub(crate) struct ConfigChangeReport {
     pub(crate) hot_reloaded: Vec<&'static str>,
     pub(crate) requires_restart: Vec<&'static str>,
@@ -1511,14 +1514,17 @@ pub(crate) struct ConfigChangeReport {
 
 impl ConfigChangeReport {
     #[must_use]
+    #[allow(dead_code)]
     pub(crate) fn has_changes(&self) -> bool {
         !self.hot_reloaded.is_empty() || !self.requires_restart.is_empty()
     }
     #[must_use]
+    #[allow(dead_code)]
     pub(crate) fn needs_restart(&self) -> bool {
         !self.requires_restart.is_empty()
     }
     #[must_use]
+    #[allow(dead_code)]
     pub(crate) fn changed_count(&self) -> usize {
         self.hot_reloaded.len() + self.requires_restart.len()
     }
@@ -3250,6 +3256,70 @@ max_output = 16384
         assert!(cfg.providers.contains_key("claude_cli"));
         assert!(cfg.providers.contains_key("gemini"));
         assert!(cfg.providers.contains_key("perplexity"));
+    }
+
+    #[test]
+    fn glm_example_config() {
+        let example = include_str!("../../../../examples/roko-glm.toml");
+        let cfg = RokoConfig::from_toml(example).expect("parse roko-glm.toml");
+        assert_eq!(cfg.schema_version, CURRENT_SCHEMA_VERSION);
+        let model = cfg.models.get("glm-5-1").expect("glm-5-1 model");
+        assert_eq!(model.provider, "zai");
+        // fallback_model must not reference a model key absent from this config.
+        if let Some(ref fallback) = cfg.agent.fallback_model {
+            assert!(
+                cfg.models.contains_key(fallback.as_str()),
+                "fallback_model '{fallback}' must be defined in [models]"
+            );
+        }
+    }
+
+    #[test]
+    fn ollama_example_config() {
+        let example = include_str!("../../../../examples/roko-ollama.toml");
+        let cfg = RokoConfig::from_toml(example).expect("parse roko-ollama.toml");
+        assert_eq!(cfg.schema_version, CURRENT_SCHEMA_VERSION);
+        assert!(cfg.providers.contains_key("ollama"));
+        // fallback_model must not reference a model key absent from this config.
+        if let Some(ref fallback) = cfg.agent.fallback_model {
+            assert!(
+                cfg.models.contains_key(fallback.as_str()),
+                "fallback_model '{fallback}' must be defined in [models]"
+            );
+        }
+    }
+
+    #[test]
+    fn lmstudio_example_config() {
+        let example = include_str!("../../../../examples/roko-lmstudio.toml");
+        let cfg = RokoConfig::from_toml(example).expect("parse roko-lmstudio.toml");
+        assert_eq!(cfg.schema_version, CURRENT_SCHEMA_VERSION);
+        assert!(cfg.providers.contains_key("lmstudio"));
+    }
+
+    #[test]
+    fn docker_config_parses() {
+        let example = include_str!("../../../../docker/roko.toml");
+        let cfg = RokoConfig::from_toml(example).expect("parse docker/roko.toml");
+        assert_eq!(cfg.schema_version, CURRENT_SCHEMA_VERSION);
+        assert_eq!(cfg.server.port, 6677);
+        // max_concurrent_tasks must use the canonical field name, not max_parallel_tasks.
+        // Verify runner parses without error (deny_unknown_fields would reject stale names).
+        let _ = cfg.runner.max_concurrent_tasks;
+    }
+
+    #[test]
+    fn demo_resources_config_parses() {
+        let example = include_str!("../../../../demo/demo-resources/roko.toml");
+        let cfg = RokoConfig::from_toml(example).expect("parse demo/demo-resources/roko.toml");
+        // auto_plan must be in [prd], not at root level.
+        // A successful parse here proves the section placement is correct.
+        assert!(!cfg.prd.auto_plan);
+        // [[gates.rungs]] must use the current syntax (not the stale [[gate]]).
+        assert!(
+            !cfg.gates.custom_rungs.is_empty(),
+            "demo gate rung must parse"
+        );
     }
 
     #[test]

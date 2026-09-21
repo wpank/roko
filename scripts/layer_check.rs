@@ -509,3 +509,214 @@ fn main() -> Result<std::process::ExitCode> {
     let code = u8::try_from(run_layer_check()?).context("layer check exit code out of range")?;
     Ok(std::process::ExitCode::from(code))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Scan `contents` for direct model subprocess dispatch violations.
+    ///
+    /// Returns `(line_no, needle)` pairs for each violation found.  This is
+    /// the pure-logic core of `check_direct_model_subprocess`, extracted so
+    /// that it can be exercised without touching the filesystem.
+    fn scan_subprocess_violations(contents: &str) -> Vec<(usize, String)> {
+        let needles = ["Command::new(\"claude\")", "Command::new(\"codex\")"];
+        let gated = legacy_gated_lines(contents);
+        let lines: Vec<&str> = contents.lines().collect();
+        let mut out = Vec::new();
+        for (idx, line) in lines.iter().enumerate() {
+            let line_no = idx + 1;
+            if gated.contains(&line_no) {
+                continue;
+            }
+            for needle in needles {
+                if !line.contains(needle) {
+                    continue;
+                }
+                let context_window = &lines[idx..usize::min(idx + 3, lines.len())];
+                if context_window.iter().any(|l| l.contains("--version")) {
+                    continue;
+                }
+                out.push((line_no, needle.to_string()));
+            }
+        }
+        out
+    }
+
+    // ── scan_subprocess_violations ──────────────────────────────────────────
+
+    /// A bare `Command::new("claude")` with no --version in the next 3 lines
+    /// must be flagged as a violation.
+    #[test]
+    fn test_subprocess_bare_call_is_violation() {
+        let src = r#"
+fn dispatch() {
+    let _ = Command::new("claude").arg("run").output();
+}
+"#;
+        let violations = scan_subprocess_violations(src);
+        assert_eq!(
+            violations.len(),
+            1,
+            "expected one violation: {violations:?}"
+        );
+        assert!(violations[0].1.contains("claude"));
+    }
+
+    /// `Command::new("claude")` followed by `.arg("--version")` on the next
+    /// line must NOT be flagged — it is a binary-presence probe, not LLM dispatch.
+    #[test]
+    fn test_subprocess_version_probe_excluded_next_line() {
+        let src = r#"
+pub fn claude_cli_available() -> bool {
+    std::process::Command::new("claude")
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+"#;
+        let violations = scan_subprocess_violations(src);
+        assert!(
+            violations.is_empty(),
+            "--version probe should not be flagged, got: {violations:?}"
+        );
+    }
+
+    /// `Command::new("claude")` with `--version` on the same line must NOT
+    /// be flagged.
+    #[test]
+    fn test_subprocess_version_probe_same_line_excluded() {
+        let src = r#"
+    let ok = Command::new("claude").arg("--version").output().is_ok();
+"#;
+        let violations = scan_subprocess_violations(src);
+        assert!(
+            violations.is_empty(),
+            "same-line --version probe should not be flagged, got: {violations:?}"
+        );
+    }
+
+    /// `Command::new("codex")` bare call must be flagged.
+    #[test]
+    fn test_subprocess_codex_bare_call_is_violation() {
+        let src = r#"
+    Command::new("codex").arg("edit").spawn().unwrap();
+"#;
+        let violations = scan_subprocess_violations(src);
+        assert_eq!(
+            violations.len(),
+            1,
+            "expected one violation: {violations:?}"
+        );
+        assert!(violations[0].1.contains("codex"));
+    }
+
+    /// `Command::new("codex")` followed by `--version` must NOT be flagged.
+    #[test]
+    fn test_subprocess_codex_version_probe_excluded() {
+        let src = r#"
+    let _ = Command::new("codex")
+        .arg("--version")
+        .output();
+"#;
+        let violations = scan_subprocess_violations(src);
+        assert!(
+            violations.is_empty(),
+            "codex --version probe should not be flagged, got: {violations:?}"
+        );
+    }
+
+    /// Code gated behind `#[cfg(feature = "legacy-orchestrate")]` must never
+    /// be flagged, even if there is no --version in scope.
+    #[test]
+    fn test_subprocess_legacy_gated_excluded() {
+        let src = r#"
+#[cfg(feature = "legacy-orchestrate")]
+fn legacy_run() {
+    Command::new("claude").arg("run").output().unwrap();
+}
+"#;
+        let violations = scan_subprocess_violations(src);
+        assert!(
+            violations.is_empty(),
+            "legacy-gated code should not be flagged, got: {violations:?}"
+        );
+    }
+
+    /// Multiple occurrences: one bare and one version-probe in the same file.
+    /// Only the bare call should appear in violations.
+    #[test]
+    fn test_subprocess_mixed_file_only_bare_flagged() {
+        let src = r#"
+pub fn probe() -> bool {
+    Command::new("claude")
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+fn dispatch_real() {
+    Command::new("claude").arg("run").output().unwrap();
+}
+"#;
+        let violations = scan_subprocess_violations(src);
+        assert_eq!(
+            violations.len(),
+            1,
+            "only the bare dispatch should be flagged, got: {violations:?}"
+        );
+        let (line_no, _) = violations[0].clone();
+        // The bare call is at the `dispatch_real` function — line must be > 8.
+        assert!(
+            line_no > 8,
+            "violation should be in dispatch_real, not probe, line={line_no}"
+        );
+    }
+
+    // ── legacy_gated_lines ──────────────────────────────────────────────────
+
+    /// A file with no legacy-orchestrate gate returns an empty set.
+    #[test]
+    fn test_gated_empty_for_ungated_file() {
+        let src = "fn foo() {}\n";
+        let gated = legacy_gated_lines(src);
+        assert!(gated.is_empty());
+    }
+
+    /// Lines inside a `#[cfg(feature = "legacy-orchestrate")]`-gated block
+    /// are reported as gated.
+    #[test]
+    fn test_gated_block_lines_reported() {
+        let src = r#"fn before() {}
+#[cfg(feature = "legacy-orchestrate")]
+fn gated() {
+    let x = 1;
+}
+fn after() {}
+"#;
+        let gated = legacy_gated_lines(src);
+        // Line 2 is the cfg attr, 3 is `fn gated() {`, 4 is `let x = 1;`, 5 is `}`
+        assert!(gated.contains(&2), "cfg line should be gated");
+        assert!(gated.contains(&3), "fn signature should be gated");
+        assert!(gated.contains(&4), "body line should be gated");
+        // Lines outside the block must not be gated.
+        assert!(!gated.contains(&1), "before() must not be gated");
+        assert!(!gated.contains(&6), "after() must not be gated");
+    }
+
+    /// A file-level `#![cfg(feature = "legacy-orchestrate")]` causes every
+    /// line to be gated.
+    #[test]
+    fn test_file_level_gate_gates_all_lines() {
+        let src = r#"#![cfg(feature = "legacy-orchestrate")]
+fn foo() {}
+fn bar() {}
+"#;
+        let gated = legacy_gated_lines(src);
+        assert!(gated.contains(&1));
+        assert!(gated.contains(&2));
+        assert!(gated.contains(&3));
+    }
+}

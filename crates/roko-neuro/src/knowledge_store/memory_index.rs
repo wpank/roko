@@ -4,9 +4,9 @@
 use roko_primitives::hdc::HdcVector;
 
 #[cfg(feature = "hdc")]
-use crate::hdc::KnowledgeHdcEncoder;
-#[cfg(feature = "hdc")]
 use crate::KnowledgeEntry;
+#[cfg(feature = "hdc")]
+use crate::hdc::KnowledgeHdcEncoder;
 
 #[cfg(feature = "hdc")]
 use super::scoring::{compare_hits, fingerprint_content, fingerprint_entry};

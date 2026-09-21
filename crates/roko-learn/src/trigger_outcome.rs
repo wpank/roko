@@ -221,15 +221,19 @@ mod tests {
     #[test]
     fn cooldown_on_high_failure_rate() {
         let mut learner = TriggerOutcomeLearner::new();
-        // 5 failures in a row.
-        for _ in 0..5 {
-            learner.record_outcome("trigger-bad", false, 100);
+        // Run up to MIN_OBSERVATIONS_FOR_COOLDOWN - 1 failures silently; the
+        // *Nth* failure (where N = MIN_OBSERVATIONS_FOR_COOLDOWN) is the first
+        // observation that can trigger cooldown.
+        for _ in 0..(MIN_OBSERVATIONS_FOR_COOLDOWN - 1) {
+            let _ = learner.record_outcome("trigger-bad", false, 100);
         }
+        // This is the MIN_OBSERVATIONS_FOR_COOLDOWN-th observation.
+        // failure_rate = 1.0 > DEFAULT_FAILURE_THRESHOLD → ExtendDebounce.
         let action = learner.record_outcome("trigger-bad", false, 100);
-        assert!(matches!(
-            action,
-            TriggerCooldownAction::ExtendDebounce { .. }
-        ));
+        assert!(
+            matches!(action, TriggerCooldownAction::ExtendDebounce { .. }),
+            "expected ExtendDebounce at {MIN_OBSERVATIONS_FOR_COOLDOWN} failures, got {action:?}"
+        );
     }
 
     #[test]

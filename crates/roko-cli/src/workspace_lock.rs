@@ -61,6 +61,62 @@ pub fn acquire_workspace_lock(roko_dir: &Path) -> Result<WorkspaceLockGuard> {
     }
 }
 
+/// Acquires an exclusive advisory lock on the plan runner slot.
+///
+/// This uses a separate `roko.runner.lock` file distinct from the workspace
+/// lock (`roko.lock`).  Holding a runner lock prevents two concurrent plan
+/// executions without blocking read-only commands that hold only a shared
+/// workspace lock.
+///
+/// Fails immediately if another process already holds the runner lock.
+pub fn acquire_runner_lock(roko_dir: &Path) -> Result<WorkspaceLockGuard> {
+    let lock_dir = roko_dir.join("runtime");
+    fs::create_dir_all(&lock_dir)
+        .with_context(|| format!("create lock dir: {}", lock_dir.display()))?;
+
+    let lock_path = lock_dir.join("roko.runner.lock");
+
+    let file = OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .open(&lock_path)
+        .with_context(|| format!("open runner lock file: {}", lock_path.display()))?;
+
+    match file.try_lock_exclusive() {
+        Ok(()) => {
+            file.set_len(0)
+                .with_context(|| format!("truncate runner lock file: {}", lock_path.display()))?;
+            let mut f = &file;
+            f.seek(SeekFrom::Start(0))
+                .with_context(|| format!("seek runner lock file: {}", lock_path.display()))?;
+            writeln!(f, "{}", std::process::id())
+                .with_context(|| format!("write runner lock file: {}", lock_path.display()))?;
+            f.sync_data()
+                .with_context(|| format!("sync runner lock file: {}", lock_path.display()))?;
+            Ok(WorkspaceLockGuard {
+                file,
+                is_shared: false,
+            })
+        }
+        Err(_) => {
+            let existing_pid = fs::read_to_string(&lock_path)
+                .unwrap_or_default()
+                .trim()
+                .to_string();
+            let pid = if existing_pid.is_empty() {
+                "unknown".to_string()
+            } else {
+                existing_pid
+            };
+            bail!(
+                "A roko plan runner is already active in this workspace (PID {pid}).\n  \
+                 hint: wait for it to finish, or kill it with `kill {pid}`"
+            );
+        }
+    }
+}
+
 /// Acquires a shared advisory lock on the workspace.
 /// Returns a guard that releases the lock on drop.
 /// Multiple shared locks can coexist; fails immediately if another process
@@ -376,5 +432,54 @@ mod tests {
         // path by constructing a guard directly.
         // The important invariant is already tested: shared Drop skips
         // truncation.
+    }
+
+    #[test]
+    fn runner_lock_uses_separate_file() {
+        let dir = tempfile::tempdir().unwrap();
+        // Acquire both the workspace lock and the runner lock — they use
+        // different files so there is no contention.
+        let _workspace = acquire_workspace_lock(dir.path()).unwrap();
+        let _runner = acquire_runner_lock(dir.path()).unwrap();
+        let workspace_path = dir.path().join("runtime/roko.lock");
+        let runner_path = dir.path().join("runtime/roko.runner.lock");
+        assert!(workspace_path.exists(), "workspace lock file missing");
+        assert!(runner_path.exists(), "runner lock file missing");
+    }
+
+    #[test]
+    fn runner_lock_and_shared_workspace_lock_coexist() {
+        // This is the key ISSUE-16 property: a plan runner (runner lock) and
+        // a read-only command (shared workspace lock) must be able to run at
+        // the same time.
+        let dir = tempfile::tempdir().unwrap();
+        let _runner = acquire_runner_lock(dir.path()).unwrap();
+        // Must succeed even though the runner lock is held.
+        let _reader = acquire_workspace_lock_shared(dir.path()).unwrap();
+    }
+
+    #[test]
+    fn runner_lock_blocks_second_runner() {
+        let dir = tempfile::tempdir().unwrap();
+        let _first = acquire_runner_lock(dir.path()).unwrap();
+        let error = acquire_runner_lock(dir.path()).err().unwrap();
+        assert!(
+            error.to_string().contains("plan runner is already active"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn runner_lock_writes_pid() {
+        let dir = tempfile::tempdir().unwrap();
+        let guard = acquire_runner_lock(dir.path()).unwrap();
+        let runner_path = dir.path().join("runtime/roko.runner.lock");
+        let content = fs::read_to_string(&runner_path).unwrap();
+        assert!(
+            !content.trim().is_empty(),
+            "runner lock should contain PID, but was empty"
+        );
+        drop(guard);
+        assert_eq!(fs::read_to_string(runner_path).unwrap(), "");
     }
 }

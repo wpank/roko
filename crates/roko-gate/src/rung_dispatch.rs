@@ -11,6 +11,7 @@
 
 use crate::CompileGate;
 use crate::clippy_gate::ClippyGate;
+use crate::diff_gate::DiffGate;
 use crate::fact_check::{FactCheckGate, SearchOracle};
 use crate::gate_pipeline::{ComposedGatePipeline, GateComposition};
 use crate::generated_test_gate::{ArtifactStore as GeneratedArtifactStore, GeneratedTestGate};
@@ -45,6 +46,12 @@ const DEFAULT_INTEGRATION_TIMEOUT_SECS: u64 = 120;
 /// `GatePayload` signal currently provides.
 #[derive(Clone, Debug, Default)]
 pub struct RungExecutionInputs {
+    /// `DiffGate` expects a `DiffPayload` body (unified git diff text).
+    ///
+    /// When set, the diff gate runs as a standalone vacuous-impl check after
+    /// the canonical rung pipeline. A `None` here skips the diff gate without
+    /// failing (graceful degradation for environments without git).
+    pub diff_signal: Option<Signal>,
     /// `SymbolGate` expects a `SymbolManifest` body.
     pub symbol_signal: Option<Signal>,
     /// `FactCheckGate` expects text or claim-like content.
@@ -321,6 +328,21 @@ pub async fn run_canonical_rung(
             run_integration_gate(base_signal, ctx, config).await,
         ],
     }
+}
+
+/// Run the standalone `DiffGate` against the diff signal built from the
+/// post-agent git diff.
+///
+/// This gate is a **standalone vacuous-impl rejection check** that sits outside
+/// the canonical 7-rung pipeline — it catches agents that produce zero
+/// substantive changes (empty diffs, all-`todo!()` implementations, etc.).
+///
+/// Returns `None` when no `diff_signal` is attached to `inputs`, so the
+/// caller can choose to skip it gracefully rather than treating the absence
+/// as a failure.
+pub async fn run_diff_gate(ctx: &Context, inputs: &RungExecutionInputs) -> Option<Verdict> {
+    let signal = inputs.diff_signal.as_ref()?;
+    Some(DiffGate::new().verify(signal, ctx).await)
 }
 
 fn stub_verdict(gate: &str, detail: impl Into<String>) -> Verdict {
@@ -817,6 +839,57 @@ mod tests {
         assert!(!verdict.passed);
         assert!(verdict.skipped);
         assert!(verdict.reason.contains("stub/not wired"));
+    }
+
+    // ─── P2-GAT-1: run_diff_gate ─────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn run_diff_gate_returns_none_when_no_diff_signal() {
+        let inputs = RungExecutionInputs::default();
+        let result = run_diff_gate(&Context::at(0), &inputs).await;
+        assert!(result.is_none(), "no diff_signal must produce None");
+    }
+
+    #[tokio::test]
+    async fn run_diff_gate_accepts_substantive_diff() {
+        let payload = crate::diff_gate::DiffPayload::new(
+            "+++ b/src/lib.rs\n+pub fn answer() -> i32 { 42 }\n",
+        );
+        let signal = Signal::builder(roko_core::Kind::Task)
+            .body(roko_core::Body::from_json(&payload).unwrap())
+            .build();
+        let inputs = RungExecutionInputs {
+            diff_signal: Some(signal),
+            ..Default::default()
+        };
+        let verdict = run_diff_gate(&Context::at(0), &inputs)
+            .await
+            .expect("diff_signal present must produce a verdict");
+        assert!(verdict.passed, "substantive diff must pass: {verdict:?}");
+        assert_eq!(verdict.gate, "diff");
+    }
+
+    #[tokio::test]
+    async fn run_diff_gate_rejects_vacuous_impl() {
+        let payload = crate::diff_gate::DiffPayload::new("+++ b/src/lib.rs\n+Ok(())\n");
+        let signal = Signal::builder(roko_core::Kind::Task)
+            .body(roko_core::Body::from_json(&payload).unwrap())
+            .build();
+        let inputs = RungExecutionInputs {
+            diff_signal: Some(signal),
+            ..Default::default()
+        };
+        let verdict = run_diff_gate(&Context::at(0), &inputs)
+            .await
+            .expect("diff_signal present must produce a verdict");
+        assert!(!verdict.passed, "vacuous impl must fail: {verdict:?}");
+        assert!(
+            verdict.reason.contains("stub")
+                || verdict.reason.contains("vacuous")
+                || verdict.reason.contains("insufficient"),
+            "failure reason must explain the rejection: {}",
+            verdict.reason
+        );
     }
 }
 

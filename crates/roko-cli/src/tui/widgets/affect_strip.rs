@@ -107,10 +107,7 @@ pub fn render_affect_strip(frame: &mut Frame<'_>, area: Rect, affect: Option<&Af
                 Style::default().fg(pad_color(snap.dominance)),
             ),
             Span::styled("  conf:", Style::default().fg(Theme::TEXT_GHOST)),
-            Span::styled(
-                format!("{conf_pct}%"),
-                Style::default().fg(conf_color),
-            ),
+            Span::styled(format!("{conf_pct}%"), Style::default().fg(conf_color)),
         ];
 
         // P2-07: Cognitive energy gauge.
@@ -140,10 +137,7 @@ pub fn render_affect_strip(frame: &mut Frame<'_>, area: Rect, affect: Option<&Af
         if !snap.active_biases.is_empty() && area.width >= 60 {
             let biases = snap.active_biases.join(" ");
             spans.push(Span::styled("  [", Style::default().fg(Theme::TEXT_GHOST)));
-            spans.push(Span::styled(
-                biases,
-                Style::default().fg(Theme::DREAM),
-            ));
+            spans.push(Span::styled(biases, Style::default().fg(Theme::DREAM)));
             spans.push(Span::styled("]", Style::default().fg(Theme::TEXT_GHOST)));
         }
 

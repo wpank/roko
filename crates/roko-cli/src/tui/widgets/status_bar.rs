@@ -62,9 +62,9 @@ pub fn render_status_bar(frame: &mut Frame<'_>, area: Rect, state: &TuiState) {
         ));
     }
 
-    // ── 1b. Active tab indicator ──────────────────────────────────────
+    // ── 1b. Active tab indicator with dynamic badge count ─────────────
     spans.push(Span::styled(
-        format!("\u{25c6} {}", state.active_tab.label()),
+        format!("\u{25c6} {}", state.tab_label_with_badge(state.active_tab)),
         Style::default()
             .fg(Theme::ROSE_BRIGHT)
             .bg(Theme::BG_SECONDARY)

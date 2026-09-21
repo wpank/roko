@@ -69,7 +69,11 @@ impl PlanComposeCell {
         if let Some(source) = signal.tags.get("source") {
             let src = source.as_str();
             if ENRICHER_SOURCES.contains(&src) || src == "context" || src == "task-context" {
-                return if src == "task-context" { "context" } else { src };
+                return if src == "task-context" {
+                    "context"
+                } else {
+                    src
+                };
             }
         }
 
@@ -104,11 +108,11 @@ impl Default for PlanComposeCell {
 
 #[async_trait]
 impl Cell for PlanComposeCell {
-    fn cell_id(&self) -> &str {
+    fn cell_id(&self) -> &'static str {
         "plan.compose"
     }
 
-    fn cell_name(&self) -> &str {
+    fn cell_name(&self) -> &'static str {
         "PlanComposeCell"
     }
 
@@ -378,7 +382,10 @@ mod tests {
 
         let text_signal = make_enricher_signal("knowledge", "has content");
 
-        let output = cell.execute(vec![empty_signal, text_signal], &ctx).await.unwrap();
+        let output = cell
+            .execute(vec![empty_signal, text_signal], &ctx)
+            .await
+            .unwrap();
 
         let text = output[0].body.as_text().unwrap();
         assert!(!text.contains("## Episode History"));

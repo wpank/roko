@@ -17,6 +17,7 @@ use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter};
 use tokio::process::{Child, ChildStdin, ChildStdout};
 use tokio::sync::Mutex;
+use tracing::debug;
 
 /// MCP protocol version targeted by Roko's client.
 pub const MCP_PROTOCOL_VERSION: &str = "2025-11-25";
@@ -213,8 +214,9 @@ pub struct StdioTransport {
 impl StdioTransport {
     /// Spawn a child MCP server process.
     ///
-    /// The process is started with stdin/stdout piped for JSON-RPC communication.
-    /// Stderr is inherited so server logs appear in the parent's stderr.
+    /// Delegates to [`spawn_with_env`](Self::spawn_with_env) with an empty
+    /// environment overlay. Stderr is piped and forwarded to the tracing
+    /// subscriber rather than inherited.
     pub fn spawn(command: &str, args: &[String]) -> Result<Self, McpError> {
         Self::spawn_with_env(command, args, &HashMap::new())
     }
@@ -222,7 +224,10 @@ impl StdioTransport {
     /// Spawn a child MCP server process with additional environment variables.
     ///
     /// The provided environment is layered on top of the current process
-    /// environment before the child process is started.
+    /// environment before the child process is started. Stderr is piped and
+    /// forwarded to the tracing subscriber (one `debug!` line per stderr line)
+    /// so MCP server diagnostics appear in structured logs rather than leaking
+    /// directly to the parent's stderr.
     pub fn spawn_with_env(
         command: &str,
         args: &[String],
@@ -234,7 +239,7 @@ impl StdioTransport {
             .envs(resolved_env)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::inherit())
+            .stderr(std::process::Stdio::piped())
             .kill_on_drop(true)
             .spawn()
             .map_err(|e| McpError::Transport(format!("failed to spawn {command}: {e}")))?;
@@ -247,6 +252,30 @@ impl StdioTransport {
             .stdout
             .take()
             .ok_or_else(|| McpError::Transport("child stdout not available".into()))?;
+        let stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| McpError::Transport("child stderr not available".into()))?;
+
+        // Relay stderr lines to the tracing subscriber so they appear in
+        // structured logs instead of leaking unformatted to the parent process.
+        let server_name = command.to_string();
+        tokio::spawn(async move {
+            let mut reader = BufReader::new(stderr);
+            let mut line = String::new();
+            loop {
+                line.clear();
+                match reader.read_line(&mut line).await {
+                    Ok(0) | Err(_) => break,
+                    Ok(_) => {
+                        let trimmed = line.trim_end();
+                        if !trimmed.is_empty() {
+                            debug!(server = %server_name, "{}", trimmed);
+                        }
+                    }
+                }
+            }
+        });
 
         Ok(Self {
             stdin: Mutex::new(BufWriter::new(stdin)),

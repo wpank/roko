@@ -211,9 +211,11 @@ pub(crate) struct PlanTaskSnapshot {
     pub model_hint: Option<String>,
     pub status: String,
     pub agent_id: Option<String>,
+    #[allow(dead_code)] // captured for future TUI display
     pub model: Option<String>,
     pub elapsed_ms: Option<u64>,
     pub started_at: Option<String>,
+    #[allow(dead_code)] // captured for future TUI display
     pub ended_at: Option<String>,
     pub wave: Option<u32>,
     /// Task IDs this task depends on (from tasks.toml).

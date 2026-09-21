@@ -234,8 +234,7 @@ impl HoldoutExperiment {
             std::fs::create_dir_all(parent)?;
         }
 
-        let json =
-            serde_json::to_string_pretty(&self.state).map_err(io::Error::other)?;
+        let json = serde_json::to_string_pretty(&self.state).map_err(io::Error::other)?;
 
         // Write to a sibling `.tmp` file then rename for atomicity.
         let tmp_path = self.path.with_extension("json.tmp");
@@ -548,7 +547,9 @@ mod tests {
             exp.state.holdout_metrics.record(i < 14, 0.1);
         }
 
-        let alert = exp.check_overfitting().expect("overfitting should be detected");
+        let alert = exp
+            .check_overfitting()
+            .expect("overfitting should be detected");
         assert!(alert.divergence_pp > OVERFITTING_THRESHOLD_PP);
         assert_eq!(alert.holdout_observations, 20);
     }
@@ -569,8 +570,8 @@ mod tests {
 
         // 85% − 70% = 15pp, which is exactly at the threshold.
         // The check uses `>`, so this should NOT trigger.
-        let divergence = exp.state.train_metrics.pass_rate()
-            - exp.state.holdout_metrics.pass_rate();
+        let divergence =
+            exp.state.train_metrics.pass_rate() - exp.state.holdout_metrics.pass_rate();
         // This test is sensitive to exact arithmetic, so we check the
         // computed divergence and apply the same rule as the implementation.
         if divergence > OVERFITTING_THRESHOLD_PP {
@@ -665,9 +666,7 @@ mod tests {
         assert_eq!(exp2.train_metrics().total, train_total_before);
         assert_eq!(exp2.holdout_metrics().total, holdout_total_before);
         assert_eq!(exp2.assignment_count(), assignments_before);
-        assert!(
-            (exp2.train_metrics().pass_rate() - exp.train_metrics().pass_rate()).abs() < 1e-9
-        );
+        assert!((exp2.train_metrics().pass_rate() - exp.train_metrics().pass_rate()).abs() < 1e-9);
     }
 
     #[test]
@@ -694,7 +693,11 @@ mod tests {
     #[test]
     fn save_creates_parent_directories() {
         let tmp = TempDir::new().expect("tempdir");
-        let path = tmp.path().join("nested").join("dirs").join("holdout-state.json");
+        let path = tmp
+            .path()
+            .join("nested")
+            .join("dirs")
+            .join("holdout-state.json");
         let exp = HoldoutExperiment::new(path.clone());
         exp.save().expect("save should create parent dirs");
         assert!(path.exists());

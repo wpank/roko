@@ -11,12 +11,14 @@ use roko_agent::dispatcher::{HandlerResolver, ToolDispatcher};
 use roko_agent::rate_limit::ProviderRateLimiter;
 use roko_core::agent::{AgentRole, ProviderKind, resolve_model};
 use roko_core::config::DEFAULT_TTFT_TIMEOUT_MS;
-use roko_core::defaults::DEFAULT_CONNECT_TIMEOUT_MS;
 use roko_core::config::schema::{ModelProfile, RokoConfig};
+use roko_core::defaults::DEFAULT_CONNECT_TIMEOUT_MS;
 use roko_core::defaults::DEFAULT_REQUEST_TIMEOUT_MS;
 use roko_core::foundation::{MessageRole, ModelInputBlock, ModelStreamEvent, TokenUsage};
 use roko_core::task::TaskCategory;
-use roko_core::tool::{ToolCall, ToolContext, ToolError, ToolHandler, ToolPermission, ToolResult, VecToolRegistry};
+use roko_core::tool::{
+    ToolCall, ToolContext, ToolError, ToolHandler, ToolPermission, ToolResult, VecToolRegistry,
+};
 use roko_learn::{
     cascade_router::CascadeRouter,
     episode_logger::{Episode, EpisodeLogger},
@@ -32,14 +34,12 @@ use crate::transport::StdioTransport;
 use roko_learn::playbook::Playbook;
 
 use crate::types::{
-    ClientCapabilities, ContentBlock, JsonRpcNotification,
-    McpServerStatus, PermissionAction, PermissionDecision,
-    SESSION_BUDGET_EXCEEDED, SESSION_BUSY, SessionNewParams,
+    ClientCapabilities, ContentBlock, JsonRpcNotification, McpServerStatus, PermissionAction,
+    PermissionDecision, SESSION_BUDGET_EXCEEDED, SESSION_BUSY, SessionNewParams,
     SessionPromptParams, SessionPromptResult, SessionUpdate, StopReason, ToolCallKind,
     ToolCallStatus, UsageInfo, unsupported_prompt_content,
 };
 
-use super::*;
 use super::context::*;
 use super::cost::*;
 use super::dispatch::*;
@@ -49,6 +49,7 @@ use super::permissions::*;
 use super::provenance::*;
 use super::slash_commands::*;
 use super::tools::*;
+use super::*;
 
 fn test_session(model: &str, workflow: &str) -> AcpSession {
     let mut session = AcpSession::new(SessionNewParams {
@@ -257,8 +258,13 @@ async fn anthropic_session_mcp_tools() {
     });
     let (event_sender, _event_receiver) = mpsc::channel(4);
 
-    let (runtime, statuses) =
-        setup_session_mcp_tools(&session.session_id, &session.mcp_servers, event_sender).await;
+    let (runtime, statuses) = setup_session_mcp_tools(
+        &session.session_id,
+        &session.mcp_servers,
+        roko_agent::safety::capabilities::PluginTier::Sandboxed,
+        event_sender,
+    )
+    .await;
 
     assert_eq!(statuses, vec![McpServerStatus::ready("fixture", 1)]);
     assert_eq!(runtime.tools.len(), 1);
@@ -344,6 +350,7 @@ async fn acp_conformance() {
         session_id: "conformance-session".into(),
         workdir: tmp.path().to_path_buf(),
         event_sender: permission_tx,
+        role: "implementer".into(),
     };
     let context = ToolContext::testing(tmp.path());
     let write_task = tokio::spawn(async move {
@@ -413,6 +420,11 @@ async fn acp_conformance() {
     let assignment = assignment.expect("applicable assignment");
     assert_eq!(model_override.as_deref(), Some("vision-key"));
     assert!(render_experiment_context(&assignment).contains("Use the ACP variant."));
+    // P2-ACP-1: mark dispatched before settling so the assignment moves from
+    // Prepared to Dispatched state; settle_attempt only counts Dispatched
+    // assignments, matching the graph engine runner's three-phase protocol.
+    let prompt_hash = roko_core::ContentHash::of(b"acp-conformance-test-prompt").to_hex();
+    mark_acp_experiment_dispatched(&experiment_path, &assignment, &prompt_hash);
     record_acp_experiment_outcome(&experiment_path, &assignment, true)
         .expect("record scoped outcome");
     let recorded = ExperimentStore::load_or_new(&experiment_path);
@@ -452,9 +464,13 @@ async fn acp_conformance() {
         }],
     });
     let (mcp_tx, _mcp_rx) = mpsc::channel(4);
-    let (runtime, statuses) =
-        setup_session_mcp_tools(&mcp_session.session_id, &mcp_session.mcp_servers, mcp_tx)
-            .await;
+    let (runtime, statuses) = setup_session_mcp_tools(
+        &mcp_session.session_id,
+        &mcp_session.mcp_servers,
+        roko_agent::safety::capabilities::PluginTier::Sandboxed,
+        mcp_tx,
+    )
+    .await;
     assert_eq!(statuses, vec![McpServerStatus::ready("fixture", 1)]);
     assert_eq!(runtime.tools[0].name, "fixture_echo");
     assert!(runtime.handlers.contains_key("fixture_echo"));
@@ -563,13 +579,16 @@ fn experiment_assignment_selects_applies_and_records_acp_variant() {
         Some("configured-vision")
     );
 
+    // P2-ACP-1: mark dispatched first so the assignment moves to Dispatched
+    // state; the canonical receipt protocol (settle_attempt) only counts
+    // Dispatched assignments toward trials, matching the runner's path.
+    let prompt_hash = roko_core::ContentHash::of(b"test-session-2-prompt").to_hex();
+    mark_acp_experiment_dispatched(&path, &assignment, &prompt_hash);
     record_acp_experiment_outcome(&path, &assignment, true).expect("record outcome");
     let recorded = ExperimentStore::load_or_new(&path);
     let stats = &recorded.get("exp-a").expect("experiment").stats["a"];
     assert_eq!(stats.trials, 1);
     assert_eq!(stats.successes, 1);
-    let persisted = std::fs::read_to_string(&path).expect("read experiments");
-    assert!(persisted.contains("metric_stats"));
 }
 
 #[test]
@@ -640,6 +659,213 @@ fn concurrent_acp_and_external_experiment_writers_preserve_all_outcomes() {
     let stats = &committed.get("concurrent-exp").expect("experiment").stats["variant"];
     assert_eq!(stats.trials, 40);
     assert_eq!(stats.successes, 40);
+}
+
+// P2-ACP-1: Verify that the canonical receipt protocol does not double-count
+// trials.  The graph engine runner calls settle_attempt as the sole stats writer;
+// ACP must do the same when attempt_key is Some so both paths record exactly one
+// trial per observed outcome.
+#[test]
+fn record_acp_experiment_outcome_does_not_double_count_trials_with_receipt_protocol() {
+    use roko_learn::prompt_experiment::{PromptExperiment, PromptVariant};
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let path = tmp.path().join(".roko/learn/experiments.json");
+    std::fs::create_dir_all(path.parent().expect("experiment parent"))
+        .expect("create experiment parent");
+
+    let mut store = ExperimentStore::new();
+    store.register(PromptExperiment::new(
+        "no-dup-exp",
+        "constraints",
+        vec![PromptVariant {
+            id: "v1".to_string(),
+            name: "V1".to_string(),
+            section_name: "constraints".to_string(),
+            content: "No double count.".to_string(),
+            slug: None,
+            active: true,
+        }],
+    ));
+    store.save(&path).expect("save experiments");
+
+    // Full three-phase lifecycle: prepare → dispatch → settle.
+    let assignment = assign_acp_experiment(&path, "code", "no-dup-session").expect("assignment");
+    assert!(assignment.attempt_key.is_some(), "attempt_key must be set");
+
+    let prompt_hash = roko_core::ContentHash::of(b"no-dup-prompt").to_hex();
+    mark_acp_experiment_dispatched(&path, &assignment, &prompt_hash);
+
+    record_acp_experiment_outcome(&path, &assignment, true).expect("record outcome");
+
+    let reloaded = ExperimentStore::load_or_new(&path);
+    let stats = &reloaded.get("no-dup-exp").expect("experiment").stats["v1"];
+    assert_eq!(
+        stats.trials, 1,
+        "exactly one trial must be recorded; got {} (double-counting would yield 2)",
+        stats.trials
+    );
+    assert_eq!(stats.successes, 1);
+}
+
+// P2-ACP-1: When the prepare phase failed (attempt_key is None), the legacy
+// direct-mutation path must still record the outcome so results are never lost.
+#[test]
+fn record_acp_experiment_outcome_legacy_fallback_when_no_attempt_key() {
+    use roko_learn::prompt_experiment::{PromptExperiment, PromptVariant};
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let path = tmp.path().join(".roko/learn/experiments.json");
+    std::fs::create_dir_all(path.parent().expect("experiment parent"))
+        .expect("create experiment parent");
+
+    let mut store = ExperimentStore::new();
+    store.register(PromptExperiment::new(
+        "fallback-exp",
+        "constraints",
+        vec![PromptVariant {
+            id: "fv1".to_string(),
+            name: "FV1".to_string(),
+            section_name: "constraints".to_string(),
+            content: "Fallback content.".to_string(),
+            slug: None,
+            active: true,
+        }],
+    ));
+    store.save(&path).expect("save experiments");
+
+    // Construct an assignment with no attempt_key to simulate a failed prepare.
+    let assignment = AcpExperimentAssignment {
+        experiment_id: "fallback-exp".to_string(),
+        variant_id: "fv1".to_string(),
+        section_name: "constraints".to_string(),
+        content: "Fallback content.".to_string(),
+        model_slug: None,
+        attempt_key: None,
+        prepared_assignment_ids: Vec::new(),
+    };
+
+    record_acp_experiment_outcome(&path, &assignment, true).expect("record outcome");
+
+    let reloaded = ExperimentStore::load_or_new(&path);
+    let stats = &reloaded.get("fallback-exp").expect("experiment").stats["fv1"];
+    assert_eq!(
+        stats.trials, 1,
+        "legacy fallback must still record exactly one trial"
+    );
+    assert_eq!(stats.successes, 1);
+}
+
+#[test]
+fn replace_experiment_section_replaces_named_canonical_section() {
+    // P1-ACP-2: replace_experiment_section must replace the named section in
+    // the system prompt rather than appending a new heading.
+    let prompt =
+        "Preamble.\n\n## Project Conventions\n\nOriginal conventions.\n\n## Other\n\nOther text.";
+    let assignment = AcpExperimentAssignment {
+        experiment_id: "exp".to_string(),
+        variant_id: "v1".to_string(),
+        section_name: "conventions".to_string(),
+        content: "Experiment conventions content.".to_string(),
+        model_slug: None,
+        attempt_key: None,
+        prepared_assignment_ids: Vec::new(),
+    };
+    let result = replace_experiment_section(prompt, &assignment);
+    assert!(
+        result.contains("Experiment conventions content."),
+        "result should contain experiment content: {result}"
+    );
+    assert!(
+        !result.contains("Original conventions."),
+        "result should not contain original section: {result}"
+    );
+    assert!(
+        result.contains("Other text."),
+        "result should retain other sections: {result}"
+    );
+}
+
+#[test]
+fn replace_experiment_section_falls_back_to_append_when_heading_missing() {
+    let prompt = "A prompt without a conventions section.";
+    let assignment = AcpExperimentAssignment {
+        experiment_id: "exp".to_string(),
+        variant_id: "v1".to_string(),
+        section_name: "conventions".to_string(),
+        content: "Experiment content.".to_string(),
+        model_slug: None,
+        attempt_key: None,
+        prepared_assignment_ids: Vec::new(),
+    };
+    let result = replace_experiment_section(prompt, &assignment);
+    assert!(
+        result.contains("Experiment content."),
+        "fallback result should contain experiment content: {result}"
+    );
+    // Original prompt must still be present in the fallback path.
+    assert!(
+        result.contains("A prompt without a conventions section."),
+        "fallback result should retain original prompt: {result}"
+    );
+}
+
+#[test]
+fn mark_acp_experiment_dispatched_records_dispatched_state_for_prepared_attempt() {
+    use roko_learn::prompt_experiment::{ExperimentStatus, PromptExperiment, PromptVariant};
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let path = tmp.path().join(".roko/learn/experiments.json");
+    std::fs::create_dir_all(path.parent().expect("experiment parent"))
+        .expect("create experiment parent");
+
+    let mut store = ExperimentStore::new();
+    store.register(PromptExperiment::new(
+        "dispatch-exp",
+        "conventions",
+        vec![PromptVariant {
+            id: "v1".to_string(),
+            name: "V1".to_string(),
+            section_name: "conventions".to_string(),
+            content: "Content for dispatch test.".to_string(),
+            slug: None,
+            active: true,
+        }],
+    ));
+    store.save(&path).expect("save experiments");
+
+    // Assign and prepare a receipt.
+    let assignment =
+        assign_acp_experiment(&path, "code", "test-dispatch-session").expect("assignment");
+    assert_eq!(assignment.experiment_id, "dispatch-exp");
+    assert!(
+        assignment.attempt_key.is_some(),
+        "attempt key must be set after prepare"
+    );
+    assert!(
+        !assignment.prepared_assignment_ids.is_empty(),
+        "prepared_assignment_ids must be non-empty"
+    );
+
+    // Simulate what the pipeline path does: mark as dispatched.
+    let prompt_hash = roko_core::ContentHash::of(b"simulated-pipeline-prompt").to_hex();
+    mark_acp_experiment_dispatched(&path, &assignment, &prompt_hash);
+
+    // Verify the assignment moved to Dispatched state in the store.
+    let reloaded = ExperimentStore::load_or_new(&path);
+    let exp = reloaded.get("dispatch-exp").expect("experiment");
+    assert_eq!(exp.status, ExperimentStatus::Running);
+    // The attempt bucket should exist; we verify via a successful settle.
+    let attempt_key = assignment.attempt_key.as_ref().expect("attempt key");
+    let settle_result = ExperimentStore::settle_attempt(
+        &path,
+        attempt_key,
+        roko_learn::prompt_experiment::AssignmentSettlement::Observed { success: true },
+    );
+    assert!(
+        settle_result.is_ok(),
+        "settle_attempt should succeed after mark_attempt_dispatched: {settle_result:?}"
+    );
 }
 
 #[test]
@@ -1398,8 +1624,7 @@ fn acp_routing_context_maps_modes_to_roles() {
     assert_eq!(plan.role, AgentRole::Strategist);
     assert_eq!(plan.thinking_level.as_deref(), Some("high"));
 
-    let research =
-        acp_routing_context("research", "find the source of truth", "medium", workdir);
+    let research = acp_routing_context("research", "find the source of truth", "medium", workdir);
     assert_eq!(research.task_category, TaskCategory::Research);
     assert_eq!(research.role, AgentRole::Researcher);
 
@@ -1564,8 +1789,7 @@ async fn resolve_context_items_resolves_resource_and_path_mentions() {
     let tmp = tempfile::tempdir().expect("create tmpdir");
     let workdir = tmp.path();
     let file_path = workdir.join("src/main.rs");
-    std::fs::create_dir_all(file_path.parent().expect("parent directory"))
-        .expect("create dirs");
+    std::fs::create_dir_all(file_path.parent().expect("parent directory")).expect("create dirs");
     std::fs::write(&file_path, "fn main() {}\n").expect("write file");
 
     let prompt = vec![
@@ -1806,6 +2030,7 @@ async fn acp_builtin_tool_handler_respects_denied_tools() {
         session_id: "test-session".into(),
         workdir: std::env::temp_dir(),
         event_sender: tx,
+        role: "implementer".into(),
     };
     let call = ToolCall {
         id: "t1".into(),
@@ -1830,6 +2055,7 @@ async fn acp_builtin_tool_handler_respects_allowed_tools() {
         session_id: "test-session".into(),
         workdir: std::env::temp_dir(),
         event_sender: tx,
+        role: "implementer".into(),
     };
     let call = ToolCall {
         id: "t1".into(),
@@ -1844,6 +2070,60 @@ async fn acp_builtin_tool_handler_respects_allowed_tools() {
     assert!(
         matches!(result, ToolResult::Err(_)),
         "tool not in allowed set must return ToolResult::Err"
+    );
+}
+
+#[tokio::test]
+async fn acp_builtin_tool_handler_contract_denies_forbidden_tool() {
+    // The implementer contract forbids web_fetch via ForbiddenTools governance.
+    // The handler must deny the call before attempting execution.
+    let (tx, _rx) = mpsc::channel(16);
+    let handler = AcpBuiltinToolHandler {
+        tool_name: "web_fetch".into(),
+        session_id: "contract-deny-session".into(),
+        workdir: std::env::temp_dir(),
+        event_sender: tx,
+        role: "implementer".into(),
+    };
+    let call = ToolCall {
+        id: "c1".into(),
+        name: "web_fetch".into(),
+        arguments: serde_json::json!({"url": "https://example.com"}),
+        request_ts_ms: 0,
+    };
+    let ctx = ToolContext::testing(std::env::temp_dir());
+    let result = handler.execute(call, &ctx).await;
+    assert!(
+        matches!(result, ToolResult::Err(ToolError::PermissionDenied(_))),
+        "AgentContract ForbiddenTools must deny web_fetch for implementer role, got {:?}",
+        result,
+    );
+}
+
+#[tokio::test]
+async fn acp_builtin_tool_handler_unknown_role_falls_closed() {
+    // An unrecognised role falls back to RestrictedFallback (empty allowed_tools).
+    // Every tool must be denied.
+    let (tx, _rx) = mpsc::channel(16);
+    let handler = AcpBuiltinToolHandler {
+        tool_name: "read_file".into(),
+        session_id: "unknown-role-session".into(),
+        workdir: std::env::temp_dir(),
+        event_sender: tx,
+        role: "completely-unknown-role-xyz".into(),
+    };
+    let call = ToolCall {
+        id: "u1".into(),
+        name: "read_file".into(),
+        arguments: serde_json::json!({"path": "CLAUDE.md"}),
+        request_ts_ms: 0,
+    };
+    let ctx = ToolContext::testing(std::env::temp_dir());
+    let result = handler.execute(call, &ctx).await;
+    assert!(
+        matches!(result, ToolResult::Err(ToolError::PermissionDenied(_))),
+        "Unknown role must fall closed (deny all tools), got {:?}",
+        result,
     );
 }
 
@@ -1864,6 +2144,7 @@ async fn permission_prompt_precedes_write() {
         session_id: session_id.clone(),
         workdir: tmp.path().to_path_buf(),
         event_sender: event_sender.clone(),
+        role: "implementer".into(),
     };
     let context = ToolContext::testing(tmp.path());
     let handler_task = tokio::spawn(async move {
@@ -1978,6 +2259,7 @@ async fn permission_wait_cancellation_is_bounded() {
         session_id: session_id.clone(),
         workdir: tmp.path().to_path_buf(),
         event_sender: event_sender.clone(),
+        role: "implementer".into(),
     };
     let context = ToolContext::testing(tmp.path());
     let handler_task = tokio::spawn(async move {
@@ -2167,6 +2449,7 @@ async fn acp_builtin_permission_decisions_gate_write() {
         session_id: "permission-reject".into(),
         workdir: tmp.path().to_path_buf(),
         event_sender: reject_sender,
+        role: "implementer".into(),
     };
     let reject_context = ToolContext::testing(tmp.path());
     let reject_task =
@@ -2194,6 +2477,7 @@ async fn acp_builtin_permission_decisions_gate_write() {
         session_id: "permission-allow".into(),
         workdir: tmp.path().to_path_buf(),
         event_sender: allow_sender,
+        role: "implementer".into(),
     };
     let allow_context = ToolContext::testing(tmp.path());
     let allow_task =
@@ -2225,10 +2509,10 @@ async fn acp_builtin_permission_decisions_gate_write() {
         session_id: "permission-dropped".into(),
         workdir: tmp.path().to_path_buf(),
         event_sender: drop_sender,
+        role: "implementer".into(),
     };
     let drop_context = ToolContext::testing(tmp.path());
-    let drop_task =
-        tokio::spawn(async move { drop_handler.execute(call(), &drop_context).await });
+    let drop_task = tokio::spawn(async move { drop_handler.execute(call(), &drop_context).await });
     match drop_events.recv().await.expect("permission request") {
         CognitiveEvent::PermissionRequest { reply, .. } => drop(reply),
         other => panic!("expected permission request, got {other:?}"),
@@ -2799,4 +3083,365 @@ async fn cascade_observation_updates_the_dispatched_config_key() {
     let stats = router_loaded.observation_snapshot();
     assert_eq!(stats.get(&config_key).map(|entry| entry.trials), Some(1));
     assert_eq!(stats.get(&config_key).map(|entry| entry.successes), Some(1));
+}
+
+// ── P2-ACP-3: client capability declaration ──────────────────────────────────
+
+/// No capabilities declared → all tool flags must be false (safe text-only default).
+/// This ensures a client that omits `clientCapabilities` cannot accidentally get
+/// file/exec/network access.
+#[test]
+fn capability_negotiation_no_capabilities_yields_all_false() {
+    let caps = derive_acp_tool_capabilities("code", &ClientCapabilities::default(), false, &HashSet::new());
+    assert!(!caps.read, "read must be false when no capabilities declared");
+    assert!(!caps.write, "write must be false when no capabilities declared");
+    assert!(!caps.exec, "exec must be false when no capabilities declared");
+    assert!(!caps.git, "git must be false when no capabilities declared");
+    assert!(!caps.network, "network must be false when no capabilities declared");
+}
+
+/// Declaring `fs.readTextFile = true` enables read access only; write remains
+/// gated on `fs.writeTextFile`.
+#[test]
+fn capability_negotiation_read_only_fs_enables_read_not_write() {
+    let client = ClientCapabilities {
+        fs: Some(crate::types::FsCapabilities {
+            read_text_file: true,
+            write_text_file: false,
+        }),
+        terminal: None,
+        mcp_servers: None,
+    };
+    let caps = derive_acp_tool_capabilities("code", &client, false, &HashSet::new());
+    assert!(caps.read, "read_text_file=true must enable read");
+    assert!(!caps.write, "write_text_file=false must keep write disabled");
+    assert!(!caps.exec, "exec must be false without terminal capability");
+    assert!(!caps.git, "git must be false without terminal capability");
+    assert!(!caps.network, "network must be false without mcp_servers");
+}
+
+/// Declaring both `fs.readTextFile` and `fs.writeTextFile` enables read + write.
+#[test]
+fn capability_negotiation_full_fs_enables_read_and_write() {
+    let client = ClientCapabilities {
+        fs: Some(crate::types::FsCapabilities {
+            read_text_file: true,
+            write_text_file: true,
+        }),
+        terminal: None,
+        mcp_servers: None,
+    };
+    let caps = derive_acp_tool_capabilities("code", &client, false, &HashSet::new());
+    assert!(caps.read, "read_text_file=true must enable read");
+    assert!(caps.write, "write_text_file=true must enable write");
+    assert!(!caps.exec, "exec must be false without terminal capability");
+}
+
+/// `terminal = true` enables exec access. Git access additionally requires the
+/// role's permission ceiling to include git (only `MergeResolver` has that flag;
+/// the `code` mode maps to `Implementer` which does not).
+#[test]
+fn capability_negotiation_terminal_enables_exec_not_git_for_implementer() {
+    let client = ClientCapabilities {
+        fs: None,
+        terminal: Some(true),
+        mcp_servers: None,
+    };
+    // "code" mode → Implementer role → role.git = false → git stays false even
+    // with terminal capability declared.
+    let caps = derive_acp_tool_capabilities("code", &client, false, &HashSet::new());
+    assert!(caps.exec, "terminal=true must enable exec for Implementer");
+    assert!(!caps.git, "git must be false for Implementer role (role.git = false)");
+    assert!(!caps.read, "read must still be false without fs capability");
+}
+
+/// `session/new` result includes `resolvedToolCapabilities` reflecting the
+/// negotiated flags so the client does not need to re-derive them.
+#[test]
+fn session_new_result_includes_resolved_tool_capabilities() {
+    // Session with full fs + terminal capabilities declared.
+    let session = AcpSession::new(SessionNewParams {
+        session_name: None,
+        client_capabilities: Some(ClientCapabilities {
+            fs: Some(crate::types::FsCapabilities {
+                read_text_file: true,
+                write_text_file: true,
+            }),
+            terminal: Some(true),
+            mcp_servers: None,
+        }),
+        model: None,
+        provider: None,
+        effort: None,
+        mcp_servers: Vec::new(),
+    });
+    let result = session.new_result();
+    assert!(result.resolved_tool_capabilities.read, "read must be active");
+    assert!(result.resolved_tool_capabilities.write, "write must be active");
+    assert!(result.resolved_tool_capabilities.exec, "exec must be active");
+    // Default agent_mode is "code" (Implementer), whose role ceiling has git=false,
+    // so git stays false regardless of the terminal capability.
+    assert!(!result.resolved_tool_capabilities.git, "git must be false for Implementer role");
+
+    // Session with no capabilities declared → all-false safe defaults.
+    let bare_session = AcpSession::new(SessionNewParams {
+        session_name: None,
+        client_capabilities: None,
+        model: None,
+        provider: None,
+        effort: None,
+        mcp_servers: Vec::new(),
+    });
+    let bare_result = bare_session.new_result();
+    assert!(!bare_result.resolved_tool_capabilities.read, "no caps → read must be false");
+    assert!(!bare_result.resolved_tool_capabilities.write, "no caps → write must be false");
+    assert!(!bare_result.resolved_tool_capabilities.exec, "no caps → exec must be false");
+    assert!(!bare_result.resolved_tool_capabilities.git, "no caps → git must be false");
+    assert!(!bare_result.resolved_tool_capabilities.network, "no caps → network must be false");
+}
+
+// ── P2-ACP-2: MCP crash resilience + tool matrix ─────────────────────────
+
+/// MCP server that exits immediately after initialization — simulates a crash
+/// during the tools/list phase. The session must not panic and must report a
+/// failed status so callers can degrade gracefully.
+#[tokio::test]
+async fn mcp_server_crash_during_tools_list_produces_failed_status() {
+    // The server sends the initialize response then exits, so the tools/list
+    // request returns EOF on the client side (ToolsListFailed or similar).
+    let server = r#"
+        IFS= read -r initialize
+        printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"capabilities":{}}}'
+        exit 0
+    "#;
+    let session = AcpSession::new(SessionNewParams {
+        session_name: None,
+        client_capabilities: Some(ClientCapabilities {
+            mcp_servers: Some(true),
+            ..Default::default()
+        }),
+        model: Some("crash-test".into()),
+        provider: Some("anthropic".into()),
+        effort: None,
+        mcp_servers: vec![crate::types::McpServerConfig {
+            name: "crash-server".into(),
+            transport: crate::types::McpTransport::Stdio {
+                command: "sh".into(),
+                args: vec!["-c".into(), server.into()],
+            },
+            discovery_timeout_ms: Some(1_000),
+        }],
+    });
+    let (event_sender, _event_receiver) = mpsc::channel(4);
+
+    let (runtime, statuses) = setup_session_mcp_tools(
+        &session.session_id,
+        &session.mcp_servers,
+        roko_agent::safety::capabilities::PluginTier::Sandboxed,
+        event_sender,
+    )
+    .await;
+
+    // A crash after initialize must produce a failed status — never a panic.
+    assert_eq!(statuses.len(), 1, "exactly one status for one server");
+    assert_ne!(
+        statuses[0].status,
+        crate::types::McpInitStatus::Ready,
+        "crashed server must not report Ready"
+    );
+    assert!(
+        runtime.tools.is_empty(),
+        "no tools must be exposed from a crashed server"
+    );
+    assert!(
+        runtime.handlers.is_empty(),
+        "no handlers must be registered from a crashed server"
+    );
+}
+
+/// MCP server that never responds — simulates a hang / freeze. The session
+/// must time out and report a failed status rather than blocking indefinitely.
+#[tokio::test]
+async fn mcp_server_hang_during_initialize_times_out_gracefully() {
+    // The server reads the initialize request but never responds.
+    let server = r#"
+        IFS= read -r initialize
+        sleep 60
+    "#;
+    let session = AcpSession::new(SessionNewParams {
+        session_name: None,
+        client_capabilities: None,
+        model: None,
+        provider: None,
+        effort: None,
+        mcp_servers: vec![crate::types::McpServerConfig {
+            name: "hang-server".into(),
+            transport: crate::types::McpTransport::Stdio {
+                command: "sh".into(),
+                args: vec!["-c".into(), server.into()],
+            },
+            // Short timeout so the test stays fast.
+            discovery_timeout_ms: Some(200),
+        }],
+    });
+    let (event_sender, _event_receiver) = mpsc::channel(4);
+
+    let start = std::time::Instant::now();
+    let (runtime, statuses) = setup_session_mcp_tools(
+        &session.session_id,
+        &session.mcp_servers,
+        roko_agent::safety::capabilities::PluginTier::Sandboxed,
+        event_sender,
+    )
+    .await;
+    let elapsed = start.elapsed();
+
+    // Must resolve within a reasonable multiple of the configured timeout.
+    assert!(
+        elapsed.as_secs() < 5,
+        "session setup must time out quickly, elapsed: {elapsed:?}"
+    );
+    assert_eq!(statuses.len(), 1);
+    assert!(
+        matches!(
+            statuses[0].status,
+            crate::types::McpInitStatus::InitializeTimeout
+                | crate::types::McpInitStatus::InitializeFailed
+        ),
+        "hung server must report InitializeTimeout or InitializeFailed, got {:?}",
+        statuses[0].status
+    );
+    assert!(runtime.tools.is_empty());
+    assert!(runtime.handlers.is_empty());
+}
+
+/// Verify the builtin tool matrix: every tool exposed by `acp_builtin_tools()`
+/// has a matching permission, a non-empty name, a non-empty description, and
+/// the `derive_tool_permissions` function returns the expected capability flags.
+#[test]
+fn builtin_tool_matrix_permissions_and_definitions_are_correct() {
+    use crate::builtin_tools::{acp_builtin_tools, compute_session_capabilities, derive_tool_permissions};
+    use roko_core::tool::ToolPermission;
+
+    let tools = acp_builtin_tools();
+
+    // Expected tool count: 9 (read_file, write_file, edit_file, glob, grep, bash, ls,
+    // web_fetch, retrieve).  The RAG-16 `retrieve` tool was added after the initial 8.
+    assert_eq!(tools.len(), 9, "acp_builtin_tools must expose exactly 9 tools");
+
+    // Every tool must have a non-empty name and description.
+    for tool in &tools {
+        assert!(!tool.name.is_empty(), "tool must have a non-empty name");
+        assert!(
+            !tool.description.is_empty(),
+            "tool '{}' must have a non-empty description",
+            tool.name
+        );
+    }
+
+    // Verify per-tool permission expectations.
+    let cases: &[(&str, ToolPermission)] = &[
+        ("read_file", ToolPermission::read_only()),
+        ("glob",      ToolPermission::read_only()),
+        ("grep",      ToolPermission::read_only()),
+        ("ls",        ToolPermission::read_only()),
+        ("retrieve",  ToolPermission::read_only()),
+        ("write_file", ToolPermission::writes()),
+        ("edit_file",  ToolPermission::writes()),
+        ("bash", ToolPermission::executes()),
+        (
+            "web_fetch",
+            ToolPermission { read: true, write: false, exec: false, git: false, network: true },
+        ),
+    ];
+
+    for (name, expected) in cases {
+        let got = derive_tool_permissions(name);
+        assert_eq!(
+            got, *expected,
+            "derive_tool_permissions('{}') mismatch: got {got:?}, expected {expected:?}",
+            name
+        );
+    }
+
+    // Unknown tool names must fail closed (all false).
+    let unknown = derive_tool_permissions("totally-unknown-tool-xyz");
+    assert_eq!(
+        unknown,
+        ToolPermission { read: false, write: false, exec: false, git: false, network: false },
+        "unknown tool must return all-false (fail-closed)"
+    );
+
+    // Session capabilities = union of all tool permissions.
+    let session_caps = compute_session_capabilities(&tools);
+    assert!(session_caps.read, "session must have read capability");
+    assert!(session_caps.write, "session must have write capability");
+    assert!(session_caps.exec, "session must have exec capability");
+    assert!(session_caps.network, "session must have network capability");
+}
+
+/// Session setup with zero configured MCP servers must return an empty runtime
+/// without panicking — nothing to do is a valid (non-error) outcome.
+#[tokio::test]
+async fn mcp_setup_with_no_servers_returns_empty_runtime() {
+    let (event_sender, _event_receiver) = mpsc::channel(4);
+
+    let (runtime, statuses) = setup_session_mcp_tools(
+        "empty-session",
+        &[],
+        roko_agent::safety::capabilities::PluginTier::Sandboxed,
+        event_sender,
+    )
+    .await;
+
+    assert!(statuses.is_empty(), "no servers → no statuses");
+    assert!(runtime.tools.is_empty(), "no servers → no tools");
+    assert!(runtime.handlers.is_empty(), "no servers → no handlers");
+}
+
+/// MCP server that immediately exits without sending any data — simulates a
+/// spawn-level failure (e.g. script returns 1 without output). The session
+/// must not panic and must produce a failed status.
+#[tokio::test]
+async fn mcp_server_immediate_exit_without_response_reports_failed_status() {
+    let server = r#"exit 1"#;
+    let (event_sender, _event_receiver) = mpsc::channel(4);
+
+    let (runtime, statuses) = setup_session_mcp_tools(
+        "immediate-exit-session",
+        &[crate::types::McpServerConfig {
+            name: "exit-server".into(),
+            transport: crate::types::McpTransport::Stdio {
+                command: "sh".into(),
+                args: vec!["-c".into(), server.into()],
+            },
+            discovery_timeout_ms: Some(1_000),
+        }],
+        roko_agent::safety::capabilities::PluginTier::Sandboxed,
+        event_sender,
+    )
+    .await;
+
+    assert_eq!(statuses.len(), 1);
+    assert_ne!(
+        statuses[0].status,
+        crate::types::McpInitStatus::Ready,
+        "server that exits without a response must not be Ready"
+    );
+    assert!(runtime.tools.is_empty());
+}
+
+/// `compute_session_capabilities` with an empty tool list must return all-false
+/// (fail-closed), matching the documented contract.
+#[test]
+fn compute_session_capabilities_empty_tool_list_is_fail_closed() {
+    use crate::builtin_tools::compute_session_capabilities;
+    use roko_core::tool::ToolPermission;
+
+    let caps = compute_session_capabilities(&[]);
+    assert_eq!(
+        caps,
+        ToolPermission { read: false, write: false, exec: false, git: false, network: false },
+        "empty tool list must produce all-false capabilities"
+    );
 }

@@ -44,6 +44,11 @@ pub(crate) fn render(
         SubView::LearningEfficiency => render_efficiency(frame, rows[1], tui_state, theme),
         SubView::LearningPlaybooks => render_playbooks(frame, rows[1], tui_state, theme),
         SubView::LearningExperiments => render_experiments(frame, rows[1], tui_state, theme),
+        SubView::LearningKnowHealth => render_know_health(frame, rows[1], tui_state, theme),
+        SubView::LearningRagStats => render_rag_stats(frame, rows[1], tui_state, theme),
+        SubView::LearningRagExperiments => {
+            render_rag_experiments(frame, rows[1], tui_state, theme);
+        }
         _ => render_router(frame, rows[1], tui_state, theme),
     }
 }
@@ -729,10 +734,7 @@ fn render_playbooks(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiState, the
         frame.render_widget(block, area);
         let lines = vec![
             Line::from(""),
-            Line::from(Span::styled(
-                "No playbooks recorded yet.",
-                theme.muted(),
-            )),
+            Line::from(Span::styled("No playbooks recorded yet.", theme.muted())),
             Line::from(""),
             Line::from(Span::styled(
                 "Playbooks are learned from successful task episodes.",
@@ -760,15 +762,9 @@ fn render_playbooks(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiState, the
     let header = Row::new(vec![
         Cell::from(Span::styled("Name", theme.label())),
         Cell::from(Line::from(Span::styled("Steps", theme.label())).alignment(Alignment::Right)),
-        Cell::from(
-            Line::from(Span::styled("Success", theme.label())).alignment(Alignment::Right),
-        ),
-        Cell::from(
-            Line::from(Span::styled("Fail", theme.label())).alignment(Alignment::Right),
-        ),
-        Cell::from(
-            Line::from(Span::styled("Rate", theme.label())).alignment(Alignment::Right),
-        ),
+        Cell::from(Line::from(Span::styled("Success", theme.label())).alignment(Alignment::Right)),
+        Cell::from(Line::from(Span::styled("Fail", theme.label())).alignment(Alignment::Right)),
+        Cell::from(Line::from(Span::styled("Rate", theme.label())).alignment(Alignment::Right)),
         Cell::from(Span::styled("Goal", theme.label())),
     ])
     .style(Style::default().add_modifier(Modifier::BOLD));
@@ -804,18 +800,12 @@ fn render_playbooks(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiState, the
                         .alignment(Alignment::Right),
                 ),
                 Cell::from(
-                    Line::from(Span::styled(
-                        pb.success_count.to_string(),
-                        theme.value(),
-                    ))
-                    .alignment(Alignment::Right),
+                    Line::from(Span::styled(pb.success_count.to_string(), theme.value()))
+                        .alignment(Alignment::Right),
                 ),
                 Cell::from(
-                    Line::from(Span::styled(
-                        pb.failure_count.to_string(),
-                        theme.value(),
-                    ))
-                    .alignment(Alignment::Right),
+                    Line::from(Span::styled(pb.failure_count.to_string(), theme.value()))
+                        .alignment(Alignment::Right),
                 ),
                 Cell::from(
                     Line::from(Span::styled(rate_str, Style::default().fg(rate_color)))
@@ -1025,12 +1015,8 @@ fn render_experiments(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiState, t
     let header = Row::new(vec![
         Cell::from(Span::styled("Experiment", theme.label())),
         Cell::from(Span::styled("Section", theme.label())),
-        Cell::from(
-            Line::from(Span::styled("Variants", theme.label())).alignment(Alignment::Right),
-        ),
-        Cell::from(
-            Line::from(Span::styled("Trials", theme.label())).alignment(Alignment::Right),
-        ),
+        Cell::from(Line::from(Span::styled("Variants", theme.label())).alignment(Alignment::Right)),
+        Cell::from(Line::from(Span::styled("Trials", theme.label())).alignment(Alignment::Right)),
         Cell::from(Span::styled("Status", theme.label())),
         Cell::from(Span::styled("Leader", theme.label())),
     ])
@@ -1044,10 +1030,7 @@ fn render_experiments(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiState, t
                 "concluded" => Style::default().fg(Theme::DREAM),
                 _ => theme.muted(),
             };
-            let leader = exp
-                .winner_id
-                .as_deref()
-                .unwrap_or("\u{2014}");
+            let leader = exp.winner_id.as_deref().unwrap_or("\u{2014}");
             Row::new(vec![
                 Cell::from(Span::styled(
                     truncate_str(&exp.experiment_id, 24),
@@ -1058,24 +1041,15 @@ fn render_experiments(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiState, t
                     theme.value(),
                 )),
                 Cell::from(
-                    Line::from(Span::styled(
-                        exp.active_variants.to_string(),
-                        theme.value(),
-                    ))
-                    .alignment(Alignment::Right),
+                    Line::from(Span::styled(exp.active_variants.to_string(), theme.value()))
+                        .alignment(Alignment::Right),
                 ),
                 Cell::from(
-                    Line::from(Span::styled(
-                        exp.total_trials.to_string(),
-                        theme.value(),
-                    ))
-                    .alignment(Alignment::Right),
+                    Line::from(Span::styled(exp.total_trials.to_string(), theme.value()))
+                        .alignment(Alignment::Right),
                 ),
                 Cell::from(Span::styled(exp.status.clone(), status_style)),
-                Cell::from(Span::styled(
-                    truncate_str(leader, 16),
-                    theme.value(),
-                )),
+                Cell::from(Span::styled(truncate_str(leader, 16), theme.value())),
             ])
         })
         .collect();
@@ -1114,4 +1088,599 @@ fn truncate_str(s: &str, max_len: usize) -> String {
     } else {
         format!("{}\u{2026}", &s[..max_len.saturating_sub(1)])
     }
+}
+
+// ---------------------------------------------------------------------------
+// Sub-view 6: Knowledge store health (RAG-06)
+// ---------------------------------------------------------------------------
+
+fn render_know_health(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiState, theme: &Theme) {
+    let cache = &tui_state.knowledge_health_cache;
+
+    let block = Block::bordered()
+        .title(Span::styled(" Knowledge Store Health ", theme.section_header()))
+        .border_style(theme.muted());
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if cache.total == 0 {
+        let lines = vec![
+            Line::from(""),
+            Line::from(Span::styled(
+                "No knowledge entries yet.",
+                theme.muted(),
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                "Entries are created as agents complete tasks and gate results are recorded.",
+                theme.muted(),
+            )),
+            Line::from(Span::styled(
+                "Source: .roko/neuro/knowledge.jsonl",
+                theme.muted(),
+            )),
+        ];
+        frame.render_widget(
+            Paragraph::new(lines)
+                .alignment(Alignment::Center)
+                .wrap(Wrap { trim: false }),
+            inner,
+        );
+        return;
+    }
+
+    let rows_layout = Layout::vertical([
+        Constraint::Length(3), // total count
+        Constraint::Length(1), // gap
+        Constraint::Min(6),    // tier table
+    ])
+    .split(inner);
+
+    // -- Total --
+    let total_line = Line::from(vec![
+        Span::styled("  Total entries: ", theme.label()),
+        Span::styled(
+            cache.total.to_string(),
+            Style::default()
+                .fg(Theme::SAGE)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled("  |  Calibrated: ", theme.label()),
+        Span::styled(cache.calibrated.to_string(), theme.value()),
+        Span::styled("  |  Avg balance: ", theme.label()),
+        Span::styled(
+            format!("{:.3}", cache.avg_balance),
+            theme.value(),
+        ),
+    ]);
+    frame.render_widget(Paragraph::new(vec![Line::from(""), total_line]), rows_layout[0]);
+
+    // -- Tier table --
+    let header = Row::new(vec![
+        Cell::from(Span::styled("Tier", theme.label())),
+        Cell::from(Line::from(Span::styled("Count", theme.label())).alignment(Alignment::Right)),
+        Cell::from(Span::styled("Bar", theme.label())),
+    ])
+    .style(Style::default().add_modifier(Modifier::BOLD));
+
+    let tier_data = [
+        ("Transient", cache.transient, Theme::STAGE_STATIC),
+        ("Working", cache.working, Theme::STAGE_CONFIDENCE),
+        ("Consolidated", cache.consolidated, Theme::SAGE),
+        ("Persistent", cache.persistent, Theme::STAGE_UCB),
+        ("AntiKnowledge", cache.anti_knowledge, Theme::RATE_BAD),
+        ("Frozen", cache.frozen, theme.muted),
+    ];
+
+    let bar_width = area.width.saturating_sub(30) as usize;
+    let rows: Vec<Row> = tier_data
+        .iter()
+        .filter(|(_, count, _)| *count > 0)
+        .map(|(label, count, color)| {
+            let pct = if cache.total > 0 {
+                *count as f64 / cache.total as f64
+            } else {
+                0.0
+            };
+            let filled = (pct * bar_width as f64).round() as usize;
+            let empty = bar_width.saturating_sub(filled);
+            let bar = format!(
+                "{}{}",
+                "\u{2588}".repeat(filled),
+                "\u{2591}".repeat(empty),
+            );
+            Row::new(vec![
+                Cell::from(Span::styled(*label, theme.value())),
+                Cell::from(
+                    Line::from(Span::styled(count.to_string(), theme.value()))
+                        .alignment(Alignment::Right),
+                ),
+                Cell::from(Span::styled(bar, Style::default().fg(*color))),
+            ])
+        })
+        .collect();
+
+    let table = Table::new(
+        rows,
+        [
+            Constraint::Length(14),
+            Constraint::Length(8),
+            Constraint::Min(10),
+        ],
+    )
+    .header(header)
+    .block(
+        Block::bordered()
+            .title(Span::styled(" Tier Distribution ", theme.section_header()))
+            .border_style(theme.muted()),
+    );
+
+    frame.render_widget(table, rows_layout[2]);
+}
+
+// ---------------------------------------------------------------------------
+// Sub-view 7: RAG retrieval stats (RAG-06)
+// ---------------------------------------------------------------------------
+
+/// Compute aggregate stats from retrieval outcome JSONL on disk.
+///
+/// Returns `(total, gate_passed, avg_latency_ms, per_strategy)` where
+/// `per_strategy` maps strategy name → (attempts, passes, avg_latency_ms).
+fn load_retrieval_stats(
+    workdir: &std::path::Path,
+) -> (
+    usize,
+    usize,
+    f64,
+    HashMap<String, (usize, usize, f64)>,
+) {
+    let path = workdir
+        .join(".roko")
+        .join("learn")
+        .join("retrieval-outcomes.jsonl");
+    let text = match std::fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(_) => return (0, 0, 0.0, HashMap::new()),
+    };
+
+    let mut total = 0usize;
+    let mut passed = 0usize;
+    let mut total_latency_ms = 0f64;
+    let mut latency_count = 0usize;
+    let mut per_strategy: HashMap<String, (usize, usize, f64)> = HashMap::new();
+
+    for line in text.lines() {
+        let Ok(rec) = serde_json::from_str::<roko_learn::retrieval_outcome::RetrievalOutcomeRecord>(line) else {
+            continue;
+        };
+        // Only count settled records (gate_passed is Some).
+        let Some(gate_ok) = rec.gate_passed else {
+            continue;
+        };
+
+        total += 1;
+        if gate_ok {
+            passed += 1;
+        }
+        if let Some(lat) = rec.latency_ms {
+            total_latency_ms += lat as f64;
+            latency_count += 1;
+        }
+
+        let entry = per_strategy.entry(rec.strategy.clone()).or_default();
+        entry.0 += 1;
+        if gate_ok {
+            entry.1 += 1;
+        }
+        if let Some(lat) = rec.latency_ms {
+            entry.2 += lat as f64;
+        }
+    }
+
+    let avg_latency = if latency_count > 0 {
+        total_latency_ms / latency_count as f64
+    } else {
+        0.0
+    };
+
+    (total, passed, avg_latency, per_strategy)
+}
+
+fn render_rag_stats(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiState, theme: &Theme) {
+    let (total, passed, avg_latency_ms, per_strategy) =
+        load_retrieval_stats(&tui_state.workdir);
+
+    let block = Block::bordered()
+        .title(Span::styled(" RAG Retrieval Stats ", theme.section_header()))
+        .border_style(theme.muted());
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if total == 0 {
+        let lines = vec![
+            Line::from(""),
+            Line::from(Span::styled(
+                "No settled retrieval outcomes yet.",
+                theme.muted(),
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                "Outcomes are recorded per task-dispatch when retrieval is active.",
+                theme.muted(),
+            )),
+            Line::from(Span::styled(
+                "Source: .roko/learn/retrieval-outcomes.jsonl",
+                theme.muted(),
+            )),
+        ];
+        frame.render_widget(
+            Paragraph::new(lines)
+                .alignment(Alignment::Center)
+                .wrap(Wrap { trim: false }),
+            inner,
+        );
+        return;
+    }
+
+    let precision = if total > 0 {
+        passed as f64 / total as f64 * 100.0
+    } else {
+        0.0
+    };
+    let miss_rate = 100.0 - precision;
+
+    let chunks = Layout::vertical([
+        Constraint::Length(5), // summary gauges
+        Constraint::Length(1), // separator
+        Constraint::Min(6),    // per-strategy table
+    ])
+    .split(inner);
+
+    // -- Summary block --
+    let prec_color = if precision >= 80.0 {
+        Theme::RATE_GOOD
+    } else if precision >= 50.0 {
+        Theme::RATE_MID
+    } else {
+        Theme::RATE_BAD
+    };
+    let summary_lines = vec![
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  Precision: ", theme.label()),
+            Span::styled(
+                format!("{precision:.1}%"),
+                Style::default()
+                    .fg(prec_color)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("  |  Miss rate: ", theme.label()),
+            Span::styled(format!("{miss_rate:.1}%"), theme.value()),
+            Span::styled("  |  Settled records: ", theme.label()),
+            Span::styled(total.to_string(), theme.value()),
+        ]),
+        Line::from(vec![
+            Span::styled("  Avg latency: ", theme.label()),
+            Span::styled(
+                if avg_latency_ms > 0.0 {
+                    format!("{avg_latency_ms:.0}ms")
+                } else {
+                    "\u{2014}".to_string()
+                },
+                theme.value(),
+            ),
+        ]),
+    ];
+    frame.render_widget(Paragraph::new(summary_lines), chunks[0]);
+    render_separator(frame, chunks[1], theme);
+
+    // -- Per-strategy table --
+    let header = Row::new(vec![
+        Cell::from(Span::styled("Strategy", theme.label())),
+        Cell::from(Line::from(Span::styled("Attempts", theme.label())).alignment(Alignment::Right)),
+        Cell::from(Line::from(Span::styled("Passed", theme.label())).alignment(Alignment::Right)),
+        Cell::from(
+            Line::from(Span::styled("Precision", theme.label())).alignment(Alignment::Right),
+        ),
+        Cell::from(
+            Line::from(Span::styled("Avg Latency", theme.label())).alignment(Alignment::Right),
+        ),
+    ])
+    .style(Style::default().add_modifier(Modifier::BOLD));
+
+    let mut sorted: Vec<_> = per_strategy.iter().collect();
+    sorted.sort_by(|a, b| b.1 .0.cmp(&a.1 .0));
+
+    let rows: Vec<Row> = sorted
+        .iter()
+        .map(|(strategy, (attempts, passes, total_lat))| {
+            let prec = if *attempts > 0 {
+                *passes as f64 / *attempts as f64 * 100.0
+            } else {
+                0.0
+            };
+            let avg_lat = if *attempts > 0 {
+                total_lat / *attempts as f64
+            } else {
+                0.0
+            };
+            let color = if prec >= 80.0 {
+                Theme::RATE_GOOD
+            } else if prec >= 50.0 {
+                Theme::RATE_MID
+            } else {
+                Theme::RATE_BAD
+            };
+
+            Row::new(vec![
+                Cell::from(Span::styled(strategy.as_str(), theme.value())),
+                Cell::from(
+                    Line::from(Span::styled(attempts.to_string(), theme.value()))
+                        .alignment(Alignment::Right),
+                ),
+                Cell::from(
+                    Line::from(Span::styled(passes.to_string(), theme.value()))
+                        .alignment(Alignment::Right),
+                ),
+                Cell::from(
+                    Line::from(Span::styled(
+                        format!("{prec:.1}%"),
+                        Style::default().fg(color),
+                    ))
+                    .alignment(Alignment::Right),
+                ),
+                Cell::from(
+                    Line::from(Span::styled(
+                        if avg_lat > 0.0 {
+                            format!("{avg_lat:.0}ms")
+                        } else {
+                            "\u{2014}".to_string()
+                        },
+                        theme.metadata(),
+                    ))
+                    .alignment(Alignment::Right),
+                ),
+            ])
+        })
+        .collect();
+
+    let table = Table::new(
+        rows,
+        [
+            Constraint::Percentage(20),
+            Constraint::Percentage(16),
+            Constraint::Percentage(16),
+            Constraint::Percentage(20),
+            Constraint::Percentage(28),
+        ],
+    )
+    .header(header)
+    .block(
+        Block::bordered()
+            .title(Span::styled(" Per-Strategy Breakdown ", theme.section_header()))
+            .border_style(theme.muted()),
+    );
+
+    frame.render_widget(table, chunks[2]);
+}
+
+// ---------------------------------------------------------------------------
+// Sub-view 8: RAG retrieval A/B experiments (RAG-06)
+// ---------------------------------------------------------------------------
+
+/// Per-arm stats derived from retrieval outcome records.
+struct RagArmStats {
+    arm: String,
+    attempts: usize,
+    passes: usize,
+    total_latency_ms: f64,
+    latency_count: usize,
+}
+
+fn load_rag_experiment_arms(
+    workdir: &std::path::Path,
+) -> Vec<RagArmStats> {
+    let path = workdir
+        .join(".roko")
+        .join("learn")
+        .join("retrieval-outcomes.jsonl");
+    let text = match std::fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(_) => return Vec::new(),
+    };
+
+    let mut per_arm: HashMap<String, RagArmStats> = HashMap::new();
+
+    for line in text.lines() {
+        let Ok(rec) = serde_json::from_str::<roko_learn::retrieval_outcome::RetrievalOutcomeRecord>(line) else {
+            continue;
+        };
+        // Only settled records.
+        let Some(gate_ok) = rec.gate_passed else {
+            continue;
+        };
+        // Only those linked to an experiment arm.
+        let arm = match &rec.experiment_assignment_id {
+            Some(id) => id.clone(),
+            None => continue,
+        };
+
+        let entry = per_arm.entry(arm.clone()).or_insert_with(|| RagArmStats {
+            arm,
+            attempts: 0,
+            passes: 0,
+            total_latency_ms: 0.0,
+            latency_count: 0,
+        });
+        entry.attempts += 1;
+        if gate_ok {
+            entry.passes += 1;
+        }
+        if let Some(lat) = rec.latency_ms {
+            entry.total_latency_ms += lat as f64;
+            entry.latency_count += 1;
+        }
+    }
+
+    let mut arms: Vec<_> = per_arm.into_values().collect();
+    arms.sort_by(|a, b| b.attempts.cmp(&a.attempts));
+    arms
+}
+
+fn render_rag_experiments(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    tui_state: &TuiState,
+    theme: &Theme,
+) {
+    let arms = load_rag_experiment_arms(&tui_state.workdir);
+
+    let block = Block::bordered()
+        .title(Span::styled(" RAG Strategy Experiments ", theme.section_header()))
+        .border_style(theme.muted());
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if arms.is_empty() {
+        let lines = vec![
+            Line::from(""),
+            Line::from(Span::styled(
+                "No RAG A/B experiment data yet.",
+                theme.muted(),
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                "Retrieval strategy experiments compare keyword, hdc-only, and hybrid arms.",
+                theme.muted(),
+            )),
+            Line::from(Span::styled(
+                "Configure experiments under [learning.retrieval_experiments] in roko.toml.",
+                theme.muted(),
+            )),
+            Line::from(Span::styled(
+                "Source: .roko/learn/retrieval-outcomes.jsonl (experiment_assignment_id field)",
+                theme.muted(),
+            )),
+        ];
+        frame.render_widget(
+            Paragraph::new(lines)
+                .alignment(Alignment::Center)
+                .wrap(Wrap { trim: false }),
+            inner,
+        );
+        return;
+    }
+
+    let header = Row::new(vec![
+        Cell::from(Span::styled("Arm / Variant", theme.label())),
+        Cell::from(Line::from(Span::styled("Attempts", theme.label())).alignment(Alignment::Right)),
+        Cell::from(Line::from(Span::styled("Passed", theme.label())).alignment(Alignment::Right)),
+        Cell::from(
+            Line::from(Span::styled("Precision", theme.label())).alignment(Alignment::Right),
+        ),
+        Cell::from(
+            Line::from(Span::styled("Avg Latency", theme.label())).alignment(Alignment::Right),
+        ),
+        Cell::from(Span::styled("Leader", theme.label())),
+    ])
+    .style(Style::default().add_modifier(Modifier::BOLD));
+
+    // Identify the arm with highest precision among those with >= 5 attempts.
+    let best_arm = arms
+        .iter()
+        .filter(|a| a.attempts >= 5)
+        .max_by(|a, b| {
+            let pa = a.passes as f64 / a.attempts as f64;
+            let pb = b.passes as f64 / b.attempts as f64;
+            pa.partial_cmp(&pb).unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .map(|a| a.arm.as_str());
+
+    let rows: Vec<Row> = arms
+        .iter()
+        .map(|arm| {
+            let prec = if arm.attempts > 0 {
+                arm.passes as f64 / arm.attempts as f64 * 100.0
+            } else {
+                0.0
+            };
+            let avg_lat = if arm.latency_count > 0 {
+                arm.total_latency_ms / arm.latency_count as f64
+            } else {
+                0.0
+            };
+            let color = if prec >= 80.0 {
+                Theme::RATE_GOOD
+            } else if prec >= 50.0 {
+                Theme::RATE_MID
+            } else {
+                Theme::RATE_BAD
+            };
+            let leader_marker = if best_arm == Some(arm.arm.as_str()) {
+                "\u{2605} leading"
+            } else {
+                ""
+            };
+
+            Row::new(vec![
+                Cell::from(Span::styled(
+                    truncate_str(&arm.arm, 28),
+                    theme.value(),
+                )),
+                Cell::from(
+                    Line::from(Span::styled(arm.attempts.to_string(), theme.value()))
+                        .alignment(Alignment::Right),
+                ),
+                Cell::from(
+                    Line::from(Span::styled(arm.passes.to_string(), theme.value()))
+                        .alignment(Alignment::Right),
+                ),
+                Cell::from(
+                    Line::from(Span::styled(
+                        format!("{prec:.1}%"),
+                        Style::default().fg(color),
+                    ))
+                    .alignment(Alignment::Right),
+                ),
+                Cell::from(
+                    Line::from(Span::styled(
+                        if avg_lat > 0.0 {
+                            format!("{avg_lat:.0}ms")
+                        } else {
+                            "\u{2014}".to_string()
+                        },
+                        theme.metadata(),
+                    ))
+                    .alignment(Alignment::Right),
+                ),
+                Cell::from(Span::styled(
+                    leader_marker,
+                    Style::default().fg(Theme::SAGE),
+                )),
+            ])
+        })
+        .collect();
+
+    let table = Table::new(
+        rows,
+        [
+            Constraint::Percentage(24),
+            Constraint::Percentage(12),
+            Constraint::Percentage(12),
+            Constraint::Percentage(14),
+            Constraint::Percentage(18),
+            Constraint::Percentage(20),
+        ],
+    )
+    .header(header)
+    .block(
+        Block::bordered()
+            .title(Span::styled(
+                format!(" RAG Experiment Arms ({}) ", arms.len()),
+                theme.section_header(),
+            ))
+            .border_style(theme.muted()),
+    );
+
+    frame.render_widget(table, inner);
 }

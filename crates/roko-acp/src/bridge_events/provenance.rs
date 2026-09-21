@@ -3,12 +3,9 @@
 use std::collections::HashSet;
 use std::path::Path;
 
-use roko_learn::{
-    episode_logger::EpisodeLogger,
-    playbook::Playbook,
-};
-use roko_neuro::{KnowledgeKind, KnowledgeQueryHit, KnowledgeTier};
 use roko_dreams::{load_dream_routing_advice, relevant_pattern_summaries};
+use roko_learn::{episode_logger::EpisodeLogger, playbook::Playbook};
+use roko_neuro::{KnowledgeKind, KnowledgeQueryHit, KnowledgeTier};
 use tokio::{sync::mpsc, task};
 use tracing::warn;
 
@@ -369,4 +366,3 @@ pub(crate) fn prompt_keywords(prompt: &str) -> Vec<String> {
 
     keywords
 }
-

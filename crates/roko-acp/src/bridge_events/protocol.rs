@@ -6,10 +6,9 @@ use thiserror::Error;
 
 use crate::transport::TransportError;
 use crate::types::{
-    ContentBlock, INTERNAL_ERROR, INVALID_PARAMS, McpServerStatus, PlanEntry,
-    PermissionAction, PermissionDecision,
-    SESSION_BUDGET_EXCEEDED, SESSION_BUSY, SessionPromptResult, StopReason, ToolCallKind,
-    ToolCallStatus, UsageInfo,
+    ContentBlock, INTERNAL_ERROR, INVALID_PARAMS, McpServerStatus, PermissionAction,
+    PermissionDecision, PlanEntry, SESSION_BUDGET_EXCEEDED, SESSION_BUSY, SessionPromptResult,
+    StopReason, ToolCallKind, ToolCallStatus, UsageInfo,
 };
 
 // ── Error types ──────────────────────────────────────────────────────
@@ -207,4 +206,3 @@ pub struct StreamResult {
     /// Usage reported by the provider, if any.
     pub usage: Option<UsageInfo>,
 }
-

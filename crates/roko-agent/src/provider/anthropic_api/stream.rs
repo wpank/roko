@@ -16,6 +16,7 @@
 
 use std::collections::HashMap;
 
+use roko_core::sse::parse_sse_lines;
 use serde_json::Value;
 
 use crate::tool_loop::{LlmError, StreamEvent, StreamEventKind};
@@ -418,54 +419,14 @@ impl AnthropicStreamState {
 
 /// Parse SSE lines into (event_type, data) pairs.
 ///
-/// SSE frames consist of `event: <type>` and `data: <json>` lines
-/// separated by blank lines. This function processes a batch of lines
-/// and yields all complete event/data pairs.
+/// Delegates to the shared [`roko_core::sse::parse_sse_lines`] parser and
+/// maps the result to the `(event_type, data)` tuple format expected by
+/// [`AnthropicStreamState::process_sse_event`].
 pub(crate) fn parse_sse_frames(lines: &[String]) -> Vec<(String, String)> {
-    let mut frames = Vec::new();
-    let mut current_event = String::new();
-    let mut current_data = Vec::new();
-
-    for line in lines {
-        if line.is_empty() {
-            // End of frame: emit if we have data.
-            if !current_data.is_empty() {
-                let event_type = if current_event.is_empty() {
-                    "message".to_string()
-                } else {
-                    current_event.clone()
-                };
-                frames.push((event_type, current_data.join("\n")));
-            }
-            current_event.clear();
-            current_data.clear();
-            continue;
-        }
-
-        if line.starts_with(':') {
-            // SSE comment -- ignore.
-            continue;
-        }
-
-        if let Some(rest) = line.strip_prefix("event:") {
-            current_event = rest.trim_start().to_string();
-        } else if let Some(rest) = line.strip_prefix("data:") {
-            current_data.push(rest.trim_start().to_string());
-        }
-        // Other field names (id:, retry:) are ignored.
-    }
-
-    // Flush any unterminated frame (final event without trailing blank line).
-    if !current_data.is_empty() {
-        let event_type = if current_event.is_empty() {
-            "message".to_string()
-        } else {
-            current_event
-        };
-        frames.push((event_type, current_data.join("\n")));
-    }
-
-    frames
+    parse_sse_lines(lines.iter().map(String::as_str))
+        .into_iter()
+        .map(|frame| (frame.event, frame.data))
+        .collect()
 }
 
 #[cfg(test)]

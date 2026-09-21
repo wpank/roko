@@ -125,9 +125,7 @@ impl ToolMetricsStore {
         let mut aggregates: HashMap<String, ToolMetrics> = HashMap::new();
         for line in contents.lines() {
             if let Ok(record) = serde_json::from_str::<ToolMetricsRecord>(line) {
-                let metrics = aggregates
-                    .entry(record.key.tool_name.clone())
-                    .or_default();
+                let metrics = aggregates.entry(record.key.tool_name.clone()).or_default();
                 metrics.total_calls += 1;
                 if record.success {
                     metrics.success_count += 1;
@@ -147,7 +145,9 @@ impl ToolMetricsStore {
     /// # Errors
     ///
     /// Returns an error if the file cannot be read.
-    pub fn aggregate_by_role(&self) -> Result<HashMap<(String, String), ToolMetrics>, std::io::Error> {
+    pub fn aggregate_by_role(
+        &self,
+    ) -> Result<HashMap<(String, String), ToolMetrics>, std::io::Error> {
         let contents = match std::fs::read_to_string(&self.path) {
             Ok(c) => c,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(HashMap::new()),

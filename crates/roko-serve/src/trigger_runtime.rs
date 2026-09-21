@@ -2845,7 +2845,7 @@ mod tests {
     ) {
         crate::publish_chain_watcher_payload(
             state,
-            "chain:log",
+            "chain.log",
             serde_json::to_value(roko_chain::chain_state::RawLogInfo {
                 block_number,
                 block_hash: block_hash.to_string(),
@@ -2870,7 +2870,7 @@ mod tests {
     fn publish_watcher_block(state: &Arc<AppState>, number: u64, hash: &str, parent_hash: &str) {
         crate::publish_chain_watcher_payload(
             state,
-            "chain:block",
+            "chain.block",
             serde_json::to_value(roko_chain::chain_state::BlockInfo {
                 number,
                 hash: hash.to_string(),
@@ -2948,7 +2948,7 @@ mod tests {
 
         crate::publish_chain_watcher_payload(
             &state,
-            "chain:reorg",
+            "chain.reorg",
             serde_json::to_value(roko_chain::chain_state::ChainReorgInfo {
                 orphaned_block_hashes: vec!["0xORPHAN".to_string()],
             })

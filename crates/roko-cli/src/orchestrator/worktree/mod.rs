@@ -1474,10 +1474,7 @@ impl WorktreeManager {
     }
 
     #[cfg(test)]
-    pub(super) fn set_test_git_probe_environment(
-        &self,
-        environment: Vec<(OsString, OsString)>,
-    ) {
+    pub(super) fn set_test_git_probe_environment(&self, environment: Vec<(OsString, OsString)>) {
         *self.git_probe_environment.lock() = environment;
     }
 

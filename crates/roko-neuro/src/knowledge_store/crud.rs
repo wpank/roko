@@ -13,12 +13,12 @@ use crate::{
     apply_source_security_labels,
 };
 
+use super::KnowledgeStore;
 use super::anti_pattern::{
     extract_anti_pattern_from_failure, find_similar_anti_pattern_index, reinforce_anti_pattern,
 };
 use super::scoring::*;
 use super::types::*;
-use super::KnowledgeStore;
 
 impl KnowledgeStore {
     /// Append a knowledge entry to the JSONL log.

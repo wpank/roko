@@ -106,7 +106,10 @@ impl MigrationRegistry {
         let mut current_version = fingerprint.version;
 
         while current_version < CURRENT_VERSION {
-            let step = self.steps.iter().find(|s| s.source_version() == current_version);
+            let step = self
+                .steps
+                .iter()
+                .find(|s| s.source_version() == current_version);
             match step {
                 Some(step) => match step.migrate(&current_vector) {
                     Ok(migrated) => {
@@ -123,9 +126,7 @@ impl MigrationRegistry {
                 None => {
                     return MigrationResult::Failed {
                         stuck_at_version: current_version,
-                        reason: format!(
-                            "no migration step found from version {current_version}"
-                        ),
+                        reason: format!("no migration step found from version {current_version}"),
                     };
                 }
             }

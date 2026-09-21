@@ -46,7 +46,11 @@ pub(crate) fn cmd_explain(topic: &str, depth: u8) -> bool {
 
 /// Scaffold a new boilerplate artifact.
 pub(crate) fn cmd_new(type_name: &str, name: &str, output: Option<PathBuf>) -> Result<i32> {
-    let output_dir = output.unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+    let cwd = std::env::current_dir().unwrap_or_default();
+    let (output_dir, used_default) = match output {
+        Some(dir) => (dir, false),
+        None => (cwd.clone(), true),
+    };
     match roko_cli::scaffold::scaffold(type_name, name, &output_dir) {
         Ok(files) => {
             println!(
@@ -57,11 +61,69 @@ pub(crate) fn cmd_new(type_name: &str, name: &str, output: Option<PathBuf>) -> R
             for f in &files {
                 println!("  {}", f.display());
             }
+            // When the user did not provide --output, print placement guidance
+            // so the file does not get lost in the CWD.
+            if used_default {
+                scaffold_placement_hint(type_name, name, &cwd);
+            }
             Ok(EXIT_SUCCESS)
         }
         Err(e) => {
             eprintln!("error: {e}");
             Ok(EXIT_SYSTEM_ERROR)
+        }
+    }
+}
+
+/// Print a placement hint after scaffolding when no `--output` was given.
+///
+/// For Rust workspaces (a `Cargo.toml` containing `[workspace]` exists in an
+/// ancestor directory or the CWD) the hint suggests moving the file into the
+/// appropriate `crates/` subdirectory.  For other projects a generic hint is
+/// printed.
+fn scaffold_placement_hint(type_name: &str, _name: &str, cwd: &Path) {
+    // Walk up to find a workspace root (Cargo.toml with [workspace]).
+    let workspace_root = find_workspace_root(cwd);
+
+    if let Some(root) = workspace_root {
+        let crates_dir = root.join("crates");
+        let rel = if crates_dir.is_dir() {
+            crates_dir.display().to_string()
+        } else {
+            root.display().to_string()
+        };
+        eprintln!(
+            "\nhint: file written to current directory. For Rust workspace projects,\n\
+             move it into a crate under {rel}/\n\
+             or pass --output to write directly to the right location:\n\
+             \n  roko new {type_name} <name> --output {rel}/<crate>/src/"
+        );
+    } else {
+        eprintln!(
+            "\nhint: file written to current directory ({}).\n\
+             Pass --output <dir> to write directly to the right location.",
+            cwd.display()
+        );
+    }
+}
+
+/// Walk from `start` toward the filesystem root looking for a `Cargo.toml`
+/// that contains `[workspace]`.  Returns the directory containing that file,
+/// or `None` if none is found.
+fn find_workspace_root(start: &Path) -> Option<PathBuf> {
+    let mut current = start;
+    loop {
+        let manifest = current.join("Cargo.toml");
+        if manifest.is_file() {
+            if let Ok(contents) = std::fs::read_to_string(&manifest) {
+                if contents.contains("[workspace]") {
+                    return Some(current.to_path_buf());
+                }
+            }
+        }
+        match current.parent() {
+            Some(parent) => current = parent,
+            None => return None,
         }
     }
 }
@@ -307,6 +369,108 @@ pub(crate) async fn cmd_run(
     // Apply --max-retries to the learning config.
     if let Some(retries) = max_retries {
         config.learning.replan_max_per_plan = Some(retries);
+    }
+
+    // P2-BUD-1: Budget admission check before dispatch.
+    //
+    // Two guards mirror the plan-runner behaviour so `roko run` respects the
+    // same spend ceilings that `roko plan run` enforces:
+    //
+    // 1. Plan ceiling as a daily guard (`max_plan_usd`): read today's total
+    //    from the costs JSONL log; reject the dispatch if today's accumulated
+    //    spend already meets or exceeds the plan ceiling.
+    //
+    // 2. Turn ceiling (`max_turn_usd`): load the learned BudgetPredictor and
+    //    compare the predicted token cost against the per-turn USD cap.  The
+    //    predictor provides a best-effort estimate; if no history is available
+    //    the fallback token count is used.  A conservative average price of
+    //    $15 / million tokens is applied (sonnet-class output side).
+    //
+    // Both checks are soft-fail on I/O errors (best-effort).
+    {
+        let learn_dir = workdir.join(".roko").join("learn");
+        let budget = &config.budget;
+
+        // Guard 1: plan ceiling as a daily spend guard.
+        let max_plan = budget.max_plan_usd;
+        if max_plan > 0.0 {
+            let costs_path = learn_dir.join("costs.jsonl");
+            let costs_log = CostsLog::at(&costs_path);
+            match costs_log.cost_today().await {
+                Ok(today_usd) if today_usd >= max_plan => {
+                    return Err(anyhow::anyhow!(
+                        "daily budget exhausted: spent ${today_usd:.4} of ${max_plan:.2} today \
+                         (max_plan_usd = {max_plan}). \
+                         Increase [budget].max_plan_usd in roko.toml or wait until tomorrow."
+                    ));
+                }
+                Ok(today_usd) => {
+                    tracing::debug!(
+                        today_usd,
+                        max_plan_usd = max_plan,
+                        "daily budget admission: ok"
+                    );
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    tracing::debug!("costs log not found; skipping daily budget check");
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "could not read costs log for daily budget check; proceeding"
+                    );
+                }
+            }
+        }
+
+        // Guard 2: per-turn ceiling via BudgetPredictor.
+        let max_turn = budget.max_turn_usd;
+        if max_turn > 0.0 {
+            // Load the predictor. When no budget-predictor.json exists yet,
+            // calibrate from efficiency.jsonl so historical cost data is used
+            // even on a fresh workspace (P2-LRN-2).
+            let predictor = match roko_compose::budget_predictor::load_or_calibrate(&learn_dir) {
+                Ok(p) => p,
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "could not load or calibrate budget predictor; using defaults"
+                    );
+                    roko_compose::BudgetPredictor::new()
+                }
+            };
+
+            // Derive task features from config: role, complexity, domain.
+            let role = if config.prompt.role.trim().is_empty() {
+                "workflow".to_string()
+            } else {
+                config.prompt.role.trim().to_string()
+            };
+            let features = roko_compose::TaskFeatures::new(role, "standard", "code");
+            let predicted_tokens = predictor.predict(&features);
+
+            // Conservative price: $15 / million tokens (sonnet output tier).
+            // This errs on the side of caution so the cap is enforced before
+            // committing to a potentially over-budget dispatch.
+            const USD_PER_TOKEN: f64 = 15.0 / 1_000_000.0;
+            #[allow(clippy::cast_precision_loss)]
+            let predicted_usd = predicted_tokens as f64 * USD_PER_TOKEN;
+
+            if predicted_usd > max_turn {
+                return Err(anyhow::anyhow!(
+                    "predicted turn cost ${predicted_usd:.4} exceeds max_turn_usd ${max_turn:.4} \
+                     (estimated {predicted_tokens} tokens at $15/MTok). \
+                     Increase [budget].max_turn_usd in roko.toml or use a simpler prompt."
+                ));
+            }
+
+            tracing::debug!(
+                predicted_tokens,
+                predicted_usd,
+                max_turn_usd = max_turn,
+                "turn budget admission: ok"
+            );
+        }
     }
 
     // Optionally start the HTTP control plane for external observability.
@@ -1190,6 +1354,14 @@ pub(crate) async fn cmd_doctor(
     serve_url: Option<String>,
 ) -> Result<i32> {
     let workdir = workdir.unwrap_or_else(|| resolve_workdir(cli));
+    // `doctor clean` removes orphaned files (exclusive); all other doctor
+    // variants are read-only and use a shared lock so they can coexist with
+    // an active plan runner.
+    let _lock = if matches!(subject, Some(DoctorSubject::Clean)) {
+        roko_cli::workspace_lock::acquire_workspace_lock(&workdir.join(".roko"))?
+    } else {
+        roko_cli::workspace_lock::acquire_workspace_lock_shared(&workdir.join(".roko"))?
+    };
     if matches!(subject, Some(DoctorSubject::Clean)) {
         let removed = roko_cli::doctor::clean_orphaned_files(&workdir);
         if cli.json {
@@ -1246,7 +1418,21 @@ pub(crate) async fn cmd_doctor(
     if cli.json {
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
+        let reporter = roko_cli::cli_reporter::CliReporter::from_flags(false, false);
+        // Print detailed check output via the existing renderer, then emit a
+        // structured summary line using CliReporter so the overall health
+        // status is visually consistent with other commands.
         print!("{}", report.render_human());
+        let summary = &report.summary;
+        let summary_msg = format!(
+            "{} ok · {} warn · {} fail · {} skipped",
+            summary.ok, summary.warn, summary.fail, summary.skipped
+        );
+        if report.healthy {
+            reporter.success(&summary_msg);
+        } else {
+            reporter.error(&summary_msg);
+        }
     }
 
     Ok(report.exit_code())
@@ -1378,7 +1564,12 @@ pub(crate) async fn cmd_inject(
 
     let inject_kind = InjectKind::parse(kind_str).map_err(|e| anyhow!("{e}"))?;
     let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
-    let request = InjectRequest::new(session.clone(), inject_kind.clone(), payload.clone(), wd.clone());
+    let request = InjectRequest::new(
+        session.clone(),
+        inject_kind.clone(),
+        payload.clone(),
+        wd.clone(),
+    );
 
     // Validation errors (empty session, empty payload for directive/context) remain
     // more specific than the transport-unavailable error below.
@@ -1609,62 +1800,67 @@ pub(crate) fn cmd_index(cli: &Cli, cmd: IndexCmd) -> Result<i32> {
         IndexCmd::Stats { path } => {
             let target = path.unwrap_or_else(|| workdir.clone());
 
-            // Try to reuse an existing persistent index first.
-            let idx = match index_load_or_build(&target) {
-                Ok(idx) => idx,
-                Err(e) => {
-                    return Err(e)
-                        .with_context(|| format!("load or build index for {}", target.display()));
-                }
-            };
-            let stats = idx.stats();
-
-            // Show persistent DB metadata if available.
+            // Read stats from the persistent DB only — never trigger a full
+            // in-memory build here, which would walk the entire workspace
+            // (potentially millions of lines) and hang indefinitely on large
+            // repos.  If no DB exists, tell the user how to build one.
             let db_path = roko_index::IndexStore::db_path_for(&target);
-            if db_path.exists() {
-                println!("=== Index Statistics (persistent) ===\n");
-                println!("Database:       {}", db_path.display());
-                if let Ok(store) = roko_index::IndexStore::open_readonly(&target) {
+            if !db_path.exists() {
+                eprintln!(
+                    "No index database found at {}.\n\
+                    Run `roko index build` to build the index first.",
+                    db_path.display()
+                );
+                return Ok(EXIT_SUCCESS);
+            }
+
+            match roko_index::IndexStore::open_readonly(&target) {
+                Ok(store) => {
+                    println!("=== Index Statistics ===\n");
+                    println!("Database:        {}", db_path.display());
+
                     if let Ok(meta) = store.meta() {
                         println!("Schema version:  {}", meta.schema_version);
                         println!("Index version:   {}", meta.index_version);
                         println!("Features:        {}", meta.feature_fingerprint);
                     }
+
+                    if let Ok(count) = store.inner().symbol_count() {
+                        println!("Total symbols:   {count}");
+                    }
+                    if let Ok(count) = store.inner().edge_count() {
+                        println!("Total edges:     {count}");
+                    }
                     if let Ok(count) = store.inner().ranking_count() {
                         println!("Rankings:        {count}");
                     }
                 }
-            } else {
-                println!("=== Index Statistics (in-memory) ===\n");
-            }
-
-            println!("Files indexed:  {}", stats.indexed_files);
-            println!("Total symbols:  {}", stats.total_symbols);
-            println!("Total edges:    {}", stats.total_edges);
-
-            println!("\nEdge breakdown:");
-            for (kind, count) in &stats.edge_breakdown {
-                println!("  {kind}: {count}");
-            }
-
-            println!("\nLanguages:");
-            for (lang, count) in &stats.languages {
-                println!("  {lang}: {count} files");
-            }
-
-            if !stats.top_symbols_by_pagerank.is_empty() {
-                println!("\nTop-10 symbols by PageRank:");
-                println!("{:<50} {:<10} {:<8}", "NAME", "KIND", "SCORE");
-                println!("{}", "-".repeat(70));
-                for r in &stats.top_symbols_by_pagerank {
-                    println!(
-                        "{:<50} {:<10} {:.6}",
-                        r.symbol.id.symbol_name,
-                        format!("{:?}", r.symbol.id.kind),
-                        r.score,
+                Err(roko_index::IndexStoreError::VersionMismatch { stored, expected }) => {
+                    eprintln!(
+                        "Index schema version mismatch (stored {stored}, expected {expected}).\n\
+                        Run `roko index rebuild` to update the index."
                     );
                 }
+                Err(roko_index::IndexStoreError::RootMismatch { stored, requested }) => {
+                    eprintln!(
+                        "Index root mismatch (stored {stored}, requested {requested}).\n\
+                        Run `roko index rebuild` to update the index."
+                    );
+                }
+                Err(roko_index::IndexStoreError::Corrupt(msg)) => {
+                    eprintln!(
+                        "Index database is corrupt: {msg}\n\
+                        Run `roko index rebuild` to recreate it."
+                    );
+                }
+                Err(roko_index::IndexStoreError::Locked(msg)) => {
+                    anyhow::bail!("index database locked: {msg}");
+                }
+                Err(roko_index::IndexStoreError::Other(e)) => {
+                    return Err(e).context("open index database");
+                }
             }
+
             Ok(EXIT_SUCCESS)
         }
     }
@@ -1724,7 +1920,10 @@ fn index_load_or_build(target: &std::path::Path) -> Result<roko_index::Workspace
                 );
             }
             Err(roko_index::IndexStoreError::Corrupt(msg)) => {
-                tracing::error!(msg, "index: database corrupt; rebuild with `roko index rebuild`");
+                tracing::error!(
+                    msg,
+                    "index: database corrupt; rebuild with `roko index rebuild`"
+                );
             }
             Err(roko_index::IndexStoreError::Locked(msg)) => {
                 anyhow::bail!("index database locked: {msg}");
@@ -2441,7 +2640,10 @@ pub(crate) fn preflight_provider_for_model(
                 builtin.api_key_env
             );
         }
-        anyhow::bail!("model '{}' not found in config.\n  hint: run `roko config models list` to see configured models, or add a [[models]] entry in roko.toml", model_key);
+        anyhow::bail!(
+            "model '{}' not found in config.\n  hint: run `roko config models list` to see configured models, or add a [[models]] entry in roko.toml",
+            model_key
+        );
     }
     let model = model.expect("model should be Some after config lookup loop");
     let provider_name = &model.provider;

@@ -34,7 +34,7 @@ impl FeedAgent for BlockSpaceAgent {
     fn feeds(&self) -> Vec<FeedDescriptor> {
         vec![FeedDescriptor {
             feed_id: "chain-block-space".into(),
-            topic: "feed:chain:block-space".into(),
+            topic: "feed.chain.block-space".into(),
             name: "Block Space Utilization".into(),
             description: "Gas usage ratio, EIP-1559 base fee dynamics, and block fullness".into(),
             kind: "derived".into(),
@@ -87,7 +87,7 @@ impl FeedAgent for BlockSpaceAgent {
                             "fee_pressure": fee_pressure,
                             "tx_count": latest.tx_count,
                         });
-                        ctx.publish_tick(self.agent_id(), "chain-block-space", "feed:chain:block-space", payload);
+                        ctx.publish_tick(self.agent_id(), "chain-block-space", "feed.chain.block-space", payload);
                     }
                 }
             }
@@ -114,7 +114,7 @@ impl FeedAgent for TxThroughputAgent {
     fn feeds(&self) -> Vec<FeedDescriptor> {
         vec![FeedDescriptor {
             feed_id: "chain-tps".into(),
-            topic: "feed:chain:tps".into(),
+            topic: "feed.chain.tps".into(),
             name: "Transaction Throughput".into(),
             description: "Transactions per second averaged over recent blocks".into(),
             kind: "derived".into(),
@@ -167,7 +167,7 @@ impl FeedAgent for TxThroughputAgent {
                             "buffer_total_tx": total_tx,
                             "block_number": latest.number,
                         });
-                        ctx.publish_tick(self.agent_id(), "chain-tps", "feed:chain:tps", payload);
+                        ctx.publish_tick(self.agent_id(), "chain-tps", "feed.chain.tps", payload);
                     }
                 }
             }
@@ -194,7 +194,7 @@ impl FeedAgent for FeeBurnAgent {
     fn feeds(&self) -> Vec<FeedDescriptor> {
         vec![FeedDescriptor {
             feed_id: "chain-fee-burn".into(),
-            topic: "feed:chain:fee-burn".into(),
+            topic: "feed.chain.fee-burn".into(),
             name: "ETH Fee Burn".into(),
             description: "Cumulative ETH burned via EIP-1559 base fee".into(),
             kind: "derived".into(),
@@ -234,7 +234,7 @@ impl FeedAgent for FeeBurnAgent {
                             "current_base_fee_gwei": (current_base_fee * 1000.0).round() / 1000.0,
                             "blocks_tracked": last_block,
                         });
-                        ctx.publish_tick(self.agent_id(), "chain-fee-burn", "feed:chain:fee-burn", payload);
+                        ctx.publish_tick(self.agent_id(), "chain-fee-burn", "feed.chain.fee-burn", payload);
                     }
                 }
             }
@@ -261,7 +261,7 @@ impl FeedAgent for NetworkHealthAgent {
     fn feeds(&self) -> Vec<FeedDescriptor> {
         vec![FeedDescriptor {
             feed_id: "chain-health".into(),
-            topic: "feed:chain:health".into(),
+            topic: "feed.chain.health".into(),
             name: "Network Health".into(),
             description: "Block interval consistency, reorg detection, chain tip lag".into(),
             kind: "meta".into(),
@@ -319,7 +319,7 @@ impl FeedAgent for NetworkHealthAgent {
                             "min_block_interval_s": min_interval,
                             "blocks_in_buffer": blocks.len(),
                         });
-                        ctx.publish_tick(self.agent_id(), "chain-health", "feed:chain:health", payload);
+                        ctx.publish_tick(self.agent_id(), "chain-health", "feed.chain.health", payload);
                     }
                 }
             }
@@ -346,7 +346,7 @@ impl FeedAgent for ContractActivityAgent {
     fn feeds(&self) -> Vec<FeedDescriptor> {
         vec![FeedDescriptor {
             feed_id: "chain-contracts".into(),
-            topic: "feed:chain:contracts".into(),
+            topic: "feed.chain.contracts".into(),
             name: "Contract Activity".into(),
             description: "Smart contract interaction patterns and deployment tracking".into(),
             kind: "derived".into(),
@@ -394,7 +394,7 @@ impl FeedAgent for ContractActivityAgent {
                             "est_contract_calls": est_calls,
                             "cumulative_calls": total_contract_calls,
                         });
-                        ctx.publish_tick(self.agent_id(), "chain-contracts", "feed:chain:contracts", payload);
+                        ctx.publish_tick(self.agent_id(), "chain-contracts", "feed.chain.contracts", payload);
                     }
                 }
             }

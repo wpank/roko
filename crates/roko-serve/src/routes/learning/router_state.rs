@@ -73,12 +73,6 @@ pub async fn cfactor_trend(
     })))
 }
 
-/// `GET /api/learning/cascade-router` — read `.roko/learn/cascade-router.json`.
-pub async fn cascade_router(State(state): State<Arc<AppState>>) -> Result<Json<Value>, ApiError> {
-    let path = state.workdir.join(".roko/learn/cascade-router.json");
-    super::helpers::read_json_file(&path).await
-}
-
 /// `GET /api/learn/cascade` — summarize `.roko/learn/cascade-router.json`.
 pub async fn cascade(
     State(state): State<Arc<AppState>>,

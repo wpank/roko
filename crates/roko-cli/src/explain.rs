@@ -82,9 +82,9 @@ pub static TOPICS: &[TopicEntry] = &[
                  from role templates, domain context, and runtime state.",
         internals: "Trait definitions live in `crates/roko-core/src/traits.rs`. The \
                     universal loop is wired in `crates/roko-cli/src/run.rs` via \
-                    `run_once()`. Prompt assembly uses `RoleSystemPromptSpec` in \
-                    the runner module (`runner/event_loop.rs`). Templates are in \
-                    `crates/roko-compose/src/templates/` (11 role templates).",
+                    `run_once()`. Prompt assembly uses `RoleSystemPromptSpec` from \
+                    `roko-compose`, assembled in `roko-cli/src/prompting.rs`. Templates \
+                    are in `crates/roko-compose/src/templates/` (11 role templates).",
     },
     TopicEntry {
         name: "neuro",
@@ -247,6 +247,138 @@ pub static TOPICS: &[TopicEntry] = &[
                     `crates/roko-agent-server/` provides `/message`, `/stream` (WS), \
                     and `/predictions` endpoints.",
     },
+    TopicEntry {
+        name: "cell",
+        title: "Cell (Graph Computational Primitive)",
+        summary: "A Cell is the fundamental computational unit in roko's graph engine. \
+                  Each Cell encapsulates a single step in a plan or workflow, declaring \
+                  its inputs, outputs, and execution logic. Cells are composed into DAGs \
+                  that the Graph engine schedules and executes.",
+        detail: "Roko ships several built-in Cell kinds: TaskCell dispatches an agent \
+                 to implement a task, VerifyCell runs a gate pipeline, PlanComposeCell \
+                 assembles prompts for a new plan, and StubCell acts as a no-op \
+                 placeholder for wiring. Each Cell receives a typed context (inputs, \
+                 workspace, config) and produces typed outputs that flow to downstream \
+                 Cells. Cells are defined in TOML plan files under `[[tasks]]` and \
+                 compiled into a `GraphTopology` at runtime.",
+        internals: "Cell trait definitions and built-in implementations live in \
+                    `crates/roko-graph/src/cells/`. `TaskCell`, `PlanGateCell`, \
+                    `PlanComposeCell`, `TaskContextCell`, and stub variants are the \
+                    canonical set. The `GraphTopology` struct owns the compiled DAG. \
+                    Cell execution is driven by `WorkflowGraphController` in \
+                    `crates/roko-cli/src/graph_execution/`. Cell outputs are typed \
+                    `CellOutput` variants that gate downstream scheduling.",
+    },
+    TopicEntry {
+        name: "store",
+        title: "Store (Persistent Signal Storage)",
+        summary: "The Store trait is roko's interface for persisting and retrieving \
+                  Signals. Hot storage keeps recent signals accessible for fast lookup; \
+                  ColdStore archives older signals to disk for long-term retention and \
+                  audit. All writes are append-only and content-addressed.",
+        detail: "The `FileSubstrate` in `roko-fs` is the primary Store implementation. \
+                 It writes signals to `.roko/engrams.jsonl` as append-only JSONL. \
+                 Reads scan or index the file for hash-addressed lookups. The `GC` \
+                 module compacts old generations while preserving the audit trail. \
+                 ColdStore archival is triggered by the server on a configurable timer \
+                 to move aged signals out of the hot file.",
+        internals: "The `Store` and `ColdStore` trait definitions are in \
+                    `crates/roko-core/src/traits.rs`. `FileSubstrate` is in \
+                    `crates/roko-fs/src/file_substrate.rs`. Log rotation and GC live \
+                    in `crates/roko-fs/src/log_rotation.rs` and `gc.rs`. The \
+                    archival timer is wired in `crates/roko-serve/src/lib.rs`. \
+                    Signal hashes use blake3; the DAG lineage is reconstructed by \
+                    walking `parent_hash` fields in stored entries.",
+    },
+    TopicEntry {
+        name: "bus",
+        title: "Bus (Event Bus)",
+        summary: "The Bus trait is roko's inter-component event delivery system. It \
+                  broadcasts typed events (gate verdicts, agent turns, plan progress) \
+                  to all registered subscribers. The TUI dashboard, SSE endpoints, and \
+                  learning subsystem all consume bus events.",
+        detail: "The runtime event bus uses Tokio broadcast channels internally. \
+                 Publishers emit `DashboardEvent` variants (GateVerdict, AgentTurn, \
+                 PlanProgress, CostUpdate, etc.) without knowing who is listening. \
+                 Subscribers register at startup and drain events in their own tasks. \
+                 The SSE subscription relay in `roko-serve` bridges bus events to \
+                 HTTP clients. MCP tools publish tool-call results through the bus \
+                 for audit logging.",
+        internals: "The `Bus` trait is in `crates/roko-core/src/traits.rs`. The \
+                    runtime implementation is in `crates/roko-runtime/src/`. \
+                    `DashboardEvent` variants are defined in `crates/roko-core/`. \
+                    The SSE bridge lives in `crates/roko-serve/src/subscription_relay.rs`. \
+                    The TUI bridges bus events via `TuiBridge` in \
+                    `crates/roko-cli/src/tui/`. Backpressure is handled by dropping \
+                    lagged receivers rather than blocking publishers.",
+    },
+    TopicEntry {
+        name: "compose",
+        title: "Compose (Prompt Assembly Pipeline)",
+        summary: "The Compose subsystem assembles the multi-layer system prompts that \
+                  govern agent behavior. It combines role templates, domain context, \
+                  runtime state (daimon affect, neuro knowledge, playbook rules), and \
+                  task specifics into a coherent instruction set for each LLM call.",
+        detail: "The `SystemPromptBuilder` in `roko-compose` assembles 9-layer prompts \
+                 from a `RoleSystemPromptSpec`. The layers are: identity, role \
+                 (implementer/reviewer/architect/researcher etc.), domain context, \
+                 workspace state, neuro knowledge snippets, daimon affect modulation, \
+                 playbook rules (top when/then matches), task description, and \
+                 tool/safety policy. Each layer is optional and can be overridden. \
+                 Use `roko show prompt` to inspect the assembled prompt for the \
+                 current workspace.",
+        internals: "Implementation is in `crates/roko-compose/src/system_prompt_builder.rs` \
+                    and `crates/roko-compose/src/templates/`. There are 11 role \
+                    templates under `templates/`. The `MemoryFunctor` injects neuro \
+                    snippets; `GroupContextBidder` injects group context. Section \
+                    compression in `section_compressor.rs` trims prompts that exceed \
+                    token budget. Prompt assembly is called from `roko-cli/src/runner/` \
+                    via `dispatch_agent_with`.",
+    },
+    TopicEntry {
+        name: "trigger",
+        title: "Trigger (Declarative Trigger Runtime)",
+        summary: "Triggers let you fire roko actions automatically in response to \
+                  external events — cron schedules, file changes, webhooks, chain \
+                  events, and more. A trigger binding maps a source event to a \
+                  Graph execution with a typed payload.",
+        detail: "Roko supports seven trigger sources: cron (IANA/DST-aware), \
+                 file-watch, webhook, chain events (ABI/finality/reorg), \
+                 signal patterns, feed thresholds, and manual `roko trigger fire`. \
+                 Each trigger binding declares its source, a filter predicate, \
+                 and the graph or plan to execute. Trigger history is durable and \
+                 queryable via `roko trigger list`. Capability enforcement ensures \
+                 triggers only execute graphs within their declared Space.",
+        internals: "The trigger runtime is in `crates/roko-core/src/trigger/` and \
+                    wired into `crates/roko-serve/` for live execution. The `Trigger` \
+                    trait is in `crates/roko-core/src/traits.rs`. Bindings persist \
+                    in `.roko/triggers/`. The cron source uses the `cron` crate with \
+                    IANA timezone data. Chain event handling integrates with the \
+                    `roko-chain` watcher adapter. CA-verified mTLS is required for \
+                    webhook sources.",
+    },
+    TopicEntry {
+        name: "connect",
+        title: "Connect (Relay and Connectivity)",
+        summary: "The Connect subsystem manages agent-to-agent and agent-to-external \
+                  relay messaging. It provides bounded canonical-envelope delivery, \
+                  atomic cursor restore, and ACK-after-durable subscription semantics \
+                  for reliable inter-agent communication.",
+        detail: "The `Connect` trait defines a five-method async contract: send, \
+                 receive, subscribe, unsubscribe, and ack. The primary runtime \
+                 adapter is an HTTP JSON relay. `roko-serve` provides bounded \
+                 canonical-envelope delivery with atomic cursor restore and \
+                 fail-closed reconciliation. Agents subscribe to named rooms; \
+                 messages are durable until ACKed. The relay client and supervisor \
+                 are in `crates/roko-agent/src/`.",
+        internals: "The `Connect` trait is in `crates/roko-core/src/traits.rs`. \
+                    The supervised HTTP JSON adapter is in \
+                    `crates/roko-agent/src/hermes/`. Room subscription and ACK \
+                    logic live in `crates/roko-serve/src/routes/`. Additional \
+                    transports (WebSocket, MCP, A2A, x402 finality execution) and \
+                    startup discovery remain product work. See `.roko/GAPS.md` for \
+                    current connectivity boundaries.",
+    },
 ];
 
 // `roko explain` is still dispatched through a caller that returns success.
@@ -350,14 +482,7 @@ fn global_flag_takes_value(flag: &str) -> bool {
 fn global_flag_is_bool(flag: &str) -> bool {
     matches!(
         flag,
-        "--json"
-            | "--quiet"
-            | "--no-replan"
-            | "--headless"
-            | "--timing"
-            | "--no-serve"
-            | "--help"
-            | "--version"
+        "--json" | "--quiet" | "--headless" | "--timing" | "--no-serve" | "--help" | "--version"
     )
 }
 
@@ -370,6 +495,12 @@ pub fn resolve_topic_alias(name: &str) -> &str {
     match name {
         "signals" | "engram" | "engrams" => "signal",
         "environment-variables" | "env-vars" | "envvars" | "environment" => "env",
+        "cells" => "cell",
+        "storage" | "substrate" | "coldstore" => "store",
+        "eventbus" | "event-bus" | "events" => "bus",
+        "composition" | "prompt" | "prompts" | "system-prompt" => "compose",
+        "triggers" => "trigger",
+        "relay" | "connectivity" | "connection" => "connect",
         other => other,
     }
 }
@@ -494,8 +625,8 @@ mod tests {
     #[test]
     fn at_least_8_topics() {
         assert!(
-            TOPICS.len() >= 8,
-            "expected at least 8 topics, got {}",
+            TOPICS.len() >= 14,
+            "expected at least 14 topics, got {}",
             TOPICS.len()
         );
     }
@@ -549,8 +680,14 @@ mod tests {
     #[test]
     fn topic_names_returns_all() {
         let names = topic_names();
-        assert!(names.len() >= 8);
+        assert!(names.len() >= 14);
         assert!(names.contains(&"gates"));
         assert!(names.contains(&"cfactor"));
+        assert!(names.contains(&"cell"));
+        assert!(names.contains(&"store"));
+        assert!(names.contains(&"bus"));
+        assert!(names.contains(&"compose"));
+        assert!(names.contains(&"trigger"));
+        assert!(names.contains(&"connect"));
     }
 }

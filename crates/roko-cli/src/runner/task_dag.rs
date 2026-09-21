@@ -16,8 +16,8 @@
 //!   indefinitely.
 //!
 //! This module is intentionally focused on DAG bookkeeping. It does not
-//! execute tasks, run gates, or perform any I/O. Those concerns continue
-//! to live in `event_loop.rs`.
+//! execute tasks, run gates, or perform any I/O. Those concerns live in
+//! the graph execution engine (`crates/roko-graph/src/`).
 
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};

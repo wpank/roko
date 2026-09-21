@@ -98,7 +98,12 @@ pub(crate) async fn dispatch_learn(cli: &Cli, cmd: LearnCmd) -> Result<i32> {
                     let wd = outer_wd.or(workdir).unwrap_or_else(|| resolve_workdir(cli));
                     cmd_experiments_list(&wd, limit).await
                 }
-                Some(ExperimentsSubCmd::Create { workdir, name, section, variants }) => {
+                Some(ExperimentsSubCmd::Create {
+                    workdir,
+                    name,
+                    section,
+                    variants,
+                }) => {
                     let wd = outer_wd.or(workdir).unwrap_or_else(|| resolve_workdir(cli));
                     cmd_experiments_create(&wd, &name, &section, &variants)
                 }
@@ -138,11 +143,10 @@ pub(crate) async fn dispatch_learn(cli: &Cli, cmd: LearnCmd) -> Result<i32> {
         }
         LearnCmd::Gates { workdir } => {
             let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
-            if json {
-                cmd_learn_json(&wd, "gates").await
-            } else {
-                cmd_learn(&wd, "gates").await
-            }
+            // Route directly to inspect_gates so the output includes
+            // per-rung EMA pass rates and observation counts, not just
+            // the entry count printed by print_learn_gate_thresholds.
+            inspect_gates(&wd, json)
         }
         LearnCmd::KnowledgeStats { workdir } => {
             let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
@@ -254,60 +258,66 @@ struct InspectGatesJson {
 fn inspect_gates(workdir: &std::path::Path, json: bool) -> Result<i32> {
     let path = learn_gate_thresholds_path(workdir);
 
-    if !path.exists() {
-        if json {
-            let output = InspectGatesJson {
-                path: path.display().to_string(),
-                rung_count: 0,
-                rungs: serde_json::Value::Object(Default::default()),
-            };
-            println!("{}", serde_json::to_string_pretty(&output)?);
-        } else {
-            print_no_data(&path);
-        }
-        return Ok(EXIT_SUCCESS);
-    }
+    // Audit #80: load from disk if present, then fill in defaults for all 7
+    // canonical rungs so the display always shows a complete picture.
+    let mut gate_thresholds = if path.exists() {
+        let content = std::fs::read_to_string(&path)?;
+        serde_json::from_str::<roko_cli::runner::persist::GateThresholds>(&content)
+            .unwrap_or_default()
+    } else {
+        roko_cli::runner::persist::GateThresholds::default()
+    };
+    gate_thresholds.fill_default_rungs();
 
-    let content = std::fs::read_to_string(&path)?;
-    let thresholds: serde_json::Value = serde_json::from_str(&content)?;
-    let rung_count = thresholds
-        .get("rungs")
-        .and_then(serde_json::Value::as_object)
-        .map_or(0, |rungs| rungs.len());
+    let rung_count = gate_thresholds.rungs.len();
+    let file_exists = path.exists();
+
+    // Serialize the filled thresholds back to a JSON value for display.
+    let rungs_json = serde_json::to_value(&gate_thresholds.rungs)?;
 
     if json {
         let output = InspectGatesJson {
             path: path.display().to_string(),
             rung_count,
-            rungs: thresholds
-                .get("rungs")
-                .cloned()
-                .unwrap_or(serde_json::Value::Object(Default::default())),
+            rungs: rungs_json,
         };
         println!("{}", serde_json::to_string_pretty(&output)?);
     } else {
-        println!("Adaptive gate thresholds ({})", path.display());
-        println!("  Rungs: {rung_count}");
-        if let Some(rungs) = thresholds.get("rungs").and_then(|v| v.as_object()) {
-            for (rung_key, rung_val) in rungs {
-                let ema = rung_val
-                    .get("ema_pass_rate")
-                    .and_then(|v| v.as_f64())
-                    .map(|v| format!("{v:.2}"))
-                    .unwrap_or_else(|| "n/a".to_string());
-                let count = rung_val
-                    .get("observation_count")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(0);
-                let display_name = rung_key
-                    .parse::<u32>()
-                    .ok()
-                    .and_then(roko_gate::Rung::from_index)
-                    .map(|r| r.label())
-                    .unwrap_or(rung_key.as_str());
-                println!("    {display_name} (rung {rung_key}): EMA pass rate={ema}, observations={count}");
-            }
+        let reporter = roko_cli::cli_reporter::CliReporter::new(false, false);
+        if file_exists {
+            reporter.step("Adaptive gate thresholds", &path.display().to_string());
+        } else {
+            reporter.step(
+                "Adaptive gate thresholds",
+                "defaults — no observations yet; file will be created on first plan run",
+            );
+            reporter.note(&format!("  ({})", path.display()));
         }
+        reporter.note(&format!("  Rungs: {rung_count} (all canonical rungs shown)"));
+        // Sort by rung index for stable output then emit as a table.
+        let mut rung_pairs: Vec<(u32, &roko_cli::runner::persist::GateThresholdStats)> =
+            gate_thresholds.rungs.iter().map(|(k, v)| (*k, v)).collect();
+        rung_pairs.sort_by_key(|(idx, _)| *idx);
+        let rows: Vec<Vec<String>> = rung_pairs
+            .iter()
+            .map(|(rung_idx, stats)| {
+                let display_name = roko_gate::Rung::from_index(*rung_idx)
+                    .map(|r| r.label())
+                    .unwrap_or("unknown");
+                let obs_label = if stats.total_count == 0 {
+                    "0 (default prior)".to_string()
+                } else {
+                    stats.total_count.to_string()
+                };
+                vec![
+                    display_name.to_string(),
+                    rung_idx.to_string(),
+                    format!("{:.2}", stats.ema_pass_rate),
+                    obs_label,
+                ]
+            })
+            .collect();
+        reporter.table(&["RUNG", "IDX", "EMA PASS RATE", "OBSERVATIONS"], &rows);
     }
 
     Ok(EXIT_SUCCESS)
@@ -546,8 +556,11 @@ pub(crate) async fn cmd_learn(workdir: &std::path::Path, what: &str) -> Result<i
         print_learn_reflexes(workdir);
     }
 
-    if show_all {
+    if show_all || what == "gates" {
         print_learn_gate_thresholds(workdir);
+    }
+
+    if show_all {
         print_learn_knowledge(workdir).await;
     }
 
@@ -558,11 +571,12 @@ pub(crate) async fn cmd_learn(workdir: &std::path::Path, what: &str) -> Result<i
             "efficiency",
             "episodes",
             "reflexes",
+            "gates",
         ]
         .contains(&what)
     {
         anyhow::bail!(
-            "unknown learning area '{what}'. Available: router, experiments, efficiency, episodes, reflexes, all"
+            "unknown learning area '{what}'. Available: router, experiments, efficiency, episodes, reflexes, gates, all"
         );
     }
 
@@ -712,7 +726,7 @@ async fn cmd_learn_json(workdir: &std::path::Path, what: &str) -> Result<i32> {
         None
     };
 
-    let gate_thresholds = if show_all {
+    let gate_thresholds = if show_all || what == "gates" {
         collect_gate_thresholds_json(workdir)
     } else {
         None
@@ -731,11 +745,12 @@ async fn cmd_learn_json(workdir: &std::path::Path, what: &str) -> Result<i32> {
             "efficiency",
             "episodes",
             "reflexes",
+            "gates",
         ]
         .contains(&what)
     {
         anyhow::bail!(
-            "unknown learning area '{what}'. Available: router, experiments, efficiency, episodes, reflexes, all"
+            "unknown learning area '{what}'. Available: router, experiments, efficiency, episodes, reflexes, gates, all"
         );
     }
 
@@ -1125,13 +1140,25 @@ async fn cmd_experiments_list(workdir: &std::path::Path, limit: Option<u32>) -> 
 
     println!(
         "{:<name_w$}  {:<section_w$}  {:>8}  {:>12}  {:>12}  {:>8}  {:>10}",
-        "Name", "Section", "Status", "Variants", "Observations", "Best", "Win Rate",
+        "Name",
+        "Section",
+        "Status",
+        "Variants",
+        "Observations",
+        "Best",
+        "Win Rate",
         name_w = name_w,
         section_w = section_w,
     );
     println!(
         "{:-<name_w$}  {:-<section_w$}  {:->8}  {:->12}  {:->12}  {:->8}  {:->10}",
-        "", "", "", "", "", "", "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
         name_w = name_w,
         section_w = section_w,
     );
@@ -1245,9 +1272,8 @@ fn cmd_experiments_create(
 fn cmd_experiments_conclude(workdir: &std::path::Path, name: &str) -> Result<i32> {
     let prompt_path = learn_root(workdir).join("experiments.json");
 
-    let winner_id =
-        ExperimentStore::transaction(&prompt_path, |store| store.force_conclude(name))
-            .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let winner_id = ExperimentStore::transaction(&prompt_path, |store| store.force_conclude(name))
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
 
     println!("Concluded experiment '{name}' — winner: {winner_id}");
 
@@ -1262,9 +1288,9 @@ fn cmd_experiments_report(workdir: &std::path::Path, name: &str) -> Result<i32> 
     let prompt_path = learn_root(workdir).join("experiments.json");
     let store = ExperimentStore::load_or_new(&prompt_path);
 
-    let exp = store
-        .get(name)
-        .ok_or_else(|| anyhow::anyhow!("experiment '{name}' not found at {}", prompt_path.display()))?;
+    let exp = store.get(name).ok_or_else(|| {
+        anyhow::anyhow!("experiment '{name}' not found at {}", prompt_path.display())
+    })?;
 
     println!("Experiment: {}", exp.experiment_id);
     println!("  Section:  {}", exp.section_name);
@@ -1320,8 +1346,7 @@ fn cmd_experiments_report(workdir: &std::path::Path, name: &str) -> Result<i32> 
                 let z_sq = z * z;
                 let denom = 1.0 + z_sq / n;
                 let center = (p + z_sq / (2.0 * n)) / denom;
-                let margin =
-                    (z / denom) * ((p * (1.0 - p) / n + z_sq / (4.0 * n * n)).sqrt());
+                let margin = (z / denom) * ((p * (1.0 - p) / n + z_sq / (4.0 * n * n)).sqrt());
                 (
                     (center - margin).clamp(0.0, 1.0),
                     (center + margin).clamp(0.0, 1.0),
@@ -1353,11 +1378,18 @@ fn cmd_experiments_report(workdir: &std::path::Path, name: &str) -> Result<i32> 
         let (chi_sq, p_value) = chi_squared_test(s1, s2);
         let effect_size = (s1.success_rate() - s2.success_rate()).abs();
         // Cohen's h for two proportions.
-        let cohens_h = 2.0
-            * (s1.success_rate().sqrt().asin() - s2.success_rate().sqrt().asin()).abs();
+        let cohens_h =
+            2.0 * (s1.success_rate().sqrt().asin() - s2.success_rate().sqrt().asin()).abs();
         println!("  Chi-squared test ({} vs {}):", v1.id, v2.id);
         println!("    statistic = {chi_sq:.4}");
-        println!("    p-value   = {p_value:.4} {}", if p_value < 0.05 { "(significant at alpha=0.05)" } else { "(not significant)" });
+        println!(
+            "    p-value   = {p_value:.4} {}",
+            if p_value < 0.05 {
+                "(significant at alpha=0.05)"
+            } else {
+                "(not significant)"
+            }
+        );
         println!("    effect size (|Δ win rate|) = {effect_size:.4}");
         println!("    Cohen's h = {cohens_h:.4}");
     } else if rows.len() < 2 {
@@ -1371,10 +1403,7 @@ fn cmd_experiments_report(workdir: &std::path::Path, name: &str) -> Result<i32> 
     // Archived stats, if concluded.
     if let Some(archive) = &exp.archive {
         println!();
-        println!(
-            "  Concluded at: {}",
-            archive.concluded_at.to_rfc3339()
-        );
+        println!("  Concluded at: {}", archive.concluded_at.to_rfc3339());
         println!("  Archive p-value:    {:.4}", archive.p_value);
         println!("  Archive effect size: {:.4}", archive.effect_size);
     }
@@ -1389,6 +1418,21 @@ pub(crate) async fn print_learn_efficiency(workdir: &std::path::Path) {
     if !path.exists() {
         print_no_data(&path);
         return;
+    }
+
+    // Audit #80 Step 6: one-shot migration — rewrite pre-P0-GA-1 entries
+    // that erroneously stored gate_passed=false for successful tasks.
+    // Safe to call repeatedly; already-patched entries are left unchanged.
+    match roko_learn::efficiency::null_ambiguous_gate_failed_entries(&path) {
+        Ok(0) => {}
+        Ok(n) => tracing::info!(
+            patched = n,
+            "efficiency.jsonl: nulled {n} ambiguous gate_passed=false entries (audit #80)"
+        ),
+        Err(err) => tracing::warn!(
+            error = %err,
+            "efficiency.jsonl: gate_passed migration failed (non-fatal)"
+        ),
     }
 
     let Ok(text) = tokio::fs::read_to_string(&path).await else {
@@ -1715,17 +1759,31 @@ async fn cmd_learn_playbooks(workdir: &std::path::Path) -> Result<i32> {
         .unwrap_or(7)
         .max(7);
 
-    println!("Playbook store: {} entries ({})", playbooks.len(), dir.display());
+    println!(
+        "Playbook store: {} entries ({})",
+        playbooks.len(),
+        dir.display()
+    );
     println!();
     println!(
         "{:<name_w$}  {:<pattern_w$}  {:>4}  {:>4}  {:>8}  {:>4}",
-        "Name", "Trigger", "Succ", "Fail", "Rate", "Deps",
+        "Name",
+        "Trigger",
+        "Succ",
+        "Fail",
+        "Rate",
+        "Deps",
         name_w = name_w,
         pattern_w = pattern_w,
     );
     println!(
         "{:-<name_w$}  {:-<pattern_w$}  {:->4}  {:->4}  {:->8}  {:->4}",
-        "", "", "", "", "", "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
         name_w = name_w,
         pattern_w = pattern_w,
     );
@@ -1823,14 +1881,12 @@ async fn cmd_learn_sections(workdir: &std::path::Path) -> Result<i32> {
     println!();
     println!(
         "{:<name_w$}  {:>6}  {:>9}",
-        "Section Name", "Trials", "Pass Rate",
+        "Section Name",
+        "Trials",
+        "Pass Rate",
         name_w = name_w,
     );
-    println!(
-        "{:-<name_w$}  {:->6}  {:->9}",
-        "", "", "",
-        name_w = name_w,
-    );
+    println!("{:-<name_w$}  {:->6}  {:->9}", "", "", "", name_w = name_w);
     #[allow(clippy::cast_precision_loss)]
     for (name, passed, total) in &rows {
         let rate = if *total == 0 {
@@ -1854,7 +1910,10 @@ async fn cmd_learn_sections(workdir: &std::path::Path) -> Result<i32> {
 // ── P2-13: Reflections ───────────────────────────────────────────────
 
 /// `roko learn reflections` — show recent post-gate reflections.
-fn cmd_learn_reflections(workdir: &std::path::Path, limit: usize) -> impl std::future::Future<Output = Result<i32>> {
+fn cmd_learn_reflections(
+    workdir: &std::path::Path,
+    limit: usize,
+) -> impl std::future::Future<Output = Result<i32>> {
     let workdir = workdir.to_path_buf();
     async move {
         let path = learn_post_gate_reflections_path(&workdir);
@@ -1879,16 +1938,16 @@ fn cmd_learn_reflections(workdir: &std::path::Path, limit: usize) -> impl std::f
 
         for record in display_records {
             let ts = record.created_at.format("%Y-%m-%d %H:%M:%S").to_string();
-            let task = record
-                .task_id
-                .as_deref()
-                .unwrap_or("-");
+            let task = record.task_id.as_deref().unwrap_or("-");
             let verdict = match record.outcome {
                 roko_learn::post_gate_reflection::ReflectionGateOutcome::Passed => "pass",
                 roko_learn::post_gate_reflection::ReflectionGateOutcome::Failed => "fail",
             };
             let lesson = truncate_str(&record.proposed_lesson, 120);
-            println!("  [{}] gate={} verdict={} task={}", ts, record.trigger_gate, verdict, task);
+            println!(
+                "  [{}] gate={} verdict={} task={}",
+                ts, record.trigger_gate, verdict, task
+            );
             println!("    {}", lesson);
             println!();
         }
@@ -1926,14 +1985,21 @@ async fn cmd_learn_tools(workdir: &std::path::Path, json: bool) -> Result<i32> {
             continue;
         };
         match entry {
-            roko_fs::tool_audit::AuditLine::Admit { call_name, ts_ms, .. } => {
+            roko_fs::tool_audit::AuditLine::Admit {
+                call_name, ts_ms, ..
+            } => {
                 let tool = stats.entry(call_name).or_default();
                 tool.calls += 1;
                 if ts_ms > tool.last_seen_ms {
                     tool.last_seen_ms = ts_ms;
                 }
             }
-            roko_fs::tool_audit::AuditLine::Result { call_name, ok, ts_ms, .. } => {
+            roko_fs::tool_audit::AuditLine::Result {
+                call_name,
+                ok,
+                ts_ms,
+                ..
+            } => {
                 let tool = stats.entry(call_name).or_default();
                 tool.results += 1;
                 if ok {
@@ -2259,10 +2325,7 @@ async fn cmd_learn_feedback_proof(workdir: &std::path::Path, json: bool) -> Resu
         let Ok(entry) = serde_json::from_str::<serde_json::Value>(trimmed) else {
             continue;
         };
-        let id = entry
-            .get("id")
-            .and_then(|v| v.as_str())
-            .unwrap_or_default();
+        let id = entry.get("id").and_then(|v| v.as_str()).unwrap_or_default();
         let confirmations = entry
             .get("confirmation_count")
             .and_then(|v| v.as_u64())
@@ -2299,20 +2362,37 @@ async fn cmd_learn_feedback_proof(workdir: &std::path::Path, json: bool) -> Resu
         );
     } else {
         println!("Feedback loop proof");
-        println!("  Knowledge IDs injected into prompts: {}", injected_ids.len());
-        println!("  Tasks passed with knowledge: {}", passed_with_knowledge.len());
-        println!("  Confirmed knowledge entries used: {}", confirmed_ids.len());
+        println!(
+            "  Knowledge IDs injected into prompts: {}",
+            injected_ids.len()
+        );
+        println!(
+            "  Tasks passed with knowledge: {}",
+            passed_with_knowledge.len()
+        );
+        println!(
+            "  Confirmed knowledge entries used: {}",
+            confirmed_ids.len()
+        );
         println!("  Closed loops found: {}", closed_loops.len());
         if closed_loops.is_empty() {
             println!();
             println!("  No closed feedback loop found yet.");
             println!("  A closed loop requires: knowledge entry ingested from an episode,");
-            println!("  injected into a prompt, contributed to a passing gate, and received confirmation.");
+            println!(
+                "  injected into a prompt, contributed to a passing gate, and received confirmation."
+            );
         } else {
             println!();
             for loop_entry in &closed_loops {
-                let kid = loop_entry.get("knowledge_id").and_then(|v| v.as_str()).unwrap_or("?");
-                let tid = loop_entry.get("task_id").and_then(|v| v.as_str()).unwrap_or("?");
+                let kid = loop_entry
+                    .get("knowledge_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("?");
+                let tid = loop_entry
+                    .get("task_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("?");
                 println!("  * {kid} -> task {tid}: ingested -> injected -> gate_pass -> confirmed");
             }
         }
@@ -2340,7 +2420,10 @@ async fn cmd_learn_role_costs(workdir: &std::path::Path, json: bool) -> Result<i
         if json {
             println!("{{\"profiles\":[]}}");
         } else {
-            println!("Role cost profiles: no efficiency data at {}", eff_path.display());
+            println!(
+                "Role cost profiles: no efficiency data at {}",
+                eff_path.display()
+            );
         }
         return Ok(EXIT_SUCCESS);
     }

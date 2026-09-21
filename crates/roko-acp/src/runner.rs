@@ -586,57 +586,6 @@ impl std::str::FromStr for AcpWorkflowRoute {
     }
 }
 
-// ---------------------------------------------------------------------------
-// #245: Non-plan service migration adapter (Lane D2)
-// ---------------------------------------------------------------------------
-
-/// Validates an ACP workflow request against the
-/// [`roko_execution::profiles::ProfileMatrix`] before service construction.
-///
-/// #243 landed: `run_with_workflow_engine` now uses `RuntimeServicesBuilder`
-/// and `ServiceFactory::build_with_runtime_services` to share handles.
-/// This adapter remains as the per-session validation entry point.
-///
-/// **Spec constraint (Lane D2):** this adapter does not edit
-/// `commands/plan.rs`, `runner/event_loop.rs`, or any plan-path type.
-pub struct AcpSessionServiceAdapter;
-
-impl AcpSessionServiceAdapter {
-    /// Validate that an ACP workflow request satisfies the profile matrix
-    /// and return a handle for cost settlement correlation.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the profile matrix validation fails.
-    pub fn validate_workflow(
-        session_id: &str,
-        workdir: &std::path::Path,
-        model_key: Option<String>,
-        mcp_config: Option<std::path::PathBuf>,
-    ) -> anyhow::Result<roko_execution::NonPlanServiceHandle> {
-        use roko_execution::profiles::RuntimeProfile;
-
-        let exec_overrides = roko_execution::overrides_for_acp(session_id, model_key, mcp_config);
-        let request = roko_execution::NonPlanServiceRequest::new(
-            RuntimeProfile::Workflow,
-            workdir.to_path_buf(),
-            exec_overrides,
-        );
-        let handle = roko_execution::validate_service_request(&request)
-            .map_err(|e| anyhow::anyhow!("ACP session service validation: {e}"))?;
-
-        tracing::debug!(
-            session_id = %session_id,
-            instance_id = %handle.instance_id(),
-            profile = %handle.profile(),
-            required = ?handle.required_bundles(),
-            "validated ACP session service request"
-        );
-
-        Ok(handle)
-    }
-}
-
 /// Options for graph-based workflow execution bridged to ACP protocol.
 ///
 /// #276 retired `WorkflowEngine`. These options configure the graph template
@@ -739,11 +688,6 @@ pub async fn run_with_workflow_engine(
         None,
     ))
 }
-
-// Dead AcpWorkflowEventConsumer cluster removed — see git history.
-// It was staging code for ACP-to-Graph event wiring (#276), which is now
-// merged. The live equivalent is `build_plan_entries` + the pipeline
-// event loop below.
 
 fn text_block(text: String) -> ContentBlock {
     ContentBlock::Text { text }

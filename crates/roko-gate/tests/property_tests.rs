@@ -1,10 +1,10 @@
 //! Property-based tests for roko-gate core types.
 
 use proptest::prelude::*;
+use roko_core::Verdict;
 use roko_gate::adaptive_threshold::AdaptiveThresholds;
 use roko_gate::benchmark_gate::BenchmarkComparison;
 use roko_gate::verdict_publisher::VerdictSummary;
-use roko_core::Verdict;
 
 // ─── AdaptiveThresholds: EMA in [0,1] ───────────────────────────────────────
 
@@ -111,17 +111,15 @@ proptest! {
 // ─── Verdict and VerdictSummary roundtrip ────────────────────────────────────
 
 fn arb_verdict() -> impl Strategy<Value = Verdict> {
-    (any::<bool>(), "[a-z]{1,8}", 0u64..300_000).prop_map(
-        |(passed, gate, duration_ms)| {
-            let mut v = if passed {
-                Verdict::pass(gate)
-            } else {
-                Verdict::fail(gate, "property test failure")
-            };
-            v.duration_ms = duration_ms;
-            v
-        },
-    )
+    (any::<bool>(), "[a-z]{1,8}", 0u64..300_000).prop_map(|(passed, gate, duration_ms)| {
+        let mut v = if passed {
+            Verdict::pass(gate)
+        } else {
+            Verdict::fail(gate, "property test failure")
+        };
+        v.duration_ms = duration_ms;
+        v
+    })
 }
 
 proptest! {

@@ -16,9 +16,9 @@
 
 // Sub-modules
 mod learning;
-pub(crate) mod snapshot;
-mod signals;
 mod scroll;
+mod signals;
+pub(crate) mod snapshot;
 
 mod safety;
 pub use safety::SafetyIncident;
@@ -38,7 +38,7 @@ use super::atmosphere::Atmosphere;
 use super::dashboard::{
     AgentSummary, AlertSummary, CascadeRouterState, DashboardData, EfficiencySummary,
     ExperimentSummary, GateResultSummary, GateResultsPageData, KnowledgeBrowseEntry,
-    PlaybookSummary, PlanExecutionSnapshot, SignalSummary, TaskSummary,
+    PlanExecutionSnapshot, PlaybookSummary, SignalSummary, TaskSummary,
 };
 use super::input::{ConfirmAction, FocusZone, InputMode, LogFilterLevel};
 use super::modals::ModalState;
@@ -65,7 +65,6 @@ pub struct PendingApproval {
     /// Optional approval identifier (P1-40: SurfaceEvent command path).
     pub approval_id: Option<String>,
 }
-
 
 /// Health classification for a configured LLM provider.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -512,8 +511,20 @@ pub struct AgentOutputHistory {
 impl AgentOutputHistory {
     /// Push a new record for the given agent, assigning a sequence number.
     ///
-    /// If the deque exceeds `MAX_AGENT_OUTPUT_RECORDS`, the oldest record
-    /// is evicted and `oldest_seq` is updated.
+    /// If the deque exceeds `MAX_AGENT_OUTPUT_RECORDS`, the oldest record(s)
+    /// are evicted and `oldest_seq` is updated.
+    ///
+    /// # Tool-pair coherence (P1-TUI-G2)
+    ///
+    /// When a `ToolCall` record is evicted, its paired `ToolResult` (the next
+    /// record in the deque that shares the same `tool_id`) is also evicted so
+    /// the display never shows an orphaned result with no matching call.
+    /// Similarly, if a `ToolResult` is evicted and its paired `ToolCall` (the
+    /// immediately preceding record with the same `tool_id`) has already been
+    /// evicted, the result is evicted cleanly. If the caller pushes a
+    /// `ToolResult` whose matching `ToolCall` is still in the deque, the
+    /// natural ordering ensures the call appears first; no special handling is
+    /// needed for that direction.
     pub fn push(&mut self, agent_id: &str, mut record: AgentOutputRecord) {
         let seq = self.next_seq.entry(agent_id.to_string()).or_insert(1);
         record.seq = *seq;
@@ -526,11 +537,52 @@ impl AgentOutputHistory {
 
         deque.push_back(record);
 
-        if deque.len() > MAX_AGENT_OUTPUT_RECORDS {
-            if let Some(evicted_record) = deque.pop_front() {
-                self.oldest_seq
-                    .insert(agent_id.to_string(), evicted_record.seq + 1);
-                self.evicted += 1;
+        while deque.len() > MAX_AGENT_OUTPUT_RECORDS {
+            let Some(evicted_record) = deque.pop_front() else {
+                break;
+            };
+            let new_oldest = evicted_record.seq + 1;
+            self.oldest_seq.insert(agent_id.to_string(), new_oldest);
+            self.evicted += 1;
+
+            // If we just evicted a ToolCall, also evict any immediately
+            // following ToolResult with the same tool_id to keep pairs intact.
+            if evicted_record.kind == OutputRecordKind::ToolCall {
+                if let Some(evicted_id) = evicted_record.tool_id.as_deref() {
+                    if deque
+                        .front()
+                        .is_some_and(|r| r.kind == OutputRecordKind::ToolResult
+                            && r.tool_id.as_deref() == Some(evicted_id))
+                    {
+                        if let Some(paired_result) = deque.pop_front() {
+                            self.oldest_seq
+                                .insert(agent_id.to_string(), paired_result.seq + 1);
+                            self.evicted += 1;
+                        }
+                    }
+                }
+            }
+
+            // If we just evicted a ToolResult whose paired ToolCall is already
+            // gone (seq < oldest), nothing more to do. If the ToolCall is
+            // still in the deque as the new front, it is now orphaned — evict
+            // it too so the viewer never sees a ToolCall without its result.
+            if evicted_record.kind == OutputRecordKind::ToolResult {
+                if let Some(evicted_id) = evicted_record.tool_id.as_deref() {
+                    if deque
+                        .front()
+                        .is_some_and(|r| r.kind == OutputRecordKind::ToolCall
+                            && r.tool_id.as_deref() == Some(evicted_id))
+                    {
+                        // This means a ToolCall follows its result — abnormal
+                        // ordering; evict the orphaned call.
+                        if let Some(orphaned_call) = deque.pop_front() {
+                            self.oldest_seq
+                                .insert(agent_id.to_string(), orphaned_call.seq + 1);
+                            self.evicted += 1;
+                        }
+                    }
+                }
             }
         }
     }
@@ -850,6 +902,7 @@ pub fn model_context_limit(model: &str) -> u64 {
 }
 
 #[must_use]
+#[allow(dead_code)] // used by route_metrics_from_event; wired to TUI display in P2-TUI-7
 fn route_tier_label_for_frequency(frequency: OperatingFrequency) -> &'static str {
     match frequency {
         OperatingFrequency::Gamma => "fast",
@@ -859,6 +912,7 @@ fn route_tier_label_for_frequency(frequency: OperatingFrequency) -> &'static str
 }
 
 #[must_use]
+#[allow(dead_code)] // used by route_metrics_from_event and fallback_route_metrics_for_agent; P2-TUI-7
 fn route_tier_label_for_model(model: &str) -> &'static str {
     let lower = model.trim().to_ascii_lowercase();
     if lower.is_empty() {
@@ -886,6 +940,7 @@ fn route_tier_label_for_model(model: &str) -> &'static str {
 use crate::tui::display_utils::event_model_slug;
 
 #[must_use]
+#[allow(dead_code)] // focus scoring for route metrics; wired in P2-TUI-7
 fn prompt_focus_score(event: &roko_learn::efficiency::AgentEfficiencyEvent) -> f64 {
     if event.prompt_sections.is_empty() {
         return if event.total_prompt_tokens > 0 {
@@ -920,6 +975,7 @@ fn prompt_focus_score(event: &roko_learn::efficiency::AgentEfficiencyEvent) -> f
 }
 
 #[must_use]
+#[allow(dead_code)] // route confidence scoring; wired in P2-TUI-7
 fn route_focus_score(
     event: &roko_learn::efficiency::AgentEfficiencyEvent,
     data: &DashboardData,
@@ -934,6 +990,7 @@ fn route_focus_score(
 }
 
 #[must_use]
+#[allow(dead_code)] // route metrics builder; wired in P2-TUI-7
 fn route_metrics_from_event(
     event: &roko_learn::efficiency::AgentEfficiencyEvent,
     data: &DashboardData,
@@ -955,6 +1012,7 @@ fn route_metrics_from_event(
 }
 
 #[must_use]
+#[allow(dead_code)] // fallback route metrics; wired in P2-TUI-7
 fn fallback_route_metrics_for_agent(agent: &AgentRow) -> RouteMetrics {
     let context_limit = agent
         .context_limit
@@ -2072,6 +2130,18 @@ pub struct TuiState {
     /// Timestamp of the last inspect data refresh.
     pub inspect_last_refresh: Option<Instant>,
 
+    // -- dream view cache (RC-4) --
+    /// Cached journal/archive data for the F7:Inspect/Dreams sub-view.
+    pub dream_view_cache: DreamViewCache,
+
+    // -- knowledge health cache (RC-4) --
+    /// Cached knowledge aggregate stats for the F7:Inspect/Knowledge Health sub-view.
+    pub knowledge_health_cache: KnowledgeHealthCache,
+
+    // -- runtime status cache (RC-4) --
+    /// Cached relay+lens status for the F6 Config runtime sections.
+    pub runtime_status_cache: RuntimeStatusCache,
+
     // -- MCP config cache (P3.1) --
     /// Cached MCP configuration for the Dashboard MCP panel.
     pub mcp_config_view: McpConfigView,
@@ -2271,6 +2341,10 @@ impl Default for TuiState {
 
             inspect_data: InspectData::default(),
             inspect_last_refresh: None,
+
+            dream_view_cache: DreamViewCache::default(),
+            knowledge_health_cache: KnowledgeHealthCache::default(),
+            runtime_status_cache: RuntimeStatusCache::default(),
 
             mcp_config_view: McpConfigView::default(),
             mcp_config_refreshed_at: None,
@@ -2555,6 +2629,102 @@ pub struct InspectData {
     pub prompt_stats: PromptStatsData,
 }
 
+// ---------------------------------------------------------------------------
+// DreamViewCache — avoids reading journal.jsonl and archive.jsonl every frame
+// ---------------------------------------------------------------------------
+
+/// A parsed journal entry for the Dreams sub-tab display.
+#[derive(Debug, Clone, Default)]
+pub struct DreamJournalEntry {
+    pub cycle_id: String,
+    pub phase: String,
+    pub summary: String,
+    /// Raw line kept as fallback for entries that don't parse as JSON.
+    pub raw: String,
+}
+
+/// A parsed archive entry for the Dreams sub-tab display.
+#[derive(Debug, Clone, Default)]
+pub struct DreamArchiveEntry {
+    pub kind: String,
+    pub quality_score: f64,
+    pub summary: String,
+    pub raw: String,
+}
+
+/// Cached content for the F7:Inspect / Dreams sub-view (sub_tab 7).
+///
+/// Populated by [`TuiState::refresh_dream_cache`] on the same 5-second
+/// cadence as [`TuiState::refresh_inspect_data`]. The render function reads
+/// these fields instead of calling `std::fs::read_to_string` directly.
+#[derive(Debug, Clone, Default)]
+pub struct DreamViewCache {
+    /// Total number of lines in `journal.jsonl`.
+    pub journal_entry_count: usize,
+    /// Most recent 5 journal entries (newest first).
+    pub journal_recent: Vec<DreamJournalEntry>,
+    /// Total number of lines in `archive.jsonl`.
+    pub archive_entry_count: usize,
+    /// Most recent 5 archive entries (newest first).
+    pub archive_recent: Vec<DreamArchiveEntry>,
+    /// Display path for the dreams directory.
+    pub dream_dir_display: String,
+}
+
+// ---------------------------------------------------------------------------
+// KnowledgeHealthCache — avoids reading knowledge.jsonl every frame
+// ---------------------------------------------------------------------------
+
+/// Cached aggregate statistics for the F7:Inspect / Knowledge Health sub-view
+/// (sub_tab 8).
+///
+/// Populated by [`TuiState::refresh_knowledge_health_cache`] on the same
+/// 5-second cadence as [`TuiState::refresh_inspect_data`].
+#[derive(Debug, Clone, Default)]
+pub struct KnowledgeHealthCache {
+    pub total: u64,
+    pub transient: u64,
+    pub working: u64,
+    pub consolidated: u64,
+    pub persistent: u64,
+    pub anti_knowledge: u64,
+    pub frozen: u64,
+    pub avg_balance: f64,
+    pub calibrated: u64,
+}
+
+// ---------------------------------------------------------------------------
+// RuntimeStatusCache — avoids reading relay/lens status files every frame
+// ---------------------------------------------------------------------------
+
+/// Relay status parsed from `.roko/relay/status.json`.
+#[derive(Debug, Clone, Default)]
+pub struct RelayStatusCache {
+    pub present: bool,
+    pub connected: bool,
+    pub cursor: u64,
+    pub reconnect_count: u64,
+}
+
+/// Lens status parsed from `.roko/telemetry/lens-status.json` and `read_dir`.
+#[derive(Debug, Clone, Default)]
+pub struct LensStatusCache {
+    pub lens_count: usize,
+    pub lens_names: Vec<String>,
+}
+
+/// Cached status for runtime sections appended to the F6 Config view.
+///
+/// Populated by [`TuiState::refresh_runtime_status_cache`] on the same
+/// 5-second cadence as config-items refresh. Avoids reading
+/// `relay/status.json`, `telemetry/lens-status.json`, and `read_dir` on
+/// every render frame.
+#[derive(Debug, Clone, Default)]
+pub struct RuntimeStatusCache {
+    pub relay: RelayStatusCache,
+    pub lens: LensStatusCache,
+}
+
 /// MCP runtime status for the F7 inspect panel.
 #[derive(Debug, Clone, Default)]
 pub struct McpRuntimeData {
@@ -2724,7 +2894,11 @@ fn load_playbook_summaries(learn_dir: &Path) -> Vec<PlaybookSummary> {
         let Ok(pb) = serde_json::from_str::<serde_json::Value>(&contents) else {
             continue;
         };
-        let id = pb.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let id = pb
+            .get("id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
         let name = pb
             .get("name")
             .and_then(|v| v.as_str())
@@ -2875,6 +3049,9 @@ impl TuiState {
     fn rebuild_config_items_cache(&mut self) {
         self.config_items_cache =
             super::config_meta::build_flat_items(&self.workdir, &self.config_pending);
+        // RC-4: Also refresh the runtime status cache (relay/lens) so the
+        // config view render function reads cached data instead of hitting disk.
+        self.refresh_runtime_status_cache();
         self.config_items_refreshed_at = Some(Instant::now());
         self.config_items_pending_len = self.config_pending.len();
     }
@@ -2895,7 +3072,249 @@ impl TuiState {
         // P2-05: Also refresh playbook summaries on the same cadence.
         let learn_dir = self.workdir.join(".roko").join("learn");
         self.playbook_summaries = load_playbook_summaries(&learn_dir);
+        // RC-4: Refresh caches that avoid per-frame disk reads in context/config views.
+        self.refresh_dream_cache();
+        self.refresh_knowledge_health_cache();
         self.inspect_last_refresh = Some(Instant::now());
+    }
+
+    /// Refresh the Dream sub-view cache from `.roko/dreams/journal.jsonl` and
+    /// `.roko/dreams/archive.jsonl`.
+    ///
+    /// Called from `refresh_inspect_data` (5-second cadence) so the render
+    /// function reads pre-loaded data instead of hitting disk every frame.
+    pub fn refresh_dream_cache(&mut self) {
+        let dream_dir = self.workdir.join(".roko").join("dreams");
+        let journal_path = dream_dir.join("journal.jsonl");
+        let archive_path = dream_dir.join("archive.jsonl");
+
+        let journal_text = std::fs::read_to_string(&journal_path).unwrap_or_default();
+        let journal_lines: Vec<&str> = journal_text.lines().collect();
+        let journal_entry_count = journal_lines.len();
+        let journal_recent: Vec<DreamJournalEntry> = journal_lines
+            .iter()
+            .rev()
+            .take(5)
+            .map(|raw| {
+                if let Ok(val) = serde_json::from_str::<serde_json::Value>(raw) {
+                    DreamJournalEntry {
+                        cycle_id: val
+                            .get("cycle_id")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("?")
+                            .to_string(),
+                        phase: val
+                            .get("phase")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("?")
+                            .to_string(),
+                        summary: val
+                            .get("summary")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string(),
+                        raw: String::new(),
+                    }
+                } else {
+                    DreamJournalEntry {
+                        raw: (*raw).to_string(),
+                        ..Default::default()
+                    }
+                }
+            })
+            .collect();
+
+        let archive_text = std::fs::read_to_string(&archive_path).unwrap_or_default();
+        let archive_lines: Vec<&str> = archive_text.lines().collect();
+        let archive_entry_count = archive_lines.len();
+        let archive_recent: Vec<DreamArchiveEntry> = archive_lines
+            .iter()
+            .rev()
+            .take(5)
+            .map(|raw| {
+                if let Ok(val) = serde_json::from_str::<serde_json::Value>(raw) {
+                    DreamArchiveEntry {
+                        kind: val
+                            .get("kind")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("?")
+                            .to_string(),
+                        quality_score: val
+                            .get("quality_score")
+                            .and_then(|v| v.as_f64())
+                            .unwrap_or(0.0),
+                        summary: val
+                            .get("summary")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string(),
+                        raw: String::new(),
+                    }
+                } else {
+                    DreamArchiveEntry {
+                        raw: (*raw).to_string(),
+                        ..Default::default()
+                    }
+                }
+            })
+            .collect();
+
+        self.dream_view_cache = DreamViewCache {
+            journal_entry_count,
+            journal_recent,
+            archive_entry_count,
+            archive_recent,
+            dream_dir_display: dream_dir.display().to_string(),
+        };
+    }
+
+    /// Refresh the Knowledge Health cache from `.roko/knowledge.jsonl`.
+    ///
+    /// Called from `refresh_inspect_data` (5-second cadence).
+    pub fn refresh_knowledge_health_cache(&mut self) {
+        let knowledge_path = self.workdir.join(".roko").join("knowledge.jsonl");
+        let text = std::fs::read_to_string(&knowledge_path).unwrap_or_default();
+
+        let mut transient = 0_u64;
+        let mut working = 0_u64;
+        let mut consolidated = 0_u64;
+        let mut persistent = 0_u64;
+        let mut anti_knowledge = 0_u64;
+        let mut frozen = 0_u64;
+        let mut total_balance = 0.0_f64;
+        let mut balance_count = 0_u64;
+        let mut calibrated = 0_u64;
+        let mut total = 0_u64;
+
+        for line in text.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let Ok(entry) = serde_json::from_str::<serde_json::Value>(trimmed) else {
+                continue;
+            };
+            total += 1;
+            let tier = entry
+                .get("tier")
+                .and_then(|v| v.as_str())
+                .unwrap_or("transient");
+            match tier {
+                "transient" => transient += 1,
+                "working" => working += 1,
+                "consolidated" => consolidated += 1,
+                "persistent" => persistent += 1,
+                _ => transient += 1,
+            }
+            if entry
+                .get("anti_knowledge")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+            {
+                anti_knowledge += 1;
+            }
+            if entry
+                .get("frozen")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+            {
+                frozen += 1;
+            }
+            if let Some(balance) = entry.get("balance").and_then(|v| v.as_f64()) {
+                total_balance += balance;
+                balance_count += 1;
+            }
+            if entry
+                .get("heuristic_calibration")
+                .and_then(|v| v.as_f64())
+                .is_some()
+            {
+                calibrated += 1;
+            }
+        }
+
+        let avg_balance = if balance_count > 0 {
+            total_balance / balance_count as f64
+        } else {
+            0.0
+        };
+
+        self.knowledge_health_cache = KnowledgeHealthCache {
+            total,
+            transient,
+            working,
+            consolidated,
+            persistent,
+            anti_knowledge,
+            frozen,
+            avg_balance,
+            calibrated,
+        };
+    }
+
+    /// Refresh the runtime status cache for the F6 Config view's runtime sections.
+    ///
+    /// Reads `relay/status.json`, `telemetry/lens-status.json`, and does a
+    /// `read_dir` on the telemetry dir. Called on the same 5-second cadence as
+    /// config-items refresh so the render function avoids per-frame disk I/O.
+    pub fn refresh_runtime_status_cache(&mut self) {
+        // Relay status
+        let relay_path = self.workdir.join(".roko").join("relay").join("status.json");
+        let relay = if let Ok(text) = std::fs::read_to_string(&relay_path) {
+            if let Ok(status) = serde_json::from_str::<serde_json::Value>(&text) {
+                RelayStatusCache {
+                    present: true,
+                    connected: status
+                        .get("connected")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false),
+                    cursor: status.get("cursor").and_then(|v| v.as_u64()).unwrap_or(0),
+                    reconnect_count: status
+                        .get("reconnect_count")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0),
+                }
+            } else {
+                RelayStatusCache {
+                    present: true,
+                    ..Default::default()
+                }
+            }
+        } else {
+            RelayStatusCache::default()
+        };
+
+        // Lens status
+        let telemetry_dir = self.workdir.join(".roko").join("telemetry");
+        let lens_count = if telemetry_dir.exists() {
+            std::fs::read_dir(&telemetry_dir)
+                .map(|entries| entries.flatten().count())
+                .unwrap_or(0)
+        } else {
+            0
+        };
+        let lens_status_path = telemetry_dir.join("lens-status.json");
+        let lens_names: Vec<String> = std::fs::read_to_string(&lens_status_path)
+            .ok()
+            .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+            .and_then(|val| val.get("lenses").cloned())
+            .and_then(|lenses| serde_json::from_value::<Vec<serde_json::Value>>(lenses).ok())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| {
+                        v.get("name")
+                            .and_then(|n| n.as_str())
+                            .map(|s| s.to_string())
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let lens = LensStatusCache {
+            lens_count,
+            lens_names,
+        };
+
+        self.runtime_status_cache = RuntimeStatusCache { relay, lens };
     }
 
     /// Whether the cached MCP configuration should be refreshed.
@@ -3005,6 +3424,21 @@ impl TuiState {
                 .map(|s| s.elapsed().as_secs_f64())
                 .unwrap_or(0.0)
         })
+    }
+
+    /// Update `elapsed_secs` on all active plans from their `started_at`
+    /// `Instant`.
+    ///
+    /// Called from the animation tick so that live plan timers advance every
+    /// frame without waiting for the next `DashboardSnapshot` push from the
+    /// StateHub.  This eliminates the one-snapshot-period latency that caused
+    /// the plan timing display to freeze during active graph-engine runs.
+    pub fn tick_elapsed(&mut self) {
+        for plan in self.plans.iter_mut().filter(|p| p.active) {
+            if let Some(started) = plan.started_at {
+                plan.elapsed_secs = started.elapsed().as_secs_f64();
+            }
+        }
     }
 
     /// Return the selected plan's spend, ceiling, and simple historical projection.
@@ -3171,6 +3605,21 @@ impl TuiState {
                 .filter(|p| !matches!(p.health, ProviderHealth::Healthy))
                 .count(),
             _ => 0,
+        }
+    }
+
+    /// Dynamic tab label with count badge appended when the badge is non-zero.
+    ///
+    /// Returns `"Plans (3)"` style strings for use in the breadcrumb bar and
+    /// the active-tab indicator in the status bar. Returns the plain label
+    /// (e.g. `"Dashboard"`) for tabs with no notable count.
+    #[must_use]
+    pub fn tab_label_with_badge(&self, tab: Tab) -> String {
+        let badge = self.tab_badge(tab);
+        if badge > 0 {
+            format!("{} ({badge})", tab.label())
+        } else {
+            tab.label().to_string()
         }
     }
 

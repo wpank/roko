@@ -335,9 +335,7 @@ pub(super) fn resolve_repository_identity(
         let parse_fd = rustix::fs::openat(
             repo_root_fd,
             ".git",
-            rustix::fs::OFlags::RDONLY
-                | rustix::fs::OFlags::NOFOLLOW
-                | rustix::fs::OFlags::CLOEXEC,
+            rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::CLOEXEC,
             rustix::fs::Mode::empty(),
         )
         .map_err(std::io::Error::from)?;
@@ -357,9 +355,7 @@ pub(super) fn resolve_repository_identity(
         match rustix::fs::openat(
             &git_admin_fd,
             "commondir",
-            rustix::fs::OFlags::RDONLY
-                | rustix::fs::OFlags::NOFOLLOW
-                | rustix::fs::OFlags::CLOEXEC,
+            rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::CLOEXEC,
             rustix::fs::Mode::empty(),
         ) {
             Ok(common_reference_fd) => {
@@ -490,10 +486,7 @@ fn write_claim_file(
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
-fn read_claim_file(
-    claim_dir_fd: &std::os::fd::OwnedFd,
-    name: &str,
-) -> std::io::Result<Vec<u8>> {
+fn read_claim_file(claim_dir_fd: &std::os::fd::OwnedFd, name: &str) -> std::io::Result<Vec<u8>> {
     let fd = rustix::fs::openat(
         claim_dir_fd,
         name,
@@ -664,7 +657,10 @@ pub(super) fn ensure_cleanup_safe(
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
-pub(super) fn unlink_claim_file(claim_dir_fd: &std::os::fd::OwnedFd, name: &str) -> std::io::Result<()> {
+pub(super) fn unlink_claim_file(
+    claim_dir_fd: &std::os::fd::OwnedFd,
+    name: &str,
+) -> std::io::Result<()> {
     match rustix::fs::unlinkat(claim_dir_fd, name, rustix::fs::AtFlags::empty()) {
         Ok(()) => Ok(()),
         Err(rustix::io::Errno::NOENT) => Ok(()),
@@ -821,8 +817,7 @@ fn validate_cleanup_records(
         }
     }
     if let (Some((_, prepared_bytes)), Some((linked_marker, _))) = (&prepared, &linked) {
-        if linked_marker.previous_digest
-            != Some(blake3::hash(prepared_bytes).to_hex().to_string())
+        if linked_marker.previous_digest != Some(blake3::hash(prepared_bytes).to_hex().to_string())
         {
             return Err(std::io::Error::other(
                 "cleanup-safe claim contains a broken prepared-to-linked digest",
@@ -836,8 +831,7 @@ fn validate_cleanup_records(
             ));
         }
         if let Some((_, linked_bytes)) = &linked {
-            if reset_marker.previous_digest
-                != Some(blake3::hash(linked_bytes).to_hex().to_string())
+            if reset_marker.previous_digest != Some(blake3::hash(linked_bytes).to_hex().to_string())
             {
                 return Err(std::io::Error::other(
                     "cleanup-safe claim contains a broken linked-to-reset digest",
@@ -1243,7 +1237,11 @@ impl WorktreeManager {
     pub(super) fn open_creation_marker_root(
         &self,
         create: bool,
-    ) -> std::io::Result<(std::os::fd::OwnedFd, std::os::fd::OwnedFd, super::InodeIdentity)> {
+    ) -> std::io::Result<(
+        std::os::fd::OwnedFd,
+        std::os::fd::OwnedFd,
+        super::InodeIdentity,
+    )> {
         let worktrees_root_fd = rustix::fs::open(
             &self.config.worktrees_root,
             rustix::fs::OFlags::RDONLY
@@ -1266,20 +1264,14 @@ impl WorktreeManager {
                 Err(error) => return Err(std::io::Error::from(error)),
             }
         }
-        let marker_root_fd =
-            open_secure_directory_at(&worktrees_root_fd, CREATION_MARKER_DIR)?;
-        let marker_root_inode =
-            validate_secure_directory(&marker_root_fd, "creation marker root")?;
+        let marker_root_fd = open_secure_directory_at(&worktrees_root_fd, CREATION_MARKER_DIR)?;
+        let marker_root_inode = validate_secure_directory(&marker_root_fd, "creation marker root")?;
         Ok((worktrees_root_fd, marker_root_fd, marker_root_inode))
     }
 
     #[cfg(any(target_os = "macos", target_os = "linux"))]
-    pub(super) fn verify_live_creation_claim(
-        &self,
-        claim: &CreationClaim,
-    ) -> std::io::Result<()> {
-        let held_root =
-            validate_secure_directory(&claim.marker_root_fd, "creation marker root")?;
+    pub(super) fn verify_live_creation_claim(&self, claim: &CreationClaim) -> std::io::Result<()> {
+        let held_root = validate_secure_directory(&claim.marker_root_fd, "creation marker root")?;
         let held_claim = validate_secure_directory(&claim.claim_dir_fd, "creation claim")?;
         if held_root != claim.marker_root_inode || held_claim != claim.claim_dir_inode {
             return Err(std::io::Error::other("held creation claim inode changed"));
@@ -1307,10 +1299,7 @@ impl WorktreeManager {
     }
 
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-    pub(super) fn verify_live_creation_claim(
-        &self,
-        _claim: &CreationClaim,
-    ) -> std::io::Result<()> {
+    pub(super) fn verify_live_creation_claim(&self, _claim: &CreationClaim) -> std::io::Result<()> {
         Ok(())
     }
 
@@ -1333,9 +1322,7 @@ impl WorktreeManager {
         };
         let claim_dir_inode = validate_secure_directory(&claim_dir_fd, "creation claim")?;
 
-        if let Some(cleanup_bytes) =
-            read_optional_claim_file(&claim_dir_fd, "cleanup-safe.json")?
-        {
+        if let Some(cleanup_bytes) = read_optional_claim_file(&claim_dir_fd, "cleanup-safe.json")? {
             let cleanup: CreationCleanupSafe = serde_json::from_slice(&cleanup_bytes)
                 .map_err(|error| reattach_rejected(id, error.to_string()))?;
             if cleanup.schema_version != CREATION_MARKER_SCHEMA
@@ -1425,11 +1412,8 @@ impl WorktreeManager {
             &claim_id,
             CreationPhase::LinkedNoCheckout,
         )?;
-        let reset = read_optional_creation_record(
-            &claim_dir_fd,
-            &claim_id,
-            CreationPhase::ResetComplete,
-        )?;
+        let reset =
+            read_optional_creation_record(&claim_dir_fd, &claim_id, CreationPhase::ResetComplete)?;
         if let Some((linked_marker, linked_bytes)) = &linked {
             verify_record_name_and_chain(linked_marker, linked_bytes, Some(&prepared.1))?;
         }
@@ -1496,12 +1480,12 @@ impl WorktreeManager {
             )));
         }
         let branch_ref = format!("refs/heads/{}", marker.branch);
-        let branch_oid = self
-            .git_ref_oid(&branch_ref, true)
-            .await?
-            .ok_or_else(|| WorktreeError::GitFailed {
-                stderr: "completed claim branch disappeared".to_string(),
-            })?;
+        let branch_oid =
+            self.git_ref_oid(&branch_ref, true)
+                .await?
+                .ok_or_else(|| WorktreeError::GitFailed {
+                    stderr: "completed claim branch disappeared".to_string(),
+                })?;
         let worktree_head = self
             .git_probe_output_at(&marker.path, &["rev-parse", "HEAD"])
             .await?;
@@ -1514,14 +1498,9 @@ impl WorktreeManager {
             )));
         }
         let listed = self
-            .git_probe_output_at(
-                &self.config.repo_root,
-                &["worktree", "list", "--porcelain"],
-            )
+            .git_probe_output_at(&self.config.repo_root, &["worktree", "list", "--porcelain"])
             .await?;
-        if !listed.status.success()
-            || !worktree_list_contains_path(&listed.stdout, &marker.path)
-        {
+        if !listed.status.success() || !worktree_list_contains_path(&listed.stdout, &marker.path) {
             return Err(WorktreeError::IoError(std::io::Error::other(
                 "ResetComplete claim is absent from git worktree registry",
             )));

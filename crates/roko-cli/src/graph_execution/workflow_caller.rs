@@ -253,6 +253,4 @@ mod tests {
         assert!(LEGACY_WORKFLOW_ENGINE_FROZEN.contains("frozen"));
         assert!(LEGACY_WORKFLOW_ENGINE_FROZEN.contains("#258"));
     }
-
-
 }

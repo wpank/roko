@@ -3716,7 +3716,9 @@ mod tests {
             Some("state_snapshot")
         );
         assert!(captured.provenance.runner.is_some());
-        assert_eq!(captured.next_seq, 0);
+        // bootstrap_from_workdir emits a SnapshotRebased event advancing the
+        // cursor by one; the first live-observable sequence is therefore 1.
+        assert_eq!(captured.next_seq, 1);
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -3766,8 +3768,11 @@ mod tests {
             .body(Body::text("fresh"))
             .created_at_ms(now_ms)
             .build();
-        hot.put(aged.clone()).await.expect("store aged signal");
-        hot.put(fresh.clone()).await.expect("store fresh signal");
+        // Capture the stored IDs: put_if_absent attaches an HDC fingerprint
+        // tag and recomputes the content hash, so the on-disk ID differs from
+        // the pre-storage Signal::build() ID.
+        let stored_aged_id = hot.put(aged.clone()).await.expect("store aged signal");
+        let stored_fresh_id = hot.put(fresh.clone()).await.expect("store fresh signal");
 
         let hub = roko_runtime::StateHub::default_capacity();
         let signal_store = crate::state::SignalStore::new(roko_dir.clone(), hub.sender());
@@ -3787,15 +3792,23 @@ mod tests {
             .await
             .expect("query hot substrate");
         assert_eq!(remaining.len(), 1);
-        assert_eq!(remaining[0].id, fresh.id);
+        assert!(
+            remaining.iter().any(|s| s.id == stored_fresh_id),
+            "fresh signal must survive archival; got {:?}",
+            remaining.iter().map(|s| s.id).collect::<Vec<_>>()
+        );
 
         let cold = roko_fs::ArchiveColdSubstrate::open(roko_dir.join("cold"))
             .await
             .expect("open cold substrate");
-        assert!(cold.contains(&aged.id).await.expect("query cold substrate"));
+        assert!(
+            cold.contains(&stored_aged_id)
+                .await
+                .expect("query cold substrate")
+        );
         assert!(
             !cold
-                .contains(&fresh.id)
+                .contains(&stored_fresh_id)
                 .await
                 .expect("query cold substrate")
         );

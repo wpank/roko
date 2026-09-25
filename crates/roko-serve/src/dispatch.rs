@@ -3502,7 +3502,7 @@ printf '%s\n' '{"type":"content_block_delta","delta":{"text":"template-ok"}}'
         let provider_health =
             std::fs::read_to_string(workdir.join(".roko/learn/provider-health.json"))
                 .expect("read provider health");
-        assert!(provider_health.contains("template-cli"));
+        assert!(provider_health.contains("template_cli"));
 
         let cascade_router =
             std::fs::read_to_string(workdir.join(".roko/learn/cascade-router.json"))

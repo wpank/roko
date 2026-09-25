@@ -1,0 +1,67 @@
+[meta]
+plan = "validate-xl"
+total = 3
+done = 0
+status = "ready"
+max_parallel = 3
+skip_enrichment = true
+
+[[task]]
+id = "XL-T01"
+title = "Verify ACP spec version is 1.7.0"
+description = """Search crates/roko-acp/src/types.rs for 'ACP_SPEC_VERSION'.
+Confirm it shows version 1.7.0 (not 0.12.2).
+Write result to demo/xl-check/acp-spec-ok.txt."""
+status = "ready"
+tier = "mechanical"
+max_loc = 2
+model_hint = "cerebras-gptoss"
+files = ["demo/xl-check/acp-spec-ok.txt"]
+role = "implementer"
+depends_on = []
+max_turns = 5
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q '1.7.0' demo/xl-check/acp-spec-ok.txt"
+fail_msg = "ACP spec version not 1.7.0"
+
+[[task]]
+id = "XL-T02"
+title = "Verify StateHub checkpoint module exists"
+description = """Search crates/roko-runtime/src/snapshot_checkpoint.rs for 'start_checkpoint_writer'.
+Confirm the durable checkpoint module exists.
+Write result to demo/xl-check/checkpoint-ok.txt."""
+status = "ready"
+tier = "mechanical"
+max_loc = 2
+model_hint = "cerebras-gptoss"
+files = ["demo/xl-check/checkpoint-ok.txt"]
+role = "implementer"
+depends_on = []
+max_turns = 5
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'checkpoint' demo/xl-check/checkpoint-ok.txt"
+fail_msg = "Checkpoint module not found"
+
+[[task]]
+id = "XL-T03"
+title = "Verify JSONL cursors are deprecated"
+description = """Search crates/roko-cli/src/tui/cursors.rs for 'deprecated'.
+Confirm SignalCursor, EpisodeCursor, EventLogCursor are marked deprecated.
+Write result to demo/xl-check/deprecated-ok.txt."""
+status = "ready"
+tier = "mechanical"
+max_loc = 2
+model_hint = "cerebras-gptoss"
+files = ["demo/xl-check/deprecated-ok.txt"]
+role = "implementer"
+depends_on = []
+max_turns = 5
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'deprecated' demo/xl-check/deprecated-ok.txt"
+fail_msg = "Deprecation not confirmed"

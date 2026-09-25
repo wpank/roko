@@ -151,6 +151,11 @@ pub struct ModelCallService {
     /// budgets at the provider I/O boundary.  When `None`, the
     /// `OpenAiCompatLlmBackend` falls back to its own process-global limiter.
     rate_limiter: Option<Arc<ProviderRateLimiter>>,
+    /// When `true`, agent subprocesses are launched with
+    /// `--dangerously-skip-permissions` so they can write files without
+    /// interactive permission prompts.  Mirrors
+    /// `runner.dangerously_skip_permissions` in `roko.toml`.
+    dangerously_skip_permissions: bool,
 }
 
 impl ModelCallService {
@@ -183,6 +188,7 @@ impl ModelCallService {
             run_id: "model-call-service".to_string(),
             request_seq: AtomicU64::new(1),
             rate_limiter: None,
+            dangerously_skip_permissions: false,
         }
     }
 
@@ -386,6 +392,18 @@ impl ModelCallService {
         self
     }
 
+    /// Enable `--dangerously-skip-permissions` for agent subprocesses.
+    ///
+    /// When set, provider adapters that construct a `ClaudeCliAgent` (or any
+    /// subprocess-backed agent) will launch the subprocess without interactive
+    /// file-write permission prompts.  Required for serve-side plan execution
+    /// where there is no user terminal to approve writes.
+    #[must_use]
+    pub fn with_dangerously_skip_permissions(mut self, enabled: bool) -> Self {
+        self.dangerously_skip_permissions = enabled;
+        self
+    }
+
     /// Resolve which model to use for a request.
     fn resolve_model(&self, req: &ModelCallRequest) -> String {
         if req.model.is_empty() {
@@ -489,6 +507,7 @@ impl ModelCallService {
             env: self.env.clone(),
             effort: Some(self.config.agent.default_effort.clone())
                 .filter(|effort| !effort.trim().is_empty()),
+            dangerously_skip_permissions: self.dangerously_skip_permissions,
             ..AgentOptions::default()
         };
         options.mcp_config = req

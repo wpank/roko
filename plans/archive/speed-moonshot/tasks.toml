@@ -1,0 +1,26 @@
+[meta]
+plan = "speed-moonshot"
+total = 1
+done = 0
+status = "ready"
+max_parallel = 1
+skip_enrichment = true
+estimated_total_minutes = 1
+
+[[task]]
+id = "MOON-T01"
+title = "Write one line to a file via Moonshot"
+description = """Write the text `moonshot-speed-ok` to the file `demo/speed-moonshot-output.txt`.
+Nothing else. One file, one line. Stop immediately after."""
+status = "ready"
+tier = "mechanical"
+max_loc = 1
+model_hint = "kimi-k2-5"
+files = ["demo/speed-moonshot-output.txt"]
+role = "implementer"
+depends_on = []
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'moonshot-speed-ok' demo/speed-moonshot-output.txt"
+fail_msg = "demo/speed-moonshot-output.txt missing or wrong content"

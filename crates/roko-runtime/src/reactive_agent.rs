@@ -229,6 +229,7 @@ where
     /// The loop runs until the handle's cancel token is signalled or the
     /// agent exits cleanly.  Lifecycle transitions (to `Waiting` and back to
     /// `Active`) are logged at `DEBUG` level.
+    #[allow(clippy::too_many_lines)]
     pub fn spawn(self) -> ReactiveAgentHandle {
         let handle = ReactiveAgentHandle {
             cancel: self.cancel.clone(),
@@ -320,24 +321,6 @@ where
                     // Build a single future that yields the first pulse from any receiver.
                     let num_bus = bus_receivers.len();
                     let num_cron = cron_intervals.len();
-
-                    // Wrap in Option to allow `select!` to take ownership conditionally.
-                    let cron_tick_future: std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> =
-                        if num_cron > 0 {
-                            // Tick the first interval; subsequent cron conditions
-                            // share the same beat (shortest-period wins in practice).
-                            Box::pin(async { /* replaced inline */ })
-                        } else {
-                            Box::pin(std::future::pending::<()>())
-                        };
-                    // We can't use an async block that borrows `cron_intervals`
-                    // through the select due to lifetime constraints.
-                    // Instead, poll via a oneshot-style approach: check if any
-                    // interval is ready, otherwise use tokio::select.
-
-                    // Use an explicit poll loop with a timeout so we don't
-                    // block forever when there are no bus receivers.
-                    let _ = cron_tick_future; // not needed below
 
                     // Simple strategy: use tokio::select! with a single optional
                     // interval branch and a single optional bus branch.
@@ -506,8 +489,8 @@ pub enum ReactiveAgentStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicU64, Ordering};
     use tokio::time::Duration;
 
     struct CountingHandler {
@@ -548,7 +531,11 @@ mod tests {
         handle.wake(Some("hello".to_string())).unwrap();
         tokio::time::sleep(Duration::from_millis(50)).await;
 
-        assert_eq!(count.load(Ordering::SeqCst), 1, "handler should have been called once");
+        assert_eq!(
+            count.load(Ordering::SeqCst),
+            1,
+            "handler should have been called once"
+        );
 
         handle.shutdown();
     }
@@ -641,7 +628,11 @@ mod tests {
 
         tokio::time::sleep(Duration::from_millis(50)).await;
 
-        assert_eq!(count.load(Ordering::SeqCst), 1, "bus pulse should have woken the agent");
+        assert_eq!(
+            count.load(Ordering::SeqCst),
+            1,
+            "bus pulse should have woken the agent"
+        );
         handle.shutdown();
     }
 

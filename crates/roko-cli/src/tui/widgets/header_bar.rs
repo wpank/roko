@@ -785,10 +785,7 @@ pub fn render_breadcrumb_bar(frame: &mut Frame<'_>, area: Rect, state: &TuiState
 
     // Tab name with dynamic badge count
     let tab = state.active_tab;
-    spans.push(Span::styled(
-        state.tab_label_with_badge(tab),
-        tab_style,
-    ));
+    spans.push(Span::styled(state.tab_label_with_badge(tab), tab_style));
 
     // Sub-view name (if the tab has multiple sub-views)
     let sub_views = super::super::views::SubView::for_tab(tab);

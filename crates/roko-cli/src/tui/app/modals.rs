@@ -131,8 +131,16 @@ impl App {
                     .map(|a| (a.current_plan.clone(), a.current_task.clone()))
                     .unwrap_or_default();
                 ConfirmAction::CancelAgent {
-                    plan_id: if plan_id.is_empty() { selected.0 } else { plan_id },
-                    task_id: if task_id.is_empty() { selected.1 } else { task_id },
+                    plan_id: if plan_id.is_empty() {
+                        selected.0
+                    } else {
+                        plan_id
+                    },
+                    task_id: if task_id.is_empty() {
+                        selected.1
+                    } else {
+                        task_id
+                    },
                 }
             }
             other => other,

@@ -314,17 +314,23 @@ pub fn strategy_stats(records: &[RetrievalOutcomeRecord]) -> Vec<RetrievalStrate
 
     let mut stats: Vec<RetrievalStrategyStats> = by_strategy
         .into_iter()
-        .map(|(strategy, (obs, passes, sum_count))| RetrievalStrategyStats {
-            strategy: strategy.to_string(),
-            observations: obs,
-            gate_passes: passes,
-            gate_pass_rate: if obs == 0 { 0.0 } else { passes as f64 / obs as f64 },
-            avg_results_count: if obs == 0 {
-                0.0
-            } else {
-                sum_count as f64 / obs as f64
+        .map(
+            |(strategy, (obs, passes, sum_count))| RetrievalStrategyStats {
+                strategy: strategy.to_string(),
+                observations: obs,
+                gate_passes: passes,
+                gate_pass_rate: if obs == 0 {
+                    0.0
+                } else {
+                    passes as f64 / obs as f64
+                },
+                avg_results_count: if obs == 0 {
+                    0.0
+                } else {
+                    sum_count as f64 / obs as f64
+                },
             },
-        })
+        )
         .collect();
     stats.sort_by(|a, b| {
         b.gate_pass_rate
@@ -384,17 +390,15 @@ mod tests {
 
     #[test]
     fn with_experiment_assignment_sets_field() {
-        let record =
-            RetrievalOutcomeRecord::pre_gate("p", "t", "q", STRATEGY_HYBRID, 0)
-                .with_experiment_assignment("assign-42");
+        let record = RetrievalOutcomeRecord::pre_gate("p", "t", "q", STRATEGY_HYBRID, 0)
+            .with_experiment_assignment("assign-42");
         assert_eq!(record.experiment_assignment_id, Some("assign-42".into()));
     }
 
     #[test]
     fn with_latency_ms_sets_field() {
-        let record =
-            RetrievalOutcomeRecord::pre_gate("p", "t", "q", STRATEGY_KEYWORD, 3)
-                .with_latency_ms(42);
+        let record = RetrievalOutcomeRecord::pre_gate("p", "t", "q", STRATEGY_KEYWORD, 3)
+            .with_latency_ms(42);
         assert_eq!(record.latency_ms, Some(42));
     }
 
@@ -404,7 +408,10 @@ mod tests {
         let record = sample_record(STRATEGY_KEYWORD, None);
         assert_eq!(record.latency_ms, None);
         let json = serde_json::to_string(&record).expect("serialize");
-        assert!(!json.contains("latency_ms"), "absent latency_ms must not appear in JSON");
+        assert!(
+            !json.contains("latency_ms"),
+            "absent latency_ms must not appear in JSON"
+        );
         let back: RetrievalOutcomeRecord = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(back.latency_ms, None);
     }
@@ -414,7 +421,10 @@ mod tests {
         let record = RetrievalOutcomeRecord::pre_gate("p", "t", "q", STRATEGY_KEYWORD, 2)
             .with_latency_ms(123);
         let json = serde_json::to_string(&record).expect("serialize");
-        assert!(json.contains("\"latency_ms\":123"), "latency_ms must appear in JSON");
+        assert!(
+            json.contains("\"latency_ms\":123"),
+            "latency_ms must appear in JSON"
+        );
         let back: RetrievalOutcomeRecord = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(back.latency_ms, Some(123));
     }
@@ -434,12 +444,18 @@ mod tests {
         let stats = strategy_stats(&records);
         assert_eq!(stats.len(), 2, "hybrid pre-gate records excluded");
 
-        let kw = stats.iter().find(|s| s.strategy == STRATEGY_KEYWORD).unwrap();
+        let kw = stats
+            .iter()
+            .find(|s| s.strategy == STRATEGY_KEYWORD)
+            .unwrap();
         assert_eq!(kw.observations, 3);
         assert_eq!(kw.gate_passes, 2);
         assert!((kw.gate_pass_rate - 2.0 / 3.0).abs() < 1e-9);
 
-        let hdc = stats.iter().find(|s| s.strategy == STRATEGY_HDC_ONLY).unwrap();
+        let hdc = stats
+            .iter()
+            .find(|s| s.strategy == STRATEGY_HDC_ONLY)
+            .unwrap();
         assert_eq!(hdc.observations, 2);
         assert_eq!(hdc.gate_passes, 1);
     }

@@ -1,0 +1,25 @@
+[meta]
+plan = "speed-minimal"
+total = 1
+done = 0
+status = "ready"
+max_parallel = 1
+skip_enrichment = true
+estimated_total_minutes = 1
+
+[[task]]
+id = "MIN-T01"
+title = "Write one line to a file"
+description = """Write the text `speed-test-ok` to the file `demo/speed-minimal-output.txt`.
+Nothing else. One file, one line. Stop immediately after."""
+status = "ready"
+tier = "mechanical"
+max_loc = 1
+files = ["demo/speed-minimal-output.txt"]
+role = "implementer"
+depends_on = []
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'speed-test-ok' demo/speed-minimal-output.txt"
+fail_msg = "demo/speed-minimal-output.txt missing or wrong content"

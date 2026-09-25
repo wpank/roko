@@ -851,14 +851,14 @@ printf '%s\n' '{"type":"content_block_delta","delta":{"text":"provider-ok"}}'
         let snapshot = bundle.provider_health_registry.snapshot();
         assert_eq!(snapshot.len(), 1, "one live attempt must produce one key");
         let health = snapshot
-            .get("health-provider")
+            .get("health_provider")
             .expect("configured provider identity recorded");
         assert_eq!(
             health.total_requests, 1,
             "outcome must not be double-counted"
         );
         assert_eq!(health.total_failures, 0);
-        assert!(!snapshot.contains_key("health-model-v1"));
+        assert!(!snapshot.contains_key("health_model_v1"));
     }
 
     #[tokio::test]
@@ -918,7 +918,7 @@ printf '%s\n' '{"type":"content_block_delta","delta":{"text":"fallback-ok"}}'
         let snapshot = bundle.provider_health_registry.snapshot();
         assert_eq!(snapshot.len(), 2);
         let primary_health = snapshot
-            .get("primary-provider")
+            .get("primary_provider")
             .expect("failed primary identity recorded");
         assert_eq!(primary_health.total_requests, 1);
         assert_eq!(primary_health.total_failures, 1);
@@ -930,12 +930,12 @@ printf '%s\n' '{"type":"content_block_delta","delta":{"text":"fallback-ok"}}'
             Some(ErrorClass::ServerError)
         );
         let fallback_health = snapshot
-            .get("fallback-provider")
+            .get("fallback_provider")
             .expect("successful fallback identity recorded");
         assert_eq!(fallback_health.total_requests, 1);
         assert_eq!(fallback_health.total_failures, 0);
-        assert!(!snapshot.contains_key("primary-model-v1"));
-        assert!(!snapshot.contains_key("fallback-model-v1"));
+        assert!(!snapshot.contains_key("primary_model_v1"));
+        assert!(!snapshot.contains_key("fallback_model_v1"));
     }
 
     #[test]

@@ -14,7 +14,7 @@ use crate::error::{ApiError, validate_path_segment};
 use crate::events::ServerEvent;
 use crate::extract::{RequestPayload, ValidJson, validate_with_validator};
 use crate::plan_types::{Plan, PlanTask};
-use crate::runtime::RunResult;
+use crate::runtime::{PlanExecutionResult, RunResult};
 use crate::state::{AppState, OperationHandle, OperationStatus, PlanHandle};
 use roko_core::agent::resolve_model;
 use roko_learn::cost_projection::{CompletedTask, CostProjector, RemainingTask};
@@ -211,7 +211,18 @@ async fn execute_plan(
     let bus = state.event_bus.clone();
     let runtime = state.runtime.clone();
     let workdir = state.workdir.clone();
-    let prompt = build_plan_execution_prompt(&plan);
+    // Resolve the on-disk plan file path so `run_plan` gets a stable path
+    // rather than a reconstructed prompt.  `find_plan` already verified the
+    // file exists, so we know at least one of the two extensions is present.
+    let plan_file = {
+        let pd = plans_dir(&state.workdir);
+        let json_path = pd.join(format!("{}.json", plan.id));
+        if json_path.is_file() {
+            json_path
+        } else {
+            pd.join(format!("{}.toml", plan.id))
+        }
+    };
     let plan_id = id.clone();
 
     let mut active = state.active_plans.write().await;
@@ -227,8 +238,8 @@ async fn execute_plan(
             bus.publish(ServerEvent::PlanStarted {
                 plan_id: plan_id.clone(),
             });
-            let success = match runtime.run_once(&workdir, &prompt).await {
-                Ok(RunResult { success, .. }) => success,
+            let success = match runtime.run_plan(&workdir, &plan_file).await {
+                Ok(PlanExecutionResult { success, .. }) => success,
                 Err(err) => {
                     bus.publish(ServerEvent::Error {
                         message: format!("plan execution failed for {plan_id}: {err}"),
@@ -1519,30 +1530,6 @@ async fn find_prd(
     Err(ApiError::not_found(format!("PRD '{slug}' not found")))
 }
 
-fn build_plan_execution_prompt(plan: &Plan) -> String {
-    let mut prompt = String::new();
-    prompt.push_str(&format!(
-        "Read the implementation plan at `.roko/plans/{id}` and execute it in the current workspace.\n\
-         Use the plan as the source of truth for task order, file scope, and completion criteria.\n\
-         Keep changes surgical and stop when the plan is complete.\n\n",
-        id = plan.id,
-    ));
-    prompt.push_str("## Plan summary\n");
-    prompt.push_str(&format!("- id: {}\n", plan.id));
-    prompt.push_str(&format!("- title: {}\n", plan.title));
-    prompt.push_str(&format!("- description: {}\n", plan.description));
-    prompt.push_str("- tasks:\n");
-
-    for task in &plan.tasks {
-        prompt.push_str(&format!(
-            "  - {}: {}\n    depends_on: {:?}\n    files: {:?}\n    completed: {}\n",
-            task.id, task.description, task.depends_on, task.files, task.completed
-        ));
-    }
-
-    prompt
-}
-
 fn build_plan_generation_prompt(prd_path: &std::path::Path, prd_content: &str) -> String {
     format!(
         "Read the PRD at {path} and generate implementation plan directories under .roko/plans.\n\
@@ -1579,11 +1566,24 @@ mod tests {
 
     use crate::deploy::create_backend;
     use crate::routes::build_router;
-    use crate::runtime::{CliRuntime, DashboardInfo, NoOpRuntime, RunResult, SessionStatusInfo};
+    use crate::runtime::{
+        CliRuntime, DashboardInfo, NoOpRuntime, PlanExecutionResult, RunResult, SessionStatusInfo,
+    };
+
+    /// Calls recorded by `RecordingRuntime`.
+    ///
+    /// `run_once` entries: `("once", workdir_string, prompt)`.
+    /// `run_plan` entries: `("plan", workdir_string, plan_target_string)`.
+    #[derive(Clone, Debug)]
+    struct RecordedCall {
+        kind: &'static str,
+        workdir: PathBuf,
+        arg: String,
+    }
 
     #[derive(Clone)]
     struct RecordingRuntime {
-        calls: Arc<Mutex<Vec<(PathBuf, String)>>>,
+        calls: Arc<Mutex<Vec<RecordedCall>>>,
         notify: Arc<Notify>,
         success: bool,
         call_count: Arc<AtomicUsize>,
@@ -1596,16 +1596,36 @@ mod tests {
             workdir: &std::path::Path,
             prompt: &str,
         ) -> anyhow::Result<RunResult> {
-            self.calls
-                .lock()
-                .expect("lock calls")
-                .push((workdir.to_path_buf(), prompt.to_string()));
+            self.calls.lock().expect("lock calls").push(RecordedCall {
+                kind: "once",
+                workdir: workdir.to_path_buf(),
+                arg: prompt.to_string(),
+            });
             self.call_count.fetch_add(1, Ordering::SeqCst);
             self.notify.notify_waiters();
             Ok(RunResult {
                 success: self.success,
                 output_text: None,
                 usage: None,
+                gate_results: Vec::new(),
+            })
+        }
+
+        async fn run_plan(
+            &self,
+            workdir: &std::path::Path,
+            plan_target: &std::path::Path,
+        ) -> anyhow::Result<PlanExecutionResult> {
+            self.calls.lock().expect("lock calls").push(RecordedCall {
+                kind: "plan",
+                workdir: workdir.to_path_buf(),
+                arg: plan_target.to_string_lossy().into_owned(),
+            });
+            self.call_count.fetch_add(1, Ordering::SeqCst);
+            self.notify.notify_waiters();
+            Ok(PlanExecutionResult {
+                success: self.success,
+                output_text: None,
                 gate_results: Vec::new(),
             })
         }
@@ -1768,8 +1788,9 @@ mod tests {
         tokio::fs::create_dir_all(&plans_dir)
             .await
             .expect("create plans dir");
+        let plan_file = plans_dir.join("demo.json");
         tokio::fs::write(
-            plans_dir.join("demo.json"),
+            &plan_file,
             serde_json::to_string_pretty(&json!({
                 "id": "demo",
                 "title": "Demo Plan",
@@ -1804,9 +1825,15 @@ mod tests {
 
         let calls = calls.lock().expect("lock calls");
         assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0].0, state.workdir);
-        assert!(calls[0].1.contains("Demo Plan"));
-        assert!(calls[0].1.contains("Update the widget"));
+        // execute_plan must delegate to run_plan (not run_once) and pass the
+        // workdir and the on-disk plan file path.
+        assert_eq!(calls[0].kind, "plan", "execute_plan must call run_plan");
+        assert_eq!(calls[0].workdir, state.workdir);
+        assert_eq!(
+            calls[0].arg,
+            plan_file.to_string_lossy(),
+            "plan_target must be the on-disk .json plan file"
+        );
     }
 
     #[tokio::test]
@@ -1852,9 +1879,17 @@ mod tests {
 
         let calls = calls.lock().expect("lock calls");
         assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0].0, state.workdir);
-        assert!(calls[0].1.contains(".roko/prd/published/demo.md"));
-        assert!(calls[0].1.contains("Build the widget."));
+        assert_eq!(calls[0].workdir, state.workdir);
+        assert!(
+            calls[0].arg.contains(".roko/prd/published/demo.md"),
+            "run_once arg must contain PRD path: {}",
+            calls[0].arg
+        );
+        assert!(
+            calls[0].arg.contains("Build the widget."),
+            "run_once arg must contain PRD content: {}",
+            calls[0].arg
+        );
     }
 
     #[tokio::test]

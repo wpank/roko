@@ -1,0 +1,1429 @@
+/*
+ * ROSEDUST Design Language
+ * Premium dark theme for Roko documentation
+ *
+ * Palette:
+ *   void-black  #0a0a0f    twilight  #12101a    dusk      #1a1726
+ *   rose-dim    #8b5e6b    rose      #c77d8f    rose-bright #e8a0b2
+ *   rose-glow   #ffc0d0    jade      #5eead4    amber     #fbbf24
+ *   crimson     #f87171    violet    #a78bfa    sapphire  #60a5fa
+ *   frost       #e5e7eb    mist      #9ca3af    ghost     #6b7280
+ */
+
+/* ================================================================
+   0. WEB FONTS
+   ================================================================ */
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&display=swap');
+
+/* ================================================================
+   1. FORCE DARK MODE
+   ================================================================ */
+:root {
+  color-scheme: dark;
+}
+
+html {
+  color-scheme: dark !important;
+}
+
+/* ================================================================
+   2. CSS CUSTOM PROPERTIES -- ROSEDUST PALETTE
+   ================================================================ */
+:root,
+.dark {
+  /* ---- Brand ---- */
+  --vp-c-brand-1: #c77d8f;
+  --vp-c-brand-2: #e8a0b2;
+  --vp-c-brand-3: #ffc0d0;
+  --vp-c-brand-soft: rgba(199, 125, 143, 0.14);
+  --vp-c-brand-dimm: rgba(199, 125, 143, 0.08);
+
+  /* ---- Backgrounds ---- */
+  --vp-c-bg: #0a0a0f;
+  --vp-c-bg-alt: #0e0d14;
+  --vp-c-bg-elv: #1a1726;
+  --vp-c-bg-soft: #12101a;
+
+  /* ---- Text ---- */
+  --vp-c-text-1: #e5e7eb;
+  --vp-c-text-2: #9ca3af;
+  --vp-c-text-3: #6b7280;
+
+  /* ---- Dividers ---- */
+  --vp-c-divider: rgba(139, 94, 107, 0.25);
+  --vp-c-gutter: rgba(139, 94, 107, 0.12);
+  --vp-c-border: rgba(139, 94, 107, 0.30);
+
+  /* ---- Semantic colors ---- */
+  --vp-c-default-1: #1a1726;
+  --vp-c-default-2: #12101a;
+  --vp-c-default-3: #0a0a0f;
+  --vp-c-default-soft: rgba(26, 23, 38, 0.5);
+
+  --vp-c-tip-1: #5eead4;
+  --vp-c-tip-2: rgba(94, 234, 212, 0.6);
+  --vp-c-tip-3: rgba(94, 234, 212, 0.2);
+  --vp-c-tip-soft: rgba(94, 234, 212, 0.08);
+
+  --vp-c-warning-1: #fbbf24;
+  --vp-c-warning-2: rgba(251, 191, 36, 0.6);
+  --vp-c-warning-3: rgba(251, 191, 36, 0.2);
+  --vp-c-warning-soft: rgba(251, 191, 36, 0.08);
+
+  --vp-c-danger-1: #f87171;
+  --vp-c-danger-2: rgba(248, 113, 113, 0.6);
+  --vp-c-danger-3: rgba(248, 113, 113, 0.2);
+  --vp-c-danger-soft: rgba(248, 113, 113, 0.08);
+
+  --vp-c-important-1: #a78bfa;
+  --vp-c-important-2: rgba(167, 139, 250, 0.6);
+  --vp-c-important-3: rgba(167, 139, 250, 0.2);
+  --vp-c-important-soft: rgba(167, 139, 250, 0.08);
+
+  --vp-c-caution-1: #f87171;
+  --vp-c-caution-2: rgba(248, 113, 113, 0.6);
+  --vp-c-caution-3: rgba(248, 113, 113, 0.2);
+  --vp-c-caution-soft: rgba(248, 113, 113, 0.08);
+
+  /* ---- Buttons ---- */
+  --vp-button-brand-border: rgba(199, 125, 143, 0.5);
+  --vp-button-brand-text: #0a0a0f;
+  --vp-button-brand-bg: #c77d8f;
+  --vp-button-brand-hover-border: rgba(232, 160, 178, 0.6);
+  --vp-button-brand-hover-text: #0a0a0f;
+  --vp-button-brand-hover-bg: #e8a0b2;
+  --vp-button-brand-active-border: rgba(255, 192, 208, 0.7);
+  --vp-button-brand-active-text: #0a0a0f;
+  --vp-button-brand-active-bg: #ffc0d0;
+
+  --vp-button-alt-border: rgba(139, 94, 107, 0.35);
+  --vp-button-alt-text: #e5e7eb;
+  --vp-button-alt-bg: rgba(26, 23, 38, 0.8);
+  --vp-button-alt-hover-border: rgba(199, 125, 143, 0.5);
+  --vp-button-alt-hover-text: #ffc0d0;
+  --vp-button-alt-hover-bg: rgba(26, 23, 38, 0.95);
+
+  --vp-button-sponsor-border: rgba(199, 125, 143, 0.4);
+  --vp-button-sponsor-text: #c77d8f;
+  --vp-button-sponsor-bg: transparent;
+  --vp-button-sponsor-hover-border: rgba(232, 160, 178, 0.6);
+  --vp-button-sponsor-hover-text: #e8a0b2;
+  --vp-button-sponsor-hover-bg: rgba(199, 125, 143, 0.06);
+
+  /* ---- Shadows ---- */
+  --vp-shadow-1: 0 1px 2px rgba(0, 0, 0, 0.3), 0 0 8px rgba(199, 125, 143, 0.04);
+  --vp-shadow-2: 0 3px 12px rgba(0, 0, 0, 0.4), 0 0 16px rgba(199, 125, 143, 0.06);
+  --vp-shadow-3: 0 12px 32px rgba(0, 0, 0, 0.5), 0 0 24px rgba(199, 125, 143, 0.08);
+  --vp-shadow-4: 0 24px 56px rgba(0, 0, 0, 0.6), 0 0 40px rgba(199, 125, 143, 0.10);
+  --vp-shadow-5: 0 32px 72px rgba(0, 0, 0, 0.7), 0 0 56px rgba(199, 125, 143, 0.12);
+
+  /* ---- Hero ---- */
+  --vp-home-hero-name-color: transparent;
+  --vp-home-hero-name-background: linear-gradient(
+    135deg,
+    #c77d8f 0%,
+    #e8a0b2 40%,
+    #ffc0d0 70%,
+    #a78bfa 100%
+  );
+  --vp-home-hero-image-background-image: radial-gradient(
+    ellipse at 50% 50%,
+    rgba(199, 125, 143, 0.30) 0%,
+    rgba(167, 139, 250, 0.15) 50%,
+    transparent 80%
+  );
+  --vp-home-hero-image-filter: blur(56px) saturate(1.2);
+
+  /* ---- Typography ---- */
+  --vp-font-family-base: 'JetBrains Mono', 'Berkeley Mono', ui-monospace,
+    SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace;
+  --vp-font-family-mono: 'JetBrains Mono', 'Berkeley Mono', ui-monospace,
+    SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace;
+
+  /* ---- Nav ---- */
+  --vp-nav-height: 64px;
+
+  /* ---- Sidebar ---- */
+  --vp-sidebar-width: 280px;
+
+  /* ---- Code ---- */
+  --vp-code-font-size: 13px;
+  --vp-code-line-height: 1.65;
+  --vp-code-color: #e8a0b2;
+  --vp-code-bg: rgba(18, 16, 26, 0.65);
+  --vp-code-block-bg: #0e0d14;
+  --vp-code-block-divider-color: rgba(139, 94, 107, 0.15);
+  --vp-code-tab-text-color: #9ca3af;
+  --vp-code-tab-active-text-color: #e8a0b2;
+  --vp-code-tab-active-bar-color: #c77d8f;
+  --vp-code-tab-hover-text-color: #ffc0d0;
+  --vp-code-copy-code-bg: rgba(26, 23, 38, 0.7);
+  --vp-code-copy-code-hover-bg: rgba(26, 23, 38, 0.9);
+  --vp-code-copy-code-border-color: rgba(139, 94, 107, 0.3);
+  --vp-code-copy-code-active-text: #ffc0d0;
+  --vp-code-line-highlight-color: rgba(199, 125, 143, 0.10);
+
+  /* ---- Carbon ads ---- */
+  --vp-carbon-ads-text-color: #9ca3af;
+  --vp-carbon-ads-bg-color: #12101a;
+
+  /* ---- Search ---- */
+  --vp-local-search-bg: #12101a;
+  --vp-local-search-highlight-bg: rgba(199, 125, 143, 0.15);
+  --vp-local-search-highlight-text: #ffc0d0;
+
+  /* ---- Custom ROSEDUST tokens ---- */
+  --rd-easing: cubic-bezier(0.16, 1, 0.3, 1);
+  --rd-glass-bg: rgba(18, 16, 26, 0.80);
+  --rd-glass-blur: blur(12px);
+  --rd-glass-border: 1px solid rgba(139, 94, 107, 0.20);
+  --rd-glow-rose: 0 0 20px rgba(199, 125, 143, 0.25);
+  --rd-glow-rose-strong: 0 0 32px rgba(199, 125, 143, 0.40);
+  --rd-glow-violet: 0 0 20px rgba(167, 139, 250, 0.25);
+  --rd-glow-jade: 0 0 20px rgba(94, 234, 212, 0.25);
+  --rd-glow-sapphire: 0 0 20px rgba(96, 165, 250, 0.25);
+}
+
+/* ================================================================
+   3. GLOBAL BASE STYLES
+   ================================================================ */
+html {
+  background: #0a0a0f !important;
+  scrollbar-color: rgba(199, 125, 143, 0.35) rgba(10, 10, 15, 0.5);
+}
+
+body {
+  background: #0a0a0f;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+::selection {
+  background: rgba(199, 125, 143, 0.30);
+  color: #ffc0d0;
+}
+
+/* ================================================================
+   4. CUSTOM SCROLLBAR
+   ================================================================ */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: rgba(10, 10, 15, 0.5);
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(139, 94, 107, 0.40);
+  border-radius: 3px;
+  transition: background 0.3s var(--rd-easing);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(199, 125, 143, 0.55);
+}
+
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* ================================================================
+   5. NAVBAR -- GLASS MORPHISM
+   ================================================================ */
+.VPNav {
+  background: var(--rd-glass-bg) !important;
+  backdrop-filter: var(--rd-glass-blur) !important;
+  -webkit-backdrop-filter: var(--rd-glass-blur) !important;
+  border-bottom: var(--rd-glass-border) !important;
+}
+
+.VPNavBar {
+  background: transparent !important;
+  border-bottom: none !important;
+}
+
+.VPNavBar .title {
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #c77d8f !important;
+}
+
+.VPNavBarTitle .title::before {
+  content: '';
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #c77d8f;
+  box-shadow: 0 0 8px rgba(199, 125, 143, 0.5);
+  margin-right: 8px;
+  vertical-align: middle;
+}
+
+/* Nav links */
+.VPNavBarMenuLink .VPLink,
+.VPNavBarMenu .VPLink {
+  font-size: 0.82rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  font-weight: 500;
+  color: #9ca3af !important;
+  transition: color 0.3s var(--rd-easing);
+}
+
+.VPNavBarMenuLink .VPLink:hover,
+.VPNavBarMenu .VPLink:hover {
+  color: #e8a0b2 !important;
+}
+
+.VPNavBarMenuLink.active .VPLink,
+.VPNavBarMenu .VPLink.active {
+  color: #ffc0d0 !important;
+}
+
+/* Nav menu links (direct selectors) */
+.VPNavBarMenuLink {
+  font-size: 0.82rem;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #9ca3af !important;
+  transition: color 0.3s var(--rd-easing);
+}
+
+.VPNavBarMenuLink:hover,
+.VPNavBarMenuLink.active {
+  color: #e8a0b2 !important;
+}
+
+/* Social links in nav */
+.VPNavBarSocialLinks .VPSocialLink {
+  color: #6b7280 !important;
+  transition: color 0.3s var(--rd-easing), filter 0.3s var(--rd-easing);
+}
+
+.VPNavBarSocialLinks .VPSocialLink:hover {
+  color: #c77d8f !important;
+  filter: drop-shadow(0 0 4px rgba(199, 125, 143, 0.4));
+}
+
+/* Nav divider */
+.VPNavBar .divider {
+  background: rgba(139, 94, 107, 0.15);
+}
+
+/* ================================================================
+   6. SIDEBAR -- GLASS MORPHISM
+   ================================================================ */
+.VPSidebar {
+  background: var(--rd-glass-bg) !important;
+  backdrop-filter: var(--rd-glass-blur) !important;
+  -webkit-backdrop-filter: var(--rd-glass-blur) !important;
+  border-right: var(--rd-glass-border) !important;
+}
+
+/* Sidebar group headings */
+.VPSidebarItem.level-0 > .item > .text,
+.VPSidebarItem.level-0 > .item > .indicator + .text {
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.10em;
+  text-transform: uppercase;
+  color: #8b5e6b !important;
+  padding-top: 0.75rem;
+}
+
+/* Sidebar links */
+.VPSidebarItem .text {
+  transition: color 0.2s var(--rd-easing), padding-left 0.2s var(--rd-easing);
+}
+
+.VPSidebarItem.is-active > .item > .link > .text {
+  color: #ffc0d0 !important;
+  font-weight: 600;
+}
+
+.VPSidebarItem .item:hover > .link > .text,
+.VPSidebarItem .item:hover > .text {
+  color: #e8a0b2 !important;
+}
+
+/* Active indicator bar */
+.VPSidebarItem.is-active > .item > .indicator {
+  background-color: #c77d8f !important;
+  box-shadow: 0 0 6px rgba(199, 125, 143, 0.4);
+}
+
+/* Sidebar depth items */
+.VPSidebarItem.level-1 .items .VPSidebarItem .text {
+  font-size: 0.82rem;
+}
+
+/* Collapse toggle caret */
+.VPSidebarItem .caret {
+  color: #6b7280 !important;
+  transition: color 0.2s var(--rd-easing), transform 0.3s var(--rd-easing);
+}
+
+.VPSidebarItem .caret:hover {
+  color: #c77d8f !important;
+}
+
+/* ================================================================
+   7. CONTENT AREA
+   ================================================================ */
+.VPContent {
+  background: #0a0a0f;
+}
+
+.VPDoc {
+  background: transparent;
+}
+
+/* ================================================================
+   8. HEADERS -- ROSE ACCENT, UPPERCASE, LETTER-SPACED
+   ================================================================ */
+.vp-doc h1 {
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  background: linear-gradient(135deg, #c77d8f, #ffc0d0);
+  background-clip: text;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  border-bottom: 1px solid rgba(139, 94, 107, 0.20);
+  padding-bottom: 1rem;
+}
+
+.vp-doc h2 {
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  font-size: 1.3rem;
+  color: #e8a0b2;
+  border-top: 1px solid rgba(139, 94, 107, 0.15);
+  padding-top: 1.5rem;
+  margin-top: 2.5rem;
+}
+
+.vp-doc h3 {
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  color: #c77d8f;
+}
+
+.vp-doc h4 {
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: #8b5e6b;
+  text-transform: uppercase;
+  font-size: 0.88rem;
+}
+
+/* Anchor links */
+.vp-doc .header-anchor {
+  color: rgba(199, 125, 143, 0.4) !important;
+  transition: color 0.2s var(--rd-easing), opacity 0.2s var(--rd-easing);
+}
+
+.vp-doc .header-anchor:hover {
+  color: #ffc0d0 !important;
+}
+
+/* ================================================================
+   9. PROSE LINKS -- ROSE WITH GLOW HOVER
+   ================================================================ */
+.vp-doc a {
+  color: #c77d8f;
+  text-decoration: none;
+  border-bottom: 1px solid rgba(199, 125, 143, 0.25);
+  transition: color 0.2s var(--rd-easing),
+    border-color 0.2s var(--rd-easing),
+    text-shadow 0.3s var(--rd-easing);
+}
+
+.vp-doc a:hover {
+  color: #ffc0d0;
+  border-bottom-color: #ffc0d0;
+  text-shadow: 0 0 12px rgba(255, 192, 208, 0.3);
+}
+
+/* ================================================================
+   10. INLINE CODE
+   ================================================================ */
+.vp-doc :not(pre) > code {
+  background: rgba(18, 16, 26, 0.65);
+  border: 1px solid rgba(139, 94, 107, 0.20);
+  color: #e8a0b2;
+  border-radius: 4px;
+  padding: 0.15rem 0.4rem;
+  font-size: 0.88em;
+  font-weight: 500;
+  transition: background 0.2s var(--rd-easing), border-color 0.2s var(--rd-easing);
+}
+
+.vp-doc a > code {
+  color: #c77d8f;
+}
+
+.vp-doc a:hover > code {
+  color: #ffc0d0;
+  border-color: rgba(255, 192, 208, 0.3);
+}
+
+/* ================================================================
+   11. CODE BLOCKS -- DARK WITH LANGUAGE ACCENTS
+   ================================================================ */
+.vp-doc div[class*='language-'] {
+  border-radius: 8px;
+  border: 1px solid rgba(139, 94, 107, 0.18);
+  background: #0e0d14 !important;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.3);
+  transition: border-color 0.3s var(--rd-easing), box-shadow 0.3s var(--rd-easing);
+  position: relative;
+}
+
+.vp-doc div[class*='language-']:hover {
+  border-color: rgba(199, 125, 143, 0.30);
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.3), var(--rd-glow-rose);
+}
+
+/* Language-specific left border accents */
+.vp-doc div[class*='language-rust'] {
+  border-left: 3px solid #c77d8f;
+}
+
+.vp-doc div[class*='language-toml'] {
+  border-left: 3px solid #a78bfa;
+}
+
+.vp-doc div[class*='language-bash'],
+.vp-doc div[class*='language-sh'],
+.vp-doc div[class*='language-shell'] {
+  border-left: 3px solid #5eead4;
+}
+
+.vp-doc div[class*='language-json'],
+.vp-doc div[class*='language-yaml'] {
+  border-left: 3px solid #fbbf24;
+}
+
+.vp-doc div[class*='language-typescript'],
+.vp-doc div[class*='language-ts'],
+.vp-doc div[class*='language-javascript'],
+.vp-doc div[class*='language-js'] {
+  border-left: 3px solid #60a5fa;
+}
+
+.vp-doc div[class*='language-markdown'],
+.vp-doc div[class*='language-md'] {
+  border-left: 3px solid #8b5e6b;
+}
+
+/* Code block language label */
+.vp-doc div[class*='language-'] > span.lang {
+  color: #6b7280 !important;
+  font-size: 0.7rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  font-weight: 600;
+}
+
+/* Line numbers */
+.vp-doc div[class*='language-'] .line-numbers-wrapper {
+  border-right: 1px solid rgba(139, 94, 107, 0.12);
+  color: #6b7280;
+}
+
+/* Copy button */
+.vp-doc div[class*='language-'] > button.copy {
+  border: 1px solid rgba(139, 94, 107, 0.20);
+  border-radius: 6px;
+  transition: background 0.2s var(--rd-easing),
+    border-color 0.2s var(--rd-easing),
+    box-shadow 0.2s var(--rd-easing);
+}
+
+.vp-doc div[class*='language-'] > button.copy:hover {
+  border-color: rgba(199, 125, 143, 0.45);
+  box-shadow: 0 0 8px rgba(199, 125, 143, 0.2);
+}
+
+.vp-doc div[class*='language-'] > button.copy.copied {
+  border-color: rgba(94, 234, 212, 0.5);
+  box-shadow: 0 0 8px rgba(94, 234, 212, 0.2);
+}
+
+/* ================================================================
+   12. TABLES -- GLASS HEADER, HOVER ROWS
+   ================================================================ */
+.vp-doc table {
+  border-collapse: separate;
+  border-spacing: 0;
+  width: 100%;
+  margin: 1.5rem 0;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid rgba(139, 94, 107, 0.20);
+}
+
+.vp-doc table th {
+  background: rgba(18, 16, 26, 0.80);
+  font-weight: 700;
+  font-size: 0.78rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #c77d8f;
+  border-bottom: 1px solid rgba(139, 94, 107, 0.25) !important;
+}
+
+.vp-doc table th,
+.vp-doc table td {
+  border: none;
+  border-bottom: 1px solid rgba(139, 94, 107, 0.10);
+  padding: 0.6rem 0.85rem;
+}
+
+.vp-doc table tr:last-child td {
+  border-bottom: none;
+}
+
+.vp-doc table tbody tr {
+  transition: background 0.2s var(--rd-easing);
+}
+
+.vp-doc table tbody tr:hover {
+  background: rgba(199, 125, 143, 0.05);
+}
+
+/* ================================================================
+   13. BLOCKQUOTES
+   ================================================================ */
+.vp-doc blockquote {
+  border-left: 3px solid #8b5e6b;
+  background: rgba(18, 16, 26, 0.50);
+  color: #9ca3af;
+  border-radius: 0 6px 6px 0;
+  padding: 0.75rem 1.25rem;
+  margin: 1rem 0;
+}
+
+.vp-doc blockquote p {
+  color: #9ca3af;
+}
+
+/* ================================================================
+   14. HORIZONTAL RULES
+   ================================================================ */
+.vp-doc hr {
+  border: none;
+  height: 1px;
+  background: linear-gradient(
+    to right,
+    transparent,
+    rgba(139, 94, 107, 0.4),
+    transparent
+  );
+  margin: 2rem 0;
+}
+
+/* ================================================================
+   15. CUSTOM CONTAINERS / CALLOUTS
+   ================================================================ */
+.vp-doc .custom-block {
+  border-radius: 8px;
+  border: 1px solid;
+  backdrop-filter: var(--rd-glass-blur);
+  -webkit-backdrop-filter: var(--rd-glass-blur);
+}
+
+.vp-doc .custom-block.info {
+  background: rgba(96, 165, 250, 0.06);
+  border-color: rgba(96, 165, 250, 0.20);
+}
+
+.vp-doc .custom-block.info .custom-block-title {
+  color: #60a5fa;
+}
+
+.vp-doc .custom-block.tip {
+  background: rgba(94, 234, 212, 0.06);
+  border-color: rgba(94, 234, 212, 0.20);
+}
+
+.vp-doc .custom-block.tip .custom-block-title {
+  color: #5eead4;
+}
+
+.vp-doc .custom-block.warning {
+  background: rgba(251, 191, 36, 0.06);
+  border-color: rgba(251, 191, 36, 0.20);
+}
+
+.vp-doc .custom-block.warning .custom-block-title {
+  color: #fbbf24;
+}
+
+.vp-doc .custom-block.danger {
+  background: rgba(248, 113, 113, 0.06);
+  border-color: rgba(248, 113, 113, 0.20);
+}
+
+.vp-doc .custom-block.danger .custom-block-title {
+  color: #f87171;
+}
+
+.vp-doc .custom-block.details {
+  background: rgba(18, 16, 26, 0.60);
+  border-color: rgba(139, 94, 107, 0.20);
+}
+
+.vp-doc .custom-block .custom-block-title {
+  font-weight: 700;
+  font-size: 0.82rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+/* ================================================================
+   16. HERO SECTION -- GRADIENT + RADIAL OVERLAYS
+   ================================================================ */
+.VPHero {
+  position: relative;
+}
+
+.VPHero::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(
+      ellipse 60% 40% at 30% 60%,
+      rgba(199, 125, 143, 0.08) 0%,
+      transparent 70%
+    ),
+    radial-gradient(
+      ellipse 50% 50% at 70% 30%,
+      rgba(167, 139, 250, 0.05) 0%,
+      transparent 60%
+    );
+  pointer-events: none;
+  z-index: 0;
+}
+
+.VPHero .name {
+  font-weight: 900 !important;
+  letter-spacing: 0.08em;
+}
+
+.VPHero .text {
+  color: #9ca3af !important;
+  font-weight: 400;
+}
+
+.VPHero .tagline {
+  color: #6b7280 !important;
+  font-weight: 300;
+  letter-spacing: 0.02em;
+}
+
+/* ================================================================
+   17. FEATURE CARDS -- GLASS MORPHISM WITH GLOW HOVER
+   ================================================================ */
+.VPFeature {
+  background: var(--rd-glass-bg) !important;
+  backdrop-filter: var(--rd-glass-blur) !important;
+  -webkit-backdrop-filter: var(--rd-glass-blur) !important;
+  border: 1px solid rgba(139, 94, 107, 0.15) !important;
+  border-radius: 12px !important;
+  transition: border-color 0.4s var(--rd-easing),
+    box-shadow 0.4s var(--rd-easing),
+    transform 0.4s var(--rd-easing) !important;
+}
+
+.VPFeature:hover {
+  border-color: rgba(199, 125, 143, 0.40) !important;
+  box-shadow: var(--rd-glow-rose), 0 8px 32px rgba(0, 0, 0, 0.3) !important;
+  transform: translateY(-2px);
+}
+
+.VPFeature .title {
+  font-weight: 700 !important;
+  color: #e8a0b2 !important;
+  letter-spacing: 0.02em;
+}
+
+.VPFeature .details {
+  color: #9ca3af !important;
+}
+
+.VPFeature .link-text {
+  color: #c77d8f !important;
+  transition: color 0.2s var(--rd-easing);
+}
+
+.VPFeature:hover .link-text {
+  color: #ffc0d0 !important;
+}
+
+/* ================================================================
+   18. OUTLINE (TABLE OF CONTENTS)
+   ================================================================ */
+.VPDocAsideOutline {
+  border-left: 1px solid rgba(139, 94, 107, 0.15);
+}
+
+.VPDocAsideOutline .outline-link {
+  color: #6b7280;
+  font-size: 0.8rem;
+  transition: color 0.2s var(--rd-easing);
+}
+
+.VPDocAsideOutline .outline-link:hover {
+  color: #e8a0b2;
+}
+
+.VPDocAsideOutline .outline-link.active {
+  color: #ffc0d0;
+  font-weight: 600;
+}
+
+.VPDocAsideOutline .outline-marker {
+  background-color: #c77d8f !important;
+  box-shadow: 0 0 6px rgba(199, 125, 143, 0.4);
+}
+
+/* ================================================================
+   19. FOOTER -- GLASS
+   ================================================================ */
+.VPFooter {
+  background: var(--rd-glass-bg) !important;
+  backdrop-filter: var(--rd-glass-blur) !important;
+  -webkit-backdrop-filter: var(--rd-glass-blur) !important;
+  border-top: var(--rd-glass-border) !important;
+}
+
+.VPFooter .message {
+  color: #6b7280 !important;
+  font-size: 0.8rem;
+  letter-spacing: 0.04em;
+}
+
+.VPFooter .copyright {
+  color: #6b7280 !important;
+  font-size: 0.75rem;
+}
+
+/* ================================================================
+   20. SEARCH DIALOG -- GLASS
+   ================================================================ */
+.VPLocalSearchBox .shell {
+  background: var(--rd-glass-bg) !important;
+  backdrop-filter: var(--rd-glass-blur) !important;
+  -webkit-backdrop-filter: var(--rd-glass-blur) !important;
+  border: 1px solid rgba(139, 94, 107, 0.25) !important;
+  border-radius: 12px !important;
+  box-shadow: var(--vp-shadow-4) !important;
+}
+
+.VPLocalSearchBox .search-input {
+  color: #e5e7eb !important;
+  caret-color: #c77d8f;
+}
+
+.VPLocalSearchBox .result.selected {
+  background: rgba(199, 125, 143, 0.12) !important;
+  border-color: rgba(199, 125, 143, 0.30) !important;
+}
+
+/* ================================================================
+   21. COLLAPSIBLE DETAILS -- GLASS
+   ================================================================ */
+details {
+  margin: 1rem 0;
+  padding: 0.5rem 1rem;
+  border: 1px solid rgba(139, 94, 107, 0.20);
+  border-radius: 8px;
+  background: rgba(18, 16, 26, 0.50);
+  backdrop-filter: var(--rd-glass-blur);
+  -webkit-backdrop-filter: var(--rd-glass-blur);
+  transition: border-color 0.3s var(--rd-easing);
+}
+
+details:hover {
+  border-color: rgba(199, 125, 143, 0.35);
+}
+
+details summary {
+  cursor: pointer;
+  font-weight: 600;
+  color: #e5e7eb;
+  padding: 0.25rem 0;
+  user-select: none;
+  transition: color 0.2s var(--rd-easing);
+}
+
+details summary:hover {
+  color: #e8a0b2;
+}
+
+details[open] summary {
+  margin-bottom: 0.5rem;
+  border-bottom: 1px solid rgba(139, 94, 107, 0.15);
+  padding-bottom: 0.5rem;
+  color: #c77d8f;
+}
+
+/* ================================================================
+   22. MERMAID DIAGRAMS
+   ================================================================ */
+.mermaid-diagram {
+  display: flex;
+  justify-content: center;
+  margin: 1.5rem 0;
+  padding: 1.25rem;
+  border-radius: 8px;
+  background: rgba(14, 13, 20, 0.80);
+  border: 1px solid rgba(139, 94, 107, 0.15);
+  overflow-x: auto;
+  transition: border-color 0.3s var(--rd-easing);
+}
+
+.mermaid-diagram:hover {
+  border-color: rgba(199, 125, 143, 0.30);
+}
+
+.mermaid-diagram svg {
+  max-width: 100%;
+  height: auto;
+}
+
+/* ================================================================
+   23. INTERACTIVE DIAGRAM WRAPPER
+   ================================================================ */
+.interactive-diagram {
+  position: relative;
+  border: 1px solid rgba(139, 94, 107, 0.20);
+  border-radius: 8px;
+  overflow: hidden;
+  margin: 1.5rem 0;
+  background: rgba(18, 16, 26, 0.60);
+}
+
+.interactive-diagram__toolbar {
+  display: flex;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  background: rgba(14, 13, 20, 0.80);
+  border-bottom: 1px solid rgba(139, 94, 107, 0.15);
+}
+
+.interactive-diagram__toolbar button {
+  padding: 0.25rem 0.5rem;
+  border: 1px solid rgba(139, 94, 107, 0.25);
+  border-radius: 4px;
+  background: rgba(26, 23, 38, 0.60);
+  color: #9ca3af;
+  cursor: pointer;
+  font-size: 0.8rem;
+  font-family: var(--vp-font-family-mono);
+  transition: all 0.2s var(--rd-easing);
+}
+
+.interactive-diagram__toolbar button:hover {
+  background: rgba(199, 125, 143, 0.12);
+  color: #e8a0b2;
+  border-color: rgba(199, 125, 143, 0.40);
+  box-shadow: 0 0 6px rgba(199, 125, 143, 0.15);
+}
+
+.interactive-diagram__viewport {
+  overflow: auto;
+  padding: 1rem;
+  min-height: 200px;
+  cursor: grab;
+}
+
+.interactive-diagram__viewport:active {
+  cursor: grabbing;
+}
+
+/* ================================================================
+   24. CITATION REFERENCES -- VIOLET ACCENT
+   ================================================================ */
+.citation-ref {
+  position: relative;
+  display: inline;
+}
+
+.citation-ref__link {
+  color: #a78bfa;
+  text-decoration: none;
+  cursor: pointer;
+  border-bottom: 1px dotted #a78bfa;
+  font-size: 0.85em;
+  vertical-align: super;
+  line-height: 0;
+  padding: 0 1px;
+  transition: color 0.2s var(--rd-easing), border-color 0.2s var(--rd-easing);
+}
+
+.citation-ref__link:hover {
+  color: #c4b5fd;
+  border-bottom-color: #c4b5fd;
+  text-shadow: 0 0 6px rgba(167, 139, 250, 0.3);
+}
+
+.citation-ref__preview {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%) translateY(4px);
+  z-index: 100;
+  width: 340px;
+  max-width: 90vw;
+  padding: 0.75rem 1rem;
+  background: var(--rd-glass-bg);
+  backdrop-filter: var(--rd-glass-blur);
+  -webkit-backdrop-filter: var(--rd-glass-blur);
+  border: 1px solid rgba(167, 139, 250, 0.25);
+  border-radius: 8px;
+  box-shadow: var(--vp-shadow-3), var(--rd-glow-violet);
+  font-size: 0.85rem;
+  line-height: 1.5;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.2s var(--rd-easing), transform 0.3s var(--rd-easing);
+}
+
+.citation-ref:hover .citation-ref__preview {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateX(-50%) translateY(0);
+}
+
+.citation-ref__preview-title {
+  font-weight: 600;
+  color: #e5e7eb;
+  margin-bottom: 0.25rem;
+}
+
+.citation-ref__preview-authors {
+  color: #9ca3af;
+  font-size: 0.8rem;
+}
+
+.citation-ref__preview-venue {
+  color: #6b7280;
+  font-size: 0.75rem;
+  margin-top: 0.25rem;
+}
+
+/* ================================================================
+   25. CRATE LINKS -- SAPPHIRE ACCENT
+   ================================================================ */
+.crate-link {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.crate-link__anchor {
+  font-family: var(--vp-font-family-mono);
+  font-size: 0.9em;
+  color: #60a5fa;
+  text-decoration: none;
+  padding: 0.1rem 0.4rem;
+  border-radius: 4px;
+  background: rgba(96, 165, 250, 0.10);
+  border: 1px solid rgba(96, 165, 250, 0.15);
+  transition: background 0.2s var(--rd-easing),
+    border-color 0.2s var(--rd-easing),
+    box-shadow 0.2s var(--rd-easing);
+}
+
+.crate-link__anchor:hover {
+  background: rgba(96, 165, 250, 0.18);
+  border-color: rgba(96, 165, 250, 0.35);
+  box-shadow: 0 0 8px rgba(96, 165, 250, 0.15);
+}
+
+.crate-link__tooltip {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 100;
+  white-space: nowrap;
+  padding: 0.35rem 0.6rem;
+  background: var(--rd-glass-bg);
+  backdrop-filter: var(--rd-glass-blur);
+  -webkit-backdrop-filter: var(--rd-glass-blur);
+  border: 1px solid rgba(96, 165, 250, 0.25);
+  border-radius: 6px;
+  box-shadow: var(--vp-shadow-2);
+  font-size: 0.8rem;
+  color: #9ca3af;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.2s var(--rd-easing);
+}
+
+.crate-link:hover .crate-link__tooltip {
+  opacity: 1;
+}
+
+/* ================================================================
+   26. LISTS -- ROSE BULLETS
+   ================================================================ */
+.vp-doc ul {
+  list-style: none;
+  padding-left: 1.25rem;
+}
+
+.vp-doc ul > li::before {
+  content: '\2022';
+  color: #8b5e6b;
+  font-weight: 700;
+  display: inline-block;
+  width: 1em;
+  margin-left: -1em;
+}
+
+.vp-doc ol > li::marker {
+  color: #8b5e6b;
+  font-weight: 600;
+}
+
+/* ================================================================
+   27. BADGES / TAGS
+   ================================================================ */
+.VPBadge {
+  font-family: var(--vp-font-family-mono);
+  font-size: 0.7rem;
+  letter-spacing: 0.04em;
+  font-weight: 600;
+  border-radius: 4px;
+}
+
+.VPBadge.info {
+  background: rgba(96, 165, 250, 0.12);
+  color: #60a5fa;
+  border: 1px solid rgba(96, 165, 250, 0.25);
+}
+
+.VPBadge.tip {
+  background: rgba(94, 234, 212, 0.12);
+  color: #5eead4;
+  border: 1px solid rgba(94, 234, 212, 0.25);
+}
+
+.VPBadge.warning {
+  background: rgba(251, 191, 36, 0.12);
+  color: #fbbf24;
+  border: 1px solid rgba(251, 191, 36, 0.25);
+}
+
+.VPBadge.danger {
+  background: rgba(248, 113, 113, 0.12);
+  color: #f87171;
+  border: 1px solid rgba(248, 113, 113, 0.25);
+}
+
+/* ================================================================
+   28. EDIT LINK & LAST UPDATED
+   ================================================================ */
+.VPDocFooter .edit-link-button {
+  color: #6b7280 !important;
+  transition: color 0.2s var(--rd-easing);
+}
+
+.VPDocFooter .edit-link-button:hover {
+  color: #c77d8f !important;
+}
+
+.VPLastUpdated .prefix {
+  color: #6b7280;
+}
+
+.VPLastUpdated .datetime {
+  color: #8b5e6b;
+  font-weight: 600;
+}
+
+/* ================================================================
+   29. PREV / NEXT PAGE LINKS
+   ================================================================ */
+.pager-link {
+  border: 1px solid rgba(139, 94, 107, 0.20) !important;
+  border-radius: 8px !important;
+  background: rgba(18, 16, 26, 0.50) !important;
+  transition: border-color 0.3s var(--rd-easing),
+    box-shadow 0.3s var(--rd-easing),
+    transform 0.3s var(--rd-easing) !important;
+}
+
+.pager-link:hover {
+  border-color: rgba(199, 125, 143, 0.40) !important;
+  box-shadow: var(--rd-glow-rose) !important;
+  transform: translateY(-1px);
+}
+
+.pager-link .title {
+  color: #e8a0b2 !important;
+  font-weight: 600;
+}
+
+.pager-link .desc {
+  color: #6b7280 !important;
+  font-size: 0.78rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+/* ================================================================
+   30. MOBILE HAMBURGER MENU
+   ================================================================ */
+.VPNavBarHamburger .container span {
+  background-color: #9ca3af !important;
+  transition: background-color 0.2s var(--rd-easing);
+}
+
+.VPNavBarHamburger:hover .container span {
+  background-color: #c77d8f !important;
+}
+
+/* ================================================================
+   31. VITEPRESS OVERRIDES
+   ================================================================ */
+
+/* Hide appearance toggle -- dark-only mode */
+.VPNavBarAppearance,
+.VPSwitchAppearance {
+  display: none !important;
+}
+
+/* Back-to-top button */
+.VPBackToTop button {
+  background: rgba(18, 16, 26, 0.85) !important;
+  border: 1px solid rgba(139, 94, 107, 0.30) !important;
+  color: #c77d8f !important;
+  transition: box-shadow 0.3s var(--rd-easing), border-color 0.3s var(--rd-easing);
+}
+
+.VPBackToTop button:hover {
+  border-color: rgba(199, 125, 143, 0.50) !important;
+  box-shadow: var(--rd-glow-rose) !important;
+}
+
+/* Local nav -- breadcrumb area */
+.VPLocalNav {
+  background: var(--rd-glass-bg) !important;
+  backdrop-filter: var(--rd-glass-blur) !important;
+  -webkit-backdrop-filter: var(--rd-glass-blur) !important;
+  border-bottom: var(--rd-glass-border) !important;
+}
+
+/* ================================================================
+   32. IMAGES
+   ================================================================ */
+.vp-doc img {
+  border-radius: 8px;
+  border: 1px solid rgba(139, 94, 107, 0.15);
+  transition: border-color 0.3s var(--rd-easing), box-shadow 0.3s var(--rd-easing);
+}
+
+.vp-doc img:hover {
+  border-color: rgba(199, 125, 143, 0.35);
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3), var(--rd-glow-rose);
+}
+
+/* ================================================================
+   33. KBD ELEMENTS
+   ================================================================ */
+.vp-doc kbd {
+  background: rgba(18, 16, 26, 0.80);
+  border: 1px solid rgba(139, 94, 107, 0.30);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  padding: 0.1rem 0.4rem;
+  font-family: var(--vp-font-family-mono);
+  font-size: 0.82em;
+  color: #e8a0b2;
+  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.3);
+}
+
+/* ================================================================
+   34. DROPDOWN / FLYOUT MENUS -- GLASS
+   ================================================================ */
+.VPMenu {
+  background: var(--rd-glass-bg) !important;
+  backdrop-filter: var(--rd-glass-blur) !important;
+  -webkit-backdrop-filter: var(--rd-glass-blur) !important;
+  border: 1px solid rgba(139, 94, 107, 0.25) !important;
+  border-radius: 8px !important;
+  box-shadow: var(--vp-shadow-4) !important;
+}
+
+.VPMenu .menu-item {
+  transition: color 0.2s var(--rd-easing), background 0.2s var(--rd-easing);
+}
+
+.VPMenu .menu-item:hover {
+  color: #e8a0b2 !important;
+  background: rgba(199, 125, 143, 0.08) !important;
+}
+
+.VPMenu .menu-item.active {
+  color: #ffc0d0 !important;
+}
+
+.VPFlyout .items {
+  background: var(--rd-glass-bg) !important;
+  backdrop-filter: var(--rd-glass-blur) !important;
+  -webkit-backdrop-filter: var(--rd-glass-blur) !important;
+  border: 1px solid rgba(139, 94, 107, 0.25) !important;
+  border-radius: 8px !important;
+  box-shadow: var(--vp-shadow-4) !important;
+}
+
+.VPFlyout .VPLink:hover {
+  color: #e8a0b2 !important;
+}
+
+/* ================================================================
+   35. PAGE TRANSITION ANIMATION
+   ================================================================ */
+.VPContent .vp-doc {
+  animation: rd-fade-in 0.35s var(--rd-easing);
+}
+
+@keyframes rd-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Focus outlines */
+:focus-visible {
+  outline: 2px solid rgba(199, 125, 143, 0.50);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* ================================================================
+   36. RESPONSIVE TWEAKS
+   ================================================================ */
+@media (max-width: 768px) {
+  .citation-ref__preview {
+    left: 0;
+    transform: none;
+    width: calc(100vw - 2rem);
+  }
+
+  .interactive-diagram__viewport {
+    min-height: 150px;
+  }
+
+  .VPHero::before {
+    display: none;
+  }
+
+  .VPFeature:hover {
+    transform: none;
+  }
+}
+
+@media (max-width: 960px) {
+  .VPSidebar.open {
+    box-shadow: var(--vp-shadow-5) !important;
+  }
+}
+
+/* ================================================================
+   37. PRINT STYLES
+   ================================================================ */
+@media print {
+  .interactive-diagram__toolbar {
+    display: none;
+  }
+
+  .citation-ref__preview {
+    display: none;
+  }
+
+  .VPNav,
+  .VPSidebar,
+  .VPDocAsideOutline,
+  .VPDocFooter {
+    display: none !important;
+  }
+
+  body,
+  html {
+    background: white !important;
+    color: black !important;
+  }
+
+  .vp-doc h1,
+  .vp-doc h2,
+  .vp-doc h3 {
+    color: black !important;
+    background: none !important;
+    -webkit-text-fill-color: black !important;
+  }
+}
+
+/* ================================================================
+   38. UTILITY CLASSES
+   ================================================================ */
+.rd-glow-text {
+  color: #ffc0d0;
+  text-shadow: 0 0 12px rgba(255, 192, 208, 0.35);
+}
+
+.rd-jade {
+  color: #5eead4;
+}
+
+.rd-violet {
+  color: #a78bfa;
+}
+
+.rd-sapphire {
+  color: #60a5fa;
+}
+
+.rd-amber {
+  color: #fbbf24;
+}
+
+.rd-crimson {
+  color: #f87171;
+}
+
+/* Rose-bordered glass panel utility */
+.rd-panel {
+  background: var(--rd-glass-bg);
+  backdrop-filter: var(--rd-glass-blur);
+  -webkit-backdrop-filter: var(--rd-glass-blur);
+  border: 1px solid rgba(139, 94, 107, 0.20);
+  border-radius: 8px;
+  padding: 1rem 1.25rem;
+  margin: 1rem 0;
+  transition: border-color 0.3s var(--rd-easing), box-shadow 0.3s var(--rd-easing);
+}
+
+.rd-panel:hover {
+  border-color: rgba(199, 125, 143, 0.40);
+  box-shadow: var(--rd-glow-rose);
+}

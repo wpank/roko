@@ -1200,7 +1200,7 @@ mod tests {
         .await
         .expect("subscriber should publish without handler-side execution");
         assert_eq!(graduated.tags["plan_id"], "async-plan");
-        assert!(tempdir.path().join(".roko/engrams.jsonl").exists());
+        assert!(tempdir.path().join(".roko/signals.jsonl").exists());
 
         state.cancel.cancel();
         subscriber.await.expect("subscriber join");

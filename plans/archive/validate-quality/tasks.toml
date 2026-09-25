@@ -1,0 +1,67 @@
+[meta]
+plan = "validate-quality"
+total = 3
+done = 0
+status = "ready"
+max_parallel = 3
+skip_enrichment = true
+
+[[task]]
+id = "QLT-T01"
+title = "Verify bounded channels replace unbounded in ACP client"
+description = """Search crates/roko-agent/src/harness/acp_client.rs for 'unbounded_channel'.
+If found, this is a bug. If NOT found, search for 'ACP_NOTIFICATION_CAP' to confirm bounded channels.
+Write result to demo/quality-check/bounded-ok.txt."""
+status = "ready"
+tier = "mechanical"
+max_loc = 2
+model_hint = "cerebras-gptoss"
+files = ["demo/quality-check/bounded-ok.txt"]
+role = "implementer"
+depends_on = []
+max_turns = 5
+
+[[task.verify]]
+phase = "structural"
+command = "grep -qE 'bounded|ACP_NOTIFICATION_CAP' demo/quality-check/bounded-ok.txt"
+fail_msg = "Bounded channels not confirmed"
+
+[[task]]
+id = "QLT-T02"
+title = "Verify CorticalState is wired into dispatch"
+description = """Search crates/roko-cli/src/graph_task_dispatch.rs for 'cortical_state'.
+Confirm it exists as a field and is ticked after dispatch.
+Write result to demo/quality-check/cortical-ok.txt."""
+status = "ready"
+tier = "mechanical"
+max_loc = 2
+model_hint = "cerebras-gptoss"
+files = ["demo/quality-check/cortical-ok.txt"]
+role = "implementer"
+depends_on = []
+max_turns = 5
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'cortical_state' demo/quality-check/cortical-ok.txt"
+fail_msg = "CorticalState not confirmed"
+
+[[task]]
+id = "QLT-T03"
+title = "Verify parse_duration is deduplicated to roko-core"
+description = """Search crates/roko-core/src/duration.rs for 'parse_duration_secs_lenient'.
+Verify it exists as a public function.
+Write result to demo/quality-check/dedup-ok.txt."""
+status = "ready"
+tier = "mechanical"
+max_loc = 2
+model_hint = "cerebras-gptoss"
+files = ["demo/quality-check/dedup-ok.txt"]
+role = "implementer"
+depends_on = []
+max_turns = 5
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'parse_duration_secs_lenient' demo/quality-check/dedup-ok.txt"
+fail_msg = "Dedup not confirmed"

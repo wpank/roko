@@ -146,7 +146,10 @@ impl CliReporter {
     pub fn table_or_json(&self, headers: &[&str], rows: &[Vec<String>]) {
         if self.json {
             let json_val = table_to_json(headers, rows);
-            println!("{}", serde_json::to_string_pretty(&json_val).unwrap_or_default());
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&json_val).unwrap_or_default()
+            );
         } else {
             self.table(headers, rows);
         }
@@ -157,7 +160,10 @@ impl CliReporter {
     /// explicitly when you want JSON output.
     pub fn table_json(&self, headers: &[&str], rows: &[Vec<String>]) {
         let json_val = table_to_json(headers, rows);
-        println!("{}", serde_json::to_string_pretty(&json_val).unwrap_or_default());
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json_val).unwrap_or_default()
+        );
     }
 
     // ── Internal helpers ──────────────────────────────────────────────────────

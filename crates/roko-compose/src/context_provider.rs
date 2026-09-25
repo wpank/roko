@@ -3542,7 +3542,10 @@ mod tests {
 
         let budgets = ContextBudgets::from_retrieval_config_for_role(&retrieval, "unknown-role");
         // No per-role override; global cap = 100000 > all tier defaults.
-        assert_eq!(budgets.surgical, ContextTier::Surgical.default_token_budget());
+        assert_eq!(
+            budgets.surgical,
+            ContextTier::Surgical.default_token_budget()
+        );
         assert_eq!(budgets.focused, ContextTier::Focused.default_token_budget());
         assert_eq!(budgets.full, ContextTier::Full.default_token_budget());
     }

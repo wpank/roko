@@ -1964,12 +1964,10 @@ impl GraphEngine {
                     // the provider.
                     if is_activity
                         && let Some(recorder) = &self.recorder
-                        && let Err(error) = recorder.lock().record(
-                            &graph_name,
-                            node_id,
-                            0,
-                            output_signals.clone(),
-                        )
+                        && let Err(error) =
+                            recorder
+                                .lock()
+                                .record(&graph_name, node_id, 0, output_signals.clone())
                     {
                         return Err(GraphError::NodeFailed {
                             node_id: node_id.clone(),
@@ -2453,9 +2451,7 @@ impl GraphEngine {
                                 {
                                     return Err(GraphError::NodeFailed {
                                         node_id: node_result.node_id.clone(),
-                                        reason: format!(
-                                            "persist Activity checkpoint: {error}"
-                                        ),
+                                        reason: format!("persist Activity checkpoint: {error}"),
                                     });
                                 }
                                 outputs
@@ -5245,9 +5241,7 @@ to = "b"
             let begin = Instant::now();
             tokio::time::sleep(self.delay).await;
             let end = Instant::now();
-            self.intervals
-                .lock()
-                .push((self.id.clone(), begin, end));
+            self.intervals.lock().push((self.id.clone(), begin, end));
             Ok(input)
         }
     }
@@ -5309,7 +5303,11 @@ cell_type = "timed-right"
             .expect("flow output");
 
         assert!(output.success, "both nodes should complete successfully");
-        assert_eq!(output.node_results.len(), 2, "both nodes must appear in results");
+        assert_eq!(
+            output.node_results.len(),
+            2,
+            "both nodes must appear in results"
+        );
         for r in &output.node_results {
             assert_eq!(
                 r.status,

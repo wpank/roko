@@ -1098,7 +1098,10 @@ fn render_know_health(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiState, t
     let cache = &tui_state.knowledge_health_cache;
 
     let block = Block::bordered()
-        .title(Span::styled(" Knowledge Store Health ", theme.section_header()))
+        .title(Span::styled(
+            " Knowledge Store Health ",
+            theme.section_header(),
+        ))
         .border_style(theme.muted());
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -1106,10 +1109,7 @@ fn render_know_health(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiState, t
     if cache.total == 0 {
         let lines = vec![
             Line::from(""),
-            Line::from(Span::styled(
-                "No knowledge entries yet.",
-                theme.muted(),
-            )),
+            Line::from(Span::styled("No knowledge entries yet.", theme.muted())),
             Line::from(""),
             Line::from(Span::styled(
                 "Entries are created as agents complete tasks and gate results are recorded.",
@@ -1148,12 +1148,12 @@ fn render_know_health(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiState, t
         Span::styled("  |  Calibrated: ", theme.label()),
         Span::styled(cache.calibrated.to_string(), theme.value()),
         Span::styled("  |  Avg balance: ", theme.label()),
-        Span::styled(
-            format!("{:.3}", cache.avg_balance),
-            theme.value(),
-        ),
+        Span::styled(format!("{:.3}", cache.avg_balance), theme.value()),
     ]);
-    frame.render_widget(Paragraph::new(vec![Line::from(""), total_line]), rows_layout[0]);
+    frame.render_widget(
+        Paragraph::new(vec![Line::from(""), total_line]),
+        rows_layout[0],
+    );
 
     // -- Tier table --
     let header = Row::new(vec![
@@ -1184,11 +1184,7 @@ fn render_know_health(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiState, t
             };
             let filled = (pct * bar_width as f64).round() as usize;
             let empty = bar_width.saturating_sub(filled);
-            let bar = format!(
-                "{}{}",
-                "\u{2588}".repeat(filled),
-                "\u{2591}".repeat(empty),
-            );
+            let bar = format!("{}{}", "\u{2588}".repeat(filled), "\u{2591}".repeat(empty),);
             Row::new(vec![
                 Cell::from(Span::styled(*label, theme.value())),
                 Cell::from(
@@ -1228,12 +1224,7 @@ fn render_know_health(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiState, t
 /// `per_strategy` maps strategy name → (attempts, passes, avg_latency_ms).
 fn load_retrieval_stats(
     workdir: &std::path::Path,
-) -> (
-    usize,
-    usize,
-    f64,
-    HashMap<String, (usize, usize, f64)>,
-) {
+) -> (usize, usize, f64, HashMap<String, (usize, usize, f64)>) {
     let path = workdir
         .join(".roko")
         .join("learn")
@@ -1250,7 +1241,9 @@ fn load_retrieval_stats(
     let mut per_strategy: HashMap<String, (usize, usize, f64)> = HashMap::new();
 
     for line in text.lines() {
-        let Ok(rec) = serde_json::from_str::<roko_learn::retrieval_outcome::RetrievalOutcomeRecord>(line) else {
+        let Ok(rec) =
+            serde_json::from_str::<roko_learn::retrieval_outcome::RetrievalOutcomeRecord>(line)
+        else {
             continue;
         };
         // Only count settled records (gate_passed is Some).
@@ -1287,11 +1280,13 @@ fn load_retrieval_stats(
 }
 
 fn render_rag_stats(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiState, theme: &Theme) {
-    let (total, passed, avg_latency_ms, per_strategy) =
-        load_retrieval_stats(&tui_state.workdir);
+    let (total, passed, avg_latency_ms, per_strategy) = load_retrieval_stats(&tui_state.workdir);
 
     let block = Block::bordered()
-        .title(Span::styled(" RAG Retrieval Stats ", theme.section_header()))
+        .title(Span::styled(
+            " RAG Retrieval Stats ",
+            theme.section_header(),
+        ))
         .border_style(theme.muted());
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -1350,9 +1345,7 @@ fn render_rag_stats(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiState, the
             Span::styled("  Precision: ", theme.label()),
             Span::styled(
                 format!("{precision:.1}%"),
-                Style::default()
-                    .fg(prec_color)
-                    .add_modifier(Modifier::BOLD),
+                Style::default().fg(prec_color).add_modifier(Modifier::BOLD),
             ),
             Span::styled("  |  Miss rate: ", theme.label()),
             Span::styled(format!("{miss_rate:.1}%"), theme.value()),
@@ -1389,7 +1382,7 @@ fn render_rag_stats(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiState, the
     .style(Style::default().add_modifier(Modifier::BOLD));
 
     let mut sorted: Vec<_> = per_strategy.iter().collect();
-    sorted.sort_by(|a, b| b.1 .0.cmp(&a.1 .0));
+    sorted.sort_by(|a, b| b.1.0.cmp(&a.1.0));
 
     let rows: Vec<Row> = sorted
         .iter()
@@ -1457,7 +1450,10 @@ fn render_rag_stats(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiState, the
     .header(header)
     .block(
         Block::bordered()
-            .title(Span::styled(" Per-Strategy Breakdown ", theme.section_header()))
+            .title(Span::styled(
+                " Per-Strategy Breakdown ",
+                theme.section_header(),
+            ))
             .border_style(theme.muted()),
     );
 
@@ -1477,9 +1473,7 @@ struct RagArmStats {
     latency_count: usize,
 }
 
-fn load_rag_experiment_arms(
-    workdir: &std::path::Path,
-) -> Vec<RagArmStats> {
+fn load_rag_experiment_arms(workdir: &std::path::Path) -> Vec<RagArmStats> {
     let path = workdir
         .join(".roko")
         .join("learn")
@@ -1492,7 +1486,9 @@ fn load_rag_experiment_arms(
     let mut per_arm: HashMap<String, RagArmStats> = HashMap::new();
 
     for line in text.lines() {
-        let Ok(rec) = serde_json::from_str::<roko_learn::retrieval_outcome::RetrievalOutcomeRecord>(line) else {
+        let Ok(rec) =
+            serde_json::from_str::<roko_learn::retrieval_outcome::RetrievalOutcomeRecord>(line)
+        else {
             continue;
         };
         // Only settled records.
@@ -1527,16 +1523,14 @@ fn load_rag_experiment_arms(
     arms
 }
 
-fn render_rag_experiments(
-    frame: &mut Frame<'_>,
-    area: Rect,
-    tui_state: &TuiState,
-    theme: &Theme,
-) {
+fn render_rag_experiments(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiState, theme: &Theme) {
     let arms = load_rag_experiment_arms(&tui_state.workdir);
 
     let block = Block::bordered()
-        .title(Span::styled(" RAG Strategy Experiments ", theme.section_header()))
+        .title(Span::styled(
+            " RAG Strategy Experiments ",
+            theme.section_header(),
+        ))
         .border_style(theme.muted());
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -1623,10 +1617,7 @@ fn render_rag_experiments(
             };
 
             Row::new(vec![
-                Cell::from(Span::styled(
-                    truncate_str(&arm.arm, 28),
-                    theme.value(),
-                )),
+                Cell::from(Span::styled(truncate_str(&arm.arm, 28), theme.value())),
                 Cell::from(
                     Line::from(Span::styled(arm.attempts.to_string(), theme.value()))
                         .alignment(Alignment::Right),

@@ -1,0 +1,441 @@
+[meta]
+plan = "04-backend-plan-authoring"
+total = 9
+done = 0
+status = "ready"
+max_parallel = 1
+skip_enrichment = true
+estimated_total_minutes = 185
+
+# Make plan authoring work from the API.
+#
+# Generating a plan from a prompt returns 400 "missing field slug" because the
+# request type has no prompt field and looks up a PRD instead. Saving tasks returns
+# 405 because only a GET is registered on that path although the portal editor has
+# always called PUT. There is no validate endpoint at all.
+#
+# This plan delivers the "generate" half of the flow that defines success:
+# type a sentence, get a plan.
+# See tmp/portal-audit/03-CONTRACT.md section 2.2 and 2.4.
+
+[[task]]
+id = "T01"
+title = "Accept either a prompt or a slug when generating a plan"
+description = """
+Widen the generate request type in `crates/roko-serve/src/routes/plans.rs` so the
+portal can generate a plan from free text.
+
+Today the request struct has a single required slug field with no serde default, so
+any body without it fails deserialization and becomes a 400 before the handler runs.
+That is exactly what the portal's Develop and Run Prompt dialogs hit.
+
+Make both fields optional and validate that exactly one is present, returning a 422
+with a clear message when both or neither are supplied. Keep the existing non-blank
+validation on the slug when it is the one provided.
+
+Do not change the handler body in this task. T02 rewrites the dispatch. Keeping the
+type change separate means a failure here is unambiguous.
+"""
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 20
+depends_on = []
+files = ["crates/roko-serve/src/routes/plans.rs"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-serve/src/routes/plans.rs", why = "the generate request struct and its validation attributes" },
+    { path = "crates/roko-serve/src/extract.rs", why = "how deserialization failures become 400 and how validation failures become 422" },
+]
+anti_patterns = [
+    "Do not leave the slug field required. That is the defect.",
+    "Do not accept both fields at once without an error. Ambiguous input should be rejected.",
+]
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-serve"
+fail_msg = "roko-serve does not compile after widening the generate request"
+
+[[task]]
+id = "T02"
+title = "Dispatch plan generation through the plan generator service"
+description = """
+Rewrite the generate handler in `crates/roko-serve/src/routes/plans.rs` to use the
+shared plan generator instead of firing a raw one-shot prompt.
+
+Today, after finding the PRD, the handler calls the runtime's generic one-shot prompt
+method with a hand-built instruction string. It does **not** call the runtime's PRD
+plan generation method, which exists and which the job runner in this same crate
+already uses correctly.
+
+The shared contract in crates/roko-execution/src/plan_generator.rs already models
+both inputs: its plan source enum has a PRD variant and a prompt variant. Its adapter
+key constants even name this handler as the intended call site, with a comment
+pointing at this file and function.
+
+Build a generator request whose source is the prompt variant when a prompt was given
+and the PRD variant when a slug was given, tag it with the HTTP adapter key, and
+dispatch it through the generator. Keep the existing accepted-with-operation-handle
+response shape and the operation completed event.
+
+The generated plan must land in the top-level plans directory as a plan directory
+containing a tasks file, so the discovery path from the backend-plan-service plan can
+see it. Verify that, do not assume it.
+"""
+status = "ready"
+role = "implementer"
+tier = "architectural"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 35
+depends_on = ["T01"]
+files = ["crates/roko-serve/src/routes/plans.rs"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-serve/src/routes/plans.rs", why = "the generate handler, its one-shot dispatch and its operation handle response" },
+    { path = "crates/roko-execution/src/plan_generator.rs", why = "the plan source variants, the request type and the adapter key naming this handler" },
+    { path = "crates/roko-cli/src/plan_generator.rs", why = "the canonical generator implementation that will run" },
+    { path = "crates/roko-serve/src/job_runner.rs", why = "an existing correct call into the runtime plan generation method" },
+]
+anti_patterns = [
+    "Do not keep the hand-built one-shot prompt. The generator service exists for this.",
+    "Do not write the generated plan into the dotted roko plans directory. Discovery reads the top-level one first.",
+    "Do not change the response shape. The portal reads an accepted response with an operation id.",
+]
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-serve"
+fail_msg = "roko-serve does not compile after rewiring plan generation"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'plan_generator\\|PlanSource\\|PlanGenerator' crates/roko-serve/src/routes/plans.rs"
+fail_msg = "the generate handler does not dispatch through the plan generator service"
+
+[[task]]
+id = "T03"
+title = "Report plan generation progress and completion"
+description = """
+Generation takes tens of seconds. The portal needs to show progress rather than a
+frozen dialog, and it needs to know the slug of what was produced.
+
+In `crates/roko-serve/src/routes/plans.rs`, make the generate operation emit
+lifecycle events on the dashboard stream: started when the operation is registered,
+and completed carrying the resulting plan slug when the generator returns.
+
+The completion event carrying the slug is the important one. Without it the portal
+has to poll the plan list and diff it to guess what was just created, which is both
+racy and ugly.
+
+If no existing event variant carries an operation result with an identifier, use the
+most specific one that does and say in the task output which fields you had to
+overload. Do not add a new variant in this task.
+"""
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 20
+depends_on = ["T02"]
+files = ["crates/roko-serve/src/routes/plans.rs"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-serve/src/routes/plans.rs", why = "the generate handler and its existing operation completed emission" },
+    { path = "crates/roko-serve/src/events.rs", why = "the server event variants available, including operation lifecycle" },
+    { path = "crates/roko-serve/src/lib.rs", why = "the bridge to dashboard events and which fields it preserves" },
+]
+anti_patterns = [
+    "Do not make the portal diff the plan list to discover the new slug. Emit it.",
+    "Do not add a new event variant in this task.",
+]
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-serve"
+fail_msg = "roko-serve does not compile after adding generation lifecycle events"
+
+[[task]]
+id = "T04"
+title = "Register the plan task write route"
+description = """
+Register `PUT /api/plans/{id}/tasks` in `crates/roko-serve/src/routes/plans.rs`.
+
+The route table currently registers only a GET on this path, so every save from the
+portal's plan editor has returned 405. The portal has had the client code for this
+the whole time.
+
+Accept a body containing a tasks array in the same shape the GET returns, and respond
+with the plan id and the number of tasks written.
+
+This task registers the route and defines the request and response types. T05
+implements the write itself. Keeping them apart means a routing failure and a write
+failure are distinguishable.
+"""
+status = "ready"
+role = "implementer"
+tier = "mechanical"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 15
+depends_on = ["T03"]
+files = ["crates/roko-serve/src/routes/plans.rs"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-serve/src/routes/plans.rs", why = "the route table showing only a get on the tasks path" },
+    { path = "crates/roko-serve/src/plan_types.rs", why = "the task transport type the request body mirrors" },
+    { path = "crates/roko-serve/src/routes/mod.rs", why = "how route permissions map to path prefixes" },
+]
+anti_patterns = [
+    "Do not change the shape the GET returns. Round-tripping must work.",
+]
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-serve"
+fail_msg = "roko-serve does not compile after registering the tasks write route"
+
+[[task]]
+id = "T05"
+title = "Implement the plan task write through the runtime"
+description = """
+Implement the write behind the route from T04.
+
+Add a write method to the runtime trait in crates/roko-serve/src/runtime.rs, matching
+the style of the read methods, and implement it in
+crates/roko-cli/src/serve_runtime.rs using the task parser's existing mutation and
+write functions rather than serializing TOML by hand.
+
+The parser owns the file format, including the ordering rule that scalar keys precede
+the nested context table and the verify tables. Hand-written TOML gets that wrong and
+produces files the parser then rejects.
+
+Requirements:
+
+  - Validate before writing. A request that would produce an invalid plan must be
+    rejected with 422 and the rule ids, not written and then discovered broken.
+  - Recount the meta totals after mutation so the task count stays consistent.
+  - Write atomically: write a temporary file and rename, so an interrupted save
+    cannot truncate a plan.
+"""
+status = "ready"
+role = "implementer"
+tier = "integrative"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 30
+depends_on = ["T04"]
+files = ["crates/roko-cli/src/serve_runtime.rs", "crates/roko-serve/src/runtime.rs"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/task_parser.rs", why = "the mutation, recount and write functions, and the key ordering rule the format requires" },
+    { path = "crates/roko-cli/src/serve_runtime.rs", why = "the impl block to extend, matching the read method style" },
+    { path = "crates/roko-serve/src/runtime.rs", why = "the trait to widen" },
+    { path = "crates/roko-serve/src/plan_types.rs", why = "the transport type being written from" },
+]
+anti_patterns = [
+    "Do not serialize TOML by hand. The parser owns the format and its key ordering rules.",
+    "Do not write first and validate afterwards. Reject invalid input before touching the file.",
+    "Do not write in place without a temporary file and rename.",
+]
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli && cargo check -p roko-serve"
+fail_msg = "the workspace does not compile after implementing the tasks write"
+
+[[task]]
+id = "T06"
+title = "Add a plan validation endpoint"
+description = """
+Add `POST /api/plans/{id}/validate` so the portal can show live validation while a
+plan is being edited.
+
+Run the same checks the command-line validator runs and return every diagnostic with
+its severity, rule id, task id and message. The portal renders these inline on the
+offending field, so the task id matters as much as the message.
+
+Return 200 with the diagnostic list even when there are errors. A plan being invalid
+is a normal editing state, not an HTTP failure. Reserve non-200 for the plan not
+existing or the request being malformed.
+
+Include a summary count of errors and warnings alongside the list so the portal can
+render the status badge without walking the array.
+"""
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 25
+depends_on = ["T05"]
+files = ["crates/roko-serve/src/routes/plans.rs"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/plan_validate.rs", why = "the diagnostic shape, the severity levels and the rule ids to surface" },
+    { path = "crates/roko-serve/src/routes/plans.rs", why = "the route table and the handler style in this module" },
+    { path = "crates/roko-serve/src/runtime.rs", why = "the trait to widen with a validate method" },
+]
+anti_patterns = [
+    "Do not return a non-200 status when the plan is merely invalid. Invalid is a normal editing state.",
+    "Do not drop the task id from diagnostics. The portal anchors errors to fields with it.",
+]
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-serve"
+fail_msg = "roko-serve does not compile after adding the validate endpoint"
+
+[[task]]
+id = "T07"
+title = "Test the authoring round trip"
+description = """
+Add `crates/roko-serve/tests/plan_authoring.rs` covering read, write and validate.
+
+Assert, through the router against a temporary workspace:
+
+  1. Reading a plan's tasks, writing the same body back unchanged, and reading again
+     yields the same tasks. A round trip must be lossless; this is the test that
+     catches hand-rolled TOML serialization.
+  2. Writing a modified task, such as a changed title or an added dependency,
+     persists and reads back with the change.
+  3. Writing a body whose dependency references a task id that does not exist is
+     rejected with 422 and the plan file on disk is unchanged.
+  4. Validating a plan with a broken dependency returns 200 with an error diagnostic
+     naming the offending task.
+  5. Generating with neither a prompt nor a slug returns 422; with both, 422.
+
+Point four's assertion that the file is unchanged is the important one. Validate
+before write means a rejected save must leave no trace.
+"""
+status = "ready"
+role = "implementer"
+tier = "integrative"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 30
+depends_on = ["T06"]
+files = ["crates/roko-serve/tests/plan_authoring.rs"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-serve/src/routes/plans.rs", why = "the handlers under test and their status codes" },
+    { path = "crates/roko-serve/src/plan_types.rs", why = "the request and response shapes the assertions build" },
+    { path = "plans/demo-hello/tasks.toml", why = "a minimal valid tasks file to model the fixture on" },
+]
+anti_patterns = [
+    "Do not skip the lossless round trip assertion. It is the one that catches format bugs.",
+    "Do not let a rejected write leave a modified file.",
+]
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-serve --test plan_authoring"
+fail_msg = "the plan authoring round trip test does not pass"
+
+[[task]]
+id = "T08"
+title = "Make generation produce a plan that immediately runs"
+description = """
+Close the loop between this plan and the two before it: a generated plan must be
+runnable without hand editing.
+
+Generated plans are frequently rejected by the run path even when they lint clean,
+because the runtime enforces context file existence more strictly than the linter
+does. A generated plan that references a file that does not exist yet, and is not
+produced by a declared dependency, will lint with a warning but hard fail at run.
+
+Make the generation path validate its own output against the run path's rules before
+reporting success, and when the output fails, repair the common cases rather than
+emitting a broken plan: drop context read files that do not exist and are not
+produced by a dependency, and ensure every implementer task has at least one verify
+step and a non-empty output file list.
+
+If repair cannot make the plan valid, report the operation as failed with the
+diagnostics, rather than reporting success and leaving an unrunnable plan on disk.
+"""
+status = "ready"
+role = "implementer"
+tier = "integrative"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 30
+depends_on = ["T07"]
+files = ["crates/roko-cli/src/plan_generator.rs"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/plan_generator.rs", why = "the generator implementation and its existing repair layer" },
+    { path = "crates/roko-cli/src/plan_validate.rs", why = "the linter rules and which ones the run path treats as fatal" },
+    { path = "crates/roko-cli/src/runner/plan_loader.rs", why = "the run path context checks that hard fail where the linter only warns" },
+    { path = "crates/roko-cli/src/task_parser.rs", why = "the schema rules for implementer tasks needing verify steps and output files" },
+]
+anti_patterns = [
+    "Do not report generation success when the produced plan cannot run.",
+    "Do not relax the run path checks to make generated plans pass. Fix the generator output.",
+]
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli"
+fail_msg = "roko-cli does not compile after tightening generation output validation"
+
+[[task]]
+id = "T09"
+title = "Verify generate to run end to end and record the result"
+description = """
+Prove the sentence-to-running-plan path works, and write the result to
+`plans/portal-programme/04-backend-plan-authoring/REVIEW.md`.
+
+Run this exact sequence against a live server, using the API only, never the CLI:
+
+  1. Generate a plan from the prompt: a rust app that prints hello world.
+  2. Record the returned operation id and the slug from the completion event.
+  3. Confirm a plan directory with that slug now exists with a tasks file.
+  4. Confirm the plan appears in the plan listing.
+  5. Read its tasks and record them.
+  6. Validate it and record the diagnostics.
+  7. Execute it.
+  8. Confirm a rust source file was created and that it prints the expected text when
+     built and run.
+
+Step eight is the acceptance test for this whole programme. A generated plan that
+executes but produces nothing has not worked.
+
+Record each step's actual result. If the sequence breaks, record exactly which step
+broke and the error, and do not describe the plan as complete.
+"""
+status = "ready"
+role = "implementer"
+tier = "integrative"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 30
+depends_on = ["T08"]
+files = ["plans/portal-programme/04-backend-plan-authoring/REVIEW.md"]
+
+[task.context]
+read_files = [
+    { path = "tmp/portal-audit/00-README.md", why = "the hello world test that defines done for this programme" },
+    { path = "tmp/portal-audit/03-CONTRACT.md", why = "the endpoint contract each step exercises" },
+    { path = "crates/roko-serve/src/routes/plans.rs", why = "the handlers being exercised" },
+]
+anti_patterns = [
+    "Do not use the CLI for any step. The point is that the API path works.",
+    "Do not report success without building and running the generated program.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "test -f plans/portal-programme/04-backend-plan-authoring/REVIEW.md && grep -qi 'hello world' plans/portal-programme/04-backend-plan-authoring/REVIEW.md"
+fail_msg = "REVIEW.md is missing or does not record the hello world end to end attempt"

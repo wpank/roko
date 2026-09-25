@@ -1,0 +1,638 @@
+[meta]
+plan = "05-portal-foundation"
+total = 12
+done = 0
+status = "ready"
+max_parallel = 1
+skip_enrichment = true
+estimated_total_minutes = 260
+
+# Strip the portal to its working core and give it a foundation.
+#
+# The portal is 32,437 lines across 119 files and 34 routes, with three parallel
+# navigation systems. About 6,000 lines are unreachable from any route, eleven pages
+# render invented data, and the store's gap recovery silently wipes seven state
+# slices because it reads camelCase keys the server has never sent.
+#
+# This plan deletes what is dead, fixes what is load bearing, and establishes the
+# primitives the new single-screen design needs. It creates no new screens.
+# See tmp/portal-audit/01-FINDINGS.md part C and 05-INVENTORY.md.
+
+[[task]]
+id = "T01"
+title = "Delete the unreachable API layer"
+description = """
+Remove roughly 3,600 lines of API code in `apps/portal/src` that no route can reach.
+
+Delete these files:
+
+  src/api/safe-api.ts      1404 lines, imported only by safe-hooks.ts
+  src/api/safe-hooks.ts     472 lines, zero importers anywhere
+  src/api/ws-client.ts      348 lines, imported only by useWebSocket.ts
+  src/hooks/useWebSocket.ts 226 lines, zero importers anywhere
+  src/api/query-provider.tsx     zero importers; providers.tsx hand-rolls its own
+
+The defensive safe-api layer is worth understanding before deleting it: its own
+header declares the rule that no component should import the raw hooks module, and
+every single page violates that rule. The layer was written, never adopted, and left
+to rot. The new foundation replaces it with typed wire contracts, in T03.
+
+Do **not** delete src/api/contracts.ts. It has zero importers today but it is the
+only file in the tree with correct wire shapes, and T03 adopts it.
+
+After deleting, run the type checker and remove any import left dangling.
+"""
+status = "ready"
+role = "implementer"
+tier = "mechanical"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 20
+depends_on = []
+files = [
+    "apps/portal/src/api/safe-api.ts",
+    "apps/portal/src/api/safe-hooks.ts",
+    "apps/portal/src/api/ws-client.ts",
+    "apps/portal/src/hooks/useWebSocket.ts",
+    "apps/portal/src/api/query-provider.tsx",
+]
+
+[task.context]
+read_files = [
+    { path = "apps/portal/src/api/client.ts", why = "the surviving HTTP client; confirm nothing being deleted is needed by it" },
+    { path = "apps/portal/src/api/contracts.ts", why = "the file that must be kept, holding the correct wire shapes" },
+    { path = "apps/portal/src/app/providers.tsx", why = "the hand-rolled query client that makes query-provider redundant" },
+]
+anti_patterns = [
+    "Do not delete contracts.ts. It has no importers yet but is adopted in T03.",
+    "Do not delete client.ts or sse-client.ts. Both are load bearing and well built.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "test ! -f apps/portal/src/api/safe-api.ts && test ! -f apps/portal/src/api/safe-hooks.ts && test ! -f apps/portal/src/api/ws-client.ts && test ! -f apps/portal/src/hooks/useWebSocket.ts && test -f apps/portal/src/api/contracts.ts"
+fail_msg = "the unreachable API files were not removed, or contracts.ts was removed by mistake"
+
+[[task]]
+id = "T02"
+title = "Delete the route sprawl and its navigation"
+description = """
+Remove the 33 routes that are not the workspace screen, and the three navigation
+systems that addressed them.
+
+Delete these route directories under `apps/portal/src/app`: work, agents,
+intelligence, observe, providers, settings, design. That is 33 page files, six
+section layouts and about 18,000 lines. Keep src/app/page.tsx, src/app/layout.tsx,
+src/app/providers.tsx and src/app/api/git-info/route.ts.
+
+Delete these navigation components under src/components: layout/Sidebar.tsx,
+layout/SubNav.tsx, layout/Header.tsx, layout/AppShell.tsx, the whole
+command-palette directory, the whole atmosphere directory and the whole terminal
+directory.
+
+Delete these stores: src/stores/agents.ts and src/stores/intelligence.ts. The
+intelligence store is fed by nothing — its only event handler caller is a synthetic
+snapshot built from a REST response, and its case arms read camelCase keys the
+server never sends.
+
+Eleven of the deleted pages rendered invented data. Three settings pages were
+entirely hardcoded, one of them a permanently empty array. Nothing of value is lost.
+
+Leave src/app/page.tsx importing nothing but a placeholder for now; the shell arrives
+in the portal-shell plan. The build must pass at the end of this task.
+"""
+status = "ready"
+role = "implementer"
+tier = "mechanical"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 25
+depends_on = ["T01"]
+files = [
+    "apps/portal/src/app/page.tsx",
+    "apps/portal/src/app/layout.tsx",
+    "apps/portal/src/components/layout/Sidebar.tsx",
+    "apps/portal/src/components/layout/SubNav.tsx",
+    "apps/portal/src/components/layout/Header.tsx",
+    "apps/portal/src/components/layout/AppShell.tsx",
+    "apps/portal/src/stores/agents.ts",
+    "apps/portal/src/stores/intelligence.ts",
+]
+
+[task.context]
+read_files = [
+    { path = "apps/portal/src/app/page.tsx", why = "the one surviving route, reduced to a placeholder here" },
+    { path = "apps/portal/src/app/layout.tsx", why = "the root layout, which must stop importing the deleted app shell" },
+    { path = "apps/portal/src/app/providers.tsx", why = "the provider tree that must keep mounting the SSE client" },
+    { path = "tmp/portal-audit/05-INVENTORY.md", why = "the authoritative keep and delete ledger for every file" },
+]
+anti_patterns = [
+    "Do not delete src/app/providers.tsx. It mounts the SSE client that everything depends on.",
+    "Do not delete the atoms directory. Those components survive.",
+    "Do not leave the build broken at the end of this task.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "test ! -d apps/portal/src/app/work && test ! -d apps/portal/src/app/agents && test ! -d apps/portal/src/app/intelligence && test ! -d apps/portal/src/app/observe && test ! -d apps/portal/src/app/settings && test ! -d apps/portal/src/components/command-palette && test -f apps/portal/src/app/providers.tsx"
+fail_msg = "the route sprawl was not removed, or a surviving file was deleted by mistake"
+
+[[task]]
+id = "T03"
+title = "Adopt the wire contracts as the single source of type truth"
+description = """
+Make `apps/portal/src/api/contracts.ts` the type authority for everything crossing
+the network, and retire the aspirational types.
+
+The portal has two type systems for the same data. src/api/types.ts is camelCase
+throughout; the wire is snake_case throughout, because the server's dashboard event
+enum is tagged with snake_case renaming. So types.ts describes something that has
+never existed. contracts.ts, which nothing imports, has the correct shapes, captured
+from a live server.
+
+Restructure so that:
+
+  - contracts.ts holds only wire types, named for what they are, snake_case fields.
+  - A new mapping module at exactly `apps/portal/src/api/map.ts` converts wire types
+    to the view types the components use, at exactly one boundary. Use that exact
+    filename. Conversion happens on the way in, once.
+  - types.ts keeps only view types, with every wire-shaped type removed.
+
+This is not cosmetic. The next task fixes a bug caused directly by this confusion.
+"""
+status = "ready"
+role = "implementer"
+tier = "integrative"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 30
+depends_on = ["T02"]
+files = ["apps/portal/src/api/contracts.ts", "apps/portal/src/api/types.ts", "apps/portal/src/api/map.ts"]
+
+[task.context]
+read_files = [
+    { path = "apps/portal/src/api/contracts.ts", why = "the correct wire shapes being adopted" },
+    { path = "apps/portal/src/api/types.ts", why = "the camelCase view types being separated out" },
+    { path = "crates/roko-core/src/dashboard_snapshot.rs", why = "the authoritative server-side event and snapshot definitions and their snake_case renaming" },
+    { path = "crates/roko-serve/src/plan_types.rs", why = "the plan transport shapes the backend plans introduce" },
+]
+anti_patterns = [
+    "Do not convert wire shapes inside components. Convert once, at the boundary.",
+    "Do not keep camelCase wire types. They describe a server that does not exist.",
+]
+
+[[task.verify]]
+phase = "compile"
+command = "cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && ./node_modules/.bin/tsc --noEmit"
+fail_msg = "the portal does not type check after adopting wire contracts"
+timeout_ms = 600000
+
+[[task]]
+id = "T04"
+title = "Fix the snapshot replacement that wipes live state"
+description = """
+Fix a real data-loss bug in `apps/portal/src/stores/dashboard.ts`.
+
+The snapshot replacement function reads camelCase keys for recent gates, recent
+episodes, recent errors, inbox items, vitals, providers and learning. The server's
+snapshot struct has **none of those names** — it uses snake_case, its inbox is a map
+rather than an array, and it has no vitals, providers or learning field at all.
+
+The consequence: every gap frame resets seven state slices to their defaults and also
+wipes the activity feed. Gap frames arrive whenever the client falls behind the
+server's replay ring, which is exactly when losing state hurts most.
+
+Rewrite the function against the real snapshot shape, using the wire types from T03.
+For fields the snapshot genuinely does not carry, preserve the existing local value
+rather than resetting it — dropping to a default is strictly worse than keeping a
+slightly stale value.
+
+Add a unit test that feeds a realistic server snapshot and asserts no slice is reset
+to its default.
+"""
+status = "ready"
+role = "implementer"
+tier = "integrative"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 25
+depends_on = ["T03"]
+files = ["apps/portal/src/stores/dashboard.ts"]
+
+[task.context]
+read_files = [
+    { path = "apps/portal/src/stores/dashboard.ts", why = "the snapshot replacement function and every state slice it resets" },
+    { path = "crates/roko-core/src/dashboard_snapshot.rs", why = "the real snapshot field names, including the inbox being a map" },
+    { path = "apps/portal/src/api/contracts.ts", why = "the wire types to read the snapshot through" },
+]
+anti_patterns = [
+    "Do not reset a slice to its default because the snapshot lacks the field. Preserve the local value.",
+    "Do not keep reading camelCase keys from the snapshot.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'inbox_items\\|recent_gates\\|snake' apps/portal/src/stores/dashboard.ts"
+fail_msg = "the snapshot replacement still reads camelCase keys the server never sends"
+
+[[task]]
+id = "T05"
+title = "Persist the event cursor so reloads do not replay from zero"
+description = """
+Fix the companion bug to T04 in `apps/portal/src/stores/dashboard.ts` and
+`apps/portal/src/api/sse-client.ts`.
+
+The store declares a last event id field and **nothing ever writes it**. The SSE
+client tracks the cursor correctly in its own instance, but that lives only in
+memory, so a page reload replays from sequence zero and the client re-folds the
+entire ring.
+
+Write the cursor into the store as events arrive, and persist it so a reload resumes
+from where it left off. Restore it when the client connects.
+
+The server already supports this fully: it honours the standard last event id header,
+a query parameter alias, and a numeric parameter, in that precedence. The client
+already sends the query parameter. Only the persistence is missing.
+
+Be careful to discard a persisted cursor that the server reports as out of range,
+rather than looping on a replay that can never succeed. The server signals this with
+a gap frame.
+"""
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 20
+depends_on = ["T04"]
+files = ["apps/portal/src/stores/dashboard.ts", "apps/portal/src/api/sse-client.ts"]
+
+[task.context]
+read_files = [
+    { path = "apps/portal/src/stores/dashboard.ts", why = "the last event id field that is never written" },
+    { path = "apps/portal/src/api/sse-client.ts", why = "the cursor tracking, the replay parameter and the gap frame handling" },
+    { path = "crates/roko-serve/src/routes/sse.rs", why = "the cursor precedence rules and when the server sends a gap frame" },
+]
+anti_patterns = [
+    "Do not retry indefinitely on a cursor the server cannot serve. Fall back to a fresh bootstrap.",
+]
+
+[[task.verify]]
+phase = "compile"
+command = "cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && ./node_modules/.bin/tsc --noEmit"
+fail_msg = "the portal does not type check after persisting the event cursor"
+timeout_ms = 600000
+
+[[task]]
+id = "T06"
+title = "Handle the dashboard events that are currently dropped"
+description = """
+Make the store consume the events it silently discards, in
+`apps/portal/src/stores/dashboard.ts`.
+
+Seven event types reach the client and go nowhere. One is a bare fall-through case
+with no body; six more are explicit no-ops. Among them are the efficiency events that
+carry token counts and cost, and the task output events that carry transcript lines —
+the exact data the run view needs.
+
+Add real handlers for: the efficiency event, folding its metric into per-agent and
+per-task token and cost totals; the event log entry, appending to the activity feed;
+the task output appended event; and the episode recorded event, which is why the
+recent episodes list is never populated by anything.
+
+For the events that genuinely do not belong in this store, such as the dream phase
+events, delete the case rather than leaving an empty body. An empty case reads as
+handled; an absent case reads as out of scope, which is the truth.
+
+The backend-live-events plan makes the efficiency events actually fire. Handle them
+now so the two halves meet.
+"""
+status = "ready"
+role = "implementer"
+tier = "integrative"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 30
+depends_on = ["T05"]
+files = ["apps/portal/src/stores/dashboard.ts"]
+
+[task.context]
+read_files = [
+    { path = "apps/portal/src/stores/dashboard.ts", why = "the dropped cases and the state slices the new handlers write into" },
+    { path = "crates/roko-core/src/dashboard_snapshot.rs", why = "the event field names and the metric strings the efficiency event carries" },
+    { path = "apps/portal/src/api/contracts.ts", why = "the wire types for the events being handled" },
+]
+anti_patterns = [
+    "Do not leave an empty case body. Handle it or delete the case.",
+    "Do not invent metric names. Use the ones the server emits.",
+]
+
+[[task.verify]]
+phase = "compile"
+command = "cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && ./node_modules/.bin/tsc --noEmit"
+fail_msg = "the portal does not type check after handling the dropped events"
+timeout_ms = 600000
+
+[[task]]
+id = "T07"
+title = "Reduce the data hooks to the ten endpoints that exist"
+description = """
+Trim `apps/portal/src/api/hooks.ts` from 1,479 lines to the ten endpoints the design
+actually uses, and make the survivors correct.
+
+Delete every hook whose page was deleted in T02, and every hook that calls an
+endpoint the server does not have. Three such hooks exist: a knowledge garbage
+collection call, an inbox dismissal call, and a backlog fetch. None has a server
+route. Their pages are gone anyway.
+
+Keep exactly these, wired through the mapping boundary from T03: the plan list, a
+plan's tasks, plan generation, the plan tasks write, plan validation, plan execution,
+plan cancellation, the state hub snapshot, provider health for the diagnostics
+drawer, and plan costs.
+
+Fix two inconsistencies among the survivors while you are here. The agent list hook
+maps its response and the single agent hook does not, so the same entity has two
+shapes depending on which hook produced it. And the plan hooks return raw snake_case
+data typed as camelCase, which type checks and is wrong at runtime.
+
+The state hub snapshot hook is new. The portal has never called it, and it is the
+correct way to bootstrap.
+"""
+status = "ready"
+role = "implementer"
+tier = "integrative"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 30
+depends_on = ["T06"]
+files = ["apps/portal/src/api/hooks.ts"]
+
+[task.context]
+read_files = [
+    { path = "apps/portal/src/api/hooks.ts", why = "the hooks being trimmed and the two mapping inconsistencies" },
+    { path = "apps/portal/src/api/client.ts", why = "the HTTP client the hooks call through" },
+    { path = "tmp/portal-audit/03-CONTRACT.md", why = "the ten endpoints and the bootstrap sequence" },
+]
+anti_patterns = [
+    "Do not keep a hook for an endpoint the server does not implement.",
+    "Do not return raw wire data typed as a view type. Map at the boundary.",
+]
+
+[[task.verify]]
+phase = "compile"
+command = "cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && ./node_modules/.bin/tsc --noEmit"
+fail_msg = "the portal does not type check after trimming the hooks"
+timeout_ms = 600000
+
+[[task]]
+id = "T08"
+title = "Establish the design tokens"
+description = """
+Create `apps/portal/src/styles/tokens.css` as the single visual vocabulary.
+
+Build on the existing ROSEDUST palette rather than inventing colours. Define:
+
+  **State tokens**, one per task and agent state: done, active, failed, pending,
+  skipped, and the warning state used for work that is dispatched but not finished.
+  That last one matters: green must mean actually finished, and a plan whose tasks
+  are all dispatched but still in gates must read amber. This single rule prevents
+  the most common orchestration misread.
+
+  **Focus tokens**, exactly two: a bright border and a bone title for the focused
+  region, and a near-invisible border with a ghost title for everything else. Exactly
+  one region ever looks active.
+
+  **Role accent tokens**, one fixed colour per agent role, used everywhere that role
+  appears: the roster row, the transcript gutter, the agent tab, the burn row.
+
+  **Semantic progress**, three bands for progress bars: below thirty percent, thirty
+  to seventy, and above seventy. The bar's colour encodes the band, so a column of
+  bars is scannable before any digit is read.
+
+Define spacing and a type scale with tabular numerals, because the layout uses fixed
+metric columns that must align vertically.
+"""
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 25
+depends_on = ["T07"]
+files = ["apps/portal/src/styles/tokens.css"]
+
+[task.context]
+read_files = [
+    { path = "apps/portal/src/styles/rosedust.css", why = "the existing palette to build on rather than replace" },
+    { path = "apps/portal/src/styles/globals.css", why = "the current global styles and where tokens must be imported" },
+    { path = "tmp/portal-audit/02-DESIGN.md", why = "the colour and state semantics section defining every token" },
+]
+anti_patterns = [
+    "Do not invent a new palette. Extend the existing one.",
+    "Do not use green for work that is dispatched but not finished. That is the misread this rule prevents.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "test -f apps/portal/src/styles/tokens.css && grep -q 'focus\\|--state' apps/portal/src/styles/tokens.css"
+fail_msg = "the design tokens file is missing or does not define state and focus tokens"
+
+[[task]]
+id = "T09"
+title = "Build the status glyph and metric cell primitives"
+description = """
+Create two primitives every later view depends on, under
+`apps/portal/src/components/primitives`.
+
+**StatusGlyph.tsx** — maps a task or agent state to its glyph and token colour, in
+one place. The vocabulary: a check for done, a filled triangle for active, a cross
+for failed, a middle dot for pending, a slashed circle for skipped, a warning sign
+for dispatched but unfinished. One entity state, one glyph, one colour, everywhere.
+mori defined the same state twice with two different glyphs and two different colours
+in different widgets; do not repeat that.
+
+**MetricCell.tsx** — a fixed-width right-aligned cell with tabular numerals that
+renders a middle dot when its value is null or undefined, never an empty space. The
+placeholder proves the cell exists and keeps columns aligned. Every number in the
+plan rail and the task list goes through this.
+
+Also add a middle-ellipsis text helper. Plan and branch names must never be
+end-truncated, because the distinguishing part is usually the tail.
+"""
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 25
+depends_on = ["T08"]
+files = [
+    "apps/portal/src/components/primitives/StatusGlyph.tsx",
+    "apps/portal/src/components/primitives/MetricCell.tsx",
+    "apps/portal/src/components/primitives/index.ts",
+]
+
+[task.context]
+read_files = [
+    { path = "apps/portal/src/components/atoms/Badge.tsx", why = "the existing component conventions to follow" },
+    { path = "apps/portal/src/lib/formatters.ts", why = "existing formatting helpers to extend rather than duplicate" },
+    { path = "tmp/portal-audit/02-DESIGN.md", why = "the glyph vocabulary and the metric column rules" },
+]
+anti_patterns = [
+    "Do not define the same state with two different glyphs in two places.",
+    "Do not render an empty cell for a missing value. Render the placeholder.",
+    "Do not end-truncate identifiers. Use the middle ellipsis.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "test -f apps/portal/src/components/primitives/StatusGlyph.tsx && test -f apps/portal/src/components/primitives/MetricCell.tsx"
+fail_msg = "the status glyph and metric cell primitives were not created"
+
+[[task]]
+id = "T10"
+title = "Build the derived empty state helper"
+description = """
+Create `apps/portal/src/lib/emptyState.ts`, a pure function that turns run state into
+an honest sentence.
+
+An empty pane must never say no data. It should say what the system is doing,
+derived from the plan phase, the task counts and the set of active agents. mori did
+this and it is the single highest-value piece of pure logic in that codebase.
+
+The function takes the selected plan's state and returns the sentence. Cover at
+least: no plans in the workspace at all; a plan selected but never run; a plan
+running with queued tasks but no live agent yet; a plan whose tasks have all
+dispatched and which is now in gate or verification work; a plan that finished
+successfully; a plan that failed, naming the failing task.
+
+Pure logic, no rendering, fully unit tested. Add the tests in the same task — a table
+of state inputs and expected sentences.
+"""
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 20
+depends_on = ["T09"]
+files = ["apps/portal/src/lib/emptyState.ts"]
+
+[task.context]
+read_files = [
+    { path = "apps/portal/src/stores/dashboard.ts", why = "the plan, task and agent state shapes the function reads" },
+    { path = "tmp/portal-audit/02-DESIGN.md", why = "the empty state section listing the sentences to cover" },
+]
+anti_patterns = [
+    "Do not return the string no data for any input.",
+    "Do not render anything from this module. It returns a sentence.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "test -f apps/portal/src/lib/emptyState.ts && ! grep -qi 'no data' apps/portal/src/lib/emptyState.ts"
+fail_msg = "the empty state helper is missing or still returns a no-data string"
+
+[[task]]
+id = "T11"
+title = "Reduce the root layout to a single mount point"
+description = """
+Rewrite `apps/portal/src/app/layout.tsx` and `apps/portal/src/app/page.tsx` for a
+one-screen application.
+
+The root layout becomes the document shell plus the provider tree plus a single error
+boundary. It no longer imports an application shell with a sidebar, because there is
+no sidebar navigation any more.
+
+The page becomes a single mount point for the workspace screen, which the
+portal-shell plan builds. For now it renders the derived empty state from T10 so the
+application runs and shows something honest rather than a blank page.
+
+Confirm the provider tree still mounts the SSE client, and that the client still
+connects on load. That connection is the spine of the whole application and it must
+survive this restructuring.
+
+Run the production build, not only the type checker. A Next.js application can type
+check and fail to build.
+"""
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 20
+depends_on = ["T10"]
+files = ["apps/portal/src/app/layout.tsx", "apps/portal/src/app/page.tsx"]
+
+[task.context]
+read_files = [
+    { path = "apps/portal/src/app/layout.tsx", why = "the layout being reduced" },
+    { path = "apps/portal/src/app/page.tsx", why = "the page being reduced to a mount point" },
+    { path = "apps/portal/src/app/providers.tsx", why = "the provider tree that must keep mounting the SSE client" },
+    { path = "apps/portal/src/hooks/useStateHubSSE.ts", why = "the SSE mount hook whose connection must survive" },
+]
+anti_patterns = [
+    "Do not drop the SSE mount from the provider tree.",
+    "Do not accept a passing type check as proof. Run the production build.",
+]
+
+[[task.verify]]
+phase = "compile"
+command = "cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && ./node_modules/.bin/tsc --noEmit"
+fail_msg = "the portal does not type check after reducing the root layout"
+timeout_ms = 600000
+
+[[task.verify]]
+phase = "integration"
+command = "cd apps/portal && npm run build"
+fail_msg = "the portal production build fails after reducing the root layout"
+timeout_ms = 900000
+
+[[task]]
+id = "T12"
+title = "Record the strip and verify nothing live was lost"
+description = """
+Confirm the foundation is sound and write the result to
+`plans/portal-programme/05-portal-foundation/REVIEW.md`.
+
+Record, with real numbers rather than estimates:
+
+  1. Line count and file count before and after. The audit measured 32,437 lines
+     across 119 files; state the actual figures now.
+  2. Route count, which must be one.
+  3. That the type check and the production build both pass.
+  4. That the development server starts and the SSE client connects to a running
+     roko-serve. Say how you confirmed the connection, not merely that the page
+     loaded.
+  5. That no surviving file imports anything deleted.
+
+Then state explicitly whether each of the five part C findings in
+tmp/portal-audit/01-FINDINGS.md is resolved, and list anything deferred.
+
+If the live SSE connection could not be confirmed, say so. That connection is the
+spine of the application and an unverified claim about it is worse than no claim.
+"""
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 20
+depends_on = ["T11"]
+files = ["plans/portal-programme/05-portal-foundation/REVIEW.md"]
+
+[task.context]
+read_files = [
+    { path = "tmp/portal-audit/01-FINDINGS.md", why = "the part C findings this plan claims to resolve" },
+    { path = "tmp/portal-audit/05-INVENTORY.md", why = "the keep and delete ledger to check the result against" },
+    { path = "apps/portal/package.json", why = "the build and type check scripts used as evidence" },
+]
+anti_patterns = [
+    "Do not estimate the line counts. Measure them.",
+    "Do not claim the SSE connection works without observing it.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "test -f plans/portal-programme/05-portal-foundation/REVIEW.md && grep -qi 'sse' plans/portal-programme/05-portal-foundation/REVIEW.md"
+fail_msg = "REVIEW.md is missing or does not record the live SSE connection check"

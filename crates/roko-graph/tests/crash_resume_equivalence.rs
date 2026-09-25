@@ -52,9 +52,7 @@ use tempfile::NamedTempFile;
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 fn signal(tag: &str) -> Signal {
-    Signal::builder(Kind::Task)
-        .body(Body::text(tag))
-        .build()
+    Signal::builder(Kind::Task).body(Body::text(tag)).build()
 }
 
 fn empty_config() -> toml::Value {
@@ -301,8 +299,8 @@ async fn crash_resume_produces_identical_final_state() {
 
     // Collect the clean run's final outputs per node for comparison later.
     let clean_node_outputs: std::collections::HashMap<String, Vec<Signal>> = {
-        let replayer = ActivityReplayer::load(clean_recording.path())
-            .expect("load clean recording");
+        let replayer =
+            ActivityReplayer::load(clean_recording.path()).expect("load clean recording");
         // The replayer stores by (node_id, tick); extract tick 0 for each node.
         [
             ("task_a".to_string(), replayer.lookup("task_a", 0).cloned()),
@@ -370,8 +368,8 @@ async fn crash_resume_produces_identical_final_state() {
     // The crash recording must contain task_a's output (persisted before crash),
     // but NOT task_b's (it crashed before returning success).
     {
-        let partial_replay = ActivityReplayer::load(crash_recording.path())
-            .expect("load crash recording");
+        let partial_replay =
+            ActivityReplayer::load(crash_recording.path()).expect("load crash recording");
         assert_eq!(
             partial_replay.entry_count(),
             1,
@@ -395,8 +393,8 @@ async fn crash_resume_produces_identical_final_state() {
     let resume_count_c = Arc::new(AtomicU32::new(0));
 
     // Load the partial (crash) checkpoint for replay.
-    let replayer = ActivityReplayer::load(crash_recording.path())
-        .expect("load crash checkpoint for resume");
+    let replayer =
+        ActivityReplayer::load(crash_recording.path()).expect("load crash checkpoint for resume");
 
     // New recording for the resume run.
     let resume_recording = NamedTempFile::new().expect("tempfile for resume recording");
@@ -543,8 +541,8 @@ async fn full_checkpoint_replays_without_any_reexecution() {
         let count_b = Arc::new(AtomicU32::new(0));
         let count_c = Arc::new(AtomicU32::new(0));
 
-        let recorder = ActivityRecorder::create_fresh("full-run", recording.path())
-            .expect("create recorder");
+        let recorder =
+            ActivityRecorder::create_fresh("full-run", recording.path()).expect("create recorder");
 
         let engine = GraphEngine::new(
             build_linear_graph(FailureStrategy::FailFast),
@@ -619,10 +617,7 @@ async fn clean_run_executes_every_node_exactly_once() {
     )
     .with_allow_test_stubs(true);
 
-    let output = engine
-        .execute(&CellContext::new())
-        .await
-        .expect("execute");
+    let output = engine.execute(&CellContext::new()).await.expect("execute");
 
     assert!(output.success, "clean run must succeed");
     assert_eq!(count_a.load(Ordering::Relaxed), 1, "task_a called once");

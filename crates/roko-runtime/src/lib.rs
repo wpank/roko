@@ -92,6 +92,11 @@ pub use lifecycle::{
 };
 pub use projection::{RunSummary, RuntimeProjection};
 pub use pulse_bus::{PulseBus, PulseBusReceiver};
+pub use reactive_agent::{
+    ReactiveAgentConfig, ReactiveAgentHandle, ReactiveAgentStatus, ReactiveAgentSupervisor,
+    ReactiveHandler, ReactiveWakeEvent, TriggerCondition, WakeError, condition_for_any_trigger,
+    condition_for_trigger_name,
+};
 pub use roko_core::RuntimeEvent;
 pub use roko_core::foundation::{
     ChatMessage, EventConsumer, FeedbackEvent, FeedbackSink, GateConfig, GateReport, GateRunner,
@@ -123,11 +128,6 @@ pub use state_snapshot::{
 pub use workflow_contract::{
     CommitOutcome, GateOutcome, Phase, WorkflowConfig, WorkflowOutcome, WorkflowResult,
     WorkflowRunConfig, WorkflowRunReport,
-};
-pub use reactive_agent::{
-    ReactiveAgentConfig, ReactiveAgentHandle, ReactiveAgentStatus, ReactiveAgentSupervisor,
-    ReactiveHandler, ReactiveWakeEvent, TriggerCondition, WakeError,
-    condition_for_any_trigger, condition_for_trigger_name,
 };
 // task_scheduler retired with WorkflowEngine
 pub use telemetry_projection_aggregator::{

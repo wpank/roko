@@ -549,11 +549,10 @@ impl AgentOutputHistory {
             // following ToolResult with the same tool_id to keep pairs intact.
             if evicted_record.kind == OutputRecordKind::ToolCall {
                 if let Some(evicted_id) = evicted_record.tool_id.as_deref() {
-                    if deque
-                        .front()
-                        .is_some_and(|r| r.kind == OutputRecordKind::ToolResult
-                            && r.tool_id.as_deref() == Some(evicted_id))
-                    {
+                    if deque.front().is_some_and(|r| {
+                        r.kind == OutputRecordKind::ToolResult
+                            && r.tool_id.as_deref() == Some(evicted_id)
+                    }) {
                         if let Some(paired_result) = deque.pop_front() {
                             self.oldest_seq
                                 .insert(agent_id.to_string(), paired_result.seq + 1);
@@ -569,11 +568,10 @@ impl AgentOutputHistory {
             // it too so the viewer never sees a ToolCall without its result.
             if evicted_record.kind == OutputRecordKind::ToolResult {
                 if let Some(evicted_id) = evicted_record.tool_id.as_deref() {
-                    if deque
-                        .front()
-                        .is_some_and(|r| r.kind == OutputRecordKind::ToolCall
-                            && r.tool_id.as_deref() == Some(evicted_id))
-                    {
+                    if deque.front().is_some_and(|r| {
+                        r.kind == OutputRecordKind::ToolCall
+                            && r.tool_id.as_deref() == Some(evicted_id)
+                    }) {
                         // This means a ToolCall follows its result — abnormal
                         // ordering; evict the orphaned call.
                         if let Some(orphaned_call) = deque.pop_front() {

@@ -1,0 +1,231 @@
+[meta]
+plan = "add-plan-queue"
+total = 3
+done = 0
+status = "ready"
+max_parallel = 1
+skip_enrichment = true
+estimated_total_minutes = 30
+
+# ── T01: Add QueueConfig struct to roko-core ─────────────────────────────────
+#
+# The `QueueManifest` type in `roko-cli/src/runner/queue_manifest.rs` already
+# handles the operational queue manifest (`.roko/queue.toml`). What is missing
+# is a first-class `QueueConfig` section in the workspace `roko.toml` schema
+# that declares default queue behaviour (max_agents, mode, queue_path) alongside
+# the rest of the top-level config. This config section is distinct from the
+# per-run `RunOverrides` embedded in the queue manifest itself.
+#
+# Add a `[queue]` section to `roko.toml` backed by a new `QueueConfig` struct
+# in `roko-core/src/config/schema.rs`. The struct must derive `Default` so that
+# workspaces without a `[queue]` section continue to work. Wire the field into
+# `RokoConfig`. Re-export from `roko-core/src/config/mod.rs`.
+
+[[task]]
+id = "T01"
+title = "Add QueueConfig struct to roko-core config schema"
+description = """Add a `QueueConfig` struct to `crates/roko-core/src/config/schema.rs`
+that represents the `[queue]` section of `roko.toml`. The struct must contain at
+minimum: `queue_file` (Option<PathBuf> — path to the queue manifest, default
+`.roko/queue.toml`), `max_agents` (Option<usize> — workspace-level agent concurrency
+cap), and `mode` (Option<String> — execution mode hint). All fields must have serde
+`default` so an empty `[queue]` table (or a missing section) deserialises cleanly.
+Add `pub queue: QueueConfig` to `RokoConfig`. Re-export `QueueConfig` from
+`crates/roko-core/src/config/mod.rs`. Do not change any existing field or break any
+existing test."""
+status = "ready"
+tier = "mechanical"
+max_loc = 60
+files = [
+    "crates/roko-core/src/config/schema.rs",
+    "crates/roko-core/src/config/mod.rs",
+]
+role = "implementer"
+depends_on = []
+acceptance = [
+    "QueueConfig struct exists in roko-core with queue_file, max_agents, and mode fields.",
+    "RokoConfig has a `queue: QueueConfig` field with serde default.",
+    "`cargo check -p roko-core` passes with no new warnings.",
+    "QueueConfig is re-exported from crates/roko-core/src/config/mod.rs.",
+]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-core/src/config/schema.rs", lines = "1-80", why = "Understand existing top-level RokoConfig struct and field conventions." },
+    { path = "crates/roko-core/src/config/schema.rs", lines = "80-200", why = "Observe serde default patterns used by existing optional config sections." },
+    { path = "crates/roko-core/src/config/mod.rs", lines = "1-90", why = "Understand the re-export pattern used for config types." },
+    { path = "crates/roko-cli/src/runner/queue_manifest.rs", lines = "1-92", why = "Reference for existing queue schema fields (RunOverrides) to avoid duplication." },
+]
+symbols = [
+    "RokoConfig — top-level config struct in schema.rs",
+    "QueueManifest, RunOverrides — operational queue types in queue_manifest.rs (do not duplicate these)",
+    "serde(default) — pattern used by all optional config sections",
+]
+anti_patterns = [
+    "Do not duplicate RunOverrides from queue_manifest.rs; QueueConfig is for roko.toml workspace defaults only.",
+    "Do not add required fields without defaults — all fields must be optional so existing workspaces deserialise correctly.",
+    "Do not change existing RokoConfig fields or their types.",
+    "Do not add business logic; this task is schema-only.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub struct QueueConfig' crates/roko-core/src/config/schema.rs"
+fail_msg = "QueueConfig struct must exist in schema.rs"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub queue: QueueConfig' crates/roko-core/src/config/schema.rs"
+fail_msg = "RokoConfig must have a queue field of type QueueConfig"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'QueueConfig' crates/roko-core/src/config/mod.rs"
+fail_msg = "QueueConfig must be re-exported from roko-core config mod"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-core 2>&1"
+fail_msg = "roko-core must compile cleanly after adding QueueConfig"
+
+# ── T02: Add `roko plan queue show` command ───────────────────────────────────
+#
+# `roko plan queue show` already works for the `.roko/queue.toml` operational
+# manifest. However the command currently ignores `roko.toml`'s `[queue]` section
+# entirely. Wire T01's `QueueConfig` into `cmd_plan_queue` so that when
+# `--file` is not explicitly provided, the resolved `queue_file` from the loaded
+# config is used as the default path instead of the hardcoded `.roko/queue.toml`.
+# Additionally, display the workspace-level `mode` and `max_agents` defaults
+# beneath the milestone table so operators can see which config values will govern
+# an unqualified `roko plan run`.
+
+[[task]]
+id = "T02"
+title = "Wire QueueConfig defaults into roko plan queue show"
+description = """Load the workspace `QueueConfig` from the roko.toml via
+`LoadedConfig` inside `cmd_plan_queue` (plan.rs). When `QueueCmd::Show` is
+invoked without an explicit `--file` flag (i.e. the flag value equals the
+current default path), substitute `config.roko_config.queue.queue_file` if it
+is set. After the milestone table, append a two-line config summary block:
+  Queue config: mode=<mode|unset>  max_agents=<n|unset>  file=<resolved_path>
+This must only appear in non-JSON output mode. In JSON mode, add `queue_config`
+as a sibling to `milestones` with the same three fields. Do not change the
+milestone rendering logic."""
+status = "ready"
+tier = "focused"
+max_loc = 80
+files = [
+    "crates/roko-cli/src/commands/plan.rs",
+]
+role = "implementer"
+depends_on = ["T01"]
+acceptance = [
+    "`roko plan queue show` resolves queue_file from roko.toml [queue] when --file is not provided.",
+    "Non-JSON output includes a Queue config summary line below the milestone table.",
+    "JSON output includes a queue_config object alongside milestones.",
+    "`cargo check -p roko-cli` passes with no new warnings.",
+    "Existing QueueCmd::Validate and QueueCmd::Init branches are unchanged.",
+]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/commands/plan.rs", lines = "1540-1640", why = "cmd_plan_queue implementation — Show, Validate, and Init branches." },
+    { path = "crates/roko-cli/src/commands/plan.rs", lines = "1-60", why = "Imports and LoadedConfig usage patterns in plan.rs." },
+    { path = "crates/roko-core/src/config/schema.rs", lines = "1-80", why = "Locate QueueConfig field path on RokoConfig for config access." },
+    { path = "crates/roko-cli/src/runner/queue_manifest.rs", lines = "154-280", why = "QueueManifest::from_file and render_show — understand what data is already rendered." },
+]
+symbols = [
+    "cmd_plan_queue(cli: &Cli, cmd: QueueCmd) — plan.rs:1545",
+    "QueueCmd::Show { file, workdir } — the variant to modify",
+    "LoadedConfig — loaded from resolve_workdir via load_config",
+    "QueueConfig::queue_file — Option<PathBuf> to substitute as default path",
+    "manifest.render_show(&completed) — returns the existing milestone table string",
+]
+anti_patterns = [
+    "Do not change QueueCmd::Validate or QueueCmd::Init — only modify the Show branch.",
+    "Do not replace the milestone table rendering; append the config summary after it.",
+    "Do not panic if QueueConfig fields are None — display 'unset' as the fallback string.",
+    "Do not hardcode '.roko/queue.toml' as the default in this function; derive it from config.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'queue_config\\|queue.queue_file\\|queue\\.mode\\|queue\\.max_agents' crates/roko-cli/src/commands/plan.rs"
+fail_msg = "plan.rs must reference queue config fields in the Show branch"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "roko-cli must compile after wiring QueueConfig into plan queue show"
+
+[[task.verify]]
+phase = "smoke"
+command = "cargo run -p roko-cli --quiet -- plan queue show --help 2>&1 | grep -q 'show'"
+fail_msg = "roko plan queue show --help must render without error"
+
+# ── T03: Write docs for the queue feature ────────────────────────────────────
+#
+# The queue feature has no user-facing documentation. Write a concise reference
+# doc that covers the queue.toml schema, the [queue] roko.toml section, and the
+# three subcommands (show, validate, init). The doc lives in docs/v3/ which is
+# the active documentation directory for new features.
+
+[[task]]
+id = "T03"
+title = "Write plan queue feature documentation"
+description = """Create `docs/v3/plan-queue.md` documenting the roko plan queue
+feature. The file must contain these sections: `## Overview`, `## queue.toml schema`
+(with a TOML code block showing the full milestone format including `depends_on` and
+`tags`), `## roko.toml [queue] section` (documenting the three QueueConfig fields
+added in T01), `## Commands` (subcommands: show, validate, init with usage and
+example output), and `## Milestone ordering` (explaining the topological execution
+order). The document must reference actual file paths and not invent features that
+do not exist. Do not create any source code."""
+status = "ready"
+tier = "focused"
+max_loc = 200
+files = [
+    "docs/v3/plan-queue.md",
+]
+role = "scribe"
+depends_on = ["T02"]
+acceptance = [
+    "docs/v3/plan-queue.md exists and has all five required sections.",
+    "The queue.toml TOML example block is syntactically valid.",
+    "The [queue] roko.toml section documents queue_file, max_agents, and mode.",
+    "Commands section covers show, validate, and init subcommands.",
+    "No invented file paths or commands that do not exist in the codebase.",
+]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/runner/queue_manifest.rs", lines = "1-92", why = "Reference the canonical queue.toml schema for the documentation example." },
+    { path = "crates/roko-cli/src/commands/plan.rs", lines = "1540-1660", why = "Reference the three subcommand implementations for accurate command docs." },
+    { path = "crates/roko-core/src/config/schema.rs", lines = "1-80", why = "Verify the QueueConfig field names and types for the roko.toml section docs." },
+]
+symbols = [
+    "QueueManifest, Milestone, RunOverrides — canonical schema types",
+    "QueueCmd::Show, QueueCmd::Validate, QueueCmd::Init — the three subcommands",
+    "QueueConfig::queue_file, QueueConfig::max_agents, QueueConfig::mode — roko.toml fields",
+]
+anti_patterns = [
+    "Do not create source code; this task owns only docs/v3/plan-queue.md.",
+    "Do not document features that are not implemented — only document the three subcommands and the roko.toml section.",
+    "Do not invent TOML field names; verify every field name against the struct definitions.",
+    "Do not add an 'Implementation notes' section — keep the doc operator-facing only.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "test -f docs/v3/plan-queue.md && for h in '## Overview' '## queue.toml schema' '## roko.toml \\[queue\\] section' '## Commands' '## Milestone ordering'; do grep -q \"$h\" docs/v3/plan-queue.md || exit 1; done"
+fail_msg = "docs/v3/plan-queue.md must exist with all five required sections"
+
+[[task.verify]]
+phase = "content"
+command = "python3 -c \"import re, pathlib; body = pathlib.Path('docs/v3/plan-queue.md').read_text(); toml_blocks = re.findall(r'\\x60\\x60\\x60toml\\n(.*?)\\x60\\x60\\x60', body, re.DOTALL); assert toml_blocks, 'missing TOML code block'\""
+fail_msg = "docs/v3/plan-queue.md must contain at least one TOML code block"
+
+[[task.verify]]
+phase = "content"
+command = "grep -q 'queue_file' docs/v3/plan-queue.md && grep -q 'max_agents' docs/v3/plan-queue.md && grep -q 'mode' docs/v3/plan-queue.md"
+fail_msg = "docs must document all three QueueConfig fields"

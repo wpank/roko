@@ -74,8 +74,7 @@ fn latest_precision(stream: &[Signal]) -> Option<f64> {
         .iter()
         .rev()
         .find(|s| {
-            s.kind == Kind::Metric
-                && s.tag(METRIC_NAME_TAG) == Some(RETRIEVAL_PRECISION_METRIC)
+            s.kind == Kind::Metric && s.tag(METRIC_NAME_TAG) == Some(RETRIEVAL_PRECISION_METRIC)
         })
         .and_then(|s| s.tag(METRIC_VALUE_TAG))
         .and_then(|v| v.parse::<f64>().ok())

@@ -80,7 +80,11 @@ pub(crate) fn decompose_message(msg: &str) -> Option<Vec<SubTask>> {
 /// 3. Update the README
 /// ```
 fn try_numbered_list(text: &str) -> Option<Vec<SubTask>> {
-    let lines: Vec<&str> = text.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+    let lines: Vec<&str> = text
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
     if lines.len() < 2 {
         return None;
     }
@@ -160,14 +164,20 @@ fn try_conjunction_split(text: &str) -> Option<Vec<SubTask>> {
             if left.len() >= 8 && right.len() >= 8 {
                 // Check if the right side itself contains another conjunction —
                 // if so, recurse to get all the pieces.
-                let mut tasks = vec![SubTask { index: 0, text: left.to_string() }];
+                let mut tasks = vec![SubTask {
+                    index: 0,
+                    text: left.to_string(),
+                }];
                 if let Some(mut sub) = try_conjunction_split(right) {
                     for t in &mut sub {
                         t.index += 1;
                     }
                     tasks.extend(sub);
                 } else {
-                    tasks.push(SubTask { index: 1, text: right.to_string() });
+                    tasks.push(SubTask {
+                        index: 1,
+                        text: right.to_string(),
+                    });
                 }
                 return Some(tasks);
             }
@@ -314,7 +324,8 @@ mod tests {
 
     #[test]
     fn conjunction_also_splits_two() {
-        let msg = "check the gate configuration in roko.toml also verify the provider health registry";
+        let msg =
+            "check the gate configuration in roko.toml also verify the provider health registry";
         let tasks = decompose_message(msg).unwrap();
         assert_eq!(tasks.len(), 2);
     }
@@ -349,7 +360,10 @@ mod tests {
     }
 
     fn make_task(index: usize, text: &str) -> SubTask {
-        SubTask { index, text: text.to_string() }
+        SubTask {
+            index,
+            text: text.to_string(),
+        }
     }
 
     #[test]
@@ -390,10 +404,7 @@ mod tests {
     fn merge_takes_model_from_first() {
         let r1 = make_result("r1", "model-a", 1, 1);
         let r2 = make_result("r2", "model-b", 1, 1);
-        let merged = merge_results(vec![
-            (make_task(0, "t1"), r1),
-            (make_task(1, "t2"), r2),
-        ]);
+        let merged = merge_results(vec![(make_task(0, "t1"), r1), (make_task(1, "t2"), r2)]);
         assert_eq!(merged.model, "model-a");
     }
 
@@ -403,10 +414,7 @@ mod tests {
         r1.session_id = Some("sess-1".to_string());
         let mut r2 = make_result("r2", "m", 1, 1);
         r2.session_id = Some("sess-2".to_string());
-        let merged = merge_results(vec![
-            (make_task(0, "t1"), r1),
-            (make_task(1, "t2"), r2),
-        ]);
+        let merged = merge_results(vec![(make_task(0, "t1"), r1), (make_task(1, "t2"), r2)]);
         assert_eq!(merged.session_id.as_deref(), Some("sess-2"));
     }
 }

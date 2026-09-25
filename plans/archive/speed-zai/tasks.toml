@@ -1,0 +1,26 @@
+[meta]
+plan = "speed-zai"
+total = 1
+done = 0
+status = "ready"
+max_parallel = 1
+skip_enrichment = true
+estimated_total_minutes = 1
+
+[[task]]
+id = "ZAI-T01"
+title = "Write one line to a file via ZAI"
+description = """Write the text `zai-speed-ok` to the file `demo/speed-zai-output.txt`.
+Nothing else. One file, one line. Stop immediately after."""
+status = "ready"
+tier = "mechanical"
+max_loc = 1
+model_hint = "glm51"
+files = ["demo/speed-zai-output.txt"]
+role = "implementer"
+depends_on = []
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'zai-speed-ok' demo/speed-zai-output.txt"
+fail_msg = "demo/speed-zai-output.txt missing or wrong content"

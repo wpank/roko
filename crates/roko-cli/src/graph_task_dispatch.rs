@@ -1845,7 +1845,12 @@ impl TaskDispatcher for GraphTaskDispatcher {
             // Stash for gate-settlement below.
             self.retrieval_ctx.lock().insert(
                 retry_key.clone(),
-                (strategy.clone(), query.clone(), results_count, prompt_assembly_latency_ms),
+                (
+                    strategy.clone(),
+                    query.clone(),
+                    results_count,
+                    prompt_assembly_latency_ms,
+                ),
             );
 
             // Write the pre-gate record (best-effort, non-blocking).
@@ -2029,9 +2034,8 @@ impl TaskDispatcher for GraphTaskDispatcher {
             let hint = self.pending_warm_role.lock().take();
             if let Some(next_role) = hint {
                 let warm_pool = self.factory.warm_pool();
-                let warm_ttl = std::time::Duration::from_secs(
-                    self.config.runner.warm_pool_idle_timeout_secs,
-                );
+                let warm_ttl =
+                    std::time::Duration::from_secs(self.config.runner.warm_pool_idle_timeout_secs);
                 let warm_agent = crate::dispatch::warm_pool::WarmAgent {
                     id: format!("{}/{}/pre-warm", spec.plan_id, task.id),
                     model: dispatch.target.model_slug.clone(),
@@ -2794,8 +2798,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
                     // Release worktree with RetainForFailure for post-mortem.
                     // ── RAG-10/11: Retrieval outcome settlement (gate fail) ──
                     {
-                        let ctx_snapshot =
-                            self.retrieval_ctx.lock().get(&retry_key).cloned();
+                        let ctx_snapshot = self.retrieval_ctx.lock().get(&retry_key).cloned();
                         if let Some((strategy, query, results_count, latency_ms)) = ctx_snapshot {
                             // RAG-11: update experiment store with gate-fail outcome.
                             if let Some(exp_path) = &self.feedback.experiment_store_path {
@@ -2808,15 +2811,16 @@ impl TaskDispatcher for GraphTaskDispatcher {
                             }
                             // RAG-10: write settled record.
                             if let Some(path) = self.feedback.retrieval_outcomes_path.clone() {
-                                let record = roko_learn::retrieval_outcome::RetrievalOutcomeRecord::settled(
-                                    &spec.plan_id,
-                                    &task.id,
-                                    &query,
-                                    &strategy,
-                                    results_count,
-                                    false,
-                                )
-                                .with_latency_ms(latency_ms);
+                                let record =
+                                    roko_learn::retrieval_outcome::RetrievalOutcomeRecord::settled(
+                                        &spec.plan_id,
+                                        &task.id,
+                                        &query,
+                                        &strategy,
+                                        results_count,
+                                        false,
+                                    )
+                                    .with_latency_ms(latency_ms);
                                 tokio::spawn(async move {
                                     if let Err(error) =
                                         roko_learn::retrieval_outcome::RetrievalOutcomeStore::at(
@@ -2938,9 +2942,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
                     // RAG-11: update experiment store with gate-pass outcome.
                     if let Some(exp_path) = &self.feedback.experiment_store_path {
                         let mut store =
-                            roko_learn::prompt_experiment::ExperimentStore::load_or_new(
-                                exp_path,
-                            );
+                            roko_learn::prompt_experiment::ExperimentStore::load_or_new(exp_path);
                         store.record_retrieval_outcome(&strategy, true);
                         let _ = store.save(exp_path);
                     }
@@ -3014,9 +3016,8 @@ impl TaskDispatcher for GraphTaskDispatcher {
         // a hardcoded constant. If the pool is at capacity (max_per_role
         // slots already occupied), `insert` evicts the oldest slot and returns
         // it; we ignore the evicted value since we don't hold real processes.
-        let warm_ttl = std::time::Duration::from_secs(
-            self.config.runner.warm_pool_idle_timeout_secs,
-        );
+        let warm_ttl =
+            std::time::Duration::from_secs(self.config.runner.warm_pool_idle_timeout_secs);
         let warm_agent = crate::dispatch::warm_pool::WarmAgent {
             id: format!("{}/{}", spec.plan_id, task.id),
             model: dispatch.target.model_slug.clone(),
@@ -3187,7 +3188,10 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
             role: role.to_string(),
             workdir: lease.path.clone(),
             model_hint: task.model_hint.clone(),
-            force_backend: self.cli_model_override.clone().or(express_force_backend_streaming),
+            force_backend: self
+                .cli_model_override
+                .clone()
+                .or(express_force_backend_streaming),
             budget_remaining_usd: effective_routing_budget(
                 ctx.budget_remaining,
                 budget_reservation.routing_budget_usd(),
@@ -3430,9 +3434,8 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
             let hint = self.pending_warm_role.lock().take();
             if let Some(next_role) = hint {
                 let warm_pool = self.factory.warm_pool();
-                let warm_ttl = std::time::Duration::from_secs(
-                    self.config.runner.warm_pool_idle_timeout_secs,
-                );
+                let warm_ttl =
+                    std::time::Duration::from_secs(self.config.runner.warm_pool_idle_timeout_secs);
                 let warm_agent = crate::dispatch::warm_pool::WarmAgent {
                     id: format!("{}/{}/pre-warm", spec.plan_id, task.id),
                     model: outcome.model.clone(),
@@ -3599,9 +3602,8 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
         }
 
         // ── P2-AP-1: Return warm slot to pool (streaming path) ───────────
-        let warm_ttl = std::time::Duration::from_secs(
-            self.config.runner.warm_pool_idle_timeout_secs,
-        );
+        let warm_ttl =
+            std::time::Duration::from_secs(self.config.runner.warm_pool_idle_timeout_secs);
         let warm_agent = crate::dispatch::warm_pool::WarmAgent {
             id: format!("{}/{}", spec.plan_id, task.id),
             model: outcome.model.clone(),
@@ -4525,9 +4527,7 @@ printf '%s\n' '{"type":"result","session_id":"sess-x","model":"claude-sonnet-4-6
     /// Helper: build a minimal `GraphTaskDispatcher` backed by a real factory but no
     /// provider — suitable for testing the warm pool and hint mechanics without
     /// actually spawning LLM processes.
-    async fn make_dispatcher_for_warm_tests(
-        temp: &tempfile::TempDir,
-    ) -> Arc<GraphTaskDispatcher> {
+    async fn make_dispatcher_for_warm_tests(temp: &tempfile::TempDir) -> Arc<GraphTaskDispatcher> {
         let mut config = RokoConfig::default();
         config.providers.clear();
         config.models.clear();
@@ -4580,7 +4580,11 @@ printf '%s\n' '{"type":"result","session_id":"sess-x","model":"claude-sonnet-4-6
         // Simulate the pre-warm insertion that dispatch() does internally:
         // consume the hint and insert a slot.
         let hint = dispatcher.pending_warm_role.lock().take();
-        assert_eq!(hint.as_deref(), Some("implementer"), "hint must be consumed");
+        assert_eq!(
+            hint.as_deref(),
+            Some("implementer"),
+            "hint must be consumed"
+        );
 
         // After take, the slot should be empty.
         assert!(
@@ -4624,11 +4628,18 @@ printf '%s\n' '{"type":"result","session_id":"sess-x","model":"claude-sonnet-4-6
 
         // The next dispatch for "reviewer" can take it.
         let slot = pool.take("reviewer");
-        assert!(slot.is_some(), "reviewer slot must be available after pre-seed");
+        assert!(
+            slot.is_some(),
+            "reviewer slot must be available after pre-seed"
+        );
         assert_eq!(slot.unwrap().model, "claude-sonnet-4-6");
 
         // After take the pool should be empty again.
-        assert_eq!(pool.stats().size, 0, "pool must be empty after the slot is taken");
+        assert_eq!(
+            pool.stats().size,
+            0,
+            "pool must be empty after the slot is taken"
+        );
     }
 
     #[tokio::test]

@@ -477,14 +477,7 @@ pub fn render_output_records_styled<'a>(
                 let tool_id = record.tool_id.as_deref().unwrap_or("").to_owned();
                 // Treat non-empty error text starting with error keywords as errors.
                 let is_error = detect_error_output(&record.text);
-                render_tool_result(
-                    &mut styled,
-                    &tool_id,
-                    &record.text,
-                    is_error,
-                    opts,
-                    theme,
-                );
+                render_tool_result(&mut styled, &tool_id, &record.text, is_error, opts, theme);
             }
             OutputRecordKind::Reasoning => {
                 // ◐ reasoning text  (TEXT_DIM, italic)
@@ -1116,22 +1109,34 @@ mod tests {
     #[test]
     fn records_reasoning_uses_italic() {
         let theme = Theme::dark();
-        let records = vec![make_record_for_stream(OutputRecordKind::Reasoning, "thinking...")];
+        let records = vec![make_record_for_stream(
+            OutputRecordKind::Reasoning,
+            "thinking...",
+        )];
         let rendered = render_output_records_styled(&records, &theme, &RenderOptions::default());
         assert!(!rendered.is_empty());
-        assert!(rendered[0].spans.iter().any(|s| s
-            .style
-            .add_modifier
-            .contains(Modifier::ITALIC)));
+        assert!(
+            rendered[0]
+                .spans
+                .iter()
+                .any(|s| s.style.add_modifier.contains(Modifier::ITALIC))
+        );
         // Reasoning lines are prefixed with ◐.
-        let text: String = rendered[0].spans.iter().map(|s| s.content.as_ref()).collect();
+        let text: String = rendered[0]
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
         assert!(text.contains('\u{25d0}'));
     }
 
     #[test]
     fn records_error_kind_uses_ember_bold() {
         let theme = Theme::dark();
-        let records = vec![make_record_for_stream(OutputRecordKind::Error, "compile failed")];
+        let records = vec![make_record_for_stream(
+            OutputRecordKind::Error,
+            "compile failed",
+        )];
         let rendered = render_output_records_styled(&records, &theme, &RenderOptions::default());
         assert!(!rendered.is_empty());
         let span = &rendered[0].spans[0];
@@ -1151,7 +1156,11 @@ mod tests {
         let rendered = render_output_records_styled(&records, &theme, &RenderOptions::default());
         // text + separator + tool_call = 3 lines
         assert_eq!(rendered.len(), 3);
-        let sep: String = rendered[1].spans.iter().map(|s| s.content.as_ref()).collect();
+        let sep: String = rendered[1]
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
         assert!(sep.contains('\u{2500}'));
     }
 
@@ -1169,7 +1178,10 @@ mod tests {
     #[test]
     fn records_tool_result_fold_default() {
         let theme = Theme::dark();
-        let long_output = (0..10).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
+        let long_output = (0..10)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
         let records = vec![make_tool_result_record("t4", &long_output)];
         let rendered = render_output_records_styled(&records, &theme, &RenderOptions::default());
         // status + 3 folded body lines + "... N more" + bottom cap
@@ -1179,7 +1191,10 @@ mod tests {
     #[test]
     fn records_tool_result_unfold_shows_more() {
         let theme = Theme::dark();
-        let long_output = (0..10).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
+        let long_output = (0..10)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
         let records = vec![make_tool_result_record("t5", &long_output)];
         let opts = RenderOptions {
             unfolded_tool_ids: HashSet::from(["t5".to_string()]),
@@ -1193,7 +1208,10 @@ mod tests {
     #[test]
     fn records_search_highlighting_applied() {
         let theme = Theme::dark();
-        let records = vec![make_record_for_stream(OutputRecordKind::Text, "hello world hello")];
+        let records = vec![make_record_for_stream(
+            OutputRecordKind::Text,
+            "hello world hello",
+        )];
         let opts = RenderOptions {
             search_pattern: Some(regex::Regex::new("(?i)hello").unwrap()),
             ..Default::default()

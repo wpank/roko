@@ -1,0 +1,378 @@
+[meta]
+plan = "qa-workflow-validation"
+total = 4
+done = 0
+status = "ready"
+max_parallel = 1
+skip_enrichment = true
+estimated_total_minutes = 20
+
+# Dependency DAG:
+#
+#   T01 (implementer) — portal API test script
+#    ├── T02 (implementer) — plan lifecycle test script
+#    ├── T03 (implementer) — CLI test script
+#    └── T04 (reviewer)   — run all scripts, write RESULTS.md
+#         (depends T01, T02, T03)
+
+# ---------------------------------------------------------------------------
+
+[[task]]
+id = "T01"
+title = "Create portal API smoke-test script"
+description = """Create `demo/qa-validation/test-portal-api.sh` that exercises
+all core portal API endpoints and exits 0 only if every check passes.
+
+The script must:
+
+1. Set BASE_URL to `http://localhost:6677` (overridable via environment).
+2. Define a helper function `check` that takes a label, HTTP method, path,
+   optional body, and expected HTTP status code. It must use curl with
+   `-s -o /dev/null -w '%{http_code}'` to capture the status code, print
+   PASS or FAIL, and accumulate failures in a counter.
+3. Call `check` for each of the following endpoints (in this order):
+     GET  /api/health                    expected 200
+     GET  /api/plans                     expected 200
+     GET  /api/managed-agents            expected 200
+     GET  /api/providers                 expected 200
+     GET  /api/config                    expected 200
+     GET  /api/learn/cascade-router      expected 200
+     POST /api/run                       body: {"prompt":"hello"}   expected 200 or 202
+     POST /api/plans/generate            body: {"prompt":"test plan"} expected 200 or 202
+4. Exit 0 if the failure counter is 0, otherwise exit 1.
+5. Print a summary line at the end: `N/8 checks passed`.
+
+The script must be executable (chmod +x) and begin with `#!/usr/bin/env bash`.
+Use `set -euo pipefail` only in the function/helper block, not at the top level,
+so that curl failures are caught inside `check` rather than aborting the script.
+Do not hard-code assumptions about the server being up; if curl fails (e.g. the
+server is not running), the `check` helper must catch the failure and count it.
+
+Do not create any other files in this task."""
+status = "ready"
+tier = "mechanical"
+max_loc = 80
+files = ["demo/qa-validation/test-portal-api.sh"]
+role = "implementer"
+depends_on = []
+acceptance = [
+    "demo/qa-validation/test-portal-api.sh exists and is executable.",
+    "Script covers all 8 endpoint checks in the specified order.",
+    "Script exits 0 when all checks pass, non-zero if any fail.",
+    "Script prints a summary line with pass count.",
+]
+
+[task.context]
+symbols = [
+    "curl -s -o /dev/null -w '%{http_code}' — capture HTTP status without body",
+    "/api/health — roko-serve health route, always 200",
+    "/api/plans — list plans, always 200",
+    "/api/run — dispatch prompt, returns 200 or 202",
+    "/api/plans/generate — generate plan from prompt, returns 200 or 202",
+]
+anti_patterns = [
+    "Do not use set -e at the top level — curl failures must be handled inside the check helper.",
+    "Do not require jq or any tool beyond curl and standard POSIX utilities.",
+    "Do not create additional files beyond test-portal-api.sh.",
+]
+
+[[task.verify]]
+phase = "file-exists"
+command = "test -f demo/qa-validation/test-portal-api.sh"
+fail_msg = "demo/qa-validation/test-portal-api.sh must be created by T01"
+
+[[task.verify]]
+phase = "executable"
+command = "test -x demo/qa-validation/test-portal-api.sh"
+fail_msg = "demo/qa-validation/test-portal-api.sh must be executable"
+
+[[task.verify]]
+phase = "shebang"
+command = "grep -q '#!/usr/bin/env bash' demo/qa-validation/test-portal-api.sh"
+fail_msg = "script must begin with #!/usr/bin/env bash"
+
+[[task.verify]]
+phase = "endpoints-covered"
+command = "grep -q '/api/health' demo/qa-validation/test-portal-api.sh && grep -q '/api/plans' demo/qa-validation/test-portal-api.sh && grep -q '/api/managed-agents' demo/qa-validation/test-portal-api.sh && grep -q '/api/providers' demo/qa-validation/test-portal-api.sh && grep -q '/api/config' demo/qa-validation/test-portal-api.sh && grep -q '/api/learn/cascade-router' demo/qa-validation/test-portal-api.sh && grep -q '/api/run' demo/qa-validation/test-portal-api.sh && grep -q '/api/plans/generate' demo/qa-validation/test-portal-api.sh"
+fail_msg = "script must cover all 8 required endpoints"
+
+[[task.verify]]
+phase = "summary-line"
+command = "grep -q 'checks passed' demo/qa-validation/test-portal-api.sh"
+fail_msg = "script must print a summary line containing 'checks passed'"
+
+# ---------------------------------------------------------------------------
+
+[[task]]
+id = "T02"
+title = "Create plan lifecycle test script"
+description = """Create `demo/qa-validation/test-plan-lifecycle.sh` that exercises
+the plan CRUD and execution lifecycle via the HTTP API and exits 0 only if every
+step succeeds.
+
+The script must:
+
+1. Set BASE_URL to `http://localhost:6677` (overridable via environment).
+2. Set PLAN_ID to `qa-test` (used as the plan slug in all routes).
+3. Define the same `check` helper pattern from T01 (label, method, path, body,
+   expected status) with failure counting.
+4. Execute these steps in order:
+     a. PUT  /api/plans/qa-test/tasks     body: a minimal tasks.toml JSON payload
+        (any non-empty JSON object is acceptable)        expected 200 or 201
+     b. GET  /api/plans                                  expected 200
+        then grep the output for "qa-test" — if absent, count as a failure
+     c. POST /api/plans/qa-test/execute                  expected 200 or 202
+     d. GET  /api/plans/qa-test/status                   expected 200 or 404
+        (404 is acceptable here since the plan may not persist between API calls
+        depending on server state; the important thing is the route exists)
+5. Exit 0 if failure counter is 0, otherwise exit 1.
+6. Print a summary line at the end: `N/4 lifecycle steps passed`.
+
+The script must be executable and begin with `#!/usr/bin/env bash`.
+Do not hard-code assumptions about the server being up; catch curl failures in
+the helper.
+
+Do not create any other files in this task."""
+status = "ready"
+tier = "mechanical"
+max_loc = 80
+files = ["demo/qa-validation/test-plan-lifecycle.sh"]
+role = "implementer"
+depends_on = ["T01"]
+acceptance = [
+    "demo/qa-validation/test-plan-lifecycle.sh exists and is executable.",
+    "Script covers PUT create, GET list, POST execute, GET status in order.",
+    "Script exits 0 on full success, non-zero on any failure.",
+    "Script prints a summary line with lifecycle step pass count.",
+]
+
+[task.context]
+read_files = [
+    { path = "demo/qa-validation/test-portal-api.sh", why = "Reuse the check helper pattern established in T01." },
+]
+symbols = [
+    "PUT /api/plans/{id}/tasks — create or replace plan tasks",
+    "POST /api/plans/{id}/execute — trigger plan execution",
+    "GET /api/plans/{id}/status — query execution status",
+]
+anti_patterns = [
+    "Do not require jq; use grep or curl output parsing with standard tools only.",
+    "Do not fail hard if the execute endpoint returns 202 instead of 200.",
+    "Do not create additional files beyond test-plan-lifecycle.sh.",
+]
+
+[[task.verify]]
+phase = "file-exists"
+command = "test -f demo/qa-validation/test-plan-lifecycle.sh"
+fail_msg = "demo/qa-validation/test-plan-lifecycle.sh must be created by T02"
+
+[[task.verify]]
+phase = "executable"
+command = "test -x demo/qa-validation/test-plan-lifecycle.sh"
+fail_msg = "demo/qa-validation/test-plan-lifecycle.sh must be executable"
+
+[[task.verify]]
+phase = "shebang"
+command = "grep -q '#!/usr/bin/env bash' demo/qa-validation/test-plan-lifecycle.sh"
+fail_msg = "script must begin with #!/usr/bin/env bash"
+
+[[task.verify]]
+phase = "lifecycle-steps-covered"
+command = "grep -q 'qa-test/tasks' demo/qa-validation/test-plan-lifecycle.sh && grep -q 'qa-test/execute' demo/qa-validation/test-plan-lifecycle.sh && grep -q 'qa-test/status' demo/qa-validation/test-plan-lifecycle.sh"
+fail_msg = "script must cover PUT tasks, POST execute, and GET status for the qa-test plan"
+
+[[task.verify]]
+phase = "summary-line"
+command = "grep -q 'lifecycle steps passed' demo/qa-validation/test-plan-lifecycle.sh"
+fail_msg = "script must print a summary line containing 'lifecycle steps passed'"
+
+# ---------------------------------------------------------------------------
+
+[[task]]
+id = "T03"
+title = "Create CLI smoke-test script"
+description = """Create `demo/qa-validation/test-cli.sh` that verifies core CLI
+commands work correctly and exits 0 only if all checks pass.
+
+The script must:
+
+1. Set ROKO to `cargo run -p roko-cli --quiet --` or, if a pre-built binary
+   exists at `./target/debug/roko`, use that instead to avoid rebuild cost.
+   Check with `test -x ./target/debug/roko` before deciding.
+2. Define a helper function `check_cmd` that takes a label and a command string.
+   It runs the command, checks the exit code, and counts failures. If the command
+   exits non-zero, print FAIL and the first 3 lines of stderr; otherwise print PASS.
+3. Run these checks in order:
+     a. `$ROKO --help` — must exit 0
+        then grep the output for 'plan' — if absent, count as a failure
+        (verifies the plan subcommand is advertised)
+     b. `$ROKO plan validate plans/example-hello-world` — must exit 0 or 1
+        (exit 0 = valid, exit 1 = warnings only are acceptable; exit 2+ = error)
+        Log the result as PASS if exit code is 0 or 1.
+     c. `$ROKO config show` — must exit 0
+     d. `$ROKO config doctor` — must exit 0
+4. Exit 0 if failure counter is 0, otherwise exit 1.
+5. Print a summary line at the end: `N/4 CLI checks passed`.
+
+The script must be executable and begin with `#!/usr/bin/env bash`.
+
+Do not create any other files in this task."""
+status = "ready"
+tier = "mechanical"
+max_loc = 80
+files = ["demo/qa-validation/test-cli.sh"]
+role = "implementer"
+depends_on = ["T01"]
+acceptance = [
+    "demo/qa-validation/test-cli.sh exists and is executable.",
+    "Script auto-detects pre-built binary vs cargo run.",
+    "Script covers --help, plan validate, config show, config doctor.",
+    "Script exits 0 on full success, non-zero on failure.",
+    "Script prints a summary line with CLI check pass count.",
+]
+
+[task.context]
+read_files = [
+    { path = "demo/qa-validation/test-portal-api.sh", why = "Reuse the helper pattern for consistent output and failure counting." },
+]
+symbols = [
+    "cargo run -p roko-cli --quiet -- — invoke CLI via cargo when no binary present",
+    "./target/debug/roko — pre-built binary path to prefer for speed",
+    "roko plan validate — lints tasks.toml without executing",
+    "roko config show — prints resolved config",
+    "roko config doctor — prints config health diagnostics",
+]
+anti_patterns = [
+    "Do not hard-code the binary path without first checking it exists.",
+    "Do not treat exit code 1 from plan validate as a failure — warnings return 1.",
+    "Do not create additional files beyond test-cli.sh.",
+]
+
+[[task.verify]]
+phase = "file-exists"
+command = "test -f demo/qa-validation/test-cli.sh"
+fail_msg = "demo/qa-validation/test-cli.sh must be created by T03"
+
+[[task.verify]]
+phase = "executable"
+command = "test -x demo/qa-validation/test-cli.sh"
+fail_msg = "demo/qa-validation/test-cli.sh must be executable"
+
+[[task.verify]]
+phase = "shebang"
+command = "grep -q '#!/usr/bin/env bash' demo/qa-validation/test-cli.sh"
+fail_msg = "script must begin with #!/usr/bin/env bash"
+
+[[task.verify]]
+phase = "binary-detection"
+command = "grep -q 'target/debug/roko' demo/qa-validation/test-cli.sh"
+fail_msg = "script must check for and prefer the pre-built binary at ./target/debug/roko"
+
+[[task.verify]]
+phase = "checks-covered"
+command = "grep -q -- '--help' demo/qa-validation/test-cli.sh && grep -q 'plan validate' demo/qa-validation/test-cli.sh && grep -q 'config show' demo/qa-validation/test-cli.sh && grep -q 'config doctor' demo/qa-validation/test-cli.sh"
+fail_msg = "script must cover --help, plan validate, config show, and config doctor"
+
+[[task.verify]]
+phase = "summary-line"
+command = "grep -q 'CLI checks passed' demo/qa-validation/test-cli.sh"
+fail_msg = "script must print a summary line containing 'CLI checks passed'"
+
+# ---------------------------------------------------------------------------
+
+[[task]]
+id = "T04"
+title = "Run all test scripts and write RESULTS.md"
+description = """Act as an independent reviewer. Read all three test scripts
+created by T01, T02, and T03. Then attempt to run each one and record the
+results. Finally, create `demo/qa-validation/RESULTS.md` with a full report.
+
+Steps:
+
+1. Read `demo/qa-validation/test-portal-api.sh`,
+   `demo/qa-validation/test-plan-lifecycle.sh`, and
+   `demo/qa-validation/test-cli.sh` to verify their content before running.
+
+2. Run each script. Capture the exit code and first 20 lines of output.
+   For test-portal-api.sh and test-plan-lifecycle.sh: the server may not be
+   running; record the actual results (PASS/FAIL per check) without assuming
+   the server is up. A curl-connection-refused failure is an expected result
+   when the server is not running, not a script defect.
+
+3. Create `demo/qa-validation/RESULTS.md` with exactly these headings (in order):
+     # QA Validation Results
+     ## test-portal-api.sh
+     ## test-plan-lifecycle.sh
+     ## test-cli.sh
+     ## Summary
+     ## Verdict
+
+   Under each script heading write:
+     - Exit code observed
+     - Output (first 20 lines or `(no output)`)
+     - Script quality assessment: does the script correctly implement its
+       stated contract regardless of server availability?
+
+   Under `## Summary` write one paragraph summarising what passed, what failed,
+   and whether failures are due to server availability vs script defects.
+
+   Under `## Verdict` write exactly one of:
+     `SCRIPTS: PASS` — all three scripts are correctly implemented
+     `SCRIPTS: FAIL — <reason>` — at least one script has a defect
+
+   A script is correctly implemented if it:
+     - Exists, is executable, and has the required shebang
+     - Covers the required endpoints or commands
+     - Prints a summary line
+     - Does not abort on curl/command failures (handles them as counted failures)
+
+4. Do not modify the three test scripts. This is a review-and-run task only."""
+status = "ready"
+tier = "integrative"
+max_loc = 120
+files = ["demo/qa-validation/RESULTS.md"]
+role = "reviewer"
+depends_on = ["T01", "T02", "T03"]
+acceptance = [
+    "demo/qa-validation/RESULTS.md exists with all five required headings.",
+    "Each script section records exit code and output.",
+    "Verdict section contains 'SCRIPTS: PASS' or 'SCRIPTS: FAIL'.",
+    "Review distinguishes server-availability failures from script defects.",
+]
+
+[task.context]
+read_files = [
+    { path = "demo/qa-validation/test-portal-api.sh", why = "Review the portal API test script before running it." },
+    { path = "demo/qa-validation/test-plan-lifecycle.sh", why = "Review the lifecycle test script before running it." },
+    { path = "demo/qa-validation/test-cli.sh", why = "Review the CLI test script before running it." },
+]
+symbols = [
+    "SCRIPTS: PASS — verdict when all three scripts are correctly implemented",
+    "curl connection refused — expected when roko-serve is not running; not a script defect",
+]
+anti_patterns = [
+    "Do not modify any of the three test scripts.",
+    "Do not mark SCRIPTS: FAIL due to server not running — that is an environment condition.",
+    "Do not omit any of the five required headings from RESULTS.md.",
+    "Do not accept a script that aborts on curl failure instead of counting it.",
+]
+
+[[task.verify]]
+phase = "file-exists"
+command = "test -f demo/qa-validation/RESULTS.md"
+fail_msg = "demo/qa-validation/RESULTS.md must be created by T04"
+
+[[task.verify]]
+phase = "headings"
+command = "grep -q '# QA Validation Results' demo/qa-validation/RESULTS.md && grep -q '## test-portal-api.sh' demo/qa-validation/RESULTS.md && grep -q '## test-plan-lifecycle.sh' demo/qa-validation/RESULTS.md && grep -q '## test-cli.sh' demo/qa-validation/RESULTS.md && grep -q '## Summary' demo/qa-validation/RESULTS.md && grep -q '## Verdict' demo/qa-validation/RESULTS.md"
+fail_msg = "RESULTS.md must contain all six required headings"
+
+[[task.verify]]
+phase = "verdict-present"
+command = "grep -qE 'SCRIPTS: PASS|SCRIPTS: FAIL' demo/qa-validation/RESULTS.md"
+fail_msg = "RESULTS.md Verdict section must contain 'SCRIPTS: PASS' or 'SCRIPTS: FAIL'"
+
+[[task.verify]]
+phase = "all-scripts-exist"
+command = "test -f demo/qa-validation/test-portal-api.sh && test -f demo/qa-validation/test-plan-lifecycle.sh && test -f demo/qa-validation/test-cli.sh"
+fail_msg = "All three test scripts must exist before T04 can complete its review"

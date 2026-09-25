@@ -8,6 +8,7 @@ use roko_core::{
 };
 pub use roko_runtime::{LensPayload, LensSignalEnvelope};
 
+#[allow(dead_code)]
 #[path = "../src/builtin_lenses_health.rs"]
 mod builtin_lenses_health;
 

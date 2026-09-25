@@ -1,0 +1,427 @@
+[meta]
+plan = "02-backend-plan-execution"
+total = 9
+done = 0
+status = "ready"
+max_parallel = 1
+skip_enrichment = true
+estimated_total_minutes = 190
+
+# Make POST /api/plans/{id}/execute actually run a plan.
+#
+# Today it returns 202 and then always fails, because the call chain terminates in
+# crates/roko-cli/src/runner/mod.rs run(), a deprecated stub that unconditionally
+# bails with "the legacy Runner-v2 event loop has been removed". Every Execute
+# button in the portal has always been a no-op that reports success then fails.
+#
+# See tmp/portal-audit/01-FINDINGS.md section A1 and 03-CONTRACT.md section 2.3.
+
+[[task]]
+id = "T01"
+title = "Document the live plan execution path"
+description = """
+Before changing anything, establish exactly which function must replace the
+deprecated stub, and record it in `plans/portal-programme/02-backend-plan-execution/EXECUTION-PATH.md`.
+
+Trace and write down, with file and line for each hop:
+
+  1. The route handler that spawns the execution task.
+  2. The runtime trait method it calls.
+  3. The roko-cli implementation of that method.
+  4. The function inside that implementation which currently reaches the deprecated
+     stub in crates/roko-cli/src/runner/mod.rs.
+  5. The graph engine entry point that `roko plan run` uses instead, in
+     crates/roko-cli/src/commands/plan.rs, together with its full parameter list.
+
+Then state which parameters of that engine entry point the HTTP path can supply,
+which need defaults, and what each default should be. The HTTP caller has no
+command-line arguments object, so this mapping is the real design decision of the
+plan and every later task depends on getting it right.
+
+Note explicitly whether the engine entry point is private to its module. If it is,
+say what the smallest sound way to expose it is, without moving the function.
+"""
+status = "ready"
+role = "implementer"
+tier = "integrative"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 25
+depends_on = []
+files = ["plans/portal-programme/02-backend-plan-execution/EXECUTION-PATH.md"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-serve/src/routes/plans.rs", why = "the execute handler that spawns the run" },
+    { path = "crates/roko-serve/src/runtime.rs", why = "the run_plan trait method and its default implementation" },
+    { path = "crates/roko-cli/src/serve_runtime.rs", why = "the real run_plan implementation that reaches the deprecated stub" },
+    { path = "crates/roko-cli/src/runner/mod.rs", why = "the deprecated stub itself, which names its unmigrated call sites" },
+    { path = "crates/roko-cli/src/commands/plan.rs", why = "the graph engine entry point that plan run uses and its parameter list" },
+]
+anti_patterns = [
+    "Do not change any source file in this task. It produces a document only.",
+    "Do not propose moving the engine entry point to another crate. Find the smallest sound exposure.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "test -f plans/portal-programme/02-backend-plan-execution/EXECUTION-PATH.md && grep -q 'runner/mod.rs' plans/portal-programme/02-backend-plan-execution/EXECUTION-PATH.md"
+fail_msg = "EXECUTION-PATH.md is missing or does not trace through the deprecated stub"
+
+[[task]]
+id = "T02"
+title = "Expose the graph engine entry point to the serve runtime"
+description = """
+Make the graph engine plan-run entry point reachable from
+`crates/roko-cli/src/serve_runtime.rs`, following the approach chosen in T01's
+document.
+
+The engine entry point lives in crates/roko-cli/src/commands/plan.rs. Both that
+module and serve_runtime.rs are inside roko-cli, so this is a visibility change
+inside one crate, not a cross-crate move.
+
+Prefer adding a narrow wrapper function next to the entry point that takes only the
+parameters an HTTP caller can supply, and fills the rest with the defaults T01
+specified. That keeps the wide command-line parameter list private and gives the
+server one honest signature to call.
+
+Do not alter the behaviour of the existing entry point. Do not change what `roko plan
+run` does.
+"""
+status = "ready"
+role = "implementer"
+tier = "integrative"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 30
+depends_on = ["T01"]
+files = ["crates/roko-cli/src/commands/plan.rs"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/commands/plan.rs", why = "the entry point being wrapped and its parameter list" },
+    { path = "plans/portal-programme/02-backend-plan-execution/EXECUTION-PATH.md", why = "the parameter mapping and default values decided in T01" },
+    { path = "crates/roko-cli/src/serve_runtime.rs", why = "the caller the wrapper is being shaped for" },
+]
+anti_patterns = [
+    "Do not change the behaviour of the existing plan run path.",
+    "Do not make the full command-line parameter list public.",
+]
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli"
+fail_msg = "roko-cli does not compile after exposing the engine entry point"
+
+[[task]]
+id = "T03"
+title = "Point the serve runtime at the graph engine"
+description = """
+Rewrite the plan execution path in `crates/roko-cli/src/serve_runtime.rs` so it calls
+the wrapper from T02 instead of the deprecated runner entry point.
+
+The function that currently calls the deprecated stub is the local plan run helper in
+this file. Replace that call. When the graph engine returns, map its report into the
+plan execution result the trait returns, carrying success, the output text and the
+gate results rather than leaving the gate list empty as the default implementation
+does.
+
+After this change, no code path in roko-cli should call the deprecated runner entry
+point. Confirm that by searching the crate, and if any other caller remains, list it
+in the task output rather than silently leaving it.
+"""
+status = "ready"
+role = "implementer"
+tier = "integrative"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 30
+depends_on = ["T02"]
+files = ["crates/roko-cli/src/serve_runtime.rs"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/serve_runtime.rs", why = "the helper that calls the deprecated stub and the result type it must return" },
+    { path = "crates/roko-cli/src/commands/plan.rs", why = "the wrapper added in T02 and the report type it returns" },
+    { path = "crates/roko-cli/src/runner/mod.rs", why = "the deprecated stub being removed from the call chain" },
+    { path = "crates/roko-serve/src/runtime.rs", why = "the plan execution result shape the trait method returns" },
+]
+anti_patterns = [
+    "Do not leave the gate results empty. The run view shows them.",
+    "Do not keep a fallback call to the deprecated entry point. It always fails.",
+]
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli"
+fail_msg = "roko-cli does not compile after repointing the serve runtime"
+
+[[task.verify]]
+phase = "structural"
+command = "! grep -n 'runner::run(' crates/roko-cli/src/serve_runtime.rs"
+fail_msg = "serve_runtime.rs still calls the deprecated runner entry point"
+
+[[task]]
+id = "T04"
+title = "Resolve directory plans in the execute handler"
+description = """
+The execute handler in `crates/roko-serve/src/routes/plans.rs` resolves the plan with
+the legacy flat-file lookup, so it returns 404 for every real plan directory before
+it ever reaches the runtime.
+
+Replace that lookup with the runtime plan summary method added by the
+backend-plan-service plan, and pass the plan's own directory as the execution target
+rather than reconstructing a flat file path.
+
+Keep the existing conflict behaviour: if the plan id is already in the active plans
+map, return 409 rather than starting a second run.
+
+This task depends on the backend-plan-service plan having landed. If the runtime does
+not yet expose plan summaries, stop and report that rather than reintroducing the
+flat-file lookup.
+"""
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 25
+depends_on = ["T03"]
+files = ["crates/roko-serve/src/routes/plans.rs"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-serve/src/routes/plans.rs", why = "the execute handler, its flat-file lookup and its conflict check" },
+    { path = "crates/roko-serve/src/runtime.rs", why = "the runtime plan summary method to resolve with" },
+    { path = "crates/roko-serve/src/state.rs", why = "the active plans map and the plan handle stored in it" },
+]
+anti_patterns = [
+    "Do not reconstruct a flat json or toml path for the execution target. Pass the plan directory.",
+    "Do not remove the 409 conflict check.",
+]
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-serve"
+fail_msg = "roko-serve does not compile after fixing plan resolution in execute"
+
+[[task]]
+id = "T05"
+title = "Make plan cancellation actually cancel"
+description = """
+Fix a real bug adjacent to the execute handler in
+`crates/roko-serve/src/routes/plans.rs`.
+
+The plan handle stored in the active plans map holds a cancel token that is created
+fresh and **never passed to the spawned execution task**. The pause handler calls
+cancel on it, which therefore signals nobody; only the abort call on the following
+line has any effect, and aborting a task mid-await leaves no chance for ordered
+shutdown.
+
+Create the cancel token before spawning, move a clone into the spawned task, and have
+the execution path observe it so a cancel request unwinds the run in an orderly way
+rather than being aborted. Keep abort as a last resort with a short grace period, not
+as the primary mechanism.
+
+Also fix the neighbouring field error: the handle records the whole plans directory as
+its plan directory instead of the specific plan's directory.
+"""
+status = "ready"
+role = "implementer"
+tier = "integrative"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 25
+depends_on = ["T04"]
+files = ["crates/roko-serve/src/routes/plans.rs"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-serve/src/routes/plans.rs", why = "the execute and pause handlers and the token that is never passed" },
+    { path = "crates/roko-serve/src/state.rs", why = "the plan handle struct holding the cancel token and plan directory" },
+]
+anti_patterns = [
+    "Do not rely on abort alone. Aborting mid-await skips ordered shutdown.",
+    "Do not leave the plan directory field pointing at the whole plans directory.",
+]
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-serve"
+fail_msg = "roko-serve does not compile after fixing cancellation"
+
+[[task]]
+id = "T06"
+title = "Add a dedicated cancel route"
+description = """
+Register `POST /api/plans/{id}/cancel` in `crates/roko-serve/src/routes/plans.rs`.
+
+Today the portal's cancel action is wired to the pause endpoint, so cancel and pause
+are indistinguishable to the server and a cancelled plan can be resumed as though it
+had merely paused.
+
+Give cancel its own handler that signals the cancel token from T05, removes the plan
+from the active plans map, and returns a body stating the plan was cancelled. Pause
+keeps its snapshot behaviour and stays resumable; cancel does not.
+
+Return 404 when there is no active execution for that plan id, matching the existing
+status handler.
+"""
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 20
+depends_on = ["T05"]
+files = ["crates/roko-serve/src/routes/plans.rs"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-serve/src/routes/plans.rs", why = "the route table, the pause handler to distinguish from, and the status handler's 404 shape" },
+    { path = "crates/roko-serve/src/state.rs", why = "the active plans map the handler mutates" },
+    { path = "crates/roko-serve/src/routes/mod.rs", why = "how route modules are merged and how permissions map to path prefixes" },
+]
+anti_patterns = [
+    "Do not make cancel an alias of pause. A cancelled plan must not be resumable.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'cancel' crates/roko-serve/src/routes/plans.rs && cargo check -p roko-serve"
+fail_msg = "the cancel route is not registered or the crate does not compile"
+
+[[task]]
+id = "T07"
+title = "Emit plan lifecycle events from the execute path"
+description = """
+Make a server-initiated run visible on the dashboard stream.
+
+The spawned execution task in `crates/roko-serve/src/routes/plans.rs` already emits
+plan started and plan completed server events. Confirm those reach the dashboard
+event bus and therefore the SSE stream, and add an explicit failure event carrying
+the error text when the run returns an error, so the portal's alert band can show why
+a run died instead of only that it ended.
+
+The bridge from server events to dashboard events lives in crates/roko-serve/src/lib.rs.
+Read it to confirm the mapping exists for the variants used here, and note in the task
+output any field the bridge drops, since the portal cannot recover a dropped field.
+"""
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 20
+depends_on = ["T06"]
+files = ["crates/roko-serve/src/routes/plans.rs"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-serve/src/routes/plans.rs", why = "the spawned task and the events it already emits" },
+    { path = "crates/roko-serve/src/events.rs", why = "the server event variants available to emit" },
+    { path = "crates/roko-serve/src/lib.rs", why = "the server event to dashboard event bridge and what it drops" },
+]
+anti_patterns = [
+    "Do not invent a new event variant if an existing one carries the same meaning.",
+    "Do not emit a success completion when the run returned an error.",
+]
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-serve"
+fail_msg = "roko-serve does not compile after adding lifecycle event emission"
+
+[[task]]
+id = "T08"
+title = "Add an integration test for plan execution"
+description = """
+Add `crates/roko-serve/tests/plan_execute.rs` proving execution no longer terminates
+in the deprecated stub.
+
+Assert, through the router against a temporary workspace containing a real plan
+directory:
+
+  1. Execute on a directory plan returns 202 and a run id, rather than 404.
+  2. A second execute while the first is active returns 409.
+  3. Execute on a nonexistent plan id returns 404.
+  4. Cancel on an active plan returns success and removes it from the active set, so
+     a subsequent status request reports no active execution.
+
+Use a stub runtime for the trait so the test does not dispatch real agents. The point
+is to prove the handler resolves directory plans, manages the active set, and cancels
+properly. The deprecated stub's absence is already covered by the structural check in
+T03.
+"""
+status = "ready"
+role = "implementer"
+tier = "integrative"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 30
+depends_on = ["T07"]
+files = ["crates/roko-serve/tests/plan_execute.rs"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-serve/src/routes/plans.rs", why = "the handlers under test and their status codes" },
+    { path = "crates/roko-serve/src/runtime.rs", why = "the trait to stub, including its default implementations" },
+    { path = "crates/roko-serve/src/state.rs", why = "the active plans map the assertions inspect" },
+]
+anti_patterns = [
+    "Do not dispatch real agents in a test. Stub the runtime trait.",
+    "Do not write the fixture plan into the real plans directory.",
+]
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-serve --test plan_execute"
+fail_msg = "the plan execution integration test does not pass"
+
+[[task]]
+id = "T09"
+title = "Verify plan execution end to end and record the result"
+description = """
+Run a real plan through the HTTP API and write the outcome to
+`plans/portal-programme/02-backend-plan-execution/REVIEW.md`.
+
+Steps:
+
+  1. Start the server against this workspace.
+  2. Execute the demo-hello plan through the API, not the CLI.
+  3. Watch the event stream and record which events arrive, in order, with their
+     field values.
+  4. Confirm the plan's artifact was actually created on disk. A 202 followed by a
+     completion event is not proof; the file is.
+  5. Confirm a cancel during a longer run stops it and that the plan cannot then be
+     resumed.
+
+The review must state plainly whether execution works end to end. If the run still
+fails, record the exact error and where it originates. Note any event the run view
+will need and which did not arrive, since that is input to the backend-live-events
+plan.
+"""
+status = "ready"
+role = "implementer"
+tier = "integrative"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 25
+depends_on = ["T08"]
+files = ["plans/portal-programme/02-backend-plan-execution/REVIEW.md"]
+
+[task.context]
+read_files = [
+    { path = "tmp/portal-audit/01-FINDINGS.md", why = "the A1 defect this plan claims to fix" },
+    { path = "tmp/portal-audit/03-CONTRACT.md", why = "the eleven events the run view consumes" },
+    { path = "plans/demo-hello/tasks.toml", why = "the plan being executed and the artifact it must produce" },
+]
+anti_patterns = [
+    "Do not accept a 202 response as evidence of success. Check the artifact on disk.",
+    "Do not report success if the run failed. Record the error.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "test -f plans/portal-programme/02-backend-plan-execution/REVIEW.md && grep -qi 'demo-hello' plans/portal-programme/02-backend-plan-execution/REVIEW.md"
+fail_msg = "REVIEW.md is missing or does not record a real execution attempt"

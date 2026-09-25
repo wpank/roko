@@ -1,0 +1,577 @@
+[meta]
+plan = "07-portal-compose"
+total = 11
+done = 0
+status = "ready"
+max_parallel = 1
+skip_enrichment = true
+estimated_total_minutes = 230
+
+# Authoring: the half of the stage where you make a plan.
+#
+# This delivers the flow that defines success. Click generate, type one sentence,
+# get a plan you can read, adjust and run. Three actions, one screen.
+#
+# The DAG is rendered as ordered waves rather than a node canvas: for a plan of a
+# dozen tasks, waves carry the same information in one row and cost nothing to read.
+# See tmp/portal-audit/02-DESIGN.md section 4a.
+
+[[task]]
+id = "T01"
+title = "Compute dependency waves from task edges"
+description = """
+Create `apps/portal/src/lib/waves.ts`, a pure function turning a task list into
+ordered waves.
+
+A wave is the set of tasks whose dependencies are all satisfied by earlier waves.
+Everything in a wave can run concurrently. This is the same computation the runner
+does server side, and the portal must do it client side because **no event carries
+task edges** — the only source is the dependency list on each task from the plan
+tasks endpoint.
+
+Requirements:
+
+  - Detect cycles and return them as a diagnostic rather than looping or throwing. A
+    plan with a cycle must still render, with the cycle named.
+  - Detect dependencies on task ids that do not exist and report them the same way.
+    Both of these are real validation rules the server enforces, and the operator
+    should see them in the editor before the run path rejects the plan.
+  - Be stable: the same input yields the same wave ordering, so the display does not
+    reshuffle on refetch.
+
+Pure logic, no rendering. Unit test it in this task with a table of inputs: a linear
+chain, a diamond, a cycle, a dangling reference, and an empty plan.
+"""
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 25
+depends_on = []
+files = ["apps/portal/src/lib/waves.ts"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/runner/plan_dag.rs", why = "the server-side wave computation whose ordering this must match" },
+    { path = "crates/roko-cli/src/plan_validate.rs", why = "the cycle and dangling dependency rules the editor should surface early" },
+    { path = "apps/portal/src/api/contracts.ts", why = "the task wire shape carrying the dependency list" },
+]
+anti_patterns = [
+    "Do not throw on a cycle. Return it as a diagnostic so the plan still renders.",
+    "Do not produce a different ordering for the same input.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "test -f apps/portal/src/lib/waves.ts && grep -qi 'cycle' apps/portal/src/lib/waves.ts"
+fail_msg = "the wave helper is missing or does not detect cycles"
+
+[[task]]
+id = "T02"
+title = "Build the wave strip"
+description = """
+Create `apps/portal/src/components/compose/WaveStrip.tsx`, the DAG in one row.
+
+Render the waves from T01 as ordered groups of task chips: wave one, its tasks, then
+wave two, its tasks, and so on. Each chip shows the task id and its status glyph.
+Clicking a chip selects that task in the inspector.
+
+This is deliberately not a node-and-edge canvas. A canvas needs layout, pan, zoom and
+a legend, and for a dozen tasks it conveys nothing a wave strip does not. If a plan
+grows past the point where the strip is readable, the strip wraps; it does not become
+a graph.
+
+Show the concurrency, because that is the information a wave carries: a wave with
+four tasks means four agents can run at once, subject to the plan's parallelism
+setting. Make that legible, and mark where the plan's own parallelism limit is lower
+than the wave width, since that is a common and invisible bottleneck.
+
+When a cycle or a dangling dependency was detected, render the affected chips in the
+failure colour with the diagnostic on hover.
+"""
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 25
+depends_on = ["T01"]
+files = ["apps/portal/src/components/compose/WaveStrip.tsx"]
+
+[task.context]
+read_files = [
+    { path = "apps/portal/src/lib/waves.ts", why = "the wave computation and diagnostics being rendered" },
+    { path = "apps/portal/src/styles/rosedust.css", why = "the palette the chip states draw from" },
+    { path = "tmp/portal-audit/02-DESIGN.md", why = "the wave strip specification and why it is not a node canvas" },
+]
+anti_patterns = [
+    "Do not build a node and edge canvas with pan and zoom.",
+    "Do not hide the parallelism limit when it is lower than the wave width.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "test -f apps/portal/src/components/compose/WaveStrip.tsx"
+fail_msg = "the wave strip component was not created"
+
+[[task]]
+id = "T03"
+title = "Build the task inspector"
+description = """
+Create `apps/portal/src/components/compose/TaskInspector.tsx`, where a task is read
+and edited.
+
+Every field maps to a key in the plan's tasks file. Show and edit: the role, the
+tier, the model hint, the dependency list, the output file list, the description, and
+the verify steps with their phase and command.
+
+Constrain the fields the format constrains. The role, tier and status are closed
+sets, not free text, and offering free text guarantees the operator writes something
+the schema rejects. Read the accepted values from the parser rather than hardcoding a
+guess, and note in the task output where you read them from.
+
+Two schema rules the inspector must make visible rather than let the operator
+discover at run time: a task whose role is implementer must have at least one verify
+step, and must have at least one output file. Both are hard schema errors. Show them
+as unmet requirements on the field, not as a validation failure after saving.
+
+The description is the agent's prompt and is the most important field on the screen.
+Give it room. It is not a one-line input.
+"""
+status = "ready"
+role = "implementer"
+tier = "integrative"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 30
+depends_on = ["T02"]
+files = ["apps/portal/src/components/compose/TaskInspector.tsx"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/task_parser.rs", why = "the accepted role, tier and status values and the implementer requirements" },
+    { path = "apps/portal/src/api/contracts.ts", why = "the task wire shape the inspector reads and writes" },
+    { path = "apps/portal/src/components/atoms/Badge.tsx", why = "the existing component conventions" },
+    { path = "tmp/portal-audit/02-DESIGN.md", why = "the inspector layout" },
+]
+anti_patterns = [
+    "Do not offer free text for role, tier or status. They are closed sets.",
+    "Do not hardcode the accepted values. Read them from the parser.",
+    "Do not make the description a single-line input. It is the agent's prompt.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "test -f apps/portal/src/components/compose/TaskInspector.tsx"
+fail_msg = "the task inspector component was not created"
+
+[[task]]
+id = "T04"
+title = "Build the generate prompt"
+description = """
+Create `apps/portal/src/components/compose/GeneratePrompt.tsx`, the single field that
+starts everything.
+
+When the operator picks generate in the rail, the stage becomes one prompt field with
+one hint. Type a sentence, submit with the modifier and enter, and a plan is
+generated. No project type picker, no template gallery, no wizard. One field.
+
+Behaviour:
+
+  - Submit calls the plan generation endpoint with the prompt.
+  - Generation takes tens of seconds, so show what is happening rather than a spinner
+    with no information. The generation lifecycle events carry progress; consume them.
+  - On completion, take the produced plan slug from the completion event, select that
+    plan and switch the stage to authoring mode showing its generated tasks. Do **not**
+    poll the plan list and diff it to guess the slug; that is racy and the event
+    carries it.
+  - On failure, show what failed in the alert band and keep the typed prompt so the
+    operator can adjust rather than retype.
+
+Offer a small number of example prompts below the field, and make the first one a
+rust app that prints hello world, because that is the test that defines done for this
+programme.
+
+Read these files before you start. They were created by an earlier plan in the
+sequence, so they are not pre-loaded as context here:
+  apps/portal/src/lib/useSelection.ts
+"""
+status = "ready"
+role = "implementer"
+tier = "integrative"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 30
+depends_on = ["T03"]
+files = ["apps/portal/src/components/compose/GeneratePrompt.tsx"]
+
+[task.context]
+read_files = [
+    { path = "apps/portal/src/api/hooks.ts", why = "the generation hook and the endpoint it calls" },
+    { path = "apps/portal/src/stores/dashboard.ts", why = "the event state carrying generation progress and completion" },
+    { path = "tmp/portal-audit/00-README.md", why = "the hello world test that defines done" },
+]
+anti_patterns = [
+    "Do not poll the plan list to discover the produced slug. The completion event carries it.",
+    "Do not add a template gallery or a wizard. One field.",
+    "Do not discard the typed prompt on failure.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "test -f apps/portal/src/components/compose/GeneratePrompt.tsx && grep -qi 'hello world' apps/portal/src/components/compose/GeneratePrompt.tsx"
+fail_msg = "the generate prompt is missing or does not offer the hello world example"
+
+[[task]]
+id = "T05"
+title = "Build the live validation badge"
+description = """
+Create `apps/portal/src/components/compose/ValidationBadge.tsx`, which shows whether
+the plan would run.
+
+It calls the plan validation endpoint and renders a summary: valid, or a count of
+errors and warnings. Clicking it lists the diagnostics, and clicking a diagnostic
+selects the task it names.
+
+The important behaviour is that diagnostics anchor to fields. A rule about an unknown
+dependency belongs on the dependency field of the task it names, not in a list at the
+bottom of the screen. Pass the diagnostics down so the inspector can render them in
+place, and make the badge the summary rather than the only presentation.
+
+Debounce revalidation while the operator types. Validation is a round trip and firing
+it per keystroke is both wasteful and visually noisy.
+
+Distinguish severities honestly. An invalid plan is a normal editing state; render it
+as information, not as an error state with alarm colouring. Reserve the failure
+colour for a plan that genuinely cannot run.
+"""
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 25
+depends_on = ["T04"]
+files = ["apps/portal/src/components/compose/ValidationBadge.tsx"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/plan_validate.rs", why = "the diagnostic shape, the rule ids and the severity levels" },
+    { path = "apps/portal/src/api/hooks.ts", why = "the validation hook" },
+    { path = "apps/portal/src/components/compose/TaskInspector.tsx", why = "the inspector that renders diagnostics in place on fields" },
+]
+anti_patterns = [
+    "Do not render diagnostics only as a flat list. Anchor them to the fields they name.",
+    "Do not revalidate on every keystroke.",
+    "Do not colour a plan with warnings as though it had failed.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "test -f apps/portal/src/components/compose/ValidationBadge.tsx"
+fail_msg = "the validation badge component was not created"
+
+[[task]]
+id = "T06"
+title = "Assemble the compose view"
+description = """
+Create `apps/portal/src/components/compose/ComposeView.tsx`, the authoring mode of
+the stage.
+
+Layout, top to bottom: a plan header with the run and edit toggle and the summary
+line stating the task count, the wave count, the estimated total and the parallelism
+setting; the validation badge; the task inspector for the selected task; and the wave
+strip along the bottom.
+
+Selecting a chip in the wave strip changes what the inspector shows. That is the same
+selection principle the rail uses, one level down: one selector, many lenses.
+
+When the plan has no tasks yet, show the derived empty sentence rather than an empty
+inspector.
+
+When the operator arrives here by generating, the view should already be showing the
+first task of the produced plan rather than an empty inspector waiting for a click.
+
+Read these files before you start. They were created by an earlier plan in the
+sequence, so they are not pre-loaded as context here:
+  apps/portal/src/components/shell/Stage.tsx
+  apps/portal/src/lib/emptyState.ts
+"""
+status = "ready"
+role = "implementer"
+tier = "integrative"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 25
+depends_on = ["T05"]
+files = ["apps/portal/src/components/compose/ComposeView.tsx"]
+
+[task.context]
+read_files = [
+    { path = "apps/portal/src/components/compose/TaskInspector.tsx", why = "the inspector being composed" },
+    { path = "apps/portal/src/components/compose/WaveStrip.tsx", why = "the wave strip being composed" },
+    { path = "apps/portal/src/components/compose/ValidationBadge.tsx", why = "the badge being composed" },
+]
+anti_patterns = [
+    "Do not leave the inspector empty after generation. Select the first task.",
+    "Do not introduce a second selection mechanism. The wave strip drives the inspector.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "test -f apps/portal/src/components/compose/ComposeView.tsx && grep -q 'WaveStrip' apps/portal/src/components/compose/ComposeView.tsx"
+fail_msg = "the compose view is missing or does not render the wave strip"
+
+[[task]]
+id = "T07"
+title = "Wire task editing and saving"
+description = """
+Make the inspector's edits persist, through the plan tasks write endpoint.
+
+Requirements:
+
+  - Edits are local until saved. An accidental keystroke must not write to disk.
+  - The save action is explicit and shows its state: unsaved changes, saving, saved.
+  - A rejected save shows why, anchored to the offending field, and leaves the local
+    edits intact so the operator can fix them. A rejected save that discards the work
+    is worse than no save at all.
+  - Saving a plan that is currently running is refused with an explanation, not
+    silently allowed. The runner has already read the file.
+
+Round-trip safety is the thing to get right. Read the tasks, make no change, save,
+and read again: the result must be identical. The server side validates and writes
+through the parser precisely so this holds, and the portal must not undo that by
+dropping fields it does not display. Carry unknown fields through untouched.
+"""
+status = "ready"
+role = "implementer"
+tier = "integrative"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 30
+depends_on = ["T06"]
+files = ["apps/portal/src/components/compose/ComposeView.tsx"]
+
+[task.context]
+read_files = [
+    { path = "apps/portal/src/components/compose/TaskInspector.tsx", why = "the fields being edited and the ones not displayed that must still round trip" },
+    { path = "apps/portal/src/api/hooks.ts", why = "the tasks write hook" },
+    { path = "apps/portal/src/api/contracts.ts", why = "the full task wire shape, including fields the inspector does not show" },
+]
+anti_patterns = [
+    "Do not save on every keystroke.",
+    "Do not drop fields the inspector does not display. Carry them through.",
+    "Do not discard local edits when a save is rejected.",
+    "Do not allow saving a plan that is currently running.",
+]
+
+[[task.verify]]
+phase = "compile"
+command = "cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && ./node_modules/.bin/tsc --noEmit"
+fail_msg = "the portal does not type check after wiring task saving"
+timeout_ms = 600000
+
+[[task]]
+id = "T08"
+title = "Wire the run action"
+description = """
+Make the run control in the compose header actually start the plan, and hand the
+screen over to the run view.
+
+On run: call the execute endpoint, switch the stage to run mode, and open the stream.
+The stage derives its own mode from plan state, so the switch should follow naturally
+from the plan becoming active rather than being forced; verify which happens and make
+the transition immediate either way. A visible delay between clicking run and the
+screen responding reads as a broken button.
+
+Handle the cases honestly:
+
+  - The plan is already running: the control reads cancel, not run, and cancelling
+    asks for confirmation.
+  - The plan has unsaved edits: offer to save first rather than running a stale file,
+    because the runner reads from disk and would silently ignore the edits.
+  - The plan is invalid: say so and do not start. Starting a plan the runner will
+    reject wastes a worktree and produces a confusing failure.
+
+Keyboard: the r binding from the shell reaches this action.
+
+Read these files before you start. They were created by an earlier plan in the
+sequence, so they are not pre-loaded as context here:
+  apps/portal/src/components/shell/Stage.tsx
+  apps/portal/src/lib/useKeyboard.ts
+"""
+status = "ready"
+role = "implementer"
+tier = "integrative"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 25
+depends_on = ["T07"]
+files = ["apps/portal/src/components/compose/ComposeView.tsx"]
+
+[task.context]
+read_files = [
+    { path = "apps/portal/src/api/hooks.ts", why = "the execute and cancel hooks" },
+    { path = "apps/portal/src/components/compose/ValidationBadge.tsx", why = "the validation state that blocks an invalid run" },
+]
+anti_patterns = [
+    "Do not run a plan with unsaved edits without offering to save. The runner reads from disk.",
+    "Do not start a plan that is known invalid.",
+    "Do not cancel without confirmation.",
+]
+
+[[task.verify]]
+phase = "compile"
+command = "cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && ./node_modules/.bin/tsc --noEmit"
+fail_msg = "the portal does not type check after wiring the run action"
+timeout_ms = 600000
+
+[[task]]
+id = "T09"
+title = "Wire creating an empty plan"
+description = """
+Make the new plan action in the rail create a plan directly, without the generator.
+
+Not every plan should come from a prompt. An operator who knows exactly what they
+want should be able to create a plan and write its tasks, and this path is also how
+they recover when generation produces something wrong.
+
+Creating asks only for a name, derives a slug, and produces a plan with one task
+already present and valid: a role, a tier, an output file and a verify step, so the
+plan can run the moment its description is filled in. A new plan that is immediately
+invalid teaches the operator that the editor produces broken output.
+
+Reject a name that collides with an existing plan slug, and say which plan it
+collides with.
+
+Read these files before you start. They are produced by an earlier plan in the
+sequence, so they are not pre-loaded as context here:
+  apps/portal/src/components/shell/PlanRail.tsx
+"""
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 20
+depends_on = ["T08"]
+files = ["apps/portal/src/components/shell/PlanRail.tsx"]
+
+[task.context]
+read_files = [
+    { path = "apps/portal/src/api/hooks.ts", why = "the plan creation and tasks write hooks" },
+    { path = "crates/roko-cli/src/task_parser.rs", why = "the minimum a task needs to be schema valid" },
+    { path = "plans/demo-hello/tasks.toml", why = "a minimal valid plan to model the starter task on" },
+]
+anti_patterns = [
+    "Do not create a plan whose first task is already schema invalid.",
+    "Do not allow a slug collision to silently overwrite an existing plan.",
+]
+
+[[task.verify]]
+phase = "compile"
+command = "cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && ./node_modules/.bin/tsc --noEmit"
+fail_msg = "the portal does not type check after wiring plan creation"
+timeout_ms = 600000
+
+[[task]]
+id = "T10"
+title = "Build the diagnostics drawer"
+description = """
+Create `apps/portal/src/components/shell/DiagnosticsDrawer.tsx`, the home for
+everything that is reference rather than workflow.
+
+Four short sections behind one control, reusing the existing drawer overlay
+component:
+
+  - Connection: the server address, the connection state and the event cursor.
+  - Providers: which providers are configured and their health.
+  - Config: the handful of settings that change behaviour, such as the default model
+    and the budget limits. Not every key in the file.
+  - System: the workspace doctor checks.
+
+This replaces fourteen deleted routes across settings and providers. The ratio is the
+point: those routes existed because each one had somewhere to be, not because anyone
+needed to go there. Three of the deleted settings pages had no API call at all and
+one rendered a permanently empty list.
+
+Keep each section to what an operator would actually look up mid-task. If a section
+needs scrolling, it has too much in it.
+"""
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 25
+depends_on = ["T09"]
+files = ["apps/portal/src/components/shell/DiagnosticsDrawer.tsx"]
+
+[task.context]
+read_files = [
+    { path = "apps/portal/src/components/layout/DrawerOverlay.tsx", why = "the existing overlay being reused" },
+    { path = "apps/portal/src/api/hooks.ts", why = "the provider and config hooks that survived the trim" },
+    { path = "apps/portal/src/lib/env.ts", why = "how the server address is resolved and displayed" },
+    { path = "tmp/portal-audit/05-INVENTORY.md", why = "what the fourteen deleted routes contained" },
+]
+anti_patterns = [
+    "Do not recreate the deleted settings pages inside the drawer.",
+    "Do not show every config key. Show the ones that change behaviour.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "test -f apps/portal/src/components/shell/DiagnosticsDrawer.tsx"
+fail_msg = "the diagnostics drawer component was not created"
+
+[[task]]
+id = "T11"
+title = "Verify the authoring flow and record the result"
+description = """
+Walk the authoring flow against a live server and write the result to
+`plans/portal-programme/07-portal-compose/REVIEW.md`.
+
+Perform each of these in the running portal, not in code:
+
+  1. Generate a plan from the prompt: a rust app that prints hello world. Count the
+     actions from a cold start to a plan appearing in the rail. The design says three.
+     Record the real number.
+  2. Confirm the produced plan is selected automatically with its first task shown,
+     with no extra click.
+  3. Edit a task, save it, reload, and confirm the change persisted.
+  4. Read a plan's tasks, save unchanged, read again, and confirm the result is
+     byte-identical on disk. This is the round-trip test that catches format damage.
+  5. Introduce a dependency on a task id that does not exist, and confirm the
+     diagnostic appears on the dependency field rather than only in a list.
+  6. Create an empty plan and confirm its starter task is schema valid without
+     editing.
+  7. Confirm running a plan with unsaved edits offers to save first.
+
+Record the real result of each. If the action count is above three, say so and say
+where the extra actions are.
+"""
+status = "ready"
+role = "implementer"
+tier = "integrative"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 25
+depends_on = ["T10"]
+files = ["plans/portal-programme/07-portal-compose/REVIEW.md"]
+
+[task.context]
+read_files = [
+    { path = "tmp/portal-audit/02-DESIGN.md", why = "the three-action flow and the authoring specification" },
+    { path = "tmp/portal-audit/00-README.md", why = "the test that defines done" },
+    { path = "apps/portal/src/components/compose/ComposeView.tsx", why = "the view being exercised" },
+]
+anti_patterns = [
+    "Do not count the actions from the design document. Count them in the running portal.",
+    "Do not skip the round-trip check. It is the one that catches format damage.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "test -f plans/portal-programme/07-portal-compose/REVIEW.md && grep -qi 'round' plans/portal-programme/07-portal-compose/REVIEW.md"
+fail_msg = "REVIEW.md is missing or does not record the round-trip check"

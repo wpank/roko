@@ -39,7 +39,11 @@ fn render_at(width: u16, height: u16) -> Vec<String> {
     let dir = tempdir().unwrap();
     let mut app = App::new(dir.path());
     let results = app.render_tabs_to_text(width, height, &[Tab::Dashboard]);
-    assert_eq!(results.len(), 1, "render_at({width},{height}): expected 1 tab result");
+    assert_eq!(
+        results.len(),
+        1,
+        "render_at({width},{height}): expected 1 tab result"
+    );
     let (_, text) = &results[0];
     text.lines().map(|l| l.to_string()).collect()
 }
@@ -166,10 +170,16 @@ fn render_at_zero_dimensions_returns_empty() {
     let mut app = App::new(dir.path());
 
     let result = app.render_all_tabs_to_text(0, 24);
-    assert!(result.is_empty(), "zero width must return empty render list");
+    assert!(
+        result.is_empty(),
+        "zero width must return empty render list"
+    );
 
     let result = app.render_all_tabs_to_text(80, 0);
-    assert!(result.is_empty(), "zero height must return empty render list");
+    assert!(
+        result.is_empty(),
+        "zero height must return empty render list"
+    );
 }
 
 /// Confirm the render helper in the App (render_tabs_to_text) is usable with

@@ -1,0 +1,502 @@
+[meta]
+plan = "01-backend-plan-service"
+total = 10
+done = 0
+status = "ready"
+max_parallel = 1
+skip_enrichment = true
+estimated_total_minutes = 210
+
+# Make roko-serve see the real plans on disk.
+#
+# Today GET /api/plans returns four junk UUID entries from .roko/plans/*.json and
+# the ~35 real plan directories under plans/ are invisible. Root cause is three
+# independent bugs in crates/roko-serve/src/routes/plans.rs, plus the structural
+# fact that roko-serve cannot import roko-cli (the dependency runs cli -> serve).
+# The fix widens the existing CliRuntime inversion seam.
+#
+# See tmp/portal-audit/01-FINDINGS.md section A2 and 03-CONTRACT.md section 2.1.
+
+[[task]]
+id = "T01"
+title = "Add plan discovery methods to the CliRuntime trait"
+description = """
+Widen the `CliRuntime` trait in `crates/roko-serve/src/runtime.rs` with three new
+async methods so the HTTP layer can ask roko-cli for real plans.
+
+Add these alongside the existing `generate_plan_from_prd` and `run_plan`, each with a
+default implementation that returns an explicit "runtime does not support plan
+discovery" error, exactly matching the style already used for
+`generate_plan_from_prd`:
+
+  async fn list_plans(&self, workdir: &Path) -> anyhow::Result<Vec<PlanSummaryDto>>
+  async fn load_plan_summary(&self, workdir: &Path, plan_id: &str) -> anyhow::Result<Option<PlanSummaryDto>>
+  async fn load_plan_tasks(&self, workdir: &Path, plan_id: &str) -> anyhow::Result<Option<PlanTasksDto>>
+
+The DTO type names you reference do not exist yet. T02 adds them, and T02 runs after
+this task. So this task intentionally leaves roko-serve uncompilable: declare the
+methods against the DTO type names, and T02 restores the build. That is why this
+task's verify step is a grep rather than a compile check. Do not create the DTO types
+here and do not stub them out to make the crate compile.
+
+Why a trait method and not a direct import: roko-cli depends on roko-serve
+(crates/roko-cli/Cargo.toml line 67), never the reverse, so roko-serve cannot call
+the CLI plan loader directly. `CliRuntime` is the established inversion seam for
+exactly this and already carries two plan-related methods.
+
+Do not change any existing method signature. Do not remove the existing defaults.
+"""
+status = "ready"
+role = "implementer"
+tier = "integrative"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 25
+depends_on = []
+files = ["crates/roko-serve/src/runtime.rs"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-serve/src/runtime.rs", why = "the trait being widened; copy the default-impl style from generate_plan_from_prd" },
+    { path = "crates/roko-serve/Cargo.toml", why = "confirms roko-serve does not and cannot depend on roko-cli" },
+    { path = "crates/roko-cli/Cargo.toml", why = "shows the dependency edge runs roko-cli to roko-serve" },
+]
+anti_patterns = [
+    "Do not add roko-cli as a dependency of roko-serve. That would create a dependency cycle.",
+    "Do not change the signature of any existing CliRuntime method.",
+    "Do not make the new methods non-default; existing test runtimes must keep compiling.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'fn list_plans' crates/roko-serve/src/runtime.rs && grep -q 'fn load_plan_tasks' crates/roko-serve/src/runtime.rs"
+fail_msg = "CliRuntime does not declare list_plans and load_plan_tasks"
+
+[[task]]
+id = "T02"
+title = "Define plan transport types in roko-serve"
+description = """
+Add the DTO types that `CliRuntime`'s new methods return, in
+`crates/roko-serve/src/plan_types.rs`. These are plain serializable structs owned by
+roko-serve so the trait has no roko-cli types in its signature.
+
+Define:
+
+  PlanSummaryDto { id, title, task_count, tasks_done, tasks_failed, completed,
+                   status, superseded_by, old_format, last_error }
+  PlanTaskDto    { id, title, description, role, tier, status, depends_on, files,
+                   completed, verify_phases }
+  PlanTasksDto   { plan_id, task_count, tasks: Vec<PlanTaskDto> }
+
+Field-for-field these mirror `PlanSummary` in crates/roko-cli/src/plan.rs, which is
+already the exact shape the HTTP response wants, and `TaskDef` in
+crates/roko-cli/src/task_parser.rs. Derive Debug, Clone, Serialize and Deserialize.
+Use serde snake_case, which is the default for these field names, because the portal
+reads snake_case on the wire.
+
+After adding the types, make the crate compile: the trait methods from T01 must
+resolve. Add the module declaration wherever the other modules in the crate are
+declared.
+"""
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 25
+depends_on = ["T01"]
+files = ["crates/roko-serve/src/plan_types.rs"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-serve/src/plan_types.rs", why = "the file being extended; it already holds a Plan type used by the legacy JSON path" },
+    { path = "crates/roko-cli/src/plan.rs", why = "PlanSummary is the shape to mirror field for field" },
+    { path = "crates/roko-cli/src/task_parser.rs", why = "TaskDef supplies the per-task field names" },
+    { path = "crates/roko-serve/src/runtime.rs", why = "the trait signatures these types must satisfy" },
+]
+anti_patterns = [
+    "Do not put roko-cli types in the DTO definitions. roko-serve cannot see them.",
+    "Do not rename fields to camelCase. The wire format is snake_case throughout.",
+]
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-serve"
+fail_msg = "roko-serve does not compile after adding the plan transport types"
+
+[[task]]
+id = "T03"
+title = "Implement plan listing in ServeRuntime"
+description = """
+Implement `CliRuntime::list_plans` and `CliRuntime::load_plan_summary` on the real
+runtime in `crates/roko-cli/src/serve_runtime.rs`.
+
+This is where roko-cli's working plan discovery gets exposed. Reuse the existing
+functions rather than writing new discovery logic:
+
+  roko_cli::plan::summarize_discovered_plans(workdir) -> Result<Vec<PlanSummary>, _>
+  roko_cli::plan::overlay_graph_checkpoint_status(workdir, &mut summaries)
+  roko_cli::plan::discover_plan_by_id(workdir, plan_id) -> Result<Option<PlanInfo>, _>
+
+`summarize_discovered_plans` already handles both layouts: it calls `plans_dir`,
+which prefers the top-level plans directory and falls back to the dotted roko
+directory, and it walks plan directories looking for a tasks file rather than only
+flat files. `overlay_graph_checkpoint_status` merges live graph checkpoint state so a
+running plan reports accurate counts.
+
+Map each `PlanSummary` into the `PlanSummaryDto` added in T02. Sort the result by id
+so the response is deterministic.
+
+For `load_plan_summary`, use `discover_plan_by_id`, which matches either the stable
+plan id or the directory base name, then summarize just that one.
+
+Handle discovery errors by returning them as anyhow errors with context naming the
+workspace directory, not by returning an empty list. A broken plans directory should
+be visible to the operator, not silently empty.
+"""
+status = "ready"
+role = "implementer"
+tier = "integrative"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 30
+depends_on = ["T02"]
+files = ["crates/roko-cli/src/serve_runtime.rs"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/serve_runtime.rs", why = "the impl block being extended; copy the style of the existing generate_plan_from_prd impl" },
+    { path = "crates/roko-cli/src/plan.rs", why = "summarize_discovered_plans, overlay_graph_checkpoint_status, discover_plan_by_id and the PlanSummary shape" },
+    { path = "crates/roko-cli/src/orchestrator/plan_discovery.rs", why = "discover_plans handles directories, flat files, dedupe and ranking" },
+    { path = "crates/roko-serve/src/plan_types.rs", why = "the DTO types to map into" },
+    { path = "crates/roko-serve/src/runtime.rs", why = "the trait methods being implemented" },
+]
+anti_patterns = [
+    "Do not write new directory-walking code. The discovery functions already handle both plan layouts correctly.",
+    "Do not swallow discovery errors into an empty vector. Return the error with context.",
+    "Do not read the legacy flat JSON plan store. This method is about directory plans.",
+]
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli"
+fail_msg = "roko-cli does not compile after implementing list_plans"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'summarize_discovered_plans' crates/roko-cli/src/serve_runtime.rs"
+fail_msg = "ServeRuntime does not reuse summarize_discovered_plans"
+
+[[task]]
+id = "T04"
+title = "Implement plan task loading in ServeRuntime"
+description = """
+Implement `CliRuntime::load_plan_tasks` in `crates/roko-cli/src/serve_runtime.rs`.
+
+Resolve the plan with `roko_cli::plan::discover_plan_by_id(workdir, plan_id)`, take
+its tasks file path, and parse it with `TasksFile::parse` from
+crates/roko-cli/src/task_parser.rs. That parser understands the real schema, which is
+a meta table plus an array of task tables. The legacy parser in
+crates/roko-serve/src/routes/plans.rs cannot read that schema at all and is the third
+reason directory plans are currently invisible.
+
+Map each parsed task into the `PlanTaskDto` from T02. Carry `depends_on` through
+faithfully, because the portal computes the DAG waves from it client side; there is
+no event that carries task edges. Populate `verify_phases` with the phase string of
+each verify step so the Compose view can show them without a second request.
+
+Return Ok(None) when the plan id does not resolve, so the route layer can produce a
+clean 404 instead of an error page.
+"""
+status = "ready"
+role = "implementer"
+tier = "integrative"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 30
+depends_on = ["T03"]
+files = ["crates/roko-cli/src/serve_runtime.rs"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/serve_runtime.rs", why = "the impl block being extended, now containing list_plans from T03" },
+    { path = "crates/roko-cli/src/task_parser.rs", why = "the parse entry point and the task field names to map from" },
+    { path = "crates/roko-cli/src/runner/plan_loader.rs", why = "shows how the runner loads a plan directory into a parsed tasks file" },
+    { path = "crates/roko-serve/src/plan_types.rs", why = "the DTO types to map into" },
+]
+anti_patterns = [
+    "Do not use the RawPlan parser in roko-serve routes. It cannot read the meta and task table schema.",
+    "Do not drop depends_on. The portal has no other source for the task DAG.",
+    "Do not return an error when the plan simply does not exist. Return Ok(None).",
+]
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli"
+fail_msg = "roko-cli does not compile after implementing load_plan_tasks"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'load_plan_tasks' crates/roko-cli/src/serve_runtime.rs"
+fail_msg = "ServeRuntime does not implement load_plan_tasks"
+
+[[task]]
+id = "T05"
+title = "Route plan listing through the runtime"
+description = """
+Rewrite the `list_plans` handler in `crates/roko-serve/src/routes/plans.rs` to
+delegate to `state.runtime.list_plans(&state.workdir)` instead of reading
+`.roko/plans/*.json` directly.
+
+The current handler reads a directory and skips any entry whose extension is not toml
+or json. A plan directory has no extension, so every real plan is skipped. That loop
+goes away entirely.
+
+Keep the response as a JSON array of objects with the same key names the portal
+already reads: id, title, task_count, completed, completed_task_count. Add
+tasks_failed and status from the DTO, which the new run view needs to colour a plan
+amber when its tasks are dispatched but gates have not finished.
+
+Map a runtime error to a 500 with a message naming the workspace directory. Keep the
+existing route registration and permission mapping unchanged.
+
+Verify manually before finishing: start the server and confirm the response contains
+a plan named example-hello-world, which is a real directory under plans/ and is
+currently absent from the response.
+"""
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 25
+depends_on = ["T04"]
+files = ["crates/roko-serve/src/routes/plans.rs"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-serve/src/routes/plans.rs", why = "the handler being rewritten and the extension-filter loop being removed" },
+    { path = "crates/roko-serve/src/runtime.rs", why = "the runtime method to delegate to" },
+    { path = "crates/roko-serve/src/plan_types.rs", why = "the DTO fields to serialize" },
+    { path = "crates/roko-serve/src/error.rs", why = "how handlers map errors to status codes in this crate" },
+]
+anti_patterns = [
+    "Do not keep the extension filter. It is the reason directory plans are invisible.",
+    "Do not rename the existing response keys. The portal reads id, title, task_count and completed_task_count.",
+    "Do not change the route path or its permission mapping.",
+]
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-serve"
+fail_msg = "roko-serve does not compile after rewriting list_plans"
+
+[[task]]
+id = "T06"
+title = "Route plan task reads through the runtime"
+description = """
+Rewrite the `plan_tasks` handler in `crates/roko-serve/src/routes/plans.rs` to
+delegate to `state.runtime.load_plan_tasks(&state.workdir, &id)`.
+
+Today this returns 404 for every directory plan because `find_plan` probes only a
+flat json or toml file next to the plans directory and never a plan directory
+containing a tasks file.
+
+Keep the response envelope the portal already expects: an object with plan_id,
+task_count and a tasks array, not a bare array. Each task keeps id, description,
+status, completed, depends_on and files, and gains title, role, tier and
+verify_phases from the DTO.
+
+Return 404 with the existing not-found error shape when the runtime returns None.
+Keep `validate_path_segment` on the id so path traversal is still rejected with a
+400.
+"""
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 25
+depends_on = ["T05"]
+files = ["crates/roko-serve/src/routes/plans.rs"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-serve/src/routes/plans.rs", why = "the handler being rewritten, now with list_plans already delegating" },
+    { path = "crates/roko-serve/src/runtime.rs", why = "the runtime method to delegate to" },
+    { path = "crates/roko-serve/src/error.rs", why = "the not-found error shape and path segment validation" },
+]
+anti_patterns = [
+    "Do not flatten the response to a bare array. The portal reads an object with a tasks field.",
+    "Do not remove the path segment validation. It rejects traversal attempts.",
+]
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-serve"
+fail_msg = "roko-serve does not compile after rewriting plan_tasks"
+
+[[task]]
+id = "T07"
+title = "Route single plan reads through the runtime"
+description = """
+Rewrite the `get_plan` handler in `crates/roko-serve/src/routes/plans.rs` to use
+`state.runtime.load_plan_summary`, with the same 404 behaviour as T06.
+
+This is the last read path still going through `find_plan` and `load_plan_file`. Once
+it is converted, mark both of those functions and the `RawPlan` struct as dead by
+removing them, unless `create_plan` still needs them. If `create_plan` does still
+write flat json, leave the write path alone and only remove what is now unreferenced.
+Run the compiler and let it tell you what is unused rather than guessing.
+"""
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 20
+depends_on = ["T06"]
+files = ["crates/roko-serve/src/routes/plans.rs"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-serve/src/routes/plans.rs", why = "the handler being rewritten and the legacy loader being retired" },
+    { path = "crates/roko-serve/src/runtime.rs", why = "the runtime method to delegate to" },
+]
+anti_patterns = [
+    "Do not delete the plan creation write path in the same change. Only remove what the compiler reports as unused.",
+]
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-serve"
+fail_msg = "roko-serve does not compile after rewriting get_plan"
+
+[[task]]
+id = "T08"
+title = "Give the legacy plans directory helper a dual-root fallback"
+description = """
+The helper `plans_dir` in `crates/roko-serve/src/routes/plans.rs` hardcodes the
+dotted roko plans directory. Any remaining caller, such as the plan creation write
+path, therefore writes somewhere the new read path does not look first.
+
+Make it mirror the CLI helper of the same name in crates/roko-cli/src/plan.rs: prefer
+the top-level plans directory when it is a directory, and fall back to the dotted
+roko path otherwise. Several other route modules in this crate already do this probe
+inline, so the behaviour is consistent with the rest of the server.
+
+Add a unit test in the same file covering both branches using a temporary directory.
+"""
+status = "ready"
+role = "implementer"
+tier = "mechanical"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 15
+depends_on = ["T07"]
+files = ["crates/roko-serve/src/routes/plans.rs"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-serve/src/routes/plans.rs", why = "the helper being changed and where its unit tests live" },
+    { path = "crates/roko-cli/src/plan.rs", why = "the CLI helper whose fallback order is being mirrored" },
+]
+anti_patterns = [
+    "Do not create the top-level plans directory as a side effect. Only probe whether it already exists.",
+]
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-serve --lib plans"
+fail_msg = "the plans directory fallback tests do not pass"
+
+[[task]]
+id = "T09"
+title = "Add an integration test for directory plan discovery"
+description = """
+Add `crates/roko-serve/tests/plan_discovery.rs` proving the three defects are fixed.
+
+Build a temporary workspace containing a plan directory with a valid tasks file, then
+assert through the router:
+
+  1. The plan listing contains that plan by its directory slug, with the right task
+     count. This is the fix for the extension-filter and wrong-root bugs.
+  2. Reading that plan's tasks returns the envelope with the task ids, their roles,
+     and their depends_on edges intact. This is the fix for the schema bug.
+  3. Reading a plan id that does not exist returns 404, not 500.
+  4. A plan id containing a path traversal segment returns 400.
+
+Follow the harness style already used by the other integration tests in that
+directory. Do not start a real network listener if the existing tests exercise the
+router directly.
+"""
+status = "ready"
+role = "implementer"
+tier = "integrative"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 30
+depends_on = ["T08"]
+files = ["crates/roko-serve/tests/plan_discovery.rs"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-serve/src/routes/plans.rs", why = "the handlers under test and their exact response shapes" },
+    { path = "crates/roko-serve/src/plan_types.rs", why = "the DTO fields the assertions check" },
+    { path = "plans/demo-hello/tasks.toml", why = "a minimal valid tasks file to model the fixture on" },
+]
+anti_patterns = [
+    "Do not write the fixture into the real plans directory. Use a temporary workspace.",
+    "Do not assert on the four legacy junk plans. They are incidental local state.",
+]
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-serve --test plan_discovery"
+fail_msg = "the plan discovery integration test does not pass"
+
+[[task]]
+id = "T10"
+title = "Verify plan discovery end to end and record the result"
+description = """
+Confirm the whole plan is real, not just compiling, and write the result to
+`plans/portal-programme/01-backend-plan-service/REVIEW.md`.
+
+Steps:
+
+  1. Build the CLI and start the server against this workspace.
+  2. Request the plan listing and confirm real directory plans appear, naming at
+     least example-hello-world and demo-hello. Record the actual count.
+  3. Request the tasks of one directory plan and confirm the ids, roles and
+     depends_on edges match what the tasks file on disk contains.
+  4. Confirm a nonexistent plan id returns 404 and a traversal id returns 400.
+
+The review file must state, for each of the three root causes named in
+tmp/portal-audit/01-FINDINGS.md section A2, whether it is fixed, with the evidence
+that shows it. If something is not fixed, say so plainly rather than reporting
+success. List any follow-up work for the gaps file.
+"""
+status = "ready"
+role = "implementer"
+tier = "integrative"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 25
+depends_on = ["T09"]
+files = ["plans/portal-programme/01-backend-plan-service/REVIEW.md"]
+
+[task.context]
+read_files = [
+    { path = "tmp/portal-audit/01-FINDINGS.md", why = "the three root causes this plan claims to fix" },
+    { path = "tmp/portal-audit/03-CONTRACT.md", why = "the endpoint contract the result is measured against" },
+    { path = "crates/roko-serve/src/routes/plans.rs", why = "the handlers being verified" },
+]
+anti_patterns = [
+    "Do not report success without running the server and making the requests.",
+    "Do not mark a root cause fixed based on the code reading alone.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "test -f plans/portal-programme/01-backend-plan-service/REVIEW.md && grep -qi 'example-hello-world' plans/portal-programme/01-backend-plan-service/REVIEW.md"
+fail_msg = "REVIEW.md is missing or does not record the live plan listing evidence"

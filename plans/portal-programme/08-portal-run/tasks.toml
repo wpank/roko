@@ -1,0 +1,685 @@
+[meta]
+plan = "08-portal-run"
+total = 13
+done = 0
+status = "ready"
+max_parallel = 1
+skip_enrichment = true
+estimated_total_minutes = 280
+
+# Watching: the half of the stage where a plan executes.
+#
+# Modeled on the terminal dashboard this design borrows from: a progress header over
+# four panels, with a structured agent transcript below. Copy its information
+# architecture and its colour semantics; do not copy its decoration.
+#
+# The last three tasks are the end-to-end proof for the whole programme.
+# See tmp/portal-audit/02-DESIGN.md sections 4b and 5.
+
+[[task]]
+id = "T01"
+title = "Decode the framed agent output records"
+description = """
+Create `apps/portal/src/lib/streamRecord.ts`, which turns an agent output event into
+a structured record.
+
+Agent output content is **not raw text**. Every line is wrapped in a record separator
+character, a version marker, and a JSON body whose kind is one of text, reasoning,
+tool start, or tool result, alongside the agent, plan and task ids and an attempt
+number. The framing constants are defined in the runner bridge.
+
+Implement a decoder that strips the prefix, parses the body, and returns a typed
+record. Handle the cases that will occur in practice:
+
+  - A line with no prefix, which is legacy or unframed output. Return it as text
+    rather than discarding it.
+  - A malformed JSON body. Return it as text with a flag, never throw. One bad record
+    must not break the transcript.
+  - A truncated tool result. Oversized tool output is truncated server side, keeping
+    the tail rather than the head, so mark it as truncated and say which end was cut.
+
+Unit test each case in this task. This decoder sits between the event stream and
+everything the operator reads, so it has to be robust rather than clever.
+"""
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 25
+depends_on = []
+files = ["apps/portal/src/lib/streamRecord.ts"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/runner/tui_bridge.rs", why = "the framing constants, the record kinds and the exact prefix written" },
+    { path = "crates/roko-cli/src/graph_task_dispatch.rs", why = "where records are produced and where oversized tool output is truncated" },
+    { path = "apps/portal/src/api/contracts.ts", why = "the agent output event wire shape carrying the framed content" },
+]
+anti_patterns = [
+    "Do not throw on a malformed record. One bad line must not break the transcript.",
+    "Do not discard unframed lines. Return them as text.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "test -f apps/portal/src/lib/streamRecord.ts && grep -qi 'tool' apps/portal/src/lib/streamRecord.ts"
+fail_msg = "the stream record decoder is missing or does not handle tool records"
+
+[[task]]
+id = "T02"
+title = "Build the structured transcript"
+description = """
+Create `apps/portal/src/components/run/Transcript.tsx`, which renders decoded records
+as a readable transcript rather than a log tail.
+
+Each record gets a gutter glyph and the role's accent colour by kind: a filled
+diamond for a heading, a hollow circle for reasoning, a pencil for a file edit, a
+hollow diamond for a file read, a gear for a tool call, a vertical bar for code, and
+a check or cross for success and failure.
+
+The source is already structured, so do not do string surgery on model prose to guess
+at paragraph breaks. The terminal UI this borrows from had to, because it received
+flat text; here the record kind is explicit and should be trusted.
+
+A browser does this better than a terminal can, and should:
+
+  - Render real markdown in text records.
+  - Make tool calls collapsible, collapsed by default, showing the tool name and a
+    one-line summary. A long tool result should not push the reasoning off screen.
+  - Syntax highlight code records.
+  - Make file paths clickable, selecting the task that owns that file.
+
+Auto-scroll while at the bottom; stop when the operator scrolls up and show a control
+to resume. Cap the retained lines and say when lines were dropped rather than
+silently losing them.
+"""
+status = "ready"
+role = "implementer"
+tier = "integrative"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 35
+depends_on = ["T01"]
+files = ["apps/portal/src/components/run/Transcript.tsx"]
+
+[task.context]
+read_files = [
+    { path = "apps/portal/src/lib/streamRecord.ts", why = "the decoded record kinds being rendered" },
+    { path = "apps/portal/src/stores/dashboard.ts", why = "the agent output ring the transcript reads from" },
+    { path = "apps/portal/src/styles/rosedust.css", why = "the palette the gutter accents draw from" },
+    { path = "tmp/portal-audit/02-DESIGN.md", why = "the glyph vocabulary and the transcript specification" },
+]
+anti_patterns = [
+    "Do not do string surgery on prose to fake paragraph breaks. The record kind is explicit.",
+    "Do not expand tool results by default. They push the reasoning off screen.",
+    "Do not keep auto-scrolling after the operator scrolls up.",
+    "Do not drop lines silently when the cap is reached.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "test -f apps/portal/src/components/run/Transcript.tsx"
+fail_msg = "the transcript component was not created"
+
+[[task]]
+id = "T03"
+title = "Build the stream pane with agent tabs"
+description = """
+Create `apps/portal/src/components/run/StreamPane.tsx`, the bottom region of the
+screen.
+
+Tabs are the agents working on the selected plan, each labelled with a status glyph,
+the task id and the role, plus badge tabs for errors, the diff and gate output.
+
+One rule about badges, taken from the reference UI and worth keeping exactly: a count
+appears only on an **inactive** tab. The active tab suppresses its own badge, because
+the operator is already looking at the content the badge would be summarizing.
+
+The pane collapses and expands, opens automatically when a run starts, and remembers
+its state per plan. Its open state and the active tab live in the URL selection, so a
+reload restores what the operator was reading.
+
+When nothing is running, do not show an empty pane with dead tabs. Show the last run's
+transcript if there is one, or the derived empty sentence if there is not.
+
+Read these files before you start. They were created by an earlier plan in the
+sequence, so they are not pre-loaded as context here:
+  apps/portal/src/lib/useSelection.ts
+  apps/portal/src/lib/emptyState.ts
+"""
+status = "ready"
+role = "implementer"
+tier = "integrative"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 30
+depends_on = ["T02"]
+files = ["apps/portal/src/components/run/StreamPane.tsx"]
+
+[task.context]
+read_files = [
+    { path = "apps/portal/src/components/run/Transcript.tsx", why = "the transcript each agent tab renders" },
+    { path = "apps/portal/src/stores/dashboard.ts", why = "the agent state supplying the tab list" },
+]
+anti_patterns = [
+    "Do not show a badge count on the active tab.",
+    "Do not render dead tabs when nothing is running.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "test -f apps/portal/src/components/run/StreamPane.tsx"
+fail_msg = "the stream pane component was not created"
+
+[[task]]
+id = "T04"
+title = "Build the progress header"
+description = """
+Create `apps/portal/src/components/run/ProgressHeader.tsx`, the top of the run view.
+
+It shows a progress bar coloured by semantic band, a done-over-total count, elapsed
+time, an estimate, and the accumulated cost.
+
+Elapsed and estimate appear together, always. A single elapsed figure cannot answer
+the operator's real question, which is whether the run is behind. The estimate comes
+from the critical path estimate event; when it is absent, show a placeholder dot
+rather than hiding the field, so the layout does not shift when it arrives.
+
+Note a real constraint while building this: until the live events work lands, task
+completion arrives in one batch at the end of a run, so this bar will sit at zero and
+then jump to complete. Build against the live contract; if the bar behaves that way at
+review time, that is a backend gap to report, not a reason to fake intermediate
+progress here.
+
+Smooth the cost figure so it does not jitter digit by digit. Smooth once, on ingest,
+not per render.
+"""
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 20
+depends_on = ["T03"]
+files = ["apps/portal/src/components/run/ProgressHeader.tsx"]
+
+[task.context]
+read_files = [
+    { path = "apps/portal/src/stores/dashboard.ts", why = "the plan progress, cost and estimate state" },
+    { path = "apps/portal/src/lib/formatters.ts", why = "the compact duration and currency helpers" },
+    { path = "tmp/portal-audit/03-CONTRACT.md", why = "which timing and cost data the event stream actually carries" },
+]
+anti_patterns = [
+    "Do not show elapsed time without an estimate beside it.",
+    "Do not hide the estimate field when it is absent. Show a placeholder.",
+    "Do not synthesize intermediate progress to hide a backend gap.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "test -f apps/portal/src/components/run/ProgressHeader.tsx"
+fail_msg = "the progress header component was not created"
+
+[[task]]
+id = "T05"
+title = "Build the live task list"
+description = """
+Create `apps/portal/src/components/run/TaskList.tsx`, the run view's primary panel.
+
+Each row: a status glyph, the task id, a countdown when the task is active, the
+title, and the short id of the owning agent. Sort active first, then queued, then
+done, so the rows the operator cares about are always at the top and do not move as
+the run progresses.
+
+The countdown is the estimate minus the elapsed, shown in the warning colour when it
+goes negative. That single figure is what tells an operator a task is stuck, and it
+is more useful than either number alone.
+
+Selecting a row points the stream pane at that task's agent. Same selection
+principle, one level down.
+
+Expanding a row shows the task's output files, its dependencies with their current
+status, and its gate results inline.
+
+Use the status glyph and metric cell primitives. Do not define new state colours
+here; the amber-for-dispatched-but-unfinished rule applies to tasks exactly as it does
+to plans.
+"""
+status = "ready"
+role = "implementer"
+tier = "integrative"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 30
+depends_on = ["T04"]
+files = ["apps/portal/src/components/run/TaskList.tsx"]
+
+[task.context]
+read_files = [
+    { path = "apps/portal/src/stores/dashboard.ts", why = "the task state slice, keyed by plan and task, and the gate results" },
+    { path = "apps/portal/src/components/run/StreamPane.tsx", why = "the pane a row selection points at a task's agent" },
+    { path = "apps/portal/src/lib/formatters.ts", why = "the duration helpers for the countdown" },
+    { path = "tmp/portal-audit/02-DESIGN.md", why = "the row anatomy and the sort order" },
+]
+anti_patterns = [
+    "Do not sort by task id. Active work belongs at the top and must not move.",
+    "Do not define new state colours here.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "test -f apps/portal/src/components/run/TaskList.tsx"
+fail_msg = "the task list component was not created"
+
+[[task]]
+id = "T06"
+title = "Build the agent roster"
+description = """
+Create `apps/portal/src/components/run/AgentRoster.tsx`. This is how parallelism is
+shown, and it replaces the deleted agent roster and topology routes entirely.
+
+Each row: a status glyph, the role in its accent colour, the bound task, the context
+fill as used over available, and a segmented gauge. Active agents sort first.
+
+The context gauge is the panel's real value. Its colour runs from the success colour
+through warning to the failure colour as the context fills, with tick marks at eighty
+and ninety percent, so an agent approaching its limit is visible before it fails
+rather than after. That is information the operator cannot get any other way.
+
+Selecting an agent points the stream pane at its transcript.
+
+Show idle capacity honestly: if the plan permits four concurrent agents and two are
+working, say so. An operator watching a slow run needs to know whether it is
+bottlenecked on parallelism or on the dependency graph, and this panel plus the wave
+width answers that.
+"""
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 25
+depends_on = ["T05"]
+files = ["apps/portal/src/components/run/AgentRoster.tsx"]
+
+[task.context]
+read_files = [
+    { path = "apps/portal/src/stores/dashboard.ts", why = "the agent state slice, including the context and token fields" },
+    { path = "apps/portal/src/components/run/StreamPane.tsx", why = "the pane an agent selection points at" },
+    { path = "tmp/portal-audit/02-DESIGN.md", why = "the roster specification and the context gauge rules" },
+]
+anti_patterns = [
+    "Do not hide idle capacity. The operator needs to know what the run is bottlenecked on.",
+    "Do not omit the eighty and ninety percent ticks on the context gauge.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "test -f apps/portal/src/components/run/AgentRoster.tsx"
+fail_msg = "the agent roster component was not created"
+
+[[task]]
+id = "T07"
+title = "Build the gate strip"
+description = """
+Create `apps/portal/src/components/run/GateStrip.tsx`, showing the verification
+pipeline for the selected task.
+
+One compact row of rungs, each with its name and a status glyph: passed, failed,
+running, or not yet reached. Selecting a rung puts its output in the stream pane.
+
+Gates are the best-instrumented part of the system: rung start and rung result events
+both fire live and carry the gate name, the verdict, and the output text. Use all of
+it.
+
+Two limits to handle rather than paper over. The dashboard event carries no rung
+index, so order the strip by the plan's configured rung order rather than by arrival.
+And it carries no duration, so do not show a per-rung timing figure you would have to
+invent. Both limits are recorded in the contract document as deferred backend work;
+if they have since been fixed, use the real fields and say so.
+"""
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 20
+depends_on = ["T06"]
+files = ["apps/portal/src/components/run/GateStrip.tsx"]
+
+[task.context]
+read_files = [
+    { path = "apps/portal/src/stores/dashboard.ts", why = "the gate result slice and the active rung field" },
+    { path = "crates/roko-core/src/dashboard_snapshot.rs", why = "the gate event fields, confirming there is no rung index or duration" },
+    { path = "tmp/portal-audit/03-CONTRACT.md", why = "the deferred gate event fields" },
+]
+anti_patterns = [
+    "Do not invent a per-rung duration. The event does not carry one.",
+    "Do not order rungs by arrival time. Use the configured order.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "test -f apps/portal/src/components/run/GateStrip.tsx"
+fail_msg = "the gate strip component was not created"
+
+[[task]]
+id = "T08"
+title = "Build the token burn panel"
+description = """
+Create `apps/portal/src/components/run/BurnPanel.tsx`, answering who is spending the
+budget.
+
+Show the cumulative token total, a burn-rate sparkline over time, and a per-role
+share line such as implementer at sixty-nine percent. The share is the part that
+matters; a single aggregate number does not tell the operator which role to look at.
+
+Colour the panel border and the sparkline by rate band, so a runaway burn is visible
+peripherally without reading the number.
+
+Render the sparkline as SVG. The reference terminal UI packed two samples per cell
+into braille characters, which is a clever answer to a terminal's constraints and a
+poor answer here: SVG gives more resolution, real hover values, and an axis, for less
+effort.
+
+Note the dependency honestly: until the backend live events work lands, token and
+cost events are never emitted, so this panel will read zero. Build against the
+contract. If it reads zero at review time, report it as a backend gap rather than
+sourcing the numbers from somewhere else.
+"""
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 25
+depends_on = ["T07"]
+files = ["apps/portal/src/components/run/BurnPanel.tsx"]
+
+[task.context]
+read_files = [
+    { path = "apps/portal/src/stores/dashboard.ts", why = "the token and cost totals, and the per-agent breakdown" },
+    { path = "apps/portal/src/components/atoms/Sparkline.tsx", why = "the existing sparkline component to reuse or extend" },
+    { path = "tmp/portal-audit/03-CONTRACT.md", why = "which usage events exist and when they became live" },
+]
+anti_patterns = [
+    "Do not render the sparkline with braille characters. Use SVG.",
+    "Do not show only an aggregate. The per-role share is the useful part.",
+    "Do not source numbers from elsewhere to hide a missing event.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "test -f apps/portal/src/components/run/BurnPanel.tsx"
+fail_msg = "the burn panel component was not created"
+
+[[task]]
+id = "T09"
+title = "Build the error digest"
+description = """
+Create `apps/portal/src/components/run/ErrorDigest.tsx`, which makes a failure
+readable.
+
+Parse gate output into file, line, message and severity. Group by file. Deduplicate
+identical messages with a repeat count. Sort errors before warnings. Render as a tree
+with a severity-coloured rail down the left.
+
+Raw compiler output is secondary and available behind a control. The digest is what
+the operator reads first, because a failing gate typically produces the same message
+many times and the shape of the failure is what matters, not its volume.
+
+Clicking an entry selects the task that owns that file and puts its transcript in the
+stream pane.
+
+Parse conservatively. Compiler output formats vary by language and tool, so recognise
+the common shapes, and when a line does not parse, keep it as raw text in the group
+rather than discarding it. A digest that silently drops the one line that explained
+the failure is worse than no digest.
+"""
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 25
+depends_on = ["T08"]
+files = ["apps/portal/src/components/run/ErrorDigest.tsx"]
+
+[task.context]
+read_files = [
+    { path = "apps/portal/src/stores/dashboard.ts", why = "the error slice and the gate output text being parsed" },
+    { path = "apps/portal/src/components/run/StreamPane.tsx", why = "the pane an entry selection points at" },
+    { path = "tmp/portal-audit/02-DESIGN.md", why = "the digest specification" },
+]
+anti_patterns = [
+    "Do not discard lines that do not parse. Keep them as raw text.",
+    "Do not show raw compiler output as the primary view.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "test -f apps/portal/src/components/run/ErrorDigest.tsx"
+fail_msg = "the error digest component was not created"
+
+[[task]]
+id = "T10"
+title = "Assemble the run view"
+description = """
+Create `apps/portal/src/components/run/RunView.tsx`, the run mode of the stage.
+
+Layout: the progress header across the top, then a two-column body with the task list
+on the left and the agent roster above the gate strip on the right, then the burn
+panel along the bottom. The stream pane is the shell's bottom region, not part of
+this view.
+
+Size the panels by content rather than fixing the split. A plan with three tasks and
+one agent should not reserve half the width for an almost-empty roster. The reference
+UI computed panel heights from item counts and it is worth copying.
+
+Degrade by shedding precision before identity. At a narrow width a task row loses its
+countdown and its agent id before it loses its glyph and title, and the burn panel
+loses the sparkline before the totals. Never let a row lose the information that says
+which thing it is.
+
+Wire the cancel control with confirmation, and make sure a cancelled run leaves the
+running state rather than appearing to hang.
+
+Read these files before you start. They were created by an earlier plan in the
+sequence, so they are not pre-loaded as context here:
+  apps/portal/src/components/shell/Stage.tsx
+"""
+status = "ready"
+role = "implementer"
+tier = "integrative"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 30
+depends_on = ["T09"]
+files = ["apps/portal/src/components/run/RunView.tsx"]
+
+[task.context]
+read_files = [
+    { path = "apps/portal/src/components/run/ProgressHeader.tsx", why = "the header being composed" },
+    { path = "apps/portal/src/components/run/TaskList.tsx", why = "the primary panel being composed" },
+    { path = "apps/portal/src/components/run/AgentRoster.tsx", why = "the roster being composed" },
+    { path = "apps/portal/src/components/run/BurnPanel.tsx", why = "the burn panel being composed" },
+]
+anti_patterns = [
+    "Do not fix the column split. Size panels by content.",
+    "Do not let a row lose its identifying information when narrow.",
+    "Do not cancel without confirmation.",
+]
+
+[[task.verify]]
+phase = "compile"
+command = "cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && ./node_modules/.bin/tsc --noEmit"
+fail_msg = "the portal does not type check after assembling the run view"
+timeout_ms = 600000
+
+[[task.verify]]
+phase = "integration"
+command = "cd apps/portal && npm run build"
+fail_msg = "the portal production build fails after assembling the run view"
+timeout_ms = 900000
+
+[[task]]
+id = "T11"
+title = "Verify the run view against a live run"
+description = """
+Run a real plan and check the view against the design, writing the result to
+`plans/portal-programme/08-portal-run/REVIEW.md`.
+
+Start the server and the portal, select the demo-hello plan, run it, and observe.
+Record with evidence:
+
+  1. Does the progress bar advance during the run, or does it jump from zero to
+     complete at the end?
+  2. Does agent output appear while the agent is working, or all at once after?
+  3. Do the token and cost figures become non-zero?
+  4. Does the task list show a task in the active state, with its countdown?
+  5. Do gate rungs report as they run?
+  6. Does the transcript render tool calls collapsed and code highlighted?
+  7. Does cancelling mid-run leave the running state cleanly?
+
+Questions one, two and three are the backend live-events work seen from the front
+end. If any answer is no, name the specific backend gap from the contract document
+rather than describing it as a portal defect.
+
+Include a rendering of the run view mid-execution.
+"""
+status = "ready"
+role = "implementer"
+tier = "integrative"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 25
+depends_on = ["T10"]
+files = ["plans/portal-programme/08-portal-run/REVIEW.md"]
+
+[task.context]
+read_files = [
+    { path = "tmp/portal-audit/02-DESIGN.md", why = "the run view specification being checked against" },
+    { path = "tmp/portal-audit/03-CONTRACT.md", why = "the backend gaps to attribute a negative answer to" },
+    { path = "plans/demo-hello/tasks.toml", why = "the plan being run" },
+]
+anti_patterns = [
+    "Do not answer from the code. Run the plan and watch.",
+    "Do not describe a backend gap as a portal defect.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "test -f plans/portal-programme/08-portal-run/REVIEW.md && grep -qi 'demo-hello' plans/portal-programme/08-portal-run/REVIEW.md"
+fail_msg = "REVIEW.md is missing or does not record a live run"
+
+[[task]]
+id = "T12"
+title = "Prove the hello world flow end to end"
+description = """
+This is the acceptance test for the whole programme. Write the result to
+`plans/portal-programme/08-portal-run/HELLO-WORLD.md`.
+
+From a cold start, using only the portal in a browser, never the command line:
+
+  1. Open the portal.
+  2. Choose generate.
+  3. Type: a rust app that prints hello world.
+  4. Submit.
+  5. Run the produced plan.
+  6. Watch it execute.
+  7. Confirm a rust source file exists, builds, and prints the expected text.
+
+Record for each step: what you did, what the portal showed, and how long it took.
+Count the total number of actions, where an action is a click or a submit. The design
+says three to reach a running plan.
+
+This flow previously required five page navigations and failed at every one of them.
+The document must make clear whether it now works. If it breaks, record precisely
+which step broke, what the portal showed, and what the server logged. A partial
+success is a partial success; do not round it up.
+
+Include the produced plan's tasks file and the generated program in the document, so
+the evidence is inspectable rather than asserted.
+"""
+status = "ready"
+role = "implementer"
+tier = "integrative"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 30
+depends_on = ["T11"]
+files = ["plans/portal-programme/08-portal-run/HELLO-WORLD.md"]
+
+[task.context]
+read_files = [
+    { path = "tmp/portal-audit/00-README.md", why = "the test that defines done for this programme" },
+    { path = "tmp/portal-audit/02-DESIGN.md", why = "the three-action flow being measured" },
+    { path = "tmp/portal-audit/01-FINDINGS.md", why = "the defects that made this flow impossible, to confirm each is gone" },
+]
+anti_patterns = [
+    "Do not use the command line for any step.",
+    "Do not round a partial success up to a success.",
+    "Do not assert the program works without building and running it.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "test -f plans/portal-programme/08-portal-run/HELLO-WORLD.md && grep -qi 'action' plans/portal-programme/08-portal-run/HELLO-WORLD.md"
+fail_msg = "HELLO-WORLD.md is missing or does not record the action count"
+
+[[task]]
+id = "T13"
+title = "Close the loop on the audit and the gaps file"
+description = """
+Bring the audit folder into line with what was actually built, and record everything
+that was not.
+
+Update `tmp/portal-audit/00-README.md` with the outcome: whether the defining test
+passes, and the real figures for the budget table in the design document — route
+count, file count, line count, and the number of actions to reach a running plan.
+Replace the targets with measurements.
+
+Then append to `.roko/GAPS.md`, naming the affected subsystem for each entry:
+
+  - Every backend gap the run view surfaced that was deferred rather than fixed,
+    drawn from the review documents in these eight plans.
+  - The richer graph execution event taxonomy that the engine defines and never
+    emits, if the live events plan left it open.
+  - The lowering of plan discovery and parsing into the shared execution crate, which
+    these plans deliberately deferred in favour of widening the runtime trait.
+  - Anything in the design document that was specified and not built.
+
+Be accurate rather than tidy. This file is the canonical gap tracker and an
+optimistic entry here costs more than an honest one.
+
+Two literal markers are required so the verify step can tell your work from the file's
+prior contents. Put the exact heading `OUTCOME portal-programme` above the outcome
+section you add to the README, and begin every gap entry you append with the exact
+prefix `GAP portal-programme:`.
+"""
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 20
+depends_on = ["T12"]
+files = ["tmp/portal-audit/00-README.md", ".roko/GAPS.md"]
+
+[task.context]
+read_files = [
+    { path = "tmp/portal-audit/00-README.md", why = "the file being brought up to date with the outcome" },
+    { path = "tmp/portal-audit/02-DESIGN.md", why = "the budget table whose targets become measurements" },
+    { path = "tmp/portal-audit/03-CONTRACT.md", why = "the deferred backend work to carry into the gaps file" },
+    { path = "tmp/portal-audit/04-BUILD.md", why = "the plan sequence whose review documents supply the outcomes" },
+]
+anti_patterns = [
+    "Do not write an optimistic gap entry. This file is the canonical tracker.",
+    "Do not leave a target in the budget table where a measurement is available.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'OUTCOME portal-programme' tmp/portal-audit/00-README.md && grep -q 'GAP portal-programme' .roko/GAPS.md"
+fail_msg = "the README outcome section is missing, or no gap was recorded for the programme"

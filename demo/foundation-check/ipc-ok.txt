@@ -1,0 +1,4 @@
+StateHub IPC support confirmed.
+Found socket path `.roko/runtime/hub.sock` and starter function `start_hub_ipc_server` in `crates/roko-cli/src/state_hub_ipc.rs`.
+Usage observed in `crates/roko-cli/src/commands/plan.rs` and `crates/roko-cli/src/commands/dashboard.rs`.
+This provides the Unix socket IPC layer for cross‑process dashboard communication.

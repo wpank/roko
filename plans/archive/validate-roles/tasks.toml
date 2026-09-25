@@ -1,0 +1,43 @@
+[meta]
+plan = "validate-roles"
+total = 2
+done = 0
+status = "ready"
+max_parallel = 2
+skip_enrichment = true
+
+[[task]]
+id = "ROLE-T01"
+title = "Verify auditor role is accepted by plan validator"
+description = """Run `grep -c 'auditor' crates/roko-cli/src/task_parser.rs` and confirm auditor is in the role allowlist.
+Write the count to `demo/role-check/auditor-ok.txt`."""
+status = "ready"
+tier = "mechanical"
+max_loc = 1
+model_hint = "cerebras-gptoss"
+files = ["demo/role-check/auditor-ok.txt"]
+role = "auditor"
+depends_on = []
+
+[[task.verify]]
+phase = "structural"
+command = "test -f demo/role-check/auditor-ok.txt"
+fail_msg = "auditor role check failed"
+
+[[task]]
+id = "ROLE-T02"
+title = "Verify reviewer role has a template"
+description = """Check if `crates/roko-compose/src/templates/reviewer.rs` exists.
+Write 'reviewer template exists' to `demo/role-check/reviewer-ok.txt`."""
+status = "ready"
+tier = "mechanical"
+max_loc = 1
+model_hint = "cerebras-gptoss"
+files = ["demo/role-check/reviewer-ok.txt"]
+role = "reviewer"
+depends_on = []
+
+[[task.verify]]
+phase = "structural"
+command = "test -f demo/role-check/reviewer-ok.txt"
+fail_msg = "reviewer template check failed"

@@ -1,0 +1,200 @@
+[meta]
+plan = "workspace-doctor-improvements"
+total = 2
+done = 0
+status = "ready"
+max_parallel = 1
+skip_enrichment = true
+estimated_total_minutes = 35
+
+# ── T01: Add workspace-map.md generation to `roko doctor` ────────────────────
+#
+# `generate_workspace_map_pub` in `crates/roko-cli/src/dispatch/prompt_builder.rs`
+# already produces a crate-tree summary used to seed agent context. However
+# `roko doctor` never surfaces this map for human inspection. When operators
+# debug agent context issues they have to run a full agent dispatch to see what
+# workspace map the agent actually received.
+#
+# Add a `check_workspace_map` function to `doctor.rs` that calls
+# `generate_workspace_map_pub`, writes the output to `.roko/workspace-map.md`,
+# and returns a `DoctorCheck` with status `Ok` and the byte count. Include the
+# check in `run_checks`. When the workspace is not initialised (`.roko/` absent),
+# return early with a Warn check instead of writing.
+
+[[task]]
+id = "T01"
+title = "Add workspace-map.md generation to roko doctor"
+description = """Add `fn check_workspace_map(workdir: &Path) -> DoctorCheck` to
+`crates/roko-cli/src/doctor.rs`. The function must:
+  1. Return a `DoctorCheck` with status `DoctorStatus::Warn` and message
+     "workspace not initialised — skip workspace map" if `.roko/` does not exist.
+  2. Call `crate::dispatch::prompt_builder::generate_workspace_map_pub(workdir)`
+     to produce the map string.
+  3. Write the map to `<workdir>/.roko/workspace-map.md`, creating parent
+     directories if needed.
+  4. Return a `DoctorCheck` with status `DoctorStatus::Ok`, message
+     "workspace map written (<N> bytes)", and `path` set to the output file path.
+  5. Return a `DoctorCheck` with status `DoctorStatus::Warn` if the write fails,
+     including the error in `detail`.
+Insert the check into `run_checks` after the existing `check_layout_basics` call.
+The check id must be `"workspace_map"`."""
+status = "ready"
+tier = "focused"
+max_loc = 70
+files = [
+    "crates/roko-cli/src/doctor.rs",
+]
+role = "implementer"
+depends_on = []
+acceptance = [
+    "check_workspace_map function exists in doctor.rs with id 'workspace_map'.",
+    "The function writes .roko/workspace-map.md when .roko/ exists.",
+    "The function returns Warn (not panic) when .roko/ does not exist.",
+    "The check is called from run_checks after check_layout_basics.",
+    "`cargo check -p roko-cli` passes with no new warnings.",
+    "`cargo test -p roko-cli -- doctor` passes.",
+]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/doctor.rs", lines = "290-360", why = "check_config_freshness pattern — observe how write-then-check doctor functions are structured." },
+    { path = "crates/roko-cli/src/doctor.rs", lines = "622-670", why = "check_layout_basics — the existing check after which workspace_map should be inserted." },
+    { path = "crates/roko-cli/src/doctor.rs", lines = "175-193", why = "run_checks — where to call the new check_workspace_map function." },
+    { path = "crates/roko-cli/src/dispatch/prompt_builder.rs", lines = "885-892", why = "generate_workspace_map_pub — the public adapter to call." },
+    { path = "crates/roko-cli/src/doctor.rs", lines = "509-540", why = "check_workdir — observe DoctorCheck field construction patterns." },
+]
+symbols = [
+    "generate_workspace_map_pub(workdir: &Path) -> String — prompt_builder.rs:886, public workspace map generator",
+    "DoctorCheck { id, status, message, detail, path, url, fix } — the return type",
+    "DoctorStatus::Ok, DoctorStatus::Warn — status variants",
+    "check_layout_basics(workdir: &Path) — doctor.rs:622, insert new check after this one",
+    "run_checks — doctor.rs:175, push new check result into the checks vec",
+]
+anti_patterns = [
+    "Do not call generate_workspace_map (private); use generate_workspace_map_pub.",
+    "Do not truncate or modify the map string before writing — write the full output.",
+    "Do not panic on I/O errors; return a Warn DoctorCheck with the error in detail.",
+    "Do not remove or reorder existing checks in run_checks.",
+    "Do not add a new test module; the existing doctor test suite covers check registration.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'fn check_workspace_map' crates/roko-cli/src/doctor.rs"
+fail_msg = "check_workspace_map function must exist in doctor.rs"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q '\"workspace_map\"' crates/roko-cli/src/doctor.rs"
+fail_msg = "DoctorCheck id 'workspace_map' must be set in the function"
+
+[[task.verify]]
+phase = "structural"
+command = "python3 -c \"body = open('crates/roko-cli/src/doctor.rs').read(); layout_idx = body.index('check_layout_basics'); map_idx = body.index('check_workspace_map'); assert map_idx > layout_idx, 'check_workspace_map call must appear after check_layout_basics in run_checks'\""
+fail_msg = "check_workspace_map must be called after check_layout_basics in run_checks"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "roko-cli must compile after adding check_workspace_map"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-cli -- doctor 2>&1 | tail -5"
+fail_msg = "roko-cli doctor tests must pass after adding check_workspace_map"
+
+# ── T02: Add ignored-tests ledger check to `roko doctor` ─────────────────────
+#
+# Tests marked `#[ignore]` accumulate silently. There are currently 8 such tests
+# across the workspace (extension_loader.rs:2841/2859/2911, serve_runtime.rs:736,
+# and several in roko-agent). When a previously-live test is demoted to `#[ignore]`
+# without a tracking entry, it becomes invisible.
+#
+# The system prompt builder already references `.roko/plans/ignored-tests.md` as
+# a ledger (common.rs:231). Add a `check_ignored_tests_ledger` function to
+# `doctor.rs` that counts `#[ignore]` occurrences in `crates/**/*.rs` (excluding
+# `target/`) and checks whether `.roko/plans/ignored-tests.md` exists. Returns Ok
+# if the ledger exists and Warn with a count and fix command if it is absent.
+
+[[task]]
+id = "T02"
+title = "Add ignored-tests ledger check to roko doctor"
+description = """Add `fn check_ignored_tests_ledger(workdir: &Path) -> DoctorCheck`
+to `crates/roko-cli/src/doctor.rs`. The function must:
+  1. Count lines matching `#[ignore]` in `<workdir>/crates/**/*.rs` using
+     `std::fs::read_dir` recursion or a glob-style walk. Exclude any path
+     component equal to `target`.
+  2. Check whether `<workdir>/.roko/plans/ignored-tests.md` exists.
+  3. If the ledger file exists: return `DoctorStatus::Ok` with message
+     "ignored-tests ledger present (<N> #[ignore] markers in crates/)".
+  4. If the ledger file is absent and N > 0: return `DoctorStatus::Warn` with
+     message "N #[ignore] markers found but .roko/plans/ignored-tests.md is
+     missing", detail explaining its purpose, and fix
+     `"touch .roko/plans/ignored-tests.md"`.
+  5. If the ledger is absent and N == 0: return `DoctorStatus::Ok` with message
+     "no #[ignore] markers (ledger not required)".
+Check id must be `"ignored_tests_ledger"`. Insert the call in `run_checks`
+after the new `check_workspace_map` check added in T01."""
+status = "ready"
+tier = "focused"
+max_loc = 80
+files = [
+    "crates/roko-cli/src/doctor.rs",
+]
+role = "implementer"
+depends_on = ["T01"]
+acceptance = [
+    "check_ignored_tests_ledger function exists in doctor.rs with id 'ignored_tests_ledger'.",
+    "The function counts #[ignore] markers by walking crates/ excluding target/ paths.",
+    "Returns Warn when ledger is absent and count > 0, Ok otherwise.",
+    "Called from run_checks after check_workspace_map.",
+    "`cargo check -p roko-cli` passes with no new warnings.",
+    "`cargo test -p roko-cli -- doctor` passes.",
+]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/doctor.rs", lines = "2148-2210", why = "check_orphaned_tmp_files — observe the directory-walk and count pattern." },
+    { path = "crates/roko-cli/src/doctor.rs", lines = "175-200", why = "run_checks — where to insert the new check after check_workspace_map." },
+    { path = "crates/roko-cli/src/doctor.rs", lines = "509-540", why = "check_workdir — observe DoctorCheck construction with fix field." },
+    { path = "crates/roko-compose/src/templates/common.rs", lines = "228-234", why = "Confirms .roko/plans/ignored-tests.md is the canonical ledger path." },
+]
+symbols = [
+    "check_orphaned_tmp_files(workdir) — doctor.rs:2148, reference for recursive walk + count pattern",
+    "DoctorCheck.fix — Option<String> shown as a suggested command to the user",
+    "DoctorStatus::Ok, DoctorStatus::Warn — status variants",
+    ".roko/plans/ignored-tests.md — the canonical ledger path (referenced in compose templates)",
+    "#[ignore] — the literal string to count in Rust source files",
+]
+anti_patterns = [
+    "Do not shell out to grep or ripgrep; implement the walk with std::fs.",
+    "Do not count occurrences inside the target/ directory — skip any path segment named 'target'.",
+    "Do not fail if crates/ does not exist; return Ok with a zero count.",
+    "Do not remove or reorder existing checks in run_checks.",
+    "Do not create the ledger file; only check for its presence and report.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'fn check_ignored_tests_ledger' crates/roko-cli/src/doctor.rs"
+fail_msg = "check_ignored_tests_ledger function must exist in doctor.rs"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q '\"ignored_tests_ledger\"' crates/roko-cli/src/doctor.rs"
+fail_msg = "DoctorCheck id 'ignored_tests_ledger' must be set in the function"
+
+[[task.verify]]
+phase = "structural"
+command = "python3 -c \"body = open('crates/roko-cli/src/doctor.rs').read(); map_idx = body.index('check_workspace_map'); ledger_idx = body.index('check_ignored_tests_ledger'); assert ledger_idx > map_idx, 'check_ignored_tests_ledger must appear after check_workspace_map in run_checks'\""
+fail_msg = "check_ignored_tests_ledger must be called after check_workspace_map in run_checks"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli 2>&1"
+fail_msg = "roko-cli must compile after adding check_ignored_tests_ledger"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-cli -- doctor 2>&1 | tail -5"
+fail_msg = "roko-cli doctor tests must pass after adding check_ignored_tests_ledger"

@@ -1,73 +1,232 @@
 config_version = 2
 schema_version = 2
 
+[project]
+name = "roko-project"
+root = "."
+fresh_base_branch = "main"
+
+[prd]
+auto_plan = false
+
 [agent]
-bare_mode = true
-context_limit_k = 200
+default_model = "claude-sonnet"
 default_backend = "claude"
 default_effort = "medium"
-default_model = "claude-sonnet"
-mode = "ephemeral"
 temperament = "balanced"
-
-[agent.defaults]
+context_limit_k = 200
+bare_mode = true
+mode = "ephemeral"
 
 [agent.roles]
 
-[budget]
-# Explicit nonzero spend ceilings. 0.0 means unlimited (no cap).
-max_plan_usd = 50.0
-max_turn_usd = 0.50
-prompt_token_budget = 10000
+[agent.defaults]
 
-[chain]
-enabled = false
-profile = "mirage"
+[providers.cerebras]
+kind = "openai_compat"
+base_url = "https://api.cerebras.ai/v1"
+api_key_env = "CEREBRAS_API_KEY"
+timeout_ms = 120000
+ttft_timeout_ms = 15000
+connect_timeout_ms = 5000
 
-[cold_storage]
-batch_size = 500
-enabled = true
-interval_secs = 21600
-max_age_days = 7
+[providers.claude_cli]
+kind = "claude_cli"
+command = "claude"
+timeout_ms = 120000
+ttft_timeout_ms = 15000
+connect_timeout_ms = 5000
 
-[conductor]
-auto_fix_model = "claude-haiku-4-5"
-express_mode = false
-max_agents = 8
-max_auto_fix_attempts = 3
-max_parallel_plans = 1
-parallel_enabled = false
+[providers.codex_cli]
+kind = "codex_cli"
+command = "codex"
+timeout_ms = 120000
+ttft_timeout_ms = 15000
+connect_timeout_ms = 5000
 
-[conductor.watchers]
+[providers.groq]
+kind = "openai_compat"
+base_url = "https://api.groq.com/openai/v1"
+api_key_env = "GROQ_API_KEY"
+timeout_ms = 120000
+ttft_timeout_ms = 15000
+connect_timeout_ms = 5000
 
-[deploy]
-backend = "manual"
-worker_image = "ghcr.io/nunchi-trade/roko-worker:latest"
+[providers.moonshot]
+kind = "openai_compat"
+base_url = "https://api.moonshot.ai/v1"
+api_key_env = "MOONSHOT_API_KEY"
+timeout_ms = 120000
+ttft_timeout_ms = 15000
+connect_timeout_ms = 5000
 
-[feed_agents]
-enabled = false
+[providers.openai]
+kind = "openai_compat"
+base_url = "https://api.openai.com/v1"
+api_key_env = "OPENAI_API_KEY"
+timeout_ms = 120000
+ttft_timeout_ms = 15000
+connect_timeout_ms = 5000
+
+[providers.perplexity]
+kind = "perplexity_api"
+base_url = "https://api.perplexity.ai"
+api_key_env = "PERPLEXITY_API_KEY"
+timeout_ms = 120000
+ttft_timeout_ms = 15000
+connect_timeout_ms = 5000
+
+[providers.zai]
+kind = "openai_compat"
+base_url = "https://api.z.ai/api/paas/v4"
+api_key_env = "ZAI_API_KEY"
+timeout_ms = 120000
+ttft_timeout_ms = 15000
+connect_timeout_ms = 5000
+
+[models.cerebras-gemma]
+provider = "cerebras"
+slug = "gemma-4-31b"
+context_window = 128000
+max_output = 8192
+tool_format = "openai_json"
+cost_input_per_m = 0.1
+cost_output_per_m = 0.1
+
+[models.cerebras-gptoss]
+provider = "cerebras"
+slug = "gpt-oss-120b"
+context_window = 128000
+max_output = 8192
+tool_format = "openai_json"
+cost_input_per_m = 0.5
+cost_output_per_m = 1.5
+
+[models.cerebras-qwen]
+provider = "cerebras"
+slug = "qwen-3.8-27b"
+context_window = 64000
+max_output = 8192
+tool_format = "openai_json"
+cost_input_per_m = 0.1
+cost_output_per_m = 0.1
+
+# Added 2026-09-25 during dogfood. cheap_agent() (graph_task_dispatch.rs:890) takes
+# available_model_slugs_for_cascade().into_iter().next(), and that helper SORTS slugs
+# alphabetically -- so the "cheapest available model" was resolving to claude-sonnet-4-6.
+# claude-haiku-4-5 sorts before claude-sonnet-4-6, which redirects the quality-judge and
+# error-enrichment calls to a genuinely cheap model. Also makes conductor.auto_fix_model
+# resolvable, which it previously was not.
+[models.claude-haiku]
+provider = "claude_cli"
+slug = "claude-haiku-4-5"
+context_window = 200000
+tool_format = "anthropic_blocks"
+max_tools = 32
+
+[models.claude-sonnet]
+provider = "claude_cli"
+slug = "claude-sonnet-4-6"
+context_window = 200000
+tool_format = "anthropic_blocks"
+max_tools = 32
+
+[models.codex]
+provider = "codex_cli"
+slug = "gpt-5.6-sol"
+context_window = 200000
+max_output = 100000
+tool_format = "openai_json"
+
+[models.glm51]
+provider = "zai"
+slug = "glm-5v-turbo"
+context_window = 128000
+max_output = 4096
+tool_format = "openai_json"
+cost_input_per_m = 1.4
+cost_output_per_m = 4.4
+cost_cache_read_per_m = 0.26
+cost_cache_write_per_m = 1.75
+
+[models.gpt-4o]
+provider = "openai"
+slug = "gpt-4o"
+context_window = 128000
+max_output = 16384
+supports_vision = true
+tool_format = "openai_json"
+cost_input_per_m = 2.5
+cost_output_per_m = 10.0
+
+[models.gpt-4o-mini]
+provider = "openai"
+slug = "gpt-4o-mini"
+context_window = 128000
+max_output = 16384
+supports_vision = true
+tool_format = "openai_json"
+cost_input_per_m = 0.15
+cost_output_per_m = 0.6
+
+[models.groq-llama70b]
+provider = "groq"
+slug = "llama-3.3-70b-versatile"
+context_window = 128000
+max_output = 8192
+tool_format = "openai_json"
+cost_input_per_m = 0.59
+cost_output_per_m = 0.79
+
+[models.kimi-k2-5]
+provider = "moonshot"
+slug = "kimi-k2.6"
+context_window = 256000
+max_output = 65535
+supports_thinking = true
+tool_format = "openai_json"
+cost_input_per_m = 0.6
+cost_output_per_m = 3.0
+cost_cache_read_per_m = 0.1
+
+[models.sonar]
+provider = "perplexity"
+slug = "sonar"
+context_window = 127000
+max_output = 16384
+supports_tools = false
+tool_format = "openai_json"
+cost_input_per_m = 1.0
+cost_output_per_m = 1.0
+supports_search = true
+supports_citations = true
+cost_per_request = 0.005
 
 [gates]
-cargo_fix_enabled = true
+mode = "full"
 clippy_enabled = true
-max_iterations = 3
-rungs = []
 skip_tests = false
-
-[gemini]
-enable_context_caching = false
-safety_settings = []
-thinking_level = "medium"
-use_free_tier = false
-
-[github]
-auto_pr = false
-auto_update_prs = false
-cleanup_merged_branches = false
-default_branch = "main"
-label_prefix = "roko/"
-merge_method = "squash"
-sync_interval_hours = 4
+max_iterations = 3
+# Disabled 2026-09-25: attempt_auto_fix runs `cargo fix --allow-dirty` across the
+# WHOLE workspace (no -p scoping, gate_dispatch.rs:557) and awaits it with no
+# timeout (gate_dispatch.rs:590). A failure in one task can rewrite crates it
+# never touched, and the process can hang indefinitely.
+cargo_fix_enabled = false
+impact_timeout_ms = 5000
+impact_max_reverse_dependents = 4
+impact_max_targets = 8
+compile_concurrency = 1
+rungs = []
+ema_alpha = 0.1
+adaptive_min_retries = 1
+adaptive_max_retries = 5
+skip_streak_threshold = 20
+convergence_min_observations = 50
+# 0 disables force-accept entirely (guard is `max_review_cycles > 0 &&`).
+# Was 3, which collided with task max_retries=2: attempts 1,2,3 -> cycle 3 >= 3
+# force-accepted the final attempt, so an authored verify step could never fail
+# a task. graph_task_dispatch.rs:2553. Changed 2026-09-25 during dogfood.
+max_review_cycles = 0
 
 [[graduation.policies]]
 always = true
@@ -109,314 +268,106 @@ sample_every = 1
 [graduation.policies.watch]
 Prefix = "heartbeat."
 
-[learning]
-auto_playbook_refresh = true
-dream_on_completion = true
-file_intel_max_entries = 15
-knowledge_error_patterns = true
-knowledge_file_intel = true
-knowledge_warnings = true
-knowledge_wave_context = true
-learning_min_occurrences = 2
-lookahead_threshold = 0.7
-replan_gate_attempts = 3
-replan_max_per_plan = 2
-replan_on_gate_failure = true
-use_lookahead_router = false
-warning_max_entries = 5
+[routing]
+mode = "auto_override"
+algorithm = "linucb"
+discount_factor = 0.99
+fast_task_model = "gpt-4o-mini"
+standard_task_model = "gpt-4o"
+complex_task_model = "claude-sonnet"
+context_strategy = "mcp_first"
 
-[models.cerebras-qwen]
-context_window = 64000
-cost_input_per_m = 0.10
-cost_output_per_m = 0.10
-max_output = 8192
-provider = "cerebras"
-slug = "qwen-3.8-27b"
-supports_thinking = false
-supports_tools = true
-tool_format = "openai_json"
-
-[models.cerebras-gemma]
-context_window = 128000
-cost_input_per_m = 0.10
-cost_output_per_m = 0.10
-max_output = 8192
-provider = "cerebras"
-slug = "gemma-4-31b"
-supports_thinking = false
-supports_tools = true
-tool_format = "openai_json"
-
-[models.cerebras-gptoss]
-context_window = 128000
-cost_input_per_m = 0.50
-cost_output_per_m = 1.50
-max_output = 8192
-provider = "cerebras"
-slug = "gpt-oss-120b"
-supports_thinking = false
-supports_tools = true
-tool_format = "openai_json"
-
-[models.groq-llama70b]
-context_window = 128000
-cost_input_per_m = 0.59
-cost_output_per_m = 0.79
-max_output = 8192
-provider = "groq"
-slug = "llama-3.3-70b-versatile"
-supports_thinking = false
-supports_tools = true
-tool_format = "openai_json"
-
-[models.claude-sonnet]
-context_window = 200000
-max_tools = 32
-provider = "claude_cli"
-slug = "claude-sonnet-4-6"
-tool_format = "anthropic_blocks"
-
-[models.codex]
-context_window = 200000
-max_output = 100000
-provider = "codex_cli"
-slug = "gpt-5.6-sol"
-
-[models.gpt-4o]
-context_window = 128000
-cost_input_per_m = 2.50
-cost_output_per_m = 10.0
-max_output = 16384
-provider = "openai"
-slug = "gpt-4o"
-supports_thinking = false
-supports_tools = true
-supports_vision = true
-tool_format = "openai_json"
-
-[models.gpt-4o-mini]
-context_window = 128000
-cost_input_per_m = 0.15
-cost_output_per_m = 0.60
-max_output = 16384
-provider = "openai"
-slug = "gpt-4o-mini"
-supports_thinking = false
-supports_tools = true
-supports_vision = true
-tool_format = "openai_json"
-
-[models.glm51]
-context_window = 128000
-cost_cache_read_per_m = 0.26
-cost_cache_write_per_m = 1.75
-cost_input_per_m = 1.40
-cost_output_per_m = 4.40
-max_output = 4096
-provider = "zai"
-slug = "glm-5v-turbo"
-supports_thinking = false
-supports_tools = true
-
-[models.kimi-k2-5]
-context_window = 256000
-cost_cache_read_per_m = 0.10
-cost_input_per_m = 0.60
-cost_output_per_m = 3.00
-max_output = 65535
-provider = "moonshot"
-slug = "kimi-k2.6"
-supports_thinking = true
-supports_tools = true
-tool_format = "openai_json"
-
-[models.sonar]
-context_window = 127000
-cost_input_per_m = 1.00
-cost_output_per_m = 1.00
-cost_per_request = 0.005
-max_output = 16384
-provider = "perplexity"
-slug = "sonar"
-supports_citations = true
-supports_search = true
-supports_tools = false
-tool_format = "openai_json"
-
-[perplexity]
-academic_mode = false
-return_images = false
-return_related_questions = true
-search_domain_filter = []
-search_recency_filter = "year"
+[routing.weights]
+quality = 0.5
+cost = 0.3
+latency = 0.2
 
 [pipeline]
 default_template = "standard"
 
-[pipeline.architectural]
-max_iterations = 3
-reviewer_mode = "full"
-reviewers = true
-strategist = true
+[pipeline.mechanical]
+strategist = false
+reviewers = false
+reviewer_mode = "quick"
+max_iterations = 1
 
 [pipeline.focused]
-max_iterations = 2
-reviewer_mode = "quick"
-reviewers = false
 strategist = false
+reviewers = false
+reviewer_mode = "quick"
+max_iterations = 2
 
 [pipeline.integrative]
-max_iterations = 2
-reviewer_mode = "quick"
-reviewers = true
 strategist = true
-
-[pipeline.mechanical]
-max_iterations = 1
+reviewers = true
 reviewer_mode = "quick"
-reviewers = false
-strategist = false
+max_iterations = 2
 
-[prd]
-auto_plan = false
+[pipeline.architectural]
+strategist = true
+reviewers = true
+reviewer_mode = "full"
+max_iterations = 3
 
-[project]
-fresh_base_branch = "main"
-name = "roko-project"
-root = "."
+[budget]
+max_plan_usd = 50.0
+max_task_usd = 0.0
+max_turn_usd = 0.5
+max_task_retry_usd = 5.0
+max_daily_usd = 0.0
+prompt_token_budget = 10000
+max_agent_lifetime_usd = 0.0
 
-[prompt]
-composition_strategy = "auto"
-vcg_warmup_observations = 10
+[budget.tier_multipliers]
+mechanical = 0.20000000298023224
+standard = 1.0
+complex = 3.0
+expert = 5.0
 
-[providers.claude_cli]
-command = "claude"
-kind = "claude_cli"
+[conductor]
+max_agents = 8
+max_parallel_plans = 1
+parallel_enabled = false
+express_mode = false
+max_auto_fix_attempts = 3
+auto_fix_model = "claude-haiku-4-5"
+silence_timeout_secs = 180
+compile_fail_threshold = 3
+task_stall_secs = 300
+context_pressure_pct = 80
+phase_timeout_secs = 1800
+context_window_small_tokens = 200000
+context_window_opus_tokens = 1000000
+context_pressure_lookback = 3
 
-[providers.codex_cli]
-command = "codex"
-kind = "codex_cli"
+[conductor.watchers]
 
-[providers.cerebras]
-api_key_env = "CEREBRAS_API_KEY"
-base_url = "https://api.cerebras.ai/v1"
-kind = "openai_compat"
+[learning]
+auto_playbook_refresh = true
+knowledge_file_intel = true
+knowledge_warnings = true
+knowledge_wave_context = true
+knowledge_error_patterns = true
+learning_min_occurrences = 2
+file_intel_max_entries = 15
+warning_max_entries = 5
+replan_on_gate_failure = true
+replan_max_per_plan = 2
+replan_gate_attempts = 3
+dream_on_completion = true
+use_lookahead_router = false
+lookahead_threshold = 0.7
+gate_threshold_flush_interval = 10
 
-[providers.groq]
-api_key_env = "GROQ_API_KEY"
-base_url = "https://api.groq.com/openai/v1"
-kind = "openai_compat"
+[learning.dreams]
+trigger_on_plan_complete = true
+max_concurrent = 1
 
-[providers.moonshot]
-api_key_env = "MOONSHOT_API_KEY"
-base_url = "https://api.moonshot.ai/v1"
-kind = "openai_compat"
-
-[providers.openai]
-api_key_env = "OPENAI_API_KEY"
-base_url = "https://api.openai.com/v1"
-kind = "openai_compat"
-
-[providers.perplexity]
-api_key_env = "PERPLEXITY_API_KEY"
-base_url = "https://api.perplexity.ai"
-kind = "perplexity_api"
-
-[providers.zai]
-api_key_env = "ZAI_API_KEY"
-base_url = "https://api.z.ai/api/paas/v4"
-kind = "openai_compat"
-
-[relay]
-heartbeat_interval_secs = 30
-
-[resources]
-auto_cleanup_on_complete = true
-gc_on_failure = true
-gc_on_plan_end = true
-gc_on_plan_start = true
-log_rotation_max_mb = 100
-max_plan_disk_mb = 0
-min_free_disk_mb = 2048
-target_cleanup_enabled = true
-target_max_age_days = 3
-warn_disk_mb = 5120
-worktree_cleanup_on_complete = true
-worktree_cleanup_on_failure = true
-worktree_max_age_secs = 86400
-
-[routing]
-algorithm = "linucb"
-complex_task_model = "claude-sonnet"
-context_strategy = "mcp_first"
-discount_factor = 0.99
-fast_task_model = "gpt-4o-mini"
-mode = "auto_override"
-standard_task_model = "gpt-4o"
-
-[routing.weights]
-cost = 0.3
-latency = 0.2
-quality = 0.5
-
-[runner]
-dangerously_skip_permissions = true
-dispatch_max_retries = 5
-plan_timeout_secs = 3600
-sandbox_level = "restrict"
-warm_pool_idle_timeout_secs = 300
-warm_pool_size = 2
-
-[scheduler]
-
-[serve]
-acknowledge_public_risk = false
-auto_orchestrate = true
-auto_start = false
-share_ttl_days = 7
-terminal_enabled = false
-
-[serve.auth]
-api_key = ""
-enabled = false
-enforcement_mode = "enforce"
-
-[serve.deploy]
-environment = [
-    "GITHUB_TOKEN",
-    "GITHUB_WEBHOOK_SECRET",
-    "SLACK_BOT_TOKEN",
-    "SLACK_SIGNING_SECRET",
-]
-provider = "railway"
-
-[serve.tracing]
-sample_rate = 1.0
-service_name = "roko-serve"
-
-[server]
-bind = "127.0.0.1"
-cors_origins = []
-port = 6677
-unsafe_public_cors = false
-workspace_gc_interval_secs = 300
-
-[timeouts]
-agent_dispatch_secs = 600
-gate_clippy_secs = 300
-gate_compile_secs = 600
-gate_test_secs = 900
-health_check_secs = 3
-http_request_secs = 30
-llm_call_secs = 120
-plan_total_secs = 3600
-workspace_lock_secs = 5
-
-[tools]
-allow = []
-deny = []
-
-[tools.profiles]
+[learning.knowledge]
+transient_confirmations = 2
+working_contexts = 3
+consolidated_age_days = 14
+demotion_balance_threshold = 0.1
 
 [tui]
 refresh_rate_ms = 250
@@ -424,8 +375,176 @@ refresh_rate_ms = 250
 [tui.effects]
 preset = "full"
 
-[validation]
-strict_validation = false
+[timeouts]
+agent_dispatch_secs = 600
+gate_compile_secs = 600
+gate_test_secs = 900
+gate_clippy_secs = 300
+llm_call_secs = 120
+dream_consolidation_secs = 600
+http_request_secs = 30
+workspace_lock_secs = 5
+health_check_secs = 3
+plan_total_secs = 3600
+post_run_cleanup_secs = 120
+tool_execution_ms = 120000
+acp_request_ms = 120000
+graph_node_secs = 300
+lost_effect_secs = 600
+
+[statehub]
+history_retention = "7d"
+
+[serve]
+share_ttl_days = 7
+terminal_enabled = false
+auto_orchestrate = true
+auto_start = false
+acknowledge_public_risk = false
+
+[serve.auth]
+enabled = false
+api_key = ""
+enforcement_mode = "enforce"
+invite_expiry_days = 7
+
+[serve.deploy]
+provider = "railway"
+environment = [
+    "GITHUB_TOKEN",
+    "GITHUB_WEBHOOK_SECRET",
+    "SLACK_BOT_TOKEN",
+    "SLACK_SIGNING_SECRET",
+]
+
+[serve.tracing]
+service_name = "roko-serve"
+sample_rate = 1.0
+
+[scheduler]
 
 [webhooks.github]
 secret = ""
+
+[github]
+default_branch = "main"
+auto_pr = false
+merge_method = "squash"
+label_prefix = "roko/"
+auto_update_prs = false
+sync_interval_hours = 4
+cleanup_merged_branches = false
+
+[server]
+bind = "127.0.0.1"
+port = 6677
+cors_origins = []
+unsafe_public_cors = false
+workspace_gc_interval_secs = 300
+rate_limit_per_sec = 100
+rate_limit_per_key_per_sec = 30
+
+[deploy]
+backend = "manual"
+worker_image = "ghcr.io/nunchi-trade/roko-worker:latest"
+
+[perplexity]
+search_recency_filter = "year"
+academic_mode = false
+search_domain_filter = []
+return_images = false
+return_related_questions = true
+
+[gemini]
+use_free_tier = false
+thinking_level = "medium"
+enable_context_caching = false
+safety_settings = []
+
+[tools]
+allow = []
+deny = []
+
+[tools.profiles]
+
+[chain]
+enabled = false
+profile = "mirage"
+
+[relay]
+heartbeat_interval_secs = 30
+ring_buffer_size = 65536
+
+[feed_agents]
+enabled = false
+
+[runner]
+plan_timeout_secs = 3600
+dangerously_skip_permissions = true
+sandbox_level = "restrict"
+dispatch_max_retries = 5
+warm_pool_size = 2
+warm_pool_idle_timeout_secs = 300
+log_prompts = false
+prompt_log_retention = 100
+
+[validation]
+strict_validation = false
+
+[cold_storage]
+enabled = true
+max_age_days = 7
+batch_size = 500
+interval_secs = 21600
+
+[prompt]
+composition_strategy = "auto"
+vcg_warmup_observations = 10
+
+[resources]
+min_free_disk_mb = 2048
+warn_disk_mb = 5120
+max_plan_disk_mb = 0
+gc_on_plan_start = true
+gc_on_plan_end = true
+gc_on_failure = true
+target_cleanup_enabled = true
+target_max_age_days = 3
+log_rotation_max_mb = 100
+worktree_cleanup_on_complete = true
+worktree_cleanup_on_failure = true
+worktree_max_age_secs = 86400
+auto_cleanup_on_complete = true
+
+[dreams]
+auto_dream = true
+idle_threshold_mins = 15
+min_episodes_for_dream = 5
+episode_count_trigger = 0
+quality_gain = 0.75
+quality_penalty = 1.25
+
+[daimon.strategy_space]
+domain = "coding"
+dimensions = [
+    "complexity",
+    "risk",
+    "novelty",
+    "confidence",
+    "time_pressure",
+    "scope",
+    "reversibility",
+    "dependency_depth",
+]
+
+[retrieval]
+mode = "hybrid"
+max_results = 10
+min_results = 3
+min_score = 0.1
+token_budget = 4000
+enable_code_index = true
+dense_embedding_enabled = false
+rerank_enabled = false
+
+[retrieval.role_token_budgets]

@@ -1,0 +1,130 @@
+[meta]
+plan = "portal-redesign-phase2"
+total = 4
+done = 0
+status = "ready"
+max_parallel = 1
+skip_enrichment = true
+estimated_total_minutes = 180
+
+# Phase 2: Plan Workflow — wire generate, execute, watch, done
+
+[[task]]
+id = "P2-T01"
+title = "Wire prompt submission to plan creation"
+description = """Wire the PromptInput component in MainArea to create and execute plans.
+
+When the user types a prompt and clicks "Generate":
+1. Call POST /api/run with { prompt: text } (the working endpoint)
+2. Show a toast "Dispatched — watching for results..."
+3. The SSE stream will emit task_started, agent_output, task_completed events
+4. These automatically update the Zustand dashboard store
+5. Show the executing state in MainArea
+
+The key insight: POST /api/run already works end-to-end. Use it directly instead of the broken POST /api/plans/generate.
+
+Import useRunPrompt from @/api/hooks for the mutation.
+Import showToast from @/components/atoms/Toast."""
+status = "ready"
+role = "implementer"
+tier = "focused"
+files = ["apps/portal/src/components/layout/MainArea.tsx"]
+depends_on = []
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'useRunPrompt\\|api/run\\|POST.*run' apps/portal/src/components/layout/MainArea.tsx"
+fail_msg = "MainArea must wire prompt submission to POST /api/run"
+
+[[task]]
+id = "P2-T02"
+title = "Wire plan execution with live SSE updates"
+description = """Wire the Execute button in MainArea to run plans and show live progress.
+
+When the user clicks Execute on a selected plan:
+1. Call POST /api/plans/{id}/execute via useStartPlan hook
+2. Show toast "Executing..."
+3. Transition MainArea state to EXECUTING
+4. Call onOutputOpen() to auto-open the output panel
+5. Read task statuses from useDashboardStore(s => s.tasks) — these update via SSE
+6. Show ProgressBar with completion percentage
+7. Each TaskRow shows live status: ○ pending, ● running (with pulse), ✓ done, ✗ failed
+8. When SSE emits plan_completed, transition to DONE state
+
+Data flow:
+- SSE events → Zustand store → component re-renders
+- No polling needed — SSE drives everything
+
+Guard all data access:
+- (tasks ?? []).filter(...)
+- task?.status ?? 'pending'
+- (task?.gateResults ?? []).length"""
+status = "ready"
+role = "implementer"
+tier = "integrative"
+files = ["apps/portal/src/components/layout/MainArea.tsx"]
+depends_on = ["P2-T01"]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'useStartPlan\\|execute\\|EXECUTING' apps/portal/src/components/layout/MainArea.tsx"
+fail_msg = "MainArea must wire Execute button"
+
+[[task]]
+id = "P2-T03"
+title = "Wire OutputPanel to show live agent output"
+description = """Wire the OutputPanel to show the active agent's streaming output.
+
+The OutputPanel should:
+1. Read all agent output from useDashboardStore(s => s.agentOutput)
+2. Find the currently active agent from useDashboardStore(s => s.agents) — the one with status 'active'
+3. Display the agent's output lines in a scrollable monospace pre element
+4. Auto-scroll to bottom on new content
+5. Show "Waiting for agent..." when no agent is active
+6. Show agent name and model in the header bar
+
+Use the existing AgentOutputStream organism if it fits, or write a simpler inline version.
+The output is just a pre element with monospace text that auto-scrolls. Keep it simple."""
+status = "ready"
+role = "implementer"
+tier = "focused"
+files = ["apps/portal/src/components/layout/OutputPanel.tsx"]
+depends_on = ["P2-T01"]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'agentOutput\\|useDashboardStore' apps/portal/src/components/layout/OutputPanel.tsx"
+fail_msg = "OutputPanel must read agent output from store"
+
+[[task]]
+id = "P2-T04"
+title = "Wire done state with cost summary"
+description = """Wire the DONE state in MainArea to show completion results.
+
+When a plan completes (SSE plan_completed event):
+1. MainArea transitions to DONE state
+2. Show all tasks with ✓ (green) or ✗ (red) status
+3. Show per-task cost from task.costUsd (guarded: ?? 0)
+4. Show total cost at bottom
+5. Show "Re-run" and "New" buttons
+6. OutputPanel stays open showing completion summary
+
+The DONE state is just the SELECTED state with all tasks marked complete and costs visible.
+No separate component needed — just conditional rendering in MainArea based on plan status.
+
+TypeScript must compile: cd apps/portal && ./node_modules/.bin/tsc --noEmit"""
+status = "ready"
+role = "implementer"
+tier = "focused"
+files = ["apps/portal/src/components/layout/MainArea.tsx"]
+depends_on = ["P2-T02"]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'DONE\\|done\\|completed\\|costUsd\\|cost' apps/portal/src/components/layout/MainArea.tsx"
+fail_msg = "MainArea must show done state with costs"
+
+[[task.verify]]
+phase = "compile"
+command = "cd apps/portal && ./node_modules/.bin/tsc --noEmit 2>&1 | head -5"
+fail_msg = "TypeScript must compile clean"

@@ -2784,7 +2784,7 @@ mod tests {
                 .count(),
             1
         );
-        assert!(state.layout.root().join("engrams.jsonl").is_file());
+        assert!(state.layout.root().join("signals.jsonl").is_file());
         shutdown(&state).await;
     }
 

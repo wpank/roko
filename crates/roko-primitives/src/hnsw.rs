@@ -144,7 +144,11 @@ fn normalise(v: &[f32]) -> Vec<f32> {
 /// Short-circuits at the shorter length; excess dimensions are treated as zero.
 fn dot_product(a: &[f32], b: &[f32]) -> f32 {
     let len = a.len().min(b.len());
-    a[..len].iter().zip(b[..len].iter()).map(|(x, y)| x * y).sum()
+    a[..len]
+        .iter()
+        .zip(b[..len].iter())
+        .map(|(x, y)| x * y)
+        .sum()
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────

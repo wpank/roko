@@ -198,7 +198,9 @@ impl RuntimeServices {
     /// in tests using `for_test`).
     #[must_use]
     pub fn knowledge_store(&self) -> Option<roko_neuro::KnowledgeStore> {
-        self.workdir.as_deref().map(roko_neuro::KnowledgeStore::for_workdir)
+        self.workdir
+            .as_deref()
+            .map(roko_neuro::KnowledgeStore::for_workdir)
     }
 
     /// Retrieve a typed override previously registered via

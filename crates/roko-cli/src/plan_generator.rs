@@ -602,6 +602,11 @@ fn validate_and_fix_plan_toml(
                                 "strategist",
                                 "scribe",
                                 "quick-reviewer",
+                                "auditor",
+                                "conductor",
+                                "critic",
+                                "refactorer",
+                                "auto-fixer",
                             ];
                             if !VALID_ROLES.contains(&r) {
                                 repairs.push(format!(

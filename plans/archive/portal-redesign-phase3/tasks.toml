@@ -1,0 +1,84 @@
+[meta]
+plan = "portal-redesign-phase3"
+total = 3
+done = 0
+status = "ready"
+max_parallel = 2
+skip_enrichment = true
+estimated_total_minutes = 60
+
+# Phase 3: Polish — settings, keyboard shortcuts, error handling
+
+[[task]]
+id = "P3-T01"
+title = "Add settings modal"
+description = """Add a settings modal triggered by a gear icon in the PlanSidebar status strip.
+
+The modal should have 4 sections (simple tabs or accordion):
+1. Config: show key fields from GET /api/config (model, backend, budget limits)
+2. Keys: show provider key status from GET /api/providers (configured/missing)
+3. Connection: show current server URL + latency
+4. System: show GET /api/doctor check results
+
+Use the existing DrawerOverlay pattern or a simple fixed overlay.
+Import useSafeConfig, useSafeProviders, useSafeDoctor from safe-hooks.ts.
+
+Keep each section minimal — just the most useful information, not every config field.
+The settings modal is a reference tool, not the primary workflow."""
+status = "ready"
+role = "implementer"
+tier = "focused"
+files = ["apps/portal/src/components/layout/PlanSidebar.tsx"]
+depends_on = []
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'settings\\|Settings\\|gear\\|modal' apps/portal/src/components/layout/PlanSidebar.tsx"
+fail_msg = "PlanSidebar must have settings trigger"
+
+[[task]]
+id = "P3-T02"
+title = "Add keyboard shortcuts"
+description = """Add keyboard shortcuts to the WorkspaceShell:
+
+- Cmd+K or /: focus the prompt input (transition to IDLE if needed)
+- Cmd+Enter: execute the selected plan
+- Escape: deselect plan (go to IDLE)
+
+Add a useEffect in WorkspaceShell that listens for keydown events.
+These are simple — no command palette needed. Just direct key → action mapping."""
+status = "ready"
+role = "implementer"
+tier = "mechanical"
+files = ["apps/portal/src/components/layout/WorkspaceShell.tsx"]
+depends_on = []
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'keydown\\|Escape\\|Enter' apps/portal/src/components/layout/WorkspaceShell.tsx"
+fail_msg = "WorkspaceShell must handle keyboard shortcuts"
+
+[[task]]
+id = "P3-T03"
+title = "Final verification and cleanup"
+description = """Final verification of the complete portal redesign:
+
+1. Run TypeScript check: cd apps/portal && ./node_modules/.bin/tsc --noEmit
+2. Run production build: cd apps/portal && npm run build
+3. Fix any remaining errors
+4. Verify all 4 states work:
+   - IDLE: shows prompt input
+   - SELECTED: shows task list
+   - EXECUTING: shows live progress
+   - DONE: shows results with costs
+5. Write a completion report to plans/portal-redesign-phase3/REVIEW.md"""
+status = "ready"
+role = "reviewer"
+tier = "integrative"
+files = ["plans/portal-redesign-phase3/REVIEW.md"]
+depends_on = ["P3-T01", "P3-T02"]
+
+[[task.verify]]
+phase = "compile"
+command = "cd apps/portal && ./node_modules/.bin/tsc --noEmit 2>&1 | head -5"
+fail_msg = "TypeScript must compile clean"

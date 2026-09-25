@@ -665,7 +665,10 @@ mod tests {
         let completed = factory::agent_completed("r", "a1", "done", 100, 0.01);
         assert!(matches!(
             completed,
-            RuntimeEvent::AgentCompleted { tokens_used: 100, .. }
+            RuntimeEvent::AgentCompleted {
+                tokens_used: 100,
+                ..
+            }
         ));
     }
 
@@ -724,7 +727,11 @@ mod tests {
     fn bridge_task_started_produces_one_dashboard_event() {
         let ev = factory::task_started("r1", "p1", "t1", "Build crate", "implementer");
         let out = core_event_to_dashboard_events(&ev);
-        assert_eq!(out.len(), 1, "TaskStarted should produce exactly one DashboardEvent");
+        assert_eq!(
+            out.len(),
+            1,
+            "TaskStarted should produce exactly one DashboardEvent"
+        );
         match &out[0] {
             crate::dashboard_snapshot::DashboardEvent::TaskStarted {
                 plan_id,
@@ -803,9 +810,7 @@ mod tests {
         let out = core_event_to_dashboard_events(&ev);
         assert_eq!(out.len(), 1);
         match &out[0] {
-            crate::dashboard_snapshot::DashboardEvent::GateResult {
-                gate, passed, ..
-            } => {
+            crate::dashboard_snapshot::DashboardEvent::GateResult { gate, passed, .. } => {
                 assert_eq!(gate, "compile");
                 assert!(*passed);
             }
@@ -819,9 +824,7 @@ mod tests {
         let out = core_event_to_dashboard_events(&ev);
         assert_eq!(out.len(), 1);
         match &out[0] {
-            crate::dashboard_snapshot::DashboardEvent::GateResult {
-                gate, passed, ..
-            } => {
+            crate::dashboard_snapshot::DashboardEvent::GateResult { gate, passed, .. } => {
                 assert_eq!(gate, "test");
                 assert!(!*passed);
             }
@@ -837,7 +840,11 @@ mod tests {
             prompt: "fix the bug".into(),
         };
         let out = core_event_to_dashboard_events(&ev);
-        assert_eq!(out.len(), 2, "WorkflowStarted should produce PlanStarted + TaskStarted");
+        assert_eq!(
+            out.len(),
+            2,
+            "WorkflowStarted should produce PlanStarted + TaskStarted"
+        );
         assert!(matches!(
             &out[0],
             crate::dashboard_snapshot::DashboardEvent::PlanStarted { .. }
@@ -855,7 +862,11 @@ mod tests {
             outcome: WorkflowOutcome::Success { commit_hash: None },
         };
         let out = core_event_to_dashboard_events(&ev);
-        assert_eq!(out.len(), 2, "WorkflowCompleted should produce TaskCompleted + PlanCompleted");
+        assert_eq!(
+            out.len(),
+            2,
+            "WorkflowCompleted should produce TaskCompleted + PlanCompleted"
+        );
         assert!(matches!(
             &out[0],
             crate::dashboard_snapshot::DashboardEvent::TaskCompleted { .. }

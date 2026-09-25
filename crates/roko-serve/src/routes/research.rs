@@ -777,7 +777,7 @@ mod tests {
             .await
             .expect("write episodes");
 
-        let signals_path = dir.path().join(".roko").join("engrams.jsonl");
+        let signals_path = dir.path().join(".roko").join("signals.jsonl");
         tokio::fs::create_dir_all(signals_path.parent().expect("signals parent"))
             .await
             .expect("signals dir");

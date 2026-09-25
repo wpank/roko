@@ -495,9 +495,9 @@ async fn completed_runs_append_cfactor_history() {
     // Dedup key is "{plan_id}:{task_id}:{attempt}"; same key → second episode
     // replaces the first, causing the 2nd snapshot to report episode_count=1.
     runtime
-        .record_completed_run(CompletedRunInput::from_episode(
-            sample_pattern_episode(true, "2"),
-        ))
+        .record_completed_run(CompletedRunInput::from_episode(sample_pattern_episode(
+            true, "2",
+        )))
         .await
         .unwrap();
 

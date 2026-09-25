@@ -860,27 +860,6 @@ mod tests {
         assert!(json.contains("[REDACTED]"), "no [REDACTED] marker found");
     }
 
-    fn init_git_workdir(workdir: &std::path::Path) {
-        run_git(workdir, &["init"]);
-        run_git(workdir, &["config", "user.email", "test@example.com"]);
-        run_git(workdir, &["config", "user.name", "Roko Test"]);
-    }
-
-    fn run_git(workdir: &std::path::Path, args: &[&str]) {
-        let output = std::process::Command::new("git")
-            .args(args)
-            .current_dir(workdir)
-            .output()
-            .expect("run git command");
-
-        assert!(
-            output.status.success(),
-            "git {:?} failed: {}",
-            args,
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-
     // ── resolve_engine_flag tests (#300) ──────────────────────────────
 
     #[test]

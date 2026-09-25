@@ -3771,9 +3771,11 @@ async fn dispatch_subcommand(command: Command, cli: &Cli) -> Result<i32> {
         } => commands::util::cmd_doctor(cli, subject, workdir, serve_url).await,
         Command::Cache { cmd } => commands::cache::cmd_cache(cli, cmd).await,
         Command::RunIndex { cmd } => commands::run_index::cmd_run_index(cli, cmd).await,
-        Command::Setup { workdir, yes, quick } => {
-            commands::setup::cmd_setup(cli, workdir, yes, quick).await
-        }
+        Command::Setup {
+            workdir,
+            yes,
+            quick,
+        } => commands::setup::cmd_setup(cli, workdir, yes, quick).await,
         Command::Diagnose {
             plan_id,
             verbose,

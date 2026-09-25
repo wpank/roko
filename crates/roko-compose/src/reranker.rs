@@ -98,7 +98,9 @@ pub struct HeuristicReranker {
 
 impl Default for HeuristicReranker {
     fn default() -> Self {
-        Self { length_weight: 0.15 }
+        Self {
+            length_weight: 0.15,
+        }
     }
 }
 
@@ -114,7 +116,11 @@ impl HeuristicReranker {
 
     fn tokenize(text: &str) -> Vec<String> {
         text.split_whitespace()
-            .map(|w| w.to_lowercase().trim_matches(|c: char| !c.is_alphanumeric()).to_string())
+            .map(|w| {
+                w.to_lowercase()
+                    .trim_matches(|c: char| !c.is_alphanumeric())
+                    .to_string()
+            })
             .filter(|w| !w.is_empty())
             .collect()
     }
@@ -270,7 +276,11 @@ mod tests {
     #[test]
     fn heuristic_reranker_sorted_descending() {
         let reranker = HeuristicReranker::default();
-        let docs = ["completely unrelated", "rust async programming", "rust language features"];
+        let docs = [
+            "completely unrelated",
+            "rust async programming",
+            "rust language features",
+        ];
         let result = reranker.rerank("rust programming", &docs);
         // Scores should be in descending order.
         for i in 1..result.len() {

@@ -74,9 +74,8 @@ pub use schema::{
     SpecDriftConfig, StateHubConfig, StrategySpaceConfig, StuckPatternConfig, SubscriptionConfig,
     SubscriptionFilterConfig, SubscriptionTrigger, TaskComplexity, TestFailureBudgetConfig,
     TimeOverrunConfig, ToolProfileConfig, ToolsConfig, TracingConfig, TuiConfig, ValidationConfig,
-    WatcherConfig,
-    WatcherPathConfig, WatcherThresholds, WebhooksConfig, WorktreeCountConfig, builtin_profiles,
-    resolve_profile,
+    WatcherConfig, WatcherPathConfig, WatcherThresholds, WebhooksConfig, WorktreeCountConfig,
+    builtin_profiles, resolve_profile,
 };
 pub use serve::GitHubConfig;
 

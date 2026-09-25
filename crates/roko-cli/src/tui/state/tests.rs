@@ -2034,7 +2034,10 @@ fn agent_output_history_eviction_preserves_tool_pairs() {
 
     // Fill remaining slots with Text records up to capacity.
     for i in 0..MAX_AGENT_OUTPUT_RECORDS - 2 {
-        history.push("a", make_record(&format!("filler-{i}"), OutputRecordKind::Text));
+        history.push(
+            "a",
+            make_record(&format!("filler-{i}"), OutputRecordKind::Text),
+        );
     }
     assert_eq!(history.len("a"), MAX_AGENT_OUTPUT_RECORDS);
 

@@ -1184,7 +1184,9 @@ fn read_dream_status(workdir: &Path) -> String {
         let Some(ts_str) = stem.strip_prefix("dream-") else {
             continue;
         };
-        if let Ok(ts) = ts_str.parse::<i64>() && latest.as_ref().is_none_or(|(cur, _)| ts > *cur) {
+        if let Ok(ts) = ts_str.parse::<i64>()
+            && latest.as_ref().is_none_or(|(cur, _)| ts > *cur)
+        {
             latest = Some((ts, path));
         }
     }

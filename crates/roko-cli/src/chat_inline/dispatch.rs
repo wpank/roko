@@ -116,11 +116,8 @@ pub(crate) fn dispatch_prompt_decomposed(session: &mut ChatSession, msg: &str) {
             let agent_session_opt = session.agent_session.as_ref().map(clone_chat_agent_session);
 
             tokio::spawn(async move {
-                let result =
-                    run_decomposed(tasks, dispatch, &agent_id, agent_session_opt).await;
-                let _ = tx
-                    .send(result.map_err(|e| e.to_string()))
-                    .await;
+                let result = run_decomposed(tasks, dispatch, &agent_id, agent_session_opt).await;
+                let _ = tx.send(result.map_err(|e| e.to_string())).await;
             });
         }
     }
@@ -157,15 +154,12 @@ async fn dispatch_single(
             backend_url,
             is_sidecar,
         } => {
-            let resp =
-                send_and_receive(client, backend_url, agent_id, text, *is_sidecar).await?;
+            let resp = send_and_receive(client, backend_url, agent_id, text, *is_sidecar).await?;
             Ok(resp.into())
         }
-        DispatchMode::Direct { .. } => {
-            Err(anyhow::anyhow!(
-                ChatInlineDispatchError::DirectDispatchDisabled.to_string()
-            ))
-        }
+        DispatchMode::Direct { .. } => Err(anyhow::anyhow!(
+            ChatInlineDispatchError::DirectDispatchDisabled.to_string()
+        )),
         DispatchMode::Session => {
             let Some(agent_session) = agent_session_opt.as_ref() else {
                 anyhow::bail!("agent session unavailable for decomposed dispatch");

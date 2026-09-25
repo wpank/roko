@@ -1,0 +1,304 @@
+[meta]
+plan = "wire-http-plan-execute"
+total = 3
+done = 0
+status = "ready"
+max_parallel = 1
+skip_enrichment = true
+estimated_total_minutes = 30
+
+# ── T01: Replace run_once with run_plan in the execute_plan handler ────────────
+#
+# `execute_plan` in `crates/roko-serve/src/routes/plans.rs` (line ~476) builds a
+# natural-language prompt from the plan and dispatches it to `runtime.run_once()`.
+# That path is a single LLM call: no task graph, no gates, no checkpoints.
+#
+# The `CliRuntime` trait already provides `run_plan(workdir, plan_target)` (defined
+# in `crates/roko-serve/src/runtime.rs` at line ~285). Its concrete implementation
+# in `crates/roko-cli/src/serve_runtime.rs` (line ~212) spawns a blocking worker
+# that runs `run_plan_on_local_runtime`, which is the graph-engine path.
+#
+# The handler must:
+#   1. Derive the plan directory from the located plan rather than calling
+#      `build_plan_execution_prompt`. The plan directory is the argument that
+#      `run_plan` expects (equivalent to what `roko plan run <dir>` receives).
+#      Use the same search order as `find_plan`: `plans/{id}/`, then
+#      `.roko/plans/{id}/`. Fall back to `.roko/plans/{id}` as a synthetic path
+#      when only a flat file was found.
+#   2. Replace the `runtime.run_once(&workdir, &prompt)` invocation inside the
+#      `tokio::spawn` block with `runtime.run_plan(&workdir, &plan_dir).await`.
+#   3. Map `PlanExecutionResult::success` (returned by `run_plan`) to the
+#      `ServerEvent::PlanCompleted { plan_id, success }` bus publish.
+#   4. Remove the now-unused `build_plan_execution_prompt` call and the `prompt`
+#      binding inside `execute_plan`. Do not remove the helper function itself if
+#      it is used elsewhere in the file.
+#
+# The `run_once` import / `RunResult` type may become unused inside `execute_plan`
+# after this change. Remove the local binding; keep the top-level `use` only if
+# other handlers in the file still need it (they do — leave it).
+
+[[task]]
+id = "T01"
+title = "Replace run_once with run_plan in execute_plan handler"
+description = """Modify `crates/roko-serve/src/routes/plans.rs` so that the
+`execute_plan` async handler uses `runtime.run_plan(&workdir, &plan_dir)` instead
+of `runtime.run_once(&workdir, &prompt)`.
+
+Steps:
+1. After `find_plan` returns a `Plan`, derive `plan_dir: PathBuf` as follows:
+   - Check `workdir.join("plans").join(&id)` — if it is a directory, use it.
+   - Otherwise check `workdir.join(".roko").join("plans").join(&id)` — if it is a
+     directory, use it.
+   - Otherwise fall back to `workdir.join(".roko").join("plans").join(&id)` as a
+     synthetic path (flat-file plans have no directory; run_plan will fail closed
+     with a clear error rather than silently mis-dispatching).
+2. Remove the `prompt` and `build_plan_execution_prompt` call from `execute_plan`.
+   Keep the `build_plan_execution_prompt` function if referenced elsewhere.
+3. Inside the `tokio::spawn` block replace:
+     `runtime.run_once(&workdir, &prompt).await`
+   with:
+     `runtime.run_plan(&workdir, &plan_dir).await`
+4. Map the `PlanExecutionResult` to success/failure the same way the old code did
+   with `RunResult`.
+5. Ensure the file still compiles with `cargo check -p roko-serve`."""
+status = "ready"
+tier = "focused"
+max_loc = 60
+files = [
+    "crates/roko-serve/src/routes/plans.rs",
+]
+role = "implementer"
+depends_on = []
+acceptance = [
+    "execute_plan no longer calls runtime.run_once inside its tokio::spawn block.",
+    "execute_plan calls runtime.run_plan(&workdir, &plan_dir) where plan_dir is derived from the plan id.",
+    "The PlanStarted and PlanCompleted ServerEvents are still published around the run_plan call.",
+    "`cargo check -p roko-serve` passes with no errors.",
+]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-serve/src/routes/plans.rs", lines = "1-22", why = "Existing imports — check what is already in scope (RunResult, PlanHandle, etc.)." },
+    { path = "crates/roko-serve/src/routes/plans.rs", lines = "475-533", why = "The execute_plan function to be modified — full current implementation." },
+    { path = "crates/roko-serve/src/routes/plans.rs", lines = "1753-1780", why = "find_plan helper — understand what it returns and the directory search order." },
+    { path = "crates/roko-serve/src/routes/plans.rs", lines = "2020-2058", why = "build_plan_execution_prompt and plans_dir helpers — check other callers before removing call." },
+    { path = "crates/roko-serve/src/runtime.rs", lines = "62-75", why = "PlanExecutionResult type definition — fields to map in the success/failure branch." },
+    { path = "crates/roko-serve/src/runtime.rs", lines = "280-301", why = "CliRuntime::run_plan default implementation — signature and contract." },
+    { path = "crates/roko-cli/src/serve_runtime.rs", lines = "212-237", why = "Concrete run_plan implementation — what plan_target path it expects." },
+]
+symbols = [
+    "execute_plan — async fn in plans.rs, the handler to modify",
+    "CliRuntime::run_plan — async fn(&self, workdir: &Path, plan_target: &Path) -> anyhow::Result<PlanExecutionResult>",
+    "PlanExecutionResult::success — bool field, replaces RunResult::success",
+    "find_plan — async fn returning Plan; Plan::id is the plan id string",
+    "plans_dir — fn(workdir) -> PathBuf returning workdir/.roko/plans/",
+    "ServerEvent::PlanStarted / PlanCompleted — event bus publishes to preserve",
+]
+anti_patterns = [
+    "Do not call run_once anywhere inside execute_plan after this change.",
+    "Do not remove the RunResult use or import — other handlers in the file still call run_once.",
+    "Do not change the response shape: the endpoint must still return HTTP 202 with { id: run_id }.",
+    "Do not add a second tokio::spawn layer — run_plan is already async and can be awaited directly.",
+    "Do not silently swallow the PlanExecutionResult::gate_results; they are available for future use.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -n 'run_once' crates/roko-serve/src/routes/plans.rs | grep -v 'fn run_once\\|impl.*run_once\\|#\\[\\|//\\|test' | grep -q 'execute_plan\\|tokio::spawn' && echo FAIL || echo PASS"
+fail_msg = "execute_plan must not call run_once after this change (structural check)"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'run_plan' crates/roko-serve/src/routes/plans.rs"
+fail_msg = "plans.rs must contain a call to run_plan after the change"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-serve 2>&1"
+fail_msg = "roko-serve must compile cleanly after replacing run_once with run_plan"
+
+# ── T02: Forward DashboardEvents through the serve event_bus during execution ──
+#
+# After T01 the graph engine executes tasks in order, but the serve-side
+# `event_bus` only receives PlanStarted / PlanCompleted. The portal SSE stream
+# and TUI dashboard depend on TaskStarted, TaskCompleted, and GateResult events
+# to show live progress.
+#
+# The `SharedStateHub` used by `RokoCliRuntime` already receives DashboardEvents
+# from the graph engine. The serve-side `event_bus` (a `ServerEventBus`) is a
+# separate channel. A bridge is needed so that DashboardEvents emitted by the
+# graph engine are also forwarded as ServerEvents on the serve bus.
+#
+# The cleanest approach is to subscribe to the StateHub's broadcast sender (the
+# same mechanism used by the TUI and SSE routes) before spawning the run_plan
+# task, then fan DashboardEvent variants of interest into the ServerEvent bus
+# inside a sibling tokio::spawn. Forward at minimum:
+#   - DashboardEvent::TaskStarted  -> ServerEvent::TaskStarted (if the variant exists)
+#     or a generic ServerEvent::EventLogEntry with the task id and "started" status.
+#   - DashboardEvent::TaskCompleted -> similar
+#   - DashboardEvent::GateResult   -> ServerEvent::GateResult (or EventLogEntry)
+#
+# Check crates/roko-serve/src/events.rs for the available ServerEvent variants
+# before deciding which mapping to use. Prefer exact variants over generic log
+# entries; fall back to EventLogEntry when the exact variant is absent.
+#
+# The forwarding task should stop when the plan_handle's JoinHandle finishes
+# (poll `handle.is_finished()` or use a CancelToken that is cancelled after
+# run_plan returns). Do not leak background tasks.
+
+[[task]]
+id = "T02"
+title = "Forward graph DashboardEvents to the serve SSE event bus during plan execution"
+description = """Modify `crates/roko-serve/src/routes/plans.rs` so that
+DashboardEvents emitted by the graph engine during `run_plan` are forwarded to
+the serve-side `state.event_bus` as `ServerEvent`s. This allows the portal SSE
+stream and the TUI to display live per-task progress when a plan is triggered via
+the HTTP endpoint.
+
+Steps:
+1. Before the `tokio::spawn` that calls `run_plan`, subscribe to the StateHub's
+   DashboardEvent broadcast channel. The `AppState` has access to a `SharedStateHub`
+   (check `crates/roko-serve/src/state.rs` for the field name). Call
+   `state_hub.subscribe()` (or the equivalent method) to get a
+   `tokio::sync::broadcast::Receiver<DashboardEvent>`.
+2. Spawn a sibling forwarding task that receives from the DashboardEvent channel
+   and publishes matching ServerEvents to `state.event_bus`. Forward at minimum:
+   - `DashboardEvent::TaskStarted { plan_id, task_id, .. }` as an appropriate
+     ServerEvent (check `crates/roko-serve/src/events.rs` for exact variants).
+   - `DashboardEvent::TaskCompleted { plan_id, task_id, success, .. }` similarly.
+   - `DashboardEvent::GateResult { .. }` similarly.
+3. Cancel the forwarding task cleanly when `run_plan` returns. Use the existing
+   `CancelToken` already attached to the `PlanHandle`, or a new local
+   `tokio::sync::oneshot` channel — whichever avoids leaking the background task.
+4. Ensure `cargo check -p roko-serve` passes."""
+status = "ready"
+tier = "focused"
+max_loc = 80
+files = [
+    "crates/roko-serve/src/routes/plans.rs",
+]
+role = "implementer"
+depends_on = ["T01"]
+acceptance = [
+    "A DashboardEvent subscription is obtained from the StateHub before run_plan is called.",
+    "A sibling forwarding task bridges DashboardEvent::TaskStarted/TaskCompleted/GateResult to ServerEvent publishes.",
+    "The forwarding task is cancelled or exits cleanly when run_plan completes.",
+    "No background task is leaked after PlanCompleted is published.",
+    "`cargo check -p roko-serve` passes with no errors.",
+]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-serve/src/routes/plans.rs", lines = "475-533", why = "The execute_plan handler as modified by T01 — starting point for T02." },
+    { path = "crates/roko-serve/src/state.rs", lines = "1-80", why = "AppState fields — locate the SharedStateHub or StateHubSender field available in the handler." },
+    { path = "crates/roko-serve/src/events.rs", lines = "1-80", why = "ServerEvent variants — identify which ones correspond to TaskStarted/TaskCompleted/GateResult." },
+    { path = "crates/roko-serve/src/routes/jobs.rs", lines = "846-920", why = "Reference pattern for mapping DashboardEvents to ServerEvents in the jobs route." },
+    { path = "crates/roko-runtime/src/state_hub.rs", lines = "1037-1055", why = "subscribe_events() and subscribe_events_from() signatures — use subscribe_events() for simple live subscription returning broadcast::Receiver<Envelope<DashboardEvent>>." },
+]
+symbols = [
+    "AppState::state_hub — SharedStateHub held by AppState (field confirmed in state.rs line 441)",
+    "SharedStateHub::subscribe_events() — returns tokio::sync::broadcast::Receiver<event_bus::Envelope<DashboardEvent>>; SharedStateHub derefs to StateHub so call state.state_hub.subscribe_events()",
+    "DashboardEvent::TaskStarted { plan_id, task_id, role, tier } — emitted by graph cells",
+    "DashboardEvent::TaskCompleted { plan_id, task_id, success, .. } — emitted by graph cells",
+    "DashboardEvent::GateResult { plan_id, task_id, gate, passed, detail } — emitted by gate runner",
+    "ServerEvent — enum in crates/roko-serve/src/events.rs; check for TaskStarted/TaskCompleted/GateResult variants",
+    "CancelToken — already on PlanHandle, can be used to stop the forwarding task",
+]
+anti_patterns = [
+    "Do not open a new SSE connection or HTTP connection for forwarding — use the in-process channel.",
+    "Do not block run_plan waiting for the forwarding task — they run concurrently.",
+    "Do not forward every DashboardEvent variant — only the three listed (TaskStarted, TaskCompleted, GateResult) are required.",
+    "Do not remove the PlanStarted/PlanCompleted ServerEvent publishes introduced in T01.",
+    "Do not ignore broadcast::error::RecvError::Lagged — log it with tracing::warn! and continue.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'DashboardEvent\\|dashboard_event\\|state_hub' crates/roko-serve/src/routes/plans.rs"
+fail_msg = "plans.rs must reference DashboardEvent or the state_hub after T02"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-serve 2>&1"
+fail_msg = "roko-serve must compile cleanly after adding the DashboardEvent forwarding bridge"
+
+# ── T03: Review the execution flow and write verdict ──────────────────────────
+#
+# An independent reviewer reads the modified execute_plan handler and the runtime
+# trait implementations, confirms that the graph engine is now invoked correctly,
+# and writes a verdict document. The reviewer does not modify source files.
+
+[[task]]
+id = "T03"
+title = "Review graph-engine wiring in execute_plan and write verdict document"
+description = """Act as an independent reviewer. Read the modified
+`crates/roko-serve/src/routes/plans.rs` execute_plan handler and the relevant
+runtime trait and implementation files. Confirm:
+  1. run_once is no longer called inside execute_plan's tokio::spawn block.
+  2. run_plan receives a valid plan directory path (not a flat-file path that
+     would silently fail).
+  3. PlanStarted and PlanCompleted ServerEvents are still published.
+  4. The DashboardEvent forwarding bridge from T02 subscribes before run_plan
+     starts (no events lost at startup) and exits cleanly after completion.
+  5. No background tasks are leaked.
+  6. cargo check -p roko-serve passes.
+
+Create `plans/wire-http-plan-execute/REVIEW.md` with sections:
+  ## Execution flow correctness
+  ## DashboardEvent bridge
+  ## Potential issues
+  ## Verdict
+
+Verdict must be `PASS` or `FAIL`. Reference specific line numbers or symbol
+names from the implementation. Do not modify any source file."""
+status = "ready"
+tier = "integrative"
+max_loc = 100
+files = [
+    "plans/wire-http-plan-execute/REVIEW.md",
+]
+role = "reviewer"
+depends_on = ["T02"]
+acceptance = [
+    "REVIEW.md exists at plans/wire-http-plan-execute/REVIEW.md.",
+    "REVIEW.md contains all four required sections.",
+    "Verdict section contains the word PASS or FAIL in uppercase.",
+    "Review references specific line numbers or symbol names from the modified execute_plan handler.",
+    "`cargo check -p roko-serve` passes.",
+]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-serve/src/routes/plans.rs", lines = "475-560", why = "The execute_plan handler as modified by T01 and T02 — primary subject of the review." },
+    { path = "crates/roko-serve/src/runtime.rs", lines = "280-301", why = "CliRuntime::run_plan default — what happens when the real CLI runtime is not available." },
+    { path = "crates/roko-cli/src/serve_runtime.rs", lines = "212-237", why = "Concrete run_plan implementation — verify it calls the graph engine path." },
+    { path = "crates/roko-cli/src/serve_runtime.rs", lines = "465-480", why = "run_plan_on_local_runtime stub — confirm it fails closed with a clear message." },
+    { path = "crates/roko-serve/src/events.rs", lines = "1-80", why = "ServerEvent variants — verify the forwarded events are correct types." },
+]
+symbols = [
+    "execute_plan — the modified handler; primary review target",
+    "CliRuntime::run_plan — trait method invoked by execute_plan",
+    "run_plan_on_local_runtime — underlying graph-engine dispatch function",
+    "DashboardEvent forwarding task — background task introduced in T02",
+    "PlanHandle::cancel — CancelToken used to stop the forwarding task",
+]
+anti_patterns = [
+    "Do not edit source files to resolve review findings — note them in Potential issues.",
+    "Do not accept without verifying that run_once is absent from execute_plan's spawn block.",
+    "Do not skip the compile check — run cargo check -p roko-serve and report the result.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "test -f plans/wire-http-plan-execute/REVIEW.md && grep -q '## Execution flow correctness' plans/wire-http-plan-execute/REVIEW.md && grep -q '## DashboardEvent bridge' plans/wire-http-plan-execute/REVIEW.md && grep -q '## Potential issues' plans/wire-http-plan-execute/REVIEW.md && grep -q '## Verdict' plans/wire-http-plan-execute/REVIEW.md"
+fail_msg = "REVIEW.md must exist with all four required sections"
+
+[[task.verify]]
+phase = "content"
+command = "grep -qE 'PASS|FAIL' plans/wire-http-plan-execute/REVIEW.md"
+fail_msg = "REVIEW.md Verdict section must contain PASS or FAIL"
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-serve 2>&1"
+fail_msg = "roko-serve must still compile cleanly after the review pass"

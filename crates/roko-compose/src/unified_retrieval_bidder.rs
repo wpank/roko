@@ -38,13 +38,13 @@ use roko_core::config::RetrievalConfig;
 use crate::context_provider::{
     ContextBidder, ContextCandidate, ContextProvider, ContextRequest, ContextScope,
 };
+use crate::context_provider::{ContextPurpose, ContextSection, ContextSource};
 use crate::graph_cells::code_index::CodeIndexProvider;
 use crate::graph_cells::episodes::EpisodeProvider;
 use crate::graph_cells::knowledge::KnowledgeProvider;
 use crate::graph_cells::signals::ComposeScope;
 use crate::prompt::{AttentionBidder, CacheLayer, Placement};
 use crate::reranker::Reranker;
-use crate::context_provider::{ContextSection, ContextSource, ContextPurpose};
 
 // ── Fraction of the global retrieval budget allocated to each source ──────────
 
@@ -165,9 +165,21 @@ impl UnifiedRetrievalContextBidder {
         // share even when fewer than three sources are present.  The leftover
         // from disabled sources is distributed proportionally by renormalising
         // the fractions of the active ones.
-        let mut frac_k = if has_knowledge { KNOWLEDGE_BUDGET_FRACTION } else { 0.0 };
-        let mut frac_e = if has_episodes { EPISODE_BUDGET_FRACTION } else { 0.0 };
-        let mut frac_c = if has_code_index { CODE_INDEX_BUDGET_FRACTION } else { 0.0 };
+        let mut frac_k = if has_knowledge {
+            KNOWLEDGE_BUDGET_FRACTION
+        } else {
+            0.0
+        };
+        let mut frac_e = if has_episodes {
+            EPISODE_BUDGET_FRACTION
+        } else {
+            0.0
+        };
+        let mut frac_c = if has_code_index {
+            CODE_INDEX_BUDGET_FRACTION
+        } else {
+            0.0
+        };
         let total_frac = frac_k + frac_e + frac_c;
         if total_frac > 0.0 {
             frac_k /= total_frac;
@@ -233,7 +245,9 @@ impl UnifiedRetrievalContextBidder {
         seen_names: &mut HashSet<String>,
         out: &mut Vec<ContextCandidate>,
     ) {
-        let Some(provider) = &self.knowledge else { return };
+        let Some(provider) = &self.knowledge else {
+            return;
+        };
         if budget == 0 {
             return;
         }
@@ -277,7 +291,9 @@ impl UnifiedRetrievalContextBidder {
         seen_names: &mut HashSet<String>,
         out: &mut Vec<ContextCandidate>,
     ) {
-        let Some(provider) = &self.episodes else { return };
+        let Some(provider) = &self.episodes else {
+            return;
+        };
         if budget == 0 {
             return;
         }
@@ -321,7 +337,9 @@ impl UnifiedRetrievalContextBidder {
         seen_names: &mut HashSet<String>,
         out: &mut Vec<ContextCandidate>,
     ) {
-        let Some(provider) = &self.code_index else { return };
+        let Some(provider) = &self.code_index else {
+            return;
+        };
         if budget == 0 {
             return;
         }
@@ -397,14 +415,32 @@ impl ContextBidder for UnifiedRetrievalContextBidder {
         let mut seen_names: HashSet<String> = HashSet::new();
 
         // ── Knowledge source ──────────────────────────────────────────────────
-        self.collect_knowledge(request, &scope, budgets.knowledge, &mut seen_names, &mut all_candidates);
+        self.collect_knowledge(
+            request,
+            &scope,
+            budgets.knowledge,
+            &mut seen_names,
+            &mut all_candidates,
+        );
 
         // ── Episode source ────────────────────────────────────────────────────
-        self.collect_episodes(request, &scope, budgets.episodes, &mut seen_names, &mut all_candidates);
+        self.collect_episodes(
+            request,
+            &scope,
+            budgets.episodes,
+            &mut seen_names,
+            &mut all_candidates,
+        );
 
         // ── Code-index source ─────────────────────────────────────────────────
         if self.config.enable_code_index {
-            self.collect_code_index(request, &scope, budgets.code_index, &mut seen_names, &mut all_candidates);
+            self.collect_code_index(
+                request,
+                &scope,
+                budgets.code_index,
+                &mut seen_names,
+                &mut all_candidates,
+            );
         }
 
         if all_candidates.is_empty() {
@@ -602,8 +638,8 @@ mod tests {
     fn max_results_cap_respected() {
         let mut config = RetrievalConfig::default();
         config.max_results = 2;
-        let bidder = UnifiedRetrievalContextBidder::new(config)
-            .with_knowledge(FixedKnowledge(vec![
+        let bidder =
+            UnifiedRetrievalContextBidder::new(config).with_knowledge(FixedKnowledge(vec![
                 ("kn1", "knowledge 1"),
                 ("kn2", "knowledge 2"),
                 ("kn3", "knowledge 3"),
@@ -623,7 +659,10 @@ mod tests {
         let provider = dummy_provider();
         let request = minimal_request();
         let candidates = bidder.propose_context(&provider, &request);
-        assert!(candidates.is_empty(), "code index disabled should produce no candidates");
+        assert!(
+            candidates.is_empty(),
+            "code index disabled should produce no candidates"
+        );
     }
 
     #[test]
@@ -697,8 +736,8 @@ mod tests {
     #[test]
     fn per_source_budget_with_only_knowledge() {
         let config = RetrievalConfig::default();
-        let bidder = UnifiedRetrievalContextBidder::new(config)
-            .with_knowledge(FixedKnowledge(vec![]));
+        let bidder =
+            UnifiedRetrievalContextBidder::new(config).with_knowledge(FixedKnowledge(vec![]));
         let b = bidder.per_source_budget(1000);
         // Knowledge gets 100% when it's the only active source.
         assert_eq!(b.knowledge, 1000);

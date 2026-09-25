@@ -924,7 +924,8 @@ pub(crate) async fn dispatch_bench_prompt(
         .with_feedback_sink(feedback_sink)
         .with_inference_observer(Arc::new(
             crate::inference_observer::RuntimeEventInferenceObserver::new(),
-        ));
+        ))
+        .with_dangerously_skip_permissions(config.runner.dangerously_skip_permissions);
     if let Some(ref mcp_path) = config.agent.mcp_config {
         service = service.with_mcp_config(mcp_path.clone());
     }
@@ -1258,7 +1259,7 @@ fn unique_suffix() -> String {
     let millis = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis())
-        .unwrap_or_default();
+        .unwrap_or(0);
     format!("{}-{millis}", std::process::id())
 }
 

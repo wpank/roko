@@ -92,6 +92,23 @@ impl JsonlLogger {
         run_index_path(&self.shared.path, run_id)
     }
 
+    /// Flush all buffered writes to the global log.
+    ///
+    /// Normally the logger auto-flushes at lifecycle event boundaries and on
+    /// drop. Call this in tests or before an orderly shutdown to guarantee the
+    /// on-disk file is up to date.
+    pub fn flush(&self) -> std::io::Result<()> {
+        let mut state = self
+            .shared
+            .io
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(ref mut writer) = state.writer {
+            writer.flush()?;
+        }
+        Ok(())
+    }
+
     /// Flush buffered derived records for one run before a read-side query.
     ///
     /// The global compatibility log is already flushed independently. A

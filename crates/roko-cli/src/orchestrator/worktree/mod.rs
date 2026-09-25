@@ -99,10 +99,10 @@ pub(super) struct InodeIdentity {
 
 #[cfg(test)]
 #[derive(Debug, Clone)]
-pub(super) struct TestPhaseBarrier {
-    pub(super) phase: CreationPhase,
-    pub(super) started: PathBuf,
-    pub(super) release: PathBuf,
+struct TestPhaseBarrier {
+    phase: CreationPhase,
+    started: PathBuf,
+    release: PathBuf,
 }
 
 #[cfg(test)]
@@ -429,7 +429,7 @@ pub struct WorktreeManager {
     #[cfg(test)]
     pub(super) git_probe_environment: Arc<Mutex<Vec<(OsString, OsString)>>>,
     #[cfg(test)]
-    pub(super) phase_barrier: Arc<Mutex<Option<TestPhaseBarrier>>>,
+    phase_barrier: Arc<Mutex<Option<TestPhaseBarrier>>>,
     #[cfg(test)]
     pub(super) claim_mutation_barrier: Arc<Mutex<Option<TestClaimMutationBarrier>>>,
     #[cfg(test)]
@@ -1479,7 +1479,7 @@ impl WorktreeManager {
     }
 
     #[cfg(test)]
-    pub(super) fn set_test_phase_barrier(&self, barrier: TestPhaseBarrier) {
+    fn set_test_phase_barrier(&self, barrier: TestPhaseBarrier) {
         *self.phase_barrier.lock() = Some(barrier);
     }
 

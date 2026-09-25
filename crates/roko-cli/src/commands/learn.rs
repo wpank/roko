@@ -293,7 +293,9 @@ fn inspect_gates(workdir: &std::path::Path, json: bool) -> Result<i32> {
             );
             reporter.note(&format!("  ({})", path.display()));
         }
-        reporter.note(&format!("  Rungs: {rung_count} (all canonical rungs shown)"));
+        reporter.note(&format!(
+            "  Rungs: {rung_count} (all canonical rungs shown)"
+        ));
         // Sort by rung index for stable output then emit as a table.
         let mut rung_pairs: Vec<(u32, &roko_cli::runner::persist::GateThresholdStats)> =
             gate_thresholds.rungs.iter().map(|(k, v)| (*k, v)).collect();

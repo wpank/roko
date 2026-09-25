@@ -186,7 +186,12 @@ impl OpenAiCompatEmbeddingAdapter {
 
         let response_text = self
             .poster
-            .post_json(&self.endpoint(), &self.auth_headers(), &body_bytes, self.timeout_ms)
+            .post_json(
+                &self.endpoint(),
+                &self.auth_headers(),
+                &body_bytes,
+                self.timeout_ms,
+            )
             .await
             .map_err(|e| EmbedAdapterError::Http(e.to_string()))?;
 
@@ -400,8 +405,7 @@ mod tests {
         let _ = adapter.embed(&["test"]).await.expect("ok");
         let cap = captured.lock().expect("lock").clone().expect("captured");
         assert_eq!(cap.url, "https://api.openai.com/v1/embeddings");
-        let body: serde_json::Value =
-            serde_json::from_slice(&cap.body).expect("body is json");
+        let body: serde_json::Value = serde_json::from_slice(&cap.body).expect("body is json");
         assert_eq!(body["model"], DEFAULT_OPENAI_EMBED_MODEL);
         assert_eq!(body["input"][0], "test");
     }

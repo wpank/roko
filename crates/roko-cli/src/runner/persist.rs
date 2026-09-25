@@ -1735,8 +1735,8 @@ mod tests {
 
         // Observe compile (rung 0) passing and lint (rung 1) failing.
         let mut gt = GateThresholds::load_or_default(&gt_path).unwrap();
-        gt.observe(0, true);   // compile pass
-        gt.observe(1, false);  // lint fail
+        gt.observe(0, true); // compile pass
+        gt.observe(1, false); // lint fail
         gt.save(&gt_path).unwrap();
 
         // Reload confirms the EMA was updated and persisted.

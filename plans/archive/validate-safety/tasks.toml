@@ -1,0 +1,64 @@
+[meta]
+plan = "validate-safety"
+total = 3
+done = 0
+status = "ready"
+max_parallel = 3
+skip_enrichment = true
+
+[[task]]
+id = "SAF-T01"
+title = "Verify taint tracking exists in dispatch"
+description = """Search crates/roko-cli/src/graph_task_dispatch.rs for 'taint_tracker' or 'TaintTracker'.
+Write confirmation to demo/safety-check/taint-ok.txt."""
+status = "ready"
+tier = "mechanical"
+max_loc = 2
+model_hint = "cerebras-gptoss"
+files = ["demo/safety-check/taint-ok.txt"]
+role = "implementer"
+depends_on = []
+max_turns = 5
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'taint' demo/safety-check/taint-ok.txt"
+fail_msg = "Taint tracking not confirmed"
+
+[[task]]
+id = "SAF-T02"
+title = "Verify self-healing conductor exists"
+description = """Search crates/roko-conductor/src/conductor.rs for 'self_healing' or 'SelfHealingState'.
+Write confirmation to demo/safety-check/healing-ok.txt."""
+status = "ready"
+tier = "mechanical"
+max_loc = 2
+model_hint = "cerebras-gptoss"
+files = ["demo/safety-check/healing-ok.txt"]
+role = "implementer"
+depends_on = []
+max_turns = 5
+
+[[task.verify]]
+phase = "structural"
+command = "grep -qE 'self_healing|SelfHealing' demo/safety-check/healing-ok.txt"
+fail_msg = "Self-healing not confirmed"
+
+[[task]]
+id = "SAF-T03"
+title = "Verify bench collect command exists"
+description = """Search crates/roko-cli/src/bench_demo.rs for 'run_bench_collect' or 'BenchCollectReport'.
+Write confirmation to demo/safety-check/bench-ok.txt."""
+status = "ready"
+tier = "mechanical"
+max_loc = 2
+model_hint = "cerebras-gptoss"
+files = ["demo/safety-check/bench-ok.txt"]
+role = "implementer"
+depends_on = []
+max_turns = 5
+
+[[task.verify]]
+phase = "structural"
+command = "grep -qE 'bench|BenchCollect' demo/safety-check/bench-ok.txt"
+fail_msg = "Bench collect not confirmed"

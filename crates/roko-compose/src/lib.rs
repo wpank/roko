@@ -28,10 +28,6 @@ pub mod error;
 
 pub mod agents_md;
 pub mod attention;
-/// RAG-08: Provider-neutral dense embedding adapter, gated by retrieval config.
-pub mod dense_embedding;
-/// RAG-22: Cross-encoder reranking interface, gated by retrieval config.
-pub mod reranker;
 pub mod auction;
 pub mod budget;
 pub mod budget_predictor;
@@ -44,6 +40,8 @@ pub mod conventions;
 pub mod cost_attribution;
 pub mod cross_cut;
 pub mod daimon_functor;
+/// RAG-08: Provider-neutral dense embedding adapter, gated by retrieval config.
+pub mod dense_embedding;
 pub mod dreams_functor;
 pub mod enrichment;
 pub mod foraging;
@@ -56,6 +54,8 @@ pub mod natural_transforms;
 pub mod prompt;
 pub mod prompt_assembly_service;
 pub mod prompt_hints;
+/// RAG-22: Cross-encoder reranking interface, gated by retrieval config.
+pub mod reranker;
 pub mod role_prompts;
 pub mod safety_functor;
 pub mod scorer;
@@ -100,6 +100,10 @@ pub use conventions::{ProjectConventions, detect_conventions};
 pub use cost_attribution::{CostAttribution, SectionCost};
 pub use cross_cut::{CrossCutContext, CrossCutFunctor, CrossCutResult, EnrichedCell, LoopStep};
 pub use daimon_functor::{DaimonFunctor, PROSPECT_ALPHA, PROSPECT_LAMBDA, prospect_value};
+pub use dense_embedding::{
+    DenseEmbeddingAdapter, EmbedAdapterError, NoopEmbeddingAdapter, OpenAiCompatEmbeddingAdapter,
+    dense_embedding_adapter_for_config,
+};
 pub use dreams_functor::{DreamConsumptionReport, DreamOutputConsumer, DreamsFunctor};
 pub use error::ComposeError;
 pub use foraging::{
@@ -120,6 +124,7 @@ pub use prompt::{
 };
 pub use prompt_assembly_service::PromptAssemblyService;
 pub use prompt_hints::prompt_hints_for;
+pub use reranker::{HeuristicReranker, NoopReranker, Reranker, reranker_for_config};
 pub use role_prompts::{
     BuiltinRolePolicy, DEFAULT_CONVENTIONS_SUFFIX, MANIFEST_BACKED_CORE_ROLES, RolePromptSource,
     RoleSystemPromptSpec, TaskContext, builtin_prompt_policy_for,
@@ -139,15 +144,8 @@ pub use templates::{
     scribe::ScribeVariant,
 };
 pub use token_counter::TokenCounter;
-pub use dense_embedding::{
-    DenseEmbeddingAdapter, EmbedAdapterError, NoopEmbeddingAdapter,
-    OpenAiCompatEmbeddingAdapter, dense_embedding_adapter_for_config,
-};
-pub use reranker::{
-    HeuristicReranker, NoopReranker, Reranker, reranker_for_config,
-};
 /// RAG-09: Unified retrieval context bidder — combines episode, knowledge,
 /// code index, and dense search under one AttentionBidder.
 pub mod unified_retrieval_bidder;
-pub use unified_retrieval_bidder::UnifiedRetrievalContextBidder;
 pub use graph_cells::{RETRIEVAL_CELL_TYPE, RetrievalCell, register_retrieval_cell};
+pub use unified_retrieval_bidder::UnifiedRetrievalContextBidder;

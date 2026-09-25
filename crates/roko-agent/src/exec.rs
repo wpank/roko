@@ -191,8 +191,10 @@ impl CodexOperationPolicy {
     }
 }
 
-const ALL_CODEX_OPERATION_TYPES: &[CodexOperationType] =
-    &[CodexOperationType::CommandExecution, CodexOperationType::FileChange];
+const ALL_CODEX_OPERATION_TYPES: &[CodexOperationType] = &[
+    CodexOperationType::CommandExecution,
+    CodexOperationType::FileChange,
+];
 
 // ── JSONL operation broker ───────────────────────────────────────────────────
 
@@ -204,7 +206,10 @@ const ALL_CODEX_OPERATION_TYPES: &[CodexOperationType] =
 /// This is the post-execution enforcement boundary: it cannot prevent Codex
 /// from running the operation, but it will cause the overall agent turn to be
 /// rejected before roko persists or acts on the output.
-fn check_codex_output_against_policy(raw: &str, policy: &CodexOperationPolicy) -> Result<(), String> {
+fn check_codex_output_against_policy(
+    raw: &str,
+    policy: &CodexOperationPolicy,
+) -> Result<(), String> {
     if !policy.has_constraints() {
         return Ok(());
     }

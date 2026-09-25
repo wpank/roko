@@ -354,7 +354,9 @@ mod tests {
     #[test]
     fn effective_token_budget_returns_per_role_override() {
         let mut config = RetrievalConfig::default();
-        config.role_token_budgets.insert("researcher".to_string(), 8000);
+        config
+            .role_token_budgets
+            .insert("researcher".to_string(), 8000);
         config
             .role_token_budgets
             .insert("implementer".to_string(), 3000);

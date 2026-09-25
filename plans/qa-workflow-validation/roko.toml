@@ -1,0 +1,12 @@
+config_version = 2
+
+[timeouts]
+agent_silence_secs = 300
+
+[gates]
+
+[[gates.rungs]]
+name = "files-exist"
+command = "test -f demo/qa-validation/test-portal-api.sh && test -f demo/qa-validation/test-plan-lifecycle.sh && test -f demo/qa-validation/test-cli.sh && test -f demo/qa-validation/RESULTS.md"
+timeout_secs = 10
+required = true

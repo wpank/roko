@@ -283,9 +283,7 @@ impl App {
                     // The snapshot has already set plan.active = true.  Set
                     // started_at (a TUI-local Instant not carried by the
                     // snapshot) so tick_elapsed() can advance the live timer.
-                    if let Some(plan) =
-                        self.tui_state.plans.iter_mut().find(|p| p.id == *plan_id)
-                    {
+                    if let Some(plan) = self.tui_state.plans.iter_mut().find(|p| p.id == *plan_id) {
                         if plan.started_at.is_none() {
                             plan.started_at = Some(std::time::Instant::now());
                         }
@@ -296,9 +294,7 @@ impl App {
                     // Freeze the elapsed timer before the snapshot clears active.
                     // elapsed_secs is TUI-local (derived from started_at Instant);
                     // the snapshot does not carry it.
-                    if let Some(plan) =
-                        self.tui_state.plans.iter_mut().find(|p| p.id == *plan_id)
-                    {
+                    if let Some(plan) = self.tui_state.plans.iter_mut().find(|p| p.id == *plan_id) {
                         if let Some(started) = plan.started_at.take() {
                             plan.elapsed_secs = started.elapsed().as_secs_f64();
                         }
@@ -334,9 +330,7 @@ impl App {
                         self.tui_state.push_agent_chunk(agent_id, content.clone());
                         continue;
                     };
-                    let Ok(record) =
-                        serde_json::from_str::<serde_json::Value>(record)
-                    else {
+                    let Ok(record) = serde_json::from_str::<serde_json::Value>(record) else {
                         continue;
                     };
                     let kind = record
@@ -356,8 +350,7 @@ impl App {
                                     None,
                                     None,
                                 );
-                                self.tui_state
-                                    .push_agent_chunk(agent_id, text.to_string());
+                                self.tui_state.push_agent_chunk(agent_id, text.to_string());
                             }
                         }
                         "reasoning" => {
@@ -388,7 +381,11 @@ impl App {
                                 agent_id,
                                 super::super::state::OutputRecordKind::ToolCall,
                                 String::new(),
-                                if id.is_empty() { None } else { Some(id.to_string()) },
+                                if id.is_empty() {
+                                    None
+                                } else {
+                                    Some(id.to_string())
+                                },
                                 Some(tool.to_string()),
                             );
                             self.tui_state
@@ -407,7 +404,11 @@ impl App {
                                 agent_id,
                                 super::super::state::OutputRecordKind::ToolResult,
                                 output.to_string(),
-                                if id.is_empty() { None } else { Some(id.to_string()) },
+                                if id.is_empty() {
+                                    None
+                                } else {
+                                    Some(id.to_string())
+                                },
                                 None,
                             );
                             self.tui_state

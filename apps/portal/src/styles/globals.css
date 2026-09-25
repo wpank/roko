@@ -1,0 +1,450 @@
+/**
+ * ROSEDUST design system — globals
+ *
+ * This is the single CSS entry point for the portal. It:
+ *   1. Imports Tailwind v4 (CSS-first, no JS config required)
+ *   2. Imports the rosedust token sheet and atmosphere effects
+ *   3. Declares the Tailwind @theme block that maps every rosedust
+ *      token to a Tailwind utility class
+ *   4. Sets baseline HTML/body styles
+ *   5. Establishes global resets specific to the ROSEDUST aesthetic
+ *      (no border-radius anywhere, custom focus ring, selection colour)
+ *   6. Styles scrollbars, ::selection, and focusable elements
+ */
+
+/* -------------------------------------------------------------------- */
+/* 1. Tailwind CSS v4                                                    */
+/* -------------------------------------------------------------------- */
+
+@import "tailwindcss";
+
+/* -------------------------------------------------------------------- */
+/* 2. Design system tokens and effects                                   */
+/* -------------------------------------------------------------------- */
+
+@import "./rosedust.css";
+@import "./atmosphere.css";
+
+/* -------------------------------------------------------------------- */
+/* 3. Tailwind v4 @theme — map CSS variables → utility classes          */
+/*                                                                        */
+/* In Tailwind v4, the @theme block is the replacement for              */
+/* tailwind.config.js `theme.extend`. Every --color-* declared here     */
+/* becomes available as bg-*, text-*, border-*, etc.                    */
+/* -------------------------------------------------------------------- */
+
+@theme {
+  /* ---- Colours: backgrounds ---------------------------------------- */
+  --color-void:             var(--void);
+  --color-bg-raised:        var(--bg-raised);
+  --color-bg-secondary:     var(--bg-secondary);
+  --color-bg-highlight:     var(--bg-highlight);
+
+  /* ---- Colours: text ----------------------------------------------- */
+  --color-text-strong:      var(--text-strong);
+  --color-text-muted:       var(--text-muted);
+  --color-text-faint:       var(--text-faint);
+  --color-text-ghost:       var(--text-ghost);
+
+  /* ---- Colours: rose family ---------------------------------------- */
+  --color-rose:             var(--rose);
+  --color-rose-bright:      var(--rose-bright);
+  --color-rose-dim:         var(--rose-dim);
+  --color-rose-glow:        var(--rose-glow);
+
+  /* ---- Colours: neutrals ------------------------------------------- */
+  --color-bone:             var(--bone);
+  --color-bone-bright:      var(--bone-bright);
+
+  /* ---- Colours: utility accents ------------------------------------ */
+  --color-dream:            var(--dream);
+  --color-dream-bright:     var(--dream-bright);
+  --color-sage:             var(--sage);
+  --color-ember:            var(--ember);
+  --color-warning:          var(--warning);
+
+  /* ---- Colours: semantic ------------------------------------------- */
+  --color-accent-rose:      var(--accent-rose);
+  --color-accent-cyan:      var(--accent-cyan);
+  --color-accent-amber:     var(--accent-amber);
+  --color-accent-error:     var(--accent-error);
+  --color-accent-success:   var(--accent-success);
+
+  /* ---- Colours: borders -------------------------------------------- */
+  --color-border-default:   var(--border-default);
+  --color-border-hover:     var(--border-hover);
+  --color-border-active:    var(--border-active);
+
+  /* ---- Font families ----------------------------------------------- */
+  --font-family-mono:       var(--font-mono);
+  --font-family-sans:       var(--font-sans);
+
+  /* ---- Font sizes --------------------------------------------------- */
+  --font-size-xs:           var(--text-xs);
+  --font-size-sm:           var(--text-sm);
+  --font-size-base:         var(--text-base);
+  --font-size-md:           var(--text-md);
+  --font-size-lg:           var(--text-lg);
+  --font-size-xl:           var(--text-xl);
+  --font-size-2xl:          var(--text-2xl);
+  --font-size-3xl:          var(--text-3xl);
+
+  /* ---- Spacing ----------------------------------------------------- */
+  --spacing-1:              var(--space-1);
+  --spacing-2:              var(--space-2);
+  --spacing-3:              var(--space-3);
+  --spacing-4:              var(--space-4);
+  --spacing-5:              var(--space-5);
+  --spacing-6:              var(--space-6);
+  --spacing-8:              var(--space-8);
+  --spacing-10:             var(--space-10);
+  --spacing-12:             var(--space-12);
+  --spacing-16:             var(--space-16);
+
+  /* ---- Box shadows ------------------------------------------------- */
+  --shadow-sm:              var(--shadow-sm);
+  --shadow-md:              var(--shadow-md);
+  --shadow-lg:              var(--shadow-lg);
+  --shadow-rose:            var(--shadow-rose);
+  --shadow-dream:           var(--shadow-dream);
+
+  /* ---- Border radius — all zero to enforce the flat ROSEDUST rule -- */
+  --radius-none:            0px;
+  --radius-sm:              0px;
+  --radius-md:              0px;
+  --radius-lg:              0px;
+  --radius-xl:              0px;
+  --radius-2xl:             0px;
+  --radius-full:            0px;
+
+  /* ---- Transition durations ---------------------------------------- */
+  --duration-fast:          var(--duration-fast);
+  --duration-normal:        var(--duration-normal);
+  --duration-slow:          var(--duration-slow);
+
+  /* ---- Z-index ----------------------------------------------------- */
+  --z-index-base:           var(--z-base);
+  --z-index-raised:         var(--z-raised);
+  --z-index-dropdown:       var(--z-dropdown);
+  --z-index-sticky:         var(--z-sticky);
+  --z-index-overlay:        var(--z-overlay);
+  --z-index-modal:          var(--z-modal);
+  --z-index-toast:          var(--z-toast);
+  --z-index-tooltip:        var(--z-tooltip);
+}
+
+/* -------------------------------------------------------------------- */
+/* 4. HTML / body baseline                                               */
+/* -------------------------------------------------------------------- */
+
+html {
+  /* Prevent iOS text inflation */
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+
+  /* Use border-box everywhere */
+  box-sizing: border-box;
+
+  /* Smooth scrolling unless the user prefers not to */
+  scroll-behavior: smooth;
+
+  /* Subpixel rendering for the dark background */
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-smooth: always;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: inherit;
+}
+
+body {
+  background: var(--void);
+  color: var(--text-strong);
+  font-family: var(--font-mono);
+  font-size: var(--text-base);
+  line-height: var(--leading-normal);
+  letter-spacing: var(--tracking-normal);
+  min-height: 100dvh;
+  margin: 0;
+  padding: 0;
+
+  /* Prevent horizontal overflow from layout bugs */
+  overflow-x: hidden;
+
+  /* Tab/inactive windows should stay crisp */
+  tab-size: 2;
+}
+
+/* -------------------------------------------------------------------- */
+/* 5. Global aesthetic resets — ROSEDUST specific                        */
+/* -------------------------------------------------------------------- */
+
+/**
+ * No border-radius, anywhere, ever.
+ * ROSEDUST is hard-edged. Rounded corners are explicitly forbidden.
+ * The !important ensures third-party components (Radix, cmdk, etc.)
+ * cannot accidentally introduce rounding.
+ */
+* {
+  border-radius: 0 !important;
+}
+
+/**
+ * Default border colour. All borders should use design system tokens;
+ * this catches any unstyled `border` declarations.
+ */
+* {
+  border-color: var(--border-default);
+}
+
+/* -------------------------------------------------------------------- */
+/* 6. Selection                                                           */
+/* -------------------------------------------------------------------- */
+
+::selection {
+  background: var(--rose-dim);
+  color: var(--text-strong);
+}
+
+::-moz-selection {
+  background: var(--rose-dim);
+  color: var(--text-strong);
+}
+
+/* -------------------------------------------------------------------- */
+/* 7. Focus ring                                                          */
+/*                                                                        */
+/* A single-pixel rose outline replaces the browser default. We use      */
+/* :focus-visible so the ring only appears for keyboard navigation, not  */
+/* mouse clicks.                                                         */
+/* -------------------------------------------------------------------- */
+
+:focus {
+  outline: none;
+}
+
+:focus-visible {
+  outline: 1px solid var(--rose);
+  outline-offset: 2px;
+}
+
+/* Interactive elements that should always show a focus ring */
+a:focus-visible,
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+[role="button"]:focus-visible,
+[role="link"]:focus-visible,
+[role="tab"]:focus-visible,
+[role="menuitem"]:focus-visible,
+[role="option"]:focus-visible,
+[tabindex]:focus-visible {
+  outline: 1px solid var(--rose);
+  outline-offset: 2px;
+}
+
+/* -------------------------------------------------------------------- */
+/* 8. Scrollbars — thin, dark, rosedust-toned                            */
+/* -------------------------------------------------------------------- */
+
+/* Chromium / Safari */
+::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--void);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--text-ghost);
+  border: none;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-faint);
+}
+
+::-webkit-scrollbar-corner {
+  background: var(--void);
+}
+
+/* Firefox */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--text-ghost) var(--void);
+}
+
+/* -------------------------------------------------------------------- */
+/* 9. Typography defaults                                                 */
+/* -------------------------------------------------------------------- */
+
+h1, h2, h3, h4, h5, h6 {
+  font-family: var(--font-mono);
+  font-weight: 500;
+  line-height: var(--leading-tight);
+  letter-spacing: var(--tracking-tight);
+  color: var(--text-strong);
+  margin: 0;
+}
+
+p {
+  margin: 0;
+  line-height: var(--leading-relaxed);
+}
+
+a {
+  color: var(--rose);
+  text-decoration: none;
+  transition: color var(--duration-fast) var(--ease-out);
+}
+
+a:hover {
+  color: var(--rose-bright);
+}
+
+code,
+kbd,
+samp,
+pre {
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+}
+
+pre {
+  overflow-x: auto;
+  background: var(--bg-raised);
+  padding: var(--space-4);
+  color: var(--text-strong);
+}
+
+/* -------------------------------------------------------------------- */
+/* 10. Form element baseline                                              */
+/* -------------------------------------------------------------------- */
+
+input,
+textarea,
+select,
+button {
+  font-family: inherit;
+  font-size: inherit;
+  color: inherit;
+  background: transparent;
+  border: 1px solid var(--border-default);
+  padding: var(--space-2) var(--space-3);
+  transition:
+    border-color var(--duration-fast) var(--ease-out),
+    background var(--duration-fast) var(--ease-out);
+}
+
+input:hover,
+textarea:hover,
+select:hover {
+  border-color: var(--border-hover);
+}
+
+input:focus,
+textarea:focus,
+select:focus {
+  border-color: var(--border-active);
+  background: var(--bg-highlight);
+  outline: none;
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: var(--text-faint);
+}
+
+button {
+  cursor: pointer;
+  user-select: none;
+  background: transparent;
+  color: var(--text-strong);
+  border: 1px solid var(--border-default);
+  transition:
+    color var(--duration-fast) var(--ease-out),
+    border-color var(--duration-fast) var(--ease-out),
+    background var(--duration-fast) var(--ease-out);
+}
+
+button:hover {
+  border-color: var(--border-hover);
+  color: var(--rose-bright);
+}
+
+button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+/* -------------------------------------------------------------------- */
+/* 11. Image / media                                                      */
+/* -------------------------------------------------------------------- */
+
+img,
+video,
+svg {
+  display: block;
+  max-width: 100%;
+}
+
+/* -------------------------------------------------------------------- */
+/* 12. Utilities — low-level helpers not worth a Tailwind plugin         */
+/* -------------------------------------------------------------------- */
+
+/**
+ * Screen-reader only — visually hidden but announced by assistive tech.
+ * Tailwind provides .sr-only but we define it here for completeness.
+ */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border-width: 0;
+}
+
+/** Disable pointer events — useful for decorative layers. */
+.pointer-events-none {
+  pointer-events: none;
+}
+
+/** GPU-accelerated layer hint. */
+.gpu {
+  transform: translateZ(0);
+  will-change: transform;
+}
+
+/**
+ * Monospace number rendering — prevents layout shift in live counters.
+ */
+.num {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+}
+
+/**
+ * Truncate single line of text with an ellipsis.
+ */
+.truncate {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

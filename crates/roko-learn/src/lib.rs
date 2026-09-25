@@ -113,12 +113,12 @@ pub mod prompt_experiment;
 pub mod provider_health;
 /// Provider/model pass-rate outcome telemetry for future routing bandits.
 pub mod provider_model_outcome;
-/// RAG-10: Retrieval outcome JSONL telemetry with gate-pass correlation.
-pub mod retrieval_outcome;
 pub mod quality_judge;
 /// T0 reflex store — condition-action pairs learned from T2 episode promotions.
 pub mod reflex_store;
 pub mod regression;
+/// RAG-10: Retrieval outcome JSONL telemetry with gate-pass correlation.
+pub mod retrieval_outcome;
 /// Lookahead and calibration shells around the shipped cascade router.
 pub mod routing_extras;
 /// Append-only routing-decision audit log for explainability and dashboards.

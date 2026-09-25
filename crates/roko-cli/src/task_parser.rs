@@ -1219,19 +1219,17 @@ impl TasksFile {
             .iter()
             .filter(|t| t.status.eq_ignore_ascii_case("done"))
             .count() as u32;
-        self.meta.status =
-            if self.meta.total > 0 && self.meta.done == self.meta.total {
-                "complete".to_string()
-            } else {
-                "ready".to_string()
-            };
+        self.meta.status = if self.meta.total > 0 && self.meta.done == self.meta.total {
+            "complete".to_string()
+        } else {
+            "ready".to_string()
+        };
     }
 
     /// Atomically write this [`TasksFile`] to `path` using a tmp-then-rename
     /// strategy so a crash mid-write does not corrupt the plan file.
     pub fn write(&self, path: &Path) -> Result<()> {
-        let serialized =
-            toml::to_string_pretty(self).context("serialize TasksFile to TOML")?;
+        let serialized = toml::to_string_pretty(self).context("serialize TasksFile to TOML")?;
 
         let parent = path
             .parent()
@@ -1247,13 +1245,8 @@ impl TasksFile {
             f.flush()
                 .with_context(|| format!("flush tmp file {}", tmp_path.display()))?;
         }
-        fs::rename(&tmp_path, path).with_context(|| {
-            format!(
-                "rename {} -> {}",
-                tmp_path.display(),
-                path.display()
-            )
-        })?;
+        fs::rename(&tmp_path, path)
+            .with_context(|| format!("rename {} -> {}", tmp_path.display(), path.display()))?;
         Ok(())
     }
 }
@@ -2986,7 +2979,10 @@ depends_on = ["T2"]
         let t1 = tasks.tasks.iter().find(|t| t.id == "T1").unwrap();
         assert_eq!(t1.status, "done");
         // meta.done should have incremented (T1=done, T3=done → 2)
-        assert_eq!(tasks.meta.done, 2, "meta.done should be 2 after T1 marked done");
+        assert_eq!(
+            tasks.meta.done, 2,
+            "meta.done should be 2 after T1 marked done"
+        );
         assert_eq!(tasks.meta.status, "ready", "not all tasks are done yet");
     }
 
@@ -2996,7 +2992,10 @@ depends_on = ["T2"]
         let first = tasks.apply_mutation(PlanMutation::MarkTaskDone {
             task_id: "T3".to_string(),
         });
-        assert!(!first, "T3 is already done; apply_mutation should return false");
+        assert!(
+            !first,
+            "T3 is already done; apply_mutation should return false"
+        );
         assert_eq!(tasks.meta.done, 1, "meta.done should still be 1");
     }
 
@@ -3045,31 +3044,49 @@ depends_on = ["T2"]
         let changed = tasks.apply_mutation(PlanMutation::MarkTaskDone {
             task_id: "DOES_NOT_EXIST".to_string(),
         });
-        assert!(!changed, "unknown task id should return false without panicking");
+        assert!(
+            !changed,
+            "unknown task id should return false without panicking"
+        );
     }
 
     #[test]
     fn mutation_target_status_returns_correct_strings() {
         assert_eq!(
-            PlanMutation::MarkTaskDone { task_id: "T".into() }.target_status(),
+            PlanMutation::MarkTaskDone {
+                task_id: "T".into()
+            }
+            .target_status(),
             Some("done")
         );
         assert_eq!(
-            PlanMutation::MarkTaskFailed { task_id: "T".into(), reason: String::new() }
-                .target_status(),
+            PlanMutation::MarkTaskFailed {
+                task_id: "T".into(),
+                reason: String::new()
+            }
+            .target_status(),
             Some("failed")
         );
         assert_eq!(
-            PlanMutation::SkipTask { task_id: "T".into() }.target_status(),
+            PlanMutation::SkipTask {
+                task_id: "T".into()
+            }
+            .target_status(),
             Some("skipped")
         );
         assert_eq!(
-            PlanMutation::RetryTask { task_id: "T".into() }.target_status(),
+            PlanMutation::RetryTask {
+                task_id: "T".into()
+            }
+            .target_status(),
             Some("pending")
         );
         assert_eq!(
-            PlanMutation::UpdateTaskStatus { task_id: "T".into(), status: "active".into() }
-                .target_status(),
+            PlanMutation::UpdateTaskStatus {
+                task_id: "T".into(),
+                status: "active".into()
+            }
+            .target_status(),
             Some("active")
         );
     }
@@ -3078,10 +3095,16 @@ depends_on = ["T2"]
     fn apply_mutations_batch_marks_all_done_and_updates_meta_once() {
         let mut tasks = TasksFile::parse_str(MUTATION_TEST_TASKS).unwrap();
         let mutations = vec![
-            PlanMutation::MarkTaskDone { task_id: "T1".to_string() },
-            PlanMutation::MarkTaskDone { task_id: "T2".to_string() },
+            PlanMutation::MarkTaskDone {
+                task_id: "T1".to_string(),
+            },
+            PlanMutation::MarkTaskDone {
+                task_id: "T2".to_string(),
+            },
             // T3 is already done — this one is a no-op.
-            PlanMutation::MarkTaskDone { task_id: "T3".to_string() },
+            PlanMutation::MarkTaskDone {
+                task_id: "T3".to_string(),
+            },
         ];
         let changed = tasks.apply_mutations(mutations);
         // Only T1 and T2 actually changed (T3 was already done).

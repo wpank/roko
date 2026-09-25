@@ -122,8 +122,7 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                 return Ok(EXIT_SUCCESS);
             }
 
-            let reporter =
-                roko_cli::cli_reporter::CliReporter::from_flags(false, cli.json);
+            let reporter = roko_cli::cli_reporter::CliReporter::from_flags(false, cli.json);
 
             if cli.json {
                 let entries: Vec<serde_json::Value> = summaries

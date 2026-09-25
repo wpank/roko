@@ -1,0 +1,535 @@
+[meta]
+plan = "03-backend-live-events"
+total = 11
+done = 0
+status = "ready"
+max_parallel = 1
+skip_enrichment = true
+estimated_total_minutes = 250
+
+# Make a running plan observable.
+#
+# Three defects make the run view impossible even once execution works:
+#   - task status arrives batched 0 to M, because poll_status_changes has zero callers
+#   - tokens and cost never reach the dashboard, because token_usage has zero callers
+#   - agent output replays in one burst after the agent has already finished
+# And a fourth, deeper one: a CLI plan run publishes to an in-process state hub that
+# the HTTP server never sees.
+#
+# Every fix here is a call-site change. None requires a schema change.
+# See tmp/portal-audit/01-FINDINGS.md sections A3 and B1 to B4.
+
+[[task]]
+id = "T01"
+title = "Emit live task status transitions during plan execution"
+description = """
+Make per-task status arrive as it happens instead of in two batches.
+
+Today the graph plan run emits a task started event for **every node at once, before
+execution begins**, and a task completed event for **every node in one batch after
+the whole plan finishes**. Progress therefore jumps from zero to complete with
+nothing in between, which is why the portal can never show a task in flight.
+
+The function that emits live transitions already exists:
+`GraphTuiBridge::poll_status_changes` in crates/roko-cli/src/runner/graph_tui_bridge.rs.
+It has zero production callers; only tests call it.
+
+Call it from the polling loop in crates/roko-cli/src/commands/plan.rs, the same loop
+that currently polls for TUI commands. Poll status on each iteration and emit only
+the transitions that changed since the previous poll, so the event stream carries
+deltas rather than repeated full states.
+
+Then remove the up-front burst that marks every node as started before execution.
+A node that has not been dispatched is pending, not started.
+"""
+status = "ready"
+role = "implementer"
+tier = "integrative"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 30
+depends_on = []
+files = ["crates/roko-cli/src/commands/plan.rs"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/commands/plan.rs", why = "the polling loop and the two batch emission sites" },
+    { path = "crates/roko-cli/src/runner/graph_tui_bridge.rs", why = "poll_status_changes, which already computes transitions and has no callers" },
+    { path = "crates/roko-cli/src/runner/tui_bridge.rs", why = "the bridge methods that publish task events" },
+]
+anti_patterns = [
+    "Do not emit a started event for a node that has not been dispatched.",
+    "Do not re-emit unchanged states on every poll. Emit deltas only.",
+    "Do not write a second status-diffing implementation. The existing one is correct and unused.",
+]
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli"
+fail_msg = "roko-cli does not compile after wiring live task status"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'poll_status_changes' crates/roko-cli/src/commands/plan.rs"
+fail_msg = "the plan run loop does not call poll_status_changes"
+
+[[task]]
+id = "T02"
+title = "Emit token usage from the dispatch cost site"
+description = """
+Make token counts reach the dashboard. Today they are structurally guaranteed to be
+zero: `TuiBridge::token_usage` in crates/roko-cli/src/runner/tui_bridge.rs has **zero
+callers anywhere**, so every agent's token fields and the snapshot totals read zero
+forever. That is why the portal shows zero tokens on an agent that clearly ran.
+
+The data already exists at the right place. In
+crates/roko-cli/src/graph_task_dispatch.rs there is a site that builds a cost record
+and appends it to the learning costs log. Every field the event needs is already in
+scope there: the plan id, task id, role, model, input tokens, output tokens, cached
+tokens, cost and duration.
+
+Call the bridge's token usage method at that same site, passing the plan id and task
+id so the event can be attributed to a task rather than only to an agent.
+
+Do not move or restructure the cost record writing. Add the event emission next to
+it.
+"""
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 25
+depends_on = ["T01"]
+files = ["crates/roko-cli/src/graph_task_dispatch.rs"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/graph_task_dispatch.rs", why = "the cost record site where every needed field is already in scope" },
+    { path = "crates/roko-cli/src/runner/tui_bridge.rs", why = "the token usage method being called and the events it publishes" },
+    { path = "crates/roko-core/src/dashboard_snapshot.rs", why = "the efficiency event variant and the metric names the snapshot recognises" },
+]
+anti_patterns = [
+    "Do not change how the cost record is written to the learning log.",
+    "Do not emit token events without the plan and task ids. Per-agent attribution alone is not enough for the run view.",
+]
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli"
+fail_msg = "roko-cli does not compile after emitting token usage"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'token_usage' crates/roko-cli/src/graph_task_dispatch.rs"
+fail_msg = "the dispatch cost site does not emit token usage"
+
+[[task]]
+id = "T03"
+title = "Emit per-task cost from the dispatch cost site"
+description = """
+Emit the dollar cost alongside the token counts from T02, at the same site in
+crates/roko-cli/src/graph_task_dispatch.rs.
+
+The dashboard snapshot recognises a specific set of efficiency metric names, one of
+which is the cost metric. Read the snapshot module to get the exact metric string it
+matches on, and emit an efficiency event with that metric name and the cost value
+from the cost record.
+
+Consider whether four separate token events plus one cost event per turn is too
+chatty for the event ring, which holds 1024 events. If a single combined per-task
+usage event would be better, say so in the task output and note it as follow-up
+rather than changing the schema here. This task stays within the existing variants.
+"""
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 20
+depends_on = ["T02"]
+files = ["crates/roko-cli/src/graph_task_dispatch.rs"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/graph_task_dispatch.rs", why = "the cost record site, now emitting token usage from T02" },
+    { path = "crates/roko-core/src/dashboard_snapshot.rs", why = "the exact efficiency metric names the snapshot folds into its totals" },
+    { path = "crates/roko-cli/src/runner/tui_bridge.rs", why = "the efficiency event method to call" },
+]
+anti_patterns = [
+    "Do not invent a new metric name. Use the one the snapshot already matches on.",
+    "Do not add a new event variant in this task.",
+]
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli"
+fail_msg = "roko-cli does not compile after emitting cost events"
+
+[[task]]
+id = "T04"
+title = "Stream agent output during dispatch instead of after"
+description = """
+Make the transcript arrive while the agent is working.
+
+In crates/roko-cli/src/graph_task_dispatch.rs, the function that forwards dispatch
+events to the bridge is invoked **after** the shared agent bridge call has already
+returned. The whole transcript is therefore replayed in one burst when the agent is
+already done. The doc comment on that function says so outright.
+
+Move the forwarding into a streaming callback that fires as records are produced,
+rather than draining a completed collection. Preserve the existing record framing
+exactly: output is wrapped in a record separator, a version marker and a JSON body
+whose kind is one of text, reasoning, tool start or tool result. The portal parses
+that framing, so changing it breaks the transcript.
+
+Preserve the existing truncation of oversized tool output, which keeps the tail
+rather than the head.
+
+If the shared agent bridge has no streaming hook today, add the narrowest one that
+serves this purpose, and say in the task output what you added.
+"""
+status = "ready"
+role = "implementer"
+tier = "integrative"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 35
+depends_on = ["T03"]
+files = ["crates/roko-cli/src/graph_task_dispatch.rs"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/graph_task_dispatch.rs", why = "the forwarding function, its two post-completion call sites and the truncation rule" },
+    { path = "crates/roko-cli/src/runner/tui_bridge.rs", why = "the record framing constants and the agent output publisher" },
+]
+anti_patterns = [
+    "Do not change the record framing. The portal parses the prefix and the JSON body.",
+    "Do not remove the oversized tool output truncation.",
+    "Do not buffer the whole transcript and flush at the end. That is the current behaviour being fixed.",
+]
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli"
+fail_msg = "roko-cli does not compile after streaming agent output"
+
+[[task]]
+id = "T05"
+title = "Emit a run completion event carrying elapsed time"
+description = """
+Emit the run completed dashboard event at the end of a graph plan run, in
+crates/roko-cli/src/commands/plan.rs.
+
+The variant exists and carries the run outcome, the duration in milliseconds, whether
+cleanup was degraded, and any surviving agent ids and process ids. It is **never
+emitted in the graph path**, so the snapshot's run duration and run outcome stay
+null and the portal has no elapsed time for the run.
+
+Emit it on every terminal path, including cancellation and failure, not only on
+success. A run that was cancelled still has an elapsed time and still needs to leave
+the running state in the portal.
+
+Take the start instant at the point the run actually begins, not when the command is
+parsed.
+"""
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 20
+depends_on = ["T04"]
+files = ["crates/roko-cli/src/commands/plan.rs"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/commands/plan.rs", why = "the terminal paths of the graph run, including cancellation and failure" },
+    { path = "crates/roko-core/src/dashboard_snapshot.rs", why = "the run completed variant and the snapshot fields it populates" },
+    { path = "crates/roko-cli/src/runner/tui_bridge.rs", why = "the bridge method that publishes it" },
+]
+anti_patterns = [
+    "Do not emit only on the success path. Cancelled and failed runs need it too.",
+    "Do not measure elapsed time from command parse. Measure from the start of the run.",
+]
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli"
+fail_msg = "roko-cli does not compile after emitting run completion"
+
+[[task]]
+id = "T06"
+title = "Give plan run an opt-in hub bridge flag"
+description = """
+Add the mechanism that lets a CLI plan run publish into a state hub the HTTP server
+can read.
+
+Today `roko plan run` uses the shared in-process state hub, which has no event log,
+no socket and no HTTP, so a terminal run is completely invisible to the portal. The
+server builds a different hub object entirely. The bridge that would join them,
+the hub inter-process server in crates/roko-cli/src/state_hub_ipc.rs, has **zero
+production call sites**.
+
+Add an opt-in flag to the plan run command, off by default, that starts the hub
+inter-process server for the duration of the run. Off by default because a plain
+terminal run should not open a socket without being asked.
+
+This task adds the flag, the plumbing and the lifecycle: start before the run, shut
+down cleanly afterwards, and do not fail the run if the bridge cannot start. Report
+a warning and continue. The server side is T07.
+"""
+status = "ready"
+role = "implementer"
+tier = "integrative"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 30
+depends_on = ["T05"]
+files = ["crates/roko-cli/src/commands/plan.rs"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/state_hub_ipc.rs", why = "the inter-process hub server that has never been called" },
+    { path = "crates/roko-cli/src/commands/plan.rs", why = "where the run acquires its hub and where the flag must be threaded" },
+    { path = "crates/roko-runtime/src/state_hub.rs", why = "the in-process hub constructor and what it lacks" },
+]
+anti_patterns = [
+    "Do not make the bridge on by default. A plain terminal run should not open a socket unasked.",
+    "Do not fail the run when the bridge cannot start. Warn and continue.",
+]
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli"
+fail_msg = "roko-cli does not compile after adding the hub bridge flag"
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'start_hub_ipc_server' crates/roko-cli/src/commands/plan.rs"
+fail_msg = "the plan run command does not start the hub bridge"
+
+[[task]]
+id = "T07"
+title = "Let the server consume events from a bridged CLI run"
+description = """
+Complete the other half of T06: let `roko serve` read events published by a separate
+`roko plan run` process.
+
+Add a consumer that connects to the hub inter-process endpoint and folds the events
+it receives into the server's own state hub, so they reach the SSE stream and the
+projections exactly as in-process events do.
+
+Requirements:
+
+  - Connect lazily. The server must start normally when no bridged run exists.
+  - Reconnect with backoff if the producer goes away and comes back.
+  - Do not duplicate events already present. The hub carries sequence numbers; use
+    them to deduplicate, the same way the existing server event bridge does.
+  - Log clearly when a bridged producer attaches and detaches.
+
+Read the existing server event bridge before writing this. It solves the same class
+of problem, including cycle-breaking by sequence, and this consumer should look like
+it rather than inventing a new shape.
+"""
+status = "ready"
+role = "implementer"
+tier = "architectural"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 35
+depends_on = ["T06"]
+files = ["crates/roko-serve/src/hub_bridge.rs"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/state_hub_ipc.rs", why = "the producer protocol this consumer must speak" },
+    { path = "crates/roko-serve/src/lib.rs", why = "the existing server event bridge, including its sequence-based deduplication" },
+    { path = "crates/roko-serve/src/state.rs", why = "where the server builds its own state hub" },
+    { path = "crates/roko-runtime/src/state_hub.rs", why = "the hub api for applying events and reading the cursor" },
+]
+anti_patterns = [
+    "Do not make server startup depend on a bridged producer being present.",
+    "Do not re-apply events the hub has already seen. Deduplicate by sequence.",
+]
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-serve"
+fail_msg = "roko-serve does not compile after adding the hub bridge consumer"
+
+[[task]]
+id = "T08"
+title = "Test live task status transitions"
+description = """
+Add `crates/roko-cli/tests/live_task_status.rs` proving status arrives as deltas.
+
+Drive the graph tui bridge directly with a sequence of node status changes and assert
+the published events form a live progression: a task moves to started, then to
+completed, with no event claiming a task started before it was dispatched, and no
+repeated unchanged states.
+
+Assert specifically that a run of three tasks where only the first has finished
+publishes exactly one completion, not three. That is the behaviour the batch emission
+got wrong.
+"""
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 25
+depends_on = ["T07"]
+files = ["crates/roko-cli/tests/live_task_status.rs"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/runner/graph_tui_bridge.rs", why = "the bridge under test and its existing test usage of poll_status_changes" },
+    { path = "crates/roko-cli/src/runner/tui_bridge.rs", why = "the events published, which the assertions inspect" },
+]
+anti_patterns = [
+    "Do not run a real plan in this test. Drive the bridge directly.",
+]
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-cli --test live_task_status"
+fail_msg = "the live task status test does not pass"
+
+[[task]]
+id = "T09"
+title = "Test token and cost event emission"
+description = """
+Add `crates/roko-cli/tests/usage_events.rs` proving usage reaches the event stream.
+
+Assert that publishing a usage record through the bridge produces events carrying the
+plan id, the task id, the input and output token counts and the cost, and that
+folding those events into a dashboard snapshot yields non-zero token totals and a
+non-zero cost total.
+
+That last assertion is the one that matters. The defect being fixed is not that the
+events were malformed; it is that the snapshot totals were structurally always zero
+because nothing ever emitted them. Prove the totals move.
+"""
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 25
+depends_on = ["T08"]
+files = ["crates/roko-cli/tests/usage_events.rs"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/runner/tui_bridge.rs", why = "the usage publishing methods under test" },
+    { path = "crates/roko-core/src/dashboard_snapshot.rs", why = "the snapshot fold that turns these events into totals" },
+]
+anti_patterns = [
+    "Do not assert only on event shape. Assert the snapshot totals become non-zero.",
+]
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-cli --test usage_events"
+fail_msg = "the usage event test does not pass"
+
+[[task]]
+id = "T10"
+title = "Document the run view event contract as built"
+description = """
+Update `tmp/portal-audit/03-CONTRACT.md` so its event table reflects what this plan
+actually delivered, and write the residual gaps to `.roko/GAPS.md`.
+
+For each of the eleven events the run view consumes, record its real status after
+this plan: live, batched, or absent. Replace the predictions with observations. If
+something in the table was wrong, correct it rather than leaving the original claim
+standing.
+
+Then append to the gaps file, with the subsystem named for each entry:
+
+  - The richer graph execution event taxonomy that the engine defines and never
+    emits, including waves, node progress and terminal statistics.
+  - Any schema change this plan deliberately deferred, such as timestamps on task
+    events, a rung index on gate results, or real attempt numbers.
+  - Whether a combined per-task usage event should replace the several per-turn
+    events, if T03 concluded that it should.
+
+Two literal markers are required so the verify step can tell your work from the
+file's prior contents. Put the exact heading `AS BUILT 03-backend-live-events` above
+the revised event table in the contract document, and begin every gap entry you append
+with the exact prefix `GAP 03-backend-live-events:`.
+"""
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 20
+depends_on = ["T09"]
+files = ["tmp/portal-audit/03-CONTRACT.md", ".roko/GAPS.md"]
+
+[task.context]
+read_files = [
+    { path = "tmp/portal-audit/03-CONTRACT.md", why = "the event table being brought up to date" },
+    { path = "tmp/portal-audit/01-FINDINGS.md", why = "the B-series defects this plan addressed" },
+    { path = "crates/roko-graph/src/engine.rs", why = "the stored but never read event sink behind the deferred taxonomy" },
+]
+anti_patterns = [
+    "Do not leave a prediction in the table where an observation is now available.",
+    "Do not claim an event is live without having seen it emitted.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'AS BUILT 03-backend-live-events' tmp/portal-audit/03-CONTRACT.md && grep -q 'GAP 03-backend-live-events' .roko/GAPS.md"
+fail_msg = "the contract table was not marked AS BUILT, or no gap was recorded for this plan"
+
+[[task]]
+id = "T11"
+title = "Verify a live run is observable and record the result"
+description = """
+Prove a running plan is observable, and write the result to
+`plans/portal-programme/03-backend-live-events/REVIEW.md`.
+
+Run both cases:
+
+  **Case A, server-initiated.** Start the server, execute demo-hello through the API,
+  and capture the event stream. Record the timeline: when each task started, when it
+  completed, when agent output first arrived relative to the agent finishing, and
+  what the token and cost totals reached.
+
+  **Case B, CLI-initiated with the bridge on.** Start the server, run the same plan
+  from a terminal with the hub bridge flag enabled, and capture the stream again.
+
+For each case record: did task status arrive as deltas rather than in two batches;
+did agent output arrive while the agent was working rather than after; did the token
+and cost totals become non-zero.
+
+Those three questions are the whole point of the plan. Answer each with evidence from
+the captured stream, and say plainly if any answer is no.
+"""
+status = "ready"
+role = "implementer"
+tier = "integrative"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 30
+depends_on = ["T10"]
+files = ["plans/portal-programme/03-backend-live-events/REVIEW.md"]
+
+[task.context]
+read_files = [
+    { path = "tmp/portal-audit/01-FINDINGS.md", why = "the A3 and B1 to B4 defects being verified" },
+    { path = "tmp/portal-audit/03-CONTRACT.md", why = "the bootstrap sequence and the event table to check against" },
+    { path = "plans/demo-hello/tasks.toml", why = "the plan being run in both cases" },
+]
+anti_patterns = [
+    "Do not report success from the code alone. Capture the actual event stream.",
+    "Do not skip the CLI-initiated case. It is the harder half and the one that was never wired.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "test -f plans/portal-programme/03-backend-live-events/REVIEW.md && grep -qi 'case b' plans/portal-programme/03-backend-live-events/REVIEW.md"
+fail_msg = "REVIEW.md is missing or does not cover the CLI-initiated case"

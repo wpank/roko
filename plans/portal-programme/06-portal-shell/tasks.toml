@@ -1,0 +1,623 @@
+[meta]
+plan = "06-portal-shell"
+total = 12
+done = 0
+status = "ready"
+max_parallel = 1
+skip_enrichment = true
+estimated_total_minutes = 250
+
+# Build the one screen.
+#
+# Three regions: a plan rail on the left, a stage in the middle that is a lens on the
+# selected plan, and a collapsible agent stream at the bottom. One header row and one
+# alert row. No navigation, because there is nowhere else to go.
+#
+# The selection principle: the rail selects and every other region is a lens on that
+# selection. You never navigate to watch a run because you never left it.
+# See tmp/portal-audit/02-DESIGN.md sections 2 and 3.
+
+[[task]]
+id = "T01"
+title = "Bootstrap state from the snapshot, then stream deltas"
+description = """
+Create `apps/portal/src/lib/bootstrap.ts`, the correct way to get initial state.
+
+The portal has always bootstrapped by connecting the event stream and folding
+whatever it replayed. That is wrong: the server sends a snapshot only
+**conditionally**, when the client's cursor fell out of the replay ring, when the
+retained suffix exceeds its replay cap, or when the suffix has holes. A fresh client
+with a short retained suffix gets raw events and no snapshot at all, and has to fold
+from nothing.
+
+The correct sequence is two steps: fetch the state hub snapshot, which returns the
+full dashboard state together with a cursor, then open the event stream from that
+cursor.
+
+Implement that. Take the cursor from the snapshot response, not from local storage,
+on a cold start. Hand it to the SSE client as its replay position.
+
+The alternative, a single projection stream that sends one state frame then delta
+frames, is noted in the contract document. Use the two-step form because it composes
+with the persisted cursor from the foundation plan, and say in the task output which
+you chose and why.
+"""
+status = "ready"
+role = "implementer"
+tier = "integrative"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 25
+depends_on = []
+files = ["apps/portal/src/lib/bootstrap.ts"]
+
+[task.context]
+read_files = [
+    { path = "apps/portal/src/api/sse-client.ts", why = "the client whose replay position is being set, and its gap frame handling" },
+    { path = "apps/portal/src/hooks/useStateHubSSE.ts", why = "the single mount point where the sequence must run" },
+    { path = "crates/roko-serve/src/routes/sse.rs", why = "when the server does and does not send a snapshot, and the cursor precedence" },
+    { path = "tmp/portal-audit/03-CONTRACT.md", why = "the bootstrap sequence this task implements" },
+]
+anti_patterns = [
+    "Do not bootstrap by folding whatever the event stream happens to replay.",
+    "Do not open the stream before the snapshot has supplied a cursor.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "test -f apps/portal/src/lib/bootstrap.ts && grep -q 'snapshot' apps/portal/src/lib/bootstrap.ts"
+fail_msg = "the bootstrap helper is missing or does not fetch a snapshot first"
+
+[[task]]
+id = "T02"
+title = "Build the three-pane workspace shell"
+description = """
+Create `apps/portal/src/components/shell/WorkspaceShell.tsx`, the layout that
+replaces 34 routes.
+
+A CSS grid with named template areas: a header row, an optional alert row, then a
+body splitting into a fixed rail track and a fluid stage track, then a collapsible
+stream row at the bottom spanning the full width.
+
+The rail is a fixed track, around 260 pixels. The stream is collapsed by default and
+opens automatically when a run starts. The stage takes everything else.
+
+Requirements:
+
+  - Each region is wrapped in its own error boundary, so a broken panel does not take
+    the screen down.
+  - The grid must not scroll as a whole. Each region scrolls independently, which is
+    what makes a dense operator screen usable.
+  - No fixed pixel widths anywhere except the rail track.
+
+Render placeholders for the rail, stage and stream. The real components arrive in
+later tasks; this task is the frame.
+"""
+status = "ready"
+role = "implementer"
+tier = "integrative"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 30
+depends_on = ["T01"]
+files = ["apps/portal/src/components/shell/WorkspaceShell.tsx"]
+
+[task.context]
+read_files = [
+    { path = "apps/portal/src/app/page.tsx", why = "the mount point that renders this shell" },
+    { path = "apps/portal/src/components/ErrorBoundary.tsx", why = "the boundary each region is wrapped in" },
+    { path = "apps/portal/src/styles/rosedust.css", why = "the palette and surface tokens the grid uses" },
+    { path = "tmp/portal-audit/02-DESIGN.md", why = "the screen layout this task builds" },
+]
+anti_patterns = [
+    "Do not let the page scroll as a whole. Each region scrolls independently.",
+    "Do not add fixed pixel widths outside the rail track.",
+    "Do not add navigation. There is nowhere to navigate to.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "test -f apps/portal/src/components/shell/WorkspaceShell.tsx && grep -q 'grid' apps/portal/src/components/shell/WorkspaceShell.tsx"
+fail_msg = "the workspace shell is missing or is not a grid layout"
+
+[[task]]
+id = "T03"
+title = "Make selection live in the URL"
+description = """
+Create `apps/portal/src/lib/useSelection.ts` so the selected plan, the stage mode and
+the open stream pane are URL state.
+
+The URL carries the plan slug, the mode, and which stream pane is open. Changing the
+selection replaces the history entry rather than pushing one, so the back button
+leaves the application instead of walking a trail of selections.
+
+This is something the terminal UI this design borrows from structurally could not do:
+its selection was ephemeral and unlinkable. Here a run in progress has an address
+that survives a reload and can be pasted to a colleague.
+
+Provide a single hook returning the current selection and a setter. Every region
+reads from it. No component holds its own copy of the selected plan; that duplication
+is how panes drift out of sync.
+
+Handle the invalid cases: a plan slug in the URL that does not exist in the workspace
+clears to no selection rather than rendering an error, and an unknown mode falls back
+to the state-derived default.
+"""
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 25
+depends_on = ["T02"]
+files = ["apps/portal/src/lib/useSelection.ts"]
+
+[task.context]
+read_files = [
+    { path = "apps/portal/src/components/shell/WorkspaceShell.tsx", why = "the shell whose regions consume the selection" },
+    { path = "apps/portal/src/stores/dashboard.ts", why = "the plan state used to validate a slug from the URL" },
+    { path = "tmp/portal-audit/02-DESIGN.md", why = "the URL shape and the interaction model" },
+]
+anti_patterns = [
+    "Do not let any component keep its own copy of the selected plan.",
+    "Do not push a history entry per selection change. Replace it.",
+    "Do not render an error for an unknown slug. Clear the selection.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "test -f apps/portal/src/lib/useSelection.ts && grep -q 'plan' apps/portal/src/lib/useSelection.ts"
+fail_msg = "the selection hook is missing or does not track the selected plan"
+
+[[task]]
+id = "T04"
+title = "Build the plan row with fixed metric columns"
+description = """
+Create `apps/portal/src/components/shell/PlanRow.tsx`, one row in the rail.
+
+The row is a grid with fixed column tracks, not a flex row: a status glyph, the plan
+name, a done-over-total count, a progress bar, and an age. Numbers use the metric
+cell primitive so they are right-aligned with tabular numerals and render a
+placeholder dot rather than a blank when absent.
+
+Fixed tracks and tabular numerals are what make a column of rows scannable straight
+down. A flex row with proportional numerals is not.
+
+Two rules that carry real information:
+
+  - The name middle-ellipsizes. A plan named portal-redesign-phase-two truncated from
+    the end becomes indistinguishable from its siblings; truncated in the middle it
+    stays identifiable.
+  - The progress bar takes its colour from the semantic band, and the row reads amber
+    when every task is dispatched but the plan is not finished. Green means actually
+    done. This single rule prevents the most common orchestration misread.
+
+Use the status glyph and metric cell primitives from the foundation plan. Do not
+define a second glyph vocabulary here.
+"""
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 25
+depends_on = ["T03"]
+files = ["apps/portal/src/components/shell/PlanRow.tsx"]
+
+[task.context]
+read_files = [
+    { path = "apps/portal/src/styles/rosedust.css", why = "the palette the state and semantic tokens build on" },
+    { path = "apps/portal/src/lib/formatters.ts", why = "the duration and ellipsis helpers to use rather than duplicate" },
+    { path = "apps/portal/src/components/atoms/ProgressBar.tsx", why = "the existing bar component to reuse" },
+    { path = "tmp/portal-audit/02-DESIGN.md", why = "the row anatomy and the colour rules" },
+]
+anti_patterns = [
+    "Do not use a flex row. Fixed grid tracks are what make the column scannable.",
+    "Do not end-truncate the plan name.",
+    "Do not colour a dispatched but unfinished plan green.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "test -f apps/portal/src/components/shell/PlanRow.tsx && grep -q 'grid' apps/portal/src/components/shell/PlanRow.tsx"
+fail_msg = "the plan row is missing or does not use fixed grid columns"
+
+[[task]]
+id = "T05"
+title = "Build the plan rail"
+description = """
+Create `apps/portal/src/components/shell/PlanRail.tsx`, the only list in the product.
+
+It lists the workspace's plans from the plan list hook, merged with live state from
+the dashboard store so a running plan updates without a refetch. Selecting a row sets
+the URL selection from the hook in T03.
+
+At the bottom, two actions and nothing else: create a new plan, and generate one from
+a prompt. That is the entire creation surface, replacing seven navigation items,
+twenty-two sub-tabs and a thirty-item command palette.
+
+Filtering: a slash key focuses a filter input that narrows by substring. No filter
+chips, no faceted search, no sort menu. The list is tens of items, not thousands.
+
+When the workspace has no plans, render the derived sentence from the empty state
+helper rather than an empty box.
+
+Wire the live merge carefully: the list hook gives durable state from disk and the
+store gives live state from the event stream. Live wins where both have a value, disk
+wins where the store has nothing. Getting this backwards makes a running plan appear
+to reset every time the list refetches.
+"""
+status = "ready"
+role = "implementer"
+tier = "integrative"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 30
+depends_on = ["T04"]
+files = ["apps/portal/src/components/shell/PlanRail.tsx"]
+
+[task.context]
+read_files = [
+    { path = "apps/portal/src/components/shell/PlanRow.tsx", why = "the row component being listed" },
+    { path = "apps/portal/src/lib/useSelection.ts", why = "the selection setter a row click calls" },
+    { path = "apps/portal/src/stores/dashboard.ts", why = "the live plan state merged over the fetched list" },
+    { path = "apps/portal/src/api/hooks.ts", why = "the plan list hook supplying durable state" },
+]
+anti_patterns = [
+    "Do not let a list refetch overwrite live state for a running plan.",
+    "Do not add sort menus or filter chips. A substring filter is enough.",
+    "Do not render an empty box when there are no plans.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "test -f apps/portal/src/components/shell/PlanRail.tsx && grep -q 'PlanRow' apps/portal/src/components/shell/PlanRail.tsx"
+fail_msg = "the plan rail is missing or does not render plan rows"
+
+[[task]]
+id = "T06"
+title = "Group the rail by dependency wave"
+description = """
+Create `apps/portal/src/components/shell/WaveGroup.tsx` and use it in the rail when
+plans declare cross-plan dependencies.
+
+A wave is the set of plans whose dependencies are satisfied by earlier waves; every
+plan in a wave can run concurrently, and a wave cannot start until the previous one
+drains. A wave header shows its index, its done-over-total count, and a blocker label
+naming the wave it waits on.
+
+Waves and progress are orthogonal axes and must not be conflated: the wave is
+horizontal parallelism across plans, and progress within a plan is vertical. Show
+them in different places.
+
+When no plan declares a cross-plan dependency, the rail stays flat. Do not render a
+single wave containing everything; that is noise carrying no information.
+
+Groups collapse and expand, and the state persists per wave across reloads.
+"""
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 25
+depends_on = ["T05"]
+files = ["apps/portal/src/components/shell/WaveGroup.tsx"]
+
+[task.context]
+read_files = [
+    { path = "apps/portal/src/components/shell/PlanRail.tsx", why = "the rail this grouping wraps" },
+    { path = "apps/portal/src/components/shell/PlanRow.tsx", why = "the rows grouped under each wave header" },
+    { path = "crates/roko-cli/src/runner/plan_dag.rs", why = "how the cross-plan dependency graph computes waves server side" },
+]
+anti_patterns = [
+    "Do not render a single wave when no plan declares a cross-plan dependency. Stay flat.",
+    "Do not conflate wave position with progress within a plan.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "test -f apps/portal/src/components/shell/WaveGroup.tsx"
+fail_msg = "the wave group component was not created"
+
+[[task]]
+id = "T07"
+title = "Build the header row"
+description = """
+Create `apps/portal/src/components/shell/Header.tsx`, one row, deliberately sparse.
+
+It carries: the workspace identity, meaning the repository name and branch; the run
+progress when something is running, as a wave position, a done-over-total count,
+elapsed time and an estimate; the cost; the connection state; and the command bar
+hint.
+
+Elapsed and estimate appear together. The operator's real question is whether a run
+is behind, not how long it has been going, and a single elapsed figure cannot answer
+that.
+
+The reference terminal UI packed roughly eighteen fields into this row, including
+network and disk throughput, which tell an agent orchestration operator nothing.
+Cut those. If a number does not change a decision, it does not belong in the header.
+
+Smooth the cost and token figures with an exponential moving average so live counters
+do not jitter digit by digit. Smooth on the way in, once, not per render.
+"""
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 20
+depends_on = ["T06"]
+files = ["apps/portal/src/components/shell/Header.tsx"]
+
+[task.context]
+read_files = [
+    { path = "apps/portal/src/stores/dashboard.ts", why = "the vitals, cost and connection state the header reads" },
+    { path = "apps/portal/src/lib/formatters.ts", why = "the compact duration and currency helpers" },
+    { path = "apps/portal/src/app/api/git-info/route.ts", why = "the local route supplying repository and branch identity" },
+    { path = "tmp/portal-audit/02-DESIGN.md", why = "the header contents and what was deliberately cut" },
+]
+anti_patterns = [
+    "Do not add system metrics such as memory, network or disk throughput.",
+    "Do not show elapsed time without an estimate beside it.",
+    "Do not smooth values inside the render path.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "test -f apps/portal/src/components/shell/Header.tsx"
+fail_msg = "the header component was not created"
+
+[[task]]
+id = "T08"
+title = "Build the single alert band"
+description = """
+Create `apps/portal/src/components/shell/AlertBand.tsx`, one row that shows exactly
+one message.
+
+Rank the candidates and show the highest: an execution error beats a gate failure,
+which beats a validation error, which beats a lost connection. Show one. Dismiss with
+the escape key. Collapse to zero height when there is nothing to say, so the row
+costs nothing when the system is healthy.
+
+One channel, not three. The reference terminal UI stacked an alert band, a toast
+stack of up to three, and a status bar, and the operator had to check all three to
+know the state. The portal has this row and nothing else.
+
+An alert names what failed and where, and offers the one action that helps, such as
+selecting the failing task or reconnecting. An alert with no action and no location
+is noise.
+"""
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 20
+depends_on = ["T07"]
+files = ["apps/portal/src/components/shell/AlertBand.tsx"]
+
+[task.context]
+read_files = [
+    { path = "apps/portal/src/stores/dashboard.ts", why = "the error and connection slices supplying alert candidates" },
+    { path = "apps/portal/src/lib/useSelection.ts", why = "the selection setter an alert action calls to jump to the failing task" },
+    { path = "tmp/portal-audit/02-DESIGN.md", why = "the alert ranking and the one-channel rule" },
+]
+anti_patterns = [
+    "Do not stack multiple alerts. Rank and show one.",
+    "Do not add a toast system alongside this band.",
+    "Do not show an alert with no location and no action.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "test -f apps/portal/src/components/shell/AlertBand.tsx"
+fail_msg = "the alert band component was not created"
+
+[[task]]
+id = "T09"
+title = "Build the stage mode router"
+description = """
+Create `apps/portal/src/components/shell/Stage.tsx`, which decides what the centre
+region shows.
+
+The stage has two modes and picks between them from the selected plan's state: a plan
+that has never run, or has been edited since, shows the authoring mode; a plan that
+is running or has finished shows the run mode. The selection hook's mode parameter
+overrides the derived choice when the operator toggles explicitly.
+
+The automatic derivation is the point. Clicking run should not also require choosing
+a view; the view follows what the plan is doing. The explicit toggle exists for
+reading a finished plan's tasks or editing one mid-flight, not as the primary path.
+
+When a run starts, the stage also asks the shell to open the stream. That is the one
+cross-region effect in the design and it belongs here, where the transition is
+detected.
+
+Render placeholders for both modes. The authoring mode arrives in the portal-compose
+plan and the run mode in portal-run.
+
+Read these files before you start. They were created by an earlier plan in the
+sequence, so they are not pre-loaded as context here:
+  apps/portal/src/lib/emptyState.ts
+"""
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 20
+depends_on = ["T08"]
+files = ["apps/portal/src/components/shell/Stage.tsx"]
+
+[task.context]
+read_files = [
+    { path = "apps/portal/src/lib/useSelection.ts", why = "the mode parameter that overrides the derived choice" },
+    { path = "apps/portal/src/stores/dashboard.ts", why = "the plan state the mode is derived from" },
+    { path = "apps/portal/src/components/shell/WorkspaceShell.tsx", why = "the shell the stage sits in and asks to open the stream" },
+]
+anti_patterns = [
+    "Do not require an explicit mode choice after clicking run. Derive it.",
+    "Do not add a third mode.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "test -f apps/portal/src/components/shell/Stage.tsx"
+fail_msg = "the stage mode router was not created"
+
+[[task]]
+id = "T10"
+title = "Add the seven keyboard bindings"
+description = """
+Create `apps/portal/src/lib/useKeyboard.ts` with exactly seven bindings and no more.
+
+Arrow keys move the rail selection. Enter selects. The r key runs the selected plan.
+The e key toggles the stage mode. The o key toggles the stream. Slash focuses the
+plan filter. Escape dismisses the alert or clears the filter. The command bar keeps
+its existing modifier-k binding.
+
+Two rules taken from the reference terminal UI and one rejected from it.
+
+Taken: single unmodified letters for recoverable actions, and a modifier plus
+confirmation for destructive ones. Cancelling a run must be confirmed and must not be
+adjacent to a bare letter.
+
+Taken: the bindings are context sensitive, meaning the arrow keys move within
+whatever region has focus.
+
+Rejected: using the tab key to cycle regions. In a browser, tab belongs to the
+accessibility tree and stealing it breaks keyboard navigation for anyone who relies
+on it. Use a different key or let focus follow the usual rules.
+
+Do not fire a binding while a text input has focus.
+"""
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 20
+depends_on = ["T09"]
+files = ["apps/portal/src/lib/useKeyboard.ts"]
+
+[task.context]
+read_files = [
+    { path = "apps/portal/src/lib/useSelection.ts", why = "the selection actions the bindings drive" },
+    { path = "apps/portal/src/components/shell/Stage.tsx", why = "the mode toggle bound to the e key" },
+    { path = "tmp/portal-audit/02-DESIGN.md", why = "the seven bindings and the rejected tab behaviour" },
+]
+anti_patterns = [
+    "Do not bind the tab key to region cycling. It belongs to the accessibility tree.",
+    "Do not fire a binding while a text input has focus.",
+    "Do not add bindings beyond the seven specified.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "test -f apps/portal/src/lib/useKeyboard.ts && ! grep -q \"'Tab'\" apps/portal/src/lib/useKeyboard.ts"
+fail_msg = "the keyboard hook is missing or rebinds the tab key"
+
+[[task]]
+id = "T11"
+title = "Assemble the shell and prove it runs"
+description = """
+Wire every piece together in `apps/portal/src/app/page.tsx` and
+`apps/portal/src/components/shell/WorkspaceShell.tsx`, replacing the placeholders.
+
+The page mounts the shell. The shell runs the bootstrap sequence, renders the header,
+the alert band, the rail, the stage and the stream, and installs the keyboard
+bindings.
+
+Then prove it works against a live server, not only against the type checker:
+
+  1. Start roko-serve and the portal.
+  2. The rail lists the workspace's real plans. If it still shows only a handful of
+     legacy entries, the backend plan service work has not landed and you should stop
+     and report that rather than working around it.
+  3. Selecting a plan updates the URL, and reloading that URL restores the selection.
+  4. The header shows the repository and branch and reports a connected state.
+  5. Each keyboard binding does what it says.
+
+Record anything that does not work in the task output.
+"""
+status = "ready"
+role = "implementer"
+tier = "integrative"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 25
+depends_on = ["T10"]
+files = ["apps/portal/src/app/page.tsx", "apps/portal/src/components/shell/WorkspaceShell.tsx"]
+
+[task.context]
+read_files = [
+    { path = "apps/portal/src/app/page.tsx", why = "the mount point being completed" },
+    { path = "apps/portal/src/components/shell/WorkspaceShell.tsx", why = "the shell whose placeholders are being replaced" },
+    { path = "apps/portal/src/lib/bootstrap.ts", why = "the snapshot then deltas sequence the shell runs" },
+    { path = "apps/portal/src/lib/useKeyboard.ts", why = "the bindings the shell installs" },
+    { path = "apps/portal/src/components/shell/Stage.tsx", why = "the stage the shell renders" },
+]
+anti_patterns = [
+    "Do not work around an empty plan list. If the backend work has not landed, report it.",
+    "Do not accept a passing type check as proof the screen works.",
+]
+
+[[task.verify]]
+phase = "compile"
+command = "cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && ./node_modules/.bin/tsc --noEmit"
+fail_msg = "the portal does not type check after assembling the shell"
+timeout_ms = 600000
+
+[[task.verify]]
+phase = "integration"
+command = "cd apps/portal && npm run build"
+fail_msg = "the portal production build fails after assembling the shell"
+timeout_ms = 900000
+
+[[task]]
+id = "T12"
+title = "Verify the shell against the design and record the result"
+description = """
+Check the built screen against the design and write the result to
+`plans/portal-programme/06-portal-shell/REVIEW.md`.
+
+Answer each with evidence, not assertion:
+
+  1. How many routes does the application have? The answer must be one.
+  2. How many navigation systems? The answer must be zero.
+  3. How many clicks from opening the portal to seeing a plan's live agent output?
+     The design says zero, because the stream is always present. Measure it.
+  4. Does the selection survive a reload, and is the URL shareable?
+  5. Does each of the seven keyboard bindings work?
+  6. Does every region scroll independently, with no whole-page scroll?
+  7. At a narrow window, does the layout degrade by shedding precision rather than
+     identity? A plan row should lose its age and percentage before it loses its name
+     and status.
+
+Include a screenshot or an accurate rendering of the assembled screen. State plainly
+anything the design calls for and the build does not do.
+"""
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 20
+depends_on = ["T11"]
+files = ["plans/portal-programme/06-portal-shell/REVIEW.md"]
+
+[task.context]
+read_files = [
+    { path = "tmp/portal-audit/02-DESIGN.md", why = "the design the build is measured against, including the budget table" },
+    { path = "apps/portal/src/components/shell/WorkspaceShell.tsx", why = "the assembled screen being reviewed" },
+]
+anti_patterns = [
+    "Do not answer the click-count question from the design document. Measure it in the running application.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "test -f plans/portal-programme/06-portal-shell/REVIEW.md && grep -qi 'route' plans/portal-programme/06-portal-shell/REVIEW.md"
+fail_msg = "REVIEW.md is missing or does not record the route count check"

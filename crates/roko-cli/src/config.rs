@@ -182,6 +182,7 @@ impl Config {
             executor: ExecutorConfig::default(),
             runner: RunnerConfig {
                 plan_timeout_secs: core.runner.plan_timeout_secs,
+                dangerously_skip_permissions: core.runner.dangerously_skip_permissions,
             },
             runtime: RuntimeControlConfig::default(),
             budget: BudgetConfig::default(),
@@ -621,6 +622,12 @@ pub struct RunnerConfig {
     /// Wall-clock timeout for the entire plan execution.
     #[serde(default = "RunnerConfig::default_plan_timeout_secs")]
     pub plan_timeout_secs: u64,
+    /// When true, the agent subprocess is launched with
+    /// `--dangerously-skip-permissions` so it can write files without
+    /// interactive prompts.  Mirrors `runner.dangerously_skip_permissions` in
+    /// `roko.toml`.  Default: `false`.
+    #[serde(default)]
+    pub dangerously_skip_permissions: bool,
 }
 
 impl RunnerConfig {
@@ -633,6 +640,7 @@ impl Default for RunnerConfig {
     fn default() -> Self {
         Self {
             plan_timeout_secs: Self::default_plan_timeout_secs(),
+            dangerously_skip_permissions: false,
         }
     }
 }
@@ -2040,6 +2048,7 @@ impl RunnerLayer {
         let defaults = RunnerConfig::default();
         RunnerConfig {
             plan_timeout_secs: self.plan_timeout_secs.unwrap_or(defaults.plan_timeout_secs),
+            dangerously_skip_permissions: defaults.dangerously_skip_permissions,
         }
     }
 }

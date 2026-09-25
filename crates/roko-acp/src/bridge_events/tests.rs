@@ -3092,12 +3092,29 @@ async fn cascade_observation_updates_the_dispatched_config_key() {
 /// file/exec/network access.
 #[test]
 fn capability_negotiation_no_capabilities_yields_all_false() {
-    let caps = derive_acp_tool_capabilities("code", &ClientCapabilities::default(), false, &HashSet::new());
-    assert!(!caps.read, "read must be false when no capabilities declared");
-    assert!(!caps.write, "write must be false when no capabilities declared");
-    assert!(!caps.exec, "exec must be false when no capabilities declared");
+    let caps = derive_acp_tool_capabilities(
+        "code",
+        &ClientCapabilities::default(),
+        false,
+        &HashSet::new(),
+    );
+    assert!(
+        !caps.read,
+        "read must be false when no capabilities declared"
+    );
+    assert!(
+        !caps.write,
+        "write must be false when no capabilities declared"
+    );
+    assert!(
+        !caps.exec,
+        "exec must be false when no capabilities declared"
+    );
     assert!(!caps.git, "git must be false when no capabilities declared");
-    assert!(!caps.network, "network must be false when no capabilities declared");
+    assert!(
+        !caps.network,
+        "network must be false when no capabilities declared"
+    );
 }
 
 /// Declaring `fs.readTextFile = true` enables read access only; write remains
@@ -3114,7 +3131,10 @@ fn capability_negotiation_read_only_fs_enables_read_not_write() {
     };
     let caps = derive_acp_tool_capabilities("code", &client, false, &HashSet::new());
     assert!(caps.read, "read_text_file=true must enable read");
-    assert!(!caps.write, "write_text_file=false must keep write disabled");
+    assert!(
+        !caps.write,
+        "write_text_file=false must keep write disabled"
+    );
     assert!(!caps.exec, "exec must be false without terminal capability");
     assert!(!caps.git, "git must be false without terminal capability");
     assert!(!caps.network, "network must be false without mcp_servers");
@@ -3151,7 +3171,10 @@ fn capability_negotiation_terminal_enables_exec_not_git_for_implementer() {
     // with terminal capability declared.
     let caps = derive_acp_tool_capabilities("code", &client, false, &HashSet::new());
     assert!(caps.exec, "terminal=true must enable exec for Implementer");
-    assert!(!caps.git, "git must be false for Implementer role (role.git = false)");
+    assert!(
+        !caps.git,
+        "git must be false for Implementer role (role.git = false)"
+    );
     assert!(!caps.read, "read must still be false without fs capability");
 }
 
@@ -3176,12 +3199,24 @@ fn session_new_result_includes_resolved_tool_capabilities() {
         mcp_servers: Vec::new(),
     });
     let result = session.new_result();
-    assert!(result.resolved_tool_capabilities.read, "read must be active");
-    assert!(result.resolved_tool_capabilities.write, "write must be active");
-    assert!(result.resolved_tool_capabilities.exec, "exec must be active");
+    assert!(
+        result.resolved_tool_capabilities.read,
+        "read must be active"
+    );
+    assert!(
+        result.resolved_tool_capabilities.write,
+        "write must be active"
+    );
+    assert!(
+        result.resolved_tool_capabilities.exec,
+        "exec must be active"
+    );
     // Default agent_mode is "code" (Implementer), whose role ceiling has git=false,
     // so git stays false regardless of the terminal capability.
-    assert!(!result.resolved_tool_capabilities.git, "git must be false for Implementer role");
+    assert!(
+        !result.resolved_tool_capabilities.git,
+        "git must be false for Implementer role"
+    );
 
     // Session with no capabilities declared → all-false safe defaults.
     let bare_session = AcpSession::new(SessionNewParams {
@@ -3193,11 +3228,26 @@ fn session_new_result_includes_resolved_tool_capabilities() {
         mcp_servers: Vec::new(),
     });
     let bare_result = bare_session.new_result();
-    assert!(!bare_result.resolved_tool_capabilities.read, "no caps → read must be false");
-    assert!(!bare_result.resolved_tool_capabilities.write, "no caps → write must be false");
-    assert!(!bare_result.resolved_tool_capabilities.exec, "no caps → exec must be false");
-    assert!(!bare_result.resolved_tool_capabilities.git, "no caps → git must be false");
-    assert!(!bare_result.resolved_tool_capabilities.network, "no caps → network must be false");
+    assert!(
+        !bare_result.resolved_tool_capabilities.read,
+        "no caps → read must be false"
+    );
+    assert!(
+        !bare_result.resolved_tool_capabilities.write,
+        "no caps → write must be false"
+    );
+    assert!(
+        !bare_result.resolved_tool_capabilities.exec,
+        "no caps → exec must be false"
+    );
+    assert!(
+        !bare_result.resolved_tool_capabilities.git,
+        "no caps → git must be false"
+    );
+    assert!(
+        !bare_result.resolved_tool_capabilities.network,
+        "no caps → network must be false"
+    );
 }
 
 // ── P2-ACP-2: MCP crash resilience + tool matrix ─────────────────────────
@@ -3320,14 +3370,20 @@ async fn mcp_server_hang_during_initialize_times_out_gracefully() {
 /// the `derive_tool_permissions` function returns the expected capability flags.
 #[test]
 fn builtin_tool_matrix_permissions_and_definitions_are_correct() {
-    use crate::builtin_tools::{acp_builtin_tools, compute_session_capabilities, derive_tool_permissions};
+    use crate::builtin_tools::{
+        acp_builtin_tools, compute_session_capabilities, derive_tool_permissions,
+    };
     use roko_core::tool::ToolPermission;
 
     let tools = acp_builtin_tools();
 
     // Expected tool count: 9 (read_file, write_file, edit_file, glob, grep, bash, ls,
     // web_fetch, retrieve).  The RAG-16 `retrieve` tool was added after the initial 8.
-    assert_eq!(tools.len(), 9, "acp_builtin_tools must expose exactly 9 tools");
+    assert_eq!(
+        tools.len(),
+        9,
+        "acp_builtin_tools must expose exactly 9 tools"
+    );
 
     // Every tool must have a non-empty name and description.
     for tool in &tools {
@@ -3342,16 +3398,22 @@ fn builtin_tool_matrix_permissions_and_definitions_are_correct() {
     // Verify per-tool permission expectations.
     let cases: &[(&str, ToolPermission)] = &[
         ("read_file", ToolPermission::read_only()),
-        ("glob",      ToolPermission::read_only()),
-        ("grep",      ToolPermission::read_only()),
-        ("ls",        ToolPermission::read_only()),
-        ("retrieve",  ToolPermission::read_only()),
+        ("glob", ToolPermission::read_only()),
+        ("grep", ToolPermission::read_only()),
+        ("ls", ToolPermission::read_only()),
+        ("retrieve", ToolPermission::read_only()),
         ("write_file", ToolPermission::writes()),
-        ("edit_file",  ToolPermission::writes()),
+        ("edit_file", ToolPermission::writes()),
         ("bash", ToolPermission::executes()),
         (
             "web_fetch",
-            ToolPermission { read: true, write: false, exec: false, git: false, network: true },
+            ToolPermission {
+                read: true,
+                write: false,
+                exec: false,
+                git: false,
+                network: true,
+            },
         ),
     ];
 
@@ -3368,7 +3430,13 @@ fn builtin_tool_matrix_permissions_and_definitions_are_correct() {
     let unknown = derive_tool_permissions("totally-unknown-tool-xyz");
     assert_eq!(
         unknown,
-        ToolPermission { read: false, write: false, exec: false, git: false, network: false },
+        ToolPermission {
+            read: false,
+            write: false,
+            exec: false,
+            git: false,
+            network: false
+        },
         "unknown tool must return all-false (fail-closed)"
     );
 
@@ -3441,7 +3509,13 @@ fn compute_session_capabilities_empty_tool_list_is_fail_closed() {
     let caps = compute_session_capabilities(&[]);
     assert_eq!(
         caps,
-        ToolPermission { read: false, write: false, exec: false, git: false, network: false },
+        ToolPermission {
+            read: false,
+            write: false,
+            exec: false,
+            git: false,
+            network: false
+        },
         "empty tool list must produce all-false capabilities"
     );
 }

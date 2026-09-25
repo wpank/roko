@@ -150,9 +150,7 @@ async fn knowledge_query(
 /// `GET /api/retrieval/stats` — aggregate stats from `.roko/learn/retrieval-outcomes.jsonl`.
 ///
 /// Returns precision (gate-pass rate), avg latency, miss rate, and a per-strategy breakdown.
-async fn retrieval_stats(
-    State(state): State<Arc<AppState>>,
-) -> Result<Json<Value>, ApiError> {
+async fn retrieval_stats(State(state): State<Arc<AppState>>) -> Result<Json<Value>, ApiError> {
     let path = state
         .workdir
         .join(".roko")

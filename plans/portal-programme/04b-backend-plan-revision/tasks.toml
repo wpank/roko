@@ -1,0 +1,328 @@
+[meta]
+plan = "04b-backend-plan-revision"
+total = 6
+done = 0
+status = "ready"
+max_parallel = 1
+skip_enrichment = true
+estimated_total_minutes = 145
+
+# Revise a plan in place from one sentence: the current tasks.toml plus the operator's
+# feedback goes to the planning agent, and the result is validated, then written
+# atomically. A revision that does not validate leaves the file untouched. This is the
+# portal's ask P-5 (tmp/portal-audit/03-CONTRACT.md section 6), the LLM-assisted
+# iteration step of the design.
+#
+# Builds on 04-backend-plan-authoring: the source save (validate, then temp file and
+# rename), the operation reporting, and the generation pipeline's fenced-TOML
+# extraction. It deliberately does NOT reuse the generation repair
+# `validate_and_fix_generated_plan`, which strips every model_hint as generation policy
+# and would silently rewrite the operator's plan.
+#
+# The acceptance check is plans/portal-programme/_harness/revision-check.sh.
+
+[[task]]
+id = "T01"
+title = "Add plan revision to the authoring core"
+description = """
+In `crates/roko-cli/src/plan_authoring.rs` (the authoring core from plan 04), add:
+
+  - `pub fn build_revision_prompt(plan_id, current_toml, feedback) -> String`.
+    - It must begin with the sentence `Revise the plan below according to the
+      feedback.`.
+    - It embeds the current `tasks.toml` verbatim in a fenced ```toml block, then
+      gives the feedback.
+    - It asks for the complete revised file in one fenced ```toml block, keeping
+      `[meta] plan = "<plan_id>"` and the ids of tasks that still apply.
+  - `pub fn apply_revision_output(workdir, plan_id, tasks_path, agent_output, models)
+    -> anyhow::Result<RevisionOutcome>`.
+    1. Extract the block with `crate::prd::extract_fenced_block`, falling back to
+       `extract_toml_content_fallback`; make both `pub(crate)`.
+    2. Apply only `task_parser::repair_toml`, and require `[meta] plan` to equal
+       `plan_id`.
+    3. Hand the text to `save_plan_source`, which validates (including the loader's
+       context check) and then writes atomically, or rejects and leaves the file
+       untouched.
+    Do not use `validate_and_fix_generated_plan`: it enforces generation policy (it
+    removes every `model_hint`) and would silently rewrite the operator's plan.
+  - `pub async fn revise_plan_source(workdir, plan_id, tasks_path, feedback, models)
+    -> anyhow::Result<RevisionOutcome>`.
+    - Read the current text.
+    - Run the planning agent exactly as PRD generation does:
+      `agent_exec::run_agent_capture_silent` with `role: Some("strategist")`,
+      `allowed_tools: Some("Read,Grep,Glob")`, and
+      `plan_generate::build_generator_system_prompt(workdir)` as the system prompt.
+    - Then call `apply_revision_output`.
+    - If the result is rejected, retry once with the diagnostics appended to the
+      feedback, then report the rejection.
+  - `RevisionOutcome` carries whether the plan was written, its task count, and the
+    validation report.
+
+Unit tests for `apply_revision_output`, with canned agent output:
+
+  - a valid revision is written exactly as extracted;
+  - a dangling dependency leaves the file byte-identical;
+  - output without a fenced block is an error;
+  - a changed `meta.plan` is rejected.
+"""
+status = "ready"
+role = "implementer"
+tier = "architectural"
+model_hint = "claude-sonnet-4-6"
+timeout_secs = 2700
+max_retries = 2
+estimated_minutes = 35
+depends_on = []
+files = [
+    "crates/roko-cli/src/plan_authoring.rs",
+    "crates/roko-cli/src/prd.rs",
+]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/prd.rs", why = "the generation pipeline's agent call, fenced-block extraction and validate_and_fix_generated_plan (not to be reused)" },
+    { path = "crates/roko-cli/src/agent_exec.rs", why = "run_agent_capture_silent and AgentExecOpts" },
+    { path = "crates/roko-cli/src/task_parser.rs", why = "repair_toml" },
+]
+anti_patterns = [
+    "Do not apply generation policy to an existing plan; keep the operator's model hints and fields.",
+    "Do not write a revision that fails validation.",
+    "Do not let the agent write files; it returns text and the core writes it.",
+]
+
+[[task.verify]]
+phase = "test"
+command = "grep -q 'pub async fn revise_plan_source' crates/roko-cli/src/plan_authoring.rs && cargo test -p roko-cli --lib plan_authoring"
+fail_msg = "the revision core is missing, or the authoring tests fail"
+timeout_ms = 2700000
+
+[[task]]
+id = "T02"
+title = "Expose plan revision through the runtime seam"
+description = """
+Add `revise_plan(workdir, plan_id, feedback) -> anyhow::Result<Option<RevisionDto>>`
+to `trait CliRuntime` (`crates/roko-serve/src/runtime.rs`), with a default body that
+bails like the other plan methods. `None` means the plan is unknown.
+
+Add `RevisionDto { revised: bool, task_count, validation: PlanValidationDto }` to
+`crates/roko-serve/src/plan_types.rs`. `PlanValidationDto` is plan 04's.
+
+Implement the method in `RokoCliRuntime` (`crates/roko-cli/src/serve_runtime.rs`) with
+`plan_authoring::revise_plan_source`, finding the plan through
+`crate::plan::discover_plan_by_id` and `crate::plan::tasks_path`, and using the
+workspace's configured models.
+"""
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+timeout_secs = 2700
+max_retries = 2
+estimated_minutes = 20
+depends_on = ["T01"]
+files = [
+    "crates/roko-serve/src/runtime.rs",
+    "crates/roko-serve/src/plan_types.rs",
+    "crates/roko-cli/src/serve_runtime.rs",
+]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-serve/src/runtime.rs", why = "the CliRuntime trait and its plan authoring methods" },
+    { path = "crates/roko-cli/src/serve_runtime.rs", why = "how RokoCliRuntime implements the plan source methods" },
+]
+anti_patterns = [
+    "Do not put revision logic in roko-serve; it belongs behind the seam.",
+]
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-serve && cargo check -p roko-cli"
+fail_msg = "the workspace does not compile after adding revise_plan to the runtime seam"
+timeout_ms = 1800000
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'fn revise_plan' crates/roko-serve/src/runtime.rs && grep -q 'fn revise_plan' crates/roko-cli/src/serve_runtime.rs"
+fail_msg = "the runtime does not expose plan revision"
+
+[[task]]
+id = "T03"
+title = "Add POST /api/plans/{id}/revise"
+description = """
+Register `POST /api/plans/{id}/revise` in `crates/roko-serve/src/routes/plans.rs`.
+
+  - The body is `{ "feedback": "..." }`. Blank feedback is 422
+    (`ApiError::unprocessable_entity`).
+  - Answer 404 for an unknown plan. Answer 409 while an active run includes the plan
+    (`active_run_for`, 03b), or while another revision of the same plan is running.
+  - Register an operation of kind `plan_revise` before the work can finish, spawn
+    `runtime.revise_plan`, and answer 202 `{ "id": op_id, "plan_id": id }`.
+  - Finalize the operation exactly as generation does, reusing plan 04's code:
+    `Completed { result: {"slug", "task_count"} }` when the plan was written, and
+    `Failed { error }` with the error count when it was rejected or the agent failed.
+  - Publish `event_log_entry` events with `event_type` `plan_revise.started`,
+    `plan_revise.completed` or `plan_revise.failed`, and `plan_id`.
+"""
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+timeout_secs = 2700
+max_retries = 2
+estimated_minutes = 25
+depends_on = ["T02"]
+files = ["crates/roko-serve/src/routes/plans.rs"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-serve/src/routes/plans.rs", why = "generate_plan's operation handling to reuse, and active_run_for" },
+    { path = "crates/roko-serve/src/extract.rs", why = "RequestPayload and the 422 path" },
+]
+anti_patterns = [
+    "Do not revise a plan while a run includes it.",
+    "Do not leave a finished revision reporting running.",
+]
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-serve"
+fail_msg = "roko-serve tests fail after adding the revise route"
+timeout_ms = 2700000
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q '\"/plans/{id}/revise\"' crates/roko-serve/src/routes/plans.rs && grep -q 'plan_revise.completed' crates/roko-serve/src/routes/plans.rs"
+fail_msg = "the revise route or its completion event is missing"
+
+[[task]]
+id = "T04"
+title = "Test the revise route through the router"
+description = """
+Add `crates/roko-serve/tests/plan_revision.rs`, modelled on
+`crates/roko-serve/tests/plan_execute.rs`: the router, a stub runtime whose
+`revise_plan` answers from fixtures, and a temporary workspace. Assert:
+
+  1. Valid feedback gives 202 `{id, plan_id}`. `GET /api/operations/{id}` goes from
+     running to completed with `result.task_count`.
+  2. A rejected revision ends in failed, with an error.
+  3. Blank feedback gives 422; an unknown plan gives 404.
+  4. The route answers 409 while a registered active run includes the plan.
+"""
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+timeout_secs = 2700
+max_retries = 2
+estimated_minutes = 25
+depends_on = ["T03"]
+files = ["crates/roko-serve/tests/plan_revision.rs"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-serve/tests/plan_execute.rs", why = "the router, stub runtime and workspace fixture pattern" },
+    { path = "crates/roko-serve/src/routes/plans.rs", why = "the handler under test" },
+]
+anti_patterns = [
+    "Do not dispatch real agents; stub the runtime.",
+]
+
+[[task.verify]]
+phase = "test"
+command = "test -f crates/roko-serve/tests/plan_revision.rs && cargo test -p roko-serve"
+fail_msg = "the revise route tests are missing or roko-serve tests fail"
+timeout_ms = 2700000
+
+[[task]]
+id = "T05"
+title = "Prove one sentence revises a plan in place"
+description = """
+Run the acceptance check and record the result in
+`plans/portal-programme/04b-backend-plan-revision/REVIEW.md`.
+
+  1. `cargo build -p roko-cli`.
+  2. `bash plans/portal-programme/_harness/revision-check.sh`. It uses a scratch
+     workspace under /tmp. The deterministic fake agent returns the current plan with
+     task T99 added, and a dangling dependency when the feedback says BREAK. The check
+     asserts:
+       - the operation reports the revised plan;
+       - the source gains the task and stays valid;
+       - the revised plan runs;
+       - a bad revision fails its operation and leaves the file byte-identical;
+       - blank feedback, an unknown plan and a running plan are refused.
+     It costs nothing and takes a few minutes.
+  3. When an assertion fails, fix the cause in this plan's code, rebuild and rerun. If
+     the harness itself is wrong, fix it and say exactly what and why in REVIEW.md.
+     Never delete or weaken an assertion.
+  4. Write REVIEW.md with the full PASS/FAIL output, then the verdict line.
+"""
+status = "ready"
+role = "implementer"
+tier = "integrative"
+model_hint = "claude-sonnet-4-6"
+timeout_secs = 2700
+max_retries = 2
+estimated_minutes = 25
+depends_on = ["T04"]
+files = ["plans/portal-programme/04b-backend-plan-revision/REVIEW.md"]
+
+[task.context]
+read_files = [
+    { path = "plans/portal-programme/_harness/revision-check.sh", why = "the assertions this plan must satisfy" },
+    { path = "plans/portal-programme/_harness/fake-claude", why = "the fake agent's revise mode" },
+]
+anti_patterns = [
+    "Do not start a server against this repository. The check brings its own workspace.",
+    "Do not edit or remove an assertion to make the check pass.",
+    "Do not report success unless the check printed REVISION-CHECK: PASS.",
+]
+
+[[task.verify]]
+phase = "test"
+command = "cargo build -p roko-cli && bash plans/portal-programme/_harness/revision-check.sh"
+fail_msg = "the revision acceptance check does not pass"
+timeout_ms = 2700000
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'REVISION-CHECK: PASS' plans/portal-programme/04b-backend-plan-revision/REVIEW.md"
+fail_msg = "REVIEW.md does not record a passing check"
+
+[[task]]
+id = "T06"
+title = "Record revision as built, and update the work graph"
+description = """
+Under a heading reading exactly `AS BUILT 04b-backend-plan-revision` in
+`tmp/portal-audit/03-CONTRACT.md`, give the revise route as built: its request and
+response, the operation result, the events, and the 409, 404 and 422 cases. Mark P-5
+as met in the section 6 dispositions. Use REVIEW.md as the evidence.
+
+Then create a work item (format in `work/README.md`; `.roko/GAPS.md` is frozen) for
+each residual. Search `work/items/` first for one that already covers it, and add
+nothing if the check found none. Candidates: the agent sees only the plan and the
+feedback, not the run's failures; one retry on rejection.
+"""
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 15
+depends_on = ["T05"]
+files = ["tmp/portal-audit/03-CONTRACT.md", "work/items"]
+
+[task.context]
+read_files = [
+    { path = "tmp/portal-audit/03-CONTRACT.md", why = "section 6 dispositions and the authoring sections" },
+    { path = "work/README.md", why = "the item format and IDs" },
+]
+anti_patterns = [
+    "Do not write to .roko/GAPS.md; it is frozen.",
+    "Do not rewrite other plans' sections of the contract.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = '''grep -q 'AS BUILT 04b-backend-plan-revision' tmp/portal-audit/03-CONTRACT.md && python3 -c 'import tomllib, glob; [tomllib.loads(open(f).read().split("+++")[1]) for f in glob.glob("work/items/*.md")]''''
+fail_msg = "the contract has no AS BUILT section for revision, or an item's front matter no longer parses"

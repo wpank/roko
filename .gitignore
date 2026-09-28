@@ -111,6 +111,8 @@ __pycache__/
 node_modules/
 *.tsbuildinfo
 .next/
+# Next.js static export of the portal (`npm run build:export` in apps/portal)
+apps/portal/out/
 
 # demo-app build output (embedded by rust-embed at compile time)
 demo/demo-app/dist/

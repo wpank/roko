@@ -276,6 +276,10 @@ fast_task_model = "gpt-4o-mini"
 standard_task_model = "gpt-4o"
 complex_task_model = "claude-sonnet"
 context_strategy = "mcp_first"
+# When a task's provider is exhausted (e.g. the Claude CLI session limit) or unusable,
+# dispatch falls back through these models in order, skipping any whose provider has no
+# API key. Keys are read from the environment; ~/.roko/.env is loaded automatically.
+fallback_models = ["kimi-k2-5", "glm51", "gpt-4o"]
 
 [routing.weights]
 quality = 0.5

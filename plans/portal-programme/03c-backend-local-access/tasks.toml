@@ -1,0 +1,646 @@
+[meta]
+plan = "03c-backend-local-access"
+total = 11
+done = 0
+status = "ready"
+max_parallel = 1
+skip_enrichment = true
+estimated_total_minutes = 285
+
+# A fresh workspace's server must be reachable from its own portal and CLI, without
+# weakening auth, and must serve both UIs: the portal at / and the demo app at /demo
+# (the user's decision, 2026-09-28). Portal asks P-1 and P-10 in
+# tmp/portal-audit/03-CONTRACT.md section 6.
+#
+# Today `roko init` writes `[serve.auth] enabled = true` with an empty key (deliberately
+# secure by default), so every /api call to a fresh workspace's loopback server is a
+# 401. The browser cannot fix that with a header: EventSource cannot send one
+# (work item bug-12d48c).
+#
+# Chosen mechanism (the lead's first option, Jupyter-style):
+#   - When auth is enabled, the bind is loopback and no API key is configured,
+#     `roko serve` mints an ephemeral launch token and prints
+#     http://127.0.0.1:<port>/#token=<token>.
+#   - The portal exchanges the token once, via POST /api/auth/session, for an
+#     HttpOnly, SameSite=Strict session cookie. Same-origin fetch and EventSource
+#     then authenticate with no header.
+#   - CLI clients read the token from .roko/runtime/serve.token (mode 0600).
+#
+# Why not the fallback (unauthenticated loopback plus Host/Origin checks): it trusts
+# every local process and user, and needs its own DNS-rebinding defence. The cookie
+# costs little: the middleware already parses credentials from headers, and a Cookie
+# header is one more source.
+#
+# Runs after 03b-backend-workspace-server (serve.json, serve_client). The acceptance
+# check is plans/portal-programme/_harness/access-check.sh.
+
+[[task]]
+id = "T01"
+title = "Give the server an ephemeral launch token and a session store"
+description = """
+Add the state the local-access mechanism needs to roko-serve.
+
+  1. `ServerBuildConfig::with_launch_token(token: String)` in
+     `crates/roko-serve/src/lib.rs`. The token is a credential for this server
+     process only, and is never persisted.
+  2. A `LocalAccess` value on `AppState` (`crates/roko-serve/src/state.rs`) holding:
+     - the optional launch token;
+     - a set of live sessions, stored as `middleware::hash_api_key` hashes, never raw
+       ids.
+     Its methods:
+     - `launch_token_matches(&str)`, a constant-time comparison using the existing
+       `constant_time_eq`;
+     - `create_session()`, which returns 32 random bytes as hex and stores their hash;
+     - `session_valid(&str)`;
+     - `end_session(&str)`.
+  3. When the server advertises itself (`with_advertised_endpoint`, 03b) and has a
+     launch token, write `.roko/runtime/serve.token` containing the token, mode 0600,
+     next to `serve.json` (`crates/roko-serve/src/endpoint.rs`). Remove it together
+     with `serve.json` on exit. The token never goes into `serve.json`.
+
+Unit tests: token matching; create, validate and end a session; the token file is
+0600 and is removed with the endpoint.
+"""
+status = "ready"
+role = "implementer"
+tier = "integrative"
+model_hint = "claude-sonnet-4-6"
+timeout_secs = 2700
+max_retries = 2
+estimated_minutes = 30
+depends_on = []
+files = [
+    "crates/roko-serve/src/state.rs",
+    "crates/roko-serve/src/lib.rs",
+    "crates/roko-serve/src/endpoint.rs",
+]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-serve/src/state.rs", why = "AppState, where the local access state lives" },
+    { path = "crates/roko-serve/src/routes/middleware.rs", why = "hash_api_key and constant_time_eq to reuse" },
+]
+anti_patterns = [
+    "Do not store raw session ids; store their hashes.",
+    "Do not write the launch token into serve.json or any log.",
+]
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-serve"
+fail_msg = "roko-serve tests fail after adding the launch token and session store"
+timeout_ms = 2700000
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'fn with_launch_token' crates/roko-serve/src/lib.rs && grep -q 'serve.token' crates/roko-serve/src/endpoint.rs"
+fail_msg = "the launch token config or its token file is missing"
+
+[[task]]
+id = "T02"
+title = "Accept the launch token and the session cookie in the auth middleware"
+description = """
+`require_api_key` (`crates/roko-serve/src/routes/middleware.rs`) takes credentials only
+from `X-Api-Key` and `Authorization`. With auth enabled and no key configured, nothing
+can match.
+
+  1. Add `AuthMethod::LaunchToken` and `AuthMethod::Session`, with header values
+     `launch_token` and `session`.
+  2. The launch token presented as `X-Api-Key` or `Authorization: Bearer` is an admin
+     credential (`LocalAccess::launch_token_matches`, T01).
+  3. With neither header present, read the `roko_session` value from the `Cookie`
+     header. A live session is an admin `AuthContext`. A header, when present, keeps
+     deciding as today.
+  4. A cookie-authenticated request other than GET, HEAD or OPTIONS must carry no
+     `Origin`, or an `Origin` whose host and port equal the request's `Host`.
+     Otherwise answer 403. `SameSite=Strict` keeps other sites' cookies out, but
+     another page on localhost is same-site.
+
+Unit tests beside the code: cookie parsing among other cookies, the Origin rule, and
+the launch token as both header forms.
+"""
+status = "ready"
+role = "implementer"
+tier = "integrative"
+model_hint = "claude-sonnet-4-6"
+timeout_secs = 2700
+max_retries = 2
+estimated_minutes = 30
+depends_on = ["T01"]
+files = ["crates/roko-serve/src/routes/middleware.rs"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-serve/src/routes/middleware.rs", why = "require_api_key, api_credential and AuthMethod" },
+    { path = "crates/roko-serve/src/state.rs", why = "LocalAccess from T01" },
+]
+anti_patterns = [
+    "Do not accept a session cookie for a cross-origin state-changing request.",
+    "Do not log a token, a session id or a cookie value.",
+]
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-serve"
+fail_msg = "roko-serve tests fail after teaching the middleware the new credentials"
+timeout_ms = 2700000
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'roko_session' crates/roko-serve/src/routes/middleware.rs && grep -q 'LaunchToken' crates/roko-serve/src/routes/middleware.rs"
+fail_msg = "the middleware does not accept the session cookie or the launch token"
+
+[[task]]
+id = "T03"
+title = "Add POST and DELETE /api/auth/session"
+description = """
+A browser needs one call that turns the launch token into a cookie.
+
+Create `crates/roko-serve/src/routes/auth_session.rs` and mount it in
+`crates/roko-serve/src/routes/mod.rs`, outside the `require_api_key` layer (it is how
+a browser obtains a credential) but inside the rate limiter.
+
+  - `POST /api/auth/session` with `{ "token": "..." }`, or with the credential in
+    `X-Api-Key`/`Authorization`. It accepts the launch token, or any API key the
+    middleware accepts, so a workspace with configured keys can also give its portal
+    a cookie. It mints a session (`LocalAccess::create_session`) and answers 204 with
+    `Set-Cookie: roko_session=<id>; HttpOnly; SameSite=Strict; Path=/`, adding
+    `Secure` when the server serves TLS. A bad or missing credential is 401.
+  - `DELETE /api/auth/session` ends the cookie's session and clears the cookie
+    (`Max-Age=0`).
+
+Record both in the auth audit (`append_auth_audit`) like other auth events.
+"""
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+timeout_secs = 2700
+max_retries = 2
+estimated_minutes = 25
+depends_on = ["T02"]
+files = [
+    "crates/roko-serve/src/routes/auth_session.rs",
+    "crates/roko-serve/src/routes/mod.rs",
+]
+closes = ["bug-12d48c"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-serve/src/routes/mod.rs", why = "how routes are layered with auth, rate limits and fallbacks" },
+    { path = "crates/roko-serve/src/routes/middleware.rs", why = "authenticate_api_key and append_auth_audit" },
+]
+anti_patterns = [
+    "Do not put the session route behind require_api_key; nothing could reach it.",
+    "Do not return the session id in the body; the cookie carries it.",
+]
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-serve"
+fail_msg = "roko-serve tests fail after adding the session routes"
+timeout_ms = 2700000
+
+[[task.verify]]
+phase = "structural"
+command = "test -f crates/roko-serve/src/routes/auth_session.rs && grep -q '/auth/session' crates/roko-serve/src/routes/auth_session.rs"
+fail_msg = "the session exchange route is missing"
+
+[[task]]
+id = "T04"
+title = "Make roko serve mint the launch token and print the portal URL"
+description = """
+In `crates/roko-cli/src/commands/server.rs`, for both `cmd_serve` and `cmd_up`:
+
+  1. Mint a launch token when `[serve.auth]` is enabled, the bind address is
+     loopback, and no API key is configured (`api_key` is empty and `api_keys` is
+     empty). Use 32 random bytes, hex-encoded, and pass it with
+     `with_launch_token` (T01).
+  2. After the listener binds, print `portal: <url>/#token=<token>`, taking `<url>`
+     from the advertised endpoint (`roko_serve::endpoint::read_endpoint`), which
+     carries the real port. A fragment never reaches a server log. Without a token,
+     print `portal: <url>`.
+     The non-TUI path blocks in `ServerBuilder::run()`. Switch it to what `run()`
+     does internally, so the line can be printed after bind: `start_background()`,
+     wait for Ctrl-C, then `state.shutdown().await`, then await the join handle. The
+     hub socket's cancellation token (03b) is still cancelled after shutdown.
+  3. Never print or write a configured API key.
+"""
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+timeout_secs = 2700
+max_retries = 2
+estimated_minutes = 25
+depends_on = ["T03"]
+files = ["crates/roko-cli/src/commands/server.rs"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/commands/server.rs", why = "cmd_serve and cmd_up, where the server is built and started" },
+    { path = "crates/roko-core/src/config/serve.rs", why = "ServeAuthConfig: enabled, api_key and api_keys" },
+]
+anti_patterns = [
+    "Do not mint a token for a non-loopback bind; a deployed server must use configured keys.",
+    "Do not print the token anywhere but the portal line.",
+]
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli"
+fail_msg = "roko-cli does not compile after minting the launch token"
+timeout_ms = 1800000
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'with_launch_token' crates/roko-cli/src/commands/server.rs && grep -q '#token=' crates/roko-cli/src/commands/server.rs"
+fail_msg = "roko serve neither mints the launch token nor prints the portal URL"
+
+[[task]]
+id = "T05"
+title = "Let CLI clients authenticate with the launch token"
+description = """
+`crates/roko-cli/src/serve_client.rs` (03b) authenticates with
+`crate::auth::resolve_api_key`. A fresh workspace has no key to resolve.
+
+When `resolve_api_key` finds nothing, read `.roko/runtime/serve.token` for the
+discovered server and send it as `Authorization: Bearer <token>`. The file is 0600
+and owned by whoever started the server, the same trust boundary as `hub.sock`. A
+resolved key still wins.
+
+Unit test: with a token file present and no key resolvable, the client's requests
+carry the bearer header.
+"""
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+timeout_secs = 2700
+max_retries = 2
+estimated_minutes = 15
+depends_on = ["T04"]
+files = ["crates/roko-cli/src/serve_client.rs"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/auth.rs", why = "resolve_api_key and how headers are built" },
+]
+anti_patterns = [
+    "Do not prefer the token file over a configured key.",
+]
+
+[[task.verify]]
+phase = "test"
+command = "grep -q 'serve.token' crates/roko-cli/src/serve_client.rs && cargo test -p roko-cli --lib serve_client"
+fail_msg = "the CLI client does not use the launch token, or its tests fail"
+timeout_ms = 2700000
+
+[[task]]
+id = "T06"
+title = "Make a fresh roko init workspace work with the launch token"
+description = """
+`roko init` writes `[serve.auth] enabled = true` with an empty key, secure by default.
+After T01–T04, that workspace's loopback server mints a launch token, so it works as
+written. Fix what misleads:
+
+  - The `ServeAuthConfig::default` comment in `crates/roko-core/src/config/serve.rs`
+    says `roko init` writes `enabled = false`. It writes `true`. Correct it and name
+    the launch token.
+  - The test `default_toml_template_disables_auth_with_local_dev_comment` in
+    `crates/roko-cli/src/config.rs` asserts `enabled = true` under a name that says
+    the opposite. Rename it `default_toml_template_enables_auth_by_default`.
+  - `cmd_init`'s closing hints (`crates/roko-cli/src/commands/util.rs`) should say
+    that `roko serve` prints a portal URL carrying a one-time token.
+"""
+status = "ready"
+role = "implementer"
+tier = "mechanical"
+model_hint = "claude-sonnet-4-6"
+timeout_secs = 2700
+max_retries = 2
+estimated_minutes = 15
+depends_on = ["T05"]
+files = [
+    "crates/roko-core/src/config/serve.rs",
+    "crates/roko-cli/src/config.rs",
+    "crates/roko-cli/src/commands/util.rs",
+]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-core/src/config/serve.rs", why = "the ServeAuthConfig default and its comment" },
+]
+anti_patterns = [
+    "Do not change the default to enabled = false; the launch token makes the secure default usable.",
+]
+
+[[task.verify]]
+phase = "test"
+command = "grep -q 'fn default_toml_template_enables_auth_by_default' crates/roko-cli/src/config.rs && cargo test -p roko-cli --lib default_toml_template_enables_auth_by_default"
+fail_msg = "the init template test was not renamed, or it fails"
+timeout_ms = 2700000
+
+[[task]]
+id = "T07"
+title = "Serve the portal at / and the demo app at /demo"
+description = """
+The user decided on 2026-09-28 that `roko serve` serves both UIs:
+  - the portal's static export (`apps/portal/out`, now gitignored) at `/`;
+  - the demo app under `/demo`.
+This is section 6, P-10 of `tmp/portal-audit/03-CONTRACT.md`.
+
+Today `crates/roko-serve/src/embedded.rs` serves one SPA for every path that is not an
+API path, trying in order:
+  - `ROKO_SPA_DIR`;
+  - `demo/demo-app/dist` beside the crate;
+  - the copy `rust-embed` baked in at compile time (`EmbeddedAssets`). `build.rs`
+    swaps in `assets/frontend-fallback/` under the `roko_frontend_fallback` cfg.
+
+  1. Resolve two UI roots once at startup, and log which one each serves from.
+     - **The portal**, for every path outside `/demo`, in this order:
+       - `ROKO_SPA_DIR` when it holds an `index.html` (the override keeps its meaning:
+         the UI at `/`);
+       - `apps/portal/out` beside the crate;
+       - a copy embedded at compile time;
+       - the fallback page.
+     - **The demo app**, for `/demo` and `/demo/*` with the prefix stripped:
+       - `demo/demo-app/dist` beside the crate;
+       - the embedded copy;
+       - the fallback page.
+  2. Embed the portal the way the demo is embedded.
+     - Add a second `rust_embed::Embed` struct over `../../apps/portal/out/`.
+     - Add a `roko_portal_fallback` cfg to `crates/roko-serve/build.rs`, declared with
+       `rustc-check-cfg`. It points the struct at the fallback folder when
+       `apps/portal/out/index.html` is absent at build time.
+     - The build script must never run npm for the portal, and must not rerun on
+       every build while the export is absent.
+  3. Update `crates/roko-serve/assets/frontend-fallback/index.html`. It should say
+     which UI is missing and how to get it: run `npm run build:export` in
+     `apps/portal` for `/`; the demo app is at `/demo/` when it is built.
+  4. Apply the SPA fallback per UI.
+     - Serve the UI's `index.html` only for a path without a file extension, which is
+       a client-side route.
+     - A missing path with an extension (a stale `_next/static/…` chunk, a missing
+       `/demo/assets/…` file) is a plain 404, never an HTML page.
+     - Keep `api_or_ws_path_requires_json_404` (`crates/roko-serve/src/lib.rs`) in
+       front of both UIs, so `/api/*`, `/ws*` and `/roko-ws*` never reach a UI.
+  5. Cache content-hashed assets as immutable: `assets/…` for Vite, `_next/static/…`
+     for Next. Everything else is `no-cache`. Today the check looks for `/assets/` in
+     a path that has no leading slash, so nothing is cached.
+
+Add unit tests in `embedded.rs` for the path rules:
+  - `/demo` and `/demo/x` go to the demo app with the prefix stripped; `/demon` does
+    not;
+  - a missing path without an extension falls back to the index, and a missing `.js`
+    is a 404;
+  - the cache rule.
+"""
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+timeout_secs = 2700
+max_retries = 2
+estimated_minutes = 40
+depends_on = ["T06"]
+files = [
+    "crates/roko-serve/src/embedded.rs",
+    "crates/roko-serve/build.rs",
+    "crates/roko-serve/assets/frontend-fallback/index.html",
+    "crates/roko-serve/src/lib.rs",
+]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-serve/src/embedded.rs", why = "disk_dist_dir, the embedded assets and the SPA fallback" },
+    { path = "crates/roko-serve/build.rs", why = "how the demo dist is embedded, and the fallback cfg" },
+]
+anti_patterns = [
+    "Do not let a UI answer an /api, /ws or /roko-ws path.",
+    "Do not serve index.html for a missing asset file.",
+    "Do not run npm from the build script for the portal.",
+]
+
+[[task.verify]]
+phase = "test"
+command = "grep -q 'apps/portal/out' crates/roko-serve/src/embedded.rs && grep -q 'roko_portal_fallback' crates/roko-serve/build.rs && cargo test -p roko-serve"
+fail_msg = "roko serve does not serve the portal export and the demo app side by side, or roko-serve tests fail"
+timeout_ms = 2700000
+
+[[task]]
+id = "T11"
+title = "Build the demo app for /demo"
+description = """
+The demo app now lives under `/demo` (T07), but it is still built for the root.
+`demo/demo-app/vite.config.ts` sets `base: '/'`, and `BrowserRouter` in
+`demo/demo-app/src/main.tsx` has no basename, so its assets and routes would resolve
+at `/`, where the portal is.
+
+  1. Build with `base: '/demo/'`, but keep `/` for the dev server. Use Vite's function
+     form, `defineConfig(({ command }) => …)`, and return `/demo/` only when
+     `command === 'build'`. The Playwright specs run against the dev server at `/`
+     (`playwright.config.ts`), so they stay unchanged.
+  2. Give `BrowserRouter` a basename derived from `import.meta.env.BASE_URL`: `/demo`
+     in a build, none in dev.
+  3. Check the source for other root-absolute browser paths that must follow the base:
+     links, `window.location` rewrites and asset URLs. API calls are root-absolute
+     (`/api/…`) on purpose and stay as they are.
+  4. Rebuild with `npx vite build` in `demo/demo-app`, so the on-disk `dist/` that
+     `roko serve` serves carries the new base. `dist/` is gitignored.
+"""
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+timeout_secs = 2700
+max_retries = 2
+estimated_minutes = 25
+depends_on = ["T07"]
+files = [
+    "demo/demo-app/vite.config.ts",
+    "demo/demo-app/src",
+]
+
+[task.context]
+read_files = [
+    { path = "demo/demo-app/vite.config.ts", why = "the base and the dev proxy" },
+    { path = "demo/demo-app/src/main.tsx", why = "the router and its routes" },
+    { path = "demo/demo-app/playwright.config.ts", why = "the e2e specs run against the dev server" },
+]
+anti_patterns = [
+    "Do not change the dev server's base; the e2e specs depend on it.",
+    "Do not prefix API calls with /demo; the API stays at the root.",
+]
+
+[[task.verify]]
+phase = "build"
+command = "(cd demo/demo-app && npx vite build) && grep -q '/demo/assets/' demo/demo-app/dist/index.html"
+fail_msg = "the demo app does not build for /demo"
+timeout_ms = 900000
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q \"'/demo/'\" demo/demo-app/vite.config.ts && grep -q 'basename' demo/demo-app/src/main.tsx"
+fail_msg = "the demo app's base or router basename is missing"
+
+[[task]]
+id = "T08"
+title = "Test local access through the router"
+description = """
+Add `crates/roko-serve/tests/local_access.rs`: the router with auth enabled, no
+configured key, and a launch token. Follow the fixture style of the other router
+tests. Assert:
+
+  1. With no credential, `GET /api/plans` and `GET /api/events` return 401.
+  2. The launch token as `X-Api-Key`, and as `Authorization: Bearer`, returns 200.
+  3. `POST /api/auth/session` with `{"token": <token>}` returns 204, with a
+     `Set-Cookie` carrying `roko_session`, `HttpOnly`, `SameSite=Strict` and
+     `Path=/`. A wrong token returns 401.
+  4. With that cookie, `GET /api/plans` and `GET /api/events` return 200 (check the
+     status only for the stream).
+  5. With the cookie, a POST carrying `Origin: http://evil.example` is 403. The same
+     POST with the server's own origin is not rejected by auth.
+  6. After `DELETE /api/auth/session`, the cookie no longer authenticates.
+  7. With a configured API key and no launch token, exchanging the key through
+     `X-Api-Key` yields a working cookie.
+"""
+status = "ready"
+role = "implementer"
+tier = "integrative"
+model_hint = "claude-sonnet-4-6"
+timeout_secs = 2700
+max_retries = 2
+estimated_minutes = 30
+depends_on = ["T11"]
+files = ["crates/roko-serve/tests/local_access.rs"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-serve/tests/plan_execute.rs", why = "how a router test builds AppState and a temporary workspace" },
+    { path = "crates/roko-serve/src/routes/middleware.rs", why = "the credentials under test" },
+]
+anti_patterns = [
+    "Do not disable auth to make a case pass; every case runs with auth enabled.",
+]
+
+[[task.verify]]
+phase = "test"
+command = "test -f crates/roko-serve/tests/local_access.rs && cargo test -p roko-serve"
+fail_msg = "the local access tests are missing or roko-serve tests fail"
+timeout_ms = 2700000
+
+[[task]]
+id = "T09"
+title = "Prove a fresh workspace reaches its own server"
+description = """
+Run the acceptance check and record the result in
+`plans/portal-programme/03c-backend-local-access/REVIEW.md`.
+
+  1. `cargo build -p roko-cli`.
+  2. `bash plans/portal-programme/_harness/access-check.sh`. It uses a scratch
+     workspace with `[serve.auth] enabled = true` and no key, plus the deterministic
+     fake agent, and asserts:
+       - the printed portal URL carries the token, which matches the 0600
+         `serve.token`;
+       - a request without a credential is a 401;
+       - the session exchange sets a proper cookie;
+       - the cookie authenticates both the API and the event stream;
+       - a cross-origin write is refused;
+       - `roko plan run` through the server authenticates with the token file;
+       - the token file is removed on shutdown;
+       - `ROKO_SPA_DIR` serves the UI at `/`, a client-side route falls back to its
+         index, and a missing asset is a 404;
+       - an unknown `/api` path is a JSON 404, never a UI page;
+       - the demo app is served under `/demo`, built for that base.
+     It costs nothing and takes a few minutes.
+  3. When an assertion fails, fix the cause in this plan's code, rebuild and rerun. If
+     the harness itself is wrong, fix it and say exactly what and why in REVIEW.md.
+     Never delete or weaken an assertion.
+  4. Write REVIEW.md with the full PASS/FAIL output, then the verdict line.
+"""
+status = "ready"
+role = "implementer"
+tier = "integrative"
+model_hint = "claude-sonnet-4-6"
+timeout_secs = 2700
+max_retries = 2
+estimated_minutes = 30
+depends_on = ["T08"]
+files = ["plans/portal-programme/03c-backend-local-access/REVIEW.md"]
+
+[task.context]
+read_files = [
+    { path = "plans/portal-programme/_harness/access-check.sh", why = "the assertions this plan must satisfy" },
+    { path = "plans/portal-programme/_harness/lib.sh", why = "how the scratch workspace and server are built and torn down" },
+]
+anti_patterns = [
+    "Do not start a server against this repository. The check brings its own workspace.",
+    "Do not edit or remove an assertion to make the check pass.",
+    "Do not report success unless the check printed ACCESS-CHECK: PASS.",
+]
+
+[[task.verify]]
+phase = "test"
+command = "cargo build -p roko-cli && bash plans/portal-programme/_harness/access-check.sh"
+fail_msg = "the local access acceptance check does not pass"
+timeout_ms = 2700000
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'ACCESS-CHECK: PASS' plans/portal-programme/03c-backend-local-access/REVIEW.md"
+fail_msg = "REVIEW.md does not record a passing check"
+
+[[task]]
+id = "T10"
+title = "Record local access as built, and update the work graph"
+description = """
+Under a heading reading exactly `AS BUILT 03c-backend-local-access` in
+`tmp/portal-audit/03-CONTRACT.md`, restate the local access mechanism as built: when
+the token is minted, the session exchange's request and response, the cookie
+attributes, the Origin rule, and the token file. Use REVIEW.md as the evidence.
+Then mark section 4.3 ("Local access") as built, pointing to the new section, and
+correct anything there the build changed.
+
+Then update the work graph: `work/items/`, format in `work/README.md`.
+`.roko/GAPS.md` is frozen; do not write there.
+
+  1. Close bug-12d48c (EventSource 401) if the check's cookie-on-event-stream
+     assertion passed: set `status = "done"`, set `updated` and `last_verified` to
+     today, and fill `[closed]` with `at`, `by`, `run_id` (from
+     `.roko/state/graph/03c-backend-local-access/checkpoint.json`) and `evidence`.
+  2. Create an item for each residual below, after searching `work/items/` for one
+     that already covers it.
+     - (gap) The portal's dev server on another port cannot use the cookie without
+       credentialed CORS. Development uses `ROKO_API_KEY` or auth disabled.
+     - (finding) Sessions live in memory; restarting the server means opening the
+       newly printed URL.
+     - (gap) Release and Docker builds do not build the portal export:
+       `.github/workflows/release.yml` and `Dockerfile` build only the demo app. So a
+       packaged binary serves the fallback page at `/`.
+"""
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 20
+depends_on = ["T09"]
+files = ["tmp/portal-audit/03-CONTRACT.md", "work/items"]
+
+[task.context]
+read_files = [
+    { path = "tmp/portal-audit/03-CONTRACT.md", why = "section 4.3, the planned local access design to restate as built" },
+    { path = "work/README.md", why = "the item format, IDs and the closure rules" },
+    { path = "work/items/bug-12d48c-portal-event-stream-sends-no-credential-so.md", why = "the item this plan closes" },
+]
+anti_patterns = [
+    "Do not close an item whose assertion did not pass in the live check.",
+    "Do not write to .roko/GAPS.md; it is frozen.",
+    "Do not rewrite other plans' sections of the contract.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = '''grep -q 'AS BUILT 03c-backend-local-access' tmp/portal-audit/03-CONTRACT.md && grep -q '^status = "done"' work/items/bug-12d48c-*.md && python3 -c 'import tomllib, glob; [tomllib.loads(open(f).read().split("+++")[1]) for f in glob.glob("work/items/*.md")]''''
+fail_msg = "the contract has no AS BUILT section, bug-12d48c was not closed, or an item's front matter no longer parses"

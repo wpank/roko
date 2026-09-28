@@ -5,6 +5,7 @@ title = "CLI plan runs are invisible to roko serve: in-process StateHub and an u
 status = "open"
 triage = "verified"
 severity = "p1"
+goal = "visibility"
 subsystem = ["roko-cli/state-hub", "roko-serve/events"]
 created = 2026-09-28
 updated = 2026-09-28

@@ -5,6 +5,7 @@ title = "Async Runtime Anti-Patterns (Drop+Spawn, Unbounded Channels, Mutex Acro
 status = "open"
 triage = "verified"
 severity = "p2"
+goal = "tooling"
 subsystem = ["roko-agent"]
 created = 2026-09-07
 updated = 2026-09-28

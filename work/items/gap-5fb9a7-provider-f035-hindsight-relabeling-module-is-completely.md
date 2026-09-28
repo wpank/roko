@@ -1,10 +1,11 @@
 +++
 id = "gap-5fb9a7"
 kind = "gap"
-title = "[provider F035] Hindsight relabeling module is completely unwired"
+title = "Hindsight relabeling module is completely unwired"
 status = "open"
 triage = "verified"
 severity = "p1"
+goal = "learning"
 subsystem = ["roko-learn/hindsight"]
 created = 2026-09-01
 updated = 2026-09-28

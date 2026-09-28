@@ -5,6 +5,7 @@ title = "PB-006: Zustand dashboard store + event dispatch"
 status = "open"
 triage = "verified"
 severity = "p2"
+goal = "visibility"
 subsystem = ["apps/portal"]
 created = 2026-09-23
 updated = 2026-09-28

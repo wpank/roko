@@ -5,6 +5,7 @@ title = "Privy JWT grants admin to any Nunchi Privy user on a publicly bound rok
 status = "open"
 triage = "verified"
 severity = "p0"
+goal = "release"
 subsystem = ["roko-serve/auth"]
 created = 2026-09-28
 updated = 2026-09-28

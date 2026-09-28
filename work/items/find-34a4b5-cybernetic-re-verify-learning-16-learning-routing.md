@@ -1,10 +1,11 @@
 +++
 id = "find-34a4b5"
 kind = "finding"
-title = "[cybernetic re-verify: learning] 16 learning/routing closures wired into deleted Runner-v2 event_loop.rs"
+title = "16 learning/routing closures wired into deleted Runner-v2 event_loop.rs"
 status = "open"
 triage = "verified"
 severity = "p1"
+goal = "learning"
 subsystem = ["roko-learn"]
 created = 2026-09-06
 updated = 2026-09-28

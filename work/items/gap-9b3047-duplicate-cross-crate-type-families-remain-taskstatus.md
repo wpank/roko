@@ -5,6 +5,7 @@ title = "Duplicate cross-crate type families remain (TaskStatus, GateFeedback, A
 status = "open"
 triage = "verified"
 severity = "p3"
+goal = "tooling"
 subsystem = ["workspace/types"]
 created = 2026-09-28
 updated = 2026-09-28

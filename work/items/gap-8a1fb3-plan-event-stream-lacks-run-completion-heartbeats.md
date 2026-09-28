@@ -5,6 +5,7 @@ title = "Plan event stream lacks run completion, heartbeats, timestamps, DAG edg
 status = "open"
 triage = "verified"
 severity = "p2"
+goal = "visibility"
 subsystem = ["roko-cli/graph-execution", "roko-serve/events"]
 created = 2026-09-28
 updated = 2026-09-28

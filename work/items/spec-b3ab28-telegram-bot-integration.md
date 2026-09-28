@@ -5,6 +5,7 @@ title = "Telegram Bot Integration"
 status = "open"
 triage = "verified"
 severity = "p2"
+goal = "features"
 subsystem = ["roko-runtime/platforms"]
 created = 2026-09-07
 updated = 2026-09-28

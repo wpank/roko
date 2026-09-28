@@ -5,6 +5,7 @@ title = "Deliver `roko inject` Through the Canonical Acknowledged Control Transp
 status = "open"
 triage = "verified"
 severity = "p1"
+goal = "features"
 subsystem = ["roko-cli/inject"]
 created = 2026-09-01
 updated = 2026-09-28

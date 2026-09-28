@@ -6,8 +6,8 @@ Roko is a Rust toolkit for building agents that build themselves. 36 workspace m
 via Claude agents, validates with gates, and persists results. The core loop is wired. Your job
 is to use it and improve it.
 
-**Status is not tracked in this file.** Current status and open work: `work/STATUS.md`
-(generated) and `work/CLAUDE-OPEN.md`; history: `work/history/`. Item format and rules are in
+**Status is not tracked in this file.** What to work on next: `work/NOW.md` (generated from the goals in
+`work/goals.toml`). All open work: `work/STATUS.md`; p0/p1 only: `work/CLAUDE-OPEN.md`; history: `work/history/`. Item format and rules are in
 `work/README.md`. The old status table, programme rollup and priority list are frozen, along with
 a list of their known-stale claims, in `work/history/claude-md-status-2026-09-28.md`.
 
@@ -365,8 +365,8 @@ stricter lints than your local toolchain.
 
 ## What to work on
 
-Open work lives in the work graph, not in this file. Start with `work/CLAUDE-OPEN.md` (generated);
-the full list, grouped by subsystem, is in `work/STATUS.md`. The old numbered priority list is
+Open work lives in the work graph, not in this file. Start with `work/NOW.md` (generated: the top
+items of each goal in `work/goals.toml`); the full list, grouped by subsystem, is in `work/STATUS.md`. The old numbered priority list is
 frozen in `work/history/claude-md-status-2026-09-28.md`.
 
 Long-term priorities that still hold:

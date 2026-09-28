@@ -5,6 +5,7 @@ title = "Interactive Setup Wizard (ratatui)"
 status = "open"
 triage = "verified"
 severity = "p2"
+goal = "features"
 subsystem = ["roko-cli/tui"]
 created = 2026-09-21
 updated = 2026-09-28

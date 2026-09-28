@@ -5,6 +5,7 @@ title = "Tool audit P0s: production ToolLoopAgent uses ToolContext::testing; can
 status = "open"
 triage = "verified"
 severity = "p2"
+goal = "core"
 subsystem = ["roko-agent/tool-loop"]
 created = 2026-09-04
 updated = 2026-09-28

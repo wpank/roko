@@ -5,6 +5,7 @@ title = "Generated eval tests are empty placeholders written into the repository
 status = "open"
 triage = "verified"
 severity = "p2"
+goal = "learning"
 subsystem = ["roko-gate/eval-generator", "roko-cli/graph-dispatch"]
 created = 2026-09-28
 updated = 2026-09-28

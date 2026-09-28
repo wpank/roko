@@ -5,6 +5,7 @@ title = "FAST mode (dev.sh fast) guarantees are only partly ported to the Graph 
 status = "open"
 triage = "verified"
 severity = "p2"
+goal = "tooling"
 subsystem = ["roko-cli/graph_execution"]
 created = 2026-09-28
 updated = 2026-09-28

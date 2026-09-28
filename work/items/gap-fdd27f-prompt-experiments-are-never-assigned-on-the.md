@@ -5,6 +5,7 @@ title = "Prompt experiments are never assigned on the Graph execution path"
 status = "open"
 triage = "verified"
 severity = "p2"
+goal = "learning"
 subsystem = ["roko-cli/graph-dispatch", "roko-learn/experiments"]
 created = 2026-09-28
 updated = 2026-09-28

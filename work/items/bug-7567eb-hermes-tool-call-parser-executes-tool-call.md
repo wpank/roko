@@ -5,6 +5,7 @@ title = "Hermes tool-call parser executes <tool_call> blocks inside <think> reas
 status = "open"
 triage = "verified"
 severity = "p1"
+goal = "hermes"
 subsystem = ["roko-agent/translate"]
 created = 2026-09-28
 updated = 2026-09-28

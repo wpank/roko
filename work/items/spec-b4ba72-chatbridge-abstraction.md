@@ -5,6 +5,7 @@ title = "ChatBridge Abstraction"
 status = "open"
 triage = "verified"
 severity = "p2"
+goal = "features"
 subsystem = ["roko-cli"]
 created = 2026-09-21
 updated = 2026-09-28

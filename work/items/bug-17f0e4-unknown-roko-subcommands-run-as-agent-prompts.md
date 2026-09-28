@@ -5,6 +5,7 @@ title = "Unknown roko subcommands run as agent prompts instead of failing"
 status = "open"
 triage = "verified"
 severity = "p2"
+goal = "release"
 subsystem = ["roko-cli/cli"]
 created = 2026-09-28
 updated = 2026-09-28

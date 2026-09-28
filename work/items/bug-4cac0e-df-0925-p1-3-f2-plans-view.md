@@ -1,10 +1,11 @@
 +++
 id = "bug-4cac0e"
 kind = "bug"
-title = "DF-0925 P1-3: F2 Plans view scans one level, shows unrelated plans and zips status by index"
+title = "F2 Plans view scans one level, shows unrelated plans and zips status by index"
 status = "open"
 triage = "verified"
 severity = "p2"
+goal = "visibility"
 subsystem = ["roko-cli/tui"]
 created = 2026-09-25
 updated = 2026-09-28

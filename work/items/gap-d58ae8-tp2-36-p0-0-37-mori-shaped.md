@@ -1,10 +1,11 @@
 +++
 id = "gap-d58ae8"
 kind = "gap"
-title = "TP2-36 P0.0/37: Mori-shaped workflow contract unproven end-to-end"
+title = "Mori-shaped workflow contract unproven end-to-end"
 status = "open"
 triage = "verified"
 severity = "p1"
+goal = "core"
 subsystem = ["roko-cli/graph_execution"]
 created = 2026-09-14
 updated = 2026-09-28

@@ -5,6 +5,7 @@ title = "PlanGateCell gates the process working directory as attempt 0"
 status = "open"
 triage = "verified"
 severity = "p1"
+goal = "core"
 subsystem = ["roko-graph/cells", "roko-gate"]
 created = 2026-09-28
 updated = 2026-09-28

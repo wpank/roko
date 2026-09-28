@@ -5,6 +5,7 @@ title = "roko-cli keeps crate-wide clippy allows and 156 #[allow(dead_code)] sit
 status = "open"
 triage = "verified"
 severity = "p3"
+goal = "tooling"
 subsystem = ["roko-cli/lints", "workspace/hygiene"]
 created = 2026-09-28
 updated = 2026-09-28

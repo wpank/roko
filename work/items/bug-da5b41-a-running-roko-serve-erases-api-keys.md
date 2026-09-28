@@ -5,6 +5,7 @@ title = "A running roko serve erases API keys created by the CLI"
 status = "open"
 triage = "verified"
 severity = "p1"
+goal = "release"
 subsystem = ["roko-serve/auth"]
 created = 2026-09-28
 updated = 2026-09-28

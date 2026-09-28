@@ -1,10 +1,11 @@
 +++
 id = "bug-b9cb83"
 kind = "bug"
-title = "[provider F023] Gateway ThinkingConfig dropped at ModelCallerBackend boundary"
+title = "Gateway ThinkingConfig dropped at ModelCallerBackend boundary"
 status = "open"
 triage = "verified"
 severity = "p1"
+goal = "core"
 subsystem = ["roko-gateway/provider"]
 created = 2026-09-01
 updated = 2026-09-28

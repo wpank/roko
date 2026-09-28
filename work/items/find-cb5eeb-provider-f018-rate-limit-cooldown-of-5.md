@@ -1,10 +1,11 @@
 +++
 id = "find-cb5eeb"
 kind = "finding"
-title = "[provider F018] Rate limit cooldown of 5 s is too short for actual provider rate windows"
+title = "Rate limit cooldown of 5 s is too short for actual provider rate windows"
 status = "open"
 triage = "verified"
 severity = "p2"
+goal = "core"
 subsystem = ["roko-learn/provider_health"]
 created = 2026-09-01
 updated = 2026-09-28

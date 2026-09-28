@@ -5,6 +5,7 @@ title = "Conductor Supervisor Loop (Live Intervention)"
 status = "open"
 triage = "verified"
 severity = "p1"
+goal = "features"
 subsystem = ["roko-cli/runner"]
 created = 2026-09-07
 updated = 2026-09-28

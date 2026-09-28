@@ -1,10 +1,11 @@
 +++
 id = "q-1faa0c"
 kind = "question"
-title = "DA-09/10: Dev-audit runtime fixes unverified on the Graph engine after Runner-v2 deletion"
+title = "Dev-audit runtime fixes unverified on the Graph engine after Runner-v2 deletion"
 status = "open"
 triage = "verified"
 severity = "p1"
+goal = "core"
 subsystem = ["roko-cli/graph_execution"]
 created = 2026-09-14
 updated = 2026-09-28

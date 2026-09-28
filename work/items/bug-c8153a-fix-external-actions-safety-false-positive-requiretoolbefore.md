@@ -5,6 +5,7 @@ title = "Fix external_actions Safety False Positive (RequireToolBeforeEdit)"
 status = "open"
 triage = "verified"
 severity = "p1"
+goal = "core"
 subsystem = ["roko-agent/safety"]
 created = 2026-09-21
 updated = 2026-09-28

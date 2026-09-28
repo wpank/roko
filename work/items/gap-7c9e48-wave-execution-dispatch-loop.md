@@ -5,6 +5,7 @@ title = "Wave Execution Dispatch Loop"
 status = "open"
 triage = "verified"
 severity = "p1"
+goal = "core"
 subsystem = ["roko-cli/commands"]
 created = 2026-09-21
 updated = 2026-09-28

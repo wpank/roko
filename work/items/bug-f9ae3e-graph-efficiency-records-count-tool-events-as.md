@@ -5,6 +5,7 @@ title = "Graph efficiency records count tool events as tool calls and mark every
 status = "open"
 triage = "verified"
 severity = "p2"
+goal = "learning"
 subsystem = ["roko-cli/graph-dispatch", "roko-learn/efficiency"]
 created = 2026-09-28
 updated = 2026-09-28

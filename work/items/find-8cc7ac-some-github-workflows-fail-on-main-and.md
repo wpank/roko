@@ -5,6 +5,7 @@ title = "Some GitHub workflows fail on main and required checks are undefined"
 status = "open"
 triage = "verified"
 severity = "p1"
+goal = "release"
 subsystem = ["ci"]
 created = 2026-09-28
 updated = 2026-09-28

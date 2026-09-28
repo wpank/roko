@@ -1,10 +1,11 @@
 +++
 id = "bug-f0f108"
 kind = "bug"
-title = "[refactor P0-01] ACP bridge crash under sustained load (analyzed, not fixed)"
+title = "ACP bridge crash under sustained load (analyzed, not fixed)"
 status = "open"
 triage = "verified"
 severity = "p1"
+goal = "hermes"
 subsystem = ["roko-acp/bridge_events"]
 created = 2026-09-15
 updated = 2026-09-28

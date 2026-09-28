@@ -1,10 +1,11 @@
 +++
 id = "find-3f99f2"
 kind = "finding"
-title = "[provider F016] Cold start problem for models added after router maturity"
+title = "Cold start problem for models added after router maturity"
 status = "open"
 triage = "verified"
 severity = "p2"
+goal = "learning"
 subsystem = ["roko-learn/model_router"]
 created = 2026-09-01
 updated = 2026-09-28

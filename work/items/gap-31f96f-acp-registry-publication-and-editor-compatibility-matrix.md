@@ -5,6 +5,7 @@ title = "ACP Registry Publication and Editor Compatibility Matrix"
 status = "open"
 triage = "verified"
 severity = "p2"
+goal = "hermes"
 subsystem = ["roko-acp"]
 created = 2026-09-21
 updated = 2026-09-28

@@ -5,6 +5,7 @@ title = "Channel-to-Reactive-Agent Binding"
 status = "open"
 triage = "verified"
 severity = "p1"
+goal = "features"
 subsystem = ["roko-runtime"]
 created = 2026-09-21
 updated = 2026-09-28

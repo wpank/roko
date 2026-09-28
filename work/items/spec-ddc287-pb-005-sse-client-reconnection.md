@@ -5,6 +5,7 @@ title = "PB-005: SSE client + reconnection"
 status = "open"
 triage = "verified"
 severity = "p2"
+goal = "visibility"
 subsystem = ["apps/portal"]
 created = 2026-09-23
 updated = 2026-09-28

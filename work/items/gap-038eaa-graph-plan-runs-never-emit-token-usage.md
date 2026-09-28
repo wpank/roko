@@ -5,6 +5,7 @@ title = "Graph plan runs never emit token usage or cost events to the dashboard"
 status = "open"
 triage = "verified"
 severity = "p2"
+goal = "visibility"
 subsystem = ["roko-cli/graph-dispatch", "roko-serve/events"]
 created = 2026-09-28
 updated = 2026-09-28

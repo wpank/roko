@@ -5,6 +5,7 @@ title = "Manual --model overrides are always recorded as router successes"
 status = "open"
 triage = "verified"
 severity = "p2"
+goal = "learning"
 subsystem = ["roko-learn/cascade-router"]
 created = 2026-09-28
 updated = 2026-09-28

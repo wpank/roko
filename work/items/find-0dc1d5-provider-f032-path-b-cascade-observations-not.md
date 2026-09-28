@@ -1,10 +1,11 @@
 +++
 id = "find-0dc1d5"
 kind = "finding"
-title = "[provider F032] Path B cascade observations not covered by WAL (write-ahead log)"
+title = "Path B cascade observations not covered by WAL (write-ahead log)"
 status = "open"
 triage = "verified"
 severity = "p2"
+goal = "learning"
 subsystem = ["roko-learn/cascade_router"]
 created = 2026-09-01
 updated = 2026-09-28

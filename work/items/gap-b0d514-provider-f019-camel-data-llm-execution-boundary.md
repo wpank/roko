@@ -1,10 +1,11 @@
 +++
 id = "gap-b0d514"
 kind = "gap"
-title = "[provider F019] CaMeL Data-LLM execution boundary not enforced"
+title = "CaMeL Data-LLM execution boundary not enforced"
 status = "open"
 triage = "verified"
 severity = "p1"
+goal = "features"
 subsystem = ["roko-agent/safety"]
 created = 2026-09-01
 updated = 2026-09-28

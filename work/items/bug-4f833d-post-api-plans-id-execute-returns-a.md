@@ -5,6 +5,7 @@ title = "POST /api/plans/{id}/execute returns a run id the Graph engine never us
 status = "open"
 triage = "verified"
 severity = "p2"
+goal = "visibility"
 subsystem = ["roko-serve/plans", "roko-cli/serve-runtime"]
 created = 2026-09-28
 updated = 2026-09-28

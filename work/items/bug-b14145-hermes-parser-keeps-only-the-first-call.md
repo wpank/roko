@@ -5,6 +5,7 @@ title = "Hermes parser keeps only the first call of a tool_calls wrapper block"
 status = "open"
 triage = "verified"
 severity = "p2"
+goal = "hermes"
 subsystem = ["roko-agent/translate"]
 created = 2026-09-28
 updated = 2026-09-28

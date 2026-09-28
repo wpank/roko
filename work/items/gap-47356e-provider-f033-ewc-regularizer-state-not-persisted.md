@@ -1,10 +1,11 @@
 +++
 id = "gap-47356e"
 kind = "gap"
-title = "[provider F033] EWC regularizer state not persisted in CascadeSnapshot"
+title = "EWC regularizer state not persisted in CascadeSnapshot"
 status = "open"
 triage = "verified"
 severity = "p2"
+goal = "learning"
 subsystem = ["roko-learn/bandits"]
 created = 2026-09-01
 updated = 2026-09-28

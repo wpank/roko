@@ -1,10 +1,11 @@
 +++
 id = "gap-836ae9"
 kind = "gap"
-title = "[tool T007] Live and replayed tool streams lack proven deterministic store/order parity"
+title = "Live and replayed tool streams lack proven deterministic store/order parity"
 status = "open"
 triage = "verified"
 severity = "p2"
+goal = "visibility"
 subsystem = ["roko-core/transcript_store"]
 created = 2026-09-14
 updated = 2026-09-28

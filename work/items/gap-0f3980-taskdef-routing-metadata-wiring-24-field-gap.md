@@ -5,6 +5,7 @@ title = "TaskDef Routing Metadata Wiring (24-field gap)"
 status = "open"
 triage = "verified"
 severity = "p1"
+goal = "core"
 subsystem = ["roko-cli/dispatch"]
 created = 2026-09-21
 updated = 2026-09-28

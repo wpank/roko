@@ -1,10 +1,11 @@
 +++
 id = "gap-633184"
 kind = "gap"
-title = "[tool T014] Control events vs text on bounded paths: zero-silent-drop under backpressure not tested"
+title = "Control events vs text on bounded paths: zero-silent-drop under backpressure not tested"
 status = "open"
 triage = "verified"
 severity = "p2"
+goal = "visibility"
 subsystem = ["roko-core/transcript_store"]
 created = 2026-09-14
 updated = 2026-09-28

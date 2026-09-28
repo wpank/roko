@@ -5,6 +5,7 @@ title = "177 eprintln! call sites remain outside tests; tracing migration incomp
 status = "open"
 triage = "verified"
 severity = "p3"
+goal = "tooling"
 subsystem = ["workspace/logging"]
 created = 2026-08-13
 updated = 2026-09-28

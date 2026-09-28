@@ -1,10 +1,11 @@
 +++
 id = "bug-cfe0be"
 kind = "bug"
-title = "[provider F017] Multi-process clobber: no cross-process atomicity for provider-health.json"
+title = "Multi-process clobber: no cross-process atomicity for provider-health.json"
 status = "open"
 triage = "verified"
 severity = "p2"
+goal = "core"
 subsystem = ["roko-learn/provider_health"]
 created = 2026-09-01
 updated = 2026-09-28

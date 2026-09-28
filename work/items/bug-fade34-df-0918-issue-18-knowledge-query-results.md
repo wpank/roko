@@ -1,7 +1,7 @@
 +++
 id = "bug-fade34"
 kind = "bug"
-title = "DF-0918 ISSUE-18: `knowledge query` results dump full hypothesis text"
+title = "`knowledge query` results dump full hypothesis text"
 status = "open"
 triage = "unverified"
 severity = "p3"

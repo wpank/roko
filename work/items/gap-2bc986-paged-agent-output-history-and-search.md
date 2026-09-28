@@ -5,6 +5,7 @@ title = "Paged Agent Output History and Search"
 status = "open"
 triage = "verified"
 severity = "p2"
+goal = "features"
 subsystem = ["workspace"]
 created = 2026-09-01
 updated = 2026-09-28

@@ -5,6 +5,7 @@ title = "Graph Engine Watchdog Integration"
 status = "open"
 triage = "verified"
 severity = "p0"
+goal = "core"
 subsystem = ["roko-cli"]
 created = 2026-09-21
 updated = 2026-09-28

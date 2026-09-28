@@ -5,6 +5,7 @@ title = "Tool Dispatch Observability Gaps (TD-003, TD-004, TD-005)"
 status = "open"
 triage = "verified"
 severity = "p1"
+goal = "visibility"
 subsystem = ["roko-agent/tool_loop"]
 created = 2026-09-21
 updated = 2026-09-28

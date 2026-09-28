@@ -5,6 +5,7 @@ title = "Successful plan attempts are never accepted: accept_attempt has no prod
 status = "open"
 triage = "verified"
 severity = "p2"
+goal = "core"
 subsystem = ["roko-cli/worktree"]
 created = 2026-09-28
 updated = 2026-09-28

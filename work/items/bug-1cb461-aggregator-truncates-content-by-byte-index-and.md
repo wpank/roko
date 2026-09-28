@@ -5,6 +5,7 @@ title = "Aggregator truncates content by byte index and can panic on non-ASCII t
 status = "open"
 triage = "verified"
 severity = "p2"
+goal = "visibility"
 subsystem = ["roko-serve/aggregator"]
 created = 2026-09-28
 updated = 2026-09-28

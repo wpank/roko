@@ -5,6 +5,7 @@ title = "Knowledge-informed model routing has no caller after Runner-v2 removal"
 status = "open"
 triage = "verified"
 severity = "p2"
+goal = "learning"
 subsystem = ["roko-learn/cascade-router", "roko-cli/dispatch"]
 created = 2026-09-28
 updated = 2026-09-28

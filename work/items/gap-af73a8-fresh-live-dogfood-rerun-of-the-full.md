@@ -5,6 +5,7 @@ title = "Fresh live dogfood rerun of the full self-hosting workflow (blocked by 
 status = "open"
 triage = "verified"
 severity = "p1"
+goal = "core"
 subsystem = ["self-hosting"]
 created = 2026-09-15
 updated = 2026-09-28

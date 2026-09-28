@@ -5,6 +5,7 @@ title = "#404 — Batch Branch Integration"
 status = "open"
 triage = "verified"
 severity = "p1"
+goal = "features"
 subsystem = ["roko-cli/runner"]
 created = 2026-09-21
 updated = 2026-09-28

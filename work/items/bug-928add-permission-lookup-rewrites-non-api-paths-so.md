@@ -5,6 +5,7 @@ title = "Permission lookup rewrites non-/api paths, so /relay permission rows ne
 status = "open"
 triage = "verified"
 severity = "p2"
+goal = "release"
 subsystem = ["roko-serve/rbac"]
 created = 2026-09-28
 updated = 2026-09-28

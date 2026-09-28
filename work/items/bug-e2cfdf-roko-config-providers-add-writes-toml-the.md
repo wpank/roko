@@ -5,6 +5,7 @@ title = "roko config providers add writes TOML the config schema rejects"
 status = "open"
 triage = "verified"
 severity = "p2"
+goal = "release"
 subsystem = ["roko-cli/config"]
 created = 2026-09-28
 updated = 2026-09-28

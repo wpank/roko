@@ -1,10 +1,11 @@
 +++
 id = "gap-3d5cce"
 kind = "gap"
-title = "[provider F036] ActCell (cognitive loop LLM dispatch point) is a stub pass-through"
+title = "ActCell (cognitive loop LLM dispatch point) is a stub pass-through"
 status = "open"
 triage = "verified"
 severity = "p2"
+goal = "features"
 subsystem = ["roko-graph/cells"]
 created = 2026-09-01
 updated = 2026-09-28

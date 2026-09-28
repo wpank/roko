@@ -5,6 +5,7 @@ title = "Plan Cost Budget Enforcement and Early Termination"
 status = "open"
 triage = "verified"
 severity = "p2"
+goal = "core"
 subsystem = ["roko-cli/runner"]
 created = 2026-09-07
 updated = 2026-09-28

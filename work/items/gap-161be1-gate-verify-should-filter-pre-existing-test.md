@@ -5,6 +5,7 @@ title = "Gate Verify Should Filter Pre-Existing Test Failures"
 status = "open"
 triage = "verified"
 severity = "p1"
+goal = "core"
 subsystem = ["roko-cli/runner"]
 created = 2026-09-07
 updated = 2026-09-28

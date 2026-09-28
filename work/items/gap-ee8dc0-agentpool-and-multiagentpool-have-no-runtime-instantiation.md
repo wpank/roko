@@ -5,6 +5,7 @@ title = "AgentPool and MultiAgentPool have no runtime instantiation"
 status = "open"
 triage = "verified"
 severity = "p3"
+goal = "tooling"
 subsystem = ["roko-agent/pool"]
 created = 2026-09-28
 updated = 2026-09-28

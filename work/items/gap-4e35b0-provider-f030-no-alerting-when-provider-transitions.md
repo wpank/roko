@@ -1,10 +1,11 @@
 +++
 id = "gap-4e35b0"
 kind = "gap"
-title = "[provider F030] No alerting when provider transitions to Open (tripped) state"
+title = "No alerting when provider transitions to Open (tripped) state"
 status = "open"
 triage = "verified"
 severity = "p2"
+goal = "core"
 subsystem = ["roko-learn/provider_health"]
 created = 2026-09-01
 updated = 2026-09-28

@@ -5,6 +5,7 @@ title = "Fix Agent Spawned Event Timing (Post-Dispatch)"
 status = "open"
 triage = "verified"
 severity = "p1"
+goal = "visibility"
 subsystem = ["roko-cli"]
 created = 2026-09-21
 updated = 2026-09-28

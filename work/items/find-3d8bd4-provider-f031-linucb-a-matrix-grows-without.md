@@ -1,10 +1,11 @@
 +++
 id = "find-3d8bd4"
 kind = "finding"
-title = "[provider F031] LinUCB A matrix grows without bound, exploration bonus approaches zero"
+title = "LinUCB A matrix grows without bound, exploration bonus approaches zero"
 status = "open"
 triage = "verified"
 severity = "p2"
+goal = "learning"
 subsystem = ["roko-learn/model_router"]
 created = 2026-09-01
 updated = 2026-09-28

@@ -5,6 +5,7 @@ title = "Graph dispatch ignores E23 vitality, phase tier caps and energy charges
 status = "open"
 triage = "verified"
 severity = "p2"
+goal = "learning"
 subsystem = ["roko-cli/graph-dispatch", "roko-daimon"]
 created = 2026-09-28
 updated = 2026-09-28

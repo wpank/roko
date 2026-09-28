@@ -1,10 +1,11 @@
 +++
 id = "gap-aabeff"
 kind = "gap"
-title = "[tool T003] TUI paths still consume string/tail projections that lose semantics (TUI adoption unproven)"
+title = "TUI paths still consume string/tail projections that lose semantics (TUI adoption unproven)"
 status = "open"
 triage = "verified"
 severity = "p1"
+goal = "visibility"
 subsystem = ["roko-cli/tui"]
 created = 2026-09-14
 updated = 2026-09-28

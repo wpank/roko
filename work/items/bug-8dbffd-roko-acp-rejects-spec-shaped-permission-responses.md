@@ -5,6 +5,7 @@ title = "roko acp rejects spec-shaped permission responses"
 status = "open"
 triage = "verified"
 severity = "p1"
+goal = "hermes"
 subsystem = ["roko-acp/permissions"]
 created = 2026-09-28
 updated = 2026-09-28

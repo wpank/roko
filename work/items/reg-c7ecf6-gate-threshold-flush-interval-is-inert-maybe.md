@@ -5,6 +5,7 @@ title = "Gate-threshold flush interval is inert: maybe_flush_gate_thresholds is 
 status = "open"
 triage = "verified"
 severity = "p3"
+goal = "learning"
 subsystem = ["roko-cli/gate-thresholds", "roko-gate/adaptive-thresholds"]
 created = 2026-09-28
 updated = 2026-09-28

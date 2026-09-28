@@ -5,6 +5,7 @@ title = "Long-running operation handles never record completion"
 status = "open"
 triage = "verified"
 severity = "p2"
+goal = "visibility"
 subsystem = ["roko-serve/operations"]
 created = 2026-09-28
 updated = 2026-09-28

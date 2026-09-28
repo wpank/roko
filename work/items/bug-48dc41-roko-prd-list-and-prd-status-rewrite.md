@@ -5,6 +5,7 @@ title = "roko prd list and prd status rewrite tracked index files"
 status = "open"
 triage = "verified"
 severity = "p3"
+goal = "tooling"
 subsystem = ["roko-cli/prd"]
 created = 2026-09-28
 updated = 2026-09-28

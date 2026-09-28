@@ -5,6 +5,7 @@ title = "AcpStdioClient::hermes() sends protocolVersion as a string"
 status = "open"
 triage = "verified"
 severity = "p2"
+goal = "hermes"
 subsystem = ["roko-agent/acp-client"]
 created = 2026-09-28
 updated = 2026-09-28

@@ -1,0 +1,45 @@
+# Active goals, highest priority first. Hand-edited: reorder, add or remove goals here.
+# An item joins a goal with `goal = "<key>"` in its front matter; open items without a goal are "later".
+# NOW.md (generated) lists the top `now` checked, open items of each goal, in this order.
+
+[[goal]]
+key = "release"
+title = "Public release: security, licence, CI, first run"
+now = 3
+why = "roko goes public for the Nous application, so it must not ship with an open auth hole, no licence or failing CI."
+
+[[goal]]
+key = "core"
+title = "Plan runs work reliably"
+now = 3
+why = "The core loop (plan, dispatch, gate, merge, resume) has to be trustworthy before anything built on it."
+
+[[goal]]
+key = "hermes"
+title = "Hermes and ACP integration"
+now = 3
+why = "The roko side of the Nous/Hermes demo."
+
+[[goal]]
+key = "visibility"
+title = "Live visibility: serve, dashboard, portal"
+now = 3
+why = "Runs must be observable live in serve, the TUI and the portal. The portal programme works here too."
+
+[[goal]]
+key = "learning"
+title = "Learning loops on the Graph path"
+now = 3
+why = "Routing, playbook, experiment and knowledge feedback that stopped when Runner-v2 was deleted."
+
+[[goal]]
+key = "tooling"
+title = "Tooling, CLI polish and code hygiene"
+now = 3
+why = "Work tracking, plan tooling and cleanup that make it easier to develop roko with roko."
+
+[[goal]]
+key = "features"
+title = "Feature ideas"
+now = 3
+why = "New capabilities, picked up after the defect goals."

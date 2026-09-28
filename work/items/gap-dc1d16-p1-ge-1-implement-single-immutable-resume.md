@@ -1,10 +1,11 @@
 +++
 id = "gap-dc1d16"
 kind = "gap"
-title = "P1-GE-1: Implement single immutable resume generation"
+title = "Implement single immutable resume generation"
 status = "open"
 triage = "verified"
 severity = "p1"
+goal = "core"
 subsystem = ["roko-graph"]
 created = 2026-09-21
 updated = 2026-09-28

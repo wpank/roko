@@ -5,6 +5,7 @@ title = "Channel Config Schema"
 status = "open"
 triage = "verified"
 severity = "p1"
+goal = "features"
 subsystem = ["roko-core/config"]
 created = 2026-09-21
 updated = 2026-09-28

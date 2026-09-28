@@ -5,6 +5,7 @@ title = "Quarantine routes read a file the runtime never writes"
 status = "open"
 triage = "verified"
 severity = "p2"
+goal = "release"
 subsystem = ["roko-serve/safety"]
 created = 2026-09-28
 updated = 2026-09-28

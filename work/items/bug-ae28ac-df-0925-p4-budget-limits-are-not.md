@@ -1,10 +1,11 @@
 +++
 id = "bug-ae28ac"
 kind = "bug"
-title = "DF-0925 P4: Daily and agent-lifetime budget limits are not enforced by the Graph engine"
+title = "Daily and agent-lifetime budget limits are not enforced by the Graph engine"
 status = "open"
 triage = "verified"
 severity = "p1"
+goal = "core"
 subsystem = ["roko-cli/graph_execution"]
 created = 2026-09-25
 updated = 2026-09-28

@@ -1,10 +1,11 @@
 +++
 id = "find-6ee709"
 kind = "finding"
-title = "[provider F039] Cache markers are inert HTML comments, not translated to provider API cache_control"
+title = "Cache markers are inert HTML comments, not translated to provider API cache_control"
 status = "open"
 triage = "verified"
 severity = "p3"
+goal = "core"
 subsystem = ["roko-compose/system_prompt_builder"]
 created = 2026-09-01
 updated = 2026-09-28

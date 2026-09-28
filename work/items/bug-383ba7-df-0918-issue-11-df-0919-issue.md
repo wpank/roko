@@ -1,16 +1,18 @@
 +++
 id = "bug-383ba7"
 kind = "bug"
-title = "DF-0918 ISSUE-11 / DF-0919 ISSUE-26: `config show` output hard to use (truncation, no section filter)"
+title = "`config show` output hard to use (truncation, no section filter)"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p3"
+goal = "tooling"
 subsystem = ["roko-cli/config"]
 created = 2026-09-19
 updated = 2026-09-28
+last_verified = 2026-09-28
 source = "tmp/dogfood/2026-09-18-session.md#ISSUE-11: `config show` truncates after providers section"
 discovered_from = "audit:tmp/dogfood/2026-09-18-session.md#ISSUE-11: `config show` truncates after providers section"
-anchors = ["roko config show"]
+anchors = ["roko config show", "crates/roko-cli/src/config_cmd.rs::cmd_show", "crates/roko-cli/src/config_cmd.rs::print_resolved", "crates/roko-cli/src/main.rs::ConfigCmd::Show"]
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
 +++
 ISSUE-11: output stopped after the first provider; ISSUE-26: full dump is 272 lines and needs `config show <section>` filtering (nice-to-have).
@@ -20,3 +22,5 @@ Imported without verification from:
 - `tmp/dogfood/2026-09-19-session.md#ISSUE-26: Config show outputs 272 lines — hard to find specific settings`
 
 How to verify: Run roko config show [section].
+
+Partly fixed (checked 2026-09-28 against 3d0ee4d02): Truncation (ISSUE-11) is not present in the current code: cmd_show (crates/roko-cli/src/config_cmd.rs:185-188) calls print_resolved (:732), which prints the redacted providers TOML at :811-815 and then continues with models, dreams.* and later fields, with no early return or break. A providers serialization error falls back to a placeholder rather than stopping. The fixing commit was not identified. Still missing (ISSUE-26): `ConfigCmd::Show` accepts only --workdir and --effective (crates/roko-cli/src/main.rs:2836-2843), so `config show <section>` filtering does not exist and the full dump is still printed.

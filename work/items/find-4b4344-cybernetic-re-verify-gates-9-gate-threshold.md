@@ -1,10 +1,11 @@
 +++
 id = "find-4b4344"
 kind = "finding"
-title = "[cybernetic re-verify: gates] 9 gate/threshold closures wired into deleted Runner-v2"
+title = "9 gate/threshold closures wired into deleted Runner-v2"
 status = "open"
 triage = "verified"
 severity = "p1"
+goal = "learning"
 subsystem = ["roko-gate"]
 created = 2026-09-06
 updated = 2026-09-28

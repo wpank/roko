@@ -5,6 +5,7 @@ title = "Worktree Isolation: Flip Default and Add Startup Repair"
 status = "open"
 triage = "verified"
 severity = "p0"
+goal = "core"
 subsystem = ["roko-cli/orchestrator"]
 created = 2026-09-21
 updated = 2026-09-28

@@ -5,6 +5,7 @@ title = "Screenshot Command Completion (Flags, Symlink, Sub-Views)"
 status = "open"
 triage = "verified"
 severity = "p3"
+goal = "features"
 subsystem = ["roko-cli/commands"]
 created = 2026-09-07
 updated = 2026-09-28

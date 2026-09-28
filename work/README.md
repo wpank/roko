@@ -11,7 +11,10 @@ This replaces `.roko/GAPS.md` (frozen 2026-09-28; its history is in `work/histor
 ```
 work/
   README.md                 this file (format + rules)
+  goals.toml                hand-edited: active goals, highest priority first (see "Goals and NOW.md")
+  NOW.md                    GENERATED — what to work on next: the top items of each goal
   items/<id>-<slug>.md      one file per item (tracked, public)
+  parked/<id>-<slug>.md     parked items: not planned, kept for search (see "Parking")
   STATUS.md                 GENERATED — open items by subsystem
   CLAUDE-OPEN.md            GENERATED — short "open now" list referenced by CLAUDE.md
   DECISIONS.md              GENERATED — open decisions
@@ -32,9 +35,11 @@ Markdown with TOML front matter between `+++` lines:
 id = "gap-7f3a2c"                 # <prefix>-<6 hex>; see "IDs"
 kind = "gap"                      # gap | bug | regression | finding | decision | spec | question
 title = "Job cancellation returns 500"
-status = "open"                   # open | in_progress | blocked | done | wontfix | superseded
+status = "open"                   # open | in_progress | blocked | done | wontfix | superseded | parked
 triage = "verified"               # verified (checked against code on last_verified) | unverified (imported, not yet checked)
 severity = "p2"                   # p0 (broken core loop / security) … p3 (polish)
+goal = "core"                     # optional: a key from goals.toml; open items without a goal are "later"
+rank = 1                          # optional: pin the order within a goal on NOW.md (lower first)
 subsystem = ["roko-serve/jobs"]   # crate or crate/area; used to group STATUS.md
 created = 2026-09-26
 updated = 2026-09-28
@@ -74,6 +79,30 @@ Hash IDs never collide across parallel agents or worktrees, unlike counters. Fil
   against the code and sets `triage = "verified"` + `last_verified`.
 - Moving or renaming files is never closure.
 
+### Parking
+
+`parked` means "not planned": nobody has decided to act on the item, so it is not work. It is the
+default for bulk imports and for audit findings nobody has picked up. Parked items live in
+`work/parked/` with a `[parked]` table (`at`, `from_status`, `reason`). The views only count them.
+They stay searchable with grep.
+
+- Park: `work.py park <id>… --reason "…"`. Revive: `work.py unpark <id>…` restores the previous
+  status and moves the file back to `items/`. Both commands are in `tmp/work-management/scripts/`
+  until `roko work` exists.
+- Parking is not closure: a parked defect may still be real. Revive it, and verify it first, when it
+  matters again.
+
+### Goals and NOW.md
+
+`goals.toml` lists the active goals in priority order. An item belongs to a goal through its `goal`
+field. `NOW.md` shows, for each goal in that order, the top `now` open, verified items (by `rank`,
+then severity). In-progress, blocked and unverified items are counted underneath, not listed.
+
+Triage asks one question per item: which goal is it for, or is it parked? New items start as
+`triage = "unverified"`. A short, regular pass verifies the ones worth keeping and gives each a goal
+(or leaves it goal-less as "later"), and parks the rest. Checking whether an item is still true is
+cheap; whether it is wanted is the decision to make deliberately.
+
 ## Rules for agents and humans
 
 1. New gap / bug / finding → new item file (not prose in another document). Include at least one anchor.
@@ -82,5 +111,5 @@ Hash IDs never collide across parallel agents or worktrees, unlike counters. Fil
    `discovered_from` pointing at the document.
 3. Plans reference items: `closes = ["gap-…"]` on the task that fixes them.
 4. Code markers carry IDs: `TODO(gap-…)`, `#[ignore = "gap-…: reason"]`.
-5. Never hand-edit `STATUS.md`, `CLAUDE-OPEN.md` or `DECISIONS.md`.
+5. Never hand-edit the generated views: `NOW.md`, `STATUS.md`, `CLAUDE-OPEN.md`, `DECISIONS.md`, `TRIAGE.md`.
 6. Status claims about roko do not go in CLAUDE.md or README — they come from here.

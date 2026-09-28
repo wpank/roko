@@ -5,6 +5,7 @@ title = "Graph plan runs only write knowledge seeds; live ingestion and tier pro
 status = "open"
 triage = "verified"
 severity = "p2"
+goal = "learning"
 subsystem = ["roko-cli/graph-execution", "roko-neuro/tier-progression"]
 created = 2026-09-28
 updated = 2026-09-28

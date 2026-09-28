@@ -5,6 +5,7 @@ title = "roko backlog audit reads the removed engine's state and ignores Graph c
 status = "open"
 triage = "verified"
 severity = "p2"
+goal = "tooling"
 subsystem = ["roko-cli/backlog"]
 created = 2026-09-28
 updated = 2026-09-28

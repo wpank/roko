@@ -1,10 +1,11 @@
 +++
 id = "bug-53475e"
 kind = "bug"
-title = "[git G07] Failed worktree cleanup retains kernel mutation lock requiring operator intervention"
+title = "Failed worktree cleanup retains kernel mutation lock requiring operator intervention"
 status = "open"
 triage = "verified"
 severity = "p1"
+goal = "core"
 subsystem = ["roko-cli/worktree"]
 created = 2026-09-05
 updated = 2026-09-28

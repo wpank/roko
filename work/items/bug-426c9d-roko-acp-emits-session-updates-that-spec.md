@@ -5,6 +5,7 @@ title = "roko acp emits session updates that spec ACP clients drop"
 status = "open"
 triage = "verified"
 severity = "p2"
+goal = "hermes"
 subsystem = ["roko-acp/protocol"]
 created = 2026-09-28
 updated = 2026-09-28

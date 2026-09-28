@@ -1,10 +1,11 @@
 +++
 id = "find-49ec18"
 kind = "finding"
-title = "[evals re-verify] 8 eval closures (2026-09-05) wired via Runner-v2 dispatch/event loop"
+title = "8 eval closures (2026-09-05) wired via Runner-v2 dispatch/event loop"
 status = "open"
 triage = "verified"
 severity = "p2"
+goal = "learning"
 subsystem = ["roko-gate/eval"]
 created = 2026-09-05
 updated = 2026-09-28

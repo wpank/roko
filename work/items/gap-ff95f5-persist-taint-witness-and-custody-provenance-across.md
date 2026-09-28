@@ -5,6 +5,7 @@ title = "Persist Taint, Witness, and Custody Provenance Across Restart"
 status = "open"
 triage = "verified"
 severity = "p1"
+goal = "features"
 subsystem = ["roko-agent/safety"]
 created = 2026-09-01
 updated = 2026-09-28

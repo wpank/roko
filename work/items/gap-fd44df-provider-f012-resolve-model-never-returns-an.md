@@ -1,10 +1,11 @@
 +++
 id = "gap-fd44df"
 kind = "gap"
-title = "[provider F012] resolve_model() never returns an error; silently returns incomplete profiles for unknown models"
+title = "resolve_model() never returns an error; silently returns incomplete profiles for unknown models"
 status = "open"
 triage = "verified"
 severity = "p2"
+goal = "core"
 subsystem = ["roko-core/config"]
 created = 2026-09-01
 updated = 2026-09-28

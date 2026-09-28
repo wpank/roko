@@ -5,6 +5,7 @@ title = "Adaptive Task-Verify Command Scoping"
 status = "open"
 triage = "verified"
 severity = "p2"
+goal = "features"
 subsystem = ["roko-cli/runner"]
 created = 2026-09-07
 updated = 2026-09-28

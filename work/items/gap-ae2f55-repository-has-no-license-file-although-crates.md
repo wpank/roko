@@ -5,6 +5,7 @@ title = "Repository has no LICENSE file although crates declare MIT OR Apache-2.
 status = "open"
 triage = "verified"
 severity = "p1"
+goal = "release"
 subsystem = ["release"]
 created = 2026-09-28
 updated = 2026-09-28

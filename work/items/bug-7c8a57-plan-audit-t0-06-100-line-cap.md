@@ -1,10 +1,11 @@
 +++
 id = "bug-7c8a57"
 kind = "bug"
-title = "[plan-audit T0-06] 100-line cap on read_files context injection"
+title = "100-line cap on read_files context injection"
 status = "open"
 triage = "verified"
 severity = "p1"
+goal = "core"
 subsystem = ["roko-cli/task_parser"]
 created = 2026-09-21
 updated = 2026-09-28

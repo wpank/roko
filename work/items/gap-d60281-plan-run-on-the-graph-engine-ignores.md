@@ -5,6 +5,7 @@ title = "plan run on the Graph engine ignores --resume, --effort, --skip-preflig
 status = "open"
 triage = "verified"
 severity = "p3"
+goal = "core"
 subsystem = ["roko-cli/plan-run"]
 created = 2026-09-01
 updated = 2026-09-28

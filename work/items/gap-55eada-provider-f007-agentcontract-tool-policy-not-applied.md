@@ -1,10 +1,11 @@
 +++
 id = "gap-55eada"
 kind = "gap"
-title = "[provider F007] AgentContract tool policy not applied to ACP tool dispatch"
+title = "AgentContract tool policy not applied to ACP tool dispatch"
 status = "open"
 triage = "verified"
 severity = "p1"
+goal = "hermes"
 subsystem = ["roko-acp/bridge_events"]
 created = 2026-09-01
 updated = 2026-09-28

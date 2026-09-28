@@ -1,10 +1,11 @@
 +++
 id = "bug-bdfb1d"
 kind = "bug"
-title = "[git G01] Stale attempt/session worktrees accumulate beyond conductor limit (auto-prune at runner startup)"
+title = "Stale attempt/session worktrees accumulate beyond conductor limit (auto-prune at runner startup)"
 status = "open"
 triage = "verified"
 severity = "p2"
+goal = "core"
 subsystem = ["roko-cli/worktree"]
 created = 2026-09-05
 updated = 2026-09-28

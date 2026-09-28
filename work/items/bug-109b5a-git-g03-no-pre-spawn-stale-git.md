@@ -1,10 +1,11 @@
 +++
 id = "bug-109b5a"
 kind = "bug"
-title = "[git G03] No pre-spawn stale .git/index.lock cleanup (with .git indirection) before agent dispatch"
+title = "No pre-spawn stale .git/index.lock cleanup (with .git indirection) before agent dispatch"
 status = "open"
 triage = "verified"
 severity = "p1"
+goal = "core"
 subsystem = ["roko-cli/worktree"]
 created = 2026-09-05
 updated = 2026-09-28

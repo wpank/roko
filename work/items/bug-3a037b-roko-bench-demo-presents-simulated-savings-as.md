@@ -5,6 +5,7 @@ title = "roko bench demo presents simulated savings as benchmark results"
 status = "open"
 triage = "verified"
 severity = "p2"
+goal = "release"
 subsystem = ["roko-cli/bench"]
 created = 2026-09-28
 updated = 2026-09-28

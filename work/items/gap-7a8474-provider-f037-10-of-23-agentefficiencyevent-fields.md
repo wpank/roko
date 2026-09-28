@@ -1,10 +1,11 @@
 +++
 id = "gap-7a8474"
 kind = "gap"
-title = "[provider F037] 10 of 23 AgentEfficiencyEvent fields always zero/empty in primary live path"
+title = "10 of 23 AgentEfficiencyEvent fields always zero/empty in primary live path"
 status = "open"
 triage = "verified"
 severity = "p2"
+goal = "learning"
 subsystem = ["roko-learn/efficiency"]
 created = 2026-09-01
 updated = 2026-09-28

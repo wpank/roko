@@ -5,6 +5,7 @@ title = "Graph runs never write task status back to tasks.toml"
 status = "open"
 triage = "verified"
 severity = "p2"
+goal = "tooling"
 subsystem = ["roko-cli/graph-execution"]
 created = 2026-09-28
 updated = 2026-09-28

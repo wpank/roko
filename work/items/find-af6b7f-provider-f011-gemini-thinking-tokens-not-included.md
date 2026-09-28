@@ -1,10 +1,11 @@
 +++
 id = "find-af6b7f"
 kind = "finding"
-title = "[provider F011] Gemini thinking tokens not included in UsageObservation.output_tokens"
+title = "Gemini thinking tokens not included in UsageObservation.output_tokens"
 status = "open"
 triage = "verified"
 severity = "p1"
+goal = "core"
 subsystem = ["roko-agent/gemini"]
 created = 2026-09-01
 updated = 2026-09-28

@@ -5,6 +5,7 @@ title = "Finish RuntimeServices migration: serve still builds services per call 
 status = "open"
 triage = "verified"
 severity = "p3"
+goal = "tooling"
 subsystem = ["roko-execution/runtime-services", "roko-serve"]
 created = 2026-09-01
 updated = 2026-09-28

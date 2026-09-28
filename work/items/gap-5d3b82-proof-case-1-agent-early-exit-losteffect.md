@@ -5,6 +5,7 @@ title = "Proof Case 1: Agent early exit / LostEffect"
 status = "open"
 triage = "verified"
 severity = "p1"
+goal = "core"
 subsystem = ["roko-cli/runner"]
 created = 2026-09-01
 updated = 2026-09-28

@@ -5,6 +5,7 @@ title = "Production Topology Restore and Kill-Point Gate"
 status = "open"
 triage = "verified"
 severity = "p2"
+goal = "core"
 subsystem = ["roko-cli"]
 created = 2026-09-05
 updated = 2026-09-28

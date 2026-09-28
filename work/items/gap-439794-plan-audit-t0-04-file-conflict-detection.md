@@ -1,10 +1,11 @@
 +++
 id = "gap-439794"
 kind = "gap"
-title = "[plan-audit T0-04] File-conflict detection before same-wave task dispatch"
+title = "File-conflict detection before same-wave task dispatch"
 status = "open"
 triage = "verified"
 severity = "p1"
+goal = "core"
 subsystem = ["roko-graph/engine"]
 created = 2026-09-21
 updated = 2026-09-28

@@ -5,6 +5,7 @@ title = "ACP v2 Spec Compliance, Refactor, and Best-in-Class Editor UX"
 status = "open"
 triage = "verified"
 severity = "p1"
+goal = "hermes"
 subsystem = ["roko-acp"]
 created = 2026-09-21
 updated = 2026-09-28

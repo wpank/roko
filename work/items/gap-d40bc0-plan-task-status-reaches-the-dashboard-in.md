@@ -5,6 +5,7 @@ title = "Plan task status reaches the dashboard in batches, not as live transiti
 status = "open"
 triage = "verified"
 severity = "p2"
+goal = "visibility"
 subsystem = ["roko-cli/graph-execution"]
 created = 2026-09-28
 updated = 2026-09-28

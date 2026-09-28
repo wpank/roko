@@ -5,6 +5,7 @@ title = "Legacy PageId/PageScaffold page system still backs text-mode and serve 
 status = "open"
 triage = "verified"
 severity = "p3"
+goal = "tooling"
 subsystem = ["roko-cli/tui"]
 created = 2026-08-31
 updated = 2026-09-28

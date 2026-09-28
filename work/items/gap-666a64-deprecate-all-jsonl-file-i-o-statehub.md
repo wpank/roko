@@ -5,6 +5,7 @@ title = "Deprecate All JSONL File I/O — StateHub as Single Source of Truth"
 status = "open"
 triage = "verified"
 severity = "p2"
+goal = "features"
 subsystem = ["roko-runtime"]
 created = 2026-09-07
 updated = 2026-09-28

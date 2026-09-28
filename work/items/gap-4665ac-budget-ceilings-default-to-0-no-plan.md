@@ -5,6 +5,7 @@ title = "Budget ceilings default to 0 (no plan or turn spend limit)"
 status = "open"
 triage = "verified"
 severity = "p3"
+goal = "release"
 subsystem = ["roko-core/config"]
 created = 2026-09-01
 updated = 2026-09-28

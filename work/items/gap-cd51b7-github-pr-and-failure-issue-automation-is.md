@@ -5,6 +5,7 @@ title = "GitHub PR and failure-issue automation is never constructed at runtime"
 status = "open"
 triage = "verified"
 severity = "p2"
+goal = "features"
 subsystem = ["roko-cli/github"]
 created = 2026-09-28
 updated = 2026-09-28

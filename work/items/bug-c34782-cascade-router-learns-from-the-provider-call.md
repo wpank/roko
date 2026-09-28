@@ -5,6 +5,7 @@ title = "Cascade router learns from the provider call's success flag before gate
 status = "open"
 triage = "verified"
 severity = "p2"
+goal = "learning"
 subsystem = ["roko-cli/graph-dispatch", "roko-learn/cascade-router"]
 created = 2026-09-28
 updated = 2026-09-28

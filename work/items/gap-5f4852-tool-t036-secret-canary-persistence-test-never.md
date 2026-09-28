@@ -1,10 +1,11 @@
 +++
 id = "gap-5f4852"
 kind = "gap"
-title = "[tool T036] Secret-canary persistence test never run for scrubbers/persistent sinks"
+title = "Secret-canary persistence test never run for scrubbers/persistent sinks"
 status = "open"
 triage = "verified"
 severity = "p1"
+goal = "release"
 subsystem = ["roko-fs/observability"]
 created = 2026-09-14
 updated = 2026-09-28

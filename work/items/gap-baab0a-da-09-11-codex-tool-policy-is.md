@@ -1,10 +1,11 @@
 +++
 id = "gap-baab0a"
 kind = "gap"
-title = "DA-09/11: Codex tool policy is advisory; Roko-owned operation-level broker missing"
+title = "Codex tool policy is advisory; Roko-owned operation-level broker missing"
 status = "open"
 triage = "verified"
 severity = "p1"
+goal = "core"
 subsystem = ["roko-agent/codex-cli"]
 created = 2026-09-14
 updated = 2026-09-28

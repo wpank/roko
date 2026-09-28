@@ -5,6 +5,7 @@ title = "Wire TUI Recovery Keybindings to Runner Command Channel"
 status = "open"
 triage = "verified"
 severity = "p1"
+goal = "visibility"
 subsystem = ["roko-cli/tui"]
 created = 2026-09-21
 updated = 2026-09-28

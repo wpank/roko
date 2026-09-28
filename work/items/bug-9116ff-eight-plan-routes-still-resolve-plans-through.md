@@ -5,13 +5,14 @@ title = "Eight plan routes still resolve plans through the flat-file find_plan"
 status = "open"
 triage = "verified"
 severity = "p2"
+goal = "visibility"
 subsystem = ["roko-serve/plans"]
 created = 2026-09-28
 updated = 2026-09-28
 last_verified = 2026-09-28
 source = "local-audit-2026-09-26"
 discovered_from = "audit:local-defect-review-2026-09-26 (untracked design notes)"
-anchors = ["crates/roko-serve/src/routes/plans.rs::find_plan"]
+anchors = ["crates/roko-serve/src/routes/plans.rs::find_plan", "crates/roko-serve/src/routes/plans.rs:1610"]
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
 
 [[repro]]
@@ -25,3 +26,5 @@ Listing, task reads and execute now go through `CliRuntime` (working tree), but 
 Call sites: resume (`:475`) and `:636`, `:675`, `:873`, `:966`, `:1113`, `:1209`, `:1294` (costs, gates, estimate, task diff, chat, reviews list and submit).
 For directory plans (`plans/<slug>/tasks.toml`, the real layout) these return 404 or an empty plan.
 Fix: route each through `runtime.load_plan_summary` / `load_plan_tasks` and delete `find_plan`; `plans/portal-programme/01-backend-plan-service` T07 removes it only "unless still needed".
+
+Verified 2026-09-28 (static check against 3d0ee4d02): crates/roko-serve/src/routes/plans.rs still has eight `find_plan(&state.workdir, &id)` calls (the item's repro count is 8, not 0): resume_plan :483, plan_gates :644, plan_costs :683, plan_chat :881, plan_estimate :974, list_reviews :1121, submit_review :1217, task_diff :1302. find_plan (:1610) still only probes `{plans_dir}/{id}.json` and `{id}.toml` and parses the flat RawPlan schema (:1623+), so directory plans (`plans/<slug>/tasks.toml`) 404. plans.rs has no uncommitted edits; last touched in 725f21e05.

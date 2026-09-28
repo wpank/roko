@@ -5,6 +5,7 @@ title = "Impact analysis is conservative text/Cargo-graph analysis, not a semant
 status = "open"
 triage = "verified"
 severity = "p3"
+goal = "features"
 subsystem = ["roko-cli/impact-analysis"]
 created = 2026-09-28
 updated = 2026-09-28

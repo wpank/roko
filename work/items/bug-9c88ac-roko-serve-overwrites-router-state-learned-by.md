@@ -5,6 +5,7 @@ title = "roko serve overwrites router state learned by concurrent CLI runs"
 status = "open"
 triage = "verified"
 severity = "p2"
+goal = "learning"
 subsystem = ["roko-learn/cascade-router", "roko-serve/state"]
 created = 2026-09-28
 updated = 2026-09-28

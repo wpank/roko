@@ -1,10 +1,11 @@
 +++
 id = "find-3174bd"
 kind = "finding"
-title = "S5: Security-Off-By-Default"
+title = "Security-Off-By-Default"
 status = "open"
 triage = "verified"
 severity = "p2"
+goal = "release"
 subsystem = ["roko-serve"]
 created = 2026-04-28
 updated = 2026-09-28

@@ -5,6 +5,7 @@ title = "Deep Hermes / Nous Research Integration"
 status = "open"
 triage = "verified"
 severity = "p2"
+goal = "hermes"
 subsystem = ["roko-agent/hermes"]
 created = 2026-09-07
 updated = 2026-09-28

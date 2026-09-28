@@ -3,17 +3,22 @@
 /**
  * Roko Portal — `useStateHubSSE` React Hook
  *
- * Wires the `SseClient` to the `useDashboardStore` Zustand store.
+ * Drives the three-step portal startup (sign in → snapshot → stream) by
+ * calling `startLiveState` with real browser/API dependencies wired up to
+ * the `useDashboardStore` Zustand store.
  *
  * Lifecycle:
- *  1. On mount, a `SseClient` instance is created (memoised) and `connect`
- *     is called.  The client URL is resolved once from `getRokoServeUrl()`.
- *  2. Every `DashboardEvent` is dispatched to `store.applyEvent`.
- *  3. `SnapshotEvent` payloads (synthetic events generated from SSE gap
- *     frames) also call `store.replaceSnapshot` for an atomic full replacement
- *     before dispatching the event so subscribers can react to the reset.
- *  4. Status changes from the SSE client update `store.connectionStatus`.
- *  5. On unmount the client is permanently disconnected.
+ *  1. On mount, `startLiveState` is called with concrete deps injected here.
+ *     The returned handle's `stop()` is called on unmount.
+ *  2. The `postSession` dep POSTs to `/api/auth/session` and returns the HTTP
+ *     status code so `startLiveState` can classify the outcome.
+ *  3. The `dropFragment` dep strips the `#token=…` fragment from the address
+ *     bar after the sign-in exchange completes.
+ *  4. The `fetchSnapshot` dep calls `GET /api/statehub/snapshot` via the
+ *     shared `api` client.
+ *  5. The `openStream` dep builds a `SseClient` seeded with `lastEventId` and
+ *     calls `connect(onEvent, onStatus)`.  The returned handle is kept in a
+ *     ref so `forceReconnect` can be exposed as a UI "retry" action.
  *
  * Usage:
  * ```tsx
@@ -28,18 +33,15 @@
  *   );
  * }
  * ```
- *
- * The hook is safe to call from multiple components simultaneously: each call
- * creates its own isolated `SseClient` instance.  For a single shared
- * connection, mount the hook once in a layout component and read state via
- * `useDashboardStore` elsewhere.
  */
 
 import { useEffect, useRef, useCallback } from 'react';
 
+import { startLiveState } from '@/lib/bootstrap';
+import type { ConnectionStatus } from '@/lib/bootstrap';
 import { SseClient } from '@/api/sse-client';
-import type { ConnectionStatus, DashboardEvent } from '@/api/types';
-import { getRokoServeUrl } from '@/lib/env';
+import { api } from '@/api/client';
+import type { WireStateHubSnapshotResponse } from '@/api/contracts';
 import { useDashboardStore } from '@/stores/dashboard';
 
 // ---------------------------------------------------------------------------
@@ -59,69 +61,78 @@ export interface UseStateHubSSEResult {
 
 export function useStateHubSSE(): UseStateHubSSEResult {
   // Grab stable action references from the Zustand store.
+  const setSession = useDashboardStore((s) => s.setSession);
+  const replaceFromSnapshot = useDashboardStore((s) => s.replaceFromSnapshot);
   const applyEvent = useDashboardStore((s) => s.applyEvent);
-  const replaceSnapshot = useDashboardStore((s) => s.replaceSnapshot);
-  const setConnectionStatus = useDashboardStore((s) => s.setConnectionStatus);
-  const connectionStatus = useDashboardStore((s) => s.connectionStatus);
+  const setConnection = useDashboardStore((s) => s.setConnection);
+  const connection = useDashboardStore((s) => s.connection);
 
-  // Keep a stable ref to the client so we can call `disconnect` in cleanup
+  // Keep a stable ref to the SseClient so we can expose `forceReconnect`
   // without pulling it into dependency arrays.
-  const clientRef = useRef<SseClient | null>(null);
+  const sseClientRef = useRef<SseClient | null>(null);
 
-  // Build the event callback.  useCallback keeps the identity stable across
-  // renders; `applyEvent` and `replaceSnapshot` are themselves stable Zustand
-  // action references so this never reconstructs unnecessarily.
-  const handleEvent = useCallback(
-    (event: DashboardEvent) => {
-      // When the server sends a gap frame we synthesise a `snapshot` event.
-      // Call replaceSnapshot first so the store's derived state is atomically
-      // replaced before applyEvent fires any additional listeners.
-      if (event.type === 'snapshot') {
-        replaceSnapshot(event.snapshot);
-      }
-      // Always call applyEvent so the store's switch statement can run any
-      // snapshot-variant-specific logic (e.g. clearing error state) and so
-      // external subscribers to applyEvent see the event regardless of type.
-      applyEvent(event);
-
-      if (process.env.NODE_ENV !== 'production') {
-        // eslint-disable-next-line no-console
-        console.debug('[StateHubSSE]', event.type, event);
-      }
-    },
-    [applyEvent, replaceSnapshot],
-  );
-
-  const handleStatus = useCallback(
-    (status: ConnectionStatus) => {
-      setConnectionStatus(status);
-    },
-    [setConnectionStatus],
-  );
-
-  // Create the client once on mount.  We resolve the URL inside the effect
-  // so that localStorage is always available (client-only code path).
+  // Start the live-state machine on mount; stop it on unmount.
   useEffect(() => {
-    const url = getRokoServeUrl();
-    const client = new SseClient(url);
-    clientRef.current = client;
+    const handle = startLiveState({
+      hash: typeof window !== 'undefined' ? window.location.hash : '',
 
-    client.connect(handleEvent, handleStatus);
+      postSession: async (token: string): Promise<number> => {
+        const res = await fetch('/api/auth/session', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ token }),
+        });
+        return res.status;
+      },
+
+      dropFragment: () => {
+        if (typeof window !== 'undefined') {
+          window.history.replaceState(
+            null,
+            '',
+            window.location.pathname + window.location.search,
+          );
+        }
+      },
+
+      setSession,
+
+      fetchSnapshot: () =>
+        api.get<WireStateHubSnapshotResponse>('/api/statehub/snapshot'),
+
+      openStream: (lastEventId, onEvent, onStatus) => {
+        const client = new SseClient('', { lastEventId });
+        sseClientRef.current = client;
+        client.connect(onEvent, onStatus);
+        return {
+          close() {
+            client.disconnect();
+            if (sseClientRef.current === client) {
+              sseClientRef.current = null;
+            }
+          },
+        };
+      },
+
+      replace: replaceFromSnapshot,
+      apply: applyEvent,
+      setStatus: setConnection,
+
+      sleep: (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
+    });
 
     return () => {
-      client.disconnect();
-      clientRef.current = null;
+      handle.stop();
     };
-    // handleEvent / handleStatus have stable identities from useCallback.
-    // We intentionally omit them from the dep array to avoid reconnecting on
-    // every render while still closing over the latest store actions.
+    // setSession, replaceFromSnapshot, applyEvent, setConnection are stable
+    // Zustand action references — they never change identity.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Expose a stable reconnect callback for the UI.
   const reconnect = useCallback(() => {
-    clientRef.current?.forceReconnect();
+    sseClientRef.current?.forceReconnect();
   }, []);
 
-  return { status: connectionStatus, reconnect };
+  return { status: connection, reconnect };
 }

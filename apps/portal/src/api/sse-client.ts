@@ -1,7 +1,7 @@
 /**
  * Roko Portal — Standalone SSE Client
  *
- * Connects to the roko-serve `/api/events` endpoint, parses `DashboardEvent`
+ * Connects to the roko-serve `/api/events` endpoint, parses `WireDashboardEvent`
  * payloads from SSE `data:` frames, and drives automatic reconnect with
  * exponential backoff and cursor-based replay.
  *
@@ -21,22 +21,36 @@
  * timing, cursor forwarding, and keepalive enforcement.
  */
 
-import type { ConnectionStatus, DashboardEvent, DashboardSnapshot } from '@/api/types';
+import type { ConnectionStatus, PortalStreamEvent } from '@/lib/bootstrap';
+import type { WireDashboardEvent, WireDashboardSnapshot } from '@/api/contracts';
 
 // ---------------------------------------------------------------------------
 // Public surface
 // ---------------------------------------------------------------------------
 
 /**
- * Callback invoked for every incoming `DashboardEvent`.
+ * Callback invoked for every incoming event.
  *
  * For `event: gap` frames the parsed `GapPayload.snapshot` is wrapped in a
- * synthetic `SnapshotEvent` so callers can use a single dispatch path.
+ * synthetic `{ type: 'snapshot' }` event so callers can use a single dispatch
+ * path.
  */
-export type EventCallback = (event: DashboardEvent) => void;
+export type EventCallback = (event: PortalStreamEvent) => void;
 
 /** Callback invoked whenever the connection status changes. */
 export type StatusCallback = (status: ConnectionStatus) => void;
+
+// ---------------------------------------------------------------------------
+// Constructor options
+// ---------------------------------------------------------------------------
+
+export interface SseClientOptions {
+  /**
+   * Seed the replay cursor.  When non-null, the first connection request will
+   * include `?lastEventId=<value>` so the server replays from that point.
+   */
+  lastEventId?: string | null;
+}
 
 // ---------------------------------------------------------------------------
 // Internal constants
@@ -62,7 +76,7 @@ const SSE_PATH = '/api/events';
 interface GapPayload {
   missed_events: number;
   last_materialized_seq: number;
-  snapshot: DashboardSnapshot;
+  snapshot: WireDashboardSnapshot;
 }
 
 // ---------------------------------------------------------------------------
@@ -75,11 +89,11 @@ interface GapPayload {
  *
  * @example
  * ```ts
- * const client = new SseClient('http://localhost:6677');
+ * const client = new SseClient('');
  *
  * client.connect(
  *   (event) => store.getState().applyEvent(event),
- *   (status) => store.getState().setConnectionStatus(status),
+ *   (status) => store.getState().setConnection(status),
  * );
  *
  * // Cleanup on unmount:
@@ -110,8 +124,12 @@ export class SseClient {
 
   constructor(
     private readonly baseUrl: string,
-    private readonly apiKey?: string,
-  ) {}
+    options?: SseClientOptions,
+  ) {
+    if (options?.lastEventId != null) {
+      this.lastEventId = options.lastEventId;
+    }
+  }
 
   // -------------------------------------------------------------------------
   // Public API
@@ -124,7 +142,7 @@ export class SseClient {
    * connection is in an error/disconnected state, in which case it triggers
    * an immediate reconnect.
    *
-   * @param onEvent  Fired for every `DashboardEvent` (including synthetic
+   * @param onEvent  Fired for every `PortalStreamEvent` (including synthetic
    *                 snapshot events generated from gap frames).
    * @param onStatus Fired whenever the connection status changes.
    */
@@ -178,8 +196,8 @@ export class SseClient {
 
   private buildUrl(): string {
     const base = this.baseUrl.replace(/\/+$/, '');
-    // When baseUrl is empty (dev proxy mode), build a relative URL so
-    // EventSource connects through the Next.js proxy on the current origin.
+    // When baseUrl is empty (same-origin mode), build a relative URL so
+    // EventSource connects through the current origin.
     const origin = base || (typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3000');
     const url = new URL(`${origin}${SSE_PATH}`);
 
@@ -219,14 +237,14 @@ export class SseClient {
       this.resetKeepalive();
     };
 
-    // Default message handler: incremental DashboardEvent.
+    // Default message handler: incremental WireDashboardEvent.
     es.onmessage = (ev: MessageEvent<string>) => {
       this.resetKeepalive();
       this.handleDataFrame(ev.data, ev.lastEventId ?? null);
     };
 
     // `event: gap` frame — the server replaces missing replay with a full
-    // DashboardSnapshot so the client can recover without re-fetching.
+    // WireDashboardSnapshot so the client can recover without re-fetching.
     es.addEventListener('gap', (ev: Event) => {
       const msgEv = ev as MessageEvent<string>;
       this.resetKeepalive();
@@ -268,8 +286,8 @@ export class SseClient {
       return;
     }
 
-    // The server serialises DashboardEvent with `#[serde(tag = "type")]` so
-    // every variant carries a `type` discriminant.
+    // The server serialises WireDashboardEvent with `#[serde(tag = "type")]`
+    // so every variant carries a `type` discriminant.
     if (
       typeof parsed !== 'object' ||
       parsed === null ||
@@ -279,7 +297,7 @@ export class SseClient {
       return;
     }
 
-    this.onEvent?.(parsed as DashboardEvent);
+    this.onEvent?.(parsed as WireDashboardEvent);
   }
 
   private handleGapFrame(data: string, eventId: string | null): void {
@@ -300,13 +318,13 @@ export class SseClient {
       return;
     }
 
-    // Wrap the snapshot in a synthetic `SnapshotEvent` so the store can use
-    // `applyEvent` for both incremental updates and full replacements.
-    const syntheticEvent: DashboardEvent = {
+    // Wrap the snapshot in a synthetic `{ type: 'snapshot' }` event so the
+    // store can use a single dispatch path for both incremental updates and
+    // full replacements.
+    const syntheticEvent: PortalStreamEvent = {
       type: 'snapshot',
       snapshot: payload.snapshot,
       cursor: this.lastEventId ?? String(payload.last_materialized_seq),
-      timestamp: new Date().toISOString(),
     };
 
     this.onEvent?.(syntheticEvent);

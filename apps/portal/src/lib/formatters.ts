@@ -76,84 +76,52 @@ export function formatDuration(ms: number): string {
 }
 
 /**
- * Format a Unix timestamp (milliseconds) as a human-readable relative time.
+ * Truncate a long string in the middle, keeping both the head and the tail
+ * visible around a single "…" character.  Preserves identifier tails so that
+ * plan names like "portal-…-shell" remain distinguishable.
  *
- * - Under 60 s ago: "just now"
- * - Under 60 min ago: "5m ago"
- * - Under 24 h ago: "3h ago"
- * - Under 48 h ago: "yesterday"
- * - Otherwise: a locale date string
- *
- * @param timestamp — Unix timestamp in milliseconds.
+ * - text.length <= max → returned unchanged.
+ * - max < 3 → first max characters (no room for "…" plus two sides).
+ * - Otherwise the result is exactly max characters.  The tail receives the
+ *   extra character when (max - 1) is odd.
  *
  * @example
- * formatRelativeTime(Date.now() - 90_000)        // "1m ago"
- * formatRelativeTime(Date.now() - 7_200_000)     // "2h ago"
+ * middleEllipsis('portal-plan-implementer-shell', 20) // "portal-pl…nter-shell"
+ * middleEllipsis('short', 10)                         // "short"
  */
-export function formatRelativeTime(timestamp: number): string {
-  const diffMs = Date.now() - timestamp;
-  const diffSeconds = Math.floor(diffMs / 1_000);
-
-  if (diffSeconds < 60) return 'just now';
-
-  const diffMinutes = Math.floor(diffSeconds / 60);
-  if (diffMinutes < 60) return `${diffMinutes}m ago`;
-
-  const diffHours = Math.floor(diffMinutes / 60);
-  if (diffHours < 24) return `${diffHours}h ago`;
-
-  if (diffHours < 48) return 'yesterday';
-
-  return new Date(timestamp).toLocaleDateString();
+export function middleEllipsis(text: string, max: number): string {
+  if (max < 3) return text.slice(0, max);
+  if (text.length <= max) return text;
+  const available = max - 1; // 1 char reserved for "…"
+  const headLen = Math.floor(available / 2);
+  const tailLen = Math.ceil(available / 2);
+  return text.slice(0, headLen) + '…' + text.slice(-tailLen);
 }
 
 /**
- * Format a number as a percentage string.
+ * Format a duration in milliseconds in a compact form inspired by mori's UI.
  *
- * @param value    — Numeric value in the range [0, 1] or [0, 100].
- *                   Values > 1 are treated as already-percentage (e.g. 42.1 → "42.1%").
- *                   Values <= 1 are multiplied by 100 first (e.g. 0.421 → "42.1%").
- * @param decimals — Number of decimal places (default 1).
- *
- * @example
- * formatPercentage(0.421)     // "42.1%"
- * formatPercentage(42.1)      // "42.1%"
- * formatPercentage(0.5, 0)    // "50%"
- */
-export function formatPercentage(value: number, decimals = 1): string {
-  const pct = value <= 1 ? value * 100 : value;
-  return `${pct.toFixed(decimals)}%`;
-}
-
-/**
- * Truncate a hex hash string to `length` characters, returning just the
- * prefix (no ellipsis).  Useful for displaying commit SHAs or content hashes.
- *
- * @param hash   — Full hash string.
- * @param length — Number of characters to keep (default 8).
+ * - "45s"   — under a minute
+ * - "2m14s" — minutes with seconds
+ * - "1h05m" — hours with zero-padded minutes (seconds dropped)
+ * - "·"     — null, undefined, NaN, or negative (placeholder proves cell exists)
  *
  * @example
- * truncateHash('a1b2c3d4e5f6')        // "a1b2c3d4"
- * truncateHash('a1b2c3d4e5f6', 6)     // "a1b2c3"
+ * compactDuration(45_000)       // "45s"
+ * compactDuration(134_000)      // "2m14s"
+ * compactDuration(3_900_000)    // "1h05m"
+ * compactDuration(null)         // "·"
  */
-export function truncateHash(hash: string, length = 8): string {
-  return hash.slice(0, length);
-}
-
-/**
- * Format a number with comma-separated thousands groups.
- *
- * Uses `Intl.NumberFormat` when available, falling back to a simple regex
- * replacement for environments where `Intl` is unavailable.
- *
- * @example
- * formatNumber(1234567) // "1,234,567"
- * formatNumber(42)      // "42"
- */
-export function formatNumber(n: number): string {
-  try {
-    return new Intl.NumberFormat('en-US').format(n);
-  } catch {
-    return n.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+export function compactDuration(ms: number | null | undefined): string {
+  if (ms == null || isNaN(ms) || ms < 0) return '·';
+  const totalSeconds = Math.floor(ms / 1_000);
+  if (totalSeconds < 60) return `${totalSeconds}s`;
+  const totalMinutes = Math.floor(totalSeconds / 60);
+  if (totalMinutes < 60) {
+    const secs = totalSeconds % 60;
+    return `${totalMinutes}m${secs}s`;
   }
+  const hours = Math.floor(totalMinutes / 60);
+  const mins = totalMinutes % 60;
+  return `${hours}h${String(mins).padStart(2, '0')}m`;
 }

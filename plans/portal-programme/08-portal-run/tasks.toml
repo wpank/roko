@@ -3,7 +3,7 @@ plan = "08-portal-run"
 total = 10
 done = 0
 status = "ready"
-max_parallel = 1
+max_parallel = 3
 skip_enrichment = true
 estimated_total_minutes = 245
 
@@ -24,6 +24,11 @@ estimated_total_minutes = 245
 # The last task removes every module nothing reaches and adds a reachability check,
 # so dead code cannot creep back. Live verification of the whole screen is plan
 # 09-acceptance. Same worktree and verify conventions as plan 05.
+#
+# Concurrency (max_parallel 3): tasks that write disjoint files share a wave; their
+# gates (`tsc --noEmit --incremental false`, single-file vitest) are safe side by
+# side. T09 is the only task that edits Workspace.tsx, and T10 holds the plan's one
+# production build.
 
 [[task]]
 id = "T01"
@@ -120,7 +125,7 @@ tier = "focused"
 model_hint = "claude-sonnet-4-6"
 max_retries = 2
 estimated_minutes = 25
-depends_on = ["T01"]
+depends_on = []
 files = ["apps/portal/src/components/stream/Transcript.tsx"]
 
 [task.context]
@@ -132,7 +137,7 @@ anti_patterns = [
 
 [[task.verify]]
 phase = "compile"
-command = "cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit && cd src/components/stream && grep -q 'export function Transcript' Transcript.tsx && grep -q 'toBlocks' Transcript.tsx && grep -q 'data-region=\"transcript\"' Transcript.tsx"
+command = "cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit --incremental false && cd src/components/stream && grep -q 'export function Transcript' Transcript.tsx && grep -q 'toBlocks' Transcript.tsx && grep -q 'data-region=\"transcript\"' Transcript.tsx"
 fail_msg = "Transcript is missing a required element or does not type check"
 timeout_ms = 600000
 
@@ -161,7 +166,7 @@ tier = "focused"
 model_hint = "claude-sonnet-4-6"
 max_retries = 2
 estimated_minutes = 20
-depends_on = ["T02"]
+depends_on = ["T01"]
 files = ["apps/portal/src/components/stream/Checks.tsx"]
 
 [task.context]
@@ -174,16 +179,16 @@ anti_patterns = [
 
 [[task.verify]]
 phase = "compile"
-command = "cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit && cd src/components/stream && grep -q 'export function Checks' Checks.tsx && grep -q 'digestOutput' Checks.tsx && grep -q 'data-region=\"checks\"' Checks.tsx"
+command = "cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit --incremental false && cd src/components/stream && grep -q 'export function Checks' Checks.tsx && grep -q 'digestOutput' Checks.tsx && grep -q 'data-region=\"checks\"' Checks.tsx"
 fail_msg = "Checks is missing a required element or does not type check"
 timeout_ms = 600000
 
 [[task]]
 id = "T04"
-title = "Build the stream pane and open it when a run starts"
+title = "Build the stream pane"
 description = '''
-Create `apps/portal/src/components/stream/StreamPane.tsx` and replace the stream
-placeholder in `src/components/shell/Workspace.tsx` with it.
+Create `apps/portal/src/components/stream/StreamPane.tsx`. T09 mounts it in the
+workspace.
 
   export function StreamPane({ planId, selectedTaskId, open, onToggle }:
     { planId: string | null; selectedTaskId: string | null; open: boolean;
@@ -202,10 +207,6 @@ placeholder in `src/components/shell/Workspace.tsx` with it.
   checks when the focused task gains a failed step, until the operator picks a view
   again.
 - Nothing selected and nothing ran: the describeEmpty sentence, not dead tabs.
-
-In Workspace: render StreamPane in the stream area (keep the `data-region="stream"`
-wrapper); open the stream when the number of running plans rises (a run started);
-`o` still toggles it. Keep every other Workspace behaviour intact.
 '''
 status = "ready"
 role = "implementer"
@@ -213,9 +214,9 @@ tier = "integrative"
 model_hint = "claude-sonnet-4-6"
 timeout_secs = 1800
 max_retries = 2
-estimated_minutes = 30
-depends_on = ["T03"]
-files = ["apps/portal/src/components/stream/StreamPane.tsx", "apps/portal/src/components/shell/Workspace.tsx"]
+estimated_minutes = 20
+depends_on = ["T02", "T03"]
+files = ["apps/portal/src/components/stream/StreamPane.tsx"]
 
 [task.context]
 read_files = [
@@ -229,14 +230,14 @@ anti_patterns = [
 
 [[task.verify]]
 phase = "structural"
-command = "cd apps/portal/src/components && grep -q 'export function StreamPane' stream/StreamPane.tsx && grep -q 'focusTaskId' stream/StreamPane.tsx && grep -q 'toggle-stream' stream/StreamPane.tsx && grep -q '<StreamPane' shell/Workspace.tsx && grep -q 'data-region=\"stream\"' shell/Workspace.tsx"
-fail_msg = "StreamPane is missing, or Workspace does not render it in the stream region"
+command = "cd apps/portal/src/components && grep -q 'export function StreamPane' stream/StreamPane.tsx && grep -q 'focusTaskId' stream/StreamPane.tsx && grep -q 'toggle-stream' stream/StreamPane.tsx"
+fail_msg = "StreamPane is missing its focus task or its collapse control"
 
 [[task.verify]]
-phase = "integration"
-command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && rm -rf .next/types out && ./node_modules/.bin/tsc --noEmit && npm test && NEXT_TELEMETRY_DISABLED=1 npm run build:export && test -f out/index.html && rm -rf out'
-fail_msg = "the portal does not type check, a unit test fails, or the static export fails with the stream mounted"
-timeout_ms = 900000
+phase = "compile"
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit --incremental false'
+fail_msg = "StreamPane does not type check"
+timeout_ms = 600000
 
 [[task]]
 id = "T05"
@@ -271,7 +272,7 @@ tier = "focused"
 model_hint = "claude-sonnet-4-6"
 max_retries = 2
 estimated_minutes = 25
-depends_on = ["T04"]
+depends_on = []
 files = ["apps/portal/src/lib/agentRoster.ts", "apps/portal/src/lib/agentRoster.test.ts"]
 
 [task.context]
@@ -319,7 +320,7 @@ tier = "focused"
 model_hint = "claude-sonnet-4-6"
 max_retries = 2
 estimated_minutes = 20
-depends_on = ["T05"]
+depends_on = []
 files = ["apps/portal/src/lib/rungs.ts", "apps/portal/src/lib/rungs.test.ts"]
 
 [task.context]
@@ -365,7 +366,7 @@ tier = "focused"
 model_hint = "claude-sonnet-4-6"
 max_retries = 2
 estimated_minutes = 20
-depends_on = ["T06"]
+depends_on = []
 files = ["apps/portal/src/lib/burn.ts", "apps/portal/src/lib/burn.test.ts"]
 
 [task.context]
@@ -416,7 +417,7 @@ model_hint = "claude-sonnet-4-6"
 timeout_secs = 1800
 max_retries = 2
 estimated_minutes = 35
-depends_on = ["T07"]
+depends_on = ["T05", "T06", "T07"]
 files = ["apps/portal/src/components/run/RunBand.tsx"]
 
 [task.context]
@@ -433,19 +434,27 @@ anti_patterns = [
 
 [[task.verify]]
 phase = "compile"
-command = "cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit && cd src/components/run && grep -q 'export function RunBand' RunBand.tsx && grep -q 'data-region=\"run-band\"' RunBand.tsx && grep -q 'data-cell=\"agents\"' RunBand.tsx && grep -q 'data-cell=\"checks\"' RunBand.tsx && grep -q 'data-cell=\"burn\"' RunBand.tsx && grep -q 'buildRoster' RunBand.tsx && grep -q 'buildRungs' RunBand.tsx && grep -q 'buildBurn' RunBand.tsx"
+command = "cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit --incremental false && cd src/components/run && grep -q 'export function RunBand' RunBand.tsx && grep -q 'data-region=\"run-band\"' RunBand.tsx && grep -q 'data-cell=\"agents\"' RunBand.tsx && grep -q 'data-cell=\"checks\"' RunBand.tsx && grep -q 'data-cell=\"burn\"' RunBand.tsx && grep -q 'buildRoster' RunBand.tsx && grep -q 'buildRungs' RunBand.tsx && grep -q 'buildBurn' RunBand.tsx"
 fail_msg = "RunBand is missing a cell or a fold, or does not type check"
 timeout_ms = 600000
 
 [[task]]
 id = "T09"
-title = "Mount the run band under the alert row"
+title = "Mount the stream pane and the run band in the workspace"
 description = '''
-Render `RunBand` in `apps/portal/src/components/shell/Workspace.tsx` as a full-width
-grid row between the alert row and the rail/stage body, passing the rail rows'
-`runningPlanIds` and the selection. The row is `auto` height, so it collapses to
-nothing when RunBand returns null. Wrap it in its own ErrorBoundary. Keep every
-other Workspace behaviour intact.
+The one task that edits `apps/portal/src/components/shell/Workspace.tsx` in this
+plan (read it first; plans 06 and 07 built it).
+
+1. Replace the stream placeholder with `StreamPane` (T04), keeping the
+   `data-region="stream"` wrapper: pass the selected plan and task, the open state
+   and its toggle. Open the stream when the number of running plans rises — a run
+   started; `o` still toggles it.
+2. Render `RunBand` (T08) as a full-width grid row between the alert row and the
+   rail/stage body, passing the rail rows' `runningPlanIds` and the selection. The
+   row is `auto` height, so it collapses to nothing when RunBand returns null. Wrap
+   it in its own ErrorBoundary.
+
+Keep every other Workspace behaviour intact. T10 runs the production build.
 '''
 status = "ready"
 role = "implementer"
@@ -453,14 +462,14 @@ tier = "focused"
 model_hint = "claude-sonnet-4-6"
 timeout_secs = 1800
 max_retries = 2
-estimated_minutes = 15
-depends_on = ["T08"]
+estimated_minutes = 25
+depends_on = ["T04", "T08"]
 files = ["apps/portal/src/components/shell/Workspace.tsx"]
 
 [task.context]
 read_files = [
+    { path = "apps/portal/src/components/stream/StreamPane.tsx", why = "the stream pane being mounted" },
     { path = "apps/portal/src/components/run/RunBand.tsx", why = "the band being mounted" },
-    { path = "apps/portal/src/components/shell/Workspace.tsx", why = "the grid gaining a row" },
 ]
 anti_patterns = [
     "Do not give the band a fixed height; it must collapse to nothing when idle.",
@@ -468,14 +477,14 @@ anti_patterns = [
 
 [[task.verify]]
 phase = "structural"
-command = "grep -q '<RunBand' apps/portal/src/components/shell/Workspace.tsx && grep -q 'runningPlanIds' apps/portal/src/components/shell/Workspace.tsx"
-fail_msg = "Workspace does not render the run band with the running plans"
+command = "cd apps/portal/src/components/shell && grep -q '<StreamPane' Workspace.tsx && grep -q 'data-region=\"stream\"' Workspace.tsx && grep -q '<RunBand' Workspace.tsx && grep -q 'runningPlanIds' Workspace.tsx"
+fail_msg = "Workspace does not render the stream pane in the stream region and the run band with the running plans"
 
 [[task.verify]]
-phase = "integration"
-command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && rm -rf .next/types out && ./node_modules/.bin/tsc --noEmit && npm test && NEXT_TELEMETRY_DISABLED=1 npm run build:export && test -f out/index.html && rm -rf out'
-fail_msg = "the portal does not type check, a unit test fails, or the static export fails with the run band mounted"
-timeout_ms = 900000
+phase = "compile"
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit --incremental false'
+fail_msg = "the workspace does not type check with the stream pane and the run band mounted"
+timeout_ms = 600000
 
 [[task]]
 id = "T10"
@@ -528,6 +537,6 @@ fail_msg = "orphaned modules remain, or the app no longer has exactly one page"
 
 [[task.verify]]
 phase = "integration"
-command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && rm -rf .next/types out && ./node_modules/.bin/tsc --noEmit && npm test && NEXT_TELEMETRY_DISABLED=1 npm run build:export && test -f out/index.html && rm -rf out'
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && rm -rf .next/types out && ./node_modules/.bin/tsc --noEmit --incremental false && npm test && NEXT_TELEMETRY_DISABLED=1 npm run build:export && test -f out/index.html && rm -rf out'
 fail_msg = "the portal no longer type checks, tests or exports after removing orphans"
 timeout_ms = 900000

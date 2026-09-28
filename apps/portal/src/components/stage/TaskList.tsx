@@ -14,7 +14,7 @@ import type { TaskRowModel } from '@/lib/taskRows';
 import { StatusGlyph } from '@/components/primitives/StatusGlyph';
 import { MetricCell } from '@/components/primitives/MetricCell';
 import { cn } from '@/lib/cn';
-import { formatDuration, formatCost } from '@/lib/formatters';
+import { formatSpan, shortModel, formatCost } from '@/lib/formatters';
 import type { CheckRun } from '@/lib/runState';
 import { GLYPHS } from '@/lib/glyphs';
 
@@ -28,19 +28,6 @@ export interface TaskListProps {
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
-
-/**
- * Format the time cell: prefix depends on kind.
- *   estimate → "~2m 30s"
- *   elapsed  → "2m 30s"  (live, no prefix)
- *   actual   → "2m 30s"
- *   none     → null (render MetricCell with null → "·")
- */
-function formatTime(time: TaskRowModel['time']): string | null {
-  if (time.kind === 'none' || time.ms === null) return null;
-  const dur = formatDuration(time.ms);
-  return time.kind === 'estimate' ? `~${dur}` : dur;
-}
 
 /**
  * Return the first output line of the first failed check that does not start
@@ -62,7 +49,7 @@ function firstFailedCheckLine(checks: CheckRun[]): string | null {
 
 // ── CheckChip ─────────────────────────────────────────────────────────────────
 
-/** A single inline check chip: glyph + phase label. e.g. "✓compile" or "✗test" */
+/** A single inline check chip: glyph + phase label. e.g. "✓ compile" or "✗ test" */
 function CheckChip({ check }: { check: CheckRun }) {
   const glyphState =
     check.status === 'passed'
@@ -73,10 +60,11 @@ function CheckChip({ check }: { check: CheckRun }) {
   const label = check.phase || check.name;
   return (
     <span
-      className="inline-flex items-center gap-0.5 text-xs font-mono"
+      className="inline-block text-xs font-mono"
       title={`${check.name}: ${check.status}`}
     >
       <StatusGlyph state={glyphState} title={`${check.name}: ${check.status}`} />
+      {' '}
       <span style={{ color: GLYPHS[glyphState].token }}>{label}</span>
     </span>
   );
@@ -160,7 +148,7 @@ function ExpandedDetail({
       {/* ── Files ────────────────────────────────────────────────────────────── */}
       {row.files.length > 0 && (
         <div className="flex flex-col gap-0.5">
-          <span className="text-xs text-text-ghost uppercase tracking-wide">files</span>
+          <span className="rd-section">files</span>
           <ul className="flex flex-col gap-0.5">
             {row.files.map((f) => (
               <li key={f} className="text-xs text-text-muted truncate" title={f}>
@@ -174,7 +162,7 @@ function ExpandedDetail({
       {/* ── Depends on ────────────────────────────────────────────────────────── */}
       {row.dependsOn.length > 0 && (
         <div className="flex flex-col gap-0.5">
-          <span className="text-xs text-text-ghost uppercase tracking-wide">depends on</span>
+          <span className="rd-section">depends on</span>
           <ul className="flex flex-wrap gap-2">
             {row.dependsOn.map((depId) => {
               const isWaiting = row.waitingOn.includes(depId);
@@ -203,7 +191,7 @@ function ExpandedDetail({
       {/* ── Verify commands ──────────────────────────────────────────────────── */}
       {row.verify.length > 0 && (
         <div className="flex flex-col gap-0.5">
-          <span className="text-xs text-text-ghost uppercase tracking-wide">verify</span>
+          <span className="rd-section">verify</span>
           <ul className="flex flex-col gap-1">
             {row.verify.map((v, i) => (
               <li key={i} className="flex items-start gap-2 text-xs font-mono">
@@ -235,7 +223,8 @@ function TaskRow({
   onSelect(): void;
   onRetry(): void;
 }) {
-  const timeStr = formatTime(row.time);
+  const timeStr = formatSpan(row.time);
+  const costStr = row.costUsd != null ? formatCost(row.costUsd) : null;
   const isAccepted = row.status === 'accepted_with_failures';
 
   return (
@@ -266,20 +255,20 @@ function TaskRow({
 
         {/* ID */}
         <span
-          className="shrink-0 text-xs font-mono text-text-ghost w-20 truncate"
+          className="rd-meta shrink-0 font-mono w-20 truncate"
           title={row.id}
         >
           {row.id}
         </span>
 
         {/* Title */}
-        <span className="flex-1 min-w-0 text-sm font-mono text-text-strong truncate">
+        <span className="rd-row flex-1 min-w-0 font-mono truncate">
           {row.title}
         </span>
 
         {/* Role · Model (shown once dispatched) */}
         {(row.role || row.model) && (
-          <span className="shrink-0 text-xs font-mono text-text-faint hidden md:inline truncate max-w-32">
+          <span className="shrink-0 text-xs font-mono text-text-faint hidden md:inline truncate max-w-56">
             {row.role && (
               <span
                 data-role={row.role}
@@ -289,21 +278,20 @@ function TaskRow({
               </span>
             )}
             {row.role && row.model && '·'}
-            {row.model}
+            {row.model && (
+              <span title={row.model}>{shortModel(row.model)}</span>
+            )}
           </span>
         )}
 
-        {/* Time */}
-        <span className="shrink-0 w-16 text-right">
-          <MetricCell value={timeStr} width="4rem" />
+        {/* Time — empty when unknown, no placeholder dot */}
+        <span data-cell="time" className="shrink-0">
+          {timeStr != null && <MetricCell value={timeStr} width="4rem" />}
         </span>
 
-        {/* Cost */}
-        <span className="shrink-0 w-16 text-right">
-          <MetricCell
-            value={row.costUsd != null ? formatCost(row.costUsd) : null}
-            width="4rem"
-          />
+        {/* Cost — empty when unknown, no placeholder dot */}
+        <span data-cell="cost" className="shrink-0">
+          {costStr != null && <MetricCell value={costStr} width="4rem" />}
         </span>
 
         {/* Retry count (when > 1 attempt) */}

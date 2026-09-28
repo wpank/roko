@@ -125,7 +125,7 @@ export function ValidationBadge({ planId, onSelectTask }: ValidationBadgeProps) 
         className={clsx(
           'inline-flex items-center',
           'font-mono font-medium uppercase tracking-widest',
-          'text-[10px] leading-none',
+          'text-xs leading-none',
           'px-1.5 py-0.5',
           'border',
           'transition-colors duration-[80ms]',

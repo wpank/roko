@@ -56,6 +56,8 @@ export interface TaskRun {
   inputTokens: number;
   outputTokens: number;
   checks: CheckRun[];
+  /** Monotonically increasing per plan; absent/0 means generation 0. */
+  generation?: number;
 }
 
 export interface PlanRun {
@@ -70,6 +72,8 @@ export interface PlanRun {
   finishedAtMs: number | null;
   etaMinutes: number | null;
   costUsd: number;
+  /** Incremented each time a finished plan starts a new run. Absent/0 means generation 0. */
+  generation?: number;
 }
 
 export interface AgentRun {
@@ -118,6 +122,8 @@ const TERMINAL: Set<TaskStatus> = new Set([
   'skipped',
   'cancelled',
 ]);
+
+const TERMINAL_PLAN_PHASES = new Set<PlanPhase>(['completed', 'failed', 'cancelled']);
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -246,6 +252,78 @@ function upsertCheck(
   return sortChecks([...checks, update(blank)]);
 }
 
+// ── beginNewRun ────────────────────────────────────────────────────────────────
+
+/**
+ * Transition a finished plan into a new run.
+ *
+ * After 'completed': fresh run — all task records and transcripts for the plan
+ * are removed and all counters reset to zero.
+ *
+ * After 'failed' or 'cancelled': resume — task records whose status is
+ * 'passed', 'skipped', or 'accepted_with_failures' are kept and counted;
+ * every other task record (and its transcript) is removed.
+ *
+ * The plan's generation is incremented in both cases.
+ */
+function beginNewRun(
+  existing: PlanRun,
+  newTasksTotal: number | null | undefined,
+  phase: PlanPhase,
+  startedAtMs: number | null,
+  allTasks: Record<string, TaskRun>,
+  allTranscripts: Record<string, Transcript>,
+  planId: string,
+): { plan: PlanRun; tasks: Record<string, TaskRun>; transcripts: Record<string, Transcript> } {
+  const generation = (existing.generation ?? 0) + 1;
+  const tasksTotal = newTasksTotal ?? existing.tasksTotal;
+
+  const basePlan: PlanRun = {
+    ...existing,
+    phase,
+    tasksTotal,
+    tasksDone: 0,
+    tasksFailed: 0,
+    tasksAccepted: 0,
+    startedAtMs,
+    finishedAtMs: null,
+    etaMinutes: null,
+    costUsd: 0,
+    generation,
+  };
+
+  const planTaskKeys = Object.keys(allTasks).filter((k) => allTasks[k]!.planId === planId);
+
+  if (existing.phase === 'completed') {
+    // Fresh run: remove all tasks and transcripts for this plan
+    const tasks = { ...allTasks };
+    const transcripts = { ...allTranscripts };
+    for (const k of planTaskKeys) {
+      delete tasks[k];
+      delete transcripts[k];
+    }
+    return { plan: basePlan, tasks, transcripts };
+  } else {
+    // Resume: keep tasks that finished well, remove the rest
+    const GOOD: Set<TaskStatus> = new Set(['passed', 'skipped', 'accepted_with_failures']);
+    let tasksDone = 0;
+    let tasksAccepted = 0;
+    const tasks = { ...allTasks };
+    const transcripts = { ...allTranscripts };
+    for (const k of planTaskKeys) {
+      const t = allTasks[k]!;
+      if (GOOD.has(t.status)) {
+        tasksDone += 1;
+        if (t.status === 'accepted_with_failures') tasksAccepted += 1;
+      } else {
+        delete tasks[k];
+        delete transcripts[k];
+      }
+    }
+    return { plan: { ...basePlan, tasksDone, tasksAccepted }, tasks, transcripts };
+  }
+}
+
 // ── initialRunState ────────────────────────────────────────────────────────────
 
 /** Return a blank RunState with zero counters. */
@@ -292,6 +370,8 @@ export function applyEvent(
       }
 
       const newPlans: Record<string, PlanRun> = { ...state.plans };
+      let newTasks = state.tasks;
+      let newTranscripts = state.transcripts;
       for (const entry of event.plans) {
         const existing = newPlans[entry.plan_id];
         if (existing?.phase === 'running') {
@@ -299,6 +379,23 @@ export function applyEvent(
           if (entry.title && !existing.title) {
             newPlans[entry.plan_id] = { ...existing, title: entry.title };
           }
+        } else if (existing && TERMINAL_PLAN_PHASES.has(existing.phase)) {
+          // Plan finished — begin a new run at 'pending' (plan_started will advance to 'running')
+          const result = beginNewRun(
+            existing,
+            entry.tasks_total,
+            'pending',
+            null,
+            newTasks,
+            newTranscripts,
+            entry.plan_id,
+          );
+          newPlans[entry.plan_id] = {
+            ...result.plan,
+            title: entry.title ?? existing.title ?? null,
+          };
+          newTasks = result.tasks;
+          newTranscripts = result.transcripts;
         } else {
           newPlans[entry.plan_id] = {
             planId: entry.plan_id,
@@ -320,6 +417,8 @@ export function applyEvent(
         ...state,
         planSet: { planIds, tasksTotal, loadedAtMs: nowMs, members },
         plans: newPlans,
+        tasks: newTasks,
+        transcripts: newTranscripts,
         run: { startedAtMs: nowMs, durationMs: null, outcome: null },
       };
     }
@@ -327,22 +426,43 @@ export function applyEvent(
     // ── plan_started ───────────────────────────────────────────────────────────
     case 'plan_started': {
       const existing = state.plans[event.plan_id];
-      const tasksTotal = Math.max(existing?.tasksTotal ?? 0, event.tasks_total ?? 0);
-      const plan: PlanRun = existing
-        ? { ...existing, phase: 'running', tasksTotal, startedAtMs: nowMs }
-        : {
-            planId: event.plan_id,
-            title: null,
-            phase: 'running',
-            tasksTotal,
-            tasksDone: 0,
-            tasksFailed: 0,
-            tasksAccepted: 0,
-            startedAtMs: nowMs,
-            finishedAtMs: null,
-            etaMinutes: null,
-            costUsd: 0,
-          };
+
+      let plan: PlanRun;
+      let newTasks = state.tasks;
+      let newTranscripts = state.transcripts;
+
+      if (existing && TERMINAL_PLAN_PHASES.has(existing.phase)) {
+        // Plan finished — begin a fresh or resume run at 'running'
+        const result = beginNewRun(
+          existing,
+          event.tasks_total,
+          'running',
+          nowMs,
+          state.tasks,
+          state.transcripts,
+          event.plan_id,
+        );
+        plan = result.plan;
+        newTasks = result.tasks;
+        newTranscripts = result.transcripts;
+      } else {
+        const tasksTotal = Math.max(existing?.tasksTotal ?? 0, event.tasks_total ?? 0);
+        plan = existing
+          ? { ...existing, phase: 'running', tasksTotal, startedAtMs: nowMs }
+          : {
+              planId: event.plan_id,
+              title: null,
+              phase: 'running',
+              tasksTotal,
+              tasksDone: 0,
+              tasksFailed: 0,
+              tasksAccepted: 0,
+              startedAtMs: nowMs,
+              finishedAtMs: null,
+              etaMinutes: null,
+              costUsd: 0,
+            };
+      }
 
       // Only reset run when the plan is not already part of the planSet
       const inPlanSet = state.planSet?.planIds.includes(event.plan_id) ?? false;
@@ -353,6 +473,8 @@ export function applyEvent(
       return {
         ...state,
         plans: { ...state.plans, [event.plan_id]: plan },
+        tasks: newTasks,
+        transcripts: newTranscripts,
         run: newRun,
       };
     }
@@ -442,12 +564,23 @@ export function applyEvent(
     case 'task_started': {
       const key = taskKey(event.plan_id, event.task_id);
       const existing = state.tasks[key];
-      const isRetry = existing !== undefined && TERMINAL.has(existing.status);
+      const plan = state.plans[event.plan_id];
+      const planGeneration = plan?.generation ?? 0;
+
+      // A task whose generation predates the current run is a fresh start, not a retry.
+      const isOlderGeneration =
+        existing !== undefined && (existing.generation ?? 0) < planGeneration;
+      // Only a terminal record from the *current* generation starting again is a retry.
+      const isRetry =
+        !isOlderGeneration && existing !== undefined && TERMINAL.has(existing.status);
 
       const attempts = isRetry ? existing.attempts + 1 : 1;
       // Preserve title when the event's title is empty
       const title =
         event.title && event.title.length > 0 ? event.title : (existing?.title ?? '');
+
+      // Keep agent/cost/token stats across phase changes, but reset on new-generation starts.
+      const keepStats = !isOlderGeneration && !!existing;
 
       const task: TaskRun = {
         planId: event.plan_id,
@@ -458,17 +591,19 @@ export function applyEvent(
         attempts,
         startedAtMs: nowMs,
         finishedAtMs: null,
-        agentId: existing?.agentId ?? null,
-        role: existing?.role ?? null,
-        model: existing?.model ?? null,
-        costUsd: existing?.costUsd ?? 0,
-        inputTokens: existing?.inputTokens ?? 0,
-        outputTokens: existing?.outputTokens ?? 0,
-        // Clear checks on retry; preserve for first start (handles phase changes)
-        checks: isRetry ? [] : (existing?.checks ?? []),
+        agentId: keepStats ? existing!.agentId : null,
+        role: keepStats ? existing!.role : null,
+        model: keepStats ? existing!.model : null,
+        costUsd: keepStats ? existing!.costUsd : 0,
+        inputTokens: keepStats ? existing!.inputTokens : 0,
+        outputTokens: keepStats ? existing!.outputTokens : 0,
+        // Clear checks on retry or new-generation start; preserve for phase changes
+        checks: (isRetry || isOlderGeneration) ? [] : (existing?.checks ?? []),
+        generation: planGeneration,
       };
 
-      // Append a divider to the transcript on retry
+      // Append a divider to the transcript on retry;
+      // clear the transcript on new-generation start.
       let newTranscripts = state.transcripts;
       if (isRetry) {
         const divider: AttemptDivider = { kind: 'divider', attempt: attempts };
@@ -477,22 +612,46 @@ export function applyEvent(
           ...state.transcripts,
           [key]: appendTranscript(transcript, divider),
         };
+      } else if (isOlderGeneration && state.transcripts[key]) {
+        const next: Record<string, Transcript> = { ...state.transcripts };
+        delete next[key];
+        newTranscripts = next;
       }
 
-      // plan.tasksTotal = max(tasksTotal, count of known tasks for this plan)
-      const plan = state.plans[event.plan_id];
-      const planTaskCount = Object.values({ ...state.tasks, [key]: task }).filter(
-        (t) => t.planId === event.plan_id,
-      ).length;
-      const newPlans = plan
-        ? {
-            ...state.plans,
-            [event.plan_id]: {
-              ...plan,
-              tasksTotal: Math.max(plan.tasksTotal, planTaskCount),
-            },
+      // Counters: when a terminal record starts again (retry or new generation),
+      // remove it from its old bucket first — never below zero.
+      let newPlans = state.plans;
+      if (plan) {
+        let { tasksDone, tasksFailed, tasksAccepted } = plan;
+        const wasTerminal = existing !== undefined && TERMINAL.has(existing.status);
+        if (wasTerminal && (isRetry || isOlderGeneration)) {
+          if (existing!.status === 'accepted_with_failures') {
+            tasksDone = Math.max(0, tasksDone - 1);
+            tasksAccepted = Math.max(0, tasksAccepted - 1);
+          } else if (existing!.status === 'failed') {
+            tasksFailed = Math.max(0, tasksFailed - 1);
+          } else {
+            // passed or skipped
+            tasksDone = Math.max(0, tasksDone - 1);
           }
-        : state.plans;
+        }
+
+        // plan.tasksTotal = max(tasksTotal, count of known tasks for this plan)
+        const planTaskCount = Object.values({ ...state.tasks, [key]: task }).filter(
+          (t) => t.planId === event.plan_id,
+        ).length;
+
+        newPlans = {
+          ...state.plans,
+          [event.plan_id]: {
+            ...plan,
+            tasksDone,
+            tasksFailed,
+            tasksAccepted,
+            tasksTotal: Math.max(plan.tasksTotal, planTaskCount),
+          },
+        };
+      }
 
       return {
         ...state,

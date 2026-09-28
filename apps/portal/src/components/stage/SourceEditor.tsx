@@ -25,6 +25,8 @@ import { ApiError } from '@/api/client';
 import type { WireDiagnostic } from '@/api/contracts';
 import { Button } from '@/components/atoms/Button';
 import { Spinner } from '@/components/atoms/Spinner';
+import { Notice } from '@/components/primitives/Notice';
+import { isMissingRoute, unsupportedMessage } from '@/lib/apiErrors';
 import { cn } from '@/lib/cn';
 
 // ---------------------------------------------------------------------------
@@ -35,6 +37,8 @@ export interface SourceEditorProps {
   planId: string;
   running: boolean;
   onClose(): void;
+  /** Called whenever the editor's dirty state (text ≠ loaded) changes, and with false on unmount. */
+  onDirtyChange?(dirty: boolean): void;
 }
 
 // ---------------------------------------------------------------------------
@@ -61,7 +65,7 @@ function extractDiagnostics(body: unknown): WireDiagnostic[] {
 // Component
 // ---------------------------------------------------------------------------
 
-export function SourceEditor({ planId, running, onClose }: SourceEditorProps) {
+export function SourceEditor({ planId, running, onClose, onDirtyChange }: SourceEditorProps) {
   // ------------------------------------------------------------------
   // Remote data
   // ------------------------------------------------------------------
@@ -85,6 +89,8 @@ export function SourceEditor({ planId, running, onClose }: SourceEditorProps) {
   const [text, setText] = useState<string | null>(null);
   const [diagnostics, setDiagnostics] = useState<WireDiagnostic[]>([]);
   const [inlineError, setInlineError] = useState<string | null>(null);
+  /** Set when a save attempt returns 404/405 — shown as a Notice above the editor. */
+  const [saveNotice, setSaveNotice] = useState<string | null>(null);
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -98,6 +104,21 @@ export function SourceEditor({ planId, running, onClose }: SourceEditorProps) {
   // `dirty` is true when the current edit differs from the last loaded value.
   const dirty =
     text !== null && data !== undefined && text !== data.toml;
+
+  // Report dirty-state changes to the parent.
+  const prevDirtyRef = useRef<boolean>(false);
+  useEffect(() => {
+    if (dirty !== prevDirtyRef.current) {
+      prevDirtyRef.current = dirty;
+      onDirtyChange?.(dirty);
+    }
+  }, [dirty, onDirtyChange]);
+
+  // Always report clean when the editor unmounts.
+  useEffect(() => {
+    return () => { onDirtyChange?.(false); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // ------------------------------------------------------------------
   // Close/cancel helpers
@@ -159,6 +180,7 @@ export function SourceEditor({ planId, running, onClose }: SourceEditorProps) {
     // Clear previous feedback before each save attempt.
     setDiagnostics([]);
     setInlineError(null);
+    setSaveNotice(null);
     saveMutation.mutate(
       { id: planId, toml: text },
       {
@@ -172,9 +194,7 @@ export function SourceEditor({ planId, running, onClose }: SourceEditorProps) {
             return;
           }
           if (err.status === 404 || err.status === 405) {
-            setInlineError(
-              'This roko serve does not support editing plans yet.',
-            );
+            setSaveNotice(unsupportedMessage('editing plans'));
             return;
           }
           if (err.status === 422) {
@@ -194,9 +214,7 @@ export function SourceEditor({ planId, running, onClose }: SourceEditorProps) {
   // Load error states
   // ------------------------------------------------------------------
 
-  const loadIsUnsupported =
-    loadError instanceof ApiError &&
-    (loadError.status === 404 || loadError.status === 405);
+  const loadIsUnsupported = isMissingRoute(loadError);
 
   if (isLoading) {
     return (
@@ -209,10 +227,10 @@ export function SourceEditor({ planId, running, onClose }: SourceEditorProps) {
 
   if (loadIsUnsupported) {
     return (
-      <div className="flex flex-col h-full items-center justify-center gap-4 text-text-muted">
-        <span className="text-sm font-mono">
-          This roko serve does not support editing plans yet.
-        </span>
+      <div className="flex flex-col h-full p-4 gap-4">
+        <Notice kind="unsupported">
+          {unsupportedMessage('editing plans')}
+        </Notice>
         <Button variant="secondary" size="sm" onClick={onClose}>
           Close
         </Button>
@@ -279,7 +297,14 @@ export function SourceEditor({ planId, running, onClose }: SourceEditorProps) {
         </Button>
       </div>
 
-      {/* ---- Inline error (409, unsupported, network) ---- */}
+      {/* ---- Save notice (404/405 — route not supported by this server) ---- */}
+      {saveNotice && (
+        <div className="px-3 py-2 border-b border-border-default shrink-0">
+          <Notice kind="unsupported">{saveNotice}</Notice>
+        </div>
+      )}
+
+      {/* ---- Inline error (409, network) ---- */}
       {inlineError && (
         <div className="px-3 py-2 text-xs font-mono text-accent-error bg-bg-highlight border-b border-border-default shrink-0">
           {inlineError}
@@ -333,9 +358,10 @@ export function SourceEditor({ planId, running, onClose }: SourceEditorProps) {
           value={text ?? ''}
           onChange={e => {
             setText(e.target.value);
-            // Clear stale diagnostics when the user edits after a 422.
+            // Clear stale diagnostics/notices when the user edits.
             if (diagnostics.length > 0) setDiagnostics([]);
             if (inlineError) setInlineError(null);
+            if (saveNotice) setSaveNotice(null);
           }}
           className={cn(
             'w-full h-full resize-none',

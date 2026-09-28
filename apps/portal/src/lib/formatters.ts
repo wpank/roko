@@ -125,3 +125,62 @@ export function compactDuration(ms: number | null | undefined): string {
   const mins = totalMinutes % 60;
   return `${hours}h${String(mins).padStart(2, '0')}m`;
 }
+
+/**
+ * Unified time-cell formatter.  Returns null for unknown/invalid time so
+ * callers can suppress the cell entirely instead of showing a placeholder.
+ *
+ * - kind 'estimate': rounded up to whole minutes (min 1), prefixed with "~".
+ *   Under an hour: "~9m".  One hour or more: "~1h35m".
+ * - kind 'elapsed' | 'actual': exact compact form via compactDuration ("12s",
+ *   "1m12s", "1h05m").
+ * - kind 'none', or any kind with null / negative / non-finite ms: null.
+ *
+ * @example
+ * formatSpan({ kind: 'estimate', ms: 9 * 60_000 })   // "~9m"
+ * formatSpan({ kind: 'estimate', ms: 95 * 60_000 })  // "~1h35m"
+ * formatSpan({ kind: 'elapsed',  ms: 12_000 })        // "12s"
+ * formatSpan({ kind: 'none',     ms: null })           // null
+ */
+export function formatSpan(time: {
+  kind: 'estimate' | 'elapsed' | 'actual' | 'none';
+  ms: number | null;
+}): string | null {
+  if (time.kind === 'none') return null;
+  const { ms } = time;
+  if (ms == null || !isFinite(ms) || ms < 0) return null;
+
+  if (time.kind === 'estimate') {
+    const minutes = Math.max(1, Math.ceil(ms / 60_000));
+    if (minutes < 60) return `~${minutes}m`;
+    return `~${compactDuration(minutes * 60_000)}`;
+  }
+
+  // 'elapsed' | 'actual': ms is already validated as finite and non-negative.
+  return compactDuration(ms);
+}
+
+/**
+ * Shorten a model identifier for display in a compact table cell.
+ *
+ * Transformations applied in order:
+ *  1. Strip a provider path prefix ("openai/" → "").
+ *  2. Strip a leading "claude-" vendor prefix.
+ *  3. Strip a trailing date suffix ("-20250514" or "-2025-05-14").
+ *
+ * @example
+ * shortModel('claude-sonnet-4-20250514') // "sonnet-4"
+ * shortModel('claude-opus-4-6')          // "opus-4-6"
+ * shortModel('openai/gpt-5.1-codex')     // "gpt-5.1-codex"
+ * shortModel('kimi-k2')                  // "kimi-k2"
+ */
+export function shortModel(model: string): string {
+  // 1. Drop provider path (e.g. "openai/")
+  const slashIdx = model.lastIndexOf('/');
+  let name = slashIdx >= 0 ? model.slice(slashIdx + 1) : model;
+  // 2. Drop leading "claude-"
+  if (name.startsWith('claude-')) name = name.slice('claude-'.length);
+  // 3. Drop trailing date suffix: -YYYYMMDD or -YYYY-MM-DD
+  name = name.replace(/-\d{8}$/, '').replace(/-\d{4}-\d{2}-\d{2}$/, '');
+  return name;
+}

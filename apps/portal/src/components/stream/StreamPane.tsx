@@ -242,7 +242,7 @@ export function StreamPane({
             >
               {focusedId}
             </span>
-            <span aria-hidden="true" style={{ opacity: 0.4, userSelect: 'none' }}>
+            <span aria-hidden="true" style={{ color: 'var(--text-faint)', userSelect: 'none' }}>
               ·
             </span>
           </>
@@ -271,7 +271,7 @@ export function StreamPane({
               aria-label={`${transcriptBadge} new`}
               style={{
                 marginLeft: '0.25em',
-                fontSize: '0.75em',
+                fontSize: 'var(--type-meta)',
                 background: 'var(--state-active)',
                 color: '#fff',
                 borderRadius: '3px',
@@ -284,7 +284,7 @@ export function StreamPane({
           )}
         </button>
 
-        <span aria-hidden="true" style={{ opacity: 0.4, userSelect: 'none' }}>
+        <span aria-hidden="true" style={{ color: 'var(--text-faint)', userSelect: 'none' }}>
           │
         </span>
 
@@ -311,7 +311,7 @@ export function StreamPane({
               aria-label={`${checksBadge} failed`}
               style={{
                 marginLeft: '0.25em',
-                fontSize: '0.75em',
+                fontSize: 'var(--type-meta)',
                 background: 'var(--state-failed)',
                 color: '#fff',
                 borderRadius: '3px',
@@ -361,7 +361,7 @@ export function StreamPane({
         >
           {focusedId === null ? (
             /* Nothing selected and nothing ran: system-state sentence */
-            <div className="stream-empty" style={{ opacity: 0.6 }}>
+            <div className="stream-empty" style={{ color: 'var(--text-faint)' }}>
               {emptySentence}
             </div>
           ) : view === 'transcript' ? (

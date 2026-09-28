@@ -77,17 +77,28 @@ export function unsupportedMessage(action: string): string {
 }
 
 /**
+ * Shown when a 400 error carries `code: "invalid_json"` — the server rejected
+ * the request because it is older than this portal and does not recognise the
+ * current request shape (e.g. it still requires fields that the portal no
+ * longer sends).  Telling the operator to update the server is far more useful
+ * than quoting the raw JSON-parser message.
+ */
+export const OUTDATED_SERVER =
+  'This roko serve could not read the request; it is probably older than this portal. Update roko and restart roko serve.';
+
+/**
  * Converts an arbitrary caught error into a one-sentence operator-facing
  * string.  Never shows the raw `ApiError` message ("HTTP 405 …").
  *
  * Priority order:
  *  1. 401 Unauthorized → SIGN_IN_HINT
  *  2. Missing route (404/405 without a resource body) → unsupportedMessage
- *  3. ApiError with a string `body.message` → that message
- *  4. ApiError with a non-empty string body → that string
- *  5. Any other ApiError → "Request failed with status N."
- *  6. Any other Error → err.message
- *  7. Anything else → String(err)
+ *  3. 400 with body.code === 'invalid_json' → OUTDATED_SERVER
+ *  4. ApiError with a string `body.message` → that message
+ *  5. ApiError with a non-empty string body → that string
+ *  6. Any other ApiError → "Request failed with status N."
+ *  7. Any other Error → err.message
+ *  8. Anything else → String(err)
  */
 export function describeRequestError(err: unknown, action: string): string {
   if (err instanceof ApiError) {
@@ -95,8 +106,14 @@ export function describeRequestError(err: unknown, action: string): string {
 
     if (isMissingRoute(err)) return unsupportedMessage(action);
 
-    // Check for a server-supplied message in the body.
+    // Older server: rejects newer request shapes with invalid_json.
     const body = err.body;
+    if (err.status === 400 && body !== null && typeof body === 'object') {
+      const b = body as Record<string, unknown>;
+      if (b['code'] === 'invalid_json') return OUTDATED_SERVER;
+    }
+
+    // Check for a server-supplied message in the body.
     if (body !== null && typeof body === 'object') {
       const b = body as Record<string, unknown>;
       if (typeof b['message'] === 'string' && b['message'].length > 0) {

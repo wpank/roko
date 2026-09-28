@@ -83,6 +83,18 @@
   --color-state-queued:     var(--state-queued);
   --color-state-pending:    var(--state-pending);
 
+  /* ---- Colours: hairlines ------------------------------------------ */
+  --color-line:             var(--line);
+
+  /* ---- Colours: buttons -------------------------------------------- */
+  --color-button-primary-bg:    var(--button-primary-bg);
+  --color-button-primary-hover: var(--button-primary-hover);
+  --color-button-primary-fg:    var(--button-primary-fg);
+
+  /* ---- Colours: danger fill ---------------------------------------- */
+  --color-danger-fill:      var(--danger-fill);
+  --color-danger-fill-fg:   var(--danger-fill-fg);
+
   /* ---- Colours: borders -------------------------------------------- */
   --color-border-default:   var(--border-default);
   --color-border-hover:     var(--border-hover);
@@ -294,7 +306,7 @@ textarea:focus-visible,
 }
 
 ::-webkit-scrollbar-thumb {
-  background: var(--text-ghost);
+  background: var(--line);
   border: none;
 }
 
@@ -309,7 +321,7 @@ textarea:focus-visible,
 /* Firefox */
 * {
   scrollbar-width: thin;
-  scrollbar-color: var(--text-ghost) var(--void);
+  scrollbar-color: var(--line) var(--void);
 }
 
 /* -------------------------------------------------------------------- */
@@ -331,7 +343,7 @@ p {
 }
 
 a {
-  color: var(--rose);
+  color: var(--rose-bright);
   text-decoration: none;
   transition: color var(--duration-fast) var(--ease-out);
 }
@@ -549,14 +561,13 @@ svg {
 
   .rd-header__cancel {
     padding: 3px var(--space-2);
-    border: 1px solid transparent;
-    background: transparent;
-    color: var(--state-failed);
+    border: 1px solid var(--danger-fill);
+    background: var(--danger-fill);
+    color: var(--danger-fill-fg);
   }
 
   .rd-header__cancel:hover {
-    border-color: var(--state-failed);
-    color: var(--state-failed);
+    border-color: var(--danger-fill-fg);
   }
 
   .rd-header__conn {
@@ -597,12 +608,21 @@ svg {
     border-left-color: var(--state-accepted);
   }
 
+  .rd-alert[data-severity="info"] {
+    border-left-color: var(--accent-cyan);
+    color: var(--accent-cyan);
+  }
+
   .rd-alert__glyph {
     color: var(--state-failed);
   }
 
   .rd-alert[data-severity="warning"] .rd-alert__glyph {
     color: var(--state-accepted);
+  }
+
+  .rd-alert[data-severity="info"] .rd-alert__glyph {
+    color: var(--accent-cyan);
   }
 
   .rd-alert__text {
@@ -637,8 +657,8 @@ svg {
 
   .rd-band {
     display: grid;
-    grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr) minmax(0, 1fr);
-    max-height: 132px;
+    grid-template-columns: var(--rail-width) minmax(0, 1.4fr) minmax(0, 1fr);
+    height: var(--band-height);
     background: var(--bg-secondary);
     border-bottom: 1px solid var(--border-default);
     font-size: var(--text-xs);
@@ -759,7 +779,7 @@ svg {
 
   .rd-plan-row {
     display: grid;
-    grid-template-columns: 2ch minmax(0, 1fr) 5ch 3ch 6ch;
+    grid-template-columns: 2ch minmax(0, 1fr) 5ch 5ch 6ch;
     column-gap: 1ch;
     align-items: center;
     width: 100%;
@@ -822,7 +842,7 @@ svg {
 
   .rd-plan-row__bar {
     position: relative;
-    height: 3px;
+    height: 4px;
     overflow: hidden;
     background: var(--bg-highlight);
   }
@@ -886,4 +906,49 @@ svg {
     color: var(--text-faint);
     font-size: var(--text-xs);
   }
+
+  /* ---- Notice: "not supported" and info notices --------------------- */
+
+  .rd-notice {
+    display: flex;
+    align-items: baseline;
+    gap: var(--space-2);
+    padding: var(--space-2) var(--space-3);
+    background: var(--bg-highlight);
+    border-left: 2px solid var(--accent-cyan);
+    color: var(--text-strong);
+    font-size: var(--type-row);
+  }
+
+  .rd-notice__glyph {
+    color: var(--accent-cyan);
+  }
+
+  /* ---- Type scale classes ------------------------------------------- */
+
+  .rd-title {
+    font-size: var(--type-title);
+    font-weight: 600;
+    color: var(--text-strong);
+    line-height: var(--leading-tight);
+  }
+
+  .rd-section {
+    font-size: var(--type-section);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: var(--tracking-wider);
+    color: var(--text-muted);
+  }
+
+  .rd-row {
+    font-size: var(--type-row);
+    color: var(--text-strong);
+  }
+
+  .rd-meta {
+    font-size: var(--type-meta);
+    color: var(--text-faint);
+  }
+
 }

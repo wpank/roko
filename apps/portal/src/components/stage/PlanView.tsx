@@ -216,6 +216,10 @@ export function PlanView({
   // ── Panel toggle state ────────────────────────────────────────────────────
 
   const [editing, setEditing] = useState(false);
+  // editorDirty is true only when the SourceEditor holds unsaved text.
+  // The open-but-clean editor (e.g. showing the "not supported" notice) must
+  // not block Run, so usePrimaryAction receives `editing && editorDirty`.
+  const [editorDirty, setEditorDirty] = useState(false);
   const [revising, setRevising] = useState(false);
 
   // ── Remote data ───────────────────────────────────────────────────────────
@@ -248,7 +252,10 @@ export function PlanView({
   // ── Primary action ────────────────────────────────────────────────────────
 
   const primaryAction = usePrimaryAction(plan.id, {
-    editing,
+    // Only block Run when the editor is open *and* holds unsaved text.
+    // An open editor that only shows the "not supported" notice keeps editorDirty
+    // false, so Run (or Run again) remains available.
+    editing: editing && editorDirty,
     onError: onRequestError,
   });
 
@@ -324,10 +331,10 @@ export function PlanView({
       <div className="flex flex-wrap items-start gap-3">
         {/* Title + group/id */}
         <div className="flex-1 min-w-0">
-          <h2 className="font-mono text-sm font-semibold text-text-strong truncate leading-snug">
+          <h2 className="rd-title font-mono font-semibold text-text-strong truncate leading-snug">
             {plan.title}
           </h2>
-          <span className="font-mono text-xs text-text-ghost">
+          <span className="rd-meta font-mono text-text-ghost">
             {plan.group ? `${plan.group}/` : ''}
             {plan.id}
           </span>
@@ -386,6 +393,9 @@ export function PlanView({
             }
             onClick={() => {
               setEditing((e) => !e);
+              // Synchronously clear dirty so Run is free as soon as the editor
+              // closes — whether the user clicks ✎ Edit or discards changes.
+              setEditorDirty(false);
               if (revising) setRevising(false);
             }}
           >
@@ -461,7 +471,8 @@ export function PlanView({
         <SourceEditor
           planId={plan.id}
           running={isRunning}
-          onClose={() => setEditing(false)}
+          onClose={() => { setEditing(false); setEditorDirty(false); }}
+          onDirtyChange={setEditorDirty}
         />
       ) : revising ? (
         /* PromptPanel in revise mode replaces the list while open */

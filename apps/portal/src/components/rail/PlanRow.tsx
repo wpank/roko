@@ -2,7 +2,7 @@
 
 import React from 'react';
 import { StatusGlyph } from '@/components/primitives/StatusGlyph';
-import { middleEllipsis, compactDuration } from '@/lib/formatters';
+import { middleEllipsis, formatSpan } from '@/lib/formatters';
 import type { PlanRowModel } from '@/lib/planRows';
 
 // ── PlanRow ────────────────────────────────────────────────────────────────────
@@ -18,15 +18,6 @@ import type { PlanRowModel } from '@/lib/planRows';
  * the plan is waiting (this is a direct grid child of the button).
  */
 
-/** Format an estimate in whole minutes — never shows seconds. */
-function estimateLabel(ms: number): string {
-  const totalMins = Math.round(ms / 60_000);
-  if (totalMins < 60) return `~${totalMins}m`;
-  const hours = Math.floor(totalMins / 60);
-  const mins = totalMins % 60;
-  return `~${hours}h${mins}m`;
-}
-
 export function PlanRow({
   row,
   selected,
@@ -38,17 +29,10 @@ export function PlanRow({
 }) {
   // ── Name label ──────────────────────────────────────────────────────────
   const baseName = row.title || row.id;
-  const shortName = middleEllipsis(baseName, 22);
+  const shortName = middleEllipsis(baseName, 18);
 
-  // ── Time cell ───────────────────────────────────────────────────────────
-  let timeLabel: string;
-  if (row.time.kind === 'estimate' && row.time.ms != null) {
-    timeLabel = estimateLabel(row.time.ms);
-  } else if ((row.time.kind === 'elapsed' || row.time.kind === 'actual') && row.time.ms != null) {
-    timeLabel = compactDuration(row.time.ms);
-  } else {
-    timeLabel = '·';
-  }
+  // ── Time cell — empty when unknown, no placeholder dot ──────────────────
+  const timeLabel = formatSpan(row.time) ?? '';
 
   // ── Button title (tooltip) ───────────────────────────────────────────────
   // Includes the wait reason when the plan is queued, so the reason is

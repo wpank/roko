@@ -39,7 +39,7 @@ describe('TaskList roles', () => {
     expect(role?.getAttribute('data-role')).toBe('implementer');
     expect(textOf(role)).toBe('implementer');
     expect(role?.getAttribute('style') ?? '').toContain('--role-implementer');
-    expect(textOf(row('T01'))).toContain('claude-opus-4-6');
+    expect(textOf(row('T01'))).toContain('opus-4-6');
   });
 
   it('gives each role its own accent', () => {

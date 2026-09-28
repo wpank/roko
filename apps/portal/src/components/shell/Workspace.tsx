@@ -25,7 +25,7 @@ import { pickAlert } from '@/lib/alerts';
 import { describeEmpty } from '@/lib/emptyState';
 import { useNow } from '@/lib/useNow';
 import { planSetActive } from '@/lib/planSet';
-import { describeRequestError } from '@/lib/apiErrors';
+import { describeRequestError, isMissingRoute } from '@/lib/apiErrors';
 import type { AlertAction } from '@/lib/alerts';
 
 // ── Workspace ──────────────────────────────────────────────────────────────────
@@ -51,6 +51,21 @@ export function Workspace() {
   const [promptOpen, setPromptOpen] = useState(false);
   const [dismissedAlertKey, setDismissedAlertKey] = useState<string | null>(null);
   const [requestError, setRequestError] = useState<string | null>(null);
+  const [requestNotice, setRequestNotice] = useState<string | null>(null);
+
+  // Routes the error to the right slot: missing-route → notice (info); anything
+  // else → error.  Both slots are consumed by pickAlert below.
+  const reportRequestError = useCallback(
+    (err: unknown, action: string) => {
+      const msg = describeRequestError(err, action);
+      if (isMissingRoute(err)) {
+        setRequestNotice(msg);
+      } else {
+        setRequestError(msg);
+      }
+    },
+    [],
+  );
 
   // Filter input ref — keyboard '/' handler focuses it.
   const filterInputRef = useRef<HTMLInputElement | null>(null);
@@ -109,8 +124,9 @@ export function Workspace() {
   // (discovery refuses to guess which one to use).
   useEffect(() => {
     if (plansError) {
-      setRequestError(describeRequestError(plansError, 'listing plans'));
+      reportRequestError(plansError, 'listing plans');
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [plansError]);
 
   // ── Mutations ─────────────────────────────────────────────────────────────────
@@ -130,6 +146,7 @@ export function Workspace() {
     selectedPlanId: resolved.plan,
     validationErrors: 0,
     requestError,
+    requestNotice,
     dismissedKey: dismissedAlertKey,
   });
 
@@ -166,7 +183,7 @@ export function Workspace() {
       if (!window.confirm(label)) return;
       cancelPlanMutation.mutate(
         { id: planId },
-        { onError: (err) => setRequestError(describeRequestError(err, 'cancelling runs')) },
+        { onError: (err) => reportRequestError(err, 'cancelling runs') },
       );
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -180,7 +197,7 @@ export function Workspace() {
       } else if (action.kind === 'retry') {
         runPlanMutation.mutate(
           { id: action.planId, resume: true },
-          { onError: (err) => setRequestError(describeRequestError(err, 'running plans')) },
+          { onError: (err) => reportRequestError(err, 'running plans') },
         );
       } else if (action.kind === 'reconnect') {
         window.location.reload();
@@ -196,7 +213,7 @@ export function Workspace() {
       const opts = ids !== null ? { plans: ids } : {};
       const action = ids === null ? 'running all plans' : 'running plan groups';
       runPlansMutation.mutate(opts, {
-        onError: (err) => setRequestError(describeRequestError(err, action)),
+        onError: (err) => reportRequestError(err, action),
       });
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps

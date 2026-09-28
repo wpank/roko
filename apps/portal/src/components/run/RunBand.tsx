@@ -25,7 +25,7 @@ import { buildBurn } from '@/lib/burn';
 import { taskKey } from '@/lib/runState';
 import type { CheckRun } from '@/lib/runState';
 import { StatusGlyph } from '@/components/primitives/StatusGlyph';
-import { compactDuration, formatTokens } from '@/lib/formatters';
+import { compactDuration, formatTokens, shortModel } from '@/lib/formatters';
 import type { GlyphState } from '@/lib/glyphs';
 import { useNow } from '@/lib/useNow';
 
@@ -139,64 +139,7 @@ function RunBandInner({
   // ── Render ───────────────────────────────────────────────────────────────────
   return (
     <section data-region="run-band" className="rd-band">
-      {/* AGENTS cell */}
-      <div data-cell="agents" className="rd-band__cell">
-        <div className="rd-band__title">AGENTS</div>
-        {roster.rows.length > 0 ? (
-          roster.rows.map((row) => (
-            <div key={row.agentId} data-agent={row.agentId} className="rd-band__agent">
-              <span
-                data-role={row.role}
-                className="rd-band__role"
-                style={{ color: `var(--role-${row.role}, var(--role-other))` }}
-              >
-                {row.role}
-              </span>
-              <span>
-                {row.planId ?? ''}
-                {row.taskId ? ` · ${row.taskId}` : ''}
-              </span>
-              <span className="rd-band__muted">{row.model}</span>
-              {row.elapsedMs !== null && (
-                <span className="rd-band__num">► {compactDuration(row.elapsedMs)}</span>
-              )}
-              <span className="rd-band__num">{formatTokens(row.tokens)} tok</span>
-            </div>
-          ))
-        ) : (
-          <div className="rd-band__empty">no agent working yet</div>
-        )}
-        {footerParts.length > 0 && (
-          <div className="rd-band__footer">{footerParts.join(' · ')}</div>
-        )}
-      </div>
-
-      {/* CHECKS cell */}
-      <div data-cell="checks" className="rd-band__cell">
-        <div className="rd-band__title">
-          {focus !== null ? `CHECKS · ${focus.taskId}` : 'CHECKS'}
-        </div>
-        {focus !== null ? (
-          <>
-            <div className="rd-band__focus">
-              {focusTaskTitle} · {focus.planId}
-            </div>
-            <div className="rd-band__rungs">
-              {rungs.map((rung, i) => (
-                <span
-                  key={rung.index ?? `x${i}`}
-                  data-rung={rung.state}
-                  className="rd-band__rung"
-                ><StatusGlyph state={rungGlyphState(rung.state)} />{rung.label}</span>
-              ))}
-            </div>
-          </>
-        ) : (
-          <div className="rd-band__empty">no task is being checked</div>
-        )}
-      </div>
-
-      {/* BURN cell */}
+      {/* BURN cell — compact, sits above the rail */}
       <div data-cell="burn" className="rd-band__cell">
         <div className="rd-band__title">BURN</div>
         <div className="rd-band__total">
@@ -219,6 +162,63 @@ function RunBandInner({
             </span>
           </div>
         ))}
+      </div>
+
+      {/* AGENTS cell */}
+      <div data-cell="agents" className="rd-band__cell">
+        <div className="rd-band__title">AGENTS</div>
+        {roster.rows.length > 0 ? (
+          roster.rows.map((row) => (
+            <div key={row.agentId} data-agent={row.agentId} className="rd-band__agent">
+              <span
+                data-role={row.role}
+                className="rd-band__role"
+                style={{ color: `var(--role-${row.role}, var(--role-other))` }}
+              >
+                {row.role}
+              </span>
+              <span>
+                {row.planId ?? ''}
+                {row.taskId ? ` · ${row.taskId}` : ''}
+              </span>
+              <span className="rd-band__muted" title={row.model}>{shortModel(row.model)}</span>
+              {row.elapsedMs !== null && (
+                <span className="rd-band__num">► {compactDuration(row.elapsedMs)}</span>
+              )}
+              <span className="rd-band__num">{formatTokens(row.tokens)} tok</span>
+            </div>
+          ))
+        ) : roster.finished === 0 ? (
+          <div className="rd-band__empty">no agent working yet</div>
+        ) : null}
+        {footerParts.length > 0 && (
+          <div className="rd-band__footer">{footerParts.join(' · ')}</div>
+        )}
+      </div>
+
+      {/* CHECKS cell */}
+      <div data-cell="checks" className="rd-band__cell">
+        <div className="rd-band__title">
+          {focus !== null ? `CHECKS · ${focus.taskId}` : 'CHECKS'}
+        </div>
+        {focus !== null ? (
+          <>
+            <div className="rd-band__focus">
+              {focusTaskTitle} · {focus.planId}
+            </div>
+            <div className="rd-band__rungs">
+              {rungs.map((rung, i) => (
+                <span
+                  key={rung.index ?? `x${i}`}
+                  data-rung={rung.state}
+                  className="rd-band__rung"
+                ><StatusGlyph state={rungGlyphState(rung.state)} />{' '}{rung.label}</span>
+              ))}
+            </div>
+          </>
+        ) : (
+          <div className="rd-band__empty">no task is being checked</div>
+        )}
       </div>
     </section>
   );

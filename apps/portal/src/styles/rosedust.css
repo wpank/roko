@@ -37,13 +37,16 @@
   --text-strong: #d8c8d0;
 
   /** Secondary/supporting text. Mid-tone mauve-grey. */
-  --text-muted: #7a6f7f;
+  --text-muted: #aa9eae;
 
   /** De-emphasised text — labels, metadata, secondary numbers. */
-  --text-faint: #504a54;
+  --text-faint: #948899;
 
-  /** Nearly invisible text — decorative, disabled, placeholders. */
-  --text-ghost: #3a3440;
+  /** Nearly invisible text — same as faint so ghost utilities stay legible. */
+  --text-ghost: var(--text-faint);
+
+  /** Hairline colour — borders, bar tracks, rule lines. */
+  --line: #3a3440;
 
   /* ------------------------------------------------------------------ */
   /* Accents — rose family                                                */
@@ -90,6 +93,12 @@
   /** Warning amber — caution, degraded, near-limit states. */
   --warning: #c0a040;
 
+  /** Periwinkle blue — architect role accent, structural. */
+  --periwinkle: #8ca4e8;
+
+  /** Lilac — reviewer role accent, light violet. */
+  --lilac: #c9a4dc;
+
   /* ------------------------------------------------------------------ */
   /* Semantic accents (mapped from primitives)                            */
   /* ------------------------------------------------------------------ */
@@ -103,8 +112,11 @@
   /** Warning accent — amber. */
   --accent-amber: var(--warning);
 
-  /** Error / destructive accent — deep red. */
-  --accent-error: #c41f1f;
+  /** Error / destructive accent — ember orange (≥ 4.5:1 on all surfaces). */
+  --accent-error: var(--ember);
+
+  /** Danger fill — deep red background for destructive actions. */
+  --danger-fill: #9e2f2f;
 
   /** Success / healthy accent — sage green. */
   --accent-success: var(--sage);
@@ -113,8 +125,8 @@
   /* Borders                                                              */
   /* ------------------------------------------------------------------ */
 
-  /** Resting border — nearly invisible, ghost-tone. */
-  --border-default: var(--text-ghost);
+  /** Resting border — hairline tone. */
+  --border-default: var(--line);
 
   /** Hover border — rose-dim to signal interactivity. */
   --border-hover: var(--rose-dim);
@@ -151,15 +163,15 @@
     -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue",
     Arial, sans-serif;
 
-  /** Base body size. */
-  --text-xs: 11px;
-  --text-sm: 12px;
-  --text-base: 13px;
-  --text-md: 14px;
-  --text-lg: 16px;
-  --text-xl: 18px;
-  --text-2xl: 22px;
-  --text-3xl: 28px;
+  /** Base body size — one notch up for legibility. */
+  --text-xs: 12px;
+  --text-sm: 13px;
+  --text-base: 14px;
+  --text-md: 15px;
+  --text-lg: 18px;
+  --text-xl: 20px;
+  --text-2xl: 24px;
+  --text-3xl: 30px;
 
   /** Line heights. */
   --leading-tight: 1.25;

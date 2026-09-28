@@ -47,7 +47,7 @@ function DigestEntryRow({ entry }: { entry: DigestEntry }) {
     >
       <span
         className="check-digest-loc"
-        style={{ fontFamily: 'monospace', opacity: 0.7, whiteSpace: 'nowrap', minWidth: '5em' }}
+        style={{ fontFamily: 'monospace', color: 'var(--text-muted)', whiteSpace: 'nowrap', minWidth: '5em' }}
       >
         {loc(entry.line, entry.column)}
       </span>
@@ -57,7 +57,7 @@ function DigestEntryRow({ entry }: { entry: DigestEntry }) {
       {entry.count > 1 && (
         <span
           className="check-digest-count"
-          style={{ opacity: 0.6, whiteSpace: 'nowrap', fontFamily: 'monospace' }}
+          style={{ color: 'var(--text-faint)', whiteSpace: 'nowrap', fontFamily: 'monospace' }}
         >
           ×{entry.count}
         </span>
@@ -71,7 +71,7 @@ function DigestGroupView({ group }: { group: DigestGroup }) {
     <div className="check-digest-group" style={{ marginBottom: '0.5em' }}>
       <div
         className="check-digest-file"
-        style={{ fontFamily: 'monospace', opacity: 0.8, marginBottom: '2px', fontSize: '0.85em' }}
+        style={{ fontFamily: 'monospace', color: 'var(--text-muted)', marginBottom: '2px', fontSize: 'var(--type-meta)' }}
       >
         {group.file}
       </div>
@@ -94,7 +94,7 @@ function RawOutputToggle({ output }: { output: string }) {
       style={{ marginTop: '0.5em' }}
     >
       <summary
-        style={{ cursor: 'pointer', opacity: 0.6, userSelect: 'none', fontSize: '0.85em' }}
+        style={{ cursor: 'pointer', color: 'var(--text-faint)', userSelect: 'none', fontSize: 'var(--type-meta)' }}
       >
         raw output
       </summary>
@@ -103,9 +103,9 @@ function RawOutputToggle({ output }: { output: string }) {
         style={{
           whiteSpace: 'pre-wrap',
           fontFamily: 'monospace',
-          fontSize: '0.8em',
+          fontSize: 'var(--type-meta)',
           margin: '4px 0 0 0',
-          opacity: 0.75,
+          color: 'var(--text-muted)',
           maxHeight: '20em',
           overflowY: 'auto',
         }}
@@ -130,13 +130,13 @@ function OutputTail({ output }: { output: string }) {
       style={{
         whiteSpace: 'pre-wrap',
         fontFamily: 'monospace',
-        fontSize: '0.8em',
+        fontSize: 'var(--type-meta)',
         margin: '4px 0 0 0',
-        opacity: 0.7,
+        color: 'var(--text-muted)',
       }}
     >
       {lines.length > TAIL_LINES && (
-        <span style={{ opacity: 0.5 }}>…{'\n'}</span>
+        <span style={{ color: 'var(--text-faint)' }}>…{'\n'}</span>
       )}
       {tail.join('\n')}
     </pre>
@@ -170,7 +170,7 @@ function CheckRow({ check }: { check: CheckRun }) {
         {command && (
           <span
             className="check-row-command"
-            style={{ fontFamily: 'monospace', opacity: 0.6, fontSize: '0.85em' }}
+            style={{ fontFamily: 'monospace', color: 'var(--text-faint)', fontSize: 'var(--type-meta)' }}
           >
             $ {command}
           </span>
@@ -189,9 +189,9 @@ function CheckRow({ check }: { check: CheckRun }) {
               style={{
                 whiteSpace: 'pre-wrap',
                 fontFamily: 'monospace',
-                fontSize: '0.8em',
+                fontSize: 'var(--type-meta)',
                 margin: '0.25em 0',
-                opacity: 0.65,
+                color: 'var(--text-faint)',
               }}
             >
               {digest.unparsed.join('\n')}
@@ -236,7 +236,7 @@ export function Checks({ checks }: { checks: CheckRun[] }) {
   return (
     <div data-region="checks" className="checks-region">
       {checks.length === 0 ? (
-        <div className="checks-empty" style={{ opacity: 0.5 }}>
+        <div className="checks-empty" style={{ color: 'var(--text-faint)' }}>
           no verify step has run
         </div>
       ) : (

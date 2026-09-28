@@ -99,7 +99,7 @@ describe('RunBand', () => {
     renderBand(['hello']);
     expect(band()?.classList.contains('rd-band')).toBe(true);
     const cells = [...band()!.querySelectorAll(':scope > [data-cell]')].map((c) => c.getAttribute('data-cell'));
-    expect(cells).toEqual(['agents', 'checks', 'burn']);
+    expect(cells).toEqual(['burn', 'agents', 'checks']);
     for (const name of ['agents', 'checks', 'burn']) {
       expect(cell(name)?.classList.contains('rd-band__cell')).toBe(true);
     }
@@ -116,7 +116,7 @@ describe('RunBand', () => {
     expect(row!.querySelector('[data-role="implementer"]')).not.toBeNull();
     const text = textOf(row);
     expect(text).toContain('hello · T01');
-    expect(text).toContain('claude-sonnet-4-6');
+    expect(text).toContain('sonnet-4-6');
     expect(text).toContain('5s');
   });
 
@@ -144,8 +144,8 @@ describe('RunBand', () => {
     expect(textOf(checks)).toContain('Scaffold the hello project');
     const rungs = [...checks.querySelectorAll('[data-rung]')].map((r) => [r.getAttribute('data-rung'), textOf(r)]);
     expect(rungs).toEqual([
-      ['passed', '✓structural'],
-      ['pending', '·compile'],
+      ['passed', '✓ structural'],
+      ['pending', '· compile'],
     ]);
   });
 

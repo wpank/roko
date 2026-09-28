@@ -87,7 +87,7 @@ export function Transcript({
       case 'reasoning':
         return (
           <details className="transcript-reasoning">
-            <summary style={{ opacity: 0.5, cursor: 'pointer', userSelect: 'none' }}>
+            <summary style={{ color: 'var(--text-faint)', cursor: 'pointer', userSelect: 'none' }}>
               <span className="transcript-gutter" aria-hidden="true">◦</span>{' '}
               reasoning
             </summary>
@@ -95,7 +95,7 @@ export function Transcript({
               style={{
                 whiteSpace: 'pre-wrap',
                 margin: 0,
-                opacity: 0.5,
+                color: 'var(--text-faint)',
                 paddingLeft: '1.25em',
               }}
             >
@@ -121,7 +121,7 @@ export function Transcript({
                 <span
                   data-target=""
                   className="transcript-tool-target"
-                  style={{ marginLeft: '0.5em', opacity: 0.7 }}
+                  style={{ marginLeft: '0.5em', color: 'var(--text-muted)' }}
                 >
                   {block.target}
                 </span>
@@ -129,7 +129,7 @@ export function Transcript({
               {firstOutputLine && (
                 <span
                   className="transcript-tool-preview"
-                  style={{ opacity: 0.6 }}
+                  style={{ color: 'var(--text-faint)' }}
                 >
                   {' '}· {firstOutputLine}
                 </span>
@@ -153,7 +153,7 @@ export function Transcript({
                 {block.truncated && (
                   <div
                     className="transcript-truncated"
-                    style={{ opacity: 0.6, fontSize: '0.85em', paddingLeft: '1.25em' }}
+                    style={{ color: 'var(--text-faint)', fontSize: 'var(--type-meta)', paddingLeft: '1.25em' }}
                   >
                     (server kept only the tail of this output)
                   </div>
@@ -185,7 +185,7 @@ export function Transcript({
               <span
                 data-target=""
                 className="transcript-tool-target"
-                style={{ marginLeft: '0.5em', opacity: 0.7 }}
+                style={{ marginLeft: '0.5em', color: 'var(--text-muted)' }}
               >
                 {block.target}
               </span>
@@ -196,9 +196,9 @@ export function Transcript({
                 className="transcript-live-marker"
                 style={{
                   marginLeft: '0.5em',
-                  fontSize: '0.75em',
+                  fontSize: 'var(--type-meta)',
                   textTransform: 'uppercase',
-                  opacity: 0.5,
+                  color: 'var(--text-faint)',
                 }}
               >
                 live
@@ -218,7 +218,7 @@ export function Transcript({
             }}
           >
             {block.malformed && (
-              <span style={{ opacity: 0.6 }}>[malformed] </span>
+              <span style={{ color: 'var(--text-faint)' }}>[malformed] </span>
             )}
             {block.text}
           </pre>
@@ -228,7 +228,7 @@ export function Transcript({
         return (
           <div
             className="transcript-divider"
-            style={{ opacity: 0.5, padding: '4px 0' }}
+            style={{ color: 'var(--text-faint)', padding: '4px 0' }}
           >
             — attempt {block.attempt} —
           </div>
@@ -283,7 +283,7 @@ export function Transcript({
 
         {/* Live working indicator — ticks each second via elapsed state */}
         {working && (
-          <div className="transcript-working" style={{ opacity: 0.7 }}>
+          <div className="transcript-working" style={{ color: 'var(--text-muted)' }}>
             agent working · {compactDuration(elapsed)}
           </div>
         )}

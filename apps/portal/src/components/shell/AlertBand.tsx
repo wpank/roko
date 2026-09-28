@@ -8,9 +8,11 @@ const ACTION_LABELS: Record<AlertAction['kind'], string> = {
 };
 
 // Glyph for each severity level.
+// ✗ and × are intentionally absent — they look like the dismiss button.
 const SEVERITY_GLYPHS: Record<Alert['severity'], string> = {
-  error: '✗',
+  error: '!',
   warning: '⚠',
+  info: 'ⓘ',
 };
 
 export function AlertBand({

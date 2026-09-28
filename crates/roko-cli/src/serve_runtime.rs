@@ -14,6 +14,7 @@ use roko_fs::RokoLayout;
 use roko_learn::playbook::PlaybookStore;
 use roko_neuro::KnowledgeStore;
 use roko_serve::bench::{BenchConfigOverrides, BenchStrategy};
+use roko_serve::plan_types::{PlanSummaryDto, PlanTaskDto, PlanTasksDto};
 use roko_serve::runtime::{
     CliRuntime, DashboardInfo, PlanExecutionResult, PlanGenerationResult, RepoInfo, RunResult,
     RunResultUsage, RuntimeGateResult, SessionStatusInfo, TriggerExecutionScope,
@@ -349,6 +350,96 @@ impl CliRuntime for RokoCliRuntime {
             })
             .collect()
     }
+
+    async fn list_plans(&self, workdir: &std::path::Path) -> anyhow::Result<Vec<PlanSummaryDto>> {
+        // A workspace with no plans directory is empty, not broken: report an empty
+        // list rather than a 500. Every other discovery failure is a real error and
+        // must stay visible to the operator.
+        let mut summaries = match crate::plan::summarize_discovered_plans(workdir) {
+            Ok(summaries) => summaries,
+            Err(crate::orchestrator::DiscoveryError::DirMissing(_)) => Vec::new(),
+            Err(error) => {
+                return Err(anyhow::Error::new(error)
+                    .context(format!("failed to discover plans in {}", workdir.display())));
+            }
+        };
+        summaries.sort_by(|a, b| a.id.cmp(&b.id));
+        Ok(summaries.into_iter().map(plan_summary_to_dto).collect())
+    }
+
+    async fn load_plan_summary(
+        &self,
+        workdir: &std::path::Path,
+        plan_id: &str,
+    ) -> anyhow::Result<Option<PlanSummaryDto>> {
+        let Some(plan_info) =
+            crate::plan::discover_plan_by_id(workdir, plan_id).with_context(|| {
+                format!(
+                    "failed to discover plan '{}' in {}",
+                    plan_id,
+                    workdir.display()
+                )
+            })?
+        else {
+            return Ok(None);
+        };
+        let mut summary = crate::plan::summarize_plan_info(&plan_info);
+        crate::plan::overlay_graph_checkpoint_status(workdir, std::slice::from_mut(&mut summary));
+        Ok(Some(plan_summary_to_dto(summary)))
+    }
+
+    async fn load_plan_tasks(
+        &self,
+        workdir: &std::path::Path,
+        plan_id: &str,
+    ) -> anyhow::Result<Option<PlanTasksDto>> {
+        let Some(plan_info) =
+            crate::plan::discover_plan_by_id(workdir, plan_id).with_context(|| {
+                format!(
+                    "failed to discover plan '{}' in {}",
+                    plan_id,
+                    workdir.display()
+                )
+            })?
+        else {
+            return Ok(None);
+        };
+
+        let Some(tasks_path) = crate::plan::tasks_path(&plan_info) else {
+            return Ok(None);
+        };
+
+        if !tasks_path.is_file() {
+            return Ok(None);
+        }
+
+        let tasks_file = crate::task_parser::TasksFile::parse(&tasks_path)
+            .with_context(|| format!("failed to parse tasks at {}", tasks_path.display()))?;
+
+        let task_count = tasks_file.tasks.len();
+        let tasks = tasks_file
+            .tasks
+            .iter()
+            .map(|task| PlanTaskDto {
+                id: task.id.clone(),
+                title: task.title.clone(),
+                description: task.description.clone(),
+                role: task.role.clone(),
+                tier: task.tier.clone(),
+                status: task.status.clone(),
+                depends_on: task.depends_on.clone(),
+                files: task.files.clone(),
+                completed: task.status == "done",
+                verify_phases: task.verify.iter().map(|v| v.phase.clone()).collect(),
+            })
+            .collect();
+
+        Ok(Some(PlanTasksDto {
+            plan_id: plan_id.to_string(),
+            task_count,
+            tasks,
+        }))
+    }
 }
 
 impl RokoCliRuntime {
@@ -438,11 +529,11 @@ fn load_serve_extension_chain(
 fn run_plan_on_local_runtime(
     workdir: PathBuf,
     plan_target: PathBuf,
-    config: Config,
+    _config: Config,
     repo_registry: RepoRegistry,
-    state_hub: SharedStateHub,
-    metrics: Option<Arc<roko_core::obs::metrics::MetricRegistry>>,
-    extension_chain: Arc<tokio::sync::Mutex<roko_core::extension::ExtensionChain>>,
+    _state_hub: SharedStateHub,
+    _metrics: Option<Arc<roko_core::obs::metrics::MetricRegistry>>,
+    _extension_chain: Arc<tokio::sync::Mutex<roko_core::extension::ExtensionChain>>,
 ) -> anyhow::Result<PlanExecutionResult> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -452,34 +543,63 @@ fn run_plan_on_local_runtime(
         let execution_root = prepare_plan_execution_root(&workdir, &plan_target)?;
         ensure_git_repo_for_runner(&workdir);
 
+        // Load plans now to capture plan IDs for post-run gate evidence collection.
+        // run_graph_plan also loads plans internally from the same execution_root.
         let plans = crate::runner::plan_loader::load_plans(&execution_root)?;
         let plan_ids = plans
             .iter()
             .map(|plan| plan.id.clone())
             .collect::<BTreeSet<_>>();
-        let roko_config = load_effective_roko_config(&workdir, &repo_registry)?;
-        let run_config = build_runner_config(
-            &workdir,
-            &execution_root,
-            &config,
-            roko_config,
-            metrics,
-            extension_chain,
-        );
-        let events_offset = runner_events_offset(&workdir);
-        let cancel = tokio_util::sync::CancellationToken::new();
 
-        #[allow(deprecated)] // Runner-v2 removed; this call now returns an error
-        let report = crate::runner::run(plans, &run_config, &state_hub, cancel).await?;
+        let roko_config = load_effective_roko_config(&workdir, &repo_registry)?;
+        let dangerously_skip_permissions = roko_config.runner.dangerously_skip_permissions;
+
+        let events_offset = runner_events_offset(&workdir);
+
+        let exit_code =
+            crate::graph_execution::run_graph_plan(crate::graph_execution::GraphPlanRunParams {
+                plans_dir: execution_root,
+                workdir: workdir.clone(),
+                // Suppress interactive output: this runs inside an HTTP handler.
+                quiet: true,
+                json: false,
+                resume_plan: None,
+                fresh: false,
+                force_resume: false,
+                max_retries: None,
+                // 0 → use each plan's meta.max_parallel default.
+                max_tasks: 0,
+                budget_override: None,
+                no_budget: false,
+                cli_model_override: None,
+                dangerously_skip_permissions,
+                log_file: None,
+                worktree_per_task: false,
+                rich_topology: false,
+                // Never launch an interactive TUI from an HTTP handler.
+                no_tui: true,
+            })
+            .await?;
+
+        let success = exit_code == crate::exit_codes::EXIT_SUCCESS;
+
         let gate_results = collect_runner_gate_results(&workdir, events_offset, &plan_ids)
             .unwrap_or_else(|err| {
                 tracing::warn!(error = %err, "failed to collect runner gate evidence");
                 Vec::new()
             });
-        let output_text = Some(render_plan_execution_summary(&report, gate_results.len()));
+
+        let task_count: usize = plans.iter().map(|p| p.tasks.tasks.len()).sum();
+        let output_text = Some(format!(
+            "graph engine plan execution {}: {} plan(s), {} task(s), {} gate results",
+            if success { "succeeded" } else { "failed" },
+            plans.len(),
+            task_count,
+            gate_results.len(),
+        ));
 
         Ok(PlanExecutionResult {
-            success: report.all_succeeded(),
+            success,
             output_text,
             gate_results,
         })
@@ -682,141 +802,6 @@ fn repo_roko_config_for_workdir_path(
         .iter()
         .find(|entry| canonical_workdir == entry.root || canonical_workdir.starts_with(&entry.root))
         .and_then(|entry| entry.roko_config_path.clone())
-}
-
-fn build_runner_config(
-    workdir: &Path,
-    plan_dir: &Path,
-    cli_config: &Config,
-    roko_config: RokoConfig,
-    metrics: Option<Arc<roko_core::obs::metrics::MetricRegistry>>,
-    extension_chain: Arc<tokio::sync::Mutex<roko_core::extension::ExtensionChain>>,
-) -> crate::runner::RunConfig {
-    let model = non_empty_string(&roko_config.agent.default_model)
-        .or_else(|| cli_config.agent.model.clone())
-        .unwrap_or_else(|| "claude-sonnet-4-6".to_string());
-    let claude_program = roko_config
-        .agent
-        .command
-        .as_deref()
-        .and_then(non_empty_string)
-        .or_else(|| non_empty_string(&cli_config.agent.command))
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("claude"));
-    let max_concurrent_tasks = roko_config
-        .runner
-        .max_concurrent_tasks
-        .or_else(|| {
-            (cli_config.executor.max_concurrent_tasks
-                != crate::orchestrator::ExecutorConfig::default().max_concurrent_tasks)
-                .then_some(cli_config.executor.max_concurrent_tasks)
-        })
-        .unwrap_or(4)
-        .max(1);
-
-    // Initialize Phase 0 subsystems.
-    let layout = RokoLayout::for_project(workdir);
-    let router_path = layout.cascade_router_path();
-    let model_slugs = vec![model.clone(), "claude-haiku-4-5".to_string()];
-    let cascade_router = Arc::new(roko_learn::cascade_router::CascadeRouter::load_or_new(
-        &router_path,
-        model_slugs,
-    ));
-    let connector_registry = Arc::new(std::sync::Mutex::new(roko_core::ConnectorRegistry::new()));
-    let feed_registry = Arc::new(std::sync::Mutex::new(roko_core::FeedRegistry::new()));
-    let run_uuid = uuid::Uuid::new_v4().to_string();
-    let projection = Arc::new(crate::runner::projection::Projection::new(run_uuid));
-    let episodes_path = layout.root_episodes_path();
-    let knowledge_path = layout
-        .learn_dir()
-        .join(roko_neuro::admission::DEFAULT_KNOWLEDGE_CANDIDATES_FILE);
-    let _ = std::fs::create_dir_all(layout.learn_dir());
-    // Build the conductor from [conductor.watchers.*] config before roko_config
-    // is moved into the Arc. The ring is shared between the ConductorRingSink
-    // (registered on the feedback facade below) and the conductor stored in
-    // RunConfig for periodic supervision ticks (E08-T04).
-    let conductor = roko_conductor::Conductor::from_config(&roko_config.conductor);
-    let conductor_ring = crate::runner::conductor_adapter::ConductorRing::new();
-
-    let feedback_facade = Arc::new(
-        crate::runtime_feedback::FeedbackFacade::new()
-            .with_sink(Arc::new(crate::runtime_feedback::EpisodeSink::at(
-                &episodes_path,
-            )))
-            .with_sink(Arc::new(
-                crate::runtime_feedback::RoutingObservationSink::new(cascade_router.clone()),
-            ))
-            .with_sink(Arc::new(
-                crate::runtime_feedback::KnowledgeIngestionSink::at(&knowledge_path).with_ingestor(
-                    Arc::new(crate::runtime_feedback::NeuroKnowledgeIngestor::new(
-                        KnowledgeStore::for_workdir(workdir),
-                    )),
-                ),
-            ))
-            // Register the conductor ring sink so watcher signals from the
-            // feedback vocabulary flow into the bounded ring buffer. The
-            // conductor (stored in RunConfig below) reads from this ring during
-            // periodic supervision ticks added in E08-T04.
-            .with_sink(Arc::new(
-                crate::runner::conductor_adapter::ConductorRingSink::new(conductor_ring.clone()),
-            )),
-    );
-
-    crate::runner::RunConfig {
-        layout,
-        workdir: workdir.to_path_buf(),
-        plan_dir: plan_dir.to_path_buf(),
-        model,
-        cli_model_override: None, // serve runtime has no CLI model override
-        timeout_secs: roko_config.timeouts.agent_dispatch_secs,
-        plan_timeout_secs: roko_config.timeouts.plan_total_secs,
-        max_retries: cli_config.executor.max_auto_fix_iterations,
-        dispatch_max_retries: roko_config.runner.dispatch_max_retries,
-        max_concurrent_tasks,
-        gate_concurrency: max_concurrent_tasks,
-        approval: false,
-        dangerously_skip_permissions: roko_config.runner.dangerously_skip_permissions,
-        force_resume: false,
-        force_disk_check: false,
-        mcp_config: cli_config.agent.mcp_config.clone(),
-        resume_session: None,
-        max_gate_rung: if roko_config.gates.skip_tests { 1 } else { 2 },
-        claude_program,
-        max_plan_usd: f64::from(roko_config.budget.max_plan_usd),
-        max_turn_usd: f64::from(roko_config.budget.max_turn_usd),
-        max_task_retry_usd: f64::from(roko_config.budget.max_task_retry_usd),
-        max_daily_usd: f64::from(roko_config.budget.max_daily_usd),
-        budget_override: false,
-        budget_ceiling_override: None,
-        no_budget: false,
-        clippy_enabled: roko_config.gates.clippy_enabled,
-        skip_tests: roko_config.gates.skip_tests,
-        safety_layer: roko_agent::SafetyLayer::from_config(&roko_config),
-        roko_config: Some(Arc::new(roko_config)),
-        extension_chain: Some(extension_chain),
-        cascade_router: Some(cascade_router),
-        daimon_state: Some(crate::runner::RunConfig::daimon_state_with_strategy(
-            workdir,
-            cli_config.daimon.strategy_space.clone(),
-        )),
-        connector_registry: Some(connector_registry),
-        feed_registry: Some(feed_registry),
-        feedback_facade: Some(feedback_facade),
-        projection: Some(projection),
-        http_event_sink: None,
-        output_sink: Arc::new(crate::runner::output_sink::NoopSink),
-        batch_size: None,
-        warm_cache: true,
-        screenshots: false,
-        screenshot_interval_secs: 60,
-        screenshot_dir: None,
-        metrics,
-        obs_sinks: None,
-        conductor: Some(Arc::new(conductor)),
-        conductor_ring: Some(conductor_ring),
-        github_ops: None,
-        structured_log: crate::runner::structured_log::StructuredLogger::noop(),
-    }
 }
 
 /// Produce a deterministic, realistic-looking simulated result for demo mode.
@@ -1263,37 +1248,20 @@ fn unique_suffix() -> String {
     format!("{}-{millis}", std::process::id())
 }
 
-fn render_plan_execution_summary(report: &crate::runner::RunReport, gate_count: usize) -> String {
-    let mut lines = vec![format!(
-        "plan execution {}: {}/{} tasks, {} failed, {} agent calls, ${:.2}, {}s, {} gate results",
-        if report.all_succeeded() {
-            "succeeded"
-        } else {
-            "failed"
-        },
-        report.tasks_completed,
-        report.total_tasks,
-        report.tasks_failed,
-        report.total_agent_calls,
-        report.total_cost_usd,
-        report.duration.as_secs(),
-        gate_count
-    )];
-    for plan in &report.plans {
-        lines.push(format!(
-            "{}: {} ({}/{} tasks, {} failed)",
-            plan.plan_id,
-            if plan.completed {
-                "completed"
-            } else {
-                "incomplete"
-            },
-            plan.tasks_completed,
-            plan.tasks_total,
-            plan.tasks_failed
-        ));
+/// Map a [`crate::plan::PlanSummary`] to the wire-format [`PlanSummaryDto`].
+fn plan_summary_to_dto(summary: crate::plan::PlanSummary) -> PlanSummaryDto {
+    PlanSummaryDto {
+        id: summary.id,
+        title: summary.title,
+        task_count: summary.task_count,
+        tasks_done: summary.tasks_done,
+        tasks_failed: summary.tasks_failed,
+        completed: summary.completed,
+        status: summary.status,
+        superseded_by: summary.superseded_by,
+        old_format: summary.old_format,
+        last_error: summary.last_error,
     }
-    lines.join("\n")
 }
 
 #[cfg(test)]

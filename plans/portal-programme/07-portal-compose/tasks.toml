@@ -39,8 +39,11 @@ Requirements:
   - Be stable: the same input yields the same wave ordering, so the display does not
     reshuffle on refetch.
 
-Pure logic, no rendering. Unit test it in this task with a table of inputs: a linear
-chain, a diamond, a cycle, a dangling reference, and an empty plan.
+Pure logic, no rendering. The portal has no test runner configured — `apps/portal/package.json` has no test
+script and there is no vitest or jest — so do not add a test file and do not try to
+install one. Include the case table as a comment block above the function instead,
+so the cases stay reviewable.
+Cover: a linear chain, a diamond, a cycle, a dangling reference, and an empty plan.
 """
 status = "ready"
 role = "implementer"
@@ -550,11 +553,37 @@ Perform each of these in the running portal, not in code:
 
 Record the real result of each. If the action count is above three, say so and say
 where the extra actions are.
+
+## How to verify inside a plan run
+
+This task runs INSIDE `roko plan run`, which holds an **exclusive** workspace lock
+(`commands/plan.rs:302`). `roko serve` acquires the same exclusive lock
+(`commands/server.rs:10`), so **you cannot start the server, and you must not try** —
+it will fail with "Another roko process holds an exclusive lock" and you will burn the
+task's time budget retrying.
+
+Verify everything that does not need a running server, and there is a lot of it:
+
+  - read the code and confirm the change is actually present, citing file and line
+  - run `cargo test` / `cargo check` on the affected crates, and quote the real output
+  - run the crate's own integration tests, which exercise the handlers directly
+    through the router without binding a port
+  - inspect artifacts on disk
+
+Then write the report, and give it a section headed exactly
+`## Deferred: live-server checks` listing each check that genuinely needs a running
+server, as a command the operator can paste. Be specific — the endpoint, the expected
+response, and what it would prove.
+
+A report that honestly separates "verified here" from "deferred" is worth far more
+than one that claims a live check it could not perform. Do not fabricate server
+output.
 """
 status = "ready"
 role = "implementer"
 tier = "integrative"
 model_hint = "claude-sonnet-4-6"
+timeout_secs = 2700
 max_retries = 2
 estimated_minutes = 25
 depends_on = ["T10"]
@@ -567,7 +596,7 @@ read_files = [
     { path = "apps/portal/src/components/compose/ComposeView.tsx", why = "the view being exercised" },
 ]
 anti_patterns = [
-    "Do not count the actions from the design document. Count them in the running portal.",
+    "Do not fabricate server output. Put anything needing a live server under the deferred heading.",
     "Do not skip the round-trip check. It is the one that catches format damage.",
 ]
 

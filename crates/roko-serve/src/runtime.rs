@@ -10,6 +10,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 use crate::bench::BenchConfigOverrides;
+use crate::plan_types::{PlanSummaryDto, PlanTasksDto};
 
 /// Token usage reported by an LLM provider.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -219,6 +220,16 @@ impl CliRuntime for NoOpRuntime {
         })
     }
 
+    /// Returns `Ok(None)` for every id so that handlers that delegate to this
+    /// method produce a clean 404 rather than a 500 in unit tests.
+    async fn load_plan_summary(
+        &self,
+        _workdir: &std::path::Path,
+        _plan_id: &str,
+    ) -> anyhow::Result<Option<PlanSummaryDto>> {
+        Ok(None)
+    }
+
     fn session_status(&self, workdir: PathBuf) -> SessionStatusInfo {
         SessionStatusInfo {
             session_id: None,
@@ -364,6 +375,42 @@ pub trait CliRuntime: Send + Sync + 'static {
     /// cross-repo context into agent system prompts during dispatch.
     fn list_repos(&self) -> Vec<RepoInfo> {
         Vec::new()
+    }
+
+    /// List all plans available in the given working directory.
+    ///
+    /// Runtime implementations that know the real CLI internals should
+    /// override this. The default is explicit so callers can detect
+    /// unsupported runtimes without assuming plan discovery is available.
+    async fn list_plans(&self, workdir: &std::path::Path) -> anyhow::Result<Vec<PlanSummaryDto>> {
+        let _ = workdir;
+        anyhow::bail!("runtime does not support plan discovery")
+    }
+
+    /// Load a summary for a single plan identified by `plan_id`.
+    ///
+    /// Returns `Ok(None)` when the plan does not exist. The default returns
+    /// an explicit error so callers can detect unsupported runtimes.
+    async fn load_plan_summary(
+        &self,
+        workdir: &std::path::Path,
+        plan_id: &str,
+    ) -> anyhow::Result<Option<PlanSummaryDto>> {
+        let _ = (workdir, plan_id);
+        anyhow::bail!("runtime does not support plan discovery")
+    }
+
+    /// Load the task list for a single plan identified by `plan_id`.
+    ///
+    /// Returns `Ok(None)` when the plan does not exist. The default returns
+    /// an explicit error so callers can detect unsupported runtimes.
+    async fn load_plan_tasks(
+        &self,
+        workdir: &std::path::Path,
+        plan_id: &str,
+    ) -> anyhow::Result<Option<PlanTasksDto>> {
+        let _ = (workdir, plan_id);
+        anyhow::bail!("runtime does not support plan discovery")
     }
 
     /// Run a SWE-bench evaluation. Returns per-instance results.

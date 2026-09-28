@@ -29,6 +29,7 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/plans/{id}/status", get(plan_status))
         .route("/plans/{id}/pause", post(pause_plan))
         .route("/plans/{id}/resume", post(resume_plan))
+        .route("/plans/{id}/cancel", post(cancel_plan))
         .route("/plans/{id}/gates", get(plan_gates))
         .route("/plans/{id}/costs", get(plan_costs))
         .route("/plans/{id}/reviews", get(list_reviews))
@@ -39,74 +40,118 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/plans/generate", post(generate_plan))
 }
 
-/// `GET /api/plans` — list plans from `.roko/plans/`.
+/// `GET /api/plans` — list plans by delegating to the runtime's plan discovery.
+///
+/// The previous implementation walked `.roko/plans/` and filtered by file
+/// extension, which silently skipped every plan stored as a directory (the
+/// normal layout). Delegating to `state.runtime.list_plans()` fixes that and
+/// also surfaces richer status metadata the portal needs to colour plans.
 async fn list_plans(State(state): State<Arc<AppState>>) -> Result<Json<Value>, ApiError> {
-    let plans_dir = plans_dir(&state.workdir);
-    if !plans_dir.is_dir() {
-        return Ok(Json(json!([])));
-    }
-
-    let mut summaries = Vec::new();
-    let mut entries = tokio::fs::read_dir(&plans_dir)
+    let plans = state
+        .runtime
+        .list_plans(&state.workdir)
         .await
-        .map_err(|e| ApiError::internal(format!("read plans dir: {e}")))?;
+        .map_err(|e| {
+            ApiError::internal(format!("list plans in {}: {e}", state.workdir.display()))
+        })?;
 
-    while let Some(entry) = entries
-        .next_entry()
-        .await
-        .map_err(|e| ApiError::internal(format!("read plan entry: {e}")))?
-    {
-        let path = entry.path();
-        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-        if ext != "toml" && ext != "json" {
-            continue;
-        }
-        let plan = load_plan_file(&path).await?;
-        let completed_count = plan.tasks.iter().filter(|t| t.completed).count();
-        summaries.push(json!({
-            "id": plan.id,
-            "title": plan.title,
-            "task_count": plan.tasks.len(),
-            "completed": plan.tasks.iter().all(|t| t.completed),
-            "completed_task_count": completed_count,
-        }));
-    }
+    let summaries: Vec<Value> = plans
+        .into_iter()
+        .map(|dto| {
+            json!({
+                "id": dto.id,
+                "title": dto.title,
+                "task_count": dto.task_count,
+                "completed": dto.completed,
+                "completed_task_count": dto.tasks_done,
+                "tasks_failed": dto.tasks_failed,
+                "status": dto.status,
+            })
+        })
+        .collect();
 
     Ok(Json(Value::Array(summaries)))
 }
 
-/// `GET /api/plans/:id` — load a specific plan.
+/// `GET /api/plans/:id` — load a specific plan summary.
+///
+/// Delegates to `state.runtime.load_plan_summary()` so that directory-layout
+/// plans (the normal layout) are discovered correctly. The previous
+/// implementation called `find_plan`, which only probed flat `.json`/`.toml`
+/// files and returned 404 for every directory plan.
 async fn get_plan(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
-    let plan = find_plan(&state.workdir, &id).await?;
-    Ok(Json(plan_to_json(&plan)))
+    validate_path_segment(&id, "plan id")?;
+
+    let dto = state
+        .runtime
+        .load_plan_summary(&state.workdir, &id)
+        .await
+        .map_err(|e| ApiError::internal(format!("load plan '{id}': {e}")))?
+        .ok_or_else(|| ApiError::not_found(format!("plan '{id}' not found")))?;
+
+    Ok(Json(json!({
+        "id": dto.id,
+        "title": dto.title,
+        "task_count": dto.task_count,
+        "completed": dto.completed,
+        "completed_task_count": dto.tasks_done,
+        "tasks_done": dto.tasks_done,
+        "tasks_failed": dto.tasks_failed,
+        "status": dto.status,
+        "superseded_by": dto.superseded_by,
+        "old_format": dto.old_format,
+        "last_error": dto.last_error,
+    })))
 }
 
 /// `GET /api/plans/:id/tasks` — return the task list for a specific plan.
+///
+/// Delegates to `state.runtime.load_plan_tasks()` so that directory-layout
+/// plans (the normal layout) are discovered correctly. The previous
+/// implementation called `find_plan`, which only probed flat `.json`/`.toml`
+/// files and returned 404 for every directory plan.
+///
+/// Response envelope: `{ plan_id, task_count, tasks: [...] }`.
+/// Each task carries `id`, `title`, `description`, `role`, `tier`,
+/// `depends_on`, `files`, `completed`, `status`, and `verify_phases`.
 async fn plan_tasks(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
-    let plan = find_plan(&state.workdir, &id).await?;
-    let tasks: Vec<Value> = plan
+    validate_path_segment(&id, "plan id")?;
+
+    let dto = state
+        .runtime
+        .load_plan_tasks(&state.workdir, &id)
+        .await
+        .map_err(|e| ApiError::internal(format!("load tasks for plan '{id}': {e}")))?
+        .ok_or_else(|| ApiError::not_found(format!("plan '{id}' not found")))?;
+
+    let tasks: Vec<Value> = dto
         .tasks
         .iter()
         .map(|t| {
             json!({
                 "id": t.id,
+                "title": t.title,
                 "description": t.description,
+                "role": t.role,
+                "tier": t.tier,
                 "depends_on": t.depends_on,
                 "files": t.files,
                 "completed": t.completed,
-                "status": task_status(t),
+                "status": t.status,
+                "verify_phases": t.verify_phases,
             })
         })
         .collect();
+
     Ok(Json(json!({
-        "plan_id": plan.id,
-        "task_count": tasks.len(),
+        "plan_id": dto.plan_id,
+        "task_count": dto.task_count,
         "tasks": tasks,
     })))
 }
@@ -203,26 +248,30 @@ async fn execute_plan(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
-    // Verify the plan exists.
-    let plan = find_plan(&state.workdir, &id).await?;
+    validate_path_segment(&id, "plan id")?;
+
+    // Verify the plan exists via the runtime.  The previous flat-file lookup
+    // (`find_plan`) only probed for `.json` / `.toml` files and returned 404
+    // for every real plan directory (the normal layout). Delegating to
+    // `load_plan_summary` mirrors the approach already used by `get_plan` and
+    // correctly handles directory-layout plans.
+    let _dto = state
+        .runtime
+        .load_plan_summary(&state.workdir, &id)
+        .await
+        .map_err(|e| ApiError::internal(format!("load plan '{id}': {e}")))?
+        .ok_or_else(|| ApiError::not_found(format!("plan '{id}' not found")))?;
 
     // Acquire write lock once to check-and-insert atomically (no TOCTOU race).
     let run_id = uuid::Uuid::new_v4().to_string();
     let bus = state.event_bus.clone();
     let runtime = state.runtime.clone();
     let workdir = state.workdir.clone();
-    // Resolve the on-disk plan file path so `run_plan` gets a stable path
-    // rather than a reconstructed prompt.  `find_plan` already verified the
-    // file exists, so we know at least one of the two extensions is present.
-    let plan_file = {
-        let pd = plans_dir(&state.workdir);
-        let json_path = pd.join(format!("{}.json", plan.id));
-        if json_path.is_file() {
-            json_path
-        } else {
-            pd.join(format!("{}.toml", plan.id))
-        }
-    };
+    // Pass the plan's own directory as the execution target. The graph engine
+    // knows how to read `tasks.toml` from a directory; the old flat-file path
+    // only worked for the deprecated single-file format and silently failed
+    // for every real plan directory.
+    let plan_dir = plans_dir(&state.workdir).join(&id);
     let plan_id = id.clone();
 
     let mut active = state.active_plans.write().await;
@@ -232,18 +281,52 @@ async fn execute_plan(
         )));
     }
 
+    // Create the cancel token before spawning so the task can observe it.
+    // The `pause_plan` handler calls `cancel.cancel()` on the stored copy;
+    // the clone moved into the task is what the task actually checks.
+    let cancel = CancelToken::new();
+    let task_cancel = cancel.clone();
+
     let handle = tokio::spawn({
         let plan_id = plan_id.clone();
+        let plan_dir = plan_dir.clone();
         async move {
             bus.publish(ServerEvent::PlanStarted {
                 plan_id: plan_id.clone(),
             });
-            let success = match runtime.run_plan(&workdir, &plan_file).await {
-                Ok(PlanExecutionResult { success, .. }) => success,
-                Err(err) => {
-                    bus.publish(ServerEvent::Error {
-                        message: format!("plan execution failed for {plan_id}: {err}"),
-                    });
+            // Race the execution against the cancel signal so that a pause
+            // request can unwind the run in an orderly way rather than relying
+            // solely on task abort (which skips ordered shutdown).
+            let success = tokio::select! {
+                result = runtime.run_plan(&workdir, &plan_dir) => {
+                    match result {
+                        Ok(PlanExecutionResult { success, .. }) => {
+                            // Emit an explicit failure event so the portal's alert
+                            // band can show why a run died, not only that it ended.
+                            // NOTE: the bridge maps ServerEvent::Error to
+                            // DashboardEvent::Error { message } — plan_id is
+                            // embedded in the message string because
+                            // DashboardEvent::Error carries no structured plan_id
+                            // field; the portal cannot recover it separately.
+                            if !success {
+                                bus.publish(ServerEvent::Error {
+                                    message: format!(
+                                        "plan {plan_id} completed with task-level failures"
+                                    ),
+                                });
+                            }
+                            success
+                        }
+                        Err(err) => {
+                            bus.publish(ServerEvent::Error {
+                                message: format!("plan execution failed for {plan_id}: {err}"),
+                            });
+                            false
+                        }
+                    }
+                }
+                () = task_cancel.cancelled() => {
+                    tracing::info!(plan_id = %plan_id, "plan execution cancelled via token");
                     false
                 }
             };
@@ -251,13 +334,13 @@ async fn execute_plan(
         }
     });
 
-    let plans_dir = plans_dir(&state.workdir);
     let plan_handle = PlanHandle {
         id: run_id.clone(),
-        plan_dir: plans_dir,
+        // Store the specific plan's directory, not the parent plans directory.
+        plan_dir: plan_dir.clone(),
         status: OperationStatus::Running,
         handle,
-        cancel: CancelToken::new(),
+        cancel,
     };
 
     active.insert(id, plan_handle);
@@ -299,7 +382,7 @@ async fn pause_plan(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
-    let mut active = state.active_plans.write().await;
+    let active = state.active_plans.write().await;
     let handle = active
         .get(&id)
         .ok_or_else(|| ApiError::not_found("no active execution for this plan"))?;
@@ -308,9 +391,33 @@ async fn pause_plan(
         return Err(ApiError::conflict("plan execution already finished"));
     }
 
-    // Signal cancellation then abort the tokio task.
+    // Extract data needed for the snapshot before releasing the lock.
+    let task_abort = handle.handle.abort_handle();
+    let captured_plan_dir = handle.plan_dir.clone();
+    let captured_run_id = handle.id.clone();
+
+    // Signal ordered cancellation so the task can unwind cleanly.
     handle.cancel.cancel();
-    handle.handle.abort();
+
+    // Release the write lock so the spawned task can make progress during the
+    // grace window.  Holding the lock while sleeping would deadlock if the task
+    // tries to acquire it on its way out.
+    drop(active);
+
+    // Give the task a short grace period to observe the cancel signal and shut
+    // down in an orderly way.  Abort is kept as a last resort — it skips
+    // ordered shutdown and may leave shared state partially updated.
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+    {
+        // Re-acquire briefly to check task liveness; abort only if still running.
+        let active_check = state.active_plans.read().await;
+        if let Some(h) = active_check.get(&id) {
+            if !h.handle.is_finished() {
+                task_abort.abort();
+            }
+        }
+    }
 
     // Write a lightweight snapshot so the dashboard knows the plan is
     // paused and `POST /resume` can restart it.
@@ -323,8 +430,8 @@ async fn pause_plan(
         "plan_id": id,
         "paused": true,
         "paused_at": chrono::Utc::now().to_rfc3339(),
-        "plan_dir": handle.plan_dir,
-        "run_id": handle.id,
+        "plan_dir": captured_plan_dir,
+        "run_id": captured_run_id,
     });
     if let Err(err) = tokio::fs::write(
         &snapshot_path,
@@ -336,7 +443,8 @@ async fn pause_plan(
     }
 
     // Remove from active set.
-    active.remove(&id);
+    let mut active_final = state.active_plans.write().await;
+    drop(active_final.remove(&id));
 
     state.event_bus.publish(ServerEvent::PlanCompleted {
         plan_id: id.clone(),
@@ -390,19 +498,46 @@ async fn resume_plan(
         )));
     }
 
+    // Create the cancel token before spawning so the task can observe it (same
+    // pattern as execute_plan).
     let cancel = CancelToken::new();
+    let task_cancel = cancel.clone();
+
     let handle = tokio::spawn({
         let plan_id = plan_id.clone();
         async move {
             bus.publish(ServerEvent::PlanStarted {
                 plan_id: plan_id.clone(),
             });
-            let success = match runtime.run_once(&workdir, &prompt).await {
-                Ok(RunResult { success, .. }) => success,
-                Err(err) => {
-                    bus.publish(ServerEvent::Error {
-                        message: format!("plan resume failed for {plan_id}: {err}"),
-                    });
+            // Race execution against the cancel signal for orderly shutdown.
+            let success = tokio::select! {
+                result = runtime.run_once(&workdir, &prompt) => {
+                    match result {
+                        Ok(RunResult { success, .. }) => {
+                            // Emit an explicit failure event on task-level failure
+                            // so the portal's alert band shows why the resume died.
+                            // See the execute_plan note: plan_id is embedded in the
+                            // message string because DashboardEvent::Error carries
+                            // no structured plan_id field.
+                            if !success {
+                                bus.publish(ServerEvent::Error {
+                                    message: format!(
+                                        "plan {plan_id} resume completed with task-level failures"
+                                    ),
+                                });
+                            }
+                            success
+                        }
+                        Err(err) => {
+                            bus.publish(ServerEvent::Error {
+                                message: format!("plan resume failed for {plan_id}: {err}"),
+                            });
+                            false
+                        }
+                    }
+                }
+                () = task_cancel.cancelled() => {
+                    tracing::info!(plan_id = %plan_id, "plan resume cancelled via token");
                     false
                 }
             };
@@ -412,7 +547,8 @@ async fn resume_plan(
 
     let plan_handle = PlanHandle {
         id: run_id.clone(),
-        plan_dir: plans_dir(&state.workdir),
+        // Store the specific plan's directory, not the whole plans directory.
+        plan_dir: plans_dir(&state.workdir).join(&id),
         status: OperationStatus::Running,
         handle,
         cancel,
@@ -425,6 +561,63 @@ async fn resume_plan(
         axum::http::StatusCode::ACCEPTED,
         Json(json!({ "id": run_id, "resumed": true })),
     ))
+}
+
+/// `POST /api/plans/:id/cancel` — permanently cancel a running plan execution.
+///
+/// Unlike `/pause`, this handler does **not** write a snapshot file, so the
+/// plan cannot be resumed afterwards.  It signals the cancel token for ordered
+/// shutdown, waits a short grace window, aborts the task if still running, and
+/// then removes the plan from the active-plans map.
+///
+/// Returns 200 `{ "cancelled": true }` on success, or 404 when the plan is not
+/// actively executing.
+async fn cancel_plan(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    let active = state.active_plans.write().await;
+    let handle = active
+        .get(&id)
+        .ok_or_else(|| ApiError::not_found("no active execution for this plan"))?;
+
+    if handle.handle.is_finished() {
+        return Err(ApiError::not_found("no active execution for this plan"));
+    }
+
+    // Capture the abort handle before releasing the lock.
+    let task_abort = handle.handle.abort_handle();
+
+    // Signal ordered cancellation so the task can unwind cleanly.
+    handle.cancel.cancel();
+
+    // Release the write lock so the spawned task can make progress during the
+    // grace window.
+    drop(active);
+
+    // Give the task a short grace period to observe the cancel signal.
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+    {
+        let active_check = state.active_plans.read().await;
+        if let Some(h) = active_check.get(&id) {
+            if !h.handle.is_finished() {
+                task_abort.abort();
+            }
+        }
+    }
+
+    // Remove from the active set.  No snapshot is written — a cancelled plan
+    // is not resumable.
+    let mut active_final = state.active_plans.write().await;
+    drop(active_final.remove(&id));
+
+    state.event_bus.publish(ServerEvent::PlanCompleted {
+        plan_id: id.clone(),
+        success: false,
+    });
+
+    Ok(Json(json!({ "cancelled": true })))
 }
 
 // ── Verify results query ──────────────────────────────────────────────
@@ -1542,7 +1735,20 @@ fn build_plan_generation_prompt(prd_path: &std::path::Path, prd_content: &str) -
     )
 }
 
+/// Resolve the plans directory for the given workspace root.
+///
+/// Prefers the top-level `plans/` directory when it already exists as a
+/// directory, and falls back to the legacy `.roko/plans` location otherwise.
+/// This mirrors the identical helper in `roko-cli` so that `create_plan`
+/// writes to the same location that `list_plans` / `get_plan` read from.
+///
+/// Note: this function only *probes* whether the top-level directory exists —
+/// it never creates it as a side effect.
 fn plans_dir(workdir: &std::path::Path) -> std::path::PathBuf {
+    let top = workdir.join("plans");
+    if top.is_dir() {
+        return top;
+    }
     workdir.join(".roko").join("plans")
 }
 
@@ -1628,6 +1834,27 @@ mod tests {
                 output_text: None,
                 gate_results: Vec::new(),
             })
+        }
+
+        /// Return a synthetic summary for any plan ID so that `execute_plan`
+        /// can verify the plan exists without hitting the real filesystem.
+        async fn load_plan_summary(
+            &self,
+            _workdir: &std::path::Path,
+            plan_id: &str,
+        ) -> anyhow::Result<Option<crate::plan_types::PlanSummaryDto>> {
+            Ok(Some(crate::plan_types::PlanSummaryDto {
+                id: plan_id.to_string(),
+                title: "Test Plan".to_string(),
+                task_count: 1,
+                tasks_done: 0,
+                tasks_failed: 0,
+                completed: false,
+                status: "ready".to_string(),
+                superseded_by: None,
+                old_format: false,
+                last_error: None,
+            }))
         }
 
         fn session_status(&self, workdir: PathBuf) -> SessionStatusInfo {
@@ -1784,31 +2011,20 @@ mod tests {
         let calls = Arc::clone(&runtime.as_ref().calls);
         let (_dir, state) = test_state_with_runtime(runtime);
 
-        let plans_dir = state.workdir.join(".roko").join("plans");
-        tokio::fs::create_dir_all(&plans_dir)
+        // RecordingRuntime.load_plan_summary returns a synthetic DTO for any
+        // plan ID, so the directory does not need to exist on disk for the
+        // existence check. We create it anyway to keep the test realistic and
+        // to verify the target path passed to run_plan is the directory.
+        let plan_dir = state.workdir.join(".roko").join("plans").join("demo");
+        tokio::fs::create_dir_all(&plan_dir)
             .await
-            .expect("create plans dir");
-        let plan_file = plans_dir.join("demo.json");
+            .expect("create plan dir");
         tokio::fs::write(
-            &plan_file,
-            serde_json::to_string_pretty(&json!({
-                "id": "demo",
-                "title": "Demo Plan",
-                "description": "Implement the demo",
-                "tasks": [
-                    {
-                        "id": "T1",
-                        "description": "Update the widget",
-                        "depends_on": [],
-                        "files": ["src/widget.rs"],
-                        "completed": false
-                    }
-                ]
-            }))
-            .expect("serialize plan"),
+            plan_dir.join("tasks.toml"),
+            "[meta]\ntitle = \"Demo Plan\"\n\n[[tasks]]\nid = \"T1\"\ndescription = \"Update the widget\"\n",
         )
         .await
-        .expect("write plan");
+        .expect("write tasks.toml");
 
         let response = execute_plan(State(Arc::clone(&state)), Path("demo".into()))
             .await
@@ -1826,13 +2042,13 @@ mod tests {
         let calls = calls.lock().expect("lock calls");
         assert_eq!(calls.len(), 1);
         // execute_plan must delegate to run_plan (not run_once) and pass the
-        // workdir and the on-disk plan file path.
+        // plan's own directory — not a reconstructed flat .json / .toml path.
         assert_eq!(calls[0].kind, "plan", "execute_plan must call run_plan");
         assert_eq!(calls[0].workdir, state.workdir);
         assert_eq!(
             calls[0].arg,
-            plan_file.to_string_lossy(),
-            "plan_target must be the on-disk .json plan file"
+            plan_dir.to_string_lossy(),
+            "plan_target must be the plan directory, not a flat file path"
         );
     }
 
@@ -1977,6 +2193,37 @@ mod tests {
         assert!((limit - 0.27).abs() < 1e-6);
         assert_eq!(payload["budget"]["status"], "projected_exceeded");
         assert_eq!(payload["budget"]["projected_exceeded"], true);
+    }
+
+    // ── plans_dir helper ────────────────────────────────────────────────
+
+    /// When `<workdir>/plans/` already exists as a directory, `plans_dir`
+    /// should return it rather than the legacy `.roko/plans` location.
+    #[test]
+    fn plans_dir_prefers_top_level_when_it_exists() {
+        let dir = tempdir().expect("tempdir");
+        let top = dir.path().join("plans");
+        std::fs::create_dir_all(&top).expect("create top-level plans dir");
+
+        let result = plans_dir(dir.path());
+        assert_eq!(result, top, "should return top-level plans/ directory");
+    }
+
+    /// When `<workdir>/plans/` does not exist, `plans_dir` should fall back
+    /// to the legacy `.roko/plans` path (without creating any directory).
+    #[test]
+    fn plans_dir_falls_back_to_dotted_roko_when_top_level_absent() {
+        let dir = tempdir().expect("tempdir");
+        // Do NOT create `plans/` — only the dotted path should be returned.
+        let expected = dir.path().join(".roko").join("plans");
+
+        let result = plans_dir(dir.path());
+        assert_eq!(result, expected, "should fall back to .roko/plans");
+        // Confirm the helper did not create the directory as a side effect.
+        assert!(
+            !dir.path().join("plans").exists(),
+            "plans_dir must not create the top-level directory"
+        );
     }
 
     #[tokio::test]

@@ -1234,3 +1234,21 @@ Several findings appear independently in multiple audits, indicating high-confid
 | Replace `SessionManager::provider_health_registry`/`provider_rate_limiter` with builder handle | Blocked on #243 | roko-acp |
 | Conformance tests proving mandatory services active per profile | Partial (unit tests in runtime_services.rs) | roko-execution |
 | Delete duplicate `ServiceFactory::build` calls after full migration | Blocked on #243 | roko-cli, roko-acp |
+
+## GAP 2026-09-26: job cancellation returns 500 (roko-serve / roko-core)
+
+Three tests in `crates/roko-serve/tests/job_lifecycle.rs` fail and are now `#[ignore]`d:
+`test_cancel_from_assigned_state`, `test_job_cancellation_from_in_progress`,
+`test_cancel_terminal_job_fails_422`.
+
+`POST /api/jobs/{id}/cancel` returns 500 instead of 200/422. The handler
+`cancel_job_endpoint` (`crates/roko-serve/src/routes/jobs.rs:1217`) calls
+`roko_core::JobExecutionService::cancel`; every `JobError` other than
+`InvalidTransition` maps to `ApiError::internal`, so the real cause is masked.
+
+Pre-existing: `crates/roko-core/` and `routes/jobs.rs` are unmodified in the working
+tree, and the last commits touching these files predate the portal-programme work.
+Discovered while widening plan gates from single-test-file to whole-crate.
+
+Subsystem: roko-serve job routes / roko-core JobExecutionService.
+Also note: the response body uses `status`, while the tests assert on `state`.

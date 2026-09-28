@@ -219,6 +219,7 @@ pub mod workspace_lock;
 pub mod workspace_paths;
 
 pub mod serve_runtime;
+pub mod state_hub_ipc;
 
 /// Server modules re-exported from the `roko-serve` crate.
 pub use roko_serve as serve;

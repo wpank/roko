@@ -21,6 +21,7 @@ pub mod control_adapter;
 pub mod delivery;
 pub mod feedback;
 pub mod identity_map;
+pub mod plan_runner;
 pub mod runtime_event_adapter;
 pub mod view_state;
 pub mod workflow_caller;
@@ -34,6 +35,7 @@ pub use delivery::{
 };
 pub use feedback::{CompletionSinkResult, build_settler};
 pub use identity_map::{GraphIdentityMap, NodeIdentity};
+pub use plan_runner::{GraphPlanRunParams, run_graph_plan};
 pub use runtime_event_adapter::GraphRuntimeEventAdapter;
 pub use view_state::{
     GraphNodeRow, GraphNodeStatus, GraphStatusSummary, GraphViewState, GraphViewStateProjector,

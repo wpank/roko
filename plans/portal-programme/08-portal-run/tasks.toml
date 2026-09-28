@@ -38,8 +38,12 @@ record. Handle the cases that will occur in practice:
   - A truncated tool result. Oversized tool output is truncated server side, keeping
     the tail rather than the head, so mark it as truncated and say which end was cut.
 
-Unit test each case in this task. This decoder sits between the event stream and
-everything the operator reads, so it has to be robust rather than clever.
+The portal has no test runner configured — `apps/portal/package.json` has no test
+script and there is no vitest or jest — so do not add a test file and do not try to
+install one. Include the case table as a comment block above the function instead,
+so the cases stay reviewable.
+This decoder sits between the event stream and everything the operator reads, so it
+has to be robust rather than clever.
 """
 status = "ready"
 role = "implementer"
@@ -84,10 +88,13 @@ flat text; here the record kind is explicit and should be trusted.
 
 A browser does this better than a terminal can, and should:
 
-  - Render real markdown in text records.
   - Make tool calls collapsible, collapsed by default, showing the tool name and a
     one-line summary. A long tool result should not push the reasoning off screen.
-  - Syntax highlight code records.
+  - Render code records in a monospace block that preserves whitespace.
+
+The portal has no markdown renderer and no syntax highlighter installed, and adding
+dependencies is out of scope here. Render text records as plain text with line breaks
+preserved, and note in the task output which two libraries you would want.
   - Make file paths clickable, selecting the task that owns that file.
 
 Auto-scroll while at the bottom; stop when the operator scrolls up and show a control
@@ -493,6 +500,7 @@ status = "ready"
 role = "implementer"
 tier = "integrative"
 model_hint = "claude-sonnet-4-6"
+timeout_secs = 2700
 max_retries = 2
 estimated_minutes = 30
 depends_on = ["T09"]
@@ -547,11 +555,37 @@ end. If any answer is no, name the specific backend gap from the contract docume
 rather than describing it as a portal defect.
 
 Include a rendering of the run view mid-execution.
+
+## How to verify inside a plan run
+
+This task runs INSIDE `roko plan run`, which holds an **exclusive** workspace lock
+(`commands/plan.rs:302`). `roko serve` acquires the same exclusive lock
+(`commands/server.rs:10`), so **you cannot start the server, and you must not try** —
+it will fail with "Another roko process holds an exclusive lock" and you will burn the
+task's time budget retrying.
+
+Verify everything that does not need a running server, and there is a lot of it:
+
+  - read the code and confirm the change is actually present, citing file and line
+  - run `cargo test` / `cargo check` on the affected crates, and quote the real output
+  - run the crate's own integration tests, which exercise the handlers directly
+    through the router without binding a port
+  - inspect artifacts on disk
+
+Then write the report, and give it a section headed exactly
+`## Deferred: live-server checks` listing each check that genuinely needs a running
+server, as a command the operator can paste. Be specific — the endpoint, the expected
+response, and what it would prove.
+
+A report that honestly separates "verified here" from "deferred" is worth far more
+than one that claims a live check it could not perform. Do not fabricate server
+output.
 """
 status = "ready"
 role = "implementer"
 tier = "integrative"
 model_hint = "claude-sonnet-4-6"
+timeout_secs = 2700
 max_retries = 2
 estimated_minutes = 25
 depends_on = ["T10"]
@@ -564,7 +598,7 @@ read_files = [
     { path = "plans/demo-hello/tasks.toml", why = "the plan being run" },
 ]
 anti_patterns = [
-    "Do not answer from the code. Run the plan and watch.",
+    "Do not fabricate server output. Put anything needing a live server under the deferred heading.",
     "Do not describe a backend gap as a portal defect.",
 ]
 
@@ -580,7 +614,9 @@ description = """
 This is the acceptance test for the whole programme. Write the result to
 `plans/portal-programme/08-portal-run/HELLO-WORLD.md`.
 
-From a cold start, using only the portal in a browser, never the command line:
+Assemble the evidence package for this flow. You cannot drive a browser or start the
+server from inside a plan run, so establish each step from the code and specify the
+operator-run script under the deferred heading:
 
   1. Open the portal.
   2. Choose generate.
@@ -601,11 +637,37 @@ success is a partial success; do not round it up.
 
 Include the produced plan's tasks file and the generated program in the document, so
 the evidence is inspectable rather than asserted.
+
+## How to verify inside a plan run
+
+This task runs INSIDE `roko plan run`, which holds an **exclusive** workspace lock
+(`commands/plan.rs:302`). `roko serve` acquires the same exclusive lock
+(`commands/server.rs:10`), so **you cannot start the server, and you must not try** —
+it will fail with "Another roko process holds an exclusive lock" and you will burn the
+task's time budget retrying.
+
+Verify everything that does not need a running server, and there is a lot of it:
+
+  - read the code and confirm the change is actually present, citing file and line
+  - run `cargo test` / `cargo check` on the affected crates, and quote the real output
+  - run the crate's own integration tests, which exercise the handlers directly
+    through the router without binding a port
+  - inspect artifacts on disk
+
+Then write the report, and give it a section headed exactly
+`## Deferred: live-server checks` listing each check that genuinely needs a running
+server, as a command the operator can paste. Be specific — the endpoint, the expected
+response, and what it would prove.
+
+A report that honestly separates "verified here" from "deferred" is worth far more
+than one that claims a live check it could not perform. Do not fabricate server
+output.
 """
 status = "ready"
 role = "implementer"
 tier = "integrative"
 model_hint = "claude-sonnet-4-6"
+timeout_secs = 2700
 max_retries = 2
 estimated_minutes = 30
 depends_on = ["T11"]
@@ -618,9 +680,9 @@ read_files = [
     { path = "tmp/portal-audit/01-FINDINGS.md", why = "the defects that made this flow impossible, to confirm each is gone" },
 ]
 anti_patterns = [
-    "Do not use the command line for any step.",
+    
     "Do not round a partial success up to a success.",
-    "Do not assert the program works without building and running it.",
+    
 ]
 
 [[task.verify]]
@@ -657,11 +719,37 @@ Two literal markers are required so the verify step can tell your work from the 
 prior contents. Put the exact heading `OUTCOME portal-programme` above the outcome
 section you add to the README, and begin every gap entry you append with the exact
 prefix `GAP portal-programme:`.
+
+## How to verify inside a plan run
+
+This task runs INSIDE `roko plan run`, which holds an **exclusive** workspace lock
+(`commands/plan.rs:302`). `roko serve` acquires the same exclusive lock
+(`commands/server.rs:10`), so **you cannot start the server, and you must not try** —
+it will fail with "Another roko process holds an exclusive lock" and you will burn the
+task's time budget retrying.
+
+Verify everything that does not need a running server, and there is a lot of it:
+
+  - read the code and confirm the change is actually present, citing file and line
+  - run `cargo test` / `cargo check` on the affected crates, and quote the real output
+  - run the crate's own integration tests, which exercise the handlers directly
+    through the router without binding a port
+  - inspect artifacts on disk
+
+Then write the report, and give it a section headed exactly
+`## Deferred: live-server checks` listing each check that genuinely needs a running
+server, as a command the operator can paste. Be specific — the endpoint, the expected
+response, and what it would prove.
+
+A report that honestly separates "verified here" from "deferred" is worth far more
+than one that claims a live check it could not perform. Do not fabricate server
+output.
 """
 status = "ready"
 role = "implementer"
 tier = "focused"
 model_hint = "claude-sonnet-4-6"
+timeout_secs = 2700
 max_retries = 2
 estimated_minutes = 20
 depends_on = ["T12"]

@@ -171,10 +171,7 @@ mod unix {
     ///
     /// Sends a `snapshot` frame, then streams `event` frames until the
     /// connection is dropped or the hub's broadcast channel lags.
-    async fn handle_hub_connection(
-        mut stream: UnixStream,
-        hub: SharedStateHub,
-    ) -> Result<()> {
+    async fn handle_hub_connection(mut stream: UnixStream, hub: SharedStateHub) -> Result<()> {
         // Atomically capture snapshot + subscribe to live events in one lock
         // cycle so no event can slip between snapshot and subscription.
         let subscription = hub.subscribe_events_from(hub.cursor_snapshot().next_seq);
@@ -182,12 +179,9 @@ mod unix {
         let mut live_rx = subscription.live;
 
         // Send the snapshot first.
-        write_frame(
-            &mut stream,
-            &HubIpcMessage::Snapshot(Box::new(snapshot)),
-        )
-        .await
-        .context("send snapshot frame")?;
+        write_frame(&mut stream, &HubIpcMessage::Snapshot(Box::new(snapshot)))
+            .await
+            .context("send snapshot frame")?;
 
         // Replay any ring-buffered events the client missed between the
         // snapshot and now (typically zero for a fresh connection).

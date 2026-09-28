@@ -18,107 +18,158 @@ estimated_total_minutes = 190
 
 [[task]]
 id = "T01"
-title = "Document the live plan execution path"
+title = "Design the lib-side graph plan-run entry point"
 description = """
-Before changing anything, establish exactly which function must replace the
-deprecated stub, and record it in `plans/portal-programme/02-backend-plan-execution/EXECUTION-PATH.md`.
+Before changing anything, settle the design and record it in
+`plans/portal-programme/02-backend-plan-execution/EXECUTION-PATH.md`.
+
+There is a crate boundary in the way, and getting it wrong wastes the whole plan.
+`commands/plan.rs` belongs to the **binary** crate (`crates/roko-cli/src/main.rs`
+declares `mod commands;`). `serve_runtime.rs` belongs to the **library** crate
+(`crates/roko-cli/src/lib.rs` declares `pub mod serve_runtime;`). The binary depends on
+the library, never the reverse, so **`serve_runtime.rs` cannot call anything in
+`commands/plan.rs`**, no matter what visibility it is given.
+
+The graph plan-run entry point currently lives in the binary, is private, and takes a
+`cli: &Cli` parameter whose type is private to `main.rs`. So it cannot simply be made
+public either.
 
 Trace and write down, with file and line for each hop:
 
   1. The route handler that spawns the execution task.
   2. The runtime trait method it calls.
-  3. The roko-cli implementation of that method.
-  4. The function inside that implementation which currently reaches the deprecated
-     stub in crates/roko-cli/src/runner/mod.rs.
-  5. The graph engine entry point that `roko plan run` uses instead, in
-     crates/roko-cli/src/commands/plan.rs, together with its full parameter list.
+  3. The roko-cli implementation of that method, and the exact line where it reaches
+     the deprecated stub in `crates/roko-cli/src/runner/mod.rs`.
+  4. The graph entry point in `crates/roko-cli/src/commands/plan.rs`, with its full
+     parameter list.
 
-Then state which parameters of that engine entry point the HTTP path can supply,
-which need defaults, and what each default should be. The HTTP caller has no
-command-line arguments object, so this mapping is the real design decision of the
-plan and every later task depends on getting it right.
+Then design the extraction. The library already has `crates/roko-cli/src/graph_execution/`
+(declared at `lib.rs:161`) holding the supporting pieces — the control adapter, the
+feedback settler, the delivery service, the identity map. That is the right home.
 
-Note explicitly whether the engine entry point is private to its module. If it is,
-say what the smallest sound way to expose it is, without moving the function.
+Specify:
+
+  - A parameter struct, owned by the library, carrying everything the run needs and
+    **mentioning no type private to `main.rs`**. Go through the entry point's parameter
+    list one by one and say, for each, whether it becomes a struct field, gets a
+    default, or is dropped.
+  - The signature of the library function that takes it.
+  - Which parts of the current body move to the library and which stay in the binary
+    because they are genuinely CLI concerns, such as argument parsing, the TUI launch,
+    and terminal progress printing.
+
+This is the same inversion the previous plan solved with the runtime trait, one layer
+down. Do not propose making `Cli` public, and do not propose moving `commands/plan.rs`
+into the library — it is written against the binary's namespace with `use crate::*`.
 """
 status = "ready"
 role = "implementer"
-tier = "integrative"
+tier = "architectural"
 model_hint = "claude-sonnet-4-6"
+timeout_secs = 2700
 max_retries = 2
-estimated_minutes = 25
+estimated_minutes = 30
 depends_on = []
 files = ["plans/portal-programme/02-backend-plan-execution/EXECUTION-PATH.md"]
 
 [task.context]
 read_files = [
-    { path = "crates/roko-serve/src/routes/plans.rs", why = "the execute handler that spawns the run" },
-    { path = "crates/roko-serve/src/runtime.rs", why = "the run_plan trait method and its default implementation" },
-    { path = "crates/roko-cli/src/serve_runtime.rs", why = "the real run_plan implementation that reaches the deprecated stub" },
-    { path = "crates/roko-cli/src/runner/mod.rs", why = "the deprecated stub itself, which names its unmigrated call sites" },
-    { path = "crates/roko-cli/src/commands/plan.rs", why = "the graph engine entry point that plan run uses and its parameter list" },
+    { path = "crates/roko-cli/src/main.rs", why = "declares mod commands, so commands/plan.rs is in the binary crate; also where Cli is defined and private" },
+    { path = "crates/roko-cli/src/lib.rs", why = "declares pub mod serve_runtime and pub mod graph_execution, both in the library crate" },
+    { path = "crates/roko-cli/src/graph_execution/mod.rs", why = "the library module that will host the extracted entry point" },
+    { path = "crates/roko-cli/src/serve_runtime.rs", why = "the caller that cannot see the binary crate" },
+    { path = "crates/roko-cli/src/runner/mod.rs", why = "the deprecated stub the current path terminates in" },
 ]
 anti_patterns = [
+    "Do not propose making the Cli struct public. It is a binary-crate argument parser.",
+    "Do not propose moving commands/plan.rs into the library; it uses `use crate::*` against the binary namespace.",
     "Do not change any source file in this task. It produces a document only.",
-    "Do not propose moving the engine entry point to another crate. Find the smallest sound exposure.",
 ]
 
 [[task.verify]]
 phase = "structural"
-command = "test -f plans/portal-programme/02-backend-plan-execution/EXECUTION-PATH.md && grep -q 'runner/mod.rs' plans/portal-programme/02-backend-plan-execution/EXECUTION-PATH.md"
-fail_msg = "EXECUTION-PATH.md is missing or does not trace through the deprecated stub"
+command = "test -f plans/portal-programme/02-backend-plan-execution/EXECUTION-PATH.md && grep -q 'graph_execution' plans/portal-programme/02-backend-plan-execution/EXECUTION-PATH.md"
+fail_msg = "EXECUTION-PATH.md is missing or does not name the library module that will host the entry point"
 
 [[task]]
 id = "T02"
-title = "Expose the graph engine entry point to the serve runtime"
+title = "Extract the graph plan-run entry point into the library crate"
 description = """
-Make the graph engine plan-run entry point reachable from
-`crates/roko-cli/src/serve_runtime.rs`, following the approach chosen in T01's
-document.
+Create `crates/roko-cli/src/graph_execution/plan_runner.rs` in the **library** crate and
+move the graph plan-run body there, following the design from T01.
 
-The engine entry point lives in crates/roko-cli/src/commands/plan.rs. Both that
-module and serve_runtime.rs are inside roko-cli, so this is a visibility change
-inside one crate, not a cross-crate move.
+This is the crux of the plan. The binary cannot be called from the library, so the
+shared code has to live in the library and both sides call it.
 
-Prefer adding a narrow wrapper function next to the entry point that takes only the
-parameters an HTTP caller can supply, and fills the rest with the defaults T01
-specified. That keeps the wide command-line parameter list private and gives the
-server one honest signature to call.
+Do this:
 
-Do not alter the behaviour of the existing entry point. Do not change what `roko plan
-run` does.
+  1. Add a parameter struct in the new module carrying what the run needs — the plans
+     directory, the workspace directory, the resolved config, retry and task limits,
+     budget settings, the model override, the permission flag, and the worktree flag.
+     It must reference no type private to `main.rs`. Give it a `Default` where that is
+     sensible so an HTTP caller can fill in only what it knows.
+  2. Move the graph execution body out of `crates/roko-cli/src/commands/plan.rs` into a
+     public async function in the new module that takes that struct and returns the
+     run report.
+  3. Leave in the binary only what is genuinely a CLI concern: argument parsing, the
+     TUI launch, terminal progress printing, and translating `Cli` into the new struct.
+  4. Declare the module in `crates/roko-cli/src/graph_execution/mod.rs` and re-export
+     the function and the struct so `serve_runtime.rs` can reach them.
+  5. Make `commands/plan.rs` call the new library function.
+
+`roko plan run` must behave exactly as before. That is the acceptance bar: this is a
+move, not a redesign. If a piece of the body genuinely cannot move because it depends
+on binary-only types, leave it in the binary, pass its result in through the struct,
+and say so in the task output.
 """
 status = "ready"
 role = "implementer"
-tier = "integrative"
+tier = "architectural"
 model_hint = "claude-sonnet-4-6"
+timeout_secs = 2700
 max_retries = 2
-estimated_minutes = 30
+estimated_minutes = 45
 depends_on = ["T01"]
-files = ["crates/roko-cli/src/commands/plan.rs"]
+files = [
+    "crates/roko-cli/src/graph_execution/plan_runner.rs",
+    "crates/roko-cli/src/graph_execution/mod.rs",
+    "crates/roko-cli/src/commands/plan.rs",
+]
 
 [task.context]
 read_files = [
-    { path = "crates/roko-cli/src/commands/plan.rs", why = "the entry point being wrapped and its parameter list" },
-    { path = "plans/portal-programme/02-backend-plan-execution/EXECUTION-PATH.md", why = "the parameter mapping and default values decided in T01" },
-    { path = "crates/roko-cli/src/serve_runtime.rs", why = "the caller the wrapper is being shaped for" },
+    { path = "plans/portal-programme/02-backend-plan-execution/EXECUTION-PATH.md", why = "the parameter mapping and extraction boundary decided in T01" },
+    { path = "crates/roko-cli/src/commands/plan.rs", why = "the body being moved and its full parameter list" },
+    { path = "crates/roko-cli/src/graph_execution/mod.rs", why = "the module that must declare and re-export the new submodule" },
+    { path = "crates/roko-cli/src/lib.rs", why = "confirms graph_execution is part of the library crate" },
 ]
 anti_patterns = [
-    "Do not change the behaviour of the existing plan run path.",
-    "Do not make the full command-line parameter list public.",
+    "Do not leave the entry point in the binary crate. The library cannot call it there, and the next task depends on reaching it.",
+    "Do not reference the Cli struct from the library module.",
+    "Do not change what `roko plan run` does. This is a move, not a redesign.",
 ]
+
+[[task.verify]]
+phase = "structural"
+command = "test -f crates/roko-cli/src/graph_execution/plan_runner.rs && grep -q 'plan_runner' crates/roko-cli/src/graph_execution/mod.rs"
+fail_msg = "the plan runner was not created in the library crate or is not declared in graph_execution/mod.rs"
 
 [[task.verify]]
 phase = "compile"
 command = "cargo check -p roko-cli"
-fail_msg = "roko-cli does not compile after exposing the engine entry point"
+fail_msg = "roko-cli does not compile after extracting the plan runner into the library"
+timeout_ms = 1800000
 
 [[task]]
 id = "T03"
 title = "Point the serve runtime at the graph engine"
 description = """
 Rewrite the plan execution path in `crates/roko-cli/src/serve_runtime.rs` so it calls
-the wrapper from T02 instead of the deprecated runner entry point.
+the library function from T02 instead of the deprecated runner entry point.
+
+Both this file and `graph_execution/plan_runner.rs` are in the library crate, so the
+call resolves. Build the parameter struct from the workspace directory and the plan
+target, taking defaults for everything the HTTP caller does not know.
 
 The function that currently calls the deprecated stub is the local plan run helper in
 this file. Replace that call. When the graph engine returns, map its report into the
@@ -142,7 +193,7 @@ files = ["crates/roko-cli/src/serve_runtime.rs"]
 [task.context]
 read_files = [
     { path = "crates/roko-cli/src/serve_runtime.rs", why = "the helper that calls the deprecated stub and the result type it must return" },
-    { path = "crates/roko-cli/src/commands/plan.rs", why = "the wrapper added in T02 and the report type it returns" },
+    { path = "crates/roko-cli/src/graph_execution/plan_runner.rs", why = "the library entry point added in T02, its parameter struct and its report type" },
     { path = "crates/roko-cli/src/runner/mod.rs", why = "the deprecated stub being removed from the call chain" },
     { path = "crates/roko-serve/src/runtime.rs", why = "the plan execution result shape the trait method returns" },
 ]
@@ -202,8 +253,8 @@ anti_patterns = [
 
 [[task.verify]]
 phase = "compile"
-command = "cargo check -p roko-serve"
-fail_msg = "roko-serve does not compile after fixing plan resolution in execute"
+command = "grep -q 'load_plan_summary' crates/roko-serve/src/routes/plans.rs && cargo check -p roko-serve"
+fail_msg = "the execute handler does not resolve plans through the runtime, or the crate does not compile"
 
 [[task]]
 id = "T05"
@@ -288,8 +339,8 @@ anti_patterns = [
 
 [[task.verify]]
 phase = "structural"
-command = "grep -q 'cancel' crates/roko-serve/src/routes/plans.rs && cargo check -p roko-serve"
-fail_msg = "the cancel route is not registered or the crate does not compile"
+command = "grep -q '/cancel' crates/roko-serve/src/routes/plans.rs && cargo check -p roko-serve"
+fail_msg = "the cancel route path is not registered or the crate does not compile"
 
 [[task]]
 id = "T07"
@@ -375,7 +426,7 @@ anti_patterns = [
 
 [[task.verify]]
 phase = "test"
-command = "cargo test -p roko-serve --test plan_execute"
+command = "cargo test -p roko-serve"
 fail_msg = "the plan execution integration test does not pass"
 
 [[task]]
@@ -387,8 +438,9 @@ Run a real plan through the HTTP API and write the outcome to
 
 Steps:
 
-  1. Start the server against this workspace.
-  2. Execute the demo-hello plan through the API, not the CLI.
+  1. Establish from the code and the integration tests that the execute handler
+     resolves directory plans and reaches the graph engine.
+  2. Run the plan-execute integration test and quote its real output.
   3. Watch the event stream and record which events arrive, in order, with their
      field values.
   4. Confirm the plan's artifact was actually created on disk. A 202 followed by a
@@ -400,11 +452,37 @@ The review must state plainly whether execution works end to end. If the run sti
 fails, record the exact error and where it originates. Note any event the run view
 will need and which did not arrive, since that is input to the backend-live-events
 plan.
+
+## How to verify inside a plan run
+
+This task runs INSIDE `roko plan run`, which holds an **exclusive** workspace lock
+(`commands/plan.rs:302`). `roko serve` acquires the same exclusive lock
+(`commands/server.rs:10`), so **you cannot start the server, and you must not try** —
+it will fail with "Another roko process holds an exclusive lock" and you will burn the
+task's time budget retrying.
+
+Verify everything that does not need a running server, and there is a lot of it:
+
+  - read the code and confirm the change is actually present, citing file and line
+  - run `cargo test` / `cargo check` on the affected crates, and quote the real output
+  - run the crate's own integration tests, which exercise the handlers directly
+    through the router without binding a port
+  - inspect artifacts on disk
+
+Then write the report, and give it a section headed exactly
+`## Deferred: live-server checks` listing each check that genuinely needs a running
+server, as a command the operator can paste. Be specific — the endpoint, the expected
+response, and what it would prove.
+
+A report that honestly separates "verified here" from "deferred" is worth far more
+than one that claims a live check it could not perform. Do not fabricate server
+output.
 """
 status = "ready"
 role = "implementer"
 tier = "integrative"
 model_hint = "claude-sonnet-4-6"
+timeout_secs = 2700
 max_retries = 2
 estimated_minutes = 25
 depends_on = ["T08"]
@@ -417,7 +495,7 @@ read_files = [
     { path = "plans/demo-hello/tasks.toml", why = "the plan being executed and the artifact it must produce" },
 ]
 anti_patterns = [
-    "Do not accept a 202 response as evidence of success. Check the artifact on disk.",
+    "Do not fabricate server output. Put anything needing a live server under the deferred heading.",
     "Do not report success if the run failed. Record the error.",
 ]
 

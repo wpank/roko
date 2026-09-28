@@ -207,6 +207,11 @@ impl GraphTuiBridge {
     /// has changed since the last poll.
     ///
     /// Returns the new status map for the next polling cycle.
+    ///
+    /// Completions are always published before starts so that, when a
+    /// predecessor completes and a successor starts in the same 100 ms tick,
+    /// `task_completed` always precedes `task_started` in the event stream.
+    /// This preserves the causal order visible to the portal's run view.
     pub fn poll_status_changes(
         &self,
         plan_id: &str,
@@ -214,29 +219,39 @@ impl GraphTuiBridge {
         current: &HashMap<String, NodeStatus>,
         node_titles: &HashMap<String, String>,
     ) -> Vec<(String, NodeStatus)> {
-        let mut changes = Vec::new();
+        // Collect transitions into two buckets so we can emit in the right
+        // order regardless of HashMap iteration order.
+        let mut completions: Vec<(&String, NodeStatus)> = Vec::new();
+        let mut starts: Vec<(&String, NodeStatus)> = Vec::new();
+
         for (node_id, &new_status) in current {
             let old_status = previous.get(node_id).copied();
-            let changed = old_status.map_or(true, |old| old != new_status);
-            if !changed {
+            if old_status.map_or(false, |old| old == new_status) {
                 continue;
             }
             match new_status {
-                NodeStatus::Running => {
-                    let title = node_titles
-                        .get(node_id)
-                        .map(String::as_str)
-                        .unwrap_or(node_id);
-                    self.node_started(plan_id, node_id, title);
-                }
+                NodeStatus::Running => starts.push((node_id, new_status)),
                 NodeStatus::Complete
                 | NodeStatus::Failed
                 | NodeStatus::Skipped
-                | NodeStatus::ConditionSkipped => {
-                    self.node_completed(plan_id, node_id, new_status);
-                }
+                | NodeStatus::ConditionSkipped => completions.push((node_id, new_status)),
                 NodeStatus::Pending => {}
             }
+        }
+
+        let mut changes = Vec::new();
+        // Emit completions first: in a serial DAG a node completing in this
+        // tick is always the cause of any successor starting in the same tick.
+        for (node_id, new_status) in completions {
+            self.node_completed(plan_id, node_id, new_status);
+            changes.push((node_id.clone(), new_status));
+        }
+        for (node_id, new_status) in starts {
+            let title = node_titles
+                .get(node_id)
+                .map(String::as_str)
+                .unwrap_or(node_id);
+            self.node_started(plan_id, node_id, title);
             changes.push((node_id.clone(), new_status));
         }
         changes

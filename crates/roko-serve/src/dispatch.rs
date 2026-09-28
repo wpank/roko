@@ -307,6 +307,10 @@ impl EfficiencyTracker {
             .await
             .with_context(|| format!("open {}", self.path.display()))?;
         file.write_all(line.as_bytes()).await?;
+        // tokio::fs::File hands writes to the blocking pool; without an explicit
+        // flush the write can still be in flight when this returns and the file is
+        // dropped, so an immediate reader sees an empty file (the N-9 flake).
+        file.flush().await?;
         Ok(())
     }
 }

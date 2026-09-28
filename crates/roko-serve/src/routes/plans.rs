@@ -14,7 +14,7 @@ use crate::error::{ApiError, validate_path_segment};
 use crate::events::ServerEvent;
 use crate::extract::{RequestPayload, ValidJson, validate_with_validator};
 use crate::plan_types::{Plan, PlanTask};
-use crate::runtime::{PlanExecutionResult, RunResult};
+use crate::runtime::{PlanExecutionResult, PlanRunOptions, RunResult};
 use crate::state::{AppState, OperationHandle, OperationStatus, PlanHandle};
 use roko_core::agent::resolve_model;
 use roko_learn::cost_projection::{CompletedTask, CostProjector, RemainingTask};
@@ -243,18 +243,73 @@ async fn create_plan(
     ))
 }
 
-/// `POST /api/plans/:id/execute` — spawn a background plan execution task.
-async fn execute_plan(
-    State(state): State<Arc<AppState>>,
-    Path(id): Path<String>,
-) -> Result<impl IntoResponse, ApiError> {
+// ── Active-run bookkeeping helpers ────────────────────────────────────
+
+/// Returns the map key of any unfinished run entry, or `None` when every
+/// entry is already finished or the map is empty.
+///
+/// A finished entry does **not** constitute a conflict: `execute_plan`
+/// replaces a stale finished entry rather than blocking on it.
+fn active_run_conflict(
+    active: &std::collections::HashMap<String, PlanHandle>,
+) -> Option<String> {
+    active
+        .iter()
+        .find(|(_, h)| !h.handle.is_finished())
+        .map(|(key, _)| key.clone())
+}
+
+/// Returns the map key of the unfinished entry whose key equals `id` or
+/// whose `members` list contains `id`.
+///
+/// Returns `None` when no live entry matches — either because `id` is
+/// unknown or because every matching entry has already finished.
+fn active_run_for(
+    active: &std::collections::HashMap<String, PlanHandle>,
+    id: &str,
+) -> Option<String> {
+    active
+        .iter()
+        .find(|(key, h)| {
+            !h.handle.is_finished() && (*key == id || h.members.iter().any(|m| m == id))
+        })
+        .map(|(key, _)| key.clone())
+}
+
+/// Optional request body for `POST /api/plans/:id/execute`.
+///
+/// Both fields default to `false`, so the portal's "run" button (which sends
+/// no body) always triggers a fresh run without needing to supply a payload.
+#[derive(Deserialize, Default)]
+struct ExecutePlanRequest {
+    /// `true` — resume from the last checkpoint (`--force-resume`).
+    /// `false` (default) — start fresh, discarding any checkpoint (`--fresh`).
+    #[serde(default)]
+    resume: bool,
+}
+
+/// Shared execution helper for [`execute_plan`] and [`resume_plan`].
+///
+/// - Validates `id` as a safe path segment.
+/// - Resolves the plan with `runtime.load_plan_summary` (returns 404 when absent).
+/// - Derives `plan_dir` from the summary's `group`, exactly as `execute_plan`
+///   did before this refactor: `plans_dir(..)`, joined with `group` when set,
+///   then with the plan `id`.
+/// - Returns 409 when an unfinished run is already active.
+/// - Spawns a background task that calls `run_plan_with_options` with the
+///   cancel token; `force_resume` and `fresh` are set from `resume`.
+///
+/// Returns `run_id` on success.
+async fn start_plan_run(
+    state: &Arc<AppState>,
+    id: String,
+    resume: bool,
+) -> Result<String, ApiError> {
     validate_path_segment(&id, "plan id")?;
 
-    // Verify the plan exists via the runtime.  The previous flat-file lookup
-    // (`find_plan`) only probed for `.json` / `.toml` files and returned 404
-    // for every real plan directory (the normal layout). Delegating to
-    // `load_plan_summary` mirrors the approach already used by `get_plan` and
-    // correctly handles directory-layout plans.
+    // Resolve the plan through the runtime so directory-layout plans are found.
+    // The old `find_plan` helper only probed flat `.json`/`.toml` files and
+    // returned 404 for every real plan directory.
     let dto = state
         .runtime
         .load_plan_summary(&state.workdir, &id)
@@ -262,15 +317,11 @@ async fn execute_plan(
         .map_err(|e| ApiError::internal(format!("load plan '{id}': {e}")))?
         .ok_or_else(|| ApiError::not_found(format!("plan '{id}' not found")))?;
 
-    // Acquire write lock once to check-and-insert atomically (no TOCTOU race).
     let run_id = uuid::Uuid::new_v4().to_string();
     let bus = state.event_bus.clone();
     let runtime = state.runtime.clone();
     let workdir = state.workdir.clone();
-    // Pass the plan's own directory as the execution target. The graph engine
-    // knows how to read `tasks.toml` from a directory; the old flat-file path
-    // only worked for the deprecated single-file format and silently failed
-    // for every real plan directory.
+
     // Plans inside a plan set live under their group directory.
     let plan_dir = dto
         .group
@@ -282,10 +333,11 @@ async fn execute_plan(
         .join(&id);
     let plan_id = id.clone();
 
+    // Acquire write lock once to check-and-insert atomically (no TOCTOU race).
     let mut active = state.active_plans.write().await;
-    if active.contains_key(&id) {
+    if let Some(conflict_key) = active_run_conflict(&active) {
         return Err(ApiError::conflict(format!(
-            "plan {id} is already executing"
+            "a plan run is already active (run key: {conflict_key})"
         )));
     }
 
@@ -299,42 +351,46 @@ async fn execute_plan(
         let plan_id = plan_id.clone();
         let plan_dir = plan_dir.clone();
         async move {
-            bus.publish(ServerEvent::PlanStarted {
-                plan_id: plan_id.clone(),
-            });
-            // Race the execution against the cancel signal so that a pause
-            // request can unwind the run in an orderly way rather than relying
-            // solely on task abort (which skips ordered shutdown).
-            let success = tokio::select! {
-                result = runtime.run_plan(&workdir, &plan_dir) => {
-                    match result {
-                        Ok(PlanExecutionResult { success, .. }) => {
-                            // Emit an explicit failure event so the portal's alert
-                            // band can show why a run died, not only that it ended.
-                            // NOTE: the bridge maps ServerEvent::Error to
-                            // DashboardEvent::Error { message } — plan_id is
-                            // embedded in the message string because
-                            // DashboardEvent::Error carries no structured plan_id
-                            // field; the portal cannot recover it separately.
-                            if !success {
-                                bus.publish(ServerEvent::Error {
-                                    message: format!(
-                                        "plan {plan_id} completed with task-level failures"
-                                    ),
-                                });
-                            }
-                            success
-                        }
-                        Err(err) => {
-                            bus.publish(ServerEvent::Error {
-                                message: format!("plan execution failed for {plan_id}: {err}"),
-                            });
-                            false
-                        }
+            // Do NOT publish PlanStarted here. The runtime publishes its own
+            // PlanStarted event (with the correct tasks_total) into the server
+            // hub. A duplicate from the handler would be forwarded by the
+            // bus-to-hub bridge with tasks_total: 0, confusing the portal.
+            //
+            // Pass the cancel token to the runtime so it can stop itself when
+            // the handler calls cancel.cancel(). The run observes the token
+            // internally; there is no select! race here, so PlanCompleted is
+            // always published exactly once — by this task, after run returns.
+            let options = PlanRunOptions {
+                cancel: Some(task_cancel),
+                fresh: !resume,
+                force_resume: resume,
+                ..PlanRunOptions::default()
+            };
+            let success = match runtime
+                .run_plan_with_options(&workdir, &plan_dir, options)
+                .await
+            {
+                Ok(PlanExecutionResult { success, .. }) => {
+                    // Emit an explicit failure event so the portal's alert
+                    // band can show why a run died, not only that it ended.
+                    // NOTE: the bridge maps ServerEvent::Error to
+                    // DashboardEvent::Error { message } — plan_id is
+                    // embedded in the message string because
+                    // DashboardEvent::Error carries no structured plan_id
+                    // field; the portal cannot recover it separately.
+                    if !success {
+                        bus.publish(ServerEvent::Error {
+                            message: format!(
+                                "plan {plan_id} completed with task-level failures"
+                            ),
+                        });
                     }
+                    success
                 }
-                () = task_cancel.cancelled() => {
-                    tracing::info!(plan_id = %plan_id, "plan execution cancelled via token");
+                Err(err) => {
+                    bus.publish(ServerEvent::Error {
+                        message: format!("plan execution failed for {plan_id}: {err}"),
+                    });
                     false
                 }
             };
@@ -346,6 +402,8 @@ async fn execute_plan(
         id: run_id.clone(),
         // Store the specific plan's directory, not the parent plans directory.
         plan_dir: plan_dir.clone(),
+        // Single-plan run: the only member is this plan.
+        members: vec![plan_id.clone()],
         status: OperationStatus::Running,
         handle,
         cancel,
@@ -354,29 +412,54 @@ async fn execute_plan(
     active.insert(id, plan_handle);
     drop(active);
 
+    Ok(run_id)
+}
+
+/// `POST /api/plans/:id/execute` — spawn a background plan execution task.
+///
+/// Accepts an optional JSON body `{ "resume": bool }` (P-7 of the portal
+/// contract). When `resume: true`, the run continues from the last checkpoint;
+/// when absent or `false`, the run starts fresh.
+async fn execute_plan(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    body: axum::body::Bytes,
+) -> Result<impl IntoResponse, ApiError> {
+    // Parse the optional request body. An empty body (the common case from
+    // the portal's run button) means a fresh run; `{ "resume": true }`
+    // resumes from the last checkpoint.
+    let req: ExecutePlanRequest = if body.is_empty() {
+        ExecutePlanRequest::default()
+    } else {
+        serde_json::from_slice(&body).map_err(ApiError::parse)?
+    };
+    let resume = req.resume;
+
+    let run_id = start_plan_run(&state, id, resume).await?;
+
     Ok((
         axum::http::StatusCode::ACCEPTED,
-        Json(json!({ "id": run_id })),
+        Json(json!({ "id": run_id, "resume": resume })),
     ))
 }
 
 /// `GET /api/plans/:id/status` — check execution status for a plan.
+///
+/// `{id}` may be the run key **or** any member plan id of an active run.
 async fn plan_status(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
     let active = state.active_plans.read().await;
-    active.get(&id).map_or_else(
-        || Err(ApiError::not_found("no active execution for this plan")),
-        |h| {
-            Ok(Json(json!({
-                "id": h.id,
-                "plan_dir": h.plan_dir,
-                "status": format!("{:?}", h.status),
-                "finished": h.handle.is_finished(),
-            })))
-        },
-    )
+    let key = active_run_for(&active, &id)
+        .ok_or_else(|| ApiError::not_found("no active execution for this plan"))?;
+    let h = active.get(&key).expect("key from active_run_for must exist in map");
+    Ok(Json(json!({
+        "id": h.id,
+        "plan_dir": h.plan_dir,
+        "status": format!("{:?}", h.status),
+        "finished": h.handle.is_finished(),
+    })))
 }
 
 // ── Pause / Resume ───────────────────────────────────────────────────
@@ -386,14 +469,17 @@ async fn plan_status(
 /// Cancels the background task and saves a snapshot so the plan can be
 /// resumed later.  Returns 200 with `{ "paused": true }` on success, 404
 /// if the plan is not actively executing, or 409 if it already finished.
+///
+/// `{id}` may be the run key **or** any member plan id of an active run.
 async fn pause_plan(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
     let active = state.active_plans.write().await;
-    let handle = active
-        .get(&id)
+    // Resolve by key or by member plan id.
+    let key = active_run_for(&active, &id)
         .ok_or_else(|| ApiError::not_found("no active execution for this plan"))?;
+    let handle = active.get(&key).expect("key from active_run_for must exist in map");
 
     if handle.handle.is_finished() {
         return Err(ApiError::conflict("plan execution already finished"));
@@ -417,15 +503,20 @@ async fn pause_plan(
     // ordered shutdown and may leave shared state partially updated.
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
-    {
+    let had_to_abort = {
         // Re-acquire briefly to check task liveness; abort only if still running.
         let active_check = state.active_plans.read().await;
-        if let Some(h) = active_check.get(&id) {
+        if let Some(h) = active_check.get(&key) {
             if !h.handle.is_finished() {
                 task_abort.abort();
+                true
+            } else {
+                false
             }
+        } else {
+            false
         }
-    }
+    };
 
     // Write a lightweight snapshot so the dashboard knows the plan is
     // paused and `POST /resume` can restart it.
@@ -450,124 +541,53 @@ async fn pause_plan(
         tracing::warn!(path = %snapshot_path.display(), error = %err, "failed to write pause snapshot");
     }
 
-    // Remove from active set.
+    // Remove from active set using the resolved key.
     let mut active_final = state.active_plans.write().await;
-    drop(active_final.remove(&id));
+    drop(active_final.remove(&key));
 
-    state.event_bus.publish(ServerEvent::PlanCompleted {
-        plan_id: id.clone(),
-        success: false,
-    });
+    // Publish PlanCompleted only when the task did not finish cleanly on its
+    // own.  If the run observed the cancel token and returned, it already
+    // published PlanCompleted; publishing again here would deliver a duplicate
+    // to every connected WebSocket client.
+    if had_to_abort {
+        state.event_bus.publish(ServerEvent::PlanCompleted {
+            plan_id: id.clone(),
+            success: false,
+        });
+    }
 
     Ok(Json(json!({ "paused": true, "snapshot": snapshot_path })))
 }
 
 /// `POST /api/plans/:id/resume` — resume a paused plan execution.
 ///
-/// Re-starts the plan from where it left off.  If the plan was paused via
-/// `/pause`, a `.paused.json` snapshot exists in `.roko/state/`.
+/// Removes the `.roko/state/<id>.paused.json` marker written by `pause_plan`,
+/// then delegates to [`start_plan_run`] with `resume: true` — the same path
+/// that `POST /api/plans/{id}/execute` with `{ "resume": true }` follows.
+///
+/// This fixes the previous implementation, which used the legacy flat-file
+/// `find_plan` (404 for every directory plan) and sent the plan as a text
+/// prompt to `run_once` instead of running it through `run_plan_with_options`.
 async fn resume_plan(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
-    // Check it's not already running.
-    let active = state.active_plans.read().await;
-    if active.contains_key(&id) {
-        return Err(ApiError::conflict(format!(
-            "plan {id} is already executing"
-        )));
-    }
-    drop(active);
-
-    // Load the plan to verify it exists.
-    let plan = find_plan(&state.workdir, &id).await?;
-
-    // Clean up the paused marker if it exists.
+    // Remove the paused marker written by pause_plan (ignore errors: the file
+    // may not exist if the plan was never paused, or was already cleaned up).
     let paused_path = state
         .workdir
         .join(".roko")
         .join("state")
         .join(format!("{id}.paused.json"));
-    // Intentionally ignoring: file may not exist if plan was never paused
     let _ = tokio::fs::remove_file(&paused_path).await;
 
-    // Re-execute (same logic as execute, but marks it as a resume).
-    let run_id = uuid::Uuid::new_v4().to_string();
-    let bus = state.event_bus.clone();
-    let runtime = state.runtime.clone();
-    let workdir = state.workdir.clone();
-    let prompt = build_plan_resume_prompt(&plan);
-    let plan_id = id.clone();
-
-    let mut active = state.active_plans.write().await;
-    if active.contains_key(&id) {
-        return Err(ApiError::conflict(format!(
-            "plan {id} is already executing"
-        )));
-    }
-
-    // Create the cancel token before spawning so the task can observe it (same
-    // pattern as execute_plan).
-    let cancel = CancelToken::new();
-    let task_cancel = cancel.clone();
-
-    let handle = tokio::spawn({
-        let plan_id = plan_id.clone();
-        async move {
-            bus.publish(ServerEvent::PlanStarted {
-                plan_id: plan_id.clone(),
-            });
-            // Race execution against the cancel signal for orderly shutdown.
-            let success = tokio::select! {
-                result = runtime.run_once(&workdir, &prompt) => {
-                    match result {
-                        Ok(RunResult { success, .. }) => {
-                            // Emit an explicit failure event on task-level failure
-                            // so the portal's alert band shows why the resume died.
-                            // See the execute_plan note: plan_id is embedded in the
-                            // message string because DashboardEvent::Error carries
-                            // no structured plan_id field.
-                            if !success {
-                                bus.publish(ServerEvent::Error {
-                                    message: format!(
-                                        "plan {plan_id} resume completed with task-level failures"
-                                    ),
-                                });
-                            }
-                            success
-                        }
-                        Err(err) => {
-                            bus.publish(ServerEvent::Error {
-                                message: format!("plan resume failed for {plan_id}: {err}"),
-                            });
-                            false
-                        }
-                    }
-                }
-                () = task_cancel.cancelled() => {
-                    tracing::info!(plan_id = %plan_id, "plan resume cancelled via token");
-                    false
-                }
-            };
-            bus.publish(ServerEvent::PlanCompleted { plan_id, success });
-        }
-    });
-
-    let plan_handle = PlanHandle {
-        id: run_id.clone(),
-        // Store the specific plan's directory, not the whole plans directory.
-        plan_dir: plans_dir(&state.workdir).join(&id),
-        status: OperationStatus::Running,
-        handle,
-        cancel,
-    };
-
-    active.insert(id, plan_handle);
-    drop(active);
+    // Delegate to the shared helper (validates id, resolves plan dir from
+    // group, checks for conflicts, spawns the run with force_resume: true).
+    let run_id = start_plan_run(&state, id, true).await?;
 
     Ok((
         axum::http::StatusCode::ACCEPTED,
-        Json(json!({ "id": run_id, "resumed": true })),
+        Json(json!({ "id": run_id, "resumed": true, "resume": true })),
     ))
 }
 
@@ -580,14 +600,17 @@ async fn resume_plan(
 ///
 /// Returns 200 `{ "cancelled": true }` on success, or 404 when the plan is not
 /// actively executing.
+///
+/// `{id}` may be the run key **or** any member plan id of an active run.
 async fn cancel_plan(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
     let active = state.active_plans.write().await;
-    let handle = active
-        .get(&id)
+    // Resolve by key or by member plan id.
+    let key = active_run_for(&active, &id)
         .ok_or_else(|| ApiError::not_found("no active execution for this plan"))?;
+    let handle = active.get(&key).expect("key from active_run_for must exist in map");
 
     if handle.handle.is_finished() {
         return Err(ApiError::not_found("no active execution for this plan"));
@@ -606,24 +629,35 @@ async fn cancel_plan(
     // Give the task a short grace period to observe the cancel signal.
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
-    {
+    let had_to_abort = {
         let active_check = state.active_plans.read().await;
-        if let Some(h) = active_check.get(&id) {
+        if let Some(h) = active_check.get(&key) {
             if !h.handle.is_finished() {
                 task_abort.abort();
+                true
+            } else {
+                false
             }
+        } else {
+            false
         }
-    }
+    };
 
-    // Remove from the active set.  No snapshot is written — a cancelled plan
-    // is not resumable.
+    // Remove from the active set using the resolved key.  No snapshot is
+    // written — a cancelled plan is not resumable.
     let mut active_final = state.active_plans.write().await;
-    drop(active_final.remove(&id));
+    drop(active_final.remove(&key));
 
-    state.event_bus.publish(ServerEvent::PlanCompleted {
-        plan_id: id.clone(),
-        success: false,
-    });
+    // Publish PlanCompleted only when the task did not finish cleanly on its
+    // own.  If the run observed the cancel token and returned, it already
+    // published PlanCompleted; publishing again here would deliver a duplicate
+    // to every connected WebSocket client.
+    if had_to_abort {
+        state.event_bus.publish(ServerEvent::PlanCompleted {
+            plan_id: id.clone(),
+            success: false,
+        });
+    }
 
     Ok(Json(json!({ "cancelled": true })))
 }
@@ -640,8 +674,8 @@ async fn plan_gates(
 ) -> Result<Json<Value>, ApiError> {
     validate_path_segment(&id, "plan id")?;
 
-    // Verify the plan exists on disk.
-    let _plan = find_plan(&state.workdir, &id).await?;
+    // Verify the plan exists via the runtime (finds directory-layout plans).
+    let _plan = resolve_plan(&state, &id).await?;
 
     // Pull gate results from the materialized snapshot.
     let snapshot = state.state_hub.current_snapshot();
@@ -679,8 +713,8 @@ async fn plan_costs(
 ) -> Result<Json<Value>, ApiError> {
     validate_path_segment(&id, "plan id")?;
 
-    // Verify the plan exists on disk.
-    let plan = find_plan(&state.workdir, &id).await?;
+    // Verify the plan exists via the runtime (finds directory-layout plans).
+    let plan = resolve_plan(&state, &id).await?;
 
     // Read efficiency events from the learning log.
     let efficiency_path = state
@@ -878,7 +912,7 @@ async fn plan_chat(
     Path(id): Path<String>,
     ValidJson(body): ValidJson<PlanChatRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let plan = find_plan(&state.workdir, &id).await?;
+    let plan = resolve_plan(&state, &id).await?;
     let plan_json = plan_to_json(&plan);
 
     let prompt = format!(
@@ -971,7 +1005,7 @@ async fn plan_estimate(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
-    let plan = find_plan(&state.workdir, &id).await?;
+    let plan = resolve_plan(&state, &id).await?;
 
     // Load historical efficiency data.
     let efficiency_path = state
@@ -1083,29 +1117,6 @@ fn estimate_task_from_history(history: &[HistoricalEfficiency]) -> (u64, u64, f6
     (avg_input, avg_output, avg_cost, avg_duration)
 }
 
-fn build_plan_resume_prompt(plan: &Plan) -> String {
-    let mut prompt = String::new();
-    prompt.push_str(&format!(
-        "Resume the implementation plan at `.roko/plans/{id}` from where it was paused.\n\
-         Skip tasks that are already completed. Continue with the next pending task.\n\
-         Use the plan as the source of truth for task order, file scope, and completion criteria.\n\n",
-        id = plan.id,
-    ));
-    prompt.push_str("## Plan summary\n");
-    prompt.push_str(&format!("- id: {}\n", plan.id));
-    prompt.push_str(&format!("- title: {}\n", plan.title));
-    prompt.push_str(&format!("- description: {}\n", plan.description));
-    prompt.push_str("- tasks:\n");
-
-    for task in &plan.tasks {
-        prompt.push_str(&format!(
-            "  - {}: {}\n    depends_on: {:?}\n    files: {:?}\n    completed: {}\n",
-            task.id, task.description, task.depends_on, task.files, task.completed
-        ));
-    }
-
-    prompt
-}
 
 // ── Review workflow ──────────────────────────────────────────────────
 
@@ -1118,7 +1129,7 @@ async fn list_reviews(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
-    let plan = find_plan(&state.workdir, &id).await?;
+    let plan = resolve_plan(&state, &id).await?;
 
     // Pull gate results for this plan from the snapshot.
     let snapshot = state.state_hub.current_snapshot();
@@ -1214,7 +1225,7 @@ async fn submit_review(
     validate_path_segment(&task_id, "task id")?;
 
     // Verify plan and task exist.
-    let plan = find_plan(&state.workdir, &id).await?;
+    let plan = resolve_plan(&state, &id).await?;
     if !plan.tasks.iter().any(|t| t.id == task_id) {
         return Err(ApiError::not_found(format!(
             "task '{task_id}' not found in plan '{id}'"
@@ -1299,7 +1310,7 @@ async fn task_diff(
     validate_path_segment(&task_id, "task id")?;
 
     // Verify plan and task exist.
-    let plan = find_plan(&state.workdir, &id).await?;
+    let plan = resolve_plan(&state, &id).await?;
     if !plan.tasks.iter().any(|t| t.id == task_id) {
         return Err(ApiError::not_found(format!(
             "task '{task_id}' not found in plan '{id}'"
@@ -1606,79 +1617,6 @@ async fn generate_plan(
 
 // ── helpers ──────────────────────────────────────────────────────────
 
-/// Locate and load a plan file by ID (checks `.json` then `.toml`).
-async fn find_plan(workdir: &std::path::Path, id: &str) -> Result<Plan, ApiError> {
-    validate_path_segment(id, "plan id")?;
-    let plans_dir = plans_dir(workdir);
-    for ext in &["json", "toml"] {
-        let path = plans_dir.join(format!("{id}.{ext}"));
-        if path.is_file() {
-            return load_plan_file(&path).await;
-        }
-    }
-    Err(ApiError::not_found(format!("plan '{id}' not found")))
-}
-
-/// Load a plan from a TOML or JSON file.
-async fn load_plan_file(path: &std::path::Path) -> Result<Plan, ApiError> {
-    #[derive(serde::Deserialize)]
-    struct RawPlan {
-        #[serde(default)]
-        id: String,
-        #[serde(default)]
-        title: String,
-        #[serde(default)]
-        description: String,
-        #[serde(default)]
-        tasks: Vec<RawTask>,
-    }
-
-    #[derive(serde::Deserialize)]
-    struct RawTask {
-        #[serde(default)]
-        id: String,
-        #[serde(default)]
-        description: String,
-        #[serde(default = "default_task_tier")]
-        tier: String,
-        #[serde(default)]
-        model_hint: Option<String>,
-        #[serde(default)]
-        depends_on: Vec<String>,
-        #[serde(default)]
-        files: Vec<String>,
-        #[serde(default)]
-        completed: bool,
-    }
-
-    let content = tokio::fs::read_to_string(path)
-        .await
-        .map_err(|e| ApiError::internal(format!("read plan file: {e}")))?;
-
-    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("json");
-
-    let raw: RawPlan = match ext {
-        "toml" => toml::from_str(&content)
-            .map_err(|e| ApiError::internal(format!("parse plan TOML: {e}")))?,
-        _ => serde_json::from_str(&content)
-            .map_err(|e| ApiError::internal(format!("parse plan JSON: {e}")))?,
-    };
-
-    let mut plan = Plan::new(raw.id, raw.title, raw.description);
-    for t in raw.tasks {
-        plan.add_task(PlanTask {
-            id: t.id,
-            description: t.description,
-            tier: t.tier,
-            model_hint: t.model_hint,
-            depends_on: t.depends_on,
-            files: t.files,
-            completed: t.completed,
-        });
-    }
-    Ok(plan)
-}
-
 /// Derive a status string from a task's completion state.
 fn task_status(task: &PlanTask) -> &'static str {
     if task.completed {
@@ -1760,6 +1698,44 @@ fn plans_dir(workdir: &std::path::Path) -> std::path::PathBuf {
     workdir.join(".roko").join("plans")
 }
 
+/// Load a plan by id using the runtime's plan-discovery methods.
+///
+/// Returns 404 when the plan is absent, just like the legacy `find_plan`
+/// helper did — but unlike `find_plan`, this resolves directory-layout
+/// plans correctly by delegating to the runtime rather than probing for
+/// flat `.json`/`.toml` files.
+async fn resolve_plan(state: &Arc<AppState>, id: &str) -> Result<Plan, ApiError> {
+    validate_path_segment(id, "plan id")?;
+
+    let summary = state
+        .runtime
+        .load_plan_summary(&state.workdir, id)
+        .await
+        .map_err(|e| ApiError::internal(format!("load plan '{id}': {e}")))?
+        .ok_or_else(|| ApiError::not_found(format!("plan '{id}' not found")))?;
+
+    let tasks_dto = state
+        .runtime
+        .load_plan_tasks(&state.workdir, id)
+        .await
+        .map_err(|e| ApiError::internal(format!("load tasks for plan '{id}': {e}")))?
+        .ok_or_else(|| ApiError::not_found(format!("plan '{id}' not found")))?;
+
+    let mut plan = Plan::new(summary.id, summary.title, String::new());
+    for t in tasks_dto.tasks {
+        plan.add_task(PlanTask {
+            id: t.id,
+            description: t.description.unwrap_or_else(|| t.title.clone()),
+            tier: t.tier,
+            model_hint: None,
+            depends_on: t.depends_on,
+            files: t.files,
+            completed: t.completed,
+        });
+    }
+    Ok(plan)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1801,6 +1777,18 @@ mod tests {
         notify: Arc<Notify>,
         success: bool,
         call_count: Arc<AtomicUsize>,
+        /// Optional group returned from `load_plan_summary` so tests can
+        /// assert that the plan directory is derived from the group.
+        group: Option<String>,
+        /// Most-recently-received `PlanRunOptions` from `run_plan_with_options`.
+        last_options: Arc<Mutex<Option<PlanRunOptions>>>,
+        /// When `Some(id)`, `load_plan_summary` and `load_plan_tasks` return
+        /// data only for that plan id; any other id returns `Ok(None)` (404).
+        /// When `None`, all ids are accepted (backward-compat default).
+        known_plan_id: Option<String>,
+        /// Tasks returned by `load_plan_tasks`.  When empty, a single default
+        /// task (id="T1", tier="focused", completed=false) is synthesised.
+        plan_tasks: Vec<crate::plan_types::PlanTaskDto>,
     }
 
     #[async_trait::async_trait]
@@ -1844,17 +1832,27 @@ mod tests {
             })
         }
 
-        /// Return a synthetic summary for any plan ID so that `execute_plan`
-        /// can verify the plan exists without hitting the real filesystem.
+        /// Return a synthetic summary for a plan ID.
+        ///
+        /// When `self.known_plan_id` is `Some(id)`, only that id returns a
+        /// summary; all other ids return `Ok(None)` (404).  When
+        /// `known_plan_id` is `None`, every id is accepted (backward-compat
+        /// default for tests that do not exercise 404 routing).
         async fn load_plan_summary(
             &self,
             _workdir: &std::path::Path,
             plan_id: &str,
         ) -> anyhow::Result<Option<crate::plan_types::PlanSummaryDto>> {
+            if let Some(ref known) = self.known_plan_id {
+                if plan_id != known {
+                    return Ok(None);
+                }
+            }
+            let task_count = if self.plan_tasks.is_empty() { 1 } else { self.plan_tasks.len() };
             Ok(Some(crate::plan_types::PlanSummaryDto {
                 id: plan_id.to_string(),
                 title: "Test Plan".to_string(),
-                task_count: 1,
+                task_count,
                 tasks_done: 0,
                 tasks_failed: 0,
                 completed: false,
@@ -1862,8 +1860,72 @@ mod tests {
                 superseded_by: None,
                 old_format: false,
                 last_error: None,
-                group: None,
+                group: self.group.clone(),
             }))
+        }
+
+        /// Return synthetic tasks for a plan ID.
+        ///
+        /// When `self.known_plan_id` is `Some(id)`, only that id returns
+        /// tasks; all other ids return `Ok(None)`.  When `known_plan_id` is
+        /// `None`, every id is accepted.  The tasks returned are
+        /// `self.plan_tasks` when non-empty; otherwise a single default
+        /// task is synthesised.
+        async fn load_plan_tasks(
+            &self,
+            _workdir: &std::path::Path,
+            plan_id: &str,
+        ) -> anyhow::Result<Option<crate::plan_types::PlanTasksDto>> {
+            if let Some(ref known) = self.known_plan_id {
+                if plan_id != known {
+                    return Ok(None);
+                }
+            }
+            let tasks: Vec<crate::plan_types::PlanTaskDto> = if self.plan_tasks.is_empty() {
+                vec![crate::plan_types::PlanTaskDto {
+                    id: "T1".to_string(),
+                    title: "Default task".to_string(),
+                    description: None,
+                    role: None,
+                    tier: "focused".to_string(),
+                    status: "pending".to_string(),
+                    depends_on: vec![],
+                    files: vec![],
+                    completed: false,
+                    verify_phases: vec![],
+                }]
+            } else {
+                self.plan_tasks.clone()
+            };
+            let task_count = tasks.len();
+            Ok(Some(crate::plan_types::PlanTasksDto {
+                plan_id: plan_id.to_string(),
+                task_count,
+                tasks,
+            }))
+        }
+
+        /// Override the default so that tests can inspect the options received
+        /// by the executor (e.g. `force_resume`, `fresh`).
+        async fn run_plan_with_options(
+            &self,
+            workdir: &std::path::Path,
+            plan_target: &std::path::Path,
+            options: PlanRunOptions,
+        ) -> anyhow::Result<PlanExecutionResult> {
+            *self.last_options.lock().expect("lock last_options") = Some(options);
+            self.calls.lock().expect("lock calls").push(RecordedCall {
+                kind: "plan",
+                workdir: workdir.to_path_buf(),
+                arg: plan_target.to_string_lossy().into_owned(),
+            });
+            self.call_count.fetch_add(1, Ordering::SeqCst);
+            self.notify.notify_waiters();
+            Ok(PlanExecutionResult {
+                success: self.success,
+                output_text: None,
+                gate_results: Vec::new(),
+            })
         }
 
         fn session_status(&self, workdir: PathBuf) -> SessionStatusInfo {
@@ -1933,7 +1995,7 @@ mod tests {
     async fn execute_plan_returns_404_for_missing_plan() {
         let (_dir, state) = test_state();
 
-        let err = match execute_plan(State(state), Path("missing-plan".into())).await {
+        let err = match execute_plan(State(state), Path("missing-plan".into()), axum::body::Bytes::new()).await {
             Ok(_) => panic!("missing plan should error"),
             Err(err) => err,
         };
@@ -2015,6 +2077,10 @@ mod tests {
             notify: Arc::new(Notify::new()),
             success: true,
             call_count: Arc::new(AtomicUsize::new(0)),
+            group: None,
+            last_options: Arc::new(Mutex::new(None)),
+            known_plan_id: None,
+            plan_tasks: vec![],
         });
         let notify = Arc::clone(&runtime.as_ref().notify);
         let calls = Arc::clone(&runtime.as_ref().calls);
@@ -2035,7 +2101,7 @@ mod tests {
         .await
         .expect("write tasks.toml");
 
-        let response = execute_plan(State(Arc::clone(&state)), Path("demo".into()))
+        let response = execute_plan(State(Arc::clone(&state)), Path("demo".into()), axum::body::Bytes::new())
             .await
             .expect("execute plan");
 
@@ -2068,6 +2134,10 @@ mod tests {
             notify: Arc::new(Notify::new()),
             success: true,
             call_count: Arc::new(AtomicUsize::new(0)),
+            group: None,
+            last_options: Arc::new(Mutex::new(None)),
+            known_plan_id: None,
+            plan_tasks: vec![],
         });
         let notify = Arc::clone(&runtime.as_ref().notify);
         let calls = Arc::clone(&runtime.as_ref().calls);
@@ -2119,50 +2189,55 @@ mod tests {
 
     #[tokio::test]
     async fn plan_costs_reports_projection_and_budget_status() {
-        let (_dir, state) = test_state();
+        // Build a runtime stub that knows the "cost-demo" plan with two tasks.
+        // This replaces the previous flat-file fixture so that the test works
+        // with directory-layout plans (no `.roko/plans/cost-demo.json` file).
+        let runtime = Arc::new(RecordingRuntime {
+            calls: Arc::new(Mutex::new(Vec::new())),
+            notify: Arc::new(Notify::new()),
+            success: true,
+            call_count: Arc::new(AtomicUsize::new(0)),
+            group: None,
+            last_options: Arc::new(Mutex::new(None)),
+            known_plan_id: Some("cost-demo".to_string()),
+            plan_tasks: vec![
+                crate::plan_types::PlanTaskDto {
+                    id: "T1".to_string(),
+                    title: "completed task".to_string(),
+                    description: Some("completed task".to_string()),
+                    role: None,
+                    tier: "mechanical".to_string(),
+                    status: "completed".to_string(),
+                    depends_on: vec![],
+                    files: vec![],
+                    completed: true,
+                    verify_phases: vec![],
+                },
+                crate::plan_types::PlanTaskDto {
+                    id: "T2".to_string(),
+                    title: "remaining task".to_string(),
+                    description: Some("remaining task".to_string()),
+                    role: None,
+                    tier: "focused".to_string(),
+                    status: "pending".to_string(),
+                    depends_on: vec!["T1".to_string()],
+                    files: vec![],
+                    completed: false,
+                    verify_phases: vec![],
+                },
+            ],
+        });
+        let (_dir, state) = test_state_with_runtime(runtime);
         let mut config = (*state.load_roko_config()).clone();
         config.budget.max_plan_usd = 0.27;
         config.budget.max_task_usd = 1.0;
         state.roko_config.store(Arc::new(config));
         state.provider_health_registry.record_success("anthropic");
 
-        let plans_dir = state.workdir.join(".roko").join("plans");
         let learn_dir = state.workdir.join(".roko").join("learn");
-        tokio::fs::create_dir_all(&plans_dir)
-            .await
-            .expect("create plans dir");
         tokio::fs::create_dir_all(&learn_dir)
             .await
             .expect("create learn dir");
-        tokio::fs::write(
-            plans_dir.join("cost-demo.json"),
-            serde_json::to_vec_pretty(&json!({
-                "id": "cost-demo",
-                "title": "Cost demo",
-                "description": "Exercise live cost reporting",
-                "tasks": [
-                    {
-                        "id": "T1",
-                        "description": "completed task",
-                        "tier": "mechanical",
-                        "model_hint": "claude-haiku-4-5",
-                        "depends_on": [],
-                        "files": [],
-                        "completed": true
-                    },
-                    {
-                        "id": "T2",
-                        "description": "remaining task",
-                        "depends_on": ["T1"],
-                        "files": [],
-                        "completed": false
-                    }
-                ]
-            }))
-            .expect("serialize plan"),
-        )
-        .await
-        .expect("write plan");
         tokio::fs::write(
             learn_dir.join("efficiency.jsonl"),
             serde_json::to_string(&json!({
@@ -2235,6 +2310,62 @@ mod tests {
         );
     }
 
+    /// After `execute_plan` returns, the event bus must carry **no**
+    /// `PlanStarted` event for that plan id.  The run publishes its own
+    /// `PlanStarted` (with the correct `tasks_total`) via the runtime; the
+    /// handler must not publish a duplicate with `tasks_total: 0`.
+    #[tokio::test]
+    async fn execute_leaves_plan_started_to_the_run() {
+        let runtime = Arc::new(RecordingRuntime {
+            calls: Arc::new(Mutex::new(Vec::new())),
+            notify: Arc::new(Notify::new()),
+            success: true,
+            call_count: Arc::new(AtomicUsize::new(0)),
+            group: None,
+            last_options: Arc::new(Mutex::new(None)),
+            known_plan_id: None,
+            plan_tasks: vec![],
+        });
+        let notify = Arc::clone(&runtime.as_ref().notify);
+        let (_dir, state) = test_state_with_runtime(runtime);
+
+        // Subscribe before executing to catch every event the handler emits.
+        let mut rx = state.event_bus.subscribe();
+
+        let plan_id = "no-started-event";
+        execute_plan(
+            State(Arc::clone(&state)),
+            Path(plan_id.into()),
+            axum::body::Bytes::new(),
+        )
+        .await
+        .expect("execute plan");
+
+        // Wait until the spawned task has called into the runtime.
+        tokio::time::timeout(std::time::Duration::from_secs(1), notify.notified())
+            .await
+            .expect("runtime should be called");
+
+        // Give the task a moment to publish PlanCompleted.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        // Drain all buffered events and assert no PlanStarted was emitted by
+        // the handler.  A duplicate from the handler would appear here with
+        // tasks_total: 0 because it has no task-count information.
+        let mut plan_started_seen = false;
+        while let Ok(envelope) = rx.try_recv() {
+            if let ServerEvent::PlanStarted { plan_id: ref pid } = envelope.payload {
+                if pid == plan_id {
+                    plan_started_seen = true;
+                }
+            }
+        }
+        assert!(
+            !plan_started_seen,
+            "execute_plan must not publish PlanStarted; the run publishes its own"
+        );
+    }
+
     #[tokio::test]
     async fn list_plans_returns_internal_error_for_corrupt_plan_file() {
         let (dir, state) = test_state();
@@ -2252,5 +2383,160 @@ mod tests {
 
         assert_eq!(err.status, axum::http::StatusCode::INTERNAL_SERVER_ERROR);
         drop(dir);
+    }
+
+    /// `resume_plan` must:
+    ///   - call `run_plan_with_options` (not `run_once`),
+    ///   - pass `plans/<group>/<id>` as the plan directory when the summary
+    ///     carries a `group`,
+    ///   - set `force_resume: true` in the options.
+    #[tokio::test]
+    async fn resume_plan_runs_the_plan_directory() {
+        let runtime = Arc::new(RecordingRuntime {
+            calls: Arc::new(Mutex::new(Vec::new())),
+            notify: Arc::new(Notify::new()),
+            success: true,
+            call_count: Arc::new(AtomicUsize::new(0)),
+            // The summary returned by load_plan_summary will carry this group.
+            group: Some("portal-programme".to_string()),
+            last_options: Arc::new(Mutex::new(None)),
+            known_plan_id: None,
+            plan_tasks: vec![],
+        });
+        let notify = Arc::clone(&runtime.as_ref().notify);
+        let calls = Arc::clone(&runtime.as_ref().calls);
+        let last_options = Arc::clone(&runtime.as_ref().last_options);
+        let (_dir, state) = test_state_with_runtime(runtime);
+
+        let response = resume_plan(State(Arc::clone(&state)), Path("my-plan".into()))
+            .await
+            .expect("resume plan");
+
+        assert_eq!(
+            response.into_response().status(),
+            axum::http::StatusCode::ACCEPTED,
+            "resume_plan must return 202"
+        );
+
+        // Wait until the spawned task calls into the runtime.
+        tokio::time::timeout(std::time::Duration::from_secs(1), notify.notified())
+            .await
+            .expect("runtime should be called within 1 second");
+
+        // Verify exactly one plan run was recorded (not a run_once call).
+        let calls = calls.lock().expect("lock calls");
+        assert_eq!(calls.len(), 1, "exactly one call — resume must not fall through to run_once");
+        assert_eq!(
+            calls[0].kind, "plan",
+            "resume_plan must call run_plan_with_options, not run_once"
+        );
+
+        // The plan directory must be plans/<group>/<id>, not plans/<id>.
+        // workdir has no top-level `plans/` dir, so plans_dir returns .roko/plans.
+        let expected_dir = state
+            .workdir
+            .join(".roko")
+            .join("plans")
+            .join("portal-programme")
+            .join("my-plan");
+        assert_eq!(
+            calls[0].arg,
+            expected_dir.to_string_lossy(),
+            "plan_target must be plans/<group>/<id>"
+        );
+
+        // force_resume must be set; fresh must be unset.
+        let opts = last_options
+            .lock()
+            .expect("lock last_options")
+            .clone()
+            .expect("options must have been recorded");
+        assert!(opts.force_resume, "resume must set force_resume: true");
+        assert!(!opts.fresh, "resume must not set fresh: true");
+    }
+
+    /// `GET /api/plans/{id}/costs` and `GET /api/plans/{id}/gates` return 200
+    /// for a plan the runtime knows about, even when no plan file exists on
+    /// disk (directory-layout plan).  An unknown id must answer 404.
+    #[tokio::test]
+    async fn per_plan_routes_find_directory_plans() {
+        use roko_core::config::ServeAuthConfig;
+
+        let runtime = Arc::new(RecordingRuntime {
+            calls: Arc::new(Mutex::new(Vec::new())),
+            notify: Arc::new(Notify::new()),
+            success: true,
+            call_count: Arc::new(AtomicUsize::new(0)),
+            group: None,
+            last_options: Arc::new(Mutex::new(None)),
+            // Only "dir-plan" is known; "unknown-id" must 404.
+            known_plan_id: Some("dir-plan".to_string()),
+            plan_tasks: vec![],
+        });
+        let (_dir, state) = test_state_with_runtime(runtime);
+
+        // No plan files exist on disk — only the runtime knows this plan.
+
+        let app = build_router(
+            Arc::clone(&state),
+            &[],
+            ServeAuthConfig {
+                enabled: false,
+                ..ServeAuthConfig::default()
+            },
+        );
+
+        // costs — known plan → 200
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/api/plans/dir-plan/costs")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(
+            resp.status(),
+            axum::http::StatusCode::OK,
+            "costs for known directory plan must return 200"
+        );
+
+        // gates — known plan → 200
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/api/plans/dir-plan/gates")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(
+            resp.status(),
+            axum::http::StatusCode::OK,
+            "gates for known directory plan must return 200"
+        );
+
+        // costs — unknown id → 404
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/api/plans/unknown-id/costs")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(
+            resp.status(),
+            axum::http::StatusCode::NOT_FOUND,
+            "costs for unknown plan must return 404"
+        );
     }
 }

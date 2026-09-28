@@ -52,6 +52,11 @@ use crate::task_parser::TaskDef;
 
 const MICRO_USD_PER_USD: f64 = 1_000_000.0;
 
+/// How often to publish a [`TuiBridge::agent_heartbeat`] while waiting for a
+/// provider dispatch to complete.  5 seconds lets the dashboard show elapsed
+/// time at a human-readable granularity without generating excessive events.
+const AGENT_HEARTBEAT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// Thin `Agent` adapter that forwards a one-shot prompt through the shared
 /// factory bridge so `error_enrichment` and `quality_judge` can use the
 /// live provider without rebuilding the full dispatch stack.
@@ -1633,6 +1638,27 @@ impl GraphTaskDispatcher {
             }
         }
 
+        // ── W05c: Publish token usage and cost to the TUI dashboard ──────
+        //
+        // `token_usage` and `efficiency_event("cost_usd")` feed the snapshot's
+        // per-agent counters and the overall `SnapshotStats` totals.  Kept
+        // outside the `if let Some(costs_path)` block above so they fire even
+        // when `.roko/learn/costs.jsonl` is not configured.  The fold in
+        // `DashboardSnapshot::apply` attributes the numbers to the agent that
+        // `forward_dispatch_events_to_tui` announced for the task, so publish
+        // after that call.
+        if let Some(tui) = &self.tui_bridge {
+            tui.token_usage(
+                &spec.plan_id,
+                &task.id,
+                tokens_in,
+                tokens_out,
+                u64::from(dispatch.result.usage.cache_read_tokens),
+                u64::from(dispatch.result.usage.cache_create_tokens),
+            );
+            tui.efficiency_event(&spec.plan_id, &task.id, "cost_usd", cost_usd);
+        }
+
         // ── W07: Playbook outcome recording ──────────────────────────────
         if let Some(playbook_dir) = &self.feedback.playbook_dir {
             let store = roko_learn::playbook::PlaybookStore::new(playbook_dir);
@@ -2691,16 +2717,8 @@ impl GraphTaskDispatcher {
         let plan_id = &spec.plan_id;
         let task_id = &task.id;
 
-        // Emit agent spawned event so the TUI knows an agent is active.
-        tui.agent_spawned(
-            &agent_id,
-            plan_id,
-            task_id,
-            0,
-            task.role.as_deref().unwrap_or("implementer"),
-            &dispatch.target.model_slug,
-            &dispatch.target.provider_id,
-        );
+        // `agent_spawned` is now published immediately before dispatch starts
+        // (see the `dispatch` fn). Do not publish it here to avoid a duplicate.
 
         // Forward each provider event as a TUI stream record.
         for event in &dispatch.events {
@@ -2714,8 +2732,17 @@ impl GraphTaskDispatcher {
                 roko_agent::AgentRuntimeEvent::ToolOutput { id, output } => {
                     // Truncate tool output for the TUI to avoid overwhelming
                     // the bounded stream ring buffer.
+                    //
+                    // Safety: floor the slice start to a char boundary so we
+                    // never split a multi-byte character, which would panic.
                     let truncated = if output.len() > 2048 {
-                        let tail = &output[output.len() - 1024..];
+                        let raw_start = output.len().saturating_sub(1024);
+                        // Walk backwards until we land on a char boundary.
+                        let char_start = (0..=raw_start)
+                            .rev()
+                            .find(|&i| output.is_char_boundary(i))
+                            .unwrap_or(0);
+                        let tail = &output[char_start..];
                         format!("[...truncated]\n{tail}")
                     } else {
                         output.clone()
@@ -3408,30 +3435,95 @@ impl TaskDispatcher for GraphTaskDispatcher {
             max_turns: Some(max_turns),
         };
 
+        // ── T04: Pre-dispatch agent_spawned ─────────────────────────────
+        //
+        // Publish `agent_spawned` immediately so the TUI shows the agent as
+        // active before the (potentially multi-minute) provider call starts.
+        // `forward_dispatch_events_to_tui` no longer emits it.
+        let pre_dispatch_agent_id = format!(
+            "{}/{}",
+            spec.plan_id,
+            ctx.cell_id.as_deref().unwrap_or(&task.id)
+        );
+        if let Some(tui) = &self.tui_bridge {
+            // Derive a provider label from the planned backend so the dashboard
+            // can display it before the actual dispatch resolves a provider.
+            let planned_provider: String = roko_core::ProviderKind::from(
+                dispatch_plan.model.backend,
+            )
+            .label()
+            .to_string();
+            tui.agent_spawned(
+                &pre_dispatch_agent_id,
+                &spec.plan_id,
+                &task.id,
+                0,
+                task.role.as_deref().unwrap_or("implementer"),
+                &dispatch_plan.model.slug,
+                &planned_provider,
+            );
+        }
+
         let started_at = Instant::now();
         // The planned model is a preference: an unusable or out-of-usage
         // provider fails over; `dispatch.target` names the model that ran.
-        let dispatch = self
-            .run_bridge_with_failover(spec, &task.id, request)
-            .await
-            .map_err(|error| {
-                // Best-effort release on dispatch failure when worktree isolation is active.
-                if let Some((provider, lease)) =
-                    self.workspace_provider.as_ref().zip(lease.as_ref())
-                {
-                    let provider = Arc::clone(provider);
-                    let lease = lease.clone();
-                    tokio::spawn(async move {
-                        let _ = provider
-                            .release(
-                                &lease,
-                                roko_graph::workspace::WorkspaceReleasePolicy::RetainForFailure,
-                            )
-                            .await;
-                    });
+        //
+        // T04: Drive the dispatch future through a select loop so we can emit
+        // periodic `agent_heartbeat` events while waiting.  This keeps the
+        // elapsed-time counter live on the TUI even though the transcript is
+        // only available after the immune boundary screens the final result.
+        let dispatch_result = {
+            let mut heartbeat = tokio::time::interval(AGENT_HEARTBEAT_INTERVAL);
+            heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            // Consume the immediate first tick so we don't fire at t=0.
+            heartbeat.tick().await;
+            let dispatch_future = self.run_bridge_with_failover(spec, &task.id, request);
+            tokio::pin!(dispatch_future);
+            loop {
+                tokio::select! {
+                    result = &mut dispatch_future => { break result; }
+                    _ = heartbeat.tick() => {
+                        let elapsed_ms = started_at.elapsed().as_millis() as u64;
+                        if let Some(tui) = &self.tui_bridge {
+                            tui.agent_heartbeat(
+                                &pre_dispatch_agent_id,
+                                &spec.plan_id,
+                                &task.id,
+                                elapsed_ms,
+                            );
+                        }
+                    }
                 }
-                error
-            })?;
+            }
+        };
+        let dispatch = dispatch_result.map_err(|error| {
+            // Best-effort release on dispatch failure when worktree isolation is active.
+            if let Some((provider, lease)) =
+                self.workspace_provider.as_ref().zip(lease.as_ref())
+            {
+                let provider = Arc::clone(provider);
+                let lease = lease.clone();
+                tokio::spawn(async move {
+                    let _ = provider
+                        .release(
+                            &lease,
+                            roko_graph::workspace::WorkspaceReleasePolicy::RetainForFailure,
+                        )
+                        .await;
+                });
+            }
+            // T04: Publish agent_completed on the error path so the dashboard
+            // never leaves an agent stuck in the "running" state.
+            if let Some(tui) = &self.tui_bridge {
+                tui.agent_completed(
+                    &pre_dispatch_agent_id,
+                    &spec.plan_id,
+                    &task.id,
+                    0,
+                );
+            }
+            error
+        })?;
         let wall_duration = started_at.elapsed();
 
         // Account for every completed provider call, including unsuccessful

@@ -2504,6 +2504,7 @@ async fn cmd_plan_run_engine(
         interrupt: Some(interrupt),
         max_parallel_plans,
         fail_fast,
+        only_plans: None,
     })
     .await
 }

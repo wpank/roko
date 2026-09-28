@@ -11,8 +11,9 @@ usage: sse.py FILE COMMAND ARGS
   positive TYPE FIELD [k=v ...]                 some match has numeric FIELD > 0
 
 `k=v` compares event[k] rendered as JSON (strings unquoted), so booleans are
-`true`/`false`. Exit status 0 means the assertion holds; a reason is printed
-otherwise.
+`true`/`false`. `k~text` holds when the rendered value contains text, and
+`k!~text` when it does not (useful for the framed `content` of agent_output).
+Exit status 0 means the assertion holds; a reason is printed otherwise.
 """
 import json
 import sys
@@ -37,12 +38,30 @@ def render(value):
     return value if isinstance(value, str) else json.dumps(value)
 
 
+def parse_filter(item):
+    # The first operator wins, so values may contain '=' or '~' themselves.
+    ops = [(item.find(op), op) for op in ("!~", "~", "=") if op in item]
+    index, op = min(ops, key=lambda pair: (pair[0], -len(pair[1])))
+    return item[:index], op, item[index + len(op):]
+
+
+def filter_holds(event, key, op, value):
+    if key not in event:
+        return False
+    rendered = render(event[key])
+    if op == "=":
+        return rendered == value
+    if op == "~":
+        return value in rendered
+    return value not in rendered
+
+
 def matcher(spec):
-    kind, filters = spec[0], [item.split("=", 1) for item in spec[1:]]
+    kind, filters = spec[0], [parse_filter(item) for item in spec[1:]]
 
     def matches(event):
         return event.get("type") == kind and all(
-            key in event and render(event[key]) == value for key, value in filters)
+            filter_holds(event, key, op, value) for key, op, value in filters)
 
     return matches
 

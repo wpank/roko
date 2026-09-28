@@ -15,12 +15,14 @@ use roko_learn::playbook::PlaybookStore;
 use roko_neuro::KnowledgeStore;
 use roko_serve::bench::{BenchConfigOverrides, BenchStrategy};
 use roko_serve::plan_types::{PlanSummaryDto, PlanTaskDto, PlanTasksDto};
+use roko_runtime::cancel::CancelToken;
 use roko_serve::runtime::{
-    CliRuntime, DashboardInfo, PlanExecutionResult, PlanGenerationResult, RepoInfo, RunResult,
-    RunResultUsage, RuntimeGateResult, SessionStatusInfo, TriggerExecutionScope,
+    CliRuntime, DashboardInfo, PlanExecutionResult, PlanGenerationResult, PlanRunOptions, RepoInfo,
+    RunResult, RunResultUsage, RuntimeGateResult, SessionStatusInfo, TriggerExecutionScope,
 };
 
 use crate::config::{Config, RepoRegistry};
+use crate::graph_execution::plan_runner::{PlanRunInterrupt, PlanRunInterruptHandle};
 use crate::prd;
 use crate::runner::types::{GateCompletionKind, RunnerEvent};
 use crate::state_hub::SharedStateHub;
@@ -235,6 +237,16 @@ impl CliRuntime for RokoCliRuntime {
         workdir: &Path,
         plan_target: &Path,
     ) -> anyhow::Result<PlanExecutionResult> {
+        self.run_plan_with_options(workdir, plan_target, PlanRunOptions::default())
+            .await
+    }
+
+    async fn run_plan_with_options(
+        &self,
+        workdir: &Path,
+        plan_target: &Path,
+        options: PlanRunOptions,
+    ) -> anyhow::Result<PlanExecutionResult> {
         let workdir = workdir.to_path_buf();
         let plan_target = plan_target.to_path_buf();
         let config = self.config.clone();
@@ -251,10 +263,49 @@ impl CliRuntime for RokoCliRuntime {
                 state_hub,
                 metrics,
                 extension_chain,
+                options.fresh,
+                options.force_resume,
+                options.only_plans,
+                options.max_parallel_plans,
+                options.cancel,
             )
         })
         .await
         .map_err(|err| anyhow::anyhow!("plan execution worker failed: {err}"))?
+    }
+
+    async fn plan_run_order(
+        &self,
+        workdir: &Path,
+        plan_target: &Path,
+        only_plans: Option<Vec<String>>,
+    ) -> anyhow::Result<Vec<String>> {
+        let workdir = workdir.to_path_buf();
+        let plan_target_abs = if plan_target.is_absolute() {
+            plan_target.to_path_buf()
+        } else {
+            workdir.join(plan_target)
+        };
+        // plan_target might be a single-plan directory (has tasks.toml) or a
+        // multi-plan set directory. Resolve the same way run_plan does.
+        let plans_dir = if plan_target_abs.is_dir()
+            && !plan_target_abs.join("tasks.toml").is_file()
+        {
+            plan_target_abs
+        } else if plan_target_abs.is_dir() {
+            // Single-plan directory: the plans dir is its parent.
+            plan_target_abs
+                .parent()
+                .unwrap_or(&plan_target_abs)
+                .to_path_buf()
+        } else {
+            plan_target_abs
+        };
+        crate::graph_execution::compute_plan_run_order(
+            &workdir,
+            &plans_dir,
+            only_plans.as_deref(),
+        )
     }
 
     async fn run_trigger_graph(
@@ -526,6 +577,7 @@ fn load_serve_extension_chain(
     Ok(chain)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_plan_on_local_runtime(
     workdir: PathBuf,
     plan_target: PathBuf,
@@ -534,7 +586,18 @@ fn run_plan_on_local_runtime(
     state_hub: SharedStateHub,
     _metrics: Option<Arc<roko_core::obs::metrics::MetricRegistry>>,
     _extension_chain: Arc<tokio::sync::Mutex<roko_core::extension::ExtensionChain>>,
+    fresh: bool,
+    force_resume: bool,
+    only_plans: Option<Vec<String>>,
+    max_parallel_plans: Option<usize>,
+    cancel: Option<CancelToken>,
 ) -> anyhow::Result<PlanExecutionResult> {
+    // Acquire the runner lock before touching the workspace.  Server-side runs
+    // and `roko plan run` both take this lock, so only one plan executor can be
+    // active at a time.  If the lock is already held the error message names the
+    // owning PID; return it immediately without retrying.
+    let _runner_lock = crate::workspace_lock::acquire_runner_lock(&workdir.join(".roko"))?;
+
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
@@ -556,6 +619,19 @@ fn run_plan_on_local_runtime(
 
         let events_offset = runner_events_offset(&workdir);
 
+        // Create the interrupt handle shared between the cancel bridge and the
+        // graph run. The first `cancel.cancelled()` fires `PlanRunInterrupt::Interrupt`,
+        // which cancels the in-flight graph, SIGTERMs/SIGKILLs agent processes,
+        // finalizes the checkpoint as `interrupted`, and returns exit code 130.
+        let interrupt_handle = PlanRunInterruptHandle::default();
+        if let Some(cancel_token) = cancel {
+            let handle_for_cancel = interrupt_handle.clone();
+            tokio::spawn(async move {
+                cancel_token.cancelled().await;
+                handle_for_cancel.request(PlanRunInterrupt::Interrupt);
+            });
+        }
+
         let exit_code =
             crate::graph_execution::run_graph_plan(crate::graph_execution::GraphPlanRunParams {
                 plans_dir: execution_root,
@@ -564,8 +640,8 @@ fn run_plan_on_local_runtime(
                 quiet: true,
                 json: false,
                 resume_plan: None,
-                fresh: false,
-                force_resume: false,
+                fresh,
+                force_resume,
                 max_retries: None,
                 // 0 → use each plan's meta.max_parallel default.
                 max_tasks: 0,
@@ -580,11 +656,13 @@ fn run_plan_on_local_runtime(
                 no_tui: true,
                 // Publish into the server's hub so API/SSE clients see the run.
                 state_hub: Some(state_hub),
-                // Serve-side cancellation is wired separately (plan 03).
-                interrupt: None,
-                // The workspace's `[conductor] max_parallel_plans`.
-                max_parallel_plans: None,
+                // Bridge from the CancelToken: interrupt_handle.request() fires when
+                // the token is cancelled.
+                interrupt: Some(interrupt_handle),
+                // Per-run override for max parallel plans; None defers to config.
+                max_parallel_plans,
                 fail_fast: false,
+                only_plans,
             })
             .await?;
 
@@ -709,10 +787,19 @@ fn prepare_plan_execution_root(workdir: &Path, plan_target: &Path) -> anyhow::Re
         workdir.join(plan_target)
     };
 
-    if absolute_target.is_dir() && !absolute_target.join("tasks.toml").is_file() {
+    // Any directory target runs in place — both a plan-set directory (no
+    // tasks.toml at the top level) and a single-plan directory (contains
+    // tasks.toml). Running in place keeps `plan_dir` identical across every
+    // invocation, so the fingerprint that `plan_to_graph` embeds in each
+    // node's config never changes between runs and checkpoints under
+    // `.roko/state/graph/<plan_id>/` can always be resumed.
+    if absolute_target.is_dir() {
         return Ok(absolute_target);
     }
 
+    // The only case that still needs a copy: a bare tasks.toml file target.
+    // Resolve to its parent directory and copy it to a uniquely-named run
+    // root so the original is not mutated by the run.
     let copy_source = if absolute_target.is_file() {
         let parent = absolute_target.parent().ok_or_else(|| {
             anyhow::anyhow!(
@@ -727,8 +814,6 @@ fn prepare_plan_execution_root(workdir: &Path, plan_target: &Path) -> anyhow::Re
             );
         }
         parent.to_path_buf()
-    } else if absolute_target.is_dir() {
-        absolute_target.clone()
     } else {
         anyhow::bail!("plan target does not exist: {}", absolute_target.display());
     };
@@ -1269,6 +1354,59 @@ fn plan_summary_to_dto(summary: crate::plan::PlanSummary) -> PlanSummaryDto {
         old_format: summary.old_format,
         last_error: summary.last_error,
         group: summary.group,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A directory that contains `tasks.toml` is a single-plan directory.
+    /// It must be returned unchanged (not copied into `.roko/plan-runs/`) so
+    /// that `plan_to_graph` always records the same `plan_dir` in every node's
+    /// config.  A stable `plan_dir` produces a stable graph fingerprint, which
+    /// is required for checkpoints to survive between runs and across CLI vs
+    /// server invocations.
+    #[test]
+    fn plan_directory_runs_in_place() {
+        let tmp = tempfile::tempdir().unwrap();
+        let plan_dir = tmp.path().join("my-plan");
+        std::fs::create_dir_all(&plan_dir).unwrap();
+        std::fs::write(
+            plan_dir.join("tasks.toml"),
+            "[meta]\nid = \"my-plan\"\nmax_parallel = 1\n\n[tasks]\n",
+        )
+        .unwrap();
+
+        // prepare_plan_execution_root must return the directory itself, not a copy.
+        let result = prepare_plan_execution_root(tmp.path(), &plan_dir).unwrap();
+        assert_eq!(
+            result, plan_dir,
+            "a plan directory must run in place; got a different path"
+        );
+    }
+
+    /// A plan-set directory (no top-level tasks.toml) must also be returned
+    /// unchanged — this was already the case, but the test guards it explicitly
+    /// now that both branches share the same early-return path.
+    #[test]
+    fn plan_set_directory_runs_in_place() {
+        let tmp = tempfile::tempdir().unwrap();
+        // A plan-set directory contains child plan dirs, not a root tasks.toml.
+        let child = tmp.path().join("child-plan");
+        std::fs::create_dir_all(&child).unwrap();
+        std::fs::write(
+            child.join("tasks.toml"),
+            "[meta]\nid = \"child-plan\"\nmax_parallel = 1\n\n[tasks]\n",
+        )
+        .unwrap();
+
+        let result = prepare_plan_execution_root(tmp.path(), tmp.path()).unwrap();
+        assert_eq!(
+            result,
+            tmp.path(),
+            "a plan-set directory must run in place; got a different path"
+        );
     }
 }
 

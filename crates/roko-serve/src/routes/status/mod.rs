@@ -450,6 +450,7 @@ mod tests {
         let plan_handle = PlanHandle {
             id: "plan-1".into(),
             plan_dir: dir.path().join(".roko/plans/plan-1"),
+            members: vec!["plan-1".into()],
             status: OperationStatus::Running,
             handle: tokio::spawn(async {}),
             cancel: roko_runtime::cancel::CancelToken::new(),

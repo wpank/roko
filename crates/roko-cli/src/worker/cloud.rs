@@ -592,6 +592,7 @@ pub async fn run_code_implementer_cloud(
                 interrupt: None,
                 max_parallel_plans: None,
                 fail_fast: false,
+                only_plans: None,
             })
             .await?;
         let success = exit_code == crate::exit_codes::EXIT_SUCCESS;

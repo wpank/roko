@@ -2,7 +2,7 @@
 id = "gap-038eaa"
 kind = "gap"
 title = "Graph plan runs never emit token usage or cost events to the dashboard"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 subsystem = ["roko-cli/graph-dispatch", "roko-serve/events"]
@@ -16,6 +16,12 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[repro]]
 command = 'grep -q "token_usage" crates/roko-cli/src/graph_task_dispatch.rs'
+
+[closed]
+at = 2026-09-28
+by = "plan:portal-programme/03-backend-live-events#T03"
+run_id = "graph-03-backend-live-events-0ea932f0-fc26-479a-92e0-90c2cb2648a3"
+evidence = "PASS input tokens are attributed to the task; PASS cost is attributed to the task — LIVE-EVENTS-CHECK: PASS (12 checks)"
 +++
 
 `TuiBridge::token_usage` / `efficiency_event` are reached only through the legacy runner output sink (`runner/output_sink.rs`); nothing on the Graph path (`graph_task_dispatch.rs`, `graph_execution/plan_runner.rs`) calls them.

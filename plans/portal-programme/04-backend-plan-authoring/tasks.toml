@@ -3,9 +3,9 @@ plan = "04-backend-plan-authoring"
 total = 15
 done = 0
 status = "ready"
-max_parallel = 1
+max_parallel = 2
 skip_enrichment = true
-estimated_total_minutes = 375
+estimated_total_minutes = 385
 
 # Make plan authoring work from the API: create a plan, edit its source, validate
 # while typing, generate one from a sentence, and run what was generated.
@@ -20,6 +20,13 @@ estimated_total_minutes = 375
 #   - A generation's outcome is not observable: its handle never leaves Running, and
 #     OperationStarted/Completed never reach the SSE stream.
 #
+# Tasks run two at a time where their files are disjoint (max_parallel = 2):
+#   - T01 (the wire shape) runs beside T02 then T03 (validator move, authoring core);
+#     T04 joins them.
+#   - The routes chain T05-T09, T11 (routes/plans.rs) runs beside the pipeline chain
+#     T10, T12 (prd.rs, serve_runtime.rs).
+#   - T13 joins both chains.
+#
 # Revising a plan in place (P-5) is the next plan, 04b-backend-plan-revision.
 # The shapes follow the portal's asks P-2, P-3, P-4 and P-11 in
 # tmp/portal-audit/03-CONTRACT.md section 6. Editing works on the plan's TOML source,
@@ -29,7 +36,7 @@ estimated_total_minutes = 375
 
 [[task]]
 id = "T01"
-title = "Carry verify steps, model hint and estimates on the task wire shape"
+title = "Carry verify steps, model hint, estimates and the whole plan summary on the wire"
 description = """
 The portal shows a task's verify steps, model hint and estimate, and a plan's title,
 parallelism and estimate (section 6, P-11 of `tmp/portal-audit/03-CONTRACT.md`). None
@@ -53,6 +60,21 @@ of these are on the wire.
      task estimates.
   3. Fix every other construction of these DTOs so both crates compile, including the
      test runtimes under `crates/roko-serve/tests`. Grep for them.
+  4. Make `GET /api/plans` and `GET /api/plans/{id}` (`list_plans` and `get_plan` in
+     `crates/roko-serve/src/routes/plans.rs`) serialize `PlanSummaryDto` as it is.
+     Today both build their own JSON:
+     - the list drops `tasks_done`, `group`, `old_format`, `superseded_by` and
+       `last_error`, and names the done count `completed_task_count`;
+     - `get_plan` drops `group`.
+     The portal reads the DTO's own names, so its rail shows "undefined/1" and
+     nested plans lose their group. The new `estimated_minutes` would be dropped the
+     same way. Keep `completed_task_count` as an alias of `tasks_done` for older
+     clients.
+
+Add a router test beside the handlers, `plan_list_and_detail_carry_the_summary_fields`.
+Give it a runtime whose summary has a `group`, a done count, `old_format`,
+`superseded_by`, `last_error` and `estimated_minutes`, and assert that
+`GET /api/plans` and `GET /api/plans/{id}` both carry every one of them.
 """
 status = "ready"
 role = "implementer"
@@ -60,11 +82,12 @@ tier = "focused"
 model_hint = "claude-sonnet-4-6"
 timeout_secs = 2700
 max_retries = 2
-estimated_minutes = 25
+estimated_minutes = 35
 depends_on = []
 files = [
     "crates/roko-serve/src/plan_types.rs",
     "crates/roko-cli/src/serve_runtime.rs",
+    "crates/roko-serve/src/routes/plans.rs",
 ]
 
 [task.context]
@@ -72,6 +95,7 @@ read_files = [
     { path = "crates/roko-serve/src/plan_types.rs", why = "the plan wire shapes being widened" },
     { path = "crates/roko-cli/src/serve_runtime.rs", why = "load_plan_tasks, plan_summary_to_dto and their mappings" },
     { path = "crates/roko-cli/src/task_parser.rs", why = "TaskDef, TaskMeta and VerifyStep: the fields the DTOs mirror" },
+    { path = "crates/roko-serve/src/routes/plans.rs", why = "list_plans and get_plan, which rebuild the summary by hand", symbols = ["list_plans", "get_plan"] },
 ]
 anti_patterns = [
     "Do not change the names or meaning of fields the API already returns.",
@@ -85,7 +109,7 @@ timeout_ms = 2700000
 
 [[task.verify]]
 phase = "structural"
-command = "grep -q 'pub verify: Vec<PlanTaskVerifyDto>' crates/roko-serve/src/plan_types.rs && grep -q 'fn task_to_dto' crates/roko-cli/src/serve_runtime.rs"
+command = "grep -q 'pub verify: Vec<PlanTaskVerifyDto>' crates/roko-serve/src/plan_types.rs && grep -q 'fn task_to_dto' crates/roko-cli/src/serve_runtime.rs && grep -q 'fn plan_list_and_detail_carry_the_summary_fields' crates/roko-serve/src/routes/plans.rs"
 fail_msg = "the task wire shape does not carry verify steps, or the mapping was not extracted"
 
 [[task]]
@@ -118,7 +142,7 @@ model_hint = "claude-sonnet-4-6"
 timeout_secs = 2700
 max_retries = 2
 estimated_minutes = 25
-depends_on = ["T01"]
+depends_on = []
 files = [
     "crates/roko-cli/src/lib.rs",
     "crates/roko-cli/src/main.rs",
@@ -256,7 +280,7 @@ model_hint = "claude-sonnet-4-6"
 timeout_secs = 2700
 max_retries = 2
 estimated_minutes = 30
-depends_on = ["T03"]
+depends_on = ["T01", "T03"]
 files = [
     "crates/roko-serve/src/runtime.rs",
     "crates/roko-serve/src/plan_types.rs",
@@ -570,7 +594,7 @@ model_hint = "claude-sonnet-4-6"
 timeout_secs = 2700
 max_retries = 2
 estimated_minutes = 20
-depends_on = ["T09"]
+depends_on = ["T04"]
 files = [
     "crates/roko-cli/src/prd.rs",
     "crates/roko-cli/src/serve_runtime.rs",
@@ -633,7 +657,7 @@ model_hint = "claude-sonnet-4-6"
 timeout_secs = 2700
 max_retries = 2
 estimated_minutes = 30
-depends_on = ["T10"]
+depends_on = ["T09"]
 files = [
     "crates/roko-serve/src/routes/plans.rs",
     "crates/roko-serve/src/routes/status/dashboard.rs",
@@ -696,7 +720,7 @@ model_hint = "claude-sonnet-4-6"
 timeout_secs = 2700
 max_retries = 2
 estimated_minutes = 25
-depends_on = ["T11"]
+depends_on = ["T10"]
 files = ["crates/roko-cli/src/prd.rs"]
 
 [task.context]
@@ -753,7 +777,7 @@ model_hint = "claude-sonnet-4-6"
 timeout_secs = 2700
 max_retries = 2
 estimated_minutes = 30
-depends_on = ["T12"]
+depends_on = ["T11", "T12"]
 files = ["crates/roko-serve/tests/plan_authoring.rs"]
 
 [task.context]

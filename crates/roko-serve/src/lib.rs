@@ -41,6 +41,7 @@ pub mod deploy;
 pub mod dispatch;
 pub mod dreams;
 pub mod embedded;
+pub mod endpoint;
 pub mod error;
 pub mod event_bus;
 pub mod events;
@@ -126,6 +127,10 @@ pub struct ServerBuildConfig {
     /// that metrics collected during plan execution are visible on the
     /// `/metrics` endpoint (E09-T03).
     pub metrics: Option<Arc<roko_core::obs::metrics::MetricRegistry>>,
+    /// When `true`, the server writes `.roko/runtime/serve.json` after
+    /// binding so that CLI commands can discover the running server.
+    /// Off by default; opt in with [`Self::with_advertised_endpoint`].
+    pub advertise_endpoint: bool,
 }
 
 impl ServerBuildConfig {
@@ -145,6 +150,7 @@ impl ServerBuildConfig {
             bind,
             port,
             metrics: None,
+            advertise_endpoint: false,
         }
     }
 
@@ -160,6 +166,18 @@ impl ServerBuildConfig {
     #[must_use]
     pub fn with_metrics(mut self, metrics: Arc<roko_core::obs::metrics::MetricRegistry>) -> Self {
         self.metrics = Some(metrics);
+        self
+    }
+
+    /// Enable workspace endpoint advertisement.
+    ///
+    /// When this flag is set, [`ServerBuilder::start_background`] writes
+    /// `.roko/runtime/serve.json` immediately after binding and removes it
+    /// when the serve task exits.  Off by default so tests and embedded
+    /// callers that do not own a real workspace do not touch the filesystem.
+    #[must_use]
+    pub fn with_advertised_endpoint(mut self) -> Self {
+        self.advertise_endpoint = true;
         self
     }
 
@@ -445,6 +463,24 @@ impl ServerBuilder {
         info!("roko server listening on {scheme}://{addr}");
         info!("workdir: {}", self.config.workdir.display());
 
+        // Advertise this server in the workspace when the caller opted in
+        // (off by default so tests and embedded callers do not touch the fs).
+        let advertise_endpoint = self.config.advertise_endpoint;
+        let endpoint_workdir = self.config.workdir.clone();
+        if advertise_endpoint {
+            if let Ok(local_addr) = listener.local_addr() {
+                let ep = endpoint::ServeEndpoint {
+                    pid: std::process::id(),
+                    url: endpoint::local_url(local_addr, scheme),
+                    workdir: endpoint_workdir.clone(),
+                    started_at: chrono::Utc::now().to_rfc3339(),
+                };
+                if let Err(err) = endpoint::write_endpoint(&endpoint_workdir, &ep) {
+                    warn!(%err, "failed to write serve endpoint file");
+                }
+            }
+        }
+
         // Spawn chain-watcher if chain.rpc_url is configured (best-effort).
         // Redirect all subprocess output through a day-based rolling writer
         // under .roko/ so long-running serve sessions do not grow one unbounded file.
@@ -552,6 +588,10 @@ impl ServerBuilder {
                 warn!(%error, "periodic telemetry observer join failed");
             }
             serve_result?;
+            // Remove the endpoint advertisement when we are the owner.
+            if advertise_endpoint {
+                endpoint::remove_endpoint_if_owned(&endpoint_workdir, std::process::id());
+            }
             info!("server stopped");
             Ok(())
         });

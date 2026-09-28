@@ -1,8 +1,9 @@
 'use client';
 
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { Transcript as TranscriptState } from '@/lib/runState';
 import { toBlocks } from '@/lib/streamRecord';
+import type { TranscriptBlock } from '@/lib/streamRecord';
 import { compactDuration } from '@/lib/formatters';
 
 // ── Transcript component ──────────────────────────────────────────────────────
@@ -73,6 +74,171 @@ export function Transcript({
   const blocks = transcript ? toBlocks(transcript.entries) : [];
   const dropped = transcript?.dropped ?? 0;
 
+  // ── Render a single block (no key; key is managed by the outer wrapper) ───
+  function renderBlockContent(block: TranscriptBlock): React.ReactNode {
+    switch (block.kind) {
+      case 'text':
+        return (
+          <pre className="transcript-text" style={{ whiteSpace: 'pre-wrap', margin: 0 }}>
+            {block.text}
+          </pre>
+        );
+
+      case 'reasoning':
+        return (
+          <details className="transcript-reasoning">
+            <summary style={{ opacity: 0.5, cursor: 'pointer', userSelect: 'none' }}>
+              <span className="transcript-gutter" aria-hidden="true">◦</span>{' '}
+              reasoning
+            </summary>
+            <pre
+              style={{
+                whiteSpace: 'pre-wrap',
+                margin: 0,
+                opacity: 0.5,
+                paddingLeft: '1.25em',
+              }}
+            >
+              {block.text}
+            </pre>
+          </details>
+        );
+
+      case 'tool': {
+        const firstOutputLine = block.output
+          ? (block.output.split('\n')[0] ?? '')
+          : '';
+        return (
+          <details data-tool={block.toolId} className="transcript-tool">
+            <summary style={{ cursor: 'pointer', userSelect: 'none' }}>
+              <span className="transcript-glyph" aria-hidden="true">
+                {block.glyph}
+              </span>{' '}
+              <span className="transcript-tool-name">
+                {block.tool || '(unknown)'}
+              </span>
+              {block.target && (
+                <span
+                  data-target=""
+                  className="transcript-tool-target"
+                  style={{ marginLeft: '0.5em', opacity: 0.7 }}
+                >
+                  {block.target}
+                </span>
+              )}
+              {firstOutputLine && (
+                <span
+                  className="transcript-tool-preview"
+                  style={{ opacity: 0.6 }}
+                >
+                  {' '}· {firstOutputLine}
+                </span>
+              )}
+            </summary>
+            {block.input && (
+              <pre
+                data-input=""
+                style={{
+                  whiteSpace: 'pre-wrap',
+                  margin: 0,
+                  fontFamily: 'monospace',
+                  paddingLeft: '1.25em',
+                }}
+              >
+                {block.input}
+              </pre>
+            )}
+            {block.output !== null && (
+              <div>
+                {block.truncated && (
+                  <div
+                    className="transcript-truncated"
+                    style={{ opacity: 0.6, fontSize: '0.85em', paddingLeft: '1.25em' }}
+                  >
+                    (server kept only the tail of this output)
+                  </div>
+                )}
+                <pre
+                  style={{
+                    whiteSpace: 'pre-wrap',
+                    margin: 0,
+                    fontFamily: 'monospace',
+                    paddingLeft: '1.25em',
+                  }}
+                >
+                  {block.output}
+                </pre>
+              </div>
+            )}
+          </details>
+        );
+      }
+
+      case 'step':
+        return (
+          <div data-step={block.toolId} className="transcript-step">
+            <span className="transcript-glyph" aria-hidden="true">
+              {block.glyph}
+            </span>{' '}
+            <span className="transcript-tool-name">{block.tool}</span>
+            {block.target && (
+              <span
+                data-target=""
+                className="transcript-tool-target"
+                style={{ marginLeft: '0.5em', opacity: 0.7 }}
+              >
+                {block.target}
+              </span>
+            )}
+            {working && (
+              <span
+                data-live=""
+                className="transcript-live-marker"
+                style={{
+                  marginLeft: '0.5em',
+                  fontSize: '0.75em',
+                  textTransform: 'uppercase',
+                  opacity: 0.5,
+                }}
+              >
+                live
+              </span>
+            )}
+          </div>
+        );
+
+      case 'raw':
+        return (
+          <pre
+            className="transcript-raw"
+            style={{
+              whiteSpace: 'pre-wrap',
+              margin: 0,
+              fontFamily: 'monospace',
+            }}
+          >
+            {block.malformed && (
+              <span style={{ opacity: 0.6 }}>[malformed] </span>
+            )}
+            {block.text}
+          </pre>
+        );
+
+      case 'divider':
+        return (
+          <div
+            className="transcript-divider"
+            style={{ opacity: 0.5, padding: '4px 0' }}
+          >
+            — attempt {block.attempt} —
+          </div>
+        );
+
+      default:
+        return null;
+    }
+  }
+
   return (
     <div style={{ position: 'relative', height: '100%' }}>
       <div
@@ -93,120 +259,26 @@ export function Transcript({
         )}
 
         {blocks.map((block, i) => {
-          switch (block.kind) {
-            case 'text':
-              return (
-                <pre
-                  key={i}
-                  className="transcript-text"
-                  style={{ whiteSpace: 'pre-wrap', margin: 0 }}
+          const isUnscreened = 'unscreened' in block && block.unscreened === true;
+          const content = renderBlockContent(block);
+          if (isUnscreened) {
+            return (
+              <div
+                key={i}
+                data-unscreened=""
+                className="border-l-2 border-accent-warn pl-2"
+              >
+                <span
+                  data-unscreened-label=""
+                  className="text-accent-warn"
                 >
-                  {block.text}
-                </pre>
-              );
-
-            case 'reasoning':
-              return (
-                <details key={i} className="transcript-reasoning">
-                  <summary
-                    style={{ opacity: 0.5, cursor: 'pointer', userSelect: 'none' }}
-                  >
-                    <span className="transcript-gutter" aria-hidden="true">◦</span>{' '}
-                    reasoning
-                  </summary>
-                  <pre
-                    style={{
-                      whiteSpace: 'pre-wrap',
-                      margin: 0,
-                      opacity: 0.5,
-                      paddingLeft: '1.25em',
-                    }}
-                  >
-                    {block.text}
-                  </pre>
-                </details>
-              );
-
-            case 'tool': {
-              const firstOutputLine = block.output
-                ? (block.output.split('\n')[0] ?? '')
-                : '';
-              return (
-                <details key={i} className="transcript-tool">
-                  <summary style={{ cursor: 'pointer', userSelect: 'none' }}>
-                    <span className="transcript-glyph" aria-hidden="true">
-                      {block.glyph}
-                    </span>{' '}
-                    <span className="transcript-tool-name">
-                      {block.tool || '(unknown)'}
-                    </span>
-                    {firstOutputLine && (
-                      <span
-                        className="transcript-tool-preview"
-                        style={{ opacity: 0.6 }}
-                      >
-                        {' '}· {firstOutputLine}
-                      </span>
-                    )}
-                  </summary>
-                  {block.output !== null && (
-                    <div>
-                      {block.truncated && (
-                        <div
-                          className="transcript-truncated"
-                          style={{ opacity: 0.6, fontSize: '0.85em', paddingLeft: '1.25em' }}
-                        >
-                          (server kept only the tail of this output)
-                        </div>
-                      )}
-                      <pre
-                        style={{
-                          whiteSpace: 'pre-wrap',
-                          margin: 0,
-                          fontFamily: 'monospace',
-                          paddingLeft: '1.25em',
-                        }}
-                      >
-                        {block.output}
-                      </pre>
-                    </div>
-                  )}
-                </details>
-              );
-            }
-
-            case 'raw':
-              return (
-                <pre
-                  key={i}
-                  className="transcript-raw"
-                  style={{
-                    whiteSpace: 'pre-wrap',
-                    margin: 0,
-                    fontFamily: 'monospace',
-                  }}
-                >
-                  {block.malformed && (
-                    <span style={{ opacity: 0.6 }}>[malformed] </span>
-                  )}
-                  {block.text}
-                </pre>
-              );
-
-            case 'divider':
-              return (
-                <div
-                  key={i}
-                  className="transcript-divider"
-                  style={{ opacity: 0.5, padding: '4px 0' }}
-                >
-                  — attempt {block.attempt} —
-                </div>
-              );
-
-            default:
-              return null;
+                  live · unscreened
+                </span>
+                {content}
+              </div>
+            );
           }
+          return <Fragment key={i}>{content}</Fragment>;
         })}
 
         {/* Live working indicator — ticks each second via elapsed state */}

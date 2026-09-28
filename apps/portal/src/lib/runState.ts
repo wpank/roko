@@ -11,8 +11,8 @@
 
 import type { WireDashboardEvent, WireDashboardSnapshot } from '@/api/contracts';
 import { TASK_OUTCOME_ACCEPTED_WITH_FAILURES } from '@/api/contracts';
-import { decodeStreamRecord } from '@/lib/streamRecord';
-import type { TranscriptEntry, AttemptDivider } from '@/lib/streamRecord';
+import { decodeFrame } from '@/lib/streamRecord';
+import type { Frame, TranscriptEntry, AttemptDivider, ToolStep, UnscreenedEntry } from '@/lib/streamRecord';
 
 // ── Constants ──────────────────────────────────────────────────────────────────
 
@@ -165,6 +165,55 @@ function appendTranscript(t: Transcript, entry: TranscriptEntry): Transcript {
     entries: [...t.entries.slice(1), entry],
     dropped: t.dropped + 1,
   };
+}
+
+/**
+ * Fold one decoded Frame into a transcript, applying the live-output rules:
+ * - live, not unscreened, tool_start  → ToolStep entry (never removed later)
+ * - live, unscreened                  → UnscreenedEntry
+ * - live, anything else               → ignore (return transcript unchanged)
+ * - not live (screened record)        → remove same-agent/attempt unscreened
+ *                                       entries first, then append the record
+ */
+function appendFrame(
+  t: Transcript,
+  frame: Frame,
+  agentId: string,
+  attempt: number,
+): Transcript {
+  if (frame.live) {
+    if (!frame.unscreened && frame.record.kind === 'tool_start') {
+      const step: ToolStep = {
+        kind: 'step',
+        toolId: frame.record.toolId,
+        tool: frame.record.tool,
+        target: frame.target,
+        agentId,
+        attempt,
+      };
+      return appendTranscript(t, step);
+    }
+    if (frame.unscreened) {
+      const entry: UnscreenedEntry = {
+        kind: 'unscreened',
+        record: frame.record,
+        input: frame.input,
+        agentId,
+        attempt,
+      };
+      return appendTranscript(t, entry);
+    }
+    // Any other live record (non-unscreened, non-step) → ignore
+    return t;
+  }
+  // Screened record: remove unscreened entries for this agentId+attempt, then append
+  const before = t.entries;
+  const filtered = before.filter(
+    (e) => e.kind !== 'unscreened' || e.agentId !== agentId || e.attempt !== attempt,
+  );
+  const base: Transcript =
+    filtered.length !== before.length ? { entries: filtered, dropped: t.dropped } : t;
+  return appendTranscript(base, frame.record);
 }
 
 /** Sort checks by index, nulls last. Stable relative to original order for ties. */
@@ -367,7 +416,26 @@ export function applyEvent(
         newAgents[id] = agent.active ? { ...agent, active: false } : agent;
       }
 
-      return { ...state, run: newRun, plans: newPlans, tasks: newTasks, agents: newAgents };
+      // Remove all unscreened entries from all transcripts on run end
+      let newTranscripts = state.transcripts;
+      for (const [key, transcript] of Object.entries(state.transcripts)) {
+        const filtered = transcript.entries.filter((e) => e.kind !== 'unscreened');
+        if (filtered.length !== transcript.entries.length) {
+          if (newTranscripts === state.transcripts) {
+            newTranscripts = { ...state.transcripts };
+          }
+          newTranscripts[key] = { entries: filtered, dropped: transcript.dropped };
+        }
+      }
+
+      return {
+        ...state,
+        run: newRun,
+        plans: newPlans,
+        tasks: newTasks,
+        agents: newAgents,
+        transcripts: newTranscripts,
+      };
     }
 
     // ── task_started ───────────────────────────────────────────────────────────
@@ -524,9 +592,26 @@ export function applyEvent(
     case 'agent_completed': {
       const existing = state.agents[event.agent_id];
       if (!existing) return state;
+
+      // Remove every unscreened entry belonging to this agent from all transcripts
+      const completedId = event.agent_id;
+      let newTranscripts = state.transcripts;
+      for (const [key, transcript] of Object.entries(state.transcripts)) {
+        const filtered = transcript.entries.filter(
+          (e) => e.kind !== 'unscreened' || e.agentId !== completedId,
+        );
+        if (filtered.length !== transcript.entries.length) {
+          if (newTranscripts === state.transcripts) {
+            newTranscripts = { ...state.transcripts };
+          }
+          newTranscripts[key] = { entries: filtered, dropped: transcript.dropped };
+        }
+      }
+
       return {
         ...state,
         agents: { ...state.agents, [event.agent_id]: { ...existing, active: false } },
+        transcripts: newTranscripts,
       };
     }
 
@@ -557,7 +642,9 @@ export function applyEvent(
 
     // ── agent_output ───────────────────────────────────────────────────────────
     case 'agent_output': {
-      const entry = decodeStreamRecord(event.content);
+      const frame = decodeFrame(event.content);
+      const agentId = event.agent_id;
+      const attempt = event.attempt ?? frame.attempt ?? 0;
 
       // Resolve the transcript key: prefer event's plan/task, then agent's current context
       let key: string | null = null;
@@ -574,11 +661,14 @@ export function applyEvent(
       if (!key) return state;
 
       const transcript = state.transcripts[key] ?? { entries: [], dropped: 0 };
+      const newTranscript = appendFrame(transcript, frame, agentId, attempt);
+      // If appendFrame returned the same object (ignored live record), skip state copy
+      if (newTranscript === transcript) return state;
       return {
         ...state,
         transcripts: {
           ...state.transcripts,
-          [key]: appendTranscript(transcript, entry),
+          [key]: newTranscript,
         },
       };
     }
@@ -958,9 +1048,20 @@ export function fromSnapshot(snapshot: WireDashboardSnapshot, nowMs: number): Ru
     if (planIds.length !== 1) continue; // ambiguous — skip
     const planId = planIds[0]!;
     const key = taskKey(planId, taskId);
+    const taskActive = tasks[key]?.status === 'active';
     let t: Transcript = { entries: [], dropped: 0 };
     for (const line of lines) {
-      t = appendTranscript(t, decodeStreamRecord(line));
+      const frame = decodeFrame(line);
+      const frameAgentId = frame.agentId ?? '';
+      const frameAttempt = frame.attempt ?? 0;
+      t = appendFrame(t, frame, frameAgentId, frameAttempt);
+    }
+    // If the task is no longer active, drop all unscreened entries
+    if (!taskActive) {
+      const filtered = t.entries.filter((e) => e.kind !== 'unscreened');
+      if (filtered.length !== t.entries.length) {
+        t = { entries: filtered, dropped: t.dropped };
+      }
     }
     transcripts[key] = t;
   }

@@ -4,10 +4,13 @@
  * RunBand.tsx — the live run band shown while plans are executing.
  *
  * Contains three cells rendered side-by-side:
+ *   BURN    — token totals and per-role breakdown (buildBurn)
  *   AGENTS  — active agent roster (buildRoster)
  *   CHECKS  — verify ladder for the focus task (checkFocusTask + buildRungs)
- *   BURN    — token totals and per-role breakdown (buildBurn)
  *
+ * Each cell opens with a compact `.rd-band__head` line: its title and a summary
+ * note beside it.  Only BAND_ROWS content lines appear under the head; extras
+ * are counted in the note as "+N more".
  * Returns null (zero height) when no plans are running.
  */
 
@@ -28,6 +31,11 @@ import { StatusGlyph } from '@/components/primitives/StatusGlyph';
 import { compactDuration, formatTokens, shortModel } from '@/lib/formatters';
 import type { GlyphState } from '@/lib/glyphs';
 import { useNow } from '@/lib/useNow';
+
+// ── Constants ────────────────────────────────────────────────────────────────────
+
+/** Number of content rows rendered per cell; the rest are counted in the head note. */
+const BAND_ROWS = 2;
 
 // ── Helpers ─────────────────────────────────────────────────────────────────────
 
@@ -101,10 +109,11 @@ function RunBandInner({
   // ── AGENTS ──────────────────────────────────────────────────────────────────
   const roster = buildRoster(run, { nowMs, runningPlanIds, maxParallelByPlan });
 
-  // Footer: only non-zero parts, joined with " · ".
-  const footerParts: string[] = [];
-  if (roster.finished > 0) footerParts.push(`+${roster.finished} finished`);
-  if (roster.idle !== null && roster.idle > 0) footerParts.push(`idle ×${roster.idle}`);
+  // Head note: "+N more" for overflow active rows, "+N finished", "idle ×N".
+  const agentsNoteParts: string[] = [];
+  if (roster.rows.length > BAND_ROWS) agentsNoteParts.push(`+${roster.rows.length - BAND_ROWS} more`);
+  if (roster.finished > 0) agentsNoteParts.push(`+${roster.finished} finished`);
+  if (roster.idle !== null && roster.idle > 0) agentsNoteParts.push(`idle ×${roster.idle}`);
 
   // ── CHECKS ──────────────────────────────────────────────────────────────────
   // Adapt Selection (plan/task) → the shape checkFocusTask expects.
@@ -141,13 +150,17 @@ function RunBandInner({
     <section data-region="run-band" className="rd-band">
       {/* BURN cell — compact, sits above the rail */}
       <div data-cell="burn" className="rd-band__cell">
-        <div className="rd-band__title">BURN</div>
-        <div className="rd-band__total">
-          {formatTokens(burn.tokens)} tok
-          {burn.tokensPerMin !== null &&
-            ` · ${formatTokens(Math.round(burn.tokensPerMin))}/min`}
+        <div className="rd-band__head">
+          <span className="rd-band__title">BURN</span>
+          <span className="rd-band__note rd-band__total">
+            {formatTokens(burn.tokens)} tok
+            {burn.tokensPerMin !== null &&
+              ` · ${formatTokens(Math.round(burn.tokensPerMin))}/min`}
+            {burn.byRole.length > BAND_ROWS &&
+              ` · +${burn.byRole.length - BAND_ROWS} more`}
+          </span>
         </div>
-        {burn.byRole.map((r) => (
+        {burn.byRole.slice(0, BAND_ROWS).map((r) => (
           <div key={r.role} data-role-share={r.role} className="rd-band__share">
             <span className="rd-band__bar">
               <span
@@ -166,56 +179,59 @@ function RunBandInner({
 
       {/* AGENTS cell */}
       <div data-cell="agents" className="rd-band__cell">
-        <div className="rd-band__title">AGENTS</div>
-        {roster.rows.length > 0 ? (
-          roster.rows.map((row) => (
-            <div key={row.agentId} data-agent={row.agentId} className="rd-band__agent">
-              <span
-                data-role={row.role}
-                className="rd-band__role"
-                style={{ color: `var(--role-${row.role}, var(--role-other))` }}
-              >
-                {row.role}
-              </span>
-              <span>
-                {row.planId ?? ''}
-                {row.taskId ? ` · ${row.taskId}` : ''}
-              </span>
-              <span className="rd-band__muted" title={row.model}>{shortModel(row.model)}</span>
-              {row.elapsedMs !== null && (
-                <span className="rd-band__num">► {compactDuration(row.elapsedMs)}</span>
-              )}
-              <span className="rd-band__num">{formatTokens(row.tokens)} tok</span>
-            </div>
-          ))
-        ) : roster.finished === 0 ? (
+        <div className="rd-band__head">
+          <span className="rd-band__title">AGENTS</span>
+          {agentsNoteParts.length > 0 && (
+            <span className="rd-band__note">{agentsNoteParts.join(' · ')}</span>
+          )}
+        </div>
+        {roster.rows.slice(0, BAND_ROWS).map((row) => (
+          <div key={row.agentId} data-agent={row.agentId} className="rd-band__agent">
+            <span
+              data-role={row.role}
+              className="rd-band__role"
+              style={{ color: `var(--role-${row.role}, var(--role-other))` }}
+            >
+              {row.role}
+            </span>
+            <span>
+              {row.planId ?? ''}
+              {row.taskId ? ` · ${row.taskId}` : ''}
+            </span>
+            <span className="rd-band__muted" title={row.model}>{shortModel(row.model)}</span>
+            {row.elapsedMs !== null && (
+              <span className="rd-band__num">► {compactDuration(row.elapsedMs)}</span>
+            )}
+            <span className="rd-band__num">{formatTokens(row.tokens)} tok</span>
+          </div>
+        ))}
+        {roster.rows.length === 0 && roster.finished === 0 && (
           <div className="rd-band__empty">no agent working yet</div>
-        ) : null}
-        {footerParts.length > 0 && (
-          <div className="rd-band__footer">{footerParts.join(' · ')}</div>
         )}
       </div>
 
       {/* CHECKS cell */}
       <div data-cell="checks" className="rd-band__cell">
-        <div className="rd-band__title">
-          {focus !== null ? `CHECKS · ${focus.taskId}` : 'CHECKS'}
+        <div className="rd-band__head">
+          <span className="rd-band__title">
+            {focus !== null ? `CHECKS · ${focus.taskId}` : 'CHECKS'}
+          </span>
+          {focus !== null && (
+            <span className="rd-band__note rd-band__focus">
+              {focusTaskTitle} · {focus.planId}
+            </span>
+          )}
         </div>
         {focus !== null ? (
-          <>
-            <div className="rd-band__focus">
-              {focusTaskTitle} · {focus.planId}
-            </div>
-            <div className="rd-band__rungs">
-              {rungs.map((rung, i) => (
-                <span
-                  key={rung.index ?? `x${i}`}
-                  data-rung={rung.state}
-                  className="rd-band__rung"
-                ><StatusGlyph state={rungGlyphState(rung.state)} />{' '}{rung.label}</span>
-              ))}
-            </div>
-          </>
+          <div className="rd-band__rungs">
+            {rungs.map((rung, i) => (
+              <span
+                key={rung.index ?? `x${i}`}
+                data-rung={rung.state}
+                className="rd-band__rung"
+              ><StatusGlyph state={rungGlyphState(rung.state)} />{' '}{rung.label}</span>
+            ))}
+          </div>
         ) : (
           <div className="rd-band__empty">no task is being checked</div>
         )}

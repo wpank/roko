@@ -26,7 +26,7 @@ import type { WireDiagnostic } from '@/api/contracts';
 import { Button } from '@/components/atoms/Button';
 import { Spinner } from '@/components/atoms/Spinner';
 import { Notice } from '@/components/primitives/Notice';
-import { isMissingRoute, unsupportedMessage } from '@/lib/apiErrors';
+import { describeRequestError, isMissingRoute, unsupportedMessage } from '@/lib/apiErrors';
 import { cn } from '@/lib/cn';
 
 // ---------------------------------------------------------------------------
@@ -225,28 +225,15 @@ export function SourceEditor({ planId, running, onClose, onDirtyChange }: Source
     );
   }
 
-  if (loadIsUnsupported) {
-    return (
-      <div className="flex flex-col h-full p-4 gap-4">
-        <Notice kind="unsupported">
-          {unsupportedMessage('editing plans')}
-        </Notice>
-        <Button variant="secondary" size="sm" onClick={onClose}>
-          Close
-        </Button>
-      </div>
-    );
-  }
-
   if (loadError) {
     return (
-      <div className="flex flex-col h-full items-center justify-center gap-4 text-accent-error">
-        <span className="text-sm font-mono">
-          Failed to load source: {String(loadError)}
-        </span>
-        <Button variant="secondary" size="sm" onClick={onClose}>
-          Close
-        </Button>
+      <div className="flex flex-col h-full p-4 gap-4">
+        <Notice
+          kind={loadIsUnsupported ? 'unsupported' : 'error'}
+          onClose={onClose}
+        >
+          {describeRequestError(loadError, 'editing plans')}
+        </Notice>
       </div>
     );
   }
@@ -300,14 +287,14 @@ export function SourceEditor({ planId, running, onClose, onDirtyChange }: Source
       {/* ---- Save notice (404/405 — route not supported by this server) ---- */}
       {saveNotice && (
         <div className="px-3 py-2 border-b border-border-default shrink-0">
-          <Notice kind="unsupported">{saveNotice}</Notice>
+          <Notice kind="unsupported" onClose={() => setSaveNotice(null)}>{saveNotice}</Notice>
         </div>
       )}
 
       {/* ---- Inline error (409, network) ---- */}
       {inlineError && (
-        <div className="px-3 py-2 text-xs font-mono text-accent-error bg-bg-highlight border-b border-border-default shrink-0">
-          {inlineError}
+        <div className="px-3 py-2 border-b border-border-default shrink-0">
+          <Notice kind="error" onClose={() => setInlineError(null)}>{inlineError}</Notice>
         </div>
       )}
 

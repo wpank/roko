@@ -252,12 +252,12 @@ export function PromptPanel({
 
       {/* Missing-route notice */}
       {noticeError && (
-        <Notice kind="unsupported">{noticeError}</Notice>
+        <Notice kind="unsupported" onClose={() => setNoticeError(null)}>{noticeError}</Notice>
       )}
 
       {/* Inline error (409, outdated server, network, etc.) */}
       {error && (
-        <p data-error className="text-xs font-mono text-accent-error">{error}</p>
+        <Notice kind="error" onClose={() => setError(null)}><span data-error>{error}</span></Notice>
       )}
 
       {/* Action row */}

@@ -86,9 +86,12 @@ export function glyphStateForTask(status: TaskStatus | 'pending'): GlyphState {
  * Return the CSS token for a progress fraction.
  *
  * Bands (mirrors tokens.css §3):
- *   fraction < 0.3        → var(--progress-low)   (ember orange)
- *   0.3 ≤ fraction ≤ 0.7  → var(--progress-mid)   (warning amber)
- *   fraction > 0.7        → var(--progress-high)  (sage green)
+ *   fraction < 0.3        → var(--progress-low)   (running colour — indigo)
+ *   0.3 ≤ fraction ≤ 0.7  → var(--progress-mid)   (running colour — indigo)
+ *   fraction > 0.7        → var(--progress-high)  (running colour — indigo)
+ *
+ * All three bands are the running colour. Finished bars use state tokens
+ * (--state-done, --state-accepted, --state-failed) via GLYPHS[state].token.
  */
 export function progressToken(fraction: number): string {
   if (fraction < 0.3) return 'var(--progress-low)';

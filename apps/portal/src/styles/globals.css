@@ -261,7 +261,7 @@ body {
 /* -------------------------------------------------------------------- */
 /* 7. Focus ring                                                          */
 /*                                                                        */
-/* A single-pixel rose outline replaces the browser default. We use      */
+/* A single-pixel neutral outline replaces the browser default. We use   */
 /* :focus-visible so the ring only appears for keyboard navigation, not  */
 /* mouse clicks.                                                         */
 /* -------------------------------------------------------------------- */
@@ -662,13 +662,13 @@ svg {
     background: var(--bg-secondary);
     border-bottom: 1px solid var(--border-default);
     font-size: var(--text-xs);
-    line-height: var(--leading-normal);
+    line-height: 1.4;
   }
 
   .rd-band__cell {
     min-width: 0;
-    padding: var(--space-2) var(--space-3);
-    overflow: auto;
+    padding: var(--space-1) var(--space-3);
+    overflow: hidden;
   }
 
   .rd-band__cell + .rd-band__cell {
@@ -676,7 +676,7 @@ svg {
   }
 
   .rd-band__title {
-    margin-bottom: var(--space-1);
+    flex-shrink: 0;
     overflow: hidden;
     color: var(--text-faint);
     font-weight: 600;
@@ -684,6 +684,21 @@ svg {
     text-overflow: ellipsis;
     text-transform: uppercase;
     white-space: nowrap;
+  }
+
+  .rd-band__head {
+    display: flex;
+    align-items: baseline;
+    gap: var(--space-2);
+    overflow: hidden;
+    white-space: nowrap;
+  }
+
+  .rd-band__note {
+    min-width: 0;
+    overflow: hidden;
+    color: var(--text-muted);
+    text-overflow: ellipsis;
   }
 
   .rd-band__agent {
@@ -723,7 +738,7 @@ svg {
   .rd-band__rungs {
     display: flex;
     flex-wrap: wrap;
-    gap: var(--space-1) var(--space-3);
+    gap: 0 var(--space-3);
   }
 
   .rd-band__rung {
@@ -907,6 +922,63 @@ svg {
     font-size: var(--text-xs);
   }
 
+  /* ---- Pulse animation —  running glyph indicator ------------------- */
+
+  @keyframes rd-pulse {
+    0%   { opacity: 1; }
+    50%  { opacity: 0.55; }
+    100% { opacity: 1; }
+  }
+
+  .rd-pulse {
+    animation: rd-pulse 2.4s ease-in-out infinite;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .rd-pulse {
+      animation: none;
+    }
+  }
+
+  /* ---- Task table row ----------------------------------------------- */
+
+  .rd-task-row {
+    display: grid;
+    grid-template-columns: 2ch 8ch minmax(0, 1fr) 22ch 7ch 8ch 4ch 30ch;
+    column-gap: var(--space-2);
+    align-items: baseline;
+    font-size: var(--type-row);
+  }
+
+  .rd-task-row > * {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .rd-task-row__meta {
+    font-size: var(--type-meta);
+  }
+
+  .rd-task-row__num {
+    font-size: var(--type-meta);
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+  }
+
+  /* ---- Stream body -------------------------------------------------- */
+
+  .rd-stream-body {
+    font-size: var(--type-row);
+    line-height: var(--leading-relaxed);
+  }
+
+  .rd-stream-body pre {
+    font-size: inherit;
+    line-height: inherit;
+  }
+
   /* ---- Notice: "not supported" and info notices --------------------- */
 
   .rd-notice {
@@ -920,8 +992,35 @@ svg {
     font-size: var(--type-row);
   }
 
+  .rd-notice[data-notice="error"] {
+    border-left-color: var(--state-failed);
+  }
+
+  .rd-notice[data-notice="error"] .rd-notice__glyph {
+    color: var(--state-failed);
+  }
+
   .rd-notice__glyph {
     color: var(--accent-cyan);
+  }
+
+  .rd-notice__text {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .rd-notice__close {
+    flex-shrink: 0;
+    padding: 0 var(--space-2);
+    border: 1px solid var(--border-default);
+    background: transparent;
+    color: var(--text-muted);
+    font-size: var(--type-meta);
+  }
+
+  .rd-notice__close:hover {
+    border-color: var(--border-hover);
+    color: var(--text-strong);
   }
 
   /* ---- Type scale classes ------------------------------------------- */

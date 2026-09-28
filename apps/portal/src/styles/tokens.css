@@ -17,21 +17,21 @@
   /* ------------------------------------------------------------------ */
   /* 1. State colours                                                     */
   /*                                                                      */
-  /* Green (--sage) means verified/done. Amber (--warning) means         */
-  /* accepted-with-failures — never green for partially-failed work.     */
+  /* Browser-safe hues: rose and red are indistinguishable as errors, so */
+  /* each state uses a dedicated, perceptually-distinct primitive.        */
   /* ------------------------------------------------------------------ */
 
-  /** Completed and verified — sage green. */
-  --state-done:     var(--sage);
+  /** Completed and verified — leaf green. */
+  --state-done:     var(--leaf);
 
-  /** Currently running / in-flight — bright rose. */
-  --state-active:   var(--rose-bright);
+  /** Currently running / in-flight — indigo (calm, not rose/red). */
+  --state-active:   var(--indigo);
 
-  /** Accepted but with failures — warning amber, NOT green. */
-  --state-accepted: var(--warning);
+  /** Accepted but with failures — amber, NOT green. */
+  --state-accepted: var(--amber);
 
-  /** Hard failure — ember orange-red. */
-  --state-failed:   var(--ember);
+  /** Hard failure — signal red (clear red, not rose). */
+  --state-failed:   var(--signal-red);
 
   /** Waiting in queue — de-emphasised faint. */
   --state-queued:   var(--text-faint);
@@ -46,8 +46,8 @@
   /* 2. Focus / blur — card focus ring and title colours                 */
   /* ------------------------------------------------------------------ */
 
-  /** Border colour when a card/panel is focused. */
-  --focus-border: var(--rose-bright);
+  /** Border colour when a card/panel is focused — neutral bone, not a brand hue. */
+  --focus-border: var(--bone);
 
   /** Title colour when a card/panel is focused. */
   --focus-title:  var(--bone);
@@ -61,38 +61,39 @@
   /* ------------------------------------------------------------------ */
   /* 3. Progress bands                                                    */
   /*                                                                      */
-  /* < 30%  → low  (ember)                                               */
-  /* 30-70% → mid  (warning amber)                                       */
-  /* > 70%  → high (sage green)                                          */
+  /* All three bands use the running colour — a bar's hue signals state  */
+  /* (running/done/failed), not fraction. Finished bars use state tokens. */
   /* ------------------------------------------------------------------ */
 
-  /** Progress < 30% — ember orange, signals low completion. */
-  --progress-low:  var(--ember);
+  /** Progress < 30% — running colour (indigo). */
+  --progress-low:  var(--state-active);
 
-  /** Progress 30–70% — warning amber, mid-range caution. */
-  --progress-mid:  var(--warning);
+  /** Progress 30–70% — running colour (indigo). */
+  --progress-mid:  var(--state-active);
 
-  /** Progress > 70% — sage green, near complete. */
-  --progress-high: var(--sage);
+  /** Progress > 70% — running colour (indigo). */
+  --progress-high: var(--state-active);
 
   /* ------------------------------------------------------------------ */
   /* 4. Role accents — one accent per agent role                         */
+  /*                                                                      */
+  /* Every role hue is ≥ 30° from every state hue and from --accent-cyan */
   /* ------------------------------------------------------------------ */
 
-  /** Implementer — muted cyan (action, execution; not a state hue). */
-  --role-implementer:    var(--accent-cyan);
+  /** Implementer — orchid (action, execution; ≥ 30° from every state). */
+  --role-implementer:    var(--orchid);
 
-  /** Strategist — bright dream purple (planning, speculation). */
-  --role-strategist:     var(--dream-bright);
+  /** Strategist — mint (planning; cool green, not leaf-green done). */
+  --role-strategist:     var(--mint);
 
-  /** Architect — periwinkle blue (structure, information). */
-  --role-architect:      var(--periwinkle);
+  /** Architect — blush (structure; pink, not rose/red). */
+  --role-architect:      var(--blush);
 
   /** Scribe — bone cream (documentation, neutral). */
   --role-scribe:         var(--bone);
 
-  /** Quick-reviewer — lilac (caution, review; not a state hue). */
-  --role-quick-reviewer: var(--lilac);
+  /** Quick-reviewer — lime (review; yellow-green, not leaf-green done). */
+  --role-quick-reviewer: var(--lime);
 
   /** Other / uncategorised — muted text. */
   --role-other:          var(--text-muted);
@@ -104,8 +105,8 @@
   /** Left navigation rail width — 336px aligns the first band divider to the rail edge. */
   --rail-width:     336px;
 
-  /** Run band fixed height — replaces max-height for stable layout. */
-  --band-height:    112px;
+  /** Run band fixed height — compact: one head line + two content lines at 60px. */
+  --band-height:    60px;
 
   /** Standard data row height in the task grid. */
   --row-height:     24px;

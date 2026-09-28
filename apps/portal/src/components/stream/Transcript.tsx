@@ -20,9 +20,11 @@ import { compactDuration } from '@/lib/formatters';
 export function Transcript({
   transcript,
   working,
+  taskStatus = 'active',
 }: {
   transcript: TranscriptState | undefined;
   working: { sinceMs: number } | null;
+  taskStatus?: 'pending' | 'active' | 'finished';
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   // `following` starts true so the first content scrolls into view.
@@ -64,9 +66,15 @@ export function Transcript({
 
   // ── Empty state ───────────────────────────────────────────────────────────
   if (transcript === undefined && !working) {
+    const emptyMsg =
+      taskStatus === 'pending'
+        ? 'This task has not started.'
+        : taskStatus === 'finished'
+          ? 'No transcript was kept for this task.'
+          : 'The agent has not produced output yet.';
     return (
-      <div data-region="transcript" className="transcript-empty">
-        The agent has not produced output yet.
+      <div data-region="transcript" className="transcript-empty rd-stream-body">
+        {emptyMsg}
       </div>
     );
   }
@@ -244,6 +252,7 @@ export function Transcript({
       <div
         ref={containerRef}
         data-region="transcript"
+        className="rd-stream-body"
         onScroll={handleScroll}
         style={{
           overflowY: 'auto',

@@ -234,7 +234,7 @@ function extractCommand(output: string): string | null {
  */
 export function Checks({ checks }: { checks: CheckRun[] }) {
   return (
-    <div data-region="checks" className="checks-region">
+    <div data-region="checks" className="checks-region rd-stream-body">
       {checks.length === 0 ? (
         <div className="checks-empty" style={{ color: 'var(--text-faint)' }}>
           no verify step has run

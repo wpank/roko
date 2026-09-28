@@ -100,6 +100,36 @@
   --lilac: #c9a4dc;
 
   /* ------------------------------------------------------------------ */
+  /* Accents — browser state and role hues                               */
+  /*                                                                      */
+  /* Mori ran "running" in rose; in a browser rose and red read as error */
+  /* ------------------------------------------------------------------ */
+
+  /** Indigo — running / active state. A calm blue-violet; not rose. */
+  --indigo: #8993f0;
+
+  /** Signal red — hard failure. A clear red, distinguishable from rose. */
+  --signal-red: #ef6a6a;
+
+  /** Amber — accepted with failures. Distinct from green (done). */
+  --amber: #e0b040;
+
+  /** Leaf green — done / verified. */
+  --leaf: #6cbf6c;
+
+  /** Orchid — implementer role accent. */
+  --orchid: #c886ea;
+
+  /** Mint — strategist role accent. */
+  --mint: #8fd6be;
+
+  /** Blush — architect role accent. */
+  --blush: #e28dc9;
+
+  /** Lime — quick-reviewer role accent. */
+  --lime: #c4d78e;
+
+  /* ------------------------------------------------------------------ */
   /* Semantic accents (mapped from primitives)                            */
   /* ------------------------------------------------------------------ */
 
@@ -112,8 +142,8 @@
   /** Warning accent — amber. */
   --accent-amber: var(--warning);
 
-  /** Error / destructive accent — ember orange (≥ 4.5:1 on all surfaces). */
-  --accent-error: var(--ember);
+  /** Error / destructive accent — signal red (≥ 4.5:1 on all surfaces). */
+  --accent-error: var(--signal-red);
 
   /** Danger fill — deep red background for destructive actions. */
   --danger-fill: #9e2f2f;

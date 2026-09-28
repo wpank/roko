@@ -71,7 +71,7 @@ export function StreamPane({
   const agent =
     liveTask?.agentId != null ? (run.agents[liveTask.agentId] ?? null) : null;
   const working =
-    liveTask?.status === 'active'
+    liveTask?.status === 'active' && (agent?.active ?? false)
       ? {
           sinceMs:
             agent?.spawnedAtMs ??
@@ -79,6 +79,10 @@ export function StreamPane({
             Date.now(),
         }
       : null;
+
+  // ── Task status for Transcript empty-state copy ────────────────────────────
+  const taskStatus =
+    liveTask === null ? 'pending' : liveTask.status === 'active' ? 'active' : 'finished';
 
   // ── View state ─────────────────────────────────────────────────────────────
   const [view, setView] = useState<'transcript' | 'checks'>('transcript');
@@ -365,7 +369,7 @@ export function StreamPane({
               {emptySentence}
             </div>
           ) : view === 'transcript' ? (
-            <Transcript transcript={transcript} working={working} />
+            <Transcript transcript={transcript} working={working} taskStatus={taskStatus} />
           ) : (
             <Checks checks={checks} />
           )}

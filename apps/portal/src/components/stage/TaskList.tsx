@@ -246,73 +246,68 @@ function TaskRow({
       role="option"
       aria-selected={selected}
     >
-      {/* ── Summary row (always visible) ─────────────────────────────────── */}
-      <div className="flex items-center gap-2 min-w-0">
-        {/* Glyph */}
-        <span className="shrink-0 w-4 text-center">
+      {/* ── Summary row: eight-track grid, every track always present ────── */}
+      <div className="rd-task-row">
+        {/* 1. Glyph */}
+        <span data-cell="glyph">
           <StatusGlyph state={row.state} />
         </span>
 
-        {/* ID */}
-        <span
-          className="rd-meta shrink-0 font-mono w-20 truncate"
-          title={row.id}
-        >
+        {/* 2. ID */}
+        <span data-cell="id" className="rd-meta font-mono" title={row.id}>
           {row.id}
         </span>
 
-        {/* Title */}
-        <span className="rd-row flex-1 min-w-0 font-mono truncate">
+        {/* 3. Title */}
+        <span data-cell="title" className="rd-row font-mono">
           {row.title}
         </span>
 
-        {/* Role · Model (shown once dispatched) */}
-        {(row.role || row.model) && (
-          <span className="shrink-0 text-xs font-mono text-text-faint hidden md:inline truncate max-w-56">
-            {row.role && (
-              <span
-                data-role={row.role}
-                style={{ color: `var(--role-${row.role}, var(--role-other))` }}
-              >
-                {row.role}
-              </span>
-            )}
-            {row.role && row.model && '·'}
-            {row.model && (
-              <span title={row.model}>{shortModel(row.model)}</span>
-            )}
-          </span>
-        )}
-
-        {/* Time — empty when unknown, no placeholder dot */}
-        <span data-cell="time" className="shrink-0">
-          {timeStr != null && <MetricCell value={timeStr} width="4rem" />}
+        {/* 4. Role · Model */}
+        <span data-cell="role" className="rd-task-row__meta font-mono text-text-faint">
+          {row.role && (
+            <span
+              data-role={row.role}
+              style={{ color: `var(--role-${row.role}, var(--role-other))` }}
+            >
+              {row.role}
+            </span>
+          )}
+          {row.role && row.model && '·'}
+          {row.model && (
+            <span title={row.model}>{shortModel(row.model)}</span>
+          )}
         </span>
 
-        {/* Cost — empty when unknown, no placeholder dot */}
-        <span data-cell="cost" className="shrink-0">
-          {costStr != null && <MetricCell value={costStr} width="4rem" />}
+        {/* 5. Time — empty when unknown */}
+        <span data-cell="time" className="rd-task-row__num">
+          {timeStr != null && <MetricCell value={timeStr} />}
         </span>
 
-        {/* Retry count (when > 1 attempt) */}
-        {row.attempts > 1 && (
-          <span
-            className="shrink-0 text-xs font-mono tabular"
-            style={{ color: 'var(--state-accepted)' }}
-            title={`${row.attempts} attempts`}
-          >
-            ↻{row.attempts}
-          </span>
-        )}
+        {/* 6. Cost — empty when unknown */}
+        <span data-cell="cost" className="rd-task-row__num">
+          {costStr != null && <MetricCell value={costStr} />}
+        </span>
 
-        {/* Check chips */}
-        {row.checks.length > 0 && (
-          <span className="shrink-0 flex items-center gap-1 hidden sm:flex">
-            {row.checks.map((c) => (
-              <CheckChip key={c.name} check={c} />
-            ))}
-          </span>
-        )}
+        {/* 7. Attempts (↻N when N > 1, else empty) */}
+        <span
+          data-cell="attempts"
+          className="rd-task-row__num"
+          style={row.attempts > 1 ? { color: 'var(--state-accepted)' } : undefined}
+          title={row.attempts > 1 ? `${row.attempts} attempts` : undefined}
+        >
+          {row.attempts > 1 ? `↻${row.attempts}` : ''}
+        </span>
+
+        {/* 8. Checks (space-separated chips, no flex wrapper) */}
+        <span data-cell="checks" className="rd-task-row__meta">
+          {row.checks.map((c, i) => (
+            <React.Fragment key={c.name}>
+              {i > 0 && ' '}
+              <CheckChip check={c} />
+            </React.Fragment>
+          ))}
+        </span>
       </div>
 
       {/* ── Expanded detail ──────────────────────────────────────────────── */}

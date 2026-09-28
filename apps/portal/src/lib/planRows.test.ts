@@ -7,8 +7,8 @@
  *  3. queue positions (live, in planSet)
  *  4. no queue after the run ends
  *  5. accepted is never done
- *  6. accepted is never green (barToken)
- *  7. running plan at 90% is amber
+ *  6. accepted bar is var(--state-accepted), not done
+ *  7. running bar is var(--state-active) at any fraction
  *  8. superseded → skipped with supersededBy
  *  9. numeric ordering within a group
  * 10. top-level plans come before grouped plans
@@ -156,8 +156,8 @@ describe('buildPlanRows', () => {
     expect(row.state).not.toBe('done');
   });
 
-  // 6. Accepted is never green
-  it('accepted plan never gets the green barToken (--progress-high)', () => {
+  // 6. Accepted bar is the accepted (amber) state colour
+  it('accepted plan bar is var(--state-accepted), not the done colour', () => {
     const disk = [mkDisk({ id: 'plan-1', completed: true, task_count: 5, tasks_done: 5 })];
     const run = withLive(initialRunState(), 'plan-1', {
       phase: 'completed',
@@ -168,12 +168,12 @@ describe('buildPlanRows', () => {
     const result = buildPlanRows(disk, run, { filter: '', nowMs: NOW });
     const row = result.groups[0]!.rows[0]!;
     expect(row.state).toBe('accepted');
-    expect(row.barToken).not.toBe('var(--progress-high)');
-    expect(row.barToken).toBe('var(--progress-mid)'); // fraction 1.0 ≥ 0.3 → amber
+    expect(row.barToken).not.toBe('var(--state-done)');
+    expect(row.barToken).toBe('var(--state-accepted)');
   });
 
-  // 7. Running plan at 90% is amber
-  it('running plan at 90% fraction gets amber (--progress-mid), not green', () => {
+  // 7. Running bar is the running colour at any fraction
+  it('running plan at 90% fraction gets the running colour (--state-active)', () => {
     const disk = [mkDisk({ id: 'plan-1' })];
     const run = withLive(initialRunState(), 'plan-1', {
       phase: 'running',
@@ -185,7 +185,7 @@ describe('buildPlanRows', () => {
     const row = result.groups[0]!.rows[0]!;
     expect(row.fraction).toBeCloseTo(0.9);
     expect(row.state).toBe('active');
-    expect(row.barToken).toBe('var(--progress-mid)'); // amber, never green
+    expect(row.barToken).toBe('var(--state-active)');
   });
 
   // 8. Superseded

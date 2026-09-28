@@ -1531,6 +1531,8 @@ async fn record_review(
             use tokio::io::AsyncWriteExt;
             if let Err(err) = f.write_all(line.as_bytes()).await {
                 tracing::warn!(path = %reviews_path.display(), error = %err, "failed to write review entry");
+            } else if let Err(err) = f.flush().await {
+                tracing::warn!(path = %reviews_path.display(), error = %err, "failed to flush review entry");
             }
         }
         Err(err) => {

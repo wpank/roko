@@ -271,6 +271,7 @@ impl GateGamingDetector {
             .await?;
 
         file.write_all(line.as_bytes()).await?;
+        file.flush().await?;
         file.sync_data().await?;
 
         Ok(())

@@ -442,6 +442,9 @@ async fn post_idea(
         file.write_all(line.as_bytes())
             .await
             .map_err(|e| ApiError::internal(format!("append idea: {e}")))?;
+        file.flush()
+            .await
+            .map_err(|e| ApiError::internal(format!("append idea: {e}")))?;
     }
 
     Ok((

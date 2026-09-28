@@ -373,6 +373,11 @@ async fn persist_registry_file<T: Serialize + ?Sized>(
         file.write_all(&data).await.map_err(|error| {
             ApiError::internal(format!("write {}: {error}", temp_path.display()))
         })?;
+        // `sync_all` waits for the in-flight write but swallows its error;
+        // flush first so a failed write never gets renamed over the registry.
+        file.flush().await.map_err(|error| {
+            ApiError::internal(format!("write {}: {error}", temp_path.display()))
+        })?;
         file.sync_all().await.map_err(|error| {
             ApiError::internal(format!("sync {}: {error}", temp_path.display()))
         })?;

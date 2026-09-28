@@ -1639,6 +1639,8 @@ impl TriggerCoordinator {
                     bytes.push(b'\n');
                     if let Err(error) = file.write_all(&bytes).await {
                         warn!(%error, "failed to append trigger lifecycle event");
+                    } else if let Err(error) = file.flush().await {
+                        warn!(%error, "failed to flush trigger lifecycle event");
                     }
                 }
             }

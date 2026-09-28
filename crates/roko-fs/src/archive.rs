@@ -545,6 +545,9 @@ mod tests {
         tokio::io::AsyncWriteExt::write_all(&mut file, b"not valid json\n")
             .await
             .expect("write garbage");
+        tokio::io::AsyncWriteExt::flush(&mut file)
+            .await
+            .expect("flush garbage");
 
         let entries = archiver.read_month(2026, 4).await.expect("read month");
         assert_eq!(entries.len(), 1, "should skip malformed line");

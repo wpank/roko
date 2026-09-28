@@ -229,6 +229,7 @@ impl RetrievalOutcomeStore {
             .open(&self.path)
             .await?;
         file.write_all(line.as_bytes()).await?;
+        file.flush().await?;
         if self.fsync {
             file.sync_data().await?;
         }
@@ -477,6 +478,23 @@ mod tests {
 
         let loaded = store.read_all().await.expect("read_all");
         assert_eq!(loaded, vec![r1, r2]);
+    }
+
+    /// `tokio::fs::File` hands writes to the blocking pool, so without a flush
+    /// the line can still be in flight when `append` returns.
+    #[tokio::test]
+    async fn append_without_fsync_is_visible_on_return() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("retrieval-outcomes.jsonl");
+        let store = RetrievalOutcomeStore::at(&path).without_fsync();
+        let record = sample_record(STRATEGY_KEYWORD, Some(true));
+        let line_len = serde_json::to_string(&record).expect("serialize").len() + 1;
+
+        for appended in 1..=64 {
+            store.append(&record).await.expect("append");
+            let contents = std::fs::read_to_string(&path).expect("read log");
+            assert_eq!(contents.len(), line_len * appended, "append {appended}");
+        }
     }
 
     #[tokio::test]

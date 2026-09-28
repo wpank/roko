@@ -55,6 +55,10 @@ const fn default_compile_concurrency() -> usize {
     1
 }
 
+const fn default_sibling_settle_secs() -> u64 {
+    600
+}
+
 // ---- [gates.adaptive] defaults -------------------------------------------
 
 const fn default_ema_alpha() -> f64 {
@@ -149,6 +153,12 @@ pub struct GatesConfig {
     /// Per-repository Cargo command ownership limit.
     #[serde(default = "default_compile_concurrency")]
     pub compile_concurrency: usize,
+    /// Seconds a Graph verify step that failed while sibling tasks were
+    /// editing the same working tree waits for them to finish their current
+    /// attempt before re-running once; only the re-run counts. `0` disables
+    /// the wait, so every failure counts at once. Default: 600.
+    #[serde(default = "default_sibling_settle_secs")]
+    pub sibling_settle_secs: u64,
     /// Per-domain gate overrides. Keys are domain labels (e.g. "research", "docs"),
     /// values are shell commands to run as gates (e.g. `["shell:true"]`).
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
@@ -223,6 +233,7 @@ impl Default for GatesConfig {
             impact_max_reverse_dependents: default_impact_max_reverse_dependents(),
             impact_max_targets: default_impact_max_targets(),
             compile_concurrency: default_compile_concurrency(),
+            sibling_settle_secs: default_sibling_settle_secs(),
             domain_gates: HashMap::new(),
             custom_rungs: Vec::new(),
             max_rung: None,

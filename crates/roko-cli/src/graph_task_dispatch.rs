@@ -50,6 +50,8 @@ use crate::runner::tui_bridge::TuiBridge;
 use crate::runtime_feedback::{FeedbackEvent, FeedbackFacade};
 use crate::task_parser::TaskDef;
 
+mod sibling_settle;
+
 const MICRO_USD_PER_USD: f64 = 1_000_000.0;
 
 /// Thin `Agent` adapter that forwards a one-shot prompt through the shared
@@ -1151,6 +1153,9 @@ pub struct GraphTaskDispatcher {
     /// Set immediately after `plan()` returns so that both the pre-gate record and
     /// the gate-settled record carry the same metadata.
     retrieval_ctx: parking_lot::Mutex<HashMap<String, (String, String, usize, u64)>>,
+    /// Attempts running now, so a verify step that fails while siblings edit
+    /// the same working tree can wait for them to settle.
+    in_flight: sibling_settle::InFlightTasks,
 }
 
 impl GraphTaskDispatcher {
@@ -1184,6 +1189,7 @@ impl GraphTaskDispatcher {
             skip_enrichment_plans: parking_lot::Mutex::new(HashMap::new()),
             turn_cap_retries: parking_lot::Mutex::new(HashMap::new()),
             task_attempts: parking_lot::Mutex::new(HashMap::new()),
+            in_flight: sibling_settle::InFlightTasks::default(),
         }
     }
 
@@ -1721,8 +1727,11 @@ impl GraphTaskDispatcher {
     /// verdict. Authored verify steps are deterministic: any failure returns
     /// `RokoError::Verify` (the Graph engine retries up to the task's
     /// `max_retries`, then fails the task) and is never force-accepted. Steps
-    /// run fail-fast; the rest are reported as skipped. The caller releases
-    /// any worktree lease and settles episode feedback with the result.
+    /// run fail-fast; the rest are reported as skipped. A step that fails
+    /// while sibling tasks edit the same working tree waits for them to
+    /// settle and re-runs once; only that result counts (`sibling_settle`).
+    /// The caller releases any worktree lease and settles episode feedback
+    /// with the result.
     #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
     async fn settle_task_verification(
         &self,
@@ -1758,6 +1767,9 @@ impl GraphTaskDispatcher {
             let mut promise_terminated = false;
             // Steps not run because an earlier step already failed.
             let mut skipped_steps: Vec<String> = Vec::new();
+            // Siblings whose files hold every error of a failure that
+            // persisted after they settled.
+            let mut blocked_by_sibling: Option<String> = None;
             let total_steps = u32::try_from(task.verify.len()).unwrap_or(u32::MAX);
 
             for (i, step) in task.verify.iter().enumerate() {
@@ -1809,31 +1821,46 @@ impl GraphTaskDispatcher {
                 .with_timeout_ms(step.timeout_ms)
                 .with_name(&step_label);
 
-                // Cargo steps queue on the per-repository compile lock before
-                // their timeout starts, so a build by a plan running beside
-                // this one cannot time the step out.
-                let runs_cargo = step
-                    .command
-                    .split(|c: char| c.is_whitespace() || "&|;({".contains(c))
-                    .any(|word| word == "cargo");
-                let _compile_permit = if runs_cargo {
-                    crate::runner::gate_dispatch::acquire_compile_ownership(
-                        &effective_workdir,
-                        self.config.gates.compile_concurrency,
-                        std::time::Duration::from_millis(step.timeout_ms),
-                        &spec.plan_id,
-                        &task.id,
-                        &step.command,
-                    )
-                    .await
-                    .inspect_err(|error| {
-                        tracing::warn!(%error, "running the cargo verify step without the compile lock");
-                    })
-                    .ok()
-                } else {
-                    None
-                };
-                let verdict = gate.verify(&gate_signal, &gate_ctx).await;
+                let compile_permit = verify_compile_permit(
+                    &effective_workdir,
+                    self.config.gates.compile_concurrency,
+                    step,
+                    &spec.plan_id,
+                    &task.id,
+                )
+                .await;
+                let mut verdict = gate.verify(&gate_signal, &gate_ctx).await;
+                if !verdict.passed {
+                    // A sibling editing this working tree may have caused the
+                    // failure: let it settle, then re-run the step once. The
+                    // compile lock is released meanwhile so the sibling's own
+                    // cargo steps can finish.
+                    drop(compile_permit);
+                    let failed_step = sibling_settle::FailedStep {
+                        plan_id: &spec.plan_id,
+                        task_id: &task.id,
+                        files: &task.files,
+                        label: &step_label,
+                        workdir: &effective_workdir,
+                        settle_limit: std::time::Duration::from_secs(
+                            self.config.gates.sibling_settle_secs,
+                        ),
+                    };
+                    (verdict, blocked_by_sibling) = self
+                        .in_flight
+                        .settle_failed_step(&failed_step, verdict, || async {
+                            let _compile_permit = verify_compile_permit(
+                                &effective_workdir,
+                                self.config.gates.compile_concurrency,
+                                step,
+                                &spec.plan_id,
+                                &task.id,
+                            )
+                            .await;
+                            gate.verify(&gate_signal, &gate_ctx).await
+                        })
+                        .await;
+                }
 
                 tracing::info!(
                     plan_id = %spec.plan_id,
@@ -2067,6 +2094,7 @@ impl GraphTaskDispatcher {
                         failures = retry_failures;
                         step_outcomes = retry_step_outcomes;
                         skipped_steps = retry_skipped;
+                        blocked_by_sibling = None;
                     }
                     Ok(outcome) => {
                         tracing::debug!(
@@ -2294,12 +2322,17 @@ impl GraphTaskDispatcher {
                 // `max_retries` and then fails the task. (`gates.max_review_cycles`
                 // may only bound non-deterministic review/judge verdicts, and
                 // the Graph dispatcher gates on none.)
-                let summary = verify_failure_summary(
+                let mut summary = verify_failure_summary(
                     &spec.title,
                     task.verify.len(),
                     &failures,
                     &skipped_steps,
                 );
+                // Lead with the blamed sibling so one-line failure reasons,
+                // such as the episode's, keep it.
+                if let Some(sibling) = &blocked_by_sibling {
+                    summary = format!("blocked_by_sibling = {sibling}: {summary}");
+                }
                 tracing::warn!(
                     plan_id = %spec.plan_id,
                     task_id = %task.id,
@@ -3188,6 +3221,11 @@ impl TaskDispatcher for GraphTaskDispatcher {
         let effective_workdir = lease
             .as_ref()
             .map_or_else(|| self.workdir.clone(), |l| l.path.clone());
+        // Until this attempt ends, a sibling's failed verify step in the same
+        // working tree may wait for it to settle.
+        let _in_flight = self
+            .in_flight
+            .register(&task_spend_key, &effective_workdir, &task.files);
 
         let role = task.role.as_deref().unwrap_or("implementer");
 
@@ -3661,6 +3699,38 @@ impl TaskDispatcher for GraphTaskDispatcher {
     }
 }
 
+/// Queue a cargo verify step on the per-repository compile lock before its
+/// timeout starts, so a build by a plan running beside this one cannot time
+/// the step out. Other steps take no permit.
+async fn verify_compile_permit(
+    workdir: &Path,
+    compile_concurrency: usize,
+    step: &crate::task_parser::VerifyStep,
+    plan_id: &str,
+    task_id: &str,
+) -> Option<tokio::sync::OwnedSemaphorePermit> {
+    let runs_cargo = step
+        .command
+        .split(|c: char| c.is_whitespace() || "&|;({".contains(c))
+        .any(|word| word == "cargo");
+    if !runs_cargo {
+        return None;
+    }
+    crate::runner::gate_dispatch::acquire_compile_ownership(
+        workdir,
+        compile_concurrency,
+        std::time::Duration::from_millis(step.timeout_ms),
+        plan_id,
+        task_id,
+        &step.command,
+    )
+    .await
+    .inspect_err(|error| {
+        tracing::warn!(%error, "running the cargo verify step without the compile lock");
+    })
+    .ok()
+}
+
 /// Stable label for the `index`-th verify step (`verify[i]` or `verify[i:phase]`).
 fn verify_step_label(index: usize, phase: &str) -> String {
     if phase.is_empty() {
@@ -3785,6 +3855,11 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
             ))
         })?;
         let role = task.role.as_deref().unwrap_or("implementer");
+        let _in_flight = self.in_flight.register(
+            &format!("{}/{}", spec.plan_id, task.id),
+            &lease.path,
+            &task.files,
+        );
 
         // ── P3-AGT-2: Express mode check (streaming) ─────────────────────
         let express_active = is_express_task(&self.config, &task);
@@ -5070,6 +5145,117 @@ printf '%s\n' '{"type":"result","session_id":"sess-v1","model":"claude-sonnet-4-
             "{message}"
         );
         assert!(!marker.exists(), "fail-fast must not run later steps");
+    }
+
+    /// Dispatches `task` beside a fake sibling `T12` of the same plan that
+    /// edits `web/src/PlanView.tsx` in the same working tree and finishes its
+    /// attempt once `failed_once` exists, first creating `sibling_done`.
+    async fn dispatch_beside_editing_sibling(
+        dispatcher: &GraphTaskDispatcher,
+        task: &TaskDef,
+        failed_once: &Path,
+        sibling_done: &Path,
+    ) -> Result<Vec<Signal>> {
+        let spec = make_spec(task);
+        let sibling = dispatcher.in_flight.register(
+            &format!("{}/T12", spec.plan_id),
+            &dispatcher.workdir,
+            &["web/src/PlanView.tsx".to_string()],
+        );
+        let finish_sibling = async {
+            while !failed_once.exists() {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+            std::fs::write(sibling_done, "").expect("sibling edit");
+            drop(sibling);
+        };
+        let ctx = CellContext::new();
+        let (outcome, ()) = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+            tokio::join!(dispatcher.dispatch(&spec, Vec::new(), &ctx), finish_sibling)
+        })
+        .await
+        .expect("the failed step settles once the sibling finishes");
+        outcome
+    }
+
+    fn settle_quickly(config: &mut RokoConfig) {
+        config.gates.cargo_fix_enabled = false;
+        config.gates.sibling_settle_secs = 30;
+    }
+
+    #[tokio::test]
+    async fn a_verify_failure_beside_an_editing_sibling_is_rerun_once_it_settles() {
+        let temp = tempdir().expect("tempdir");
+        let (dispatcher, mut task) = make_test_dispatcher(
+            &temp,
+            VERIFY_PROVIDER,
+            settle_quickly,
+            GraphFeedbackContext::default(),
+        )
+        .await;
+        let failed_once = temp.path().join("failed-once");
+        let sibling_done = temp.path().join("sibling-done");
+        task.verify = vec![verify_step(
+            "typecheck",
+            &format!(
+                "test -f {} || {{ touch {}; exit 2; }}",
+                sibling_done.display(),
+                failed_once.display()
+            ),
+        )];
+
+        let outputs =
+            dispatch_beside_editing_sibling(&dispatcher, &task, &failed_once, &sibling_done)
+                .await
+                .expect("the re-run after the sibling settled passes");
+
+        assert!(
+            failed_once.exists(),
+            "the first run failed beside the sibling"
+        );
+        assert_eq!(
+            TaskGateVerdict::from_signals(&outputs),
+            Some(TaskGateVerdict::Passed)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_verify_failure_left_in_a_sibling_file_blames_the_sibling() {
+        let temp = tempdir().expect("tempdir");
+        let (dispatcher, mut task) = make_test_dispatcher(
+            &temp,
+            VERIFY_PROVIDER,
+            settle_quickly,
+            GraphFeedbackContext::default(),
+        )
+        .await;
+        let failed_once = temp.path().join("failed-once");
+        let sibling_done = temp.path().join("sibling-done");
+        task.verify = vec![verify_step(
+            "typecheck",
+            &format!(
+                "touch {}; echo 'src/PlanView.tsx(448,24): error TS2304: \
+                 Cannot find name formatDuration.' >&2; exit 2",
+                failed_once.display()
+            ),
+        )];
+
+        let error =
+            dispatch_beside_editing_sibling(&dispatcher, &task, &failed_once, &sibling_done)
+                .await
+                .expect_err("the failure persists after the sibling settled");
+
+        let RokoError::Verify { message, .. } = error else {
+            panic!("expected a verify failure, got {error}");
+        };
+        assert!(
+            message.starts_with("blocked_by_sibling = T12: 1/1 verify step(s) failed"),
+            "{message}"
+        );
+        assert!(
+            message.contains("first at src/PlanView.tsx:448:24"),
+            "{message}"
+        );
     }
 
     #[tokio::test]

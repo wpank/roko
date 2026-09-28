@@ -19,8 +19,8 @@ command = 'cargo test -p roko-cli --lib -- nested_plan_set_is_discovered_with_it
 
 [closed]
 at = 2026-09-28
-commit = "91b4745f8"
-evidence = "(working tree, uncommitted) crates/roko-cli/src/orchestrator/plan_discovery.rs:319-332 discover_plans walks nested plan sets via find_plan_dirs (test nested_plan_set_is_discovered_with_its_group at :817) and runner/plan_loader.rs:120-122 load_plans applies the same rule (test load_plans_matches_discovery_for_nested_plan_sets at :708); remaining plan-API residuals are bug-9f340c"
+commit = "725f21e05"
+evidence = "Committed in 725f21e05 by the portal session. Re-checked 2026-09-28: the cited files are clean at HEAD and the named symbols and tests exist there (not rebuilt or retested here). crates/roko-cli/src/orchestrator/plan_discovery.rs:319-332 discover_plans walks nested plan sets via find_plan_dirs (test nested_plan_set_is_discovered_with_its_group at :817) and runner/plan_loader.rs:120-122 load_plans applies the same rule (test load_plans_matches_discovery_for_nested_plan_sets at :708); remaining plan-API residuals are bug-9f340c"
 +++
 plans/<set>/<plan>/tasks.toml runs via load_plans but is invisible to plan list, GET /api/plans and TUI F2 because orchestrator plan discovery scans one level; the two halves disagree on what a plan directory is.
 

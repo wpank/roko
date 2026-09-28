@@ -22,8 +22,8 @@ command = '! grep -n "max_review_cycles" crates/roko-cli/src/graph_task_dispatch
 
 [closed]
 at = 2026-09-28
-commit = "91b4745f8"
-evidence = "(working tree, uncommitted) crates/roko-cli/src/graph_task_dispatch.rs:1402-1410, 1946-1951 and 3195-3198: failing authored verify steps return RokoError::Verify and are never force-accepted (no max_review_cycles logic remains); graph_checkpoint.rs:271 writes the GATE_VERDICT_EXTENSION summary and graph_checkpoint.rs:225 invalidate_unverified_activities re-executes forced/unverified records on resume"
+commit = "725f21e05"
+evidence = "Committed in 725f21e05 by the portal session. Re-checked 2026-09-28: the cited files are clean at HEAD and the named symbols and tests exist there (not rebuilt or retested here). crates/roko-cli/src/graph_task_dispatch.rs:1402-1410, 1946-1951 and 3195-3198: failing authored verify steps return RokoError::Verify and are never force-accepted (no max_review_cycles logic remains); graph_checkpoint.rs:271 writes the GATE_VERDICT_EXTENSION summary and graph_checkpoint.rs:225 invalidate_unverified_activities re-executes forced/unverified records on resume"
 +++
 When cycle_count >= max_review_cycles the dispatcher force-accepts and logs 'all graph verify steps passed'; with default max_retries=3 the last attempt is always force-accepted, so verify can never fail a task. No event/field/checkpoint trace; GATE_VERDICT_EXTENSION unused.
 

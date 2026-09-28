@@ -19,8 +19,8 @@ command = "grep -q 'plan_set_complete()' crates/roko-cli/src/tui/app/channels.rs
 
 [closed]
 at = 2026-09-28
-commit = "91b4745f8"
-evidence = "(working tree, uncommitted; not in HEAD 91b4745f8) crates/roko-cli/src/tui/app/channels.rs::update_plan_completion_exit no longer exits when plans_active == 0 between plans; it exits only once snapshot.plan_set_complete() or a run_outcome is published (tests in tui/app/tests.rs seed PlanSetLoaded)."
+commit = "725f21e05"
+evidence = "Committed in 725f21e05 by the portal session. Re-checked 2026-09-28: the cited files are clean at HEAD and the named symbols and tests exist there (not rebuilt or retested here). crates/roko-cli/src/tui/app/channels.rs::update_plan_completion_exit no longer exits when plans_active == 0 between plans; it exits only once snapshot.plan_set_complete() or a run_outcome is published (tests in tui/app/tests.rs seed PlanSetLoaded)."
 +++
 with_exit_on_plan_completion shuts the TUI when plans_active==0, which happens between plans; inline progress is disabled and stderr is dup2'd to a log, so remaining plans run for hours with no output.
 

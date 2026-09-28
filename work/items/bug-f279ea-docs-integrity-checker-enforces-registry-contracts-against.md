@@ -11,7 +11,7 @@ updated = 2026-09-28
 last_verified = 2026-09-28
 source = "tmp/work-management/03-roko-native-capabilities.md"
 discovered_from = "doc:tmp/work-management/03-roko-native-capabilities.md"
-anchors = ["tools/docs_integrity/check_markdown_links.py"]
+anchors = ["tools/docs_integrity/check_markdown_links.py::check_status_disposition_registry", "tools/docs_integrity/check_markdown_links.py::check_source_coverage_registry", ".github/workflows/docs-lint.yml"]
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
 
 [[verify]]
@@ -19,4 +19,4 @@ command = 'python3 tools/docs_integrity/check_markdown_links.py'
 +++
 
 `tools/docs_integrity/check_markdown_links.py` enforces fixed-count registry contracts (exactly 109 files in `tmp/status-quo/`, fixed coverage-ledger and source-manifest counts), but `tmp/status-quo/` no longer exists and `tmp/` is gitignored, so no clone can satisfy them.
-Fix: drop those contracts or move their registries into tracked files; keep the link, anchor and INDEX checks.
+Decided 2026-09-28 (Will): drop the registry contracts rather than track the registries in git. Also drop the docs-lint rule that plan-run examples must select `--engine runner-v2`: that engine was deleted, so the four bare `roko plan run plans/` examples it flags in docs/v2 are correct. Keep the link, anchor and stale-phrase checks. Fix the two remaining link findings: README.md:12 should point at `work/STATUS.md`; docs/v2/ARCHITECTURE-GUIDE.md:22 has a dead anchor. Planned as `03-tooling-fixes` T04/T05, parked in `tmp/work-management/plans/work-graph/`.

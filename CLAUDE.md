@@ -20,7 +20,7 @@ What each subsystem is and where it lives. The table makes no maturity or status
 | Kernel | `Signal` (backed by the `Engram` struct), the 12 kernel traits, the signal-selection loop helper | `crates/roko-core/` (`src/engram.rs`, `src/loop_tick.rs`) |
 | Graph engine | The only plan executor: a DAG of Cells with topology, cost state and checkpoints | `crates/roko-graph/` (`src/engine.rs`) |
 | Graph plan execution (host side) | Plan runner, control, delivery, feedback, workspaces and per-task dispatch for Graph runs | `crates/roko-cli/src/graph_execution/`, `crates/roko-cli/src/graph_task_dispatch.rs` |
-| Runner support modules | Gate dispatch, persistence, output sinks, preflight, merge, resume, plan loading/DAG, queue manifests. The Runner-v2 event loop was deleted on 2026-09-06; `runner::run()` now only returns an error | `crates/roko-cli/src/runner/` |
+| Runner support modules | Gate dispatch, persistence, output sinks, preflight, merge, resume, plan loading/DAG, queue manifests. The Runner-v2 event loop was deleted on 2026-09-06, and the `runner::run()` stub was removed in `725f21e05` | `crates/roko-cli/src/runner/` |
 | Agent dispatch | Provider-neutral dispatch, prompt building, model routing; provider adapters | `crates/roko-cli/src/dispatch/`, `crates/roko-agent/` (`src/dispatcher/mod.rs`) |
 | Gates | Gate implementations and the rung pipeline; the per-task entry point is `run_gate_once` | `crates/roko-gate/`, `crates/roko-cli/src/runner/gate_dispatch.rs` |
 | Prompt assembly | Layered system prompt builder and role templates | `crates/roko-compose/` (`src/system_prompt_builder.rs`, `src/templates/`), `crates/roko-cli/src/dispatch/prompt_builder.rs` |
@@ -60,8 +60,7 @@ Run the actual code path. "Code exists" != "feature works". Test via CLI, not ju
 
 ### 4. Record gaps in the work graph
 Record gaps in the work graph: add an item under `work/items/` per `work/README.md` (anchor +
-verify command). `.roko/GAPS.md` is frozen (only running portal-programme plans still append
-`## GAP` entries there temporarily).
+verify command). `.roko/GAPS.md` is frozen.
 
 ## Architecture
 
@@ -75,7 +74,8 @@ react. Production ownership is explicit: `roko run` uses graph templates via
 which is the only plan executor, and the core `select_compose_verify_persist` helper covers only
 the non-ACT/non-BROADCAST signal-selection subset. Backlog #260 made Graph the default. The
 Runner-v2 event loop was deleted on 2026-09-06 (`6b5da8616`); `--engine legacy` and
-`--engine runner-v2` are still parsed but exit with an error (`crates/roko-cli/src/main.rs:1925-1942`, `:2013`).
+`--engine runner-v2` are still parsed (`PlanEngine` in `crates/roko-cli/src/main.rs`) but rejected with an error
+(`crates/roko-cli/src/commands/plan.rs`).
 `#NNN` numbers in this file are backlog items, not GitHub PRs.
 
 ## Self-hosting workflow
@@ -116,9 +116,8 @@ For an eligible small/local plan with a prebuilt `target/debug/roko`, prefer the
 ./dev.sh fast plans/<plan-directory>
 ```
 
-> **Currently broken:** `dev.sh` still passes `--engine runner-v2` (`dev.sh:307`). That value is
-> an alias of `--engine legacy`, which exits with an error now that Runner-v2 is deleted, so
-> `./dev.sh fast` fails until `dev.sh` is fixed.
+> FAST is only partly ported to the Graph engine. Check work item `gap-4a6dcb` before relying on
+> the guarantees below.
 
 Each FAST task must define exactly one authored `verify` command. FAST tells the provider to hand
 off after patching, keeps Cargo out of the provider session, skips critical-path warmup/cleanup,
@@ -135,7 +134,6 @@ pre-commit checks in the Building section.
 | `roko setup` | Interactive setup wizard: detect providers, init workspace, verify |
 | `roko run "<prompt>"` | Single prompt through graph templates (compose -> provider -> gate -> persist) |
 | `roko do "<prompt>"` | Execute a task via agent dispatch (used internally by `roko run`) |
-| `roko develop "<prompt>"` | Plan-first development: generate plan, approve, execute |
 | `roko show [subject]` | Inspect workspace state: costs, agents, knowledge, plans, learning, history |
 | `roko status` | Query signals, report counts and episodes |
 | `roko doctor` | Diagnose workspace bootstrap state |

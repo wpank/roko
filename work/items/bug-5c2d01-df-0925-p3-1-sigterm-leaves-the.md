@@ -19,8 +19,8 @@ command = "grep -q 'PlanRunInterrupt::Terminate.exit_code()' crates/roko-cli/src
 
 [closed]
 at = 2026-09-28
-commit = "91b4745f8"
-evidence = "(working tree, uncommitted; not in HEAD 91b4745f8) crates/roko-cli/src/main.rs::install_sigterm_handler defers to a running plan run (plan_run_owns_termination_signals) and otherwise exits PlanRunInterrupt::Terminate.exit_code() (143), never EXIT_SUCCESS; plan_runner.rs finalizes checkpoints as GraphCheckpointStatus::Interrupted/Cancelled (graph_checkpoint.rs finish_with_status)."
+commit = "725f21e05"
+evidence = "Committed in 725f21e05 by the portal session. Re-checked 2026-09-28: the cited files are clean at HEAD and the named symbols and tests exist there (not rebuilt or retested here). crates/roko-cli/src/main.rs::install_sigterm_handler defers to a running plan run (plan_run_owns_termination_signals) and otherwise exits PlanRunInterrupt::Terminate.exit_code() (143), never EXIT_SUCCESS; plan_runner.rs finalizes checkpoints as GraphCheckpointStatus::Interrupted/Cancelled (graph_checkpoint.rs finish_with_status)."
 +++
 The signal handler reaps children then calls process::exit(EXIT_SUCCESS); PreparedGraphCheckpoint has no Drop, so an interrupted run reports success to CI and the checkpoint is never finalized.
 

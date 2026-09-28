@@ -22,8 +22,8 @@ command = "cargo test -p roko-cli resume_reruns_unverified_or_forced_task_record
 
 [closed]
 at = 2026-09-28
-commit = "91b4745f8"
-evidence = "(working tree) Fix exists only as uncommitted changes from a concurrent session (visibly mid-change; not built or tested here): task outputs carry a TaskGateVerdict stamp incl. ForcedAccept (crates/roko-graph/src/cells/task_executor.rs); crates/roko-graph/src/replay.rs never replays forced-accept records (tests forced_accept_record_is_never_replayed_and_can_be_superseded, forced_accept_record_alone_forces_re_execution); crates/roko-cli/src/graph_checkpoint.rs:225 re-executes unverified/force-accepted nodes on resume (test resume_reruns_unverified_or_forced_task_records). Reopen if these changes are not committed."
+commit = "725f21e05"
+evidence = "Committed in 725f21e05 by the portal session. Re-checked 2026-09-28: the cited files are clean at HEAD and the named symbols and tests exist there (not rebuilt or retested here). task outputs carry a TaskGateVerdict stamp incl. ForcedAccept (crates/roko-graph/src/cells/task_executor.rs); crates/roko-graph/src/replay.rs never replays forced-accept records (tests forced_accept_record_is_never_replayed_and_can_be_superseded, forced_accept_record_alone_forces_re_execution); crates/roko-cli/src/graph_checkpoint.rs:225 re-executes unverified/force-accepted nodes on resume (test resume_reruns_unverified_or_forced_task_records)."
 +++
 activities.jsonl records only successful outputs and resume marks those nodes Complete without re-verification; force-accept state lived only in memory, so a BLOCK verdict would be replayed as success.
 

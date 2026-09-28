@@ -19,8 +19,8 @@ command = "cargo test -p roko-core failing_gate_summary_names_the_command_and_su
 
 [closed]
 at = 2026-09-28
-commit = "91b4745f8"
-evidence = "(working tree) All three defects are addressed by uncommitted changes from a concurrent session (visibly mid-change; not built or tested here): FailureEntry.summary is now gate_failure_summary(output) instead of String::new() (crates/roko-core/src/dashboard_snapshot.rs:1775); gate output is published with a leading `$ command` line (crates/roko-cli/src/graph_task_dispatch.rs published_gate_output); gate output is retained per task so a failure's detail outlives later gates (dashboard_snapshot.rs; test failing_gate_summary_names_the_command_and_survives_other_tasks). Reopen if not committed."
+commit = "725f21e05"
+evidence = "Committed in 725f21e05 by the portal session. Re-checked 2026-09-28: the cited files are clean at HEAD and the named symbols and tests exist there (not rebuilt or retested here). All three defects are addressed: FailureEntry.summary is now gate_failure_summary(output) instead of String::new() (crates/roko-core/src/dashboard_snapshot.rs:1775); gate output is published with a leading `$ command` line (crates/roko-cli/src/graph_task_dispatch.rs published_gate_output); gate output is retained per task so a failure's detail outlives later gates (dashboard_snapshot.rs; test failing_gate_summary_names_the_command_and_survives_other_tasks). Reopen if not committed."
 +++
 FailureEntry.summary is hardcoded empty (and error_digest infers remediation from it); the failing verify command is never published (label only); gate_output_lines is cleared on every gate result.
 

@@ -19,8 +19,8 @@ command = "grep -q 'Settled after the gate' crates/roko-cli/src/graph_task_dispa
 
 [closed]
 at = 2026-09-28
-commit = "91b4745f8"
-evidence = "(working tree, uncommitted; not in HEAD 91b4745f8) crates/roko-cli/src/graph_task_dispatch.rs: emit_feedback now takes the verified outcome and runs after settle_task_verification on both the buffered and streaming dispatch paths ('Settled after the gate so episodes, routing, playbooks, affect, and experiments learn from the verified outcome'); failed provider calls settle with success=false. File was visibly mid-edit by a concurrent session."
+commit = "725f21e05"
+evidence = "Committed in 725f21e05 by the portal session. Re-checked 2026-09-28: the cited files are clean at HEAD and the named symbols and tests exist there (not rebuilt or retested here). crates/roko-cli/src/graph_task_dispatch.rs: emit_feedback now takes the verified outcome and runs after settle_task_verification on both the buffered and streaming dispatch paths ('Settled after the gate so episodes, routing, playbooks, affect, and experiments learn from the verified outcome'); failed provider calls settle with success=false. File was visibly mid-edit by a concurrent session."
 +++
 emit_feedback runs ~100 lines before the verify block, so episodes say success=true even when verify failed; routing, playbooks, reward and cascade learning train on false positives.
 

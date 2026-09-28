@@ -22,8 +22,8 @@ command = "cargo test -p roko-core plan_set_completes_only_when_every_member_is_
 
 [closed]
 at = 2026-09-28
-commit = "91b4745f8"
-evidence = "(working tree, uncommitted; not in HEAD 91b4745f8) crates/roko-cli/src/graph_execution/plan_runner.rs publishes DashboardEvent::PlanSetLoaded (plan_set_entries) before any plan starts; roko-core dashboard_snapshot.rs handles PlanSetLoaded/plan_set_complete(); tui/state/snapshot.rs:483 keeps one run clock across plan boundaries via plan_set_running."
+commit = "725f21e05"
+evidence = "Committed in 725f21e05 by the portal session. Re-checked 2026-09-28: the cited files are clean at HEAD and the named symbols and tests exist there (not rebuilt or retested here). crates/roko-cli/src/graph_execution/plan_runner.rs publishes DashboardEvent::PlanSetLoaded (plan_set_entries) before any plan starts; roko-core dashboard_snapshot.rs handles PlanSetLoaded/plan_set_complete(); tui/state/snapshot.rs:483 keeps one run clock across plan boundaries via plan_set_running."
 +++
 No PlanSetLoaded event; snap.plans grows only on PlanStarted, so F1 shows 1/10 not x/87, the plan tree has one row and the run clock resets between plans.
 

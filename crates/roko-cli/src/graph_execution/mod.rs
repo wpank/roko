@@ -19,7 +19,7 @@
 //! | [`plan_set`] | Plan-set order, footprints, and which plans may run at once |
 //! | [`runtime_event_adapter`] | Graph event to canonical runtime event conversion |
 //! | [`view_state`] | TUI/HTTP graph status projection |
-//! | [`workflow_caller`] | Canary comparison and legacy facade marker |
+//! | [`workflow_caller`] | Legacy workflow facade marker |
 //! | [`workspaces`] | Worktree-backed execution workspace provider |
 
 pub mod agent_slots;
@@ -52,8 +52,5 @@ pub use view_state::{
     GraphNodeRow, GraphNodeStatus, GraphStatusSummary, GraphViewState, GraphViewStateProjector,
     HotGraphStatus, SharedGraphViewState, populate_dependencies,
 };
-pub use workflow_caller::{
-    CanaryAuthoritative, CanaryComparisonReport, LEGACY_WORKFLOW_ENGINE_FROZEN,
-    run_canary_comparison,
-};
+pub use workflow_caller::LEGACY_WORKFLOW_ENGINE_FROZEN;
 pub use workspaces::WorktreeExecutionWorkspaceProvider;

@@ -634,8 +634,7 @@ impl DashboardData {
 
         // Initialize incremental tailers and do the first tick so items are
         // populated to match the full-read data already loaded above.
-        let mut efficiency_tailer =
-            super::jsonl_tailer::IncrementalTailer::<AgentEfficiencyEvent>::new(&efficiency_path);
+        let mut efficiency_tailer = super::jsonl_tailer::efficiency_tailer(&efficiency_path);
         let _ = efficiency_tailer.tick();
         let mut cfactor_tailer =
             super::jsonl_tailer::IncrementalTailer::<CFactor>::new(&cfactor_path);

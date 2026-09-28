@@ -201,7 +201,7 @@ max_loc = 120
 files = [
     "apps/portal/src/app/work/editor/REVIEW.md",
 ]
-role = "reviewer"
+role = "implementer"
 depends_on = ["T02"]
 acceptance = [
     "REVIEW.md exists with Wiring correctness, Potential issues, and Verdict sections.",

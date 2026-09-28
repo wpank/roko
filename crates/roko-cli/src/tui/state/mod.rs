@@ -227,6 +227,9 @@ pub enum TaskStatus {
     Active,
     Done,
     Failed,
+    /// Completed although its verification failed (a forced accept). Its own
+    /// state: neither passed nor failed.
+    AcceptedWithFailures,
     Blocked,
 }
 
@@ -236,9 +239,17 @@ impl TaskStatus {
         matches!(self, Self::Active)
     }
 
+    /// Whether the task finished and was accepted: passed, or accepted with
+    /// failures (plan progress counts both, as the engine does). Use
+    /// [`Self::is_accepted_with_failures`] to tell them apart.
     #[must_use]
     pub const fn is_done(self) -> bool {
-        matches!(self, Self::Done)
+        matches!(self, Self::Done | Self::AcceptedWithFailures)
+    }
+
+    #[must_use]
+    pub const fn is_accepted_with_failures(self) -> bool {
+        matches!(self, Self::AcceptedWithFailures)
     }
 
     #[must_use]
@@ -253,6 +264,7 @@ impl TaskStatus {
             Self::Active => "active",
             Self::Done => "done",
             Self::Failed => "failed",
+            Self::AcceptedWithFailures => "accepted with failures",
             Self::Blocked => "blocked",
         }
     }
@@ -295,6 +307,9 @@ impl From<&str> for TaskStatus {
             | "merging"
             | "commit" => Self::Active,
             "failed" | "error" | "gate_rejected" | "gate-rejected" => Self::Failed,
+            roko_core::dashboard_snapshot::TASK_OUTCOME_ACCEPTED_WITH_FAILURES
+            | "accepted-with-failures"
+            | "accepted with failures" => Self::AcceptedWithFailures,
             "blocked" => Self::Blocked,
             _ => Self::Pending,
         }
@@ -1071,6 +1086,18 @@ pub struct PlanEntry {
     pub started_at: Option<Instant>,
 }
 
+impl PlanEntry {
+    /// Tasks accepted although their verification failed. They are part of
+    /// `tasks_done`, so a plan's passed count is `tasks_done` minus this.
+    #[must_use]
+    pub fn tasks_accepted_with_failures(&self) -> usize {
+        self.tasks
+            .iter()
+            .filter(|task| task.status.is_accepted_with_failures())
+            .count()
+    }
+}
+
 /// A task within a plan entry.
 #[derive(Debug, Clone, Default)]
 pub struct TaskEntry {
@@ -1579,6 +1606,8 @@ pub struct GateResultEntry {
     pub gate: String,
     /// Plan ID this gate ran against.
     pub plan_id: String,
+    /// Task the gate ran for; empty when unknown.
+    pub task_id: String,
     /// Whether the gate passed.
     pub passed: bool,
     /// Verify output text (stdout + stderr).
@@ -1590,6 +1619,7 @@ impl From<&GateResultSummary> for GateResultEntry {
         Self {
             gate: value.gate_name.clone(),
             plan_id: value.plan_id.clone(),
+            task_id: String::new(),
             passed: value.passed,
             output: value.summary.clone(),
         }
@@ -1752,6 +1782,13 @@ pub struct TuiState {
     pub gate_trends: HashMap<String, roko_core::TrendBuckets>,
     /// Recent failing verdicts surfaced beside the trend grid.
     pub gate_recent_failures: Vec<roko_core::FailureEntry>,
+    /// Latest gate output retained per task by the live snapshot: a leading
+    /// `$ command` line (when published) plus the output tail.
+    pub task_gate_outputs: Vec<roko_core::dashboard_snapshot::TaskGateOutput>,
+    /// Plan set of each plan id seen in the live snapshot, from disk
+    /// discovery (`None` for top-level or undiscovered plans). The snapshot
+    /// itself carries no plan set.
+    pub plan_groups: HashMap<String, Option<String>>,
 
     // -- gate output --
     /// Streaming gate output lines from rung executions (bounded).
@@ -2225,6 +2262,8 @@ impl Default for TuiState {
             experiment_winners: Vec::new(),
             gate_trends: HashMap::new(),
             gate_recent_failures: Vec::new(),
+            task_gate_outputs: Vec::new(),
+            plan_groups: HashMap::new(),
 
             gate_output_lines: VecDeque::new(),
             current_gate_rung: None,

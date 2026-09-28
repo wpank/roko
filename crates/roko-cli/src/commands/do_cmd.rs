@@ -17,6 +17,7 @@
 //! | plan-generate intent          | `roko plan generate`                     |
 //! | unqualified TTY prompt        | preview + confirm before dispatch        |
 //! | unqualified non-TTY prompt    | reject; require `--complexity`/`--plan`  |
+//! | non-TTY `roko run` prompt     | auto-detected route (as on a TTY)        |
 //! | dry-run/ghost/compare         | print route; never execute               |
 //! | single word matching plan dir | instruct `roko plan run <path>`          |
 
@@ -129,6 +130,9 @@ pub struct DoRouteInput {
     pub compare: bool,
     /// Whether stdin is a TTY.
     pub is_tty: bool,
+    /// Whether the prompt came from `roko run`, an explicit single-prompt
+    /// invocation that scripts and CI use without a TTY.
+    pub explicit_run: bool,
 }
 
 /// Pure routing resolver: maps [`DoRouteInput`] to a [`DoRoute`].
@@ -161,7 +165,9 @@ pub fn resolve_do_route(input: &DoRouteInput) -> DoRoute {
     }
 
     // Non-TTY without explicit complexity: reject before side effects.
-    if !input.is_tty && !input.complexity_forced && !input.plan_flag {
+    // `roko run` is itself the explicit request, so it keeps the auto-detected
+    // route a TTY caller would get.
+    if !input.is_tty && !input.complexity_forced && !input.plan_flag && !input.explicit_run {
         return DoRoute::RejectNonTty;
     }
 
@@ -183,6 +189,7 @@ pub(crate) async fn cmd_do(
     no_cascade: bool,
     provider: Option<String>,
     context: Vec<PathBuf>,
+    explicit_run: bool,
 ) -> Result<i32> {
     let workdir = workdir.unwrap_or_else(|| resolve_workdir(cli));
     let prompt = prompt_args.join(" ").trim().to_string();
@@ -299,6 +306,7 @@ pub(crate) async fn cmd_do(
         dry_preview,
         compare,
         is_tty: roko_cli::stdin_is_tty(),
+        explicit_run,
     };
     let route = resolve_do_route(&route_input);
 
@@ -401,7 +409,7 @@ pub(crate) async fn cmd_do(
     }
 }
 
-// ─── Simple path: direct agent run via WorkflowEngine ───────────────
+// ─── Simple path: one-task plan through the Graph engine ────────────
 
 async fn run_simple_path(
     cli: &Cli,
@@ -411,9 +419,10 @@ async fn run_simple_path(
     no_cascade: bool,
     provider: Option<String>,
 ) -> Result<i32> {
-    let workflow_template = workflow_template_for_complexity(complexity);
+    let tier = workflow_template_for_complexity(complexity);
 
-    let out = roko_cli::cli_output::CliOutput::new(cli.quiet);
+    // `--json` keeps stdout to the one report document.
+    let out = roko_cli::cli_output::CliOutput::new(cli.quiet || cli.json);
     out.step(
         "Complexity",
         &format!("{} (auto-detected)", complexity_label(complexity)),
@@ -421,11 +430,7 @@ async fn run_simple_path(
     out.step("Running", "single agent...");
 
     prepare_runtime_hooks(workdir, cli.quiet);
-    let mut config = resolve_config_for_workdir(cli, workdir)?;
-    apply_resume_session_override(&mut config, cli.resume.clone());
 
-    let enabled_gates = roko_cli::run::workflow_enabled_gate_names(&config.gates);
-    let shell_gates = roko_cli::run::workflow_shell_gate_commands(&config.gates);
     let overrides = roko_cli::run::CliOverrides {
         model: cli.model.clone(),
         role: cli.role.clone(),
@@ -436,24 +441,24 @@ async fn run_simple_path(
 
     tracing::debug!(
         complexity = complexity_label(complexity),
-        workflow_template,
+        tier,
         cascade_enabled = !no_cascade,
         engine = "graph",
-        "dispatching roko do (simple) through graph templates"
+        "dispatching roko do (simple) as a one-task Graph plan"
     );
 
-    let result = roko_cli::run::run_workflow_report(
+    let result = roko_cli::run::run_prompt(roko_cli::run::PromptRun {
         prompt,
         workdir,
-        workflow_template,
-        enabled_gates,
-        shell_gates,
-        None,
-        &overrides,
-    )
+        tier,
+        overrides: &overrides,
+        max_retries: None,
+        quiet: cli.quiet || cli.json,
+        state_hub: None,
+    })
     .await;
 
-    handle_workflow_result(cli, prompt, workflow_template, result)
+    handle_workflow_result(cli, prompt, tier, result)
 }
 
 // ─── Standard path: generate plan from prompt, then execute ─────────
@@ -1004,7 +1009,7 @@ fn print_do_preview(
 fn handle_workflow_result(
     cli: &Cli,
     prompt: &str,
-    workflow_template: &str,
+    tier: &str,
     result: anyhow::Result<roko_runtime::workflow_contract::WorkflowRunReport>,
 ) -> Result<i32> {
     match result {
@@ -1012,7 +1017,7 @@ fn handle_workflow_result(
             if cli.json {
                 println!("{}", serde_json::to_string_pretty(&report)?);
             } else if !cli.quiet {
-                roko_cli::run::print_workflow_run_report(prompt, workflow_template, &report);
+                roko_cli::run::print_workflow_run_report(prompt, tier, &report);
             }
 
             if report.success {
@@ -1023,7 +1028,7 @@ fn handle_workflow_result(
         }
         Err(error) => {
             let out = roko_cli::cli_output::CliOutput::new(cli.quiet);
-            out.error(&format!("workflow engine error: {error:#}"));
+            out.error(&format!("roko run failed: {error:#}"));
             Ok(EXIT_AGENT_FAILURE)
         }
     }
@@ -1036,7 +1041,8 @@ fn promote_to_planned_complexity(complexity: PlanComplexity) -> PlanComplexity {
     }
 }
 
-fn workflow_template_for_complexity(complexity: PlanComplexity) -> &'static str {
+/// Task tier a single-agent route runs the prompt at.
+pub(crate) fn workflow_template_for_complexity(complexity: PlanComplexity) -> &'static str {
     match complexity {
         PlanComplexity::Trivial => "mechanical",
         PlanComplexity::Simple => "focused",
@@ -1227,6 +1233,7 @@ mod tests {
             dry_preview: dry,
             compare,
             is_tty: tty,
+            explicit_run: false,
         }
     }
 
@@ -1418,6 +1425,25 @@ mod tests {
             false,
         ));
         assert_eq!(r, DoRoute::RejectNonTty);
+    }
+
+    // Row 10a: non-TTY `roko run` without forced complexity -> auto-detected route
+    #[test]
+    fn do_route_non_tty_explicit_run_uses_detected_route() {
+        for (complexity, expected) in [
+            (PlanComplexity::Trivial, DoRoute::Mechanical),
+            (PlanComplexity::Simple, DoRoute::Focused),
+            (PlanComplexity::Standard, DoRoute::PromptPlan),
+            (PlanComplexity::Complex, DoRoute::PrdPlan),
+        ] {
+            let tty = resolve_do_route(&route_input(complexity, false, false, false, false, true));
+            let r = resolve_do_route(&DoRouteInput {
+                explicit_run: true,
+                ..route_input(complexity, false, false, false, false, false)
+            });
+            assert_eq!(r, expected);
+            assert_eq!(r, tty, "non-TTY `roko run` must match the TTY route");
+        }
     }
 
     // Row 10b: non-TTY WITH forced complexity -> dispatches normally

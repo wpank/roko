@@ -38,6 +38,7 @@ pub(crate) async fn cmd_develop(
             false,
             provider,
             Vec::new(),
+            false,
         )
         .await;
     }
@@ -64,6 +65,7 @@ pub(crate) async fn cmd_develop(
             false,
             provider,
             Vec::new(),
+            false,
         )
         .await;
     }
@@ -84,6 +86,7 @@ pub(crate) async fn cmd_develop(
             false,
             provider,
             Vec::new(),
+            false,
         )
         .await?;
         if code == EXIT_SUCCESS && std::io::stderr().is_terminal() {
@@ -133,6 +136,7 @@ pub(crate) async fn cmd_develop(
             false,
             provider,
             Vec::new(),
+            false,
         )
         .await?
     };

@@ -44,7 +44,7 @@ impl TuiState {
                 .is_empty()
             {
                 self.connected_efficiency_tailer =
-                    super::super::jsonl_tailer::IncrementalTailer::new(&efficiency_path);
+                    super::super::jsonl_tailer::efficiency_tailer(&efficiency_path);
             }
             let _ = self.connected_efficiency_tailer.tick();
             self.efficiency_events = self.connected_efficiency_tailer.items().to_vec();

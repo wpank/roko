@@ -331,7 +331,7 @@ status = "ready"
 tier = "integrative"
 max_loc = 120
 files = ["demo/qa-validation/RESULTS.md"]
-role = "reviewer"
+role = "implementer"
 depends_on = ["T01", "T02", "T03"]
 acceptance = [
     "demo/qa-validation/RESULTS.md exists with all five required headings.",

@@ -337,9 +337,16 @@ pub fn render_header_bar(frame: &mut Frame<'_>, area: Rect, state: &TuiState) {
     };
     let all_done = state.plans.iter().all(|p| !p.active);
     let has_failures = state.plans.iter().any(|p| p.tasks_failed > 0);
+    let accepted_with_failures: usize = state
+        .plans
+        .iter()
+        .map(|p| p.tasks_accepted_with_failures())
+        .sum();
 
     // Show "done/total tasks" fraction next to progress bar
-    let progress_text = if all_done && total > 0 && !has_failures {
+    let progress_text = if all_done && total > 0 && !has_failures && accepted_with_failures > 0 {
+        format!(" COMPLETE \u{26a0}{accepted_with_failures}")
+    } else if all_done && total > 0 && !has_failures {
         " COMPLETE".to_string()
     } else if has_failures {
         format!(" ERR:{done}/{total}")
@@ -353,6 +360,11 @@ pub fn render_header_bar(frame: &mut Frame<'_>, area: Rect, state: &TuiState) {
         Style::default()
             .fg(Theme::EMBER)
             .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+    } else if all_done && total > 0 && accepted_with_failures > 0 {
+        // Finished, but not clean: some tasks were accepted with failures.
+        Style::default()
+            .fg(Theme::WARNING)
+            .add_modifier(Modifier::BOLD)
     } else if all_done && total > 0 {
         Style::default()
             .fg(Theme::SAGE)

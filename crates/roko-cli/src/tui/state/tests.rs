@@ -2466,3 +2466,55 @@ fn reset_scrolls_includes_all_detail_fields() {
     assert_eq!(state.marketplace_detail_scroll, 0);
     assert_eq!(state.atelier_detail_scroll, 0);
 }
+
+#[test]
+fn accepted_with_failures_is_its_own_task_state() {
+    use roko_core::DashboardEvent;
+    use roko_core::dashboard_snapshot::{DashboardSnapshot, TASK_OUTCOME_ACCEPTED_WITH_FAILURES};
+
+    let mut snap = DashboardSnapshot::default();
+    snap.apply(&DashboardEvent::PlanStarted {
+        plan_id: "p1".into(),
+        tasks_total: 3,
+    });
+    for task_id in ["t1", "t2", "t3"] {
+        snap.apply(&DashboardEvent::TaskStarted {
+            plan_id: "p1".into(),
+            task_id: task_id.into(),
+            title: task_id.into(),
+            phase: "verify".into(),
+        });
+    }
+    for (task_id, outcome) in [
+        ("t1", "passed"),
+        ("t2", TASK_OUTCOME_ACCEPTED_WITH_FAILURES),
+        ("t3", "failed"),
+    ] {
+        snap.apply(&DashboardEvent::TaskCompleted {
+            plan_id: "p1".into(),
+            task_id: task_id.into(),
+            outcome: outcome.into(),
+        });
+    }
+
+    let mut state = TuiState::default();
+    state.update_from_dashboard_snapshot(&snap);
+    let plan = state.plans.iter().find(|plan| plan.id == "p1").expect("p1");
+    let status = |id: &str| {
+        plan.tasks
+            .iter()
+            .find(|task| task.id == id)
+            .expect("task")
+            .status
+    };
+    assert_eq!(status("t1"), TaskStatus::Done);
+    assert_eq!(status("t2"), TaskStatus::AcceptedWithFailures);
+    assert_eq!(status("t3"), TaskStatus::Failed);
+    assert!(!status("t2").is_failed());
+    assert_eq!(plan.tasks_accepted_with_failures(), 1);
+    assert_eq!(plan.tasks_failed, 1);
+    assert_eq!(
+        TaskStatus::from(TASK_OUTCOME_ACCEPTED_WITH_FAILURES),
+        TaskStatus::AcceptedWithFailures
+    );
+}

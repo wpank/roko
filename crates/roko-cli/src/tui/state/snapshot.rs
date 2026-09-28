@@ -880,6 +880,7 @@ impl TuiState {
             .map(|gate_result| GateResultEntry {
                 gate: gate_result.gate.clone(),
                 plan_id: gate_result.plan_id.clone(),
+                task_id: gate_result.task_id.clone(),
                 passed: gate_result.passed,
                 output: if gate_result.task_id.is_empty() {
                     String::new()
@@ -904,6 +905,7 @@ impl TuiState {
         }
         self.gate_trends = snap.gate_trends.clone();
         self.gate_recent_failures = snap.gate_recent_failures.clone();
+        self.task_gate_outputs = snap.task_gate_outputs.iter().cloned().collect();
         self.affect = snap.affect.clone();
         self.critical_path_eta_minutes = snap.critical_path_eta_minutes.map(|v| v as f64);
         if !snap.agent_topology.is_empty() {
@@ -1000,6 +1002,26 @@ impl TuiState {
 
         // Synthesize plan_summaries from snapshot-built plans so the F2 left
         // panel works in approval mode (where DashboardData is never loaded).
+        // The snapshot carries no plan set, so each plan keeps the group disk
+        // discovery gave it: from the disk-loaded summaries when there are
+        // any, else from one workspace scan per unseen plan id.
+        let discovered_groups: HashMap<String, String> = self
+            .plan_summaries
+            .iter()
+            .filter_map(|summary| Some((summary.id.clone(), summary.group.clone()?)))
+            .collect();
+        if !self.workdir.as_os_str().is_empty()
+            && self
+                .plans
+                .iter()
+                .any(|plan| !self.plan_groups.contains_key(&plan.id))
+        {
+            let plan_dirs = crate::plan::plan_dirs_by_id(&self.workdir);
+            for plan in &self.plans {
+                let group = plan_dirs.get(&plan.id).and_then(|dir| dir.group.clone());
+                self.plan_groups.insert(plan.id.clone(), group);
+            }
+        }
         self.plan_summaries = self
             .plans
             .iter()
@@ -1014,7 +1036,10 @@ impl TuiState {
                 superseded_by: None,
                 old_format: false,
                 last_error: None,
-                group: None,
+                group: discovered_groups
+                    .get(&plan.id)
+                    .cloned()
+                    .or_else(|| self.plan_groups.get(&plan.id).cloned().flatten()),
             })
             .collect();
 
@@ -1317,16 +1342,12 @@ fn instant_at_unix_ms(unix_ms: u64) -> Option<Instant> {
 }
 
 fn snapshot_task_status(task: &roko_core::dashboard_snapshot::TaskState) -> TaskStatus {
-    match task.outcome.as_deref() {
-        Some(outcome)
-            if outcome.contains("fail")
-                || outcome.contains("error")
-                || outcome.contains("Fail")
-                || outcome.contains("Error") =>
-        {
-            TaskStatus::Failed
-        }
-        Some(_) => TaskStatus::Done,
+    use roko_core::dashboard_snapshot::{TaskOutcomeClass, classify_task_outcome};
+
+    match task.outcome.as_deref().map(classify_task_outcome) {
+        Some(TaskOutcomeClass::Failed) => TaskStatus::Failed,
+        Some(TaskOutcomeClass::AcceptedWithFailures) => TaskStatus::AcceptedWithFailures,
+        Some(TaskOutcomeClass::Passed) => TaskStatus::Done,
         None => TaskStatus::from(task.phase.as_str()),
     }
 }

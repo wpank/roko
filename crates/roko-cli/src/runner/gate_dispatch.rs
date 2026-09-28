@@ -258,7 +258,7 @@ async fn compile_coordinator(workdir: &Path, permits: usize) -> Arc<Semaphore> {
     coordinator
 }
 
-pub(super) async fn acquire_compile_ownership(
+pub(crate) async fn acquire_compile_ownership(
     workdir: &Path,
     permits: usize,
     max_wait: Duration,

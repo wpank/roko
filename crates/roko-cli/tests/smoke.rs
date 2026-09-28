@@ -240,11 +240,18 @@ fn item_04_plan_runner_reports_non_zero_agent_calls() {
         "CLAUDE.md item 04 invalidated: PlanRunner reported zero agent calls\n{report}"
     );
 
-    // Verify at least one plan was tracked.
-    let plans = report.get("plans").and_then(serde_json::Value::as_array);
+    // The Graph engine report tracks each plan through its `plan_budgets`
+    // entry; the sample plan must be among them.
+    let tracked_plans = report
+        .get("plan_budgets")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|budget| budget.get("plan_id").and_then(serde_json::Value::as_str))
+        .collect::<Vec<_>>();
     assert!(
-        plans.is_some_and(|ps| !ps.is_empty()),
-        "CLAUDE.md item 04 invalidated: no plans tracked in report\n{report}"
+        tracked_plans.contains(&SAMPLE_PLAN_ID),
+        "CLAUDE.md item 04 invalidated: sample plan not tracked in report\n{report}"
     );
 }
 

@@ -393,212 +393,249 @@ fn render_wave_tree(
     // assignment. Fall back to synthetic wave groups of ~4 plans each
     // when wave data is absent (wave computation not yet done).
     let has_real_waves = tui_state.plans.iter().any(|p| p.wave.is_some());
-    let use_waves = tui_state.plan_summaries.len() > 3;
 
-    if use_waves {
-        // Build wave groups: real data or synthetic fallback.
-        let wave_groups: Vec<(usize, Vec<usize>)> = if has_real_waves {
-            // Group plan indices by their wave assignment. Plans without a
-            // PlanEntry (summary-only) go to wave 0.
-            let mut groups: std::collections::BTreeMap<usize, Vec<usize>> =
-                std::collections::BTreeMap::new();
-            for i in 0..tui_state.plan_summaries.len() {
-                let wave_idx = entry_at(i).and_then(|(_, plan)| plan.wave).unwrap_or(0);
-                groups.entry(wave_idx).or_default().push(i);
+    // Plans inside a plan set (`plans/<group>/<plan>`) render under a group
+    // header; top-level plans come first, without one.
+    for (group, members) in plan_groups(&tui_state.plan_summaries) {
+        let grouped = group.is_some();
+        if let Some(group) = group {
+            let visible = |i: usize| {
+                entry_at(i).is_none_or(|(_, p)| tui_state.plan_tree_filter.matches_plan_or_tasks(p))
+            };
+            if filter_active && !members.iter().any(|&i| visible(i)) {
+                continue;
             }
-            groups.into_iter().collect()
-        } else {
-            // Synthetic groups of ~4 plans each.
-            let wave_size = 4usize;
-            let num_waves = (tui_state.plan_summaries.len() + wave_size - 1) / wave_size;
-            (0..num_waves)
-                .map(|w| {
-                    let start = w * wave_size;
-                    let end = (start + wave_size).min(tui_state.plan_summaries.len());
-                    (w, (start..end).collect())
-                })
-                .collect()
-        };
-
-        for (wave_idx, plan_indices) in &wave_groups {
-            let wave_done = plan_indices
+            let done = members
                 .iter()
-                .filter(|&&i| {
-                    tui_state
-                        .plan_summaries
-                        .get(i)
-                        .map(|p| p.completed)
-                        .unwrap_or(false)
-                })
+                .filter(|&&i| tui_state.plan_summaries.get(i).is_some_and(|p| p.completed))
                 .count();
-            let wave_total = plan_indices.len();
-            let all_done = wave_done == wave_total;
-            let any_active = plan_indices
-                .iter()
-                .any(|&i| entry_at(i).is_some_and(|(_, p)| p.status.is_active()));
-
-            // Is this wave selected (contains selected plan)?
-            let wave_selected = plan_indices.iter().any(|&i| is_selected_at(i));
-            // Default: expand selected wave and completed waves, collapse others.
-            // Respect the user's explicit collapse toggle.
-            let explicitly_collapsed = tui_state.collapsed_waves.contains(wave_idx);
-            let expanded = !explicitly_collapsed && (wave_selected || all_done || any_active);
-
-            // Wave header
-            let (wave_icon, wave_style) = if all_done {
-                (
-                    "\u{2713}", // checkmark
-                    Style::default().fg(theme.success),
-                )
-            } else if any_active {
-                (
-                    "\u{25b6}", // ▶
-                    Style::default()
-                        .fg(theme.accent)
-                        .add_modifier(Modifier::BOLD),
-                )
-            } else {
-                (
-                    "\u{25cb}", // ○
-                    Style::default().fg(theme.muted),
-                )
-            };
-
-            let collapse_icon = if expanded {
-                "\u{25be}" // ▾
-            } else {
-                "\u{25b8}" // ▸
-            };
-
-            // Wave progress bar (8-char)
-            let wave_fill = wave_done as f64 / wave_total.max(1) as f64;
-            let wave_bar = build_mini_bar(8, wave_fill, all_done, any_active, theme);
-
-            // Count failed in wave
-            let wave_failed = plan_indices
+            let failed = members
                 .iter()
                 .filter(|&&i| entry_at(i).is_some_and(|(_, p)| p.status.is_failed()))
                 .count();
+            let active = members
+                .iter()
+                .any(|&i| entry_at(i).is_some_and(|(_, p)| p.status.is_active()));
+            lines.push(group_header_line(
+                group,
+                GroupCounts {
+                    done,
+                    total: members.len(),
+                    failed,
+                    active,
+                },
+                theme,
+                content_width,
+            ));
+        }
+        let use_waves = members.len() > 3;
 
-            let mut wave_spans = vec![
-                Span::styled(
-                    format!(" {collapse_icon} "),
-                    Style::default().fg(theme.muted),
-                ),
-                Span::styled(format!("{wave_icon} "), wave_style),
-                Span::styled(
-                    format!("Wave {} ", wave_idx),
-                    Style::default()
-                        .fg(theme.foreground)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    format!("({wave_done}/{wave_total}) "),
-                    Style::default().fg(theme.muted),
-                ),
-                Span::styled(
-                    wave_bar,
-                    Style::default().fg(if all_done {
-                        theme.success
-                    } else if any_active {
-                        theme.accent
-                    } else {
-                        theme.muted
-                    }),
-                ),
-            ];
+        if use_waves {
+            // Build wave groups: real data or synthetic fallback.
+            let wave_groups: Vec<(usize, Vec<usize>)> = if has_real_waves {
+                // Group plan indices by their wave assignment. Plans without a
+                // PlanEntry (summary-only) go to wave 0.
+                let mut groups: std::collections::BTreeMap<usize, Vec<usize>> =
+                    std::collections::BTreeMap::new();
+                for &i in &members {
+                    let wave_idx = entry_at(i).and_then(|(_, plan)| plan.wave).unwrap_or(0);
+                    groups.entry(wave_idx).or_default().push(i);
+                }
+                groups.into_iter().collect()
+            } else {
+                // Synthetic groups of ~4 plans each.
+                let wave_size = 4usize;
+                members
+                    .chunks(wave_size)
+                    .enumerate()
+                    .map(|(w, chunk)| (w, chunk.to_vec()))
+                    .collect()
+            };
 
-            if wave_failed > 0 {
-                wave_spans.push(Span::styled(
-                    format!(" \u{2717}{wave_failed}"),
-                    Style::default().fg(theme.danger),
-                ));
-            }
-
-            // "after W{N}" blocker label for pending/non-started waves
-            if !all_done && !any_active && *wave_idx > 0 {
-                // Find the highest incomplete predecessor wave
-                let blocker_waves: Vec<usize> = wave_groups
+            for (wave_idx, plan_indices) in &wave_groups {
+                let wave_done = plan_indices
                     .iter()
-                    .filter(|(w, indices)| {
-                        *w < *wave_idx
-                            && indices.iter().any(|&i| {
-                                tui_state
-                                    .plan_summaries
-                                    .get(i)
-                                    .map(|p| !p.completed)
-                                    .unwrap_or(false)
-                            })
+                    .filter(|&&i| {
+                        tui_state
+                            .plan_summaries
+                            .get(i)
+                            .map(|p| p.completed)
+                            .unwrap_or(false)
                     })
-                    .map(|(w, _)| *w)
-                    .collect();
-                if !blocker_waves.is_empty() {
-                    let blocker_label = blocker_waves
-                        .iter()
-                        .map(|w| format!("W{w}"))
-                        .collect::<Vec<_>>()
-                        .join(",");
-                    wave_spans.push(Span::styled(
-                        format!(" after {blocker_label}"),
+                    .count();
+                let wave_total = plan_indices.len();
+                let all_done = wave_done == wave_total;
+                let any_active = plan_indices
+                    .iter()
+                    .any(|&i| entry_at(i).is_some_and(|(_, p)| p.status.is_active()));
+
+                // Is this wave selected (contains selected plan)?
+                let wave_selected = plan_indices.iter().any(|&i| is_selected_at(i));
+                // Default: expand selected wave and completed waves, collapse others.
+                // Respect the user's explicit collapse toggle.
+                let explicitly_collapsed = tui_state.collapsed_waves.contains(wave_idx);
+                let expanded = !explicitly_collapsed && (wave_selected || all_done || any_active);
+
+                // Wave header
+                let (wave_icon, wave_style) = if all_done {
+                    (
+                        "\u{2713}", // checkmark
+                        Style::default().fg(theme.success),
+                    )
+                } else if any_active {
+                    (
+                        "\u{25b6}", // ▶
+                        Style::default()
+                            .fg(theme.accent)
+                            .add_modifier(Modifier::BOLD),
+                    )
+                } else {
+                    (
+                        "\u{25cb}", // ○
                         Style::default().fg(theme.muted),
+                    )
+                };
+
+                let collapse_icon = if expanded {
+                    "\u{25be}" // ▾
+                } else {
+                    "\u{25b8}" // ▸
+                };
+
+                // Wave progress bar (8-char)
+                let wave_fill = wave_done as f64 / wave_total.max(1) as f64;
+                let wave_bar = build_mini_bar(8, wave_fill, all_done, any_active, theme);
+
+                // Count failed in wave
+                let wave_failed = plan_indices
+                    .iter()
+                    .filter(|&&i| entry_at(i).is_some_and(|(_, p)| p.status.is_failed()))
+                    .count();
+
+                let mut wave_spans = vec![
+                    Span::styled(
+                        format!(" {collapse_icon} "),
+                        Style::default().fg(theme.muted),
+                    ),
+                    Span::styled(format!("{wave_icon} "), wave_style),
+                    Span::styled(
+                        format!("Wave {} ", wave_idx),
+                        Style::default()
+                            .fg(theme.foreground)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        format!("({wave_done}/{wave_total}) "),
+                        Style::default().fg(theme.muted),
+                    ),
+                    Span::styled(
+                        wave_bar,
+                        Style::default().fg(if all_done {
+                            theme.success
+                        } else if any_active {
+                            theme.accent
+                        } else {
+                            theme.muted
+                        }),
+                    ),
+                ];
+
+                if wave_failed > 0 {
+                    wave_spans.push(Span::styled(
+                        format!(" \u{2717}{wave_failed}"),
+                        Style::default().fg(theme.danger),
                     ));
                 }
-            }
 
-            // Fill remaining width with horizontal line
-            let used: usize = wave_spans.iter().map(|s| s.content.chars().count()).sum();
-            let avail = content_width;
-            if avail > used + 1 {
-                wave_spans.push(Span::styled(
-                    format!(" {}", "\u{2500}".repeat(avail - used - 1)),
-                    Style::default().fg(Theme::SEPARATOR),
-                ));
-            }
-            lines.push(Line::from(wave_spans));
+                // "after W{N}" blocker label for pending/non-started waves
+                if !all_done && !any_active && *wave_idx > 0 {
+                    // Find the highest incomplete predecessor wave
+                    let blocker_waves: Vec<usize> = wave_groups
+                        .iter()
+                        .filter(|(w, indices)| {
+                            *w < *wave_idx
+                                && indices.iter().any(|&i| {
+                                    tui_state
+                                        .plan_summaries
+                                        .get(i)
+                                        .map(|p| !p.completed)
+                                        .unwrap_or(false)
+                                })
+                        })
+                        .map(|(w, _)| *w)
+                        .collect();
+                    if !blocker_waves.is_empty() {
+                        let blocker_label = blocker_waves
+                            .iter()
+                            .map(|w| format!("W{w}"))
+                            .collect::<Vec<_>>()
+                            .join(",");
+                        wave_spans.push(Span::styled(
+                            format!(" after {blocker_label}"),
+                            Style::default().fg(theme.muted),
+                        ));
+                    }
+                }
 
-            if !expanded {
-                continue;
-            }
+                // Fill remaining width with horizontal line
+                let used: usize = wave_spans.iter().map(|s| s.content.chars().count()).sum();
+                let avail = content_width;
+                if avail > used + 1 {
+                    wave_spans.push(Span::styled(
+                        format!(" {}", "\u{2500}".repeat(avail - used - 1)),
+                        Style::default().fg(Theme::SEPARATOR),
+                    ));
+                }
+                lines.push(Line::from(wave_spans));
 
-            // Plans within wave (apply filter)
-            for &i in plan_indices {
+                if !expanded {
+                    continue;
+                }
+
+                // Plans within wave (apply filter)
+                for &i in plan_indices {
+                    let entry = entry_at(i).map(|(_, p)| p);
+                    if filter_active
+                        && entry
+                            .is_some_and(|p| !tui_state.plan_tree_filter.matches_plan_or_tasks(p))
+                    {
+                        continue;
+                    }
+                    if let Some(plan) = tui_state.plan_summaries.get(i) {
+                        render_plan_line(
+                            &mut lines,
+                            plan,
+                            entry,
+                            is_selected_at(i),
+                            theme,
+                            content_width,
+                            true,
+                        );
+                    }
+                }
+            }
+        } else {
+            // Flat list (apply filter)
+            for &i in &members {
+                let Some(plan) = tui_state.plan_summaries.get(i) else {
+                    continue;
+                };
                 let entry = entry_at(i).map(|(_, p)| p);
                 if filter_active
                     && entry.is_some_and(|p| !tui_state.plan_tree_filter.matches_plan_or_tasks(p))
                 {
                     continue;
                 }
-                if let Some(plan) = tui_state.plan_summaries.get(i) {
-                    render_plan_line(
-                        &mut lines,
-                        plan,
-                        entry,
-                        is_selected_at(i),
-                        theme,
-                        content_width,
-                        true,
-                    );
-                }
+                render_plan_line(
+                    &mut lines,
+                    plan,
+                    entry,
+                    is_selected_at(i),
+                    theme,
+                    content_width,
+                    grouped,
+                );
             }
-        }
-    } else {
-        // Flat list (apply filter)
-        for (i, plan) in tui_state.plan_summaries.iter().enumerate() {
-            let entry = entry_at(i).map(|(_, p)| p);
-            if filter_active
-                && entry.is_some_and(|p| !tui_state.plan_tree_filter.matches_plan_or_tasks(p))
-            {
-                continue;
-            }
-            render_plan_line(
-                &mut lines,
-                plan,
-                entry,
-                is_selected_at(i),
-                theme,
-                content_width,
-                false,
-            );
         }
     }
 
@@ -629,6 +666,74 @@ fn render_wave_tree(
     }
 }
 
+/// Summary indices grouped by plan set: top-level plans (no group) first,
+/// then each group by name, each keeping the summaries' order.
+fn plan_groups(summaries: &[crate::plan::PlanSummary]) -> Vec<(Option<&str>, Vec<usize>)> {
+    let mut groups: std::collections::BTreeMap<Option<&str>, Vec<usize>> =
+        std::collections::BTreeMap::new();
+    for (index, summary) in summaries.iter().enumerate() {
+        groups
+            .entry(summary.group.as_deref())
+            .or_default()
+            .push(index);
+    }
+    groups.into_iter().collect()
+}
+
+/// Plan counts shown on a group header.
+#[derive(Debug, Clone, Copy)]
+struct GroupCounts {
+    done: usize,
+    total: usize,
+    failed: usize,
+    active: bool,
+}
+
+/// Header row for a plan set: name, plans completed, failures, and a rule.
+fn group_header_line(
+    group: &str,
+    counts: GroupCounts,
+    theme: &Theme,
+    content_width: usize,
+) -> Line<'static> {
+    let GroupCounts {
+        done,
+        total,
+        failed,
+        active,
+    } = counts;
+    let mut spans = vec![
+        Span::styled(
+            " \u{25c6} ",
+            Style::default().fg(if active { theme.accent } else { Theme::DREAM }),
+        ),
+        Span::styled(
+            group.to_string(),
+            Style::default()
+                .fg(theme.foreground)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!(" ({done}/{total})"),
+            Style::default().fg(theme.muted),
+        ),
+    ];
+    if failed > 0 {
+        spans.push(Span::styled(
+            format!(" \u{2717}{failed}"),
+            Style::default().fg(theme.danger),
+        ));
+    }
+    let used: usize = spans.iter().map(|span| span.content.chars().count()).sum();
+    if content_width > used + 1 {
+        spans.push(Span::styled(
+            format!(" {}", "\u{2500}".repeat(content_width - used - 1)),
+            Style::default().fg(Theme::SEPARATOR),
+        ));
+    }
+    Line::from(spans)
+}
+
 // ---------------------------------------------------------------------------
 // Single plan line
 // ---------------------------------------------------------------------------
@@ -646,6 +751,8 @@ fn render_plan_line(
 ) {
     let is_active = tui_plan.map(|p| p.status.is_active()).unwrap_or(false);
     let is_failed = tui_plan.map(|p| p.status.is_failed()).unwrap_or(false);
+    // Accepted-with-failures tasks keep a finished plan amber, never green.
+    let with_failures = tui_plan.is_some_and(|p| p.tasks_accepted_with_failures() > 0);
     let task_total = tui_plan.map(|p| p.tasks_total).unwrap_or(plan.task_count);
     let task_done =
         tui_plan
@@ -653,7 +760,14 @@ fn render_plan_line(
             .unwrap_or(if plan.completed { task_total } else { 0 });
 
     // Status icon
-    let (icon, icon_style) = if plan.completed {
+    let (icon, icon_style) = if plan.completed && with_failures {
+        (
+            "\u{26a0}", // ⚠
+            Style::default()
+                .fg(theme.warning)
+                .add_modifier(Modifier::BOLD),
+        )
+    } else if plan.completed {
         (
             "\u{2713}", // checkmark
             Style::default().fg(theme.success),
@@ -680,7 +794,9 @@ fn render_plan_line(
     };
 
     // Text styling
-    let text_style = if plan.completed {
+    let text_style = if plan.completed && with_failures {
+        Style::default().fg(theme.warning)
+    } else if plan.completed {
         Style::default().fg(theme.success)
     } else if is_active {
         Style::default()
@@ -713,7 +829,9 @@ fn render_plan_line(
     } else {
         "\u{00b7}".to_string()
     };
-    let progress_color = if plan.completed {
+    let progress_color = if plan.completed && with_failures {
+        theme.warning
+    } else if plan.completed {
         theme.success
     } else if is_active {
         semantic_color(fill_pct, theme)
@@ -962,7 +1080,11 @@ fn render_plan_summary(
     } else {
         plan.status.label()
     };
-    let (status_icon, status_color, status_label) = if summary_completed || plan.status.is_done() {
+    let accepted_with_failures = plan.tasks_accepted_with_failures();
+    let finished = summary_completed || plan.status.is_done();
+    let (status_icon, status_color, status_label) = if finished && accepted_with_failures > 0 {
+        ("\u{26a0}", theme.warning, "accepted with failures")
+    } else if finished {
         ("\u{2713}", theme.success, "completed")
     } else if plan.status.is_failed() {
         ("\u{2717}", theme.danger, "failed")
@@ -980,10 +1102,12 @@ fn render_plan_summary(
     let last_error = plan_summary.and_then(|summary| summary.last_error.as_deref());
     let bar_w = area.width.saturating_sub(28).clamp(10, 32) as usize;
     let bar = build_progress_bar(pct, bar_w);
-    let bar_color = if tasks_done == tasks_total && tasks_total > 0 {
+    let bar_color = if tasks_done == tasks_total && tasks_total > 0 && accepted_with_failures == 0 {
         theme.success
     } else if plan.tasks_failed > 0 {
         theme.danger
+    } else if accepted_with_failures > 0 {
+        theme.warning
     } else {
         semantic_color(pct, theme)
     };
@@ -1043,6 +1167,14 @@ fn render_plan_summary(
                             theme.foreground
                         },
                     ),
+                ),
+                Span::styled(
+                    if accepted_with_failures > 0 {
+                        format!("  {accepted_with_failures} \u{26a0} accepted w/ failures")
+                    } else {
+                        String::new()
+                    },
+                    Style::default().fg(theme.warning),
                 ),
                 Span::styled(
                     format!("  {} failed", plan.tasks_failed),
@@ -1315,9 +1447,19 @@ fn render_plan_tasks(
                     .bg(bg),
             ),
             Span::styled(
-                format!(" {:<8}", truncate(task.status.label(), 8)),
+                format!(
+                    " {:<8}",
+                    if task.status.is_accepted_with_failures() {
+                        "\u{26a0} accept".to_string()
+                    } else {
+                        truncate(task.status.label(), 8)
+                    }
+                ),
                 match task.status {
                     TaskStatus::Done => theme.badge_complete(),
+                    TaskStatus::AcceptedWithFailures => Style::default()
+                        .fg(theme.warning)
+                        .add_modifier(Modifier::BOLD),
                     TaskStatus::Failed | TaskStatus::Blocked => theme.badge_failed(),
                     TaskStatus::Active => theme.badge_running(),
                     TaskStatus::Pending => theme.badge_pending(),
@@ -1635,6 +1777,7 @@ fn build_timing_lines(
 fn task_status_icon(task: &TaskEntry, theme: &Theme) -> (&'static str, Color) {
     match task.status {
         TaskStatus::Done => ("\u{2713}", theme.success),
+        TaskStatus::AcceptedWithFailures => ("\u{26a0}", theme.warning),
         TaskStatus::Active => ("\u{25b6}", theme.warning),
         TaskStatus::Failed | TaskStatus::Blocked => ("\u{2717}", theme.danger),
         TaskStatus::Pending => ("\u{25cb}", theme.muted),
@@ -1859,6 +2002,100 @@ mod tests {
             .chunks(width)
             .map(|row| row.iter().map(|cell| cell.symbol()).collect::<String>())
             .collect()
+    }
+
+    #[test]
+    fn plan_set_members_render_under_their_group_header() {
+        let grouped = |id: &str| PlanSummary {
+            group: Some("portal-programme".to_string()),
+            ..summary(id)
+        };
+        let mut state = TuiState::default();
+        state.plan_summaries = vec![
+            summary("01-backend"),
+            grouped("03-portal"),
+            grouped("04-portal"),
+        ];
+        state.plans = vec![PlanEntry {
+            id: "03-portal".to_string(),
+            name: "03-portal".to_string(),
+            status: PlanPhase::Active,
+            tasks_total: 2,
+            tasks_done: 1,
+            ..PlanEntry::default()
+        }];
+
+        // Nothing selected, so no plan row grows a detail line.
+        let rows = rendered_rows(&state, usize::MAX);
+        let row_of = |needle: &str| {
+            rows.iter()
+                .position(|row| row.contains(needle))
+                .unwrap_or_else(|| panic!("no row with {needle}: {rows:#?}"))
+        };
+        let header = row_of("portal-programme");
+        assert!(rows[header].contains("(0/2)"), "{}", rows[header]);
+        assert!(row_of("01-backend") < header, "{rows:#?}");
+        assert!(header < row_of("03-portal") && header < row_of("04-portal"));
+        // Group members are indented under the header; the join by plan id
+        // still finds 03-portal's live entry.
+        assert!(
+            rows[row_of("03-portal")].contains("\u{2502}   "),
+            "{rows:#?}"
+        );
+        assert!(rows[row_of("03-portal")].contains("1/2"), "{rows:#?}");
+    }
+
+    #[test]
+    fn snapshot_updates_keep_discovered_plan_groups() {
+        use roko_core::DashboardEvent;
+        use roko_core::dashboard_snapshot::DashboardSnapshot;
+
+        let mut state = TuiState::default();
+        state.plan_summaries = vec![PlanSummary {
+            group: Some("portal-programme".to_string()),
+            ..summary("03-portal")
+        }];
+        let mut snap = DashboardSnapshot::default();
+        snap.apply_with_ts(
+            &DashboardEvent::PlanStarted {
+                plan_id: "03-portal".to_string(),
+                tasks_total: 2,
+            },
+            1_000,
+        );
+        state.update_from_dashboard_snapshot(&snap);
+
+        let summary = state
+            .plan_summaries
+            .iter()
+            .find(|summary| summary.id == "03-portal")
+            .expect("03-portal summary");
+        assert_eq!(summary.group.as_deref(), Some("portal-programme"));
+
+        // A live run loads nothing from disk; the group comes from one scan
+        // of the workspace's plans directory.
+        let dir = tempfile::tempdir().unwrap();
+        let plan_dir = dir.path().join("plans/portal-programme/05-live");
+        std::fs::create_dir_all(&plan_dir).unwrap();
+        std::fs::write(plan_dir.join("plan.md"), "# Plan\n").unwrap();
+        let mut live = TuiState::default();
+        live.workdir = dir.path().to_path_buf();
+        snap.apply_with_ts(
+            &DashboardEvent::PlanStarted {
+                plan_id: "05-live".to_string(),
+                tasks_total: 1,
+            },
+            2_000,
+        );
+        live.update_from_dashboard_snapshot(&snap);
+        let group_of = |id: &str| {
+            live.plan_summaries
+                .iter()
+                .find(|summary| summary.id == id)
+                .and_then(|summary| summary.group.clone())
+        };
+        assert_eq!(group_of("05-live").as_deref(), Some("portal-programme"));
+        assert_eq!(group_of("03-portal"), None);
     }
 
     #[test]

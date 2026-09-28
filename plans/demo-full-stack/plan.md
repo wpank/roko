@@ -11,8 +11,8 @@ tags: [demo, multi-role, rust, web-server]
 
 This plan showcases Roko's full agent pipeline by building a real, runnable
 Rust web server. It is designed to be compelling in a live demo: every task
-assigns a distinct role, every output is a concrete file that exists on disk
-after the run, and the final conductor task verifies the whole deliverable
+has a distinct responsibility, every output is a concrete file that exists on disk
+after the run, and the final sign-off task verifies the whole deliverable
 end-to-end.
 
 ## What gets built
@@ -41,21 +41,21 @@ curl http://localhost:3333/info
 
 | Task | Role        | Responsibility                                      |
 |------|-------------|-----------------------------------------------------|
-| T01  | researcher  | Evaluate frameworks; recommend axum with rationale  |
+| T01  | scribe      | Evaluate frameworks; recommend axum with rationale  |
 | T02  | implementer | Scaffold Cargo.toml + axum skeleton on port 3333   |
 | T03  | implementer | Add /health and /info JSON endpoints                |
-| T04  | auditor     | Security audit: no panics, no secrets, report PASS |
+| T04  | scribe      | Security audit: no panics, no secrets, report PASS |
 | T05  | scribe      | Write README with API docs and architecture section |
-| T06  | conductor   | Final review, compile check, sign-off report        |
+| T06  | implementer | Final review, compile check, sign-off report        |
 
 ## Dependency DAG
 
 ```
-T01 (researcher)
+T01 (scribe)
  └─▶ T02 (implementer)
       └─▶ T03 (implementer)
-           ├─▶ T04 (auditor) ──┐
-           └─▶ T05 (scribe)  ──┴─▶ T06 (conductor)
+           ├─▶ T04 (scribe) ──┐
+           └─▶ T05 (scribe) ──┴─▶ T06 (implementer)
 ```
 
 T04 and T05 run in parallel (max_parallel = 2) after T03 is accepted.
@@ -71,16 +71,18 @@ demo/hello-server/
 ├── research.md         # framework comparison and axum recommendation
 ├── AUDIT.md            # security audit report, verdict: PASS
 ├── README.md           # user docs, API table, architecture section
-└── COMPLETION.md       # conductor sign-off: "demo-full-stack plan: COMPLETE"
+└── COMPLETION.md       # final sign-off: "demo-full-stack plan: COMPLETE"
 ```
 
 ## Why this is a good demo
 
-- **Five distinct roles** across six tasks — visible in the TUI agent list.
+- **Writing roles only** — every task produces a file, so each uses a role whose
+  safety contract permits file writes (`implementer` or `scribe`; PLAN_036).
 - **Real compilation gate** — T02, T03, and T06 all run `cargo build`.
 - **Cross-task traceability** — T04 reads T03's output; T06 reads T04 and T05.
 - **Parallel wave** — T04 and T05 run concurrently, demonstrating max_parallel = 2.
 - **Deterministic acceptance** — every `[[task.verify]]` block is an executable
   shell command, not a human judgement.
-- **End-to-end narrative** — researcher chooses a framework, implementers build
-  it, auditor certifies it, scribe documents it, conductor signs it off.
+- **End-to-end narrative** — a research brief chooses the framework, implementers
+  build it, an audit certifies it, a README documents it, and a final sign-off
+  verifies it.

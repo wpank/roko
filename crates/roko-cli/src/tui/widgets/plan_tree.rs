@@ -33,7 +33,14 @@ const RESERVED: u16 = (COL_PROGRESS + COL_BAR + COL_DELTA + COL_VERIFY + COL_AGE
 
 /// Status icon and style for a plan entry.
 fn plan_icon(plan: &PlanEntry) -> (&'static str, Style) {
-    if !plan.active && plan.status.is_done() {
+    if !plan.active && plan.status.is_done() && plan.tasks_accepted_with_failures() > 0 {
+        (
+            "\u{26a0}", // ⚠ finished, but some tasks were accepted with failures
+            Style::default()
+                .fg(Theme::WARNING)
+                .add_modifier(Modifier::BOLD),
+        )
+    } else if !plan.active && plan.status.is_done() {
         (
             "\u{2713}", // ✓
             Style::default()
@@ -81,11 +88,19 @@ pub fn render_plan_tree(frame: &mut Frame<'_>, area: Rect, state: &TuiState, foc
         .iter()
         .filter(|p| !p.active && p.status.is_failed())
         .count();
+    let accepted_with_failures: usize = state
+        .plans
+        .iter()
+        .map(PlanEntry::tasks_accepted_with_failures)
+        .sum();
 
     let health_suffix = {
         let mut parts = Vec::new();
         if active > 0 {
             parts.push(format!("{active}\u{25b8}")); // ▸
+        }
+        if accepted_with_failures > 0 {
+            parts.push(format!("{accepted_with_failures}\u{26a0}")); // ⚠ tasks
         }
         if failed > 0 {
             parts.push(format!("{failed}\u{2717}")); // ✗
@@ -450,17 +465,20 @@ fn render_plan_line(
     let (icon, icon_style) = plan_icon(plan);
 
     // Text styling by plan status
-    let text_style = if !plan.active && plan.status.is_done() {
-        Style::default().fg(Theme::SAGE)
-    } else if plan.active {
-        Style::default()
-            .fg(Theme::ROSE_BRIGHT)
-            .add_modifier(Modifier::BOLD)
-    } else if plan.status.is_failed() {
-        Style::default().fg(Theme::EMBER)
-    } else {
-        Style::default().fg(Theme::TEXT_DIM)
-    };
+    let text_style =
+        if !plan.active && plan.status.is_done() && plan.tasks_accepted_with_failures() > 0 {
+            Style::default().fg(Theme::WARNING)
+        } else if !plan.active && plan.status.is_done() {
+            Style::default().fg(Theme::SAGE)
+        } else if plan.active {
+            Style::default()
+                .fg(Theme::ROSE_BRIGHT)
+                .add_modifier(Modifier::BOLD)
+        } else if plan.status.is_failed() {
+            Style::default().fg(Theme::EMBER)
+        } else {
+            Style::default().fg(Theme::TEXT_DIM)
+        };
 
     let bg = if is_selected {
         Theme::BG_HIGHLIGHT
@@ -753,6 +771,7 @@ fn render_task_subtree(lines: &mut Vec<Line<'static>>, plan: &PlanEntry, indent:
             TaskStatus::Done => Theme::SAGE,
             TaskStatus::Active => Theme::WARNING,
             TaskStatus::Failed => Theme::EMBER,
+            TaskStatus::AcceptedWithFailures => Theme::WARNING,
             TaskStatus::Blocked => Theme::TEXT_GHOST,
             TaskStatus::Pending => Theme::TEXT_DIM,
         };
@@ -780,6 +799,7 @@ fn task_icon(status: &TaskStatus) -> (&'static str, Color) {
         TaskStatus::Done => ("\u{2713}", Theme::SAGE), // ✓
         TaskStatus::Active => ("\u{25b6}", Theme::WARNING), // ►
         TaskStatus::Failed => ("\u{2717}", Theme::EMBER), // ✗
+        TaskStatus::AcceptedWithFailures => ("\u{26a0}", Theme::WARNING), // ⚠
         TaskStatus::Blocked => ("\u{25cb}", Theme::TEXT_GHOST), // ○
         TaskStatus::Pending => ("\u{00b7}", Theme::TEXT_DIM), // ·
     }
@@ -1076,6 +1096,35 @@ mod tests {
     use ratatui::backend::TestBackend;
 
     use crate::tui::state::{TaskEntry, Wave};
+
+    #[test]
+    fn finished_plan_with_accepted_failures_is_never_clean_green() {
+        let plan = |status: TaskStatus| PlanEntry {
+            id: "p1".to_string(),
+            status: crate::tui::state::PlanPhase::Done,
+            tasks: vec![
+                TaskEntry {
+                    id: "t1".to_string(),
+                    status: TaskStatus::Done,
+                    ..TaskEntry::default()
+                },
+                TaskEntry {
+                    id: "t2".to_string(),
+                    status,
+                    ..TaskEntry::default()
+                },
+            ],
+            ..PlanEntry::default()
+        };
+
+        let (icon, style) = plan_icon(&plan(TaskStatus::AcceptedWithFailures));
+        assert_eq!(icon, "\u{26a0}");
+        assert_eq!(style.fg, Some(Theme::WARNING));
+        assert_eq!(task_icon(&TaskStatus::AcceptedWithFailures).0, "\u{26a0}");
+
+        let (clean, _) = plan_icon(&plan(TaskStatus::Done));
+        assert_eq!(clean, "\u{2713}");
+    }
 
     fn sample_state() -> TuiState {
         use crate::tui::dashboard::DashboardData;

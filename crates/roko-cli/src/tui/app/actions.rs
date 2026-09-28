@@ -605,6 +605,11 @@ impl App {
             }
             TuiAction::SwitchDetailTab(idx) => {
                 self.tui_state.plan_detail_tab = idx;
+                // The dashboard's right panel renders its own sub-tab, so its
+                // a/o/d/e/... keys (e.g. `e:Verify`) must switch that one too.
+                if matches!(self.tui_state.active_tab, Tab::Dashboard) {
+                    self.tui_state.set_sub_tab_for(Tab::Dashboard, idx);
+                }
                 // Move focus to the right panel so subsequent Up/Down/j/k
                 // keys scroll the detail pane (e.g. procs_scroll for the
                 // Processes sub-tab) instead of the plan tree (P6.5/P7.3).

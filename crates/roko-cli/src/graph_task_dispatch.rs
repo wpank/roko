@@ -1139,6 +1139,9 @@ pub struct GraphTaskDispatcher {
     /// Tasks (`"{plan_id}/{task_id}"`) whose last attempt stopped at its turn
     /// cap; the next attempt raises the cap and resumes the partial work.
     turn_cap_retries: parking_lot::Mutex<HashMap<String, TurnCapRetry>>,
+    /// Dispatch attempts started per task (`"{plan_id}/{task_id}"`) in this
+    /// run; numbers each attempt's efficiency records.
+    task_attempts: parking_lot::Mutex<HashMap<String, u32>>,
 
     /// RAG-10/11: Per-task retrieval context retained from prompt assembly until
     /// gate settlement.
@@ -1180,6 +1183,7 @@ impl GraphTaskDispatcher {
             task_spend: GraphTaskSpendLedger::default(),
             skip_enrichment_plans: parking_lot::Mutex::new(HashMap::new()),
             turn_cap_retries: parking_lot::Mutex::new(HashMap::new()),
+            task_attempts: parking_lot::Mutex::new(HashMap::new()),
         }
     }
 
@@ -1372,19 +1376,34 @@ impl GraphTaskDispatcher {
         Err(error)
     }
 
+    /// Allocate the identity of a new dispatch attempt of `task_key`
+    /// (`"{plan_id}/{task_id}"`): `"{task_key}/a{n}"`, where `n` counts this
+    /// run's attempts of the task from zero. The attempt's gate records append
+    /// a suffix, so every efficiency record stays unique yet joins its
+    /// dispatch record by prefix.
+    fn next_attempt_id(&self, task_key: &str) -> String {
+        let mut attempts = self.task_attempts.lock();
+        let attempt = attempts.entry(task_key.to_string()).or_default();
+        let attempt_id = format!("{task_key}/a{attempt}");
+        *attempt = attempt.saturating_add(1);
+        attempt_id
+    }
+
     /// Emit all feedback events after a task dispatch completes.
     ///
     /// This is the Graph engine equivalent of Runner-v2's post-dispatch
     /// feedback pipeline. Each subsystem is best-effort: failures are logged
     /// but do not block the task result.
     ///
-    /// `failure_reason` is the attempt's short class-prefixed reason when
-    /// `succeeded` is false (see [`attempt_failure_reason`]); it lands on the
-    /// episode together with the provider-reported turn count.
+    /// `attempt_id` comes from [`Self::next_attempt_id`]. `failure_reason` is
+    /// the attempt's short class-prefixed reason when `succeeded` is false
+    /// (see [`attempt_failure_reason`]); it lands on the episode together with
+    /// the provider-reported turn count.
     async fn emit_feedback(
         &self,
         spec: &TaskExecutionSpec,
         task: &TaskDef,
+        attempt_id: &str,
         dispatch: &crate::dispatch_v2::AgentResultDispatch,
         succeeded: bool,
         wall_duration: std::time::Duration,
@@ -1520,7 +1539,7 @@ impl GraphTaskDispatcher {
                 model: model_slug.clone(),
                 plan_id: spec.plan_id.clone(),
                 task_id: task.id.clone(),
-                attempt_id: String::new(),
+                attempt_id: attempt_id.to_string(),
                 input_tokens: tokens_in,
                 output_tokens: tokens_out,
                 reasoning_tokens: 0,
@@ -1713,6 +1732,7 @@ impl GraphTaskDispatcher {
         effective_workdir: &Path,
         retry_key: &str,
         attempt_number: u32,
+        attempt_id: &str,
         progress_tx: Option<&tokio::sync::mpsc::Sender<GraphTaskEvent>>,
     ) -> Result<TaskGateVerdict> {
         let effective_workdir = effective_workdir.to_path_buf();
@@ -1789,6 +1809,30 @@ impl GraphTaskDispatcher {
                 .with_timeout_ms(step.timeout_ms)
                 .with_name(&step_label);
 
+                // Cargo steps queue on the per-repository compile lock before
+                // their timeout starts, so a build by a plan running beside
+                // this one cannot time the step out.
+                let runs_cargo = step
+                    .command
+                    .split(|c: char| c.is_whitespace() || "&|;({".contains(c))
+                    .any(|word| word == "cargo");
+                let _compile_permit = if runs_cargo {
+                    crate::runner::gate_dispatch::acquire_compile_ownership(
+                        &effective_workdir,
+                        self.config.gates.compile_concurrency,
+                        std::time::Duration::from_millis(step.timeout_ms),
+                        &spec.plan_id,
+                        &task.id,
+                        &step.command,
+                    )
+                    .await
+                    .inspect_err(|error| {
+                        tracing::warn!(%error, "running the cargo verify step without the compile lock");
+                    })
+                    .ok()
+                } else {
+                    None
+                };
                 let verdict = gate.verify(&gate_signal, &gate_ctx).await;
 
                 tracing::info!(
@@ -2295,7 +2339,7 @@ impl GraphTaskDispatcher {
                             model: dispatch.target.model_slug.clone(),
                             plan_id: spec.plan_id.clone(),
                             task_id: task.id.clone(),
-                            attempt_id: String::new(),
+                            attempt_id: format!("{attempt_id}/gate-fail"),
                             input_tokens: 0,
                             output_tokens: 0,
                             reasoning_tokens: 0,
@@ -2568,9 +2612,9 @@ impl GraphTaskDispatcher {
                     model: dispatch.target.model_slug.clone(),
                     plan_id: spec.plan_id.clone(),
                     task_id: task.id.clone(),
-                    // Distinct attempt_id so cost_dedup's uniqueness check does
-                    // not treat this as a duplicate of the initial dispatch event.
-                    attempt_id: "gate-pass".to_string(),
+                    // Suffixed so it stays distinct from, yet joins, the
+                    // attempt's dispatch event.
+                    attempt_id: format!("{attempt_id}/gate-pass"),
                     input_tokens: 0,
                     output_tokens: 0,
                     reasoning_tokens: 0,
@@ -3229,6 +3273,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
             .cloned()
             .map(|(fb, attempt)| (Some(fb), attempt))
             .unwrap_or((None, 0));
+        let efficiency_attempt_id = self.next_attempt_id(&retry_key);
 
         if attempt_number > 0 {
             tracing::info!(
@@ -3461,6 +3506,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
             self.emit_feedback(
                 spec,
                 &task,
+                &efficiency_attempt_id,
                 &dispatch,
                 false,
                 wall_duration,
@@ -3531,6 +3577,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
                 &effective_workdir,
                 &retry_key,
                 attempt_number,
+                &efficiency_attempt_id,
                 None,
             )
             .await;
@@ -3543,6 +3590,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
         self.emit_feedback(
             spec,
             &task,
+            &efficiency_attempt_id,
             &dispatch,
             verification.is_ok(),
             wall_duration,
@@ -3920,8 +3968,9 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
                 //
                 // Same verdict logic as the batch path; gates run in the lease
                 // path and progress streams through the event channel.
+                let retry_key = format!("{}/{}", spec.plan_id, task.id);
+                let efficiency_attempt_id = self.next_attempt_id(&retry_key);
                 let verification = if dispatch.result.success {
-                    let retry_key = format!("{}/{}", spec.plan_id, task.id);
                     let attempt_number = self
                         .gate_retry_context
                         .lock()
@@ -3935,6 +3984,7 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
                             &lease.path,
                             &retry_key,
                             attempt_number,
+                            &efficiency_attempt_id,
                             Some(&event_tx),
                         )
                         .await,
@@ -3957,6 +4007,7 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
                 self.emit_feedback(
                     spec,
                     &task,
+                    &efficiency_attempt_id,
                     &dispatch,
                     verified,
                     wall_duration,
@@ -4936,22 +4987,24 @@ printf '%s\n' '{"type":"result","session_id":"sess-v1","model":"claude-sonnet-4-
         config.gates.cargo_fix_enabled = false;
     }
 
-    /// Outcomes of the dispatch-time efficiency records (not the gate-pass
-    /// follow-ups), waiting for the background writers.
-    async fn dispatch_efficiency_outcomes(path: &Path, expected: usize) -> Vec<String> {
+    /// Sorted `(attempt_id, outcome)` of every efficiency record, once
+    /// `expected` records have landed from the background writers.
+    async fn efficiency_records(path: &Path, expected: usize) -> Vec<(String, String)> {
         // Generous deadline: the writers are background tasks, and a loaded
         // test run can starve them for seconds. Returns as soon as they land.
         for _ in 0..600 {
-            let mut outcomes: Vec<String> = std::fs::read_to_string(path)
+            let mut records: Vec<(String, String)> = std::fs::read_to_string(path)
                 .unwrap_or_default()
                 .lines()
                 .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
-                .filter(|record| record["attempt_id"] == "")
-                .filter_map(|record| record["outcome"].as_str().map(str::to_string))
+                .map(|record| {
+                    let field = |name: &str| record[name].as_str().unwrap_or_default().to_string();
+                    (field("attempt_id"), field("outcome"))
+                })
                 .collect();
-            if outcomes.len() >= expected {
-                outcomes.sort();
-                return outcomes;
+            if records.len() >= expected {
+                records.sort();
+                return records;
             }
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
@@ -5056,10 +5109,19 @@ printf '%s\n' '{"type":"result","session_id":"sess-v1","model":"claude-sonnet-4-
             .expect_err("verify failure");
 
         // The provider succeeded all three times; learning must record the
-        // verified outcome, so the failed-verify attempt is a failure.
+        // verified outcome, so the failed-verify attempt is a failure. Each
+        // attempt gets its own identity, which its gate-pass record extends.
+        let task_key = format!("{}/{}", make_spec(&task).plan_id, task.id);
+        let attempt =
+            |suffix: &str, outcome: &str| (format!("{task_key}/{suffix}"), outcome.to_string());
         assert_eq!(
-            dispatch_efficiency_outcomes(&efficiency, 3).await,
-            vec!["failure", "success", "success"]
+            efficiency_records(&efficiency, 4).await,
+            vec![
+                attempt("a0", "success"),
+                attempt("a1", "success"),
+                attempt("a1/gate-pass", "gate_pass"),
+                attempt("a2", "failure"),
+            ]
         );
     }
 

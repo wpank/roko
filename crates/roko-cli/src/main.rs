@@ -446,7 +446,8 @@ Examples:
     /// the prompt into a complexity band and picks the lightest workflow that can
     /// complete it safely:
     ///
-    ///   Trivial / Simple → direct single-agent dispatch (no plan file)
+    ///   Trivial / Simple → one agent: the prompt runs as a one-task plan written to
+    ///                      .roko/runs/<run-id>/, verified by the workspace gates
     ///   Medium / Complex  → planned workflow: generate tasks.toml, approve, execute
     ///
     /// Use `--complexity` to force a specific band, or `--plan` to always use
@@ -454,9 +455,8 @@ Examples:
     ///
     /// RELATED COMMANDS
     ///
-    ///   roko run "<prompt>"     Single prompt through the universal loop (compose ->
-    ///                           agent -> gate -> persist). Lower-level than `do`; does
-    ///                           not classify or generate a plan automatically.
+    ///   roko run "<prompt>"     `roko do` for scripts and CI: the same routes, without
+    ///                           the TTY requirement for auto-detected scope.
     ///
     ///   roko plan run plans/    Execute a pre-existing plans directory through the
     ///                           Graph engine. Use this when you already have tasks.toml
@@ -531,12 +531,21 @@ Examples:
         #[arg(value_name = "PROMPT")]
         prompt: Vec<String>,
     },
-    /// Seed a prompt and run the universal loop (compose -> agent -> gate -> persist).
+    /// Run a prompt through the Graph engine (`roko do`, usable without a TTY).
+    ///
+    /// The prompt's scope is auto-classified. A trivial or simple prompt runs as a
+    /// one-task plan written to `.roko/runs/<run-id>/tasks.toml`: one implementer
+    /// agent whose verify steps are the workspace gates (`[[gates.rungs]]`, else
+    /// `cargo check` / `go build`), with the dispatch, failover, safety, budget,
+    /// checkpoints, episodes, and cost records of `roko plan run`. A standard or
+    /// complex prompt first generates a plan (or a PRD and a plan), then executes it.
+    /// `--serve`, `--share`, and `--max-retries` always run the one-task plan.
+    /// Exits non-zero when the run fails; `--json` prints the run report.
     #[command(after_help = "\
 Examples:
-  roko run \"Fix the login bug\"      Single prompt through the universal loop
+  roko run \"Fix the login bug\"      One-task plan through the Graph engine
   roko run \"Add tests for auth\"     Generate and execute a plan
-  roko run \"Refactor db layer\" --role architect   Run with a specific role")]
+  roko --json run \"Fix the login bug\"   Print the run report as JSON")]
     Run {
         /// The user prompt text.
         prompt: String,
@@ -552,7 +561,7 @@ Examples:
         /// Override the provider for this run (e.g. anthropic, openai, ollama, moonshot).
         #[arg(long)]
         provider: Option<String>,
-        /// Maximum retry attempts per task when gate failures trigger replanning.
+        /// Retries after a failed attempt of the prompt's task.
         #[arg(long)]
         max_retries: Option<u32>,
     },
@@ -3681,6 +3690,7 @@ async fn dispatch_subcommand(command: Command, cli: &Cli) -> Result<i32> {
                     false,
                     provider,
                     Vec::new(),
+                    true, // explicit `roko run`: auto-route without a TTY
                 )
                 .await;
             }
@@ -3738,6 +3748,7 @@ async fn dispatch_subcommand(command: Command, cli: &Cli) -> Result<i32> {
                 no_cascade,
                 provider,
                 context,
+                false,
             )
             .await
         }

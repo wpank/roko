@@ -372,7 +372,7 @@ fn default_tier() -> String {
     "focused".into()
 }
 
-fn default_max_retries() -> u32 {
+pub(crate) fn default_max_retries() -> u32 {
     3
 }
 

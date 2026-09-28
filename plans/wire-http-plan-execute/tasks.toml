@@ -257,7 +257,7 @@ max_loc = 100
 files = [
     "plans/wire-http-plan-execute/REVIEW.md",
 ]
-role = "reviewer"
+role = "implementer"
 depends_on = ["T02"]
 acceptance = [
     "REVIEW.md exists at plans/wire-http-plan-execute/REVIEW.md.",

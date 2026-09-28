@@ -26,18 +26,30 @@
 
 use std::path::PathBuf;
 
+use roko_learn::efficiency::{AgentEfficiencyEvent, EfficiencyRowSchema, classify_efficiency_row};
+
 use super::jsonl_cursor::JsonlCursor;
+
+/// Decides whether a well-formed JSONL row belongs to the tailed record type.
+///
+/// Files shared by several writers use this to skip the other writers' rows
+/// without counting them as parse errors.
+pub type RowFilter = fn(&serde_json::Value) -> bool;
 
 /// Accumulating, incremental reader for typed JSONL files.
 ///
 /// Wraps a [`JsonlCursor`] and deserializes each new line into `T`,
 /// accumulating all successfully parsed items in an internal `Vec`.
-/// Malformed lines are silently skipped (logged at trace level).
+/// Malformed lines are skipped and counted in `parse_errors`; rows rejected
+/// by the optional [`RowFilter`] are skipped and counted in `skipped_rows`.
 pub struct IncrementalTailer<T> {
     cursor: JsonlCursor,
     items: Vec<T>,
+    row_filter: Option<RowFilter>,
     /// Number of lines that failed deserialization (cumulative).
     pub parse_errors: usize,
+    /// Number of well-formed rows the row filter skipped (cumulative).
+    pub skipped_rows: usize,
 }
 
 impl<T: Clone> Clone for IncrementalTailer<T> {
@@ -45,7 +57,9 @@ impl<T: Clone> Clone for IncrementalTailer<T> {
         Self {
             cursor: self.cursor.clone(),
             items: self.items.clone(),
+            row_filter: self.row_filter,
             parse_errors: self.parse_errors,
+            skipped_rows: self.skipped_rows,
         }
     }
 }
@@ -56,6 +70,7 @@ impl<T: std::fmt::Debug> std::fmt::Debug for IncrementalTailer<T> {
             .field("cursor", &self.cursor)
             .field("items_len", &self.items.len())
             .field("parse_errors", &self.parse_errors)
+            .field("skipped_rows", &self.skipped_rows)
             .finish()
     }
 }
@@ -65,7 +80,9 @@ impl<T> Default for IncrementalTailer<T> {
         Self {
             cursor: JsonlCursor::default(),
             items: Vec::new(),
+            row_filter: None,
             parse_errors: 0,
+            skipped_rows: 0,
         }
     }
 }
@@ -78,7 +95,19 @@ impl<T: serde::de::DeserializeOwned> IncrementalTailer<T> {
         Self {
             cursor: JsonlCursor::new(path),
             items: Vec::new(),
+            row_filter: None,
             parse_errors: 0,
+            skipped_rows: 0,
+        }
+    }
+
+    /// Create a tailer that only deserializes rows `row_filter` accepts.
+    ///
+    /// Rejected rows are skipped without counting as parse errors.
+    pub fn with_row_filter(path: impl Into<PathBuf>, row_filter: RowFilter) -> Self {
+        Self {
+            row_filter: Some(row_filter),
+            ..Self::new(path)
         }
     }
 
@@ -98,6 +127,7 @@ impl<T: serde::de::DeserializeOwned> IncrementalTailer<T> {
             tracing::info!(path = %self.cursor.path().display(), "JSONL file truncated — resync from beginning");
             self.items.clear();
             self.parse_errors = 0;
+            self.skipped_rows = 0;
             return Ok(0);
         }
 
@@ -112,6 +142,7 @@ impl<T: serde::de::DeserializeOwned> IncrementalTailer<T> {
                 tracing::info!(path = %self.cursor.path().display(), "JSONL file truncated — resync from beginning");
                 self.items.clear();
                 self.parse_errors = 0;
+                self.skipped_rows = 0;
             }
         }
 
@@ -120,7 +151,18 @@ impl<T: serde::de::DeserializeOwned> IncrementalTailer<T> {
             if line.is_empty() {
                 continue;
             }
-            match serde_json::from_str::<T>(line) {
+            let parsed = match self.row_filter {
+                None => serde_json::from_str::<T>(line),
+                Some(accepts) => match serde_json::from_str::<serde_json::Value>(line) {
+                    Ok(row) if !accepts(&row) => {
+                        self.skipped_rows += 1;
+                        continue;
+                    }
+                    Ok(row) => serde_json::from_value::<T>(row),
+                    Err(error) => Err(error),
+                },
+            };
+            match parsed {
                 Ok(item) => {
                     self.items.push(item);
                     added += 1;
@@ -163,6 +205,17 @@ impl<T: serde::de::DeserializeOwned> IncrementalTailer<T> {
     pub fn path(&self) -> &std::path::Path {
         self.cursor.path()
     }
+}
+
+/// Tailer over `.roko/learn/efficiency.jsonl`.
+///
+/// The `FeedbackService` shares that file; its `feedback_event/v1` rows are
+/// valid JSON of another shape, so they are skipped rather than reported as
+/// parse errors.
+pub fn efficiency_tailer(path: impl Into<PathBuf>) -> IncrementalTailer<AgentEfficiencyEvent> {
+    IncrementalTailer::with_row_filter(path, |row| {
+        classify_efficiency_row(row) != EfficiencyRowSchema::FeedbackEvent
+    })
 }
 
 #[cfg(test)]
@@ -268,5 +321,64 @@ mod tests {
         // Old items should be cleared, only fresh remains.
         assert_eq!(tailer.len(), 1);
         assert_eq!(tailer.items()[0].kind, "fresh");
+    }
+
+    #[test]
+    fn efficiency_tailer_skips_feedback_rows_without_parse_errors() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("efficiency.jsonl");
+
+        // Per-turn efficiency rows: one current (schema-tagged), one legacy
+        // row that predates the `schema` discriminator.
+        let current = AgentEfficiencyEvent {
+            agent_id: "T01:1".to_string(),
+            task_id: "T01".to_string(),
+            duration_ms: 1_200,
+            ..AgentEfficiencyEvent::default()
+        };
+        let mut legacy = serde_json::to_value(AgentEfficiencyEvent {
+            agent_id: "T02:1".to_string(),
+            task_id: "T02".to_string(),
+            duration_ms: 3_400,
+            ..AgentEfficiencyEvent::default()
+        })
+        .expect("serialize legacy event");
+        legacy
+            .as_object_mut()
+            .expect("event serializes as an object")
+            .remove("schema");
+
+        // Per-call rows the FeedbackService writes into the same file, with
+        // and without the schema discriminator.
+        let feedback = r#"{"cost_usd":0.0,"input_tokens":0,"kind":"model_call","latency_ms":2600,"model":"claude-sonnet-4-6","output_tokens":0,"provider":"claude_cli","request_id":"dispatch-v2-demo/T01","role":"dispatch_v2","schema":"feedback_event/v1","success":false,"ts":"2026-09-05T15:40:28Z"}"#;
+        let legacy_feedback = r#"{"kind":"gate_result","success":true,"latency_ms":40}"#;
+
+        for line in [
+            serde_json::to_string(&current).expect("serialize current event"),
+            feedback.to_string(),
+            legacy.to_string(),
+            legacy_feedback.to_string(),
+        ] {
+            append(&path, &line);
+            append(&path, "\n");
+        }
+
+        let mut tailer = efficiency_tailer(&path);
+        assert_eq!(tailer.tick().expect("tick"), 2);
+        assert_eq!(tailer.parse_errors, 0);
+        assert_eq!(tailer.skipped_rows, 2);
+        let task_ids: Vec<&str> = tailer
+            .items()
+            .iter()
+            .map(|event| event.task_id.as_str())
+            .collect();
+        assert_eq!(task_ids, ["T01", "T02"]);
+        assert_eq!(tailer.items()[1].duration_ms, 3_400);
+
+        // Genuinely malformed rows are still reported.
+        append(&path, "NOT VALID JSON\n");
+        assert_eq!(tailer.tick().expect("second tick"), 0);
+        assert_eq!(tailer.parse_errors, 1);
+        assert_eq!(tailer.skipped_rows, 2);
     }
 }

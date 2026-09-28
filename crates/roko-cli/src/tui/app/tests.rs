@@ -782,6 +782,8 @@ fn dashboard_subtab_keybindings_include_learning_and_procs() {
 
     app.handle_key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE));
     assert_eq!(app.tui_state.plan_detail_tab, 3); // switched to Errors
+    // The dashboard's right panel follows the same keys (`e:Verify`).
+    assert_eq!(app.tui_state.dashboard_sub_tab, 3);
 
     app.handle_key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE));
     assert_eq!(app.tui_state.plan_detail_tab, 4); // switched to Git

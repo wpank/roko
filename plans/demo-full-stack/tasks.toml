@@ -42,7 +42,7 @@ status = "ready"
 tier = "focused"
 max_loc = 80
 files = ["demo/hello-server/research.md"]
-role = "researcher"
+role = "scribe"
 depends_on = []
 
 [task.context]
@@ -283,7 +283,7 @@ status = "ready"
 tier = "integrative"
 max_loc = 100
 files = ["demo/hello-server/AUDIT.md"]
-role = "auditor"
+role = "scribe"
 depends_on = ["T03"]
 
 [task.context]
@@ -460,7 +460,7 @@ status = "ready"
 tier = "integrative"
 max_loc = 80
 files = ["demo/hello-server/COMPLETION.md"]
-role = "conductor"
+role = "implementer"
 depends_on = ["T04", "T05"]
 
 [task.context]

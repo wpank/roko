@@ -548,6 +548,14 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                     cli,
                     &wd,
                     max_parallel_plans.map(|limit| usize::try_from(limit).unwrap_or(usize::MAX)),
+                    &roko_cli::graph_checkpoint::ResumeOptions {
+                        resume_plan: resume_plan.as_deref(),
+                        fresh,
+                        force_resume,
+                        max_tasks,
+                        max_retries,
+                        rich_topology,
+                    },
                 )
                 .await;
             }
@@ -1792,9 +1800,17 @@ pub(crate) async fn cmd_plan_dry_run(
     cli: &Cli,
     workdir: &Path,
     max_parallel_plans: Option<usize>,
+    resume: &roko_cli::graph_checkpoint::ResumeOptions<'_>,
 ) -> Result<i32> {
     let plans = roko_cli::runner::plan_loader::load_plans(plans_dir)?;
     let schedule = parallel_schedule(workdir, plans_dir, &plans, max_parallel_plans).await?;
+    // What each plan's Graph checkpoint would restore in a real run.
+    let checkpoints: Vec<_> = plans
+        .iter()
+        .map(|plan| {
+            roko_cli::graph_checkpoint::preview_plan_resume(workdir, plan, plans.len(), resume)
+        })
+        .collect();
     // Optional scheduling hints live in each plan's `plan.md` frontmatter.
     let frontmatters: Vec<Option<roko_cli::orchestrator::PlanFrontmatter>> = plans
         .iter()
@@ -1809,7 +1825,7 @@ pub(crate) async fn cmd_plan_dry_run(
     let mut total_tasks: usize = 0;
     let mut total_estimated_minutes: u32 = 0;
 
-    for (plan, frontmatter) in plans.iter().zip(&frontmatters) {
+    for ((plan, frontmatter), checkpoint) in plans.iter().zip(&frontmatters).zip(&checkpoints) {
         let task_details: Vec<serde_json::Value> = plan
             .tasks
             .tasks
@@ -1841,6 +1857,10 @@ pub(crate) async fn cmd_plan_dry_run(
             "priority": frontmatter.as_ref().and_then(|f| f.priority),
             "tags": frontmatter.as_ref().map(|f| &f.tags),
             "tasks": task_details,
+            "checkpoint": match checkpoint {
+                Ok(preview) => serde_json::to_value(preview)?,
+                Err(error) => json!({ "error": format!("{error:#}") }),
+            },
         }));
     }
 
@@ -1865,7 +1885,12 @@ pub(crate) async fn cmd_plan_dry_run(
             plans_dir.display()
         );
 
-        for (i, (plan, frontmatter)) in plans.iter().zip(&frontmatters).enumerate() {
+        for (i, ((plan, frontmatter), checkpoint)) in plans
+            .iter()
+            .zip(&frontmatters)
+            .zip(&checkpoints)
+            .enumerate()
+        {
             let est = frontmatter
                 .as_ref()
                 .and_then(|f| f.estimated_minutes)
@@ -1890,6 +1915,14 @@ pub(crate) async fn cmd_plan_dry_run(
                     format!(" (after {})", t.depends_on.join(", "))
                 };
                 println!("     {}: {} [{}, {status}]{deps}", t.id, t.title, t.tier);
+            }
+            match checkpoint {
+                Ok(preview) => {
+                    for line in preview.describe(workdir) {
+                        println!("     {line}");
+                    }
+                }
+                Err(error) => println!("     checkpoint: unknown ({error:#})"),
             }
         }
 

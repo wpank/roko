@@ -44,13 +44,33 @@ pub(crate) async fn cmd_up(cli: &Cli, workdir: PathBuf) -> Result<i32> {
     let runtime = runtime.into_arc();
     let roko_config = roko_core::config::loader::load_config_unified(&workdir)
         .map_err(|e| anyhow::anyhow!("{e}"))?;
+    #[cfg(unix)]
+    let ipc_hub = state_hub.clone();
     let server_config =
         roko_serve::ServerBuildConfig::new(workdir.clone(), runtime, roko_config, None, None)
             .with_state_hub(state_hub)
-            .with_metrics(metrics);
+            .with_metrics(metrics)
+            .with_advertised_endpoint();
     let (serve_state, serve_handle) = roko_serve::ServerBuilder::new(server_config)
         .start_background()
         .await?;
+
+    // Start the StateHub IPC server so `roko dashboard` in another terminal
+    // can connect to the live event stream.  A bind failure (e.g. socket path
+    // too long on some systems) is non-fatal and must never prevent the HTTP
+    // server from starting.
+    #[cfg(unix)]
+    let ipc_token = {
+        let token = tokio_util::sync::CancellationToken::new();
+        if let Err(e) = roko_cli::state_hub_ipc::start_hub_ipc_server(
+            ipc_hub,
+            &workdir,
+            token.clone(),
+        ) {
+            tracing::warn!(error = %e, "StateHub IPC server failed to bind; dashboard IPC unavailable");
+        }
+        token
+    };
 
     // `start_server_background` binds before returning; this short pause keeps
     // the existing startup output order stable while background tasks settle.
@@ -150,6 +170,8 @@ pub(crate) async fn cmd_up(cli: &Cli, workdir: PathBuf) -> Result<i32> {
         Ok(Err(e)) => tracing::warn!(%e, "roko-serve shutdown error"),
         Err(e) => tracing::error!(%e, "roko-serve task panicked"),
     }
+    #[cfg(unix)]
+    ipc_token.cancel();
 
     println!("All services stopped.");
     Ok(EXIT_SUCCESS)
@@ -201,11 +223,31 @@ pub(crate) async fn cmd_serve(
         roko_config.serve.terminal_enabled = true;
     }
 
+    #[cfg(unix)]
+    let ipc_hub = state_hub.clone();
     let server_config =
         roko_serve::ServerBuildConfig::new(wd.clone(), runtime, roko_config, bind, port)
             .with_state_hub(state_hub)
-            .with_metrics(metrics);
+            .with_metrics(metrics)
+            .with_advertised_endpoint();
     let server_builder = roko_serve::ServerBuilder::new(server_config);
+
+    // Start the StateHub IPC server so `roko dashboard` in another terminal
+    // can connect to the live event stream.  A bind failure (e.g. socket path
+    // too long on some systems) is non-fatal and must never prevent the HTTP
+    // server from starting.
+    #[cfg(unix)]
+    let ipc_token = {
+        let token = tokio_util::sync::CancellationToken::new();
+        if let Err(e) = roko_cli::state_hub_ipc::start_hub_ipc_server(
+            ipc_hub,
+            &wd,
+            token.clone(),
+        ) {
+            tracing::warn!(error = %e, "StateHub IPC server failed to bind; dashboard IPC unavailable");
+        }
+        token
+    };
 
     if tui {
         let (state, server_handle) = server_builder.start_background().await?;
@@ -224,9 +266,13 @@ pub(crate) async fn cmd_serve(
             Ok(Err(e)) => tracing::error!(%e, "server error on shutdown"),
             Err(e) => tracing::error!(%e, "server task panicked"),
         }
+        #[cfg(unix)]
+        ipc_token.cancel();
         tui_result
     } else {
         server_builder.run().await?;
+        #[cfg(unix)]
+        ipc_token.cancel();
         Ok(EXIT_SUCCESS)
     }
 }

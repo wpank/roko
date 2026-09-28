@@ -26,10 +26,10 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
     match cmd {
         PlanCmd::List { workdir, waves } => {
             let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
-            // Read-only: shared lock allows coexistence with plan runners and
-            // other read-only commands while still preventing writes from
-            // observing inconsistent state.
-            let _lock = roko_cli::workspace_lock::acquire_workspace_lock_shared(&wd.join(".roko"))?;
+            // Read-only: skip the lock when a server owns the workspace (the
+            // server is the only writer and operates atomically); otherwise
+            // take the shared lock as usual.
+            let _lock = roko_cli::serve_client::read_lock_unless_served(&wd)?;
             let summaries =
                 roko_cli::plan::summarize_discovered_plans(&wd).map_err(|e| anyhow!("{e}"))?;
             let executor_state = read_executor_state(&wd);
@@ -197,8 +197,9 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
         }
         PlanCmd::Show { plan_id, workdir } => {
             let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
-            // Read-only: shared lock so this can run alongside an active plan runner.
-            let _lock = roko_cli::workspace_lock::acquire_workspace_lock_shared(&wd.join(".roko"))?;
+            // Read-only: skip the lock when a server owns the workspace;
+            // otherwise take the shared lock as usual.
+            let _lock = roko_cli::serve_client::read_lock_unless_served(&wd)?;
             let plan_id = plan_id
                 .strip_prefix("plans/")
                 .or_else(|| plan_id.strip_prefix("plans\\"))
@@ -359,10 +360,9 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
             dag,
         } => {
             let workdir = resolve_workdir(cli);
-            // Read-only lint: shared lock so validation can run alongside an
-            // active plan runner without being blocked.
-            let _lock =
-                roko_cli::workspace_lock::acquire_workspace_lock_shared(&workdir.join(".roko"))?;
+            // Read-only lint: skip the lock when a server owns the workspace;
+            // otherwise take the shared lock as usual.
+            let _lock = roko_cli::serve_client::read_lock_unless_served(&workdir)?;
             let plans_dir = if dir.is_absolute() {
                 dir.clone()
             } else {
@@ -442,10 +442,9 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
         PlanCmd::Index { check, workdir } => {
             let workdir = workdir.unwrap_or_else(|| resolve_workdir(cli));
             if check {
-                // Read-only check: shared lock so it can run alongside a plan runner.
-                let _lock = roko_cli::workspace_lock::acquire_workspace_lock_shared(
-                    &workdir.join(".roko"),
-                )?;
+                // Read-only check: skip the lock when a server owns the
+                // workspace; otherwise take the shared lock as usual.
+                let _lock = roko_cli::serve_client::read_lock_unless_served(&workdir)?;
                 roko_cli::index::check_plans_index(&workdir)?;
             } else {
                 // Rebuild writes the index: exclusive workspace lock.
@@ -553,6 +552,37 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
             }
 
             validate_graph_execution_options(engine, approval)?;
+
+            // ── Workspace server check ────────────────────────────────────
+            // When a live `roko-serve` process owns this workspace, forward
+            // the run to the server rather than executing locally.  The
+            // server already holds the runner lock so we must not acquire it.
+            if let Some(endpoint) =
+                roko_cli::serve_client::discover_workspace_server(&wd)
+            {
+                return roko_cli::serve_client::run_plan_via_server(
+                    &wd,
+                    &resolved_plans_dir,
+                    &endpoint,
+                    fresh,
+                    no_tui,
+                    cli.json,
+                    max_parallel_plans
+                        .map(|limit| usize::try_from(limit).unwrap_or(usize::MAX)),
+                    // server-incompatible flags
+                    max_retries,
+                    max_tasks,
+                    budget_override,
+                    no_budget,
+                    effective_model_override.clone(),
+                    dangerously_skip_permissions,
+                    log_file.clone(),
+                    worktree_per_task,
+                    rich_topology,
+                    resume_plan.clone(),
+                )
+                .await;
+            }
 
             // Both execution engines mutate shared workspace/runtime state.
             // Use the runner-exclusive lock (roko.runner.lock) so that
@@ -1254,9 +1284,9 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
 
         PlanCmd::Status { plan_dir, workdir } => {
             let wd = workdir.unwrap_or_else(|| resolve_workdir(cli));
-            // Read-only status inspection: shared lock allows this to run
-            // alongside an active plan runner.
-            let _lock = roko_cli::workspace_lock::acquire_workspace_lock_shared(&wd.join(".roko"))?;
+            // Read-only status inspection: skip the lock when a server owns
+            // the workspace; otherwise take the shared lock as usual.
+            let _lock = roko_cli::serve_client::read_lock_unless_served(&wd)?;
 
             // When a plan directory is provided, show task-level status for
             // that specific plan instead of the global runner status.

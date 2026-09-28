@@ -38,6 +38,7 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/plans/{id}/chat", post(plan_chat))
         .route("/plans/{id}/estimate", post(plan_estimate))
         .route("/plans/generate", post(generate_plan))
+        .route("/plans/execute", post(execute_plans))
 }
 
 /// `GET /api/plans` — list plans by delegating to the runtime's plan discovery.
@@ -286,6 +287,201 @@ struct ExecutePlanRequest {
     /// `false` (default) — start fresh, discarding any checkpoint (`--fresh`).
     #[serde(default)]
     resume: bool,
+}
+
+/// Request body for `POST /api/plans/execute`.
+///
+/// All fields are optional.  `plans` and `target` are mutually exclusive —
+/// provide at most one.  Omitting both runs every plan under the workspace
+/// plans root ("Run all").
+#[derive(Deserialize, Default)]
+struct ExecutePlansRequest {
+    /// Specific plan ids to run from the workspace plans root.
+    /// Mutually exclusive with `target`.
+    #[serde(default)]
+    plans: Option<Vec<String>>,
+    /// Workspace-relative directory to run.
+    /// Mutually exclusive with `plans`.
+    #[serde(default)]
+    target: Option<String>,
+    /// When `true`, resume from the last checkpoint; default is a fresh run.
+    #[serde(default)]
+    resume: bool,
+    /// Maximum number of independent plans to run concurrently.
+    /// Must be ≥ 1 when given; defaults to `[conductor] max_parallel_plans`.
+    #[serde(default)]
+    max_parallel_plans: Option<usize>,
+}
+
+/// `POST /api/plans/execute` — run a named set of plans, a target directory, or
+/// every plan under the workspace plans root ("Run all").
+///
+/// This is a static route (like `/plans/generate`) under the `/api/plans` →
+/// `plan:write` scope.
+///
+/// Body (all optional):
+/// ```json
+/// { "plans": ["id1", "id2"], "target": "rel/path", "resume": false, "max_parallel_plans": 2 }
+/// ```
+///
+/// * `plans` and `target` are mutually exclusive (400 if both are given).
+/// * `plans` – run those ids from `plans_dir` via `PlanRunOptions::only_plans`.
+/// * `target` – a workspace-relative directory; absolute paths, `..` escapes,
+///   and symlinks pointing outside the workspace are rejected with 400.
+/// * Neither – run every plan under `plans_dir` ("Run all").
+///
+/// Returns `202 { "id": run_id, "order": [...], "max_parallel_plans": N }`.
+async fn execute_plans(
+    State(state): State<Arc<AppState>>,
+    body: axum::body::Bytes,
+) -> Result<impl IntoResponse, ApiError> {
+    let req: ExecutePlansRequest = if body.is_empty() {
+        ExecutePlansRequest::default()
+    } else {
+        serde_json::from_slice(&body).map_err(ApiError::parse)?
+    };
+
+    // `plans` and `target` are mutually exclusive.
+    if req.plans.is_some() && req.target.is_some() {
+        return Err(ApiError::bad_request(
+            "plans and target are mutually exclusive; provide at most one",
+        ));
+    }
+
+    // Validate max_parallel_plans ≥ 1.
+    if let Some(n) = req.max_parallel_plans {
+        if n < 1 {
+            return Err(ApiError::unprocessable_entity(
+                "max_parallel_plans must be at least 1",
+            ));
+        }
+    }
+
+    let pdir = plans_dir(&state.workdir);
+
+    // Determine the execution target and optional plan-id filter.
+    let (plan_target, only_plans) = if let Some(ids) = req.plans.clone() {
+        // Run specific ids under the plans root.
+        (pdir, Some(ids))
+    } else if let Some(ref target_str) = req.target {
+        // Reject absolute paths immediately.
+        if std::path::Path::new(target_str.as_str()).is_absolute() {
+            return Err(ApiError::bad_request(
+                "target must be a workspace-relative path; absolute paths are not allowed",
+            ));
+        }
+        let raw = state.workdir.join(target_str);
+        // Canonicalize resolves symlinks and `..` so we can check containment.
+        let canonical = raw.canonicalize().map_err(|e| {
+            ApiError::bad_request(format!("target path is invalid or does not exist: {e}"))
+        })?;
+        let workdir_canonical = state
+            .workdir
+            .canonicalize()
+            .map_err(|e| ApiError::internal(format!("canonicalize workdir: {e}")))?;
+        if !canonical.starts_with(&workdir_canonical) {
+            return Err(ApiError::bad_request(
+                "target must be a directory inside the workspace",
+            ));
+        }
+        if !canonical.is_dir() {
+            return Err(ApiError::bad_request("target must be a directory"));
+        }
+        (canonical, None)
+    } else {
+        // Run all plans under the plans root.
+        (pdir, None)
+    };
+
+    // Compute dependency order before acquiring the run lock so that a
+    // 404/422 error does not consume the runner slot.
+    let order = match state
+        .runtime
+        .plan_run_order(&state.workdir, &plan_target, only_plans.clone())
+        .await
+    {
+        Ok(order) => order,
+        Err(err) => {
+            let msg = err.to_string();
+            // An error whose message names an unknown plan id → 404.
+            // Any other ordering failure (cycle, unsupported runtime, …) → 422.
+            if msg.contains("unknown plan")
+                || msg.contains("not found")
+                || msg.contains("unknown id")
+            {
+                return Err(ApiError::not_found(msg));
+            }
+            return Err(ApiError::unprocessable_entity(msg));
+        }
+    };
+
+    // Effective parallelism: body value, else workspace [conductor] setting.
+    let config = state.load_roko_config();
+    let effective_max = req
+        .max_parallel_plans
+        .unwrap_or(config.conductor.max_parallel_plans);
+
+    let run_id = uuid::Uuid::new_v4().to_string();
+    let bus = state.event_bus.clone();
+    let runtime = state.runtime.clone();
+    let workdir = state.workdir.clone();
+    let resume = req.resume;
+    let cancel = CancelToken::new();
+    let task_cancel = cancel.clone();
+    let plan_target_for_task = plan_target.clone();
+    let run_id_for_task = run_id.clone();
+
+    // Atomically check-and-insert with the write lock, then spawn the task.
+    let order_for_response = order.clone();
+    let mut active = state.active_plans.write().await;
+    if let Some(conflict_key) = active_run_conflict(&active) {
+        return Err(ApiError::conflict(format!(
+            "a plan run is already active (run key: {conflict_key})"
+        )));
+    }
+
+    let handle = tokio::spawn(async move {
+        let options = PlanRunOptions {
+            cancel: Some(task_cancel),
+            fresh: !resume,
+            force_resume: resume,
+            only_plans,
+            max_parallel_plans: Some(effective_max),
+        };
+        // Do NOT publish plan lifecycle events (plan_started, plan_completed)
+        // for the run_id.  The runtime publishes its own per-plan events
+        // (plan_set_loaded, run_completed) with the correct metadata.
+        if let Err(err) = runtime
+            .run_plan_with_options(&workdir, &plan_target_for_task, options)
+            .await
+        {
+            bus.publish(ServerEvent::Error {
+                message: format!("plan set execution failed (run {run_id_for_task}): {err}"),
+            });
+        }
+    });
+
+    let plan_handle = PlanHandle {
+        id: run_id.clone(),
+        plan_dir: plan_target,
+        // members carries every plan id so cancel/status by member id works.
+        members: order,
+        status: OperationStatus::Running,
+        handle,
+        cancel,
+    };
+    // Key by run_id (not a single plan id) since this run may span many plans.
+    active.insert(run_id.clone(), plan_handle);
+    drop(active);
+
+    Ok((
+        axum::http::StatusCode::ACCEPTED,
+        Json(json!({
+            "id": run_id,
+            "order": order_for_response,
+            "max_parallel_plans": effective_max,
+        })),
+    ))
 }
 
 /// Shared execution helper for [`execute_plan`] and [`resume_plan`].
@@ -1928,6 +2124,18 @@ mod tests {
             })
         }
 
+        /// Return the ids from `only_plans` when given, or a single-element
+        /// list so that `execute_plans` tests get a non-empty order without
+        /// creating plan files on disk.
+        async fn plan_run_order(
+            &self,
+            _workdir: &std::path::Path,
+            _plan_target: &std::path::Path,
+            only_plans: Option<Vec<String>>,
+        ) -> anyhow::Result<Vec<String>> {
+            Ok(only_plans.unwrap_or_else(|| vec!["mock-plan".to_string()]))
+        }
+
         fn session_status(&self, workdir: PathBuf) -> SessionStatusInfo {
             SessionStatusInfo {
                 session_id: None,
@@ -2537,6 +2745,192 @@ mod tests {
             resp.status(),
             axum::http::StatusCode::NOT_FOUND,
             "costs for unknown plan must return 404"
+        );
+    }
+
+    // ── execute_plans ────────────────────────────────────────────────────
+
+    /// `POST /api/plans/execute` with a `plans` list must return 202 with
+    /// `order` containing the requested ids and `max_parallel_plans` equal to
+    /// the conductor default (since no body override was given).
+    #[tokio::test]
+    async fn execute_plans_returns_202_with_order_and_parallelism() {
+        let runtime = Arc::new(RecordingRuntime {
+            calls: Arc::new(Mutex::new(Vec::new())),
+            notify: Arc::new(Notify::new()),
+            success: true,
+            call_count: Arc::new(AtomicUsize::new(0)),
+            group: None,
+            last_options: Arc::new(Mutex::new(None)),
+            known_plan_id: None,
+            plan_tasks: vec![],
+        });
+        let notify = Arc::clone(&runtime.as_ref().notify);
+        let (_dir, state) = test_state_with_runtime(runtime);
+
+        let response = match execute_plans(
+            State(Arc::clone(&state)),
+            axum::body::Bytes::from(
+                r#"{"plans":["plan-a","plan-b"],"max_parallel_plans":2}"#,
+            ),
+        )
+        .await
+        {
+            Ok(r) => r.into_response(),
+            Err(e) => panic!("execute_plans should succeed, got error: {e:?}"),
+        };
+        assert_eq!(
+            response.status(),
+            axum::http::StatusCode::ACCEPTED,
+            "execute_plans must return 202"
+        );
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let payload: Value = serde_json::from_slice(&body).expect("parse body");
+        assert!(payload["id"].as_str().is_some(), "response must have an id");
+        assert_eq!(
+            payload["order"],
+            json!(["plan-a", "plan-b"]),
+            "order must match the requested plan ids"
+        );
+        assert_eq!(
+            payload["max_parallel_plans"], 2,
+            "max_parallel_plans must reflect the body value"
+        );
+
+        // Wait for the spawned task to notify the runtime.
+        tokio::time::timeout(std::time::Duration::from_secs(1), notify.notified())
+            .await
+            .expect("runtime should be called");
+    }
+
+    /// Providing both `plans` and `target` must be rejected with 400.
+    #[tokio::test]
+    async fn execute_plans_rejects_plans_and_target_together() {
+        let (_dir, state) = test_state();
+
+        let err = match execute_plans(
+            State(state),
+            axum::body::Bytes::from(r#"{"plans":["plan-a"],"target":"subdir"}"#),
+        )
+        .await
+        {
+            Ok(_) => panic!("mutually exclusive fields must error"),
+            Err(e) => e,
+        };
+
+        assert_eq!(
+            err.status,
+            axum::http::StatusCode::BAD_REQUEST,
+            "both plans+target must return 400"
+        );
+    }
+
+    /// `max_parallel_plans: 0` must be rejected with 422.
+    #[tokio::test]
+    async fn execute_plans_rejects_zero_max_parallel_plans() {
+        let (_dir, state) = test_state();
+
+        let err = match execute_plans(
+            State(state),
+            axum::body::Bytes::from(r#"{"max_parallel_plans":0}"#),
+        )
+        .await
+        {
+            Ok(_) => panic!("max_parallel_plans 0 must error"),
+            Err(e) => e,
+        };
+
+        assert_eq!(
+            err.status,
+            axum::http::StatusCode::UNPROCESSABLE_ENTITY,
+            "max_parallel_plans:0 must return 422"
+        );
+    }
+
+    /// An absolute `target` path must be rejected with 400.
+    #[tokio::test]
+    async fn execute_plans_rejects_absolute_target() {
+        let (_dir, state) = test_state();
+
+        let err = match execute_plans(
+            State(state),
+            axum::body::Bytes::from(r#"{"target":"/etc/passwd"}"#),
+        )
+        .await
+        {
+            Ok(_) => panic!("absolute target must error"),
+            Err(e) => e,
+        };
+
+        assert_eq!(
+            err.status,
+            axum::http::StatusCode::BAD_REQUEST,
+            "absolute target must return 400"
+        );
+    }
+
+    /// An empty body ("Run all") must return 202 and call the runtime with the
+    /// plans root as the target.
+    #[tokio::test]
+    async fn execute_plans_empty_body_runs_all() {
+        let runtime = Arc::new(RecordingRuntime {
+            calls: Arc::new(Mutex::new(Vec::new())),
+            notify: Arc::new(Notify::new()),
+            success: true,
+            call_count: Arc::new(AtomicUsize::new(0)),
+            group: None,
+            last_options: Arc::new(Mutex::new(None)),
+            known_plan_id: None,
+            plan_tasks: vec![],
+        });
+        let notify = Arc::clone(&runtime.as_ref().notify);
+        let (_dir, state) = test_state_with_runtime(runtime);
+
+        let response = match execute_plans(State(Arc::clone(&state)), axum::body::Bytes::new()).await
+        {
+            Ok(r) => r.into_response(),
+            Err(e) => panic!("execute_plans empty body should succeed, got error: {e:?}"),
+        };
+
+        assert_eq!(response.status(), axum::http::StatusCode::ACCEPTED);
+
+        tokio::time::timeout(std::time::Duration::from_secs(1), notify.notified())
+            .await
+            .expect("runtime should be called for run-all");
+    }
+
+    /// A second call while a run is active must return 409.
+    #[tokio::test]
+    async fn execute_plans_conflicts_with_active_run() {
+        let runtime = Arc::new(RecordingRuntime {
+            calls: Arc::new(Mutex::new(Vec::new())),
+            notify: Arc::new(Notify::new()),
+            success: true,
+            call_count: Arc::new(AtomicUsize::new(0)),
+            group: None,
+            last_options: Arc::new(Mutex::new(None)),
+            known_plan_id: None,
+            plan_tasks: vec![],
+        });
+        let (_dir, state) = test_state_with_runtime(runtime);
+
+        // First call — should succeed.
+        execute_plans(State(Arc::clone(&state)), axum::body::Bytes::new())
+            .await
+            .expect("first execute_plans should succeed");
+
+        // Second call while the first run is registered — should 409.
+        let err = match execute_plans(State(Arc::clone(&state)), axum::body::Bytes::new()).await {
+            Ok(_) => panic!("second execute_plans must error"),
+            Err(e) => e,
+        };
+
+        assert_eq!(
+            err.status,
+            axum::http::StatusCode::CONFLICT,
+            "concurrent execute_plans must return 409"
         );
     }
 }

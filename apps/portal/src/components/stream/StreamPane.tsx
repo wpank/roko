@@ -6,6 +6,7 @@ import { useDashboardStore } from '@/stores/dashboard';
 import { buildTaskRows, focusTaskId } from '@/lib/taskRows';
 import { taskKey } from '@/lib/runState';
 import { describeEmpty } from '@/lib/emptyState';
+import { queuePosition, waitReason } from '@/lib/planSet';
 import { Transcript } from './Transcript';
 import { Checks } from './Checks';
 
@@ -150,15 +151,46 @@ export function StreamPane({
         ).length
       : 0;
 
+  // A live 'pending' plan is queued only while the plan-set is still active.
+  // Once the run ends (outcome is set) the set goes inactive and we treat the
+  // plan as never-run so it shows "Ready — N tasks" rather than "Plan was
+  // cancelled."
+  const isQueued =
+    planId !== null && queuePosition(run, planId) !== null;
+
   const emptyPlan = livePlan
-    ? {
-        id: planId!,
-        phase: livePlan.phase,
-        tasksTotal: livePlan.tasksTotal,
-        tasksDone: livePlan.tasksDone,
-        tasksActive,
-        tasksAccepted: livePlan.tasksAccepted,
-      }
+    ? livePlan.phase === 'pending' && isQueued
+      ? {
+          id: planId!,
+          phase: 'pending' as const,
+          tasksTotal: livePlan.tasksTotal,
+          tasksDone: livePlan.tasksDone,
+          tasksActive,
+          tasksAccepted: livePlan.tasksAccepted,
+          waitReason: waitReason(run, planId!),
+        }
+      : livePlan.phase === 'pending'
+        ? {
+            // Set is over — plan never ran; treat as never_run.
+            id: planId!,
+            phase: 'never_run' as const,
+            tasksTotal: livePlan.tasksTotal,
+            tasksDone: 0,
+            tasksActive: 0,
+            tasksAccepted: 0,
+          }
+        : {
+            id: planId!,
+            phase: livePlan.phase,
+            tasksTotal: livePlan.tasksTotal,
+            tasksDone: livePlan.tasksDone,
+            tasksActive,
+            tasksAccepted: livePlan.tasksAccepted,
+            durationMs:
+              livePlan.finishedAtMs != null && livePlan.startedAtMs != null
+                ? livePlan.finishedAtMs - livePlan.startedAtMs
+                : undefined,
+          }
     : planId !== null
       ? {
           id: planId,

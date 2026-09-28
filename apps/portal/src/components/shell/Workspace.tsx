@@ -16,7 +16,6 @@ import {
   useCancelPlan,
   useWorkspace,
 } from '@/api/queries';
-import { ApiError } from '@/api/client';
 import { useDashboardStore } from '@/stores/dashboard';
 import { useSelection } from '@/lib/useSelection';
 import { useKeyboard } from '@/lib/useKeyboard';
@@ -24,29 +23,10 @@ import { buildPlanRows } from '@/lib/planRows';
 import { resolveSelection } from '@/lib/selection';
 import { pickAlert } from '@/lib/alerts';
 import { describeEmpty } from '@/lib/emptyState';
-import { SIGN_IN_HINT } from '@/lib/bootstrap';
+import { useNow } from '@/lib/useNow';
+import { planSetActive } from '@/lib/planSet';
+import { describeRequestError } from '@/lib/apiErrors';
 import type { AlertAction } from '@/lib/alerts';
-
-// ── Error message extraction ───────────────────────────────────────────────────
-
-/**
- * Extract a human-readable message from any thrown value.
- * A 401 always returns the sign-in hint regardless of the body text.
- */
-function extractErrorMessage(err: unknown): string {
-  if (err instanceof ApiError) {
-    if (err.status === 401) return SIGN_IN_HINT;
-    const body = err.body;
-    if (typeof body === 'string' && body.length > 0) return body;
-    if (body !== null && typeof body === 'object' && 'message' in body) {
-      const msg = (body as { message: unknown }).message;
-      if (typeof msg === 'string' && msg.length > 0) return msg;
-    }
-    return err.message;
-  }
-  if (err instanceof Error) return err.message;
-  return String(err);
-}
 
 // ── Workspace ──────────────────────────────────────────────────────────────────
 
@@ -83,7 +63,10 @@ export function Workspace() {
   const { plan: selectedPlanId, task: selectedTaskId, select } = useSelection();
 
   // ── Build rows ───────────────────────────────────────────────────────────────
-  const rows = buildPlanRows(plans ?? [], run, { filter, nowMs: Date.now() });
+  // anyRunning drives useNow so the rail clock keeps ticking between events.
+  const anyRunning = Object.values(run.plans).some((p) => p.phase === 'running');
+  const nowMs = useNow(anyRunning);
+  const rows = buildPlanRows(plans ?? [], run, { filter, nowMs });
 
   // ── Resolve selection ────────────────────────────────────────────────────────
   // resolveSelection clears an unknown plan once the list has loaded, and
@@ -126,7 +109,7 @@ export function Workspace() {
   // (discovery refuses to guess which one to use).
   useEffect(() => {
     if (plansError) {
-      setRequestError(extractErrorMessage(plansError));
+      setRequestError(describeRequestError(plansError, 'listing plans'));
     }
   }, [plansError]);
 
@@ -139,10 +122,6 @@ export function Workspace() {
   const primaryAction = usePrimaryAction(resolved.plan, {
     onError: setRequestError,
   });
-
-  function handleMutationError(err: unknown): void {
-    setRequestError(extractErrorMessage(err));
-  }
 
   // ── Alert ─────────────────────────────────────────────────────────────────────
   const alert = pickAlert({
@@ -187,7 +166,7 @@ export function Workspace() {
       if (!window.confirm(label)) return;
       cancelPlanMutation.mutate(
         { id: planId },
-        { onError: (err) => handleMutationError(err) },
+        { onError: (err) => setRequestError(describeRequestError(err, 'cancelling runs')) },
       );
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -201,7 +180,7 @@ export function Workspace() {
       } else if (action.kind === 'retry') {
         runPlanMutation.mutate(
           { id: action.planId, resume: true },
-          { onError: (err) => handleMutationError(err) },
+          { onError: (err) => setRequestError(describeRequestError(err, 'running plans')) },
         );
       } else if (action.kind === 'reconnect') {
         window.location.reload();
@@ -215,7 +194,10 @@ export function Workspace() {
     (ids: string[] | null, label: string) => {
       if (!window.confirm(`Run ${label} in dependency order?`)) return;
       const opts = ids !== null ? { plans: ids } : {};
-      runPlansMutation.mutate(opts, { onError: (err) => handleMutationError(err) });
+      const action = ids === null ? 'running all plans' : 'running plan groups';
+      runPlansMutation.mutate(opts, {
+        onError: (err) => setRequestError(describeRequestError(err, action)),
+      });
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [runPlansMutation],
@@ -319,6 +301,7 @@ export function Workspace() {
             onNewPlan={() => setPromptOpen(true)}
             onRunPlans={handleRunPlans}
             emptySentence={railEmpty}
+            runDisabledReason={planSetActive(run) ? 'A run is already in progress' : null}
           />
         </ErrorBoundary>
       </div>

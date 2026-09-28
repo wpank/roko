@@ -90,8 +90,15 @@ export interface Transcript {
   dropped: number;
 }
 
+export interface PlanSetMember {
+  position: number;
+  wave: number;
+  dependsOn: string[];
+  conflictsWith: string[];
+}
+
 export interface RunState {
-  planSet: { planIds: string[]; tasksTotal: number; loadedAtMs: number } | null;
+  planSet: { planIds: string[]; tasksTotal: number; loadedAtMs: number; members?: Record<string, PlanSetMember> } | null;
   plans: Record<string, PlanRun>;
   tasks: Record<string, TaskRun>;
   agents: Record<string, AgentRun>;
@@ -224,6 +231,17 @@ export function applyEvent(
       const planIds = event.plans.map((p) => p.plan_id);
       const tasksTotal = event.plans.reduce((s, p) => s + (p.tasks_total ?? 0), 0);
 
+      const members: Record<string, PlanSetMember> = {};
+      for (let i = 0; i < event.plans.length; i++) {
+        const entry = event.plans[i]!;
+        members[entry.plan_id] = {
+          position: i,
+          wave: entry.wave ?? 0,
+          dependsOn: entry.depends_on ?? [],
+          conflictsWith: entry.conflicts_with ?? [],
+        };
+      }
+
       const newPlans: Record<string, PlanRun> = { ...state.plans };
       for (const entry of event.plans) {
         const existing = newPlans[entry.plan_id];
@@ -251,7 +269,7 @@ export function applyEvent(
 
       return {
         ...state,
-        planSet: { planIds, tasksTotal, loadedAtMs: nowMs },
+        planSet: { planIds, tasksTotal, loadedAtMs: nowMs, members },
         plans: newPlans,
         run: { startedAtMs: nowMs, durationMs: null, outcome: null },
       };
@@ -466,6 +484,9 @@ export function applyEvent(
       const role = event.role || event.model || 'impl';
       const model = event.model ?? '';
       const existing = state.agents[event.agent_id];
+      // Start the clock on first spawn or restart; keep it when the same agent
+      // is re-announced while still active (avoids jitter from duplicate events).
+      const spawnedAtMs = existing?.active ? (existing.spawnedAtMs ?? nowMs) : nowMs;
       const agent: AgentRun = {
         agentId: event.agent_id,
         planId: event.plan_id ?? null,
@@ -473,7 +494,7 @@ export function applyEvent(
         role,
         model,
         active: true,
-        spawnedAtMs: existing?.spawnedAtMs ?? null,
+        spawnedAtMs,
         costUsd: existing?.costUsd ?? 0,
         inputTokens: existing?.inputTokens ?? 0,
         outputTokens: existing?.outputTokens ?? 0,
@@ -770,11 +791,61 @@ export function fromSnapshot(snapshot: WireDashboardSnapshot, nowMs: number): Ru
 
   // ── plan_set ──────────────────────────────────────────────────────────────
   const planSet = snapshot.plan_set
-    ? {
-        planIds: snapshot.plan_set.plans.map((p) => p.plan_id),
-        tasksTotal: snapshot.plan_set.tasks_total,
-        loadedAtMs: snapshot.plan_set.loaded_at_ms,
-      }
+    ? (() => {
+        const setEntries = snapshot.plan_set!.plans;
+        const loadedAtMs = snapshot.plan_set!.loaded_at_ms;
+        const members: Record<string, PlanSetMember> = {};
+        for (let i = 0; i < setEntries.length; i++) {
+          const entry = setEntries[i]!;
+          members[entry.plan_id] = {
+            position: i,
+            wave: entry.wave ?? 0,
+            dependsOn: entry.depends_on ?? [],
+            conflictsWith: entry.conflicts_with ?? [],
+          };
+        }
+
+        // Apply titles and timing from plan_set entries
+        const isOnePlanSet = setEntries.length === 1;
+        for (let i = 0; i < setEntries.length; i++) {
+          const entry = setEntries[i]!;
+          let plan = plans[entry.plan_id];
+          if (!plan) continue;
+
+          // Fill title from plan_set entry when non-empty
+          if (entry.title) {
+            plan = { ...plan, title: entry.title };
+          }
+
+          // Position 0 while running: startedAtMs = loadedAtMs
+          if (i === 0 && plan.phase === 'running') {
+            plan = { ...plan, startedAtMs: loadedAtMs };
+          }
+
+          // One-plan set, not pending/running, run_duration_ms known: derive timing
+          if (
+            isOnePlanSet &&
+            plan.phase !== 'pending' &&
+            plan.phase !== 'running' &&
+            snapshot.run_duration_ms != null
+          ) {
+            plan = {
+              ...plan,
+              startedAtMs: loadedAtMs,
+              finishedAtMs: loadedAtMs + snapshot.run_duration_ms,
+            };
+          }
+
+          plans[entry.plan_id] = plan;
+        }
+
+        return {
+          planIds: setEntries.map((p) => p.plan_id),
+          tasksTotal: snapshot.plan_set!.tasks_total,
+          loadedAtMs,
+          members,
+        };
+      })()
     : null;
 
   // ── Build task → plan mapping (for ambiguity detection in task_outputs) ───

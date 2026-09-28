@@ -180,7 +180,7 @@ describe('case: completed cleanly', () => {
     expect(result).toBe('Finished in 4m12s — 3 of 3 verified.');
   });
 
-  it('uses · placeholder when durationMs is null', () => {
+  it('omits duration when durationMs is null', () => {
     const result = describeEmpty(
       input({
         plan: plan({
@@ -193,7 +193,7 @@ describe('case: completed cleanly', () => {
         }),
       }),
     );
-    expect(result).toContain('·');
+    expect(result).toBe('Finished — 2 of 2 verified.');
   });
 });
 

@@ -279,8 +279,17 @@ function TaskRow({
 
         {/* Role · Model (shown once dispatched) */}
         {(row.role || row.model) && (
-          <span className="shrink-0 text-xs font-mono text-text-ghost hidden md:inline truncate max-w-32">
-            {[row.role, row.model].filter(Boolean).join('·')}
+          <span className="shrink-0 text-xs font-mono text-text-faint hidden md:inline truncate max-w-32">
+            {row.role && (
+              <span
+                data-role={row.role}
+                style={{ color: `var(--role-${row.role}, var(--role-other))` }}
+              >
+                {row.role}
+              </span>
+            )}
+            {row.role && row.model && '·'}
+            {row.model}
           </span>
         )}
 

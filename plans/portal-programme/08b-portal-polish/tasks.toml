@@ -1,0 +1,1208 @@
+[meta]
+plan = "08b-portal-polish"
+total = 16
+done = 0
+status = "ready"
+max_parallel = 4
+skip_enrichment = true
+estimated_total_minutes = 345
+
+# Fixes from the 2026-09-28 integration preview of plans 05-08 (mock agent,
+# headless browser, today's server). What it found:
+# - After one run nothing could run again: the server keeps plan_set after a run
+#   (DashboardSnapshot::plan_set_complete), and the portal read "a plan set
+#   exists" as "a run is in progress".
+# - Rail names were cut to four letters ("Hell") beside "undefined/1": the list
+#   route omits tasks_done, and the row grid left the name about 29 px.
+# - Header and run band rendered as unstyled text stacked in the top-left.
+# - Elapsed times froze between events (Date.now() read only at render).
+# - 404/405 answers were retried behind "Loading source…" or shown as
+#   "HTTP 405 Method Not Allowed".
+# - The status line printed "· · · · ·".
+# - The page looked near-unstyled: globals.css reset elements outside any
+#   cascade layer, which beats every Tailwind utility class, so `bg-rose`,
+#   `border-sage` and the rest never applied.
+# Also: queued plans say why they wait (plan_set_loaded now carries wave,
+# depends_on and conflicts_with), and the portal tolerates a plan list without
+# tasks_done, group or estimated_minutes.
+#
+# Acceptance tests live in accept/ beside this file. Each gate copies its tests
+# into apps/portal/src and requires their exact passing count; an edited copy is
+# overwritten by the next gate run, so fix the code a test exercises, never the
+# test. Each test fails on the tree its task starts from and passed against a
+# reference implementation on 2026-09-28 (with only that task's dependencies
+# applied, then with its own files added; tsc clean at every step). DOM tests
+# run under jsdom with @testing-library/react (T01) and check structure, text and
+# state, not layout; the classes they require are styled in T07.
+#
+# Portal only (npm, tsc, vitest; no cargo); run in the portal worktree.
+# Concurrency (max_parallel 4): tasks that can run side by side write disjoint
+# files, tsc gates use --incremental false, and gates run single test files.
+# T16 holds the plan's one production build.
+
+[[task]]
+id = "T01"
+title = "Add a DOM test harness: Testing Library, jsdom and the shared helper"
+description = '''
+Give the portal's vitest setup component tests, so the design can be checked
+against rendered components without a backend.
+
+1. Install first, before touching any source — other tasks run tsc meanwhile:
+     cd apps/portal && npm install --save-dev --no-audit --no-fund \
+       @testing-library/react@^16.3.0 @testing-library/dom@^10.4.0 jsdom@^30.1.0
+   (Checked 2026-09-28 against React 19.3, vitest 5.0.2 and Vite 8.3.)
+2. apps/portal/vitest.config.ts:
+   - include `src/**/*.test.tsx` beside `src/**/*.test.ts`;
+   - keep `environment: 'node'` as the default: a DOM test opts in with the
+     first line `// @vitest-environment jsdom`;
+   - add, at the top level of the config, `oxc: { jsx: { runtime: 'automatic' } }`.
+     tsconfig.json keeps `"jsx": "preserve"` for Next.js, and Vite 8 (rolldown and
+     oxc; there is no esbuild) otherwise leaves JSX untransformed in tests, which
+     fails with "Unexpected JSX expression". Do not change tsconfig.json.
+3. Copy plans/portal-programme/08b-portal-polish/accept/dom.tsx to
+   apps/portal/src/test/dom.tsx unchanged: the helper every acceptance test
+   imports (testQueryClient, renderWithClient, foldEvents, setStore, stubFetch,
+   textOf, hasMissingValue).
+4. apps/portal/scripts/orphans.mjs: files under src/test/ are test support. Treat
+   them like *.test.ts files: excluded from the orphan list and never counted as
+   reaching production modules. Update the header comment to match.
+
+The gate copies accept/harness.accept.test.tsx to src/test/ and requires its 8
+tests to pass, re-runs an existing .ts suite, and runs tsc and the orphan check.
+'''
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 20
+depends_on = []
+files = [
+    "apps/portal/package.json",
+    "apps/portal/package-lock.json",
+    "apps/portal/vitest.config.ts",
+    "apps/portal/scripts/orphans.mjs",
+    "apps/portal/src/test/dom.tsx",
+    "apps/portal/src/test/harness.accept.test.tsx",
+]
+
+[task.context]
+read_files = [
+    { path = "plans/portal-programme/08b-portal-polish/accept/dom.tsx", why = "the helper to copy verbatim", lines = "1-" },
+    { path = "plans/portal-programme/08b-portal-polish/accept/harness.accept.test.tsx", why = "the acceptance test the gate runs", lines = "1-" },
+    { path = "apps/portal/vitest.config.ts", why = "the config to extend" },
+    { path = "apps/portal/package.json", why = "dev dependencies and scripts" },
+    { path = "apps/portal/scripts/orphans.mjs", why = "collectFiles decides what counts as a test file", lines = "93-114" },
+]
+anti_patterns = [
+    "Do not switch the default test environment to jsdom; the existing .ts suites run in node.",
+    "Do not add @vitejs/plugin-react or a Babel config; the oxc option is enough.",
+    "Do not edit the copied helper or acceptance test; the gate overwrites them.",
+    "Do not edit a file outside this task's files; a gate failure in one usually means a concurrent task is mid-edit, so re-run the gate first.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "cd apps/portal && grep -q '\"@testing-library/react\"' package.json && grep -q '\"@testing-library/dom\"' package.json && grep -q '\"jsdom\"' package.json && grep -q 'node_modules/jsdom' package-lock.json && test -f node_modules/@testing-library/react/package.json && test -f node_modules/jsdom/package.json && grep -q 'test.tsx' vitest.config.ts && grep -q 'automatic' vitest.config.ts"
+fail_msg = "Testing Library and jsdom are not installed and recorded, or vitest does not collect .tsx tests with the automatic JSX runtime"
+timeout_ms = 60000
+
+[[task.verify]]
+phase = "test"
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && mkdir -p src/test && cp ../../plans/portal-programme/08b-portal-polish/accept/dom.tsx src/test/dom.tsx && cp ../../plans/portal-programme/08b-portal-polish/accept/harness.accept.test.tsx src/test/harness.accept.test.tsx && node scripts/vitest-min.mjs src/test/harness.accept.test.tsx 8'
+fail_msg = "the component-test harness acceptance test does not pass all 8 tests"
+timeout_ms = 600000
+
+[[task.verify]]
+phase = "test"
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && node scripts/vitest-min.mjs src/lib/formatters.test.ts 22'
+fail_msg = "the existing node-environment suites no longer run: formatters.test.ts lacks 22 passing tests"
+timeout_ms = 600000
+
+[[task.verify]]
+phase = "compile"
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && mkdir -p src/test && cp ../../plans/portal-programme/08b-portal-polish/accept/dom.tsx src/test/dom.tsx && cp ../../plans/portal-programme/08b-portal-polish/accept/harness.accept.test.tsx src/test/harness.accept.test.tsx && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit --incremental false'
+fail_msg = "the portal does not type-check with the harness"
+timeout_ms = 600000
+
+[[task.verify]]
+phase = "structural"
+command = 'cd apps/portal && mkdir -p src/test && cp ../../plans/portal-programme/08b-portal-polish/accept/dom.tsx src/test/dom.tsx && out=$(node scripts/orphans.mjs || true) && printf "%s\n" "$out" | head -1 | grep -qE "^(no orphans|src/)" && ! printf "%s\n" "$out" | grep -q "src/test/"'
+fail_msg = "scripts/orphans.mjs does not run, or it still reports the test helpers under src/test/ as orphans"
+timeout_ms = 60000
+
+[[task]]
+id = "T02"
+title = "Keep plan-set scheduling facts and what a snapshot knows"
+description = '''
+Fold the new plan_set_loaded fields, and stop losing what a reload knows.
+
+1. apps/portal/src/api/contracts.ts
+   - WirePlanSetEntry gains optional `wave?: number`, `depends_on?: string[]` and
+     `conflicts_with?: string[]` (PlanSetEntry in
+     crates/roko-core/src/dashboard_snapshot.rs: wave 0 without prerequisites in
+     the set; depends_on = plans of the set that must succeed first;
+     conflicts_with = plans it never runs beside because they write or build the
+     same files). Replace the stale "engine work in progress" note above it.
+   - WirePlanSummary.tasks_done becomes optional: today's list route omits it,
+     and the rail rendered "undefined/1".
+2. apps/portal/src/lib/runState.ts
+   - `export interface PlanSetMember { position: number; wave: number;
+     dependsOn: string[]; conflictsWith: string[] }`.
+   - RunState.planSet gains `members?: Record<string, PlanSetMember>`, optional so
+     the hand-built fixtures in other test files stay valid. plan_set_loaded and
+     fromSnapshot fill it for every entry, keyed by plan_id: position = index in
+     the set, and 0 / [] / [] for what an older server omits.
+   - agent_spawned starts the agent's clock: spawnedAtMs = nowMs, unless the agent
+     is already active (a repeated spawn of a live agent keeps its time). The
+     roster showed no elapsed time until the first heartbeat, five seconds in.
+   - fromSnapshot, from snapshot.plan_set: a member's PlanRun.title is the entry's
+     title when non-empty (reloads showed plan ids). The first member (position
+     0), while running, gets startedAtMs = plan_set.loaded_at_ms. A one-plan set
+     whose plan is neither pending nor running, with run_duration_ms known, gets
+     startedAtMs = loaded_at_ms and finishedAtMs = loaded_at_ms +
+     run_duration_ms. Every other member keeps null: the snapshot has no
+     per-plan clock, and a guess would be wrong.
+3. apps/portal/src/lib/planRows.ts, one line (near line 176):
+   `done = disk.tasks_done ?? (disk.completed ? disk.task_count : 0);`
+4. apps/portal/src/lib/runState.test.ts: the two `toEqual` checks of `s.planSet`
+   (lines 70 and 515) become `toMatchObject`, since planSet now has members.
+   All 56 tests keep passing.
+
+Acceptance: accept/runState.accept.test.ts (15 tests), copied by the gate to
+src/lib/runState.accept.test.ts.
+'''
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 30
+depends_on = []
+files = [
+    "apps/portal/src/api/contracts.ts",
+    "apps/portal/src/lib/runState.ts",
+    "apps/portal/src/lib/runState.test.ts",
+    "apps/portal/src/lib/planRows.ts",
+    "apps/portal/src/lib/runState.accept.test.ts",
+]
+
+[task.context]
+read_files = [
+    { path = "plans/portal-programme/08b-portal-polish/accept/runState.accept.test.ts", why = "the acceptance test the gate runs", lines = "1-" },
+    { path = "apps/portal/src/api/contracts.ts", why = "WirePlanSetEntry (line 35) and WirePlanSummary (line 267)", lines = "26-45" },
+    { path = "apps/portal/src/lib/runState.ts", why = "RunState, plan_set_loaded, agent_spawned; fromSnapshot is at line 731", lines = "90-110" },
+    { path = "apps/portal/src/lib/planRows.ts", why = "the done/total fallback", lines = "168-181" },
+]
+symbols = ["case 'plan_set_loaded'", "case 'agent_spawned'", "const planSet = snapshot.plan_set"]
+anti_patterns = [
+    "Do not make PlanSetMember facts required on RunState.planSet; other test fixtures build planSet without them.",
+    "Do not invent a start time for plans the snapshot cannot place.",
+    "Do not edit the copied acceptance test; the gate overwrites it.",
+    "Do not edit a file outside this task's files; a gate failure in one usually means a concurrent task is mid-edit, so re-run the gate first.",
+]
+
+[[task.verify]]
+phase = "test"
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && cp ../../plans/portal-programme/08b-portal-polish/accept/runState.accept.test.ts src/lib/runState.accept.test.ts && node scripts/vitest-min.mjs src/lib/runState.accept.test.ts 15'
+fail_msg = "the run-state acceptance test does not pass all 15 tests"
+timeout_ms = 600000
+
+[[task.verify]]
+phase = "test"
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && node scripts/vitest-min.mjs src/lib/runState.test.ts 56 && node scripts/vitest-min.mjs src/lib/planRows.test.ts 20'
+fail_msg = "an existing run-state or plan-row test broke"
+timeout_ms = 600000
+
+[[task.verify]]
+phase = "compile"
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && cp ../../plans/portal-programme/08b-portal-polish/accept/runState.accept.test.ts src/lib/runState.accept.test.ts && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit --incremental false'
+fail_msg = "the portal does not type-check"
+timeout_ms = 600000
+
+[[task]]
+id = "T03"
+title = "Define when a plan-set run is active and why a queued plan waits"
+description = '''
+Create apps/portal/src/lib/planSet.ts, the one definition of "a run is in
+progress". Pure functions; no Date.now(); never mutate the input.
+
+The server keeps plan_set in its snapshot after a run ends, so
+`run.planSet !== null` does not mean a run is active. The preview found Run
+disabled for every plan after the first run (usePrimaryAction in
+src/components/stage/PlanView.tsx).
+
+  planSetActive(run: RunState): boolean
+    true only while run.planSet !== null, run.run.outcome === null, and some id
+    in run.planSet.planIds has run.plans[id].phase 'pending' or 'running'. A
+    member with no live record does not keep the set active.
+
+  queuePosition(run: RunState, planId: string): number | null
+    the 1-based index in planSet.planIds when the set is active and the plan's
+    phase is 'pending'; otherwise null.
+
+  waitReason(run: RunState, planId: string): string | null
+    null unless queuePosition is non-null. Otherwise, from
+    run.planSet.members?.[planId] (absent: no facts), the first that applies:
+    1. a depends_on member whose phase is 'failed' or 'cancelled' (depends_on
+       order) → `blocked: <id> failed` or `blocked: <id> cancelled`;
+    2. depends_on members not 'completed' → `after <id>, <id>` (depends_on order);
+    3. conflicts_with members that are 'running' → `after <id>, <id> (shared files)`;
+    4. otherwise → `waiting for a free slot`.
+
+RunState, PlanRun and PlanSetMember come from @/lib/runState (T02 adds
+planSet.members). Acceptance: accept/planSet.accept.test.ts (17 tests), copied to
+src/lib/planSet.accept.test.ts.
+'''
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 20
+depends_on = ["T02"]
+files = ["apps/portal/src/lib/planSet.ts", "apps/portal/src/lib/planSet.accept.test.ts"]
+
+[task.context]
+read_files = [
+    { path = "plans/portal-programme/08b-portal-polish/accept/planSet.accept.test.ts", why = "the acceptance test the gate runs", lines = "1-" },
+    { path = "apps/portal/src/lib/runState.ts", why = "PlanRun phases and RunState.planSet", lines = "33-120" },
+]
+anti_patterns = [
+    "Do not treat run.planSet !== null as an active run.",
+    "Do not edit the copied acceptance test; the gate overwrites it.",
+    "Do not edit a file outside this task's files; a gate failure in one usually means a concurrent task is mid-edit, so re-run the gate first.",
+]
+
+[[task.verify]]
+phase = "test"
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && cp ../../plans/portal-programme/08b-portal-polish/accept/planSet.accept.test.ts src/lib/planSet.accept.test.ts && node scripts/vitest-min.mjs src/lib/planSet.accept.test.ts 17'
+fail_msg = "the plan-set acceptance test does not pass all 17 tests"
+timeout_ms = 600000
+
+[[task.verify]]
+phase = "compile"
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && cp ../../plans/portal-programme/08b-portal-polish/accept/planSet.accept.test.ts src/lib/planSet.accept.test.ts && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit --incremental false'
+fail_msg = "the portal does not type-check"
+timeout_ms = 600000
+
+[[task]]
+id = "T04"
+title = "Stop retrying client errors and name missing routes in words"
+description = '''
+On today's server, validate and source answered 404 and React Query retried
+each twice with backoff (`retry: 2` in apps/portal/src/app/providers.tsx), so the
+editor sat on "Loading source…" and the badge on `·`; Run all answered 405 and
+the alert read "HTTP 405 Method Not Allowed".
+
+1. apps/portal/src/lib/apiErrors.ts (pure):
+   isMissingRoute(err: unknown): boolean
+     true for an ApiError (@/api/client) with status 405. For a 404: true unless
+     the body is the API's own error object — a string `code`, as
+     crates/roko-serve/src/error.rs sends for a resource that is not found — and
+     its message does not start with "No route matches". So an empty body, or the
+     router fallback `{error: "not_found", message: "No route matches …"}`, is a
+     missing route; `{code: "not_found", message: "plan 'x' not found"}` is not.
+     Anything else is false.
+   shouldRetryQuery(failureCount: number, err: unknown): boolean
+     false for any ApiError with status 400-499; otherwise failureCount < 2
+     (React Query passes 0 after the first failure).
+   unsupportedMessage(action: string): string
+     `This roko serve does not support ${action} yet.`
+   describeRequestError(err: unknown, action: string): string
+     401 → SIGN_IN_HINT (@/lib/bootstrap); a missing route →
+     unsupportedMessage(action); a non-empty string body.message → it; a
+     non-empty string body → it; any other ApiError → `Request failed with status
+     ${status}.`; an Error → its message; anything else → String(err). Never the
+     raw "HTTP 405 …" line.
+2. apps/portal/src/api/queryClient.ts:
+   `export function createQueryClient(): QueryClient` with defaultOptions.queries
+   `{ staleTime: 30_000, retry: shouldRetryQuery, refetchOnWindowFocus: false }`.
+3. apps/portal/src/app/providers.tsx: `useState(createQueryClient)` replaces the
+   inline client; keep SSEInitializer and SessionGate as they are.
+
+SourceEditor and ValidationBadge already say `This roko serve does not support
+editing plans yet.` and `validation unavailable` for 404/405; without retries
+they say it at once. PlanView (T12) and Workspace (T15) adopt
+describeRequestError.
+
+Acceptance: accept/apiErrors.accept.test.ts (12 tests) → src/lib/, and
+accept/missingRoutes.accept.test.tsx (3 DOM tests: against a stubbed 404 or 405
+the editor and the badge must say so within 600 ms after one request) →
+src/components/stage/.
+'''
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 25
+depends_on = ["T01", "T02"]
+files = [
+    "apps/portal/src/lib/apiErrors.ts",
+    "apps/portal/src/api/queryClient.ts",
+    "apps/portal/src/app/providers.tsx",
+    "apps/portal/src/lib/apiErrors.accept.test.ts",
+    "apps/portal/src/components/stage/missingRoutes.accept.test.tsx",
+]
+
+[task.context]
+read_files = [
+    { path = "plans/portal-programme/08b-portal-polish/accept/apiErrors.accept.test.ts", why = "the acceptance test the gate runs", lines = "1-" },
+    { path = "plans/portal-programme/08b-portal-polish/accept/missingRoutes.accept.test.tsx", why = "the DOM acceptance test the gate runs", lines = "1-" },
+    { path = "apps/portal/src/app/providers.tsx", why = "the inline QueryClient with retry: 2", lines = "1-" },
+    { path = "apps/portal/src/api/client.ts", why = "ApiError status, statusText and body", lines = "14-27" },
+    { path = "apps/portal/src/components/stage/SourceEditor.tsx", why = "how the editor reports a missing route", lines = "193-234" },
+]
+anti_patterns = [
+    "Do not retry 4xx responses; they will not fix themselves.",
+    "Do not show `HTTP <status> <text>` to the operator.",
+    "Do not edit the copied acceptance tests; the gate overwrites them.",
+    "Do not edit a file outside this task's files; a gate failure in one usually means a concurrent task is mid-edit, so re-run the gate first.",
+]
+
+[[task.verify]]
+phase = "test"
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && cp ../../plans/portal-programme/08b-portal-polish/accept/apiErrors.accept.test.ts src/lib/apiErrors.accept.test.ts && cp ../../plans/portal-programme/08b-portal-polish/accept/missingRoutes.accept.test.tsx src/components/stage/missingRoutes.accept.test.tsx && node scripts/vitest-min.mjs src/lib/apiErrors.accept.test.ts 12 && node scripts/vitest-min.mjs src/components/stage/missingRoutes.accept.test.tsx 3'
+fail_msg = "the request-error acceptance tests do not pass (12 + 3 tests)"
+timeout_ms = 600000
+
+[[task.verify]]
+phase = "structural"
+command = "cd apps/portal/src/app && grep -q 'createQueryClient' providers.tsx && ! grep -q 'retry: 2' providers.tsx"
+fail_msg = "providers.tsx still builds its own retrying QueryClient"
+timeout_ms = 60000
+
+[[task.verify]]
+phase = "compile"
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && cp ../../plans/portal-programme/08b-portal-polish/accept/apiErrors.accept.test.ts src/lib/apiErrors.accept.test.ts && cp ../../plans/portal-programme/08b-portal-polish/accept/missingRoutes.accept.test.tsx src/components/stage/missingRoutes.accept.test.tsx && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit --incremental false'
+fail_msg = "the portal does not type-check"
+timeout_ms = 600000
+
+[[task]]
+id = "T05"
+title = "Add useNow: a clock that ticks only while something runs"
+description = '''
+Create apps/portal/src/lib/useNow.ts:
+
+  'use client';
+  export function useNow(active: boolean, intervalMs = 1_000): number
+
+It returns Date.now() captured at mount. While `active`, it re-reads the clock
+the moment it becomes active and then every intervalMs (setInterval, cleared
+when it becomes inactive and on unmount). While inactive it keeps no timer and
+holds its last value. Callers pass "something is running", so an idle page costs
+nothing.
+
+Why: the preview's elapsed times froze between events, because PlanView.tsx
+(lines 236 and 283) and Workspace.tsx (line 86) read Date.now() only when an
+event happened to re-render them. T10, T11, T12 and T15 adopt this hook.
+
+Acceptance: accept/useNow.accept.test.tsx (7 tests, fake timers), copied to
+src/lib/useNow.accept.test.tsx.
+'''
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 10
+depends_on = ["T01"]
+files = ["apps/portal/src/lib/useNow.ts", "apps/portal/src/lib/useNow.accept.test.tsx"]
+
+[task.context]
+read_files = [
+    { path = "plans/portal-programme/08b-portal-polish/accept/useNow.accept.test.tsx", why = "the acceptance test the gate runs", lines = "1-" },
+]
+anti_patterns = [
+    "Do not keep an interval running while inactive.",
+    "Do not edit the copied acceptance test; the gate overwrites it.",
+    "Do not edit a file outside this task's files; a gate failure in one usually means a concurrent task is mid-edit, so re-run the gate first.",
+]
+
+[[task.verify]]
+phase = "test"
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && cp ../../plans/portal-programme/08b-portal-polish/accept/useNow.accept.test.tsx src/lib/useNow.accept.test.tsx && node scripts/vitest-min.mjs src/lib/useNow.accept.test.tsx 7'
+fail_msg = "the clock hook acceptance test does not pass all 7 tests"
+timeout_ms = 600000
+
+[[task.verify]]
+phase = "compile"
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && cp ../../plans/portal-programme/08b-portal-polish/accept/useNow.accept.test.tsx src/lib/useNow.accept.test.tsx && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit --incremental false'
+fail_msg = "the portal does not type-check"
+timeout_ms = 600000
+
+[[task]]
+id = "T06"
+title = "Derive status-line fields that are known, never placeholders"
+description = '''
+Create apps/portal/src/lib/statusLine.ts: the plan status line's fields, only
+those whose values are known. The preview printed `2 tasks · 2 waves · · · · ·`.
+
+  export type StatusFieldKey = 'tasks' | 'waves' | 'estimate' | 'parallel' |
+    'progress' | 'elapsed' | 'eta' | 'cost' | 'agents';
+  export interface StatusField { key: StatusFieldKey; text: string }
+  export interface StatusLineInput {
+    hasRun: boolean; running: boolean;
+    taskCount: number; waveCount: number;
+    estimatedMinutes: number | null; parallel: number | null;
+    tasksDone: number; tasksTotal: number;
+    elapsedMs: number | null; etaMinutes: number | null;
+    costUsd: number; busyAgents: number; maxParallel: number | null;
+  }
+  export function statusFields(input: StatusLineInput): StatusField[]
+
+Before a run (hasRun false), in order: tasks `3 tasks` or `1 task` (always);
+waves `3 waves` or `1 wave` when above 0; estimate `~9 min` when finite and above
+0; parallel `parallel 2` when finite and above 0.
+Once run (hasRun true), in order: progress `2/3` (always); elapsed via
+compactDuration (@/lib/formatters: `1m12s`, `16s`, `0s`) when finite and at
+least 0; eta `~2m` only while running and known; cost via formatCost (`$0.21`)
+when above 0; agents `agents 1/1`, or `agents 2` when maxParallel is unknown,
+while running or when busyAgents is above 0.
+
+This is the design's status line: before a run `3 tasks · 3 waves · ~9 min ·
+parallel 1` and then the validation badge; once run `2/3 · 1m12s · ~2m · $0.21 ·
+agents 1/1`. PlanView adopts it in T12.
+
+Acceptance: accept/statusLine.accept.test.ts (11 tests) → src/lib/.
+'''
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 15
+depends_on = []
+files = ["apps/portal/src/lib/statusLine.ts", "apps/portal/src/lib/statusLine.accept.test.ts"]
+
+[task.context]
+read_files = [
+    { path = "plans/portal-programme/08b-portal-polish/accept/statusLine.accept.test.ts", why = "the acceptance test the gate runs", lines = "1-" },
+    { path = "apps/portal/src/lib/formatters.ts", why = "compactDuration and formatCost", lines = "8-26" },
+]
+symbols = ["export function compactDuration"]
+anti_patterns = [
+    "Do not emit a field whose value is unknown; no `·` placeholders.",
+    "Do not edit the copied acceptance test; the gate overwrites it.",
+    "Do not edit a file outside this task's files; a gate failure in one usually means a concurrent task is mid-edit, so re-run the gate first.",
+]
+
+[[task.verify]]
+phase = "test"
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && cp ../../plans/portal-programme/08b-portal-polish/accept/statusLine.accept.test.ts src/lib/statusLine.accept.test.ts && node scripts/vitest-min.mjs src/lib/statusLine.accept.test.ts 11'
+fail_msg = "the status-line acceptance test does not pass all 11 tests"
+timeout_ms = 600000
+
+[[task.verify]]
+phase = "compile"
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && cp ../../plans/portal-programme/08b-portal-polish/accept/statusLine.accept.test.ts src/lib/statusLine.accept.test.ts && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit --incremental false'
+fail_msg = "the portal does not type-check"
+timeout_ms = 600000
+
+[[task]]
+id = "T07"
+title = "Make the ROSEDUST styles apply and add the shell's component classes"
+description = '''
+Why the portal looked unstyled: Tailwind v4 (`@import "tailwindcss"`) puts its
+utilities in `@layer utilities`, and CSS outside any layer beats every layered
+rule regardless of specificity. apps/portal/src/styles/globals.css sections 4-11
+reset elements outside any layer — `button { background: transparent; color:
+var(--text-strong); border: 1px solid … }`, `* { border-color:
+var(--border-default) }` — so `bg-rose`, `border-sage` and every other utility
+on those elements lost. The primary Run button rendered as a plain box and every
+border came out ghost-grey.
+
+apps/portal/src/styles/globals.css:
+1. Wrap sections 4-11 (html/body baseline through image/media, including the
+   prefers-reduced-motion block) in `@layer base { … }`, unchanged inside, with a
+   comment saying why. Wrap section 12's helper classes in
+   `@layer utilities { … }`. The @imports and @theme stay at the top level.
+2. Focus (design: the focused region gets --rose-bright, which tokens.css names
+   --focus-border): both `:focus-visible` rules draw
+   `outline: 1px solid var(--focus-border)`.
+3. @theme gains colours the components use but the theme lacks, and the state
+   tokens: `--color-accent-warn: var(--warning)`, `--color-bg-base: var(--void)`,
+   `--color-bg-subtle: var(--bg-secondary)`, and `--color-state-done`,
+   `-active`, `-accepted`, `-failed`, `-queued`, `-pending` as
+   `var(--state-…)`.
+4. Append plans/portal-programme/08b-portal-polish/accept/rd-components.css (it
+   is section 13, one `@layer components { … }` block) verbatim at the end: the
+   header row, alert row, run band, rail row, status line and progress classes
+   that T09-T12 apply. Colours come only through tokens.
+apps/portal/src/styles/tokens.css: `--rail-width: 320px` (room for a name beside
+four number columns; was 260px); add `--header-height: 32px`; add
+`--role-impl: var(--role-implementer)` and
+`--role-reviewer: var(--role-quick-reviewer)` (role names the engine reports).
+
+Acceptance: accept/styles.accept.test.ts (12 tests; it parses globals.css and
+scans component sources for colour utilities the theme does not declare) →
+src/styles/styles.accept.test.ts.
+'''
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 25
+depends_on = []
+files = [
+    "apps/portal/src/styles/globals.css",
+    "apps/portal/src/styles/tokens.css",
+    "apps/portal/src/styles/styles.accept.test.ts",
+]
+
+[task.context]
+read_files = [
+    { path = "plans/portal-programme/08b-portal-polish/accept/styles.accept.test.ts", why = "the acceptance test the gate runs", lines = "1-" },
+    { path = "plans/portal-programme/08b-portal-polish/accept/rd-components.css", why = "section 13 to append verbatim", lines = "1-" },
+    { path = "apps/portal/src/styles/globals.css", why = "the sections to layer", lines = "1-40" },
+    { path = "apps/portal/src/styles/tokens.css", why = "state, focus, role and layout tokens", lines = "1-" },
+]
+anti_patterns = [
+    "Do not add !important to beat utilities; layer the resets instead.",
+    "Do not introduce colour literals in the components layer; use tokens.",
+    "Do not edit the copied acceptance test; the gate overwrites it.",
+    "Do not edit a file outside this task's files; a gate failure in one usually means a concurrent task is mid-edit, so re-run the gate first.",
+]
+
+[[task.verify]]
+phase = "test"
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && cp ../../plans/portal-programme/08b-portal-polish/accept/styles.accept.test.ts src/styles/styles.accept.test.ts && node scripts/vitest-min.mjs src/styles/styles.accept.test.ts 12'
+fail_msg = "the styles acceptance test does not pass all 12 tests"
+timeout_ms = 600000
+
+[[task.verify]]
+phase = "compile"
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && cp ../../plans/portal-programme/08b-portal-polish/accept/styles.accept.test.ts src/styles/styles.accept.test.ts && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit --incremental false'
+fail_msg = "the portal does not type-check"
+timeout_ms = 600000
+
+[[task]]
+id = "T08"
+title = "Give queued rail rows their wait reason"
+description = '''
+apps/portal/src/lib/planRows.ts:
+- PlanRowModel gains `waitReason: string | null`.
+- A live 'pending' plan is 'queued' exactly when queuePosition(run, id) from
+  @/lib/planSet is non-null; its queuePosition is that value and its waitReason
+  is waitReason(run, id). Otherwise it falls back to its disk state, as today.
+  This replaces the local `runIsLive` and planSetOrder test (lines 105-112 and
+  132-142): a set whose members have all finished is over even though the
+  server keeps plan_set, and older servers never send run_completed.
+- Every other row has waitReason null.
+Keep the 20 tests in planRows.test.ts passing; their fixtures build planSet
+without members, which queuePosition handles.
+
+Acceptance: accept/planRows.wait.accept.test.ts (8 tests) → src/lib/.
+'''
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 15
+depends_on = ["T03"]
+files = ["apps/portal/src/lib/planRows.ts", "apps/portal/src/lib/planRows.wait.accept.test.ts"]
+
+[task.context]
+read_files = [
+    { path = "plans/portal-programme/08b-portal-polish/accept/planRows.wait.accept.test.ts", why = "the acceptance test the gate runs", lines = "1-" },
+    { path = "apps/portal/src/lib/planRows.ts", why = "PlanRowModel and the queue logic", lines = "1-170" },
+    { path = "apps/portal/src/lib/planSet.ts", why = "queuePosition and waitReason (T03)" },
+]
+anti_patterns = [
+    "Do not decide queueing from run.run.durationMs or from planSet alone; use queuePosition.",
+    "Do not edit the copied acceptance test; the gate overwrites it.",
+    "Do not edit a file outside this task's files; a gate failure in one usually means a concurrent task is mid-edit, so re-run the gate first.",
+]
+
+[[task.verify]]
+phase = "test"
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && cp ../../plans/portal-programme/08b-portal-polish/accept/planRows.wait.accept.test.ts src/lib/planRows.wait.accept.test.ts && node scripts/vitest-min.mjs src/lib/planRows.wait.accept.test.ts 8'
+fail_msg = "the queued-row acceptance test does not pass all 8 tests"
+timeout_ms = 600000
+
+[[task.verify]]
+phase = "test"
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && node scripts/vitest-min.mjs src/lib/planRows.test.ts 20'
+fail_msg = "an existing plan-row test broke"
+timeout_ms = 600000
+
+[[task.verify]]
+phase = "compile"
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && cp ../../plans/portal-programme/08b-portal-polish/accept/planRows.wait.accept.test.ts src/lib/planRows.wait.accept.test.ts && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit --incremental false'
+fail_msg = "the portal does not type-check"
+timeout_ms = 600000
+
+[[task]]
+id = "T09"
+title = "Rebuild rail rows on fixed columns with a readable name"
+description = '''
+The preview's row grid (`1.25rem minmax(0,1fr) 3.5rem 3rem 3.75rem` as inline
+styles in a 260px rail) left the name about 29px wide ("Hell") under an
+overflowing "undefined/1". T07 styles the .rd-plan-row classes (jsdom does not
+load CSS, so the tests check structure).
+
+apps/portal/src/components/rail/PlanRow.tsx — same props, this structure, no
+inline layout styles:
+  <button type="button" class="rd-plan-row" data-plan-row={id} data-state={state}
+          aria-current={selected ? 'true' : undefined}
+          title={full title, plus ` — <waitReason>` when waiting}
+          onClick={() => onSelect(id)}>
+    <span class="rd-plan-row__glyph"><StatusGlyph state={state}/></span>
+    <span class="rd-plan-row__label">
+      <span class="rd-plan-row__name" data-name>{middleEllipsis(title || id, 22)}</span>
+      queued:     <span class="rd-plan-row__queue" data-queue>#{queuePosition}</span>
+      superseded: <span class="rd-plan-row__queue">→ {supersededBy}</span>
+    </span>
+    <span class="rd-plan-row__count" data-count>{done}/{total}</span>
+    <span class="rd-plan-row__bar" aria-hidden="true">
+      <span style={{ width: `${pct}%`, background: barToken }}/></span>
+    <span class="rd-plan-row__time" data-time>{time}</span>
+    waiting: <span class="rd-plan-row__wait" data-wait>{waitReason}</span>
+  </button>
+Time: an estimate in whole minutes (`~9m`, and compactDuration above an hour:
+`~1h35m`) — not `~9m0s`; elapsed and actual via compactDuration; `·` when
+unknown.
+
+apps/portal/src/components/rail/PlanRail.tsx: an optional prop
+`runDisabledReason?: string | null`. When non-null, `▶ Run all`
+(data-action="run-all") and every group ▶ (data-action="run-group") are
+disabled, with the reason as their title. Workspace passes it in T15.
+
+Acceptance: accept/rail.accept.test.tsx (11 DOM tests) → src/components/rail/.
+'''
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 25
+depends_on = ["T01", "T08"]
+files = [
+    "apps/portal/src/components/rail/PlanRow.tsx",
+    "apps/portal/src/components/rail/PlanRail.tsx",
+    "apps/portal/src/components/rail/rail.accept.test.tsx",
+]
+
+[task.context]
+read_files = [
+    { path = "plans/portal-programme/08b-portal-polish/accept/rail.accept.test.tsx", why = "the acceptance test the gate runs", lines = "1-" },
+    { path = "apps/portal/src/components/rail/PlanRow.tsx", why = "the row to rebuild", lines = "1-" },
+    { path = "apps/portal/src/components/rail/PlanRail.tsx", why = "Run all and the group run buttons", lines = "49-152" },
+    { path = "plans/portal-programme/08b-portal-polish/accept/rd-components.css", why = "the .rd-plan-row classes T07 adds", lines = "275-365" },
+]
+anti_patterns = [
+    "Do not size the row with inline grid styles; the class carries the layout.",
+    "Do not print undefined or NaN; a missing number is `·`.",
+    "Do not edit the copied acceptance test; the gate overwrites it.",
+    "Do not edit a file outside this task's files; a gate failure in one usually means a concurrent task is mid-edit, so re-run the gate first.",
+]
+
+[[task.verify]]
+phase = "test"
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && cp ../../plans/portal-programme/08b-portal-polish/accept/rail.accept.test.tsx src/components/rail/rail.accept.test.tsx && node scripts/vitest-min.mjs src/components/rail/rail.accept.test.tsx 11'
+fail_msg = "the rail acceptance test does not pass all 11 tests"
+timeout_ms = 600000
+
+[[task.verify]]
+phase = "structural"
+command = "cd apps/portal/src/components/rail && grep -q 'rd-plan-row' PlanRow.tsx && grep -q 'data-wait' PlanRow.tsx && ! grep -q 'gridTemplateColumns' PlanRow.tsx && grep -q 'runDisabledReason' PlanRail.tsx"
+fail_msg = "PlanRow still lays itself out inline, or PlanRail cannot lock Run all"
+timeout_ms = 60000
+
+[[task.verify]]
+phase = "compile"
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && cp ../../plans/portal-programme/08b-portal-polish/accept/rail.accept.test.tsx src/components/rail/rail.accept.test.tsx && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit --incremental false'
+fail_msg = "the portal does not type-check"
+timeout_ms = 600000
+
+[[task]]
+id = "T10"
+title = "Make the header one row and the alert one styled row"
+description = '''
+The preview rendered `<header data-region="header">` with no layout: the
+workspace name and a bordered run summary stacked in the top-left, and the
+alert as a solid amber bar reading "HTTP 405 Method Not Allowed". T07 styles the
+.rd-header and .rd-alert classes.
+
+apps/portal/src/components/shell/Header.tsx — same props; one row:
+  <header data-region="header" class="rd-header">
+    <span data-slot="workspace" class="rd-header__workspace">{name}
+      {branch && <span class="rd-header__branch"> · {branch}</span>}</span>
+    while running:
+    <span data-slot="run" class="rd-header__run">
+      <button type="button" data-action="next-running" class="rd-header__summary">
+        <StatusGlyph state="active"/><span>{parts joined with " · "}</span></button>
+      <button type="button" data-action="cancel-run" class="rd-header__cancel"
+              aria-label="Cancel the run">■</button></span>
+    <span data-slot="connection" data-connection={connection}
+          class="rd-header__conn" title={…}>●</span>
+  </header>
+Parts: for a plan set of more than one plan, `N running · x/y plans · a/b tasks`
+(x = members completed, failed or cancelled; a = the sum of tasksDone +
+tasksFailed over members; b = planSet.tasksTotal); otherwise the running plan's
+title (else id), middle-ellipsised to 32, and `done/total` (done = tasksDone +
+tasksFailed). Then the elapsed time, compactDuration(now − start) with start =
+run.run.startedAtMs, else the earliest running plan's startedAtMs; `~Nm`, the
+largest etaMinutes among running plans, when known; and formatCost of
+run.totals.costUsd when above 0. `now` comes from useNow(isRunning)
+(@/lib/useNow), replacing the component's own setInterval. Clicking the summary
+still selects the next running plan and ■ still calls onCancelRun. Keep
+document.title = `roko · <name>`.
+
+apps/portal/src/components/shell/AlertBand.tsx — same props:
+  <div data-region="alert" data-severity={severity} role="status" class="rd-alert">
+    <span class="rd-alert__glyph" aria-hidden="true">✗ (error) or ⚠ (warning)</span>
+    <span class="rd-alert__text" title={text}>{text}</span>
+    one <button class="rd-alert__action"> per action: Show, Retry, Reconnect
+    <button class="rd-alert__dismiss" aria-label="Dismiss alert">×</button>
+  </div>
+No inline background fill; the class tints the row by data-severity. Nothing
+renders without an alert.
+
+Acceptance: accept/shell.accept.test.tsx (11 DOM tests) → src/components/shell/.
+'''
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 30
+depends_on = ["T01", "T02", "T05"]
+files = [
+    "apps/portal/src/components/shell/Header.tsx",
+    "apps/portal/src/components/shell/AlertBand.tsx",
+    "apps/portal/src/components/shell/shell.accept.test.tsx",
+]
+
+[task.context]
+read_files = [
+    { path = "plans/portal-programme/08b-portal-polish/accept/shell.accept.test.tsx", why = "the acceptance test the gate runs", lines = "1-" },
+    { path = "apps/portal/src/components/shell/Header.tsx", why = "the header to lay out", lines = "1-" },
+    { path = "apps/portal/src/components/shell/AlertBand.tsx", why = "the alert to restyle", lines = "1-" },
+    { path = "apps/portal/src/lib/useNow.ts", why = "the clock hook (T05)" },
+]
+anti_patterns = [
+    "Do not show a cost of $0.00 or a placeholder in the run summary.",
+    "Do not keep a component-local setInterval; use useNow.",
+    "Do not edit the copied acceptance test; the gate overwrites it.",
+    "Do not edit a file outside this task's files; a gate failure in one usually means a concurrent task is mid-edit, so re-run the gate first.",
+]
+
+[[task.verify]]
+phase = "test"
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && cp ../../plans/portal-programme/08b-portal-polish/accept/shell.accept.test.tsx src/components/shell/shell.accept.test.tsx && node scripts/vitest-min.mjs src/components/shell/shell.accept.test.tsx 11'
+fail_msg = "the header and alert acceptance test does not pass all 11 tests"
+timeout_ms = 600000
+
+[[task.verify]]
+phase = "structural"
+command = "cd apps/portal/src/components/shell && grep -q 'useNow' Header.tsx && ! grep -q 'setInterval' Header.tsx && grep -q 'rd-header' Header.tsx && grep -q 'rd-alert' AlertBand.tsx"
+fail_msg = "the header still runs its own interval, or the header or alert lacks its class"
+timeout_ms = 60000
+
+[[task.verify]]
+phase = "compile"
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && cp ../../plans/portal-programme/08b-portal-polish/accept/shell.accept.test.tsx src/components/shell/shell.accept.test.tsx && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit --incremental false'
+fail_msg = "the portal does not type-check"
+timeout_ms = 600000
+
+[[task]]
+id = "T11"
+title = "Render the run band as three titled cells"
+description = '''
+The preview rendered RunBand's markup with no layout: "+1 finished",
+"Scaffold the hello project · hello", "✓structural" and "0 tok · ·" stacked down
+the left edge. Keep the props and the folds (buildRoster, checkFocusTask and
+buildRungs, buildBurn); change the markup. T07 styles the .rd-band classes.
+
+apps/portal/src/components/run/RunBand.tsx:
+  <section data-region="run-band" class="rd-band">
+    <div data-cell="agents" class="rd-band__cell">
+      <div class="rd-band__title">AGENTS</div>
+      per roster row:
+      <div data-agent={agentId} class="rd-band__agent">
+        <span data-role={role} class="rd-band__role"
+              style={{ color: `var(--role-${role}, var(--role-other))` }}>{role}</span>
+        <span>{planId} · {taskId}</span>
+        <span class="rd-band__muted">{model}</span>
+        <span class="rd-band__num">► {compactDuration(elapsedMs)}</span>  (only when known)
+        <span class="rd-band__num">{formatTokens(tokens)} tok</span>
+      </div>
+      no rows: <div class="rd-band__empty">no agent working yet</div>
+      a footer of only its non-zero parts, joined with " · ": `+N finished`, `idle ×N`
+    </div>
+    <div data-cell="checks" class="rd-band__cell">
+      <div class="rd-band__title">CHECKS · {taskId}</div>   (just CHECKS without a focus task)
+      <div class="rd-band__focus">{task title} · {planId}</div>
+      <div class="rd-band__rungs">per rung:
+        <span data-rung={rung.state} class="rd-band__rung"><StatusGlyph …/>{label}</span></div>
+      no focus task: <div class="rd-band__empty">no task is being checked</div>
+    </div>
+    <div data-cell="burn" class="rd-band__cell">
+      <div class="rd-band__title">BURN</div>
+      <div class="rd-band__total">{formatTokens(tokens)} tok, plus ` · {rate}/min` only when tokensPerMin is known</div>
+      per role: <div data-role-share={role} class="rd-band__share">
+        <span class="rd-band__bar"><span style={{ width, background: the role colour }}/></span>
+        <span class="rd-band__num">{role} {pct}%</span></div>
+    </div>
+  </section>
+No placeholder dots. The clock comes from useNow(true) (@/lib/useNow) instead of
+the component's own setInterval. Nothing renders while no plan runs.
+
+Acceptance: accept/RunBand.accept.test.tsx (9 DOM tests) → src/components/run/.
+'''
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 25
+depends_on = ["T01", "T02", "T05"]
+files = ["apps/portal/src/components/run/RunBand.tsx", "apps/portal/src/components/run/RunBand.accept.test.tsx"]
+
+[task.context]
+read_files = [
+    { path = "plans/portal-programme/08b-portal-polish/accept/RunBand.accept.test.tsx", why = "the acceptance test the gate runs", lines = "1-" },
+    { path = "apps/portal/src/components/run/RunBand.tsx", why = "the band to re-mark", lines = "1-" },
+    { path = "apps/portal/src/lib/useNow.ts", why = "the clock hook (T05)" },
+]
+anti_patterns = [
+    "Do not render `·` for an unknown rate or elapsed time; leave it out.",
+    "Do not change the roster, rung or burn folds.",
+    "Do not edit the copied acceptance test; the gate overwrites it.",
+    "Do not edit a file outside this task's files; a gate failure in one usually means a concurrent task is mid-edit, so re-run the gate first.",
+]
+
+[[task.verify]]
+phase = "test"
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && cp ../../plans/portal-programme/08b-portal-polish/accept/RunBand.accept.test.tsx src/components/run/RunBand.accept.test.tsx && node scripts/vitest-min.mjs src/components/run/RunBand.accept.test.tsx 9'
+fail_msg = "the run band acceptance test does not pass all 9 tests"
+timeout_ms = 600000
+
+[[task.verify]]
+phase = "structural"
+command = "cd apps/portal/src/components/run && grep -q 'useNow' RunBand.tsx && ! grep -q 'setInterval' RunBand.tsx && grep -q 'rd-band__title' RunBand.tsx"
+fail_msg = "the run band still runs its own interval or has no cell titles"
+timeout_ms = 60000
+
+[[task.verify]]
+phase = "compile"
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && cp ../../plans/portal-programme/08b-portal-polish/accept/RunBand.accept.test.tsx src/components/run/RunBand.accept.test.tsx && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit --incremental false'
+fail_msg = "the portal does not type-check"
+timeout_ms = 600000
+
+[[task]]
+id = "T12"
+title = "Keep Run available after a run and list only known status fields"
+description = '''
+apps/portal/src/components/stage/PlanView.tsx
+1. usePrimaryAction: a run blocks this plan only when planSetActive(run)
+   (@/lib/planSet) and this plan is not running — never merely because
+   run.planSet exists, which left Run disabled forever after the first run
+   (line 114). Reason for a queued member: `Queued #${queuePosition(run, id)} —
+   ${waitReason(run, id)}`; otherwise keep `Another run is already in progress`.
+   Labels: `▶ Run`, `■ Cancel`, `↻ Retry`, `▶ Run again`. Mutation errors go
+   through describeRequestError(err, kind === 'cancel' ? 'cancelling runs' :
+   'running plans') (@/lib/apiErrors), replacing the local ApiError parsing.
+2. Show the reason: when the primary action is disabled with a reason, render
+   `<span data-reason class="rd-reason">{reason}</span>` before the buttons. A
+   disabled button's title never shows: globals.css sets pointer-events: none on
+   :disabled.
+3. Clock: `const nowMs = useNow(isRunning)` (@/lib/useNow) feeds buildTaskRows
+   and the elapsed time; no Date.now() at render (lines 236 and 283).
+4. hasRun means the plan has live state whose phase is not 'pending': a plan
+   queued in a set shows its pre-run facts and no progress bar.
+5. Status line: `<div data-region="status-line" class="rd-status">` renders
+   statusFields(…) (@/lib/statusLine) as `<span data-field={key}
+   class="rd-status__field">{text}</span>`, with
+   `<span class="rd-status__sep" aria-hidden="true">·</span>` only between
+   fields; before a run the ValidationBadge follows after one more separator.
+   Once run, the progress bar (role="progressbar", class rd-progress, its inner
+   span coloured as today) sits above the line. Inputs: taskCount =
+   plan.task_count, waveCount, estimatedMinutes = plan.estimated_minutes ?? null,
+   parallel as today, tasksDone, tasksTotal, elapsedMs, etaMinutes, costUsd =
+   livePlan.costUsd, busy agents, maxParallel.
+apps/portal/src/components/stage/ValidationBadge.tsx: while loading show
+`validating…` rather than a lone `·`; decide the missing-route state with
+isMissingRoute(error) (@/lib/apiErrors).
+
+Acceptance: accept/PlanView.accept.test.tsx (15 DOM tests) →
+src/components/stage/; the missing-route test from T04 must keep passing.
+'''
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 35
+depends_on = ["T01", "T03", "T04", "T05", "T06"]
+files = [
+    "apps/portal/src/components/stage/PlanView.tsx",
+    "apps/portal/src/components/stage/ValidationBadge.tsx",
+    "apps/portal/src/components/stage/PlanView.accept.test.tsx",
+]
+
+[task.context]
+read_files = [
+    { path = "plans/portal-programme/08b-portal-polish/accept/PlanView.accept.test.tsx", why = "the acceptance test the gate runs", lines = "1-" },
+    { path = "apps/portal/src/components/stage/PlanView.tsx", why = "primary action, status line and clock", lines = "34-466" },
+    { path = "apps/portal/src/components/stage/ValidationBadge.tsx", why = "loading and missing-route states", lines = "57-82" },
+    { path = "apps/portal/src/lib/statusLine.ts", why = "statusFields (T06)" },
+    { path = "apps/portal/src/lib/planSet.ts", why = "planSetActive, queuePosition, waitReason (T03)" },
+]
+anti_patterns = [
+    "Do not disable Run because run.planSet is non-null.",
+    "Do not render placeholder dots in the status line.",
+    "Do not read Date.now() during render.",
+    "Do not edit the copied acceptance tests; the gate overwrites them.",
+    "Do not edit a file outside this task's files; a gate failure in one usually means a concurrent task is mid-edit, so re-run the gate first.",
+]
+
+[[task.verify]]
+phase = "test"
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && cp ../../plans/portal-programme/08b-portal-polish/accept/PlanView.accept.test.tsx src/components/stage/PlanView.accept.test.tsx && cp ../../plans/portal-programme/08b-portal-polish/accept/missingRoutes.accept.test.tsx src/components/stage/missingRoutes.accept.test.tsx && node scripts/vitest-min.mjs src/components/stage/PlanView.accept.test.tsx 15 && node scripts/vitest-min.mjs src/components/stage/missingRoutes.accept.test.tsx 3'
+fail_msg = "the plan view acceptance test (15) or the missing-route test (3) does not pass"
+timeout_ms = 600000
+
+[[task.verify]]
+phase = "structural"
+command = "cd apps/portal/src/components/stage && grep -q 'planSetActive' PlanView.tsx && grep -q 'statusFields' PlanView.tsx && grep -q 'useNow' PlanView.tsx && ! grep -q 'Date.now()' PlanView.tsx && grep -q 'isMissingRoute' ValidationBadge.tsx"
+fail_msg = "PlanView does not use planSetActive, statusFields and useNow, still reads Date.now(), or the badge does not use isMissingRoute"
+timeout_ms = 60000
+
+[[task.verify]]
+phase = "compile"
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && cp ../../plans/portal-programme/08b-portal-polish/accept/PlanView.accept.test.tsx src/components/stage/PlanView.accept.test.tsx && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit --incremental false'
+fail_msg = "the portal does not type-check"
+timeout_ms = 600000
+
+[[task]]
+id = "T13"
+title = "Tell the truth about queued and finished plans in the stream pane"
+description = '''
+In the preview a queued plan's stream read "Plan was cancelled." — the
+fall-through of describeEmpty for phase 'pending' — and a finished plan without
+a known duration would read "Finished in · — …".
+
+apps/portal/src/lib/emptyState.ts: the plan input gains
+`waitReason?: string | null`. Phase 'pending' → `Queued — ${waitReason}.`, or
+`Queued — waiting to start.` without one (a new case before the completed
+cases). 'completed' without a known duration → `Finished — X of Y verified.`;
+with one, `Finished in 4m12s — X of Y verified.` as today. Update the existing
+test "uses · placeholder when durationMs is null" in emptyState.test.ts (line
+183) to expect `Finished — 2 of 2 verified.`; keep all 21 tests.
+
+apps/portal/src/components/stream/StreamPane.tsx (empty-state inputs, lines
+141-178): a live 'pending' plan is queued only while queuePosition(run, planId)
+(@/lib/planSet) is non-null — then pass phase 'pending' and
+waitReason(run, planId). A pending plan whose set is over reads as never run
+(the existing never_run input). Pass durationMs = finishedAtMs − startedAtMs
+when both are known.
+
+Acceptance: accept/stream.accept.test.tsx (7 tests, two of them DOM) →
+src/components/stream/.
+'''
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 20
+depends_on = ["T01", "T03"]
+files = [
+    "apps/portal/src/lib/emptyState.ts",
+    "apps/portal/src/lib/emptyState.test.ts",
+    "apps/portal/src/components/stream/StreamPane.tsx",
+    "apps/portal/src/components/stream/stream.accept.test.tsx",
+]
+
+[task.context]
+read_files = [
+    { path = "plans/portal-programme/08b-portal-polish/accept/stream.accept.test.tsx", why = "the acceptance test the gate runs", lines = "1-" },
+    { path = "apps/portal/src/lib/emptyState.ts", why = "the sentences by phase", lines = "1-134" },
+    { path = "apps/portal/src/components/stream/StreamPane.tsx", why = "the empty-state inputs", lines = "136-180" },
+    { path = "apps/portal/src/lib/planSet.ts", why = "queuePosition and waitReason (T03)" },
+]
+anti_patterns = [
+    "Do not call a queued plan cancelled.",
+    "Do not print a placeholder duration.",
+    "Do not edit the copied acceptance test; the gate overwrites it.",
+    "Do not edit a file outside this task's files; a gate failure in one usually means a concurrent task is mid-edit, so re-run the gate first.",
+]
+
+[[task.verify]]
+phase = "test"
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && cp ../../plans/portal-programme/08b-portal-polish/accept/stream.accept.test.tsx src/components/stream/stream.accept.test.tsx && node scripts/vitest-min.mjs src/components/stream/stream.accept.test.tsx 7 && node scripts/vitest-min.mjs src/lib/emptyState.test.ts 21'
+fail_msg = "the stream acceptance test (7) or the empty-state suite (21) does not pass"
+timeout_ms = 600000
+
+[[task.verify]]
+phase = "compile"
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && cp ../../plans/portal-programme/08b-portal-polish/accept/stream.accept.test.tsx src/components/stream/stream.accept.test.tsx && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit --incremental false'
+fail_msg = "the portal does not type-check"
+timeout_ms = 600000
+
+[[task]]
+id = "T14"
+title = "Colour each task row's role with its accent"
+description = '''
+One accent per role, wherever the role appears. The preview rendered a task
+row's `implementer·claude…` in --text-ghost, nearly invisible, while the run
+band colours roles.
+
+apps/portal/src/components/stage/TaskList.tsx, the role·model cell (line 280):
+render the role as
+  <span data-role={role} style={{ color: `var(--role-${role}, var(--role-other))` }}>{role}</span>
+then `·` and the model in the cell's faint colour (text-text-faint). A row
+without a role has no role span. Nothing else changes.
+
+Acceptance: accept/TaskList.accept.test.tsx (4 DOM tests) → src/components/stage/.
+'''
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 10
+depends_on = ["T01", "T02"]
+files = ["apps/portal/src/components/stage/TaskList.tsx", "apps/portal/src/components/stage/TaskList.accept.test.tsx"]
+
+[task.context]
+read_files = [
+    { path = "plans/portal-programme/08b-portal-polish/accept/TaskList.accept.test.tsx", why = "the acceptance test the gate runs", lines = "1-" },
+    { path = "apps/portal/src/components/stage/TaskList.tsx", why = "the task row", lines = "227-300" },
+]
+anti_patterns = [
+    "Do not change the row layout or the other cells.",
+    "Do not edit the copied acceptance test; the gate overwrites it.",
+    "Do not edit a file outside this task's files; a gate failure in one usually means a concurrent task is mid-edit, so re-run the gate first.",
+]
+
+[[task.verify]]
+phase = "test"
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && cp ../../plans/portal-programme/08b-portal-polish/accept/TaskList.accept.test.tsx src/components/stage/TaskList.accept.test.tsx && node scripts/vitest-min.mjs src/components/stage/TaskList.accept.test.tsx 4'
+fail_msg = "the task-list role acceptance test does not pass all 4 tests"
+timeout_ms = 600000
+
+[[task.verify]]
+phase = "compile"
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && cp ../../plans/portal-programme/08b-portal-polish/accept/TaskList.accept.test.tsx src/components/stage/TaskList.accept.test.tsx && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit --incremental false'
+fail_msg = "the portal does not type-check"
+timeout_ms = 600000
+
+[[task]]
+id = "T15"
+title = "Wire the screen: ticking rail, locked Run all, errors in words"
+description = '''
+apps/portal/src/components/shell/Workspace.tsx:
+- Rail rows: `nowMs = useNow(anyRunning)` (@/lib/useNow), where anyRunning means
+  some plan in run.plans has phase 'running', replaces Date.now() at render
+  (line 86).
+- PlanRail gets `runDisabledReason={planSetActive(run) ? 'A run is already in
+  progress' : null}` (@/lib/planSet): one plan-set run at a time.
+- Replace extractErrorMessage (line 36) with describeRequestError(err, action)
+  (@/lib/apiErrors): Run all → 'running all plans', a group ▶ → 'running plan
+  groups', cancel → 'cancelling runs', the alert's Retry → 'running plans', the
+  plan list error → 'listing plans'. Drop imports this leaves unused.
+
+Acceptance: accept/Workspace.accept.test.tsx (4 DOM tests) →
+src/components/shell/. It renders the whole screen with next/navigation mocked
+and canned server answers: rail rows without "undefined"; Run all answered with
+405 reads "This roko serve does not support running all plans yet."; Run all and
+Run again are free once a run has finished; the rail clock ticks between events.
+'''
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 20
+depends_on = ["T09", "T10", "T11", "T12", "T13", "T14"]
+files = ["apps/portal/src/components/shell/Workspace.tsx", "apps/portal/src/components/shell/Workspace.accept.test.tsx"]
+
+[task.context]
+read_files = [
+    { path = "plans/portal-programme/08b-portal-polish/accept/Workspace.accept.test.tsx", why = "the acceptance test the gate runs", lines = "1-" },
+    { path = "apps/portal/src/components/shell/Workspace.tsx", why = "rows, handlers and the rail props", lines = "1-330" },
+]
+anti_patterns = [
+    "Do not read Date.now() during render.",
+    "Do not show a raw HTTP status line in the alert.",
+    "Do not edit the copied acceptance test; the gate overwrites it.",
+    "Do not edit a file outside this task's files; a gate failure in one usually means a concurrent task is mid-edit, so re-run the gate first.",
+]
+
+[[task.verify]]
+phase = "test"
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && cp ../../plans/portal-programme/08b-portal-polish/accept/Workspace.accept.test.tsx src/components/shell/Workspace.accept.test.tsx && node scripts/vitest-min.mjs src/components/shell/Workspace.accept.test.tsx 4'
+fail_msg = "the whole-screen acceptance test does not pass all 4 tests"
+timeout_ms = 600000
+
+[[task.verify]]
+phase = "structural"
+command = "cd apps/portal/src/components/shell && grep -q 'useNow' Workspace.tsx && ! grep -q 'Date.now()' Workspace.tsx && grep -q 'describeRequestError' Workspace.tsx && ! grep -q 'extractErrorMessage' Workspace.tsx && grep -q 'runDisabledReason' Workspace.tsx"
+fail_msg = "Workspace still reads Date.now() or extractErrorMessage, or does not lock Run all"
+timeout_ms = 60000
+
+[[task.verify]]
+phase = "compile"
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && cp ../../plans/portal-programme/08b-portal-polish/accept/Workspace.accept.test.tsx src/components/shell/Workspace.accept.test.tsx && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit --incremental false'
+fail_msg = "the portal does not type-check"
+timeout_ms = 600000
+
+[[task]]
+id = "T16"
+title = "Prove the whole plan together and build once"
+description = '''
+Run everything together and build the export once.
+
+The gates re-copy every acceptance test and the shared helper from
+plans/portal-programme/08b-portal-polish/accept/ (they must be unchanged), then
+require: the full suite with at least 501 passing tests (347 before this plan,
+plus 154 acceptance tests) and none failing; tsc; the orphan check
+(scripts/orphans.mjs); and the one production build, whose exported CSS must
+carry the base layer and the rd- component classes.
+
+Fix only what a gate reports, in the module the failing test exercises. Do not
+edit the acceptance copies.
+'''
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 20
+depends_on = ["T07", "T15"]
+files = ["apps/portal/src", "apps/portal/scripts"]
+
+[task.context]
+read_files = [
+    { path = "apps/portal/package.json", why = "test and build:export scripts" },
+    { path = "apps/portal/scripts/vitest-min.mjs", why = "the counted-test gate" },
+]
+anti_patterns = [
+    "Do not weaken or skip a test to make the suite pass.",
+    "Do not leave apps/portal/out behind.",
+    "Do not edit a file outside this task's files; a gate failure in one usually means a concurrent task is mid-edit, so re-run the gate first.",
+]
+
+[[task.verify]]
+phase = "test"
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && A=../../plans/portal-programme/08b-portal-polish/accept && mkdir -p src/test && cp $A/dom.tsx src/test/dom.tsx && for p in test/harness.accept.test.tsx lib/runState.accept.test.ts lib/planSet.accept.test.ts lib/apiErrors.accept.test.ts components/stage/missingRoutes.accept.test.tsx lib/useNow.accept.test.tsx lib/statusLine.accept.test.ts styles/styles.accept.test.ts lib/planRows.wait.accept.test.ts components/rail/rail.accept.test.tsx components/shell/shell.accept.test.tsx components/run/RunBand.accept.test.tsx components/stage/PlanView.accept.test.tsx components/stream/stream.accept.test.tsx components/stage/TaskList.accept.test.tsx components/shell/Workspace.accept.test.tsx; do cp $A/${p##*/} src/$p || exit 1; done && node scripts/vitest-min.mjs src 501'
+fail_msg = "the full suite, with every acceptance test, lacks 501 passing tests or has a failure"
+timeout_ms = 900000
+
+[[task.verify]]
+phase = "structural"
+command = 'cd apps/portal && node scripts/orphans.mjs'
+fail_msg = "a source module is unreachable from src/app"
+timeout_ms = 60000
+
+[[task.verify]]
+phase = "integration"
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && rm -rf .next/types out && ./node_modules/.bin/tsc --noEmit --incremental false && NEXT_TELEMETRY_DISABLED=1 npm run build:export && test -f out/index.html && grep -q "@layer base" out/_next/static/css/*.css && grep -q "rd-plan-row" out/_next/static/css/*.css && grep -q "rd-band" out/_next/static/css/*.css && rm -rf out'
+fail_msg = "the portal does not type-check, the static export fails, or its CSS lacks the base layer and component classes"
+timeout_ms = 900000

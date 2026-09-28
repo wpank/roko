@@ -11,7 +11,7 @@
  * Returns null (zero height) when no plans are running.
  */
 
-import React, { useEffect, useState } from 'react';
+import React from 'react';
 import { useQueries } from '@tanstack/react-query';
 import { api } from '@/api/client';
 import type { WirePlanTasks } from '@/api/contracts';
@@ -27,6 +27,7 @@ import type { CheckRun } from '@/lib/runState';
 import { StatusGlyph } from '@/components/primitives/StatusGlyph';
 import { compactDuration, formatTokens } from '@/lib/formatters';
 import type { GlyphState } from '@/lib/glyphs';
+import { useNow } from '@/lib/useNow';
 
 // ── Helpers ─────────────────────────────────────────────────────────────────────
 
@@ -77,12 +78,8 @@ function RunBandInner({
 }) {
   const run = useDashboardStore((s) => s.run);
 
-  // Tick once per second so elapsed times update live.
-  const [nowMs, setNowMs] = useState<number>(() => Date.now());
-  useEffect(() => {
-    const id = setInterval(() => setNowMs(Date.now()), 1_000);
-    return () => clearInterval(id);
-  }, []);
+  // Wall clock — ticks every second while running. Drives elapsed time display.
+  const nowMs = useNow(true);
 
   // Fetch tasks for every running plan (max_parallel + verify steps).
   // One query per plan, cached under queryKeys.planTasks(id).
@@ -103,6 +100,11 @@ function RunBandInner({
 
   // ── AGENTS ──────────────────────────────────────────────────────────────────
   const roster = buildRoster(run, { nowMs, runningPlanIds, maxParallelByPlan });
+
+  // Footer: only non-zero parts, joined with " · ".
+  const footerParts: string[] = [];
+  if (roster.finished > 0) footerParts.push(`+${roster.finished} finished`);
+  if (roster.idle !== null && roster.idle > 0) footerParts.push(`idle ×${roster.idle}`);
 
   // ── CHECKS ──────────────────────────────────────────────────────────────────
   // Adapt Selection (plan/task) → the shape checkFocusTask expects.
@@ -136,67 +138,83 @@ function RunBandInner({
 
   // ── Render ───────────────────────────────────────────────────────────────────
   return (
-    <section data-region="run-band">
+    <section data-region="run-band" className="rd-band">
       {/* AGENTS cell */}
-      <div data-cell="agents">
-        {roster.rows.map((row) => (
-          <div
-            key={row.agentId}
-            style={{
-              color: `var(--role-${row.role}, var(--role-other))`,
-            }}
-          >
-            <span>{row.role}</span>
-            <span>
-              {row.planId ?? ''}
-              {row.taskId ? ` · ${row.taskId}` : ''}
-            </span>
-            <span>{row.model}</span>
-            <span>
-              {'► '}
-              {row.elapsedMs !== null ? compactDuration(row.elapsedMs) : '—'}
-            </span>
-            <span>{formatTokens(row.tokens)}</span>
-          </div>
-        ))}
-        {roster.finished > 0 && <div>+{roster.finished} finished</div>}
-        {roster.idle !== null && roster.idle > 0 && (
-          <div>idle ×{roster.idle}</div>
+      <div data-cell="agents" className="rd-band__cell">
+        <div className="rd-band__title">AGENTS</div>
+        {roster.rows.length > 0 ? (
+          roster.rows.map((row) => (
+            <div key={row.agentId} data-agent={row.agentId} className="rd-band__agent">
+              <span
+                data-role={row.role}
+                className="rd-band__role"
+                style={{ color: `var(--role-${row.role}, var(--role-other))` }}
+              >
+                {row.role}
+              </span>
+              <span>
+                {row.planId ?? ''}
+                {row.taskId ? ` · ${row.taskId}` : ''}
+              </span>
+              <span className="rd-band__muted">{row.model}</span>
+              {row.elapsedMs !== null && (
+                <span className="rd-band__num">► {compactDuration(row.elapsedMs)}</span>
+              )}
+              <span className="rd-band__num">{formatTokens(row.tokens)} tok</span>
+            </div>
+          ))
+        ) : (
+          <div className="rd-band__empty">no agent working yet</div>
+        )}
+        {footerParts.length > 0 && (
+          <div className="rd-band__footer">{footerParts.join(' · ')}</div>
         )}
       </div>
 
       {/* CHECKS cell */}
-      <div data-cell="checks">
-        {focus !== null && (
+      <div data-cell="checks" className="rd-band__cell">
+        <div className="rd-band__title">
+          {focus !== null ? `CHECKS · ${focus.taskId}` : 'CHECKS'}
+        </div>
+        {focus !== null ? (
           <>
-            <div>
+            <div className="rd-band__focus">
               {focusTaskTitle} · {focus.planId}
             </div>
-            <div>
+            <div className="rd-band__rungs">
               {rungs.map((rung, i) => (
-                <span key={rung.index ?? `x${i}`}>
-                  <StatusGlyph state={rungGlyphState(rung.state)} />
-                  {rung.label}
-                </span>
+                <span
+                  key={rung.index ?? `x${i}`}
+                  data-rung={rung.state}
+                  className="rd-band__rung"
+                ><StatusGlyph state={rungGlyphState(rung.state)} />{rung.label}</span>
               ))}
             </div>
           </>
+        ) : (
+          <div className="rd-band__empty">no task is being checked</div>
         )}
       </div>
 
       {/* BURN cell */}
-      <div data-cell="burn">
-        <div>
+      <div data-cell="burn" className="rd-band__cell">
+        <div className="rd-band__title">BURN</div>
+        <div className="rd-band__total">
           {formatTokens(burn.tokens)} tok
-          {' · '}
-          {burn.tokensPerMin !== null
-            ? `${formatTokens(Math.round(burn.tokensPerMin))}/min`
-            : '·'}
+          {burn.tokensPerMin !== null &&
+            ` · ${formatTokens(Math.round(burn.tokensPerMin))}/min`}
         </div>
         {burn.byRole.map((r) => (
-          <div key={r.role}>
-            <div style={{ width: `${(r.share * 100).toFixed(1)}%` }} />
-            <span>
+          <div key={r.role} data-role-share={r.role} className="rd-band__share">
+            <span className="rd-band__bar">
+              <span
+                style={{
+                  width: `${(r.share * 100).toFixed(1)}%`,
+                  background: `var(--role-${r.role}, var(--role-other))`,
+                }}
+              />
+            </span>
+            <span className="rd-band__num">
               {r.role} {Math.round(r.share * 100)}%
             </span>
           </div>

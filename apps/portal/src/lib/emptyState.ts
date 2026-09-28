@@ -36,6 +36,8 @@ export interface EmptyStateInput {
     failedCheck?: string | null;
     /** Elapsed wall-clock duration in milliseconds (for the completed message). */
     durationMs?: number | null;
+    /** Human-readable reason why the plan is waiting in the queue (for the pending message). */
+    waitReason?: string | null;
   };
 }
 
@@ -53,10 +55,11 @@ export interface EmptyStateInput {
  *    a. Nothing active, tasks queued → scheduler waiting message.
  *    b. Every task dispatched → dispatched message.
  *    c. Otherwise → generic running progress.
- * 6. Plan completed with accepted tasks → accepted message.
- * 7. Plan completed cleanly → finished + duration + verification count.
- * 8. Plan failed → stopped-at message with retry hint.
- * 9. Plan cancelled → cancelled message.
+ * 6. Plan is pending (queued) → queued message with optional wait reason.
+ * 7. Plan completed with accepted tasks → accepted message.
+ * 8. Plan completed cleanly → finished + optional duration + verification count.
+ * 9. Plan failed → stopped-at message with retry hint.
+ * 10. Plan cancelled → cancelled message.
  */
 export function describeEmpty(input: EmptyStateInput): string {
   const { connection, workspace, planCount, plan } = input;
@@ -107,19 +110,29 @@ export function describeEmpty(input: EmptyStateInput): string {
     return `Running — ${tasksActive} active, ${tasksDone} of ${tasksTotal} done.`;
   }
 
-  // ── 6. Completed with accepted tasks ───────────────────────────────────────
+  // ── 6. Pending (queued) ─────────────────────────────────────────────────────
+  if (phase === 'pending') {
+    const reason = plan.waitReason;
+    if (reason) return `Queued — ${reason}.`;
+    return 'Queued — waiting to start.';
+  }
+
+  // ── 7. Completed with accepted tasks ───────────────────────────────────────
   if (phase === 'completed' && tasksAccepted > 0) {
     const taskWord = tasksAccepted === 1 ? 'task was' : 'tasks were';
     return `Finished; ${tasksAccepted} ${taskWord} accepted despite failing checks.`;
   }
 
-  // ── 7. Completed cleanly ────────────────────────────────────────────────────
+  // ── 8. Completed cleanly ────────────────────────────────────────────────────
   if (phase === 'completed') {
-    const duration = compactDuration(plan.durationMs);
-    return `Finished in ${duration} — ${tasksDone} of ${tasksTotal} verified.`;
+    if (plan.durationMs != null) {
+      const duration = compactDuration(plan.durationMs);
+      return `Finished in ${duration} — ${tasksDone} of ${tasksTotal} verified.`;
+    }
+    return `Finished — ${tasksDone} of ${tasksTotal} verified.`;
   }
 
-  // ── 8. Failed ───────────────────────────────────────────────────────────────
+  // ── 9. Failed ───────────────────────────────────────────────────────────────
   if (phase === 'failed') {
     const { failedTaskId, failedCheck } = plan;
     if (failedTaskId) {
@@ -129,6 +142,6 @@ export function describeEmpty(input: EmptyStateInput): string {
     return 'Plan failed. Retry to resume from the last checkpoint.';
   }
 
-  // ── 9. Cancelled ────────────────────────────────────────────────────────────
+  // ── 10. Cancelled ───────────────────────────────────────────────────────────
   return 'Plan was cancelled.';
 }

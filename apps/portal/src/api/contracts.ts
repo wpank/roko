@@ -27,15 +27,19 @@ export const TASK_OUTCOME_ACCEPTED_WITH_FAILURES = 'accepted_with_failures' as c
 /**
  * Entry in the plan-set index.
  *
- * NOTE: plan_set_loaded is part of the planned event schema (engine work in
- * progress); the Rust source does not yet have a PlanSetLoaded variant in
- * DashboardEvent as of this writing. This type is provided for forward
- * compatibility.
+ * Mirrors PlanSetEntry in crates/roko-core/src/dashboard_snapshot.rs.
+ * wave: scheduling wave (0 = no prerequisites in the set).
+ * depends_on: plan_ids in this set that must succeed before this one starts.
+ * conflicts_with: plan_ids that this plan never runs beside (same output files).
+ * Older servers omit wave/depends_on/conflicts_with; consumers default to 0/[]/[].
  */
 export interface WirePlanSetEntry {
   plan_id: string;
   title?: string;
   tasks_total?: number;
+  wave?: number;
+  depends_on?: string[];
+  conflicts_with?: string[];
 }
 
 /**
@@ -268,7 +272,7 @@ export interface WirePlanSummary {
   id: string;
   title: string;
   task_count: number;
-  tasks_done: number;
+  tasks_done?: number;
   tasks_failed: number;
   completed: boolean;
   status: string;

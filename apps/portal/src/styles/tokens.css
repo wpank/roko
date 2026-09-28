@@ -101,11 +101,24 @@
   /* 5. Layout — fixed-dimension tokens                                  */
   /* ------------------------------------------------------------------ */
 
-  /** Left navigation rail width. */
-  --rail-width:  260px;
+  /** Left navigation rail width — 320px gives room for a name beside four number columns. */
+  --rail-width:     320px;
 
   /** Standard data row height in the task grid. */
-  --row-height:  24px;
+  --row-height:     24px;
+
+  /** Portal header bar height. */
+  --header-height:  32px;
+
+  /* ------------------------------------------------------------------ */
+  /* 6. Role aliases — short names the engine reports                    */
+  /* ------------------------------------------------------------------ */
+
+  /** Short alias for the implementer role. */
+  --role-impl:     var(--role-implementer);
+
+  /** Short alias for the quick-reviewer role. */
+  --role-reviewer: var(--role-quick-reviewer);
 }
 
 /* -------------------------------------------------------------------- */

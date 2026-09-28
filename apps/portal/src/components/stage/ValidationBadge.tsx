@@ -21,7 +21,7 @@
 import React, { useRef, useEffect, useState } from 'react';
 import { clsx } from 'clsx';
 import { useValidation } from '@/api/queries';
-import { ApiError } from '@/api/client';
+import { isMissingRoute } from '@/lib/apiErrors';
 import type { WireDiagnostic } from '@/api/contracts';
 
 // ---------------------------------------------------------------------------
@@ -61,7 +61,7 @@ export function ValidationBadge({ planId, onSelectTask }: ValidationBadgeProps) 
   if (isLoading) {
     return (
       <span className="text-text-faint font-mono text-xs select-none" aria-label="validating">
-        ·
+        validating…
       </span>
     );
   }
@@ -70,7 +70,7 @@ export function ValidationBadge({ planId, onSelectTask }: ValidationBadgeProps) 
   // Missing-route state (404 / 405)
   // -------------------------------------------------------------------------
 
-  if (error instanceof ApiError && (error.status === 404 || error.status === 405)) {
+  if (isMissingRoute(error)) {
     return (
       <span
         className="text-text-faint font-mono text-xs select-none cursor-default"

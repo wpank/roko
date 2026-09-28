@@ -7,16 +7,18 @@
  * - Workspace name (and branch when reported) from useWorkspace(); sets
  *   document.title to "roko · <name>" via an effect.
  * - Live run progress when plans are running: plan-set summary or single-plan
- *   progress, elapsed + ETA (always together), and accumulated cost.  The
- *   entire section is a button that cycles selectedPlanId through runningPlanIds.
- *   A ■ cancel button stops the whole run.
+ *   progress, elapsed time, ETA when known, and accumulated cost when > 0.
+ *   The entire section is a button that cycles selectedPlanId through
+ *   runningPlanIds. A ■ cancel button stops the whole run.
  * - Connection dot with data-connection attribute and descriptive title.
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect } from 'react';
 import { useWorkspace } from '@/api/queries';
 import { useDashboardStore } from '@/stores/dashboard';
-import { formatCost, compactDuration } from '@/lib/formatters';
+import { compactDuration, formatCost, middleEllipsis } from '@/lib/formatters';
+import { useNow } from '@/lib/useNow';
+import { StatusGlyph } from '@/components/primitives/StatusGlyph';
 
 // ---------------------------------------------------------------------------
 // Props
@@ -43,12 +45,10 @@ export function Header({
   const run = useDashboardStore((s) => s.run);
   const connection = useDashboardStore((s) => s.connection);
 
-  // Tick once a second so elapsed display stays current.
-  const [nowMs, setNowMs] = useState<number>(() => Date.now());
-  useEffect(() => {
-    const id = setInterval(() => setNowMs(Date.now()), 1_000);
-    return () => clearInterval(id);
-  }, []);
+  const isRunning = runningPlanIds.length > 0;
+
+  // Clock that only ticks while something is running.
+  const nowMs = useNow(isRunning);
 
   // document.title — "roko · <workspace name>"
   const workspaceName = workspace?.name;
@@ -58,52 +58,49 @@ export function Header({
     }
   }, [workspaceName]);
 
-  // Workspace label: "name" or "name · branch"
-  const workspaceLabel = workspace
-    ? workspace.branch
-      ? `${workspace.name} · ${workspace.branch}`
-      : workspace.name
-    : null;
-
   // ── Running-state display ─────────────────────────────────────────────────
 
-  const isRunning = runningPlanIds.length > 0;
-
-  // Plans currently in the 'running' phase (used for ETA).
+  // Plans currently in the 'running' phase.
   const runningPlans = Object.values(run.plans).filter((p) => p.phase === 'running');
 
+  // Is this a multi-plan set (more than one plan in the set)?
+  const isMultiPlanSet = run.planSet !== null && run.planSet.planIds.length > 1;
+
   // Build the main run label (plan-set or single plan).
-  let runLabel = '';
+  let mainLabel = '';
   if (isRunning) {
-    if (run.planSet !== null) {
+    if (isMultiPlanSet && run.planSet !== null) {
       // Plan-set run: multiple plans executing concurrently.
       const setPlans = run.planSet.planIds.flatMap((id) => {
-        // Record<string, PlanRun> — key may be absent at runtime
         const p = run.plans[id as keyof typeof run.plans];
         return p !== undefined ? [p] : [];
       });
       const donePlans = setPlans.filter(
-        (p) => p.phase === 'completed' || p.phase === 'failed',
+        (p) => p.phase === 'completed' || p.phase === 'failed' || p.phase === 'cancelled',
       ).length;
       const totalPlans = run.planSet.planIds.length;
       const doneTasks = setPlans.reduce((s, p) => s + p.tasksDone + p.tasksFailed, 0);
       const totalTasks = run.planSet.tasksTotal;
-      runLabel = `${runningPlans.length} running · ${donePlans}/${totalPlans} plans · ${doneTasks}/${totalTasks} tasks`;
+      mainLabel = `${runningPlans.length} running · ${donePlans}/${totalPlans} plans · ${doneTasks}/${totalTasks} tasks`;
     } else {
-      // Single plan outside a set.
+      // Single plan (or single-plan set): use title, middle-ellipsised to 32.
       const plan = runningPlans[0];
       if (plan) {
         const done = plan.tasksDone + plan.tasksFailed;
-        runLabel = `${plan.planId} ${done}/${plan.tasksTotal}`;
+        const label = plan.title ? middleEllipsis(plan.title, 32) : plan.planId;
+        mainLabel = `${label} ${done}/${plan.tasksTotal}`;
       }
     }
   }
 
-  // Elapsed since run started; freezes when the run ends (durationMs is set).
-  const elapsedMs =
-    run.run.startedAtMs !== null && run.run.durationMs === null
-      ? nowMs - run.run.startedAtMs
-      : run.run.durationMs ?? null;
+  // Elapsed time: use run.run.startedAtMs, else earliest running plan's startedAtMs.
+  const startMs =
+    run.run.startedAtMs ??
+    runningPlans.reduce<number | null>((earliest, p) => {
+      if (p.startedAtMs === null) return earliest;
+      return earliest === null ? p.startedAtMs : Math.min(earliest, p.startedAtMs);
+    }, null);
+  const elapsedMs = startMs !== null && isRunning ? nowMs - startMs : null;
 
   // ETA: largest etaMinutes across all currently running plans.
   const maxEtaMinutes = runningPlans.reduce<number | null>((max, p) => {
@@ -111,14 +108,13 @@ export function Header({
     return max === null ? p.etaMinutes : Math.max(max, p.etaMinutes);
   }, null);
 
-  // Elapsed and ETA are always shown together or not at all.
-  // "The operator's question is 'am I behind' — elapsed alone doesn't answer it."
-  const timingLabel =
-    elapsedMs !== null && maxEtaMinutes !== null
-      ? `${compactDuration(elapsedMs)} ~${maxEtaMinutes}m`
-      : null;
-
-  const costLabel = formatCost(run.totals.costUsd);
+  // Build run summary parts joined with ' · '.
+  const runParts: string[] = [];
+  if (mainLabel) runParts.push(mainLabel);
+  if (elapsedMs !== null) runParts.push(compactDuration(elapsedMs));
+  if (maxEtaMinutes !== null) runParts.push(`~${maxEtaMinutes}m`);
+  if (run.totals.costUsd > 0) runParts.push(formatCost(run.totals.costUsd));
+  const runSummaryText = runParts.join(' · ');
 
   // Cycle selectedPlanId through runningPlanIds on each click.
   function handleSelectNext() {
@@ -142,28 +138,43 @@ export function Header({
   // ── Render ────────────────────────────────────────────────────────────────
 
   return (
-    <header data-region="header">
-      {workspaceLabel !== null && <span>{workspaceLabel}</span>}
+    <header data-region="header" className="rd-header">
+      <span data-slot="workspace" className="rd-header__workspace">
+        {workspace?.name}
+        {workspace?.branch && (
+          <span className="rd-header__branch"> · {workspace.branch}</span>
+        )}
+      </span>
 
       {isRunning && (
-        <>
-          <button type="button" onClick={handleSelectNext}>
-            {runLabel}
-            {timingLabel !== null && <> · {timingLabel}</>}
-            {' '}
-            {costLabel}
+        <span data-slot="run" className="rd-header__run">
+          <button
+            type="button"
+            data-action="next-running"
+            className="rd-header__summary"
+            onClick={handleSelectNext}
+          >
+            <StatusGlyph state="active" />
+            <span>{runSummaryText}</span>
           </button>
           <button
             type="button"
             data-action="cancel-run"
+            className="rd-header__cancel"
+            aria-label="Cancel the run"
             onClick={() => onCancelRun(runningPlanIds[0]!)}
           >
             ■
           </button>
-        </>
+        </span>
       )}
 
-      <span data-connection={connection} title={connectionTitle}>
+      <span
+        data-slot="connection"
+        data-connection={connection}
+        className="rd-header__conn"
+        title={connectionTitle}
+      >
         ●
       </span>
     </header>

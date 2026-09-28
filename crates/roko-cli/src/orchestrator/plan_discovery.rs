@@ -13,6 +13,16 @@
 //! (`08a`). Both are preserved in [`PlanInfo::num`] and sorted
 //! lexicographically so `08` comes before `08a`.
 //!
+//! # Plan sets
+//!
+//! A directory holding its own `tasks.toml` or `plan.md` is a plan; any other
+//! directory is a plan set whose plans (and nested sets) are discovered up to
+//! [`MAX_PLAN_DEPTH`] levels below the plans root, e.g.
+//! `plans/portal-programme/01-backend-plan-service/tasks.toml`. A plan's id is
+//! its leaf directory name and its set is reported as [`PlanInfo::group`].
+//! [`find_plan_dirs`] is the single definition of a plan directory, shared
+//! with the execution loader (`runner::plan_loader::load_plans`).
+//!
 //! # Frontmatter contract
 //!
 //! Frontmatter lives between two `---` fences at the very top of
@@ -85,6 +95,9 @@ pub struct PlanInfo {
     pub path: PathBuf,
     /// Parsed frontmatter. `None` when the file has no `---` fences.
     pub frontmatter: Option<PlanFrontmatter>,
+    /// Plan set containing this plan, relative to the plans root and
+    /// `/`-separated (e.g. `"portal-programme"`). `None` for top-level plans.
+    pub group: Option<String>,
 }
 
 impl PlanInfo {
@@ -131,6 +144,158 @@ pub enum DiscoveryError {
         #[source]
         source: ValidationError,
     },
+
+    /// Two plan directories share a leaf name, so their ids (and their
+    /// `.roko/state/graph/<id>` checkpoints) would collide.
+    #[error(
+        "duplicate plan id '{id}': {first} and {second} (plan ids are leaf directory names and must be unique across plan sets)"
+    )]
+    DuplicatePlanId {
+        /// The colliding plan id.
+        id: String,
+        /// The first plan directory with this id.
+        first: PathBuf,
+        /// The second plan directory with this id.
+        second: PathBuf,
+    },
+}
+
+/// Deepest level below a plans root at which plan directories are found:
+/// `plans/<set>/<subset>/<plan>/tasks.toml` sits at depth 3.
+pub const MAX_PLAN_DEPTH: usize = 3;
+
+/// Directory names that are never plans or plan sets (compared
+/// case-insensitively). Names not starting with an ASCII letter or digit,
+/// including dot-directories, are skipped as well.
+const SKIPPED_DIR_NAMES: &[&str] = &["archive", "archived", "_meta"];
+
+/// A plan directory located by [`find_plan_dirs`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlanDir {
+    /// Plan id: the leaf directory name, which also names the plan's
+    /// `.roko/state/graph/<id>` checkpoint directory.
+    pub id: String,
+    /// The plan directory.
+    pub dir: PathBuf,
+    /// Plan set containing this plan, relative to the discovery root and
+    /// `/`-separated. `None` for plans directly under the root.
+    pub group: Option<String>,
+}
+
+impl PlanDir {
+    /// Whether the plan is runnable, i.e. it has a `tasks.toml`.
+    #[must_use]
+    pub fn has_tasks(&self) -> bool {
+        self.dir.join("tasks.toml").is_file()
+    }
+}
+
+/// Is `dir` a plan directory — does it hold its own `tasks.toml` or `plan.md`?
+#[must_use]
+pub fn is_plan_dir(dir: &Path) -> bool {
+    dir.join("tasks.toml").is_file() || dir.join("plan.md").is_file()
+}
+
+/// Find every plan directory under `root`.
+///
+/// This is the one definition of a plan directory, shared by `roko plan
+/// list`, `GET /api/plans`, the TUI and `roko plan run`:
+///
+/// - A directory holding its own `tasks.toml` or `plan.md` is a plan. When
+///   `root` itself is one, it is the only result. Plans are never searched
+///   for nested plans.
+/// - Any other directory is a plan set, searched up to [`MAX_PLAN_DEPTH`]
+///   levels below `root`.
+/// - `archive/`, `archived/`, `_meta/` and dot-directories are skipped.
+///
+/// Results are sorted by path.
+///
+/// # Errors
+///
+/// - [`DiscoveryError::DirMissing`] if `root` does not exist.
+/// - [`DiscoveryError::ReadFailed`] if a directory cannot be listed.
+/// - [`DiscoveryError::DuplicatePlanId`] if two plans share a leaf name.
+pub fn find_plan_dirs(root: &Path) -> Result<Vec<PlanDir>, DiscoveryError> {
+    if !root.exists() {
+        return Err(DiscoveryError::DirMissing(root.to_path_buf()));
+    }
+    if is_plan_dir(root) {
+        let id = root.file_name().map_or_else(
+            || root.display().to_string(),
+            |name| name.to_string_lossy().into_owned(),
+        );
+        return Ok(vec![PlanDir {
+            id,
+            dir: root.to_path_buf(),
+            group: None,
+        }]);
+    }
+    let mut found = Vec::new();
+    collect_plan_dirs(root, root, 1, &mut found)?;
+    found.sort_by(|a, b| a.dir.cmp(&b.dir));
+    let mut seen: std::collections::HashMap<&str, &Path> = std::collections::HashMap::new();
+    for plan in &found {
+        if let Some(first) = seen.insert(plan.id.as_str(), plan.dir.as_path()) {
+            return Err(DiscoveryError::DuplicatePlanId {
+                id: plan.id.clone(),
+                first: first.to_path_buf(),
+                second: plan.dir.clone(),
+            });
+        }
+    }
+    Ok(found)
+}
+
+/// Recursive step of [`find_plan_dirs`]; `dir` sits `depth - 1` levels below `root`.
+fn collect_plan_dirs(
+    root: &Path,
+    dir: &Path,
+    depth: usize,
+    found: &mut Vec<PlanDir>,
+) -> Result<(), DiscoveryError> {
+    let read = fs::read_dir(dir).map_err(|source| DiscoveryError::ReadFailed {
+        path: dir.to_path_buf(),
+        source,
+    })?;
+    for entry in read {
+        let entry = entry.map_err(|source| DiscoveryError::ReadFailed {
+            path: dir.to_path_buf(),
+            source,
+        })?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !starts_with_plan_prefix(&name)
+            || SKIPPED_DIR_NAMES
+                .iter()
+                .any(|skipped| name.eq_ignore_ascii_case(skipped))
+        {
+            continue;
+        }
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        if is_plan_dir(&path) {
+            let group = dir
+                .strip_prefix(root)
+                .ok()
+                .filter(|relative| !relative.as_os_str().is_empty())
+                .map(|relative| {
+                    relative
+                        .components()
+                        .map(|part| part.as_os_str().to_string_lossy())
+                        .collect::<Vec<_>>()
+                        .join("/")
+                });
+            found.push(PlanDir {
+                id: name,
+                dir: path,
+                group,
+            });
+        } else if depth < MAX_PLAN_DEPTH {
+            collect_plan_dirs(root, &path, depth + 1, found)?;
+        }
+    }
+    Ok(())
 }
 
 /// Errors returned by [`validate_frontmatter`].
@@ -151,69 +316,69 @@ pub enum ValidationError {
 /// Scan `plans_dir` for plan files, parse each one, validate, and
 /// return the discovered entries ordered by [`rank_plans`] rules.
 ///
+/// Plan directories come from [`find_plan_dirs`], so nested plan sets are
+/// included and `plans_dir` may itself be a single plan. Legacy flat
+/// `<base>.md` plans are only recognised directly under a plans root.
+///
 /// The returned vector is empty when the directory has no plan files.
 ///
 /// # Errors
 ///
 /// - [`DiscoveryError::DirMissing`] if `plans_dir` does not exist.
 /// - [`DiscoveryError::ReadFailed`] on I/O errors while reading a plan.
+/// - [`DiscoveryError::DuplicatePlanId`] if two plan directories share a name.
 /// - [`DiscoveryError::BadFrontmatter`] on malformed YAML.
 /// - [`DiscoveryError::Invalid`] if a parsed frontmatter fails validation.
 pub fn discover_plans(plans_dir: &Path) -> Result<Vec<PlanInfo>, DiscoveryError> {
-    if !plans_dir.exists() {
-        return Err(DiscoveryError::DirMissing(plans_dir.to_path_buf()));
-    }
-    // Collect candidates first so we can enforce "new-layout wins" before
-    // any I/O past metadata — directory entries are loaded before flat
-    // `.md` entries so the dedup in the second pass is deterministic.
-    let mut dir_candidates: Vec<(String, PathBuf)> = Vec::new();
-    let mut file_candidates: Vec<(String, PathBuf)> = Vec::new();
-    let read = fs::read_dir(plans_dir).map_err(|source| DiscoveryError::ReadFailed {
-        path: plans_dir.to_path_buf(),
-        source,
-    })?;
-    for entry in read {
-        let entry = entry.map_err(|source| DiscoveryError::ReadFailed {
+    let root_is_plan = is_plan_dir(plans_dir);
+    // Directory plans are collected before flat `.md` entries so the
+    // "new-layout wins" dedup below is deterministic.
+    let dir_candidates = find_plan_dirs(plans_dir)?.into_iter().map(|plan| {
+        let plan_md = plan.dir.join("plan.md");
+        let path = if plan_md.is_file() {
+            plan_md
+        } else {
+            plan.dir.join("tasks.toml")
+        };
+        (plan.id, path, plan.group)
+    });
+    let mut file_candidates: Vec<(String, PathBuf, Option<String>)> = Vec::new();
+    if !root_is_plan {
+        let read = fs::read_dir(plans_dir).map_err(|source| DiscoveryError::ReadFailed {
             path: plans_dir.to_path_buf(),
             source,
         })?;
-        let name = entry.file_name().to_string_lossy().to_string();
-        if !starts_with_plan_prefix(&name) {
-            continue;
-        }
-        // Skip well-known non-plan files that happen to start with an
-        // alphanumeric character (e.g. INDEX.md, README.md, CONTEXT.md).
-        let name_lower = name.to_ascii_lowercase();
-        if matches!(
-            name_lower.as_str(),
-            "index" | "index.md" | "readme" | "readme.md" | "context" | "context.md"
-        ) {
-            continue;
-        }
-        let kind = entry
-            .file_type()
-            .map_err(|source| DiscoveryError::ReadFailed {
-                path: entry.path(),
+        for entry in read {
+            let entry = entry.map_err(|source| DiscoveryError::ReadFailed {
+                path: plans_dir.to_path_buf(),
                 source,
             })?;
-        if kind.is_dir() {
-            let plan_md = entry.path().join("plan.md");
-            let tasks_toml = entry.path().join("tasks.toml");
-            if plan_md.is_file() {
-                dir_candidates.push((name, plan_md));
-            } else if tasks_toml.is_file() {
-                dir_candidates.push((name, tasks_toml));
+            let name = entry.file_name().to_string_lossy().to_string();
+            // Skip well-known non-plan files that happen to start with an
+            // alphanumeric character (e.g. INDEX.md, README.md, CONTEXT.md).
+            if !starts_with_plan_prefix(&name)
+                || !has_md_extension(&name)
+                || matches!(
+                    name.to_ascii_lowercase().as_str(),
+                    "index.md" | "readme.md" | "context.md"
+                )
+            {
+                continue;
             }
-        } else if kind.is_file()
-            && has_md_extension(&name)
-            && !name.eq_ignore_ascii_case("CONTEXT.md")
-        {
-            let base = strip_md_extension(&name).to_string();
-            file_candidates.push((base, entry.path()));
+            let kind = entry
+                .file_type()
+                .map_err(|source| DiscoveryError::ReadFailed {
+                    path: entry.path(),
+                    source,
+                })?;
+            if kind.is_file() {
+                let base = strip_md_extension(&name).to_string();
+                file_candidates.push((base, entry.path(), None));
+            }
         }
     }
     let mut plans = Vec::new();
-    for (base, path) in dir_candidates.into_iter().chain(file_candidates) {
+    for (base, path, group) in dir_candidates.chain(file_candidates) {
         // New-layout dir wins over legacy flat file with the same base.
         if plans.iter().any(|p: &PlanInfo| p.base == base) {
             continue;
@@ -240,6 +405,7 @@ pub fn discover_plans(plans_dir: &Path) -> Result<Vec<PlanInfo>, DiscoveryError>
             num,
             path,
             frontmatter,
+            group,
         });
     }
     rank_plans(&mut plans);
@@ -616,6 +782,7 @@ mod tests {
                 num: "02".into(),
                 path: PathBuf::new(),
                 frontmatter: None,
+                group: None,
             },
             PlanInfo {
                 base: "01-a".into(),
@@ -625,6 +792,7 @@ mod tests {
                     priority: Some(5),
                     ..Default::default()
                 }),
+                group: None,
             },
         ];
         rank_plans(&mut plans);
@@ -641,5 +809,108 @@ mod tests {
         let plans = discover_plans(dir.path()).unwrap();
         let nums: Vec<&str> = plans.iter().map(|p| p.num.as_str()).collect();
         assert_eq!(nums, vec!["30", "31", "32"]);
+    }
+
+    const TASKS: &str = "[meta]\nplan = \"p\"\n\n[[task]]\nid = \"T1\"\n";
+
+    #[test]
+    fn nested_plan_set_is_discovered_with_its_group() {
+        let dir = TempDir::new().unwrap();
+        write_tasks_only_plan(dir.path(), "top-plan", TASKS);
+        let set = dir.path().join("programme");
+        write_tasks_only_plan(&set, "01-backend", TASKS);
+        write_tasks_only_plan(&set, "02-portal", TASKS);
+        // Supporting markdown inside a set is not a legacy flat plan.
+        fs::write(set.join("EXECUTION-PATH.md"), "# notes").unwrap();
+
+        let plans = discover_plans(dir.path()).unwrap();
+        let found: Vec<(&str, Option<&str>)> = plans
+            .iter()
+            .map(|p| (p.base.as_str(), p.group.as_deref()))
+            .collect();
+        assert_eq!(
+            found,
+            vec![
+                ("01-backend", Some("programme")),
+                ("02-portal", Some("programme")),
+                ("top-plan", None),
+            ]
+        );
+        assert!(plans[0].path.ends_with("programme/01-backend/tasks.toml"));
+    }
+
+    #[test]
+    fn archive_meta_and_dot_directories_are_skipped() {
+        let dir = TempDir::new().unwrap();
+        write_tasks_only_plan(&dir.path().join("archive"), "old-plan", TASKS);
+        write_tasks_only_plan(&dir.path().join("Archived"), "older-plan", TASKS);
+        write_tasks_only_plan(&dir.path().join("_meta"), "meta-plan", TASKS);
+        write_tasks_only_plan(&dir.path().join(".hidden"), "hidden-plan", TASKS);
+        write_tasks_only_plan(dir.path(), "live-plan", TASKS);
+
+        let ids: Vec<String> = find_plan_dirs(dir.path())
+            .unwrap()
+            .into_iter()
+            .map(|plan| plan.id)
+            .collect();
+        assert_eq!(ids, vec!["live-plan"]);
+    }
+
+    #[test]
+    fn discovery_depth_is_bounded() {
+        let dir = TempDir::new().unwrap();
+        write_tasks_only_plan(&dir.path().join("a/b"), "at-depth-3", TASKS);
+        write_tasks_only_plan(&dir.path().join("a/b/c"), "at-depth-4", TASKS);
+
+        let plans = find_plan_dirs(dir.path()).unwrap();
+        assert_eq!(plans.len(), 1);
+        assert_eq!(plans[0].id, "at-depth-3");
+        assert_eq!(plans[0].group.as_deref(), Some("a/b"));
+    }
+
+    #[test]
+    fn plans_are_not_searched_for_nested_plans() {
+        let dir = TempDir::new().unwrap();
+        write_tasks_only_plan(dir.path(), "outer", TASKS);
+        write_tasks_only_plan(&dir.path().join("outer"), "inner", TASKS);
+
+        let ids: Vec<String> = find_plan_dirs(dir.path())
+            .unwrap()
+            .into_iter()
+            .map(|plan| plan.id)
+            .collect();
+        assert_eq!(ids, vec!["outer"]);
+    }
+
+    #[test]
+    fn duplicate_plan_ids_across_sets_fail_with_both_paths() {
+        let dir = TempDir::new().unwrap();
+        write_tasks_only_plan(&dir.path().join("set-a"), "01-same", TASKS);
+        write_tasks_only_plan(&dir.path().join("set-b"), "01-same", TASKS);
+
+        let err = discover_plans(dir.path()).unwrap_err();
+        let DiscoveryError::DuplicatePlanId { id, first, second } = &err else {
+            panic!("expected DuplicatePlanId, got {err:?}");
+        };
+        assert_eq!(id, "01-same");
+        assert!(first.ends_with("set-a/01-same"));
+        assert!(second.ends_with("set-b/01-same"));
+        let message = err.to_string();
+        assert!(message.contains("set-a") && message.contains("set-b"));
+    }
+
+    #[test]
+    fn root_that_is_a_plan_is_the_only_plan() {
+        let dir = TempDir::new().unwrap();
+        write_tasks_only_plan(dir.path(), "01-single", TASKS);
+        let plan_dir = dir.path().join("01-single");
+        // Sibling markdown must not be mistaken for legacy flat plans.
+        fs::write(plan_dir.join("REVIEW.md"), "# review").unwrap();
+
+        let plans = discover_plans(&plan_dir).unwrap();
+        assert_eq!(plans.len(), 1);
+        assert_eq!(plans[0].base, "01-single");
+        assert_eq!(plans[0].group, None);
+        assert!(plans[0].path.ends_with("01-single/tasks.toml"));
     }
 }

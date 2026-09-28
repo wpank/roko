@@ -114,7 +114,10 @@ pub fn load_plan(dir: &Path) -> Result<Plan> {
 /// Load plan(s) from a directory.
 ///
 /// - If `dir/tasks.toml` exists, returns a single plan rooted at `dir`.
-/// - Otherwise, scans immediate subdirectories for `tasks.toml` files.
+/// - Otherwise `dir` is a plan set: loads every runnable plan that
+///   [`find_plan_dirs`](crate::orchestrator::plan_discovery::find_plan_dirs)
+///   discovers — the same plan directories `roko plan list` shows, including
+///   nested plan sets and excluding `archive/`, `_meta/` and dot-directories.
 /// - Never scans `.md` files or modifies anything on disk.
 pub fn load_plans(dir: &Path) -> Result<Vec<Plan>> {
     // Case 1: dir itself is a plan (try reading tasks.toml directly)
@@ -126,34 +129,15 @@ pub fn load_plans(dir: &Path) -> Result<Vec<Plan>> {
         }
     }
 
-    // Case 2: scan subdirs
+    // Case 2: a plan set. Plans with only a `plan.md` are not runnable yet.
+    let plan_dirs = crate::orchestrator::plan_discovery::find_plan_dirs(dir)
+        .with_context(|| format!("cannot discover plans in {}", dir.display()))?;
     let mut plans = Vec::new();
-    let entries = std::fs::read_dir(dir)
-        .with_context(|| format!("cannot read directory {}", dir.display()))?;
-
-    for entry in entries {
-        let entry = match entry {
-            Ok(e) => e,
+    for plan_dir in plan_dirs.iter().filter(|plan_dir| plan_dir.has_tasks()) {
+        match load_plan(&plan_dir.dir) {
+            Ok(plan) => plans.push(plan),
             Err(e) => {
-                tracing::warn!(dir = %dir.display(), err = %e, "skipping unreadable directory entry");
-                continue;
-            }
-        };
-        let path = entry.path();
-        if !path.is_dir() {
-            continue;
-        }
-        // Attempt to read tasks.toml — if NotFound, this subdir is not a plan.
-        match std::fs::read_to_string(path.join("tasks.toml")) {
-            Ok(_) => match load_plan(&path) {
-                Ok(plan) => plans.push(plan),
-                Err(e) => {
-                    tracing::warn!(dir = %path.display(), err = %e, "skipping plan with parse error");
-                }
-            },
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(e) => {
-                tracing::warn!(dir = %path.display(), err = %e, "failed to probe tasks.toml");
+                tracing::warn!(dir = %plan_dir.dir.display(), err = %e, "skipping plan with parse error");
             }
         }
     }
@@ -718,6 +702,46 @@ role = "implementer"
         let tmp = tempfile::tempdir().unwrap();
         let result = load_plans(tmp.path());
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn load_plans_matches_discovery_for_nested_plan_sets() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_tasks_toml(&tmp.path().join("top-plan"), MINIMAL_TASKS);
+        write_tasks_toml(
+            &tmp.path().join("programme/01-backend"),
+            &MINIMAL_TASKS.replace("test-plan", "01-backend"),
+        );
+        write_tasks_toml(&tmp.path().join("archive/old-plan"), MINIMAL_TASKS);
+        write_tasks_toml(&tmp.path().join("_meta/meta-plan"), MINIMAL_TASKS);
+
+        let loaded: Vec<String> = load_plans(tmp.path())
+            .unwrap()
+            .into_iter()
+            .map(|plan| plan.id)
+            .collect();
+        assert_eq!(loaded, vec!["01-backend", "top-plan"]);
+
+        let discovered: Vec<String> = crate::orchestrator::discover_plans(tmp.path())
+            .unwrap()
+            .into_iter()
+            .map(|plan| plan.base)
+            .collect();
+        assert_eq!(discovered, loaded);
+    }
+
+    #[test]
+    fn load_plans_rejects_duplicate_plan_ids_across_sets() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_tasks_toml(&tmp.path().join("set-a/01-same"), MINIMAL_TASKS);
+        write_tasks_toml(&tmp.path().join("set-b/01-same"), MINIMAL_TASKS);
+
+        let error = format!("{:#}", load_plans(tmp.path()).unwrap_err());
+        assert!(error.contains("duplicate plan id '01-same'"), "{error}");
+        assert!(
+            error.contains("set-a") && error.contains("set-b"),
+            "{error}"
+        );
     }
 
     const TASKS_WITH_CRATE_FILES: &str = r#"

@@ -478,13 +478,26 @@ impl TuiState {
     /// experiment store) are tailed from the local `.roko/learn/` files by
     /// [`Self::sync_connected_learning_files`].
     pub fn update_from_dashboard_snapshot(&mut self, snap: &roko_core::DashboardSnapshot) {
+        // One run clock spans the whole announced plan set, including the
+        // gaps between plans when nothing is active.
+        self.plan_set_running = snap.plan_set.is_some() && !snap.plan_set_complete();
         if let Some(duration_ms) = snap.run_duration_ms {
             self.run_duration_secs = Some(duration_ms as f64 / 1_000.0);
             self.run_started = None;
-        } else if snap.stats.plans_active > 0 {
+        } else if snap.stats.plans_active > 0 || self.plan_set_running {
             self.run_duration_secs = None;
             if self.run_started.is_none() {
-                self.run_started = Some(Instant::now());
+                self.run_started = Some(
+                    snap.plan_set
+                        .as_ref()
+                        .and_then(|set| instant_at_unix_ms(set.loaded_at_ms))
+                        .unwrap_or_else(Instant::now),
+                );
+            }
+        } else if snap.plan_set.is_some() {
+            // The whole set finished: freeze the clock at its final value.
+            if let Some(started) = self.run_started.take() {
+                self.run_duration_secs = Some(started.elapsed().as_secs_f64());
             }
         } else {
             self.run_duration_secs = None;
@@ -593,14 +606,35 @@ impl TuiState {
             .collect();
 
         let mut plan_ids: Vec<String> = snap.plans.keys().cloned().collect();
-        plan_ids.sort_by(|lhs, rhs| {
-            prev_plan_order
-                .get(lhs)
-                .copied()
+        // Announced plan-set members keep their execution order.
+        let plan_set_position = |plan_id: &str| {
+            snap.plan_set
+                .as_ref()
+                .and_then(|set| set.position(plan_id))
                 .unwrap_or(usize::MAX)
-                .cmp(&prev_plan_order.get(rhs).copied().unwrap_or(usize::MAX))
+        };
+        plan_ids.sort_by(|lhs, rhs| {
+            plan_set_position(lhs)
+                .cmp(&plan_set_position(rhs))
+                .then_with(|| {
+                    prev_plan_order
+                        .get(lhs)
+                        .copied()
+                        .unwrap_or(usize::MAX)
+                        .cmp(&prev_plan_order.get(rhs).copied().unwrap_or(usize::MAX))
+                })
                 .then_with(|| lhs.cmp(rhs))
         });
+        // Announced plan-set members group by their dependency wave, so the
+        // plan tree shows which plans can run side by side.
+        let plan_set_wave = |plan_id: &str| {
+            snap.plan_set.as_ref().and_then(|set| {
+                set.plans
+                    .iter()
+                    .find(|entry| entry.plan_id == plan_id)
+                    .map(|entry| entry.wave)
+            })
+        };
 
         self.plans = plan_ids
             .iter()
@@ -618,7 +652,8 @@ impl TuiState {
                     tasks_done: plan.tasks_done.min(tasks_total),
                     tasks_failed: plan.tasks_failed.min(tasks_total),
                     elapsed_secs: prev_plan_elapsed.get(plan_id).copied().unwrap_or(0.0),
-                    wave: prev_plan_wave.get(plan_id).copied().flatten(),
+                    wave: plan_set_wave(plan_id)
+                        .or_else(|| prev_plan_wave.get(plan_id).copied().flatten()),
                     expanded: prev_plan_expanded.get(plan_id).copied().unwrap_or(false),
                     tasks,
                     branch: Some(crate::orchestrator::worktree::format_branch_name(plan_id)),
@@ -979,6 +1014,7 @@ impl TuiState {
                 superseded_by: None,
                 old_format: false,
                 last_error: None,
+                group: None,
             })
             .collect();
 
@@ -1265,6 +1301,19 @@ fn snapshot_plan_status(plan: &roko_core::dashboard_snapshot::PlanState) -> Plan
             phase => PlanPhase::from(phase),
         }
     }
+}
+
+/// Map a past Unix-millisecond timestamp onto the monotonic clock.
+fn instant_at_unix_ms(unix_ms: u64) -> Option<Instant> {
+    if unix_ms == 0 {
+        return None;
+    }
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_millis();
+    let elapsed_ms = u64::try_from(now_ms).ok()?.checked_sub(unix_ms)?;
+    Instant::now().checked_sub(std::time::Duration::from_millis(elapsed_ms))
 }
 
 fn snapshot_task_status(task: &roko_core::dashboard_snapshot::TaskState) -> TaskStatus {

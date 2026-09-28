@@ -35,6 +35,22 @@ pub enum RuntimeProfile {
     AuthoredGraph,
 }
 
+impl RuntimeProfile {
+    /// Stable snake_case identifier, identical to the serde name.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::FullPlan => "full_plan",
+            Self::GraphPlan => "graph_plan",
+            Self::Workflow => "workflow",
+            Self::DirectLight => "direct_light",
+            Self::AgentServer => "agent_server",
+            Self::ChatLight => "chat_light",
+            Self::AuthoredGraph => "authored_graph",
+        }
+    }
+}
+
 impl std::fmt::Display for RuntimeProfile {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -274,6 +290,21 @@ mod tests {
         assert_eq!(RuntimeProfile::AgentServer.to_string(), "AgentServer");
         assert_eq!(RuntimeProfile::ChatLight.to_string(), "ChatLight");
         assert_eq!(RuntimeProfile::AuthoredGraph.to_string(), "AuthoredGraph");
+    }
+
+    #[test]
+    fn profile_as_str_matches_serde_name() {
+        for profile in [
+            RuntimeProfile::FullPlan,
+            RuntimeProfile::GraphPlan,
+            RuntimeProfile::Workflow,
+            RuntimeProfile::DirectLight,
+            RuntimeProfile::AgentServer,
+            RuntimeProfile::ChatLight,
+            RuntimeProfile::AuthoredGraph,
+        ] {
+            assert_eq!(serde_json::json!(profile), profile.as_str());
+        }
     }
 
     #[test]

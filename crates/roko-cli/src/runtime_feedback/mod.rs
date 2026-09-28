@@ -88,6 +88,11 @@ pub enum FeedbackEvent {
         /// Model slug initially selected by the dispatcher before cascade
         /// routing, daimon modulation, and EFE adjustments.
         initial_model: String,
+        /// Agent turns the provider reported for this attempt (0 = unknown).
+        turns: u64,
+        /// Short class-prefixed reason when the attempt failed
+        /// (`"turn_cap: …"`, `"provider: …"`, `"verify: …"`).
+        failure_reason: Option<String>,
     },
     /// A gate verdict landed for a task.
     GateOutcome {

@@ -374,6 +374,17 @@ fn validate_tasks_file(
                     message: format!("schema validation failed: {schema_issue}"),
                 });
             }
+            // A role whose safety contract denies write tools cannot produce
+            // the task's declared `files`; the task would fail at runtime.
+            for issue in tasks_file.write_capability_issues() {
+                diagnostics.push(Diagnostic {
+                    severity: Severity::Error,
+                    rule_id: "PLAN_036".to_string(),
+                    plan_id: Some(plan_id.clone()),
+                    task_id: Some(issue.task_id.clone()),
+                    message: issue.to_string(),
+                });
+            }
         }
         Err(runtime_err) => {
             diagnostics.push(Diagnostic {
@@ -971,7 +982,8 @@ fn parse_task_role(role: &str) -> Option<AgentRole> {
         "architect" => AgentRole::Architect,
         "researcher" => AgentRole::Researcher,
         "auditor" => AgentRole::Auditor,
-        "quick-reviewer" | "quickreviewer" => AgentRole::QuickReviewer,
+        // `reviewer` is prompted with the read-only quick-reviewer template.
+        "quick-reviewer" | "quickreviewer" | "reviewer" => AgentRole::QuickReviewer,
         "scribe" => AgentRole::Scribe,
         "critic" => AgentRole::Critic,
         "auto-fixer" | "autofixer" => AgentRole::AutoFixer,

@@ -58,6 +58,7 @@ impl PlanDiscoveryRuntime {
             superseded_by: None,
             old_format: false,
             last_error: None,
+            group: None,
         };
 
         let task = PlanTaskDto {

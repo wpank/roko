@@ -13,6 +13,7 @@ use crate::process::{
     GRACE_STDIN_CLOSE_MS, ResourceLimits, benign_stderr_warn_once, classify_benign_stderr,
     confined_command, kill_tree, register_spawned_pid, set_process_group, unregister_pid,
 };
+use crate::provider::error_classify::detect_provider_exhaustion;
 use crate::usage::Usage;
 use async_trait::async_trait;
 use roko_core::defaults::DEFAULT_REQUEST_TIMEOUT_MS;
@@ -284,8 +285,35 @@ impl ClaudeCliAgent {
         {
             output = output.tag("model", model);
         }
+        if let Some(num_turns) = stream_usage.num_turns {
+            output = output.tag("num_turns", num_turns.to_string());
+        }
         let output = output.build();
         AgentResult::fail(output).with_usage(Self::usage_from_stream(stream_usage, wall_ms))
+    }
+
+    /// The run stopped at `--max-turns`: the final stream-json `result` has
+    /// subtype `error_max_turns` (the CLI exits 1 with no text or stderr).
+    fn turn_cap_hit(
+        &self,
+        stdout: &str,
+        stderr: &str,
+    ) -> Option<crate::provider::error_classify::TurnCapHit> {
+        let result = [stdout, stderr].into_iter().find_map(|output| {
+            output
+                .lines()
+                .filter_map(Self::parse_stream_event)
+                .rfind(|event| event.get("type").and_then(Value::as_str) == Some("result"))
+        })?;
+        (result.get("subtype").and_then(Value::as_str) == Some("error_max_turns")).then(|| {
+            crate::provider::error_classify::TurnCapHit {
+                num_turns: result
+                    .get("num_turns")
+                    .and_then(Value::as_u64)
+                    .and_then(|turns| u32::try_from(turns).ok()),
+                cap: self.max_turns,
+            }
+        })
     }
 
     fn discovered_mcp_config(&self) -> Option<PathBuf> {
@@ -426,6 +454,9 @@ impl ClaudeCliAgent {
             }
 
             usage.source = UsageSource::ProviderReported;
+            if let Some(num_turns) = event.get("num_turns").and_then(Value::as_u64) {
+                usage.num_turns = Some(num_turns);
+            }
             if let Some(model) = event
                 .get("model")
                 .and_then(Value::as_str)
@@ -568,6 +599,54 @@ impl ClaudeCliAgent {
             }
             _ => {}
         }
+    }
+
+    /// Human-readable reason for a non-zero exit.
+    ///
+    /// A usage-window refusal ("You've hit your session limit · resets 4pm")
+    /// arrives as the stream-json `result` on stdout with nothing on stderr,
+    /// so both are read; an exhaustion is rendered as
+    /// [`crate::provider::ProviderError::ProviderExhausted`] so callers can
+    /// quarantine the provider until its reset time.
+    fn failure_reason(stdout: &str, stderr: &str) -> String {
+        let human_stderr = stderr
+            .lines()
+            .filter(|line| Self::parse_stream_event(line).is_none())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let result_error =
+            Self::result_error_text(stdout).or_else(|| Self::result_error_text(stderr));
+        if let Some(exhaustion) = detect_provider_exhaustion(&human_stderr)
+            .or_else(|| result_error.as_deref().and_then(detect_provider_exhaustion))
+        {
+            return exhaustion.into_error().to_string();
+        }
+        Self::first_human_stderr_line(stderr)
+            .map(str::to_string)
+            .or(result_error)
+            .unwrap_or_else(|| "claude failed".to_string())
+    }
+
+    /// Text of the final stream-json `result` event when it reports an error.
+    fn result_error_text(output: &str) -> Option<String> {
+        output
+            .lines()
+            .filter_map(Self::parse_stream_event)
+            .rfind(|event| event.get("type").and_then(Value::as_str) == Some("result"))
+            .filter(|event| {
+                event
+                    .get("is_error")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(true)
+            })
+            .and_then(|event| {
+                event
+                    .get("result")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|text| !text.is_empty())
+                    .map(str::to_string)
+            })
     }
 
     fn first_human_stderr_line(stderr: &str) -> Option<&str> {
@@ -853,15 +932,20 @@ impl Agent for ClaudeCliAgent {
         let stream_usage =
             Self::parse_stream_usage(&stdout).merge(Self::parse_stream_usage(&stderr));
 
+        if let Some(hit) = self.turn_cap_hit(&stdout, &stderr) {
+            tracing::warn!(agent = %self.name, elapsed_s = elapsed_secs, "{hit}");
+            return self.failure_with_stream_usage(input, &hit.to_string(), started, &stream_usage);
+        }
+
         if !status.success() {
             let code = status
                 .code()
                 .map_or_else(|| "signal".to_string(), |c| c.to_string());
             tracing::warn!(agent = %self.name, exit_code = %code, elapsed_s = elapsed_secs, "agent failed");
-            let stderr_reason = Self::first_human_stderr_line(&stderr).unwrap_or("claude failed");
+            let reason = Self::failure_reason(&stdout, &stderr);
             return self.failure_with_stream_usage(
                 input,
-                &format!("exit {code}: {stderr_reason}"),
+                &format!("exit {code}: {reason}"),
                 started,
                 &stream_usage,
             );
@@ -896,15 +980,18 @@ impl Agent for ClaudeCliAgent {
             "agent completed successfully"
         );
 
-        let output_signal = input
+        let mut output_signal = input
             .derive(Kind::AgentOutput, Body::text(text))
             .provenance(Provenance::agent(&self.name))
             .tag("agent", &self.name)
             .tag(
                 "model",
                 stream_usage.model.as_deref().unwrap_or(&self.model),
-            )
-            .build();
+            );
+        if let Some(num_turns) = stream_usage.num_turns {
+            output_signal = output_signal.tag("num_turns", num_turns.to_string());
+        }
+        let output_signal = output_signal.build();
 
         AgentResult::ok(output_signal)
             .with_trace(self.stderr_trace(&stderr))
@@ -941,6 +1028,8 @@ struct StreamUsage {
     cache_read_tokens: Option<u64>,
     cost_usd: Option<f64>,
     model: Option<String>,
+    /// Agent turns the CLI reported in its final `result` event.
+    num_turns: Option<u64>,
     source: UsageSource,
 }
 
@@ -956,6 +1045,7 @@ impl StreamUsage {
             self.cache_read_tokens = self.cache_read_tokens.or(other.cache_read_tokens);
             self.cost_usd = self.cost_usd.or(other.cost_usd);
             self.model = self.model.or(other.model);
+            self.num_turns = self.num_turns.or(other.num_turns);
         }
         self
     }
@@ -1400,5 +1490,111 @@ printf '%s\n' '{"type":"content_block_delta","delta":{"text":"ok"}}'
         );
         assert_eq!(trace.len(), 1);
         assert_eq!(trace[0].body.as_text().unwrap(), "unexpected stderr line");
+    }
+
+    #[test]
+    fn failure_reason_surfaces_session_limit_from_stdout_result() {
+        let stdout = concat!(
+            "{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"s1\"}\n",
+            "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":true,",
+            "\"result\":\"You\u{2019}ve hit your session limit \u{b7} resets 4pm (Europe/Berlin)\"}\n",
+        );
+        let reason = ClaudeCliAgent::failure_reason(stdout, "");
+        assert!(
+            reason.starts_with("provider usage exhausted: "),
+            "unexpected reason: {reason}"
+        );
+        assert!(reason.contains("resets 4pm (Europe/Berlin)"), "{reason}");
+        let exhaustion = detect_provider_exhaustion(&reason).expect("re-detectable");
+        assert!(exhaustion.resets_at_ms.is_some());
+    }
+
+    #[test]
+    fn failure_reason_prefers_stderr_then_result_then_generic() {
+        assert_eq!(
+            ClaudeCliAgent::failure_reason("", "Error: bad flag\n"),
+            "Error: bad flag"
+        );
+        let stdout =
+            "{\"type\":\"result\",\"is_error\":true,\"result\":\"Credit balance is too low\"}\n";
+        assert_eq!(
+            ClaudeCliAgent::failure_reason(stdout, ""),
+            "Credit balance is too low"
+        );
+        assert_eq!(ClaudeCliAgent::failure_reason("", ""), "claude failed");
+    }
+}
+
+#[cfg(all(test, unix))]
+mod turn_cap_tests {
+    use super::*;
+    use crate::provider::error_classify::{
+        TurnCapHit, detect_provider_exhaustion, detect_turn_cap,
+    };
+    use std::os::unix::fs::PermissionsExt;
+
+    fn fake_claude(dir: &std::path::Path, result_line: &str, exit_code: i32) -> PathBuf {
+        let script = dir.join("claude-fake.sh");
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' '{result_line}'\nexit {exit_code}\n"
+            ),
+        )
+        .expect("write fake claude");
+        let mut permissions = std::fs::metadata(&script).expect("metadata").permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&script, permissions).expect("make executable");
+        script
+    }
+
+    fn prompt() -> Signal {
+        Signal::builder(Kind::Prompt)
+            .body(Body::text("do it"))
+            .build()
+    }
+
+    #[tokio::test]
+    async fn error_max_turns_is_a_turn_cap_hit_not_a_generic_failure() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let script = fake_claude(
+            tmp.path(),
+            r#"{"type":"result","subtype":"error_max_turns","is_error":true,"num_turns":2,"total_cost_usd":0.01}"#,
+            1,
+        );
+        let agent = ClaudeCliAgent::new(&script, tmp.path(), "claude-test-model").with_max_turns(1);
+
+        let result = agent.run(&prompt(), &Context::now()).await;
+        assert!(!result.success);
+        let text = result.output.body.as_text().expect("failure text");
+        assert_eq!(
+            detect_turn_cap(text),
+            Some(TurnCapHit {
+                num_turns: Some(2),
+                cap: Some(1),
+            }),
+            "{text}"
+        );
+        assert!(detect_provider_exhaustion(text).is_none(), "{text}");
+        assert_eq!(result.output.tag("num_turns"), Some("2"));
+    }
+
+    #[tokio::test]
+    async fn successful_run_reports_the_cli_turn_count() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let script = fake_claude(
+            tmp.path(),
+            concat!(
+                r#"{"type":"content_block_delta","delta":{"text":"done"}}"#,
+                "\n",
+                r#"{"type":"result","subtype":"success","is_error":false,"num_turns":3,"result":"done"}"#,
+            ),
+            0,
+        );
+        let agent = ClaudeCliAgent::new(&script, tmp.path(), "claude-test-model");
+
+        let result = agent.run(&prompt(), &Context::now()).await;
+        assert!(result.success, "{:?}", result.output.body.as_text());
+        assert_eq!(result.output.tag("num_turns"), Some("3"));
     }
 }

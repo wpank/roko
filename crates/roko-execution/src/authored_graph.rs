@@ -483,6 +483,9 @@ mod tests {
         CapabilitySet::from([Capability::ReadFs, Capability::Bus])
     }
 
+    /// Write a one-node graph around `sense`: a real, zero-cost Cell with no
+    /// capability requirements. The `noop` test stub cannot be used because
+    /// production starts reject test-stub descriptors.
     fn write_test_graph(dir: &std::path::Path, name: &str, caps: &[&str]) -> PathBuf {
         let path = dir.join(format!("{name}.toml"));
         let caps_str = if caps.is_empty() {
@@ -499,7 +502,7 @@ name = "{name}"
 {caps_str}
 [[nodes]]
 id = "root"
-cell_type = "noop"
+cell_type = "sense"
 "#
             ),
         )

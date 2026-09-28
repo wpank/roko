@@ -258,7 +258,7 @@ pub fn validate_service_request(
         .overrides
         .run_id
         .clone()
-        .unwrap_or_else(|| format!("{}_{}", request.profile, chrono_millis()));
+        .unwrap_or_else(|| format!("{}_{}", request.profile.as_str(), chrono_millis()));
 
     Ok(NonPlanServiceHandle {
         profile: request.profile,

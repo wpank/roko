@@ -92,7 +92,12 @@ impl LshIndex {
     #[must_use]
     pub fn new(num_tables: usize, hash_bits: usize) -> Self {
         let tables: Vec<HashTable> = (0..num_tables.max(1))
-            .map(|i| HashTable::new(hash_bits.max(1), (i as u64 + 1) * 0x517c_c1b7_2722_0a95))
+            .map(|i| {
+                HashTable::new(
+                    hash_bits.max(1),
+                    (i as u64 + 1).wrapping_mul(0x517c_c1b7_2722_0a95),
+                )
+            })
             .collect();
         Self {
             tables,

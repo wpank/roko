@@ -1302,7 +1302,8 @@ impl RokoConfig {
             let _ = writeln!(out, "strategist = {}", band.strategist);
             let _ = writeln!(out, "reviewers = {}", band.reviewers);
             let _ = writeln!(out, "reviewer_mode = \"{}\"", band.reviewer_mode.label());
-            let _ = writeln!(out, "max_iterations = {}\n", band.max_iterations);
+            let _ = writeln!(out, "max_iterations = {}", band.max_iterations);
+            let _ = writeln!(out, "max_turns = {}\n", band.max_turns);
         }
     }
     fn write_example_budget(out: &mut String, c: &Self) {
@@ -1686,10 +1687,17 @@ pub(crate) fn validate_references(config: &RokoConfig) -> Vec<ValidationWarning>
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ConductorConfig {
+    /// Most plan tasks (each one agent) executing at once across a whole
+    /// Graph plan run, whatever each plan's own `max_parallel` allows.
     #[serde(default = "default_max_agents")]
     pub max_agents: usize,
+    /// Most plans of a selected plan set running at once (default 1, one
+    /// plan at a time). Plans whose footprints overlap never run together.
+    /// `roko plan run --max-parallel-plans` overrides it for one run.
     #[serde(default = "default_max_parallel_plans")]
     pub max_parallel_plans: usize,
+    /// Not read by the Graph engine: `max_parallel_plans` alone sets how
+    /// many plans run at once.
     #[serde(default)]
     pub parallel_enabled: bool,
     #[serde(default)]
@@ -2470,19 +2478,17 @@ pub struct CoreRunnerConfig {
     /// connection timeout). Defaults to 5.
     #[serde(default = "CoreRunnerConfig::default_dispatch_max_retries")]
     pub dispatch_max_retries: u32,
-    /// Maximum number of warm (pre-spawned) agent slots per role.
+    /// Capacity per role of the dispatcher's warm-pool container.
     ///
-    /// The warm pool keeps pre-spawned agent handles alive so the next
-    /// phase's agent can be promoted in <100 ms instead of a cold 5-15 s
-    /// subprocess spawn. Setting this to 0 disables warm-pool pre-spawning.
-    /// Defaults to 2 (one reviewer slot + one implementer slot).
+    /// No runtime effect today: no provider process is pre-spawned or reused,
+    /// and no dispatch path takes from the pool, so every agent dispatch is a
+    /// cold start. Defaults to 2.
     #[serde(default = "CoreRunnerConfig::default_warm_pool_size")]
     pub warm_pool_size: usize,
-    /// Maximum idle lifetime for a pre-spawned warm agent, in seconds.
+    /// Idle lifetime of a warm-pool entry, in seconds.
     ///
-    /// Agents that have been sitting in the pool longer than this are evicted
-    /// on the next housekeeping tick. Prevents stale processes from lingering
-    /// between long inter-task gaps. Defaults to 300 s (5 minutes).
+    /// No runtime effect today (see [`Self::warm_pool_size`]). Defaults to
+    /// 300 s (5 minutes).
     #[serde(default = "CoreRunnerConfig::default_warm_pool_idle_timeout_secs")]
     pub warm_pool_idle_timeout_secs: u64,
     /// When `true`, the runner writes the full assembled system prompt to

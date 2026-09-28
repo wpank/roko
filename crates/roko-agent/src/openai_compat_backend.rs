@@ -42,16 +42,21 @@ fn shared_rate_limiter() -> Arc<ProviderRateLimiter> {
 /// Classify an [`HttpPostError`] into the appropriate [`LlmError`] variant.
 ///
 /// Status codes are mapped as follows:
-/// - 429 / 529 -> `LlmError::Provider(ProviderError::RateLimit { .. })`
+/// - 429 / 529 -> `LlmError::Provider(ProviderError::RateLimit { .. })`, or
+///   `InsufficientCredits` / `ProviderExhausted` when the body names a billing
+///   or usage-window problem or `Retry-After` spans a usage window
 /// - 500..=599 -> `LlmError::Provider(ProviderError::ServerError(status))`
 /// - 401       -> `LlmError::Provider(ProviderError::AuthFailure)`
 /// - Everything else (including transport errors with no status) -> `LlmError::Network`
 fn classify_http_error(e: crate::http::HttpPostError) -> LlmError {
     use crate::provider::ProviderError;
     match e.status {
-        Some(429 | 529) => LlmError::Provider(ProviderError::RateLimit {
-            retry_after_ms: e.retry_after_secs.map(|sec| sec * 1000),
-        }),
+        Some(429 | 529) => {
+            LlmError::Provider(crate::provider::error_classify::classify_rate_limited(
+                &e.message,
+                e.retry_after_secs.map(|sec| sec * 1000),
+            ))
+        }
         Some(s @ 500..=599) => LlmError::Provider(ProviderError::ServerError(s)),
         Some(401) => LlmError::Provider(ProviderError::AuthFailure),
         _ => LlmError::Network(e.to_string()),
@@ -305,6 +310,7 @@ impl OpenAiCompatLlmBackend {
             LlmError::Provider(ProviderError::RateLimit { .. }) => "rate_limit",
             LlmError::Provider(ProviderError::AuthFailure) => "auth_failure",
             LlmError::Provider(ProviderError::InsufficientCredits) => "insufficient_credits",
+            LlmError::Provider(ProviderError::ProviderExhausted { .. }) => "provider_exhausted",
             LlmError::Provider(ProviderError::Timeout) | LlmError::Timeout(_) => "timeout",
             LlmError::Provider(ProviderError::ServerError(_)) => "server_error",
             LlmError::Provider(ProviderError::ContentPolicy) => "content_policy",

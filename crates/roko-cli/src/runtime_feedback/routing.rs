@@ -211,6 +211,8 @@ mod tests {
         let r = router();
         let sink = RoutingObservationSink::new(r.clone());
         let event = FeedbackEvent::TaskCompleted {
+            turns: 0,
+            failure_reason: None,
             plan_id: "p".into(),
             task_id: "t".into(),
             outcome: outcome(true),
@@ -242,6 +244,8 @@ mod tests {
         let r = router();
         let sink = RoutingObservationSink::new(r.clone());
         let event = FeedbackEvent::TaskCompleted {
+            turns: 0,
+            failure_reason: None,
             plan_id: "p".into(),
             task_id: "t".into(),
             outcome: outcome(false),
@@ -277,6 +281,8 @@ mod tests {
         let r = router();
         let sink = RoutingObservationSink::new(r.clone());
         let event = FeedbackEvent::TaskCompleted {
+            turns: 0,
+            failure_reason: None,
             plan_id: "p".into(),
             task_id: "t".into(),
             outcome: outcome(true),
@@ -307,6 +313,8 @@ mod tests {
         let mut bad_outcome = outcome(true);
         bad_outcome.model = "no-such-slug".into();
         let event = FeedbackEvent::TaskCompleted {
+            turns: 0,
+            failure_reason: None,
             plan_id: "p".into(),
             task_id: "t".into(),
             outcome: bad_outcome,
@@ -343,6 +351,8 @@ mod tests {
         let sink = RoutingObservationSink::new(r.clone());
         let ctx = test_routing_context();
         let event = FeedbackEvent::TaskCompleted {
+            turns: 0,
+            failure_reason: None,
             plan_id: "p".into(),
             task_id: "t".into(),
             outcome: outcome(true),
@@ -376,6 +386,8 @@ mod tests {
         let r = router();
         let sink = RoutingObservationSink::new(r.clone());
         let event = FeedbackEvent::TaskCompleted {
+            turns: 0,
+            failure_reason: None,
             plan_id: "p".into(),
             task_id: "t".into(),
             outcome: outcome(true),

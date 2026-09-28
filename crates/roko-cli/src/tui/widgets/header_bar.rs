@@ -193,9 +193,16 @@ fn format_elapsed(secs: u64) -> String {
 
 /// Derive a short queue/plan label from the TUI state.
 fn queue_label(state: &TuiState) -> Option<String> {
-    // Prefer active plan names; fall back to first plan.
-    if let Some(active) = state.plans.iter().find(|p| p.active) {
-        return Some(truncate_label(&active.id, 24));
+    // Prefer active plan names, counting the others that run beside the
+    // first; fall back to the first plan.
+    let mut active = state.plans.iter().filter(|p| p.active);
+    if let Some(first) = active.next() {
+        let others = active.count();
+        return Some(if others == 0 {
+            truncate_label(&first.id, 24)
+        } else {
+            format!("{} +{others}", truncate_label(&first.id, 20))
+        });
     }
     if let Some(first) = state.plans.first() {
         return Some(truncate_label(&first.id, 24));
@@ -982,6 +989,23 @@ mod tests {
             ..Default::default()
         });
         assert_eq!(queue_label(&state), Some("my-cool-plan".to_string()));
+    }
+
+    #[test]
+    fn queue_label_counts_plans_running_beside_the_first() {
+        let mut state = TuiState::from_dashboard_data(&DashboardData::default());
+        for (id, active) in [
+            ("01-backend", true),
+            ("02-idle", false),
+            ("05-portal", true),
+        ] {
+            state.plans.push(super::super::super::state::PlanEntry {
+                id: id.to_string(),
+                active,
+                ..Default::default()
+            });
+        }
+        assert_eq!(queue_label(&state), Some("01-backend +1".to_string()));
     }
 
     #[test]

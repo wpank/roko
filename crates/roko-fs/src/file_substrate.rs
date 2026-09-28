@@ -13,7 +13,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::Mutex;
 
 #[cfg(any(test, feature = "hdc"))]
-const HDC_TAG: &str = "hdc_fingerprint";
+const HDC_TAG: &str = roko_core::signal::HDC_FINGERPRINT_TAG;
 
 /// A substrate that persists signals to a JSONL log on disk.
 ///
@@ -435,8 +435,8 @@ fn attach_hdc_fingerprint(mut signal: Signal) -> Signal {
     signal
         .tags
         .insert(HDC_TAG.into(), BASE64.encode(fingerprint.to_bytes()));
-    // Recompute the content hash since tags are identity-bearing.
-    signal.id = signal.content_hash();
+    // The fingerprint tag is not identity-bearing, so the id (and every
+    // lineage reference to it) stays valid.
     signal
 }
 
@@ -474,9 +474,9 @@ mod tests {
         let sub = FileSubstrate::open(tmp.path()).await.unwrap();
         let s = sig(Kind::Task, "hi", 0);
         let id = sub.put(s.clone()).await.unwrap();
+        // put() may attach an HDC fingerprint tag, but never re-keys the signal.
+        assert_eq!(id, s.id);
         let got = sub.get(&id).await.unwrap().expect("signal must exist");
-        // put() may attach an HDC fingerprint which changes the id and tags.
-        // Verify the essential semantic content, not the full signal identity.
         assert_eq!(got.kind, s.kind);
         assert_eq!(got.body, s.body);
     }

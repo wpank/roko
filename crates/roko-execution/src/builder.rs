@@ -728,7 +728,11 @@ mod tests {
             let summary = services.summary();
             snapshot.push(serde_json::to_value(&summary).unwrap());
         }
-        insta::assert_json_snapshot!("builder_profile_services", snapshot);
+        // Workspace builds unify `serde_json/preserve_order` in from the chain
+        // dependencies, which changes `Value` key order; sort for stability.
+        insta::with_settings!({ sort_maps => true }, {
+            insta::assert_json_snapshot!("builder_profile_services", snapshot);
+        });
     }
 
     #[test]

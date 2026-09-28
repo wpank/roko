@@ -326,6 +326,8 @@ mod tests {
         let path = dir.path().join("kc.jsonl");
         let sink = KnowledgeIngestionSink::at(&path);
         sink.on_event(&FeedbackEvent::TaskCompleted {
+            turns: 0,
+            failure_reason: None,
             plan_id: "p".into(),
             task_id: "t".into(),
             outcome: outcome(),
@@ -351,6 +353,8 @@ mod tests {
         let path = dir.path().join("kc.jsonl");
         let sink = KnowledgeIngestionSink::at(&path);
         sink.on_event(&FeedbackEvent::TaskCompleted {
+            turns: 0,
+            failure_reason: None,
             plan_id: "p".into(),
             task_id: "t".into(),
             outcome: outcome(),
@@ -375,6 +379,8 @@ mod tests {
         let sink = KnowledgeIngestionSink::at(dir.path().join("kc.jsonl"))
             .with_ingestor(Arc::new(NeuroKnowledgeIngestor::new(store.clone())));
         sink.on_event(&FeedbackEvent::TaskCompleted {
+            turns: 0,
+            failure_reason: None,
             plan_id: "plan-x".into(),
             task_id: "task-y".into(),
             outcome: outcome(),

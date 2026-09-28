@@ -476,12 +476,15 @@ mod tests {
 
     #[tokio::test]
     async fn loopback_bridge_authenticates_lists_and_dispatches() {
+        // Tool dispatch persists immune controls under the immune root, so
+        // keep them out of the crate directory.
+        let workspace = tempdir().unwrap();
         let bridge = CliPluginMcpBridge::start(runtime(), Arc::new(RokoConfig::default()))
             .expect("start bridge");
         let config = bridge
             .session_config(
-                Path::new("."),
-                Path::new("."),
+                workspace.path(),
+                workspace.path(),
                 &AgentContract {
                     role: "test".into(),
                     ..AgentContract::default()

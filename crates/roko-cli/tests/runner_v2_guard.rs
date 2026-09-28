@@ -1,14 +1,10 @@
-//! CI guard: ensure no production call sites use the legacy `PlanRunner`
-//! (backlog #131).
+//! CI guard: production code executes plans through the Graph engine.
 //!
-//! Both `prd.rs::run_generated_plans()` and `serve_runtime.rs` still call
-//! `crate::runner::run`, which is now a deprecated stub that returns an error
-//! directing callers to the Graph engine (#342 tracks migrating these sites).
-//! This test statically verifies that no new call sites for the legacy
-//! `PlanRunner::from_plans_dir` pattern appear in the CLI crate source.
-//!
-//! The test scans Rust source files for the pattern `PlanRunner::from_plans_dir`
-//! and fails if any call site is found (the definition itself is excluded).
+//! Runner-v2 and its `runner::run` entry point are gone; plan execution goes
+//! through `graph_execution::run_graph_plan`. These tests scan the CLI crate
+//! source so that neither the legacy `PlanRunner::from_plans_dir` pattern
+//! (backlog #131) nor a `runner::run(` call comes back, and pin the Graph
+//! engine at every caller that used to reach the removed stub.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -78,36 +74,49 @@ fn no_legacy_plan_runner_call_sites() {
     }
 }
 
-/// Verify that `prd.rs` still calls `crate::runner::run` (deprecated stub).
+/// Ensure nothing in the CLI crate calls `runner::run(`.
 ///
-/// `prd.rs` is a tracked migration site (#342): it calls the deprecated
-/// `runner::run` stub which returns an error at runtime directing callers to
-/// the Graph engine. This test documents the pending migration — it will be
-/// removed once `prd.rs` is updated to use `cmd_plan_run_engine` directly.
+/// The Runner-v2 entry point was deleted; while it existed as a stub it made
+/// `roko develop`, `roko do`, PRD auto-execution, and the cloud worker fail
+/// on every run. Execute plans with `graph_execution::run_graph_plan`.
 #[test]
-fn prd_uses_runner_stub() {
-    let prd_path = crate_src_dir().join("prd.rs");
-    assert!(prd_path.exists(), "prd.rs should exist");
-    let content = fs::read_to_string(&prd_path).expect("read prd.rs");
-    assert!(
-        content.contains("crate::runner::run"),
-        "prd.rs::run_generated_plans should call crate::runner::run (deprecated stub, #342)"
-    );
+fn no_runner_run_call_sites() {
+    let hits = scan_for_pattern(&crate_src_dir(), "runner::run(");
+    if !hits.is_empty() {
+        let mut msg = String::from(
+            "ERROR: `runner::run(` call site(s) detected; Runner-v2 was removed.\n\
+             Execute plans with `graph_execution::run_graph_plan`.\n\n",
+        );
+        for (path, line, content) in &hits {
+            msg.push_str(&format!(
+                "  {}:{}: {}\n",
+                path.display(),
+                line,
+                content.trim()
+            ));
+        }
+        panic!("{msg}");
+    }
 }
 
-/// Verify that `serve_runtime.rs` still calls `crate::runner::run` (deprecated stub).
+/// Verify that every production plan-execution caller uses the Graph engine.
 ///
-/// `serve_runtime.rs` is a tracked migration site (#342): it calls the
-/// deprecated `runner::run` stub which returns an error at runtime. This test
-/// documents the pending migration — it will be removed once `serve_runtime.rs`
-/// is updated to use `cmd_plan_run_engine` directly.
+/// Each of these used to terminate in the deprecated `runner::run` stub,
+/// which always returned an error.
 #[test]
-fn serve_runtime_uses_runner_stub() {
-    let serve_path = crate_src_dir().join("serve_runtime.rs");
-    assert!(serve_path.exists(), "serve_runtime.rs should exist");
-    let content = fs::read_to_string(&serve_path).expect("read serve_runtime.rs");
-    assert!(
-        content.contains("crate::runner::run"),
-        "serve_runtime.rs should call crate::runner::run (deprecated stub, #342)"
-    );
+fn plan_execution_callers_use_graph_engine() {
+    for caller in [
+        "serve_runtime.rs",   // POST /api/plans/{id}/execute
+        "prd.rs",             // PRD auto_plan + auto-execute
+        "worker/cloud.rs",    // deployed cloud code-implementer worker
+        "commands/do_cmd.rs", // `roko develop` and `roko do --plan`
+    ] {
+        let path = crate_src_dir().join(caller);
+        let content = fs::read_to_string(&path)
+            .unwrap_or_else(|err| panic!("read {}: {err}", path.display()));
+        assert!(
+            content.contains("run_graph_plan"),
+            "{caller} should execute plans via graph_execution::run_graph_plan"
+        );
+    }
 }

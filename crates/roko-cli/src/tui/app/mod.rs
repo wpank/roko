@@ -490,6 +490,18 @@ static TERMINAL_CLEANUP_ACTIVE: AtomicBool = AtomicBool::new(false);
 #[cfg(unix)]
 static TERMINAL_SIGNAL_CLEANUP_INSTALLED: AtomicBool = AtomicBool::new(false);
 
+/// Set by [`App::with_host_termination_signals`]: the host handles
+/// SIGINT/SIGTERM, so the terminal handler only claims SIGHUP.
+static HOST_HANDLES_TERMINATION_SIGNALS: AtomicBool = AtomicBool::new(false);
+
+/// Best-effort terminal reset for a host that must exit while a TUI thread
+/// may still own the terminal (e.g. a forced shutdown after a second signal).
+pub fn restore_terminal_for_forced_exit() {
+    if TERMINAL_CLEANUP_ACTIVE.load(Ordering::SeqCst) {
+        App::cleanup_terminal_best_effort();
+    }
+}
+
 struct PanicHookRestoreGuard(Arc<dyn Fn(&std::panic::PanicHookInfo<'_>) + Send + Sync + 'static>);
 
 impl Drop for PanicHookRestoreGuard {
@@ -542,8 +554,10 @@ fn install_terminal_signal_cleanup() {
     #[allow(unsafe_code)]
     unsafe {
         let handler = terminal_signal_handler as *const () as libc::sighandler_t;
-        let _ = libc::signal(libc::SIGINT, handler);
-        let _ = libc::signal(libc::SIGTERM, handler);
+        if !HOST_HANDLES_TERMINATION_SIGNALS.load(Ordering::SeqCst) {
+            let _ = libc::signal(libc::SIGINT, handler);
+            let _ = libc::signal(libc::SIGTERM, handler);
+        }
         let _ = libc::signal(libc::SIGHUP, handler);
     }
 }
@@ -1225,6 +1239,16 @@ impl App {
     #[must_use]
     pub const fn with_exit_on_plan_completion(mut self) -> Self {
         self.exit_on_plan_completion = true;
+        self
+    }
+
+    /// Leave SIGINT/SIGTERM to the embedding host instead of the
+    /// reset-and-reraise terminal handler. The host (e.g. `roko plan run`)
+    /// cancels its work, stops this TUI through the shutdown receiver, and
+    /// exits with the signal's status; SIGHUP keeps the terminal handler.
+    #[must_use]
+    pub fn with_host_termination_signals(self) -> Self {
+        HOST_HANDLES_TERMINATION_SIGNALS.store(true, Ordering::SeqCst);
         self
     }
 

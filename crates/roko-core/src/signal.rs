@@ -128,6 +128,13 @@ impl std::error::Error for GraduationError {}
 /// this version recorded so future re-encoders can invalidate stale fingerprints.
 pub const ENCODER_VERSION_TEXT_V1: u32 = 1;
 
+/// Tag under which a substrate may store a body-derived HDC fingerprint.
+///
+/// Its value is a pure function of the body, so it is excluded from
+/// [`Signal::content_hash`]: attaching it never changes a Signal's identity
+/// or breaks lineage references to it.
+pub const HDC_FINGERPRINT_TAG: &str = "hdc_fingerprint";
+
 /// HDC fingerprint metadata stored alongside a Signal.
 ///
 /// The vector provides semantic similarity lookup, while `encoder_version`
@@ -237,8 +244,10 @@ impl Signal {
     /// Compute the content hash of this signal's identity fields.
     ///
     /// The hash covers: kind, body, author, taint, lineage, and tags.
-    /// It does NOT cover: score, decay, timestamp, attestation, or emotional
-    /// metadata — these can change without changing what the signal fundamentally is.
+    /// It does NOT cover: score, decay, timestamp, attestation, emotional
+    /// metadata, or body-derived HDC fingerprints (the `fingerprint` field and
+    /// [`HDC_FINGERPRINT_TAG`]) — these can change without changing what the
+    /// signal fundamentally is.
     #[must_use]
     pub fn content_hash(&self) -> ContentHash {
         let mut hasher = blake3::Hasher::new();
@@ -255,6 +264,9 @@ impl Signal {
         }
         hasher.update(b"|");
         for (k, v) in &self.tags {
+            if k == HDC_FINGERPRINT_TAG {
+                continue;
+            }
             hasher.update(k.as_bytes());
             hasher.update(b"=");
             hasher.update(v.as_bytes());
@@ -843,6 +855,16 @@ mod tests {
             .tag("priority", "low")
             .build();
         assert_ne!(a.id, b.id);
+    }
+
+    #[test]
+    fn hdc_fingerprint_tag_does_not_affect_hash() {
+        let plain = Engram::builder(Kind::Task).body(Body::text("x")).build();
+        let tagged = Engram::builder(Kind::Task)
+            .body(Body::text("x"))
+            .tag(HDC_FINGERPRINT_TAG, "AAAA")
+            .build();
+        assert_eq!(plain.id, tagged.id);
     }
 
     #[test]

@@ -2008,6 +2008,7 @@ Examples:
   roko plan run plans/ --approval   Run with interactive TUI approval
   roko plan run plans/ --dry-run    Preview without executing
   roko plan run plans/ --fresh      Archive old state and start clean
+  roko plan run plans/ --max-parallel-plans 3   Run up to 3 independent plans at once
   roko plan run plans/ --resume-plan .roko/state/graph                              Resume Graph Activities
 
 The legacy Runner-v2 engine has been removed. --engine legacy is accepted but exits with an error.")]
@@ -2024,7 +2025,9 @@ The legacy Runner-v2 engine has been removed. --engine legacy is accepted but ex
         /// Working directory (repo root). Defaults to current directory.
         #[arg(long)]
         workdir: Option<PathBuf>,
-        /// Resume from engine state (Runner executor snapshot or Graph checkpoint directory/file).
+        /// Resume from engine state. Bare `--resume-plan` resumes the canonical
+        /// Graph checkpoints under `.roko/state/graph/` (any number of plans);
+        /// pass a checkpoint directory, or a checkpoint file for a single plan.
         #[arg(long = "resume-plan", visible_alias = "resume-state", num_args = 0..=1, default_missing_value = ".roko/state/state-snapshot.json")]
         resume_plan: Option<PathBuf>,
         /// Launch the connected inline TUI while Runner-v2 runs.
@@ -2139,6 +2142,23 @@ The legacy Runner-v2 engine has been removed. --engine legacy is accepted but ex
         /// each enricher cell type. Only applies to the Graph engine.
         #[arg(long)]
         rich_topology: bool,
+        /// Run up to N plans of a plan set at the same time.
+        ///
+        /// Plans start in execution order once their `depends_on_plan`
+        /// prerequisites have succeeded. Plans that write or build
+        /// overlapping parts of the working tree never run at the same time.
+        /// Defaults to `[conductor] max_parallel_plans` (1: one plan at a
+        /// time).
+        #[arg(
+            long,
+            value_name = "N",
+            value_parser = clap::value_parser!(u64).range(1..=64)
+        )]
+        max_parallel_plans: Option<u64>,
+        /// Start no further plans after the first plan fails. Plans already
+        /// running finish; the rest are reported as blocked.
+        #[arg(long)]
+        fail_fast: bool,
     },
     /// Generate implementation plans from a prompt, file, or PRD.
     Generate {
@@ -3363,13 +3383,10 @@ fn main() {
 
     let ansi_logs = use_color;
 
-    // Determine the workdir for log file placement.
-    let workdir = match &cli.command {
-        Some(Command::Serve { workdir, .. }) => {
-            workdir.clone().unwrap_or_else(|| resolve_workdir(&cli))
-        }
-        _ => resolve_workdir(&cli),
-    };
+    // Determine the workdir for log file placement and the agent PID
+    // registry: the invoked subcommand's `--workdir`, else `--repo`/cwd.
+    let workdir = invoked_subcommand_workdir().unwrap_or_else(|| resolve_workdir(&cli));
+    roko_agent::process::set_registry_root(&workdir);
 
     // File layer: write to .roko/roko.log with day-based rotation.
     // In TUI mode, use serve-tui.log to keep it separate from the main log.
@@ -4354,15 +4371,25 @@ fn install_sigterm_handler(runtime: &tokio::runtime::Runtime, shutdown: Graceful
             tracing::warn!("failed to install SIGTERM handler");
             return;
         };
-        sigterm.recv().await;
-        let report = shutdown.drain().await;
-        tracing::info!(
-            drained_hooks = report.drained_hooks,
-            timed_out_hooks = report.timed_out_hooks,
-            elapsed_ms = report.elapsed_ms,
-            "SIGTERM graceful shutdown complete"
-        );
-        std::process::exit(EXIT_SUCCESS);
+        while sigterm.recv().await.is_some() {
+            // A running `plan run` owns SIGTERM: it cancels its graph,
+            // finalizes checkpoints, restores the terminal and exits 143
+            // itself, with its own bounded forced-exit fallback.
+            if roko_cli::graph_execution::plan_runner::plan_run_owns_termination_signals() {
+                continue;
+            }
+            let report = shutdown.drain().await;
+            tracing::info!(
+                drained_hooks = report.drained_hooks,
+                timed_out_hooks = report.timed_out_hooks,
+                elapsed_ms = report.elapsed_ms,
+                "SIGTERM graceful shutdown complete"
+            );
+            // A terminated process never reports success.
+            std::process::exit(
+                roko_cli::graph_execution::plan_runner::PlanRunInterrupt::Terminate.exit_code(),
+            );
+        }
     }));
 }
 
@@ -4384,15 +4411,9 @@ fn bootstrap_observability_dirs(workdir: &Path) -> std::io::Result<()> {
 }
 
 fn run_process_lifecycle_hooks(workdir: &Path, quiet: bool) {
-    // The process registry currently keys off `std::env::current_dir()`.
-    // Avoid cleaning the wrong workspace when `--repo` points elsewhere.
-    if !process_registry_matches_workdir(workdir) {
-        tracing::debug!(
-            workdir = %workdir.display(),
-            "skipping process lifecycle hooks; registry is cwd-scoped",
-        );
-        return;
-    }
+    // Key the PID registry to this workspace, so cleanup inspects the records
+    // of Roko processes that ran here whatever the current directory is.
+    roko_agent::process::set_registry_root(workdir);
     cleanup_orphaned_agents();
     let reaped = reap_orphaned_children();
     if reaped > 0 && !quiet {
@@ -4400,20 +4421,25 @@ fn run_process_lifecycle_hooks(workdir: &Path, quiet: bool) {
     }
 }
 
-fn process_registry_matches_workdir(workdir: &Path) -> bool {
-    let cwd = std::env::current_dir().ok();
-    let target = if workdir.is_absolute() {
-        Some(workdir.to_path_buf())
-    } else {
-        cwd.clone().map(|base| base.join(workdir))
-    };
+/// The `--workdir` passed to the deepest invoked subcommand that accepts one.
+///
+/// Subcommands declare `--workdir` individually, so this reads the argument
+/// matches instead of enumerating every `Command` variant.
+fn invoked_subcommand_workdir() -> Option<PathBuf> {
+    let matches = Cli::command().try_get_matches().ok()?;
+    subcommand_workdir(&matches)
+}
 
-    let Some(cwd) = cwd else { return false };
-    let Some(target) = target else { return false };
-
-    let lhs = std::fs::canonicalize(cwd).unwrap_or_else(|_| PathBuf::from("."));
-    let rhs = std::fs::canonicalize(&target).unwrap_or(target);
-    lhs == rhs
+fn subcommand_workdir(matches: &clap::ArgMatches) -> Option<PathBuf> {
+    let mut workdir = None;
+    let mut current = matches;
+    while let Some((_, sub)) = current.subcommand() {
+        if let Ok(Some(dir)) = sub.try_get_one::<PathBuf>("workdir") {
+            workdir = Some(dir.clone());
+        }
+        current = sub;
+    }
+    workdir
 }
 
 fn parse_dashboard_page(input: &str) -> Option<PageId> {
@@ -5428,6 +5454,45 @@ mod tests {
                 cmd: PlanCmd::Run { fresh: true, .. }
             })
         ));
+    }
+
+    #[test]
+    fn cli_parses_plan_parallel_flags() {
+        let cli = Cli::try_parse_from([
+            "roko",
+            "plan",
+            "run",
+            "plans",
+            "--max-parallel-plans",
+            "3",
+            "--fail-fast",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Plan {
+                cmd: PlanCmd::Run {
+                    max_parallel_plans: Some(3),
+                    fail_fast: true,
+                    ..
+                }
+            })
+        ));
+        let cli = Cli::try_parse_from(["roko", "plan", "run", "plans"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Plan {
+                cmd: PlanCmd::Run {
+                    max_parallel_plans: None,
+                    fail_fast: false,
+                    ..
+                }
+            })
+        ));
+        assert!(
+            Cli::try_parse_from(["roko", "plan", "run", "plans", "--max-parallel-plans", "0"])
+                .is_err()
+        );
     }
 
     #[test]
@@ -7282,14 +7347,23 @@ mod tests {
     }
 
     #[test]
-    fn process_registry_matches_workdir_for_current_dir() {
-        assert!(process_registry_matches_workdir(Path::new(".")));
-    }
-
-    #[test]
-    fn process_registry_does_not_match_unrelated_dir() {
-        let tmp = tempfile::tempdir().unwrap();
-        assert!(!process_registry_matches_workdir(tmp.path()));
+    fn subcommand_workdir_reads_the_deepest_workdir_flag() {
+        let workdir = |args: &[&str]| {
+            let matches = Cli::command()
+                .try_get_matches_from(args)
+                .expect("valid invocation");
+            subcommand_workdir(&matches)
+        };
+        assert_eq!(
+            workdir(&["roko", "serve", "--workdir", "/ws/serve"]),
+            Some(PathBuf::from("/ws/serve"))
+        );
+        assert_eq!(
+            workdir(&["roko", "plan", "run", "plans", "--workdir", "/ws/plan"]),
+            Some(PathBuf::from("/ws/plan"))
+        );
+        assert_eq!(workdir(&["roko", "--repo", "/ws/repo", "status"]), None);
+        assert_eq!(workdir(&["roko", "init"]), None);
     }
 
     #[test]

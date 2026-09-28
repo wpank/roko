@@ -1508,6 +1508,10 @@ fn build_schema_tree() -> toml::Value {
     config.agent.mcp_config = Some(std::path::PathBuf::new());
     config.agent.default_agent_id = Some(String::new());
     config.agent.disabled_providers = vec![String::new()];
+    // Routing lists skip serialization when empty; without these sentinels
+    // `strip_unknown_fields` would silently drop them from every roko.toml.
+    config.routing.disabled_providers = vec![String::new()];
+    config.routing.fallback_models = vec![String::new()];
     // Populate Optional/skip_serializing_if GitHubConfig fields so they
     // appear in the serialized schema tree and are not stripped.
     config.github.owner = Some(String::new());
@@ -3521,6 +3525,22 @@ context_pressure_enabled = true
             !flagged.is_empty(),
             "context_pressure_enabled should be flagged as unknown after removal"
         );
+    }
+
+    #[test]
+    fn routing_failover_lists_survive_unknown_field_stripping() {
+        let text = r#"
+[routing]
+disabled_providers = ["openai"]
+fallback_models = ["kimi-k2-5", "glm51"]
+exhaustion_cooldown_secs = 600
+"#;
+        let value: toml::Value = text.parse().expect("parse routing toml");
+        assert!(validate_known_config_paths(&value).is_empty());
+        let config = deserialize_migrated_toml(text).expect("load routing config");
+        assert_eq!(config.routing.disabled_providers, ["openai"]);
+        assert_eq!(config.routing.fallback_models, ["kimi-k2-5", "glm51"]);
+        assert_eq!(config.routing.exhaustion_cooldown_secs, 600);
     }
 
     #[test]

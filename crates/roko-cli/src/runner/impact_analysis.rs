@@ -848,7 +848,7 @@ async fn changed_files(workdir: &Path, limit: Duration) -> Result<BTreeSet<Strin
     Ok(files)
 }
 
-async fn cargo_metadata(workdir: &Path, limit: Duration) -> Result<Metadata, String> {
+pub(crate) async fn cargo_metadata(workdir: &Path, limit: Duration) -> Result<Metadata, String> {
     let stdout = bounded_output(
         workdir,
         "cargo",
@@ -1182,7 +1182,7 @@ async fn public_surface_classification(
     Ok(classify_diff(&text))
 }
 
-fn reverse_dependents(
+pub(crate) fn reverse_dependents(
     metadata: &Metadata,
     producers: &[String],
     cap: usize,

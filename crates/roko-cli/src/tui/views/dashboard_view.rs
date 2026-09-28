@@ -58,8 +58,9 @@ pub(crate) fn render(
     view_state: &ViewState,
     theme: &Theme,
 ) {
-    // Only show the left panel when plans are actively running.
-    let has_active_plans = tui_state.plans.iter().any(|p| p.active);
+    // Only show the left panel when plans are actively running, including the
+    // gaps between plans of an unfinished plan set.
+    let has_active_plans = tui_state.plan_set_running || tui_state.plans.iter().any(|p| p.active);
     if has_active_plans {
         let (sidebar, detail) =
             crate::tui::layout::responsive_panel_split(area, 38, 100, area.height / 3);
@@ -401,19 +402,31 @@ fn current_task_label(tui_state: &TuiState, max_width: usize) -> Option<String> 
         }
     }
 
-    // Fallback: find a running task in the checklist.
-    tui_state
+    // Fallback: find a running task in the checklist, and count the others
+    // running beside it (several plans may run at once).
+    let mut running = tui_state
         .current_task_checklist
         .iter()
-        .find(|t| t.status == crate::tui::state::TaskStatus::Active)
-        .map(|t| {
-            let label = if t.title.is_empty() {
-                t.id.clone()
-            } else {
-                format!("{}: {}", t.id, t.title)
-            };
-            truncate(&label, max_width.saturating_sub(4))
-        })
+        .filter(|t| t.status == crate::tui::state::TaskStatus::Active);
+    let first = running.next()?;
+    let others = running.count();
+    let label = if first.title.is_empty() {
+        first.id.clone()
+    } else {
+        format!("{}: {}", first.id, first.title)
+    };
+    Some(if others == 0 {
+        truncate(&label, max_width.saturating_sub(4))
+    } else {
+        let suffix = format!(" (+{others} running)");
+        format!(
+            "{}{suffix}",
+            truncate(
+                &label,
+                max_width.saturating_sub(4).saturating_sub(suffix.len())
+            )
+        )
+    })
 }
 
 // ---------------------------------------------------------------------------

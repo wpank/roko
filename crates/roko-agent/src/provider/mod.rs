@@ -1011,6 +1011,12 @@ pub fn map_provider_error(
     let env_var = api_key_env.unwrap_or("(none)");
     let url = base_url.unwrap_or("(unknown)");
 
+    // Usage-window refusals keep the provider's own words (and reset time) so
+    // callers can still detect them and route around the provider.
+    if error_classify::detect_provider_exhaustion(&err_text).is_some() {
+        return format!("{err_text} (provider '{provider_name}')");
+    }
+
     if err_lower.contains("401")
         || err_lower.contains("authentication_error")
         || err_lower.contains("unauthorized")
@@ -1107,6 +1113,16 @@ pub enum ProviderError {
     /// retrying and the provider should be skipped for the remainder of the
     /// run.
     InsufficientCredits,
+    /// Subscription or usage window exhausted (Claude CLI "You've hit your
+    /// session limit", Codex "You've hit your usage limit", a 429 with an
+    /// hour-long `Retry-After`). Retrying this provider before the reset
+    /// cannot succeed; route to another provider instead.
+    ProviderExhausted {
+        /// When the provider says the window resets (unix ms), if known.
+        resets_at_ms: Option<i64>,
+        /// Tail of the provider's own message.
+        message: String,
+    },
     Timeout,
     ServerError(u16),
     ContentPolicy,
@@ -1125,6 +1141,11 @@ impl fmt::Display for ProviderError {
             Self::AuthFailure => f.write_str("authentication failed"),
             Self::InsufficientCredits => f.write_str(
                 "billing error: insufficient credits or quota exceeded — will not retry",
+            ),
+            Self::ProviderExhausted { message, .. } => write!(
+                f,
+                "{}: {message}",
+                error_classify::PROVIDER_EXHAUSTED_MARKER
             ),
             Self::Timeout => f.write_str("request timed out"),
             Self::ServerError(status) => write!(f, "server error {status}"),
@@ -1162,6 +1183,8 @@ pub fn should_retry(error: &ProviderError) -> RetryAction {
         // Billing errors (insufficient credits, quota exceeded, payment
         // required) are permanent for this run — retrying would waste time.
         ProviderError::InsufficientCredits => RetryAction::Skip,
+        // The same provider stays refused until its usage window resets.
+        ProviderError::ProviderExhausted { .. } => RetryAction::TryFallback,
         ProviderError::Timeout => RetryAction::TryFallback,
         ProviderError::ServerError(_) => RetryAction::TryFallback,
         ProviderError::ContentPolicy => RetryAction::Skip,

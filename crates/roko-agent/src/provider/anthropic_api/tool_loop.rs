@@ -579,6 +579,7 @@ impl AnthropicMessagesBackend {
             LlmError::Provider(ProviderError::RateLimit { .. }) => "rate_limit",
             LlmError::Provider(ProviderError::AuthFailure) => "auth_failure",
             LlmError::Provider(ProviderError::InsufficientCredits) => "insufficient_credits",
+            LlmError::Provider(ProviderError::ProviderExhausted { .. }) => "provider_exhausted",
             LlmError::Provider(ProviderError::Timeout) | LlmError::Timeout(_) => "timeout",
             LlmError::Provider(ProviderError::ServerError(_)) => "server_error",
             LlmError::Provider(ProviderError::ContentPolicy) => "content_policy",
@@ -634,9 +635,10 @@ impl LlmBackend for AnthropicMessagesBackend {
                 let mapped = if let Some(s) = err.status
                     && (s == 429 || s == 529)
                 {
-                    LlmError::Provider(ProviderError::RateLimit {
-                        retry_after_ms: err.retry_after_secs.map(|sec| sec * 1000),
-                    })
+                    LlmError::Provider(crate::provider::error_classify::classify_rate_limited(
+                        &err.message,
+                        err.retry_after_secs.map(|sec| sec * 1000),
+                    ))
                 } else {
                     let decorated = map_provider_error(
                         ProviderKind::AnthropicApi,

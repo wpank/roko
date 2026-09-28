@@ -1,0 +1,14 @@
+{
+  "role": "quick-reviewer",
+  "invariants": [
+    "NoNetworkAccess",
+    { "MaxTokensPerTurn": 8000 }
+  ],
+  "governance": [
+    { "MaxToolCallsPerTurn": 6 },
+    { "ForbiddenTools": ["edit_file", "write_file", "multi_edit", "apply_patch", "notebook_edit"] }
+  ],
+  "recovery": [
+    { "trigger": "attempted_edit", "action": "Abort" }
+  ]
+}

@@ -73,8 +73,13 @@ struct JobRecord {
     description: String,
     #[serde(default)]
     job_type: String,
-    #[serde(default, rename = "state", alias = "status")]
+    #[serde(default, rename = "state")]
     status: String,
+    /// The `status` key written by roko-core's `FileJobStore` and the job
+    /// runner. It wins over `state` when a file carries both, matching
+    /// `MarketplaceJob::effective_status`; see [`JobRecord::from_path`].
+    #[serde(default, rename = "status", skip_serializing)]
+    core_status: Option<String>,
     #[serde(default)]
     posted_by: String,
     #[serde(default, alias = "assignee")]
@@ -122,6 +127,11 @@ impl JobRecord {
                 .and_then(|stem| stem.to_str())
                 .unwrap_or_default()
                 .to_string();
+        }
+        if let Some(status) = job.core_status.take()
+            && !status.trim().is_empty()
+        {
+            job.status = status;
         }
         Ok(job)
     }
@@ -548,6 +558,7 @@ async fn create_job(
         description: body.description.trim().to_string(),
         job_type: non_empty_or_default(&body.job_type, "other"),
         status: non_empty_or_default(&body.status, "open"),
+        core_status: None,
         posted_by: body.posted_by.trim().to_string(),
         assigned_to: body.assigned_to.trim().to_string(),
         priority: body.priority.trim().to_string(),
@@ -1214,41 +1225,49 @@ async fn start_job(
     Ok(Json(job))
 }
 
+/// `POST /jobs/{id}/cancel` response: the cancelled job in the same shape as
+/// every other job route, plus the execution service's transition receipt.
+#[derive(Debug, Serialize)]
+struct CancelJobResponse {
+    #[serde(flatten)]
+    job: JobRecord,
+    receipt: roko_core::JobTransitionReceipt,
+}
+
 async fn cancel_job_endpoint(
     State(state): State<Arc<AppState>>,
     AxumPath(id): AxumPath<String>,
-) -> Result<impl IntoResponse, ApiError> {
+) -> Result<Json<CancelJobResponse>, ApiError> {
     validate_path_segment(&id, "job id")?;
+    // Require an exact id; the execution service would also resolve prefixes.
+    load_job(&state.workdir, &id).await?;
 
     let svc = roko_core::JobExecutionService::new(jobs_dir(&state.workdir));
     let receipt = svc
         .cancel(&id, roko_core::JobExecutionMode::Serve)
         .await
-        .map_err(|e| match &e {
-            roko_core::JobError::InvalidTransition { from, .. } => {
-                ApiError::unprocessable_with_hint(
-                    format!("cannot cancel job '{id}': current status '{from}' is terminal"),
-                    format!("'{from}' is a terminal state with no valid transitions"),
-                )
-            }
-            _ => ApiError::internal(e.to_string()),
-        })?;
+        .map_err(|error| cancel_error(&id, &error))?;
 
-    // Re-load the job record for event publishing and response.
-    let job = load_job(&state.workdir, &id).await?;
+    let job = load_job(&state.workdir, &receipt.job_id).await?;
     publish_job_event(&state, ServerEventKind::Updated, &job)?;
     publish_transition(&state, &job, &receipt.prior_status);
+    Ok(Json(CancelJobResponse { job, receipt }))
+}
 
-    Ok((
-        axum::http::StatusCode::OK,
-        Json(serde_json::json!({
-            "id": id,
-            "status": "cancelled",
-            "prior_status": receipt.prior_status,
-            "mode": receipt.mode.to_string(),
-            "acknowledged": receipt.acknowledged,
-        })),
-    ))
+/// Map a `JobExecutionService::cancel` failure to its HTTP status.
+fn cancel_error(id: &str, error: &roko_core::JobError) -> ApiError {
+    use roko_core::JobError;
+    match error {
+        JobError::NotFound(_) => ApiError::not_found(format!("job '{id}' not found")),
+        JobError::InvalidTransition { from, .. } => ApiError::unprocessable_with_hint(
+            format!("cannot cancel job '{id}': current status '{from}' is terminal"),
+            format!("'{from}' is a terminal state with no valid transitions"),
+        ),
+        JobError::ActiveCancellationDenied { .. } | JobError::LeaseHeld { .. } => {
+            ApiError::conflict(error.to_string())
+        }
+        JobError::Io(_) | JobError::Serde(_) => ApiError::internal(error.to_string()),
+    }
 }
 
 async fn execute_job_endpoint(

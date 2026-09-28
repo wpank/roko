@@ -17,7 +17,7 @@ use roko_agent::{
         CodingConfig, DeploymentMode, DomainPlugin, ResearchConfig, resolve_manifest,
         validate_manifest,
     },
-    process::registry::{register_spawned_pid, unregister_pid},
+    process::registry::unregister_pid,
 };
 use roko_agent_server::{AgentServer, BearerAuth, DispatchLike, SidecarDispatchError};
 use roko_cli::agent_spawn::{SpawnAgentSpec, spawn_agent_scoped};
@@ -1675,8 +1675,10 @@ pub(crate) fn run_agent_start(name: &str, bind: &str, workdir: Option<&Path>) ->
         .spawn()
         .with_context(|| format!("spawn agent serve for '{}'", name))?;
 
+    // The sidecar deliberately outlives this command and is tracked by its
+    // agent entry, not the orphan registry, whose cleanup would kill it once
+    // this process exits.
     let pid = child.id();
-    register_spawned_pid(pid);
 
     let now = chrono::Utc::now().to_rfc3339();
     entries.push(AgentEntry {

@@ -1577,10 +1577,18 @@ impl AgentDispatcherV2 {
         let latency_ms = started.elapsed().as_millis() as u64;
         fill_cost_from_profile(&mut result, &created.target);
 
-        // Record provider outcome for the circuit breaker (E48-T05).
+        // Record provider outcome for the circuit breaker (E48-T05). A run
+        // stopped at its turn cap is a task outcome, not a provider fault.
         if let Some(registry) = &self.health_registry {
             let provider_id = &created.target.provider_id;
-            if result.success {
+            let turn_cap_stop = result
+                .output
+                .body
+                .as_text()
+                .ok()
+                .and_then(roko_agent::provider::error_classify::detect_turn_cap)
+                .is_some();
+            if result.success || turn_cap_stop {
                 registry.record_provider_success(provider_id);
             } else {
                 let output_text = result
@@ -1689,7 +1697,7 @@ impl AgentDispatcherV2 {
                 session_id: None,
                 total_cost_usd: (result.usage.cost_usd > 0.0)
                     .then_some(f64::from(result.usage.cost_usd)),
-                num_turns: Some(1),
+                num_turns: reported_num_turns(&result),
                 is_error: !result.success,
             })
             .await;
@@ -2145,13 +2153,25 @@ fn dispatch_events_from_result(
     events.push(DispatchEvent::TurnCompleted {
         session_id: None,
         total_cost_usd: (result.usage.cost_usd > 0.0).then_some(f64::from(result.usage.cost_usd)),
-        num_turns: Some(1),
+        num_turns: reported_num_turns(result),
         is_error: !result.success,
     });
     events.push(DispatchEvent::Exited {
         exit_code: Some(if result.success { 0 } else { 1 }),
     });
     events
+}
+
+/// Turns the provider reported (the Claude CLI tags its output with
+/// `num_turns`), or one when it did not say.
+fn reported_num_turns(result: &AgentResult) -> Option<u32> {
+    Some(
+        result
+            .output
+            .tag("num_turns")
+            .and_then(|turns| turns.parse().ok())
+            .unwrap_or(1),
+    )
 }
 
 /// Convert a [`roko_agent::tool_loop::StreamEvent`] into a local [`StreamChunk`].

@@ -290,24 +290,32 @@ latency = 0.2
 default_template = "standard"
 
 [pipeline.mechanical]
+# Turn cap per task dispatch (Claude CLI --max-turns). A guard against runaway sessions, not a working limit: the built-in defaults (10/10/20/30) made the CLI exit with error_max_turns mid-task (dogfood 2026-09-28).
+max_turns = 40
 strategist = false
 reviewers = false
 reviewer_mode = "quick"
 max_iterations = 1
 
 [pipeline.focused]
+# Turn cap per task dispatch (Claude CLI --max-turns). A guard against runaway sessions, not a working limit: the built-in defaults (10/10/20/30) made the CLI exit with error_max_turns mid-task (dogfood 2026-09-28).
+max_turns = 60
 strategist = false
 reviewers = false
 reviewer_mode = "quick"
 max_iterations = 2
 
 [pipeline.integrative]
+# Turn cap per task dispatch (Claude CLI --max-turns). A guard against runaway sessions, not a working limit: the built-in defaults (10/10/20/30) made the CLI exit with error_max_turns mid-task (dogfood 2026-09-28).
+max_turns = 90
 strategist = true
 reviewers = true
 reviewer_mode = "quick"
 max_iterations = 2
 
 [pipeline.architectural]
+# Turn cap per task dispatch (Claude CLI --max-turns). A guard against runaway sessions, not a working limit: the built-in defaults (10/10/20/30) made the CLI exit with error_max_turns mid-task (dogfood 2026-09-28).
+max_turns = 120
 strategist = true
 reviewers = true
 reviewer_mode = "full"
@@ -317,7 +325,9 @@ max_iterations = 3
 max_plan_usd = 50.0
 max_task_usd = 0.0
 max_turn_usd = 0.5
-max_task_retry_usd = 5.0
+# Enforced by the Graph engine since 2026-09-28 (was inert); backend verification tasks can
+# spend several dollars on a first attempt, so leave room for retries.
+max_task_retry_usd = 15.0
 max_daily_usd = 0.0
 prompt_token_budget = 10000
 max_agent_lifetime_usd = 0.0

@@ -72,9 +72,12 @@ impl PromptCacheHandle {
         }
     }
 
-    /// Returns `true` if the cache has exceeded its maximum age.
+    /// Returns `true` if the cache has reached its maximum age.
+    ///
+    /// A zero maximum age is therefore always stale, independent of clock
+    /// resolution.
     pub fn is_stale(&self) -> bool {
-        self.built_at.elapsed() > self.max_age
+        self.built_at.elapsed() >= self.max_age
     }
 
     /// Override the maximum age for staleness checks.

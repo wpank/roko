@@ -1148,25 +1148,37 @@ where
 }
 
 async fn run_generated_plans(workdir: &Path, plans_root: &Path) -> Result<()> {
-    let plans = crate::runner::load_plans(plans_root)?;
-    let roko_config = roko_core::config::loader::load_config_unified(workdir)
-        .with_context(|| format!("load roko config from {}", workdir.display()))?;
-    let run_config = crate::runner::RunConfig::from_roko_config(
-        workdir.to_path_buf(),
-        plans_root.to_path_buf(),
-        roko_config,
-    );
-    let state_hub = crate::state_hub::StateHub::default_capacity();
-    #[allow(deprecated)] // Runner-v2 removed; this call now returns an error
-    let report = crate::runner::run(
-        plans,
-        &run_config,
-        &state_hub,
-        tokio_util::sync::CancellationToken::new(),
-    )
-    .await?;
-    if !report.all_succeeded() {
-        return Err(anyhow!("generated plan execution failed"));
+    // Library path (CLI promote and the serve PRD subscriber): no TUI and no
+    // signal handlers of its own.
+    let exit_code =
+        crate::graph_execution::run_graph_plan(crate::graph_execution::GraphPlanRunParams {
+            plans_dir: plans_root.to_path_buf(),
+            workdir: workdir.to_path_buf(),
+            quiet: false,
+            json: false,
+            resume_plan: None,
+            fresh: false,
+            force_resume: false,
+            max_retries: None,
+            max_tasks: 0,
+            budget_override: None,
+            no_budget: false,
+            cli_model_override: None,
+            dangerously_skip_permissions: false,
+            log_file: None,
+            worktree_per_task: false,
+            rich_topology: false,
+            no_tui: true,
+            state_hub: None,
+            interrupt: None,
+            max_parallel_plans: None,
+            fail_fast: false,
+        })
+        .await?;
+    if exit_code != crate::exit_codes::EXIT_SUCCESS {
+        return Err(anyhow!(
+            "generated plan execution failed (exit {exit_code})"
+        ));
     }
     Ok(())
 }

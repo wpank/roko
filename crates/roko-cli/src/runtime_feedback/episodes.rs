@@ -59,6 +59,8 @@ impl FeedbackSink for EpisodeSink {
             knowledge_ids,
             playbook_ids,
             initial_model,
+            turns,
+            failure_reason,
             ..
         } = event
         else {
@@ -67,6 +69,16 @@ impl FeedbackSink for EpisodeSink {
 
         let mut episode = Episode::new(outcome.task_id.clone(), task_id.clone());
         episode.success = *succeeded;
+        episode.turns = *turns;
+        if !*succeeded {
+            episode.failure_reason = failure_reason.clone();
+            if let Some((class, _)) = failure_reason.as_deref().and_then(|r| r.split_once(": ")) {
+                episode.extra.insert(
+                    "failure_class".into(),
+                    serde_json::Value::String(class.to_string()),
+                );
+            }
+        }
         episode.usage = Usage {
             input_tokens: outcome.tokens_in,
             output_tokens: outcome.tokens_out,
@@ -206,6 +218,8 @@ mod tests {
         let path = dir.path().join("episodes.jsonl");
         let sink = EpisodeSink::at(&path);
         let event = FeedbackEvent::TaskCompleted {
+            turns: 0,
+            failure_reason: None,
             plan_id: "plan-1".into(),
             task_id: "task-1".into(),
             outcome: outcome(),

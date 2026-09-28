@@ -84,6 +84,12 @@ pub enum DashboardEvent {
     },
     /// A plan execution completed.
     PlanCompleted { plan_id: String, success: bool },
+    /// A runner selected its complete plan set, listed in execution order.
+    ///
+    /// Published once per invocation before any plan starts, so dashboards
+    /// know every plan (pending ones included) and the whole-set task total
+    /// up front, and keep one run clock across plan boundaries.
+    PlanSetLoaded { plans: Vec<PlanSetEntry> },
     /// The owning runner reached a terminal outcome.  This is separate from
     /// per-plan completion so cancellation and hard deadlines can converge all
     /// live dashboard projections in one idempotent event.
@@ -495,6 +501,66 @@ pub struct PlanDisplayState {
 
 /// Backward-compatibility alias. Prefer `PlanDisplayState`.
 pub type PlanState = PlanDisplayState;
+
+/// Phase of a plan-set member that has not started yet.
+pub const PLAN_SET_PENDING_PHASE: &str = "pending";
+
+/// One plan announced by [`DashboardEvent::PlanSetLoaded`].
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlanSetEntry {
+    /// Plan identifier.
+    pub plan_id: String,
+    /// Human-readable plan title (the plan ID when none is declared).
+    #[serde(default)]
+    pub title: String,
+    /// Total tasks declared by the plan.
+    #[serde(default)]
+    pub tasks_total: usize,
+    /// Dependency wave: 0 without `depends_on_plan` prerequisites in the
+    /// set, otherwise one more than its latest prerequisite's wave.
+    #[serde(default)]
+    pub wave: usize,
+    /// Plans of the set that must succeed before this one starts.
+    #[serde(default)]
+    pub depends_on: Vec<String>,
+    /// Plans of the set this one never runs beside, because they write or
+    /// build overlapping parts of the working tree. Empty when the run
+    /// executes one plan at a time.
+    #[serde(default)]
+    pub conflicts_with: Vec<String>,
+}
+
+/// The plan set selected by the latest runner invocation.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlanSetState {
+    /// Plans in execution order.
+    pub plans: Vec<PlanSetEntry>,
+    /// Sum of `tasks_total` across the set.
+    pub tasks_total: usize,
+    /// When the set was loaded (Unix ms); the origin of the run clock.
+    pub loaded_at_ms: u64,
+}
+
+impl PlanSetState {
+    /// Position of `plan_id` in the execution order, if it belongs to the set.
+    #[must_use]
+    pub fn position(&self, plan_id: &str) -> Option<usize> {
+        self.plans.iter().position(|plan| plan.plan_id == plan_id)
+    }
+
+    /// Whether every plan in the set has reached a terminal phase.
+    ///
+    /// An empty set is complete. A member missing from `plans` (for example
+    /// after a snapshot rebase) is treated as not yet terminal.
+    #[must_use]
+    pub fn is_complete(&self, plans: &HashMap<String, PlanState>) -> bool {
+        self.plans.iter().all(|entry| {
+            plans.get(&entry.plan_id).is_some_and(|plan| {
+                !plan.active && (is_terminal_phase(&plan.phase) || plan.phase == "cancelled")
+            })
+        })
+    }
+}
 
 /// A single task's live state.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1018,6 +1084,52 @@ pub struct KnowledgeBrowseEntry {
     pub frozen: bool,
 }
 
+/// `TaskCompleted` outcome for a task whose failing verification was
+/// accepted anyway (a forced accept). Counted apart from passed tasks.
+pub const TASK_OUTCOME_ACCEPTED_WITH_FAILURES: &str = "accepted_with_failures";
+
+/// How a `TaskCompleted` outcome counts in the dashboard.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TaskOutcomeClass {
+    /// The task completed and passed.
+    Passed,
+    /// The task failed or errored.
+    Failed,
+    /// The task completed although its verification failed.
+    AcceptedWithFailures,
+}
+
+/// Classify a `TaskCompleted` outcome string.
+///
+/// The accepted-with-failures outcome is matched exactly before the generic
+/// failure heuristics, so it is neither a pass nor a plain failure.
+#[must_use]
+pub fn classify_task_outcome(outcome: &str) -> TaskOutcomeClass {
+    let lower = outcome.to_ascii_lowercase();
+    if lower == TASK_OUTCOME_ACCEPTED_WITH_FAILURES {
+        TaskOutcomeClass::AcceptedWithFailures
+    } else if lower.contains("fail") || lower.contains("error") {
+        TaskOutcomeClass::Failed
+    } else {
+        TaskOutcomeClass::Passed
+    }
+}
+
+/// Latest gate output retained for one task.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskGateOutput {
+    /// Parent plan identifier.
+    pub plan_id: String,
+    /// Task identifier.
+    pub task_id: String,
+    /// Gate (verify step) that produced the output.
+    pub gate: String,
+    /// Whether that gate passed.
+    pub passed: bool,
+    /// Bounded output: a leading `$ command` line (when published) plus tail.
+    pub lines: Vec<String>,
+}
+
 /// One recent failing gate verdict surfaced in the dashboard.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct FailureEntry {
@@ -1093,6 +1205,9 @@ pub struct DashboardSnapshot {
     /// PIDs retained by terminal settlement for startup orphan cleanup.
     #[serde(default)]
     pub surviving_agent_pids: Vec<u32>,
+    /// Plan set announced by the latest runner invocation, if any.
+    #[serde(default)]
+    pub plan_set: Option<PlanSetState>,
     /// Active and recently completed plans.
     pub plans: HashMap<String, PlanState>,
     /// Active tasks keyed by `"{plan_id}/{task_id}"`.
@@ -1178,6 +1293,11 @@ pub struct DashboardSnapshot {
     /// Gate output lines from rung executions (bounded to 500).
     #[serde(default)]
     pub gate_output_lines: VecDeque<String>,
+    /// Latest gate output retained per task (bounded), so a failure's detail
+    /// outlives later gates of other tasks. `gate_output_lines` remains the
+    /// live view of the most recent rung.
+    #[serde(default)]
+    pub task_gate_outputs: VecDeque<TaskGateOutput>,
     /// Gate pipeline currently in progress, cleared on the next verdict.
     #[serde(default)]
     pub active_gate_rung: Option<ActiveGateRung>,
@@ -1206,6 +1326,10 @@ pub struct SnapshotStats {
     pub tasks_completed: usize,
     /// Number of tasks that failed.
     pub tasks_failed: usize,
+    /// Number of tasks accepted although their verification failed. Counted
+    /// apart from `tasks_completed`; plan progress still treats them as done.
+    #[serde(default)]
+    pub tasks_accepted_with_failures: usize,
     /// Number of agents currently running.
     pub agents_active: usize,
     /// Number of gates that passed.
@@ -1246,6 +1370,14 @@ const MAX_EPISODES: usize = 128;
 const MAX_EVENT_LOG: usize = 200;
 const MAX_TASK_OUTPUT_LINES: usize = 50;
 const MAX_GATE_OUTPUT_LINES: usize = 500;
+/// Tasks whose latest gate output is retained in `task_gate_outputs`.
+const MAX_TASK_GATE_OUTPUTS: usize = 64;
+/// Output lines retained per task.
+const MAX_TASK_GATE_OUTPUT_LINES: usize = 60;
+/// Output tail lines folded into a failure summary.
+const FAILURE_SUMMARY_TAIL_LINES: usize = 3;
+/// Upper bound on a failure summary, in characters.
+const FAILURE_SUMMARY_MAX_CHARS: usize = 400;
 const MAX_TOKEN_EVENT_RING: usize = 120;
 const GATE_TREND_BUCKET_SIZE_SECS: u64 = 60 * 60;
 const GATE_TREND_BUCKET_COUNT: usize = 24;
@@ -1273,6 +1405,16 @@ impl DashboardSnapshot {
             task_id,
             message,
         });
+    }
+
+    /// Whether an announced plan set has every member in a terminal phase.
+    ///
+    /// `false` when no runner announced a plan set.
+    #[must_use]
+    pub fn plan_set_complete(&self) -> bool {
+        self.plan_set
+            .as_ref()
+            .is_some_and(|set| set.is_complete(&self.plans))
     }
 
     /// Apply a single event, mutating the snapshot in place.
@@ -1308,10 +1450,45 @@ impl DashboardSnapshot {
                 plan.tasks_total = plan.tasks_total.max(*tasks_total);
                 plan.active = true;
             }
+            DashboardEvent::PlanSetLoaded { plans } => {
+                // A new invocation: clear the previous terminal run state so
+                // the run clock runs from this load until the run ends.
+                self.run_duration_ms = None;
+                self.run_outcome = None;
+                self.run_cleanup_degraded = false;
+                self.surviving_agent_pids.clear();
+                for entry in plans {
+                    let plan =
+                        self.plans
+                            .entry(entry.plan_id.clone())
+                            .or_insert_with(|| PlanState {
+                                plan_id: entry.plan_id.clone(),
+                                ..Default::default()
+                            });
+                    // Never clobber a plan another runner is executing.
+                    if plan.active {
+                        continue;
+                    }
+                    plan.phase = PLAN_SET_PENDING_PHASE.into();
+                    plan.tasks_total = entry.tasks_total;
+                    plan.tasks_done = 0;
+                    plan.tasks_failed = 0;
+                }
+                self.plan_set = Some(PlanSetState {
+                    tasks_total: plans.iter().map(|entry| entry.tasks_total).sum(),
+                    plans: plans.clone(),
+                    loaded_at_ms: ts,
+                });
+            }
             DashboardEvent::PlanCompleted { plan_id, success } => {
+                let mut was_active = false;
                 let mut newly_terminal = false;
                 if let Some(plan) = self.plans.get_mut(plan_id) {
-                    newly_terminal = plan.active;
+                    was_active = plan.active;
+                    // A plan-set member that never started (blocked by a
+                    // failed prerequisite, or rejected before execution) is
+                    // terminal too.
+                    newly_terminal = plan.active || plan.phase == PLAN_SET_PENDING_PHASE;
                     plan.active = false;
                     plan.phase = if *success {
                         "completed".into()
@@ -1319,8 +1496,10 @@ impl DashboardSnapshot {
                         "failed".into()
                     };
                 }
-                if newly_terminal {
+                if was_active {
                     self.stats.plans_active = self.stats.plans_active.saturating_sub(1);
+                }
+                if newly_terminal {
                     if *success {
                         self.stats.plans_completed += 1;
                     } else {
@@ -1408,7 +1587,7 @@ impl DashboardSnapshot {
                 outcome,
             } => {
                 let key = format!("{plan_id}/{task_id}");
-                let failed = outcome.contains("fail") || outcome.contains("error");
+                let class = classify_task_outcome(outcome);
                 let mut newly_terminal = false;
                 if let Some(task) = self.tasks.get_mut(&key) {
                     newly_terminal = task.outcome.is_none();
@@ -1417,15 +1596,24 @@ impl DashboardSnapshot {
                 }
                 if newly_terminal {
                     self.stats.tasks_active = self.stats.tasks_active.saturating_sub(1);
-                    if failed {
-                        self.stats.tasks_failed += 1;
-                        if let Some(plan) = self.plans.get_mut(plan_id) {
-                            plan.tasks_failed += 1;
+                    match class {
+                        TaskOutcomeClass::Failed => {
+                            self.stats.tasks_failed += 1;
+                            if let Some(plan) = self.plans.get_mut(plan_id) {
+                                plan.tasks_failed += 1;
+                            }
                         }
-                    } else {
-                        self.stats.tasks_completed += 1;
-                        if let Some(plan) = self.plans.get_mut(plan_id) {
-                            plan.tasks_done += 1;
+                        TaskOutcomeClass::AcceptedWithFailures => {
+                            self.stats.tasks_accepted_with_failures += 1;
+                            if let Some(plan) = self.plans.get_mut(plan_id) {
+                                plan.tasks_done += 1;
+                            }
+                        }
+                        TaskOutcomeClass::Passed => {
+                            self.stats.tasks_completed += 1;
+                            if let Some(plan) = self.plans.get_mut(plan_id) {
+                                plan.tasks_done += 1;
+                            }
                         }
                     }
                 }
@@ -1561,6 +1749,7 @@ impl DashboardSnapshot {
             } => {
                 self.active_gate_rung = None;
                 if let Some(output) = output_text {
+                    retain_task_gate_output(self, plan_id, task_id, gate, *passed, output);
                     self.gate_output_lines.clear();
                     let lines = output
                         .lines()
@@ -1595,7 +1784,7 @@ impl DashboardSnapshot {
                             plan_id: plan_id.clone(),
                             task_id: task_id.clone(),
                             gate: gate.clone(),
-                            summary: String::new(),
+                            summary: gate_failure_summary(output_text.as_deref()),
                             artifacts: None,
                         },
                     );
@@ -3401,6 +3590,90 @@ fn record_gate_trend(
         .record_gate_result(ts, passed);
 }
 
+impl DashboardSnapshot {
+    /// Latest retained gate output for `plan_id/task_id`, if any.
+    #[must_use]
+    pub fn task_gate_output(&self, plan_id: &str, task_id: &str) -> Option<&TaskGateOutput> {
+        self.task_gate_outputs
+            .iter()
+            .rev()
+            .find(|output| output.plan_id == plan_id && output.task_id == task_id)
+    }
+}
+
+/// Retain the latest gate output for one task, bounded in tasks and lines.
+///
+/// A leading `$ command` line survives truncation so the failing command
+/// stays attributable.
+fn retain_task_gate_output(
+    snapshot: &mut DashboardSnapshot,
+    plan_id: &str,
+    task_id: &str,
+    gate: &str,
+    passed: bool,
+    output: &str,
+) {
+    snapshot
+        .task_gate_outputs
+        .retain(|entry| entry.plan_id != plan_id || entry.task_id != task_id);
+    if snapshot.task_gate_outputs.len() >= MAX_TASK_GATE_OUTPUTS {
+        snapshot.task_gate_outputs.pop_front();
+    }
+    let lines: Vec<&str> = output.lines().collect();
+    let (command, rest) = match lines.split_first() {
+        Some((first, rest)) if first.starts_with("$ ") => (Some(*first), rest),
+        _ => (None, lines.as_slice()),
+    };
+    let keep = MAX_TASK_GATE_OUTPUT_LINES.saturating_sub(usize::from(command.is_some()));
+    let lines = command
+        .into_iter()
+        .chain(rest[rest.len().saturating_sub(keep)..].iter().copied())
+        .map(str::to_string)
+        .collect();
+    snapshot.task_gate_outputs.push_back(TaskGateOutput {
+        plan_id: plan_id.to_string(),
+        task_id: task_id.to_string(),
+        gate: gate.to_string(),
+        passed,
+        lines,
+    });
+}
+
+/// One-line failure summary: the `$ command` line (when published) plus a
+/// short tail of the gate output.
+fn gate_failure_summary(output: Option<&str>) -> String {
+    output
+        .map(|output| summarize_gate_lines(output.lines()))
+        .unwrap_or_default()
+}
+
+fn summarize_gate_lines<'a>(lines: impl Iterator<Item = &'a str>) -> String {
+    let lines: Vec<&str> = lines
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect();
+    let (command, rest) = match lines.split_first() {
+        Some((first, rest)) if first.starts_with("$ ") => (Some(*first), rest),
+        _ => (None, lines.as_slice()),
+    };
+    let tail = &rest[rest.len().saturating_sub(FAILURE_SUMMARY_TAIL_LINES)..];
+    let summary = command
+        .into_iter()
+        .chain(tail.iter().copied())
+        .collect::<Vec<_>>()
+        .join(" | ");
+    if summary.chars().count() > FAILURE_SUMMARY_MAX_CHARS {
+        let mut truncated: String = summary
+            .chars()
+            .take(FAILURE_SUMMARY_MAX_CHARS.saturating_sub(1))
+            .collect();
+        truncated.push('…');
+        truncated
+    } else {
+        summary
+    }
+}
+
 fn push_gate_failure(snapshot: &mut DashboardSnapshot, failure: FailureEntry) {
     if snapshot.gate_recent_failures.len() >= MAX_GATE_FAILURES {
         snapshot.gate_recent_failures.remove(0);
@@ -3417,6 +3690,11 @@ fn rebuild_gate_observability(snapshot: &mut DashboardSnapshot, gates: &[GateVer
         let ts = timestamp_from_millis(i64::try_from(gate.ts_millis).unwrap_or_default());
         record_gate_trend(snapshot, &gate.gate, ts, gate.passed);
         if !gate.passed {
+            let summary = snapshot
+                .task_gate_output(&gate.plan_id, &gate.task_id)
+                .filter(|output| !output.passed && output.gate == gate.gate)
+                .map(|output| summarize_gate_lines(output.lines.iter().map(String::as_str)))
+                .unwrap_or_default();
             push_gate_failure(
                 snapshot,
                 FailureEntry {
@@ -3424,7 +3702,7 @@ fn rebuild_gate_observability(snapshot: &mut DashboardSnapshot, gates: &[GateVer
                     plan_id: gate.plan_id.clone(),
                     task_id: gate.task_id.clone(),
                     gate: gate.gate.clone(),
-                    summary: String::new(),
+                    summary,
                     artifacts: None,
                 },
             );
@@ -3829,6 +4107,131 @@ mod tests {
         assert!(!snap.plans["p1"].active);
     }
 
+    fn plan_set_event(plans: &[(&str, usize)]) -> DashboardEvent {
+        DashboardEvent::PlanSetLoaded {
+            plans: plans
+                .iter()
+                .map(|(plan_id, tasks_total)| PlanSetEntry {
+                    plan_id: (*plan_id).into(),
+                    title: (*plan_id).into(),
+                    tasks_total: *tasks_total,
+                    ..PlanSetEntry::default()
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn plan_set_loaded_wire_shape_is_snake_case() {
+        let json = serde_json::to_value(plan_set_event(&[("01-a", 10)])).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "type": "plan_set_loaded",
+                "plans": [{
+                    "plan_id": "01-a",
+                    "title": "01-a",
+                    "tasks_total": 10,
+                    "wave": 0,
+                    "depends_on": [],
+                    "conflicts_with": [],
+                }],
+            })
+        );
+        let decoded: DashboardEvent = serde_json::from_value(serde_json::json!({
+            "type": "plan_set_loaded",
+            "plans": [{"plan_id": "01-a"}],
+        }))
+        .unwrap();
+        assert_eq!(
+            decoded,
+            DashboardEvent::PlanSetLoaded {
+                plans: vec![PlanSetEntry {
+                    plan_id: "01-a".into(),
+                    ..PlanSetEntry::default()
+                }],
+            }
+        );
+    }
+
+    #[test]
+    fn plan_set_loaded_seeds_pending_plans_and_whole_set_total() {
+        let mut snap = DashboardSnapshot {
+            run_duration_ms: Some(9),
+            run_outcome: Some("succeeded".into()),
+            ..DashboardSnapshot::default()
+        };
+
+        snap.apply_with_ts(&plan_set_event(&[("01-a", 10), ("02-b", 7)]), 1_000);
+
+        let set = snap.plan_set.as_ref().expect("plan set");
+        assert_eq!(set.tasks_total, 17);
+        assert_eq!(set.loaded_at_ms, 1_000);
+        assert_eq!(set.position("02-b"), Some(1));
+        assert_eq!(snap.plans["02-b"].phase, PLAN_SET_PENDING_PHASE);
+        assert_eq!(snap.plans["02-b"].tasks_total, 7);
+        assert!(!snap.plans["02-b"].active);
+        assert_eq!(snap.stats.plans_active, 0);
+        assert!(snap.run_duration_ms.is_none() && snap.run_outcome.is_none());
+        assert!(!snap.plan_set_complete());
+    }
+
+    #[test]
+    fn plan_set_completes_only_when_every_member_is_terminal() {
+        let mut snap = DashboardSnapshot::default();
+        snap.apply(&plan_set_event(&[("01-a", 1), ("02-b", 1), ("03-c", 1)]));
+
+        snap.apply(&DashboardEvent::PlanStarted {
+            plan_id: "01-a".into(),
+            tasks_total: 1,
+        });
+        snap.apply(&DashboardEvent::PlanCompleted {
+            plan_id: "01-a".into(),
+            success: false,
+        });
+        // Between plans nothing is active, but the set is not done.
+        assert_eq!(snap.stats.plans_active, 0);
+        assert!(!snap.plan_set_complete());
+
+        snap.apply(&DashboardEvent::PlanStarted {
+            plan_id: "02-b".into(),
+            tasks_total: 1,
+        });
+        snap.apply(&DashboardEvent::PlanCompleted {
+            plan_id: "02-b".into(),
+            success: true,
+        });
+        assert!(!snap.plan_set_complete());
+
+        // A member blocked by a failed prerequisite never starts; its
+        // terminal event still counts once and closes the set.
+        snap.apply(&DashboardEvent::PlanCompleted {
+            plan_id: "03-c".into(),
+            success: false,
+        });
+        snap.apply(&DashboardEvent::PlanCompleted {
+            plan_id: "03-c".into(),
+            success: false,
+        });
+        assert!(snap.plan_set_complete());
+        assert_eq!(snap.stats.plans_active, 0);
+        assert_eq!(snap.stats.plans_completed, 1);
+        assert_eq!(snap.stats.plans_failed, 2);
+    }
+
+    #[test]
+    fn plan_set_loaded_does_not_reset_an_active_plan() {
+        let mut snap = DashboardSnapshot::default();
+        snap.apply(&DashboardEvent::PlanStarted {
+            plan_id: "live".into(),
+            tasks_total: 3,
+        });
+        snap.apply(&plan_set_event(&[("live", 9)]));
+        assert!(snap.plans["live"].active);
+        assert_eq!(snap.plans["live"].phase, "started");
+        assert_eq!(snap.stats.plans_active, 1);
+    }
+
     #[test]
     fn task_started_preserves_known_total_and_grows_unknown_total() {
         let mut snap = DashboardSnapshot::default();
@@ -4019,6 +4422,79 @@ mod tests {
             output_text: Some("Checking roko-core".into()),
         });
         assert!(snap.active_gate_rung.is_none());
+    }
+
+    #[test]
+    fn accepted_with_failures_is_counted_apart_from_passed_and_failed() {
+        let mut snap = DashboardSnapshot::default();
+        snap.apply(&DashboardEvent::PlanStarted {
+            plan_id: "p1".into(),
+            tasks_total: 0,
+        });
+        for task_id in ["t1", "t2", "t3"] {
+            snap.apply(&DashboardEvent::TaskStarted {
+                plan_id: "p1".into(),
+                task_id: task_id.into(),
+                title: task_id.into(),
+                phase: "verify".into(),
+            });
+        }
+        for (task_id, outcome) in [
+            ("t1", "passed"),
+            ("t2", TASK_OUTCOME_ACCEPTED_WITH_FAILURES),
+            ("t3", "failed"),
+        ] {
+            snap.apply(&DashboardEvent::TaskCompleted {
+                plan_id: "p1".into(),
+                task_id: task_id.into(),
+                outcome: outcome.into(),
+            });
+        }
+        assert_eq!(snap.stats.tasks_completed, 1);
+        assert_eq!(snap.stats.tasks_accepted_with_failures, 1);
+        assert_eq!(snap.stats.tasks_failed, 1);
+        assert_eq!(snap.plans["p1"].tasks_done, 2);
+        assert_eq!(snap.plans["p1"].tasks_failed, 1);
+        assert_eq!(
+            classify_task_outcome("gate_failed"),
+            TaskOutcomeClass::Failed
+        );
+    }
+
+    #[test]
+    fn failing_gate_summary_names_the_command_and_survives_other_tasks() {
+        let mut snap = DashboardSnapshot::default();
+        snap.apply(&DashboardEvent::GateResult {
+            plan_id: "p1".into(),
+            task_id: "t1".into(),
+            gate: "verify[0:structural]".into(),
+            passed: false,
+            output_text: Some(
+                "$ grep -q PlanSource src/lib.rs\nnoise\nmore noise\nexit status 1".into(),
+            ),
+        });
+        snap.apply(&DashboardEvent::GateResult {
+            plan_id: "p1".into(),
+            task_id: "t2".into(),
+            gate: "verify[0:compile]".into(),
+            passed: true,
+            output_text: Some("$ cargo check\nFinished".into()),
+        });
+
+        let failure = &snap.gate_recent_failures[0];
+        assert_eq!(
+            failure.summary,
+            "$ grep -q PlanSource src/lib.rs | noise | more noise | exit status 1"
+        );
+        // The live view moved on to t2, but t1's failing output is retained.
+        assert_eq!(
+            snap.gate_output_lines.front().map(String::as_str),
+            Some("$ cargo check")
+        );
+        let retained = snap.task_gate_output("p1", "t1").expect("t1 output");
+        assert!(!retained.passed);
+        assert_eq!(retained.lines[0], "$ grep -q PlanSource src/lib.rs");
+        assert_eq!(gate_failure_summary(None), "");
     }
 
     #[test]

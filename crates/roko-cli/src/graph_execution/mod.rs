@@ -8,20 +8,29 @@
 //!
 //! | Module | Responsibility |
 //! |---|---|
+//! | [`agent_slots`] | Run-wide cap on concurrently executing tasks (`max_agents`) |
 //! | [`control_adapter`] | CLI/TUI command transport to graph-layer control service |
 //! | [`delivery`] | Post-execution merge, regression, and publication pipeline |
+//! | [`event_log`] | `--log-file` JSONL recorder and StateHub event taps |
+//! | [`fast_lane`] | FAST lane (`./dev.sh fast`) run deadline |
 //! | [`feedback`] | 12-row completion feedback settlement sinks |
 //! | [`identity_map`] | Graph node-to-plan/task identity resolution |
+//! | [`plan_runner`] | Runs a selected plan set through the Graph engine |
+//! | [`plan_set`] | Plan-set order, footprints, and which plans may run at once |
 //! | [`runtime_event_adapter`] | Graph event to canonical runtime event conversion |
 //! | [`view_state`] | TUI/HTTP graph status projection |
 //! | [`workflow_caller`] | Canary comparison and legacy facade marker |
 //! | [`workspaces`] | Worktree-backed execution workspace provider |
 
+pub mod agent_slots;
 pub mod control_adapter;
 pub mod delivery;
+pub mod event_log;
+pub mod fast_lane;
 pub mod feedback;
 pub mod identity_map;
 pub mod plan_runner;
+pub mod plan_set;
 pub mod runtime_event_adapter;
 pub mod view_state;
 pub mod workflow_caller;
@@ -33,9 +42,11 @@ pub use delivery::{
     CliCompletionDeliveryService, DELIVERY_CHECKPOINT_KEY, DeliveryBackend, DeliveryMergeOutcome,
     DeliveryPublicationOutcome, DeliveryRegressionOutcome, GitDeliveryBackend,
 };
+pub use event_log::{EventTap, RunEventLog, Tapped};
 pub use feedback::{CompletionSinkResult, build_settler};
 pub use identity_map::{GraphIdentityMap, NodeIdentity};
 pub use plan_runner::{GraphPlanRunParams, run_graph_plan};
+pub use plan_set::{PlanSetOrder, plan_set_order};
 pub use runtime_event_adapter::GraphRuntimeEventAdapter;
 pub use view_state::{
     GraphNodeRow, GraphNodeStatus, GraphStatusSummary, GraphViewState, GraphViewStateProjector,

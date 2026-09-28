@@ -456,6 +456,19 @@ impl SharedAgentFactory {
         &self,
         request: AgentDispatchRequest,
     ) -> Result<AgentResultDispatch, DispatchV2Error> {
+        self.run_shared_agent_bridge_with_config(request, Arc::clone(&self.config))
+            .await
+    }
+
+    /// [`Self::run_shared_agent_bridge`], resolving `request.model_key`
+    /// against `config` instead of the run's config. Provider failover uses
+    /// this to serve a hinted slug on another configured provider that no
+    /// `[models.*]` entry names.
+    pub async fn run_shared_agent_bridge_with_config(
+        &self,
+        request: AgentDispatchRequest,
+        config: Arc<RokoConfig>,
+    ) -> Result<AgentResultDispatch, DispatchV2Error> {
         let local_tool_mcp = request.agent_contract.as_ref().and_then(|contract| {
             self.cli_plugin_mcp_config(
                 &request.workdir,
@@ -465,10 +478,9 @@ impl SharedAgentFactory {
         });
         let local_tool_mcp_bridge_ready =
             self.cli_plugin_mcp_bridge.is_some() && request.agent_contract.is_some();
-        let mut dispatcher =
-            AgentDispatcherV2::with_shared(Arc::clone(&self.config), Arc::clone(&self.semaphores))
-                .with_rate_limiter(Arc::clone(&self.rate_limiter))
-                .with_health_registry(Arc::clone(&self.health_registry));
+        let mut dispatcher = AgentDispatcherV2::with_shared(config, Arc::clone(&self.semaphores))
+            .with_rate_limiter(Arc::clone(&self.rate_limiter))
+            .with_health_registry(Arc::clone(&self.health_registry));
         if let Some(audit) = &self.tool_audit {
             dispatcher = dispatcher.with_tool_audit(Arc::clone(audit));
         }

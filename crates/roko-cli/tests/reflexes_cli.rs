@@ -72,6 +72,7 @@ fn learn_reflexes_reports_an_empty_store_friendly() {
 
     Command::cargo_bin("roko")
         .expect("roko binary")
+        .current_dir(workdir.path())
         .args(["learn", "reflexes", "--workdir"])
         .arg(workdir.path())
         .assert()
@@ -91,6 +92,7 @@ fn learn_reflexes_reports_total_and_only_the_top_five() {
 
     let output = Command::cargo_bin("roko")
         .expect("roko binary")
+        .current_dir(workdir.path())
         .args(["learn", "reflexes", "--workdir"])
         .arg(workdir.path())
         .assert()
@@ -124,6 +126,7 @@ fn learn_reflexes_honors_global_json_output() {
 
     let output = Command::cargo_bin("roko")
         .expect("roko binary")
+        .current_dir(workdir.path())
         .args(["--json", "learn", "reflexes", "--workdir"])
         .arg(workdir.path())
         .assert()

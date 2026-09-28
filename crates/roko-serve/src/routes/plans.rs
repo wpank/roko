@@ -255,7 +255,7 @@ async fn execute_plan(
     // for every real plan directory (the normal layout). Delegating to
     // `load_plan_summary` mirrors the approach already used by `get_plan` and
     // correctly handles directory-layout plans.
-    let _dto = state
+    let dto = state
         .runtime
         .load_plan_summary(&state.workdir, &id)
         .await
@@ -271,7 +271,15 @@ async fn execute_plan(
     // knows how to read `tasks.toml` from a directory; the old flat-file path
     // only worked for the deprecated single-file format and silently failed
     // for every real plan directory.
-    let plan_dir = plans_dir(&state.workdir).join(&id);
+    // Plans inside a plan set live under their group directory.
+    let plan_dir = dto
+        .group
+        .as_deref()
+        .map_or_else(
+            || plans_dir(&state.workdir),
+            |group| plans_dir(&state.workdir).join(group),
+        )
+        .join(&id);
     let plan_id = id.clone();
 
     let mut active = state.active_plans.write().await;
@@ -1854,6 +1862,7 @@ mod tests {
                 superseded_by: None,
                 old_format: false,
                 last_error: None,
+                group: None,
             }))
         }
 

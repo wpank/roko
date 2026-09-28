@@ -2116,6 +2116,11 @@ fn is_rate_limit_message(message: &str) -> bool {
 /// outer workflow handling can erase the provider identity.
 /// Classify provider-facing error text for circuit-breaker outcome recording.
 pub(crate) fn provider_error_kind(message: &str) -> &'static str {
+    // Usage-window refusals mention "limit"; classify them before billing and
+    // rate limits so the circuit breaker quarantines instead of retrying.
+    if crate::provider::error_classify::detect_provider_exhaustion(message).is_some() {
+        return "provider_exhausted";
+    }
     let lower = message.to_ascii_lowercase();
     // Billing/credit errors must be checked before the generic rate-limit
     // classifier so that messages containing "quota" + billing indicators

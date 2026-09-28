@@ -4,7 +4,7 @@
 //! the nodes, and executes Cells sequentially or in bounded topological waves.
 //! Only active conditional edges contribute upstream outputs to downstream Cells.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -17,6 +17,7 @@ use tracing::{info, warn};
 use roko_core::{ContentHash, LensScope, ObservableEvent, TelemetryEventSink};
 
 use crate::cell::{Cell, CellContext};
+use crate::cells::task_executor::TaskGateVerdict;
 use crate::registry::CellRegistry;
 use crate::replay::{ActivityRecorder, ActivityReplayer};
 use crate::topo::{topological_order, topological_waves};
@@ -156,6 +157,9 @@ pub struct GraphOutput {
     pub node_results: Vec<NodeResult>,
     /// Total wall-clock duration for the full graph execution.
     pub total_duration: Duration,
+    /// Gate verdicts stamped on node outputs (live or replayed), keyed by
+    /// node. Nodes whose outputs carry no verdict tag are absent.
+    pub gate_verdicts: BTreeMap<NodeId, TaskGateVerdict>,
 }
 
 impl GraphOutput {
@@ -894,6 +898,7 @@ impl GraphEngine {
             success,
             node_results: results,
             total_duration,
+            gate_verdicts: collect_gate_verdicts(&outputs),
         })
     }
 
@@ -1309,6 +1314,7 @@ impl GraphEngine {
             success,
             node_results: results,
             total_duration,
+            gate_verdicts: collect_gate_verdicts(&outputs.lock()),
         })
     }
 
@@ -1609,6 +1615,7 @@ impl GraphEngine {
             success,
             node_results: results,
             total_duration,
+            gate_verdicts: collect_gate_verdicts(&outputs),
         })
     }
 
@@ -2084,6 +2091,7 @@ impl GraphEngine {
             success,
             node_results: results,
             total_duration,
+            gate_verdicts: collect_gate_verdicts(&outputs),
         })
     }
 
@@ -2523,6 +2531,7 @@ impl GraphEngine {
             success,
             node_results: results,
             total_duration,
+            gate_verdicts: collect_gate_verdicts(&outputs.lock()),
         })
     }
 
@@ -2820,6 +2829,18 @@ async fn execute_cell_with_retries(
             Err(error) => return (Err(error), retry_attempt.saturating_add(1)),
         }
     }
+}
+
+/// Collect the gate verdicts stamped on each node's outputs.
+fn collect_gate_verdicts(
+    outputs: &HashMap<NodeId, Vec<roko_core::Signal>>,
+) -> BTreeMap<NodeId, TaskGateVerdict> {
+    outputs
+        .iter()
+        .filter_map(|(node_id, signals)| {
+            TaskGateVerdict::from_signals(signals).map(|verdict| (node_id.clone(), verdict))
+        })
+        .collect()
 }
 
 /// Enforce the Graph IFC boundary after every Cell execution and replay.

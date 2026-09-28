@@ -230,6 +230,7 @@ depends_on = ["plan-b:T1"]
             superseded_by: None,
             old_format: false,
             last_error: None,
+            group: None,
         },
         PlanSummary {
             id: "plan-b".into(),
@@ -242,6 +243,7 @@ depends_on = ["plan-b:T1"]
             superseded_by: None,
             old_format: false,
             last_error: None,
+            group: None,
         },
         PlanSummary {
             id: "plan-c".into(),
@@ -254,6 +256,7 @@ depends_on = ["plan-b:T1"]
             superseded_by: None,
             old_format: false,
             last_error: None,
+            group: None,
         },
     ];
 
@@ -710,6 +713,7 @@ fn plan_task_counts_uses_summary_progress_without_snapshot() {
         superseded_by: None,
         old_format: false,
         last_error: None,
+        group: None,
     };
 
     assert_eq!(plan_task_counts(&summary, None, 5), (2, 1));
@@ -728,6 +732,7 @@ fn plan_task_counts_prefers_snapshot_task_statuses() {
         superseded_by: None,
         old_format: false,
         last_error: None,
+        group: None,
     };
     let snapshot = PlanTaskListSnapshot {
         tasks_done: 0,
@@ -857,6 +862,7 @@ fn update_from_dashboard_snapshot_maps_connected_state_and_preserves_navigation(
         run_cleanup_degraded: false,
         critical_path_eta_minutes: None,
         surviving_agent_pids: Vec::new(),
+        plan_set: None,
         plans: [
             (
                 "plan-a".to_string(),
@@ -983,6 +989,7 @@ fn update_from_dashboard_snapshot_maps_connected_state_and_preserves_navigation(
         inbox_pending_count: 0,
         affect: None,
         gate_output_lines: Default::default(),
+        task_gate_outputs: Default::default(),
         active_gate_rung: None,
         token_event_ring: Default::default(),
         stats: Default::default(),

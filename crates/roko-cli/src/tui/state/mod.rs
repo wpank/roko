@@ -1961,6 +1961,9 @@ pub struct TuiState {
     pub run_started: Option<Instant>,
     /// Immutable elapsed time published by a terminal runner snapshot.
     pub run_duration_secs: Option<f64>,
+    /// A connected runner announced a plan set that has not finished yet.
+    /// Stays `true` in the gaps between plans, when no plan is active.
+    pub plan_set_running: bool,
 
     // -- wave navigation --
     /// Selected wave index for wave prev/next navigation.
@@ -2323,6 +2326,7 @@ impl Default for TuiState {
 
             run_started: None,
             run_duration_secs: None,
+            plan_set_running: false,
 
             selected_wave_idx: 0,
 

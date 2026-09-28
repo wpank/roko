@@ -27,6 +27,7 @@ fn write_jsonl(path: &Path, lines: &[String]) {
 fn run_roko(workdir: &Path, args: &[&str]) -> String {
     let assert = Command::cargo_bin("roko")
         .expect("roko binary")
+        .current_dir(workdir)
         .args(args)
         .arg("--workdir")
         .arg(workdir)

@@ -208,6 +208,17 @@ fn render_left_panel(
 // Wave tree: hierarchical wave -> plan list
 // ---------------------------------------------------------------------------
 
+/// Live plan entries keyed by plan id, with each entry's index in
+/// `tui_state.plans` (the index `selected_plan_idx` refers to).
+fn plan_entries_by_id(tui_state: &TuiState) -> HashMap<&str, (usize, &PlanEntry)> {
+    tui_state
+        .plans
+        .iter()
+        .enumerate()
+        .map(|(index, plan)| (plan.id.as_str(), (index, plan)))
+        .collect()
+}
+
 fn render_wave_tree(
     frame: &mut Frame<'_>,
     area: Rect,
@@ -217,6 +228,18 @@ fn render_wave_tree(
     theme: &Theme,
 ) {
     let focused = matches!(tui_state.focus, FocusZone::PlanTree);
+    // Rows render `plan_summaries`; live status comes from the `PlanEntry`
+    // with the same plan id — the two lists are never aligned by position.
+    let entries = plan_entries_by_id(tui_state);
+    let entry_at = |summary_idx: usize| {
+        tui_state
+            .plan_summaries
+            .get(summary_idx)
+            .and_then(|summary| entries.get(summary.id.as_str()).copied())
+    };
+    let is_selected_at = |summary_idx: usize| {
+        entry_at(summary_idx).is_some_and(|(entry_idx, _)| entry_idx == view_state.selected)
+    };
     let total_plans = tui_state.plan_summaries.len();
     let completed = tui_state
         .plan_summaries
@@ -251,10 +274,8 @@ fn render_wave_tree(
             .iter()
             .enumerate()
             .filter(|(i, _)| {
-                tui_state
-                    .plans
-                    .get(*i)
-                    .map(|p| tui_state.plan_tree_filter.matches_plan_or_tasks(p))
+                entry_at(*i)
+                    .map(|(_, p)| tui_state.plan_tree_filter.matches_plan_or_tasks(p))
                     .unwrap_or(true)
             })
             .count();
@@ -377,16 +398,13 @@ fn render_wave_tree(
     if use_waves {
         // Build wave groups: real data or synthetic fallback.
         let wave_groups: Vec<(usize, Vec<usize>)> = if has_real_waves {
-            // Group plan indices by their wave assignment.
+            // Group plan indices by their wave assignment. Plans without a
+            // PlanEntry (summary-only) go to wave 0.
             let mut groups: std::collections::BTreeMap<usize, Vec<usize>> =
                 std::collections::BTreeMap::new();
-            for (i, plan) in tui_state.plans.iter().enumerate() {
-                let wave_idx = plan.wave.unwrap_or(0);
+            for i in 0..tui_state.plan_summaries.len() {
+                let wave_idx = entry_at(i).and_then(|(_, plan)| plan.wave).unwrap_or(0);
                 groups.entry(wave_idx).or_default().push(i);
-            }
-            // Plans without a PlanEntry (summary-only) go to wave 0.
-            for i in tui_state.plans.len()..tui_state.plan_summaries.len() {
-                groups.entry(0).or_default().push(i);
             }
             groups.into_iter().collect()
         } else {
@@ -415,16 +433,12 @@ fn render_wave_tree(
                 .count();
             let wave_total = plan_indices.len();
             let all_done = wave_done == wave_total;
-            let any_active = plan_indices.iter().any(|&i| {
-                tui_state
-                    .plans
-                    .get(i)
-                    .map(|p| p.status.is_active())
-                    .unwrap_or(false)
-            });
+            let any_active = plan_indices
+                .iter()
+                .any(|&i| entry_at(i).is_some_and(|(_, p)| p.status.is_active()));
 
             // Is this wave selected (contains selected plan)?
-            let wave_selected = plan_indices.iter().any(|&i| i == view_state.selected);
+            let wave_selected = plan_indices.iter().any(|&i| is_selected_at(i));
             // Default: expand selected wave and completed waves, collapse others.
             // Respect the user's explicit collapse toggle.
             let explicitly_collapsed = tui_state.collapsed_waves.contains(wave_idx);
@@ -463,13 +477,7 @@ fn render_wave_tree(
             // Count failed in wave
             let wave_failed = plan_indices
                 .iter()
-                .filter(|&&i| {
-                    tui_state
-                        .plans
-                        .get(i)
-                        .map(|p| p.status.is_failed())
-                        .unwrap_or(false)
-                })
+                .filter(|&&i| entry_at(i).is_some_and(|(_, p)| p.status.is_failed()))
                 .count();
 
             let mut wave_spans = vec![
@@ -554,20 +562,18 @@ fn render_wave_tree(
 
             // Plans within wave (apply filter)
             for &i in plan_indices {
-                if filter_active {
-                    if let Some(p) = tui_state.plans.get(i) {
-                        if !tui_state.plan_tree_filter.matches_plan_or_tasks(p) {
-                            continue;
-                        }
-                    }
+                let entry = entry_at(i).map(|(_, p)| p);
+                if filter_active
+                    && entry.is_some_and(|p| !tui_state.plan_tree_filter.matches_plan_or_tasks(p))
+                {
+                    continue;
                 }
                 if let Some(plan) = tui_state.plan_summaries.get(i) {
                     render_plan_line(
                         &mut lines,
                         plan,
-                        i,
-                        view_state,
-                        tui_state,
+                        entry,
+                        is_selected_at(i),
                         theme,
                         content_width,
                         true,
@@ -578,19 +584,17 @@ fn render_wave_tree(
     } else {
         // Flat list (apply filter)
         for (i, plan) in tui_state.plan_summaries.iter().enumerate() {
-            if filter_active {
-                if let Some(p) = tui_state.plans.get(i) {
-                    if !tui_state.plan_tree_filter.matches_plan_or_tasks(p) {
-                        continue;
-                    }
-                }
+            let entry = entry_at(i).map(|(_, p)| p);
+            if filter_active
+                && entry.is_some_and(|p| !tui_state.plan_tree_filter.matches_plan_or_tasks(p))
+            {
+                continue;
             }
             render_plan_line(
                 &mut lines,
                 plan,
-                i,
-                view_state,
-                tui_state,
+                entry,
+                is_selected_at(i),
                 theme,
                 content_width,
                 false,
@@ -629,19 +633,17 @@ fn render_wave_tree(
 // Single plan line
 // ---------------------------------------------------------------------------
 
-#[allow(clippy::too_many_arguments)]
+/// Render one F2 plan row. `tui_plan` is the live entry for the same plan
+/// id, when one exists.
 fn render_plan_line(
     lines: &mut Vec<Line<'_>>,
     plan: &crate::plan::PlanSummary,
-    idx: usize,
-    view_state: &ViewState,
-    tui_state: &TuiState,
+    tui_plan: Option<&PlanEntry>,
+    is_selected: bool,
     theme: &Theme,
     content_width: usize,
     indented: bool,
 ) {
-    let is_selected = idx == view_state.selected;
-    let tui_plan = tui_state.plans.get(idx);
     let is_active = tui_plan.map(|p| p.status.is_active()).unwrap_or(false);
     let is_failed = tui_plan.map(|p| p.status.is_failed()).unwrap_or(false);
     let task_total = tui_plan.map(|p| p.tasks_total).unwrap_or(plan.task_count);
@@ -898,8 +900,7 @@ fn render_right_panel(
         let plan_summary = tui_state
             .plan_summaries
             .iter()
-            .find(|summary| summary.id == plan.id)
-            .or_else(|| tui_state.plan_summaries.get(tui_state.selected_plan_idx));
+            .find(|summary| summary.id == plan.id);
         let plan_execution = tui_state
             .current_plan_execution
             .as_ref()
@@ -1808,3 +1809,125 @@ fn parse_duration_secs(duration: &str) -> Option<f64> {
 }
 
 use crate::tui::display_utils::truncate;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::plan::PlanSummary;
+    use crate::tui::state::PlanPhase;
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    fn summary(id: &str) -> PlanSummary {
+        PlanSummary {
+            id: id.to_string(),
+            title: id.to_string(),
+            task_count: 2,
+            tasks_done: 0,
+            tasks_failed: 0,
+            completed: false,
+            status: "ready".to_string(),
+            superseded_by: None,
+            old_format: false,
+            last_error: None,
+            group: None,
+        }
+    }
+
+    fn rendered_rows(state: &TuiState, selected: usize) -> Vec<String> {
+        let mut terminal = Terminal::new(TestBackend::new(60, 8)).unwrap();
+        let view_state = ViewState {
+            selected,
+            ..ViewState::default()
+        };
+        terminal
+            .draw(|frame| {
+                render_wave_tree(
+                    frame,
+                    frame.area(),
+                    &DashboardData::default(),
+                    state,
+                    &view_state,
+                    &Theme::dark(),
+                );
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let width = buffer.area.width as usize;
+        buffer
+            .content
+            .chunks(width)
+            .map(|row| row.iter().map(|cell| cell.symbol()).collect::<String>())
+            .collect()
+    }
+
+    #[test]
+    fn live_status_joins_disk_plans_by_id_not_index() {
+        // Disk plans sort alphabetically; only the second one is running and
+        // it is the only live entry, so index 0 of each list differs.
+        let mut state = TuiState::default();
+        state.plan_summaries = vec![summary("add-plan-queue"), summary("01-backend")];
+        state.plans = vec![PlanEntry {
+            id: "01-backend".to_string(),
+            name: "01-backend".to_string(),
+            status: PlanPhase::Active,
+            tasks_total: 2,
+            tasks_done: 1,
+            ..PlanEntry::default()
+        }];
+
+        let rows = rendered_rows(&state, 0);
+        let row_for = |id: &str| {
+            rows.iter()
+                .find(|row| row.contains(id))
+                .unwrap_or_else(|| panic!("no row for {id}: {rows:#?}"))
+                .clone()
+        };
+        let active = row_for("01-backend");
+        let idle = row_for("add-plan-queue");
+        assert!(active.contains('\u{25b6}'), "running plan row: {active}");
+        assert!(active.contains("1/2"), "running plan progress: {active}");
+        assert!(!idle.contains('\u{25b6}'), "idle plan row: {idle}");
+        assert!(idle.contains("0/2"), "idle plan progress: {idle}");
+    }
+
+    #[test]
+    fn plan_set_load_refreshes_rows_and_later_starts_join_by_id() {
+        use roko_core::DashboardEvent;
+        use roko_core::dashboard_snapshot::{DashboardSnapshot, PlanSetEntry};
+
+        let entry = |plan_id: &str| PlanSetEntry {
+            plan_id: plan_id.to_string(),
+            title: plan_id.to_string(),
+            tasks_total: 2,
+            ..PlanSetEntry::default()
+        };
+        let mut snap = DashboardSnapshot::default();
+        snap.apply_with_ts(
+            &DashboardEvent::PlanSetLoaded {
+                plans: vec![entry("02-portal"), entry("01-backend")],
+            },
+            1_000,
+        );
+        let mut state = TuiState::default();
+        state.update_from_dashboard_snapshot(&snap);
+        let mut ids: Vec<&str> = state.plan_summaries.iter().map(|p| p.id.as_str()).collect();
+        ids.sort_unstable();
+        assert_eq!(ids, vec!["01-backend", "02-portal"]);
+
+        snap.apply_with_ts(
+            &DashboardEvent::PlanStarted {
+                plan_id: "01-backend".to_string(),
+                tasks_total: 2,
+            },
+            2_000,
+        );
+        state.update_from_dashboard_snapshot(&snap);
+        let rows = rendered_rows(&state, state.selected_plan_idx);
+        let row_for = |id: &str| rows.iter().find(|row| row.contains(id)).cloned();
+        let started = row_for("01-backend").expect("started row");
+        let queued = row_for("02-portal").expect("queued row");
+        assert!(started.contains('\u{25b6}'), "started plan row: {started}");
+        assert!(!queued.contains('\u{25b6}'), "queued plan row: {queued}");
+    }
+}

@@ -531,7 +531,7 @@ fn run_plan_on_local_runtime(
     plan_target: PathBuf,
     _config: Config,
     repo_registry: RepoRegistry,
-    _state_hub: SharedStateHub,
+    state_hub: SharedStateHub,
     _metrics: Option<Arc<roko_core::obs::metrics::MetricRegistry>>,
     _extension_chain: Arc<tokio::sync::Mutex<roko_core::extension::ExtensionChain>>,
 ) -> anyhow::Result<PlanExecutionResult> {
@@ -578,6 +578,13 @@ fn run_plan_on_local_runtime(
                 rich_topology: false,
                 // Never launch an interactive TUI from an HTTP handler.
                 no_tui: true,
+                // Publish into the server's hub so API/SSE clients see the run.
+                state_hub: Some(state_hub),
+                // Serve-side cancellation is wired separately (plan 03).
+                interrupt: None,
+                // The workspace's `[conductor] max_parallel_plans`.
+                max_parallel_plans: None,
+                fail_fast: false,
             })
             .await?;
 
@@ -1261,6 +1268,7 @@ fn plan_summary_to_dto(summary: crate::plan::PlanSummary) -> PlanSummaryDto {
         superseded_by: summary.superseded_by,
         old_format: summary.old_format,
         last_error: summary.last_error,
+        group: summary.group,
     }
 }
 

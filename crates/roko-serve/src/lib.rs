@@ -1584,6 +1584,9 @@ fn server_event_to_dashboard(event: &ServerEvent) -> Option<roko_core::Dashboard
             plan_id: plan_id.clone(),
             tasks_total: 0,
         }),
+        ServerEvent::PlanSetLoaded { plans } => Some(DashboardEvent::PlanSetLoaded {
+            plans: plans.clone(),
+        }),
         ServerEvent::PlanCompleted { plan_id, success } => Some(DashboardEvent::PlanCompleted {
             plan_id: plan_id.clone(),
             success: *success,
@@ -1922,6 +1925,9 @@ fn dashboard_event_to_server(event: &roko_core::DashboardEvent) -> Option<Server
         DashboardEvent::PlanCompleted { plan_id, success } => Some(ServerEvent::PlanCompleted {
             plan_id: plan_id.clone(),
             success: *success,
+        }),
+        DashboardEvent::PlanSetLoaded { plans } => Some(ServerEvent::PlanSetLoaded {
+            plans: plans.clone(),
         }),
         DashboardEvent::TaskStarted {
             plan_id,
@@ -3115,6 +3121,29 @@ mod subscription_relay_bridge_tests {
             relay_initial_retry_delay(1_000),
             std::time::Duration::from_secs(30)
         );
+    }
+}
+
+#[cfg(test)]
+mod plan_set_event_mapping_tests {
+    use super::*;
+
+    #[test]
+    fn plan_set_loaded_bridges_both_ways_with_one_wire_shape() {
+        let dashboard = roko_core::DashboardEvent::PlanSetLoaded {
+            plans: vec![roko_core::dashboard_snapshot::PlanSetEntry {
+                plan_id: "01-a".into(),
+                title: "01-a".into(),
+                tasks_total: 10,
+                ..Default::default()
+            }],
+        };
+
+        let server = dashboard_event_to_server(&dashboard).expect("mapped to ServerEvent");
+        let wire = serde_json::to_value(&server).expect("serialize server event");
+        assert_eq!(wire["type"], "plan_set_loaded");
+        assert_eq!(wire, serde_json::to_value(&dashboard).expect("serialize"));
+        assert_eq!(server_event_to_dashboard(&server), Some(dashboard));
     }
 }
 

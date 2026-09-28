@@ -99,6 +99,11 @@ pub enum ServerEvent {
     /// A plan execution has completed.
     PlanCompleted { plan_id: String, success: bool },
 
+    /// A runner selected its complete plan set, listed in execution order.
+    PlanSetLoaded {
+        plans: Vec<roko_core::dashboard_snapshot::PlanSetEntry>,
+    },
+
     /// An agent process was spawned.
     AgentSpawned {
         agent_id: String,

@@ -723,6 +723,8 @@ async fn test_runtime_harness_smoke() {
     // Emit a task-completed event for T1.
     facade
         .on_event(&FeedbackEvent::TaskCompleted {
+            turns: 0,
+            failure_reason: None,
             plan_id: "test-plan".into(),
             task_id: "T1".into(),
             outcome: AgentOutcome {
@@ -753,6 +755,8 @@ async fn test_runtime_harness_smoke() {
     // Emit a task-completed event for T2.
     facade
         .on_event(&FeedbackEvent::TaskCompleted {
+            turns: 0,
+            failure_reason: None,
             plan_id: "test-plan".into(),
             task_id: "T2".into(),
             outcome: AgentOutcome {

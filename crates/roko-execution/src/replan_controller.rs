@@ -24,6 +24,7 @@ use roko_core::plan_mutation::{
     PlanMutationErrorV1, PlanMutationOpV1, PlanMutationV1, apply_mutation, canonical_fingerprint,
 };
 use roko_gate::{FailureClass, GateFailureAction, GateFailureClassification};
+use roko_graph::plan_mutation::{build_merge_with_rewiring, build_split_with_rewiring};
 use roko_graph::snapshot::{CheckpointExtension, EXT_REPLAN};
 use serde::{Deserialize, Serialize};
 use tracing::debug;
@@ -300,8 +301,16 @@ impl ReplanController {
     /// ordinary retry or are blocked/human-required. Returns
     /// `ReplanDecision::CapReached` when the cap is exhausted. Otherwise
     /// returns `ReplanDecision::Apply` with the first untried strategy.
+    ///
+    /// Without the plan, no dependency edges can be rewired: split parts start
+    /// with no dependencies and merges are unavailable. Use
+    /// [`Self::decide_with_plan`] when the plan is known.
     #[must_use]
     pub fn decide(request: &ReplanRequest) -> ReplanDecision {
+        Self::decide_inner(request, None)
+    }
+
+    fn decide_inner(request: &ReplanRequest, plan: Option<&MutablePlanV1>) -> ReplanDecision {
         let cap = request.max_replans.min(ABSOLUTE_MAX_REPLANS);
         let attempt_count = request.prior_attempts.len() as u32;
 
@@ -374,7 +383,7 @@ impl ReplanController {
             }
 
             // Build the mutation for this strategy.
-            match build_mutation(request, strategy, &evidence_fp) {
+            match build_mutation(request, strategy, &evidence_fp, plan) {
                 Ok(mutation) => {
                     return ReplanDecision::Apply {
                         strategy: strategy.clone(),
@@ -565,6 +574,7 @@ fn build_mutation(
     request: &ReplanRequest,
     strategy: &ReplanStrategy,
     evidence_fp: &str,
+    plan: Option<&MutablePlanV1>,
 ) -> Result<PlanMutationV1, String> {
     let mutation_id = format!(
         "replan-{}-{}-{}",
@@ -589,8 +599,8 @@ fn build_mutation(
     }];
 
     let operations = match strategy {
-        ReplanStrategy::ChangeApproach => build_change_approach_ops(request)?,
-        ReplanStrategy::SplitTask => build_split_task_ops(request)?,
+        ReplanStrategy::ChangeApproach => build_change_approach_ops(request, plan)?,
+        ReplanStrategy::SplitTask => build_split_task_ops(request, plan)?,
         ReplanStrategy::AddPrerequisite => build_add_prerequisite_ops(request)?,
         ReplanStrategy::MergeSiblingTasks => build_merge_sibling_ops(request)?,
         ReplanStrategy::RemoveInvalidDependency => build_remove_invalid_dep_ops(request)?,
@@ -607,7 +617,10 @@ fn build_mutation(
 }
 
 /// ChangeApproach: replace only the failed task's metadata/prompt; clear model hints.
-fn build_change_approach_ops(request: &ReplanRequest) -> Result<Vec<PlanMutationOpV1>, String> {
+fn build_change_approach_ops(
+    request: &ReplanRequest,
+    plan: Option<&MutablePlanV1>,
+) -> Result<Vec<PlanMutationOpV1>, String> {
     let task_id = &request.failed_task_id;
     let summary = &request.gate_classification.summary;
 
@@ -627,7 +640,11 @@ fn build_change_approach_ops(request: &ReplanRequest) -> Result<Vec<PlanMutation
              The approach should be fundamentally different from the prior attempt.",
             summary
         ),
-        dependencies: BTreeSet::new(), // Will be set by caller after plan inspection.
+        // Keep the task's place in the DAG when the plan is known.
+        dependencies: plan
+            .and_then(|plan| plan.tasks.get(task_id))
+            .map(|task| task.dependencies.clone())
+            .unwrap_or_default(),
         metadata,
         completed: false,
     };
@@ -639,22 +656,50 @@ fn build_change_approach_ops(request: &ReplanRequest) -> Result<Vec<PlanMutation
 }
 
 /// SplitTask: replace the failed task with `<id>-part-1` and `<id>-part-2`.
-fn build_split_task_ops(request: &ReplanRequest) -> Result<Vec<PlanMutationOpV1>, String> {
+///
+/// With the plan, part 1 inherits the failed task's dependencies and its
+/// dependents move to part 2.
+fn build_split_task_ops(
+    request: &ReplanRequest,
+    plan: Option<&MutablePlanV1>,
+) -> Result<Vec<PlanMutationOpV1>, String> {
     let task_id = &request.failed_task_id;
     let summary = &request.gate_classification.summary;
+
+    let part1_title = format!("[split 1/2] {}", task_id);
+    let part1_description = format!(
+        "First part of split task after gate failure: {}\n\n\
+         Focus on the foundational/setup work.",
+        summary
+    );
+    let part2_title = format!("[split 2/2] {}", task_id);
+    let part2_description = format!(
+        "Second part of split task after gate failure: {}\n\n\
+         Build on the foundation from part 1.",
+        summary
+    );
+
+    if let Some(plan) = plan {
+        return build_split_with_rewiring(
+            plan,
+            task_id,
+            &part1_title,
+            &part1_description,
+            &part2_title,
+            &part2_description,
+        )
+        .map(|(operations, _, _)| operations)
+        .ok_or_else(|| format!("task '{task_id}' is not pending in the plan"));
+    }
 
     let part1_id = format!("{}-part-1", task_id);
     let part2_id = format!("{}-part-2", task_id);
 
     let part1 = MutableTaskV1 {
         id: part1_id.clone(),
-        title: format!("[split 1/2] {}", task_id),
-        description: format!(
-            "First part of split task after gate failure: {}\n\n\
-             Focus on the foundational/setup work.",
-            summary
-        ),
-        dependencies: BTreeSet::new(), // Incoming deps are wired below.
+        title: part1_title,
+        description: part1_description,
+        dependencies: BTreeSet::new(),
         metadata: BTreeMap::from([
             ("split_source".to_string(), task_id.clone()),
             ("split_ordinal".to_string(), "1".to_string()),
@@ -664,14 +709,10 @@ fn build_split_task_ops(request: &ReplanRequest) -> Result<Vec<PlanMutationOpV1>
 
     // Part 2 depends on part 1.
     let part2 = MutableTaskV1 {
-        id: part2_id.clone(),
-        title: format!("[split 2/2] {}", task_id),
-        description: format!(
-            "Second part of split task after gate failure: {}\n\n\
-             Build on the foundation from part 1.",
-            summary
-        ),
-        dependencies: BTreeSet::from([part1_id.clone()]),
+        id: part2_id,
+        title: part2_title,
+        description: part2_description,
+        dependencies: BTreeSet::from([part1_id]),
         metadata: BTreeMap::from([
             ("split_source".to_string(), task_id.clone()),
             ("split_ordinal".to_string(), "2".to_string()),
@@ -754,8 +795,8 @@ impl ReplanController {
     /// is available and `decide` returns `Reject` with a merge-context error.
     #[must_use]
     pub fn decide_with_plan(request: &ReplanRequest, plan: &MutablePlanV1) -> ReplanDecision {
-        // First try the normal path.
-        let decision = Self::decide(request);
+        // First try the normal path, wiring edges from the plan topology.
+        let decision = Self::decide_inner(request, Some(plan));
 
         // If the normal path succeeded or hit cap, return it.
         match &decision {
@@ -815,23 +856,22 @@ impl ReplanController {
 
         let sibling = &plan.tasks[*sibling_id];
 
-        // Build merge mutation.
-        let merged = MutableTaskV1 {
-            id: request.failed_task_id.clone(),
-            title: format!("[merged] {} + {}", request.failed_task_id, sibling_id),
-            description: format!(
+        // Build merge mutation; dependents of either source move to the merged task.
+        let Some(operations) = build_merge_with_rewiring(
+            plan,
+            &request.failed_task_id,
+            sibling_id,
+            &request.failed_task_id,
+            &format!("[merged] {} + {}", request.failed_task_id, sibling_id),
+            &format!(
                 "Merged task after gate failure.\n\n\
                  Original: {}\n\
                  Merged with: {}\n\n\
                  Failure: {}",
                 failed_task.description, sibling.description, request.gate_classification.summary,
             ),
-            dependencies: failed_task.dependencies.clone(),
-            metadata: BTreeMap::from([(
-                "merged_from".to_string(),
-                format!("{},{}", request.failed_task_id, sibling_id),
-            )]),
-            completed: false,
+        ) else {
+            return decision;
         };
 
         let mutation_id = format!(
@@ -858,10 +898,7 @@ impl ReplanController {
                 )),
                 fingerprint: evidence_fp,
             }],
-            operations: vec![PlanMutationOpV1::MergeTasks {
-                task_ids: vec![request.failed_task_id.clone(), sibling_id.to_string()],
-                merged,
-            }],
+            operations,
         };
 
         ReplanDecision::Apply {
@@ -1000,7 +1037,8 @@ mod tests {
             .prior_attempts
             .push((ReplanStrategy::ChangeApproach, evidence_fp.clone()));
 
-        let decision = ReplanController::decide(&request);
+        // t2 sits between t1 and t3, so the split needs the plan to rewire.
+        let decision = ReplanController::decide_with_plan(&request, &plan);
         match &decision {
             ReplanDecision::Apply { strategy, mutation } => {
                 assert_eq!(strategy, &ReplanStrategy::SplitTask);
@@ -1014,9 +1052,16 @@ mod tests {
                 assert!(new_plan.tasks.contains_key("t2-part-1"));
                 assert!(new_plan.tasks.contains_key("t2-part-2"));
 
-                // Part 2 depends on part 1.
+                // Part 1 inherits t2's dependencies; part 2 depends on part 1.
+                let part1 = &new_plan.tasks["t2-part-1"];
+                assert!(part1.dependencies.contains("t1"));
                 let part2 = &new_plan.tasks["t2-part-2"];
                 assert!(part2.dependencies.contains("t2-part-1"));
+                // t2's dependents now wait for the whole split.
+                assert_eq!(
+                    new_plan.tasks["t3"].dependencies,
+                    BTreeSet::from(["t2-part-2".to_string()])
+                );
             }
             other => panic!("expected Apply(SplitTask), got: {:?}", other),
         }
@@ -1101,6 +1146,11 @@ mod tests {
                 assert!(new_plan.tasks.contains_key("t1"));
                 // t2 is consumed.
                 assert!(!new_plan.tasks.contains_key("t2"));
+                // t3's edge to t2 moves to the merged task.
+                assert_eq!(
+                    new_plan.tasks["t3"].dependencies,
+                    BTreeSet::from(["t1".to_string()])
+                );
             }
             other => panic!("expected Apply(MergeSiblingTasks), got: {:?}", other),
         }
@@ -1630,11 +1680,13 @@ mod tests {
 
         let plan_after_second = new_plan2.unwrap();
 
-        // Third replan: should pick AddPrerequisite, then cap reached.
+        // Third replan: the split removed t2, so the same failure now lands
+        // on its first part; ChangeApproach and SplitTask are spent for this
+        // evidence, so AddPrerequisite is next.
         let (decision3, _) = ReplanController::decide_apply_checkpoint(
             "run-cp",
             &plan_after_second,
-            "t2",
+            "t2-part-1",
             classification,
             &[],
             3,

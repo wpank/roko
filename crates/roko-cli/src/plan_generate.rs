@@ -12,6 +12,8 @@
 use std::fmt::Write as _;
 use std::path::Path;
 
+use crate::task_parser::role_capabilities;
+
 const NAMING_GLOSSARY_RELATIVE_PATH: &str = "docs/00-architecture/01-naming-and-glossary.md";
 const NAMING_GLOSSARY_MAX_LINES: usize = 160;
 const CLAUDE_MD_RELATIVE_PATH: &str = "CLAUDE.md";
@@ -152,7 +154,9 @@ impl TaskTier {
 /// This prompt produces tasks with surgical context, executable verification,
 /// and model-adaptive tier hints. It's designed to produce tasks that even
 /// the smallest models can execute successfully.
-pub const PLAN_GENERATOR_SYSTEM_PROMPT: &str = r#"## CRITICAL: Output format
+///
+/// `{ROLE_TOOL_TABLE}` is replaced by [`render_role_tool_table`].
+const PLAN_GENERATOR_SYSTEM_PROMPT: &str = r#"## CRITICAL: Output format
 
 Your entire response MUST be a single ```toml fenced code block containing ONLY valid TOML.
 Do not include prose, explanations, Rust code, or markdown outside the TOML block.
@@ -174,7 +178,7 @@ status = "ready"
 tier = "focused"
 max_loc = 50
 files = ["crates/roko-core/src/lib.rs"]
-allowed_tools = ["read_file", "grep"]
+allowed_tools = ["read_file", "grep", "edit_file"]
 denied_tools = []
 depends_on = []
 role = "implementer"
@@ -243,7 +247,7 @@ tier = "mechanical"       # mechanical | focused | integrative | architectural
 # model_hint omitted — runtime picks the best model automatically
 max_loc = 20              # maximum lines of change
 files = ["crates/roko-core/src/types.rs"]   # REAL file paths only, never <path> or <crate>
-allowed_tools = ["read_file", "grep"]
+allowed_tools = ["read_file", "grep", "edit_file"]
 denied_tools = []
 # mcp_servers omitted — only include when a task genuinely requires an MCP server
 depends_on = []
@@ -304,7 +308,7 @@ Every `[[task]]` MUST include a `role` field. Choose the most specific role:
 | Role | Use when |
 |------|----------|
 | `"implementer"` | Writing code, adding fields, modifying functions, creating files |
-| `"architect"` | Designing APIs, planning module structure, major refactors |
+| `"architect"` | Reviewing and designing APIs and module structure (read-only: cannot change files) |
 | `"researcher"` | Gathering information, analyzing existing code, reading docs |
 | `"strategist"` | Decomposing requirements, planning approach, making design decisions |
 | `"scribe"` | Writing documentation, updating comments, generating markdown |
@@ -314,16 +318,9 @@ Missing or misspelled roles will be rejected by `roko plan validate`. The `role`
 
 ## Role-Tool Constraints
 
-Each role has a default tool permission set. Tasks can further restrict via `allowed_tools`/`denied_tools`.
+Each role has a default tool permission set. Tasks can further restrict via `allowed_tools`/`denied_tools`, never widen it.
 
-| Role | Read | Write | Execute | Notes |
-|------|------|-------|---------|-------|
-| `"implementer"` | yes | yes | yes | Full access to modify and build |
-| `"architect"` | yes | yes | yes | Same as implementer but for design-level tasks |
-| `"researcher"` | yes | no | no | Read-only; cannot modify files or run commands |
-| `"strategist"` | yes | no | no | Read-only; planning and analysis only |
-| `"scribe"` | yes | yes | no | Can write docs but cannot execute commands |
-| `"quick-reviewer"` | yes | no | no | Read-only; audits code without changes |
+{ROLE_TOOL_TABLE}
 
 ## Model hints
 
@@ -355,8 +352,8 @@ Detect the project language and use the right commands:
 
 ## Verify steps by role
 
-- **implementer/architect**: MUST have exactly one focused verify step. Use a target-aware compile for ordinary Rust edits, an exact test for behavioral logic, or one shell command that combines a structural assertion with the selected check.
-- **researcher/strategist**: MUST have only structural checks (e.g. `test -f path/to/output.md`, `grep -q ...`). Do NOT add compile/test verify steps — researcher tasks do not modify code.
+- **implementer**: MUST have exactly one focused verify step. Use a target-aware compile for ordinary Rust edits, an exact test for behavioral logic, or one shell command that combines a structural assertion with the selected check.
+- **architect/researcher/strategist**: MUST have only structural checks on files that already exist (e.g. `grep -q ...`). These roles cannot write, so never verify an output file they would have to create, and do NOT add compile/test verify steps.
 - **scribe/quick-reviewer**: structural checks only (verify docs exist, verify reviewed files haven't changed)
 
 ## Quality gates for YOUR output
@@ -366,7 +363,8 @@ Before finalizing, verify your tasks against:
 - [ ] `meta.max_parallel` is 1 unless tasks are truly independent (shared files = not independent)
 - [ ] Every task has ≤ max_loc lines of change for its tier
 - [ ] Every task has exactly one focused verify step and no semantic duplicate exists elsewhere in the plan
-- [ ] Researcher/strategist tasks have ONLY structural verify steps (no cargo check, no cargo test)
+- [ ] Architect/researcher/strategist tasks have ONLY structural verify steps (no cargo check, no cargo test)
+- [ ] Every task with a non-empty `files` list uses a role that can write (see Role-Tool Constraints)
 - [ ] No task requires reading more than 3 files
 - [ ] Anti-patterns are specific (not generic "be careful")
 - [ ] Dependencies form a DAG (no cycles)
@@ -434,11 +432,67 @@ fail_msg = "The exact health endpoint integration test failed or was not found"
 ```
 "#;
 
+/// Roles offered to plan-generating models, in the order they are described.
+const GENERATOR_ROLES: &[&str] = &[
+    "implementer",
+    "architect",
+    "researcher",
+    "strategist",
+    "scribe",
+    "quick-reviewer",
+];
+
+/// Render the role/tool table shown to plan-generating models.
+///
+/// Every cell comes from [`role_capabilities`] (the roles' safety contracts
+/// plus their default task denials), so the prompt cannot promise a role a
+/// capability that dispatch denies.
+#[must_use]
+pub fn render_role_tool_table() -> String {
+    let yes_no = |allowed: bool| if allowed { "yes" } else { "no" };
+    let mut table = String::from(
+        "| Role | Read | Write | Execute | Notes |\n|------|------|-------|---------|-------|\n",
+    );
+    for role in GENERATOR_ROLES {
+        let caps = role_capabilities(role);
+        let notes = match (caps.read, caps.write, caps.execute) {
+            (false, _, _) => "No tool access",
+            (true, true, true) => "Full access to modify files and run commands",
+            (true, true, false) => "Can write files but cannot run commands",
+            (true, false, true) => "Read-only: may run commands but cannot change files",
+            (true, false, false) => "Read-only: cannot change files or run commands",
+        };
+        let _ = writeln!(
+            table,
+            "| `\"{role}\"` | {} | {} | {} | {notes} |",
+            yes_no(caps.read),
+            yes_no(caps.write),
+            yes_no(caps.execute)
+        );
+    }
+    let writers: Vec<String> = GENERATOR_ROLES
+        .iter()
+        .filter(|role| role_capabilities(role).write)
+        .map(|role| format!("`\"{role}\"`"))
+        .collect();
+    let _ = write!(
+        table,
+        "\nOnly {} can write files. A task with a non-empty `files` list MUST use one of \
+         them; `roko plan validate` rejects any other role with `files` (PLAN_036).",
+        writers.join(" and ")
+    );
+    table
+}
+
 /// Build the shared system prompt for plan generation and regeneration.
 #[must_use]
 pub fn build_generator_system_prompt(workdir: &Path) -> String {
     let mut prompt = String::new();
-    let _ = writeln!(prompt, "{PLAN_GENERATOR_SYSTEM_PROMPT}");
+    let _ = writeln!(
+        prompt,
+        "{}",
+        PLAN_GENERATOR_SYSTEM_PROMPT.replace("{ROLE_TOOL_TABLE}", &render_role_tool_table())
+    );
     append_naming_glossary_prompt(&mut prompt, workdir);
     append_claude_md_prompt(&mut prompt, workdir);
     prompt
@@ -997,6 +1051,33 @@ mod tests {
         assert!(!prompt.contains("claude-opus-4-6"));
         // Tier table is still present.
         assert!(prompt.contains("| 0 | Mechanical | 20 |"));
+    }
+
+    #[test]
+    fn role_tool_table_is_derived_from_enforced_capabilities() {
+        let yes_no = |allowed: bool| if allowed { "yes" } else { "no" };
+        let table = render_role_tool_table();
+        for role in GENERATOR_ROLES {
+            let caps = role_capabilities(role);
+            let row = format!(
+                "| `\"{role}\"` | {} | {} | {} |",
+                yes_no(caps.read),
+                yes_no(caps.write),
+                yes_no(caps.execute)
+            );
+            assert!(table.contains(&row), "missing {row} in\n{table}");
+        }
+        // The dogfood trap: architect was advertised as able to write.
+        assert!(
+            table.contains("| `\"architect\"` | yes | no | no |"),
+            "{table}"
+        );
+        assert!(table.contains("Only `\"implementer\"` and `\"scribe\"` can write files"));
+
+        let prompt = build_generator_system_prompt(std::path::Path::new("/test"));
+        assert!(prompt.contains(&table));
+        assert!(!prompt.contains("{ROLE_TOOL_TABLE}"));
+        assert!(!prompt.contains("Same as implementer"));
     }
 
     // ── Backlog resolution tests (#227) ───────────────────────────────────

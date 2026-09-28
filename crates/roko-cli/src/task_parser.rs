@@ -14,6 +14,7 @@ use std::path::Path;
 
 use crate::orchestrator::{ReplanStrategy, detect_cycle_nodes};
 use anyhow::{Context as _, Result};
+use roko_agent::safety::contract::{AgentContract, ContractLoadMode, RoleCapabilities};
 use roko_core::{OperatingFrequency, TaskDomain};
 use roko_gate::AcceptanceContract;
 use roko_std::denied_tools_for_role;
@@ -649,6 +650,65 @@ impl TaskDef {
     }
 }
 
+/// Roles a plan task may declare in `role`.
+pub const PLAN_TASK_ROLES: &[&str] = &[
+    "implementer",
+    "researcher",
+    "strategist",
+    "architect",
+    "reviewer",
+    "quick-reviewer",
+    "scribe",
+];
+
+/// What a task in `role` may do when it does not narrow its own tools.
+///
+/// The role's bundled safety contract is the source of truth for role
+/// capability; it is loaded with the same fail-closed fallback dispatch uses
+/// and combined with the role's default task-level denials
+/// ([`denied_tools_for_role`]), exactly as dispatch composes them. Plan
+/// generation prompts and plan validation derive from this.
+#[must_use]
+pub fn role_capabilities(role: &str) -> RoleCapabilities {
+    let role_denied: Option<Vec<String>> = denied_tools_for_role(role)
+        .map(|tools| tools.iter().map(|tool| (*tool).to_string()).collect());
+    AgentContract::load_for_role_with_mode(role, ContractLoadMode::RestrictedFallback)
+        .unwrap_or_else(|_| AgentContract::restricted(role))
+        .with_tool_restrictions(None, role_denied.as_deref())
+        .capabilities()
+}
+
+/// A task that declares output `files` its role is not allowed to write.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReadOnlyRoleWithFiles {
+    /// Offending task id.
+    pub task_id: String,
+    /// The task's role.
+    pub role: String,
+    /// The files the task declares.
+    pub files: Vec<String>,
+}
+
+impl std::fmt::Display for ReadOnlyRoleWithFiles {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let writers: Vec<&str> = PLAN_TASK_ROLES
+            .iter()
+            .copied()
+            .filter(|role| role_capabilities(role).write)
+            .collect();
+        write!(
+            f,
+            "task '{}' declares files [{}] but role '{}' cannot write files \
+             (write_file/edit_file are denied to it); use a writing role ({}) \
+             or remove `files`",
+            self.task_id,
+            self.files.join(", "),
+            self.role,
+            writers.join(", ")
+        )
+    }
+}
+
 /// Normalize a model alias to its full model identifier.
 ///
 /// Short aliases like `"haiku"`, `"sonnet"`, `"opus"` are accepted in
@@ -894,15 +954,7 @@ impl TasksFile {
     /// and that role-specific required fields are present.
     /// Returns a list of issues (empty = valid).
     pub fn validate_against_schema(&self) -> Vec<String> {
-        const VALID_ROLES: &[&str] = &[
-            "implementer",
-            "researcher",
-            "strategist",
-            "architect",
-            "reviewer",
-            "quick-reviewer",
-            "scribe",
-        ];
+        const VALID_ROLES: &[&str] = PLAN_TASK_ROLES;
         const VALID_TIERS: &[&str] = &["mechanical", "focused", "integrative", "architectural"];
         const VALID_STATUSES: &[&str] =
             &["pending", "ready", "active", "done", "blocked", "skipped"];
@@ -976,6 +1028,28 @@ impl TasksFile {
         }
 
         issues
+    }
+
+    /// Tasks that declare output `files` although their role cannot write.
+    ///
+    /// Capability comes from [`role_capabilities`], so this agrees with what
+    /// dispatch enforces. Unknown roles are left to
+    /// [`validate_against_schema`](Self::validate_against_schema).
+    pub fn write_capability_issues(&self) -> Vec<ReadOnlyRoleWithFiles> {
+        self.tasks
+            .iter()
+            .filter(|task| !task.files.is_empty())
+            .filter_map(|task| {
+                let role = task.role.as_deref().unwrap_or("implementer");
+                (PLAN_TASK_ROLES.contains(&role) && !role_capabilities(role).write).then(|| {
+                    ReadOnlyRoleWithFiles {
+                        task_id: task.id.clone(),
+                        role: role.to_string(),
+                        files: task.files.clone(),
+                    }
+                })
+            })
+            .collect()
     }
 
     /// Validate that the raw `tasks.toml` still carries the modern task fields.
@@ -3138,5 +3212,92 @@ depends_on = ["T2"]
         assert_eq!(t1.status, "done");
         assert_eq!(reloaded.meta.done, 2); // T1 + T3
         fs::remove_dir_all(dir).ok();
+    }
+
+    fn caps(read: bool, write: bool, execute: bool) -> RoleCapabilities {
+        RoleCapabilities {
+            read,
+            write,
+            execute,
+        }
+    }
+
+    #[test]
+    fn role_capabilities_follow_enforcement() {
+        assert_eq!(role_capabilities("implementer"), caps(true, true, true));
+        assert_eq!(role_capabilities("architect"), caps(true, false, false));
+        assert_eq!(role_capabilities("researcher"), caps(true, false, false));
+        assert_eq!(role_capabilities("strategist"), caps(true, false, false));
+        assert_eq!(role_capabilities("scribe"), caps(true, true, false));
+        assert_eq!(role_capabilities("reviewer"), caps(true, false, true));
+        assert_eq!(role_capabilities("quick-reviewer"), caps(true, false, true));
+    }
+
+    #[test]
+    fn every_plan_role_has_a_contract_that_agrees_on_write() {
+        for role in PLAN_TASK_ROLES {
+            // A missing contract silently degrades to deny-all at dispatch.
+            let contract = AgentContract::load_for_role_with_mode(role, ContractLoadMode::Strict)
+                .unwrap_or_else(|error| panic!("plan role '{role}' has no contract: {error}"));
+            // Tasks may clear the role's default denials (`denied_tools = []`),
+            // so the contract alone must already decide write access.
+            assert_eq!(
+                contract.capabilities().write,
+                role_capabilities(role).write,
+                "role '{role}': contract and task defaults disagree on write access"
+            );
+            assert!(role_capabilities(role).read, "role '{role}' cannot read");
+        }
+    }
+
+    #[test]
+    fn write_capability_issues_flag_read_only_roles_with_files() {
+        let tasks = TasksFile::parse_str(
+            r#"
+[meta]
+plan = "roles"
+
+[[task]]
+id = "T1"
+title = "Design"
+role = "architect"
+files = ["docs/design.md"]
+
+[[task]]
+id = "T2"
+title = "Review"
+role = "reviewer"
+write_files = ["REVIEW.md"]
+
+[[task]]
+id = "T3"
+title = "Build"
+role = "implementer"
+files = ["src/lib.rs"]
+
+[[task]]
+id = "T4"
+title = "Quick review"
+role = "quick-reviewer"
+
+[[task]]
+id = "T5"
+title = "Docs"
+role = "scribe"
+files = ["README.md"]
+"#,
+        )
+        .unwrap();
+
+        let issues = tasks.write_capability_issues();
+        let flagged: Vec<(&str, &str)> = issues
+            .iter()
+            .map(|issue| (issue.task_id.as_str(), issue.role.as_str()))
+            .collect();
+        assert_eq!(flagged, vec![("T1", "architect"), ("T2", "reviewer")]);
+        let message = issues[0].to_string();
+        assert!(message.contains("docs/design.md"), "{message}");
+        assert!(message.contains("cannot write files"), "{message}");
+        assert!(message.contains("(implementer, scribe)"), "{message}");
     }
 }

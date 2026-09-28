@@ -483,6 +483,8 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
             batch_size,
             worktree_per_task,
             rich_topology,
+            max_parallel_plans,
+            fail_fast,
         } => {
             let _t_setup = std::time::Instant::now();
 
@@ -537,11 +539,17 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
             // `plan_loader` (one root plan, or the root's immediate plans),
             // not to the generic validator's recursive file discovery. Run
             // this preflight before both dry-run and workspace-lock mutation.
-            validate_graph_selected_plans_before_run(engine, &resolved_plans_dir)?;
+            validate_graph_selected_plans_before_run(engine, &wd, &resolved_plans_dir)?;
 
             // ── Dry-run mode: parse plans + show summary without executing ──
             if dry_run {
-                return cmd_plan_dry_run(&resolved_plans_dir, cli).await;
+                return cmd_plan_dry_run(
+                    &resolved_plans_dir,
+                    cli,
+                    &wd,
+                    max_parallel_plans.map(|limit| usize::try_from(limit).unwrap_or(usize::MAX)),
+                )
+                .await;
             }
 
             validate_graph_execution_options(engine, approval)?;
@@ -587,6 +595,8 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                     worktree_per_task,
                     rich_topology,
                     no_tui,
+                    max_parallel_plans.map(|limit| usize::try_from(limit).unwrap_or(usize::MAX)),
+                    fail_fast,
                 )
                 .await;
             }
@@ -1698,8 +1708,12 @@ pub(crate) async fn cmd_resume(
         }
     } else {
         let unified = workdir.join(".roko/state/state-snapshot.json");
+        // Graph engine runs checkpoint each plan under this root.
+        let graph_root = workdir.join(".roko/state/graph");
         if unified.exists() {
             unified
+        } else if graph_root.is_dir() {
+            graph_root
         } else {
             workdir.join(".roko/state/executor.json")
         }
@@ -1761,110 +1775,71 @@ pub(crate) async fn cmd_resume(
         batch_size: None,
         worktree_per_task: false,
         rich_topology: false,
+        max_parallel_plans: None,
+        fail_fast: false,
     };
     cmd_plan(cli, plan_cmd).await
 }
 
 /// Parse and display a plan directory without executing anything.
-pub(crate) async fn cmd_plan_dry_run(plans_dir: &Path, cli: &Cli) -> Result<i32> {
-    let plans = roko_cli::orchestrator::discover_plans(plans_dir)
-        .map_err(|e| anyhow!("plan discovery failed: {e}"))?;
+///
+/// Plans are loaded with the same loader as `plan run`, so the preview shows
+/// exactly what a real run would execute: the plan itself when `plans_dir` is
+/// a plan directory, or every plan of a plan set. Finding no plans is an
+/// error here, as it is for a real run.
+pub(crate) async fn cmd_plan_dry_run(
+    plans_dir: &Path,
+    cli: &Cli,
+    workdir: &Path,
+    max_parallel_plans: Option<usize>,
+) -> Result<i32> {
+    let plans = roko_cli::runner::plan_loader::load_plans(plans_dir)?;
+    let schedule = parallel_schedule(workdir, plans_dir, &plans, max_parallel_plans).await?;
+    // Optional scheduling hints live in each plan's `plan.md` frontmatter.
+    let frontmatters: Vec<Option<roko_cli::orchestrator::PlanFrontmatter>> = plans
+        .iter()
+        .map(|plan| {
+            std::fs::read_to_string(plan.dir.join("plan.md"))
+                .ok()
+                .and_then(|content| roko_cli::orchestrator::parse_frontmatter(&content))
+        })
+        .collect();
 
-    if plans.is_empty() {
-        if cli.json {
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&json!({
-                    "dry_run": true,
-                    "plans": [],
-                    "total_plans": 0,
-                    "total_tasks": 0,
-                }))?
-            );
-        } else {
-            println!("No plans found in {}", plans_dir.display());
-        }
-        return Ok(EXIT_SUCCESS);
-    }
-
-    // For each plan, try to load and count tasks.
     let mut plan_summaries: Vec<serde_json::Value> = Vec::new();
     let mut total_tasks: usize = 0;
     let mut total_estimated_minutes: u32 = 0;
 
-    for plan in &plans {
-        // Try loading the tasks.toml adjacent to the plan file.
-        let tasks_path = plan
-            .path
-            .parent()
-            .map(|p| p.join("tasks.toml"))
-            .filter(|p| p.exists());
+    for (plan, frontmatter) in plans.iter().zip(&frontmatters) {
+        let task_details: Vec<serde_json::Value> = plan
+            .tasks
+            .tasks
+            .iter()
+            .map(|t| {
+                json!({
+                    "id": t.id,
+                    "title": t.title,
+                    "status": t.status,
+                    "tier": t.tier,
+                    "depends_on": t.depends_on,
+                    "files": t.files.len(),
+                })
+            })
+            .collect();
 
-        let (task_count, task_details) = if let Some(ref tp) = tasks_path {
-            match roko_cli::task_parser::TasksFile::parse(tp) {
-                Ok(tf) => {
-                    let details: Vec<serde_json::Value> = tf
-                        .tasks
-                        .iter()
-                        .map(|t| {
-                            json!({
-                                "id": t.id,
-                                "title": t.title,
-                                "status": t.status,
-                                "tier": t.tier,
-                                "depends_on": t.depends_on,
-                                "files": t.files.len(),
-                            })
-                        })
-                        .collect();
-                    (tf.tasks.len(), details)
-                }
-                Err(_) => (0, vec![]),
-            }
-        } else {
-            // New-layout plans might have tasks.toml at plans_dir/plan_name/tasks.toml
-            let dir_tasks = plans_dir.join(&plan.base).join("tasks.toml");
-            if dir_tasks.exists() {
-                match roko_cli::task_parser::TasksFile::parse(&dir_tasks) {
-                    Ok(tf) => {
-                        let details: Vec<serde_json::Value> = tf
-                            .tasks
-                            .iter()
-                            .map(|t| {
-                                json!({
-                                    "id": t.id,
-                                    "title": t.title,
-                                    "status": t.status,
-                                    "tier": t.tier,
-                                    "depends_on": t.depends_on,
-                                    "files": t.files.len(),
-                                })
-                            })
-                            .collect();
-                        (tf.tasks.len(), details)
-                    }
-                    Err(_) => (0, vec![]),
-                }
-            } else {
-                (0, vec![])
-            }
-        };
-
-        total_tasks += task_count;
-        if let Some(ref fm) = plan.frontmatter
-            && let Some(mins) = fm.estimated_minutes
-        {
+        total_tasks += task_details.len();
+        if let Some(mins) = frontmatter.as_ref().and_then(|f| f.estimated_minutes) {
             total_estimated_minutes += mins;
         }
 
         plan_summaries.push(json!({
-            "plan": plan.base,
-            "num": plan.num,
-            "task_count": task_count,
-            "estimated_minutes": plan.frontmatter.as_ref().and_then(|f| f.estimated_minutes),
-            "parallel_width": plan.frontmatter.as_ref().and_then(|f| f.estimated_parallel_width),
-            "priority": plan.frontmatter.as_ref().and_then(|f| f.priority),
-            "tags": plan.frontmatter.as_ref().map(|f| &f.tags),
+            "plan": plan.id,
+            "num": plan.id.split('-').next().unwrap_or(&plan.id),
+            "dir": plan.dir,
+            "task_count": task_details.len(),
+            "estimated_minutes": frontmatter.as_ref().and_then(|f| f.estimated_minutes),
+            "parallel_width": frontmatter.as_ref().and_then(|f| f.estimated_parallel_width),
+            "priority": frontmatter.as_ref().and_then(|f| f.priority),
+            "tags": frontmatter.as_ref().map(|f| &f.tags),
             "tasks": task_details,
         }));
     }
@@ -1877,6 +1852,9 @@ pub(crate) async fn cmd_plan_dry_run(plans_dir: &Path, cli: &Cli) -> Result<i32>
             "total_tasks": total_tasks,
             "total_estimated_minutes": total_estimated_minutes,
             "plans": plan_summaries,
+            "max_parallel_plans": schedule.max_parallel_plans,
+            "execution_order": schedule.order,
+            "plan_conflicts": schedule.conflicts,
         });
         println!("{}", serde_json::to_string_pretty(&payload)?);
     } else {
@@ -1887,51 +1865,38 @@ pub(crate) async fn cmd_plan_dry_run(plans_dir: &Path, cli: &Cli) -> Result<i32>
             plans_dir.display()
         );
 
-        for (i, plan) in plans.iter().enumerate() {
-            let est = plan
-                .frontmatter
+        for (i, (plan, frontmatter)) in plans.iter().zip(&frontmatters).enumerate() {
+            let est = frontmatter
                 .as_ref()
                 .and_then(|f| f.estimated_minutes)
                 .map(|m| format!(" (~{m} min)"))
                 .unwrap_or_default();
-            let priority = plan
-                .frontmatter
+            let priority = frontmatter
                 .as_ref()
                 .and_then(|f| f.priority)
                 .map(|p| format!(" [priority={p}]"))
                 .unwrap_or_default();
-            println!("  {}. {}{}{}", i + 1, plan.base, est, priority);
+            println!("  {}. {}{}{}", i + 1, plan.id, est, priority);
 
-            // Print task list if available.
-            if let Some(tasks) = plan_summaries[i].get("tasks").and_then(|v| v.as_array()) {
-                for t in tasks {
-                    let tid = t.get("id").and_then(|v| v.as_str()).unwrap_or("?");
-                    let title = t.get("title").and_then(|v| v.as_str()).unwrap_or("");
-                    let status = t
-                        .get("status")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("pending");
-                    let tier = t.get("tier").and_then(|v| v.as_str()).unwrap_or("?");
-                    let deps = t
-                        .get("depends_on")
-                        .and_then(|v| v.as_array())
-                        .map(|arr| {
-                            let ids: Vec<&str> = arr.iter().filter_map(|v| v.as_str()).collect();
-                            if ids.is_empty() {
-                                String::new()
-                            } else {
-                                format!(" (after {})", ids.join(", "))
-                            }
-                        })
-                        .unwrap_or_default();
-                    println!("     {tid}: {title} [{tier}, {status}]{deps}");
-                }
+            for t in &plan.tasks.tasks {
+                let status = if t.status.is_empty() {
+                    "pending"
+                } else {
+                    t.status.as_str()
+                };
+                let deps = if t.depends_on.is_empty() {
+                    String::new()
+                } else {
+                    format!(" (after {})", t.depends_on.join(", "))
+                };
+                println!("     {}: {} [{}, {status}]{deps}", t.id, t.title, t.tier);
             }
         }
 
         if total_estimated_minutes > 0 {
             println!("\nEstimated total: ~{total_estimated_minutes} min");
         }
+        print_parallel_schedule(&schedule);
         println!("\nNo tasks were executed. Remove --dry-run to run the plan.");
     }
 
@@ -2299,53 +2264,86 @@ fn format_pre_validation_context(
     }
 }
 
-/// Collect and validate the plan-level dependency graph used by the Graph
-/// Engine host. A single-plan graph cannot represent `depends_on_plan`, so the
-/// host enforces those dependencies before constructing or dispatching one.
-fn graph_plan_execution_order(
-    plans: &[roko_cli::runner::plan_loader::Plan],
-) -> Result<(
-    Vec<String>,
-    std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
-)> {
-    use std::collections::{BTreeMap, BTreeSet};
+/// How a real run would schedule a plan set: its execution order, the
+/// effective `max_parallel_plans`, and which plans never run side by side.
+struct ParallelSchedule {
+    max_parallel_plans: usize,
+    order: Vec<String>,
+    conflicts: roko_cli::graph_execution::plan_set::PlanConflicts,
+}
 
-    let mut plan_ids = BTreeSet::new();
-    for plan in plans {
-        if !plan_ids.insert(plan.id.as_str()) {
-            anyhow::bail!(
-                "Graph selected plan set contains duplicate plan ID '{}'",
-                plan.id
-            );
+/// The schedule `roko plan run` would use: the `--max-parallel-plans`
+/// override, else `[conductor] max_parallel_plans`. Conflicts are only
+/// computed when more than one plan could run at once.
+async fn parallel_schedule(
+    workdir: &Path,
+    plans_dir: &Path,
+    plans: &[roko_cli::runner::plan_loader::Plan],
+    max_parallel_plans: Option<usize>,
+) -> Result<ParallelSchedule> {
+    let max_parallel_plans = match max_parallel_plans {
+        Some(limit) => limit,
+        None => roko_core::config::loader::load_config_validated(workdir)
+            .map(|loaded| loaded.into_config().conductor.max_parallel_plans)
+            .unwrap_or(1),
+    }
+    .max(1);
+    let order = roko_cli::graph_execution::plan_set_order(workdir, plans_dir, plans)?.order;
+    let conflicts = if max_parallel_plans > 1 && plans.len() > 1 {
+        roko_cli::graph_execution::plan_set::plan_set_conflicts(workdir, plans).await
+    } else {
+        roko_cli::graph_execution::plan_set::PlanConflicts::new()
+    };
+    Ok(ParallelSchedule {
+        max_parallel_plans,
+        order,
+        conflicts,
+    })
+}
+
+/// Print which plans a parallel run would keep apart, and why.
+fn print_parallel_schedule(schedule: &ParallelSchedule) {
+    if schedule.max_parallel_plans < 2 || schedule.order.len() < 2 {
+        return;
+    }
+    println!(
+        "\nParallel schedule: up to {} plans at once, started in this order: {}",
+        schedule.max_parallel_plans,
+        schedule.order.join(", ")
+    );
+    if schedule.conflicts.is_empty() {
+        println!("  No plans share part of the working tree.");
+        return;
+    }
+    for plan_id in &schedule.order {
+        let Some(others) = schedule.conflicts.get(plan_id) else {
+            continue;
+        };
+        for (other, reason) in others {
+            if schedule.order.iter().position(|id| id == other)
+                > schedule.order.iter().position(|id| id == plan_id)
+            {
+                println!("  {plan_id} and {other} never run together: {reason}");
+            }
         }
     }
-
-    let dependencies = plans
-        .iter()
-        .map(|plan| {
-            let dependencies = plan
-                .tasks
-                .tasks
-                .iter()
-                .flat_map(|task| task.depends_on_plan.iter().cloned())
-                .collect::<BTreeSet<_>>();
-            (plan.id.clone(), dependencies)
-        })
-        .collect::<BTreeMap<_, _>>();
-
-    let order = graph_plan_topological_order(&dependencies)?;
-    Ok((order, dependencies))
 }
 
 /// Validate the exact Graph plan set before any execution-only side effects.
 ///
-/// Graph dry-run follows the same cross-plan dependency rules as execution.
-/// The engine validates the freshly loaded set again under its workspace lock
-/// to fail closed if plan files change between preflight and execution.
-fn validate_graph_selected_plans_before_run(engine: PlanEngine, plans_dir: &Path) -> Result<()> {
+/// Graph dry-run follows the same cross-plan dependency rules as execution,
+/// including prerequisites outside the selected set, which must already be
+/// complete on disk. The engine validates the freshly loaded set again under
+/// its workspace lock to fail closed if plan files change between preflight
+/// and execution.
+fn validate_graph_selected_plans_before_run(
+    engine: PlanEngine,
+    workdir: &Path,
+    plans_dir: &Path,
+) -> Result<()> {
     if matches!(engine, PlanEngine::Graph) {
         let plans = roko_cli::runner::plan_loader::load_plans(plans_dir)?;
-        graph_plan_execution_order(&plans)?;
+        roko_cli::graph_execution::plan_set_order(workdir, plans_dir, &plans)?;
     }
     Ok(())
 }
@@ -2369,7 +2367,8 @@ fn validate_graph_execution_options(_engine: PlanEngine, _approval: bool) -> Res
 ///   `--model`, `--dangerously-skip-permissions`,
 ///   `--resume-plan`, `--fresh`, `--force-resume`, `--max-retries`,
 ///   `--max-tasks`, `--budget-override`, `--no-budget`, `--no-tui`,
-///   `--approval` / `--tui`, `--worktree-per-task`, `--rich-topology`
+///   `--approval` / `--tui`, `--worktree-per-task`, `--rich-topology`,
+///   `--max-parallel-plans`, `--fail-fast`
 ///
 /// Flags that ARE warned (silently dropped by the Graph Engine):
 ///   `--resume` (global session resume), `--effort`, `--skip-preflight`,
@@ -2449,129 +2448,6 @@ fn warn_graph_unsupported_flags(
     }
 }
 
-fn graph_plan_topological_order(
-    dependencies: &std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
-) -> Result<Vec<String>> {
-    use std::collections::{BTreeMap, BTreeSet};
-
-    let mut indegree = BTreeMap::new();
-    let mut dependents = BTreeMap::<String, BTreeSet<String>>::new();
-    for (plan_id, plan_dependencies) in dependencies {
-        for dependency in plan_dependencies {
-            if dependency == plan_id {
-                anyhow::bail!("Graph plan '{plan_id}' cannot depend on itself");
-            }
-            if !dependencies.contains_key(dependency) {
-                anyhow::bail!(
-                    "Graph plan '{plan_id}' depends on unknown plan '{dependency}' in the selected plan set"
-                );
-            }
-            dependents
-                .entry(dependency.clone())
-                .or_default()
-                .insert(plan_id.clone());
-        }
-        indegree.insert(plan_id.clone(), plan_dependencies.len());
-    }
-
-    let mut ready = indegree
-        .iter()
-        .filter_map(|(plan_id, degree)| (*degree == 0).then_some(plan_id.clone()))
-        .collect::<BTreeSet<_>>();
-    let mut order = Vec::with_capacity(dependencies.len());
-    while let Some(plan_id) = ready.iter().next().cloned() {
-        ready.remove(&plan_id);
-        order.push(plan_id.clone());
-
-        if let Some(plan_dependents) = dependents.get(&plan_id) {
-            for dependent in plan_dependents {
-                let Some(degree) = indegree.get_mut(dependent) else {
-                    anyhow::bail!("Graph plan dependency index is inconsistent for '{dependent}'");
-                };
-                *degree = degree.saturating_sub(1);
-                if *degree == 0 {
-                    ready.insert(dependent.clone());
-                }
-            }
-        }
-    }
-
-    if order.len() != dependencies.len() {
-        let cycle = indegree
-            .into_iter()
-            .filter_map(|(plan_id, degree)| (degree > 0).then_some(plan_id))
-            .collect::<Vec<_>>();
-        anyhow::bail!(
-            "Graph plan dependency cycle involving: {}",
-            cycle.join(", ")
-        );
-    }
-
-    Ok(order)
-}
-
-fn unsatisfied_graph_plan_dependencies(
-    plan_id: &str,
-    dependencies: &std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
-    outcomes: &std::collections::BTreeMap<String, bool>,
-) -> Vec<String> {
-    dependencies
-        .get(plan_id)
-        .into_iter()
-        .flatten()
-        .filter(|dependency| outcomes.get(*dependency) != Some(&true))
-        .cloned()
-        .collect()
-}
-
-/// Inline progress telemetry sink that prints per-node lifecycle events to
-/// stderr and delegates to the inner (StateHub) sink. This provides real-time
-/// feedback during Graph engine execution without requiring the full TUI.
-struct InlineProgressTelemetrySink {
-    inner: std::sync::Arc<dyn roko_core::TelemetryEventSink>,
-    show_progress: bool,
-}
-
-#[async_trait::async_trait]
-impl roko_core::TelemetryEventSink for InlineProgressTelemetrySink {
-    async fn emit(
-        &self,
-        event: &roko_core::ObservableEvent,
-        ancestry: &[roko_core::LensScope],
-    ) -> roko_core::error::Result<Vec<roko_core::Signal>> {
-        if self.show_progress {
-            match event {
-                roko_core::ObservableEvent::CellStarted { block, .. } => {
-                    // User-facing progress output (no TUI active)
-                    eprintln!("    \u{25b8} executing node '{block}'...");
-                }
-                roko_core::ObservableEvent::CellCompleted {
-                    block,
-                    duration_ms,
-                    cost_usd,
-                    ..
-                } => {
-                    let secs = *duration_ms as f64 / 1000.0;
-                    // User-facing progress output (no TUI active)
-                    if *cost_usd > 0.0 {
-                        eprintln!(
-                            "    \u{2713} node '{block}' completed ({secs:.1}s, ${cost_usd:.4})"
-                        );
-                    } else {
-                        eprintln!("    \u{2713} node '{block}' completed ({secs:.1}s)");
-                    }
-                }
-                roko_core::ObservableEvent::CellFailed { block, error, .. } => {
-                    // User-facing progress output (no TUI active)
-                    eprintln!("    \u{2717} node '{block}' failed: {error}");
-                }
-                _ => {}
-            }
-        }
-        self.inner.emit(event, ancestry).await
-    }
-}
-
 /// Execute plans via the Graph Engine path.
 ///
 /// Loads plans using the Runner v2 plan_loader, converts each to a Graph
@@ -2595,28 +2471,40 @@ async fn cmd_plan_run_engine(
     worktree_per_task: bool,
     rich_topology: bool,
     no_tui: bool,
+    max_parallel_plans: Option<usize>,
+    fail_fast: bool,
 ) -> Result<i32> {
-    roko_cli::graph_execution::plan_runner::run_graph_plan(
-        roko_cli::graph_execution::GraphPlanRunParams {
-            plans_dir: plans_dir.to_path_buf(),
-            workdir: workdir.to_path_buf(),
-            quiet: cli.quiet,
-            json: cli.json,
-            resume_plan: resume_plan.map(|p| p.to_path_buf()),
-            fresh,
-            force_resume,
-            max_retries,
-            max_tasks,
-            budget_override,
-            no_budget,
-            cli_model_override,
-            dangerously_skip_permissions,
-            log_file: log_file.map(|p| p.to_path_buf()),
-            worktree_per_task,
-            rich_topology,
-            no_tui,
-        },
-    )
+    use roko_cli::graph_execution::plan_runner::{
+        PlanRunInterruptHandle, install_plan_run_signal_handlers, run_graph_plan,
+    };
+
+    // SIGINT/SIGTERM stop this run gracefully (cancel, finalize checkpoints,
+    // restore the terminal, exit 130/143) for as long as the guard lives.
+    let interrupt = PlanRunInterruptHandle::default();
+    let _signals = install_plan_run_signal_handlers(interrupt.clone())?;
+    run_graph_plan(roko_cli::graph_execution::GraphPlanRunParams {
+        plans_dir: plans_dir.to_path_buf(),
+        workdir: workdir.to_path_buf(),
+        quiet: cli.quiet,
+        json: cli.json,
+        resume_plan: resume_plan.map(|p| p.to_path_buf()),
+        fresh,
+        force_resume,
+        max_retries,
+        max_tasks,
+        budget_override,
+        no_budget,
+        cli_model_override,
+        dangerously_skip_permissions,
+        log_file: log_file.map(|p| p.to_path_buf()),
+        worktree_per_task,
+        rich_topology,
+        no_tui,
+        state_hub: None,
+        interrupt: Some(interrupt),
+        max_parallel_plans,
+        fail_fast,
+    })
     .await
 }
 
@@ -2651,32 +2539,6 @@ pub(crate) fn resolve_budget_ceiling(
 mod tests {
     use super::*;
     use tempfile::tempdir;
-
-    fn graph_test_plan(id: &str, dependencies: &[&str]) -> roko_cli::runner::plan_loader::Plan {
-        let mut tasks = roko_cli::task_parser::TasksFile::parse_str(
-            r#"
-[meta]
-plan = "test-plan"
-
-[[task]]
-id = "T1"
-title = "Test task"
-role = "researcher"
-"#,
-        )
-        .expect("parse graph test plan");
-        tasks.meta.plan = id.to_string();
-        tasks.tasks[0].depends_on_plan = dependencies
-            .iter()
-            .map(|dependency| (*dependency).to_string())
-            .collect();
-        roko_cli::runner::plan_loader::Plan {
-            id: id.to_string(),
-            dir: PathBuf::from(id),
-            tasks,
-            prd_excerpt: String::new(),
-        }
-    }
 
     #[test]
     fn read_executor_state_returns_none_without_snapshot() {
@@ -2768,133 +2630,6 @@ role = "researcher"
     }
 
     #[test]
-    fn graph_plan_order_honors_dependencies_before_lexical_order() {
-        use std::collections::{BTreeMap, BTreeSet};
-
-        let dependencies = BTreeMap::from([
-            (
-                "a-consumer".to_string(),
-                BTreeSet::from(["z-foundation".to_string()]),
-            ),
-            ("m-independent".to_string(), BTreeSet::new()),
-            ("z-foundation".to_string(), BTreeSet::new()),
-        ]);
-
-        let order = graph_plan_topological_order(&dependencies).expect("valid plan graph");
-        assert_eq!(order, ["m-independent", "z-foundation", "a-consumer"]);
-    }
-
-    #[test]
-    fn graph_plan_order_rejects_unknown_dependency_before_dispatch() {
-        use std::collections::{BTreeMap, BTreeSet};
-
-        let dependencies = BTreeMap::from([(
-            "consumer".to_string(),
-            BTreeSet::from(["missing-foundation".to_string()]),
-        )]);
-
-        let error = graph_plan_topological_order(&dependencies).expect_err("unknown plan");
-        assert!(
-            error
-                .to_string()
-                .contains("unknown plan 'missing-foundation'")
-        );
-    }
-
-    #[test]
-    fn graph_plan_order_rejects_self_dependency_before_dispatch() {
-        use std::collections::{BTreeMap, BTreeSet};
-
-        let dependencies = BTreeMap::from([(
-            "self-dependent".to_string(),
-            BTreeSet::from(["self-dependent".to_string()]),
-        )]);
-
-        let error = graph_plan_topological_order(&dependencies).expect_err("self dependency");
-        assert!(
-            error
-                .to_string()
-                .contains("plan 'self-dependent' cannot depend on itself")
-        );
-    }
-
-    #[test]
-    fn graph_plan_order_rejects_duplicate_plan_ids_before_collection() {
-        let plans = [
-            graph_test_plan("duplicate", &[]),
-            graph_test_plan("duplicate", &[]),
-        ];
-
-        let error = graph_plan_execution_order(&plans).expect_err("duplicate plan ID");
-        assert!(error.to_string().contains("duplicate plan ID 'duplicate'"));
-    }
-
-    #[test]
-    fn graph_plan_order_rejects_cross_plan_cycle_before_dispatch() {
-        use std::collections::{BTreeMap, BTreeSet};
-
-        let dependencies = BTreeMap::from([
-            ("plan-a".to_string(), BTreeSet::from(["plan-b".to_string()])),
-            ("plan-b".to_string(), BTreeSet::from(["plan-a".to_string()])),
-        ]);
-
-        let error = graph_plan_topological_order(&dependencies).expect_err("dependency cycle");
-        assert!(error.to_string().contains("dependency cycle"));
-        assert!(error.to_string().contains("plan-a, plan-b"));
-    }
-
-    #[test]
-    fn graph_plan_failure_blocks_downstream_plan() {
-        use std::collections::{BTreeMap, BTreeSet};
-
-        let dependencies = BTreeMap::from([
-            ("foundation".to_string(), BTreeSet::new()),
-            (
-                "consumer".to_string(),
-                BTreeSet::from(["foundation".to_string()]),
-            ),
-        ]);
-        let failed = BTreeMap::from([("foundation".to_string(), false)]);
-        assert_eq!(
-            unsatisfied_graph_plan_dependencies("consumer", &dependencies, &failed),
-            ["foundation"]
-        );
-
-        let succeeded = BTreeMap::from([("foundation".to_string(), true)]);
-        assert!(
-            unsatisfied_graph_plan_dependencies("consumer", &dependencies, &succeeded).is_empty()
-        );
-    }
-
-    #[test]
-    fn graph_plan_failure_blocks_transitive_downstream_plans() {
-        use std::collections::{BTreeMap, BTreeSet};
-
-        let dependencies = BTreeMap::from([
-            ("foundation".to_string(), BTreeSet::new()),
-            (
-                "middle".to_string(),
-                BTreeSet::from(["foundation".to_string()]),
-            ),
-            (
-                "consumer".to_string(),
-                BTreeSet::from(["middle".to_string()]),
-            ),
-        ]);
-        let mut outcomes = BTreeMap::from([("foundation".to_string(), false)]);
-
-        assert_eq!(
-            unsatisfied_graph_plan_dependencies("middle", &dependencies, &outcomes),
-            ["foundation"]
-        );
-        outcomes.insert("middle".to_string(), false);
-        assert_eq!(
-            unsatisfied_graph_plan_dependencies("consumer", &dependencies, &outcomes),
-            ["middle"]
-        );
-    }
-
-    #[test]
     fn graph_selected_plan_preflight_runs_without_creating_workspace_lock() {
         let workspace = tempdir().expect("tempdir");
         let plans_dir = workspace.path().join("plans");
@@ -2916,8 +2651,12 @@ depends_on_plan = ["missing-foundation"]
         .expect("write consumer plan");
         let lock_path = workspace.path().join(".roko/runtime/roko.lock");
 
-        let error = validate_graph_selected_plans_before_run(PlanEngine::Graph, &plans_dir)
-            .expect_err("unknown selected dependency");
+        let error = validate_graph_selected_plans_before_run(
+            PlanEngine::Graph,
+            workspace.path(),
+            &plans_dir,
+        )
+        .expect_err("unknown selected dependency");
 
         assert!(error.to_string().contains("missing-foundation"));
         assert!(

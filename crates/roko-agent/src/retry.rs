@@ -15,6 +15,9 @@ pub enum ErrorClass {
     /// required. Unlike transient rate limits, these are permanent for the
     /// current run and should never be retried.
     InsufficientCredits,
+    /// Subscription or usage window exhausted; the provider refuses work until
+    /// its reported reset time, so retrying it is pointless.
+    ProviderExhausted,
     /// Request timed out before completing.
     Timeout,
     /// Provider returned a transient 5xx-style failure.
@@ -35,6 +38,7 @@ impl From<&ProviderError> for ErrorClass {
             ProviderError::RateLimit { .. } => Self::RateLimit,
             ProviderError::AuthFailure => Self::AuthFailure,
             ProviderError::InsufficientCredits => Self::InsufficientCredits,
+            ProviderError::ProviderExhausted { .. } => Self::ProviderExhausted,
             ProviderError::Timeout => Self::Timeout,
             ProviderError::ServerError(_) => Self::ServerError,
             ProviderError::ContentPolicy => Self::ContentPolicy,
@@ -51,6 +55,7 @@ impl std::fmt::Display for ErrorClass {
             Self::RateLimit => f.write_str("rate_limit"),
             Self::AuthFailure => f.write_str("auth_failure"),
             Self::InsufficientCredits => f.write_str("insufficient_credits"),
+            Self::ProviderExhausted => f.write_str("provider_exhausted"),
             Self::Timeout => f.write_str("timeout"),
             Self::ServerError => f.write_str("server_error"),
             Self::ContentPolicy => f.write_str("content_policy"),
@@ -157,6 +162,7 @@ impl RetryPolicy {
             ProviderError::RateLimit { .. } => true,
             ProviderError::AuthFailure => false,
             ProviderError::InsufficientCredits => false,
+            ProviderError::ProviderExhausted { .. } => false,
             ProviderError::ContentPolicy => false,
             ProviderError::Timeout => true,
             ProviderError::ServerError(_) => true,
@@ -278,6 +284,13 @@ mod tests {
         ));
         assert!(!policy.should_retry(&ProviderError::AuthFailure, 0));
         assert!(!policy.should_retry(&ProviderError::InsufficientCredits, 0));
+        assert!(!policy.should_retry(
+            &ProviderError::ProviderExhausted {
+                resets_at_ms: None,
+                message: "You've hit your session limit".into(),
+            },
+            0
+        ));
         assert!(!policy.should_retry(&ProviderError::ContentPolicy, 0));
         assert!(!policy.should_retry(&ProviderError::ContextOverflow, 0));
         assert!(policy.should_retry(&ProviderError::Other("unknown".into()), 1));

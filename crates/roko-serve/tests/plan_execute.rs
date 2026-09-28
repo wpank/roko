@@ -63,6 +63,7 @@ impl StubRuntime {
             superseded_by: None,
             old_format: false,
             last_error: None,
+            group: None,
         }
     }
 }

@@ -109,7 +109,7 @@ fn signal_captured(root_pid: Option<u32>, descendants: &[u32], signal: i32) -> s
 
 #[cfg(unix)]
 #[allow(unsafe_code)]
-fn signal_pid(pid: i32, signal: i32) -> std::io::Result<()> {
+pub(super) fn signal_pid(pid: i32, signal: i32) -> std::io::Result<()> {
     if unsafe { libc::kill(pid, signal) } == 0 {
         return Ok(());
     }
@@ -154,7 +154,7 @@ async fn wait_for_absence(
 
 #[cfg(unix)]
 #[allow(unsafe_code)]
-fn pid_is_alive(pid: u32) -> std::io::Result<bool> {
+pub(super) fn pid_is_alive(pid: u32) -> std::io::Result<bool> {
     if unsafe { libc::kill(pid as i32, 0) } == 0 {
         return Ok(true);
     }

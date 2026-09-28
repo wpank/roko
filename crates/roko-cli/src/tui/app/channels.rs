@@ -459,19 +459,22 @@ impl App {
             return;
         }
 
+        // "No plan is active right now" is not completion: a multi-plan run
+        // has idle gaps between plans while the next graph is prepared. Exit
+        // only once every plan of the announced set is terminal, or once the
+        // owning runner published a terminal run outcome.
         let has_active_plan =
             snapshot.stats.plans_active > 0 || snapshot.plans.values().any(|plan| plan.active);
-        let has_finished_plan = snapshot.stats.plans_completed > 0
-            || snapshot.stats.plans_failed > 0
-            || snapshot
-                .plans
-                .values()
-                .any(|plan| !plan.active && (plan.phase == "completed" || plan.phase == "failed"));
+        self.connected_plan_observed |= has_active_plan || snapshot.plan_set.is_some();
+        if !self.connected_plan_observed {
+            return;
+        }
 
-        self.connected_plan_observed |= has_active_plan || has_finished_plan;
-
-        if self.connected_plan_observed && !has_active_plan {
-            tracing::info!("TUI exiting: all plans completed");
+        if snapshot.plan_set_complete() {
+            tracing::info!("TUI exiting: selected plan set completed");
+            self.running = false;
+        } else if snapshot.run_outcome.is_some() {
+            tracing::info!("TUI exiting: run finished");
             self.running = false;
         }
     }

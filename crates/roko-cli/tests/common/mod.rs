@@ -114,6 +114,7 @@ pub fn process_stdout(workdir: &Path, args: &[&str]) -> String {
 pub fn init_workspace(workdir: &Path) {
     Command::cargo_bin("roko")
         .expect("roko binary")
+        .current_dir(workdir)
         .arg("init")
         .arg(workdir)
         .assert()

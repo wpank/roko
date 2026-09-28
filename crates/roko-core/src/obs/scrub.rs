@@ -23,6 +23,8 @@ pub const REDACTED: &str = "[REDACTED]";
 struct ScrubPattern {
     regex: regex::Regex,
     replacement: String,
+    /// Length of the exact secret for literal patterns; `None` for heuristics.
+    literal_len: Option<usize>,
 }
 
 impl ScrubPattern {
@@ -37,6 +39,7 @@ impl ScrubPattern {
         Ok(Self {
             regex: regex::Regex::new(pattern)?,
             replacement: replacement.into(),
+            literal_len: None,
         })
     }
 
@@ -145,13 +148,25 @@ impl LogScrubber {
     }
 
     /// Add a literal value to the scrubber, redacting it as `name`.
+    ///
+    /// Literal values are exact known secrets, so they run before the
+    /// heuristic patterns, longest first: a pattern matching only part of the
+    /// value would otherwise leave the rest of the secret in the output and
+    /// hide its name.
     pub fn add_literal_value(&self, value: &str, name: &str) -> Result<(), regex::Error> {
         if value.is_empty() {
             return Ok(());
         }
-        let pattern = regex::escape(value);
-        let replacement = format!("[REDACTED:{name}]");
-        self.add_pattern_with_replacement(&pattern, replacement)
+        let mut literal =
+            ScrubPattern::with_replacement(&regex::escape(value), format!("[REDACTED:{name}]"))?;
+        literal.literal_len = Some(value.len());
+        let mut patterns = self.patterns.write();
+        let position = patterns
+            .iter()
+            .position(|pattern| pattern.literal_len.is_none_or(|len| len < value.len()))
+            .unwrap_or(patterns.len());
+        patterns.insert(position, literal);
+        Ok(())
     }
 
     /// Scrub all known patterns from the input text, replacing matches with
@@ -397,5 +412,16 @@ mod tests {
         let output = scrubber.scrub("value super-secret-value leaked");
         assert!(output.contains("[REDACTED:TEST_ENV]"));
         assert!(!output.contains("super-secret-value"));
+    }
+
+    #[test]
+    fn literal_value_is_redacted_whole_before_overlapping_patterns() {
+        let scrubber = LogScrubber::new();
+        scrubber.add_literal_value("my-api", "SHORT").unwrap();
+        scrubber
+            .add_literal_value("my-api-key-12345678901234567890", "CUSTOM_KEY")
+            .unwrap();
+        let output = scrubber.scrub("config: my-api-key-12345678901234567890");
+        assert_eq!(output, "config: [REDACTED:CUSTOM_KEY]");
     }
 }

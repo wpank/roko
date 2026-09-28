@@ -33,6 +33,10 @@ pub struct PlanSummaryDto {
     /// Last error message from executor state, if any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_error: Option<String>,
+    /// Plan set containing this plan, relative to the plans root and
+    /// `/`-separated (e.g. `"portal-programme"`); absent for top-level plans.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
 }
 
 /// Wire-format representation of a single plan task.

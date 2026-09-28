@@ -168,6 +168,44 @@ pub struct RoutingConfig {
     /// ```
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub disabled_providers: Vec<String>,
+    /// Ordered `[models.*]` keys (or slugs) a plan task fails over to when the
+    /// provider behind its model is out of usage or its circuit is open —
+    /// e.g. the Claude CLI printing "You've hit your session limit".
+    ///
+    /// Setup: the list is empty by default, so failover is opt-in. Name models
+    /// here, then give their providers an API key. HTTP providers read the key
+    /// only from the env var named by `[providers.<id>] api_key_env`; in the
+    /// shipped roko.toml that is `MOONSHOT_API_KEY` (moonshot: `kimi-k2-5`),
+    /// `ZAI_API_KEY` (zai: `glm51`), `OPENAI_API_KEY` (openai: `gpt-4o`,
+    /// `gpt-4o-mini`), `GROQ_API_KEY` (groq), and `CEREBRAS_API_KEY`
+    /// (cerebras); `PERPLEXITY_API_KEY` feeds `sonar`, which has no tools and
+    /// is never chosen. The CLI loads `~/.roko/.env` and
+    /// `<workdir>/.roko/.env` automatically at startup, so keys can live there
+    /// (`MOONSHOT_API_KEY=…`) instead of the shell profile.
+    ///
+    /// Behaviour: the refusing provider is skipped until its reported reset
+    /// ("resets 4pm", read in local time), else for
+    /// [`Self::exhaustion_cooldown_secs`], and the first candidate whose
+    /// provider is healthy, not disabled, supports tools, and has a key runs
+    /// the task in the same attempt (logged at WARN; cost and episode records
+    /// carry the model that actually ran). `agent.fallback_model` is tried
+    /// last. A task's `model_hint` is a preference, not a pin; an explicit
+    /// `--model` override never fails over. With no usable candidate the task
+    /// fails once with an error naming the missing env vars and reset time.
+    /// Models whose slug roko does not recognise get a 3-tool cap unless their
+    /// profile sets `max_tools`.
+    ///
+    /// ```toml
+    /// [routing]
+    /// fallback_models = ["kimi-k2-5", "glm51", "gpt-4o"]
+    /// ```
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fallback_models: Vec<String>,
+    /// How long an out-of-usage provider is skipped when it did not say when
+    /// its window resets (seconds). A parsed reset time ("resets 4pm") always
+    /// wins over this.
+    #[serde(default = "default_exhaustion_cooldown_secs")]
+    pub exhaustion_cooldown_secs: u64,
 }
 
 fn default_routing_mode() -> String {
@@ -194,6 +232,10 @@ const fn default_routing_discount_factor() -> f64 {
     0.99
 }
 
+const fn default_exhaustion_cooldown_secs() -> u64 {
+    30 * 60
+}
+
 impl Default for RoutingConfig {
     fn default() -> Self {
         Self {
@@ -206,6 +248,30 @@ impl Default for RoutingConfig {
             weights: RoutingRewardWeightsConfig::default(),
             context_strategy: default_context_strategy(),
             disabled_providers: Vec::new(),
+            fallback_models: Vec::new(),
+            exhaustion_cooldown_secs: default_exhaustion_cooldown_secs(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fallback_models_and_exhaustion_cooldown_parse_with_defaults() {
+        let routing: RoutingConfig = toml::from_str(
+            r#"
+            mode = "auto_override"
+            fallback_models = ["kimi-k2-5", "glm51", "gpt-4o"]
+            "#,
+        )
+        .expect("routing config");
+        assert_eq!(routing.fallback_models, ["kimi-k2-5", "glm51", "gpt-4o"]);
+        assert_eq!(routing.exhaustion_cooldown_secs, 1_800);
+
+        let defaults = RoutingConfig::default();
+        assert!(defaults.fallback_models.is_empty());
+        assert_eq!(defaults.exhaustion_cooldown_secs, 1_800);
     }
 }

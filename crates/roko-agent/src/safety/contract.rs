@@ -53,6 +53,11 @@ const BUNDLED_CONTRACTS: &[BundledContractAsset] = &[
         source: include_str!("contracts/implementer.yaml"),
     },
     BundledContractAsset {
+        role: "quick-reviewer",
+        path: "src/safety/contracts/quick-reviewer.yaml",
+        source: include_str!("contracts/quick-reviewer.yaml"),
+    },
+    BundledContractAsset {
         role: "researcher",
         path: "src/safety/contracts/researcher.yaml",
         source: include_str!("contracts/researcher.yaml"),
@@ -84,6 +89,22 @@ const BUNDLED_CONTRACTS: &[BundledContractAsset] = &[
 /// cache misses. Only successful loads are cached; errors always re-read.
 static CONTRACT_CACHE: LazyLock<RwLock<HashMap<String, AgentContract>>> =
     LazyLock::new(|| RwLock::new(HashMap::new()));
+
+/// Coarse read / write / execute view of the tools a contract permits.
+///
+/// Derived from [`AgentContract::permits_tool`], so it answers what dispatch
+/// will actually allow. Callers that describe or validate roles (plan
+/// generation prompts, plan validation) use this instead of restating role
+/// capabilities by hand.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RoleCapabilities {
+    /// May read files (`read_file`).
+    pub read: bool,
+    /// May create and modify files (`write_file` and `edit_file`).
+    pub write: bool,
+    /// May run shell commands (`bash`).
+    pub execute: bool,
+}
 
 /// How to handle a missing or invalid bundled contract asset.
 ///
@@ -330,6 +351,16 @@ impl AgentContract {
         }
 
         true
+    }
+
+    /// Summarize which tool classes this contract permits.
+    #[must_use]
+    pub fn capabilities(&self) -> RoleCapabilities {
+        RoleCapabilities {
+            read: self.permits_tool("read_file"),
+            write: self.permits_tool("write_file") && self.permits_tool("edit_file"),
+            execute: self.permits_tool("bash"),
+        }
     }
 
     /// Collect all explicitly forbidden tool names from governance rules.
@@ -680,7 +711,7 @@ impl GovernanceRule {
     ) -> Result<(), ContractViolation> {
         match self {
             Self::MaxToolCallsPerTurn(max) => {
-                let observed_calls = u32::try_from(ctx.external_actions.read().len())
+                let observed_calls = u32::try_from(orchestrator_actions(ctx).len())
                     .unwrap_or(u32::MAX)
                     .saturating_add(1);
                 if observed_calls > *max {
@@ -712,7 +743,7 @@ impl GovernanceRule {
                 }
             }
             Self::MaxConsecutiveFailures(max) => {
-                let consecutive = count_trailing_failures(&ctx.external_actions.read());
+                let consecutive = count_trailing_failures(&orchestrator_actions(ctx));
                 if consecutive >= *max {
                     return Err(ContractViolation::new(
                         role,
@@ -827,9 +858,7 @@ fn observed_cost_usd(ctx: &ToolContext) -> Option<f64> {
     // SECURITY: Do NOT trust LLM-supplied "estimated_cost_usd" fields on the
     // pending tool call. Cost budget enforcement is based only on prior
     // orchestrator/tool-recorded external action metadata.
-    let total = ctx
-        .external_actions
-        .read()
+    let total = orchestrator_actions(ctx)
         .iter()
         .filter_map(action_cost_usd)
         .filter(|cost| cost.is_finite() && *cost >= 0.0)
@@ -894,7 +923,7 @@ fn has_gate_approval(_call: &ToolCall, ctx: &ToolContext) -> bool {
     // SECURITY: Only trust orchestrator-recorded external actions, never
     // LLM-supplied tool-call arguments. An LLM adding `"gate_passed": true`
     // to its arguments must NOT bypass the gate requirement.
-    ctx.external_actions.read().iter().any(|action| {
+    orchestrator_actions(ctx).iter().any(|action| {
         action.action_type == "gate_passed"
             || (action.action_type == "run_gate"
                 && action
@@ -936,6 +965,24 @@ fn is_failure_action(action: &ExternalAction) -> bool {
     // action_type heuristic (e.g. "tool_error", "execution_failed").
     let at = action.action_type.to_ascii_lowercase();
     at.contains("error") || at.contains("fail")
+}
+
+/// `ExternalAction::service` of the per-run tool history the tool dispatcher
+/// records after each successful call.
+///
+/// Only history rules (`RequireToolBeforeEdit`) read it; count-, cost-, and
+/// gate-based rules see [`orchestrator_actions`] so ordinary tool use never
+/// counts as — or forges — an orchestrator-recorded action.
+pub const TOOL_HISTORY_SERVICE: &str = "roko.tool_history";
+
+/// External actions recorded by the orchestrator, excluding tool history.
+fn orchestrator_actions(ctx: &ToolContext) -> Vec<ExternalAction> {
+    ctx.external_actions
+        .read()
+        .iter()
+        .filter(|action| action.service != TOOL_HISTORY_SERVICE)
+        .cloned()
+        .collect()
 }
 
 fn has_prior_tool(ctx: &ToolContext, required_tool: &str) -> bool {
@@ -1024,6 +1071,7 @@ mod tests {
                 "auditor",
                 "auto-fixer",
                 "implementer",
+                "quick-reviewer",
                 "researcher",
                 "reviewer",
                 "scribe",
@@ -1039,6 +1087,49 @@ mod tests {
                 asset.path
             );
         }
+    }
+
+    #[test]
+    fn quick_reviewer_contract_reads_but_never_edits() {
+        let contract =
+            AgentContract::load_for_role_with_mode("quick-reviewer", ContractLoadMode::Strict)
+                .expect("quick-reviewer ships a bundled contract");
+        for tool in ["read_file", "grep", "glob"] {
+            assert!(contract.permits_tool(tool), "quick-reviewer needs {tool}");
+        }
+        for tool in EDIT_TOOLS {
+            assert!(
+                !contract.permits_tool(tool),
+                "quick-reviewer must not {tool}"
+            );
+        }
+        assert!(contract.invariants.contains(&Invariant::NoNetworkAccess));
+    }
+
+    #[test]
+    fn capabilities_follow_permitted_tools() {
+        assert_eq!(
+            AgentContract::restricted("unknown-role").capabilities(),
+            RoleCapabilities::default()
+        );
+        let architect = AgentContract::load_for_role("architect").expect("load architect");
+        assert_eq!(
+            architect.capabilities(),
+            RoleCapabilities {
+                read: true,
+                write: false,
+                execute: false,
+            }
+        );
+        let implementer = AgentContract::load_for_role("implementer").expect("load implementer");
+        assert_eq!(
+            implementer.capabilities(),
+            RoleCapabilities {
+                read: true,
+                write: true,
+                execute: true,
+            }
+        );
     }
 
     #[test]
@@ -1291,6 +1382,39 @@ mod tests {
         );
 
         assert!(contract.check_pre_execution(&call, &ctx).is_ok());
+    }
+
+    #[test]
+    fn tool_history_satisfies_read_before_edit_without_counting_as_actions() {
+        let contract = AgentContract {
+            role: "implementer".into(),
+            invariants: Vec::new(),
+            governance: vec![
+                GovernanceRule::RequireToolBeforeEdit("read_file".into()),
+                GovernanceRule::MaxToolCallsPerTurn(1),
+            ],
+            recovery: Vec::new(),
+            allowed_tools: None,
+            max_taint_level: default_max_taint_level(),
+        };
+        let history = |tool: &str| ExternalAction {
+            service: TOOL_HISTORY_SERVICE.into(),
+            action_type: tool.into(),
+            resource_id: String::new(),
+            metadata: serde_json::json!({ "tool": tool }),
+            performed_at: chrono::Utc::now(),
+        };
+        let ctx = ToolContext::testing("/tmp/contract-tests").with_external_actions(Arc::new(
+            RwLock::new(vec![history("read_file"), history("grep"), history("ls")]),
+        ));
+        let call = ToolCall::new(
+            "call-4",
+            "edit_file",
+            serde_json::json!({ "path": "src/lib.rs" }),
+        );
+
+        assert!(contract.check_pre_execution(&call, &ctx).is_ok());
+        assert!(!has_gate_approval(&call, &ctx));
     }
 
     #[test]

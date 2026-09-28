@@ -1209,6 +1209,12 @@ struct SectionEffectivenessSource {
 /// fails hard on a missing or malformed role.
 fn parse_role_label(role: &str) -> AgentRole {
     let normalized = role.trim().to_ascii_lowercase().replace(['_', ' '], "-");
+    // The `reviewer` plan role has no `AgentRole` of its own. Its contract
+    // denies every write tool, so it gets the read-only quick-reviewer prompt
+    // instead of falling through to the implementer's "write code" prompt.
+    if normalized == "reviewer" {
+        return AgentRole::QuickReviewer;
+    }
     // Try kebab-case serde repr first (e.g. "implementer", "quick-reviewer").
     if let Ok(parsed) = serde_json::from_str::<AgentRole>(&format!("\"{normalized}\"")) {
         return parsed;
@@ -3481,6 +3487,13 @@ mod tests {
     fn parse_role_label_falls_back_to_implementer_for_unknown() {
         assert_eq!(parse_role_label("unknown-role"), AgentRole::Implementer);
         assert_eq!(parse_role_label(""), AgentRole::Implementer);
+    }
+
+    #[test]
+    fn parse_role_label_prompts_reviewer_as_read_only_quick_reviewer() {
+        assert_eq!(parse_role_label("reviewer"), AgentRole::QuickReviewer);
+        assert_eq!(parse_role_label("Reviewer"), AgentRole::QuickReviewer);
+        assert_eq!(parse_role_label("quick-reviewer"), AgentRole::QuickReviewer);
     }
 
     #[test]

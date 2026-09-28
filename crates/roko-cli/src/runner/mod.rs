@@ -1,7 +1,8 @@
 //! Runner — plan execution infrastructure.
 //!
 //! The legacy Runner-v2 event loop (`event_loop.rs` and its 18 helper modules)
-//! has been deleted. The Graph engine is now the sole execution engine.
+//! has been deleted. The Graph engine is now the sole execution engine;
+//! execute plans with [`crate::graph_execution::run_graph_plan`].
 //!
 //! This module retains the shared infrastructure that the Graph engine and
 //! other subsystems depend on: plan loading, gate dispatch, TUI bridging,
@@ -54,31 +55,3 @@ pub(crate) mod promise_tracker;
 pub use plan_loader::{Plan, load_plan, load_plan_lenient, load_plans, scaffold_missing_crates};
 pub use sse_stream::SseStreamClient;
 pub use types::{PlanReport, RunConfig, RunReport};
-
-/// Deprecated Runner-v2 entry point.
-///
-/// The Runner-v2 event loop has been deleted. The Graph engine is the sole
-/// execution engine. Callers that previously used `runner::run()` should
-/// migrate to the Graph engine path (`cmd_plan_run_engine` in commands/plan.rs).
-///
-/// This stub is retained so that callers compile; at runtime it returns an
-/// error directing the caller to use the Graph engine instead.
-///
-/// **#342**: Scheduled for removal in the next release. All 4 remaining call
-/// sites (`serve_runtime`, `prd`, `worker/cloud`, `do_cmd`) should be migrated
-/// to `cmd_plan_run_engine` or the graph template path.
-#[deprecated(
-    note = "Runner-v2 has been removed; use the Graph engine instead. Scheduled for removal (#342)."
-)]
-pub async fn run(
-    _plans: Vec<Plan>,
-    _config: &RunConfig,
-    _state_hub: &crate::state_hub::StateHub,
-    _cancel: tokio_util::sync::CancellationToken,
-) -> anyhow::Result<RunReport> {
-    anyhow::bail!(
-        "the legacy Runner-v2 event loop has been removed. \
-         Use the Graph engine (the default) instead. \
-         See `roko plan run --help` for details."
-    )
-}

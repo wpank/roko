@@ -17,13 +17,15 @@ import {
   useCancelPlan,
   useValidation,
 } from '@/api/queries';
-import { ApiError } from '@/api/client';
 import { useDashboardStore } from '@/stores/dashboard';
 import { buildTaskRows } from '@/lib/taskRows';
 import { computeWaves } from '@/lib/waves';
-import { formatCost, formatDuration } from '@/lib/formatters';
 import { progressToken } from '@/lib/glyphs';
 import { cn } from '@/lib/cn';
+import { describeRequestError } from '@/lib/apiErrors';
+import { planSetActive, queuePosition, waitReason } from '@/lib/planSet';
+import { statusFields } from '@/lib/statusLine';
+import { useNow } from '@/lib/useNow';
 import { Button } from '@/components/atoms/Button';
 import { WaveStrip } from '@/components/stage/WaveStrip';
 import { TaskList } from '@/components/stage/TaskList';
@@ -111,10 +113,16 @@ export function usePrimaryAction(
       if (errorCount > 0) {
         disabled = true;
         reason = `Fix ${errorCount} validation error${errorCount === 1 ? '' : 's'} first`;
-      } else if (run.planSet !== null && phase !== 'running') {
+      } else if (planSetActive(run) && phase !== 'running') {
         // A plan-set run is active but this plan is not running in it.
         disabled = true;
-        reason = 'Another run is already in progress';
+        const pos = queuePosition(run, planId);
+        const wait = waitReason(run, planId);
+        if (pos !== null && wait !== null) {
+          reason = `Queued #${pos} — ${wait}`;
+        } else {
+          reason = 'Another run is already in progress';
+        }
       }
     }
   }
@@ -135,19 +143,8 @@ export function usePrimaryAction(
     /** Surface mutation errors to the caller. */
     const handleError = (err: unknown): void => {
       if (!onError) return;
-      let msg = 'An unexpected error occurred.';
-      if (err instanceof ApiError) {
-        const b = err.body;
-        if (b && typeof b === 'object') {
-          const raw = (b as Record<string, unknown>)['message'];
-          msg = typeof raw === 'string' ? raw : `Error ${err.status}`;
-        } else {
-          msg = `Error ${err.status}`;
-        }
-      } else if (err instanceof Error) {
-        msg = err.message;
-      }
-      onError(msg);
+      const action = kind === 'cancel' ? 'cancelling runs' : 'running plans';
+      onError(describeRequestError(err, action));
     };
 
     switch (kind) {
@@ -184,10 +181,10 @@ export function usePrimaryAction(
   // ── Label ─────────────────────────────────────────────────────────────────
 
   const label =
-    kind === 'cancel' ? 'Cancel' :
-    kind === 'retry' ? 'Retry' :
-    kind === 'run-again' ? 'Run again' :
-    kind === 'run' ? 'Run' :
+    kind === 'cancel' ? '■ Cancel' :
+    kind === 'retry' ? '↻ Retry' :
+    kind === 'run-again' ? '▶ Run again' :
+    kind === 'run' ? '▶ Run' :
     '';
 
   return { kind, label, disabled, reason, perform };
@@ -219,12 +216,28 @@ export function PlanView({
   // ── Panel toggle state ────────────────────────────────────────────────────
 
   const [editing, setEditing] = useState(false);
+  // editorDirty is true only when the SourceEditor holds unsaved text.
+  // The open-but-clean editor (e.g. showing the "not supported" notice) must
+  // not block Run, so usePrimaryAction receives `editing && editorDirty`.
+  const [editorDirty, setEditorDirty] = useState(false);
   const [revising, setRevising] = useState(false);
 
   // ── Remote data ───────────────────────────────────────────────────────────
 
   const run = useDashboardStore((s) => s.run);
   const { data: tasksData } = usePlanTasks(plan.id);
+
+  // ── Live plan run state (derived before hooks that depend on isRunning) ───
+
+  const livePlan = run.plans[plan.id];
+  // hasRun: plan has live state and its phase is not 'pending' (queued plans
+  // in a plan-set have phase 'pending' and show pre-run facts, no progress bar).
+  const hasRun = livePlan !== undefined && livePlan.phase !== 'pending';
+  const isRunning = livePlan?.phase === 'running';
+
+  // ── Ticking clock — drives elapsed time; costs nothing while idle ─────────
+
+  const nowMs = useNow(isRunning);
 
   // ── Task rows + wave result ────────────────────────────────────────────────
 
@@ -233,19 +246,16 @@ export function PlanView({
     if (!tasks?.length) {
       return { rows: [], waves: computeWaves([]) };
     }
-    return buildTaskRows(tasks, run, plan.id, Date.now());
-  }, [tasksData, run, plan.id]);
-
-  // ── Live plan run state ───────────────────────────────────────────────────
-
-  const livePlan = run.plans[plan.id];
-  const hasRun = livePlan !== undefined;
-  const isRunning = livePlan?.phase === 'running';
+    return buildTaskRows(tasks, run, plan.id, nowMs);
+  }, [tasksData, run, plan.id, nowMs]);
 
   // ── Primary action ────────────────────────────────────────────────────────
 
   const primaryAction = usePrimaryAction(plan.id, {
-    editing,
+    // Only block Run when the editor is open *and* holds unsaved text.
+    // An open editor that only shows the "not supported" notice keeps editorDirty
+    // false, so Run (or Run again) remains available.
+    editing: editing && editorDirty,
     onError: onRequestError,
   });
 
@@ -279,8 +289,7 @@ export function PlanView({
         ? 'var(--state-accepted)'
         : progressToken(fraction);
 
-  // Elapsed time
-  const nowMs = Date.now();
+  // Elapsed time (nowMs comes from useNow above — no read-time clock calls)
   const elapsedMs =
     livePlan?.startedAtMs != null
       ? (livePlan.finishedAtMs ?? nowMs) - livePlan.startedAtMs
@@ -322,10 +331,10 @@ export function PlanView({
       <div className="flex flex-wrap items-start gap-3">
         {/* Title + group/id */}
         <div className="flex-1 min-w-0">
-          <h2 className="font-mono text-sm font-semibold text-text-strong truncate leading-snug">
+          <h2 className="rd-title font-mono font-semibold text-text-strong truncate leading-snug">
             {plan.title}
           </h2>
-          <span className="font-mono text-xs text-text-ghost">
+          <span className="rd-meta font-mono text-text-ghost">
             {plan.group ? `${plan.group}/` : ''}
             {plan.id}
           </span>
@@ -333,13 +342,19 @@ export function PlanView({
 
         {/* Action buttons */}
         <div className="flex items-center gap-2 flex-shrink-0">
+          {/* Reason why the primary action is disabled — never shown as a tooltip
+              because pointer-events: none on :disabled makes titles invisible. */}
+          {primaryAction.disabled && primaryAction.reason !== null && (
+            <span data-reason className="rd-reason font-mono text-xs text-text-muted">
+              {primaryAction.reason}
+            </span>
+          )}
           {primaryAction.kind !== 'none' && (
             <Button
               data-action={primaryAction.kind}
               variant={primaryAction.kind === 'cancel' ? 'danger' : 'primary'}
               size="sm"
               disabled={primaryAction.disabled}
-              title={primaryAction.reason ?? undefined}
               onClick={primaryAction.perform}
             >
               {primaryAction.label}
@@ -378,6 +393,9 @@ export function PlanView({
             }
             onClick={() => {
               setEditing((e) => !e);
+              // Synchronously clear dirty so Run is free as soon as the editor
+              // closes — whether the user clicks ✎ Edit or discards changes.
+              setEditorDirty(false);
               if (revising) setRevising(false);
             }}
           >
@@ -387,83 +405,65 @@ export function PlanView({
       </div>
 
       {/* ── 2. Status line ────────────────────────────────────────────────── */}
-      {!hasRun ? (
-        /* Pre-run: task count · waves · estimate · parallelism · validation */
-        <div className="flex flex-wrap items-center gap-1 font-mono text-xs text-text-muted">
-          <span>
-            {plan.task_count} task{plan.task_count !== 1 ? 's' : ''}
-          </span>
-          <span className="text-text-ghost select-none">·</span>
-          <span>
-            {waveCount > 0
-              ? `${waveCount} wave${waveCount !== 1 ? 's' : ''}`
-              : '·'}
-          </span>
-          <span className="text-text-ghost select-none">·</span>
-          <span>{estimatedMin !== null ? `~${estimatedMin} min` : '·'}</span>
-          <span className="text-text-ghost select-none">·</span>
-          <span>
-            {effectiveParallel !== null ? `parallel ${effectiveParallel}` : '·'}
-          </span>
-          <span className="text-text-ghost select-none">·</span>
-          <ValidationBadge planId={plan.id} onSelectTask={handleSelectTask} />
-        </div>
-      ) : (
-        /* Post-run: progress bar + stats */
-        <div className="flex flex-col gap-1.5">
-          {/* Progress bar */}
-          <div
-            className="h-1 w-full rounded-full overflow-hidden bg-bg-highlight"
-            role="progressbar"
-            aria-valuenow={Math.round(fraction * 100)}
-            aria-valuemin={0}
-            aria-valuemax={100}
-            aria-label={`${tasksDone} of ${tasksTotal} tasks complete`}
-          >
-            <div
-              className="h-full transition-[width,background-color] duration-300"
-              style={{
-                width: `${Math.round(fraction * 100)}%`,
-                backgroundColor: barColor,
-              }}
-            />
-          </div>
 
-          {/* Stats row */}
-          <div className="flex flex-wrap items-center gap-1 font-mono text-xs text-text-muted tabular-nums">
-            <span>
-              {tasksDone}/{tasksTotal}
-            </span>
-            {elapsedMs !== null && (
-              <>
-                <span className="text-text-ghost select-none">·</span>
-                <span>{formatDuration(elapsedMs)}</span>
-              </>
-            )}
-            {etaMin !== null && (
-              <>
-                <span className="text-text-ghost select-none">·</span>
-                <span>~{etaMin} min</span>
-              </>
-            )}
-            {livePlan.costUsd > 0 && (
-              <>
-                <span className="text-text-ghost select-none">·</span>
-                <span>{formatCost(livePlan.costUsd)}</span>
-              </>
-            )}
-            {(busyAgents > 0 || isRunning) && (
-              <>
-                <span className="text-text-ghost select-none">·</span>
-                <span>
-                  {busyAgents} agent{busyAgents !== 1 ? 's' : ''} busy
-                  {maxParallel !== null ? `/${maxParallel}` : ''}
-                </span>
-              </>
-            )}
-          </div>
+      {/* Progress bar — only when the plan has actually run (phase ≠ pending) */}
+      {hasRun && (
+        <div
+          role="progressbar"
+          className="rd-progress h-1 w-full rounded-full overflow-hidden bg-bg-highlight"
+          aria-valuenow={Math.round(fraction * 100)}
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-label={`${tasksDone} of ${tasksTotal} tasks complete`}
+        >
+          <span
+            className="block h-full transition-[width,background-color] duration-300"
+            style={{
+              width: `${Math.round(fraction * 100)}%`,
+              backgroundColor: barColor,
+            }}
+          />
         </div>
       )}
+
+      {/* Status line: only known fields, no placeholder dots */}
+      <div
+        data-region="status-line"
+        className="rd-status flex flex-wrap items-center gap-1 font-mono text-xs text-text-muted tabular-nums"
+      >
+        {statusFields({
+          hasRun,
+          running: isRunning,
+          taskCount: plan.task_count,
+          waveCount,
+          estimatedMinutes: estimatedMin,
+          parallel: effectiveParallel,
+          tasksDone,
+          tasksTotal,
+          elapsedMs,
+          etaMinutes: etaMin,
+          costUsd: livePlan?.costUsd ?? 0,
+          busyAgents,
+          maxParallel,
+        }).map((field, idx) => (
+          <React.Fragment key={field.key}>
+            {idx > 0 && (
+              <span className="rd-status__sep text-text-ghost select-none" aria-hidden="true">·</span>
+            )}
+            <span data-field={field.key} className="rd-status__field">
+              {field.text}
+            </span>
+          </React.Fragment>
+        ))}
+
+        {/* ValidationBadge — only before a run, after one more separator */}
+        {!hasRun && (
+          <>
+            <span className="rd-status__sep text-text-ghost select-none" aria-hidden="true">·</span>
+            <ValidationBadge planId={plan.id} onSelectTask={handleSelectTask} />
+          </>
+        )}
+      </div>
 
       {/* ── 3. Content area ───────────────────────────────────────────────── */}
       {editing ? (
@@ -471,7 +471,8 @@ export function PlanView({
         <SourceEditor
           planId={plan.id}
           running={isRunning}
-          onClose={() => setEditing(false)}
+          onClose={() => { setEditing(false); setEditorDirty(false); }}
+          onDirtyChange={setEditorDirty}
         />
       ) : revising ? (
         /* PromptPanel in revise mode replaces the list while open */

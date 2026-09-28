@@ -6,9 +6,10 @@
  * (static, side-effect, dynamic, CSS @import), and reports every
  * .ts, .tsx, .css file under src/ that is not reached.
  *
- * Test files (*.test.ts, *.test.tsx) are excluded from the orphan
- * check — and they do NOT count as reaching their subject modules.
- * A module imported only by its own test is therefore an orphan.
+ * Test files (*.test.ts, *.test.tsx) and test-support files under
+ * src/test/ are excluded from the orphan check — and they do NOT
+ * count as reaching their subject modules.  A module imported only
+ * by its own test (or by src/test/ helpers) is therefore an orphan.
  *
  * Exit 0: no orphans.  Exit 1: one or more orphans printed to stdout.
  */
@@ -19,6 +20,13 @@ import { resolve, dirname, join, relative } from 'path';
 // apps/portal/ — one level up from scripts/
 const ROOT = new URL('..', import.meta.url).pathname;
 const SRC = join(ROOT, 'src');
+
+/** True for *.test.ts, *.test.tsx, and any file under src/test/. */
+function isTestSupport(filePath) {
+  if (filePath.endsWith('.test.ts') || filePath.endsWith('.test.tsx')) return true;
+  const testDir = join(SRC, 'test') + '/';
+  return filePath.startsWith(testDir);
+}
 
 // ── specifier resolution ────────────────────────────────────────────────────
 
@@ -104,8 +112,7 @@ function collectFiles(dir, { includeTests = false } = {}) {
       const isTs = full.endsWith('.ts') || full.endsWith('.tsx');
       const isCss = full.endsWith('.css');
       if (!isTs && !isCss) continue;
-      const isTest = full.endsWith('.test.ts') || full.endsWith('.test.tsx');
-      if (isTest && !includeTests) continue;
+      if (isTestSupport(full) && !includeTests) continue;
       result.push(full);
     }
   }
@@ -142,10 +149,8 @@ function findReachable(roots) {
     for (const spec of specifiers) {
       const resolved = resolveSpecifier(spec, file);
       if (!resolved) continue;
-      // Never enqueue test files — they don't count as production reaches.
-      const isTest =
-        resolved.endsWith('.test.ts') || resolved.endsWith('.test.tsx');
-      if (!isTest && !visited.has(resolved)) {
+      // Never enqueue test files or test-support helpers — they don't count as production reaches.
+      if (!isTestSupport(resolved) && !visited.has(resolved)) {
         queue.push(resolved);
       }
     }

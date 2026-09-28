@@ -11,8 +11,8 @@
 
 import type { WireDashboardEvent, WireDashboardSnapshot } from '@/api/contracts';
 import { TASK_OUTCOME_ACCEPTED_WITH_FAILURES } from '@/api/contracts';
-import { decodeStreamRecord } from '@/lib/streamRecord';
-import type { TranscriptEntry, AttemptDivider } from '@/lib/streamRecord';
+import { decodeFrame } from '@/lib/streamRecord';
+import type { Frame, TranscriptEntry, AttemptDivider, ToolStep, UnscreenedEntry } from '@/lib/streamRecord';
 
 // ── Constants ──────────────────────────────────────────────────────────────────
 
@@ -56,6 +56,8 @@ export interface TaskRun {
   inputTokens: number;
   outputTokens: number;
   checks: CheckRun[];
+  /** Monotonically increasing per plan; absent/0 means generation 0. */
+  generation?: number;
 }
 
 export interface PlanRun {
@@ -70,6 +72,8 @@ export interface PlanRun {
   finishedAtMs: number | null;
   etaMinutes: number | null;
   costUsd: number;
+  /** Incremented each time a finished plan starts a new run. Absent/0 means generation 0. */
+  generation?: number;
 }
 
 export interface AgentRun {
@@ -90,8 +94,15 @@ export interface Transcript {
   dropped: number;
 }
 
+export interface PlanSetMember {
+  position: number;
+  wave: number;
+  dependsOn: string[];
+  conflictsWith: string[];
+}
+
 export interface RunState {
-  planSet: { planIds: string[]; tasksTotal: number; loadedAtMs: number } | null;
+  planSet: { planIds: string[]; tasksTotal: number; loadedAtMs: number; members?: Record<string, PlanSetMember> } | null;
   plans: Record<string, PlanRun>;
   tasks: Record<string, TaskRun>;
   agents: Record<string, AgentRun>;
@@ -111,6 +122,8 @@ const TERMINAL: Set<TaskStatus> = new Set([
   'skipped',
   'cancelled',
 ]);
+
+const TERMINAL_PLAN_PHASES = new Set<PlanPhase>(['completed', 'failed', 'cancelled']);
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -160,6 +173,55 @@ function appendTranscript(t: Transcript, entry: TranscriptEntry): Transcript {
   };
 }
 
+/**
+ * Fold one decoded Frame into a transcript, applying the live-output rules:
+ * - live, not unscreened, tool_start  → ToolStep entry (never removed later)
+ * - live, unscreened                  → UnscreenedEntry
+ * - live, anything else               → ignore (return transcript unchanged)
+ * - not live (screened record)        → remove same-agent/attempt unscreened
+ *                                       entries first, then append the record
+ */
+function appendFrame(
+  t: Transcript,
+  frame: Frame,
+  agentId: string,
+  attempt: number,
+): Transcript {
+  if (frame.live) {
+    if (!frame.unscreened && frame.record.kind === 'tool_start') {
+      const step: ToolStep = {
+        kind: 'step',
+        toolId: frame.record.toolId,
+        tool: frame.record.tool,
+        target: frame.target,
+        agentId,
+        attempt,
+      };
+      return appendTranscript(t, step);
+    }
+    if (frame.unscreened) {
+      const entry: UnscreenedEntry = {
+        kind: 'unscreened',
+        record: frame.record,
+        input: frame.input,
+        agentId,
+        attempt,
+      };
+      return appendTranscript(t, entry);
+    }
+    // Any other live record (non-unscreened, non-step) → ignore
+    return t;
+  }
+  // Screened record: remove unscreened entries for this agentId+attempt, then append
+  const before = t.entries;
+  const filtered = before.filter(
+    (e) => e.kind !== 'unscreened' || e.agentId !== agentId || e.attempt !== attempt,
+  );
+  const base: Transcript =
+    filtered.length !== before.length ? { entries: filtered, dropped: t.dropped } : t;
+  return appendTranscript(base, frame.record);
+}
+
 /** Sort checks by index, nulls last. Stable relative to original order for ties. */
 function sortChecks(checks: CheckRun[]): CheckRun[] {
   return [...checks].sort((a, b) => {
@@ -188,6 +250,78 @@ function upsertCheck(
   }
   const blank: CheckRun = { name, index, phase, status: 'running', output: '' };
   return sortChecks([...checks, update(blank)]);
+}
+
+// ── beginNewRun ────────────────────────────────────────────────────────────────
+
+/**
+ * Transition a finished plan into a new run.
+ *
+ * After 'completed': fresh run — all task records and transcripts for the plan
+ * are removed and all counters reset to zero.
+ *
+ * After 'failed' or 'cancelled': resume — task records whose status is
+ * 'passed', 'skipped', or 'accepted_with_failures' are kept and counted;
+ * every other task record (and its transcript) is removed.
+ *
+ * The plan's generation is incremented in both cases.
+ */
+function beginNewRun(
+  existing: PlanRun,
+  newTasksTotal: number | null | undefined,
+  phase: PlanPhase,
+  startedAtMs: number | null,
+  allTasks: Record<string, TaskRun>,
+  allTranscripts: Record<string, Transcript>,
+  planId: string,
+): { plan: PlanRun; tasks: Record<string, TaskRun>; transcripts: Record<string, Transcript> } {
+  const generation = (existing.generation ?? 0) + 1;
+  const tasksTotal = newTasksTotal ?? existing.tasksTotal;
+
+  const basePlan: PlanRun = {
+    ...existing,
+    phase,
+    tasksTotal,
+    tasksDone: 0,
+    tasksFailed: 0,
+    tasksAccepted: 0,
+    startedAtMs,
+    finishedAtMs: null,
+    etaMinutes: null,
+    costUsd: 0,
+    generation,
+  };
+
+  const planTaskKeys = Object.keys(allTasks).filter((k) => allTasks[k]!.planId === planId);
+
+  if (existing.phase === 'completed') {
+    // Fresh run: remove all tasks and transcripts for this plan
+    const tasks = { ...allTasks };
+    const transcripts = { ...allTranscripts };
+    for (const k of planTaskKeys) {
+      delete tasks[k];
+      delete transcripts[k];
+    }
+    return { plan: basePlan, tasks, transcripts };
+  } else {
+    // Resume: keep tasks that finished well, remove the rest
+    const GOOD: Set<TaskStatus> = new Set(['passed', 'skipped', 'accepted_with_failures']);
+    let tasksDone = 0;
+    let tasksAccepted = 0;
+    const tasks = { ...allTasks };
+    const transcripts = { ...allTranscripts };
+    for (const k of planTaskKeys) {
+      const t = allTasks[k]!;
+      if (GOOD.has(t.status)) {
+        tasksDone += 1;
+        if (t.status === 'accepted_with_failures') tasksAccepted += 1;
+      } else {
+        delete tasks[k];
+        delete transcripts[k];
+      }
+    }
+    return { plan: { ...basePlan, tasksDone, tasksAccepted }, tasks, transcripts };
+  }
 }
 
 // ── initialRunState ────────────────────────────────────────────────────────────
@@ -224,7 +358,20 @@ export function applyEvent(
       const planIds = event.plans.map((p) => p.plan_id);
       const tasksTotal = event.plans.reduce((s, p) => s + (p.tasks_total ?? 0), 0);
 
+      const members: Record<string, PlanSetMember> = {};
+      for (let i = 0; i < event.plans.length; i++) {
+        const entry = event.plans[i]!;
+        members[entry.plan_id] = {
+          position: i,
+          wave: entry.wave ?? 0,
+          dependsOn: entry.depends_on ?? [],
+          conflictsWith: entry.conflicts_with ?? [],
+        };
+      }
+
       const newPlans: Record<string, PlanRun> = { ...state.plans };
+      let newTasks = state.tasks;
+      let newTranscripts = state.transcripts;
       for (const entry of event.plans) {
         const existing = newPlans[entry.plan_id];
         if (existing?.phase === 'running') {
@@ -232,6 +379,23 @@ export function applyEvent(
           if (entry.title && !existing.title) {
             newPlans[entry.plan_id] = { ...existing, title: entry.title };
           }
+        } else if (existing && TERMINAL_PLAN_PHASES.has(existing.phase)) {
+          // Plan finished — begin a new run at 'pending' (plan_started will advance to 'running')
+          const result = beginNewRun(
+            existing,
+            entry.tasks_total,
+            'pending',
+            null,
+            newTasks,
+            newTranscripts,
+            entry.plan_id,
+          );
+          newPlans[entry.plan_id] = {
+            ...result.plan,
+            title: entry.title ?? existing.title ?? null,
+          };
+          newTasks = result.tasks;
+          newTranscripts = result.transcripts;
         } else {
           newPlans[entry.plan_id] = {
             planId: entry.plan_id,
@@ -251,8 +415,10 @@ export function applyEvent(
 
       return {
         ...state,
-        planSet: { planIds, tasksTotal, loadedAtMs: nowMs },
+        planSet: { planIds, tasksTotal, loadedAtMs: nowMs, members },
         plans: newPlans,
+        tasks: newTasks,
+        transcripts: newTranscripts,
         run: { startedAtMs: nowMs, durationMs: null, outcome: null },
       };
     }
@@ -260,22 +426,43 @@ export function applyEvent(
     // ── plan_started ───────────────────────────────────────────────────────────
     case 'plan_started': {
       const existing = state.plans[event.plan_id];
-      const tasksTotal = Math.max(existing?.tasksTotal ?? 0, event.tasks_total ?? 0);
-      const plan: PlanRun = existing
-        ? { ...existing, phase: 'running', tasksTotal, startedAtMs: nowMs }
-        : {
-            planId: event.plan_id,
-            title: null,
-            phase: 'running',
-            tasksTotal,
-            tasksDone: 0,
-            tasksFailed: 0,
-            tasksAccepted: 0,
-            startedAtMs: nowMs,
-            finishedAtMs: null,
-            etaMinutes: null,
-            costUsd: 0,
-          };
+
+      let plan: PlanRun;
+      let newTasks = state.tasks;
+      let newTranscripts = state.transcripts;
+
+      if (existing && TERMINAL_PLAN_PHASES.has(existing.phase)) {
+        // Plan finished — begin a fresh or resume run at 'running'
+        const result = beginNewRun(
+          existing,
+          event.tasks_total,
+          'running',
+          nowMs,
+          state.tasks,
+          state.transcripts,
+          event.plan_id,
+        );
+        plan = result.plan;
+        newTasks = result.tasks;
+        newTranscripts = result.transcripts;
+      } else {
+        const tasksTotal = Math.max(existing?.tasksTotal ?? 0, event.tasks_total ?? 0);
+        plan = existing
+          ? { ...existing, phase: 'running', tasksTotal, startedAtMs: nowMs }
+          : {
+              planId: event.plan_id,
+              title: null,
+              phase: 'running',
+              tasksTotal,
+              tasksDone: 0,
+              tasksFailed: 0,
+              tasksAccepted: 0,
+              startedAtMs: nowMs,
+              finishedAtMs: null,
+              etaMinutes: null,
+              costUsd: 0,
+            };
+      }
 
       // Only reset run when the plan is not already part of the planSet
       const inPlanSet = state.planSet?.planIds.includes(event.plan_id) ?? false;
@@ -286,6 +473,8 @@ export function applyEvent(
       return {
         ...state,
         plans: { ...state.plans, [event.plan_id]: plan },
+        tasks: newTasks,
+        transcripts: newTranscripts,
         run: newRun,
       };
     }
@@ -349,19 +538,49 @@ export function applyEvent(
         newAgents[id] = agent.active ? { ...agent, active: false } : agent;
       }
 
-      return { ...state, run: newRun, plans: newPlans, tasks: newTasks, agents: newAgents };
+      // Remove all unscreened entries from all transcripts on run end
+      let newTranscripts = state.transcripts;
+      for (const [key, transcript] of Object.entries(state.transcripts)) {
+        const filtered = transcript.entries.filter((e) => e.kind !== 'unscreened');
+        if (filtered.length !== transcript.entries.length) {
+          if (newTranscripts === state.transcripts) {
+            newTranscripts = { ...state.transcripts };
+          }
+          newTranscripts[key] = { entries: filtered, dropped: transcript.dropped };
+        }
+      }
+
+      return {
+        ...state,
+        run: newRun,
+        plans: newPlans,
+        tasks: newTasks,
+        agents: newAgents,
+        transcripts: newTranscripts,
+      };
     }
 
     // ── task_started ───────────────────────────────────────────────────────────
     case 'task_started': {
       const key = taskKey(event.plan_id, event.task_id);
       const existing = state.tasks[key];
-      const isRetry = existing !== undefined && TERMINAL.has(existing.status);
+      const plan = state.plans[event.plan_id];
+      const planGeneration = plan?.generation ?? 0;
+
+      // A task whose generation predates the current run is a fresh start, not a retry.
+      const isOlderGeneration =
+        existing !== undefined && (existing.generation ?? 0) < planGeneration;
+      // Only a terminal record from the *current* generation starting again is a retry.
+      const isRetry =
+        !isOlderGeneration && existing !== undefined && TERMINAL.has(existing.status);
 
       const attempts = isRetry ? existing.attempts + 1 : 1;
       // Preserve title when the event's title is empty
       const title =
         event.title && event.title.length > 0 ? event.title : (existing?.title ?? '');
+
+      // Keep agent/cost/token stats across phase changes, but reset on new-generation starts.
+      const keepStats = !isOlderGeneration && !!existing;
 
       const task: TaskRun = {
         planId: event.plan_id,
@@ -372,17 +591,19 @@ export function applyEvent(
         attempts,
         startedAtMs: nowMs,
         finishedAtMs: null,
-        agentId: existing?.agentId ?? null,
-        role: existing?.role ?? null,
-        model: existing?.model ?? null,
-        costUsd: existing?.costUsd ?? 0,
-        inputTokens: existing?.inputTokens ?? 0,
-        outputTokens: existing?.outputTokens ?? 0,
-        // Clear checks on retry; preserve for first start (handles phase changes)
-        checks: isRetry ? [] : (existing?.checks ?? []),
+        agentId: keepStats ? existing!.agentId : null,
+        role: keepStats ? existing!.role : null,
+        model: keepStats ? existing!.model : null,
+        costUsd: keepStats ? existing!.costUsd : 0,
+        inputTokens: keepStats ? existing!.inputTokens : 0,
+        outputTokens: keepStats ? existing!.outputTokens : 0,
+        // Clear checks on retry or new-generation start; preserve for phase changes
+        checks: (isRetry || isOlderGeneration) ? [] : (existing?.checks ?? []),
+        generation: planGeneration,
       };
 
-      // Append a divider to the transcript on retry
+      // Append a divider to the transcript on retry;
+      // clear the transcript on new-generation start.
       let newTranscripts = state.transcripts;
       if (isRetry) {
         const divider: AttemptDivider = { kind: 'divider', attempt: attempts };
@@ -391,22 +612,46 @@ export function applyEvent(
           ...state.transcripts,
           [key]: appendTranscript(transcript, divider),
         };
+      } else if (isOlderGeneration && state.transcripts[key]) {
+        const next: Record<string, Transcript> = { ...state.transcripts };
+        delete next[key];
+        newTranscripts = next;
       }
 
-      // plan.tasksTotal = max(tasksTotal, count of known tasks for this plan)
-      const plan = state.plans[event.plan_id];
-      const planTaskCount = Object.values({ ...state.tasks, [key]: task }).filter(
-        (t) => t.planId === event.plan_id,
-      ).length;
-      const newPlans = plan
-        ? {
-            ...state.plans,
-            [event.plan_id]: {
-              ...plan,
-              tasksTotal: Math.max(plan.tasksTotal, planTaskCount),
-            },
+      // Counters: when a terminal record starts again (retry or new generation),
+      // remove it from its old bucket first — never below zero.
+      let newPlans = state.plans;
+      if (plan) {
+        let { tasksDone, tasksFailed, tasksAccepted } = plan;
+        const wasTerminal = existing !== undefined && TERMINAL.has(existing.status);
+        if (wasTerminal && (isRetry || isOlderGeneration)) {
+          if (existing!.status === 'accepted_with_failures') {
+            tasksDone = Math.max(0, tasksDone - 1);
+            tasksAccepted = Math.max(0, tasksAccepted - 1);
+          } else if (existing!.status === 'failed') {
+            tasksFailed = Math.max(0, tasksFailed - 1);
+          } else {
+            // passed or skipped
+            tasksDone = Math.max(0, tasksDone - 1);
           }
-        : state.plans;
+        }
+
+        // plan.tasksTotal = max(tasksTotal, count of known tasks for this plan)
+        const planTaskCount = Object.values({ ...state.tasks, [key]: task }).filter(
+          (t) => t.planId === event.plan_id,
+        ).length;
+
+        newPlans = {
+          ...state.plans,
+          [event.plan_id]: {
+            ...plan,
+            tasksDone,
+            tasksFailed,
+            tasksAccepted,
+            tasksTotal: Math.max(plan.tasksTotal, planTaskCount),
+          },
+        };
+      }
 
       return {
         ...state,
@@ -466,6 +711,9 @@ export function applyEvent(
       const role = event.role || event.model || 'impl';
       const model = event.model ?? '';
       const existing = state.agents[event.agent_id];
+      // Start the clock on first spawn or restart; keep it when the same agent
+      // is re-announced while still active (avoids jitter from duplicate events).
+      const spawnedAtMs = existing?.active ? (existing.spawnedAtMs ?? nowMs) : nowMs;
       const agent: AgentRun = {
         agentId: event.agent_id,
         planId: event.plan_id ?? null,
@@ -473,7 +721,7 @@ export function applyEvent(
         role,
         model,
         active: true,
-        spawnedAtMs: existing?.spawnedAtMs ?? null,
+        spawnedAtMs,
         costUsd: existing?.costUsd ?? 0,
         inputTokens: existing?.inputTokens ?? 0,
         outputTokens: existing?.outputTokens ?? 0,
@@ -503,9 +751,26 @@ export function applyEvent(
     case 'agent_completed': {
       const existing = state.agents[event.agent_id];
       if (!existing) return state;
+
+      // Remove every unscreened entry belonging to this agent from all transcripts
+      const completedId = event.agent_id;
+      let newTranscripts = state.transcripts;
+      for (const [key, transcript] of Object.entries(state.transcripts)) {
+        const filtered = transcript.entries.filter(
+          (e) => e.kind !== 'unscreened' || e.agentId !== completedId,
+        );
+        if (filtered.length !== transcript.entries.length) {
+          if (newTranscripts === state.transcripts) {
+            newTranscripts = { ...state.transcripts };
+          }
+          newTranscripts[key] = { entries: filtered, dropped: transcript.dropped };
+        }
+      }
+
       return {
         ...state,
         agents: { ...state.agents, [event.agent_id]: { ...existing, active: false } },
+        transcripts: newTranscripts,
       };
     }
 
@@ -536,7 +801,9 @@ export function applyEvent(
 
     // ── agent_output ───────────────────────────────────────────────────────────
     case 'agent_output': {
-      const entry = decodeStreamRecord(event.content);
+      const frame = decodeFrame(event.content);
+      const agentId = event.agent_id;
+      const attempt = event.attempt ?? frame.attempt ?? 0;
 
       // Resolve the transcript key: prefer event's plan/task, then agent's current context
       let key: string | null = null;
@@ -553,11 +820,14 @@ export function applyEvent(
       if (!key) return state;
 
       const transcript = state.transcripts[key] ?? { entries: [], dropped: 0 };
+      const newTranscript = appendFrame(transcript, frame, agentId, attempt);
+      // If appendFrame returned the same object (ignored live record), skip state copy
+      if (newTranscript === transcript) return state;
       return {
         ...state,
         transcripts: {
           ...state.transcripts,
-          [key]: appendTranscript(transcript, entry),
+          [key]: newTranscript,
         },
       };
     }
@@ -770,11 +1040,61 @@ export function fromSnapshot(snapshot: WireDashboardSnapshot, nowMs: number): Ru
 
   // ── plan_set ──────────────────────────────────────────────────────────────
   const planSet = snapshot.plan_set
-    ? {
-        planIds: snapshot.plan_set.plans.map((p) => p.plan_id),
-        tasksTotal: snapshot.plan_set.tasks_total,
-        loadedAtMs: snapshot.plan_set.loaded_at_ms,
-      }
+    ? (() => {
+        const setEntries = snapshot.plan_set!.plans;
+        const loadedAtMs = snapshot.plan_set!.loaded_at_ms;
+        const members: Record<string, PlanSetMember> = {};
+        for (let i = 0; i < setEntries.length; i++) {
+          const entry = setEntries[i]!;
+          members[entry.plan_id] = {
+            position: i,
+            wave: entry.wave ?? 0,
+            dependsOn: entry.depends_on ?? [],
+            conflictsWith: entry.conflicts_with ?? [],
+          };
+        }
+
+        // Apply titles and timing from plan_set entries
+        const isOnePlanSet = setEntries.length === 1;
+        for (let i = 0; i < setEntries.length; i++) {
+          const entry = setEntries[i]!;
+          let plan = plans[entry.plan_id];
+          if (!plan) continue;
+
+          // Fill title from plan_set entry when non-empty
+          if (entry.title) {
+            plan = { ...plan, title: entry.title };
+          }
+
+          // Position 0 while running: startedAtMs = loadedAtMs
+          if (i === 0 && plan.phase === 'running') {
+            plan = { ...plan, startedAtMs: loadedAtMs };
+          }
+
+          // One-plan set, not pending/running, run_duration_ms known: derive timing
+          if (
+            isOnePlanSet &&
+            plan.phase !== 'pending' &&
+            plan.phase !== 'running' &&
+            snapshot.run_duration_ms != null
+          ) {
+            plan = {
+              ...plan,
+              startedAtMs: loadedAtMs,
+              finishedAtMs: loadedAtMs + snapshot.run_duration_ms,
+            };
+          }
+
+          plans[entry.plan_id] = plan;
+        }
+
+        return {
+          planIds: setEntries.map((p) => p.plan_id),
+          tasksTotal: snapshot.plan_set!.tasks_total,
+          loadedAtMs,
+          members,
+        };
+      })()
     : null;
 
   // ── Build task → plan mapping (for ambiguity detection in task_outputs) ───
@@ -887,9 +1207,20 @@ export function fromSnapshot(snapshot: WireDashboardSnapshot, nowMs: number): Ru
     if (planIds.length !== 1) continue; // ambiguous — skip
     const planId = planIds[0]!;
     const key = taskKey(planId, taskId);
+    const taskActive = tasks[key]?.status === 'active';
     let t: Transcript = { entries: [], dropped: 0 };
     for (const line of lines) {
-      t = appendTranscript(t, decodeStreamRecord(line));
+      const frame = decodeFrame(line);
+      const frameAgentId = frame.agentId ?? '';
+      const frameAttempt = frame.attempt ?? 0;
+      t = appendFrame(t, frame, frameAgentId, frameAttempt);
+    }
+    // If the task is no longer active, drop all unscreened entries
+    if (!taskActive) {
+      const filtered = t.entries.filter((e) => e.kind !== 'unscreened');
+      if (filtered.length !== t.entries.length) {
+        t = { entries: filtered, dropped: t.dropped };
+      }
     }
     transcripts[key] = t;
   }

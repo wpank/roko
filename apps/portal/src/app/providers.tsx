@@ -1,7 +1,8 @@
 'use client';
 
 import { useState } from 'react';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { QueryClientProvider } from '@tanstack/react-query';
+import { createQueryClient } from '@/api/queryClient';
 import { useStateHubSSE } from '@/hooks/useStateHubSSE';
 import { useDashboardStore } from '@/stores/dashboard';
 
@@ -39,22 +40,7 @@ function SessionGate({ children }: { children: React.ReactNode }) {
 export function Providers({ children }: { children: React.ReactNode }) {
   // Stable QueryClient instance — one per browser session, never
   // recreated on re-renders.
-  const [queryClient] = useState(
-    () =>
-      new QueryClient({
-        defaultOptions: {
-          queries: {
-            // With live SSE updates, stale-while-revalidate windows
-            // can be generous. Keep data fresh for 30 s before background
-            // refetches kick in.
-            staleTime: 30_000,
-            // Retry failed requests twice with exponential back-off.
-            retry: 2,
-            refetchOnWindowFocus: false,
-          },
-        },
-      }),
-  );
+  const [queryClient] = useState(createQueryClient);
 
   return (
     <QueryClientProvider client={queryClient}>

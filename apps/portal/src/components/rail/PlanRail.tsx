@@ -56,6 +56,7 @@ export function PlanRail({
   onNewPlan,
   onRunPlans,
   emptySentence,
+  runDisabledReason,
 }: {
   result: PlanRowsResult;
   selectedPlanId: string | null;
@@ -66,6 +67,8 @@ export function PlanRail({
   onNewPlan(): void;
   onRunPlans(ids: string[] | null, label: string): void;
   emptySentence: string;
+  /** When non-null, Run all and every group ▶ are disabled with this reason as their title. */
+  runDisabledReason?: string | null;
 }) {
   // ── Collapsed group state (lazy-initialised from localStorage) ───────────
   const [collapsed, setCollapsed] = useState<Set<string>>(() => readCollapsed());
@@ -132,6 +135,8 @@ export function PlanRail({
         <button
           type="button"
           data-action="run-all"
+          disabled={runDisabledReason != null}
+          title={runDisabledReason ?? undefined}
           onClick={() => onRunPlans(null, `all ${count} plans`)}
           style={{
             background: 'transparent',
@@ -206,6 +211,7 @@ export function PlanRail({
               onSelect={onSelect}
               onToggleCollapse={toggleGroup}
               onRunGroup={onRunPlans}
+              runDisabledReason={runDisabledReason}
             />
           ))
         )}
@@ -256,6 +262,7 @@ function GroupSection({
   onSelect,
   onToggleCollapse,
   onRunGroup,
+  runDisabledReason,
 }: {
   group: PlanGroupModel;
   collapsed: boolean;
@@ -263,6 +270,7 @@ function GroupSection({
   onSelect(id: string): void;
   onToggleCollapse(name: string): void;
   onRunGroup(ids: string[] | null, label: string): void;
+  runDisabledReason?: string | null;
 }) {
   const isNamed = group.name !== null;
 
@@ -330,6 +338,8 @@ function GroupSection({
           <button
             type="button"
             data-action="run-group"
+            disabled={runDisabledReason != null}
+            title={runDisabledReason ?? undefined}
             onClick={() => {
               const ids = group.rows.map((r) => r.id);
               onRunGroup(ids, `the ${ids.length} plans in ${group.name}`);

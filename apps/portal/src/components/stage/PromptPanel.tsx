@@ -24,7 +24,9 @@ import { ApiError } from '@/api/client';
 import { waitForOperation } from '@/lib/operation';
 import { compactDuration } from '@/lib/formatters';
 import { Button } from '@/components/atoms/Button';
+import { Notice } from '@/components/primitives/Notice';
 import { Spinner } from '@/components/atoms/Spinner';
+import { isMissingRoute, unsupportedMessage, describeRequestError } from '@/lib/apiErrors';
 import { cn } from '@/lib/cn';
 
 // ---------------------------------------------------------------------------
@@ -56,44 +58,26 @@ const GENERATE_EXAMPLES = [
 // ---------------------------------------------------------------------------
 
 /**
- * Produce a human-readable error message from a caught error.
- * Maps ApiError 404/405 to a "not supported" message and
- * ApiError 409 on revise to a specific conflict message.
+ * Maps a 409 revise error to a human-readable sentence.
+ * All other errors are handled via isMissingRoute / describeRequestError.
  */
-function toDisplayError(err: unknown, mode: 'generate' | 'revise'): string {
-  if (err instanceof ApiError) {
-    if (err.status === 404 || err.status === 405) {
-      const verb = mode === 'generate' ? 'generating' : 'revising';
-      return `This roko serve does not support ${verb} plans yet.`;
-    }
-    if (err.status === 409 && mode === 'revise') {
-      // Try to read the server's message from the body
-      const body = err.body;
-      if (body && typeof body === 'object') {
-        const b = body as Record<string, unknown>;
-        const msg = typeof b['message'] === 'string' ? b['message'] : null;
-        if (msg) {
-          const lower = msg.toLowerCase();
-          if (lower.includes('running')) {
-            return 'This plan is currently running and cannot be revised right now.';
-          }
-          if (lower.includes('alread') || lower.includes('revis')) {
-            return 'This plan is already being revised.';
-          }
-          return msg;
-        }
+function toRevise409Error(err: ApiError): string {
+  const body = err.body;
+  if (body && typeof body === 'object') {
+    const b = body as Record<string, unknown>;
+    const msg = typeof b['message'] === 'string' ? b['message'] : null;
+    if (msg) {
+      const lower = msg.toLowerCase();
+      if (lower.includes('running')) {
+        return 'This plan is currently running and cannot be revised right now.';
       }
-      return 'This plan is currently running or already being revised.';
-    }
-    // For other errors, try to extract a message from the body
-    if (err.body && typeof err.body === 'object') {
-      const b = err.body as Record<string, unknown>;
-      if (typeof b['message'] === 'string') return b['message'];
-      if (typeof b['error'] === 'string') return b['error'];
+      if (lower.includes('alread') || lower.includes('revis')) {
+        return 'This plan is already being revised.';
+      }
+      return msg;
     }
   }
-  if (err instanceof Error) return err.message;
-  return 'An unexpected error occurred.';
+  return 'This plan is currently running or already being revised.';
 }
 
 // ---------------------------------------------------------------------------
@@ -110,6 +94,7 @@ export function PromptPanel({
 }: PromptPanelProps) {
   const [prompt, setPrompt] = useState('');
   const [error, setError] = useState<string | null>(null);
+  const [noticeError, setNoticeError] = useState<string | null>(null);
   const [waiting, setWaiting] = useState(false);
   const [elapsedMs, setElapsedMs] = useState<number | null>(null);
 
@@ -128,6 +113,7 @@ export function PromptPanel({
     if (!text || waiting) return;
 
     setError(null);
+    setNoticeError(null);
     setWaiting(true);
     setElapsedMs(0);
 
@@ -162,7 +148,17 @@ export function PromptPanel({
     } catch (err) {
       setWaiting(false);
       setElapsedMs(null);
-      setError(toDisplayError(err, mode));
+      const action = mode === 'generate' ? 'generating plans' : 'revising plans';
+      if (isMissingRoute(err)) {
+        setNoticeError(unsupportedMessage(action));
+        setError(null);
+      } else if (err instanceof ApiError && err.status === 409 && mode === 'revise') {
+        setError(toRevise409Error(err));
+        setNoticeError(null);
+      } else {
+        setError(describeRequestError(err, action));
+        setNoticeError(null);
+      }
     }
   }, [prompt, waiting, mode, planId, generateMutation, reviseMutation, onDone]);
 
@@ -217,6 +213,7 @@ export function PromptPanel({
         onChange={(e) => {
           setPrompt(e.target.value);
           if (error) setError(null);
+          if (noticeError) setNoticeError(null);
         }}
         onKeyDown={handleKeyDown}
       />
@@ -253,9 +250,14 @@ export function PromptPanel({
         </div>
       )}
 
-      {/* Inline error */}
+      {/* Missing-route notice */}
+      {noticeError && (
+        <Notice kind="unsupported" onClose={() => setNoticeError(null)}>{noticeError}</Notice>
+      )}
+
+      {/* Inline error (409, outdated server, network, etc.) */}
       {error && (
-        <p className="text-xs font-mono text-accent-error">{error}</p>
+        <Notice kind="error" onClose={() => setError(null)}><span data-error>{error}</span></Notice>
       )}
 
       {/* Action row */}

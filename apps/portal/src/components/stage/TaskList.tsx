@@ -14,7 +14,7 @@ import type { TaskRowModel } from '@/lib/taskRows';
 import { StatusGlyph } from '@/components/primitives/StatusGlyph';
 import { MetricCell } from '@/components/primitives/MetricCell';
 import { cn } from '@/lib/cn';
-import { formatDuration, formatCost } from '@/lib/formatters';
+import { formatSpan, shortModel, formatCost } from '@/lib/formatters';
 import type { CheckRun } from '@/lib/runState';
 import { GLYPHS } from '@/lib/glyphs';
 
@@ -28,19 +28,6 @@ export interface TaskListProps {
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
-
-/**
- * Format the time cell: prefix depends on kind.
- *   estimate → "~2m 30s"
- *   elapsed  → "2m 30s"  (live, no prefix)
- *   actual   → "2m 30s"
- *   none     → null (render MetricCell with null → "·")
- */
-function formatTime(time: TaskRowModel['time']): string | null {
-  if (time.kind === 'none' || time.ms === null) return null;
-  const dur = formatDuration(time.ms);
-  return time.kind === 'estimate' ? `~${dur}` : dur;
-}
 
 /**
  * Return the first output line of the first failed check that does not start
@@ -62,7 +49,7 @@ function firstFailedCheckLine(checks: CheckRun[]): string | null {
 
 // ── CheckChip ─────────────────────────────────────────────────────────────────
 
-/** A single inline check chip: glyph + phase label. e.g. "✓compile" or "✗test" */
+/** A single inline check chip: glyph + phase label. e.g. "✓ compile" or "✗ test" */
 function CheckChip({ check }: { check: CheckRun }) {
   const glyphState =
     check.status === 'passed'
@@ -73,10 +60,11 @@ function CheckChip({ check }: { check: CheckRun }) {
   const label = check.phase || check.name;
   return (
     <span
-      className="inline-flex items-center gap-0.5 text-xs font-mono"
+      className="inline-block text-xs font-mono"
       title={`${check.name}: ${check.status}`}
     >
       <StatusGlyph state={glyphState} title={`${check.name}: ${check.status}`} />
+      {' '}
       <span style={{ color: GLYPHS[glyphState].token }}>{label}</span>
     </span>
   );
@@ -160,7 +148,7 @@ function ExpandedDetail({
       {/* ── Files ────────────────────────────────────────────────────────────── */}
       {row.files.length > 0 && (
         <div className="flex flex-col gap-0.5">
-          <span className="text-xs text-text-ghost uppercase tracking-wide">files</span>
+          <span className="rd-section">files</span>
           <ul className="flex flex-col gap-0.5">
             {row.files.map((f) => (
               <li key={f} className="text-xs text-text-muted truncate" title={f}>
@@ -174,7 +162,7 @@ function ExpandedDetail({
       {/* ── Depends on ────────────────────────────────────────────────────────── */}
       {row.dependsOn.length > 0 && (
         <div className="flex flex-col gap-0.5">
-          <span className="text-xs text-text-ghost uppercase tracking-wide">depends on</span>
+          <span className="rd-section">depends on</span>
           <ul className="flex flex-wrap gap-2">
             {row.dependsOn.map((depId) => {
               const isWaiting = row.waitingOn.includes(depId);
@@ -203,7 +191,7 @@ function ExpandedDetail({
       {/* ── Verify commands ──────────────────────────────────────────────────── */}
       {row.verify.length > 0 && (
         <div className="flex flex-col gap-0.5">
-          <span className="text-xs text-text-ghost uppercase tracking-wide">verify</span>
+          <span className="rd-section">verify</span>
           <ul className="flex flex-col gap-1">
             {row.verify.map((v, i) => (
               <li key={i} className="flex items-start gap-2 text-xs font-mono">
@@ -235,7 +223,8 @@ function TaskRow({
   onSelect(): void;
   onRetry(): void;
 }) {
-  const timeStr = formatTime(row.time);
+  const timeStr = formatSpan(row.time);
+  const costStr = row.costUsd != null ? formatCost(row.costUsd) : null;
   const isAccepted = row.status === 'accepted_with_failures';
 
   return (
@@ -257,65 +246,68 @@ function TaskRow({
       role="option"
       aria-selected={selected}
     >
-      {/* ── Summary row (always visible) ─────────────────────────────────── */}
-      <div className="flex items-center gap-2 min-w-0">
-        {/* Glyph */}
-        <span className="shrink-0 w-4 text-center">
+      {/* ── Summary row: eight-track grid, every track always present ────── */}
+      <div className="rd-task-row">
+        {/* 1. Glyph */}
+        <span data-cell="glyph">
           <StatusGlyph state={row.state} />
         </span>
 
-        {/* ID */}
-        <span
-          className="shrink-0 text-xs font-mono text-text-ghost w-20 truncate"
-          title={row.id}
-        >
+        {/* 2. ID */}
+        <span data-cell="id" className="rd-meta font-mono" title={row.id}>
           {row.id}
         </span>
 
-        {/* Title */}
-        <span className="flex-1 min-w-0 text-sm font-mono text-text-strong truncate">
+        {/* 3. Title */}
+        <span data-cell="title" className="rd-row font-mono">
           {row.title}
         </span>
 
-        {/* Role · Model (shown once dispatched) */}
-        {(row.role || row.model) && (
-          <span className="shrink-0 text-xs font-mono text-text-ghost hidden md:inline truncate max-w-32">
-            {[row.role, row.model].filter(Boolean).join('·')}
-          </span>
-        )}
-
-        {/* Time */}
-        <span className="shrink-0 w-16 text-right">
-          <MetricCell value={timeStr} width="4rem" />
+        {/* 4. Role · Model */}
+        <span data-cell="role" className="rd-task-row__meta font-mono text-text-faint">
+          {row.role && (
+            <span
+              data-role={row.role}
+              style={{ color: `var(--role-${row.role}, var(--role-other))` }}
+            >
+              {row.role}
+            </span>
+          )}
+          {row.role && row.model && '·'}
+          {row.model && (
+            <span title={row.model}>{shortModel(row.model)}</span>
+          )}
         </span>
 
-        {/* Cost */}
-        <span className="shrink-0 w-16 text-right">
-          <MetricCell
-            value={row.costUsd != null ? formatCost(row.costUsd) : null}
-            width="4rem"
-          />
+        {/* 5. Time — empty when unknown */}
+        <span data-cell="time" className="rd-task-row__num">
+          {timeStr != null && <MetricCell value={timeStr} />}
         </span>
 
-        {/* Retry count (when > 1 attempt) */}
-        {row.attempts > 1 && (
-          <span
-            className="shrink-0 text-xs font-mono tabular"
-            style={{ color: 'var(--state-accepted)' }}
-            title={`${row.attempts} attempts`}
-          >
-            ↻{row.attempts}
-          </span>
-        )}
+        {/* 6. Cost — empty when unknown */}
+        <span data-cell="cost" className="rd-task-row__num">
+          {costStr != null && <MetricCell value={costStr} />}
+        </span>
 
-        {/* Check chips */}
-        {row.checks.length > 0 && (
-          <span className="shrink-0 flex items-center gap-1 hidden sm:flex">
-            {row.checks.map((c) => (
-              <CheckChip key={c.name} check={c} />
-            ))}
-          </span>
-        )}
+        {/* 7. Attempts (↻N when N > 1, else empty) */}
+        <span
+          data-cell="attempts"
+          className="rd-task-row__num"
+          style={row.attempts > 1 ? { color: 'var(--state-accepted)' } : undefined}
+          title={row.attempts > 1 ? `${row.attempts} attempts` : undefined}
+        >
+          {row.attempts > 1 ? `↻${row.attempts}` : ''}
+        </span>
+
+        {/* 8. Checks (space-separated chips, no flex wrapper) */}
+        <span data-cell="checks" className="rd-task-row__meta">
+          {row.checks.map((c, i) => (
+            <React.Fragment key={c.name}>
+              {i > 0 && ' '}
+              <CheckChip check={c} />
+            </React.Fragment>
+          ))}
+        </span>
       </div>
 
       {/* ── Expanded detail ──────────────────────────────────────────────── */}

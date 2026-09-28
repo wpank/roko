@@ -67,7 +67,7 @@ describe('plan_set_loaded', () => {
         { plan_id: 'p2', tasks_total: 2 },
       ],
     }]);
-    expect(s.planSet).toEqual({ planIds: ['p1', 'p2'], tasksTotal: 5, loadedAtMs: 1000 });
+    expect(s.planSet).toMatchObject({ planIds: ['p1', 'p2'], tasksTotal: 5, loadedAtMs: 1000 });
     expect(s.plans['p1']!.phase).toBe('pending');
     expect(s.plans['p1']!.title).toBe('Plan One');
     expect(s.plans['p2']!.phase).toBe('pending');
@@ -512,7 +512,7 @@ describe('fromSnapshot', () => {
 
   it('sets planSet from snapshot.plan_set', () => {
     const s = fromSnapshot(makeSnapshot(), 9000);
-    expect(s.planSet).toEqual({ planIds: ['p1', 'p2'], tasksTotal: 3, loadedAtMs: 500 });
+    expect(s.planSet).toMatchObject({ planIds: ['p1', 'p2'], tasksTotal: 3, loadedAtMs: 500 });
   });
 
   it('maps tasks: null outcome → active, "passed" → passed', () => {

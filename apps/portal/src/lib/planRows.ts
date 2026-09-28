@@ -9,14 +9,16 @@
  * - Live phase: running → active; pending (live run) → queued; completed → done/accepted;
  *   failed → failed; cancelled → skipped.  Pending after the run ends → disk fallback.
  * - Disk only: superseded → skipped; completed → done; tasks_failed > 0 → failed; else pending.
- * - barToken: green (--progress-high) ONLY when state is done (every task verified).
- *   amber (--progress-mid) for fraction ≥ 0.3; ember (--progress-low) below 0.3.
+ * - barToken: takes its plan's state colour (GLYPHS[state].token) — not a fraction band.
+ *   A running bar is the running colour (--state-active) at any fraction.
  * - Groups: top-level (no group) first; then groups sorted numerically; rows sorted numerically.
  */
 
 import type { WirePlanSummary } from '@/api/contracts';
 import type { RunState, PlanRun } from '@/lib/runState';
 import type { GlyphState } from '@/lib/glyphs';
+import { GLYPHS } from '@/lib/glyphs';
+import { queuePosition as getPlanQueuePosition, waitReason as getPlanWaitReason } from '@/lib/planSet';
 
 // ── Public interfaces ──────────────────────────────────────────────────────────
 
@@ -31,6 +33,7 @@ export interface PlanRowModel {
   barToken: string;
   time: { kind: 'estimate' | 'elapsed' | 'actual' | 'none'; ms: number | null };
   queuePosition: number | null;
+  waitReason: string | null;
   supersededBy: string | null;
   running: boolean;
 }
@@ -49,25 +52,15 @@ export interface PlanRowsResult {
   count: number;
 }
 
-// ── Constants ──────────────────────────────────────────────────────────────────
-
-/** Green — verified (done only). */
-const BAR_HIGH = 'var(--progress-high)';
-/** Amber — in progress at ≥ 0.3. */
-const BAR_MID = 'var(--progress-mid)';
-/** Ember orange — in progress below 0.3. */
-const BAR_LOW = 'var(--progress-low)';
-
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
 /**
- * Return the progress-bar CSS token.
- * Green only when every task is verified (state === 'done').
- * Otherwise amber when fraction ≥ 0.3, ember below 0.3.
+ * Return the progress-bar CSS token for a plan's state.
+ * The bar always takes its state's colour (GLYPHS[state].token) —
+ * not a fraction band. A running bar is the running colour at any fraction.
  */
-function planBarToken(state: GlyphState, fraction: number): string {
-  if (state === 'done') return BAR_HIGH;
-  return fraction < 0.3 ? BAR_LOW : BAR_MID;
+function planBarToken(state: GlyphState): string {
+  return GLYPHS[state].token;
 }
 
 /** Locale-aware numeric compare for plan-id sorting. */
@@ -102,15 +95,6 @@ export function buildPlanRows(
   const { filter, nowMs } = opts;
   const filterLo = filter.toLowerCase();
 
-  // A run is live while durationMs is null (run_completed not yet received).
-  const runIsLive = run.run.durationMs === null;
-
-  // Build a planSet order map: planId → 0-based position.
-  const planSetOrder = new Map<string, number>();
-  if (run.planSet) {
-    run.planSet.planIds.forEach((id, idx) => planSetOrder.set(id, idx));
-  }
-
   // ── Build one PlanRowModel per disk plan ──────────────────────────────────
   const allRows: PlanRowModel[] = plans.map((disk): PlanRowModel => {
     const live: PlanRun | undefined = run.plans[disk.id];
@@ -120,6 +104,7 @@ export function buildPlanRows(
     let state: GlyphState;
     let supersededBy: string | null = null;
     let queuePosition: number | null = null;
+    let waitReason: string | null = null;
     let running = false;
 
     if (live) {
@@ -129,17 +114,20 @@ export function buildPlanRows(
           running = true;
           break;
 
-        case 'pending':
-          // Queue position only while the run is live and the plan is in the set.
-          if (runIsLive && planSetOrder.has(disk.id)) {
+        case 'pending': {
+          // Queued exactly when the plan-set is active and the plan is a pending member.
+          const pos = getPlanQueuePosition(run, disk.id);
+          if (pos !== null) {
             state = 'queued';
-            queuePosition = planSetOrder.get(disk.id)! + 1; // 1-based
+            queuePosition = pos;
+            waitReason = getPlanWaitReason(run, disk.id);
           } else {
-            // Run ended (or plan not in planSet) → fall back to disk state.
+            // Set inactive (all members finished) or plan not in set → disk fallback.
             state = diskGlyphState(disk);
             supersededBy = disk.superseded_by ?? null;
           }
           break;
+        }
 
         case 'completed':
           // accepted_with_failures is amber and NEVER green.
@@ -173,14 +161,14 @@ export function buildPlanRows(
       done = live.tasksDone;
       total = live.tasksTotal;
     } else {
-      done = disk.tasks_done;
+      done = disk.tasks_done ?? (disk.completed ? disk.task_count : 0);
       total = disk.task_count;
     }
 
     const fraction = total > 0 ? done / total : 0;
 
     // ── barToken ───────────────────────────────────────────────────────────
-    const barToken = planBarToken(state, fraction);
+    const barToken = planBarToken(state);
 
     // ── time ───────────────────────────────────────────────────────────────
     let time: PlanRowModel['time'];
@@ -209,6 +197,7 @@ export function buildPlanRows(
       barToken,
       time,
       queuePosition,
+      waitReason,
       supersededBy,
       running,
     };

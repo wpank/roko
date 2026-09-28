@@ -24,7 +24,7 @@ export type AlertAction =
 
 export interface Alert {
   key: string;
-  severity: 'error' | 'warning';
+  severity: 'error' | 'warning' | 'info';
   text: string;
   actions: AlertAction[];
 }
@@ -35,6 +35,8 @@ export interface AlertInput {
   selectedPlanId: string | null;
   validationErrors: number;
   requestError: string | null;
+  /** A server notice about an unsupported operation — shown as an info alert. */
+  requestNotice?: string | null;
   dismissedKey: string | null;
 }
 
@@ -77,7 +79,7 @@ function failedTaskText(task: TaskRun): string {
  * when no alert conditions are present.
  */
 export function pickAlert(input: AlertInput): Alert | null {
-  const { run, connection, selectedPlanId, validationErrors, requestError, dismissedKey } = input;
+  const { run, connection, selectedPlanId, validationErrors, requestError, requestNotice, dismissedKey } = input;
 
   /** Return `alert` if it is not the dismissed candidate, otherwise null. */
   function tryAlert(alert: Alert): Alert | null {
@@ -92,7 +94,14 @@ export function pickAlert(input: AlertInput): Alert | null {
     if (alert) return alert;
   }
 
-  // ── Rank 1b: newest run.errors entry ────────────────────────────────────
+  // ── Rank 1b: requestNotice (server cannot do this — informational) ───────
+  if (requestNotice != null) {
+    const key = `request-notice:${requestNotice.slice(0, 120)}`;
+    const alert = tryAlert({ key, severity: 'info', text: requestNotice, actions: [] });
+    if (alert) return alert;
+  }
+
+  // ── Rank 1c: newest run.errors entry ────────────────────────────────────
   if (run.errors.length > 0) {
     const newest = run.errors[run.errors.length - 1]!;
     const key = `run-error:${newest.atMs}`;

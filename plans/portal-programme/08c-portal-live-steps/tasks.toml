@@ -1,0 +1,337 @@
+[meta]
+plan = "08c-portal-live-steps"
+total = 5
+done = 0
+status = "ready"
+max_parallel = 2
+skip_enrichment = true
+estimated_total_minutes = 110
+
+# Live agent output in the transcript (decision dec-578863, 2026-09-28; backend
+# in plan 03c T12-T20, contract §3.5 in the backend worktree's
+# tmp/portal-audit/03-CONTRACT.md). Runs after 08b in the same worktree.
+#
+# agent_output.content keeps its framed records (U+001E + "roko.stream.v1 " +
+# JSON {kind, agent_id, plan_id, task_id, attempt, payload}); two top-level
+# envelope flags are new:
+# 1. Tool step — always on, published as the provider streams the call:
+#    {"kind":"tool_start","live":true, …, "payload":{"tool_id","tool","target"}}.
+#    target = the call's file_path, notebook_path, path, command (first line),
+#    pattern, url, query or description; secret-scrubbed, at most 120 chars,
+#    may be "". A step never carries input or a result.
+# 2. Unscreened — only with `[serve] live_agent_output = "trusted"` on a
+#    loopback-only server, in addition to steps: "live":true,"screened":false on
+#    text {text}, reasoning {text}, tool_start {tool_id, tool, input (JSON cut to
+#    2048 bytes)} and tool_result {tool_id, output}.
+# 3. Screened transcript — ordinary records, no `live` field, at turn end.
+# The portal keeps the steps, drops an agent+attempt's unscreened records at
+# its first non-live record (or when the agent completes, or the run ends), and
+# marks unscreened content visibly while it shows. A screened tool block
+# absorbs its step's row and shows the step's target — the file an edit
+# touched, which screened records never carried.
+#
+# Same gate style as 08b: acceptance tests in accept/ are copied into
+# apps/portal/src by each gate and must pass with their exact count; each fails
+# on the tree its task starts from and passed against a reference
+# implementation (2026-09-28). One production build, in T05.
+
+[[task]]
+id = "T01"
+title = "Decode the live-output envelope: steps and unscreened records"
+description = '''
+apps/portal/src/lib/streamRecord.ts
+
+1. Add `live?: boolean` and `screened?: boolean` to the internal WireEnvelope.
+2. Export `interface Frame { record: StreamRecord; live: boolean;
+   unscreened: boolean; target: string | null; input: string | null;
+   attempt: number | null; agentId: string | null }` and
+   `decodeFrame(content: string): Frame`, which never throws:
+   - `record` is exactly what decodeStreamRecord returns today;
+   - live = envelope.live === true; unscreened = envelope.screened === false;
+   - target = payload.target for a tool_start when it is a non-empty string,
+     else null; input = payload.input for a tool_start when it is a string,
+     else null;
+   - attempt and agentId from the envelope when they are a number / string;
+   - unframed content, unparsable JSON, a non-object envelope (`null`, `42`)
+     or an unknown kind give the raw record with every flag false or null.
+   decodeStreamRecord(content) becomes `decodeFrame(content).record`: its
+   19 existing tests keep passing unchanged.
+3. Export the two new transcript entries and widen the union:
+     interface ToolStep { kind: 'step'; toolId: string; tool: string;
+       target: string | null; agentId: string; attempt: number }
+     interface UnscreenedEntry { kind: 'unscreened'; record: StreamRecord;
+       input: string | null; agentId: string; attempt: number }
+     type TranscriptEntry = StreamRecord | AttemptDivider | ToolStep | UnscreenedEntry
+   toBlocks may ignore the new kinds for now (T02 renders them).
+Also extend the file's header comment with the live-output rules (see this
+plan's header).
+
+Acceptance: accept/liveDecode.accept.test.ts (8 tests) → src/lib/.
+'''
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 20
+depends_on = []
+files = ["apps/portal/src/lib/streamRecord.ts", "apps/portal/src/lib/liveDecode.accept.test.ts"]
+
+[task.context]
+read_files = [
+    { path = "plans/portal-programme/08c-portal-live-steps/accept/liveDecode.accept.test.ts", why = "the acceptance test the gate runs", lines = "1-" },
+    { path = "apps/portal/src/lib/streamRecord.ts", why = "the decoder, entry and block types", lines = "1-" },
+]
+anti_patterns = [
+    "Do not change what decodeStreamRecord returns for any input.",
+    "Do not edit the copied acceptance test; the gate overwrites it.",
+    "Do not edit a file outside this task's files; a gate failure in one usually means a concurrent task is mid-edit, so re-run the gate first.",
+]
+
+[[task.verify]]
+phase = "test"
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && cp ../../plans/portal-programme/08c-portal-live-steps/accept/liveDecode.accept.test.ts src/lib/liveDecode.accept.test.ts && node scripts/vitest-min.mjs src/lib/liveDecode.accept.test.ts 8 && node scripts/vitest-min.mjs src/lib/streamRecord.test.ts 19'
+fail_msg = "the live decode acceptance test (8) or the existing stream-record suite (19) does not pass"
+timeout_ms = 600000
+
+[[task.verify]]
+phase = "compile"
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && cp ../../plans/portal-programme/08c-portal-live-steps/accept/liveDecode.accept.test.ts src/lib/liveDecode.accept.test.ts && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit --incremental false'
+fail_msg = "the portal does not type-check"
+timeout_ms = 600000
+
+[[task]]
+id = "T02"
+title = "Fold steps and unscreened entries into transcript blocks"
+description = '''
+apps/portal/src/lib/streamRecord.ts, toBlocks and TranscriptBlock:
+
+- text and reasoning blocks gain `unscreened?: true`; tool blocks gain
+  `target?: string`, `input?: string` and `unscreened?: true` (present only when
+  set, so screened blocks compare exactly as before); a new block
+  `{ kind: 'step'; toolId: string; tool: string; glyph: ToolGlyph;
+  target: string | null }`.
+- An `unscreened` entry renders like its record, flagged `unscreened: true`.
+  Consecutive text (or reasoning) merges only with the same screened-ness:
+  unscreened text never joins screened text. An unscreened tool_start's input
+  goes on its tool block; a tool_result attaches to the open block with its
+  tool id, as today.
+- A `step` whose toolId has a tool_start anywhere in the entries (screened or
+  unscreened) renders no row of its own and leaves no trace in the block list;
+  its target (when not null) is set on that tool block. A step without such a
+  tool_start becomes a `step` block at its position, with toolGlyph(tool),
+  ending any text or reasoning merge like a tool_start does.
+- Everything else behaves exactly as today: the 19 existing tests pass
+  unchanged.
+
+Acceptance: accept/liveBlocks.accept.test.ts (10 tests) → src/lib/.
+'''
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 25
+depends_on = ["T01"]
+files = ["apps/portal/src/lib/streamRecord.ts", "apps/portal/src/lib/liveBlocks.accept.test.ts"]
+
+[task.context]
+read_files = [
+    { path = "plans/portal-programme/08c-portal-live-steps/accept/liveBlocks.accept.test.ts", why = "the acceptance test the gate runs", lines = "1-" },
+    { path = "apps/portal/src/lib/streamRecord.ts", why = "toBlocks and the block types, after T01", lines = "1-" },
+]
+anti_patterns = [
+    "Do not add target, input or unscreened keys to blocks that have no such value.",
+    "Do not merge unscreened text into screened text.",
+    "Do not edit the copied acceptance test; the gate overwrites it.",
+    "Do not edit a file outside this task's files; a gate failure in one usually means a concurrent task is mid-edit, so re-run the gate first.",
+]
+
+[[task.verify]]
+phase = "test"
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && cp ../../plans/portal-programme/08c-portal-live-steps/accept/liveBlocks.accept.test.ts src/lib/liveBlocks.accept.test.ts && node scripts/vitest-min.mjs src/lib/liveBlocks.accept.test.ts 10 && node scripts/vitest-min.mjs src/lib/streamRecord.test.ts 19'
+fail_msg = "the live blocks acceptance test (10) or the existing stream-record suite (19) does not pass"
+timeout_ms = 600000
+
+[[task.verify]]
+phase = "compile"
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && cp ../../plans/portal-programme/08c-portal-live-steps/accept/liveBlocks.accept.test.ts src/lib/liveBlocks.accept.test.ts && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit --incremental false'
+fail_msg = "the portal does not type-check"
+timeout_ms = 600000
+
+[[task]]
+id = "T03"
+title = "Hold unscreened content until the screened transcript replaces it"
+description = '''
+apps/portal/src/lib/runState.ts. Decode agent_output with decodeFrame (T01)
+and fold it through one helper, `appendFrame(transcript, frame, agentId,
+attempt)`, used by both applyEvent and fromSnapshot:
+- a live tool_start that is not unscreened → append
+  `{ kind: 'step', toolId, tool, target, agentId, attempt }`;
+- an unscreened record → append
+  `{ kind: 'unscreened', record, input, agentId, attempt }`;
+- any other live record → ignore it;
+- a screened record (no `live`) → first remove the transcript's unscreened
+  entries with this agentId and attempt, then append the record as today.
+Steps are never removed.
+
+In applyEvent('agent_output'): agentId = event.agent_id; attempt =
+event.attempt ?? frame.attempt ?? 0; the transcript key is resolved as today.
+agent_completed also removes every unscreened entry with that agentId from
+every transcript; run_completed removes every unscreened entry. Return the
+same transcripts object when nothing was removed.
+In fromSnapshot, task_outputs lines go through appendFrame with agentId =
+frame.agentId ?? '' and attempt = frame.attempt ?? 0; a task that is not
+active keeps no unscreened entries.
+
+The existing suites keep passing: runState.test.ts (56) and 08b's
+runState.accept.test.ts (15).
+Acceptance: accept/liveFold.accept.test.ts (11 tests) → src/lib/.
+'''
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 25
+depends_on = ["T01"]
+files = ["apps/portal/src/lib/runState.ts", "apps/portal/src/lib/liveFold.accept.test.ts"]
+
+[task.context]
+read_files = [
+    { path = "plans/portal-programme/08c-portal-live-steps/accept/liveFold.accept.test.ts", why = "the acceptance test the gate runs", lines = "1-" },
+    { path = "apps/portal/src/lib/runState.ts", why = "agent_output, agent_completed, run_completed and the task_outputs loop in fromSnapshot" },
+]
+symbols = ["case 'agent_output'", "case 'agent_completed'", "case 'run_completed'", "function appendTranscript", "snapshot.task_outputs"]
+anti_patterns = [
+    "Do not drop steps; only unscreened entries are replaced.",
+    "Do not drop another attempt's or another agent's unscreened entries on a screened record.",
+    "Do not edit the copied acceptance test; the gate overwrites it.",
+    "Do not edit a file outside this task's files; a gate failure in one usually means a concurrent task is mid-edit, so re-run the gate first.",
+]
+
+[[task.verify]]
+phase = "test"
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && cp ../../plans/portal-programme/08c-portal-live-steps/accept/liveFold.accept.test.ts src/lib/liveFold.accept.test.ts && node scripts/vitest-min.mjs src/lib/liveFold.accept.test.ts 11 && node scripts/vitest-min.mjs src/lib/runState.test.ts 56 && node scripts/vitest-min.mjs src/lib/runState.accept.test.ts 15'
+fail_msg = "the live fold acceptance test (11) or an existing run-state suite (56, 15) does not pass"
+timeout_ms = 600000
+
+[[task.verify]]
+phase = "compile"
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && cp ../../plans/portal-programme/08c-portal-live-steps/accept/liveFold.accept.test.ts src/lib/liveFold.accept.test.ts && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit --incremental false'
+fail_msg = "the portal does not type-check"
+timeout_ms = 600000
+
+[[task]]
+id = "T04"
+title = "Render live step rows and framed unscreened content in the transcript"
+description = '''
+apps/portal/src/components/stream/Transcript.tsx (props unchanged):
+- A `step` block is a row
+  `<div data-step={toolId}>` glyph · tool · `<span data-target>{target}</span>`
+  (only when target is not null) · and, while `working` is set,
+  `<span data-live>live</span>`: small, uppercase, --text-faint (dim). Without
+  `working` the row stays as history, without the marker.
+- A tool block gets `data-tool={toolId}` on its `<details>`, shows
+  `<span data-target>` after the tool name when it has a target, and shows its
+  input (`<pre data-input>`) above the output when it has one.
+- Every block flagged `unscreened` is wrapped in `<div data-unscreened>` that
+  starts with `<span data-unscreened-label>live · unscreened</span>`, framed with
+  a left border in the warning colour (`border-l-2 border-accent-warn pl-2`,
+  label `text-accent-warn`). The fold removes it when the screened transcript
+  arrives.
+Keep the working line, auto-scroll, `↓ follow` and the dropped-records notice.
+Tailwind utilities apply now that 08b layered the element resets.
+
+Acceptance: accept/liveTranscript.accept.test.tsx (6 DOM tests) →
+src/components/stream/.
+'''
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 25
+depends_on = ["T02", "T03"]
+files = ["apps/portal/src/components/stream/Transcript.tsx", "apps/portal/src/components/stream/liveTranscript.accept.test.tsx"]
+
+[task.context]
+read_files = [
+    { path = "plans/portal-programme/08c-portal-live-steps/accept/liveTranscript.accept.test.tsx", why = "the acceptance test the gate runs", lines = "1-" },
+    { path = "apps/portal/src/components/stream/Transcript.tsx", why = "the block rendering", lines = "1-" },
+]
+anti_patterns = [
+    "Do not show unscreened content without its frame and label.",
+    "Do not keep the live marker once the agent stops working.",
+    "Do not edit the copied acceptance test; the gate overwrites it.",
+    "Do not edit a file outside this task's files; a gate failure in one usually means a concurrent task is mid-edit, so re-run the gate first.",
+]
+
+[[task.verify]]
+phase = "test"
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && cp ../../plans/portal-programme/08c-portal-live-steps/accept/liveTranscript.accept.test.tsx src/components/stream/liveTranscript.accept.test.tsx && node scripts/vitest-min.mjs src/components/stream/liveTranscript.accept.test.tsx 6'
+fail_msg = "the live transcript acceptance test does not pass all 6 tests"
+timeout_ms = 600000
+
+[[task.verify]]
+phase = "structural"
+command = "cd apps/portal/src/components/stream && grep -q 'data-step' Transcript.tsx && grep -q 'data-unscreened' Transcript.tsx && grep -q 'data-live' Transcript.tsx"
+fail_msg = "the transcript does not render step rows, the live marker or the unscreened frame"
+timeout_ms = 60000
+
+[[task.verify]]
+phase = "compile"
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && cp ../../plans/portal-programme/08c-portal-live-steps/accept/liveTranscript.accept.test.tsx src/components/stream/liveTranscript.accept.test.tsx && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit --incremental false'
+fail_msg = "the portal does not type-check"
+timeout_ms = 600000
+
+[[task]]
+id = "T05"
+title = "Prove live steps with everything else and build once"
+description = '''
+Run everything together and build the export once.
+
+The gates re-copy this plan's four acceptance tests from
+plans/portal-programme/08c-portal-live-steps/accept/ (they must be unchanged),
+then require: the full suite with at least 536 passing tests (08b's 501 plus
+this plan's 35) and none failing; the orphan check; tsc; and the one
+production build.
+
+Fix only what a gate reports, in the module the failing test exercises. Do not
+edit the acceptance copies.
+'''
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 15
+depends_on = ["T04"]
+files = ["apps/portal/src"]
+
+[task.context]
+read_files = [
+    { path = "apps/portal/package.json", why = "test and build:export scripts" },
+]
+anti_patterns = [
+    "Do not weaken or skip a test to make the suite pass.",
+    "Do not leave apps/portal/out behind.",
+]
+
+[[task.verify]]
+phase = "test"
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && A=../../plans/portal-programme/08c-portal-live-steps/accept && for p in lib/liveDecode.accept.test.ts lib/liveBlocks.accept.test.ts lib/liveFold.accept.test.ts components/stream/liveTranscript.accept.test.tsx; do cp $A/${p##*/} src/$p || exit 1; done && node scripts/vitest-min.mjs src 536'
+fail_msg = "the full suite, with every acceptance test, lacks 536 passing tests or has a failure"
+timeout_ms = 900000
+
+[[task.verify]]
+phase = "structural"
+command = 'cd apps/portal && node scripts/orphans.mjs'
+fail_msg = "a source module is unreachable from src/app"
+timeout_ms = 60000
+
+[[task.verify]]
+phase = "integration"
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && rm -rf .next/types out && ./node_modules/.bin/tsc --noEmit --incremental false && NEXT_TELEMETRY_DISABLED=1 npm run build:export && test -f out/index.html && rm -rf out'
+fail_msg = "the portal does not type-check or the static export fails"
+timeout_ms = 900000

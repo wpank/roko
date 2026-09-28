@@ -6,6 +6,7 @@ import { useDashboardStore } from '@/stores/dashboard';
 import { buildTaskRows, focusTaskId } from '@/lib/taskRows';
 import { taskKey } from '@/lib/runState';
 import { describeEmpty } from '@/lib/emptyState';
+import { queuePosition, waitReason } from '@/lib/planSet';
 import { Transcript } from './Transcript';
 import { Checks } from './Checks';
 
@@ -70,7 +71,7 @@ export function StreamPane({
   const agent =
     liveTask?.agentId != null ? (run.agents[liveTask.agentId] ?? null) : null;
   const working =
-    liveTask?.status === 'active'
+    liveTask?.status === 'active' && (agent?.active ?? false)
       ? {
           sinceMs:
             agent?.spawnedAtMs ??
@@ -78,6 +79,10 @@ export function StreamPane({
             Date.now(),
         }
       : null;
+
+  // ── Task status for Transcript empty-state copy ────────────────────────────
+  const taskStatus =
+    liveTask === null ? 'pending' : liveTask.status === 'active' ? 'active' : 'finished';
 
   // ── View state ─────────────────────────────────────────────────────────────
   const [view, setView] = useState<'transcript' | 'checks'>('transcript');
@@ -150,15 +155,46 @@ export function StreamPane({
         ).length
       : 0;
 
+  // A live 'pending' plan is queued only while the plan-set is still active.
+  // Once the run ends (outcome is set) the set goes inactive and we treat the
+  // plan as never-run so it shows "Ready — N tasks" rather than "Plan was
+  // cancelled."
+  const isQueued =
+    planId !== null && queuePosition(run, planId) !== null;
+
   const emptyPlan = livePlan
-    ? {
-        id: planId!,
-        phase: livePlan.phase,
-        tasksTotal: livePlan.tasksTotal,
-        tasksDone: livePlan.tasksDone,
-        tasksActive,
-        tasksAccepted: livePlan.tasksAccepted,
-      }
+    ? livePlan.phase === 'pending' && isQueued
+      ? {
+          id: planId!,
+          phase: 'pending' as const,
+          tasksTotal: livePlan.tasksTotal,
+          tasksDone: livePlan.tasksDone,
+          tasksActive,
+          tasksAccepted: livePlan.tasksAccepted,
+          waitReason: waitReason(run, planId!),
+        }
+      : livePlan.phase === 'pending'
+        ? {
+            // Set is over — plan never ran; treat as never_run.
+            id: planId!,
+            phase: 'never_run' as const,
+            tasksTotal: livePlan.tasksTotal,
+            tasksDone: 0,
+            tasksActive: 0,
+            tasksAccepted: 0,
+          }
+        : {
+            id: planId!,
+            phase: livePlan.phase,
+            tasksTotal: livePlan.tasksTotal,
+            tasksDone: livePlan.tasksDone,
+            tasksActive,
+            tasksAccepted: livePlan.tasksAccepted,
+            durationMs:
+              livePlan.finishedAtMs != null && livePlan.startedAtMs != null
+                ? livePlan.finishedAtMs - livePlan.startedAtMs
+                : undefined,
+          }
     : planId !== null
       ? {
           id: planId,
@@ -210,7 +246,7 @@ export function StreamPane({
             >
               {focusedId}
             </span>
-            <span aria-hidden="true" style={{ opacity: 0.4, userSelect: 'none' }}>
+            <span aria-hidden="true" style={{ color: 'var(--text-faint)', userSelect: 'none' }}>
               ·
             </span>
           </>
@@ -239,7 +275,7 @@ export function StreamPane({
               aria-label={`${transcriptBadge} new`}
               style={{
                 marginLeft: '0.25em',
-                fontSize: '0.75em',
+                fontSize: 'var(--type-meta)',
                 background: 'var(--state-active)',
                 color: '#fff',
                 borderRadius: '3px',
@@ -252,7 +288,7 @@ export function StreamPane({
           )}
         </button>
 
-        <span aria-hidden="true" style={{ opacity: 0.4, userSelect: 'none' }}>
+        <span aria-hidden="true" style={{ color: 'var(--text-faint)', userSelect: 'none' }}>
           │
         </span>
 
@@ -279,7 +315,7 @@ export function StreamPane({
               aria-label={`${checksBadge} failed`}
               style={{
                 marginLeft: '0.25em',
-                fontSize: '0.75em',
+                fontSize: 'var(--type-meta)',
                 background: 'var(--state-failed)',
                 color: '#fff',
                 borderRadius: '3px',
@@ -329,11 +365,11 @@ export function StreamPane({
         >
           {focusedId === null ? (
             /* Nothing selected and nothing ran: system-state sentence */
-            <div className="stream-empty" style={{ opacity: 0.6 }}>
+            <div className="stream-empty" style={{ color: 'var(--text-faint)' }}>
               {emptySentence}
             </div>
           ) : view === 'transcript' ? (
-            <Transcript transcript={transcript} working={working} />
+            <Transcript transcript={transcript} working={working} taskStatus={taskStatus} />
           ) : (
             <Checks checks={checks} />
           )}

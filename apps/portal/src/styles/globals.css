@@ -3,7 +3,7 @@
  *
  * This is the single CSS entry point for the portal. It:
  *   1. Imports Tailwind v4 (CSS-first, no JS config required)
- *   2. Imports the rosedust token sheet and atmosphere effects
+ *   2. Imports the rosedust token sheet
  *   3. Declares the Tailwind @theme block that maps every rosedust
  *      token to a Tailwind utility class
  *   4. Sets baseline HTML/body styles
@@ -23,7 +23,7 @@
 /* -------------------------------------------------------------------- */
 
 @import "./rosedust.css";
-@import "./atmosphere.css";
+@import "./tokens.css";
 
 /* -------------------------------------------------------------------- */
 /* 3. Tailwind v4 @theme — map CSS variables → utility classes          */

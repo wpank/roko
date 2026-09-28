@@ -3,7 +3,7 @@ plan = "07-portal-compose"
 total = 10
 done = 0
 status = "ready"
-max_parallel = 1
+max_parallel = 3
 skip_enrichment = true
 estimated_total_minutes = 260
 
@@ -20,6 +20,10 @@ estimated_total_minutes = 260
 # (tmp/portal-audit/03-CONTRACT.md section 6 in the main checkout); the backend track
 # adds some of them in parallel, so each view explains a 404 or 405 rather than
 # failing silently.
+#
+# Concurrency (max_parallel 3): tasks that write disjoint files share a wave. Their
+# gates are safe side by side — `tsc --noEmit --incremental false` and single-file
+# vitest runs. The only production build is in T10, the final assembly.
 # Same worktree and verify conventions as plan 05.
 
 [[task]]
@@ -112,7 +116,7 @@ tier = "focused"
 model_hint = "claude-sonnet-4-6"
 max_retries = 2
 estimated_minutes = 25
-depends_on = ["T01"]
+depends_on = []
 files = ["apps/portal/src/lib/operation.ts", "apps/portal/src/lib/operation.test.ts"]
 
 [task.context]
@@ -168,7 +172,7 @@ model_hint = "claude-sonnet-4-6"
 timeout_secs = 1200
 max_retries = 2
 estimated_minutes = 30
-depends_on = ["T02"]
+depends_on = ["T01"]
 files = ["apps/portal/src/lib/taskRows.ts", "apps/portal/src/lib/taskRows.test.ts"]
 
 [task.context]
@@ -224,7 +228,7 @@ tier = "focused"
 model_hint = "claude-sonnet-4-6"
 max_retries = 2
 estimated_minutes = 25
-depends_on = ["T03"]
+depends_on = ["T02"]
 files = ["apps/portal/src/components/stage/PromptPanel.tsx"]
 
 [task.context]
@@ -239,7 +243,7 @@ anti_patterns = [
 
 [[task.verify]]
 phase = "compile"
-command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit && cd src/components/stage && grep -q "export function PromptPanel" PromptPanel.tsx && grep -q "a rust app that prints hello world" PromptPanel.tsx && grep -q "data-prompt" PromptPanel.tsx && grep -q "waitForOperation" PromptPanel.tsx && grep -q "submit-prompt" PromptPanel.tsx'
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit --incremental false && cd src/components/stage && grep -q "export function PromptPanel" PromptPanel.tsx && grep -q "a rust app that prints hello world" PromptPanel.tsx && grep -q "data-prompt" PromptPanel.tsx && grep -q "waitForOperation" PromptPanel.tsx && grep -q "submit-prompt" PromptPanel.tsx'
 fail_msg = "PromptPanel is missing a required element or does not type check"
 timeout_ms = 600000
 
@@ -270,7 +274,7 @@ tier = "focused"
 model_hint = "claude-sonnet-4-6"
 max_retries = 2
 estimated_minutes = 20
-depends_on = ["T04"]
+depends_on = ["T03"]
 files = ["apps/portal/src/components/stage/WaveStrip.tsx"]
 
 [task.context]
@@ -285,7 +289,7 @@ anti_patterns = [
 
 [[task.verify]]
 phase = "compile"
-command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit && grep -q "export function WaveStrip" src/components/stage/WaveStrip.tsx && grep -q "data-wave" src/components/stage/WaveStrip.tsx'
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit --incremental false && grep -q "export function WaveStrip" src/components/stage/WaveStrip.tsx && grep -q "data-wave" src/components/stage/WaveStrip.tsx'
 fail_msg = "WaveStrip is missing or does not type check"
 timeout_ms = 600000
 
@@ -317,7 +321,7 @@ tier = "integrative"
 model_hint = "claude-sonnet-4-6"
 max_retries = 2
 estimated_minutes = 30
-depends_on = ["T05"]
+depends_on = ["T03"]
 files = ["apps/portal/src/components/stage/TaskList.tsx"]
 
 [task.context]
@@ -332,7 +336,7 @@ anti_patterns = [
 
 [[task.verify]]
 phase = "compile"
-command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit && cd src/components/stage && grep -q "export function TaskList" TaskList.tsx && grep -q "data-task-row" TaskList.tsx && grep -q "data-state" TaskList.tsx && grep -q "retry" TaskList.tsx'
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit --incremental false && cd src/components/stage && grep -q "export function TaskList" TaskList.tsx && grep -q "data-task-row" TaskList.tsx && grep -q "data-state" TaskList.tsx && grep -q "retry" TaskList.tsx'
 fail_msg = "TaskList is missing a required element or does not type check"
 timeout_ms = 600000
 
@@ -359,7 +363,7 @@ tier = "focused"
 model_hint = "claude-sonnet-4-6"
 max_retries = 2
 estimated_minutes = 15
-depends_on = ["T06"]
+depends_on = []
 files = ["apps/portal/src/components/stage/ValidationBadge.tsx"]
 
 [task.context]
@@ -373,7 +377,7 @@ anti_patterns = [
 
 [[task.verify]]
 phase = "compile"
-command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit && grep -q "export function ValidationBadge" src/components/stage/ValidationBadge.tsx && grep -q "rule_id" src/components/stage/ValidationBadge.tsx'
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit --incremental false && grep -q "export function ValidationBadge" src/components/stage/ValidationBadge.tsx && grep -q "rule_id" src/components/stage/ValidationBadge.tsx'
 fail_msg = "ValidationBadge is missing or does not type check"
 timeout_ms = 600000
 
@@ -410,7 +414,7 @@ tier = "focused"
 model_hint = "claude-sonnet-4-6"
 max_retries = 2
 estimated_minutes = 25
-depends_on = ["T07"]
+depends_on = []
 files = ["apps/portal/src/components/stage/SourceEditor.tsx"]
 
 [task.context]
@@ -425,7 +429,7 @@ anti_patterns = [
 
 [[task.verify]]
 phase = "compile"
-command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit && cd src/components/stage && grep -q "export function SourceEditor" SourceEditor.tsx && grep -q "data-editor" SourceEditor.tsx && grep -q "save-source" SourceEditor.tsx'
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit --incremental false && cd src/components/stage && grep -q "export function SourceEditor" SourceEditor.tsx && grep -q "data-editor" SourceEditor.tsx && grep -q "save-source" SourceEditor.tsx'
 fail_msg = "SourceEditor is missing a required element or does not type check"
 timeout_ms = 600000
 
@@ -475,7 +479,7 @@ model_hint = "claude-sonnet-4-6"
 timeout_secs = 1800
 max_retries = 2
 estimated_minutes = 40
-depends_on = ["T08"]
+depends_on = ["T04", "T05", "T06", "T07", "T08"]
 files = ["apps/portal/src/components/stage/PlanView.tsx"]
 
 [task.context]
@@ -494,7 +498,7 @@ anti_patterns = [
 
 [[task.verify]]
 phase = "compile"
-command = "cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit && cd src/components/stage && grep -q 'export function PlanView' PlanView.tsx && grep -q 'export function usePrimaryAction' PlanView.tsx && grep -q 'data-action=\"revise\"' PlanView.tsx && grep -q 'data-action=\"edit\"' PlanView.tsx && grep -q '<WaveStrip' PlanView.tsx && grep -q '<TaskList' PlanView.tsx"
+command = "cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit --incremental false && cd src/components/stage && grep -q 'export function PlanView' PlanView.tsx && grep -q 'export function usePrimaryAction' PlanView.tsx && grep -q 'data-action=\"revise\"' PlanView.tsx && grep -q 'data-action=\"edit\"' PlanView.tsx && grep -q '<WaveStrip' PlanView.tsx && grep -q '<TaskList' PlanView.tsx"
 fail_msg = "PlanView is missing a required element or does not type check"
 timeout_ms = 600000
 
@@ -555,6 +559,6 @@ timeout_ms = 600000
 
 [[task.verify]]
 phase = "integration"
-command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && rm -rf .next/types out && ./node_modules/.bin/tsc --noEmit && NEXT_TELEMETRY_DISABLED=1 npm run build:export && test -f out/index.html && rm -rf out'
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && rm -rf .next/types out && ./node_modules/.bin/tsc --noEmit --incremental false && NEXT_TELEMETRY_DISABLED=1 npm run build:export && test -f out/index.html && rm -rf out'
 fail_msg = "the portal does not type check or the static export fails with the stage mounted"
 timeout_ms = 900000

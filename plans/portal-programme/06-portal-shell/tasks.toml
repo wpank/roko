@@ -3,7 +3,7 @@ plan = "06-portal-shell"
 total = 9
 done = 0
 status = "ready"
-max_parallel = 1
+max_parallel = 3
 skip_enrichment = true
 estimated_total_minutes = 220
 
@@ -17,8 +17,13 @@ estimated_total_minutes = 220
 # Needs plan 05 (the run-state fold, queries, glyphs, formatters, tokens, the test
 # runner). Those files did not exist when this plan was written, so they are named
 # in descriptions rather than in read_files. Same worktree and verify conventions as
-# plan 05: npm only, `node scripts/vitest-min.mjs` for logic, type check and static
-# export for components.
+# plan 05: npm only, `node scripts/vitest-min.mjs` for logic, type check for
+# components.
+#
+# Concurrency (max_parallel 3): tasks that write disjoint files share a wave. Their
+# gates are safe side by side — `tsc --noEmit --incremental false` (no shared
+# .tsbuildinfo) and single-file vitest runs. The only production build is in T09,
+# the final assembly, which depends on every other task.
 
 [[task]]
 id = "T01"
@@ -80,7 +85,7 @@ timeout_ms = 600000
 
 [[task.verify]]
 phase = "compile"
-command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit && grep -q "export function useSelection" src/lib/useSelection.ts && grep -q "replaceState" src/lib/useSelection.ts'
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit --incremental false && grep -q "export function useSelection" src/lib/useSelection.ts && grep -q "replaceState" src/lib/useSelection.ts'
 fail_msg = "useSelection is missing, does not use replaceState, or does not type check"
 timeout_ms = 600000
 
@@ -142,7 +147,7 @@ model_hint = "claude-sonnet-4-6"
 timeout_secs = 1200
 max_retries = 2
 estimated_minutes = 35
-depends_on = ["T01"]
+depends_on = []
 files = ["apps/portal/src/lib/planRows.ts", "apps/portal/src/lib/planRows.test.ts"]
 
 [task.context]
@@ -213,7 +218,7 @@ anti_patterns = [
 
 [[task.verify]]
 phase = "compile"
-command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit && cd src/components/rail && grep -q "export function PlanRow" PlanRow.tsx && grep -q "data-plan-row" PlanRow.tsx && grep -q "aria-current" PlanRow.tsx && grep -q "gridTemplateColumns" PlanRow.tsx && grep -q "middleEllipsis" PlanRow.tsx'
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit --incremental false && cd src/components/rail && grep -q "export function PlanRow" PlanRow.tsx && grep -q "data-plan-row" PlanRow.tsx && grep -q "aria-current" PlanRow.tsx && grep -q "gridTemplateColumns" PlanRow.tsx && grep -q "middleEllipsis" PlanRow.tsx'
 fail_msg = "PlanRow is missing its grid, its data attributes or the middle ellipsis, or does not type check"
 timeout_ms = 600000
 
@@ -267,7 +272,7 @@ anti_patterns = [
 
 [[task.verify]]
 phase = "compile"
-command = "cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit && cd src/components/rail && grep -q 'export function PlanRail' PlanRail.tsx && grep -q 'data-region=\"rail\"' PlanRail.tsx && grep -q 'data-action=\"run-all\"' PlanRail.tsx && grep -q 'data-action=\"run-group\"' PlanRail.tsx && grep -q 'data-action=\"new-plan\"' PlanRail.tsx && grep -q '<PlanRow' PlanRail.tsx"
+command = "cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit --incremental false && cd src/components/rail && grep -q 'export function PlanRail' PlanRail.tsx && grep -q 'data-region=\"rail\"' PlanRail.tsx && grep -q 'data-action=\"run-all\"' PlanRail.tsx && grep -q 'data-action=\"run-group\"' PlanRail.tsx && grep -q 'data-action=\"new-plan\"' PlanRail.tsx && grep -q '<PlanRow' PlanRail.tsx"
 fail_msg = "PlanRail is missing its region, its actions or its rows, or does not type check"
 timeout_ms = 600000
 
@@ -310,7 +315,7 @@ tier = "focused"
 model_hint = "claude-sonnet-4-6"
 max_retries = 2
 estimated_minutes = 25
-depends_on = ["T04"]
+depends_on = []
 files = ["apps/portal/src/lib/alerts.ts", "apps/portal/src/lib/alerts.test.ts"]
 
 [task.context]
@@ -361,7 +366,7 @@ anti_patterns = [
 
 [[task.verify]]
 phase = "compile"
-command = "cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit && grep -q 'export function AlertBand' src/components/shell/AlertBand.tsx && grep -q 'data-region=\"alert\"' src/components/shell/AlertBand.tsx"
+command = "cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit --incremental false && grep -q 'export function AlertBand' src/components/shell/AlertBand.tsx && grep -q 'data-region=\"alert\"' src/components/shell/AlertBand.tsx"
 fail_msg = "AlertBand is missing or does not type check"
 timeout_ms = 600000
 
@@ -402,7 +407,7 @@ tier = "focused"
 model_hint = "claude-sonnet-4-6"
 max_retries = 2
 estimated_minutes = 25
-depends_on = ["T06"]
+depends_on = []
 files = ["apps/portal/src/components/shell/Header.tsx"]
 
 [task.context]
@@ -417,7 +422,7 @@ anti_patterns = [
 
 [[task.verify]]
 phase = "compile"
-command = "cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit && cd src/components/shell && grep -q 'export function Header' Header.tsx && grep -q 'data-region=\"header\"' Header.tsx && grep -q 'document.title' Header.tsx && grep -q 'data-connection' Header.tsx && grep -q 'data-action=\"cancel-run\"' Header.tsx"
+command = "cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit --incremental false && cd src/components/shell && grep -q 'export function Header' Header.tsx && grep -q 'data-region=\"header\"' Header.tsx && grep -q 'document.title' Header.tsx && grep -q 'data-connection' Header.tsx && grep -q 'data-action=\"cancel-run\"' Header.tsx"
 fail_msg = "Header is missing a required element or does not type check"
 timeout_ms = 600000
 
@@ -455,7 +460,7 @@ tier = "focused"
 model_hint = "claude-sonnet-4-6"
 max_retries = 2
 estimated_minutes = 20
-depends_on = ["T07"]
+depends_on = []
 files = [
     "apps/portal/src/lib/keymap.ts",
     "apps/portal/src/lib/keymap.test.ts",
@@ -477,7 +482,7 @@ timeout_ms = 600000
 
 [[task.verify]]
 phase = "compile"
-command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit && grep -q "export function useKeyboard" src/lib/useKeyboard.ts'
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit --incremental false && grep -q "export function useKeyboard" src/lib/useKeyboard.ts'
 fail_msg = "useKeyboard is missing or does not type check"
 timeout_ms = 600000
 
@@ -529,7 +534,7 @@ model_hint = "claude-sonnet-4-6"
 timeout_secs = 1800
 max_retries = 2
 estimated_minutes = 40
-depends_on = ["T08"]
+depends_on = ["T01", "T04", "T06", "T07", "T08"]
 files = ["apps/portal/src/components/shell/Workspace.tsx", "apps/portal/src/app/page.tsx"]
 
 [task.context]
@@ -560,6 +565,6 @@ timeout_ms = 600000
 
 [[task.verify]]
 phase = "integration"
-command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && rm -rf .next/types out && ./node_modules/.bin/tsc --noEmit && NEXT_TELEMETRY_DISABLED=1 npm run build:export && test -f out/index.html && rm -rf out'
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && rm -rf .next/types out && ./node_modules/.bin/tsc --noEmit --incremental false && NEXT_TELEMETRY_DISABLED=1 npm run build:export && test -f out/index.html && rm -rf out'
 fail_msg = "the portal does not type check or the static export fails with the shell mounted"
 timeout_ms = 900000

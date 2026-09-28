@@ -1,0 +1,122 @@
+/**
+ * Portal design tokens — semantic aliases over ROSEDUST primitives.
+ *
+ * All values here reference ROSEDUST variables declared in rosedust.css.
+ * No new colour values are introduced in this file.
+ *
+ * Categories:
+ *   1. State colours   — task/run lifecycle states
+ *   2. Focus/blur      — card focus ring and title colours
+ *   3. Progress bands  — <30%, 30-70%, >70%
+ *   4. Role accents    — one accent colour per agent role
+ *   5. Layout          — fixed-dimension tokens
+ *   6. Utility classes — .tabular
+ */
+
+:root {
+  /* ------------------------------------------------------------------ */
+  /* 1. State colours                                                     */
+  /*                                                                      */
+  /* Green (--sage) means verified/done. Amber (--warning) means         */
+  /* accepted-with-failures — never green for partially-failed work.     */
+  /* ------------------------------------------------------------------ */
+
+  /** Completed and verified — sage green. */
+  --state-done:     var(--sage);
+
+  /** Currently running / in-flight — brand rose. */
+  --state-active:   var(--rose);
+
+  /** Accepted but with failures — warning amber, NOT green. */
+  --state-accepted: var(--warning);
+
+  /** Hard failure — ember orange-red. */
+  --state-failed:   var(--ember);
+
+  /** Waiting in queue — de-emphasised faint. */
+  --state-queued:   var(--text-faint);
+
+  /** Not yet dispatched — nearly invisible ghost. */
+  --state-pending:  var(--text-ghost);
+
+  /** Deliberately skipped — de-emphasised faint (same as queued). */
+  --state-skipped:  var(--text-faint);
+
+  /* ------------------------------------------------------------------ */
+  /* 2. Focus / blur — card focus ring and title colours                 */
+  /* ------------------------------------------------------------------ */
+
+  /** Border colour when a card/panel is focused. */
+  --focus-border: var(--rose-bright);
+
+  /** Title colour when a card/panel is focused. */
+  --focus-title:  var(--bone);
+
+  /** Border colour when a card/panel is blurred — near-invisible. */
+  --blur-border:  var(--text-ghost);
+
+  /** Title colour when a card/panel is blurred. */
+  --blur-title:   var(--text-ghost);
+
+  /* ------------------------------------------------------------------ */
+  /* 3. Progress bands                                                    */
+  /*                                                                      */
+  /* < 30%  → low  (ember)                                               */
+  /* 30-70% → mid  (warning amber)                                       */
+  /* > 70%  → high (sage green)                                          */
+  /* ------------------------------------------------------------------ */
+
+  /** Progress < 30% — ember orange, signals low completion. */
+  --progress-low:  var(--ember);
+
+  /** Progress 30–70% — warning amber, mid-range caution. */
+  --progress-mid:  var(--warning);
+
+  /** Progress > 70% — sage green, near complete. */
+  --progress-high: var(--sage);
+
+  /* ------------------------------------------------------------------ */
+  /* 4. Role accents — one accent per agent role                         */
+  /* ------------------------------------------------------------------ */
+
+  /** Implementer — brand rose (action, execution). */
+  --role-implementer:    var(--rose);
+
+  /** Strategist — dream purple (planning, speculation). */
+  --role-strategist:     var(--dream);
+
+  /** Architect — accent cyan (structure, information). */
+  --role-architect:      var(--accent-cyan);
+
+  /** Scribe — bone cream (documentation, neutral). */
+  --role-scribe:         var(--bone);
+
+  /** Quick-reviewer — warning amber (caution, review). */
+  --role-quick-reviewer: var(--warning);
+
+  /** Other / uncategorised — muted text. */
+  --role-other:          var(--text-muted);
+
+  /* ------------------------------------------------------------------ */
+  /* 5. Layout — fixed-dimension tokens                                  */
+  /* ------------------------------------------------------------------ */
+
+  /** Left navigation rail width. */
+  --rail-width:  260px;
+
+  /** Standard data row height in the task grid. */
+  --row-height:  24px;
+}
+
+/* -------------------------------------------------------------------- */
+/* 6. Utility classes                                                     */
+/* -------------------------------------------------------------------- */
+
+/**
+ * Tabular number rendering — prevents layout shift in live counters
+ * and aligned numeric columns.
+ */
+.tabular {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+}

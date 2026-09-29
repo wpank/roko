@@ -73,7 +73,7 @@ This is the implementation plan.
 - [x] gap-420202: Research paper §6: align the economics results template with the thesis, add the plan-level template, and trim
 - [x] gap-0ef29d: Research paper §7: fix the dormant-loop claim in §7.3, align with the thesis, and trim
 - [x] gap-856053: Research paper appendices A and B: match the benchmark and the spec standard as built
-- [ ] gap-987510: Research paper appendices C and D: align the audit protocol and metrics with S05, S09 and the ViabilityBench analysis
+- [x] gap-987510: Research paper appendices C and D: align the audit protocol and metrics with S05, S09 and the ViabilityBench analysis
 - [ ] gap-4d516a: TL;DR: fix four statements left stale after the 2026-09-29 refresh
 - [ ] gap-b605cf: Research paper: notation table, figure and table map, budget-line names and bibliography venues
 - [ ] gap-184da5: Research paper: cite the frozen rollup, B7, W12 and the field cases from docs/whitepaper/evidence/

@@ -2,7 +2,7 @@
 id = "gap-987510"
 kind = "gap"
 title = "Research paper appendices C and D: align the audit protocol and metrics with S05, S09 and the ViabilityBench analysis"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "whitepaper"
@@ -11,6 +11,7 @@ subsystem = ["paper"]
 created = 2026-09-29
 updated = 2026-09-29
 last_verified = 2026-09-29
+last_verified_rev = "5a9e07a26"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e18"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wave-1 reports)"
 anchors = ["tmp/cybernetic-harness/paper/sections/C-audit-protocol.md", "tmp/cybernetic-harness/paper/sections/D-metrics-statistics.md"]
@@ -20,6 +21,11 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "test -f tools/paperlint.py && python3 tools/paperlint.py --budget 1.2 --check-identifiers tmp/cybernetic-harness/paper/sections/C-audit-protocol.md tmp/cybernetic-harness/paper/sections/D-metrics-statistics.md"
+
+[closed]
+at = 2026-09-29
+by = "coordinator (session 7622b882)"
+evidence = "Appendices C and D (tmp, wk-rp-appCD) aligned with S09 v1.1 and §5: D.11/D.12 use S09's decided Holm mapping and name the plan-level slice RQ3 (outcomes PL, no S09 budget line yet); metric definitions match §5; budget lines BL0-BL11; provisional defaults D28-D31, D33, D34, D9, D10, D13, D5/D6 named where used (claims CD.19, CD.21, CC.1, CC.21 carry '(default)'). Old Table 9.1 dropped: its M1-M10 mapping is inline in §9; the verbatim table is archived at tmp/cybernetic-harness/paper/archive/table-9.1-removed-from-09-limitations.md. paperlint --budget 1.2 --check-identifiers clean on C and D; §5.6's stale D.11 TODO removed; CLAIMS-EVIDENCE regenerated (417 claims, --check up to date)."
 +++
 
 ## Problem

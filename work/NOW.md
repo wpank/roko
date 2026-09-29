@@ -17,7 +17,6 @@ _21 more open · on hold: gap-8f8544 · 3 unchecked (`TRIAGE.md`) · `goal = "re
 ## 2. Whitepaper v1 and the research papers
 
 - **P1** [spec-f8d196](items/spec-f8d196-epic-research-paper-companion-report-and-tl.md) Epic: research paper, companion report and TL;DR upkeep [spec] · size L · verified 2026-09-29
-- **P2** [gap-987510](items/gap-987510-research-paper-appendices-c-and-d-align.md) Research paper appendices C and D: align the audit protocol and metrics with S05, S09 and the ViabilityBench analysis · size M · verified 2026-09-29
 
 _0 more open · on hold: gap-bb619d · 10 unchecked (`TRIAGE.md`) · `goal = "whitepaper"`_
 

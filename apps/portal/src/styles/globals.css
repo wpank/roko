@@ -417,15 +417,16 @@ button {
     background var(--duration-fast) var(--ease-out);
 }
 
-button:hover {
+button:enabled:hover {
   border-color: var(--border-hover);
   color: var(--rose-bright);
 }
 
+/* A disabled button keeps its pointer events, so the title saying why it is
+   disabled shows on hover; !important beats an inline `cursor: pointer`. */
 button:disabled {
   opacity: 0.4;
-  cursor: not-allowed;
-  pointer-events: none;
+  cursor: not-allowed !important;
 }
 
 /* -------------------------------------------------------------------- */

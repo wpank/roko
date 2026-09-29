@@ -351,8 +351,8 @@ export function PlanView({
 
         {/* Action buttons */}
         <div className="flex items-center gap-2 flex-shrink-0">
-          {/* Reason why the primary action is disabled — never shown as a tooltip
-              because pointer-events: none on :disabled makes titles invisible. */}
+          {/* Why the primary action is disabled, as text rather than a tooltip
+              (design §4.1: "with the reason shown"). */}
           {primaryAction.disabled && primaryAction.reason !== null && (
             <span data-reason className="rd-reason font-mono text-xs text-text-muted">
               {primaryAction.reason}

@@ -3,13 +3,14 @@ id = "gap-4161ea"
 kind = "gap"
 title = "Whitepaper §3 Architecture and control stack, with Figure 1"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p1"
 goal = "whitepaper"
 size = "M"
 subsystem = ["docs/whitepaper"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-29
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e1"
 discovered_from = "tmp/cybernetic-harness/tldr/02-HOW-IT-WORKS.md (the flow; the control stack)"
 anchors = ["docs/whitepaper/03-architecture.md"]
@@ -66,7 +67,7 @@ stack plus the loop.
 
 ## Done when
 
-- [ ] Every crate path and identifier exists at HEAD, or is tagged as designed.
+- [x] Every crate path and identifier exists at HEAD, or is tagged as designed.
 - [ ] The `[[verify]]` command passes.
 
 ## Notes
@@ -74,3 +75,8 @@ stack plus the loop.
 - **Needs `tools/paperlint.py`** (gap-af0b57) to close.
 - **Tags must agree with the status matrix** (gap-35a614). The review (gap-8d2c79) checks this.
 - Lane `paper`; no hot files.
+- **Drafted** on `work/gap-4161ea` at `9b739b611`; the reworded claims AR2, AR5, AR7, AR8 and AR9 are recorded in the
+  README at `b3f1f6d6e`. Tags are at `a17d4dadd`, the status matrix's pin, re-checked with read-only greps at
+  `18946b94c`; the code these rows describe is the same at both. `tools/paperlint.py` is not at BASE, so the
+  `[[verify]]` can't run yet. gap-af0b57's uncommitted draft passes `--strict` on the file: 837 words, 1.20× the
+  budget, counting the fenced figure (about 757 without it, the README's rule). Close once paperlint merges.

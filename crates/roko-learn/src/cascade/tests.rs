@@ -1714,6 +1714,93 @@ fn arm_updates(router: &CascadeRouter, slug: &str) -> f64 {
 }
 
 #[test]
+fn narrower_slug_list_keeps_other_models_state() {
+    // bug-605a8a: a router loaded with fewer models, in another order, gets
+    // each model's own LinUCB arm, and its save keeps the counters and arm
+    // of the model it does not track.
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("cascade-router.json");
+    let ctx = default_ctx();
+    let full = CascadeRouter::new(test_slugs());
+    for _ in 0..3 {
+        full.record_observation(&ctx, "claude-haiku-4-5", 0.9, true);
+    }
+    full.record_observation(&ctx, "claude-sonnet-4-5", 0.1, false);
+    for _ in 0..2 {
+        full.record_observation(&ctx, "claude-opus-4-6", 0.6, true);
+    }
+    full.save(&path).unwrap();
+
+    // Opus first and no haiku: opus now sits where haiku's arm was saved.
+    let narrow = CascadeRouter::load_or_new(
+        &path,
+        vec!["claude-opus-4-6".to_string(), "claude-sonnet-4-5".to_string()],
+    );
+    assert_eq!(
+        arm_updates(&narrow, "claude-opus-4-6"),
+        2.0,
+        "opus gets its own arm, not haiku's"
+    );
+    assert_eq!(arm_updates(&narrow, "claude-sonnet-4-5"), 1.0);
+    let narrow_confidence = narrow.confidence_snapshot();
+    assert!(!narrow_confidence.contains_key("claude-haiku-4-5"));
+    narrow.record_observation(&ctx, "claude-sonnet-4-5", 0.8, true);
+    narrow.save(&path).unwrap();
+
+    let reloaded = CascadeRouter::load_or_new(&path, test_slugs());
+    let confidence = reloaded.confidence_snapshot();
+    assert_eq!(
+        confidence["claude-haiku-4-5"],
+        (3, 3),
+        "the narrower router's save keeps haiku's counters"
+    );
+    assert_eq!(confidence["claude-sonnet-4-5"], (2, 1));
+    assert_eq!(confidence["claude-opus-4-6"], (2, 2));
+    assert_eq!(
+        arm_updates(&reloaded, "claude-haiku-4-5"),
+        3.0,
+        "and haiku's arm"
+    );
+    assert_eq!(arm_updates(&reloaded, "claude-sonnet-4-5"), 2.0);
+    assert_eq!(arm_updates(&reloaded, "claude-opus-4-6"), 2.0);
+    assert_eq!(reloaded.total_observations(), 7);
+}
+
+#[test]
+fn legacy_snapshot_arms_follow_model_slugs() {
+    // Snapshots written before arms carried their slugs list the arms in
+    // `model_slugs` order; a reordered router still gets each model's arm.
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("cascade-router.json");
+    let ctx = default_ctx();
+    let full = CascadeRouter::new(test_slugs());
+    for _ in 0..3 {
+        full.record_observation(&ctx, "claude-haiku-4-5", 0.9, true);
+    }
+    full.record_observation(&ctx, "claude-opus-4-6", 0.6, true);
+    full.save(&path).unwrap();
+    let mut legacy: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    legacy["linucb_state"]
+        .as_object_mut()
+        .unwrap()
+        .remove("slugs");
+    std::fs::write(&path, legacy.to_string()).unwrap();
+
+    let reordered = CascadeRouter::load_or_new(
+        &path,
+        vec![
+            "claude-opus-4-6".to_string(),
+            "claude-sonnet-4-5".to_string(),
+            "claude-haiku-4-5".to_string(),
+        ],
+    );
+    assert_eq!(arm_updates(&reordered, "claude-opus-4-6"), 1.0);
+    assert_eq!(arm_updates(&reordered, "claude-sonnet-4-5"), 0.0);
+    assert_eq!(arm_updates(&reordered, "claude-haiku-4-5"), 3.0);
+}
+
+#[test]
 fn concurrent_saves_merge_observations() {
     // bug-9c88ac: processes that load the same snapshot and each save what
     // they learned keep each other's observations; the last writer no

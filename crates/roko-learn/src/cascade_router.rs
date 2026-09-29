@@ -2288,7 +2288,8 @@ impl CascadeRouter {
         Ok(())
     }
 
-    fn from_snapshot(snapshot: CascadeSnapshot, model_slugs: Vec<String>) -> Self {
+    fn from_snapshot(mut snapshot: CascadeSnapshot, model_slugs: Vec<String>) -> Self {
+        snapshot.name_legacy_arms();
         let CascadeSnapshot {
             model_slugs: persisted_model_slugs,
             confidence_stats,

@@ -1437,41 +1437,44 @@ impl LinUCBRouter {
     /// Import a previously exported [`LinUCBSnapshot`], restoring arm A/b
     /// parameters in place.
     ///
-    /// Arms are matched by index. If the snapshot has fewer arms, a different
-    /// dimensionality, or a mismatched row length, the affected arm is left
-    /// at its constructed default (identity A, zero b).
+    /// Arms are matched by slug, never by position, so a router that tracks a
+    /// narrower or reordered model list gets each model's own arm
+    /// (bug-605a8a). An arm without a well-formed persisted counterpart keeps
+    /// its constructed default (identity A, zero b). A snapshot of another
+    /// dimensionality, or one whose arms are not named, restores no arm.
     pub fn import_linucb_snapshot(&self, snap: &LinUCBSnapshot) {
         if snap.dim != CONTEXT_DIM {
-            // Dimensionality mismatch — leave all arms at their defaults.
+            tracing::warn!(
+                dim = snap.dim,
+                expected = CONTEXT_DIM,
+                "LinUCB snapshot has another context dimension -- every arm starts fresh"
+            );
+            return;
+        }
+        if !snap.names_every_arm() {
+            tracing::warn!(
+                arms = snap.a_matrices.len(),
+                slugs = snap.slugs.len(),
+                "LinUCB snapshot does not name its arms -- every arm starts fresh"
+            );
             return;
         }
 
         let mut state = self.state.write();
-        let expected_flat_len = CONTEXT_DIM * CONTEXT_DIM;
-
-        for (i, arm) in state.arms.iter_mut().enumerate() {
-            let Some(flat_a) = snap.a_matrices.get(i) else {
-                // Snapshot has fewer arms than the current router — skip.
+        for arm in &mut state.arms {
+            let Some((flat_a, b)) = snap.arm(&arm.slug) else {
+                if snap.slugs.contains(&arm.slug) {
+                    tracing::warn!(
+                        slug = %arm.slug,
+                        "persisted LinUCB arm is malformed -- it starts fresh"
+                    );
+                }
                 continue;
             };
-            let Some(b) = snap.b_vectors.get(i) else {
-                continue;
-            };
-
-            // Validate lengths before un-flattening.
-            if flat_a.len() != expected_flat_len || b.len() != CONTEXT_DIM {
-                continue;
-            }
 
             // Un-flatten row-major into dim x dim matrix.
-            let mut matrix = vec![vec![0.0; CONTEXT_DIM]; CONTEXT_DIM];
-            for (row_idx, row) in matrix.iter_mut().enumerate() {
-                let start = row_idx * CONTEXT_DIM;
-                row.copy_from_slice(&flat_a[start..start + CONTEXT_DIM]);
-            }
-
-            arm.a_matrix = matrix;
-            arm.b_vector = b.clone();
+            arm.a_matrix = flat_a.chunks(CONTEXT_DIM).map(<[f64]>::to_vec).collect();
+            arm.b_vector = b.to_vec();
         }
     }
 }

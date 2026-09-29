@@ -237,6 +237,11 @@ pub(crate) fn detect_version_changes(
     changes
 }
 
+/// The confidence stats a router tracking `active_slugs` starts with.
+///
+/// Slugs outside `active_slugs` are not loaded, but their stats are not lost:
+/// `CascadeRouter::save` merges into the snapshot on disk instead of
+/// replacing it, so they stay there for routers that track them (bug-605a8a).
 pub(crate) fn migrated_confidence_stats(
     persisted_stats: &HashMap<String, PersistedModelStats>,
     changes: &[VersionChange],

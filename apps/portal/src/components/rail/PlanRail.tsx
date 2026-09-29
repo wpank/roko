@@ -87,8 +87,9 @@ export function PlanRail({
   }, []);
 
   // ── Derived ───────────────────────────────────────────────────────────────
+  // `count` is every plan (what Run all runs); `groups` only what the filter shows.
   const { groups, count } = result;
-  const hasRows = count > 0;
+  const hasRows = groups.length > 0;
 
   // ── Render ────────────────────────────────────────────────────────────────
   return (
@@ -340,10 +341,9 @@ function GroupSection({
             data-action="run-group"
             disabled={runDisabledReason != null}
             title={runDisabledReason ?? undefined}
-            onClick={() => {
-              const ids = group.rows.map((r) => r.id);
-              onRunGroup(ids, `the ${ids.length} plans in ${group.name}`);
-            }}
+            onClick={() =>
+              onRunGroup(group.ids, `the ${group.ids.length} plans in ${group.name}`)
+            }
             style={{
               background: 'transparent',
               border: '1px solid var(--blur-border)',

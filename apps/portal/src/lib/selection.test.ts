@@ -82,10 +82,14 @@ describe('resolveSelection', () => {
     loaded?: boolean;
     planIds?: string[];
     runningPlanIds?: string[];
+    taskIds?: string[];
+    firstLoad?: boolean;
   }) => ({
     loaded: opts.loaded ?? true,
     planIds: opts.planIds ?? [],
     runningPlanIds: opts.runningPlanIds ?? [],
+    taskIds: opts.taskIds,
+    firstLoad: opts.firstLoad ?? true,
   });
 
   it('does not clear anything before the list loads', () => {
@@ -146,5 +150,42 @@ describe('resolveSelection', () => {
         known({ loaded: true, planIds: ['p1'], runningPlanIds: ['p1'] }),
       ),
     ).toEqual({ plan: 'p1', task: null });
+  });
+
+  it('never selects a running plan on its own after the first load', () => {
+    expect(
+      resolveSelection(
+        { plan: null, task: null },
+        known({ planIds: ['p1', 'p2'], runningPlanIds: ['p2'], firstLoad: false }),
+      ),
+    ).toEqual({ plan: null, task: null });
+    // An unknown plan still clears, to nothing.
+    expect(
+      resolveSelection(
+        { plan: 'ghost', task: null },
+        known({ planIds: ['p1'], runningPlanIds: ['p1'], firstLoad: false }),
+      ),
+    ).toEqual({ plan: null, task: null });
+  });
+
+  it('clears an unknown task once the plan’s tasks have loaded', () => {
+    expect(
+      resolveSelection(
+        { plan: 'p1', task: 'T99' },
+        known({ planIds: ['p1'], taskIds: ['T01', 'T02'] }),
+      ),
+    ).toEqual({ plan: 'p1', task: null });
+  });
+
+  it('keeps a known task, and any task while the plan’s tasks load', () => {
+    const sel: Selection = { plan: 'p1', task: 'T02' };
+    expect(resolveSelection(sel, known({ planIds: ['p1'], taskIds: ['T01', 'T02'] }))).toEqual(sel);
+    expect(resolveSelection(sel, known({ planIds: ['p1'] }))).toEqual(sel);
+  });
+
+  it('clears a task when no plan is selected', () => {
+    expect(
+      resolveSelection({ plan: null, task: 'T01' }, known({ planIds: ['p1'] })),
+    ).toEqual({ plan: null, task: null });
   });
 });

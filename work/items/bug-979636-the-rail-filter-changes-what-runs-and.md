@@ -2,7 +2,7 @@
 id = "bug-979636"
 kind = "bug"
 title = "The rail filter changes what runs and what is selected: group Run starts only matching plans, and a hidden selection is cleared"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "visibility"
@@ -11,7 +11,7 @@ subsystem = ["apps/portal"]
 created = 2026-09-29
 updated = 2026-09-29
 last_verified = 2026-09-29
-last_verified_rev = "f99e45dba"
+last_verified_rev = "be73cae63"
 source = "plan:portal-programme/09-acceptance#T04"
 discovered_from = "plan:portal-programme/09-acceptance#T04"
 anchors = ["apps/portal/src/lib/planRows.ts::buildPlanRows", "apps/portal/src/components/rail/PlanRail.tsx:140", "apps/portal/src/components/rail/PlanRail.tsx:343", "apps/portal/src/components/shell/Workspace.tsx:89", "apps/portal/src/components/shell/Header.tsx::Header"]
@@ -19,6 +19,12 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqF --include='*.test.ts' --include='*.test.tsx' 'filter does not change' apps/portal/src && (cd apps/portal && npx vitest run src/lib/planRows src/components/rail src/components/shell)"
+
+[closed]
+at = 2026-09-29
+commit = "be73cae63"
+by = "commit trailer"
+evidence = "be73cae63: buildPlanRows groups and counts every plan; the filter narrows only the rendered rows and `order` (what up/down step through). New PlanGroupModel.ids is the whole group, which its ▶ runs; runningPlanIds and count ignore the filter; Workspace resolves the selection against every plan id. Screen tests in apps/portal/src/components/shell/railFilter.accept.test.tsx ('the filter does not change ...'), each with a filter set: group ▶ confirms 'the 3 plans' and posts {plans: [pp-01, pp-02, pp-03]}; Run all confirms 'all 4 plans' and posts {}; the header summary, ■ (confirm and cancel POST) and run band show a run the filter hides; ?plan= survives a filter that hides it with a running plan in view. All 4 fail on 70820a74c. Plus a planRows.test.ts unit. [[verify]] passes (80 tests); portal suite 691/691, tsc, orphans and build:export clean."
 +++
 
 ## Problem

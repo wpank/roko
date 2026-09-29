@@ -80,8 +80,11 @@ export function selectionSearch(search: string, patch: Partial<Selection>): stri
  *    anything until the list has arrived.
  * 2. Once loaded, if `sel.plan` names a plan that is not in `known.planIds`,
  *    clear both `plan` and `task` silently (no error).
- * 3. If there is no plan selected after step 2, pick the first running plan
- *    (several may be running simultaneously; first in the array wins).
+ * 3. Clear a `task` silently when no plan is selected, or when the plan's
+ *    tasks have loaded (`known.taskIds`) and it is not among them.
+ * 4. Only on `known.firstLoad`: if there is no plan selected after step 2,
+ *    pick the first running plan (several may be running simultaneously;
+ *    first in the array wins). The selection never jumps on its own later.
  */
 export function resolveSelection(
   sel: Selection,
@@ -89,6 +92,9 @@ export function resolveSelection(
     loaded: boolean;
     planIds: readonly string[];
     runningPlanIds: readonly string[];
+    /** The selected plan's task ids; undefined until they have loaded. */
+    taskIds?: readonly string[];
+    firstLoad: boolean;
   },
 ): Selection {
   // Rule 1 — list not yet loaded.
@@ -102,8 +108,16 @@ export function resolveSelection(
     resolved = { plan: null, task: null };
   }
 
-  // Rule 3 — no plan selected → default to the first running plan.
-  if (resolved.plan === null && known.runningPlanIds.length > 0) {
+  // Rule 3 — unknown task → clear the task.
+  if (
+    resolved.task !== null &&
+    (resolved.plan === null || (known.taskIds && !known.taskIds.includes(resolved.task)))
+  ) {
+    resolved = { plan: resolved.plan, task: null };
+  }
+
+  // Rule 4 — no plan selected on load → default to the first running plan.
+  if (known.firstLoad && resolved.plan === null && known.runningPlanIds.length > 0) {
     return { plan: known.runningPlanIds[0]!, task: null };
   }
 

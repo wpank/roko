@@ -12,6 +12,9 @@
  * - barToken: takes its plan's state colour (GLYPHS[state].token) — not a fraction band.
  *   A running bar is the running colour (--state-active) at any fraction.
  * - Groups: top-level (no group) first; then groups sorted numerically; rows sorted numerically.
+ * - Filter: a view. It narrows each group's `rows` and `order`, never a group's
+ *   `ids`/`done`/`total`, `runningPlanIds` or `count` — what Run all, a group ▶,
+ *   the header and the selection act on.
  */
 
 import type { WirePlanSummary } from '@/api/contracts';
@@ -46,15 +49,20 @@ export interface PlanRowModel {
 
 export interface PlanGroupModel {
   name: string | null;
+  /** The rows the filter shows. */
   rows: PlanRowModel[];
+  /** Every plan in the group, whatever the filter shows: what its ▶ runs. */
+  ids: string[];
   done: number;
   total: number;
 }
 
 export interface PlanRowsResult {
   groups: PlanGroupModel[];
+  /** Shown plan ids in rail order: what ↑/↓ step through. */
   order: string[];
   runningPlanIds: string[];
+  /** Every plan, whatever the filter shows. */
   count: number;
 }
 
@@ -257,19 +265,16 @@ export function buildPlanRows(
   });
 
   // ── Filter ────────────────────────────────────────────────────────────────
-  const filtered: PlanRowModel[] = filterLo
-    ? allRows.filter(
-        (r) =>
-          r.id.toLowerCase().includes(filterLo) ||
-          r.title.toLowerCase().includes(filterLo),
-      )
-    : allRows;
+  const matches = (r: PlanRowModel): boolean =>
+    !filterLo ||
+    r.id.toLowerCase().includes(filterLo) ||
+    r.title.toLowerCase().includes(filterLo);
 
   // ── Group and sort ────────────────────────────────────────────────────────
   const topLevelRows: PlanRowModel[] = [];
   const byGroup = new Map<string, PlanRowModel[]>();
 
-  for (const row of filtered) {
+  for (const row of allRows) {
     if (row.group === null) {
       topLevelRows.push(row);
     } else {
@@ -285,27 +290,28 @@ export function buildPlanRows(
   const sortRows = (rs: PlanRowModel[]): PlanRowModel[] =>
     [...rs].sort((a, b) => numericCompare(a.id, b.id));
 
-  const countDone = (rs: PlanRowModel[]): number =>
-    rs.filter((r) => r.state === 'done' || r.state === 'accepted').length;
-
-  // Top-level group (name = null) comes first; omit when empty.
-  const sortedTop = sortRows(topLevelRows);
+  // A group counts all of its plans but shows only the matching rows, and is
+  // omitted when the filter shows none of them.
   const groups: PlanGroupModel[] = [];
-
-  if (sortedTop.length > 0) {
+  const addGroup = (name: string | null, all: PlanRowModel[]): void => {
+    const rows = all.filter(matches);
+    if (rows.length === 0) return;
     groups.push({
-      name: null,
-      rows: sortedTop,
-      done: countDone(sortedTop),
-      total: sortedTop.length,
+      name,
+      rows,
+      ids: all.map((r) => r.id),
+      done: all.filter((r) => r.state === 'done' || r.state === 'accepted').length,
+      total: all.length,
     });
-  }
+  };
+
+  // Top-level group (name = null) comes first.
+  addGroup(null, sortRows(topLevelRows));
 
   // Named groups, sorted numerically by name.
   const sortedGroupNames = [...byGroup.keys()].sort((a, b) => numericCompare(a, b));
   for (const name of sortedGroupNames) {
-    const rows = sortRows(byGroup.get(name)!);
-    groups.push({ name, rows, done: countDone(rows), total: rows.length });
+    addGroup(name, sortRows(byGroup.get(name)!));
   }
 
   // ── order ─────────────────────────────────────────────────────────────────
@@ -314,7 +320,7 @@ export function buildPlanRows(
   // ── runningPlanIds ─────────────────────────────────────────────────────────
   // planSet members first (in planSet order), then any remaining running plans
   // sorted by id.
-  const runningIds = new Set(filtered.filter((r) => r.running).map((r) => r.id));
+  const runningIds = new Set(allRows.filter((r) => r.running).map((r) => r.id));
   const runningInSetOrder: string[] = [];
 
   if (run.planSet) {
@@ -333,6 +339,6 @@ export function buildPlanRows(
     groups,
     order,
     runningPlanIds,
-    count: filtered.length,
+    count: allRows.length,
   };
 }

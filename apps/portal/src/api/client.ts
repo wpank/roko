@@ -5,8 +5,6 @@
  *  - Automatically prefixes all paths with `/api`
  *  - Attaches a Bearer token from localStorage when present
  *  - Deserialises JSON responses and throws typed `ApiError` on non-2xx
- *  - Supports runtime reconfiguration so connection-settings UI can update
- *    the target URL and API key without a page reload
  */
 
 import { getRokoServeUrl } from '@/lib/env';
@@ -33,19 +31,14 @@ export class ApiError extends Error {
 const STORAGE_KEY_API_KEY = 'roko-api-key';
 
 class RokoApiClient {
-  /**
-   * The base URL of the roko-serve instance.  Defaults to what `getRokoServeUrl`
-   * resolves (env var → localStorage → localhost:6677).  Can be overridden at
-   * runtime via `updateConnection`.
-   */
-  private baseUrl: string;
+  /** The base URL of the roko-serve instance, as `getRokoServeUrl` resolves it. */
+  private readonly baseUrl: string;
 
   /**
    * Optional Bearer token sent as `Authorization: Bearer <key>`.
-   * Seeded from `localStorage["roko-api-key"]` on construction, may be
-   * refreshed by `updateConnection`.
+   * Read from `localStorage["roko-api-key"]` on construction.
    */
-  private apiKey: string | null;
+  private readonly apiKey: string | null;
 
   constructor() {
     this.baseUrl = getRokoServeUrl();
@@ -137,45 +130,6 @@ class RokoApiClient {
 
   delete<T>(path: string): Promise<T> {
     return this.request<T>('DELETE', path);
-  }
-
-  // -------------------------------------------------------------------------
-  // Health check
-  // -------------------------------------------------------------------------
-
-  /**
-   * Ping `GET /api/health` and return `true` if the server responds with a
-   * 2xx status.  Does not throw — always resolves to a boolean.
-   */
-  async healthCheck(): Promise<boolean> {
-    try {
-      await this.get<unknown>('/api/health');
-      return true;
-    } catch {
-      return false;
-    }
-  }
-
-  // -------------------------------------------------------------------------
-  // Runtime reconfiguration
-  // -------------------------------------------------------------------------
-
-  /**
-   * Update the target URL and optionally the API key without reloading the
-   * page.  Also persists the new API key to localStorage when provided.
-   */
-  updateConnection(url: string, apiKey?: string): void {
-    this.baseUrl = url.replace(/\/+$/, '');
-    if (apiKey !== undefined) {
-      this.apiKey = apiKey || null;
-      if (typeof window !== 'undefined') {
-        if (apiKey) {
-          localStorage.setItem(STORAGE_KEY_API_KEY, apiKey);
-        } else {
-          localStorage.removeItem(STORAGE_KEY_API_KEY);
-        }
-      }
-    }
   }
 }
 

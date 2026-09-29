@@ -334,8 +334,10 @@ export function PlanView({
 
   // ── Render ────────────────────────────────────────────────────────────────
 
+  // While editing, the view fills the stage and the editor takes what the
+  // header leaves (design §2, §4a).
   return (
-    <div className={cn('flex flex-col gap-4')}>
+    <div className={cn('flex flex-col gap-4', editing && 'min-h-full')}>
       {/* ── 1. Header ─────────────────────────────────────────────────────── */}
       <div className="flex flex-wrap items-start gap-3">
         {/* Title + group/id */}

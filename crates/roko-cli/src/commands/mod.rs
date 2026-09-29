@@ -10,7 +10,7 @@ pub mod config_cmd;
 pub mod dashboard;
 pub mod dev;
 pub mod develop;
-pub mod diagnose;
+pub use roko_cli::commands::diagnose;
 pub mod do_cmd;
 pub mod experiment;
 pub mod feed;

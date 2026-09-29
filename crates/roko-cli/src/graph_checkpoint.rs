@@ -1279,6 +1279,120 @@ pub fn canonical_checkpoint_status(workdir: &Path, plan_id: &str) -> Option<Grap
 }
 
 // ---------------------------------------------------------------------------
+// Inspection
+// ---------------------------------------------------------------------------
+
+/// A plan's canonical Graph checkpoint as last written, read without
+/// validating or changing it. `roko diagnose` reports from this.
+#[derive(Debug, Clone)]
+pub struct CheckpointInspection {
+    /// Files of the checkpoint.
+    pub paths: GraphCheckpointPaths,
+    /// The manifest; a v2 manifest is migrated in memory.
+    pub manifest: GraphCheckpointManifest,
+    /// Actual provider spend in the cost ledger, in millionths of one USD.
+    /// `None` when the ledger is missing or unreadable.
+    pub spent_micro_usd: Option<u64>,
+    /// Spend reserved for a provider call that never settled. Resume refuses
+    /// a ledger with an unresolved reservation.
+    pub reserved_micro_usd: Option<u64>,
+    /// Task nodes whose output this run recorded in its Activity log, each
+    /// with the gate verdict of its latest record.
+    pub recorded: BTreeMap<String, Option<TaskGateVerdict>>,
+    /// Records the last resume removed because they lacked a passing verdict.
+    pub invalidated_on_resume: Vec<InvalidatedActivity>,
+    /// When the newest checkpoint this one replaced was archived, as Unix
+    /// milliseconds: records older than this belong to earlier runs of the
+    /// plan. `None` when no earlier checkpoint was archived.
+    pub replaced_at_ms: Option<u128>,
+}
+
+/// Read `plan_id`'s canonical checkpoint under `.roko/state/graph/` for
+/// inspection, or `None` when it has no manifest.
+///
+/// # Errors
+///
+/// Returns an error when the manifest exists but cannot be read or parsed.
+pub fn inspect_canonical_checkpoint(
+    workdir: &Path,
+    plan_id: &str,
+) -> Result<Option<CheckpointInspection>> {
+    let paths = resolve_checkpoint_paths(workdir, None, plan_id, 1)?;
+    if !paths.manifest.is_file() {
+        return Ok(None);
+    }
+    let manifest = read_manifest(&paths.manifest)?;
+    let ledger = std::fs::read(&paths.costs)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<GraphCostLedgerState>(&bytes).ok());
+    let invalidated_on_resume = manifest
+        .extensions
+        .get(GATE_VERDICT_EXTENSION)
+        .and_then(|extension| {
+            serde_json::from_value::<GateVerdictSummary>(extension.value.clone()).ok()
+        })
+        .map(|summary| summary.invalidated_on_resume)
+        .unwrap_or_default();
+    Ok(Some(CheckpointInspection {
+        recorded: recorded_outputs(&paths.activities, &manifest.run_id),
+        replaced_at_ms: latest_archive_ms(&paths),
+        spent_micro_usd: ledger.as_ref().map(|ledger| ledger.spent_micro_usd),
+        reserved_micro_usd: ledger.as_ref().map(|ledger| ledger.reserved_micro_usd),
+        invalidated_on_resume,
+        manifest,
+        paths,
+    }))
+}
+
+/// Node ids recorded in an Activity log for `run_id`, each with the gate
+/// verdict of its latest record.
+fn recorded_outputs(path: &Path, run_id: &str) -> BTreeMap<String, Option<TaskGateVerdict>> {
+    let Ok(content) = std::fs::read_to_string(path) else {
+        return BTreeMap::new();
+    };
+    content
+        .lines()
+        .filter_map(|line| serde_json::from_str::<RecordEntry>(line.trim()).ok())
+        .filter(|entry| entry.run_id == run_id)
+        .map(|entry| {
+            let verdict = TaskGateVerdict::from_signals(&entry.signals);
+            (entry.node_id, verdict)
+        })
+        .collect()
+}
+
+/// Newest timestamp [`archive_checkpoint_files`] gave any of `paths`' files.
+fn latest_archive_ms(paths: &GraphCheckpointPaths) -> Option<u128> {
+    let prefixes: Vec<String> = [&paths.manifest, &paths.activities, &paths.costs]
+        .into_iter()
+        .filter_map(|path| {
+            path.file_name()?
+                .to_str()
+                .map(|name| format!("{name}.bak."))
+        })
+        .collect();
+    std::fs::read_dir(paths.manifest.parent()?)
+        .ok()?
+        .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
+        .filter_map(|name| {
+            prefixes
+                .iter()
+                .find_map(|prefix| name.strip_prefix(prefix.as_str())?.parse::<u128>().ok())
+        })
+        .max()
+}
+
+/// Start `plan`'s canonical checkpoint the way a default `plan run` does.
+#[cfg(test)]
+pub(crate) fn start_plan_checkpoint(
+    workdir: &Path,
+    plan: &Plan,
+) -> Result<PreparedGraphCheckpoint> {
+    let graph = convert_plan(plan, &ResumeOptions::default())?;
+    prepare_graph_checkpoint(workdir, None, &plan.id, 1, &graph, false, false)
+}
+
+// ---------------------------------------------------------------------------
 // Resume preview
 // ---------------------------------------------------------------------------
 
@@ -1935,6 +2049,38 @@ depends_on = ["T1"]
 
         let identity = GraphIdentity::of(dir.path(), &graph).expect("identity");
         assert_eq!(identity.current, identity.legacy);
+    }
+
+    #[test]
+    fn inspection_reads_this_runs_records_and_the_newest_archive() {
+        let dir = tempdir().expect("tempdir");
+        assert!(
+            inspect_canonical_checkpoint(dir.path(), "p")
+                .expect("inspect")
+                .is_none()
+        );
+
+        let plan = write_plan(dir.path(), PLAN_TOML);
+        let paths = record_first_task(dir.path(), &plan_graph(&plan, &ResumeOptions::default()));
+        // A record another run left in the log, and two archived runs.
+        ActivityRecorder::create("graph-p-earlier", &paths.activities)
+            .expect("recorder")
+            .record("p", "T2", 0, Vec::new())
+            .expect("record");
+        let checkpoint_dir = paths.manifest.parent().expect("checkpoint dir");
+        std::fs::write(checkpoint_dir.join("checkpoint.json.bak.100"), "{}").expect("archive");
+        std::fs::write(checkpoint_dir.join("activities.jsonl.bak.200"), "").expect("archive");
+
+        let inspection = inspect_canonical_checkpoint(dir.path(), "p")
+            .expect("inspect")
+            .expect("checkpoint");
+        assert_eq!(inspection.manifest.status, GraphCheckpointStatus::Failed);
+        assert_eq!(inspection.recorded.keys().collect::<Vec<_>>(), ["T1"]);
+        assert_eq!(inspection.replaced_at_ms, Some(200));
+        assert_eq!(
+            (inspection.spent_micro_usd, inspection.reserved_micro_usd),
+            (Some(0), Some(0))
+        );
     }
 
     #[test]

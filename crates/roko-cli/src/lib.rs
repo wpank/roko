@@ -134,6 +134,11 @@ pub mod chat_history;
 pub mod chat_inline;
 pub mod chat_session;
 pub mod clean;
+/// Subcommand implementations that live in the library; the `roko` binary's
+/// own `commands` module re-exports them.
+pub mod commands {
+    pub mod diagnose;
+}
 pub mod config;
 pub mod config_cmd;
 pub mod config_helpers;

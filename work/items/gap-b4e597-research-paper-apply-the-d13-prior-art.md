@@ -55,3 +55,7 @@ None of the edits is applied.
 
 - [ ] E1–E15 and E17 are applied, and C1.23 is reworded.
 - [ ] The `[[verify]]` command passes.
+
+## Notes
+
+- **From wk-prior-art (gap-bb619d, 2026-09-29):** the edits keep the "(search of 2026-09-29)" dating. The submission-week re-run of the listing sweep (Q13–Q15 and Q17) and the unread Li 2026 lead are tracked in gap-85f86a, held until submission week.

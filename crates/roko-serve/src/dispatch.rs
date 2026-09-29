@@ -3468,8 +3468,10 @@ printf '%s\n' '{"type":"content_block_delta","delta":{"text":"template-ok"}}'
         );
         let cascade_path = state.layout.cascade_router_path();
         let cascade_slugs = config.model_slugs_for_cascade();
-        *state.cascade_router.write().await =
-            Some(Arc::new(CascadeRouter::load_or_new(&cascade_path, cascade_slugs)));
+        *state.cascade_router.write().await = Some(Arc::new(CascadeRouter::load_or_new(
+            &cascade_path,
+            cascade_slugs,
+        )));
 
         let template = AgentTemplate {
             name: "feedback-template".into(),

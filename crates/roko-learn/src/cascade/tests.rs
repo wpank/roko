@@ -1734,7 +1734,10 @@ fn narrower_slug_list_keeps_other_models_state() {
     // Opus first and no haiku: opus now sits where haiku's arm was saved.
     let narrow = CascadeRouter::load_or_new(
         &path,
-        vec!["claude-opus-4-6".to_string(), "claude-sonnet-4-5".to_string()],
+        vec![
+            "claude-opus-4-6".to_string(),
+            "claude-sonnet-4-5".to_string(),
+        ],
     );
     assert_eq!(
         arm_updates(&narrow, "claude-opus-4-6"),

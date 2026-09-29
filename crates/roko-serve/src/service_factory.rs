@@ -252,8 +252,9 @@ impl ServiceFactory {
         let tool_instructions = tool_instructions_for_config(&workspace_config.tools);
         // Model-call feedback and override outcomes are journaled before they
         // reach the router, so a crash before the next save loses none.
-        let cascade_journal =
-            Arc::new(ModelCallJournal::for_learn_dir(&config.roko_dir.join("learn")));
+        let cascade_journal = Arc::new(ModelCallJournal::for_learn_dir(
+            &config.roko_dir.join("learn"),
+        ));
         let cascade_router = if config.cascade_enabled {
             let cascade_model_slugs = model_slugs_for_config(&workspace_config, &model);
             Some(Arc::new(

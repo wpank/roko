@@ -1326,6 +1326,8 @@ async fn run_graph_plan_body(params: GraphPlanRunParams) -> anyhow::Result<i32> 
     let mut all_succeeded = true;
     let mut total_output_count = 0usize;
     let mut plan_outcomes = std::collections::BTreeMap::<String, bool>::new();
+    // How the tasks of each plan that ran settled, for the run metrics.
+    let mut plan_task_verdicts = std::collections::BTreeMap::<String, TaskVerdictCounts>::new();
     // Set once SIGINT/SIGTERM (or closing the TUI) stops the run; later
     // plans are left unstarted.
     let mut stopped_by: Option<PlanRunInterrupt> = None;
@@ -1432,6 +1434,7 @@ async fn run_graph_plan_body(params: GraphPlanRunParams) -> anyhow::Result<i32> 
                 let outcome = match result {
                     Ok(result) => {
                         total_output_count += result.output_count;
+                        plan_task_verdicts.insert(plan_id.clone(), result.tasks);
                         result.outcome
                     }
                     Err(error) => {
@@ -1578,6 +1581,7 @@ async fn run_graph_plan_body(params: GraphPlanRunParams) -> anyhow::Result<i32> 
     //
     // Collect task counts and cost from the just-completed plan loop and
     // append a structured RunMetricsRecord to `.roko/learn/run-metrics.jsonl`.
+    // Each task counts under its own verdict (bug-7eb27e), not its plan's.
     // The write is fire-and-forget on a background task so it never blocks
     // the TUI exit path.
     {
@@ -1589,17 +1593,19 @@ async fn run_graph_plan_body(params: GraphPlanRunParams) -> anyhow::Result<i32> 
                     .iter()
                     .find(|p| &p.id == id)
                     .map_or(0, |p| p.tasks.tasks.len());
-                let completed = if *succeeded { plan_tasks } else { 0 };
-                roko_learn::run_metrics::PlanMetrics {
-                    plan_id: id.clone(),
-                    completed: *succeeded,
-                    tasks_completed: completed,
-                    tasks_failed: plan_tasks.saturating_sub(completed),
-                }
+                // A plan that never started (blocked, or cancelled before it
+                // started) ran none of its tasks.
+                let tasks = plan_task_verdicts
+                    .get(id)
+                    .copied()
+                    .unwrap_or(TaskVerdictCounts::not_run(plan_tasks));
+                plan_metrics(id, *succeeded, tasks)
             })
             .collect();
         let tasks_completed: usize = per_plan.iter().map(|p| p.tasks_completed).sum();
         let tasks_failed: usize = per_plan.iter().map(|p| p.tasks_failed).sum();
+        let tasks_unverified: usize = per_plan.iter().map(|p| p.tasks_unverified).sum();
+        let tasks_skipped: usize = per_plan.iter().map(|p| p.tasks_skipped).sum();
         let any_budget_exhausted = plans
             .iter()
             .any(|p| graph_task_dispatcher.plan_budget_snapshot(&p.id).exhausted);
@@ -1612,6 +1618,8 @@ async fn run_graph_plan_body(params: GraphPlanRunParams) -> anyhow::Result<i32> 
             total_tasks,
             tasks_completed,
             tasks_failed,
+            tasks_unverified,
+            tasks_skipped,
             total_cost_usd,
             total_tokens_in: agg_tokens_in,
             total_tokens_out: agg_tokens_out,
@@ -1723,13 +1731,17 @@ struct PlanControl {
 struct PlanRunResult {
     outcome: PlanOutcome,
     output_count: usize,
+    /// How the plan's tasks settled.
+    tasks: TaskVerdictCounts,
 }
 
 impl PlanRunResult {
-    const fn failed() -> Self {
+    /// A plan that failed before any of its `task_count` tasks ran.
+    const fn failed(task_count: usize) -> Self {
         Self {
             outcome: PlanOutcome::Failed,
             output_count: 0,
+            tasks: TaskVerdictCounts::not_run(task_count),
         }
     }
 }
@@ -1987,7 +1999,7 @@ async fn run_one_plan(
                 ));
                 tracing::error!(plan_id = %plan.id, error = %e, "failed to build rich topology for plan");
                 graph_tui_bridge.plan_completed(&plan.id, false);
-                return Ok(PlanRunResult::failed());
+                return Ok(PlanRunResult::failed(tasks.len()));
             }
         }
     } else {
@@ -2008,7 +2020,7 @@ async fn run_one_plan(
                 ));
                 tracing::error!(plan_id = %plan.id, error = %e, "failed to convert plan to graph");
                 graph_tui_bridge.plan_completed(&plan.id, false);
-                return Ok(PlanRunResult::failed());
+                return Ok(PlanRunResult::failed(tasks.len()));
             }
         }
     };
@@ -2090,7 +2102,7 @@ async fn run_one_plan(
         }
         graph_tui_bridge.plan_completed(&plan.id, false);
         checkpoint.finish(false)?;
-        return Ok(PlanRunResult::failed());
+        return Ok(PlanRunResult::failed(tasks.len()));
     }
 
     if replayed_entries > 0 && !ctx.quiet && !ctx.json {
@@ -2232,6 +2244,9 @@ async fn run_one_plan(
         return Ok(PlanRunResult {
             outcome: plan_outcome(false, interrupted_by.is_some(), was_cancelled_by_tui),
             output_count: 0,
+            // Without the graph's result no task's verdict is known, so
+            // none counts as passed.
+            tasks: TaskVerdictCounts::not_run(tasks.len()),
         });
     };
 
@@ -2350,6 +2365,7 @@ async fn run_one_plan(
             was_cancelled_by_tui,
         ),
         output_count,
+        tasks: TaskVerdictCounts::of(&output),
     })
 }
 
@@ -2386,6 +2402,78 @@ fn task_outcomes(
         }
     }
     summary
+}
+
+/// Graph cell type that runs a plan task: one node per task in either
+/// topology.
+const TASK_EXECUTOR_CELL_TYPE: &str = "task-executor";
+
+/// How a plan's tasks settled in one run, each counted by its node status
+/// and gate verdict (epic spec-e9d7ec).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct TaskVerdictCounts {
+    /// Completed with a `passed` gate verdict: every verify step passed.
+    passed: usize,
+    /// Completed without a verify step running: the task declares none, its
+    /// role is disabled, or its output carries no gate verdict.
+    unverified: usize,
+    /// Never ran: blocked by a failed task, or not started.
+    skipped: usize,
+    /// Failed, or completed over a failed verify step (`forced_accept`).
+    failed: usize,
+}
+
+impl TaskVerdictCounts {
+    /// Count the task nodes of `output`.
+    fn of(output: &roko_graph::GraphOutput) -> Self {
+        use roko_graph::cells::task_executor::TaskGateVerdict;
+        use roko_graph::engine::NodeStatus;
+
+        let mut counts = Self::default();
+        for result in output
+            .node_results
+            .iter()
+            .filter(|result| result.cell_type == TASK_EXECUTOR_CELL_TYPE)
+        {
+            let verdict = output.gate_verdicts.get(&result.node_id).copied();
+            match (result.status, verdict) {
+                (NodeStatus::Complete, Some(TaskGateVerdict::Passed)) => counts.passed += 1,
+                (NodeStatus::Complete, Some(TaskGateVerdict::ForcedAccept))
+                | (NodeStatus::Failed, _) => counts.failed += 1,
+                (NodeStatus::Complete, _) => counts.unverified += 1,
+                // Skipped, not selected by a route, or never settled.
+                _ => counts.skipped += 1,
+            }
+        }
+        counts
+    }
+
+    /// A plan of `task_count` tasks that ran none of them.
+    const fn not_run(task_count: usize) -> Self {
+        Self {
+            passed: 0,
+            unverified: 0,
+            skipped: task_count,
+            failed: 0,
+        }
+    }
+}
+
+/// The run-metrics row of one plan: whether it succeeded, and its tasks
+/// counted by verdict.
+fn plan_metrics(
+    plan_id: &str,
+    succeeded: bool,
+    tasks: TaskVerdictCounts,
+) -> roko_learn::run_metrics::PlanMetrics {
+    roko_learn::run_metrics::PlanMetrics {
+        plan_id: plan_id.to_string(),
+        completed: succeeded,
+        tasks_completed: tasks.passed,
+        tasks_failed: tasks.failed,
+        tasks_unverified: tasks.unverified,
+        tasks_skipped: tasks.skipped,
+    }
 }
 
 #[cfg(test)]
@@ -2997,6 +3085,57 @@ max_retries = 0
             plan_checkpoint_status(false, false, false),
             GraphCheckpointStatus::Failed
         );
+    }
+
+    /// bug-7eb27e: run metrics count each task under its own verdict, not
+    /// under its plan's outcome.
+    #[test]
+    fn run_metrics_count_task_verdicts() {
+        use roko_graph::cells::task_executor::TaskGateVerdict;
+        use roko_graph::engine::NodeStatus;
+
+        let node = |id: &str, cell_type: &str, status: NodeStatus| roko_graph::NodeResult {
+            node_id: id.to_string(),
+            cell_type: cell_type.to_string(),
+            status,
+            duration: Duration::ZERO,
+            error: None,
+            output_count: 0,
+            is_stub: false,
+            blocked_by: None,
+        };
+        let output = roko_graph::GraphOutput {
+            graph_name: "verdicts".to_string(),
+            success: false,
+            node_results: vec![
+                node("T1", TASK_EXECUTOR_CELL_TYPE, NodeStatus::Complete),
+                node("T2", TASK_EXECUTOR_CELL_TYPE, NodeStatus::Complete),
+                node("T3", TASK_EXECUTOR_CELL_TYPE, NodeStatus::Failed),
+                roko_graph::NodeResult {
+                    blocked_by: Some("T3".to_string()),
+                    ..node("T4", TASK_EXECUTOR_CELL_TYPE, NodeStatus::Skipped)
+                },
+                // A helper node of the rich topology is not a task.
+                node("task.T1.gate", "passthrough", NodeStatus::Complete),
+            ],
+            total_duration: Duration::ZERO,
+            gate_verdicts: BTreeMap::from([
+                ("T1".to_string(), TaskGateVerdict::Passed),
+                ("T2".to_string(), TaskGateVerdict::Unverified),
+                ("task.T1.gate".to_string(), TaskGateVerdict::Passed),
+            ]),
+        };
+
+        let metrics = plan_metrics("verdicts", false, TaskVerdictCounts::of(&output));
+
+        assert!(!metrics.completed);
+        let counts = [
+            metrics.tasks_completed,
+            metrics.tasks_unverified,
+            metrics.tasks_skipped,
+            metrics.tasks_failed,
+        ];
+        assert_eq!(counts, [1, 1, 1, 1], "passed, unverified, skipped, failed");
     }
 
     fn wait_until_finished(session: &TuiSession) {

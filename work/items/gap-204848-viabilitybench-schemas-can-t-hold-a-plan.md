@@ -2,7 +2,7 @@
 id = "gap-204848"
 kind = "gap"
 title = "ViabilityBench schemas can't hold a plan-slice run record without a placeholder ladder, or a PL task"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "proof"
@@ -11,6 +11,7 @@ subsystem = ["benchmarks/viabilitybench/schema"]
 created = 2026-09-29
 updated = 2026-09-29
 last_verified = 2026-09-29
+last_verified_rev = "7165b1c08"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (16:47, wk-bench-slice's report on gap-89f393)"
 anchors = ["benchmarks/viabilitybench/schema/run-record.schema.json", "benchmarks/viabilitybench/schema/task.schema.json", "benchmarks/viabilitybench/families/plan_slice/feature.schema.json", "benchmarks/viabilitybench/families/plan_slice/slicekit.py"]
@@ -20,6 +21,11 @@ links = { depends_on = [], blocks = [], related = ["gap-89f393", "gap-1cd676", "
 
 [[verify]]
 command = "grep -qw 'def test_a_plan_slice_row_validates_without_a_placeholder_ladder' benchmarks/viabilitybench/schema/test_schemas.py && benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/schema/test_schemas.py -k test_a_plan_slice_row_validates_without_a_placeholder_ladder -q"
+
+[closed]
+at = 2026-09-29
+commit = "7165b1c08"
+evidence = "7165b1c08: run-record task.ladder allows null (PL rows, no level); vb.feature/1 moved to schema/feature.schema.json with examples/feature.json and a validate.py 'feature' kind; the plan-slice fixtures drop the placeholder ladder 5 (slicekit sets null and rejects a [run_record] ladder). Verify passes: schema/test_schemas.py::test_a_plan_slice_row_validates_without_a_placeholder_ladder (every fixture's and the example's PL row validates for roko_plan and fd_claude with ladder null; 0, 6 and 'plan' fail). pytest benchmarks/viabilitybench: 225 passed, 2 opt-in skips."
 +++
 
 ## Problem

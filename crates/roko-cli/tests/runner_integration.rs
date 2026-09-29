@@ -47,6 +47,7 @@ fn task(id: &str, deps: &[&str]) -> TaskDef {
         max_retries: 1,
         acceptance: vec![],
         acceptance_contract: None,
+        accept: None,
         domain: None,
         estimated_minutes: None,
         crates_touched: None,

@@ -700,6 +700,7 @@ fn prompt_tasks_file(
             max_retries: crate::task_parser::default_max_retries(),
             acceptance: Vec::new(),
             acceptance_contract: None,
+            accept: None,
             domain: None,
             estimated_minutes: None,
             crates_touched: None,

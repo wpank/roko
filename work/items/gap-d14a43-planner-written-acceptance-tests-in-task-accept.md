@@ -3,13 +3,15 @@ id = "gap-d14a43"
 kind = "gap"
 title = "Planner-written acceptance tests in [task.accept], stored out of the agent's reach"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p1"
 goal = "golden-path"
 size = "M"
 subsystem = ["roko-cli/task_parser", "roko-cli/plan_validate"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-29
+last_verified_rev = "7f2796462"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e8"
 discovered_from = "tmp/cybernetic-harness/tldr/research/B4-gates-qa-safety.md (the accept/ convention; tldr/05 P1 #10)"
 anchors = ["crates/roko-cli/src/task_parser.rs::TaskDef", "crates/roko-cli/src/plan_validate.rs::validate_tasks_file", "crates/roko-cli/src/task_accept.rs"]
@@ -73,3 +75,6 @@ Checked at `41c7ffbd6`: `TaskDef` has no accept field; the `accept/` directories
 - No hot-file edit: the generated step runs through the existing verify path.
 - With no OS sandbox the store is tamper-evident, not tamper-proof; gap-abbd22 flags edits to `accept/` sources.
 - Not filed here: S07.8's `[task.hidden]`, which never holds tests. Red-on-base proof is gap-b3fa0a's.
+- Implemented on `work/gap-d14a43` at `115e87d36`; cargo verification deferred to the batch check.
+- For gap-abbd22: a task's accept files are `TaskDef.accept` (`src` relative to the plan dir, `dest` to the working
+  tree), and `task_accept::is_pinned_step` recognizes the generated steps at the front of `verify`.

@@ -269,6 +269,7 @@ const KNOWN_TASK_FIELDS: &[&str] = &[
     "replan_strategy",
     "prompt",
     "acceptance",
+    "accept",
     "domain",
     "gate_rung",
 ];

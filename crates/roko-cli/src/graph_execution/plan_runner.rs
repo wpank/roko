@@ -804,7 +804,10 @@ async fn run_graph_plan_body(params: GraphPlanRunParams) -> anyhow::Result<i32> 
     let plans = crate::runner::plan_loader::load_plans(plans_dir)?;
     // Apply only_plans filter: keep exactly the named ids, in name order, and
     // fail immediately if any listed id does not exist in the directory.
-    let plans = filter_only_plans(plans, only_plans.as_deref(), plans_dir)?;
+    let mut plans = filter_only_plans(plans, only_plans.as_deref(), plans_dir)?;
+    // Pin planner-written acceptance tests outside the working tree and run
+    // them first, before anything is dispatched (gap-d14a43).
+    crate::task_accept::pin_plans(&mut plans, workdir)?;
     // Validate the complete selected set before initializing extensions or
     // launching a provider. This makes missing, incomplete, and cyclic
     // cross-plan dependencies fail closed without partially executing the

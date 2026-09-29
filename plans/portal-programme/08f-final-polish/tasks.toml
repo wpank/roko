@@ -32,9 +32,12 @@ estimated_total_minutes = 170
 # it ended — `✗ exit status 1` — after at most 60 lines (16 KiB) of its output,
 # and the checks view shows that ending, with "no output" when nothing printed.
 #
-# Same gate style as 08b-08e: tests in accept/ are copied into the tree by each
-# gate and must pass with their exact count; each failed on the tree its task
-# starts from and passed on a reference implementation (tsc and clippy clean).
+# Tests in accept/ are pinned acceptance tests ([task.accept], gap-d14a43): a
+# run pins each one outside the working tree, and a generated gate that runs
+# before the task's own copies the pinned test into the tree and requires its
+# exact passing count. Each failed on the tree its task starts from and passed
+# on a reference implementation (tsc and clippy clean). 08b-08e still copy
+# theirs by hand.
 # semantics.accept.test.ts replaces 08e's file of the same name. The main tree's
 # apps/portal/node_modules predates 08b's jsdom, so every portal gate installs
 # when node_modules/jsdom is missing. One production build, in T06.
@@ -101,15 +104,22 @@ anti_patterns = [
     "Do not edit a file outside this task's files; a gate failure in one usually means a concurrent task is mid-edit, so re-run the gate first.",
 ]
 
+[[task.accept.files]]
+src = "accept/semantics.accept.test.ts"
+dest = "apps/portal/src/styles/semantics.accept.test.ts"
+runner = 'cd apps/portal && { [ -d node_modules/jsdom ] || npm ci --no-audit --no-fund --silent; } && node scripts/vitest-min.mjs src/styles/semantics.accept.test.ts {count}'
+count = 16
+timeout_ms = 600000
+
 [[task.verify]]
 phase = "test"
-command = 'cd apps/portal && { [ -d node_modules/jsdom ] || npm ci --no-audit --no-fund --silent; } && cp ../../plans/portal-programme/08f-final-polish/accept/semantics.accept.test.ts src/styles/semantics.accept.test.ts && node scripts/vitest-min.mjs src/styles/semantics.accept.test.ts 16 && node scripts/vitest-min.mjs src/styles/legibility.accept.test.ts 12 && node scripts/vitest-min.mjs src/styles/styles.accept.test.ts 12'
-fail_msg = "the colour semantics test (16) or 08d's legibility / 08b's styles test does not pass"
+command = 'cd apps/portal && { [ -d node_modules/jsdom ] || npm ci --no-audit --no-fund --silent; } && node scripts/vitest-min.mjs src/styles/legibility.accept.test.ts 12 && node scripts/vitest-min.mjs src/styles/styles.accept.test.ts 12'
+fail_msg = "08d's legibility or 08b's styles test does not pass"
 timeout_ms = 600000
 
 [[task.verify]]
 phase = "compile"
-command = 'cd apps/portal && { [ -d node_modules/jsdom ] || npm ci --no-audit --no-fund --silent; } && cp ../../plans/portal-programme/08f-final-polish/accept/semantics.accept.test.ts src/styles/semantics.accept.test.ts && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit --incremental false'
+command = 'cd apps/portal && { [ -d node_modules/jsdom ] || npm ci --no-audit --no-fund --silent; } && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit --incremental false'
 fail_msg = "the portal does not type-check"
 timeout_ms = 600000
 
@@ -178,10 +188,17 @@ anti_patterns = [
     "Do not edit a file outside this task's files; a gate failure in one usually means a concurrent task is mid-edit, so re-run the gate first.",
 ]
 
+[[task.accept.files]]
+src = "accept/segments.accept.test.tsx"
+dest = "apps/portal/src/components/rail/segments.accept.test.tsx"
+runner = 'cd apps/portal && { [ -d node_modules/jsdom ] || npm ci --no-audit --no-fund --silent; } && node scripts/vitest-min.mjs src/components/rail/segments.accept.test.tsx {count}'
+count = 5
+timeout_ms = 600000
+
 [[task.verify]]
 phase = "test"
-command = 'cd apps/portal && { [ -d node_modules/jsdom ] || npm ci --no-audit --no-fund --silent; } && cp ../../plans/portal-programme/08f-final-polish/accept/segments.accept.test.tsx src/components/rail/segments.accept.test.tsx && node scripts/vitest-min.mjs src/components/rail/segments.accept.test.tsx 5 && node scripts/vitest-min.mjs src/lib/planBars.accept.test.ts 3 && node scripts/vitest-min.mjs src/lib/planRows.test.ts 20'
-fail_msg = "the segments acceptance test (5) or a plan-row suite does not pass"
+command = 'cd apps/portal && { [ -d node_modules/jsdom ] || npm ci --no-audit --no-fund --silent; } && node scripts/vitest-min.mjs src/lib/planBars.accept.test.ts 3 && node scripts/vitest-min.mjs src/lib/planRows.test.ts 20'
+fail_msg = "a plan-row suite does not pass"
 timeout_ms = 600000
 
 [[task.verify]]
@@ -192,7 +209,7 @@ timeout_ms = 600000
 
 [[task.verify]]
 phase = "compile"
-command = 'cd apps/portal && { [ -d node_modules/jsdom ] || npm ci --no-audit --no-fund --silent; } && cp ../../plans/portal-programme/08f-final-polish/accept/segments.accept.test.tsx src/components/rail/segments.accept.test.tsx && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit --incremental false'
+command = 'cd apps/portal && { [ -d node_modules/jsdom ] || npm ci --no-audit --no-fund --silent; } && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit --incremental false'
 fail_msg = "the portal does not type-check"
 timeout_ms = 600000
 
@@ -254,10 +271,17 @@ anti_patterns = [
     "Do not edit a file outside this task's files; a gate failure in one usually means a concurrent task is mid-edit, so re-run the gate first.",
 ]
 
+[[task.accept.files]]
+src = "accept/checkExit.accept.test.tsx"
+dest = "apps/portal/src/components/stream/checkExit.accept.test.tsx"
+runner = 'cd apps/portal && { [ -d node_modules/jsdom ] || npm ci --no-audit --no-fund --silent; } && node scripts/vitest-min.mjs src/components/stream/checkExit.accept.test.tsx {count}'
+count = 8
+timeout_ms = 600000
+
 [[task.verify]]
 phase = "test"
-command = 'cd apps/portal && { [ -d node_modules/jsdom ] || npm ci --no-audit --no-fund --silent; } && cp ../../plans/portal-programme/08f-final-polish/accept/checkExit.accept.test.tsx src/components/stream/checkExit.accept.test.tsx && node scripts/vitest-min.mjs src/components/stream/checkExit.accept.test.tsx 8 && node scripts/vitest-min.mjs src/lib/checks.test.ts 20'
-fail_msg = "the check-exit acceptance test (8) or checks.test does not pass"
+command = 'cd apps/portal && { [ -d node_modules/jsdom ] || npm ci --no-audit --no-fund --silent; } && node scripts/vitest-min.mjs src/lib/checks.test.ts 20'
+fail_msg = "checks.test does not pass"
 timeout_ms = 600000
 
 [[task.verify]]
@@ -268,7 +292,7 @@ timeout_ms = 600000
 
 [[task.verify]]
 phase = "compile"
-command = 'cd apps/portal && { [ -d node_modules/jsdom ] || npm ci --no-audit --no-fund --silent; } && cp ../../plans/portal-programme/08f-final-polish/accept/checkExit.accept.test.tsx src/components/stream/checkExit.accept.test.tsx && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit --incremental false'
+command = 'cd apps/portal && { [ -d node_modules/jsdom ] || npm ci --no-audit --no-fund --silent; } && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit --incremental false'
 fail_msg = "the portal does not type-check"
 timeout_ms = 600000
 
@@ -340,10 +364,17 @@ anti_patterns = [
     "Do not edit a file outside this task's files; a gate failure in one usually means a concurrent task is mid-edit, so re-run the gate first.",
 ]
 
+[[task.accept.files]]
+src = "accept/oneRetry.accept.test.tsx"
+dest = "apps/portal/src/components/shell/oneRetry.accept.test.tsx"
+runner = 'cd apps/portal && { [ -d node_modules/jsdom ] || npm ci --no-audit --no-fund --silent; } && node scripts/vitest-min.mjs src/components/shell/oneRetry.accept.test.tsx {count}'
+count = 7
+timeout_ms = 600000
+
 [[task.verify]]
 phase = "test"
-command = 'cd apps/portal && { [ -d node_modules/jsdom ] || npm ci --no-audit --no-fund --silent; } && cp ../../plans/portal-programme/08f-final-polish/accept/oneRetry.accept.test.tsx src/components/shell/oneRetry.accept.test.tsx && node scripts/vitest-min.mjs src/components/shell/oneRetry.accept.test.tsx 7 && node scripts/vitest-min.mjs src/lib/alerts.test.ts 12'
-fail_msg = "the one-Retry acceptance test (7) or alerts.test does not pass"
+command = 'cd apps/portal && { [ -d node_modules/jsdom ] || npm ci --no-audit --no-fund --silent; } && node scripts/vitest-min.mjs src/lib/alerts.test.ts 12'
+fail_msg = "alerts.test does not pass"
 timeout_ms = 600000
 
 [[task.verify]]
@@ -354,7 +385,7 @@ timeout_ms = 600000
 
 [[task.verify]]
 phase = "compile"
-command = 'cd apps/portal && { [ -d node_modules/jsdom ] || npm ci --no-audit --no-fund --silent; } && cp ../../plans/portal-programme/08f-final-polish/accept/oneRetry.accept.test.tsx src/components/shell/oneRetry.accept.test.tsx && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit --incremental false'
+command = 'cd apps/portal && { [ -d node_modules/jsdom ] || npm ci --no-audit --no-fund --silent; } && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit --incremental false'
 fail_msg = "the portal does not type-check"
 timeout_ms = 600000
 
@@ -421,15 +452,16 @@ anti_patterns = [
     "Do not edit the copied acceptance test; the gate overwrites it.",
 ]
 
-[[task.verify]]
-phase = "test"
-command = 'cp plans/portal-programme/08f-final-polish/accept/gate_output_accept.rs crates/roko-cli/src/graph_task_dispatch/gate_output_accept.rs && out="$(cargo test -p roko-cli --lib graph_task_dispatch::gate_output_accept 2>&1)"; rc=$?; printf "%s\n" "$out" | tail -25; [ "$rc" -eq 0 ] && grep -q "test result: ok. 7 passed; 0 failed" <<<"$out"'
-fail_msg = "the gate-output acceptance test does not pass all 7 tests"
+[[task.accept.files]]
+src = "accept/gate_output_accept.rs"
+dest = "crates/roko-cli/src/graph_task_dispatch/gate_output_accept.rs"
+runner = 'cargo test -p roko-cli --lib graph_task_dispatch::gate_output_accept'
+count = 7
 timeout_ms = 1800000
 
 [[task.verify]]
 phase = "test"
-command = 'cp plans/portal-programme/08f-final-polish/accept/gate_output_accept.rs crates/roko-cli/src/graph_task_dispatch/gate_output_accept.rs && cargo test -p roko-cli --lib graph_task_dispatch'
+command = 'cargo test -p roko-cli --lib graph_task_dispatch'
 fail_msg = "a graph_task_dispatch test fails"
 timeout_ms = 1800000
 
@@ -445,9 +477,9 @@ title = "Prove the final polish together and build once"
 description = '''
 Run the portal suite together and build the export once.
 
-The gates re-copy this plan's four portal acceptance tests from
-plans/portal-programme/08f-final-polish/accept/ (they must be unchanged; the
-semantics test replaces 08e's), then require: the full suite with at least 669
+Its pinned acceptance tests put this plan's four portal acceptance tests back
+in the tree, each with its exact count (the semantics test replaces 08e's);
+then the gates require: the full suite with at least 669
 passing tests (645 after 08e, plus 4 more semantics tests and this plan's 20
 new ones) and none failing; the orphan check; tsc; and the one production
 build, whose exported CSS must carry the segment and badge classes. T05's Rust
@@ -475,9 +507,37 @@ anti_patterns = [
     "Do not leave apps/portal/out behind.",
 ]
 
+[[task.accept.files]]
+src = "accept/semantics.accept.test.ts"
+dest = "apps/portal/src/styles/semantics.accept.test.ts"
+runner = 'cd apps/portal && { [ -d node_modules/jsdom ] || npm ci --no-audit --no-fund --silent; } && node scripts/vitest-min.mjs src/styles/semantics.accept.test.ts {count}'
+count = 16
+timeout_ms = 600000
+
+[[task.accept.files]]
+src = "accept/segments.accept.test.tsx"
+dest = "apps/portal/src/components/rail/segments.accept.test.tsx"
+runner = 'cd apps/portal && { [ -d node_modules/jsdom ] || npm ci --no-audit --no-fund --silent; } && node scripts/vitest-min.mjs src/components/rail/segments.accept.test.tsx {count}'
+count = 5
+timeout_ms = 600000
+
+[[task.accept.files]]
+src = "accept/checkExit.accept.test.tsx"
+dest = "apps/portal/src/components/stream/checkExit.accept.test.tsx"
+runner = 'cd apps/portal && { [ -d node_modules/jsdom ] || npm ci --no-audit --no-fund --silent; } && node scripts/vitest-min.mjs src/components/stream/checkExit.accept.test.tsx {count}'
+count = 8
+timeout_ms = 600000
+
+[[task.accept.files]]
+src = "accept/oneRetry.accept.test.tsx"
+dest = "apps/portal/src/components/shell/oneRetry.accept.test.tsx"
+runner = 'cd apps/portal && { [ -d node_modules/jsdom ] || npm ci --no-audit --no-fund --silent; } && node scripts/vitest-min.mjs src/components/shell/oneRetry.accept.test.tsx {count}'
+count = 7
+timeout_ms = 600000
+
 [[task.verify]]
 phase = "test"
-command = 'cd apps/portal && { [ -d node_modules/jsdom ] || npm ci --no-audit --no-fund --silent; } && A=../../plans/portal-programme/08f-final-polish/accept && for p in styles/semantics.accept.test.ts components/rail/segments.accept.test.tsx components/stream/checkExit.accept.test.tsx components/shell/oneRetry.accept.test.tsx; do cp $A/${p##*/} src/$p || exit 1; done && node scripts/vitest-min.mjs src 669'
+command = 'cd apps/portal && { [ -d node_modules/jsdom ] || npm ci --no-audit --no-fund --silent; } && node scripts/vitest-min.mjs src 669'
 fail_msg = "the full suite, with every acceptance test, lacks 669 passing tests or has a failure"
 timeout_ms = 900000
 

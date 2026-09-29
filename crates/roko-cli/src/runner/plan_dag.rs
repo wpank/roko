@@ -622,6 +622,7 @@ mod tests {
             max_retries: 1,
             acceptance: vec![],
             acceptance_contract: None,
+            accept: None,
             domain: None,
             estimated_minutes: Some(10),
             crates_touched: None,

@@ -215,6 +215,7 @@ pub mod spinner;
 pub mod status;
 pub mod subscriptions;
 pub mod surface_inventory;
+pub mod task_accept;
 pub mod task_helpers;
 pub mod task_parser;
 pub mod transcript;

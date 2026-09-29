@@ -62,6 +62,7 @@ fn task() -> TaskDef {
         max_retries: 1,
         acceptance: vec!["compiles".into()],
         acceptance_contract: None,
+        accept: None,
         domain: Some(roko_core::task::TaskDomain::Code),
         estimated_minutes: None,
         crates_touched: None,

@@ -2571,6 +2571,7 @@ const KNOWN_TASK_FIELDS: &[&str] = &[
     "max_retries",
     "acceptance",
     "acceptance_contract",
+    "accept",
     "domain",
     "gate_rung",
 ];

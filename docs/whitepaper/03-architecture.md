@@ -46,11 +46,11 @@ audit its own corrections, keeping the essential variables of §2 in bounds.
 | Slow regulators, across runs | Routing learned from verified outcomes; keyed failure memory; a bounded controller (M1) | The loops below; failure memory ORPHANED@a17d4dadd (LM4); M1 MISSING@a17d4dadd (RG3); spec-6ac537 |
 | Second-order audits | Random deep audits of green results (M4); per-loop exposure, influence and benefit (M2); guarded commit with rollback | MISSING@a17d4dadd (QA5, RG4, RG6; spec-6ac537) |
 
-Four loops act on what they observe and are WIRED@a17d4dadd: the provider-health circuit breaker (RC3);
-the plan budget, which since `abc1f4b27` starts no task once spent (RC5); retry budgets set from each gate rung's
-pass rate since `99adacd6d` (QA7); and playbook credit, re-wired in `33e107da1` (LM2). Prompt experiments are
-assigned and settled per attempt, but their winner test ignores the adaptive assignment (PARTIAL@a17d4dadd: LM5,
-spec-6ac537). Verified attempts are written back to the knowledge store, yet plan-run prompts retrieve nothing from it
+Four loops act on what they observe and are WIRED@a17d4dadd: the provider-health circuit breaker (RC3); the plan
+budget, which since `abc1f4b27` starts no task once spent (RC5); retry budgets set from each gate rung's pass rate
+since `99adacd6d` (QA7); and playbook credit, re-wired in `33e107da1` (LM2). Prompt experiments are assigned and
+settled per attempt, but the test that picks a winner is not valid under adaptive assignment (PARTIAL@a17d4dadd:
+LM5, spec-6ac537). Verified attempts are written back to the knowledge store, yet plan-run prompts retrieve nothing from it
 (BROKEN@a17d4dadd: LM3, bug-86117a). No loop has a measured benefit: the audit that would measure one is
 MISSING@a17d4dadd (RG4). §5 describes the mechanisms designed for the missing layers, M1 to M4.
 

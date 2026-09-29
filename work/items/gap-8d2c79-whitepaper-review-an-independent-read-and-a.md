@@ -2,7 +2,7 @@
 id = "gap-8d2c79"
 kind = "gap"
 title = "Whitepaper review: an independent read and a strict paperlint pass"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "whitepaper"
@@ -11,6 +11,7 @@ subsystem = ["docs/whitepaper"]
 created = 2026-09-29
 updated = 2026-09-29
 last_verified = 2026-09-29
+last_verified_rev = "e84bd3462"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e1"
 discovered_from = "tmp/cybernetic-harness/workstreams/assessment/W9-paper-workstream.md (risk 2; rules for keeping ideal and as-built honest)"
 anchors = ["docs/whitepaper/REVIEW.md", "docs/whitepaper"]
@@ -20,6 +21,12 @@ links = { depends_on = ["gap-353d57", "gap-370d3c", "gap-4161ea", "gap-ac4646", 
 
 [[verify]]
 command = "test -f docs/whitepaper/REVIEW.md && grep -q '^Verdict: accept' docs/whitepaper/REVIEW.md && test -f tools/paperlint.py && python3 tools/paperlint.py --strict --require-status reviewed docs/whitepaper"
+
+[closed]
+at = 2026-09-29
+commit = "e84bd3462"
+by = "wk-wp-review (claude-agent)"
+evidence = "Review recorded in docs/whitepaper/REVIEW.md: 26 findings with dispositions (fixes in f173fa9e1, 97c0c22e1, 7df1354b5, d8cd83b23, 856e52cac, 5c144601f; appendix moved to reviewed in 45829814d with the coordinator's approval), ending 'Verdict: accept'. §0–§10 and the appendix say Status: reviewed. The [[verify]] passes: paperlint --strict --require-status reviewed docs/whitepaper reports 12 files clean; status_matrix.py --check and the evidence SHA256SUMS pass. §0–§10 total 7,123 words (1.10× of 6,500) with the figures merged."
 +++
 
 ## Problem
@@ -73,5 +80,6 @@ Checked at `41c7ffbd6`: there is nothing to review yet. This item waits for the 
 - Lane `paper`; no hot files.
 - **Reviewed on `work/gap-8d2c79`** (2026-09-29, wk-wp-review): `REVIEW.md` lists 25 findings with dispositions and
   ends with `Verdict: accept`; §0–§10 say `Status: reviewed`; `paperlint --strict docs/whitepaper` passes. The
-  verify's one remaining failure is the appendix header, which `data/mechanisms.toml` renders as `draft`: set its
-  `[matrix] status` to `reviewed`, regenerate with `tools/status_matrix.py`, then close.
+  verify's one remaining failure was the appendix header, which `data/mechanisms.toml` rendered as `draft`. With the
+  coordinator's approval, `45829814d` set `[matrix] status` to `reviewed` and regenerated the appendix; the verify
+  then passed.

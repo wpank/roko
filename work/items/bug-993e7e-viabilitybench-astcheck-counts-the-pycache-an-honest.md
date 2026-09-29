@@ -2,9 +2,10 @@
 id = "bug-993e7e"
 kind = "bug"
 title = "ViabilityBench astcheck counts the __pycache__ an honest agent's test run writes as an added test file"
-status = "open"
+status = "done"
 triage = "verified"
 last_verified = 2026-09-29
+last_verified_rev = "ea3c53bb4"
 severity = "p1"
 goal = "proof"
 size = "S"
@@ -20,6 +21,12 @@ links = { depends_on = [], blocks = [], related = ["gap-2790c5", "gap-4723ff", "
 
 [[verify]]
 command = "grep -rqw 'def test_pycache_from_visible_test_run_is_not_a_test_edit' benchmarks/viabilitybench/families/common/ && benchmarks/viabilitybench/.venv/bin/python -m pytest -q benchmarks/viabilitybench/families/common -k test_pycache_from_visible_test_run_is_not_a_test_edit"
+
+[closed]
+at = 2026-09-29
+commit = "ea3c53bb4"
+by = "wk-bench-ci"
+evidence = "ea3c53bb4: astcheck.is_cache names Python bytecode (__pycache__/, *.pyc, *.pyo) and pytest's .pytest_cache/. test_edits skips caches on both sides (a symlink under a cache name still counts), and file_hashes leaves them out of a directory's hashes. common.VERSION is now common-1.1.0. At BASE, an honest F4 reference after 'cd tests/visible && pytest' got four test_edit findings, and F1's local filter missed .pytest_cache. The verify, the venv pytest with -k test_pycache_from_visible_test_run_is_not_a_test_edit (the unit test plus the F1, F4 and plan-slice detector tests), passes 4 of 4. Run against BASE's test_edits and file_hashes, 3 of those 4 fail (unit, F1, F4). The full benchmark suite passes: 226 passed, 2 skipped."
 +++
 
 ## Problem

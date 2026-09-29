@@ -25,6 +25,8 @@ pub fn graph_engine_inert_settings(config: &RokoConfig) -> Vec<InertGraphSetting
     const NOT_ENFORCED: &str = "not enforced by the Graph engine";
     const NO_READER: &str = "no production code reads it";
     const DISPLAY_ONLY: &str = "shown by config views; no routing decision reads it";
+    const LADDER: &str = "deprecated: no routing decision reads it; [routing.ladder] picks \
+                          plan-task models";
     const NO_WARM_POOL: &str = "no dispatch path pre-spawns or reuses agents";
     const PIPELINE_BAND: &str = "only `max_turns` in [pipeline.<tier>] affects plan run";
 
@@ -128,12 +130,12 @@ pub fn graph_engine_inert_settings(config: &RokoConfig) -> Vec<InertGraphSetting
         (
             routing.standard_task_model != default_routing.standard_task_model,
             "routing.standard_task_model",
-            DISPLAY_ONLY,
+            LADDER,
         ),
         (
             routing.complex_task_model != default_routing.complex_task_model,
             "routing.complex_task_model",
-            DISPLAY_ONLY,
+            LADDER,
         ),
         (
             routing.context_strategy != default_routing.context_strategy,

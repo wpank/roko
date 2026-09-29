@@ -15,7 +15,9 @@
 //! When [`ModelChoiceSource::Override`] tagged a task, the sink records
 //! it via `record_override_outcome` so manual operator overrides do not
 //! pollute the bandit signal that drives router decisions on
-//! non-overridden tasks.
+//! non-overridden tasks. A `[routing.ladder]` rung
+//! ([`ModelChoiceSource::Ladder`]) is recorded like the router's own pick,
+//! so the learner sees every rung.
 
 use std::sync::Arc;
 
@@ -259,6 +261,37 @@ mod tests {
             r.total_observations() >= 1,
             "observe_multi_objective should advance the LinUCB observation counter",
         );
+    }
+
+    /// gap-9cbf35: a ladder rung's outcome teaches the router like its own
+    /// pick would, so the learner sees every rung.
+    #[tokio::test]
+    async fn ladder_outcomes_are_recorded_like_router_outcomes() {
+        let r = router();
+        let sink = RoutingObservationSink::new(r.clone());
+        let event = FeedbackEvent::TaskCompleted {
+            turns: 0,
+            failure_reason: None,
+            settled: None,
+            plan_id: "p".into(),
+            task_id: "t".into(),
+            outcome: outcome(true),
+            model_source: ModelChoiceSource::Ladder { rung: 3 },
+            succeeded: true,
+            routing_context: Some(test_routing_context()),
+            prompt_text: None,
+            cache_read_tokens: 0,
+            knowledge_ids: vec![],
+            playbook_ids: vec![],
+            initial_model: String::new(),
+        };
+        sink.on_event(&event).await.unwrap();
+        assert_eq!(
+            r.confidence_snapshot().get("claude-sonnet-4-6").copied(),
+            Some((1, 1)),
+            "a ladder outcome is a full confidence trial, not a dampened override"
+        );
+        assert_eq!(r.total_observations(), 1);
     }
 
     #[tokio::test]

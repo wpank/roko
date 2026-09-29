@@ -403,8 +403,48 @@ mod tests {
 
     use super::*;
     use crate::graph_task_dispatch::tests::{
-        cli_provider, make_bare_dispatcher, make_task_def, model,
+        batch_ctx, cli_provider, make_bare_dispatcher, make_batch_dispatcher, make_spec,
+        make_task_def, model,
     };
+
+    /// gap-9cbf35: a plan task without a `model_hint` runs on the model of
+    /// its `[routing.ladder]` start rung.
+    #[tokio::test]
+    async fn an_unhinted_task_runs_on_its_ladder_start_rung() {
+        use roko_core::config::routing::LadderRung;
+
+        let rung = |name: &str, model: &str| LadderRung {
+            name: name.to_string(),
+            model: model.to_string(),
+        };
+        for (tier, slug) in [
+            ("mechanical", "claude-haiku-4-5"),
+            ("architectural", "claude-sonnet-4-6"),
+        ] {
+            let temp = tempdir().expect("tempdir");
+            let (dispatcher, mut task) = make_batch_dispatcher(&temp, 0.01, |config| {
+                config.models.insert(
+                    "cheap-model".to_string(),
+                    model("batch-cli", "claude-haiku-4-5", None),
+                );
+                config.routing.ladder.rungs =
+                    vec![rung("cheap", "cheap-model"), rung("top", "batch-model")];
+            })
+            .await;
+            task.model_hint = None;
+            task.tier = tier.to_string();
+            dispatcher
+                .dispatch(&make_spec(&task), Vec::new(), &batch_ctx())
+                .await
+                .expect("dispatch");
+            let args = std::fs::read_to_string(temp.path().join("provider-args"))
+                .expect("the provider recorded its arguments");
+            assert!(
+                args.contains(&format!("--model {slug}")),
+                "{tier}: provider args: {args}"
+            );
+        }
+    }
 
     /// gap-8c0a20: every consumer reads a plan tier through `TaskTier`, so
     /// for each spelling of a tier the routing band, budget multiplier, turn

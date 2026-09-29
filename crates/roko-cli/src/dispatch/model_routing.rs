@@ -17,9 +17,12 @@
 //!    operator preferences.
 //! 2. **Task hint**. `task_def.model_hint` (if any). Hints are author
 //!    intent — not learned policy — and always beat the router.
-//! 3. **CascadeRouter**. Only consulted when neither override nor hint
-//!    applies. Returns a [`CascadeModel`] whose `primary` slug is used.
-//! 4. **Safe default**. With no router and no hint, fall back to the
+//! 3. **Ladder**. With a [`RoutingLadder`] attached (`[routing.ladder]`, on
+//!    by default), the task's role and tier pick its start rung. The
+//!    cascade router's pick is only logged beside it (shadow).
+//! 4. **CascadeRouter**. Only consulted when no override, hint or ladder
+//!    rung applies. Returns a [`CascadeModel`] whose `primary` slug is used.
+//! 5. **Safe default**. With no router and no hint, fall back to the
 //!    `RunConfig.model` default. The router will eventually populate
 //!    itself from observations.
 //!
@@ -34,9 +37,12 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+use indexmap::IndexMap;
 use roko_core::agent::ModelSpec;
+use roko_core::config::routing::LadderConfig;
+use roko_core::config::schema::{ModelProfile, RokoConfig};
 use roko_core::task::{TaskCategory, TaskTier};
-use roko_learn::cascade_router::{CascadeRouter, RoutingBias};
+use roko_learn::cascade_router::{CascadeModel, CascadeRouter, RoutingBias};
 use roko_learn::latency::LatencyRegistry;
 use roko_learn::model_router::RoutingContext;
 use roko_learn::provider_health::ProviderHealthRegistry;
@@ -121,6 +127,13 @@ pub enum ModelChoiceSource {
     Override,
     /// Author intent (`task.model_hint`).
     TaskHint,
+    /// The task's start rung on `[routing.ladder]` ([`RoutingLadder`]).
+    /// Feedback records its outcome like a router pick, so the learner
+    /// sees every rung.
+    Ladder {
+        /// Index of the rung among the task's rungs, cheapest first.
+        rung: usize,
+    },
     /// Returned by [`CascadeRouter`].
     Router,
     /// Fallback when no other signal was available.
@@ -203,6 +216,9 @@ pub struct ModelRouter {
     /// cascade router results that land in this set are rejected and replaced
     /// with the `default_slug` fallback.
     models_without_tools: HashSet<String>,
+    /// `[routing.ladder]` bound to this workspace. When present, it picks
+    /// the model of every task without an override or hint.
+    ladder: Option<RoutingLadder>,
 }
 
 impl std::fmt::Debug for ModelRouter {
@@ -220,6 +236,7 @@ impl std::fmt::Debug for ModelRouter {
             .field("configured_models", &self.configured_models.len())
             .field("disabled_providers", &self.disabled_providers.len())
             .field("models_without_tools", &self.models_without_tools.len())
+            .field("ladder", &self.ladder)
             .finish()
     }
 }
@@ -237,7 +254,23 @@ impl ModelRouter {
             configured_models: HashSet::new(),
             disabled_providers: HashSet::new(),
             models_without_tools: HashSet::new(),
+            ladder: None,
         }
+    }
+
+    /// Start every task without an override or hint on its
+    /// `[routing.ladder]` rung. The cascade router's pick is then only
+    /// logged.
+    #[must_use]
+    pub fn with_routing_ladder(mut self, ladder: RoutingLadder) -> Self {
+        self.ladder = Some(ladder);
+        self
+    }
+
+    /// The attached routing ladder.
+    #[must_use]
+    pub fn routing_ladder(&self) -> Option<&RoutingLadder> {
+        self.ladder.as_ref()
     }
 
     /// Clone the inner cascade router `Arc` (for factory cache swap).
@@ -323,6 +356,10 @@ impl ModelRouter {
 
     /// Apply the precedence pipeline.
     ///
+    /// Override, then task hint, then the `[routing.ladder]` start rung
+    /// (when a ladder is attached and a rung of the task's ladder can run),
+    /// then the cascade router, then the default.
+    ///
     /// When a conductor [`RoutingBias`] is supplied through `inputs.routing_bias`,
     /// the bias is applied to the cascade router selection: deprioritized models
     /// are filtered out and `prefer_cheaper` shifts scoring toward cheaper tiers.
@@ -351,32 +388,12 @@ impl ModelRouter {
                 source: ModelChoiceSource::TaskHint,
             });
         }
+        if let Some(choice) = self.ladder_choice(inputs) {
+            return Ok(choice);
+        }
         if let Some(router) = self.cascade.as_ref() {
             if let Some(ctx) = &inputs.routing_context {
-                // Merge budget pressure into routing bias when applicable.
-                let effective_bias = Self::effective_bias(inputs);
-
-                let cascade_model = if let Some(health) = &self.health {
-                    // Health-aware path: filters Open providers, demotes HalfOpen
-                    // and optionally high-latency providers.
-                    let latency_ref = self.latency_registry.as_deref();
-                    router.route_with_health_scored(
-                        ctx,
-                        health,
-                        &self.model_providers,
-                        latency_ref,
-                        self.latency_threshold_ms,
-                    )
-                } else if let Some(bias) = &effective_bias {
-                    // Conductor / budget bias path (no health data).
-                    if bias.deprioritize.is_empty() && !bias.prefer_cheaper {
-                        router.route(ctx)
-                    } else {
-                        router.route_with_bias(ctx, bias)
-                    }
-                } else {
-                    router.route(ctx)
-                };
+                let cascade_model = self.cascade_pick(router, ctx, inputs);
                 // Guard: if the workspace has a known set of configured
                 // providers, reject models that lack credentials.  This
                 // prevents the cascade router from selecting a model whose
@@ -490,6 +507,66 @@ impl ModelRouter {
         Ok(choice)
     }
 
+    /// The task's start rung on the attached `[routing.ladder]`, logged
+    /// beside the cascade router's own pick (shadow). `None` without a
+    /// ladder, or when no rung of the task's ladder can run.
+    fn ladder_choice(&self, inputs: &RoutingInputs) -> Option<ModelChoice> {
+        let start = self
+            .ladder
+            .as_ref()?
+            .start(&inputs.role, inputs.task_tier)?;
+        let shadow = self
+            .cascade
+            .as_ref()
+            .zip(inputs.routing_context.as_ref())
+            .map(|(router, ctx)| self.cascade_pick(router, ctx, inputs).primary.slug);
+        tracing::info!(
+            role = %inputs.role,
+            tier = %inputs.task_tier,
+            rung = %start.name,
+            model = %start.model,
+            router_pick = shadow.as_deref().unwrap_or("none"),
+            "model routed by the ladder"
+        );
+        Some(ModelChoice {
+            model: ModelSpec::from_slug(start.model),
+            source: ModelChoiceSource::Ladder { rung: start.index },
+        })
+    }
+
+    /// The cascade router's pick for `ctx`, before the provider guards.
+    fn cascade_pick(
+        &self,
+        router: &CascadeRouter,
+        ctx: &RoutingContext,
+        inputs: &RoutingInputs,
+    ) -> CascadeModel {
+        // Merge budget pressure into routing bias when applicable.
+        let effective_bias = Self::effective_bias(inputs);
+
+        if let Some(health) = &self.health {
+            // Health-aware path: filters Open providers, demotes HalfOpen
+            // and optionally high-latency providers.
+            let latency_ref = self.latency_registry.as_deref();
+            router.route_with_health_scored(
+                ctx,
+                health,
+                &self.model_providers,
+                latency_ref,
+                self.latency_threshold_ms,
+            )
+        } else if let Some(bias) = &effective_bias {
+            // Conductor / budget bias path (no health data).
+            if bias.deprioritize.is_empty() && !bias.prefer_cheaper {
+                router.route(ctx)
+            } else {
+                router.route_with_bias(ctx, bias)
+            }
+        } else {
+            router.route(ctx)
+        }
+    }
+
     /// Merge `budget_pressure` into the existing `routing_bias` when the
     /// plan budget has crossed the 80% threshold.
     fn effective_bias(inputs: &RoutingInputs) -> Option<RoutingBias> {
@@ -516,6 +593,139 @@ impl ModelRouter {
             (None, false) => None,
         }
     }
+}
+
+// ─── Ladder ────────────────────────────────────────────────────────────
+
+/// `[routing.ladder]` bound to the models this workspace can dispatch.
+///
+/// Built once per run by [`Self::from_config`], which logs each rung it
+/// skips; [`Self::start`] then picks each task's start rung.
+#[derive(Debug, Clone)]
+pub struct RoutingLadder {
+    config: LadderConfig,
+    /// Rung model as configured → the model name dispatch runs, for every
+    /// rung model this workspace can dispatch.
+    runnable: HashMap<String, String>,
+}
+
+/// The rung a task starts on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LadderStartRung {
+    /// Index of the rung among the task's rungs, cheapest first.
+    pub index: usize,
+    /// Rung name (`"cheap"`).
+    pub name: String,
+    /// Model to dispatch: the `[models.*]` entry's slug, or its key when the
+    /// slug alone would not select that entry.
+    pub model: String,
+}
+
+impl RoutingLadder {
+    /// Bind `config.routing.ladder` to this workspace. `None` when the
+    /// ladder is off or none of its rungs can run here, which leaves routing
+    /// as it was.
+    #[must_use]
+    pub fn from_config(config: &RokoConfig) -> Option<Self> {
+        Self::from_config_with(config, |key| config.provider_available_for_model_key(key))
+    }
+
+    /// [`Self::from_config`] with an injectable provider-availability check
+    /// on a `[models.*]` key.
+    pub(crate) fn from_config_with(
+        config: &RokoConfig,
+        available: impl Fn(&str) -> bool,
+    ) -> Option<Self> {
+        let ladder = &config.routing.ladder;
+        if !ladder.enabled {
+            return None;
+        }
+        for issue in ladder.issues() {
+            tracing::warn!(%issue, "routing ladder is misconfigured");
+        }
+        let models = config.effective_models();
+        let mut runnable = HashMap::new();
+        let mut seen = HashSet::new();
+        for rung in ladder.all_rungs() {
+            if !seen.insert(rung.model.as_str()) {
+                continue;
+            }
+            match rung_dispatch_model(config, &models, &rung.model, &available) {
+                Ok(model) => {
+                    runnable.insert(rung.model.clone(), model);
+                }
+                Err(reason) => tracing::info!(
+                    rung = %rung.name,
+                    model = %rung.model,
+                    reason,
+                    "routing ladder: skipping a rung this workspace cannot run"
+                ),
+            }
+        }
+        if runnable.is_empty() {
+            tracing::info!("routing ladder: no rung can run in this workspace; the router picks");
+            return None;
+        }
+        Some(Self {
+            config: ladder.clone(),
+            runnable,
+        })
+    }
+
+    /// The rung a task of `tier` in `role` starts on, or `None` when no rung
+    /// of its ladder can run.
+    #[must_use]
+    pub fn start(&self, role: &str, tier: TaskTier) -> Option<LadderStartRung> {
+        let resolved = self
+            .config
+            .resolve(role, tier, |model| self.runnable.contains_key(model))?;
+        let rung = resolved.start_rung();
+        Some(LadderStartRung {
+            index: resolved.start,
+            name: rung.name.clone(),
+            model: self.runnable.get(&rung.model)?.clone(),
+        })
+    }
+}
+
+/// The model name dispatch runs for a rung's model, or why the rung cannot
+/// run. The model must name a `[models.*]` entry (by key, else by slug)
+/// that can call tools, whose provider is not in
+/// `routing.disabled_providers` and is `available`.
+fn rung_dispatch_model(
+    config: &RokoConfig,
+    models: &IndexMap<String, ModelProfile>,
+    model: &str,
+    available: impl Fn(&str) -> bool,
+) -> Result<String, &'static str> {
+    let model = model.trim();
+    let (key, profile) = models
+        .get_key_value(model)
+        .or_else(|| models.iter().find(|(_, profile)| profile.slug == model))
+        .ok_or("no [models.*] entry has this key or slug")?;
+    if profile.is_embedding_model || !profile.supports_tools {
+        return Err("the model cannot call tools");
+    }
+    if config
+        .routing
+        .disabled_providers
+        .contains(&profile.provider)
+    {
+        return Err("its provider is in routing.disabled_providers");
+    }
+    if !available(key) {
+        return Err("its provider has no credentials or command");
+    }
+    // Dispatch reads a model name as a `[models.*]` key before a slug, so the
+    // slug selects this entry only when no other entry uses it as a key or
+    // a slug.
+    let slug = profile.slug.trim();
+    let slug_is_unique = !slug.is_empty()
+        && models
+            .iter()
+            .filter(|(other_key, _)| *other_key != key)
+            .all(|(other_key, other)| other_key.as_str() != slug && other.slug.trim() != slug);
+    Ok(if slug_is_unique { slug } else { key.as_str() }.to_string())
 }
 
 // ─── Tests ─────────────────────────────────────────────────────────────
@@ -685,6 +895,183 @@ mod tests {
             t.tier = tier.into();
             assert_eq!(RoutingInputs::from_task(&t, &ctx()).task_tier, expected);
         }
+    }
+
+    // ── Routing ladder (gap-9cbf35) ────────────────────────────────────
+
+    /// A workspace with D11's three executor models and Sonnet.
+    fn ladder_config() -> RokoConfig {
+        let mut config = RokoConfig::default();
+        config.models.clear();
+        for (key, provider, slug) in [
+            ("cerebras-gptoss", "cerebras", "gpt-oss-120b"),
+            ("glm-4-7", "zai", "glm-4.7"),
+            ("gpt-5-4-mini", "openai", "gpt-5.4-mini"),
+            ("claude-sonnet", "claude_cli", "claude-sonnet-4-6"),
+        ] {
+            config.models.insert(
+                key.to_string(),
+                ModelProfile {
+                    provider: provider.to_string(),
+                    slug: slug.to_string(),
+                    supports_tools: true,
+                    ..ModelProfile::default()
+                },
+            );
+        }
+        config
+    }
+
+    fn ladder(config: &RokoConfig, available: impl Fn(&str) -> bool) -> RoutingLadder {
+        RoutingLadder::from_config_with(config, available).expect("a rung can run")
+    }
+
+    /// Route `task` for `ctx` through a router with a cascade and `ladder`.
+    fn ladder_route(ladder: RoutingLadder, task: &TaskDef, ctx: &DispatchContext) -> ModelChoice {
+        let cascade = Arc::new(CascadeRouter::new(vec![
+            "claude-sonnet-4-6".into(),
+            "gpt-5".into(),
+        ]));
+        let router = ModelRouter::new(Some(cascade)).with_routing_ladder(ladder);
+        let mut inputs = RoutingInputs::from_task(task, ctx);
+        inputs.routing_context = Some(routing_context());
+        router.route(&inputs).unwrap()
+    }
+
+    fn routed(choice: &ModelChoice) -> (&str, ModelChoiceSource) {
+        (choice.model.slug.as_str(), choice.source)
+    }
+
+    #[test]
+    fn ladder_routes_by_role_and_tier() {
+        use roko_core::config::routing::{LadderRoleConfig, LadderStart};
+
+        let everywhere = ladder(&ladder_config(), |_| true);
+        let mut t = task();
+
+        // With no hint, a mechanical implementer task starts on the first
+        // rung, and the choice says the ladder made it.
+        t.tier = "mechanical".into();
+        let choice = ladder_route(everywhere.clone(), &t, &ctx());
+        assert_eq!(
+            routed(&choice),
+            ("gpt-oss-120b", ModelChoiceSource::Ladder { rung: 0 })
+        );
+        assert!(!choice.forced());
+        for (tier, slug, rung) in [
+            ("focused", "gpt-oss-120b", 0),
+            ("integrative", "glm-4.7", 1),
+            ("architectural", "claude-sonnet-4-6", 3),
+        ] {
+            t.tier = tier.into();
+            let choice = ladder_route(everywhere.clone(), &t, &ctx());
+            assert_eq!(
+                routed(&choice),
+                (slug, ModelChoiceSource::Ladder { rung }),
+                "{tier}"
+            );
+        }
+        t.tier = "mechanical".into();
+
+        // roko.toml names rungs by `[models.*]` key; dispatch gets the slug.
+        let mut by_key = ladder_config();
+        let keys = [
+            "cerebras-gptoss",
+            "glm-4-7",
+            "gpt-5-4-mini",
+            "claude-sonnet",
+        ];
+        for (rung, key) in by_key.routing.ladder.rungs.iter_mut().zip(keys) {
+            rung.model = key.to_string();
+        }
+        let choice = ladder_route(ladder(&by_key, |_| true), &t, &ctx());
+        assert_eq!(choice.model.slug, "gpt-oss-120b");
+
+        // A role override moves that role's start rung only.
+        let mut config = ladder_config();
+        config.routing.ladder.roles.push(LadderRoleConfig {
+            role: "reviewer".to_string(),
+            start: LadderStart {
+                mechanical: Some("strong".to_string()),
+                ..LadderStart::default()
+            },
+            ..LadderRoleConfig::default()
+        });
+        let with_reviewer = ladder(&config, |_| true);
+        let mut reviewer = ctx();
+        reviewer.role = "reviewer".into();
+        let choice = ladder_route(with_reviewer.clone(), &t, &reviewer);
+        assert_eq!(
+            routed(&choice),
+            ("gpt-5.4-mini", ModelChoiceSource::Ladder { rung: 2 })
+        );
+        let choice = ladder_route(with_reviewer, &t, &ctx());
+        assert_eq!(choice.model.slug, "gpt-oss-120b");
+
+        // A rung whose provider has no credentials is skipped: the task
+        // starts one rung up. So is a disabled provider or a tool-less model.
+        let no_cerebras = ladder(&ladder_config(), |key| key != "cerebras-gptoss");
+        let choice = ladder_route(no_cerebras, &t, &ctx());
+        assert_eq!(
+            routed(&choice),
+            ("glm-4.7", ModelChoiceSource::Ladder { rung: 1 })
+        );
+        let mut config = ladder_config();
+        config.routing.disabled_providers = vec!["cerebras".to_string()];
+        config
+            .models
+            .get_mut("glm-4-7")
+            .expect("glm")
+            .supports_tools = false;
+        let choice = ladder_route(ladder(&config, |_| true), &t, &ctx());
+        assert_eq!(choice.model.slug, "gpt-5.4-mini");
+
+        // A slug that another entry shares would not select the rung's
+        // entry, so dispatch gets its key.
+        let mut config = ladder_config();
+        config.models.insert(
+            "groq-gptoss".to_string(),
+            ModelProfile {
+                provider: "groq".to_string(),
+                slug: "gpt-oss-120b".to_string(),
+                supports_tools: true,
+                ..ModelProfile::default()
+            },
+        );
+        config.routing.ladder.rungs[0].model = "cerebras-gptoss".to_string();
+        let choice = ladder_route(ladder(&config, |_| true), &t, &ctx());
+        assert_eq!(choice.model.slug, "cerebras-gptoss");
+
+        // A workspace with only Claude routes every tier to Sonnet, as the
+        // router's default did.
+        let claude_only = ladder(&ladder_config(), |key| key == "claude-sonnet");
+        for tier in TaskTier::ALL {
+            t.tier = tier.label().into();
+            let choice = ladder_route(claude_only.clone(), &t, &ctx());
+            assert_eq!(choice.model.slug, "claude-sonnet-4-6", "{tier}");
+        }
+        t.tier = "mechanical".into();
+
+        // No rung that can run, no ladder model configured, or the ladder
+        // turned off: no ladder, and the router decides as before.
+        assert!(RoutingLadder::from_config_with(&ladder_config(), |_| false).is_none());
+        assert!(RoutingLadder::from_config_with(&RokoConfig::default(), |_| true).is_none());
+        let mut off = ladder_config();
+        off.routing.ladder.enabled = false;
+        assert!(RoutingLadder::from_config_with(&off, |_| true).is_none());
+
+        // A task hint and `--model` still win over the ladder.
+        t.model_hint = Some("claude-haiku-4-5".into());
+        let choice = ladder_route(everywhere.clone(), &t, &ctx());
+        assert_eq!(
+            routed(&choice),
+            ("claude-haiku-4-5", ModelChoiceSource::TaskHint)
+        );
+        t.model_hint = None;
+        let mut forced = ctx();
+        forced.force_backend = Some("gpt-5".into());
+        let choice = ladder_route(everywhere, &t, &forced);
+        assert_eq!(routed(&choice), ("gpt-5", ModelChoiceSource::Override));
     }
 
     // ── Conductor routing bias tests (E08-T07) ─────────────────────────

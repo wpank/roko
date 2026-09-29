@@ -6,6 +6,7 @@ Run from the repository root with the benchmark venv:
 
 from __future__ import annotations
 
+import hashlib
 import itertools
 import json
 import os
@@ -19,12 +20,14 @@ import agent_env
 import caps
 import layout
 import ledger
+import materialize
 import mini_loop
 import validate
 import vb
-from common import canary, hmac_seed
+from common import canary, hmac_seed, repo
 from stub_provider import StubServer, bash, scripted
 
+TOY_FAMILY = layout.DRIVER_DIR / "testdata" / "toy_family"
 TOY_STREAM = str(layout.DRIVER_DIR / "testdata" / "toy_stream.toml")
 FAKE_KEY = "sk-test-not-a-real-key-0f3c"
 PROBE = "vb-probe-value-7d21"
@@ -120,6 +123,43 @@ def test_offline_run_writes_valid_records(places, tmp_path, monkeypatch):
     assert private_manifest.stat().st_mode & 0o777 == 0o600
     assert json.loads((out / "manifest.json").read_text())["offline"] is True
     assert not (places["work"] / "run-1").exists()  # workdirs are removed after archiving
+
+
+def test_materialize_renders_real_family_instances(tmp_path, capsys):
+    # bug-2930a8: F1 and F4 write the task repo to --workdir and everything private to --out, not to <workdir>/.vb/.
+    for instance_id in ("F1-l1-0001", "F4-l1-0001"):
+        workdir = tmp_path / instance_id
+        assert vb.main(["materialize", "--stream", "pilot", "--instance", instance_id, "--out", str(workdir)]) == 0
+        shown = json.loads(capsys.readouterr().out)
+        private = tmp_path / f"{instance_id}.private" / materialize.TASK_DIR
+        assert (shown["workdir"], shown["manifest"]) == (str(workdir), str(private / "task.json"))
+        manifest = json.loads((private / "task.json").read_text())
+        assert manifest["instance_id"] == instance_id and manifest["canary"] == canary.RELEASE_CANARY
+        assert (private / "task.json").stat().st_mode & 0o777 == 0o600
+        spec = (private / manifest["spec"]["precise"]["path"]).read_bytes()
+        assert hashlib.sha256(spec).hexdigest() == manifest["spec"]["precise"]["sha256"]
+        # The agent's workdir is the pristine base at its commit, with no manifest, spec, bundle or canary in it.
+        names = {path.relative_to(workdir).as_posix() for path in workdir.rglob("*")
+                 if ".git" not in path.relative_to(workdir).parts}
+        assert "tests/visible" in names and not [name for name in names if Path(name).name in (
+            "task.json", "spec.precise.md", "pristine.json", "pristine.bundle", materialize.TASK_DIR)]
+        assert canary.find_in_tree(workdir) == {}
+        pristine = shown["pristine"]
+        assert Path(pristine["bundle"]) == private / "pristine.bundle" and Path(pristine["bundle"]).is_file()
+        head = subprocess.run(["git", "-C", str(workdir), "rev-parse", "HEAD"], capture_output=True, text=True,
+                              check=True).stdout.strip()
+        assert repo.tree_hash(workdir) == pristine["tree"] and head == pristine["commit"]
+
+    # A generator whose workdir drifts from the pristine base it recorded is refused before any agent runs.
+    drifting = tmp_path / "drifting"
+    drifting.mkdir()
+    (drifting / "gen.py").write_text(
+        "import runpy, sys\nfrom pathlib import Path\n"
+        f"try:\n    runpy.run_path({str(TOY_FAMILY / 'gen.py')!r}, run_name='__main__')\nexcept SystemExit:\n    pass\n"
+        "(Path(sys.argv[sys.argv.index('--workdir') + 1]) / 'late.txt').write_text('after the commit')\n")
+    with pytest.raises(materialize.MaterializeError, match="not the pristine tree"):
+        materialize.materialize(family_dir=drifting, instance_id="F1-l1-0001", workdir=tmp_path / "late",
+                                private_dir=tmp_path / "late.private")
 
 
 def test_runaway_agent_is_killed_within_30_calls(places):

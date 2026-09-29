@@ -2,7 +2,7 @@
 id = "gap-6ff814"
 kind = "gap"
 title = "The portal never shows the design's run summaries: the all-dispatched, finished and stopped-at sentences are unreachable"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "visibility"
@@ -11,7 +11,7 @@ subsystem = ["apps/portal"]
 created = 2026-09-29
 updated = 2026-09-29
 last_verified = 2026-09-29
-last_verified_rev = "f99e45dba"
+last_verified_rev = "ffffcb4fb"
 source = "plan:portal-programme/09-acceptance#T04"
 discovered_from = "plan:portal-programme/09-acceptance#T04"
 anchors = ["apps/portal/src/lib/emptyState.ts::describeEmpty", "apps/portal/src/components/stream/StreamPane.tsx:351", "apps/portal/src/lib/taskRows.ts::focusTaskId"]
@@ -19,6 +19,12 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqF --include='*.test.ts' --include='*.test.tsx' 'shows the finished sentence' apps/portal/src && (cd apps/portal && npx vitest run src/components/stream src/components/stage src/lib/emptyState)"
+
+[closed]
+at = 2026-09-29
+commit = "ffffcb4fb"
+by = "commit trailer"
+evidence = "ffffcb4fb: the run-state sentence lives in the stage, under the status line, once the plan has run (PlanView renders describePlan(planState(...)) as data-region=run-summary, whatever task has focus; before a run the status line carries tasks and waves). lib/emptyState.planState passes waves, the first failed task and its failed check, and the duration; StreamPane uses it ('Ready — 2 tasks in 2 waves.') and gets the plan count from Workspace, so an open stream with plans but none selected asks to select one. Tests: components/stage/runSummary.test.tsx (6: 'shows the finished sentence' for a completed plan with T01 selected, the accepted variant, stopped-at T02 with its structural check, all-dispatched, placement, none before a run), components/stream/streamSentence.test.tsx (4), lib/emptyState.test.ts (+5); the [[verify]] passes (18 files, 125 tests)."
 +++
 
 ## Problem

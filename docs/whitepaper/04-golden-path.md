@@ -33,9 +33,9 @@ LEARN       11  Learn                PARTIAL     --> steps 1 to 4, next plan
 ## 4.1 Author
 
 A frontier model drafts the plan with the author, who edits and regenerates it quickly: PARTIAL@a17d4dadd. Only some
-CLI paths can choose the planner model (gap-853b31), the prompt cuts the PRD at 8,000 characters and lets the planner
-read at most five files, and the portal's plans were written outside Roko (§7). Principle: *put ambiguity back into
-authoring*.
+CLI paths can choose the planner model (gap-853b31), the prompt (`crates/roko-cli/src/prd.rs`) cuts the PRD at 8,000
+characters and lets the planner read at most five files, and the portal's plans were written outside Roko (§7).
+Principle: *put ambiguity back into authoring*.
 
 ## 4.2 Compile the spec
 
@@ -69,8 +69,9 @@ outputs*.
 
 Each task works in its own workspace, out of reach of the operator's secrets: PARTIAL@a17d4dadd. Tasks edit the
 operator's checkout by default, and the opt-in per-task worktree never merges its edits back. Since `1d923e377`, gates
-and provider CLIs no longer inherit Roko's provider keys (bug-7d7200), but agent tool shells and MCP servers still do,
-there is no OS sandbox, and the git guard lets `reset`, `stash` and `clean` through.
+start from an allowlisted environment and provider CLIs drop the key variables they recognise (bug-7d7200), but agent
+tool shells and MCP servers still inherit the keys, there is no OS sandbox, and the git guard lets `reset`, `stash`
+and `clean` through.
 
 ## 4.7 Verify
 
@@ -91,7 +92,7 @@ MISSING@a17d4dadd. Principle: *retry cheaply, then escalate*.
 
 Each verified task commits to a plan branch through a merge queue (ORPHANED@a17d4dadd), and a whole-plan gate checks
 the merged result (MISSING@a17d4dadd). Nothing merges on the Graph path: `MergeQueue` and `accept_attempt` have no
-production caller. On 2026-09-28 every portal plan was green while the assembled product was unusable (§7).
+production caller. On 2026-09-28 portal plans 05 to 08 passed every gate while the assembled product was unusable (§7).
 Principle: *merge, then verify*.
 
 ## 4.10 Review
@@ -104,9 +105,9 @@ this step yet.
 
 Verified outcomes teach Roko how to route, size and specify tasks: PARTIAL@a17d4dadd. Merges on 2026-09-29
 (`ce3bdcbb8`, `33e107da1`) re-wired playbook credit, prompt experiments, knowledge write-back and retry budgets from
-gate history, but no loop has a measured benefit, and the knowledge read path, BROKEN@a17d4dadd, injects nothing
-(bug-86117a). On the portal the router saw one pinned model, so it learned nothing about alternatives.[^4-model]
-Principle: *count cost per verified task*. §5 covers the loops.
+gate history. But no loop has a measured benefit, the knowledge read path, BROKEN@a17d4dadd, injects nothing
+(bug-86117a), and on the portal the router saw one pinned model (§4.12). Principle: *count cost per verified task*.
+§5 covers the loops.
 
 ## 4.12 Where the path stands
 
@@ -134,9 +135,10 @@ through the ladder on real cheap models and merges green, three runs out of thre
 frontier agent.
 
 [^4-plans]: Counted at `a17d4dadd` over the 132 tracked `tasks.toml` files under `plans/`;
-    `git grep -l -E '^max_parallel *= *1( |#|$)' a17d4dadd -- plans/` lists the 102. Tasks could run together when two
-    sit at the same depth of the plan's dependency graph (parsed with `tomllib`).
-[^4-verdicts]: spec-e9d7ec, from Roko's run records, which §7 freezes (CASE-001). Visible verify steps only: recorded
-    successes from 2026-09-05 to the fix, then passes to 2026-09-29 07:41Z. Not an audited false-green rate.
-[^4-model]: spec-f09094 and gap-e21595: all 210 portal attempts, to 2026-09-29 07:41Z, pinned one model; §7 gives
-    the record.
+    `git grep -l -E '^max_parallel *= *1( |#|$)' a17d4dadd -- 'plans/*tasks.toml'` lists the 102. Tasks could run
+    together when two sit at the same depth of the plan's dependency graph (parsed with `tomllib`).
+[^4-verdicts]: Research note B7, frozen as `evidence/2026-09-29-b7-real-run-evidence.md` (sha256 `799b6a2b6184`),
+    "TL;DR", and CASE-001 in `evidence/2026-09-29-field-cases.md`; also spec-e9d7ec. Visible verify steps only:
+    recorded successes from 2026-09-05 to the fix, then passes to 2026-09-29 07:41Z. Not an audited false-green rate.
+[^4-model]: B7 as above, "TL;DR": all 210 portal attempts, to 2026-09-29 07:41Z, pinned one model; also
+    spec-f09094 and gap-e21595.

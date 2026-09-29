@@ -36,10 +36,10 @@ ids:[^8-metrics] the verified success rate; cost per verified task, or per verif
 that all k seeds succeed; false greens, accepted runs that hidden tests reject; and wall-clock time, or a plan's
 makespan.
 
-Safeguards: the hidden-test secret sits in a driver-only file, read only after the agent exits (gap-a8a160); Claude Code
-runs with a fresh config, free of the user's memory, hooks, plugins, MCP servers and fallback model
-(gap-c4f364); and each run starts fresh, with every attempt's model checked, because failover can switch it
-silently (PARTIAL@a17d4dadd, row RC4; gap-b7ab99).
+Safeguards: the hidden-test secret sits in a driver-only file, read only after the agent exits (gap-a8a160); Claude
+Code runs with an isolated config, free of the user's memory, hooks and plugins (gap-c4f364); and each run starts
+fresh, with every attempt's model checked, because failover can switch it silently (PARTIAL@a17d4dadd, row RC4;
+gap-b7ab99).
 
 ## 8.4 Falsifiers
 

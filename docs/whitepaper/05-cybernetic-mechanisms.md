@@ -29,13 +29,12 @@ Each loop senses outcomes and changes a later decision.
 | Hindsight relabelling | A verify failure that blames an earlier task | That task's recorded success | PARTIAL@a17d4dadd (LM12): nothing reads the corrections; gap-5be28d |
 
 Runner-v2's learning loops lived in its event loop, and most lost their caller or their data when `6b5da8616` deleted
-it.[^5-lost] Merges on 2026-09-29 re-attached several. `ce3bdcbb8` keeps retry feedback across a resume and lets rung
-pass rates set retry budgets. `33e107da1` credits the playbooks a prompt used (reg-3f5969), writes gate-verified
-attempts to the knowledge store (reg-06ae9f), assigns and settles prompt experiments per attempt (gap-fdd27f) and
-relabels a success that a later verify failure blames (gap-5fb9a7); `70820a74c` closed those four items. Two limits
-remain. Most loops still learn from a pass/fail flag that counts unverified outcomes as passes (QA2, PARTIAL@a17d4dadd;
-spec-e9d7ec). And no loop has a measured benefit, under Runner-v2 or since: that learning improves outcomes is
-UNPROVEN@a17d4dadd until M2, a wiring census (gap-1f2661) and frozen-learning runs (gap-644040) exist.
+it.[^5-lost] Merges on 2026-09-29 re-attached several: `ce3bdcbb8` retry feedback across a resume and retry budgets
+from rung pass rates; `33e107da1` playbook credit (reg-3f5969), knowledge write-back (reg-06ae9f), prompt experiments
+per attempt (gap-fdd27f) and hindsight relabelling (gap-5fb9a7). Two limits remain. Most loops still learn from a
+pass/fail flag that counts unverified outcomes as passes (QA2, PARTIAL@a17d4dadd; spec-e9d7ec). And no loop has a
+measured benefit, under Runner-v2 or since: that learning improves outcomes is UNPROVEN@a17d4dadd until M2, a wiring
+census (gap-1f2661) and frozen-learning runs (gap-644040) exist.
 
 ## 5.3 Second-order mechanisms and guarded commit
 
@@ -78,7 +77,7 @@ noise and depended on task order [@ye2026fragility], and on a trading benchmark,
 weakened under distribution shift [@lin2026evopath]. None of these measured repository-scale plans.
 
 Subsystems built on analogies are proposals to park (§9), not features: affect (PARTIAL@a17d4dadd, LM8) and offline
-batch consolidation (ORPHANED@a17d4dadd, LM7), both decided by q-6b7cca; HDC similarity (BUILT-UNWIRED@a17d4dadd, LM10);
+batch consolidation (ORPHANED@a17d4dadd, LM7), both pending q-6b7cca; HDC similarity (BUILT-UNWIRED@a17d4dadd, LM10);
 and the conductor (ORPHANED@a17d4dadd, RG2; gap-ebd656).
 
 [^5-lost]: find-34a4b5 lists the learning closures wired into the deleted event loop and their state on the Graph

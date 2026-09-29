@@ -5,10 +5,8 @@ Status: draft · budget 550 words · owner gap-353d57
 ## 1.1 Capable or cheap
 
 Unattended agent work forces a choice. Frontier models complete more tasks but cost more per attempt; cheap
-models cost little but fail more often. Models fail more as tasks get longer: on software and research tasks,
-the task length a model completes 80% of the time is 4–6× shorter than the one it completes half the time
-[@kwa2025measuring], and even given the plan, small models go wrong far sooner than large ones
-[@sinha2025illusion].
+models cost little but fail more often. Models fail more as tasks get longer, and small ones far sooner
+[@kwa2025measuring; @sinha2025illusion]; §2 gives the settings.
 
 Roko bets on the harness, the code that wraps a model and decides when its work counts as done. On work that
 splits into small tasks with executable checks, the bet is that specs, checks, retries, escalation, integration
@@ -41,8 +39,8 @@ recorded agent spend.[^1-portal] Since a verdict fix on 2026-09-28, 0 of 151 rec
 `claude-sonnet-4-6`, so the cheap-model half of the thesis is UNPROVEN@a17d4dadd (spec-567e52). And supervising
 frontier-model Claude Code sessions wrote and audited the plans, fixed engine defects, set up worktrees, merged by
 hand and checked the assembled product (§7), costing an estimated 16–20× Roko's recorded spend over the same
-days.[^1-operator] Across 42 captured runs, Roko recovered from a failure by itself twice and an operator stepped
-in 39 times: an autonomy index of 2/41.[^1-autonomy]
+days.[^1-operator] Across 42 captured runs, Roko recovered from a failure by itself twice and people stepped in
+39 times: an autonomy index of 2/41.[^1-autonomy]
 
 ## 1.4 Contributions
 
@@ -55,14 +53,19 @@ in 39 times: an autonomy index of 2/41.[^1-autonomy]
 - **Status:** limitations and the order of work (§9), related work (§10), and every mechanism's tag at one
   commit (appendix).
 
-[^1-portal]: Roko's records for the portal plans, attempts to 2026-09-29 07:41Z; costs as recorded, without a
-    cost source or the supervising sessions. §7 cites the frozen copy (gap-29a64e).
+[^1-portal]: Research note B7, frozen as `evidence/2026-09-29-b7-real-run-evidence.md` (sha256 `799b6a2b6184`),
+    "TL;DR": Roko's records for the portal plans, attempts to 2026-09-29 07:41Z; costs as recorded, without a cost
+    source or the supervising sessions.
 
-[^1-verdicts]: Counts recorded successes whose own gate failed. Before the fix (`725f21e05`): 430 attempts in 31 plans
-    from 2026-09-05; after it, 168 attempts to 2026-09-29 07:41Z. Items bug-82d47b, bug-521f08, bug-06e2d1.
+[^1-verdicts]: B7 as above, "Method" and "TL;DR": recorded successes whose own gate failed. Before the fix
+    (`725f21e05`): 430 attempts in 31 plans from 2026-09-05; after it, 168 attempts to 2026-09-29 07:41Z. Items
+    bug-82d47b, bug-521f08, bug-06e2d1.
 
-[^1-operator]: An estimate: the sessions' transcripts, 2026-09-25 to 09-29, at API list prices and including
-    research work, against $172.80 recorded by Roko; gap-263de5 will replace it with harvested figures.
+[^1-operator]: Assessment note W12, table F2, frozen as `evidence/2026-09-29-w12-operator-loop-cost.md` (sha256
+    `82676de5eee4`): an estimate from the sessions' token counts, 2026-09-25 to 09-29, at API list prices and
+    including research work, against $172.80 recorded by Roko. The harvester (gap-263de5) is built; measured
+    figures await the daily rollup (gap-ccb87e).
 
-[^1-autonomy]: Field rollup 2026-09-29T14:37:51, corrected by bug-7b37c4: 42 runs from 2026-08-22, 124 notes.
+[^1-autonomy]: Field rollup 2026-09-29T14:37:51, corrected by bug-7b37c4, frozen as
+    `evidence/2026-09-29-field-rollup.md` (sha256 `7bade1532a6d`), "Totals": 42 runs from 2026-08-22, 124 notes.
     Index: automatic recoveries over automatic recoveries plus interventions. Observational.

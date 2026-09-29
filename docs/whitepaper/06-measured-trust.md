@@ -3,9 +3,8 @@ Status: draft · budget 450 words · owner gap-424bf8
 # 6 Measured trust
 
 Cheap executors are worth using only if a team can tell which results to trust. Roko is designed to report three
-measures of that trust from the team's own runs, defined below by what each counts, its denominator and how it is
-reported, and tagged from the appendix's status matrix. None is produced today. §5 describes the mechanisms; §8,
-how they will be evaluated.
+measures of that trust from the team's own runs; none is produced today. §5 describes the mechanisms, and §8 how
+they will be evaluated.
 
 ## 6.1 Three measures
 
@@ -34,6 +33,6 @@ router is "managed by Cursor", and Factory's sends routine steps to cheaper mode
 the user's own verdicts, reports how often a pass is wrong, or gives evidence per learning mechanism. This
 describes documentation on one date, not a claim of priority.
 
-[^6-verdicts]: Fix commit `725f21e05` (bug-82d47b, bug-521f08, bug-06e2d1); counts as quoted in spec-ce1484 and
-    spec-e9d7ec. Before: 430 attempts in 31 plans, 2026-09-05 to the fix; after: 168 attempts to 2026-09-29 07:41Z.
-    §7 gives the full case.
+[^6-verdicts]: Research note B7, frozen as `evidence/2026-09-29-b7-real-run-evidence.md` (sha256 `799b6a2b6184`),
+    "TL;DR"; fix commit `725f21e05` (bug-82d47b, bug-521f08, bug-06e2d1). Before: 430 attempts in 31 plans,
+    2026-09-05 to the fix; after: 168 attempts to 2026-09-29 07:41Z. §7 gives the full case (CASE-001).

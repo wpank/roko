@@ -54,12 +54,12 @@ verified task. It logs 39 interventions by people against 2 recoveries Roko made
 2/41 (5%). Its 11 escapes linked to a run are 7% of verified passes; 22 more could not be tied to a captured
 run.[^7-rollup]
 
-The supervising sessions did the rest: about 20 subagents wrote and audited the plans, fixed about 25 engine
-defects, built the worktrees, merged and supervised. Roko's records hold none of their cost. Priced from token
-counts, the Claude sessions of 09-25 to 09-29 come to about $2.7–3.4k API-equivalent, about 16–20× the $172.80 Roko
+The supervising sessions and their subagents did the rest: they wrote and audited the plans, fixed engine defects,
+built the worktrees, merged and supervised. Roko's records hold none of their cost. Priced from token counts, the
+Claude sessions of 09-25 to 09-29 come to about $2.7–3.4k API-equivalent, about 16–20× the $172.80 Roko
 recorded over the same days.[^7-operator] The estimate includes the research programme and its papers, so it
-overstates what supervising the portal cost; measured figures await the transcript harvest (gap-263de5,
-gap-ccb87e).
+overstates what supervising the portal cost; measured figures await the transcript harvest's daily rollup
+(gap-ccb87e).
 
 ## 7.4 What this does and does not show
 
@@ -104,4 +104,3 @@ since the router saw only one model. §8 describes the controlled test, and §9 
     `82676de5eee4`): token counts of the Claude sessions of 09-25 to 09-29, priced at list rates from the price
     table `prices-2026-09-28`; the range spans the 5-minute and 1-hour cache-write rates. It is an API-equivalent
     price, not cash paid. The $172.80 is the sum of the 09-26, 09-28 and 09-29 rows of rollup 2026-09-29T14:37:51.
-    The subagents and engine defects: B7, "TL;DR".

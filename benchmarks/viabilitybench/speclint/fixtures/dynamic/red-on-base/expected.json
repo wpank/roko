@@ -1,0 +1,12 @@
+{
+  "tasks": {
+    "tasks.toml T1": {"red_on_base": "fail", "outcome": "fail", "SQ06": 1, "HF3": false},
+    "tasks.toml T2": {"red_on_base": "pass", "outcome": "pass", "SQ06": 0, "HF3": true},
+    "tasks.toml T3": {"red_on_base": "unknown", "outcome": "flaky", "SQ06": 0, "HF3": false},
+    "tasks.toml T4": {"red_on_base": "unknown", "outcome": "timeout", "SQ06": 0, "HF3": false},
+    "tasks.toml T5": {"red_on_base": "unknown", "outcome": "not_run", "SQ06": 0, "HF3": false},
+    "tasks.toml T6": {"red_on_base": "unknown", "outcome": "base_broken", "SQ06": 0, "HF3": false},
+    "tasks.toml T7": {"red_on_base": "pass", "outcome": "pass", "SQ06": 0, "HF3": true},
+    "archive/old-plan/tasks.toml T1": {"red_on_base": "unknown", "outcome": "no_base", "SQ06": 0, "HF3": false}
+  }
+}

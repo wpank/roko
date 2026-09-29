@@ -1,0 +1,102 @@
+# speclint dynamic fixture (gap-b3fa0a): one task per red-on-base outcome; expected.json has them.
+# The tests check it in fixture mode, which snapshots this directory into a one-commit repo, so the
+# base is exactly these files. T3's step needs SPECLINT_FLAKY_COUNTER, a file outside the checkout:
+# the second run sees the first run's write, as a step with outside state would.
+[meta]
+plan = "dynamic-red-on-base"
+total = 7
+
+# fail: greet.sh does not exist on the base.
+[[task]]
+id = "T1"
+title = "Greeting script"
+description = """Add `greet.sh`, which prints `hello, world`."""
+role = "implementer"
+files = ["greet.sh"]
+
+[[task.verify]]
+phase = "test"
+command = "bash greet.sh | grep -qx 'hello, world'"
+
+# pass (HF3): config.ini already sets retries.
+[[task]]
+id = "T2"
+title = "Retry limit"
+description = """Set `retries` in `config.ini`."""
+role = "implementer"
+files = ["config.ini"]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q '^retries' config.ini"
+
+# unknown (flaky): passes in the first run, fails in the second.
+[[task]]
+id = "T3"
+title = "Flaky check"
+description = """Make `greet.sh` print once per call."""
+role = "implementer"
+files = ["greet.sh"]
+
+[[task.verify]]
+phase = "test"
+command = '''
+: "${SPECLINT_FLAKY_COUNTER:?the test sets it}"
+n=$(cat "$SPECLINT_FLAKY_COUNTER" 2>/dev/null || echo 0)
+echo $((n + 1)) > "$SPECLINT_FLAKY_COUNTER"
+test "$n" -eq 0
+'''
+
+# unknown (timeout): the step's own timeout_ms is shorter than the sleep.
+[[task]]
+id = "T4"
+title = "Slow check"
+description = """Add a `timeout` setting to `config.ini`."""
+role = "implementer"
+files = ["config.ini"]
+
+[[task.verify]]
+phase = "test"
+command = "sleep 30"
+timeout_ms = 500
+
+# not run: only implementer tasks are checked.
+[[task]]
+id = "T5"
+title = "Review the retry limit"
+description = """Review the `retries` setting."""
+role = "quick-reviewer"
+files = ["config.ini"]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q '^retries' config.ini"
+
+# unknown (base_broken): a regression step declared to pass on the base fails there.
+[[task]]
+id = "T6"
+title = "Timeout setting"
+description = """Add a `timeout` setting next to `retries`."""
+role = "implementer"
+files = ["config.ini"]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q '^timeout' config.ini"
+expect = "pass_on_base"
+
+[[task.verify]]
+phase = "test"
+command = "grep -q '^timeout = 30' config.ini"
+
+# pass (HF3): the step edits the tree, and passes only if each run starts from the clean base.
+[[task]]
+id = "T7"
+title = "Second retry line"
+description = """Append a second `retries` line to `config.ini`."""
+role = "implementer"
+files = ["config.ini"]
+
+[[task.verify]]
+phase = "test"
+command = "echo 'retries = 9' >> config.ini && test \"$(grep -c '^retries' config.ini)\" -eq 2"

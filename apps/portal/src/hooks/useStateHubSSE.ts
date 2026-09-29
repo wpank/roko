@@ -100,6 +100,9 @@ export function useStateHubSSE(): UseStateHubSSEResult {
       fetchSnapshot: () =>
         api.get<WireStateHubSnapshotResponse>('/api/statehub/snapshot'),
 
+      // Same origin and cookie as the event stream, whose refusal it explains.
+      probe: () => fetch('/api/status').then((res) => res.status, () => 0),
+
       openStream: (lastEventId, onEvent, onStatus) => {
         const client = new SseClient('', { lastEventId });
         sseClientRef.current = client;

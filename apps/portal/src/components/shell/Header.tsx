@@ -137,6 +137,7 @@ export function Header({
     connecting: 'Connecting…',
     disconnected: 'Disconnected',
     error: 'Connection error',
+    unauthorized: 'Not signed in',
   };
   const connectionTitle = connectionTitles[connection] ?? String(connection);
 

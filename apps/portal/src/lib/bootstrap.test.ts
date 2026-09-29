@@ -49,6 +49,7 @@ interface FakeDepsOpts {
   hash?: string;
   postSessionFn?: (token: string) => Promise<number>;
   fetchSnapshotFn?: () => Promise<WireStateHubSnapshotResponse>;
+  probeFn?: () => Promise<number>;
   sleepFn?: (ms: number) => Promise<void>;
 }
 
@@ -103,6 +104,8 @@ function makeDeps(opts: FakeDepsOpts = {}): FakeDeps {
       calls.fetchSnapshot++;
       return makeSnapshotResponse();
     }),
+
+    probe: opts.probeFn ?? (async () => 200),
 
     openStream: (
       lastEventId: string | null,
@@ -521,5 +524,25 @@ describe('startLiveState: incremental events go to apply', () => {
     await flush();
 
     expect(deps.calls.apply).toContain(ev);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// startLiveState — a refused stream and the session probe
+// ---------------------------------------------------------------------------
+
+describe('startLiveState: the session probe', () => {
+  it('ignores a 401 that answers after the stream has reopened', async () => {
+    let answer!: (code: number) => void;
+    const deps = makeDeps({ probeFn: () => new Promise((resolve) => { answer = resolve; }) });
+    startLiveState(deps);
+    await flush();
+
+    deps.streams[0].emitStatus('disconnected');
+    deps.streams[0].emitStatus('connected');
+    answer(401);
+    await flush();
+
+    expect(deps.calls.setStatus.at(-1)).toBe('connected');
   });
 });

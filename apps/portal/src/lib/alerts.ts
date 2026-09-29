@@ -5,6 +5,8 @@
  * candidate whose key is not `dismissedKey` is returned.
  *
  * Rank order:
+ * 0. Signed out (connection 'unauthorized'): nothing works until the operator
+ *    opens the sign-in link roko serve printed, so this outranks the rest.
  * 1a. requestError (portal action rejected by the server)
  * 1b. requestNotice (server cannot do this — informational)
  * 1c. newest run.errors entry (execution error); the server's generic
@@ -16,7 +18,7 @@
  */
 
 import type { RunState, TaskRun } from './runState';
-import type { ConnectionStatus } from './bootstrap';
+import { SIGN_IN_HINT, type ConnectionStatus } from './bootstrap';
 
 // ── Exported types ────────────────────────────────────────────────────────────
 
@@ -101,6 +103,12 @@ export function pickAlert(input: AlertInput): Alert | null {
   /** Return `alert` if it is not the dismissed candidate, otherwise null. */
   function tryAlert(alert: Alert): Alert | null {
     return alert.key === dismissedKey ? null : alert;
+  }
+
+  // ── Rank 0: signed out ───────────────────────────────────────────────────
+  if (connection === 'unauthorized') {
+    const alert = tryAlert({ key: 'connection:unauthorized', severity: 'error', text: SIGN_IN_HINT, actions: [] });
+    if (alert) return alert;
   }
 
   // ── Rank 1a: requestError ────────────────────────────────────────────────

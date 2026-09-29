@@ -586,7 +586,8 @@ svg {
   }
 
   .rd-header__conn[data-connection="disconnected"],
-  .rd-header__conn[data-connection="error"] {
+  .rd-header__conn[data-connection="error"],
+  .rd-header__conn[data-connection="unauthorized"] {
     color: var(--ember);
   }
 

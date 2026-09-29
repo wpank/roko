@@ -3,13 +3,14 @@ id = "bug-b16d55"
 kind = "bug"
 title = "ACP starts a paid dream consolidation every 10 episodes, and no config flag turns it off"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p2"
 goal = "core"
 size = "S"
 subsystem = ["roko-acp/bridge_events", "roko-dreams"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-29
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (14:32, wk-dream-default's report on bug-470de8)"
 anchors = ["crates/roko-acp/src/bridge_events/cost.rs::maybe_spawn_dream_consolidation", "crates/roko-acp/src/bridge_events/cost.rs:241", "crates/roko-core/src/config/learning.rs::DreamsConfig"]
@@ -79,3 +80,10 @@ cargo check) changes `learning.rs`, `presets.rs`, `plan_completion.rs` and `roko
   model caller, `cost.rs:228-237`). Whether that should sit behind a flag too is a separate question and is not
   in this item.
 - `roko-acp` is not a hot file (lane `rust-cold`).
+- Premise check at `594e58f93`: as described. bug-470de8 (merged at `d5b17759b`) changed no `roko-acp` code, so
+  the ACP trigger still read no config.
+- Chose the recommended new keys: `learning.dreams.trigger_on_acp_episodes` (serde default `false`) and
+  `learning.dreams.acp_episode_threshold` (default 10, zero treated as one). `roko.toml` is left unchanged on
+  purpose: `DreamsConfig` denies unknown fields, so a binary built before this change would reject a `roko.toml`
+  that names the new keys, and the default is already off.
+- Implemented on `work/bug-b16d55` at `c482329be`; cargo verification deferred to the batch check.

@@ -243,7 +243,7 @@ export function SourceEditor({ planId, running, onClose, onDirtyChange }: Source
 
   if (isLoading) {
     return (
-      <div className="flex flex-col h-full items-center justify-center gap-2 text-text-muted">
+      <div className="flex flex-col flex-1 items-center justify-center gap-2 text-text-muted">
         <Spinner />
         <span className="text-xs font-mono">Loading source…</span>
       </div>
@@ -252,7 +252,7 @@ export function SourceEditor({ planId, running, onClose, onDirtyChange }: Source
 
   if (loadError) {
     return (
-      <div className="flex flex-col h-full p-4 gap-4">
+      <div className="flex flex-col flex-1 p-4 gap-4">
         <Notice
           kind={loadIsUnsupported ? 'unsupported' : 'error'}
           onClose={onClose}
@@ -268,7 +268,7 @@ export function SourceEditor({ planId, running, onClose, onDirtyChange }: Source
   // ------------------------------------------------------------------
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex flex-col flex-1">
       {/* ---- Toolbar ---- */}
       <div className="flex items-center gap-2 px-3 py-2 border-b border-border-default shrink-0">
         {/* Plan id + dirty indicator */}
@@ -367,8 +367,8 @@ export function SourceEditor({ planId, running, onClose, onDirtyChange }: Source
         </div>
       )}
 
-      {/* ---- Editor ---- */}
-      <div className="relative flex-1 min-h-0">
+      {/* ---- Editor: the rest of the stage, never under 8rem ---- */}
+      <div className="relative flex-1 min-h-32">
         {running && (
           <div
             className="absolute inset-0 z-10 pointer-events-none flex items-start justify-center pt-4"
@@ -394,7 +394,7 @@ export function SourceEditor({ planId, running, onClose, onDirtyChange }: Source
             if (saveNotice) setSaveNotice(null);
           }}
           className={cn(
-            'w-full h-full resize-none',
+            'absolute inset-0 w-full h-full resize-none',
             'outline-none border-0',
             'font-mono text-sm leading-relaxed',
             'bg-transparent text-text-strong p-3',

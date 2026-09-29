@@ -114,8 +114,8 @@
 - **P1** [gap-9cbf35](items/gap-9cbf35-routing-ladder-config-role-and-tier-map.md) Routing ladder config: role and tier map to a model rung, with the D11 cascade as the default · size S
 - **P2** [gap-8cb382](items/gap-8cb382-run-manifest-with-a-config-fingerprint-for.md) Run manifest with a config fingerprint for every plan run (S01.P0-2) · size S
 
-### benchmarks/viabilitybench/families (1)
-- **P1** [gap-4723ff](items/gap-4723ff-viabilitybench-family-f1-generator-truth-suite-and.md) ViabilityBench family F1: generator, truth suite and gaming detector (S08.T3) · size M
+### bench (1)
+- **P1** [bug-993e7e](items/bug-993e7e-viabilitybench-astcheck-counts-the-pycache-an-honest.md) ViabilityBench astcheck counts the __pycache__ an honest agent's test run writes as an added test file [bug] · size S
 
 ### benchmarks/viabilitybench/analysis (2)
 - **P1** [gap-b24517](items/gap-b24517-viabilitybench-report-verified-success-cost-per-verified.md) ViabilityBench report: verified success, cost per verified success, pass^k and false greens with run ids (S08.T7) · size M

@@ -15,7 +15,7 @@ discovered_from = "tmp/cybernetic-harness/workstreams/assessment/W10-benchmarks-
 anchors = ["benchmarks/viabilitybench/driver/vb.py", "benchmarks/viabilitybench/analysis/report.py", "benchmarks/viabilitybench/reports/pilot/REPORT.md"]
 doc = "tmp/cybernetic-harness/workstreams/PLAN.md"
 lane = "bench"
-links = { depends_on = ["dec-b78874", "gap-0580f7", "gap-2790c5", "gap-4723ff", "gap-9e7079", "gap-7ee7c2", "gap-28ebea", "gap-b24517", "gap-33d54b", "gap-e003ec", "gap-c4f364", "gap-b7ab99", "gap-a8a160", "gap-c33709", "gap-327242", "gap-d9e9fe", "gap-89f393", "gap-1cd676", "q-ab27d3", "gap-419298", "dec-39c781"], blocks = [], related = ["bug-7d7200", "bug-35379d", "gap-644040", "bug-28becc", "bug-3a037b", "bug-a22228"], supersedes = [], duplicate_of = "" }
+links = { depends_on = ["dec-b78874", "gap-0580f7", "gap-2790c5", "gap-4723ff", "gap-9e7079", "gap-7ee7c2", "gap-28ebea", "gap-b24517", "gap-33d54b", "gap-e003ec", "gap-c4f364", "gap-b7ab99", "gap-a8a160", "gap-c33709", "gap-327242", "gap-d9e9fe", "gap-89f393", "gap-1cd676", "q-ab27d3", "gap-419298", "dec-39c781", "bug-993e7e"], blocks = [], related = ["bug-7d7200", "bug-35379d", "gap-644040", "bug-28becc", "bug-3a037b", "bug-a22228"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "test -f benchmarks/viabilitybench/reports/pilot/REPORT.md && benchmarks/viabilitybench/.venv/bin/python benchmarks/viabilitybench/analysis/report.py --check benchmarks/viabilitybench/reports/pilot"
@@ -99,7 +99,7 @@ providers. This removes the checklist's circular `budget` gate (W10 rec 2).
       Claude Code runs (D42)
 - [x] gap-0580f7: ViabilityBench tree, schemas and price snapshot (S08.T1)
 - [x] gap-2790c5: ViabilityBench common library: pristine repos, knobs, seeding, AST checks and canaries (S08.T2)
-- [ ] gap-4723ff: ViabilityBench family F1: generator, truth suite and gaming detector (S08.T3)
+- [x] gap-4723ff: ViabilityBench family F1: generator, truth suite and gaming detector (S08.T3)
 - [x] gap-9e7079: ViabilityBench family F4: store-state truth suite and partial-failure injection (S08.T4)
 - [ ] gap-7ee7c2: ViabilityBench verifier CI: reference, stub and gaming solutions, determinism and leak checks
       (S08.T5)
@@ -119,6 +119,7 @@ providers. This removes the checklist's circular `budget` gate (W10 rec 2).
 - [ ] q-ab27d3: Should the fd_claude_lite arm run Claude Sonnet 5.5, which is priced the same as Sonnet 5?
 - [x] gap-419298: S09 v1.2: register the plan-level slice as an exploratory experiment
 - [ ] dec-39c781: Confirm decisions D28–D36 before the pre-registration lock
+- [ ] bug-993e7e: ViabilityBench astcheck counts the __pycache__ an honest agent's test run writes as an added test file
 - [ ] The epic's `[[verify]]` command passes: the pilot page is committed, and `report.py --check` accepts its
       bundle.
 

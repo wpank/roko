@@ -99,7 +99,7 @@ Each step has a specific role in the pipeline:
 | 2. Draft | `roko prd draft new "<slug>"` | Agent generates a structured PRD from the idea, with requirements, scope, and acceptance criteria. | 30-120s |
 | 3. Research | `roko research enhance-prd <slug>` | Agent researches the topic (web search, codebase analysis, citation gathering) and enriches the PRD with findings. | 60-300s |
 | 4. Plan | `roko prd plan <slug>` | Agent generates a `tasks.toml` with dependencies, crate targets, and verification commands from the enriched PRD. | 30-120s |
-| 5. Execute | `roko plan run plans/` | The Graph engine converts tasks.toml into a DAG of Cells, runs tasks in parallel topological waves inside isolated git worktrees, validates through the 19-gate pipeline, and persists results. | minutes-hours |
+| 5. Execute | `roko plan run plans/` | The Graph engine converts tasks.toml into a DAG of Cells, runs each task as soon as its dependencies finish, in parallel inside isolated git worktrees, validates through the 19-gate pipeline, and persists results. | minutes-hours |
 | 6. Resume | `roko plan run plans/ --resume-plan` | Restores graph checkpoint from `.roko/state/graph/`, skips completed Activity nodes using recorded outputs, resumes from the first non-complete node. | varies |
 | 7. Monitor | `roko dashboard` | Interactive ratatui TUI with F1-F10 tabs showing live plan progress, agent status, cost tracking, and learning metrics. | real-time |
 | 8. Verify | `roko status` | Query signal counts, episode counts, and plan state. | <1s |
@@ -119,7 +119,7 @@ plan_to_graph() / ProductionPlanTopology::build()
 Graph of 11N nodes (N tasks)
     |
     v
-For each task (in topological wave order):
+For each task (as soon as its dependencies finish):
     |
     +-- TaskContextCell      --> parse task metadata, set scope
     +-- KnowledgeCell        --> query durable knowledge store

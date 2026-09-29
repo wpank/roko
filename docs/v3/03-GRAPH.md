@@ -17,7 +17,8 @@
 
 The Graph Engine (`roko-graph`) is the universal execution substrate for Roko.
 It takes a `Graph` -- a petgraph-backed DAG of `Node`s connected by `Edge`s --
-and executes them in bounded parallel topological waves, enforcing budgets,
+and executes them with bounded parallelism, starting each node as soon as the
+nodes it depends on have settled, enforcing budgets,
 recording Activities for replay, and persisting durable checkpoints across
 restarts.
 
@@ -313,7 +314,7 @@ flowchart TD
     CheckSnap -->|No| Validate["5b. validate_for_start()<br/>(type-schema checks)"]
     Resume --> Finally["6. GuaranteedFinallyController<br/>wraps execution"]
     Validate --> Finally
-    Finally --> Execute["7. GraphEngine::execute_parallel()<br/>(topological waves, bounded concurrency)"]
+    Finally --> Execute["7. GraphEngine::execute_parallel()<br/>(ready-queue dispatch, bounded concurrency)"]
     Execute --> PerNode["8. Per-node: resolve Cell,<br/>evaluate edge conditions,<br/>dispatch Cell::execute(),<br/>record Activity outputs"]
     PerNode --> Budget{"9. Budget check<br/>(tokens, cost, deadline)"}
     Budget -->|Exceeded| Skip["Skip remaining nodes<br/>GraphError::BudgetExceeded"]
@@ -352,7 +353,7 @@ flowchart TD
   6. GuaranteedFinallyController wraps execution
        |
        v
-  7. GraphEngine::execute_parallel()      (topological waves, bounded concurrency)
+  7. GraphEngine::execute_parallel()      (ready-queue dispatch, bounded concurrency)
        |
        v
   8. Per-node: resolve Cell from registry, evaluate edge conditions,
@@ -648,7 +649,7 @@ sequenceDiagram
 
     Engine->>Engine: Restore budget counters from checkpoint
     Engine->>Exec: Execute remaining pending nodes
-    Exec->>Exec: Topological waves (skip completed)
+    Exec->>Exec: Ready-queue dispatch (skip completed)
 
     loop After each Activity completes
         Exec->>Disk: Flush checkpoint (snapshot + activities.jsonl)

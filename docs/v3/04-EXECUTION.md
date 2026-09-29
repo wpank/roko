@@ -7,7 +7,7 @@
 > resume after crash.
 
 > The plan-execute-gate-persist pipeline. A plan directory becomes a Graph of
-> Cells, the Graph engine runs tasks in parallel topological waves inside
+> Cells, the Graph engine runs each task as soon as its dependencies finish, inside
 > isolated git worktrees, gates validate each task, a merge queue serializes
 > integration, and durable checkpoints allow resume after crash. One engine,
 > one path, end to end.

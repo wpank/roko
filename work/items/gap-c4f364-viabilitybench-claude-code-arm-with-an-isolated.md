@@ -2,7 +2,7 @@
 id = "gap-c4f364"
 kind = "gap"
 title = "ViabilityBench Claude Code arm with an isolated config (S08.T12)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "proof"
@@ -11,6 +11,7 @@ subsystem = ["benchmarks/viabilitybench/driver"]
 created = 2026-09-29
 updated = 2026-09-29
 last_verified = 2026-09-29
+last_verified_rev = "81c08e7be"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e12"
 discovered_from = "tmp/cybernetic-harness/workstreams/assessment/W10-benchmarks-proof.md (the unclean baseline, rec 4); specs/S08-benchmark-suite.md (§4.9, §6 T12)"
 anchors = ["benchmarks/viabilitybench/driver/run_cli.py", "benchmarks/viabilitybench/driver/test_run_cli.py", "benchmarks/viabilitybench/arms/fd_claude.toml"]
@@ -23,6 +24,12 @@ command = "grep -qw 'def test_claude_arm_command_is_isolated_and_pinned' benchma
 
 [[verify]]
 command = "grep -qw 'def test_result_event_is_priced_as_u_prime_and_r' benchmarks/viabilitybench/driver/test_run_cli.py && benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/driver/test_run_cli.py -k test_result_event_is_priced_as_u_prime_and_r -q"
+
+[closed]
+at = 2026-09-29
+commit = "81c08e7be"
+by = "wk-bench-ccarm"
+evidence = "fd_claude arm on 81c08e7be: driver/run_cli.py runs claude -p on claude-opus-5-5 with gap-8be530's final isolation settings (setting-sources empty, the --add-dir pair, strict empty MCP config, no auto-memory) and a fresh CLAUDE_CONFIG_DIR per task; it prices U' from modelUsage x prices-2026-09-28, keeps R as vendor_usd, and records the exact argv/env in each attempt. Checked by 9 offline tests with a fake claude (driver/test_run_cli.py): both [[verify]] commands pass, and the benchmark suite gives 221 passed, 1 skipped. Not done: the live probe. The init event and a recorded result fixture await one real run of 'run_cli.py probe --arm fd_claude --allow-network'."
 +++
 
 ## Problem

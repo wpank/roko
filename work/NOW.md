@@ -20,7 +20,7 @@ _20 more open · 5 unchecked (`TRIAGE.md`) · `goal = "release"`_
 - **P2** [gap-b409fa](items/gap-b409fa-companion-report-fill-the-re-derived-numbers.md) Companion report: fill the re-derived numbers into the E10 draft and fix the flagged source errors · size M · verified 2026-09-29
 - **P2** [gap-856053](items/gap-856053-research-paper-appendices-a-and-b-match.md) Research paper appendices A and B: match the benchmark and the spec standard as built · size M · verified 2026-09-29
 
-_3 more open · 4 unchecked (`TRIAGE.md`) · `goal = "whitepaper"`_
+_2 more open · 4 unchecked (`TRIAGE.md`) · `goal = "whitepaper"`_
 
 ## 3. Roko tells the truth and is safe (P0)
 
@@ -52,7 +52,7 @@ _0 more open · 1 unchecked (`TRIAGE.md`) · `goal = "cybernetic"`_
 - **P0** [gap-4ec59f](items/gap-4ec59f-worktree-isolation-flip-default-and-add-startup.md) Worktree Isolation: Flip Default and Add Startup Repair · size L · verified 2026-09-29
 - **P1** [bug-7c8a57](items/bug-7c8a57-plan-audit-t0-06-100-line-cap.md) 100-line cap on read_files context injection [bug] · size S · verified 2026-09-29
 
-_78 more open · 1 unchecked (`TRIAGE.md`) · `goal = "core"`_
+_79 more open · 1 unchecked (`TRIAGE.md`) · `goal = "core"`_
 
 ## 8. Live visibility: serve, dashboard, portal
 
@@ -60,7 +60,7 @@ _78 more open · 1 unchecked (`TRIAGE.md`) · `goal = "core"`_
 - **P1** [gap-aabeff](items/gap-aabeff-tool-t003-tui-paths-still-consume-string.md) TUI paths still consume string/tail projections that lose semantics (TUI adoption unproven) · size L · verified 2026-09-29
 - **P1** [find-f489db](items/find-f489db-tool-dispatch-observability-gaps-td-003-td.md) Tool Dispatch Observability Gaps (TD-003, TD-004, TD-005) [finding] · size M · verified 2026-09-29
 
-_24 more open · `goal = "visibility"`_
+_25 more open · `goal = "visibility"`_
 
 ## 9. Learning loops on the Graph path
 
@@ -76,7 +76,7 @@ _22 more open · on hold: bug-429315, bug-8c5d32, bug-b9be1d, bug-dd5dca, bug-de
 - **P1** [gap-09e478](items/gap-09e478-dogfood-session-evidence-bundle.md) Dogfood Session Evidence Bundle · size M · verified 2026-09-29
 - **P2** [bug-97c2dc](items/bug-97c2dc-async-runtime-anti-patterns-drop-spawn-unbounded.md) Async Runtime Anti-Patterns (Drop+Spawn, Unbounded Channels, Mutex Across Await) [bug] · size M · verified 2026-09-29
 
-_37 more open · 13 unchecked (`TRIAGE.md`) · `goal = "tooling"`_
+_38 more open · 13 unchecked (`TRIAGE.md`) · `goal = "tooling"`_
 
 ## 11. Feature ideas
 
@@ -94,4 +94,4 @@ _12 more open · on hold: gap-63055e, gap-8d80d3, gap-ebd656, spec-743a7e, spec-
 
 _14 more open · `goal = "hermes"`_
 
-10 open items have no goal (later); they are listed in `STATUS.md`.
+16 open items have no goal (later); they are listed in `STATUS.md`.

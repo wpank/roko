@@ -2,7 +2,7 @@
 id = "gap-420202"
 kind = "gap"
 title = "Research paper §6: align the economics results template with the thesis, add the plan-level template, and trim"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "whitepaper"
@@ -11,6 +11,7 @@ subsystem = ["paper"]
 created = 2026-09-29
 updated = 2026-09-29
 last_verified = 2026-09-29
+last_verified_rev = "d5c1dc6be"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e18"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wave-1 reports)"
 anchors = ["tmp/cybernetic-harness/paper/sections/06-results-economics.md"]
@@ -23,6 +24,11 @@ command = "test -f tools/paperlint.py && python3 tools/paperlint.py --budget 1.2
 
 [[verify]]
 command = "grep -q 'RESULT PL' tmp/cybernetic-harness/paper/sections/06-results-economics.md"
+
+[closed]
+at = 2026-09-29
+by = "coordinator (session 7622b882)"
+evidence = "Research paper §6 (untracked) set in the golden-path frame, with a new §6.6 for the exploratory plan-level slice (13 [[RESULT PL]] slots) and synthesis in §6.7; trimmed 3,964 to 2,571 counted words (1.17x); all 76 original RESULT slots kept (two re-keyed H3 to X4 per S09 v1.1); ledger updated. Both verifies pass with the merged paperlint; CLAIMS-EVIDENCE regenerated."
 +++
 
 ## Problem

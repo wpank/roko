@@ -29,7 +29,6 @@ use roko_gate::GatePayload;
 use roko_gate::ShellGate;
 use roko_gate::TurnSnapshot;
 use roko_gate::eval_generator::EvalGenerator;
-use roko_gate::rung_for_gate_name;
 use roko_graph::cell::CellContext;
 use roko_graph::cells::task_executor::TaskGateVerdict;
 use roko_graph::cells::{
@@ -50,8 +49,11 @@ use crate::runner::tui_bridge::TuiBridge;
 use crate::runtime_feedback::{FeedbackEvent, FeedbackFacade};
 use crate::task_parser::TaskDef;
 
+mod retry_budget;
 mod retry_feedback;
 mod sibling_settle;
+
+pub(crate) use retry_budget::TaskRetryBudgets;
 
 #[cfg(test)]
 mod gate_output_accept;
@@ -793,8 +795,9 @@ pub struct InertGraphSetting {
 #[must_use]
 pub fn graph_engine_inert_settings(config: &RokoConfig) -> Vec<InertGraphSetting> {
     const LEGACY_GATES: &str = "only the legacy Runner-v2 gate pipeline (--engine legacy) reads it";
-    const ADAPTIVE: &str =
-        "only AdaptiveThresholds reads it, and no run constructs one (Graph uses a fixed EMA)";
+    const ADAPTIVE: &str = "of the adaptive-threshold settings the Graph engine reads only \
+                            adaptive_min_retries and adaptive_max_retries (task retry budgets); \
+                            its gate EMA uses a fixed alpha";
     const NOT_ENFORCED: &str = "not enforced by the Graph engine";
     const NO_READER: &str = "no production code reads it";
     const DISPLAY_ONLY: &str = "shown by config views; no routing decision reads it";
@@ -854,16 +857,6 @@ pub fn graph_engine_inert_settings(config: &RokoConfig) -> Vec<InertGraphSetting
         (
             gates.ema_alpha.to_bits() != default_gates.ema_alpha.to_bits(),
             "gates.ema_alpha",
-            ADAPTIVE,
-        ),
-        (
-            gates.adaptive_min_retries != default_gates.adaptive_min_retries,
-            "gates.adaptive_min_retries",
-            ADAPTIVE,
-        ),
-        (
-            gates.adaptive_max_retries != default_gates.adaptive_max_retries,
-            "gates.adaptive_max_retries",
             ADAPTIVE,
         ),
         (
@@ -1347,6 +1340,22 @@ impl GraphTaskDispatcher {
                 "restored gate feedback for the next attempts of resumed tasks"
             );
         }
+    }
+
+    /// Retry budgets of the tasks of the plan in `plan_dir`: authored ones as
+    /// written, the rest set by `[gates]` and the adaptive gate thresholds
+    /// this dispatcher's verify runs record (see [`TaskRetryBudgets`]).
+    pub(crate) fn task_retry_budgets(&self, plan_dir: &Path) -> TaskRetryBudgets {
+        let tasks_toml = [plan_dir.to_path_buf(), self.workdir.join(plan_dir)]
+            .into_iter()
+            .map(|dir| dir.join("tasks.toml"))
+            .find(|path| path.is_file())
+            .unwrap_or_else(|| plan_dir.join("tasks.toml"));
+        TaskRetryBudgets::load(
+            self.feedback.gate_thresholds_path.as_deref(),
+            &self.config.gates,
+            &tasks_toml,
+        )
     }
 
     /// This run's index of the attempt of `task_key` that
@@ -1869,6 +1878,13 @@ impl GraphTaskDispatcher {
             // we can feed outcomes into GateThresholds::observe after all steps
             // complete (including any post-auto-fix re-run).
             let mut step_outcomes: Vec<(String, bool)> = Vec::new();
+            // P1-08: the CodingOracle's test pass-rate forecast for this
+            // attempt, taken before its steps feed the oracle below.
+            let test_pass_forecast = self
+                .feedback
+                .coding_oracle
+                .as_ref()
+                .map(|oracle| oracle.predict_test_pass_rate());
             // P4-03: PromiseTracker for early termination of doomed attempts.
             let mut promise_tracker = crate::runner::promise_tracker::PromiseTracker::new();
             let mut promise_terminated = false;
@@ -2263,14 +2279,17 @@ impl GraphTaskDispatcher {
                         GateThresholds::default()
                     }
                 };
-                for (phase, passed) in &step_outcomes {
-                    // Map the verify step's phase label to a canonical rung
-                    // index using the same registry used by the Runner-v2
-                    // gate pipeline (rung_for_gate_name strips attribution
-                    // prefixes like "baseline:" automatically).
-                    if let Some(rung) = rung_for_gate_name(phase.as_str()).map(|r| r.as_index()) {
-                        thresholds.observe(rung, *passed);
-                    }
+                // Each step whose phase maps to a canonical rung updates its
+                // EMA; test-rung steps also feed the oracle residual (P1-08).
+                let residuals = thresholds.observe_verify_steps(&step_outcomes, test_pass_forecast);
+                if !residuals.is_empty() {
+                    tracing::debug!(
+                        plan_id = %spec.plan_id,
+                        task_id = %task.id,
+                        ?residuals,
+                        forecast = ?test_pass_forecast,
+                        "P1-08: oracle residual fed to adaptive gate thresholds"
+                    );
                 }
                 match thresholds.save(gt_path) {
                     Ok(()) => {
@@ -7514,6 +7533,7 @@ printf '%s\n' '{{"type":"result","session_id":"sess-b","model":"claude-sonnet-4-
         config.pipeline.focused.max_turns = 50;
         config.budget.max_task_usd = 2.0;
         config.gates.write_eval_artifacts = true;
+        config.gates.adaptive_max_retries = 8;
         let keys = graph_engine_inert_settings(&config)
             .iter()
             .map(|setting| setting.key)

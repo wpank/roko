@@ -1,37 +1,86 @@
-Status: stub · budget 850 words · owner gap-e8cb4d
+Status: draft · budget 850 words · owner gap-e8cb4d
 
 # 5 Cybernetic mechanisms
 
-[[TODO: Write this section to gap-e8cb4d's plan, in about 850 words. Waits for: gap-35a614. It contains "guarded commit", every mechanism has a tag that matches the appendix, and every designed identifier is marked (designed). Keep line 1 and set it to `draft`, then replace everything below the heading, this list of claims included. Conventions and canonical numbers: `README.md` in this directory.]]
+Roko is designed to improve from verified outcomes and to show that it does. Three layers carry the design: essential
+variables that define "better", first-order loops that tune prompts, retries and routing, and second-order mechanisms
+that audit the gates and the loops and guard every change. Tags come from the appendix at `a17d4dadd`, each followed by
+its row.
 
-## Claims
+## 5.1 Essential variables
 
-| Id | Kind | Claim | Writer's source | Cite in the text as |
+The essential variables of §2 are the verified pass rate, the cost per verified task, the false-green rate (passes that
+a stronger check would fail) and latency, each measured per task over all its attempts. People set their bounds, and §8
+reports them. Nothing regulates them as a set yet; that is M1's job.
+
+## 5.2 First-order learning loops
+
+Each loop senses outcomes and changes a later decision.
+
+| Loop | Senses | Changes | Status |
+|---|---|---|---|
+| Model routing | Each model choice's outcome | Which model runs | PARTIAL@a17d4dadd (RC2): its learned stage sees successes only; bug-8da8ba |
+| Retry feedback | The failed attempt's gate output | The retry prompt, across a resume | WIRED@a17d4dadd (EX6) |
+| Adaptive thresholds | Each gate rung's pass rate | Retry budgets of tasks that set none | WIRED@a17d4dadd (QA7) |
+| Failure memory | Error patterns, post-gate lessons | Retry prompts | ORPHANED@a17d4dadd (LM4): neither reaches a prompt; spec-6ac537 |
+| Playbooks | Outcomes of the playbooks a prompt used | Which playbooks enter prompts | WIRED@a17d4dadd (LM2): a floor still puts three in every prompt |
+| Knowledge store | Gate-verified attempts | Notes in prompts | BROKEN@a17d4dadd (LM3): written back, but plan prompts never retrieve it; bug-86117a |
+| Prompt experiments | Each prompt variant's outcome | The variant a task gets | PARTIAL@a17d4dadd (LM5): its winner test is invalid under adaptive assignment; spec-6ac537 |
+| Hindsight relabelling | A verify failure that blames an earlier task | That task's recorded success | PARTIAL@a17d4dadd (LM12): nothing reads the corrections; gap-5be28d |
+
+Runner-v2's learning loops lived in its event loop, and most lost their caller or their data when `6b5da8616` deleted
+it.[^5-lost] Merges on 2026-09-29 re-attached several. `ce3bdcbb8` keeps retry feedback across a resume and lets rung
+pass rates set retry budgets. `33e107da1` credits the playbooks a prompt used (reg-3f5969), writes gate-verified
+attempts to the knowledge store (reg-06ae9f), assigns and settles prompt experiments per attempt (gap-fdd27f) and
+relabels a success that a later verify failure blames (gap-5fb9a7); `70820a74c` closed those four items. Two limits
+remain. Most loops still learn from a pass/fail flag that counts unverified outcomes as passes (QA2, PARTIAL@a17d4dadd;
+spec-e9d7ec). And no loop has a measured benefit, under Runner-v2 or since: that learning improves outcomes is
+UNPROVEN@a17d4dadd until M2, a wiring census (gap-1f2661) and frozen-learning runs (gap-644040) exist.
+
+## 5.3 Second-order mechanisms and guarded commit
+
+The loops change Roko's behaviour, but nothing checks that the changes help, or that the gates they learn from are
+right. Four mechanisms and one commit rule are designed for that. All five are MISSING@a17d4dadd; epic spec-6ac537 (E17)
+carries their specifications.
+
+| Mechanism | Regulates | Sensor → actuator | Bounds[^5-design] | Status |
 |---|---|---|---|---|
-| CM1 | design | The essential variables are the verified pass rate, cost per verified task, the false-green rate and latency. | tldr/02; tldr/05 proposal 22 | §2 (DP9) |
-| CM2 | status | The learning loops (routing, retry feedback, failure memory, playbooks, prompt experiments, adaptive thresholds): what each senses, what it changes, and its tag. | tldr/03 "Learning and memory"; B5; README "Rows that moved" | Tags from the appendix; merges `ce3bdcbb8`, `33e107da1` |
-| CM3 | number | Runner-v2 had 16 loops, and none was fully wired on Graph at `d9e79e9d8`; several were re-wired on 09-29. No loop has a measured benefit in either era. | B5; tldr/00 point 6; N8 | Commits; gap-fdd27f, reg-3f5969, gap-5fb9a7, reg-06ae9f; an UNPROVEN tag |
-| CM4 | design | M1, a bounded controller over the essential variables, judged by disturbance tests: what it regulates, its sensor, actuator and bounds. | tldr/05 proposal 22; draft §4.6 and Table T1; S06 | A MISSING tag; spec-6ac537 (E17) |
-| CM5 | design | M2, the loop-liveness audit: every loop shows exposure, influence and benefit against a withheld control, or it is demoted. | tldr/05 proposal 20; draft §4.5; S03 | A MISSING tag; spec-6ac537 (E17) |
-| CM6 | design | M3, a calibrated self-model: it forecasts the pass probability per task and model, and runs in shadow until it is calibrated. | tldr/05 proposal 18; draft §4.3; S04 | A MISSING tag; spec-6ac537 (E17) |
-| CM7 | design | M4, random deep audits: hidden tests written by another model family, an audit lottery, and a Hájek estimate of the false-green rate. | tldr/05 proposal 17; draft §4.4; S05 | A MISSING tag; spec-6ac537 (E17) |
-| CM8 | design | Guarded commit: every self-modification (router, memory, controller) is accepted only after held-out and anchor checks, with rollback. | tldr/05 proposal 21; tldr/03 "Regulation and audits"; S06 | A MISSING tag; spec-6ac537 (E17) |
-| CM9 | lit | The claim is measured, guarded improvement: in the literature, gains fail to compound, depend on task order and weaken under distribution shift. | tldr/01; tldr/05 §5; C4 | `wang2026compound`, `ye2026fragility`, `lin2026evopath`, `wang2026rethinking` (add them after refcheck) |
-| CM10 | status | The analogy mechanisms appear in one sentence as proposals to park, not as features: affect, offline batch consolidation, HDC similarity and the conductor. | tldr/05 §3; B6; C4 | Tags from the appendix |
-| CM11 | status | M1 does not revive the conductor's old tick, which caused restart storms. | tldr/05 proposal 22; A5 | The conductor's tag from the appendix |
+| M1 bounded controller | The essential variables | Change detectors → one step on one harness setting, kept or rolled back | Acts only when a variable leaves its bounds; never widens permissions, removes authored checks or raises budget ceilings; 10% static holdout | MISSING@a17d4dadd (RG3) |
+| M2 loop-liveness audit | Each loop's exposure, influence and benefit | Randomized holdouts with an A/A floor → keep or demote the loop | Holdout at least 2%; one state change a day at most; safety checks exempt | MISSING@a17d4dadd (RG4) |
+| M3 calibrated self-model | The chance a task passes on a given model | Verified outcomes → model choice, verification depth | Shadow until calibrated; only adds verification; authored pins win | MISSING@a17d4dadd (RG5) |
+| M4 random deep audits | The false-green rate | Audit lottery over passes, hidden tests → stricter checks, routing trust | Audit probability at least 5% per pass; at most 12% of spend | MISSING@a17d4dadd (QA5) |
+| Guarded commit | Every self-modification: router, memory, controller | Held-out and anchor checks → commit, or roll back | The last known good version is kept | MISSING@a17d4dadd (RG6) |
 
-## Sources
+**M1** starts in shadow mode, logging the moves it would make, and is judged by disturbance tests (a provider fault, a
+model swap, a halved budget) against its holdout. It replaces the conductor without reviving the conductor's supervisor
+tick, which caused restart storms.
 
-Writer inputs; the paths under `tmp/` are gitignored and are never cited in the text.
+**M2** exists because a loop can run without reaching any decision (§5.2). A loop that shows no benefit against a
+withheld control reverts to its default policy.
 
-- tldr/02: `tmp/cybernetic-harness/tldr/02-HOW-IT-WORKS.md`. Architecture, the control stack, what `.roko/` records.
-- tldr/03: `tmp/cybernetic-harness/tldr/03-MECHANISMS.md`. Every mechanism with basis, status and verdict.
-- tldr/05: `tmp/cybernetic-harness/tldr/05-GAPS-AND-PROPOSALS.md`. Scorecard V1-V10, proposals P0-P3, parking, doc corrections, decisions.
-- B5: `tmp/cybernetic-harness/tldr/research/B5-learning-loops-v2-vs-graph.md`. The 16 learning loops, Runner-v2 against Graph.
-- B6: `tmp/cybernetic-harness/tldr/research/B6-cognitive-subsystems.md`. The analogy subsystems.
-- C4: `tmp/cybernetic-harness/tldr/research/C4-research-basis-cybernetic-loops.md`. Literature behind the loops; claims it contradicts.
-- A5: `tmp/cybernetic-harness/tldr/research/A5-regulation-observability-docs.md`. Regulation and observability against docs/v3.
-- draft §N: `tmp/cybernetic-harness/paper/sections/`. The research draft's sections; outline in `paper/OUTLINE.md`, conventions in `paper/00-README.md`.
-- S01–S11: `tmp/cybernetic-harness/specs/`. Programme specs; cite the tracked epics that carry them.
-- PLAN: `tmp/cybernetic-harness/workstreams/PLAN.md`. The author's answers (section 1) and the epics (section 3).
-- matrix: `docs/whitepaper/appendix-status-matrix.md`. The status matrix (gap-35a614): every tag at one pinned commit.
+**M3** forecasts from recorded outcomes, not from a model's stated confidence.
+
+**M4** is the only sensor on the gates themselves. Another model family writes hidden tests from the spec, out of the
+agent's reach, and a Hájek estimator, weighting each audited pass by the inverse of its audit probability, gives the
+false-green rate with an interval. Today's honest verdicts (§6) rest on visible checks alone.
+
+**Guarded commit** wraps every learner and every M1 change: a change stays only if it helps on held-out work and loses
+no more than a set margin on fixed anchor tasks.
+
+## 5.4 The claim
+
+The claim is measured, guarded improvement, not compounding; the literature supports no more. In a two-phase test on
+hard Terminal-Bench 2.0 tasks, two of three harness optimizers fell below baseline or stalled once new tasks arrived,
+and the one that kept improving, the authors' own, built regression control into its loop [@wang2026compound]. On
+Terminal-Bench 2.1, harness evolution did not consistently beat simple test-time scaling at matched budgets
+[@wang2026rethinking]. In a re-evaluation on multi-step agent tasks, memory-based self-improvement amplified evaluation
+noise and depended on task order [@ye2026fragility], and on a trading benchmark, gains on similar unseen tasks often
+weakened under distribution shift [@lin2026evopath]. None of these measured repository-scale plans.
+
+Subsystems built on analogies are proposals to park (§9), not features: affect (PARTIAL@a17d4dadd, LM8) and offline
+batch consolidation (ORPHANED@a17d4dadd, LM7), both decided by q-6b7cca; HDC similarity (BUILT-UNWIRED@a17d4dadd, LM10);
+and the conductor (ORPHANED@a17d4dadd, RG2; gap-ebd656).
+
+[^5-lost]: find-34a4b5 lists the learning closures wired into the deleted event loop and their state on the Graph
+    path; the appendix gives each loop's tag at `a17d4dadd`.
+[^5-design]: Design values from the specifications that epic spec-6ac537 carries; none is built at `a17d4dadd`.

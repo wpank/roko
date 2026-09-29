@@ -64,11 +64,12 @@ to another task.
 
 **The log.** Every request to an upstream is metered and logged before the client can see the end of its response, so
 a caller whose call has returned finds it in the log and in `state`. Each appends one JSON line to `log_path`, flushed
-but not fsynced: `ts`, `task`, `ordinal`, `profile`, `fault_injected` (the profile's name when its fault fired, else
-null), `fault` (the fault's detail), `upstream`, `path`, `model_requested`, `model_reported`, `stream`, `status` (what
-the client got; null when it got none), `forwarded`, `usage_source`, `usage` (the classes; null when none came back),
-`api_equiv_usd`, `without_cache_usd`, `cost_source` (`provider_usage`, `unknown` or `not_billed`), `price_snapshot_id`,
-`refused`, `input_bound` (the most input the call could have been billed for) and `elapsed_ms`.
+but not fsynced: `ts` (when the request arrived, in UTC to the microsecond, so a runner can tell apart attempts that
+end within one second: bug-09fac4), `task`, `ordinal`, `profile`, `fault_injected` (the profile's name when its fault
+fired, else null), `fault` (the fault's detail), `upstream`, `path`, `model_requested`, `model_reported`, `stream`,
+`status` (what the client got; null when it got none), `forwarded`, `usage_source`, `usage` (the classes; null when
+none came back), `api_equiv_usd`, `without_cache_usd`, `cost_source` (`provider_usage`, `unknown` or `not_billed`),
+`price_snapshot_id`, `refused`, `input_bound` (the most input the call could have been billed for) and `elapsed_ms`.
 
 API:
     Upstream(name, base_url, api_key_env=None, stream_usage=True); Upstream.from_endpoint(endpoint) -> Upstream
@@ -84,6 +85,7 @@ API:
 
 from __future__ import annotations
 
+import datetime as dt
 import hashlib
 import hmac
 import http.client
@@ -104,7 +106,6 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
-import harness
 import layout  # also puts families/ on sys.path for common
 import ledger
 import provider
@@ -402,7 +403,7 @@ class FaultProxy:
             if not refused:
                 meter.reserved += bound
         call = _Call(self, handler, meter, bound, None if refused else digests[-1], started, {
-            "ts": harness.utc_now(), "task": task, "ordinal": ordinal, "profile": profile.as_json(),
+            "ts": _now(), "task": task, "ordinal": ordinal, "profile": profile.as_json(),
             "fault_injected": None, "fault": None, "upstream": upstream.name, "path": path,
             "model_requested": _text(request.get("model")), "model_reported": None,
             "stream": request.get("stream") is True, "status": None, "forwarded": False, "usage_source": "none",
@@ -836,6 +837,11 @@ def _prompt_digests(request: dict) -> tuple[list[str], list[int]]:
         digests.append(digest.hexdigest())
         sizes.append(len(data))
     return digests, sizes
+
+
+def _now() -> str:
+    """The current UTC time in ISO 8601, to the microsecond."""
+    return dt.datetime.now(dt.UTC).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
 
 def _canonical(value: object) -> bytes:

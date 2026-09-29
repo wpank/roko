@@ -11,7 +11,7 @@ subsystem = ["roko-graph/engine"]
 created = 2026-09-21
 updated = 2026-09-29
 last_verified = 2026-09-29
-last_verified_rev = "a17d9d766"
+last_verified_rev = "7c556bc0a"
 source = "tmp/archive/plan-audit-2026-09-23/03-ACTIONABLE-TASKS.md#T0-04: Add file-conflict detection in wave dispatch"
 discovered_from = "audit:tmp/archive/plan-audit-2026-09-23/03-ACTIONABLE-TASKS.md#T0-04: Add file-conflict detection in wave dispatch"
 anchors = ["crates/roko-graph/src/engine.rs::execute_with_status_tracking_parallel", "crates/roko-graph/src/engine.rs::execute_parallel_at_tick_validated", "crates/roko-graph/src/convert.rs", "crates/roko-graph/src/types.rs::Node", "crates/roko-graph/src/fingerprint.rs::plan_graph_fingerprint", "crates/roko-cli/src/graph_task_dispatch/sibling_settle.rs::InFlightTasks", "crates/roko-cli/src/graph_execution/plan_runner.rs::run_one_plan"]
@@ -134,6 +134,17 @@ not overlap still run in parallel.
   docs if the behaviour is user-visible.
 - Do not change `sibling_settle` behaviour here. It stays as the second line of defence for whole-project checks
   across tasks that do not overlap.
+- Implemented on `work/gap-4d835d` at `c5466b5cb`; cargo verification deferred to the batch check.
+  - Option A, but without async locks. Since `445a60d0d` both parallel entry points share one scheduler,
+    `execute_ready_queue`. It passes over a queued node whose `exclusive` paths overlap a running node's, so the
+    node holds no slot and there is nothing to deadlock. The overlap rule is in `roko-graph/src/exclusion.rs`.
+    `graph_execution_fingerprint` (and so the legacy fingerprint) now hashes nodes without `exclusive`.
+  - Plan step 3 is not done. Under `--worktree-per-task`, `run_one_plan` should clear each node's `exclusive`,
+    and `PlanRunContext` needs the flag for that. Both are in `plan_runner.rs`, which another worker owns. Until
+    then, overlapping tasks run one at a time with per-task worktrees too. That is safe but slower.
+  - The 08b incident cited above is not covered. T08 declares `planRows.ts`, T12 declares `PlanView.tsx`, and
+    the failure came from T08's whole-project `tsc` verify reading T12's half-written file. That is a
+    read-against-write conflict, and only `sibling_settle` handles it.
 
 ## Original notes
 

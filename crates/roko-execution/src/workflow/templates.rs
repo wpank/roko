@@ -264,6 +264,7 @@ pub fn build_generation_subgraph(
             inputs: vec![],
             outputs: vec!["prompt".to_string()],
             execution_class: ExecutionClass::Workflow,
+            exclusive: vec![],
         })
         .expect("compose node is first, cannot duplicate");
 
@@ -275,6 +276,7 @@ pub fn build_generation_subgraph(
             inputs: vec!["prompt".to_string()],
             outputs: vec!["output".to_string()],
             execution_class: ExecutionClass::Activity,
+            exclusive: vec![],
         })
         .expect("implement node unique within generation");
 
@@ -286,6 +288,7 @@ pub fn build_generation_subgraph(
             inputs: vec!["output".to_string()],
             outputs: vec!["verdict".to_string()],
             execution_class: ExecutionClass::Activity,
+            exclusive: vec![],
         })
         .expect("gate node unique within generation");
 
@@ -319,6 +322,7 @@ pub fn build_generation_subgraph(
                 inputs: vec!["verdict".to_string()],
                 outputs: vec!["review_verdict".to_string()],
                 execution_class: ExecutionClass::Activity,
+                exclusive: vec![],
             })
             .expect("review node unique within generation");
 
@@ -344,6 +348,7 @@ pub fn build_generation_subgraph(
                 inputs: vec![],
                 outputs: vec!["commit_hash".to_string()],
                 execution_class: ExecutionClass::Activity,
+                exclusive: vec![],
             })
             .expect("commit node unique within generation");
 
@@ -386,6 +391,7 @@ pub fn build_autofix_subgraph(descriptor: &WorkflowTemplateDescriptor, generatio
             inputs: vec![],
             outputs: vec!["prompt".to_string()],
             execution_class: ExecutionClass::Workflow,
+            exclusive: vec![],
         })
         .expect("compose node first");
 
@@ -397,6 +403,7 @@ pub fn build_autofix_subgraph(descriptor: &WorkflowTemplateDescriptor, generatio
             inputs: vec!["prompt".to_string()],
             outputs: vec!["output".to_string()],
             execution_class: ExecutionClass::Activity,
+            exclusive: vec![],
         })
         .expect("autofix node unique");
 
@@ -408,6 +415,7 @@ pub fn build_autofix_subgraph(descriptor: &WorkflowTemplateDescriptor, generatio
             inputs: vec!["output".to_string()],
             outputs: vec!["verdict".to_string()],
             execution_class: ExecutionClass::Activity,
+            exclusive: vec![],
         })
         .expect("gate node unique");
 
@@ -438,6 +446,7 @@ pub fn build_autofix_subgraph(descriptor: &WorkflowTemplateDescriptor, generatio
                 inputs: vec!["verdict".to_string()],
                 outputs: vec!["review_verdict".to_string()],
                 execution_class: ExecutionClass::Activity,
+                exclusive: vec![],
             })
             .expect("review node unique");
 
@@ -461,6 +470,7 @@ pub fn build_autofix_subgraph(descriptor: &WorkflowTemplateDescriptor, generatio
                 inputs: vec![],
                 outputs: vec!["commit_hash".to_string()],
                 execution_class: ExecutionClass::Activity,
+                exclusive: vec![],
             })
             .expect("commit node unique");
 

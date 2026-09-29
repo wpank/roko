@@ -1080,6 +1080,10 @@ impl GraphEngine {
     /// whenever fewer than `max_concurrent_nodes` cells are running, so a node
     /// never waits for nodes it does not depend on.
     ///
+    /// The one exception is [`Node::exclusive`]: a queued node whose paths
+    /// overlap a running node's waits until that node finishes. It holds no
+    /// slot while it waits, so queued nodes after it may start first.
+    ///
     /// A failed node blocks only its dependants, unless the policy is
     /// `FailFast`: then no further node starts after the first failure. No
     /// further node starts once `cancel` fires either. Nodes already running
@@ -1121,8 +1125,12 @@ impl GraphEngine {
         let mut resumed_emitted = false;
         let mut was_cancelled = false;
         let mut halt: Option<Halt> = None;
-        // Nodes cleared to run that wait for a free slot, with their input.
+        // Nodes cleared to run that wait for a free slot, or for a running
+        // node that holds their exclusive paths, with their input.
         let mut runnable: BTreeMap<usize, Vec<roko_core::Signal>> = BTreeMap::new();
+        // The queued nodes held back by exclusive paths, with the running
+        // node each was last seen waiting for.
+        let mut waiting: BTreeMap<usize, usize> = BTreeMap::new();
         let mut running: JoinSet<NodeRun> = JoinSet::new();
         let mut running_nodes: HashMap<tokio::task::Id, usize> = HashMap::new();
 
@@ -1252,16 +1260,45 @@ impl GraphEngine {
             }
 
             // Start queued nodes, in topological order, while slots are free.
-            while running.len() < max_concurrent
-                && let Some((pos, input)) = runnable.pop_first()
-            {
+            while running.len() < max_concurrent {
+                // Pass over each node whose exclusive paths overlap a running
+                // node's. It keeps its place in the queue and holds no slot.
+                let mut busy: Vec<usize> = running_nodes.values().copied().collect();
+                busy.sort_unstable();
+                let mut startable = None;
+                for &pos in runnable.keys() {
+                    let Some((holder, path, held)) = queue.exclusion_conflict(pos, &busy) else {
+                        startable = Some(pos);
+                        break;
+                    };
+                    if waiting.insert(pos, holder) != Some(holder) {
+                        info!(
+                            graph = %graph_name,
+                            node_id = %queue.node(pos).id,
+                            waits_for = %queue.node(holder).id,
+                            path,
+                            held,
+                            "exclusive paths overlap a running node: waiting for it to finish"
+                        );
+                    }
+                }
+                let Some(pos) = startable else {
+                    break;
+                };
                 if let Some(reason) = self.dispatch_stopped() {
                     info!(graph = %graph_name, %reason, "dispatch stopped: starting no further nodes");
-                    runnable.insert(pos, input);
                     halt = Some(Halt::Stopped(reason));
                     break;
                 }
+                let input = runnable.remove(&pos).unwrap_or_default();
                 let node = queue.node(pos);
+                if waiting.remove(&pos).is_some() {
+                    info!(
+                        graph = %graph_name,
+                        node_id = %node.id,
+                        "exclusive paths free: starting the node that waited"
+                    );
+                }
                 let cell = self.registry.create(&node.cell_type, node.config.clone())?;
                 statuses.lock().insert(node.id.clone(), NodeStatus::Running);
                 let task = running.spawn(run_node(NodeLaunch {
@@ -2456,6 +2493,24 @@ impl<'g> ReadyQueue<'g> {
             .node_map
             .get(node_id)
             .map_or(usize::MAX, |idx| self.position[idx.index()])
+    }
+
+    /// The first node of `running` whose exclusive paths overlap those of the
+    /// node at `pos`, with the overlapping paths: the node's own, then the
+    /// running node's.
+    fn exclusion_conflict(
+        &self,
+        pos: usize,
+        running: &[usize],
+    ) -> Option<(usize, &'g str, &'g str)> {
+        let wanted = &self.node(pos).exclusive;
+        if wanted.is_empty() {
+            return None;
+        }
+        running.iter().find_map(|&other| {
+            crate::exclusion::first_overlap(wanted, &self.node(other).exclusive)
+                .map(|(path, held)| (other, path, held))
+        })
     }
 }
 
@@ -4682,6 +4737,7 @@ to = "b"
                 inputs: vec![],
                 outputs: vec![],
                 execution_class: crate::types::ExecutionClass::default(),
+                exclusive: vec![],
             }
         }
 
@@ -6084,6 +6140,245 @@ to = "third"
                 assert_eq!(result.error.as_deref(), Some("plan budget exhausted"));
             }
             assert!(!log.saw("second:start"));
+        }
+    }
+
+    // ─── gap-439794: exclusive paths ─────────────────────────────────────────
+
+    /// Whether the [`SleepCell`] runs labelled `left` and `right` overlapped.
+    fn ran_together(log: &SleepLog, left: &str, right: &str) -> bool {
+        log.position(&format!("{left}:start")) < log.position(&format!("{right}:end"))
+            && log.position(&format!("{right}:start")) < log.position(&format!("{left}:end"))
+    }
+
+    /// gap-439794: two ready nodes whose exclusive paths overlap never run at
+    /// the same time, though a slot is free for each. `plan-view` writes a
+    /// file inside the directory `stage` writes. The node that waits stays
+    /// `Pending`, through `execute` (graph runs, Hot Graphs) and through
+    /// `start` (plan runs).
+    #[tokio::test(start_paused = true)]
+    async fn same_wave_tasks_with_overlapping_files_are_serialized() {
+        let graph = load_from_str(
+            r#"
+[graph]
+name = "overlapping-files"
+
+[graph.policy]
+max_concurrent_nodes = 2
+
+[[nodes]]
+id = "stage"
+cell_type = "sleep"
+config = { label = "stage", delay_ms = 100 }
+exclusive = ["web/src/stage"]
+
+[[nodes]]
+id = "plan-view"
+cell_type = "sleep"
+config = { label = "plan-view", delay_ms = 100 }
+exclusive = ["./web/src/stage/PlanView.tsx"]
+"#,
+        )
+        .unwrap();
+
+        let log = Arc::new(SleepLog::default());
+        let output = GraphEngine::new(graph.clone(), sleep_registry(&log))
+            .execute(&CellContext::new())
+            .await
+            .unwrap();
+        assert!(output.success);
+        assert_eq!(log.max_running.load(Ordering::SeqCst), 1, "{:?}", log.events());
+        assert!(!ran_together(&log, "stage", "plan-view"), "{:?}", log.events());
+
+        let log = Arc::new(SleepLog::default());
+        let handle = GraphEngine::new(graph, sleep_registry(&log)).start(CellContext::new());
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let statuses = handle.status().node_statuses;
+        let count = |status| statuses.values().filter(|s| **s == status).count();
+        assert_eq!(count(NodeStatus::Running), 1, "{statuses:?}");
+        assert_eq!(count(NodeStatus::Pending), 1, "{statuses:?}");
+        let output = handle.await_completion().await.expect("flow output");
+        assert!(output.success);
+        assert_eq!(result_status(&output, "stage"), NodeStatus::Complete);
+        assert_eq!(result_status(&output, "plan-view"), NodeStatus::Complete);
+        assert_eq!(log.max_running.load(Ordering::SeqCst), 1, "{:?}", log.events());
+        assert!(!ran_together(&log, "stage", "plan-view"), "{:?}", log.events());
+    }
+
+    /// Nodes whose exclusive paths do not overlap still run side by side:
+    /// the directory `src/app` does not hold the file `src/app.rs`.
+    #[tokio::test(start_paused = true)]
+    async fn same_wave_tasks_with_disjoint_files_run_in_parallel() {
+        let graph = load_from_str(
+            r#"
+[graph]
+name = "disjoint-files"
+
+[graph.policy]
+max_concurrent_nodes = 2
+
+[[nodes]]
+id = "app-dir"
+cell_type = "sleep"
+config = { label = "app-dir", delay_ms = 100 }
+exclusive = ["src/app"]
+
+[[nodes]]
+id = "app-file"
+cell_type = "sleep"
+config = { label = "app-file", delay_ms = 100 }
+exclusive = ["src/app.rs"]
+"#,
+        )
+        .unwrap();
+
+        for through_start in [false, true] {
+            let log = Arc::new(SleepLog::default());
+            let engine = GraphEngine::new(graph.clone(), sleep_registry(&log));
+            let output = if through_start {
+                engine
+                    .start(CellContext::new())
+                    .await_completion()
+                    .await
+                    .expect("flow output")
+            } else {
+                engine.execute(&CellContext::new()).await.unwrap()
+            };
+
+            assert!(output.success, "through_start = {through_start}");
+            assert_eq!(log.max_running.load(Ordering::SeqCst), 2, "{:?}", log.events());
+            assert!(ran_together(&log, "app-dir", "app-file"), "{:?}", log.events());
+        }
+    }
+
+    /// A node waiting for its exclusive paths holds no slot. `lib-a` and
+    /// `lib-b` write the same file; with two slots, `docs` runs beside the
+    /// one that starts first instead of queueing behind the one that waits.
+    /// Both listing orders run, so `docs` comes last in topological order in
+    /// one of them: there a waiting node that took a slot would block it.
+    #[tokio::test(start_paused = true)]
+    async fn a_node_waiting_for_its_files_holds_no_slot() {
+        const HEADER: &str = r#"
+[graph]
+name = "waiting-holds-no-slot"
+
+[graph.policy]
+max_concurrent_nodes = 2
+"#;
+        const LIB_A: &str = r#"
+[[nodes]]
+id = "lib-a"
+cell_type = "sleep"
+config = { label = "lib-a", delay_ms = 1000 }
+exclusive = ["src/lib.rs"]
+"#;
+        const LIB_B: &str = r#"
+[[nodes]]
+id = "lib-b"
+cell_type = "sleep"
+config = { label = "lib-b", delay_ms = 1000 }
+exclusive = ["src/lib.rs"]
+"#;
+        const DOCS: &str = r#"
+[[nodes]]
+id = "docs"
+cell_type = "sleep"
+config = { label = "docs", delay_ms = 10 }
+exclusive = ["docs/guide.md"]
+"#;
+
+        for listing in [[LIB_A, LIB_B, DOCS], [DOCS, LIB_B, LIB_A]] {
+            let graph = load_from_str(&format!("{HEADER}{}", listing.concat())).unwrap();
+            for through_start in [false, true] {
+                let log = Arc::new(SleepLog::default());
+                let engine = GraphEngine::new(graph.clone(), sleep_registry(&log));
+                let output = if through_start {
+                    engine
+                        .start(CellContext::new())
+                        .await_completion()
+                        .await
+                        .expect("flow output")
+                } else {
+                    engine.execute(&CellContext::new()).await.unwrap()
+                };
+
+                assert!(output.success, "through_start = {through_start}");
+                assert!(!ran_together(&log, "lib-a", "lib-b"), "{:?}", log.events());
+                let first_writer_end = log.position("lib-a:end").min(log.position("lib-b:end"));
+                assert!(
+                    log.position("docs:start") < first_writer_end,
+                    "docs waited behind the writers: {:?}",
+                    log.events()
+                );
+            }
+        }
+    }
+
+    /// Exclusive paths order nodes but are not dependencies. Under
+    /// `SkipFailed`, when the node holding the paths fails, the node that
+    /// waited for them still runs, and nothing reports it as blocked.
+    #[tokio::test(start_paused = true)]
+    async fn a_file_conflict_is_not_a_dependency() {
+        let graph = load_from_str(
+            r#"
+[graph]
+name = "conflict-is-not-a-dependency"
+
+[graph.policy]
+failure_strategy = "skip_failed"
+max_concurrent_nodes = 2
+
+[[nodes]]
+id = "broken"
+cell_type = "sleep"
+config = { label = "broken", delay_ms = 100, fail = true }
+exclusive = ["src/lib.rs"]
+
+[[nodes]]
+id = "setup"
+cell_type = "sleep"
+config = { label = "setup", delay_ms = 10 }
+
+[[nodes]]
+id = "fixer"
+cell_type = "sleep"
+config = { label = "fixer", delay_ms = 10 }
+exclusive = ["src/lib.rs"]
+
+[[edges]]
+from = "setup"
+to = "fixer"
+"#,
+        )
+        .unwrap();
+
+        for through_start in [false, true] {
+            let log = Arc::new(SleepLog::default());
+            let engine = GraphEngine::new(graph.clone(), sleep_registry(&log));
+            let output = if through_start {
+                engine
+                    .start(CellContext::new())
+                    .await_completion()
+                    .await
+                    .expect("flow output")
+            } else {
+                engine.execute(&CellContext::new()).await.unwrap()
+            };
+
+            assert!(!output.success, "through_start = {through_start}");
+            assert_eq!(result_status(&output, "broken"), NodeStatus::Failed);
+            assert_eq!(result_status(&output, "fixer"), NodeStatus::Complete);
+            let fixer = output
+                .node_results
+                .iter()
+                .find(|result| result.node_id == "fixer")
+                .expect("result");
+            assert_eq!(fixer.blocked_by, None);
+            assert!(
+                log.position("broken:end") < log.position("fixer:start"),
+                "fixer ran beside broken: {:?}",
+                log.events()
+            );
         }
     }
 }

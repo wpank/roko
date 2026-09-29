@@ -1078,7 +1078,7 @@ async fn bench_events_sse(State(state): State<Arc<AppState>>) -> impl IntoRespon
             }
         }
     });
-    let sse = Sse::new(stream).keep_alive(
+    let sse = Sse::new(super::sse::until_shutdown(stream, state.cancel.clone())).keep_alive(
         KeepAlive::new()
             .interval(std::time::Duration::from_secs(8))
             .text("keepalive"),

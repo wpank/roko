@@ -437,10 +437,11 @@ async fn stream_telemetry(
         },
     );
 
-    Ok(
-        Sse::new(stream::once(async move { Ok(initial) }).chain(delta_stream))
-            .keep_alive(KeepAlive::default()),
-    )
+    Ok(Sse::new(super::sse::until_shutdown(
+        stream::once(async move { Ok(initial) }).chain(delta_stream),
+        state.cancel.clone(),
+    ))
+    .keep_alive(KeepAlive::default()))
 }
 
 async fn stream_projection(
@@ -511,10 +512,11 @@ async fn stream_projection(
         },
     );
 
-    Ok(
-        Sse::new(stream::once(async move { Ok(initial) }).chain(delta_stream))
-            .keep_alive(KeepAlive::default()),
-    )
+    Ok(Sse::new(super::sse::until_shutdown(
+        stream::once(async move { Ok(initial) }).chain(delta_stream),
+        state.cancel.clone(),
+    ))
+    .keep_alive(KeepAlive::default()))
 }
 
 #[cfg(test)]

@@ -204,3 +204,88 @@ async fn serve_endpoints_respond_before_shutdown() {
     let result = tokio::time::timeout(Duration::from_secs(5), handle).await;
     assert!(result.is_ok(), "server did not shut down within 5 seconds");
 }
+
+/// Open event streams must not hold up shutdown. Once the server is
+/// cancelled, `/api/events` ends and `/ws` gets a close frame, and the server
+/// exits within seconds. Before, a portal tab held `roko serve` up for about
+/// 60 s and a `curl /api/events` held it up for good.
+#[tokio::test]
+async fn serve_shutdown_ends_open_event_streams() {
+    use futures::StreamExt as _;
+    use tokio_tungstenite::tungstenite::Message;
+    use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    drop(listener);
+
+    let tmp = tempfile::tempdir().unwrap();
+    let state = build_test_app_state(tmp.path()).await;
+    let cancel = state.cancel.clone();
+    let handle = tokio::spawn({
+        let state = Arc::clone(&state);
+        async move { roko_serve::run_server_with_state(state, "127.0.0.1", port).await }
+    });
+
+    let base_url = format!("http://127.0.0.1:{port}");
+    let client = reqwest::Client::new();
+    let ready = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if let Ok(resp) = client.get(format!("{base_url}/api/health")).send().await {
+                if resp.status().is_success() {
+                    break;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await;
+    assert!(ready.is_ok(), "server did not start in time");
+
+    // Two clients that never hang up by themselves.
+    let mut events = client
+        .get(format!("{base_url}/api/events"))
+        .send()
+        .await
+        .expect("open /api/events");
+    assert!(
+        events.status().is_success(),
+        "/api/events should return 200"
+    );
+    let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://127.0.0.1:{port}/ws"))
+        .await
+        .expect("open /ws");
+
+    cancel.cancel();
+
+    let exited = tokio::time::timeout(Duration::from_secs(3), handle).await;
+    assert!(
+        exited.is_ok(),
+        "server did not shut down within 3 seconds with event streams open"
+    );
+
+    let events_ended = tokio::time::timeout(Duration::from_secs(3), async {
+        while let Ok(Some(_)) = events.chunk().await {}
+    })
+    .await;
+    assert!(
+        events_ended.is_ok(),
+        "/api/events stayed open after shutdown"
+    );
+
+    let close = tokio::time::timeout(Duration::from_secs(3), async {
+        while let Some(Ok(message)) = socket.next().await {
+            if let Message::Close(frame) = message {
+                return frame;
+            }
+        }
+        None
+    })
+    .await
+    .expect("/ws stayed open after shutdown");
+    assert_eq!(
+        close.map(|frame| frame.code),
+        Some(CloseCode::Away),
+        "/ws must close with 1001 (going away)"
+    );
+}

@@ -962,13 +962,14 @@ async fn plan_costs(
 
     let mut projector = CostProjector::new();
     for (task_id, (cost, _, _, model)) in &task_costs {
-        let tier = plan
-            .tasks
-            .iter()
-            .find(|task| task.id == *task_id)
-            .map_or("focused", |task| task.tier.as_str());
+        // Spend recorded under an id that is not one of the plan's tasks (plan
+        // generation's `generate`, revision's `revise`) is plan spend, not a
+        // completed task.
+        let Some(task) = plan.tasks.iter().find(|task| task.id == *task_id) else {
+            continue;
+        };
         projector.record_completed(&CompletedTask {
-            tier: tier.to_string(),
+            tier: task.tier.clone(),
             model: model.clone(),
             cost_usd: *cost,
         });
@@ -985,7 +986,9 @@ async fn plan_costs(
     let config = state.load_roko_config();
     let default_model = resolve_model(&config, &config.agent.default_model).slug;
     let projection = projector.project_remaining_cost(&remaining, &default_model);
-    let projected_total_usd = projection.projected_total_usd();
+    // Everything the plan has spent, generation and revision included, plus
+    // the expected cost of its remaining tasks.
+    let projected_total_usd = total_cost + projection.expected_usd;
     let budget_limit_usd = f64::from(config.budget.max_plan_usd);
     let budget_enabled = budget_limit_usd > 0.0;
     let budget_remaining_usd = budget_enabled.then(|| (budget_limit_usd - total_cost).max(0.0));
@@ -1067,7 +1070,7 @@ async fn plan_costs(
             "remaining_usd": budget_remaining_usd,
             "utilization": budget_utilization,
             "status": budget_status,
-            "projected_exceeded": budget_enabled && projection.exceeds_budget(budget_limit_usd),
+            "projected_exceeded": budget_enabled && projected_total_usd > budget_limit_usd,
         },
     })))
 }
@@ -1794,9 +1797,9 @@ impl RequestPayload for GenerateRequest {
 /// before the background work starts so the portal's generate hook can use it
 /// immediately.
 ///
-/// The operation ends `Completed { result: {"slug", "task_count"} }` when the
-/// runtime wrote a plan, and `Failed { error }` when generation failed or
-/// finished without writing one.
+/// The operation ends `Completed { result: {"slug", "task_count"} }` only when
+/// plan `slug` loads afterwards. A generation that fails, or that finishes
+/// without writing that plan, ends it `Failed { error }`.
 ///
 /// The operation handle is registered in `state.operations` before the spawned
 /// task can finish (a oneshot start signal gates the task exactly as
@@ -1855,35 +1858,31 @@ async fn generate_plan(
                 kind: "plan_generate".into(),
             });
 
-            match runtime
+            // The portal opens plan `slug` once the operation completes, so the
+            // operation completes only when that plan loads, and fails otherwise.
+            let no_plan = || {
+                format!(
+                    "plan generation for {slug_for_task} finished without writing plan \
+                     '{slug_for_task}'"
+                )
+            };
+            let generated = match runtime
                 .generate_plan_from_prd(&workdir, &slug_for_task, &prd_path)
                 .await
             {
-                // Finishing without a plan is a failure: a `completed`
-                // operation tells the portal to open the plan it names.
-                Ok(gen_result) if gen_result.plan_targets.is_empty() => {
-                    fail_generate_operation(
-                        &state_for_task,
-                        op_id,
-                        &slug_for_task,
-                        format!(
-                            "plan generation for {slug_for_task} finished without writing a plan"
-                        ),
-                        "no_plan_written",
-                    )
-                    .await;
-                }
-                Ok(_) => {
-                    // Count tasks via the runtime so the result carries live data.
-                    let task_count = state_for_task
-                        .runtime
-                        .load_plan_summary(&workdir, &slug_for_task)
-                        .await
-                        .ok()
-                        .flatten()
-                        .map(|dto| dto.task_count)
-                        .unwrap_or(0);
+                Ok(gen_result) if gen_result.plan_targets.is_empty() => Err(no_plan()),
+                Ok(_) => match runtime.load_plan_summary(&workdir, &slug_for_task).await {
+                    Ok(Some(summary)) => Ok(summary.task_count),
+                    Ok(None) => Err(no_plan()),
+                    Err(err) => Err(format!(
+                        "plan '{slug_for_task}' does not load after generation: {err}"
+                    )),
+                },
+                Err(err) => Err(format!("plan generation failed for {slug_for_task}: {err}")),
+            };
 
+            match generated {
+                Ok(task_count) => {
                     let result_json = serde_json::to_string(
                         &json!({ "slug": slug_for_task, "task_count": task_count }),
                     )
@@ -1914,15 +1913,35 @@ async fn generate_plan(
                         success: true,
                     });
                 }
-                Err(err) => {
-                    fail_generate_operation(
-                        &state_for_task,
+                Err(error_msg) => {
+                    bus.publish(ServerEvent::Error {
+                        message: error_msg.clone(),
+                    });
+
+                    // Update the handle to Failed.
+                    if let Some(h) = state_for_task.operations.write().await.get_mut(&op_id) {
+                        h.status = crate::state::OperationStatus::Failed {
+                            error: error_msg.clone(),
+                        };
+                    }
+
+                    {
+                        use roko_core::DashboardEvent;
+                        state_for_task.state_hub.publish_batch(vec![
+                            DashboardEvent::EventLogEntry {
+                                timestamp_ms: generate_now_millis(),
+                                event_type: "plan_generate.failed".into(),
+                                plan_id: slug_for_task.clone(),
+                                task_id: String::new(),
+                                message: format!("op={op_id} error={error_msg}"),
+                            },
+                        ]);
+                    }
+                    bus.publish(ServerEvent::OperationCompleted {
                         op_id,
-                        &slug_for_task,
-                        format!("plan generation failed for {slug_for_task}: {err}"),
-                        err,
-                    )
-                    .await;
+                        kind: "plan_generate".into(),
+                        success: false,
+                    });
                 }
             }
         }
@@ -1943,38 +1962,6 @@ async fn generate_plan(
         axum::http::StatusCode::ACCEPTED,
         Json(json!({ "id": op_id, "plan_id": slug })),
     ))
-}
-
-/// Finish a generate operation as failed: its handle carries `error`, and the
-/// event bus and the dashboard stream (`plan_generate.failed`, with `detail`)
-/// announce it.
-async fn fail_generate_operation(
-    state: &AppState,
-    op_id: String,
-    plan_id: &str,
-    error: String,
-    detail: impl std::fmt::Display,
-) {
-    state.event_bus.publish(ServerEvent::Error {
-        message: error.clone(),
-    });
-    if let Some(h) = state.operations.write().await.get_mut(&op_id) {
-        h.status = OperationStatus::Failed { error };
-    }
-    state
-        .state_hub
-        .publish_batch(vec![roko_core::DashboardEvent::EventLogEntry {
-            timestamp_ms: generate_now_millis(),
-            event_type: "plan_generate.failed".into(),
-            plan_id: plan_id.to_string(),
-            task_id: String::new(),
-            message: format!("op={op_id} error={detail}"),
-        }]);
-    state.event_bus.publish(ServerEvent::OperationCompleted {
-        op_id,
-        kind: "plan_generate".into(),
-        success: false,
-    });
 }
 
 /// Request body for `POST /api/plans/{id}/revise`.
@@ -3541,7 +3528,7 @@ mod tests {
         .expect("the operation finishes");
         match status {
             OperationStatus::Failed { error } => assert!(
-                error.contains("finished without writing a plan"),
+                error.contains("finished without writing plan"),
                 "unexpected error: {error}"
             ),
             other => panic!("a generation that wrote no plan must fail, got {other:?}"),
@@ -3660,6 +3647,87 @@ mod tests {
         assert!((limit - 0.27).abs() < 1e-6);
         assert_eq!(payload["budget"]["status"], "projected_exceeded");
         assert_eq!(payload["budget"]["projected_exceeded"], true);
+    }
+
+    /// gap-a6e2c3 records plan generation and revision spend under the task
+    /// ids `generate` and `revise`. That spend belongs in the plan's totals,
+    /// but it is not a completed task of the plan.
+    #[tokio::test]
+    async fn plan_costs_counts_generation_spend_in_the_total_but_not_as_a_task() {
+        let task = |id: &str, tier: &str, completed: bool| crate::plan_types::PlanTaskDto {
+            id: id.to_string(),
+            title: id.to_string(),
+            description: None,
+            role: None,
+            tier: tier.to_string(),
+            status: if completed { "completed" } else { "pending" }.to_string(),
+            depends_on: vec![],
+            files: vec![],
+            completed,
+            verify_phases: vec![],
+            model_hint: None,
+            estimated_minutes: None,
+            verify: vec![],
+        };
+        let runtime = Arc::new(RecordingRuntime {
+            plan_tasks: vec![task("T1", "mechanical", true), task("T2", "focused", false)],
+            ..(*recording_runtime_for_plan("cost-demo")).clone()
+        });
+        let (_dir, state) = test_state_with_runtime(runtime);
+
+        let learn_dir = state.workdir.join(".roko").join("learn");
+        tokio::fs::create_dir_all(&learn_dir)
+            .await
+            .expect("create learn dir");
+        let rows = [("generate", 0.10), ("T1", 0.25), ("revise", 0.05)]
+            .iter()
+            .map(|(task_id, cost_usd)| {
+                json!({
+                    "plan_id": "cost-demo",
+                    "task_id": task_id,
+                    "model": "claude-sonnet-4-6",
+                    "cost_usd": cost_usd,
+                })
+                .to_string()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        tokio::fs::write(learn_dir.join("efficiency.jsonl"), rows)
+            .await
+            .expect("write efficiency log");
+
+        let Json(payload) = plan_costs(State(state), Path("cost-demo".into()))
+            .await
+            .expect("cost report");
+
+        let total = payload["total_cost_usd"].as_f64().expect("total cost");
+        assert!(
+            (total - 0.40).abs() < 1e-9,
+            "generation and revision spend stay in the total: {payload}"
+        );
+        assert_eq!(payload["plan_spent"], payload["total_cost_usd"]);
+        assert_eq!(
+            payload["projection"]["tasks_completed"], 1,
+            "only T1 is a completed task: {payload}"
+        );
+        assert_eq!(payload["projection"]["tasks_remaining"], 1);
+        let task_ids = payload["task_costs"]
+            .as_array()
+            .expect("task costs")
+            .iter()
+            .map(|task| task["task_id"].as_str().expect("task id"))
+            .collect::<Vec<_>>();
+        assert_eq!(task_ids, ["T1", "T2"]);
+        let expected_remaining = payload["projection"]["expected_remaining_usd"]
+            .as_f64()
+            .expect("expected remaining");
+        let projected_total = payload["projection"]["projected_total_usd"]
+            .as_f64()
+            .expect("projected total");
+        assert!(
+            (projected_total - (total + expected_remaining)).abs() < 1e-9,
+            "the projected total starts from everything spent: {payload}"
+        );
     }
 
     // ── plans_dir helper ────────────────────────────────────────────────

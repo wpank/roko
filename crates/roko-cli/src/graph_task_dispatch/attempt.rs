@@ -24,6 +24,7 @@ use roko_learn::telemetry::{
 };
 use sha2::Digest;
 
+use super::served_model::{ServedModel, is_cli_backend};
 use super::*;
 
 /// Attempt state of one run: its durable ordinals and its telemetry writer.
@@ -383,9 +384,9 @@ fn failure_class(
     Some(class)
 }
 
-/// The model that ran: the provider's own report of it, else the model the
-/// bridge launched, which after failover is not the requested one.
-/// bug-35379d records the failover chain.
+/// The model that ran: the one the bridge launched, which after failover
+/// is not the requested one, and the one the provider reported serving,
+/// which is `None` when it named none (bug-31438d).
 fn executed_model(
     model_requested: &str,
     dispatch: Option<&crate::dispatch_v2::AgentResultDispatch>,
@@ -395,14 +396,12 @@ fn executed_model(
         ..ExecutedModel::default()
     };
     if let Some(dispatch) = dispatch {
-        let reported = dispatch
-            .result
-            .usage_obs
-            .as_ref()
-            .and_then(|usage| usage.model.clone());
+        let served = ServedModel::of(dispatch);
         executed.provider = Some(dispatch.target.provider_id.clone());
-        executed.model_reported =
-            Some(reported.unwrap_or_else(|| dispatch.target.model_slug.clone()));
+        executed.model_dispatched = Some(dispatch.target.model_slug.clone());
+        executed.model_reported = served.reported;
+        executed.models_reported = served.all_reported;
+        executed.model_mismatch = served.mismatch;
         executed.turns = dispatch.events.iter().rev().find_map(|event| match event {
             roko_agent::AgentRuntimeEvent::TurnCompleted { num_turns, .. } => *num_turns,
             _ => None,
@@ -420,15 +419,7 @@ fn cost_source(dispatch: Option<&crate::dispatch_v2::AgentResultDispatch>) -> Co
     let Some(usage) = dispatch.result.usage_obs.as_ref() else {
         return CostSource::Unknown;
     };
-    let cli_backend = matches!(
-        dispatch.target.provider_kind,
-        roko_core::ProviderKind::ClaudeCli
-            | roko_core::ProviderKind::CodexCli
-            | roko_core::ProviderKind::GeminiCli
-            | roko_core::ProviderKind::CursorCli
-            | roko_core::ProviderKind::CursorAcp
-    );
-    CostSource::from_usage_source(&usage.source, cli_backend)
+    CostSource::from_usage_source(&usage.source, is_cli_backend(dispatch.target.provider_kind))
 }
 
 fn sha256_hex(text: &str) -> String {

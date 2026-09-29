@@ -522,7 +522,9 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
-    use crate::graph_task_dispatch::tests::make_task_def;
+    use crate::graph_task_dispatch::tests::{
+        final_turn, make_task_def, spawn_openai_mock, tool_call_turn,
+    };
 
     // ─── Provider failover on usage exhaustion ──────────────────────────────
 
@@ -554,96 +556,6 @@ exit 1
 
     fn invocations(calls: &Path) -> usize {
         std::fs::read_to_string(calls).map_or(0, |log| log.lines().count())
-    }
-
-    /// Serve canned OpenAI-compatible chat responses, one per connection,
-    /// capturing each request body.
-    fn spawn_openai_mock(
-        responses: Vec<serde_json::Value>,
-    ) -> (String, Arc<parking_lot::Mutex<Vec<serde_json::Value>>>) {
-        use std::io::{Read, Write};
-
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind mock server");
-        let base_url = format!("http://{}/v1", listener.local_addr().expect("mock addr"));
-        let captured = Arc::new(parking_lot::Mutex::new(Vec::new()));
-        let requests = Arc::clone(&captured);
-        std::thread::spawn(move || {
-            for response in responses {
-                let Ok((mut stream, _)) = listener.accept() else {
-                    return;
-                };
-                let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(10)));
-                let mut buf = Vec::new();
-                let mut chunk = [0_u8; 8192];
-                let body_start = loop {
-                    let n = stream.read(&mut chunk).unwrap_or(0);
-                    if n == 0 {
-                        return;
-                    }
-                    buf.extend_from_slice(&chunk[..n]);
-                    if let Some(pos) = buf.windows(4).position(|window| window == b"\r\n\r\n") {
-                        break pos + 4;
-                    }
-                };
-                let headers = String::from_utf8_lossy(&buf[..body_start]).to_ascii_lowercase();
-                let length = headers
-                    .lines()
-                    .find_map(|line| line.strip_prefix("content-length:"))
-                    .and_then(|value| value.trim().parse::<usize>().ok())
-                    .unwrap_or(0);
-                while buf.len() < body_start + length {
-                    let n = stream.read(&mut chunk).unwrap_or(0);
-                    if n == 0 {
-                        break;
-                    }
-                    buf.extend_from_slice(&chunk[..n]);
-                }
-                let end = buf.len().min(body_start + length);
-                requests.lock().push(
-                    serde_json::from_slice(&buf[body_start..end])
-                        .unwrap_or(serde_json::Value::Null),
-                );
-                let body = response.to_string();
-                let wire = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                    body.len()
-                );
-                let _ = stream.write_all(wire.as_bytes());
-            }
-        });
-        (base_url, captured)
-    }
-
-    fn tool_call_turn(id: &str, name: &str, arguments: serde_json::Value) -> serde_json::Value {
-        serde_json::json!({
-            "id": format!("chatcmpl-{id}"),
-            "choices": [{
-                "index": 0,
-                "message": {
-                    "role": "assistant",
-                    "content": "",
-                    "tool_calls": [{
-                        "id": id,
-                        "type": "function",
-                        "function": { "name": name, "arguments": arguments.to_string() }
-                    }]
-                },
-                "finish_reason": "tool_calls"
-            }],
-            "usage": { "prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15 }
-        })
-    }
-
-    fn final_turn(text: &str) -> serde_json::Value {
-        serde_json::json!({
-            "id": "chatcmpl-final",
-            "choices": [{
-                "index": 0,
-                "message": { "role": "assistant", "content": text },
-                "finish_reason": "stop"
-            }],
-            "usage": { "prompt_tokens": 12, "completion_tokens": 3, "total_tokens": 15 }
-        })
     }
 
     /// `claude_cli` (fake script) plus two OpenAI-compatible fallbacks: one

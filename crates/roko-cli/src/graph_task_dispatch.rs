@@ -60,6 +60,7 @@ mod prompt_experiment;
 mod retry_budget;
 mod retry_feedback;
 mod routing_context;
+mod served_model;
 mod sibling_settle;
 mod streaming;
 mod tui_forward;
@@ -1155,7 +1156,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
             }
         };
         attempt.dispatch_ended();
-        let dispatch = match dispatch_result {
+        let mut dispatch = match dispatch_result {
             Ok(dispatch) => dispatch,
             Err(error) => {
                 // Best-effort release on dispatch failure when worktree isolation is active.
@@ -1187,6 +1188,10 @@ impl TaskDispatcher for GraphTaskDispatcher {
             }
         };
         let wall_duration = started_at.elapsed();
+        // The model the provider reported serving (bug-31438d). A
+        // substitution is priced by the model that served, and fails a
+        // `--model` pin once the call is accounted and recorded.
+        let pinned_model_substituted = self.check_served_model(spec, &task.id, &mut dispatch);
 
         // Account for every completed provider call, including unsuccessful
         // results: callers may still have incurred the reported cost.
@@ -1200,6 +1205,31 @@ impl TaskDispatcher for GraphTaskDispatcher {
         // outputs) to the TUI bridge so the dashboard shows what the agent
         // produced. This runs for both successful and failed dispatches.
         self.forward_dispatch_events_to_tui(spec, &task, &dispatch, ctx);
+
+        if let Some(error) = pinned_model_substituted {
+            let settlement =
+                Settlement::provider_failure(&error.to_string(), first_token_seen(&dispatch));
+            let settled = attempt.settle(settlement, &dispatch_plan.model.slug, Some(&dispatch));
+            self.emit_feedback(
+                spec,
+                &task,
+                &settled,
+                &dispatch,
+                wall_duration,
+                &dispatch_plan,
+                Some(routing_ctx_for_feedback),
+            )
+            .await;
+            if let Some((provider, lease)) = self.workspace_provider.as_ref().zip(lease.as_ref()) {
+                let _ = provider
+                    .release(
+                        lease,
+                        roko_graph::workspace::WorkspaceReleasePolicy::RetainForFailure,
+                    )
+                    .await;
+            }
+            return Err(error);
+        }
 
         if !dispatch.result.success {
             let message = dispatch
@@ -1933,6 +1963,137 @@ printf '%s\n' '{{"type":"result","session_id":"sess-b","model":"claude-sonnet-4-
                 assert_eq!(counts(), (3, 3), "no rule is consulted by default");
             }
         }
+    }
+
+    /// Every record file a Graph attempt writes, under `workdir/.roko`.
+    pub(super) fn recording_feedback(workdir: &Path) -> GraphFeedbackContext {
+        let roko = workdir.join(".roko");
+        let facade = crate::runtime_feedback::FeedbackFacade::new().with_sink(Arc::new(
+            crate::runtime_feedback::EpisodeSink::at(roko.join("episodes.jsonl")),
+        ));
+        GraphFeedbackContext {
+            feedback_facade: Some(Arc::new(facade)),
+            efficiency_path: Some(roko.join("learn/efficiency.jsonl")),
+            costs_path: Some(roko.join("learn/costs.jsonl")),
+            runs_dir: Some(roko.join("runs")),
+            ..GraphFeedbackContext::default()
+        }
+    }
+
+    /// The rows of the JSONL file at `path` that `keep` accepts, once at
+    /// least `expected` of them landed from the background writers.
+    pub(super) async fn jsonl_rows_where(
+        path: &Path,
+        expected: usize,
+        keep: impl Fn(&serde_json::Value) -> bool,
+    ) -> Vec<serde_json::Value> {
+        for _ in 0..600 {
+            let rows: Vec<serde_json::Value> = std::fs::read_to_string(path)
+                .unwrap_or_default()
+                .lines()
+                .filter_map(|line| serde_json::from_str(line).ok())
+                .filter(|row| keep(row))
+                .collect();
+            if rows.len() >= expected {
+                return rows;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        panic!("{expected} rows were not written to {}", path.display());
+    }
+
+    /// Serve canned OpenAI-compatible chat responses, one per connection,
+    /// capturing each request body.
+    pub(super) fn spawn_openai_mock(
+        responses: Vec<serde_json::Value>,
+    ) -> (String, Arc<parking_lot::Mutex<Vec<serde_json::Value>>>) {
+        use std::io::{Read, Write};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind mock server");
+        let base_url = format!("http://{}/v1", listener.local_addr().expect("mock addr"));
+        let captured = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let requests = Arc::clone(&captured);
+        std::thread::spawn(move || {
+            for response in responses {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    return;
+                };
+                let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(10)));
+                let mut buf = Vec::new();
+                let mut chunk = [0_u8; 8192];
+                let body_start = loop {
+                    let n = stream.read(&mut chunk).unwrap_or(0);
+                    if n == 0 {
+                        return;
+                    }
+                    buf.extend_from_slice(&chunk[..n]);
+                    if let Some(pos) = buf.windows(4).position(|window| window == b"\r\n\r\n") {
+                        break pos + 4;
+                    }
+                };
+                let headers = String::from_utf8_lossy(&buf[..body_start]).to_ascii_lowercase();
+                let length = headers
+                    .lines()
+                    .find_map(|line| line.strip_prefix("content-length:"))
+                    .and_then(|value| value.trim().parse::<usize>().ok())
+                    .unwrap_or(0);
+                while buf.len() < body_start + length {
+                    let n = stream.read(&mut chunk).unwrap_or(0);
+                    if n == 0 {
+                        break;
+                    }
+                    buf.extend_from_slice(&chunk[..n]);
+                }
+                let end = buf.len().min(body_start + length);
+                requests.lock().push(
+                    serde_json::from_slice(&buf[body_start..end])
+                        .unwrap_or(serde_json::Value::Null),
+                );
+                let body = response.to_string();
+                let wire = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = stream.write_all(wire.as_bytes());
+            }
+        });
+        (base_url, captured)
+    }
+
+    pub(super) fn tool_call_turn(
+        id: &str,
+        name: &str,
+        arguments: serde_json::Value,
+    ) -> serde_json::Value {
+        serde_json::json!({
+            "id": format!("chatcmpl-{id}"),
+            "choices": [{
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [{
+                        "id": id,
+                        "type": "function",
+                        "function": { "name": name, "arguments": arguments.to_string() }
+                    }]
+                },
+                "finish_reason": "tool_calls"
+            }],
+            "usage": { "prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15 }
+        })
+    }
+
+    pub(super) fn final_turn(text: &str) -> serde_json::Value {
+        serde_json::json!({
+            "id": "chatcmpl-final",
+            "choices": [{
+                "index": 0,
+                "message": { "role": "assistant", "content": text },
+                "finish_reason": "stop"
+            }],
+            "usage": { "prompt_tokens": 12, "completion_tokens": 3, "total_tokens": 15 }
+        })
     }
 
     /// A fake Claude CLI that streams one API message, then works past its

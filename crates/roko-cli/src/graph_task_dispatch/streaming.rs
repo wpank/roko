@@ -236,8 +236,14 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
 
         // ── Provider invocation ──────────────────────────────────────────
         attempt.dispatch_started();
-        let dispatch_result = self.factory.run_shared_agent_bridge(request).await;
+        let mut dispatch_result = self.factory.run_shared_agent_bridge(request).await;
         attempt.dispatch_ended();
+        // A model the provider substituted is priced by the model that
+        // served (bug-31438d). This path runs no failover, and a `--model`
+        // pin fails only the batch path's attempt.
+        if let Ok(dispatch) = dispatch_result.as_mut() {
+            let _ = self.check_served_model(spec, &task.id, dispatch);
+        }
 
         let wall_duration = started_at.elapsed();
 

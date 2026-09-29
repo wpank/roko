@@ -14,6 +14,7 @@ use async_trait::async_trait;
 use roko_learn::episode_logger::{Episode, EpisodeGateVerdict, EpisodeLogger, Usage};
 use roko_learn::hdc_fingerprint::{encode as encode_hdc_fingerprint, fingerprint_episode};
 use roko_learn::hindsight::BLAMED_TASKS_KEY;
+use roko_learn::telemetry::AttemptVerdictRecord;
 
 use super::{FeedbackEvent, FeedbackSink};
 
@@ -173,6 +174,9 @@ impl FeedbackSink for EpisodeSink {
             "successful_model".into(),
             serde_json::Value::String(outcome.model.clone()),
         );
+        if let Some(settled) = settled {
+            attach_settled_attempt(&mut episode, settled);
+        }
 
         attach_episode_hdc_fingerprint(
             &mut episode,
@@ -188,6 +192,29 @@ impl FeedbackSink for EpisodeSink {
             .await
             .map_err(|err| anyhow::anyhow!("episode append failed: {err}"))?;
         Ok(())
+    }
+}
+
+/// What the attempt's verdict records that the event's legacy fields cannot
+/// say: the model the provider reported serving (bug-31438d).
+fn attach_settled_attempt(episode: &mut Episode, settled: &AttemptVerdictRecord) {
+    let executed = &settled.executed;
+    episode.extra.insert(
+        "model_reported".into(),
+        executed
+            .model_reported
+            .clone()
+            .map_or(serde_json::Value::Null, serde_json::Value::String),
+    );
+    episode.extra.insert(
+        "model_mismatch".into(),
+        serde_json::Value::Bool(executed.model_mismatch),
+    );
+    if !executed.models_reported.is_empty() {
+        episode.extra.insert(
+            "models_reported".into(),
+            serde_json::json!(executed.models_reported),
+        );
     }
 }
 
@@ -329,6 +356,48 @@ mod tests {
             [EpisodeGateVerdict::new("verify", false)]
         );
         assert!(!episode.extra.contains_key(BLAMED_TASKS_KEY));
+    }
+
+    /// The settled verdict says what the event's legacy field cannot: the
+    /// model the provider reported serving.
+    #[tokio::test]
+    async fn settled_attempt_records_served_model() {
+        use roko_learn::telemetry::{AttemptIdentity, AttemptKey, AttemptOutcome};
+
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("episodes.jsonl");
+        let sink = EpisodeSink::at(&path);
+        let key = AttemptKey::new("run-1", "plan-1", "task-1", 1);
+        let mut verdict = AttemptVerdictRecord::settle(
+            AttemptIdentity::new(&key),
+            AttemptOutcome::Unverified,
+            true,
+        );
+        verdict.executed.model_reported = Some("glm-4.7".into());
+        verdict.executed.model_mismatch = true;
+        sink.on_event(&FeedbackEvent::TaskCompleted {
+            turns: 1,
+            failure_reason: None,
+            settled: Some(Arc::new(verdict)),
+            plan_id: "plan-1".into(),
+            task_id: "task-1".into(),
+            outcome: outcome(),
+            model_source: ModelChoiceSource::Router,
+            succeeded: true,
+            routing_context: None,
+            prompt_text: None,
+            cache_read_tokens: 0,
+            knowledge_ids: vec![],
+            playbook_ids: vec![],
+            initial_model: "claude-sonnet-4-6".into(),
+        })
+        .await
+        .unwrap();
+
+        let episode = EpisodeLogger::read_all(&path).await.unwrap().remove(0);
+        assert_eq!(episode.model, "claude-sonnet-4-6");
+        assert_eq!(episode.extra["model_reported"], "glm-4.7");
+        assert_eq!(episode.extra["model_mismatch"], true);
     }
 
     #[tokio::test]

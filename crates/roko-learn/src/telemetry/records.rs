@@ -507,8 +507,17 @@ pub struct ExecutedModel {
     pub provider: Option<String>,
     /// Model the dispatcher asked for.
     pub model_requested: Option<String>,
-    /// Model the provider reported running.
+    /// Model the provider bridge launched. Legacy rows name it `model`.
+    pub model_dispatched: Option<String>,
+    /// Model the provider reported serving; `None` when its responses named
+    /// none, never the configured slug.
     pub model_reported: Option<String>,
+    /// Every model the provider named, in order, when its responses
+    /// disagreed; `model_reported` is the last of them.
+    pub models_reported: Vec<String>,
+    /// The provider reported serving another model than the one launched
+    /// (a dated snapshot of it, such as `gpt-4o-2024-08-06`, is the same).
+    pub model_mismatch: bool,
     /// Models tried before the one that ran, in order.
     pub failover_chain: Vec<String>,
     /// Agent turns taken.

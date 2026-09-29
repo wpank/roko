@@ -381,6 +381,7 @@ export function Workspace() {
               selectedTaskId={resolved.task}
               open={streamOpen}
               onToggle={() => setStreamOpen((v) => !v)}
+              planCount={plans?.length ?? 0}
             />
           </section>
         </ErrorBoundary>

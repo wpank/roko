@@ -1,6 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { describeEmpty } from './emptyState';
+import type { WireDashboardEvent, WirePlanTask } from '@/api/contracts';
+import { describeEmpty, planState } from './emptyState';
 import type { EmptyStateInput } from './emptyState';
+import { applyEvent, initialRunState } from './runState';
+import { buildTaskRows } from './taskRows';
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -62,6 +65,11 @@ describe('case: plans but none selected', () => {
   it('prompts to select a plan when plan is undefined', () => {
     const result = describeEmpty(input({ planCount: 3, plan: undefined }));
     expect(result).toBe('Select a plan, or press n to describe a new one.');
+  });
+
+  it('reads the plan count only when no plan is selected', () => {
+    const result = describeEmpty(input({ planCount: 0, plan: plan({ phase: 'never_run', tasksTotal: 2 }) }));
+    expect(result).toBe('Ready — 2 tasks.');
   });
 });
 
@@ -322,5 +330,60 @@ describe('invariant: no empty string or "no data"', () => {
       const result = describeEmpty(i);
       expect(result.toLowerCase(), `Input: ${JSON.stringify(i)}`).not.toContain('no data');
     }
+  });
+});
+
+// ── planState ─────────────────────────────────────────────────────────────────
+
+describe('planState', () => {
+  const TASKS: WirePlanTask[] = ['T01', 'T02'].map((id, i) => ({
+    id,
+    title: id,
+    tier: 'focused',
+    status: 'pending',
+    depends_on: i === 0 ? [] : ['T01'],
+    files: [],
+    completed: false,
+    verify_phases: ['test'],
+  }));
+  const fold = (events: WireDashboardEvent[], stepMs = 1) =>
+    events.reduce((run, e, i) => applyEvent(run, e, 1_000 + i * stepMs), initialRunState());
+  const state = (events: WireDashboardEvent[], stepMs = 1) => {
+    const run = fold(events, stepMs);
+    return planState(run, 'hello', buildTaskRows(TASKS, run, 'hello', 0).rows, 2);
+  };
+  const SET: WireDashboardEvent = {
+    type: 'plan_set_loaded',
+    plans: [
+      { plan_id: 'a', tasks_total: 1, wave: 0, depends_on: [], conflicts_with: [] },
+      { plan_id: 'hello', tasks_total: 2, wave: 1, depends_on: ['a'], conflicts_with: [] },
+    ],
+  };
+
+  it('calls a plan with no live record never run, with its rows and waves', () => {
+    expect(describeEmpty(input({ plan: state([]) }))).toBe('Ready — 2 tasks in 2 waves.');
+  });
+
+  it('keeps a member queued in the active set pending, with what it waits for', () => {
+    expect(describeEmpty(input({ plan: state([SET, { type: 'plan_started', plan_id: 'a', tasks_total: 1 }]) }))).toBe(
+      'Queued — after a.',
+    );
+  });
+
+  it('calls a member left pending by a finished set never run', () => {
+    const events: WireDashboardEvent[] = [SET, { type: 'run_completed', outcome: 'failed', duration_ms: 5 }];
+    expect(state(events).phase).toBe('never_run');
+  });
+
+  it('names the first failed task and its failed check, and times a finished run', () => {
+    const events: WireDashboardEvent[] = [
+      { type: 'plan_started', plan_id: 'hello', tasks_total: 2 },
+      { type: 'task_started', plan_id: 'hello', task_id: 'T01', phase: 'implement' },
+      { type: 'gate_result', plan_id: 'hello', task_id: 'T01', gate: 'verify[0:test]', passed: false },
+      { type: 'task_completed', plan_id: 'hello', task_id: 'T01', outcome: 'failed' },
+      { type: 'plan_completed', plan_id: 'hello', success: false },
+    ];
+    expect(state(events, 1_000)).toMatchObject({ phase: 'failed', failedTaskId: 'T01', failedCheck: 'test', durationMs: 4_000 });
+    expect(describeEmpty(input({ plan: state(events) }))).toBe('Stopped at T01 — test failed. Retry resumes from T01.');
   });
 });

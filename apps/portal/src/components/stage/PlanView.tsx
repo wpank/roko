@@ -25,6 +25,7 @@ import { computeWaves } from '@/lib/waves';
 import { progressSegments } from '@/lib/planRows';
 import { cn } from '@/lib/cn';
 import { describeRequestError } from '@/lib/apiErrors';
+import { describePlan, planState } from '@/lib/emptyState';
 import { planSetActive, queuePosition, waitReason } from '@/lib/planSet';
 import { statusFields } from '@/lib/statusLine';
 import { useNow } from '@/lib/useNow';
@@ -208,7 +209,8 @@ export interface PlanViewProps {
  *
  * 1. Header — title, group/id, primary CTA, ✦ Revise, ✎ Edit
  * 2. Status line — pre-run: task/wave/estimate/parallel counts + ValidationBadge;
- *                  post-run: progress bar + done/total, elapsed, eta, cost, agents
+ *                  post-run: progress bar + done/total, elapsed, eta, cost, agents,
+ *                  then the run summary sentence
  * 3. WaveStrip + TaskList — or SourceEditor / PromptPanel(revise) while open
  */
 export function PlanView({
@@ -471,6 +473,14 @@ export function PlanView({
           </>
         )}
       </div>
+
+      {/* Run summary (design §7) — what the run is doing or came to, whatever
+          task has focus. Before a run the status line says it. */}
+      {hasRun && (
+        <p data-region="run-summary" className="rd-meta font-mono">
+          {describePlan(planState(run, plan.id, rows, waveCount))}
+        </p>
+      )}
 
       {/* ── 3. Content area ───────────────────────────────────────────────── */}
       {editing ? (

@@ -693,6 +693,18 @@ pub struct GraphPlanRunParams {
 /// `roko_graph::topology::ProductionPlanTopology` (when `rich_topology` is
 /// true), and runs them through the GraphEngine with the default cell registry.
 pub async fn run_graph_plan(params: GraphPlanRunParams) -> anyhow::Result<i32> {
+    run_graph_plan_in_run(params, None).await
+}
+
+/// [`run_graph_plan`] for a caller whose run already has an id: a single
+/// plan's fresh checkpoint takes `run_id`, so the run's attempt records and
+/// manifest land in the caller's own `.roko/runs/<run_id>/` (`roko run`,
+/// bug-ccc7c4). A resumed checkpoint keeps its recorded run, a set of several
+/// plans mints one run per plan, and a `--log-file` run mints its own.
+pub async fn run_graph_plan_in_run(
+    params: GraphPlanRunParams,
+    run_id: Option<String>,
+) -> anyhow::Result<i32> {
     // `--log-file`: delegates entirely to `event_log::run_recorded`, which is
     // responsible for publishing its own terminal events.
     if params.log_file.is_some() {
@@ -723,7 +735,7 @@ pub async fn run_graph_plan(params: GraphPlanRunParams) -> anyhow::Result<i32> {
         .clone();
     let run_start = Instant::now();
 
-    let result = run_graph_plan_body(params).await;
+    let result = run_graph_plan_body(params, run_id).await;
 
     let outcome = graph_run_outcome(&result, &interrupt_handle);
     hub_sender.publish(roko_core::DashboardEvent::RunCompleted {
@@ -763,7 +775,10 @@ fn graph_run_outcome(
     }
 }
 
-async fn run_graph_plan_body(params: GraphPlanRunParams) -> anyhow::Result<i32> {
+async fn run_graph_plan_body(
+    params: GraphPlanRunParams,
+    run_id: Option<String>,
+) -> anyhow::Result<i32> {
     use roko_graph::cells::TaskDispatcher;
 
     let GraphPlanRunParams {
@@ -1178,6 +1193,7 @@ async fn run_graph_plan_body(params: GraphPlanRunParams) -> anyhow::Result<i32> 
         shared_pause_flag: &shared_pause_flag,
         interrupt: &interrupt,
         run_manifests: &run_manifests,
+        caller_run_id: run_id.as_deref(),
     };
     let mut scheduler = super::plan_set::PlanSetScheduler::new(
         &plan_order,
@@ -1787,6 +1803,9 @@ struct PlanRunContext<'a> {
     interrupt: &'a PlanRunInterruptHandle,
     /// Each checkpoint run's `manifest.json` (S01 §5.1).
     run_manifests: &'a super::run_manifest::RunManifests,
+    /// The run id the caller already gave this run (`roko run`); a single
+    /// plan's fresh checkpoint takes it.
+    caller_run_id: Option<&'a str>,
 }
 
 /// Close checkpoint run `run_id`'s attempt log, then record in its manifest
@@ -2102,7 +2121,7 @@ async fn run_one_plan(
             }
         }
     };
-    let mut checkpoint = crate::graph_checkpoint::prepare_graph_checkpoint(
+    let mut checkpoint = crate::graph_checkpoint::prepare_graph_checkpoint_for_run(
         ctx.workdir,
         ctx.resume_plan,
         &plan.id,
@@ -2110,6 +2129,7 @@ async fn run_one_plan(
         &graph,
         ctx.fresh,
         ctx.force_resume,
+        ctx.caller_run_id.filter(|_| ctx.plan_count == 1),
     )?;
     let run_id = checkpoint.run_id().to_string();
     // A new run's manifest, or one more invocation of a resumed run.

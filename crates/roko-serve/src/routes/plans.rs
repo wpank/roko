@@ -1794,6 +1794,10 @@ impl RequestPayload for GenerateRequest {
 /// before the background work starts so the portal's generate hook can use it
 /// immediately.
 ///
+/// The operation ends `Completed { result: {"slug", "task_count"} }` only when
+/// plan `slug` loads afterwards. A generation that fails, or that finishes
+/// without writing that plan, ends it `Failed { error }`.
+///
 /// The operation handle is registered in `state.operations` before the spawned
 /// task can finish (a oneshot start signal gates the task exactly as
 /// `spawn_background_run` in `routes/run.rs` does), so polling
@@ -1851,23 +1855,31 @@ async fn generate_plan(
                 kind: "plan_generate".into(),
             });
 
-            match runtime
+            // The portal opens plan `slug` once the operation completes, so the
+            // operation completes only when that plan loads, and fails otherwise.
+            let no_plan = || {
+                format!(
+                    "plan generation for {slug_for_task} finished without writing plan \
+                     '{slug_for_task}'"
+                )
+            };
+            let generated = match runtime
                 .generate_plan_from_prd(&workdir, &slug_for_task, &prd_path)
                 .await
             {
-                Ok(gen_result) => {
-                    let success = !gen_result.plan_targets.is_empty();
+                Ok(gen_result) if gen_result.plan_targets.is_empty() => Err(no_plan()),
+                Ok(_) => match runtime.load_plan_summary(&workdir, &slug_for_task).await {
+                    Ok(Some(summary)) => Ok(summary.task_count),
+                    Ok(None) => Err(no_plan()),
+                    Err(err) => Err(format!(
+                        "plan '{slug_for_task}' does not load after generation: {err}"
+                    )),
+                },
+                Err(err) => Err(format!("plan generation failed for {slug_for_task}: {err}")),
+            };
 
-                    // Count tasks via the runtime so the result carries live data.
-                    let task_count = state_for_task
-                        .runtime
-                        .load_plan_summary(&workdir, &slug_for_task)
-                        .await
-                        .ok()
-                        .flatten()
-                        .map(|dto| dto.task_count)
-                        .unwrap_or(0);
-
+            match generated {
+                Ok(task_count) => {
                     let result_json = serde_json::to_string(
                         &json!({ "slug": slug_for_task, "task_count": task_count }),
                     )
@@ -1880,17 +1892,12 @@ async fn generate_plan(
                         };
                     }
 
-                    let event_type = if success {
-                        "plan_generate.completed"
-                    } else {
-                        "plan_generate.failed"
-                    };
                     {
                         use roko_core::DashboardEvent;
                         state_for_task.state_hub.publish_batch(vec![
                             DashboardEvent::EventLogEntry {
                                 timestamp_ms: generate_now_millis(),
-                                event_type: event_type.into(),
+                                event_type: "plan_generate.completed".into(),
                                 plan_id: slug_for_task.clone(),
                                 task_id: String::new(),
                                 message: format!("op={op_id} tasks={task_count}"),
@@ -1900,11 +1907,10 @@ async fn generate_plan(
                     bus.publish(ServerEvent::OperationCompleted {
                         op_id,
                         kind: "plan_generate".into(),
-                        success,
+                        success: true,
                     });
                 }
-                Err(err) => {
-                    let error_msg = format!("plan generation failed for {slug_for_task}: {err}");
+                Err(error_msg) => {
                     bus.publish(ServerEvent::Error {
                         message: error_msg.clone(),
                     });
@@ -1924,7 +1930,7 @@ async fn generate_plan(
                                 event_type: "plan_generate.failed".into(),
                                 plan_id: slug_for_task.clone(),
                                 task_id: String::new(),
-                                message: format!("op={op_id} error={err}"),
+                                message: format!("op={op_id} error={error_msg}"),
                             },
                         ]);
                     }

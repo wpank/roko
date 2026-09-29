@@ -15,11 +15,12 @@
 //!    `{"prompt":"a rust app that prints hello world"}` gives 202 with `plan_id`,
 //!    and the PRD draft exists at `.roko/prd/drafts/<plan_id>.md`.
 //! 6. `GET /api/operations/{id}` — reports running, then completed with
-//!    `result.slug`; 404 for an unknown id.
+//!    `result.slug`; failed when generation writes no plan; 404 for an unknown
+//!    id.
 //!
 //! A stub `CliRuntime` is used so no real agent is dispatched.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -82,6 +83,12 @@ struct StubAuthoringRuntime {
 
     // Notify gating generate_plan_from_prd; None = return immediately
     generate_gate: Option<Arc<tokio::sync::Notify>>,
+
+    // Slugs generate_plan_from_prd has written; load_plan_summary knows them
+    generated: Mutex<HashSet<String>>,
+
+    // When true, generate_plan_from_prd reports success but writes no plan
+    writes_no_plan: bool,
 }
 
 impl StubAuthoringRuntime {
@@ -102,6 +109,7 @@ struct StubBuilder {
     validate_results: HashMap<String, PlanValidationDto>,
     create_outcomes: HashMap<String, CreatePlanOutcome>,
     generate_gate: Option<Arc<tokio::sync::Notify>>,
+    writes_no_plan: bool,
 }
 
 impl StubBuilder {
@@ -144,6 +152,12 @@ impl StubBuilder {
         (self, notify)
     }
 
+    /// Make generate_plan_from_prd return a plan target without writing the plan.
+    fn writing_no_plan(mut self) -> Self {
+        self.writes_no_plan = true;
+        self
+    }
+
     fn build(self) -> StubAuthoringRuntime {
         StubAuthoringRuntime {
             calls: self.calls,
@@ -152,6 +166,8 @@ impl StubBuilder {
             validate_results: self.validate_results,
             create_outcomes: self.create_outcomes,
             generate_gate: self.generate_gate,
+            generated: Mutex::new(HashSet::new()),
+            writes_no_plan: self.writes_no_plan,
         }
     }
 }
@@ -292,10 +308,12 @@ impl CliRuntime for StubAuthoringRuntime {
         _workdir: &Path,
         plan_id: &str,
     ) -> anyhow::Result<Option<PlanSummaryDto>> {
-        // A plan is "known" if it has a source or a save_result registered.
+        // A plan is "known" if it has a source or a save_result registered, or
+        // was generated.
         let known = self.sources.contains_key(plan_id)
             || self.save_results.contains_key(plan_id)
-            || self.validate_results.contains_key(plan_id);
+            || self.validate_results.contains_key(plan_id)
+            || self.generated.lock().await.contains(plan_id);
         Ok(known.then(|| stub_summary(plan_id)))
     }
 
@@ -345,6 +363,9 @@ impl CliRuntime for StubAuthoringRuntime {
             gate.notified().await;
         }
 
+        if !self.writes_no_plan {
+            self.generated.lock().await.insert(slug.to_string());
+        }
         let plans_root = workdir.join("plans");
         let plan_target = plans_root.join(slug);
         Ok(PlanGenerationResult {
@@ -1133,5 +1154,71 @@ async fn get_operation_reports_running_then_completed_with_slug() {
     assert!(
         slug.is_some(),
         "completed result must contain slug; payload: {s2_payload}"
+    );
+}
+
+/// 6c. A generation that finishes without writing its plan ends the operation
+///     `failed`, with an error naming the plan. `completed` would send the
+///     portal to a plan that does not exist.
+#[tokio::test]
+async fn get_operation_reports_failed_when_generation_writes_no_plan() {
+    let stub = StubAuthoringRuntime::builder().writing_no_plan().build();
+    let (_dir, state) = make_state(stub).await;
+
+    let gen_resp = build_app(Arc::clone(&state))
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/plans/generate")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({ "prompt": "a rust app that prints hello world" })
+                        .to_string(),
+                ))
+                .expect("build request"),
+        )
+        .await
+        .expect("send generate");
+    assert_eq!(gen_resp.status(), StatusCode::ACCEPTED);
+    let gen_payload = body_json(gen_resp).await;
+    let op_id = gen_payload["id"].as_str().expect("202 must have op id");
+    let plan_id = gen_payload["plan_id"]
+        .as_str()
+        .expect("202 must have plan_id");
+
+    let settled = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let response = build_app(Arc::clone(&state))
+                .oneshot(
+                    Request::builder()
+                        .method("GET")
+                        .uri(format!("/api/operations/{op_id}"))
+                        .body(Body::empty())
+                        .expect("build request"),
+                )
+                .await
+                .expect("send status");
+            let payload = body_json(response).await;
+            if payload["status"] != "running" {
+                return payload;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the operation must settle");
+
+    assert_eq!(
+        settled["status"], "failed",
+        "a generation that wrote no plan must fail: {settled}"
+    );
+    let error = settled["error"].as_str().unwrap_or_default();
+    assert!(
+        error.contains(&format!("'{plan_id}'")),
+        "the error must name the missing plan: {settled}"
+    );
+    assert!(
+        settled.get("result").is_none(),
+        "a failed operation carries no result: {settled}"
     );
 }

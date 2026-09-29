@@ -565,6 +565,7 @@ fn prompt_tasks_file(
             // The prompt is the whole task definition.
             skip_enrichment: true,
             source_prd: None,
+            failure_policy: None,
         },
         tasks: vec![TaskDef {
             id: "T1".to_string(),

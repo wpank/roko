@@ -127,7 +127,12 @@ enum NodeActivation {
     /// No conditional route selected the node. This is a successful no-op.
     ConditionSkipped(String),
     /// A required dependency did not complete successfully.
-    UpstreamFailed(String),
+    UpstreamFailed {
+        /// Why the node cannot run.
+        reason: String,
+        /// The required dependency that did not complete, if any.
+        dependency: Option<NodeId>,
+    },
 }
 
 /// Execution result for a single node.
@@ -147,6 +152,9 @@ pub struct NodeResult {
     pub output_count: usize,
     /// Whether the cell backing this node is a stub/placeholder.
     pub is_stub: bool,
+    /// For a node skipped because a node it depends on failed: the failed
+    /// node behind it, followed through any skipped dependencies in between.
+    pub blocked_by: Option<NodeId>,
 }
 
 /// Output of a full graph execution.
@@ -301,6 +309,13 @@ pub struct ValidatedGraph {
     _private: (),
 }
 
+/// Asked just before a node's cell starts; see [`GraphEngine::with_dispatch_stop`].
+///
+/// `Some(reason)` stops the run: no further node starts, nodes already
+/// running finish, and every node that has not started is skipped with
+/// `reason`.
+pub type DispatchStop = Arc<dyn Fn() -> Option<String> + Send + Sync>;
+
 /// The graph execution engine. Holds a graph and registry, executing nodes
 /// sequentially or with bounded parallelism according to policy.
 pub struct GraphEngine {
@@ -339,6 +354,8 @@ pub struct GraphEngine {
     /// starts set this to `false` (the default) and reject any graph containing
     /// stub descriptors.
     allow_test_stubs: bool,
+    /// Asked before each node's cell starts; `Some(reason)` stops the run.
+    dispatch_stop: Option<DispatchStop>,
 }
 
 impl GraphEngine {
@@ -358,6 +375,7 @@ impl GraphEngine {
             tick_state: parking_lot::Mutex::new(HashMap::new()),
             pre_validated: std::sync::atomic::AtomicBool::new(false),
             allow_test_stubs: false,
+            dispatch_stop: None,
         }
     }
 
@@ -462,6 +480,25 @@ impl GraphEngine {
     pub fn with_allow_test_stubs(mut self, allow: bool) -> Self {
         self.allow_test_stubs = allow;
         self
+    }
+
+    /// Stop starting nodes once `stop` returns a reason.
+    ///
+    /// `stop` is asked just before each node's cell starts, in every
+    /// execution path. Once it returns `Some(reason)`, no further node
+    /// starts: nodes already running finish, and each node that has not
+    /// started is skipped with `reason`. Replayed Activity outputs start no
+    /// cell, so they are not held back. Plan runs use this to stop at a spent
+    /// budget.
+    #[must_use]
+    pub fn with_dispatch_stop(mut self, stop: DispatchStop) -> Self {
+        self.dispatch_stop = Some(stop);
+        self
+    }
+
+    /// Why no further node may start, when the dispatch stop says so.
+    fn dispatch_stopped(&self) -> Option<String> {
+        self.dispatch_stop.as_ref().and_then(|stop| stop())
     }
 
     /// Return a reference to the graph event sequence counter.
@@ -613,7 +650,8 @@ impl GraphEngine {
         let mut outputs = self.initial_tick_outputs();
         let mut statuses: HashMap<NodeId, NodeStatus> = HashMap::new();
         let mut results: Vec<NodeResult> = Vec::with_capacity(order.len());
-        let mut fail_fast_abort = false;
+        // Once set, no further node starts: why the rest are skipped.
+        let mut abort: Option<String> = None;
         let mut resumed_emitted = false;
 
         // 3. Execute each node in order
@@ -623,16 +661,8 @@ impl GraphEngine {
                 continue;
             };
 
-            if fail_fast_abort {
-                let result = NodeResult {
-                    node_id: node_id.clone(),
-                    cell_type: node.cell_type.clone(),
-                    status: NodeStatus::Skipped,
-                    duration: Duration::ZERO,
-                    error: Some("aborted after graph failure".to_string()),
-                    output_count: 0,
-                    is_stub: false,
-                };
+            if let Some(reason) = &abort {
+                let result = skipped_result(node, NodeStatus::Skipped, reason.clone());
                 statuses.insert(node_id.clone(), result.status);
                 results.push(result);
                 continue;
@@ -650,20 +680,18 @@ impl GraphEngine {
                         error: Some(reason),
                         output_count: 0,
                         is_stub: false,
+                        blocked_by: None,
                     };
                     statuses.insert(node_id.clone(), result.status);
                     results.push(result);
                     continue;
                 }
-                NodeActivation::UpstreamFailed(reason) => {
+                NodeActivation::UpstreamFailed { reason, dependency } => {
                     let result = NodeResult {
-                        node_id: node_id.clone(),
-                        cell_type: node.cell_type.clone(),
-                        status: NodeStatus::Skipped,
-                        duration: Duration::ZERO,
-                        error: Some(reason),
-                        output_count: 0,
-                        is_stub: false,
+                        blocked_by: dependency
+                            .as_deref()
+                            .and_then(|dependency| failed_root(dependency, &statuses, &results)),
+                        ..skipped_result(node, NodeStatus::Skipped, reason)
                     };
                     statuses.insert(node_id.clone(), result.status);
                     results.push(result);
@@ -708,7 +736,17 @@ impl GraphEngine {
                     error: None,
                     output_count: count,
                     is_stub: false,
+                    blocked_by: None,
                 });
+                continue;
+            }
+
+            if let Some(reason) = self.dispatch_stopped() {
+                info!(node_id = %node_id, %reason, "dispatch stopped: starting no further nodes");
+                let result = skipped_result(node, NodeStatus::Skipped, reason.clone());
+                statuses.insert(node_id.clone(), result.status);
+                results.push(result);
+                abort = Some(reason);
                 continue;
             }
 
@@ -808,6 +846,7 @@ impl GraphEngine {
                         error: None,
                         output_count: count,
                         is_stub: cell_is_stub,
+                        blocked_by: None,
                     });
                 }
                 Err(e) => {
@@ -821,10 +860,12 @@ impl GraphEngine {
                         "node failed"
                     );
                     statuses.insert(node_id.clone(), NodeStatus::Failed);
-                    fail_fast_abort = matches!(
+                    if matches!(
                         self.graph.policy.failure_strategy,
                         crate::types::FailureStrategy::FailFast
-                    );
+                    ) {
+                        abort.get_or_insert_with(|| "aborted after graph failure".to_string());
+                    }
                     self.emit_telemetry(
                         &ObservableEvent::CellFailed {
                             block: node_id.clone(),
@@ -842,6 +883,7 @@ impl GraphEngine {
                         error: Some(msg),
                         output_count: 0,
                         is_stub: cell_is_stub,
+                        blocked_by: None,
                     });
                 }
             }
@@ -1085,7 +1127,8 @@ impl GraphEngine {
         let mut running_nodes: HashMap<tokio::task::Id, usize> = HashMap::new();
 
         loop {
-            if halt != Some(Halt::Cancelled) && cancel.is_some_and(CancellationToken::is_cancelled)
+            if !matches!(halt, Some(Halt::Cancelled))
+                && cancel.is_some_and(CancellationToken::is_cancelled)
             {
                 info!(graph = %graph_name, "flow cancelled: starting no further nodes");
                 halt = Some(Halt::Cancelled);
@@ -1101,27 +1144,31 @@ impl GraphEngine {
             // can make its dependants ready; they are decided in this pass.
             while let Some(pos) = queue.ready.pop_first() {
                 let node = queue.node(pos);
-                if let Some(halt) = halt {
+                if let Some(halt) = &halt {
                     statuses.lock().insert(node.id.clone(), NodeStatus::Skipped);
-                    if halt == Halt::Cancelled {
-                        was_cancelled = true;
-                        self.emit_telemetry(
-                            &ObservableEvent::CellCancelled {
-                                block: node.id.clone(),
-                                run: run_id.clone(),
-                            },
-                            &[
-                                LensScope::Cell(node.id.clone()),
-                                LensScope::Graph(graph_name.clone()),
-                            ],
-                        )
-                        .await;
-                    } else {
-                        results.push(skipped_result(
+                    match halt {
+                        Halt::Cancelled => {
+                            was_cancelled = true;
+                            self.emit_telemetry(
+                                &ObservableEvent::CellCancelled {
+                                    block: node.id.clone(),
+                                    run: run_id.clone(),
+                                },
+                                &[
+                                    LensScope::Cell(node.id.clone()),
+                                    LensScope::Graph(graph_name.clone()),
+                                ],
+                            )
+                            .await;
+                        }
+                        Halt::FailFast => results.push(skipped_result(
                             node,
                             NodeStatus::Skipped,
                             "aborted after graph failure".to_string(),
-                        ));
+                        )),
+                        Halt::Stopped(reason) => {
+                            results.push(skipped_result(node, NodeStatus::Skipped, reason.clone()));
+                        }
                     }
                     queue.settle(pos);
                     continue;
@@ -1142,9 +1189,17 @@ impl GraphEngine {
                         queue.settle(pos);
                         continue;
                     }
-                    NodeActivation::UpstreamFailed(reason) => {
-                        statuses.lock().insert(node.id.clone(), NodeStatus::Skipped);
-                        results.push(skipped_result(node, NodeStatus::Skipped, reason));
+                    NodeActivation::UpstreamFailed { reason, dependency } => {
+                        let mut status_guard = statuses.lock();
+                        let blocked_by = dependency.as_deref().and_then(|dependency| {
+                            failed_root(dependency, &status_guard, &results)
+                        });
+                        status_guard.insert(node.id.clone(), NodeStatus::Skipped);
+                        drop(status_guard);
+                        results.push(NodeResult {
+                            blocked_by,
+                            ..skipped_result(node, NodeStatus::Skipped, reason)
+                        });
                         queue.settle(pos);
                         continue;
                     }
@@ -1187,6 +1242,7 @@ impl GraphEngine {
                         error: None,
                         output_count: count,
                         is_stub: false,
+                        blocked_by: None,
                     });
                     queue.settle(pos);
                     continue;
@@ -1199,6 +1255,12 @@ impl GraphEngine {
             while running.len() < max_concurrent
                 && let Some((pos, input)) = runnable.pop_first()
             {
+                if let Some(reason) = self.dispatch_stopped() {
+                    info!(graph = %graph_name, %reason, "dispatch stopped: starting no further nodes");
+                    runnable.insert(pos, input);
+                    halt = Some(Halt::Stopped(reason));
+                    break;
+                }
                 let node = queue.node(pos);
                 let cell = self.registry.create(&node.cell_type, node.config.clone())?;
                 statuses.lock().insert(node.id.clone(), NodeStatus::Running);
@@ -1216,6 +1278,10 @@ impl GraphEngine {
                 running_nodes.insert(task.id(), pos);
             }
 
+            if halt.is_some() && !runnable.is_empty() {
+                // The dispatch stop just fired: settle the queued nodes.
+                continue;
+            }
             // Nothing is running, so nothing can become ready: every node
             // has settled.
             if running.is_empty() {
@@ -1224,7 +1290,7 @@ impl GraphEngine {
 
             // Wait for the next node to finish, or for cancellation.
             let next = match cancel {
-                Some(cancel) if halt != Some(Halt::Cancelled) => {
+                Some(cancel) if !matches!(halt, Some(Halt::Cancelled)) => {
                     tokio::select! {
                         next = running.join_next_with_id() => next,
                         () = cancel.cancelled() => continue,
@@ -1268,6 +1334,7 @@ impl GraphEngine {
                             error: Some(error),
                             output_count: 0,
                             is_stub: false,
+                            blocked_by: None,
                         },
                         cost_usd: 0.0,
                         outputs: Vec::new(),
@@ -1488,6 +1555,7 @@ impl GraphEngine {
                         error: None,
                         output_count,
                         is_stub: false,
+                        blocked_by: None,
                     });
                     continue;
                 }
@@ -1501,6 +1569,7 @@ impl GraphEngine {
                         error: Some("conditional route was not selected in snapshot".to_string()),
                         output_count: 0,
                         is_stub: false,
+                        blocked_by: None,
                     });
                     continue;
                 }
@@ -1514,6 +1583,7 @@ impl GraphEngine {
                         error: Some("skipped in snapshot".to_string()),
                         output_count: 0,
                         is_stub: false,
+                        blocked_by: None,
                     });
                     continue;
                 }
@@ -1527,6 +1597,7 @@ impl GraphEngine {
                         error: Some("failed in snapshot".to_string()),
                         output_count: 0,
                         is_stub: false,
+                        blocked_by: None,
                     });
                     continue;
                 }
@@ -1545,19 +1616,18 @@ impl GraphEngine {
                         error: Some(reason),
                         output_count: 0,
                         is_stub: false,
+                        blocked_by: None,
                     });
                     continue;
                 }
-                NodeActivation::UpstreamFailed(reason) => {
+                NodeActivation::UpstreamFailed { reason, dependency } => {
+                    let blocked_by = dependency
+                        .as_deref()
+                        .and_then(|dependency| failed_root(dependency, &statuses, &results));
                     statuses.insert(node_id.clone(), NodeStatus::Skipped);
                     results.push(NodeResult {
-                        node_id: node_id.clone(),
-                        cell_type: node.cell_type.clone(),
-                        status: NodeStatus::Skipped,
-                        duration: Duration::ZERO,
-                        error: Some(reason),
-                        output_count: 0,
-                        is_stub: false,
+                        blocked_by,
+                        ..skipped_result(node, NodeStatus::Skipped, reason)
                     });
                     continue;
                 }
@@ -1586,6 +1656,7 @@ impl GraphEngine {
                         error: None,
                         output_count: count,
                         is_stub: cell_is_stub,
+                        blocked_by: None,
                     });
                 }
                 Err(e) => {
@@ -1600,6 +1671,7 @@ impl GraphEngine {
                         error: Some(msg),
                         output_count: 0,
                         is_stub: cell_is_stub,
+                        blocked_by: None,
                     });
                 }
             }
@@ -1802,7 +1874,8 @@ impl GraphEngine {
         let mut results: Vec<NodeResult> = Vec::with_capacity(order.len());
         let mut total_cost_usd = 0.0;
         let mut was_cancelled = false;
-        let mut fail_fast_abort = false;
+        // Once set, no further node starts: why the rest are skipped.
+        let mut abort: Option<String> = None;
 
         // Seed all nodes as Pending.
         {
@@ -1835,19 +1908,11 @@ impl GraphEngine {
                 continue;
             };
 
-            if fail_fast_abort {
+            if let Some(reason) = &abort {
                 node_statuses
                     .lock()
                     .insert(node_id.clone(), NodeStatus::Skipped);
-                results.push(NodeResult {
-                    node_id: node_id.clone(),
-                    cell_type: node.cell_type.clone(),
-                    status: NodeStatus::Skipped,
-                    duration: Duration::ZERO,
-                    error: Some("aborted after graph failure".to_string()),
-                    output_count: 0,
-                    is_stub: false,
-                });
+                results.push(skipped_result(node, NodeStatus::Skipped, reason.clone()));
                 continue;
             }
 
@@ -1869,22 +1934,21 @@ impl GraphEngine {
                             error: Some(reason),
                             output_count: 0,
                             is_stub: false,
+                            blocked_by: None,
                         });
                         continue;
                     }
-                    NodeActivation::UpstreamFailed(reason) => {
+                    NodeActivation::UpstreamFailed { reason, dependency } => {
+                        let blocked_by = dependency
+                            .as_deref()
+                            .and_then(|dependency| failed_root(dependency, &statuses, &results));
                         drop(statuses);
                         node_statuses
                             .lock()
                             .insert(node_id.clone(), NodeStatus::Skipped);
                         results.push(NodeResult {
-                            node_id: node_id.clone(),
-                            cell_type: node.cell_type.clone(),
-                            status: NodeStatus::Skipped,
-                            duration: Duration::ZERO,
-                            error: Some(reason),
-                            output_count: 0,
-                            is_stub: false,
+                            blocked_by,
+                            ..skipped_result(node, NodeStatus::Skipped, reason)
                         });
                         continue;
                     }
@@ -1923,7 +1987,18 @@ impl GraphEngine {
                     error: None,
                     output_count: count,
                     is_stub: false,
+                    blocked_by: None,
                 });
+                continue;
+            }
+
+            if let Some(reason) = self.dispatch_stopped() {
+                info!(node_id = %node_id, %reason, "flow: dispatch stopped, starting no further nodes");
+                node_statuses
+                    .lock()
+                    .insert(node_id.clone(), NodeStatus::Skipped);
+                results.push(skipped_result(node, NodeStatus::Skipped, reason.clone()));
+                abort = Some(reason);
                 continue;
             }
 
@@ -2013,6 +2088,7 @@ impl GraphEngine {
                         error: None,
                         output_count: count,
                         is_stub: cell_is_stub,
+                        blocked_by: None,
                     });
                 }
                 Err(e) => {
@@ -2032,10 +2108,12 @@ impl GraphEngine {
                     node_statuses
                         .lock()
                         .insert(node_id.clone(), NodeStatus::Failed);
-                    fail_fast_abort = matches!(
+                    if matches!(
                         self.graph.policy.failure_strategy,
                         crate::types::FailureStrategy::FailFast
-                    );
+                    ) {
+                        abort.get_or_insert_with(|| "aborted after graph failure".to_string());
+                    }
                     results.push(NodeResult {
                         node_id: node_id.clone(),
                         cell_type: node.cell_type.clone(),
@@ -2044,6 +2122,7 @@ impl GraphEngine {
                         error: Some(msg),
                         output_count: 0,
                         is_stub: cell_is_stub,
+                        blocked_by: None,
                     });
                 }
             }
@@ -2283,10 +2362,12 @@ struct ReadyQueueRun {
 }
 
 /// Why the ready-queue scheduler starts no further node.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum Halt {
     /// A node failed under the `FailFast` failure strategy.
     FailFast,
+    /// The engine's dispatch stop gave this reason.
+    Stopped(String),
     /// The run was cancelled.
     Cancelled,
 }
@@ -2496,9 +2577,28 @@ async fn run_node(launch: NodeLaunch) -> NodeRun {
             error,
             output_count: outputs.len(),
             is_stub,
+            blocked_by: None,
         },
         cost_usd,
         outputs,
+    }
+}
+
+/// The failed node that blocks a node whose required `dependency` did not
+/// complete: the dependency itself when it failed, or the failed node that
+/// blocked it when it was skipped in turn.
+fn failed_root(
+    dependency: &str,
+    statuses: &HashMap<NodeId, NodeStatus>,
+    results: &[NodeResult],
+) -> Option<NodeId> {
+    match statuses.get(dependency) {
+        Some(NodeStatus::Failed) => Some(dependency.to_string()),
+        Some(NodeStatus::Skipped) => results
+            .iter()
+            .find(|result| result.node_id == dependency)
+            .and_then(|result| result.blocked_by.clone()),
+        _ => None,
     }
 }
 
@@ -2512,6 +2612,7 @@ fn skipped_result(node: &Node, status: NodeStatus, reason: String) -> NodeResult
         error: Some(reason),
         output_count: 0,
         is_stub: false,
+        blocked_by: None,
     }
 }
 
@@ -2529,7 +2630,10 @@ fn evaluate_node_activation(
     use petgraph::Direction;
 
     let Some(&idx) = graph.node_map.get(node_id) else {
-        return NodeActivation::UpstreamFailed(format!("node `{node_id}` is not in the graph"));
+        return NodeActivation::UpstreamFailed {
+            reason: format!("node `{node_id}` is not in the graph"),
+            dependency: None,
+        };
     };
 
     let mut has_incoming = false;
@@ -2556,14 +2660,16 @@ fn evaluate_node_activation(
                     ));
                 }
                 NodeStatus::Failed | NodeStatus::Skipped => {
-                    return NodeActivation::UpstreamFailed(format!(
-                        "required dependency `{source_id}` did not complete"
-                    ));
+                    return NodeActivation::UpstreamFailed {
+                        reason: format!("required dependency `{source_id}` did not complete"),
+                        dependency: Some(source_id.clone()),
+                    };
                 }
                 NodeStatus::Pending | NodeStatus::Running => {
-                    return NodeActivation::UpstreamFailed(format!(
-                        "required dependency `{source_id}` is not complete"
-                    ));
+                    return NodeActivation::UpstreamFailed {
+                        reason: format!("required dependency `{source_id}` is not complete"),
+                        dependency: Some(source_id.clone()),
+                    };
                 }
             },
             Some(condition) => {
@@ -5589,8 +5695,9 @@ config = { label = "d", delay_ms = 100 }
         assert_eq!(log.max_running.load(Ordering::SeqCst), 2);
     }
 
-    /// Cancelling a parallel flow starts no further node. A node already
-    /// running finishes, and the nodes that wait on it are cancelled.
+    /// Cancelling a parallel flow starts no further node, even under
+    /// `SkipFailed` after a failure. A node already running finishes, and the
+    /// nodes that wait on it are cancelled.
     #[tokio::test(start_paused = true)]
     async fn cancelling_a_parallel_flow_starts_no_further_node() {
         let graph = load_from_str(
@@ -5599,7 +5706,13 @@ config = { label = "d", delay_ms = 100 }
 name = "cancel-parallel"
 
 [graph.policy]
+failure_strategy = "skip_failed"
 max_concurrent_nodes = 4
+
+[[nodes]]
+id = "broken"
+cell_type = "sleep"
+config = { label = "broken", delay_ms = 10, fail = true }
 
 [[nodes]]
 id = "slow"
@@ -5628,6 +5741,7 @@ to = "after-slow"
         let output = handle.await_completion().await.expect("flow output");
 
         assert!(!output.success);
+        assert_eq!(result_status(&output, "broken"), NodeStatus::Failed);
         assert_eq!(result_status(&output, "slow"), NodeStatus::Complete);
         assert!(!log.saw("after-slow:start"));
         assert_eq!(
@@ -5724,5 +5838,252 @@ to = "after-boom"
         );
         assert_eq!(result_status(&output, "after-boom"), NodeStatus::Skipped);
         assert_eq!(result_status(&output, "other"), NodeStatus::Complete);
+    }
+
+    /// A node skipped because a dependency failed names the failed node,
+    /// even through a dependency that was skipped in turn, whichever
+    /// execution path runs the graph.
+    #[tokio::test(start_paused = true)]
+    async fn a_skipped_node_names_the_failed_node_that_blocked_it() {
+        let graph = load_from_str(
+            r#"
+[graph]
+name = "blocked-by"
+
+[graph.policy]
+failure_strategy = "skip_failed"
+
+[[nodes]]
+id = "broken"
+cell_type = "sleep"
+config = { label = "broken", fail = true }
+
+[[nodes]]
+id = "child"
+cell_type = "sleep"
+config = { label = "child" }
+
+[[nodes]]
+id = "grandchild"
+cell_type = "sleep"
+config = { label = "grandchild" }
+
+[[nodes]]
+id = "other"
+cell_type = "sleep"
+config = { label = "other" }
+
+[[edges]]
+from = "broken"
+to = "child"
+
+[[edges]]
+from = "child"
+to = "grandchild"
+"#,
+        )
+        .unwrap();
+
+        for max_concurrent_nodes in [1, 4] {
+            for through_start in [false, true] {
+                let case =
+                    format!("max_concurrent_nodes {max_concurrent_nodes}, start {through_start}");
+                let mut graph = graph.clone();
+                graph.policy.max_concurrent_nodes = max_concurrent_nodes;
+                let log = Arc::new(SleepLog::default());
+                let engine = GraphEngine::new(graph, sleep_registry(&log));
+                let output = if through_start {
+                    engine
+                        .start(CellContext::new())
+                        .await_completion()
+                        .await
+                        .expect("flow output")
+                } else {
+                    engine.execute(&CellContext::new()).await.unwrap()
+                };
+                let blocked_by = |node_id: &str| {
+                    output
+                        .node_results
+                        .iter()
+                        .find(|result| result.node_id == node_id)
+                        .and_then(|result| result.blocked_by.clone())
+                };
+
+                assert!(!output.success, "{case}");
+                assert_eq!(
+                    result_status(&output, "other"),
+                    NodeStatus::Complete,
+                    "{case}"
+                );
+                assert_eq!(blocked_by("broken"), None, "{case}");
+                assert_eq!(blocked_by("child").as_deref(), Some("broken"), "{case}");
+                assert_eq!(
+                    blocked_by("grandchild").as_deref(),
+                    Some("broken"),
+                    "{case}"
+                );
+            }
+        }
+    }
+
+    /// The dispatch stop halts a `SkipFailed` run the way a spent plan budget
+    /// must: once it fires no further node starts, nodes already running
+    /// finish, and every node that had not started is skipped with its
+    /// reason.
+    #[tokio::test(start_paused = true)]
+    async fn a_dispatch_stop_starts_no_further_node() {
+        let graph = load_from_str(
+            r#"
+[graph]
+name = "dispatch-stop"
+
+[graph.policy]
+failure_strategy = "skip_failed"
+max_concurrent_nodes = 3
+
+[[nodes]]
+id = "broken"
+cell_type = "sleep"
+config = { label = "broken", delay_ms = 10, fail = true }
+
+[[nodes]]
+id = "spender"
+cell_type = "sleep"
+config = { label = "spender", delay_ms = 50 }
+
+[[nodes]]
+id = "long"
+cell_type = "sleep"
+config = { label = "long", delay_ms = 200 }
+
+[[nodes]]
+id = "after-spender"
+cell_type = "sleep"
+config = { label = "after-spender" }
+
+[[nodes]]
+id = "after-long"
+cell_type = "sleep"
+config = { label = "after-long" }
+
+[[edges]]
+from = "spender"
+to = "after-spender"
+
+[[edges]]
+from = "long"
+to = "after-long"
+"#,
+        )
+        .unwrap();
+
+        for through_start in [false, true] {
+            let log = Arc::new(SleepLog::default());
+            let spent = Arc::clone(&log);
+            let engine = GraphEngine::new(graph.clone(), sleep_registry(&log)).with_dispatch_stop(
+                Arc::new(move || {
+                    spent
+                        .saw("spender:end")
+                        .then(|| "plan budget exhausted".to_string())
+                }),
+            );
+            let output = if through_start {
+                engine
+                    .start(CellContext::new())
+                    .await_completion()
+                    .await
+                    .expect("flow output")
+            } else {
+                engine.execute(&CellContext::new()).await.unwrap()
+            };
+
+            assert!(!output.success, "through_start = {through_start}");
+            assert_eq!(result_status(&output, "broken"), NodeStatus::Failed);
+            assert_eq!(result_status(&output, "spender"), NodeStatus::Complete);
+            assert_eq!(result_status(&output, "long"), NodeStatus::Complete);
+            for waiting in ["after-spender", "after-long"] {
+                let result = output
+                    .node_results
+                    .iter()
+                    .find(|result| result.node_id == waiting)
+                    .expect("result");
+                assert_eq!(result.status, NodeStatus::Skipped);
+                assert_eq!(result.error.as_deref(), Some("plan budget exhausted"));
+                assert!(!log.saw(&format!("{waiting}:start")));
+            }
+        }
+    }
+
+    /// A sequential run (one node at a time) honours the dispatch stop too.
+    #[tokio::test(start_paused = true)]
+    async fn a_dispatch_stop_halts_a_sequential_run() {
+        let graph = load_from_str(
+            r#"
+[graph]
+name = "dispatch-stop-sequential"
+
+[graph.policy]
+failure_strategy = "skip_failed"
+max_concurrent_nodes = 1
+
+[[nodes]]
+id = "first"
+cell_type = "sleep"
+config = { label = "first", delay_ms = 10 }
+
+[[nodes]]
+id = "second"
+cell_type = "sleep"
+config = { label = "second", delay_ms = 10 }
+
+[[nodes]]
+id = "third"
+cell_type = "sleep"
+config = { label = "third", delay_ms = 10 }
+
+[[edges]]
+from = "first"
+to = "second"
+
+[[edges]]
+from = "second"
+to = "third"
+"#,
+        )
+        .unwrap();
+
+        for through_start in [false, true] {
+            let log = Arc::new(SleepLog::default());
+            let spent = Arc::clone(&log);
+            let engine = GraphEngine::new(graph.clone(), sleep_registry(&log)).with_dispatch_stop(
+                Arc::new(move || {
+                    spent
+                        .saw("first:end")
+                        .then(|| "plan budget exhausted".to_string())
+                }),
+            );
+            let output = if through_start {
+                engine
+                    .start(CellContext::new())
+                    .await_completion()
+                    .await
+                    .expect("flow output")
+            } else {
+                engine.execute(&CellContext::new()).await.unwrap()
+            };
+
+            assert!(!output.success, "through_start = {through_start}");
+            assert_eq!(result_status(&output, "first"), NodeStatus::Complete);
+            for waiting in ["second", "third"] {
+                let result = output
+                    .node_results
+                    .iter()
+                    .find(|result| result.node_id == waiting)
+                    .expect("result");
+                assert_eq!(result.status, NodeStatus::Skipped);
+                assert_eq!(result.error.as_deref(), Some("plan budget exhausted"));
+            }
+            assert!(!log.saw("second:start"));
+        }
     }
 }

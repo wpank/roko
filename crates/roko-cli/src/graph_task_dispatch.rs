@@ -463,6 +463,27 @@ impl GraphPlanBudgetLedger {
         }
     }
 
+    /// Why no further dispatch of `plan_id` can run: settled spend reached
+    /// the ceiling with no override to continue, or the cost ledger cannot be
+    /// persisted. In-flight reservations alone never stop a plan.
+    fn dispatch_stop(&self, plan_id: &str, policy: GraphPlanBudgetPolicy) -> Option<String> {
+        let plans = self.plans.lock();
+        let state = plans.get(plan_id)?;
+        if let Some(error) = &state.persistence_error {
+            return Some(format!("plan cost ledger unavailable: {error}"));
+        }
+        let ceiling = policy
+            .ceiling_micro_usd
+            .filter(|_| !policy.continue_on_exhaustion)?;
+        (state.spent_micro_usd >= ceiling).then(|| {
+            format!(
+                "plan budget exhausted: ${:.4} spent of ${:.4}",
+                micro_usd_to_usd(state.spent_micro_usd),
+                micro_usd_to_usd(ceiling)
+            )
+        })
+    }
+
     fn reserve(
         &self,
         plan_id: &str,
@@ -1430,6 +1451,16 @@ impl GraphTaskDispatcher {
     #[must_use]
     pub fn plan_budget_snapshot(&self, plan_id: &str) -> GraphPlanBudgetSnapshot {
         self.budget_ledger.snapshot(plan_id, self.budget_policy)
+    }
+
+    /// Why no further task of `plan_id` may be dispatched in this run, when
+    /// that is so: its settled spend reached the plan ceiling (and no
+    /// explicit override lets it continue), or its cost ledger cannot be
+    /// persisted. In-flight reservations alone never stop a plan.
+    #[must_use]
+    pub fn plan_dispatch_stop(&self, plan_id: &str) -> Option<String> {
+        self.budget_ledger
+            .dispatch_stop(plan_id, self.budget_policy)
     }
 
     /// Return aggregate token and dispatch counts accumulated across all
@@ -5343,6 +5374,30 @@ mod tests {
         assert_eq!(effective_routing_budget(Some(0.10), 0.25), 0.10);
         assert_eq!(effective_routing_budget(None, 0.25), 0.25);
         assert_eq!(effective_routing_budget(Some(-1.0), f64::INFINITY), 0.0);
+    }
+
+    #[test]
+    fn only_settled_spend_at_the_ceiling_stops_dispatch() {
+        let ledger = GraphPlanBudgetLedger::default();
+        let policy = GraphPlanBudgetPolicy::from_ceiling(0.10, false);
+        assert_eq!(ledger.dispatch_stop("plan-a", policy), None);
+
+        // A reservation of the whole remaining budget blocks further
+        // reservations but does not stop the plan.
+        let reservation = ledger.reserve("plan-a", policy).expect("reservation");
+        assert!(ledger.snapshot("plan-a", policy).dispatch_blocked);
+        assert_eq!(ledger.dispatch_stop("plan-a", policy), None);
+
+        reservation.settle(0.10).expect("settle at the ceiling");
+        let stop = ledger
+            .dispatch_stop("plan-a", policy)
+            .expect("spent plan stops");
+        assert!(stop.starts_with("plan budget exhausted"), "{stop}");
+        assert_eq!(
+            ledger.dispatch_stop("plan-a", GraphPlanBudgetPolicy::from_ceiling(0.10, true)),
+            None,
+            "an explicit override keeps the plan going"
+        );
     }
 
     #[test]

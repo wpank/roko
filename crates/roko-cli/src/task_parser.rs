@@ -48,6 +48,10 @@ pub struct TaskMeta {
     /// does not match the slug.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_prd: Option<String>,
+    /// What a run of this plan does when a task fails. Overrides
+    /// `[conductor] plan_failure_policy`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_policy: Option<roko_core::config::PlanFailurePolicy>,
 }
 
 fn default_max_parallel() -> u32 {
@@ -2368,6 +2372,7 @@ depends_on = []
                 estimated_total_minutes: 0,
                 skip_enrichment: false,
                 source_prd: None,
+                failure_policy: None,
             },
             tasks: Vec::new(),
         };

@@ -377,6 +377,7 @@ mod tests {
             error: None,
             output_count: 1,
             is_stub: false,
+            blocked_by: None,
         }
     }
 

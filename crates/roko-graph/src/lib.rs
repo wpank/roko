@@ -68,9 +68,10 @@ pub mod workspace;
 // Re-export primary types at crate root for convenience.
 pub use cell::{Cell, CellContext, CellResources, CellVersion};
 pub use engine::{
-    FlowHandle, FlowStatus, GRAPH_SNAPSHOT_SCHEMA_VERSION, GraphEngine, GraphOutput, GraphSnapshot,
-    GraphSnapshotV2, MergeEnqueuer, MergeRequest, NodeResult, NodeStatus, SerializableNodeStatus,
-    SerializableSignal, ValidatedGraph, default_registry, reconcile_running_status,
+    DispatchStop, FlowHandle, FlowStatus, GRAPH_SNAPSHOT_SCHEMA_VERSION, GraphEngine, GraphOutput,
+    GraphSnapshot, GraphSnapshotV2, MergeEnqueuer, MergeRequest, NodeResult, NodeStatus,
+    SerializableNodeStatus, SerializableSignal, ValidatedGraph, default_registry,
+    reconcile_running_status,
 };
 pub use registry::{CellDescriptor, CellFactory, CellRegistry};
 pub use types::{

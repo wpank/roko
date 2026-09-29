@@ -2,7 +2,7 @@
 id = "gap-09e478"
 kind = "gap"
 title = "Dogfood Session Evidence Bundle"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 size = "M"
@@ -11,7 +11,7 @@ subsystem = ["roko-cli"]
 created = 2026-09-07
 updated = 2026-09-29
 last_verified = 2026-09-29
-last_verified_rev = "f8e08a8a5"
+last_verified_rev = "da360594e"
 source = "tmp/backlog/228-dogfood-session-evidence-bundle.md#228 — Dogfood Session Evidence Bundle"
 discovered_from = "audit:tmp/backlog/228-dogfood-session-evidence-bundle.md#228 — Dogfood Session Evidence Bundle"
 anchors = ["scripts/run_evidence.py::DEFAULT_APPEND_LOGS", "scripts/run_evidence.py::validate_bundle", "dev.sh::cmd_fast", "crates/roko-cli/src/graph_execution/event_log.rs::run_recorded", "crates/roko-cli/src/runner/status_file.rs::write_status_debounced", "plans/portal-programme/_harness/fake-claude"]
@@ -19,6 +19,12 @@ links = { depends_on = [], blocks = [], related = ["bug-f7943a", "bug-230de6"], 
 
 [[verify]]
 command = "grep -q 'state/graph' scripts/run_evidence.py && test -f scripts/test_run_evidence_graph.py && cargo build -p roko-cli && python3 scripts/test_run_evidence_graph.py"
+
+[closed]
+at = 2026-09-29
+commit = "da360594e"
+by = "wk-evidence (commit trailer)"
+evidence = "scripts/run_evidence.py now reads .roko/state/graph. For each touched plan it keeps a redacted checkpoint and costs copy, the Activity rows for the checkpoint's run_id (derived fields only, no signal bodies), the learning-ledger rows and roko diagnose output, indexed in graph/index.json. Metrics read the dashboard.* events, and the validator checks the Graph evidence. Check: python3 scripts/test_run_evidence_graph.py passed 8/8 against a prebuilt target/debug/roko built at 33e107da1, an ancestor of BASE. Between that commit and BASE, the Graph run, checkpoint, dispatch and runner code is unchanged, and claude_cli_agent.rs changed only its guard hook and key-file rules. The 8 tests cover a one-task success, an early agent exit (failed, failed_before_gate, with a diagnosis), a gate timeout (failed, timeout at 1500 ms, with the ledger's 'permanent' raised as a warning), resume and --fresh isolation, and ./dev.sh fast. The static part of the verify passes. The worker did not run the cargo build step (no-cargo rule). The FAST closure bundle ~/dev/nunchi/roko/roko-work-gap-09e478/tmp/gap-09e478-fast-fixture/.roko/runs/20260929T142805Z-roko-fast-93c5a2ec passes ./dev.sh evidence-validate --require-events with 0 errors and 0 warnings."
 +++
 
 ## Problem

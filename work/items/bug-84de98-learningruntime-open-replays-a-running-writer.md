@@ -3,13 +3,14 @@ id = "bug-84de98"
 kind = "bug"
 title = "LearningRuntime::open replays a running writer's unsaved model-call observations, which that writer later saves again"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p2"
 goal = "cybernetic"
 size = "M"
 subsystem = ["roko-learn/runtime_feedback", "roko-learn/wal"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-29
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-router2's report on bug-605a8a, branch work/bug-605a8a)"
 anchors = ["crates/roko-learn/src/runtime_feedback/mod.rs::replay_and_open_wal", "crates/roko-learn/src/wal.rs::folded_model_call_ids", "crates/roko-learn/src/model_call_feedback.rs"]
@@ -58,3 +59,4 @@ At ad391f99a replay skips only folded ids. Nothing tells replay whether an unfol
 ## Notes
 
 - Land with or after bug-605a8a, whose merge-on-save semantics this interacts with.
+- Implemented on `work/bug-84de98` at `c48c6a2ad`; cargo verification deferred to the batch check. Each writer journals into its own locked segment under `.roko/learn/wal/`, and an opener replays only segments whose lock it can take. A crash between a save and the truncation after it still replays that segment once more, the same window the fold markers had.

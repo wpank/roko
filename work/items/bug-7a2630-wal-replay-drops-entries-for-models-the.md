@@ -3,13 +3,14 @@ id = "bug-7a2630"
 kind = "bug"
 title = "WAL replay drops entries for models the router doesn't track and then truncates wal.jsonl, and serve never truncates it"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p2"
 goal = "cybernetic"
 size = "M"
 subsystem = ["roko-learn/runtime_feedback", "roko-learn/wal"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-29
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-router2's report on bug-605a8a, branch work/bug-605a8a)"
 anchors = ["crates/roko-learn/src/runtime_feedback/mod.rs::replay_and_open_wal", "crates/roko-learn/src/cascade_router.rs::replay_observation", "crates/roko-learn/src/wal.rs"]
@@ -51,3 +52,7 @@ At ad391f99a both behaviours hold. bug-605a8a's branch restores LinUCB arms by s
 
 - [ ] No WAL entry is lost because of the opener's model list, and the WAL stays bounded while serve runs.
 - [ ] The `[[verify]]` command passes.
+
+## Notes
+
+- Implemented on `work/bug-84de98` at `fe245f78d` (replay through a router that tracks every model the entries name) and `c48c6a2ad` (bug-84de98's per-writer segments, truncated after every save, which bound the WAL; `the_wal_is_truncated_after_every_save` landed there); cargo verification deferred to the batch check.

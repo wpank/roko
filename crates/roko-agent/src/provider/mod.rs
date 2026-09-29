@@ -52,6 +52,7 @@ use crate::safety::contract::AgentContract;
 use crate::{Agent, ExecAgent};
 use indexmap::IndexMap;
 use roko_core::agent::{ProviderKind, resolve_model};
+use roko_core::child_env::CredentialScrub;
 #[cfg(test)]
 use roko_core::config::DEFAULT_TTFT_TIMEOUT_MS;
 use roko_core::config::schema::RokoConfig;
@@ -284,12 +285,20 @@ pub fn create_agent_for_model(
                 "no provider found — falling back to ExecAgent (no tool support)"
             );
 
+            let env_passthrough = if options.env_passthrough.is_empty() {
+                &config.agent.env_passthrough
+            } else {
+                &options.env_passthrough
+            };
             let mut agent = ExecAgent::new(
                 legacy_command.unwrap_or("cat"),
                 options.extra_args.clone(),
                 safety_layer,
             )
-            .with_timeout_ms(options.effective_timeout_ms(None));
+            .with_timeout_ms(options.effective_timeout_ms(None))
+            .with_credential_scrub(
+                CredentialScrub::default().keep_all(env_passthrough.iter().cloned()),
+            );
             if !options.name.is_empty() {
                 agent = agent.with_name(options.name.clone());
             }
@@ -361,6 +370,9 @@ pub fn create_agent_for_model(
     if provider_config.kind == ProviderKind::GeminiApi && options.gemini_safety_settings.is_empty()
     {
         options.gemini_safety_settings = config.gemini.safety_settings.clone();
+    }
+    if options.env_passthrough.is_empty() {
+        options.env_passthrough = config.agent.env_passthrough.clone();
     }
     let agent = with_temperament(Some(effective_temperament), || {
         with_safety_layer(Some(safety_layer), || {
@@ -697,6 +709,18 @@ pub(crate) fn configured_resource_limits(
     Ok(limits)
 }
 
+/// Which inherited credentials a CLI subprocess for `provider` loses: those
+/// of [`CredentialScrub::for_kind`], except the provider's own `api_key_env`
+/// and `options.env_passthrough`.
+pub(crate) fn provider_credential_scrub(
+    provider: &ProviderConfig,
+    options: &AgentOptions,
+) -> CredentialScrub {
+    CredentialScrub::for_kind(provider.kind)
+        .keep_all(provider.api_key_env.iter().cloned())
+        .keep_all(options.env_passthrough.iter().cloned())
+}
+
 /// Model-visible local tool definitions paired with executable handlers.
 ///
 /// This is the dependency-neutral handoff used by embedding surfaces such as
@@ -795,6 +819,10 @@ pub struct AgentOptions {
     pub working_dir: Option<PathBuf>,
     pub provider_semaphores: Option<Arc<ProviderSemaphores>>,
     pub env: Vec<(String, String)>,
+    /// Inherited variables a provider CLI subprocess keeps even though roko
+    /// would strip them: exact names or `PREFIX*` patterns. Filled from
+    /// `[agent] env_passthrough` by [`create_agent_for_model`] when empty.
+    pub env_passthrough: Vec<String>,
     pub extra_args: Vec<String>,
     pub effort: Option<String>,
     pub bare_mode: bool,

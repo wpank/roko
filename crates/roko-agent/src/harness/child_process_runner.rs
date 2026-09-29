@@ -13,11 +13,12 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::mpsc;
 
-use crate::process::env::{AgentEnv, apply_agent_env};
+use crate::process::env::{AgentEnv, apply_agent_env, apply_credential_scrub};
 use crate::process::group::set_process_group;
 use crate::process::kill::kill_tree;
 use crate::process::limits::{ResourceLimits, confined_command};
 use crate::process::registry::{register_spawned_pid, unregister_pid};
+use roko_core::child_env::CredentialScrub;
 
 use super::error::HarnessError;
 use super::events::{EventParser, HarnessEvent};
@@ -90,6 +91,8 @@ pub struct ChildProcessRunner {
     timeout: Duration,
     /// Environment overrides.
     env: ScrubbedEnv,
+    /// Which inherited provider credentials the child loses.
+    credential_scrub: CredentialScrub,
     /// Agent name (for log messages).
     name: String,
     /// Whether to print heartbeat messages during long runs.
@@ -105,6 +108,7 @@ impl ChildProcessRunner {
             current_dir: current_dir.as_ref().to_path_buf(),
             timeout: Duration::from_secs(600),
             env: ScrubbedEnv::default(),
+            credential_scrub: CredentialScrub::default(),
             name: String::new(),
             heartbeat_enabled: true,
             resource_limits: None,
@@ -120,6 +124,13 @@ impl ChildProcessRunner {
     /// Set environment overrides.
     pub fn with_env(mut self, env: ScrubbedEnv) -> Self {
         self.env = env;
+        self
+    }
+
+    /// Replace the policy for which inherited provider credentials the
+    /// child loses. The default owns no provider credential.
+    pub fn with_credential_scrub(mut self, scrub: CredentialScrub) -> Self {
+        self.credential_scrub = scrub;
         self
     }
 
@@ -173,6 +184,7 @@ impl ChildProcessRunner {
             .kill_on_drop(true);
 
         set_process_group(&mut cmd);
+        apply_credential_scrub(&mut cmd, &self.credential_scrub);
         self.env.apply(&mut cmd);
         let mut child = cmd.spawn().map_err(HarnessError::Io)?;
 
@@ -301,6 +313,7 @@ impl ChildProcessRunner {
             .kill_on_drop(true);
 
         set_process_group(&mut cmd);
+        apply_credential_scrub(&mut cmd, &self.credential_scrub);
         self.env.apply(&mut cmd);
         let child = cmd.spawn().map_err(HarnessError::Io)?;
 

@@ -4,6 +4,7 @@ use crate::openclaw::{
 };
 use crate::provider::{
     AgentCreationError, AgentOptions, ProviderAdapter, ProviderError, configured_resource_limits,
+    provider_credential_scrub,
 };
 use roko_core::agent::ProviderKind;
 use roko_core::config::schema::{ModelProfile, ProviderConfig, ProviderTransport};
@@ -63,6 +64,7 @@ impl ProviderAdapter for OpenClawProviderAdapter {
                     auto_approve_permissions: !provider.require_confirmation,
                     resource_limits,
                     system_prompt: options.system_prompt.clone(),
+                    credential_scrub: provider_credential_scrub(provider, options),
                 };
                 let agent = OpenClawAcpAgent::new(config);
                 Ok(Box::new(agent))
@@ -85,6 +87,7 @@ impl ProviderAdapter for OpenClawProviderAdapter {
                     timeout,
                     resource_limits,
                     system_prompt: options.system_prompt.clone(),
+                    credential_scrub: provider_credential_scrub(provider, options),
                     ..Default::default()
                 };
                 if !model.slug.is_empty() {

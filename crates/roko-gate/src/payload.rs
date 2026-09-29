@@ -27,6 +27,7 @@ use std::path::{Path, PathBuf};
 ///     label: Some("check-login-module".into()),
 ///     target_crates: vec!["roko-agent".into()],
 ///     cargo_profile: None,
+///     env_passthrough: vec![],
 /// };
 /// let sig = Signal::builder(Kind::Task)
 ///     .body(Body::from_json(&payload).expect("example payload should serialize"))
@@ -41,6 +42,9 @@ pub struct GatePayload {
     pub target_dir: Option<PathBuf>,
 
     /// Additional environment variables to set for the gate's subprocess.
+    ///
+    /// The subprocess does not inherit roko's whole environment: see
+    /// [`GatePayload::apply_env`].
     pub extra_env: Vec<(String, String)>,
 
     /// Optional identifying label for logging (e.g. plan/task id).
@@ -59,6 +63,12 @@ pub struct GatePayload {
     /// profile but do not cause Cargo to select it. Non-Cargo gates ignore it.
     #[serde(default)]
     pub cargo_profile: Option<String>,
+
+    /// Extra variables of roko's environment the subprocess may inherit
+    /// beyond the default allowlist: exact names or `PREFIX*` patterns
+    /// (`[gates] env_passthrough`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub env_passthrough: Vec<String>,
 }
 
 impl GatePayload {
@@ -72,6 +82,7 @@ impl GatePayload {
             label: None,
             target_crates: Vec::new(),
             cargo_profile: None,
+            env_passthrough: Vec::new(),
         }
     }
 
@@ -108,6 +119,34 @@ impl GatePayload {
     pub fn with_cargo_profile(mut self, profile: impl Into<String>) -> Self {
         self.cargo_profile = Some(profile.into());
         self
+    }
+
+    /// Let the subprocess inherit roko variables matching `patterns` (exact
+    /// names or `PREFIX*`) beyond the default allowlist.
+    #[must_use]
+    pub fn with_env_passthrough<I, S>(mut self, patterns: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.env_passthrough
+            .extend(patterns.into_iter().map(Into::into));
+        self
+    }
+
+    /// Give `cmd` the gate environment: the variables of roko's environment
+    /// the gate policy admits (see [`inherit_gate_env`]), variables already
+    /// set on `cmd`, then `CARGO_TARGET_DIR` and `extra_env`.
+    ///
+    /// [`inherit_gate_env`]: crate::gate_env::inherit_gate_env
+    pub fn apply_env(&self, cmd: &mut tokio::process::Command) {
+        crate::gate_env::inherit_gate_env(cmd, &self.env_passthrough);
+        if let Some(target_dir) = &self.target_dir {
+            cmd.env("CARGO_TARGET_DIR", target_dir);
+        }
+        for (key, value) in &self.extra_env {
+            cmd.env(key, value);
+        }
     }
 }
 

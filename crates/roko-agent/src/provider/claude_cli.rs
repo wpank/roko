@@ -12,6 +12,7 @@ use crate::exec::CodexOperationPolicy;
 use crate::provider::current_safety_layer;
 use crate::provider::{
     AgentCreationError, AgentOptions, ProviderAdapter, ProviderError, configured_resource_limits,
+    provider_credential_scrub,
 };
 use crate::safety::SafetyLayer;
 use roko_core::agent::ProviderKind;
@@ -62,7 +63,8 @@ impl ProviderAdapter for ClaudeCliAdapter {
             .with_timeout_ms(timeout_ms)
             .with_settings_json(build_settings_json())
             .with_bare_mode(options.bare_mode)
-            .with_dangerously_skip_permissions(options.dangerously_skip_permissions);
+            .with_dangerously_skip_permissions(options.dangerously_skip_permissions)
+            .with_credential_scrub(provider_credential_scrub(provider, options));
 
         if let Some(limits) = configured_resource_limits(provider)? {
             agent = agent.with_resource_limits(limits);
@@ -233,7 +235,8 @@ impl ProviderAdapter for CodexCliAdapter {
             .with_timeout_ms(timeout_ms)
             .with_current_dir(&current_dir)
             .with_extract_codex_jsonl(true)
-            .with_codex_operation_policy(operation_policy);
+            .with_codex_operation_policy(operation_policy)
+            .with_credential_scrub(provider_credential_scrub(provider, options));
 
         // Codex lacks --system-prompt; fold it into stdin prefix.
         if let Some(system_prompt) = &options.system_prompt {
@@ -406,6 +409,7 @@ printf '%s\n' '{{"type":"content_block_delta","delta":{{"text":"adapter-ok"}}}}'
             working_dir: None,
             provider_semaphores: None,
             env: vec![("CLAUDE_TEST_ENV".to_string(), "env-value".to_string())],
+            env_passthrough: Vec::new(),
             extra_args: vec!["--option-flag".to_string(), "option-value".to_string()],
             effort: Some("high".to_string()),
             bare_mode: false,

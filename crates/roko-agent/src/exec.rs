@@ -8,14 +8,15 @@
 
 use crate::agent::{Agent, AgentResult, derived_output};
 use crate::process::{
-    GRACE_SIGTERM_MS, GRACE_STDIN_CLOSE_MS, ResourceLimits, benign_stderr_warn_once,
-    classify_benign_stderr, confined_command, kill_tree, register_spawned_pid, set_process_group,
-    unregister_pid,
+    GRACE_SIGTERM_MS, GRACE_STDIN_CLOSE_MS, ResourceLimits, apply_credential_scrub,
+    benign_stderr_warn_once, classify_benign_stderr, confined_command, kill_tree,
+    register_spawned_pid, set_process_group, unregister_pid,
 };
 use crate::provider::error_classify::{ProviderExhaustion, detect_provider_exhaustion};
 use crate::safety::SafetyLayer;
 use crate::usage::Usage;
 use async_trait::async_trait;
+use roko_core::child_env::CredentialScrub;
 use roko_core::defaults::DEFAULT_REQUEST_TIMEOUT_MS;
 use roko_core::tool::ToolResult;
 use roko_core::{Body, Context, Kind, Provenance, Signal};
@@ -283,6 +284,8 @@ pub struct ExecAgent {
     program: String,
     args: Vec<String>,
     env: Vec<(String, String)>,
+    /// Which inherited provider credentials the subprocess loses.
+    credential_scrub: CredentialScrub,
     current_dir: Option<PathBuf>,
     safety: SafetyLayer,
     timeout_ms: u64,
@@ -314,6 +317,7 @@ impl ExecAgent {
             program,
             args,
             env: Vec::new(),
+            credential_scrub: CredentialScrub::default(),
             current_dir: None,
             safety,
             timeout_ms: DEFAULT_REQUEST_TIMEOUT_MS,
@@ -365,6 +369,16 @@ impl ExecAgent {
         for (k, v) in vars {
             self.env.push((k.into(), v.into()));
         }
+        self
+    }
+
+    /// Replace the policy for which inherited credentials the subprocess
+    /// loses. The default owns no provider credential: every known provider
+    /// key, every name roko loaded from a `.env` file and roko's own
+    /// credentials are stripped.
+    #[must_use]
+    pub fn with_credential_scrub(mut self, scrub: CredentialScrub) -> Self {
+        self.credential_scrub = scrub;
         self
     }
 
@@ -495,6 +509,7 @@ impl Agent for ExecAgent {
             }
         };
         cmd.args(&self.args);
+        apply_credential_scrub(&mut cmd, &self.credential_scrub);
         for (k, v) in &self.env {
             cmd.env(k, v);
         }

@@ -2030,6 +2030,7 @@ fn build_agent(
             working_dir: Some(working_dir.to_path_buf()),
             provider_semaphores: None,
             env: Vec::new(),
+            env_passthrough: Vec::new(),
             extra_args: Vec::new(),
             effort: None,
             bare_mode: roko_config.agent.bare_mode,

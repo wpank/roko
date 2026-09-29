@@ -235,15 +235,10 @@ impl Verify for PropertyTestGate {
         }
         cmd.current_dir(&payload.working_dir);
         cmd.kill_on_drop(true);
-        if let Some(ref tgt) = payload.target_dir {
-            cmd.env("CARGO_TARGET_DIR", tgt);
-        }
         // Payload env first, proptest env second so gate config wins on
         // collision (deterministic gate behavior, even if the caller sets
         // a stray PROPTEST_CASES in extra_env).
-        for (k, v) in &payload.extra_env {
-            cmd.env(k, v);
-        }
+        payload.apply_env(&mut cmd);
         for (k, v) in self.proptest_env() {
             cmd.env(k, v);
         }

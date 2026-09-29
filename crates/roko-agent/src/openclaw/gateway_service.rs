@@ -32,6 +32,8 @@ use std::time::{Duration, Instant};
 
 use crate::harness::error::HarnessError;
 use crate::harness::service::{HarnessService, ServiceStatus};
+use roko_core::agent::ProviderKind;
+use roko_core::child_env::CredentialScrub;
 
 /// Default WebSocket port for the OpenClaw gateway.
 const DEFAULT_WS_PORT: u16 = 18789;
@@ -205,6 +207,10 @@ impl HarnessService for OpenClawGatewayService {
         let mut cmd = crate::process::confined_command(&self.binary, self.resource_limits.as_ref())
             .map_err(HarnessError::Io)?;
         cmd.arg("gateway");
+        crate::process::apply_credential_scrub(
+            &mut cmd,
+            &CredentialScrub::for_kind(ProviderKind::OpenClaw),
+        );
         cmd.stdout(std::process::Stdio::null());
         cmd.stderr(std::process::Stdio::null());
         cmd.stdin(std::process::Stdio::null());

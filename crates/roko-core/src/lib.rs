@@ -100,6 +100,8 @@ pub mod cell_payloads;
 pub mod cfactor;
 /// Canonical provider-agnostic chat message types.
 pub mod chat_types;
+/// Environment policies for gate commands and provider CLI subprocesses.
+pub mod child_env;
 pub mod cognitive_registry;
 pub mod cognitive_workspace;
 pub mod conductor;

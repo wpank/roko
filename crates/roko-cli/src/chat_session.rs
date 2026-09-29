@@ -16,12 +16,16 @@ use roko_agent::AgentRuntimeEvent;
 use roko_agent::agent::{Agent, AgentResult};
 use roko_agent::claude_cli_agent::ClaudeCliAgent;
 use roko_agent::model_call_service::ModelCallService;
-use roko_agent::process::{GRACE_STDIN_CLOSE_MS, kill_tree, set_process_group};
+use roko_agent::process::{
+    GRACE_STDIN_CLOSE_MS, apply_credential_scrub, config_file_env_names, kill_tree,
+    set_process_group,
+};
 use roko_agent::provider::claude_cli::stream::parse_stream_line;
 use roko_agent::safety::contract::AgentContract;
 use roko_compose::system_prompt_builder::SystemPromptBuilder;
 use roko_compose::{ProjectConventions, TokenCounter, detect_conventions};
 use roko_core::agent::ProviderKind;
+use roko_core::child_env::CredentialScrub;
 use roko_core::config::DEFAULT_TTFT_TIMEOUT_MS;
 use roko_core::config::schema::{ModelProfile, ProviderConfig, RokoConfig};
 use roko_core::defaults::DEFAULT_REQUEST_TIMEOUT_MS;
@@ -454,6 +458,20 @@ impl ChatAgentSession {
             provider_base_url,
             provider_api_key_env,
         })
+    }
+
+    /// Which inherited credentials the chat's Claude CLI loses: those of
+    /// [`CredentialScrub::for_kind`], except the provider's `api_key_env` and
+    /// the variables the MCP config refers to.
+    fn credential_scrub(&self) -> CredentialScrub {
+        CredentialScrub::for_kind(ProviderKind::ClaudeCli)
+            .keep_all(self.provider_api_key_env.iter().cloned())
+            .keep_all(
+                self.mcp_config
+                    .as_deref()
+                    .map(config_file_env_names)
+                    .unwrap_or_default(),
+            )
     }
 
     /// Returns `true` if the current model resolves to Claude CLI.
@@ -983,7 +1001,8 @@ impl ChatAgentSession {
             self.model_selection.backend_slug.clone(),
         )
         .with_effort(&self.effort)
-        .with_bare_mode(false);
+        .with_bare_mode(false)
+        .with_credential_scrub(self.credential_scrub());
 
         if !self.system_prompt.is_empty() {
             agent = agent.with_system_prompt(&self.system_prompt);
@@ -1230,6 +1249,7 @@ fn build_streaming_command(session: &ChatAgentSession, program: &Path) -> TokioC
         .stderr(Stdio::piped())
         .kill_on_drop(true);
     set_process_group(&mut cmd);
+    apply_credential_scrub(&mut cmd, &session.credential_scrub());
     cmd.env("CARGO_INCREMENTAL", "0");
     cmd.env("CARGO_BUILD_JOBS", "2");
     cmd.env_remove("CLAUDECODE");

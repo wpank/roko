@@ -5,6 +5,7 @@
 
 use crate::cancel_safe_command;
 use crate::error::GateError;
+use crate::gate_env::inherit_gate_env;
 use crate::symbol_gate::{
     SymbolKind, Visibility, first_identifier, normalize_path, parse_visibility, rust_module_path,
     skip_modifiers,
@@ -341,6 +342,7 @@ async fn probe_passing_tests(
     let _staged = StagedTestFile::stage(&test_path, &source).ok()?;
 
     let mut command = Command::new("cargo");
+    inherit_gate_env(&mut command, &[]);
     command
         .arg("test")
         .arg("--test")

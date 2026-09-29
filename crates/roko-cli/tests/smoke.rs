@@ -307,6 +307,7 @@ printf '%s\n' '{{"type":"content_block_delta","delta":{{"text":"mcp-ok"}}}}'
         working_dir: Some(tmp.path().to_path_buf()),
         provider_semaphores: None,
         env: Vec::new(),
+        env_passthrough: Vec::new(),
         extra_args: vec!["--extra-flag".to_string()],
         effort: Some("high".to_string()),
         bare_mode: false,

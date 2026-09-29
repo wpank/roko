@@ -140,10 +140,10 @@ providers. This removes the checklist's circular `budget` gate (W10 rec 2).
 - [x] bug-a49003: A killed subscription session's ledger row still says cli_usage; it needs an estimated cost and a subscription marker
 - [x] gap-4667a4: S08 still describes VB_SECRET as an environment variable at lines 106 and 302
 - [ ] gap-0bd49a: Agent shells in every ViabilityBench arm can reach the network, so an agent can fetch the public repo's hidden suites
-- [ ] bug-32eb77: Operator credentials that aren't arm keys, such as ANTHROPIC_API_KEY or GITHUB_TOKEN, stay readable by agents through the driver's environment
-- [ ] gap-bc0640: Only one vb run can use a secret file at a time, and S09's run schedule doesn't account for it
-- [ ] bug-09fac4: The metering proxy stamps whole seconds, so an attempt that ends in the same second as the one before gets no usage
-- [ ] bug-c30764: The metering proxy forwards the call that crosses input_token_cap, so a task can overshoot its input cap by one call
+- [x] bug-32eb77: Operator credentials that aren't arm keys, such as ANTHROPIC_API_KEY or GITHUB_TOKEN, stay readable by agents through the driver's environment
+- [x] gap-bc0640: Only one vb run can use a secret file at a time, and S09's run schedule doesn't account for it
+- [x] bug-09fac4: The metering proxy stamps whole seconds, so an attempt that ends in the same second as the one before gets no usage
+- [x] bug-c30764: The metering proxy forwards the call that crosses input_token_cap, so a task can overshoot its input cap by one call
 - [ ] gap-dad97b: run_roko.py must read bug-31438d's new record fields: turns_unknown, model_reported, substitution, attempt_key and helper rows
 - [ ] The epic's `[[verify]]` command passes: the pilot page is committed, and `report.py --check` accepts its
       bundle.

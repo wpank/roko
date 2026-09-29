@@ -653,6 +653,7 @@ mod tests {
             inputs: vec![],
             outputs: vec![],
             execution_class: ExecutionClass::Activity,
+            exclusive: vec![],
         }).unwrap();
 
         let registry = default_registry();

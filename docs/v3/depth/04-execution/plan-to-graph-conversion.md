@@ -46,6 +46,13 @@ pub fn plan_to_graph(
      dispatch; outputs are recorded for snapshot/replay)
    - A `config` map carrying the plan ID, plan directory, task title,
      description, role, tier, files, timeout, and verification commands.
+   - `exclusive` = the task's `files`. The engine never runs two nodes whose
+     exclusive paths overlap at the same time (the same path, or a directory
+     and a path inside it), so two tasks that declare overlapping files run
+     one after the other even when both are ready. The task that waits holds
+     no `max_concurrent_nodes` slot, and the engine logs which running task
+     it waits for. A task with no `files` never waits. The paths are left
+     out of the plan fingerprint, so checkpoints still resume.
 
 3. **Add edges.** For each task's `depends_on` list, a directed `Edge` is
    created from the dependency to the dependent. Unknown dependency IDs
@@ -126,6 +133,11 @@ Node IDs follow the pattern `task.<task_id>.<suffix>`:
 
 Enricher nodes are Workflow (deterministic, never recorded). The executor
 and gate are Activity (non-deterministic, always recorded).
+
+The executor and the gate both take the task's `files` as their `exclusive`
+paths: the executor writes them and the gate checks them. No other node of
+the subgraph holds any paths. Each node holds the paths only while it runs,
+so an overlapping task can still run between a task's executor and its gate.
 
 ### Why the Workflow/Activity distinction matters
 

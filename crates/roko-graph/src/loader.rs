@@ -52,6 +52,9 @@ struct RawNode {
     /// Defaults to `Activity` (non-deterministic) when absent from TOML.
     #[serde(default)]
     execution_class: ExecutionClass,
+    /// Paths this node writes in a shared working tree; see [`Node::exclusive`].
+    #[serde(default)]
+    exclusive: Vec<String>,
 }
 
 /// Raw edge definition from TOML.
@@ -121,6 +124,7 @@ pub fn load_from_str(toml_str: &str) -> Result<Graph, GraphError> {
             inputs: raw_node.inputs,
             outputs: raw_node.outputs,
             execution_class: raw_node.execution_class,
+            exclusive: raw_node.exclusive,
         };
         graph.add_node(node)?;
     }

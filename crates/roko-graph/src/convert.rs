@@ -7,6 +7,8 @@
 //! - Tasks with no outgoing edges become exit nodes
 //! - `TaskMeta.max_parallel` configures the Graph's bounded execution policy
 //! - `TaskDef.timeout_secs` is stored per-node in the config
+//! - `TaskDef.files` become the node's `exclusive` paths, so two tasks that
+//!   declare overlapping files never run at the same time
 //! - All tasks use `ExecutionClass::Activity` (non-deterministic, LLM-dispatched)
 //!
 //! Cross-plan dependencies (`depends_on_plan`) are outside the scope of a
@@ -68,6 +70,9 @@ pub fn plan_to_graph(
             inputs: vec![],
             outputs: vec![],
             execution_class: ExecutionClass::Activity,
+            // Tasks share one working tree unless the host gives each its
+            // own, so a task holds the files it writes while it runs.
+            exclusive: info.files.clone(),
         };
         graph.add_node(node)?;
     }
@@ -387,5 +392,21 @@ mod tests {
         let tasks = vec![make_task("T1", &[]), make_task("T1", &[])];
         let result = plan_to_graph("dup", "/tmp", &tasks, 1);
         assert!(matches!(result, Err(GraphError::DuplicateNode(_))));
+    }
+
+    /// gap-439794: a task holds the files it declares while it runs, and a
+    /// task that declares none holds nothing.
+    #[test]
+    fn task_files_become_exclusive_paths() {
+        let mut writer = make_task("T1", &[]);
+        writer.1.files = vec!["web/src/stage/PlanView.tsx".to_string()];
+        let tasks = vec![writer, make_task("T2", &[])];
+        let graph = plan_to_graph("files", "/tmp", &tasks, 2).unwrap();
+
+        assert_eq!(
+            graph.get_node("T1").unwrap().exclusive,
+            ["web/src/stage/PlanView.tsx"]
+        );
+        assert!(graph.get_node("T2").unwrap().exclusive.is_empty());
     }
 }

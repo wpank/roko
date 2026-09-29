@@ -1834,6 +1834,7 @@ mod tests {
                 inputs: Vec::new(),
                 outputs: Vec::new(),
                 execution_class: roko_graph::ExecutionClass::Activity,
+                exclusive: Vec::new(),
             })
             .expect("node");
         graph
@@ -1861,6 +1862,7 @@ mod tests {
                 inputs: Vec::new(),
                 outputs: Vec::new(),
                 execution_class: roko_graph::ExecutionClass::Activity,
+                exclusive: Vec::new(),
             })
             .expect("node");
         graph

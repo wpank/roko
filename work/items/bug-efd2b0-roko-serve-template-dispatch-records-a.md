@@ -3,13 +3,14 @@ id = "bug-efd2b0"
 kind = "bug"
 title = "roko-serve template dispatch records a cascade-router outcome on every TurnCompleted, on top of its journaled observation"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p2"
 goal = "cybernetic"
 size = "S"
 subsystem = ["roko-serve/dispatch"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-29
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-router2's report)"
 anchors = ["crates/roko-serve/src/dispatch.rs::drain_dispatch_learning_events", "crates/roko-serve/src/dispatch.rs::record_cascade_router_outcome_with_layout"]
@@ -52,3 +53,9 @@ At 7fa54b873 both recordings happen, as described.
 
 - [ ] A template dispatch updates the router once, on the served model's arm.
 - [ ] The `[[verify]]` command passes.
+
+## Notes
+
+- Implemented on `work/bug-f68404` at `5a8bfde57`. Checked in the worker's own target dir: `cargo test -p roko-serve --lib` for `a_template_dispatch_is_observed_once_on_the_router`, `a_quality_anomaly_is_recorded_on_the_models_slug` and the other template-dispatch and anomaly tests (7 passed), fmt, and clippy `-D warnings`. The batch check re-verifies after merge.
+- The drain keeps only the efficiency event. The one remaining confidence-outcome path, a queued `QualityDegradation` anomaly, resolves a `[models.*]` key to its slug, and so does the router model list it builds.
+- Side effect: a dispatch that fails before any model call (anomaly preflight, agent or MCP setup) no longer records a router failure, because no model was called. Serve publishes one `TurnCompleted` per dispatch, so the old double count was journal + 1.

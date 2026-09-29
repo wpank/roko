@@ -23,3 +23,8 @@ command = "grep -rqw 'fn failed_override_lowers_success_rate' crates/roko-learn/
 `record_override_outcome` (`cascade_router.rs:1540`) forwards to `observe_multi_objective` (`:1703`), which increments both `trials` and `successes` unconditionally (`:1718-1719`); cost and latency are passed as 0.0.
 A failed override run therefore counts as a free, instant success, and `override_learning_dampening` shrinks the reward instead of the observation weight.
 Fix: honour the success flag, record real cost/latency, apply dampening as an importance weight, and test that a failed override lowers the arm's success rate.
+
+## Notes
+
+- Implemented on `work/bug-f68404` at `cfcb7fd75`. Checked in the worker's own target dir: `cargo check --tests` on roko-learn, roko-agent, roko-cli and roko-serve; `cargo test -p roko-learn --lib` (1184 passed, at `7e930d2cb`); fmt, and clippy `-D warnings` on those four crates. The batch check re-verifies after merge.
+- Overrides now count fully in the confidence counters, honouring success, and enter LinUCB as an importance-weighted update (weight = the dampening, `OVERRIDE_LEARNING_RATE` 0.5 by default) with the real-cost reward, or 0 on failure. `ForceBackendOverrideRecorder::record_override_outcome` gained `cost_usd` and `latency_ms`, so the model-call service records real values too.

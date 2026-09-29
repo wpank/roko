@@ -5,19 +5,24 @@ title = "Privy JWT grants admin to any Nunchi Privy user on a publicly bound rok
 status = "open"
 triage = "verified"
 severity = "p0"
+hold = "Deferred by Will on 2026-09-28 (\"file it for later\"); do not pick until he lifts the hold"
 goal = "release"
 subsystem = ["roko-serve/auth"]
 created = 2026-09-28
-updated = 2026-09-28
-last_verified = 2026-09-28
+updated = 2026-09-29
+last_verified = 2026-09-29
+last_verified_rev = "d9e79e9d8"
 source = "dogfood:tmp/dogfood/2026-09-28-portal-programme-continuation.md#security-finding"
 discovered_from = "session:roko-55 (tmp/cybernetic-harness/research/F-fix-inventory.md), verified by session roko-b6"
-anchors = ["crates/roko-serve/src/lib.rs::build_app_state", "crates/roko-serve/src/routes/middleware.rs::try_privy_jwt"]
+anchors = ["crates/roko-serve/src/lib.rs::build_app_state", "crates/roko-serve/src/routes/middleware.rs::try_privy_jwt", "crates/roko-serve/src/jwks.rs::NUNCHI_PRIVY_APP_ID"]
 doc = ""
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
 
 [[repro]]
 command = "grep -n 'No role filter configured' crates/roko-serve/src/routes/middleware.rs"
+
+[[verify]]
+command = "! grep -q 'No role filter configured' crates/roko-serve/src/routes/middleware.rs && cargo test -p roko-serve privy_jwt_without_allow_list_gets_read_scope"
 +++
 
 `roko-serve/src/lib.rs` always sets `serve.auth.privy_app_id` to the Nunchi Privy app id

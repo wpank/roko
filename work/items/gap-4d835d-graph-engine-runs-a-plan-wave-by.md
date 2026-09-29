@@ -10,6 +10,7 @@ subsystem = ["roko-graph/engine"]
 created = 2026-09-29
 updated = 2026-09-29
 last_verified = 2026-09-29
+last_verified_rev = "d9e79e9d8"
 source = "dogfood:tmp/dogfood/2026-09-28-portal-programme-continuation.md#10-05"
 discovered_from = "plan:portal-programme/08f-final-polish#T04"
 anchors = ["crates/roko-graph/src/engine.rs::topological_waves", "crates/roko-graph/src/engine.rs:983", "crates/roko-graph/src/engine.rs:2152"]

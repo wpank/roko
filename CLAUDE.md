@@ -58,9 +58,12 @@ via `cargo run -p roko-cli -- <subcommand>`, it's probably wrong.
 ### 3. Verify before marking done
 Run the actual code path. "Code exists" != "feature works". Test via CLI, not just unit tests.
 
-### 4. Record gaps in the work graph
-Record gaps in the work graph: add an item under `work/items/` per `work/README.md` (anchor +
-verify command). `.roko/GAPS.md` is frozen.
+### 4. Track work in the work graph, and close what you finish
+Open work lives in `work/items/`, one file per item; the rules are in `work/README.md`. A new gap or bug
+becomes a new item (anchors, a body that follows the template, a verify command). When your change
+finishes an item, close it in the same flow: end the commit message with `Closes: <id>` and run
+`python3 tools/work.py close <id> --commit HEAD --evidence "…"`. Items that nobody closes go stale, which
+is what happened to the old backlog. `.roko/GAPS.md` and `tmp/backlog/` are frozen.
 
 ## Architecture
 
@@ -368,6 +371,11 @@ stricter lints than your local toolchain.
 Open work lives in the work graph, not in this file. Start with `work/NOW.md` (generated: the top
 items of each goal in `work/goals.toml`); the full list, grouped by subsystem, is in `work/STATUS.md`. The old numbered priority list is
 frozen in `work/history/claude-md-status-2026-09-28.md`.
+
+To pick up a task, alone or in parallel with other agents, follow `work/README.md`, "For agents":
+`python3 tools/work.py next` picks the top unclaimed item that doesn't touch files others are working on,
+`claim` reserves it, and you work in your own worktree on branch `work/<id>`. The `/work-next`,
+`/work-batch` and `/work-sweep` skills in `.claude/skills/` run that procedure.
 
 Long-term priorities that still hold:
 

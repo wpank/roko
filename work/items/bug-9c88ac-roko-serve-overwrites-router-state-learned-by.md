@@ -8,15 +8,16 @@ severity = "p2"
 goal = "learning"
 subsystem = ["roko-learn/cascade-router", "roko-serve/state"]
 created = 2026-09-28
-updated = 2026-09-28
-last_verified = 2026-09-28
+updated = 2026-09-29
+last_verified = 2026-09-29
+last_verified_rev = "d9e79e9d8"
 source = "local-audit-2026-09-26"
 discovered_from = "audit:local-defect-review-2026-09-26 (untracked design notes)"
-anchors = ["crates/roko-learn/src/cascade_router.rs::CascadeRouter::save", "crates/roko-serve/src/state.rs:1270"]
+anchors = ["crates/roko-learn/src/cascade_router.rs::CascadeRouter::save", "crates/roko-serve/src/state.rs:1397", "crates/roko-serve/src/lib.rs:1206"]
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
 
 [[verify]]
-command = 'cargo test -p roko-learn cascade_router'
+command = "grep -q 'with_locked_json_transaction' crates/roko-learn/src/cascade_router.rs && cargo test -p roko-learn concurrent_saves_merge_observations"
 +++
 
 `CascadeRouter::save` replaces the whole file with this process's in-memory copy, without a lock or merge.

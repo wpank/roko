@@ -8,12 +8,16 @@ severity = "p2"
 goal = "hermes"
 subsystem = ["roko-agent/hermes"]
 created = 2026-09-07
-updated = 2026-09-28
-last_verified = 2026-09-28
+updated = 2026-09-29
+last_verified = 2026-09-29
+last_verified_rev = "d9e79e9d8"
 source = "tmp/backlog/172-deep-hermes-nous-integration.md#172 — Deep Hermes / Nous Research Integration"
 discovered_from = "audit:tmp/backlog/172-deep-hermes-nous-integration.md#172 — Deep Hermes / Nous Research Integration"
 anchors = ["crates/roko-agent/src/translate/hermes.rs::HermesXmlTranslator", "crates/roko-agent/src/hermes/", "crates/roko-agent/src/provider/hermes.rs"]
 links = { depends_on = [], blocks = [], related = ["bug-7567eb", "bug-b14145", "bug-0a1729", "bug-d0b8b8", "gap-914f8c", "spec-aa8f5b"], supersedes = [], duplicate_of = "" }
+
+[[verify]]
+command = "for s in is_open_weight SamplingDefaults tool_format_override LocalInferenceManager; do grep -rq \"$s\" crates/roko-agent/src crates/roko-core/src || exit 1; done"
 +++
 completes the only provider with native tool format, self-hosted inference,. Hermes is Nous Research's flagship open-weight model family (8B–405B parameters, 128K–512K context). Roko already has a `ProviderKind::Hermes` variant, three transport tiers (HTTP, CLI one-shot, ACP over stdio), a gateway…
 

@@ -8,12 +8,16 @@ severity = "p2"
 goal = "core"
 subsystem = ["roko-learn/provider_health"]
 created = 2026-09-01
-updated = 2026-09-28
-last_verified = 2026-09-28
+updated = 2026-09-29
+last_verified = 2026-09-29
+last_verified_rev = "d9e79e9d8"
 source = "tmp/archive/provider-audit/29-FINDINGS-REGISTER.md#F018"
 discovered_from = "audit:tmp/archive/provider-audit/29-FINDINGS-REGISTER.md#F018"
 anchors = ["crates/roko-learn/src/provider_health.rs::cooldown_ms", "crates/roko-learn/src/provider_health.rs::record_exhaustion"]
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
+
+[[verify]]
+command = "! sed -n '/fn cooldown_ms/,/^    }/p' crates/roko-learn/src/provider_health.rs | grep -q 'ErrorClass::RateLimit => 5_000'"
 +++
 The circuit breaker applies a 5 s cooldown for `ErrorClass::RateLimit`. Actual provider rate limit windows are typically 60 s to 900 s for Anthropic, OpenAI, and Gemini. A 5 s cooldown causes the agent to immediately retry and receive another 429, rapidly exhausting retries.
 

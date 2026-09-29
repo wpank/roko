@@ -9,10 +9,14 @@ subsystem = ["apps/portal", "roko-serve/auth"]
 created = 2026-09-29
 updated = 2026-09-29
 last_verified = 2026-09-29
+last_verified_rev = "d9e79e9d8"
 source = "plan:portal-programme/03c-backend-local-access#T10"
 discovered_from = "plan:portal-programme/03c-backend-local-access#T10"
-anchors = ["crates/roko-serve/src/routes/auth.rs"]
+anchors = ["crates/roko-serve/src/routes/middleware.rs::cors_layer", "crates/roko-serve/src/routes/auth_session.rs::session_cookie", "apps/portal/src/lib/env.ts::getRokoServeUrl", "apps/portal/next.config.ts"]
 links = { depends_on = [], blocks = [], related = ["bug-12d48c"], supersedes = [], duplicate_of = "" }
+
+[[verify]]
+command = "grep -q \"allow_credentials(true)\" crates/roko-serve/src/routes/middleware.rs && grep -rq \"credentials: 'include'\" apps/portal/src/api"
 +++
 
 When `roko serve` runs on port 6677 and the portal dev server runs on a different
@@ -35,3 +39,5 @@ the listed origin, or (b) a query-string token accepted by the server for dev
 sessions only. Option (a) is the standard approach (Vite's proxy also routes around
 it). Neither option is in scope for the portal programme; this gap is recorded for
 a later iteration.
+
+Re-checked 2026-09-29: the gap is narrower than described. Under `next dev`, lib/env.ts getRokoServeUrl returns '' and next.config.ts rewrites /api/* and /ws/* to roko serve, so the session POST and later requests are same-origin through the proxy and the cookie should work (not yet confirmed live). The gap remains when the portal talks to serve cross-origin (a saved roko-connection-url profile, or NEXT_PUBLIC_ROKO_SERVE_URL in a non-dev build): middleware.rs cors_layer sets no allow_credentials and the portal client never sends credentials: 'include'. SameSite=Strict is not itself the blocker, because localhost:3000 and localhost:6677 are the same site. The cookie code is in routes/auth_session.rs, not routes/auth.rs.

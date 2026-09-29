@@ -8,12 +8,16 @@ severity = "p2"
 goal = "core"
 subsystem = ["roko-agent/claude-cli", "roko-learn/cost-table"]
 created = 2026-09-28
-updated = 2026-09-28
-last_verified = 2026-09-28
+updated = 2026-09-29
+last_verified = 2026-09-29
+last_verified_rev = "d9e79e9d8"
 source = "tmp/cybernetic-harness/assessment-2026-09-28/measurement-validity.md"
 discovered_from = "audit:tmp/cybernetic-harness/assessment-2026-09-28/measurement-validity.md"
 anchors = ["crates/roko-agent/src/claude_cli_agent.rs::parse_stream_usage", "crates/roko-learn/src/cost_table.rs:25"]
 links = { depends_on = [], blocks = [], related = ["find-af6b7f", "bug-b9cb83", "find-e16c23", "bug-c30f28"], supersedes = [], duplicate_of = "" }
+
+[[verify]]
+command = "grep -q 'modelUsage' crates/roko-agent/src/claude_cli_agent.rs && ! sed -n '/fn usage_from_stream/,/^    }/p' crates/roko-agent/src/claude_cli_agent.rs | grep -q 'reasoning_tokens: 0' && ! grep -q 'None if total_tokens > 0 => &SONNET_FALLBACK' crates/roko-learn/src/cost_table.rs"
 +++
 The Claude CLI usage parser (`claude_cli_agent.rs:441-506`) reads `total_cost_usd` and `usage.{input, output, cache_creation, cache_read}`. It ignores:
 - `modelUsage` (per-model usage, including subagents);
@@ -24,3 +28,5 @@ The Claude CLI usage parser (`claude_cli_agent.rs:441-506`) reads `total_cost_us
 Also reported by the assessment but not re-checked here: the OpenAI-compatible path ignores cached tokens, and the built-in Opus 4.6 cache-read price is 0.25× input instead of 0.1×.
 
 Fix: parse the full usage record, price from one dated snapshot, and flag unknown models instead of guessing.
+
+Re-checked 2026-09-29 (static): the two assessment claims not re-checked on 2026-09-28 also hold. The built-in claude-opus-4-6 entry prices cache reads at 3.75 against 15.00 input, i.e. 0.25x (asserted by the test at crates/roko-learn/src/cost_table.rs:325-329). No parsing of prompt_tokens_details.cached_tokens was found in provider/openai_compat.rs or tool_loop/backends/; openai_compat_backend.rs:826-834 only emits that field.

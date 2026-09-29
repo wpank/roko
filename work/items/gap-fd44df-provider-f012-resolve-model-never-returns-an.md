@@ -8,12 +8,16 @@ severity = "p2"
 goal = "core"
 subsystem = ["roko-core/config"]
 created = 2026-09-01
-updated = 2026-09-28
-last_verified = 2026-09-28
+updated = 2026-09-29
+last_verified = 2026-09-29
+last_verified_rev = "d9e79e9d8"
 source = "tmp/archive/provider-audit/29-FINDINGS-REGISTER.md#F012"
 discovered_from = "audit:tmp/archive/provider-audit/29-FINDINGS-REGISTER.md#F012"
 anchors = ["crates/roko-core/src/agent.rs::resolve_model", "crates/roko-core/src/config/model_registry.rs::builtin_model"]
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
+
+[[verify]]
+command = "grep -qE 'fn (try_)?resolve_model\\([^)]*\\) -> ([a-z_]+::)?Result<' crates/roko-core/src/agent.rs"
 +++
 When a model key is not found in the registry or `roko.toml`, `resolve_model()` returns a partially-constructed `ModelProfile` with `profile: None` rather than an error. Callers proceed with an unconfigured profile that may cause silent failures or incorrect API calls.
 

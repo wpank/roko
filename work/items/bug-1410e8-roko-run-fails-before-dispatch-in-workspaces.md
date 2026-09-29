@@ -5,13 +5,15 @@ title = "`roko run` fails before dispatch in workspaces with no Cargo.toml or go
 status = "open"
 triage = "verified"
 severity = "p2"
+goal = "core"
 subsystem = ["roko-cli/run"]
 created = 2026-09-29
 updated = 2026-09-29
 last_verified = 2026-09-29
+last_verified_rev = "d9e79e9d8"
 source = "dogfood:tmp/dogfood/2026-09-28-portal-programme-continuation.md"
 discovered_from = "agent:w3d-roko-run"
-anchors = ["crates/roko-cli/src/run.rs::prompt_verify_steps"]
+anchors = ["crates/roko-cli/src/run.rs::prompt_verify_steps", "crates/roko-cli/src/run.rs:404"]
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
 
 [[verify]]

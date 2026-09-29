@@ -8,12 +8,16 @@ severity = "p2"
 goal = "learning"
 subsystem = ["roko-learn/model_router"]
 created = 2026-09-01
-updated = 2026-09-28
-last_verified = 2026-09-28
+updated = 2026-09-29
+last_verified = 2026-09-29
+last_verified_rev = "d9e79e9d8"
 source = "tmp/archive/provider-audit/29-FINDINGS-REGISTER.md#F016"
 discovered_from = "audit:tmp/archive/provider-audit/29-FINDINGS-REGISTER.md#F016"
 anchors = ["crates/roko-learn/src/cascade_router.rs::confidence_scores", "crates/roko-learn/src/cascade_router.rs::select_ucb_model", "crates/roko-learn/src/model_router.rs::alpha_for_observations"]
 links = { depends_on = [], blocks = [], related = ["bug-497c2b"], supersedes = [], duplicate_of = "" }
+
+[[verify]]
+command = "grep -rqw 'fn new_model_after_maturity_gets_explored' crates/roko-learn/ && cargo test -p roko-learn new_model_after_maturity_gets_explored"
 +++
 The cascade router transitions from Stage 2 (confidence) to Stage 3 (UCB) after 200+ observations per model. A new model added to the catalog after the router reaches Stage 3 for existing models starts at 0 observations. The UCB exploration bonus is normalized across all arms; a new model with 0...
 

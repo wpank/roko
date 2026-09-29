@@ -8,11 +8,12 @@ severity = "p2"
 goal = "core"
 subsystem = ["roko-agent/claude-cli"]
 created = 2026-09-28
-updated = 2026-09-28
-last_verified = 2026-09-28
+updated = 2026-09-29
+last_verified = 2026-09-29
+last_verified_rev = "d9e79e9d8"
 source = "tmp/cybernetic-harness/assessment-2026-09-28/measurement-validity.md"
 discovered_from = "audit:tmp/cybernetic-harness/assessment-2026-09-28/measurement-validity.md"
-anchors = ["crates/roko-agent/src/claude_cli_agent.rs:368"]
+anchors = ["crates/roko-agent/src/claude_cli_agent.rs::build_command", "crates/roko-agent/src/claude_cli_agent.rs:370"]
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
 
 [[verify]]

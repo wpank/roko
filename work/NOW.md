@@ -4,60 +4,62 @@
 
 What to work on next: the top checked, open items of each goal, highest-priority goal first. Reorder or change goals in `goals.toml`; pin an item higher with `rank = 1` (lower first).
 
+**Drift:** 12 changed since checked · 1 mentioned in commits. Re-check them before relying on this list: `DRIFT.md`.
+
 ## 1. Public release: security, licence, CI, first run
 
-- **P0** [bug-7eef96](items/bug-7eef96-privy-jwt-grants-admin-on-public-bind.md) Privy JWT grants admin to any Nunchi Privy user on a publicly bound roko serve [bug] · verified 2026-09-28
-- **P1** [bug-da5b41](items/bug-da5b41-a-running-roko-serve-erases-api-keys.md) A running roko serve erases API keys created by the CLI [bug] · verified 2026-09-28
-- **P1** [bug-7d7200](items/bug-7d7200-agents-and-verify-commands-inherit-roko-s.md) Agents and verify commands inherit roko's whole environment, including provider API keys [bug] · verified 2026-09-28
+- **P1** [bug-da5b41](items/bug-da5b41-a-running-roko-serve-erases-api-keys.md) A running roko serve erases API keys created by the CLI [bug] · size M · verified 2026-09-29
+- **P1** [bug-7d7200](items/bug-7d7200-agents-and-verify-commands-inherit-roko-s.md) Agents and verify commands inherit roko's whole environment, including provider API keys [bug] · verified 2026-09-29
+- **P1** [bug-09690f](items/bug-09690f-readme-s-quick-start-fails-and-the.md) README's quick start fails, and the README claims 100% completion [bug] · size M · verified 2026-09-29
 
-_18 more open · 1 unchecked (`TRIAGE.md`) · `goal = "release"`_
+_20 more open · on hold: bug-7eef96 · `goal = "release"`_
 
 ## 2. Plan runs work reliably
 
-- **P0** [spec-a0403b](items/spec-a0403b-graph-engine-watchdog-integration.md) Graph Engine Watchdog Integration [spec] · verified 2026-09-28
-- **P0** [gap-4ec59f](items/gap-4ec59f-worktree-isolation-flip-default-and-add-startup.md) Worktree Isolation: Flip Default and Add Startup Repair · verified 2026-09-28
-- **P1** [bug-7c8a57](items/bug-7c8a57-plan-audit-t0-06-100-line-cap.md) 100-line cap on read_files context injection [bug] · verified 2026-09-28
+- **P0** [spec-a0403b](items/spec-a0403b-graph-engine-watchdog-integration.md) Graph Engine Watchdog Integration [spec] · size L · verified 2026-09-29
+- **P0** [gap-4ec59f](items/gap-4ec59f-worktree-isolation-flip-default-and-add-startup.md) Worktree Isolation: Flip Default and Add Startup Repair · size L · verified 2026-09-29
+- **P1** [bug-7c8a57](items/bug-7c8a57-plan-audit-t0-06-100-line-cap.md) 100-line cap on read_files context injection [bug] · size S · verified 2026-09-29
 
-_44 more open · in progress: bug-4efb2a · 1 unchecked (`TRIAGE.md`) · `goal = "core"`_
+_72 more open · `goal = "core"`_
 
 ## 3. Hermes and ACP integration
 
-- **P1** [bug-f0f108](items/bug-f0f108-refactor-p0-01-acp-bridge-crash-under.md) ACP bridge crash under sustained load (analyzed, not fixed) [bug] · verified 2026-09-28
-- **P1** [spec-704c28](items/spec-704c28-acp-v2-spec-compliance-refactor-and-best.md) ACP v2 Spec Compliance, Refactor, and Best-in-Class Editor UX [spec] · verified 2026-09-28
-- **P1** [gap-55eada](items/gap-55eada-provider-f007-agentcontract-tool-policy-not-applied.md) AgentContract tool policy not applied to ACP tool dispatch · verified 2026-09-28
+- **P1** [bug-f0f108](items/bug-f0f108-refactor-p0-01-acp-bridge-crash-under.md) ACP bridge crash under sustained load (analyzed, not fixed) [bug] · size M · verified 2026-09-29
+- **P1** [spec-704c28](items/spec-704c28-acp-v2-spec-compliance-refactor-and-best.md) ACP v2 Spec Compliance, Refactor, and Best-in-Class Editor UX [spec] · size L · verified 2026-09-29
+- **P1** [gap-55eada](items/gap-55eada-provider-f007-agentcontract-tool-policy-not-applied.md) AgentContract tool policy not applied to ACP tool dispatch · size M · verified 2026-09-29
 
-_12 more open · `goal = "hermes"`_
+_14 more open · `goal = "hermes"`_
 
 ## 4. Live visibility: serve, dashboard, portal
 
-- **P1** [bug-230de6](items/bug-230de6-graph-default-engine-does-not-produce-events.md) Graph (default) engine does not produce events.jsonl in mock plan runs [bug] · verified 2026-09-28
-- **P1** [gap-aabeff](items/gap-aabeff-tool-t003-tui-paths-still-consume-string.md) TUI paths still consume string/tail projections that lose semantics (TUI adoption unproven) · verified 2026-09-28
-- **P1** [find-f489db](items/find-f489db-tool-dispatch-observability-gaps-td-003-td.md) Tool Dispatch Observability Gaps (TD-003, TD-004, TD-005) [finding] · verified 2026-09-28
+- **P1** [bug-230de6](items/bug-230de6-graph-default-engine-does-not-produce-events.md) Graph (default) engine does not produce events.jsonl in mock plan runs [bug] · size M · verified 2026-09-29
+- **P1** [gap-aabeff](items/gap-aabeff-tool-t003-tui-paths-still-consume-string.md) TUI paths still consume string/tail projections that lose semantics (TUI adoption unproven) · size L · verified 2026-09-29
+- **P1** [find-f489db](items/find-f489db-tool-dispatch-observability-gaps-td-003-td.md) Tool Dispatch Observability Gaps (TD-003, TD-004, TD-005) [finding] · size M · verified 2026-09-29
 
-_15 more open · in progress: bug-6dc672 · `goal = "visibility"`_
+_23 more open · `goal = "visibility"`_
 
 ## 5. Learning loops on the Graph path
 
-- **P1** [find-34a4b5](items/find-34a4b5-cybernetic-re-verify-learning-16-learning-routing.md) 16 learning/routing closures wired into deleted Runner-v2 event_loop.rs [finding] · verified 2026-09-28
-- **P1** [find-4b4344](items/find-4b4344-cybernetic-re-verify-gates-9-gate-threshold.md) 9 gate/threshold closures wired into deleted Runner-v2 [finding] · verified 2026-09-28
-- **P1** [gap-5fb9a7](items/gap-5fb9a7-provider-f035-hindsight-relabeling-module-is-completely.md) Hindsight relabeling module is completely unwired · verified 2026-09-28
+- **P1** [find-34a4b5](items/find-34a4b5-cybernetic-re-verify-learning-16-learning-routing.md) 16 learning/routing closures wired into deleted Runner-v2 event_loop.rs [finding] · size M · verified 2026-09-29
+- **P1** [find-4b4344](items/find-4b4344-cybernetic-re-verify-gates-9-gate-threshold.md) 9 gate/threshold closures wired into deleted Runner-v2 [finding] · size M · verified 2026-09-29
+- **P1** [gap-5fb9a7](items/gap-5fb9a7-provider-f035-hindsight-relabeling-module-is-completely.md) Hindsight relabeling module is completely unwired · size M · verified 2026-09-29
 
-_22 more open · 1 unchecked (`TRIAGE.md`) · `goal = "learning"`_
+_29 more open · `goal = "learning"`_
 
 ## 6. Tooling, CLI polish and code hygiene
 
-- **P1** [gap-759041](items/gap-759041-backlog-and-plan-state-reconciliation.md) Backlog and Plan State Reconciliation · verified 2026-09-28
-- **P1** [gap-09e478](items/gap-09e478-dogfood-session-evidence-bundle.md) Dogfood Session Evidence Bundle · verified 2026-09-28
-- **P2** [bug-97c2dc](items/bug-97c2dc-async-runtime-anti-patterns-drop-spawn-unbounded.md) Async Runtime Anti-Patterns (Drop+Spawn, Unbounded Channels, Mutex Across Await) [bug] · verified 2026-09-28
+- **P1** [gap-759041](items/gap-759041-backlog-and-plan-state-reconciliation.md) Backlog and Plan State Reconciliation · size M · verified 2026-09-29
+- **P1** [gap-09e478](items/gap-09e478-dogfood-session-evidence-bundle.md) Dogfood Session Evidence Bundle · size M · verified 2026-09-29
+- **P2** [bug-97c2dc](items/bug-97c2dc-async-runtime-anti-patterns-drop-spawn-unbounded.md) Async Runtime Anti-Patterns (Drop+Spawn, Unbounded Channels, Mutex Across Await) [bug] · size M · verified 2026-09-29
 
-_21 more open · 1 unchecked (`TRIAGE.md`) · `goal = "tooling"`_
+_32 more open · `goal = "tooling"`_
 
 ## 7. Feature ideas
 
-- **P1** [spec-f830c4](items/spec-f830c4-404-batch-branch-integration.md) #404 — Batch Branch Integration [spec] · verified 2026-09-28
-- **P1** [gap-b0d514](items/gap-b0d514-provider-f019-camel-data-llm-execution-boundary.md) CaMeL Data-LLM execution boundary not enforced · verified 2026-09-28
-- **P1** [spec-743a7e](items/spec-743a7e-channel-config-schema.md) Channel Config Schema [spec] · verified 2026-09-28
+- **P1** [spec-f830c4](items/spec-f830c4-404-batch-branch-integration.md) #404 — Batch Branch Integration [spec] · size L · verified 2026-09-29
+- **P1** [gap-b0d514](items/gap-b0d514-provider-f019-camel-data-llm-execution-boundary.md) CaMeL Data-LLM execution boundary not enforced · size L · verified 2026-09-29
+- **P1** [spec-743a7e](items/spec-743a7e-channel-config-schema.md) Channel Config Schema [spec] · size M · verified 2026-09-29
 
 _18 more open · `goal = "features"`_
 
-69 open items have no goal (later); they are listed in `STATUS.md`.
+10 open items have no goal (later); they are listed in `STATUS.md`.

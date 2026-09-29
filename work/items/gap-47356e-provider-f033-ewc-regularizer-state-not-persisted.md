@@ -8,12 +8,16 @@ severity = "p2"
 goal = "learning"
 subsystem = ["roko-learn/bandits"]
 created = 2026-09-01
-updated = 2026-09-28
-last_verified = 2026-09-28
+updated = 2026-09-29
+last_verified = 2026-09-29
+last_verified_rev = "d9e79e9d8"
 source = "tmp/archive/provider-audit/29-FINDINGS-REGISTER.md#F033"
 discovered_from = "audit:tmp/archive/provider-audit/29-FINDINGS-REGISTER.md#F033"
 anchors = ["crates/roko-learn/src/model_router.rs::export_linucb_snapshot", "crates/roko-learn/src/model_router.rs::import_linucb_snapshot", "crates/roko-learn/src/cascade/persistence.rs::LinUCBSnapshot"]
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
+
+[[verify]]
+command = "grep -q 'ewc' crates/roko-learn/src/cascade/persistence.rs && cargo test -p roko-learn cascade_snapshot_round_trips_ewc_state"
 +++
 The EWC (Elastic Weight Consolidation) regularizer state that prevents catastrophic forgetting is not included in the `CascadeSnapshot` serialization. On every process restart, EWC state resets to zero, effectively discarding the accumulated regularization history.
 

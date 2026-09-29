@@ -10,10 +10,14 @@ subsystem = ["roko-serve/operations"]
 created = 2026-09-28
 updated = 2026-09-29
 last_verified = 2026-09-29
+last_verified_rev = "d9e79e9d8"
 source = "local-audit-2026-09-26"
 discovered_from = "audit:local-defect-review-2026-09-26 (untracked design notes)"
-anchors = ["crates/roko-serve/src/routes/dream.rs:107", "crates/roko-serve/src/routes/research.rs:257", "crates/roko-serve/src/routes/gateway.rs:708"]
+anchors = ["crates/roko-serve/src/routes/dream.rs:107", "crates/roko-serve/src/routes/research.rs:257", "crates/roko-serve/src/routes/prds.rs:537", "crates/roko-serve/src/routes/templates.rs:207", "crates/roko-serve/src/routes/plans.rs:1151", "crates/roko-serve/src/routes/gateway.rs:708"]
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
+
+[[verify]]
+command = "grep -rqw 'fn every_producer_records_terminal_status' crates/roko-serve/ && cargo test -p roko-serve operations::tests::every_producer_records_terminal_status"
 +++
 
 Nine handlers register an entry in `AppState.operations` (dream `routes/dream.rs:107`, research `:257`, PRDs `prds.rs:534/709/947`, templates `:207`, plans `:948/:1591`, inference batch `gateway.rs:728`), but only the inference batch ever sets `Completed` (`gateway.rs:708`).
@@ -21,3 +25,5 @@ A finished dream, research or plan-generation job reports `"Running"` until hand
 Fix: one registry wrapper that records Running -> Completed | Failed | Cancelled for every producer, returns a JSON status object and persists a bounded record.
 
 **Partial fix landed 2026-09-29 (plan 04 T11):** The plan-generation producer (`routes/plans.rs`) now finalizes its handle with `Completed{result: {slug, task_count}}` or `Failed{error}`. `GET /api/operations/{id}` returns a JSON status object `{id, kind, status, result?, error?}` (no longer a Rust `Debug` string). The other producers — dream (`routes/dream.rs`), research (`routes/research.rs`), PRDs (`routes/prds.rs`), templates, and inference batch — are unchanged: they still report `"running"` until GC removes the handle.
+
+Re-verified 2026-09-29 at d9e79e9d8. Beyond the plan-generation producer, plan 04b's plan_revise op (routes/plans.rs:2154) also records Completed/Failed (6c9b8dc7a). Still open: the producers at routes/dream.rs:107, routes/research.rs:257, routes/prds.rs:537, :712 and :950, routes/templates.rs:207 and the plan_chat op at routes/plans.rs:1151 insert OperationStatus::Running and never update it; there is still no shared registry wrapper, and operation records are not persisted, so nothing survives a restart.

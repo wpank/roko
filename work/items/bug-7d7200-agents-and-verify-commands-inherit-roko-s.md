@@ -8,11 +8,12 @@ severity = "p1"
 goal = "release"
 subsystem = ["roko-gate/shell"]
 created = 2026-09-28
-updated = 2026-09-28
-last_verified = 2026-09-28
+updated = 2026-09-29
+last_verified = 2026-09-29
+last_verified_rev = "d9e79e9d8"
 source = "tmp/cybernetic-harness/assessment-2026-09-28/s10-s11-demo-deploy.md"
 discovered_from = "audit:tmp/cybernetic-harness/assessment-2026-09-28/s10-s11-demo-deploy.md"
-anchors = ["crates/roko-gate/src/shell.rs:92", "crates/roko-agent/src/claude_cli_agent.rs:420", "crates/roko-cli/src/main.rs:4502", "crates/roko-cli/src/graph_task_dispatch.rs:1778"]
+anchors = ["crates/roko-gate/src/shell.rs:92", "crates/roko-agent/src/claude_cli_agent.rs:422", "crates/roko-cli/src/main.rs:4501", "crates/roko-cli/src/graph_task_dispatch.rs::settle_task_verification"]
 links = { depends_on = [], blocks = [], related = ["bug-7eef96"], supersedes = [], duplicate_of = "" }
 
 [[verify]]

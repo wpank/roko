@@ -8,15 +8,16 @@ severity = "p2"
 goal = "release"
 subsystem = ["roko-serve/rbac"]
 created = 2026-09-28
-updated = 2026-09-28
-last_verified = 2026-09-28
+updated = 2026-09-29
+last_verified = 2026-09-29
+last_verified_rev = "d9e79e9d8"
 source = "local-audit-2026-09-26"
 discovered_from = "audit:local-defect-review-2026-09-26 (untracked design notes)"
 anchors = ["crates/roko-serve/src/routes/route_permissions.rs::required_permission_for", "crates/roko-serve/src/routes/route_permissions.rs:183"]
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
 
 [[verify]]
-command = 'cargo test -p roko-serve route_permissions'
+command = "grep -q 'fn relay_path_requires_agent_spawn' crates/roko-serve/src/routes/route_permissions.rs && cargo test -p roko-serve route_permissions::tests::relay_path_requires_agent_spawn"
 +++
 
 `required_permission_for` rewrites any path that does not start with `/api/` to `/api{path}` before matching (`route_permissions.rs:198-204`), but the manifest declares the relay row as `/relay` (`:183`, `AgentSpawn`).

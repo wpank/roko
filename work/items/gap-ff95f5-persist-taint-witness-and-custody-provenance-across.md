@@ -5,16 +5,104 @@ title = "Persist Taint, Witness, and Custody Provenance Across Restart"
 status = "open"
 triage = "verified"
 severity = "p1"
+size = "L"
 goal = "features"
 subsystem = ["roko-agent/safety"]
 created = 2026-09-01
-updated = 2026-09-28
-last_verified = 2026-09-28
+updated = 2026-09-29
+last_verified = 2026-09-29
+last_verified_rev = "a17d9d766"
 source = "tmp/backlog/archive/351-durable-taint-witness-and-custody-provenance.md#351 — Persist Taint, Witness, and Custody Provenance Across Restart"
 discovered_from = "audit:tmp/backlog/archive/351-durable-taint-witness-and-custody-provenance.md#351 — Persist Taint, Witness, and Custody Provenance Across Restart"
-anchors = ["crates/roko-agent/src/safety/taint_propagation.rs::TaintTracker", "crates/roko-agent/src/safety/witness.rs::WitnessLogger", "crates/roko-agent/src/safety/provenance.rs::CustodyLogger", "crates/roko-cli/src/custody.rs"]
+anchors = ["crates/roko-agent/src/safety/taint_propagation.rs::TaintTracker", "crates/roko-agent/src/safety/witness.rs::WitnessLogger", "crates/roko-agent/src/safety/provenance.rs::CustodyLogger", "crates/roko-cli/src/custody.rs::log_chained", "crates/roko-agent/src/dispatcher/mod.rs::ToolDispatcher::dispatch", "crates/roko-agent/src/provider/mod.rs::build_tool_dispatcher_with_audit", "crates/roko-graph/src/snapshot.rs::EXT_SAFETY_PROVENANCE", "crates/roko-cli/src/graph_checkpoint.rs::refresh_gate_verdicts"]
 links = { depends_on = [], blocks = [], related = ["gap-1151bf", "gap-bf8d20"], supersedes = [], duplicate_of = "" }
+
+[[verify]]
+command = "grep -rqw 'EXT_SAFETY_PROVENANCE' crates/roko-cli/src && grep -rqw 'fn safety_provenance_intent_recorded_before_handler' crates/roko-agent/ && cargo test -p roko-agent safety_provenance_intent_recorded_before_handler && grep -rqw 'fn safety_provenance_restores_taint_after_restart' crates/roko-cli/ && cargo test -p roko-cli safety_provenance_restores_taint_after_restart"
 +++
+
+## Problem
+
+Safety provenance lives only in memory and live dispatch never records it. Three pieces are affected:
+
+- `TaintTracker` in `crates/roko-agent/src/safety/taint_propagation.rs` keeps a monotonic trust lattice (content hash -> taint level, reason, parent hashes) and a propagation audit. It has atomic `save`/`load` (lines 277-338), but no production code creates, saves or restores one.
+- `WitnessDag` and `WitnessLogger` (`safety/witness.rs`) are a BLAKE3 content-addressed reasoning DAG (Observation -> Prediction -> Decision -> Resolution -> NeuroEntry) that can append to `.roko/witness.jsonl`. Nothing outside the file uses them. They are only re-exported at `safety/mod.rs:110`.
+- `CustodyLogger` (`safety/provenance.rs`) and the hash-chaining helper `log_chained` (`crates/roko-cli/src/custody.rs:52`) are used only by the read-side `roko knowledge custody list/show/verify` commands (`custody.rs:75`, `:150`). No live path writes a custody record, so those commands read an empty or stale log.
+
+Observable result: run `roko plan run <plan>` with an API-backed provider that calls tools. Afterwards `.roko/witness.jsonl` gets no new vertex, `roko knowledge custody list` shows no new record, and the checkpoint `.roko/state/graph/<plan>/checkpoint.json` has no `roko.safety-provenance@1` extension. After a restart or `--resume-plan`, any taint ancestry derived during the run is gone. Nothing can prove afterwards which external or tool inputs led to an output or a denial.
+
+Expected: before each privileged tool effect there is an acknowledged pre-effect record, and after it a terminal result or denial record. The taint index and the witness/custody root hash are checkpointed and restored before new work is scheduled. If required provenance is missing or corrupt, the run fails closed instead of resetting to trusted.
+
+## Why it matters
+
+- Goal `features` (feature ideas). Severity p1: safety provenance is lost on restart, and the forensic components (`roko knowledge custody`, witness DAG) exist but are never populated.
+- It turns an unused safety library into evidence that a real run can be audited: which untrusted input reached which privileged tool.
+- Risk of leaving it: `roko knowledge custody verify` reports a clean chain only because nothing is written. Taint does not constrain anything across a restart.
+- Related: `gap-1151bf` (TaintTracker audit log is ephemeral; closed as a duplicate of this item), parked `gap-bf8d20` (TaintTracker not wired to immune boundary decisions), `gap-22b0a2` (the #282 checkpoint-extension gate; superseded), `spec-5c8b9c` (#208 runtime event schema; done).
+
+## Where
+
+- `crates/roko-agent/src/safety/taint_propagation.rs::TaintTracker`: the lattice. `mark_tainted`, `propagate(parents, child)`, `observe_signal(&Signal)`, `derived_from`, `audit_log`, `save`/`load`.
+- `crates/roko-agent/src/safety/witness.rs::WitnessDag`, `::WitnessLogger`: the vertex DAG, a standalone JSONL adapter, and an integrity walk (`IntegrityViolation`).
+- `crates/roko-agent/src/safety/provenance.rs::CustodyLogger`, `Custody`, `Taint`, `AttestationLevel`: custody records.
+- `crates/roko-cli/src/custody.rs::log_chained`: chains a custody record to the previous hash. The rest of the file is the read-side commands.
+- `crates/roko-fs/src/layout.rs`: `custody_log()` (:413) and `witness_log()` (:423, `.roko/witness.jsonl`).
+- `crates/roko-agent/src/dispatcher/mod.rs::ToolDispatcher::dispatch` (:531): the one choke point for tool calls from roko's own tool loop. Its order is ingress validation, then `SafetyLayer` stages 1-4, then `production_safety_chain` stages 5-7 (stage 6 is the taint ceiling `TaintLevelHook`, which reads the per-call `ToolContext` taint level, not `TaintTracker`), then `safety_denial_callback` on denial (:781), then `handler.execute` (:857), then the stage 9 result filter (:880). It already has two optional side channels you can copy: `file_audit` (a `ScrubAuditAdapter` JSONL) and `safety_denial_callback`.
+- `crates/roko-agent/src/provider/mod.rs::build_tool_dispatcher_with_audit` (:459): the production dispatcher builder. It is used by the Anthropic API (`provider/anthropic_api/tool_loop.rs:50`), OpenAI-compatible (`provider/openai_compat.rs:508`) and Gemini (`gemini/adapter.rs:47`, `:109`) tool loops through `options.tool_audit`.
+- `crates/roko-graph/src/snapshot.rs`: `CheckpointExtension` (:192), `ExtensionRegistry::validate_extensions` (:339), and `EXT_SAFETY_PROVENANCE = "roko.safety-provenance@1"` (:550). The namespace is already registered as optional with owner "#351" in `register_known_namespaces` (:572).
+- `crates/roko-cli/src/graph_checkpoint.rs`: host-side checkpoint. `register_extension` (:671) is write-once by fingerprint. `refresh_gate_verdicts` (:641) is the precedent for a mutable extension that is rebuilt and re-inserted into `manifest.extensions` on each save (`GATE_VERDICT_EXTENSION`, :62).
+- Entry point: `roko plan run <dir>` -> `crates/roko-cli/src/graph_execution/` -> `crates/roko-cli/src/graph_task_dispatch.rs` -> provider tool loop -> `ToolDispatcher::dispatch`.
+
+## Current state
+
+- The dependencies the original packet waited on are gone or done. #208 (runtime event schema) is done (`spec-5c8b9c`, commit `91b4745f8`). The #251 layered checkpoint-extension ledger exists (`CheckpointExtension`, the EXT_* table, round-trip tests in `snapshot.rs`). #282 was superseded (`gap-22b0a2`), and its namespace reservation for this item is already in code. The "[blocked]" status in the original notes is obsolete.
+- Nothing encodes, decodes or reconciles `roko.safety-provenance@1`. `grep -rn EXT_SAFETY_PROVENANCE crates/` finds only `snapshot.rs` and the `lib.rs` re-export.
+- There is no production `TaintTracker::new`, `WitnessLogger::new` or `log_chained` call.
+- Per-call taint does exist: `ToolContext::with_taint_level` is set by `tool_loop/agent_wrapper.rs:204`, `dispatch/plugin_mcp.rs:282`, ACP `bridge_events/dispatch.rs:290`, and others. So the stage 6 ceiling runs per call without any lineage.
+- No recent commits touch the three safety files. The last ones are the old batch commits `244f564e1` and `c828afe7f`.
+- Scope limit: CLI-backed providers (for example `ClaudeCli`, `CodexCli`) run their own tool loops inside the subprocess. `ToolDispatcher` never sees those calls, so per-tool provenance is only possible for roko's own tool loop (API providers, MCP, plugins). For CLI providers the best available is one record per dispatch turn.
+
+## Plan
+
+1. In `roko-agent`, add a `SafetyProvenanceSink` trait, e.g. `crates/roko-agent/src/safety/provenance_sink.rs`, re-exported from `safety/mod.rs`. Give it `record_intent(&ProvenanceIntent) -> Result<Ack>` and `record_outcome(&ProvenanceOutcome) -> Result<()>`. Records carry only hashes, IDs, taint levels and bounded reason codes: never prompt bodies, tool arguments, tool output or secrets. Use keyed or context-separated BLAKE3 (`blake3::derive_key` or `keyed_hash`) for argument digests, because plain hashes of low-entropy values leak them. Add a deterministic in-memory fake for tests.
+2. Add `ToolDispatcher::with_provenance_sink(Arc<dyn SafetyProvenanceSink>)`, next to `with_file_audit`. In `dispatch`:
+   - after stages 1-7 pass and before `handler.execute`, call `record_intent`. If it errors, return a `ToolResult::err` without running the handler (fail closed);
+   - after the handler (or on any denial branch), call `record_outcome` with success, error or denial and the reason code.
+   - Hold a `TaintTracker` in the sink or host and `propagate` parent hashes (the inputs) to the result hash.
+3. Host adapter in `roko-cli` (for the Graph run): keep the taint index plus `last_sequence`, the witness/custody root hash and the policy/contract fingerprints in the `roko.safety-provenance@1` checkpoint extension. Rebuild it on every checkpoint save the way `refresh_gate_verdicts` does, not through the write-once `register_extension`. Design choice for the per-effect records:
+   - (a) Append them to the existing per-plan ledger `.roko/state/graph/<plan>/activities.jsonl` as a new record kind. This is one durable log, which the original packet requires ("do not write a second JSONL log beside the canonical host ledger").
+   - (b) Reuse `WitnessLogger` and `CustodyLogger` against `.roko/witness.jsonl` and the custody log, and store only their root hash in the checkpoint. Less new code, and `roko knowledge custody` works immediately, but it is a second log and not atomic with the checkpoint.
+   - Recommendation: (b) for the custody/witness records, because it is the only way the existing read-side commands show anything, plus the checkpoint extension for the taint index and root hash. Verify the root on restore. If the owner wants the single-ledger rule kept, choose (a) and change `custody.rs` to read from it. Either way, write and fsync the intent before the effect.
+4. Restore: when a Graph run resumes (checkpoint load in `graph_checkpoint.rs`), decode the extension, rebuild `TaintTracker`, and walk the witness/custody chain to the stored root, all before any new task is admitted. An unknown version, missing root, broken parent, taint downgrade or hash mismatch is terminal safety corruption: stop the run with a clear error and do not reset to trusted. Decide whether `register_known_namespaces` should mark `EXT_SAFETY_PROVENANCE` as required. Today it is optional, so an old checkpoint without it restores silently; keep that for legacy checkpoints if you flip it.
+5. Replay idempotency: the key is `(run_id, activity/attempt, effect index, phase)`. On resume, a matching acknowledged intent or outcome is reused, not duplicated. Whether a non-idempotent external effect already happened stays with the activity/receipt ledger (`prepare_receipt`/`commit_receipt` in `snapshot.rs`). An acknowledged intent alone does not prove it.
+6. Wire the sink into `build_tool_dispatcher_with_audit` through the provider options, the same way `tool_audit` is threaded, so the Graph path gets it. Leave `roko chat`, `serve` and ACP on a no-op sink unless it is cheap to add them.
+7. Tests (names are suggestions, used by the verify command):
+   - `roko-agent`: `safety_provenance_intent_recorded_before_handler`, which asserts the handler does not run when `record_intent` fails;
+   - `roko-agent`: a redaction test proving no raw arguments or output reach the record;
+   - `roko-cli`: `safety_provenance_restores_taint_after_restart`, which writes a checkpoint, reloads, and checks that `get_level`/`derived_from` survive;
+   - tamper, downgrade, missing-parent and unknown-version restore tests that must fail closed.
+
+## Done when
+
+- A tool call through `ToolDispatcher::dispatch` with a sink attached produces an acknowledged intent record before the handler runs and a terminal outcome or denial record after it. If the intent write fails, the handler does not run.
+- A Graph plan run writes a `roko.safety-provenance@1` extension into `checkpoint.json`. After a process restart and resume, taint ancestry and policy fingerprints are restored before any task is scheduled.
+- A corrupted, downgraded or unknown-version extension makes the resume fail closed with a diagnostic.
+- Durable records hold hashes, IDs, levels and reason codes only.
+- `roko knowledge custody list` shows records from a real run (if option (b) is chosen).
+- Verify, replacing the current grep, which demands `WitnessLogger::` and `log_chained(` call sites and would push toward the second log the design avoids:
+  `grep -rqw 'EXT_SAFETY_PROVENANCE' crates/roko-cli/src && grep -rqw 'fn safety_provenance_intent_recorded_before_handler' crates/roko-agent/ && cargo test -p roko-agent safety_provenance_intent_recorded_before_handler && grep -rqw 'fn safety_provenance_restores_taint_after_restart' crates/roko-cli/ && cargo test -p roko-cli safety_provenance_restores_taint_after_restart`
+
+## Notes
+
+- Safety- and persistence-critical: this changes the tool dispatch hot path and checkpoint restore. It is not suitable for FAST mode. Keep the safety core free of filesystem and checkpoint types; put I/O in the host adapter.
+- Fail closed is a project rule: "missing or unknown safety contracts fail closed". Do not add a code path that resets taint to trusted after a load error.
+- Do not add model-based trust classification. This item persists the lattice decisions that already exist.
+- Do not change the other EXT_* rows in `snapshot.rs`.
+- Size L (the original packet estimated 3-5 days). It conflicts with concurrent work in `crates/roko-agent/src/dispatcher/mod.rs` and `crates/roko-cli/src/graph_checkpoint.rs`, so do not run it in parallel with other items anchored there.
+- No hard dependencies remain open.
+
+## Original notes
+
 [blocked] Blocked on #208 and #251; #282's registry contract is already frozen and aggregate #282 completion follows… — safety provenance is lost on restart and forensic components are not populated by live dispatch. `crates/roko-agent/src/safety/taint_propagation.rs::TaintTracker` maintains a…
 
 Imported without verification from:

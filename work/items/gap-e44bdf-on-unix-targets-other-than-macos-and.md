@@ -9,6 +9,7 @@ subsystem = ["roko-agent/process"]
 created = 2026-09-29
 updated = 2026-09-29
 last_verified = 2026-09-29
+last_verified_rev = "d9e79e9d8"
 source = "dogfood:tmp/dogfood/2026-09-28-portal-programme-continuation.md"
 discovered_from = "agent:e7-pid-registry"
 anchors = ["crates/roko-agent/src/process/identity.rs::process_identity", "crates/roko-agent/src/process/registry.rs::cleanup_orphaned_agents"]

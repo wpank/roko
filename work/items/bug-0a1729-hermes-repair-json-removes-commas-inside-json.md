@@ -8,15 +8,16 @@ severity = "p2"
 goal = "hermes"
 subsystem = ["roko-agent/translate"]
 created = 2026-09-28
-updated = 2026-09-28
-last_verified = 2026-09-28
+updated = 2026-09-29
+last_verified = 2026-09-29
+last_verified_rev = "d9e79e9d8"
 source = "local-audit-2026-09-26"
 discovered_from = "audit:local-defect-review-2026-09-26 (untracked design notes)"
 anchors = ["crates/roko-agent/src/translate/hermes.rs::repair_json"]
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
 
 [[verify]]
-command = 'cargo test -p roko-agent --lib translate::hermes'
+command = "grep -q 'fn repair_json_keeps_commas_inside_strings' crates/roko-agent/src/translate/hermes.rs && cargo test -p roko-agent --lib translate::hermes::tests::repair_json_keeps_commas_inside_strings"
 +++
 
 `repair_json` (`translate/hermes.rs:258`) walks characters and drops every `,` followed by whitespace and `}` / `]` without tracking whether it is inside a string literal.

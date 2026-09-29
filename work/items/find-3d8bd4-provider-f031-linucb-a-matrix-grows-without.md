@@ -8,12 +8,16 @@ severity = "p2"
 goal = "learning"
 subsystem = ["roko-learn/model_router"]
 created = 2026-09-01
-updated = 2026-09-28
-last_verified = 2026-09-28
+updated = 2026-09-29
+last_verified = 2026-09-29
+last_verified_rev = "d9e79e9d8"
 source = "tmp/archive/provider-audit/29-FINDINGS-REGISTER.md#F031"
 discovered_from = "audit:tmp/archive/provider-audit/29-FINDINGS-REGISTER.md#F031"
 anchors = ["crates/roko-learn/src/model_router.rs::update_features_internal", "crates/roko-learn/src/model_router.rs::alpha_for_observations"]
 links = { depends_on = [], blocks = [], related = ["bug-6f1685", "bug-8da8ba"], supersedes = [], duplicate_of = "" }
+
+[[verify]]
+command = "grep -rqw 'fn linucb_exploration_bonus_stays_bounded_after_many_observations' crates/roko-learn/ && cargo test -p roko-learn linucb_exploration_bonus_stays_bounded_after_many_observations"
 +++
 The LinUCB A matrix accumulates `x * x^T` on every observation without decay or sliding window. After thousands of observations, matrix entries grow large, making `A^{-1}` near-zero, and the exploration bonus `sqrt(x^T A^{-1} x)` approaches zero. The bandit becomes effectively greedy (no explorat...
 

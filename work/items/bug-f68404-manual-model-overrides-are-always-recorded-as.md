@@ -8,15 +8,16 @@ severity = "p2"
 goal = "learning"
 subsystem = ["roko-learn/cascade-router"]
 created = 2026-09-28
-updated = 2026-09-28
-last_verified = 2026-09-28
+updated = 2026-09-29
+last_verified = 2026-09-29
+last_verified_rev = "d9e79e9d8"
 source = "local-audit-2026-09-26"
 discovered_from = "audit:local-defect-review-2026-09-26 (untracked design notes)"
 anchors = ["crates/roko-learn/src/cascade_router.rs::CascadeRouter::record_override_outcome", "crates/roko-learn/src/cascade_router.rs::CascadeRouter::observe_multi_objective"]
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
 
 [[verify]]
-command = 'cargo test -p roko-learn cascade_router'
+command = "grep -rqw 'fn failed_override_lowers_success_rate' crates/roko-learn/ && cargo test -p roko-learn failed_override_lowers_success_rate"
 +++
 
 `record_override_outcome` (`cascade_router.rs:1540`) forwards to `observe_multi_objective` (`:1703`), which increments both `trials` and `successes` unconditionally (`:1718-1719`); cost and latency are passed as 0.0.

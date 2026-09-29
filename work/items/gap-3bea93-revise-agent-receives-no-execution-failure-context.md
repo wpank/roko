@@ -9,13 +9,14 @@ subsystem = ["roko-serve/plans"]
 created = 2026-09-29
 updated = 2026-09-29
 last_verified = 2026-09-29
+last_verified_rev = "d9e79e9d8"
 source = "plan:portal-programme/04b-backend-plan-revision#T06"
 discovered_from = "plan:portal-programme/04b-backend-plan-revision#T06"
-anchors = ["crates/roko-serve/src/routes/plans.rs::revise_plan"]
+anchors = ["crates/roko-serve/src/routes/plans.rs::revise_plan", "crates/roko-cli/src/plan_authoring.rs::revise_plan_source", "crates/roko-cli/src/plan_authoring.rs::build_revision_prompt"]
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
 
 [[verify]]
-command = "grep -r 'last_error\\|failure_context\\|run_context' crates/roko-serve/src/routes/plans.rs"
+command = "sed -n '/pub fn build_revision_prompt/,/^}/p' crates/roko-cli/src/plan_authoring.rs | grep -qiE 'failure|last_error'"
 +++
 
 When `POST /api/plans/{id}/revise` is called after a plan run has failed, the planning
@@ -34,3 +35,5 @@ include failure context in the feedback field manually.
 **A fix must:** pass execution-failure context (e.g. the last checkpoint's error or
 `last_error` from `PlanSummary`) into the revision prompt alongside the feedback, when
 the plan has a recorded failure and the caller does not supply explicit failure detail.
+
+Re-checked 2026-09-29: unchanged. The prompt is built in crates/roko-cli/src/plan_authoring.rs::build_revision_prompt (:279) from plan id, current tasks.toml and feedback only. The existing verify is unsound: it matches last_error in the list/detail DTO tests of routes/plans.rs and passes while the gap exists.

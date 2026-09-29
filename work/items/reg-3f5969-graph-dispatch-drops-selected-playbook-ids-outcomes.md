@@ -8,18 +8,16 @@ severity = "p2"
 goal = "learning"
 subsystem = ["roko-cli/graph-dispatch", "roko-learn/playbooks"]
 created = 2026-09-28
-updated = 2026-09-28
-last_verified = 2026-09-28
+updated = 2026-09-29
+last_verified = 2026-09-29
+last_verified_rev = "d9e79e9d8"
 source = "gaps-md#playbook-selection-wired-at-dispatch----resolved"
 discovered_from = "doc:tmp/work-management/01-gaps-md-audit.md"
-anchors = ["crates/roko-cli/src/graph_task_dispatch.rs:983", "crates/roko-cli/src/graph_execution/feedback.rs:468", "crates/roko-cli/src/dispatch/prompt_cache.rs"]
+anchors = ["crates/roko-cli/src/graph_task_dispatch.rs:1539", "crates/roko-cli/src/graph_task_dispatch.rs:1735", "crates/roko-cli/src/graph_execution/feedback.rs::PlaybookSink::settle", "crates/roko-cli/src/dispatch/prompt_cache.rs"]
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
 
 [[verify]]
-command = '''! grep -n 'playbook_ids: vec!\[\]' crates/roko-cli/src/graph_task_dispatch.rs'''
-
-[[verify]]
-command = '''! grep -nF 'format!("task-{}", receipt.task_id)' crates/roko-cli/src/graph_execution/feedback.rs'''
+command = "! grep -n 'playbook_ids: vec!\\[\\]' crates/roko-cli/src/graph_task_dispatch.rs && ! grep -nF 'format!(\"task-{}\", task.id)' crates/roko-cli/src/graph_task_dispatch.rs && ! grep -nF 'format!(\"task-{}\", receipt.task_id)' crates/roko-cli/src/graph_execution/feedback.rs && cargo test -p roko-cli --lib gate_pass_increments_selected_playbook"
 +++
 
 GAPS.md recorded the playbook loop as closed: Runner-v2 stored the playbook IDs chosen at dispatch for each task and called `record_outcome` for them on gate pass or fail. On the Graph path:
@@ -28,3 +26,5 @@ GAPS.md recorded the playbook loop as closed: Runner-v2 stored the playbook IDs 
 Playbooks are still loaded into prompt context (`crates/roko-cli/src/dispatch/prompt_cache.rs`), but the success/failure counters of the playbooks actually used are never updated.
 
 Fix: carry the selected playbook IDs from prompt assembly through the attempt receipt and record outcomes against those IDs. Add a test in which a gate pass increments the selected playbook's counter.
+
+2026-09-29: re-verified at d9e79e9d8. Still open. There is a second synthetic-id write the item did not list: emit_feedback's W07 block (graph_task_dispatch.rs:1733-1736) also calls record_outcome with format!("task-{}", task.id). The current [[verify]] commands do not check it.

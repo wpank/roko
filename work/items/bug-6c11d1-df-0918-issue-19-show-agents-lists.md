@@ -8,12 +8,16 @@ severity = "p3"
 goal = "tooling"
 subsystem = ["roko-cli/show"]
 created = 2026-09-18
-updated = 2026-09-28
-last_verified = 2026-09-28
+updated = 2026-09-29
+last_verified = 2026-09-29
+last_verified_rev = "d9e79e9d8"
 source = "tmp/dogfood/2026-09-18-session.md#ISSUE-19: `roko show agents` shows stale agents from months ago"
 discovered_from = "audit:tmp/dogfood/2026-09-18-session.md#ISSUE-19: `roko show agents` shows stale agents from months ago"
-anchors = ["roko show agents", "crates/roko-cli/src/commands/show.rs::agent_rows"]
+anchors = ["crates/roko-cli/src/commands/show.rs::agent_rows"]
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
+
+[[verify]]
+command = "grep -rqw 'fn show_agents_marks_or_omits_stale_agents' crates/roko-cli/ && cargo test -p roko-cli --lib show_agents_marks_or_omits_stale_agents"
 +++
 Agents from May/August (H11:12, DEMO-T01:1) still appear; needs age filtering or stale marking.
 

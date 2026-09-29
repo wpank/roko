@@ -8,15 +8,16 @@ severity = "p3"
 goal = "tooling"
 subsystem = ["tooling/docs-integrity"]
 created = 2026-09-28
-updated = 2026-09-28
-last_verified = 2026-09-28
+updated = 2026-09-29
+last_verified = 2026-09-29
+last_verified_rev = "d9e79e9d8"
 source = "tmp/work-management/03-roko-native-capabilities.md"
 discovered_from = "doc:tmp/work-management/03-roko-native-capabilities.md"
-anchors = ["tools/docs_integrity/check_markdown_links.py::check_status_disposition_registry", "tools/docs_integrity/check_markdown_links.py::check_source_coverage_registry", ".github/workflows/docs-lint.yml"]
+anchors = ["tools/docs_integrity/check_markdown_links.py::check_status_disposition_registry", "tools/docs_integrity/check_markdown_links.py::check_source_coverage_registry", ".github/workflows/docs-lint.yml:79"]
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
 
 [[verify]]
-command = 'python3 tools/docs_integrity/check_markdown_links.py'
+command = "python3 tools/docs_integrity/check_markdown_links.py && ! grep -q \"must select --engine runner-v2\" .github/workflows/docs-lint.yml"
 +++
 
 `tools/docs_integrity/check_markdown_links.py` enforces fixed-count registry contracts (exactly 109 files in `tmp/status-quo/`, fixed coverage-ledger and source-manifest counts), but `tmp/status-quo/` no longer exists and `tmp/` is gitignored, so no clone can satisfy them.

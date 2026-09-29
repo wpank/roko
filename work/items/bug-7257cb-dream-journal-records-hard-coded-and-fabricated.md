@@ -7,15 +7,16 @@ triage = "verified"
 severity = "p2"
 subsystem = ["roko-dreams/journal", "roko-serve/dream"]
 created = 2026-09-28
-updated = 2026-09-28
-last_verified = 2026-09-28
+updated = 2026-09-29
+last_verified = 2026-09-29
+last_verified_rev = "d9e79e9d8"
 source = "local-audit-2026-09-26"
 discovered_from = "audit:local-defect-review-2026-09-26 (untracked design notes)"
-anchors = ["crates/roko-dreams/src/runner.rs::persist_journal_entry", "crates/roko-serve/src/routes/dream.rs"]
+anchors = ["crates/roko-dreams/src/runner.rs::persist_journal_entry", "crates/roko-serve/src/routes/dream.rs::dream_journal"]
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
 
 [[verify]]
-command = 'cargo test -p roko-serve routes::dream'
+command = "! grep -q 'episodes_total / 4' crates/roko-serve/src/routes/dream.rs && ! grep -q 'e.get(\"timestamp\")' crates/roko-serve/src/routes/dream.rs && ! sed -n '/fn persist_journal_entry/,/^    }/p' crates/roko-dreams/src/runner.rs | grep -qE 'trigger: DreamTrigger::Manual|total_tokens: 0|let _ = journal.append'  (current `cargo test -p roko-serve routes::dream` passes while the bug exists)"
 +++
 
 `persist_journal_entry` (`roko-dreams/src/runner.rs:1221`) hard-codes `trigger: DreamTrigger::Manual` (`:1228`); per a local audit it also records `total_tokens` as 0 and ignores the append result.

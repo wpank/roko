@@ -8,12 +8,16 @@ severity = "p3"
 goal = "tooling"
 subsystem = ["roko-cli/show"]
 created = 2026-09-18
-updated = 2026-09-28
-last_verified = 2026-09-28
+updated = 2026-09-29
+last_verified = 2026-09-29
+last_verified_rev = "d9e79e9d8"
 source = "tmp/dogfood/2026-09-18-session.md#ISSUE-9: `roko show costs` — pass_rate 7.8% is misleadingly low"
 discovered_from = "audit:tmp/dogfood/2026-09-18-session.md#ISSUE-9: `roko show costs` — pass_rate 7.8% is misleadingly low"
-anchors = ["roko show costs", "crates/roko-cli/src/commands/show.rs::render_costs", "crates/roko-cli/src/tui/dashboard.rs::load_efficiency_summary"]
+anchors = ["crates/roko-cli/src/commands/show.rs::render_costs", "crates/roko-cli/src/tui/dashboard.rs::load_efficiency_summary", "crates/roko-cli/src/tui/dashboard.rs::efficiency_summary_from_events"]
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
+
+[[verify]]
+command = "grep -rqw 'fn show_costs_excludes_events_outside_window' crates/roko-cli/ && cargo test -p roko-cli --lib show_costs_excludes_events_outside_window"
 +++
 Cost and pass-rate reports include early runs from broken provider configs with no windowing or decay, making current performance look far worse.
 

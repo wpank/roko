@@ -8,11 +8,12 @@ severity = "p2"
 goal = "visibility"
 subsystem = ["roko-graph/engine", "roko-cli/state-hub"]
 created = 2026-09-28
-updated = 2026-09-28
-last_verified = 2026-09-28
+updated = 2026-09-29
+last_verified = 2026-09-29
+last_verified_rev = "d9e79e9d8"
 source = "gaps-md#batch-2026-09-05-engine-convergence/statehubgrapheventsink"
 discovered_from = "doc:tmp/work-management/01-gaps-md-audit.md"
-anchors = ["crates/roko-graph/src/engine.rs::with_event_sink", "crates/roko-cli/src/runner/types.rs:2662", "crates/roko-cli/src/commands/do_cmd.rs:949", "crates/roko-cli/src/runner/types.rs:2717"]
+anchors = ["crates/roko-graph/src/engine.rs::with_event_sink", "crates/roko-graph/src/engine.rs:327", "crates/roko-cli/src/graph_execution/plan_runner.rs:2016", "crates/roko-cli/src/runner/types.rs:2662", "crates/roko-cli/src/runner/types.rs:2717"]
 links = { depends_on = [], blocks = [], related = ["gap-7f5eb6", "gap-d40bc0", "gap-8a1fb3"], supersedes = [], duplicate_of = "" }
 
 [[verify]]

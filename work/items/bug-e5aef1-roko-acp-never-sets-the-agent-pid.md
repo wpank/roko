@@ -5,13 +5,15 @@ title = "`roko acp` never sets the agent PID registry root, so its agents regist
 status = "open"
 triage = "verified"
 severity = "p3"
+goal = "hermes"
 subsystem = ["roko-cli/main", "roko-acp"]
 created = 2026-09-29
 updated = 2026-09-29
 last_verified = 2026-09-29
+last_verified_rev = "d9e79e9d8"
 source = "dogfood:tmp/dogfood/2026-09-28-portal-programme-continuation.md"
 discovered_from = "agent:e7-pid-registry"
-anchors = ["crates/roko-cli/src/main.rs::main", "crates/roko-agent/src/process/registry.rs::set_registry_root"]
+anchors = ["crates/roko-cli/src/main.rs::main", "crates/roko-agent/src/process/registry.rs::set_registry_root", "crates/roko-acp/src/handler.rs::run_acp_server"]
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
 
 [[verify]]

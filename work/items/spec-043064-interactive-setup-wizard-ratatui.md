@@ -8,11 +8,12 @@ severity = "p2"
 goal = "features"
 subsystem = ["roko-cli/tui"]
 created = 2026-09-21
-updated = 2026-09-28
-last_verified = 2026-09-28
+updated = 2026-09-29
+last_verified = 2026-09-29
+last_verified_rev = "d9e79e9d8"
 source = "tmp/backlog/archive/223-setup-wizard-tui.md#223 — Interactive Setup Wizard (ratatui)"
 discovered_from = "audit:tmp/backlog/archive/223-setup-wizard-tui.md#223 — Interactive Setup Wizard (ratatui)"
-anchors = ["crates/roko-cli/src/commands/setup.rs::cmd_setup_interactive"]
+anchors = ["crates/roko-cli/src/commands/setup.rs::cmd_setup_interactive", "crates/roko-cli/src/commands/setup.rs::cmd_setup"]
 links = { depends_on = [], blocks = [], related = ["gap-f57fe5", "gap-db648b"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
@@ -33,3 +34,5 @@ How to verify: Check: `roko setup` launches a full-screen ratatui wizard; Phase 
 Merged 2 mined candidates: m1-060, m1-146.
 
 Verified 2026-09-28: still unimplemented - `roko setup` (commands/setup.rs:38, cmd_setup_interactive at :140) is a stdin line-prompt wizard (setup.rs:221-222) with no ratatui usage. Severity lowered p1 -> p2: a working stdin wizard exists; gap-f57fe5 / gap-db648b track the same gap at p3.
+
+Re-verified 2026-09-29: still unimplemented. Overlap: parked work/parked/gap-f57fe5 (created 2026-08-31, 'roko setup wizard is stdin-based, not the specified ratatui wizard', UX #223) is the same ratatui-wizard problem, and parked gap-db648b covers #223 together with a `roko undo` verb. This spec is kept as the live item because it also carries the #425 `roko setup channels` flow, which neither parked item covers. When this closes, gap-f57fe5 and the #223 half of gap-db648b should close with it.

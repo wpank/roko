@@ -8,12 +8,16 @@ severity = "p2"
 goal = "hermes"
 subsystem = ["roko-acp"]
 created = 2026-09-21
-updated = 2026-09-28
-last_verified = 2026-09-28
+updated = 2026-09-29
+last_verified = 2026-09-29
+last_verified_rev = "d9e79e9d8"
 source = "tmp/backlog/archive/434-acp-registry-publication-editor-compat.md#434 — ACP Registry Publication and Editor Compatibility Matrix"
 discovered_from = "audit:tmp/backlog/archive/434-acp-registry-publication-editor-compat.md#434 — ACP Registry Publication and Editor Compatibility Matrix"
 anchors = ["crates/roko-acp/src/types.rs:10", "crates/roko-acp/src/handler.rs"]
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
+
+[[verify]]
+command = "git ls-files | grep -qiE '(acp[-_/]?registry|registry/agents)/.*roko.*\\.json$|(^|/)agent\\.json$'  (in-repo manifest precondition; closure also needs roko listed in the upstream agentclientprotocol/registry, which is a manual/network check)"
 +++
 roko is not discoverable in any editor's agent marketplace. The ACP Registry (launched January 2026, co-maintained by Zed Industries and JetBrains) is the universal agent distribution system for code editors. It lists 42+ agents including Claude Agent, Gemini CLI, Codex CLI, GitHub Copilot…
 

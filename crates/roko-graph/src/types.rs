@@ -134,10 +134,12 @@ pub enum GraphMode {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FailureStrategy {
-    /// Abort the entire graph immediately on the first node failure. Default.
+    /// Abort the graph on the first node failure: no further node starts,
+    /// nodes already running finish, and the rest are skipped. Default.
     #[default]
     FailFast,
-    /// Skip failed nodes and continue executing independent successors.
+    /// Keep going past a failed node: only its dependants are skipped, and
+    /// nodes that do not depend on it still run.
     SkipFailed,
     /// Retry failed nodes up to `max_retries` times before giving up.
     Retry {
@@ -158,7 +160,7 @@ pub struct GraphPolicy {
     /// What to do when a node fails.
     #[serde(default)]
     pub failure_strategy: FailureStrategy,
-    /// Maximum number of nodes that may execute concurrently within one wave.
+    /// Maximum number of nodes that may execute concurrently.
     #[serde(default = "default_max_concurrent_nodes")]
     pub max_concurrent_nodes: usize,
     /// Optional wall-clock timeout for the entire graph execution (milliseconds).

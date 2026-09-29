@@ -10,19 +10,9 @@ WIRED@a17d4dadd is the core loop: planning, the Graph engine with resume, verify
 Merges on 2026-09-29 changed scheduling (`bbf6517fc`), retry budgets (`99adacd6d`), the cost of timed-out attempts
 (`d4be4e872`), environment isolation (`1d923e377`) and learning loops (`ce3bdcbb8`, `33e107da1`).
 
-Figure 3: The status matrix at `a17d4dadd`: mechanisms per status.
+![Figure 3: status matrix chart](figures/fig3-status-matrix.svg)
 
-<!-- gap-d1d92c generates this as figures/fig3-status-matrix.svg; the image include then replaces the text diagram. -->
-
-```text
-WIRED          21  #####################
-PARTIAL        23  #######################
-BROKEN          2  ##
-ORPHANED        7  #######
-BUILT-UNWIRED   7  #######
-MISSING        10  ##########
-REMOVED         1  #
-```
+**Figure 3:** The status matrix at `a17d4dadd`: mechanisms per status and group.
 
 None of the ten vision claims is fully met:
 

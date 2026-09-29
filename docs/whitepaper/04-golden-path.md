@@ -6,29 +6,10 @@ The golden path is the thesis in motion: eleven steps from a request to verified
 next plan. Step N is §4.N. Each gives the design, tagged as in the status matrix (the appendix, at `a17d4dadd`), and
 the principle from §2 behind it; §4.12 names the epics that would close the gaps.
 
-Figure 2: The golden path. Failures loop back from step 8, and outcomes feed the next plan; tags are at `a17d4dadd`.
+![Figure 2: golden-path diagram](figures/fig2-golden-path.svg)
 
-<!-- gap-d1d92c draws this as figures/fig2-golden-path.svg; the image include then replaces the text diagram. -->
-
-```text
-PLAN         1  Author               PARTIAL
-frontier     2  Compile the spec     PARTIAL
-model        3  Size and split       MISSING     <-- split or replan, from 8
-                    |
-                    v
-EXECUTE      4  Route                MISSING     <-- retry or one rung up, from 8
-cheapest     5  Schedule             PARTIAL
-capable      6  Isolate              PARTIAL
-model        7  Verify               PARTIAL     --> fail: 8, pass: 9
-             8  Recover              PARTIAL
-                    |
-                    v
-INTEGRATE    9  Integrate            ORPHANED, MISSING
-            10  Review               MISSING
-                    |
-                    v
-LEARN       11  Learn                PARTIAL     --> steps 1 to 4, next plan
-```
+**Figure 2:** The golden path. Failures loop back from step 8, and outcomes feed the next plan; tags are at
+`a17d4dadd`.
 
 ## 4.1 Author
 

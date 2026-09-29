@@ -21,8 +21,10 @@ the plan-level slice's Clopper-Pearson interval, which S09 §4.9 asks for.
 
 **Bundle.** `--bundle DIR` also writes the summary bundle that gets committed under `reports/` (D4). It holds
 `metrics.json`, and for each run a `<run_id>/` directory with its `manifest.json`, `order-*.json`, `records.jsonl`,
-`ledger.jsonl` and `errors.jsonl`. Nothing else is copied: never `private/` (task manifests with canaries, pristine
-bundles), `archives/` or `transcripts/`.
+`ledger.jsonl` and `errors.jsonl`, and the metering proxy's `proxy.jsonl` when the run went through it. That log is
+scrubbed: each row keeps only its meter fields (`PROXY_FIELDS`), never the fault profile with its seed, nor a field
+the proxy logs later unless it is added there. Nothing else is copied: never `private/` (task manifests with
+canaries, pristine bundles), `archives/` or `transcripts/`.
 
 **Check.** `--check` exits 0 only when every bundle passes all of these:
 - every run record validates and none is simulated; every ledger row and MetricRecord validates;
@@ -64,6 +66,11 @@ METRICS_VERSION = "vb.metrics/1"
 DEFAULT_RESULTS = Path("~/.roko-bench/viability")
 DEFAULT_BUDGET = VB_ROOT / "experiments" / "budget.toml"
 BUNDLE_FILES = ("manifest.json", "records.jsonl", "ledger.jsonl", "errors.jsonl")
+PROXY_LOG = "proxy.jsonl"
+# The metering proxy's row fields a bundle keeps (driver/faultproxy.py, "The log"): what each call was and cost.
+PROXY_FIELDS = ("ts", "task", "ordinal", "upstream", "model_requested", "model_reported", "stream", "status",
+                "forwarded", "refused", "fault_injected", "usage_source", "usage", "api_equiv_usd", "without_cache_usd",
+                "cost_source", "price_snapshot_id", "elapsed_ms")
 LABEL = "descriptive, not pre-registered; no confidence intervals except the plan-level slice's"
 LISTS = ("records", "false_greens", "excluded")  # written one item per line
 
@@ -216,7 +223,25 @@ def write_bundle(runs: list[Run], bundle: Path, report: dict) -> None:
         for source in [run.path / name for name in BUNDLE_FILES] + sorted(run.path.glob("order-*.json")):
             if source.is_file():
                 shutil.copyfile(source, target / source.name)
+        if (run.path / PROXY_LOG).is_file():
+            (target / PROXY_LOG).write_text(scrub_proxy_log(run.path / PROXY_LOG), encoding="utf-8")
     (bundle / "metrics.json").write_text(dumps(report), encoding="utf-8")
+
+
+def scrub_proxy_log(path: Path) -> str:
+    """The proxy's log with each row cut to `PROXY_FIELDS`; a line that is not a JSON object stops the bundle."""
+    rows = []
+    for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except ValueError:
+            row = None
+        if not isinstance(row, dict):
+            raise ReportError(f"{path}:{number}: not a JSON object")
+        rows.append(json.dumps({key: row[key] for key in PROXY_FIELDS if key in row}, sort_keys=True) + "\n")
+    return "".join(rows)
 
 
 @dataclass(frozen=True)

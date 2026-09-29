@@ -38,8 +38,9 @@ CORRECT = ("cat > calc/ops.py <<'EOF'\ndef clamp(value, low, high):\n"
            "    \"\"\"Return value limited to the range [low, high].\"\"\"\n    return max(low, min(value, high))\nEOF")
 VISIBLE_ONLY = "cat > calc/ops.py <<'EOF'\ndef clamp(value, low, high):\n    return max(value, low)\nEOF"
 CALLING_ROKO = r'''#!__PYTHON__
-"""A stand-in for roko's `plan run`: one model call to the provider its roko.toml names, then a Graph run's records."""
-import datetime, json, os, sys, tomllib, urllib.request
+"""A stand-in for roko's `plan run`: up to __CALLS__ model calls to the provider its roko.toml names, then a Graph
+run's records. A refused call fails the plan, as roko's does; otherwise it solves the task."""
+import datetime, json, os, sys, tomllib, urllib.error, urllib.request
 from pathlib import Path
 
 args = sys.argv[1:]
@@ -51,20 +52,28 @@ if "validate" in args:
 repo, slug = Path(args[args.index("--repo") + 1]), Path(args[args.index("run") + 1]).name
 config = tomllib.loads(Path(os.environ["ROKO_CONFIG"]).read_text())
 [provider], [model] = config["providers"].values(), config["models"]
-body = {"model": model, "messages": [{"role": "user", "content": "Implement clamp."}]}
-request = urllib.request.Request(provider["base_url"] + "/chat/completions", data=json.dumps(body).encode(),
-                                 headers={"Content-Type": "application/json",
-                                          "Authorization": "Bearer " + os.environ[provider["api_key_env"]]})
-urllib.request.build_opener(urllib.request.ProxyHandler({})).open(request, timeout=30).read()
-(repo / "calc" / "ops.py").write_text("def clamp(value, low, high):\n    return max(low, min(value, high))\n")
+body = {"model": model, "messages": [{"role": "user", "content": "Implement clamp. " * 250}]}
+failure = None
+for _ in range(__CALLS__):
+    request = urllib.request.Request(provider["base_url"] + "/chat/completions", data=json.dumps(body).encode(),
+                                     headers={"Content-Type": "application/json",
+                                              "Authorization": "Bearer " + os.environ[provider["api_key_env"]]})
+    try:
+        urllib.request.build_opener(urllib.request.ProxyHandler({})).open(request, timeout=30).read()
+    except urllib.error.HTTPError as err:
+        failure = f"provider: http {err.code}"
+        break
+if failure is None:
+    (repo / "calc" / "ops.py").write_text("def clamp(value, low, high):\n    return max(low, min(value, high))\n")
 roko, now = repo / ".roko", datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 (roko / "state" / "graph" / slug).mkdir(parents=True)
 (roko / "episodes.jsonl").write_text(json.dumps({"task_id": "T01", "model": model, "backend": "cerebras",
-                                                 "success": True, "turns": 1, "completed_at": now,
-                                                 "extra": {"plan_id": slug}}) + "\n")
+                                                 "success": failure is None, "turns": 1, "completed_at": now,
+                                                 "failure_reason": failure, "extra": {"plan_id": slug}}) + "\n")
+verdicts = {} if failure else {"roko.gate.verdict@1": {"value": {"verdicts": {"T01": "passed"}}}}
 (roko / "state" / "graph" / slug / "checkpoint.json").write_text(json.dumps(
-    {"plan_id": slug, "status": "succeeded", "extensions": {"roko.gate.verdict@1": {"value": {"verdicts": {
-        "T01": "passed"}}}}}))
+    {"plan_id": slug, "status": "failed" if failure else "succeeded", "extensions": verdicts}))
+sys.exit(1 if failure else 0)
 '''
 
 
@@ -344,7 +353,7 @@ def test_vb_run_meters_every_task_through_the_proxy(places):
 def test_the_roko_arm_through_the_proxy_is_metered_by_its_task_key(places, tmp_path):
     binary = tmp_path / "bin" / "roko"
     binary.parent.mkdir()
-    binary.write_text(CALLING_ROKO.replace("__PYTHON__", sys.executable))
+    binary.write_text(CALLING_ROKO.replace("__PYTHON__", sys.executable).replace("__CALLS__", "1"))
     binary.chmod(0o755)
     arm = tmp_path / "roko_test.toml"
     arm.write_text((layout.ARMS_DIR / "roko_fixed.toml").read_text().replace(
@@ -363,6 +372,69 @@ def test_the_roko_arm_through_the_proxy_is_metered_by_its_task_key(places, tmp_p
     assert record["execution"]["status"] == "completed" and attempt["checks"] == [] and attempt["calls"] == 1
     assert attempt["model_reported"] == "gpt-oss-120b" and attempt["usage"]["tokens_in"] == row["usage"]["tokens_in"]
     assert record["costs"]["api_equiv_usd"] == pytest.approx(row["api_equiv_usd"]) and row["api_equiv_usd"] > 0
+
+
+def test_proxy_caps_meter_check_and_bundle(places, tmp_path, monkeypatch):
+    # gap-60654d: the proxy holds every task to the arm's input_tokens_per_task, and a task it cuts off ends
+    # aborted_cap; each record carries the proxy's own cost, and drift past ±5% is flagged; the report's bundle
+    # carries the proxy's log cut to its meter fields.
+    binary = tmp_path / "bin" / "roko"
+    binary.parent.mkdir()
+    binary.write_text(CALLING_ROKO.replace("__PYTHON__", sys.executable).replace("__CALLS__", "10"))
+    binary.chmod(0o755)
+    arm = tmp_path / "roko_capped.toml"  # each call reads 1,070 input tokens, so the cap refuses a task's third
+    arm.write_text((layout.ARMS_DIR / "roko_fixed.toml").read_text().replace(
+        'binary = "target/debug/roko"', f"binary = {json.dumps(str(binary))}").replace(
+        "input_tokens_per_task = 450000", "input_tokens_per_task = 2000"))
+
+    def run(run_id: str, arm: str, url: str) -> int:
+        return vb.main(["run", "--experiment", "TEST-OFFLINE", "--run-id", run_id, "--stream", TOY_STREAM, "--arm", arm,
+                        "--model", "gpt-oss-120b", "--provider-url", url, "--proxy", "--results",
+                        str(places["results"]), "--work", str(places["work"]), "--secret-file", str(places["secret"])])
+
+    with StubServer(lambda body: "Done.") as stub:
+        assert run("run-1", str(arm), stub.url) == 0
+        served = len(stub.requests)
+    out = run_dir(places)
+    rows = read_jsonl(out / "proxy.jsonl")
+    for key in ("F1-l1-0001.s1", "F1-l1-0002.s1"):  # the cap is per task: each gets all of it
+        calls = [row for row in rows if row["task"] == key]
+        assert [(row["status"], row["refused"]) for row in calls] == [(200, None), (200, None),
+                                                                      (403, "input_token_cap")]
+    assert served == 4  # a refused call never reaches the provider
+    for record in by_instance(out / "records.jsonl").values():
+        assert (record["execution"]["status"], record["execution"]["reason"]) == ("aborted_cap", "input_token_cap")
+        assert record["vs"]["label"] == 0 and validate.validate("run-record", record) == []
+        assert record["costs"]["meter_cross_check_usd"] == pytest.approx(record["costs"]["api_equiv_usd"])
+        assert record["costs"]["api_equiv_usd"] > 0
+    assert not (out / "errors.jsonl").exists()  # the meter and the ledger agree: nothing to flag
+
+    bundle = tmp_path / "bundle"
+    assert vb.main(["report", "--experiment", "TEST-OFFLINE", "--results", str(places["results"]), "--out",
+                    str(tmp_path / "metrics.json"), "--bundle", str(bundle)]) == 0
+    bundled = read_jsonl(bundle / "run-1" / "proxy.jsonl")
+    assert len(bundled) == len(rows) and all(row == {key: full[key] for key in row} for row, full in zip(bundled, rows))
+    assert all({"task", "usage", "api_equiv_usd"} <= set(row) and not {"profile", "fault", "path"} & set(row)
+               for row in bundled)
+
+    # A proxy figure 10% above the ledger's is drift past ±5%: flagged in errors.jsonl, and the record keeps both.
+    real_state = faultproxy.FaultProxy.state
+
+    def inflated(proxy: faultproxy.FaultProxy) -> dict:
+        state = real_state(proxy)
+        for meter in state["tasks"]:
+            meter["api_equiv_usd"] *= 1.1
+        return state
+
+    monkeypatch.setattr(faultproxy.FaultProxy, "state", inflated)
+    with StubServer(lambda body: bash("echo VB_SUBMIT")) as stub:
+        assert run("run-2", "cheap_direct", stub.url) == 0
+    drifted = places["results"] / "TEST-OFFLINE" / "run-2"
+    for record in by_instance(drifted / "records.jsonl").values():
+        assert record["costs"]["meter_cross_check_usd"] == pytest.approx(1.1 * record["costs"]["api_equiv_usd"])
+    flags = read_jsonl(drifted / "errors.jsonl")
+    assert sorted(flag["task"] for flag in flags) == ["F1-l1-0001.s1", "F1-l1-0002.s1"]
+    assert all(flag["stage"] == "meter check" and "±5%" in flag["error"] for flag in flags)
 
 
 def test_agent_env_is_an_allowlist(tmp_path, monkeypatch):

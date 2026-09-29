@@ -17,7 +17,7 @@ named by their environment variable), so nothing needs redacting.
 
 API:
     build(*, experiment_id, run_id, arm_id, seed, head, billed, config_hash, snapshot_id, suite, stream,
-          materialized, outcome, result, final, archived, transcript_ref) -> dict
+          materialized, outcome, result, final, archived, transcript_ref, meter_usd=None) -> dict
     append(path: Path, record: dict) -> None           # raises RecordError on an invalid record
     canonical_hash(value) -> str; harness_state() -> (sha, dirty); final_status(outcome, census) -> str
     same_model(requested, reported) -> bool
@@ -81,7 +81,7 @@ def final_status(outcome: harness.TaskOutcome, result: census.CensusResult) -> s
 def build(*, experiment_id: str, run_id: str, arm_id: str, seed: int, head: tuple[str, bool], billed: bool,
           config_hash: str, snapshot_id: str, suite: dict, stream: dict, materialized: materialize.Materialized,
           outcome: harness.TaskOutcome, result: census.CensusResult, final: archive.Final | None,
-          archived: archive.Archive | None, transcript_ref: str | None) -> dict:
+          archived: archive.Archive | None, transcript_ref: str | None, meter_usd: float | None = None) -> dict:
     manifest = materialized.manifest
     task = {"family": manifest["family"], "instance_id": manifest["instance_id"], "ladder": manifest["ladder"],
             "latent_version": manifest["latent_version"], "spec_variant": materialized.spec_variant,
@@ -118,6 +118,7 @@ def build(*, experiment_id: str, run_id: str, arm_id: str, seed: int, head: tupl
                        "canary_places": sorted(result.canaries)},
         "simulated": False,
     }
+    record["costs"]["meter_cross_check_usd"] = meter_usd  # the metering proxy's own figure for the task, if one ran
     return record
 
 

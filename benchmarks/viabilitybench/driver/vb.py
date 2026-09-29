@@ -397,6 +397,9 @@ def _run_one(run: Run, instance_id: str, seed: int, stream_position: dict) -> bo
     except Exception as err:  # the runner owns its errors; this catches its bugs
         now = harness.utc_now()
         outcome = harness.TaskOutcome("infra_error", f"runner crashed: {type(err).__name__}: {err}", [], [], now, now)
+    meter = _task_meter(run.proxy, key)
+    _end_on_proxy_cap(outcome, meter)
+    meter_usd = None if meter is None or meter["cost_unknown"] else meter["api_equiv_usd"]
     final = archived = None
     transcript_text = json.dumps(outcome.transcript, ensure_ascii=False)
     try:
@@ -421,7 +424,12 @@ def _run_one(run: Run, instance_id: str, seed: int, stream_position: dict) -> bo
                            suite={**run.suite, "generator_versions": {task.manifest["family"]:
                                                                   task.manifest["generator_version"]}},
                            stream=stream_position, materialized=task, outcome=outcome, result=result, final=final,
-                           archived=archived, transcript_ref=transcript_ref)
+                           archived=archived, transcript_ref=transcript_ref, meter_usd=meter_usd)
+    if meter_usd is not None and record["costs"]["api_equiv_usd"] is not None:  # as `vb ledger reconcile` flags drift
+        check = ledger._compare(record["costs"]["api_equiv_usd"], meter_usd, ledger.TOLERANCE)
+        if check["flagged"]:
+            _log_error(run_dir, key, "meter check", f"the ledger's ${check['ledger']} and the proxy's "
+                       f"${check['export']} differ by more than ±{ledger.TOLERANCE:.0%}")
     try:
         records.append(run_dir / "records.jsonl", record)
     except records.RecordError as err:
@@ -431,8 +439,8 @@ def _run_one(run: Run, instance_id: str, seed: int, stream_position: dict) -> bo
         _cleanup(args, [workdir, *homes, private / "final", private / "census"])
     cost = record["costs"]["api_equiv_usd"]
     print(f"vb: {key} {record['execution']['status']} ({outcome.reason}) VS={record['vs']['label']} "
-          f"turns={sum(a.turns for a in outcome.attempts)} cost={'unknown' if cost is None else f'${cost:.4f}'}",
-          file=sys.stderr)
+          f"turns={sum(a.turns for a in outcome.attempts)} cost={'unknown' if cost is None else f'${cost:.4f}'}"
+          + ("" if meter_usd is None else f" meter=${meter_usd:.4f}"), file=sys.stderr)
     return True
 
 
@@ -466,10 +474,33 @@ def _start_proxy(plan: Plan, run_dir: Path, *, keys: Mapping[str, str]) -> fault
     try:
         if upstream.api_key_env and not keys.get(upstream.api_key_env):
             raise faultproxy.ProxyError(f"no key for {upstream.name}'s {upstream.api_key_env}")
-        return faultproxy.FaultProxy([upstream], log_path=run_dir / PROXY_LOG, snapshot=plan.snapshot).start()
+        return faultproxy.FaultProxy([upstream], log_path=run_dir / PROXY_LOG, snapshot=plan.snapshot,
+                                     input_token_cap=plan.caps.input_tokens_per_task).start()
     except (faultproxy.ProxyError, OSError) as err:
         archive.remove_tree(run_dir)  # made by this run a moment ago; nothing has run
         raise DriverError(f"the metering proxy cannot start: {err}") from None
+
+
+def _task_meter(proxy: faultproxy.FaultProxy | None, key: str) -> dict | None:
+    """One task's totals in the proxy's meter (`FaultProxy.state`): all zero when no call of it reached the proxy,
+    and None without a proxy."""
+    if proxy is None:
+        return None
+    found = [meter for meter in proxy.state()["tasks"] if meter["task"] == key]
+    return found[0] if found else {"task": key, "refused": 0, "cost_unknown": 0, "api_equiv_usd": 0.0}
+
+
+def _end_on_proxy_cap(outcome: harness.TaskOutcome, meter: dict | None) -> None:
+    """A task whose calls the proxy refused at its input-token cap ended on that cap, `aborted_cap` like one the
+    direct loop's governor stops, when its runner reports it failed or in error. A completion or a timeout stands, and
+    so does an outcome with no attempt (the runner crashed) or with an attempt its runner flagged (a model mismatch
+    stays `infra_error`). The runner's own verdict stays in the transcript."""
+    if not meter or not meter["refused"] or outcome.status not in ("failed", "infra_error") or not outcome.attempts \
+            or any(getattr(attempt, "checks", None) for attempt in outcome.attempts):
+        return
+    outcome.transcript.append({"event": "input_token_cap", "refused_calls": meter["refused"],
+                               "runner_status": outcome.status, "runner_reason": outcome.reason})
+    outcome.status, outcome.reason = "aborted_cap", "input_token_cap"
 
 
 def _secret_file(value: Path | None) -> Path:

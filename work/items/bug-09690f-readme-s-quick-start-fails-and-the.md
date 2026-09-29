@@ -117,6 +117,38 @@ files, done).
 - `docs/v2/CLI-REFERENCE.md` and the other `docs/v2` examples are covered by `bug-f279ea`, not by this item.
 - Docs only, with no Rust changes. Safe in parallel with code work. It conflicts only with other README edits
   and with `bug-f279ea` (edit `docs-lint.yml` in one place).
+- 2026-09-29 (wk-readme), how the new quick start was checked. Binary: `target/debug/roko` built at
+  `33e107da1`. Scratch directories under `/private/tmp`, an empty `HOME`, no API keys, no `cargo` on
+  `PATH`, and the fake agent `plans/portal-programme/_harness/fake-claude` standing in for `claude`.
+  - `roko init` wrote `roko.toml` and `.roko/`, and `roko config providers list` showed
+    `claude_cli ... ok (cli found)`.
+  - Empty workspace: the one-task prompt path stopped before dispatch with `no gate can verify this change`,
+    which confirms `bug-1410e8`. Cargo workspace: `roko run` dispatched the agent and ran
+    `cargo check --workspace` as its verify step.
+  - `git init && roko init`, plus a copy of `plans/demos/parallel-plans/demo-hello-world`: `roko plan run`
+    reached `status: succeeded`, and its `rustc` verify step passed. `plan status`, `--resume-plan`,
+    `--dry-run` and `plan validate` also worked.
+  - `roko serve --port 16677`: `/health` and `/ready` returned 200, and `/api/plans` returned 401 without a
+    token.
+  - `cargo install` was checked statically: `[[bin]] roko`, rust-version 1.91.
+  - The README's minimal config passes `roko config validate` and the core loader.
+- Found while checking; not fixed here (for the coordinator to file):
+  - `roko init` without `claude` on `PATH` leaves `[models.claude-sonnet-4-6]` pointing at the commented-out
+    `claude_cli` provider. Every config-loading command then fails with `config invariant 3 violated`, even
+    with `ANTHROPIC_API_KEY` exported, which is what init itself advises.
+  - `roko setup --quick` in an empty directory skips init because `.roko/` already exists (roko's own log
+    creates it). It then prints `roko.toml already contains all detected providers` and writes no
+    `roko.toml`. After `roko init`, it writes `providers.anthropic.default_model`, a key that
+    `roko config providers validate` rejects.
+  - The core loader rejects `[budget] max_plan_usd = 10, max_task_usd = 1` without `max_turn_usd`
+    (`max_turn_usd (0) must not exceed max_plan_usd (10)`), while `roko config validate` passes the same
+    file. The old README's budget example hit this.
+  - `roko config set --project agent.default_model X` rewrites `roko.toml` and adds a legacy `agent.model`
+    key that `roko config validate` then rejects. It also refuses v2 keys such as `budget.max_plan_usd`.
+  - In a fresh `roko init` workspace, `roko run --max-retries 0 "..."` fails budget admission with
+    `predicted turn cost $1.5000 exceeds max_turn_usd $1.0000`, although `roko.toml` sets
+    `max_turn_usd = 0.0`.
+  - `roko prd plan` and the `roko setup` provider advice were not run: both need a live provider.
 
 ## Original notes
 

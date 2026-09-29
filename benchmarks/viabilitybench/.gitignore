@@ -1,0 +1,2 @@
+# The pinned test venv (README, "Tests"). Only the venv belongs here: results live outside the repo in $VB_RESULTS.
+.venv/

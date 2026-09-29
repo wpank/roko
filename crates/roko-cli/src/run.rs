@@ -345,6 +345,115 @@ pub fn workflow_enabled_gate_names(gates: &[GateConfig]) -> Vec<String> {
         .collect()
 }
 
+/// Budget admission for `roko run`, checked before anything is dispatched.
+///
+/// Two guards mirror the plan runner so `roko run` respects the same spend
+/// ceilings that `roko plan run` enforces:
+///
+/// 1. Plan ceiling as a daily guard (`max_plan_usd`): read today's total
+///    from the costs JSONL log; reject the dispatch if today's accumulated
+///    spend already meets or exceeds the plan ceiling.
+/// 2. Turn ceiling (`max_turn_usd`): load the learned `BudgetPredictor` and
+///    compare the predicted token cost against the per-turn USD cap. The
+///    predictor provides a best-effort estimate; if no history is available
+///    the fallback token count is used. A conservative average price of
+///    $15 / million tokens is applied (sonnet-class output side).
+///
+/// A cap of `0.0` means no cap, as in the core `[budget]` section, and skips
+/// its guard. Both checks are soft-fail on I/O errors (best-effort).
+///
+/// # Errors
+///
+/// Fails when today's spend has reached `max_plan_usd`, or when the
+/// predicted turn cost exceeds `max_turn_usd`.
+pub async fn check_budget_admission(workdir: &Path, config: &Config) -> Result<()> {
+    let learn_dir = workdir.join(".roko").join("learn");
+    let budget = &config.budget;
+
+    // Guard 1: plan ceiling as a daily spend guard.
+    let max_plan = budget.max_plan_usd;
+    if max_plan > 0.0 {
+        let costs_path = learn_dir.join("costs.jsonl");
+        let costs_log = roko_learn::costs_log::CostsLog::at(&costs_path);
+        match costs_log.cost_today().await {
+            Ok(today_usd) if today_usd >= max_plan => {
+                bail!(
+                    "daily budget exhausted: spent ${today_usd:.4} of ${max_plan:.2} today \
+                     (max_plan_usd = {max_plan}). \
+                     Increase [budget].max_plan_usd in roko.toml or wait until tomorrow."
+                );
+            }
+            Ok(today_usd) => {
+                tracing::debug!(
+                    today_usd,
+                    max_plan_usd = max_plan,
+                    "daily budget admission: ok"
+                );
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                tracing::debug!("costs log not found; skipping daily budget check");
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "could not read costs log for daily budget check; proceeding"
+                );
+            }
+        }
+    }
+
+    // Guard 2: per-turn ceiling via BudgetPredictor.
+    let max_turn = budget.max_turn_usd;
+    if max_turn > 0.0 {
+        // Load the predictor. When no budget-predictor.json exists yet,
+        // calibrate from efficiency.jsonl so historical cost data is used
+        // even on a fresh workspace (P2-LRN-2).
+        let predictor = match roko_compose::budget_predictor::load_or_calibrate(&learn_dir) {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "could not load or calibrate budget predictor; using defaults"
+                );
+                roko_compose::BudgetPredictor::new()
+            }
+        };
+
+        // Derive task features from config: role, complexity, domain.
+        let role = if config.prompt.role.trim().is_empty() {
+            "workflow".to_string()
+        } else {
+            config.prompt.role.trim().to_string()
+        };
+        let features = roko_compose::TaskFeatures::new(role, "standard", "code");
+        let predicted_tokens = predictor.predict(&features);
+
+        // Conservative price: $15 / million tokens (sonnet output tier).
+        // This errs on the side of caution so the cap is enforced before
+        // committing to a potentially over-budget dispatch.
+        const USD_PER_TOKEN: f64 = 15.0 / 1_000_000.0;
+        #[allow(clippy::cast_precision_loss)]
+        let predicted_usd = predicted_tokens as f64 * USD_PER_TOKEN;
+
+        if predicted_usd > max_turn {
+            bail!(
+                "predicted turn cost ${predicted_usd:.4} exceeds max_turn_usd ${max_turn:.4} \
+                 (estimated {predicted_tokens} tokens at $15/MTok). \
+                 Increase [budget].max_turn_usd in roko.toml or use a simpler prompt."
+            );
+        }
+
+        tracing::debug!(
+            predicted_tokens,
+            predicted_usd,
+            max_turn_usd = max_turn,
+            "turn budget admission: ok"
+        );
+    }
+
+    Ok(())
+}
+
 /// A prompt to execute through the Graph engine (see [`run_prompt`]).
 pub struct PromptRun<'a> {
     /// The prompt; it becomes the task description verbatim.
@@ -1262,5 +1371,34 @@ mod tests {
         );
         assert_eq!(handle.instance_id(), "acp_workflow_test-session",);
         assert!(handle.cascade_enabled());
+    }
+
+    /// bug-5c25e1: the CLI config replaced the core `[budget]` with its own
+    /// legacy defaults, so a fresh workspace (`max_turn_usd = 0.0`, no cap)
+    /// failed admission against a $1.00 turn cap and the $1.50 fallback
+    /// estimate.
+    #[tokio::test]
+    async fn fresh_workspace_run_passes_budget_admission() {
+        let tmp = TempDir::new().unwrap();
+        crate::init::write_init_config(tmp.path(), false, crate::init::InitProvider::ClaudeCli)
+            .expect("roko init writes roko.toml");
+        let mut config = crate::config::load_resolved_config(tmp.path())
+            .expect("load the fresh workspace config")
+            .config;
+        assert_eq!(
+            config.budget.max_turn_usd, 0.0,
+            "roko init sets no turn cap"
+        );
+
+        check_budget_admission(tmp.path(), &config)
+            .await
+            .expect("a fresh workspace passes budget admission");
+
+        // A real turn cap below the fallback estimate still refuses the run.
+        config.budget.max_turn_usd = 0.01;
+        let err = check_budget_admission(tmp.path(), &config)
+            .await
+            .expect_err("a turn cap below the estimate refuses the run");
+        assert!(err.to_string().contains("exceeds max_turn_usd"), "{err}");
     }
 }

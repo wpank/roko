@@ -1,0 +1,40 @@
+# ViabilityBench verifier CI (gap-44632a): checks the benchmark's own verifiers on every change under
+# benchmarks/viabilitybench/, as benchmarks/viabilitybench/ci/README.md describes. It is offline: no model or provider
+# is called, the secret is a throwaway one the CI makes, and the job needs no repository secret.
+name: ViabilityBench verifier CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "benchmarks/viabilitybench/**"
+      - ".github/workflows/viabilitybench-ci.yml"
+  pull_request:
+    paths:
+      - "benchmarks/viabilitybench/**"
+      - ".github/workflows/viabilitybench-ci.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  verifier-ci:
+    name: Verify the verifiers (F1, F4, plan slice)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.8"
+      - name: Make the pinned venv
+        run: |
+          python -m venv benchmarks/viabilitybench/.venv
+          benchmarks/viabilitybench/.venv/bin/python -m pip install --require-hashes \
+            -r benchmarks/viabilitybench/requirements.lock
+      - name: Judge the known solutions of F1 and F4, levels 1-5, seeds 1-2 (20 cells)
+        run: benchmarks/viabilitybench/.venv/bin/python benchmarks/viabilitybench/ci/verify_verifiers.py --families f1,f4 --levels 1-5 --seeds 2
+      - name: Judge the plan-level slice
+        run: benchmarks/viabilitybench/.venv/bin/python benchmarks/viabilitybench/ci/verify_verifiers.py --families pl --seeds 3
+      - name: Check that broken verifiers turn the CI red
+        run: benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/ci/test_ci.py -q

@@ -73,7 +73,7 @@ Since then:
 - **Recompute tldr/04's figures** (for example, the share of sequential plans) from tracked data such as `plans/`, or
   from a frozen snapshot, and give each a footnote.
 - Lane `paper`; no hot files.
-- **Written on `work/gap-ac4646` at `4bc903cea`** (2026-09-29). Tags are at the status matrix's `a17d4dadd` (the
-  gap-35a614 draft), re-checked with greps at `1f4481133`; no golden-path code moved between the two. The verify's
-  static part passes (29 tag lines), and `paperlint --strict` from the gap-af0b57 draft is clean (1,188 words, 1.25×).
-  Close once gap-af0b57 merges `tools/paperlint.py`; if the matrix is re-pinned, re-check the tags and move `@a17d4dadd`.
+- **Written on `work/gap-ac4646` at `4bc903cea`** (2026-09-29; rows added in `3da2a1418`). Every tag is at
+  `a17d4dadd`, the pin of the status matrix merged in `5eac79f0d`, and agrees with the rows §4.12 cites; each was also
+  re-checked with greps at `1f4481133`. The verify's static part passes (29 tag lines), and `paperlint --strict` from
+  the gap-af0b57 draft is clean (1,028 words, 1.08×). Close once gap-af0b57 merges `tools/paperlint.py`.

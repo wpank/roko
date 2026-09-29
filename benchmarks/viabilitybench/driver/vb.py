@@ -139,6 +139,9 @@ class Plan:
 
 
 def main(argv: list[str] | None = None) -> int:
+    forwarded = sys.argv[1:] if argv is None else argv
+    if forwarded[:1] == ["report"]:
+        return run_report(forwarded[1:])
     args = _parser().parse_args(argv)
     args.argv = ["vb", *(sys.argv[1:] if argv is None else argv)]
     try:
@@ -146,6 +149,12 @@ def main(argv: list[str] | None = None) -> int:
     except (DriverError, caps.CapError, ledger.PriceError) as err:
         print(f"vb: {err}", file=sys.stderr)
         return 2
+
+
+def run_report(argv: list[str]) -> int:
+    """`vb report` (S08 §5.7) is `analysis/report.py`, which parses its own flags: argparse cannot pass them through."""
+    sys.path.insert(0, str(layout.VB_ROOT / "analysis"))
+    return importlib.import_module("report").main(argv)
 
 
 def admit(plan: Plan, *, allow_network: bool, max_cost_usd: float | None) -> None:
@@ -517,6 +526,7 @@ def _parser() -> argparse.ArgumentParser:
     mat.add_argument("--out", required=True)
     mat.add_argument("--private", help="where the manifest and pristine bundle go (default: OUT.private)")
     mat.set_defaults(handler=cmd_materialize)
+    commands.add_parser("report", help="metrics.json and bundle checks (analysis/report.py; see vb report --help)")
     return parser
 
 

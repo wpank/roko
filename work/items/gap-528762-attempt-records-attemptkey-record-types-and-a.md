@@ -85,7 +85,9 @@ W3a: extend one of them; do not add a third.
 - There are no call sites here; gap-96f7ed threads the key through dispatch.
 - roko-learn does not depend on roko-execution, so convert to the receipt key through the string layout.
 - The only shared line is `pub mod telemetry;` in roko-learn's `lib.rs`.
-- Implemented on `work/gap-528762` at `b41818539`; cargo verification deferred to the batch check.
+- Implemented on `work/gap-528762` at `5fdc6c5f2`; cargo verification deferred to the batch check.
+- Follows S01 v1.2 (gap-3c430e): `AttemptUsage` has the five disjoint token classes plus `tokens_reasoning`.
+  Audit rows' `sha256:` ids are S05's and are not written here, and no decision-point list exists here to rename.
 - Type names differ from S01's where the workspace already uses them. The verdict is `AttemptVerdictRecord`
   (`roko_learn::verdict_scorer::VerdictRecord` exists) and the manifest is `RunProvenanceManifest` (roko-runtime
   has a `RunManifest`). The others are `GateVerdictTag` (roko-core `GateVerdict`), `AttemptFailureClass` and

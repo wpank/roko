@@ -135,6 +135,15 @@ Entry point: `roko plan run <dir> --worktree-per-task` → `run_graph_plan` → 
 - This is git-mutation code (commits, branches, worktree removal). The repository mutation lock
   (`WorktreeManager::acquire_repository_mutation_lock`) must cover commit and merge.
 - Safe to run in parallel with items that do not touch `graph_task_dispatch.rs` or `plan_runner.rs`.
+- 2026-09-29 (wk-filer2): bug-a3760a (`809ae920d` on `work/bug-a3760a`, in Rust batch 2) replaced the merge.
+  `GitDeliveryBackend::git_merge` now merges with git plumbing only: `merge-base` for the fast-forward and
+  already-merged cases, otherwise `git merge-tree --write-tree` plus `commit-tree`, then `update-ref` with the
+  expected old value. It never checks out, merges or commits in `workdir`. A target branch that is checked out
+  anywhere is left alone, and the result is parked at `refs/roko/delivered/<plan_id>`. The regression runs in a
+  temporary detached worktree of the merge commit. `delivery.rs` no longer uses `MergeQueue`: the service's merge
+  slot and the compare-and-swap serialize merges. The `Where` bullet on `GitDeliveryBackend` and the Notes caution
+  about `git checkout` describe the old code. `PlanMerger`'s `GitMergeBackend` still merges in and auto-commits its
+  workdir (bug-207f35), so don't use it for this proof. Open follow-ups on delivery: bug-453481 and bug-aaa924.
 
 ## Original notes
 

@@ -480,20 +480,14 @@ fn pending_interrupt(
     interrupt.requested()
 }
 
-/// Terminal checkpoint status for one plan.
-fn plan_checkpoint_status(
-    succeeded: bool,
-    interrupted: bool,
-    cancelled_by_operator: bool,
-) -> GraphCheckpointStatus {
-    if succeeded {
-        GraphCheckpointStatus::Succeeded
-    } else if interrupted {
-        GraphCheckpointStatus::Interrupted
-    } else if cancelled_by_operator {
-        GraphCheckpointStatus::Cancelled
-    } else {
-        GraphCheckpointStatus::Failed
+/// Terminal checkpoint status of a plan that ran and ended with `outcome`.
+const fn plan_checkpoint_status(outcome: PlanOutcome) -> GraphCheckpointStatus {
+    match outcome {
+        PlanOutcome::Succeeded => GraphCheckpointStatus::Succeeded,
+        PlanOutcome::Unverified => GraphCheckpointStatus::Unverified,
+        PlanOutcome::Interrupted => GraphCheckpointStatus::Interrupted,
+        PlanOutcome::Cancelled => GraphCheckpointStatus::Cancelled,
+        PlanOutcome::Failed | PlanOutcome::Blocked => GraphCheckpointStatus::Failed,
     }
 }
 
@@ -1746,15 +1740,17 @@ impl PlanRunResult {
     }
 }
 
-/// Outcome of a plan that ran, by the same precedence as
-/// [`plan_checkpoint_status`].
+/// Outcome of a plan that ran. A graph that ran to completion settles by its
+/// tasks' verdicts ([`TaskVerdictCounts::outcome`]); otherwise a stop request
+/// outranks an operator cancel, which outranks a failure.
 const fn plan_outcome(
-    succeeded: bool,
+    execution_succeeded: bool,
+    tasks: TaskVerdictCounts,
     interrupted: bool,
     cancelled_by_operator: bool,
 ) -> PlanOutcome {
-    if succeeded {
-        PlanOutcome::Succeeded
+    if execution_succeeded {
+        tasks.outcome()
     } else if interrupted {
         PlanOutcome::Interrupted
     } else if cancelled_by_operator {
@@ -2235,18 +2231,21 @@ async fn run_one_plan(
         graph_tui_bridge.plan_completed(&plan.id, false);
 
         tracing::error!(plan_id = %plan.id, "plan execution failed: no output");
-        checkpoint.record_task_outcomes(&TaskOutcomeSummary::default())?;
-        checkpoint.finish_with_status(plan_checkpoint_status(
+        // Without the graph's result no task's verdict is known, so none
+        // counts as passed.
+        let task_verdicts = TaskVerdictCounts::not_run(tasks.len());
+        let outcome = plan_outcome(
             false,
+            task_verdicts,
             interrupted_by.is_some(),
             was_cancelled_by_tui,
-        ))?;
+        );
+        checkpoint.record_task_outcomes(&TaskOutcomeSummary::default())?;
+        checkpoint.finish_with_status(plan_checkpoint_status(outcome))?;
         return Ok(PlanRunResult {
-            outcome: plan_outcome(false, interrupted_by.is_some(), was_cancelled_by_tui),
+            outcome,
             output_count: 0,
-            // Without the graph's result no task's verdict is known, so
-            // none counts as passed.
-            tasks: TaskVerdictCounts::not_run(tasks.len()),
+            tasks: task_verdicts,
         });
     };
 
@@ -2257,6 +2256,16 @@ async fn run_one_plan(
         .sum::<usize>();
     let budget = ctx.graph_task_dispatcher.plan_budget_snapshot(&plan.id);
     let execution_succeeded = output.success && !budget.dispatch_blocked && !was_cancelled_by_tui;
+    // A plan succeeds only when every task passed its verify steps
+    // (gap-29a84b); one whose tasks all completed, some without running a
+    // verify step, is unverified.
+    let task_verdicts = TaskVerdictCounts::of(&output);
+    let outcome = plan_outcome(
+        execution_succeeded,
+        task_verdicts,
+        interrupted_by.is_some(),
+        was_cancelled_by_tui,
+    );
 
     // ── Graph TUI bridge: final status diff + PlanCompleted ──
     // Emit any transitions (Running→Complete/Failed/Skipped, or
@@ -2296,7 +2305,16 @@ async fn run_one_plan(
         );
     }
     checkpoint.record_task_outcomes(&task_outcomes)?;
-    graph_tui_bridge.plan_completed(&plan.id, execution_succeeded);
+    if outcome == PlanOutcome::Unverified {
+        graph_tui_bridge.log_event(
+            "graph.plan_unverified",
+            &format!(
+                "plan '{}': {} task(s) ran no verify step, so the plan did not succeed",
+                plan.id, task_verdicts.unverified
+            ),
+        );
+    }
+    graph_tui_bridge.plan_completed(&plan.id, outcome.succeeded());
 
     if !ctx.quiet && !ctx.json {
         if was_cancelled_by_tui {
@@ -2305,12 +2323,19 @@ async fn run_one_plan(
                 node_count = output.node_results.len(),
                 "plan cancelled by user"
             );
-        } else if execution_succeeded {
+        } else if outcome.succeeded() {
             tracing::info!(
                 plan_id = %plan.id,
                 node_count = output.node_results.len(),
                 output_count,
                 "plan completed: SUCCESS"
+            );
+        } else if outcome == PlanOutcome::Unverified {
+            tracing::warn!(
+                plan_id = %plan.id,
+                node_count = output.node_results.len(),
+                unverified_tasks = task_verdicts.unverified,
+                "plan completed: UNVERIFIED (some tasks ran no verify step)"
             );
         } else {
             tracing::warn!(
@@ -2353,19 +2378,11 @@ async fn run_one_plan(
             }
         }
     }
-    checkpoint.finish_with_status(plan_checkpoint_status(
-        execution_succeeded,
-        interrupted_by.is_some(),
-        was_cancelled_by_tui,
-    ))?;
+    checkpoint.finish_with_status(plan_checkpoint_status(outcome))?;
     Ok(PlanRunResult {
-        outcome: plan_outcome(
-            execution_succeeded,
-            interrupted_by.is_some(),
-            was_cancelled_by_tui,
-        ),
+        outcome,
         output_count,
-        tasks: TaskVerdictCounts::of(&output),
+        tasks: task_verdicts,
     })
 }
 
@@ -2455,6 +2472,20 @@ impl TaskVerdictCounts {
             unverified: 0,
             skipped: task_count,
             failed: 0,
+        }
+    }
+
+    /// Outcome of a plan whose graph ran to completion (gap-29a84b): it
+    /// succeeded only when every task passed its verify steps, and is
+    /// unverified when the rest passed but some ran no verify step. Anything
+    /// else failed.
+    const fn outcome(self) -> PlanOutcome {
+        if self.failed > 0 || self.skipped > 0 {
+            PlanOutcome::Failed
+        } else if self.unverified > 0 {
+            PlanOutcome::Unverified
+        } else {
+            PlanOutcome::Succeeded
         }
     }
 }
@@ -2608,9 +2639,15 @@ files = ["README.md"]
         assert_eq!(plan_set.plans.len(), 1);
         assert_eq!(plan_set.plans[0].plan_id, "01-skipped");
         // PlanStarted/PlanCompleted landed in the same hub.
-        assert_eq!(snapshot.plans["01-skipped"].phase, "completed");
         assert!(snapshot.plan_set_complete());
-        assert_eq!(exit_code, EXIT_SUCCESS);
+        // gap-29a84b: the disabled-role task ran no verify step, so the plan
+        // is unverified, not succeeded.
+        assert_ne!(snapshot.plans["01-skipped"].phase, "completed");
+        assert_eq!(exit_code, EXIT_FAILURE);
+        assert_eq!(
+            crate::graph_checkpoint::canonical_checkpoint_status(dir.path(), "01-skipped"),
+            Some(GraphCheckpointStatus::Unverified)
+        );
     }
 
     /// A workspace with [`DISABLED_ROLE_CONFIG`] plus `extra_config`, and one
@@ -2657,6 +2694,77 @@ depends_on_plan = [{depends_on_plan}]
             .expect("tasks.toml");
         }
         dir
+    }
+
+    /// A workspace with the stand-in provider of [`fake_provider_workspace`]
+    /// plus `extra_config`, and one single-task plan per `(plan_id, file,
+    /// depends_on_plan)` whose task passes its verify step.
+    #[cfg(unix)]
+    fn verified_plan_set(
+        plans: &[(&str, &str, &[&str])],
+        extra_config: &str,
+    ) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("tempdir");
+        fake_provider_workspace(dir.path(), 0.0, extra_config);
+        std::fs::write(dir.path().join("README.md"), "# plan set test\n").expect("readme");
+        for (plan_id, file, depends_on_plan) in plans {
+            write_single_task_plan(dir.path(), plan_id, file, depends_on_plan, Some("true"));
+        }
+        dir
+    }
+
+    /// Write plan `plan_id` with one task for the stand-in provider. The task
+    /// writes `file`, waits for the plans `depends_on_plan`, and has the
+    /// verify command `verify`. Without one it is a `scribe` task, since an
+    /// `implementer` task must declare a verify step.
+    #[cfg(unix)]
+    fn write_single_task_plan(
+        dir: &Path,
+        plan_id: &str,
+        file: &str,
+        depends_on_plan: &[&str],
+        verify: Option<&str>,
+    ) {
+        let depends_on_plan = depends_on_plan
+            .iter()
+            .map(|dependency| format!("{dependency:?}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let role = if verify.is_some() {
+            "implementer"
+        } else {
+            "scribe"
+        };
+        let verify = verify.map_or_else(String::new, |command| {
+            format!("verify = [{{ phase = \"structural\", command = {command:?} }}]")
+        });
+        let plan_dir = dir.join("plans").join(plan_id);
+        std::fs::create_dir_all(&plan_dir).expect("plan dir");
+        std::fs::write(
+            plan_dir.join("tasks.toml"),
+            format!(
+                r#"[meta]
+plan = "{plan_id}"
+max_parallel = 1
+skip_enrichment = true
+
+[[task]]
+id = "T1"
+title = "Single task"
+description = "Its verify step, if it has one, decides its outcome."
+role = "{role}"
+status = "ready"
+tier = "focused"
+model_hint = "graph-model"
+files = ["{file}"]
+depends_on_plan = [{depends_on_plan}]
+timeout_secs = 60
+max_retries = 0
+{verify}
+"#
+            ),
+        )
+        .expect("tasks.toml");
     }
 
     /// Run the workspace's plan set. Returns the exit code, the plan
@@ -2722,9 +2830,10 @@ depends_on_plan = [{depends_on_plan}]
         (exit_code, lifecycle, hub)
     }
 
+    #[cfg(unix)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn one_plan_at_a_time_keeps_the_execution_order() {
-        let dir = disabled_role_plan_set(
+        let dir = verified_plan_set(
             &[
                 ("a", "a.txt", &[]),
                 ("b", "b.txt", &[]),
@@ -2749,9 +2858,10 @@ depends_on_plan = [{depends_on_plan}]
         );
     }
 
+    #[cfg(unix)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn independent_plans_run_side_by_side() {
-        let dir = disabled_role_plan_set(&[("a", "a.txt", &[]), ("b", "b.txt", &[])], "");
+        let dir = verified_plan_set(&[("a", "a.txt", &[]), ("b", "b.txt", &[])], "");
 
         let (exit_code, lifecycle, hub) = run_plan_set(dir.path(), Some(2), None).await;
 
@@ -2999,9 +3109,10 @@ max_retries = 0
         }
     }
 
+    #[cfg(unix)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn conductor_max_parallel_plans_alone_sets_the_limit() {
-        let dir = disabled_role_plan_set(
+        let dir = verified_plan_set(
             &[("a", "a.txt", &[]), ("b", "b.txt", &[])],
             "\n[conductor]\nmax_parallel_plans = 2\n",
         );
@@ -3012,9 +3123,10 @@ max_retries = 0
         assert_eq!(lifecycle[..2], ["start a", "start b"], "{lifecycle:?}");
     }
 
+    #[cfg(unix)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn plans_sharing_a_file_never_run_side_by_side() {
-        let dir = disabled_role_plan_set(&[("a", "README.md", &[]), ("b", "README.md", &[])], "");
+        let dir = verified_plan_set(&[("a", "README.md", &[]), ("b", "README.md", &[])], "");
 
         let (exit_code, lifecycle, hub) = run_plan_set(dir.path(), Some(2), None).await;
 
@@ -3033,6 +3145,35 @@ max_retries = 0
                 .any(|entry| entry.event_type == "graph.plan_waiting"
                     && entry.message.contains("both write README.md")),
             "the wait is explained"
+        );
+    }
+
+    /// gap-29a84b: a plan whose only task has no verify step completes as
+    /// unverified, not succeeded. The run fails, the checkpoint says so, and
+    /// the plan that depends on it never starts.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn plan_with_unverified_task_does_not_succeed() {
+        let dir = verified_plan_set(&[("b", "b.txt", &["a"])], "");
+        write_single_task_plan(dir.path(), "a", "a.txt", &[], None);
+
+        let (exit_code, lifecycle, hub) = run_plan_set(dir.path(), Some(1), None).await;
+
+        assert_eq!(exit_code, EXIT_FAILURE);
+        assert_eq!(lifecycle, ["start a", "end a false", "end b false"]);
+        assert_eq!(
+            crate::graph_checkpoint::canonical_checkpoint_status(dir.path(), "a"),
+            Some(GraphCheckpointStatus::Unverified)
+        );
+        let provider_calls =
+            std::fs::read_to_string(dir.path().join("provider-calls")).expect("provider call log");
+        assert_eq!(provider_calls.lines().count(), 1, "only a's task ran");
+        assert!(
+            hub.current_snapshot()
+                .event_log
+                .iter()
+                .any(|entry| entry.event_type == "graph.plan_unverified"),
+            "the outcome is explained"
         );
     }
 
@@ -3069,22 +3210,56 @@ max_retries = 0
 
     #[test]
     fn checkpoint_status_is_honest_about_how_a_plan_ended() {
+        let passed = TaskVerdictCounts {
+            passed: 2,
+            ..TaskVerdictCounts::default()
+        };
+        let unverified = TaskVerdictCounts {
+            unverified: 1,
+            ..passed
+        };
+        let status = |ran, tasks, interrupted, cancelled| {
+            plan_checkpoint_status(plan_outcome(ran, tasks, interrupted, cancelled))
+        };
+
         assert_eq!(
-            plan_checkpoint_status(true, true, false),
+            status(true, passed, true, false),
             GraphCheckpointStatus::Succeeded
         );
         assert_eq!(
-            plan_checkpoint_status(false, true, true),
+            status(true, unverified, false, false),
+            GraphCheckpointStatus::Unverified
+        );
+        assert_eq!(
+            status(false, passed, true, true),
             GraphCheckpointStatus::Interrupted
         );
         assert_eq!(
-            plan_checkpoint_status(false, false, true),
+            status(false, passed, false, true),
             GraphCheckpointStatus::Cancelled
         );
         assert_eq!(
-            plan_checkpoint_status(false, false, false),
+            status(false, passed, false, false),
             GraphCheckpointStatus::Failed
         );
+    }
+
+    /// gap-29a84b: a plan whose graph ran to completion succeeds only when
+    /// every task passed its verify steps.
+    #[test]
+    fn plan_outcome_follows_task_verdicts() {
+        let counts = |passed, unverified, skipped, failed| TaskVerdictCounts {
+            passed,
+            unverified,
+            skipped,
+            failed,
+        };
+
+        assert_eq!(counts(3, 0, 0, 0).outcome(), PlanOutcome::Succeeded);
+        assert_eq!(counts(2, 1, 0, 0).outcome(), PlanOutcome::Unverified);
+        assert_eq!(counts(0, 1, 0, 0).outcome(), PlanOutcome::Unverified);
+        assert_eq!(counts(2, 1, 1, 0).outcome(), PlanOutcome::Failed);
+        assert_eq!(counts(2, 1, 0, 1).outcome(), PlanOutcome::Failed);
     }
 
     /// bug-7eb27e: run metrics count each task under its own verdict, not

@@ -310,6 +310,7 @@ fn workflow_sse(
     let mut interval = time::interval(Duration::from_millis(1250));
     interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
+    let shutdown = state.cancel.clone();
     let stream_state = WorkflowSseState {
         state,
         root,
@@ -378,8 +379,11 @@ fn workflow_sse(
         }
     });
 
-    Sse::new(stream::once(async move { Ok(initial_event) }).chain(live_stream))
-        .keep_alive(KeepAlive::default())
+    Sse::new(super::sse::until_shutdown(
+        stream::once(async move { Ok(initial_event) }).chain(live_stream),
+        shutdown,
+    ))
+    .keep_alive(KeepAlive::default())
 }
 
 struct WorkflowSseState {

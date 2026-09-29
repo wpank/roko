@@ -568,12 +568,13 @@ async fn workflow_sse_handler(
 ) -> impl axum::response::IntoResponse {
     let adapter: &Arc<SseAdapter> = &state.sse_adapter;
     let rx = adapter.subscribe();
-    let sse = workflow_sse_from_adapter(rx);
+    let sse = workflow_sse_from_adapter(rx, state.cancel.clone());
     (sse::sse_response_headers(), sse)
 }
 
 fn workflow_sse_from_adapter(
     rx: broadcast::Receiver<crate::adapters::SseEvent>,
+    shutdown: roko_runtime::cancel::CancelToken,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
     let stream = stream::unfold(rx, |mut rx| async move {
         loop {
@@ -592,7 +593,7 @@ fn workflow_sse_from_adapter(
         }
     });
 
-    Sse::new(stream).keep_alive(
+    Sse::new(sse::until_shutdown(stream, shutdown)).keep_alive(
         KeepAlive::new()
             .interval(std::time::Duration::from_secs(8))
             .text("keepalive"),

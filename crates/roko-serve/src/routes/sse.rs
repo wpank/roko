@@ -13,8 +13,10 @@ use axum::http::{HeaderMap, HeaderValue};
 use axum::response::IntoResponse;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::routing::get;
+use futures::Stream;
 use futures::stream::{self, StreamExt};
 use roko_core::dashboard_snapshot::DashboardSnapshot;
+use roko_runtime::cancel::CancelToken;
 use roko_runtime::event_bus::Envelope;
 use roko_runtime::state_hub::StateHubCursorSnapshot;
 use serde::{Deserialize, Serialize};
@@ -137,13 +139,30 @@ async fn sse_handler(
 
     // Use a shorter keep-alive interval than the default 15s to survive
     // aggressive proxy timeouts (Railway 30s, Nginx 60s).
-    let sse = Sse::new(stream::iter(replay).chain(live)).keep_alive(
+    let sse = Sse::new(until_shutdown(
+        stream::iter(replay).chain(live),
+        state.cancel.clone(),
+    ))
+    .keep_alive(
         KeepAlive::new()
             .interval(std::time::Duration::from_secs(8))
             .event(keepalive_event()),
     );
 
     (sse_response_headers(), sse)
+}
+
+/// Ends `events` once the server starts shutting down.
+///
+/// Graceful shutdown waits for every open response to finish, and an event
+/// stream never finishes by itself: one open `/api/events` client kept
+/// `roko serve` from exiting on Ctrl-C. Every SSE route wraps its stream in
+/// this.
+pub(crate) fn until_shutdown<S: Stream>(
+    events: S,
+    shutdown: CancelToken,
+) -> impl Stream<Item = S::Item> {
+    events.take_until(async move { shutdown.cancelled().await })
 }
 
 /// The keep-alive frame of `/api/events`: `event: keepalive` with `{}` as data.
@@ -269,6 +288,22 @@ mod tests {
             assert_eq!(&frame[..], b"event: keepalive\ndata: {}\n\n");
             assert_eq!(started.elapsed(), std::time::Duration::from_secs(8));
         }
+    }
+
+    /// Graceful shutdown waits for open responses, so the stream must end when
+    /// the server is cancelled: one client that never disconnects kept
+    /// `roko serve` from exiting.
+    #[tokio::test]
+    async fn stream_ends_when_the_server_shuts_down() {
+        let (_dir, state) = test_state();
+        let mut body = open_event_stream(Arc::clone(&state)).await;
+
+        state.cancel.cancel();
+
+        let end = tokio::time::timeout(std::time::Duration::from_secs(1), body.frame())
+            .await
+            .expect("the stream ends promptly");
+        assert!(end.is_none(), "no frame after shutdown: {end:?}");
     }
 
     #[test]

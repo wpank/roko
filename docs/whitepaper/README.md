@@ -72,8 +72,8 @@ here in a small commit of its own.
 - `figure`: a figure the section introduces.
 
 "Writer's source" uses the short names under "Sources". Most of those inputs are gitignored, so the published
-text never cites them: it cites what the last column says. A key in backticks there (`chen2024frugalgpt`) is not
-yet in `references.bib`; the section that first cites it adds it after checking it with refcheck.
+text never cites them: it cites what the last column says. Every `[@key]` there is in `references.bib`; a new key
+goes in only after refcheck confirms it.
 
 ### Abstract (`00-abstract.md`, gap-353d57)
 
@@ -81,7 +81,7 @@ yet in `references.bib`; the section that first cites it adds it after checking 
 |---|---|---|---|---|
 | AB1 | design | Roko runs spec'd agent work: a frontier model writes a plan of small tasks, each with its own executable check, and Roko is designed to run them in parallel on the cheapest model that passes, verify each task and the whole plan, and learn from verified outcomes. | PLAN §1 (thesis); tldr/01 "The idea" | §4 and §5; "is designed to" for anything not WIRED |
 | AB2 | status | What runs today: the Graph engine with checkpoints and resume, and honest per-task verdicts. What is designed only: the tier ladder, escalation, integration and audits. | tldr/00 points 1 and 3–6 | Tags from the appendix, at its commit |
-| AB3 | number | The portal build: 16 plans and 173 tasks (168 gate-verified) for $174.87 of recorded agent spend, excluding the supervising session. | B7 | Footnote as for N1 and N2 |
+| AB3 | number | The portal build: 16 plans and 173 tasks (168 gate-verified) for $174.87 of recorded agent spend; the supervising sessions cost an estimated 16–20× Roko's spend (N6). The review (gap-8d2c79) added the estimate, so that the abstract does not read as Roko alone. | B7; W12 | Footnote as for N1, N2 and N6 |
 | AB4 | number | The cheap-model half of the thesis is untested: all 210 portal attempts pinned `claude-sonnet-4-6`. | B7; tldr/04 | Footnote as for N3; an UNPROVEN tag |
 | AB5 | design | The evaluation tests "cheaper at equal quality": cost per verified task against Claude Code on Opus, on hidden-test tasks. | PLAN §1; §8 | §8; spec-567e52 |
 
@@ -90,11 +90,11 @@ yet in `references.bib`; the section that first cites it adds it after checking 
 | Id | Kind | Claim | Writer's source | Cite in the text as |
 |---|---|---|---|---|
 | IN1 | lit | Frontier models are capable but expensive; cheap models are unreliable on their own, and success falls as tasks get longer. | draft §1.1 "Capable or cheap"; C1 | [@kwa2025measuring]; [@sinha2025illusion] |
-| IN2 | lit | The bet: on decomposable, checkable work, most of the dependability comes from the harness (precise specs, executable checks, retries, escalation, integration gates, feedback). The literature supports about frontier quality at 2–6× lower cost there, mostly measured on single-function, QA and document tasks, and not on sequential or integrative work. | tldr/01 "The bet"; C1 TL;DR | [@kim2025towards], plus the studies behind the range (`narayan2025minions`, `chen2024frugalgpt`, `ong2025routellm`; add them after refcheck). The 2–6× range is C1's synthesis: cite the studies, not the range |
+| IN2 | lit | The bet: on decomposable, checkable work, most of the dependability comes from the harness (precise specs, executable checks, retries, escalation, integration gates, feedback). The literature supports about frontier quality at 2–6× lower cost there, mostly measured on single-function, QA and document tasks, and not on sequential or integrative work. | tldr/01 "The bet"; C1 TL;DR | [@kim2025towards], plus the studies behind the range: [@narayan2025minions]; [@chen2024frugalgpt]; [@ong2025routellm]. The 2–6× range is C1's synthesis: cite the studies, not the range |
 | IN3 | status | Built: the Graph engine, durable checkpoints and resume, and honest per-task verdicts since the 09-28 fix. | tldr/00 point 1; tldr/03 "Execution", "Verification and QA" | WIRED tags from the appendix; `crates/roko-graph/src/engine.rs`; N4 |
 | IN4 | status | Designed, not built: the tier ladder, escalation, integration on the Graph path, and audits. The text says "is designed to". | tldr/04 steps 4, 8 and 9; tldr/03 | Tags from the appendix; spec-98f76d (E5), spec-a0e40a (E6), spec-6ac537 (E17) |
 | IN5 | number | What Roko has built: the portal (N1, N2), on one pinned model (N3). | B7 | Footnotes as for N1–N3, the same figures as §7 |
-| IN6 | case | What the supervising session did: a frontier Claude Code session with about 20 subagents wrote and audited the plans, fixed about 25 engine defects, set up isolation, merged and checked the whole product. Its cost is outside Roko's record (N6). | tldr/01 "Where it stands"; B7; W12 | Frozen CASE-005 and CASE-007; N6, labelled an estimate |
+| IN6 | case | What the supervising sessions did: frontier Claude Code sessions and their subagents wrote and audited the plans, fixed engine defects, set up isolation, merged and checked the whole product. Their cost is outside Roko's record (N6), and the autonomy index shows who closed the loops (N7). No counts of subagents or engine defects: B7 gives "about 20" and "about 25" without a source, so no section quotes them. | tldr/01 "Where it stands"; B7; W12; ROLLUP | Frozen CASE-005 and CASE-007; N6, labelled an estimate; N7 |
 | IN7 | design | The contributions, and a map of §2–§10. | This README's outline | Section cross-references |
 
 ### §2 Design principles (`02-design-principles.md`, gap-370d3c)
@@ -109,7 +109,7 @@ yet in `references.bib`; the section that first cites it adds it after checking 
 | DP6 | lit | Merge, then verify, through a queue: in one study 16% of merges conflicted, and a further 7% merged cleanly but broke the build or tests. | tldr/04 rule 6; C1 | [@brun2011proactive] |
 | DP7 | lit | Put ambiguity back into authoring: models don't notice underspecification, and a check before execution recovers most of the loss. | tldr/04 rule 7; C2 | [@vijayvargiya2025ambigswe]; [@edwards2026askorassume] |
 | DP8 | lit | Count cost per verified task, including verification, retries, escalations and the planner: a cheap verifier's blind spots can cancel the savings. | tldr/04 rule 8; C1; C2 | [@rajput2026cheap] |
-| DP9 | lit | The cybernetic vocabulary: essential variables (verified pass rate, cost per verified task, false-green rate, latency), regulation, and audits of the regulators. *Agent Cybernetics* is the closest framing; no claim of firstness. | tldr/02 "What cybernetic means here"; draft §2.2 and §2.7 | `wang2026agent` and `ashby1960design` (both in the draft's `references.bib`; §2 adds them after refcheck) |
+| DP9 | lit | The cybernetic vocabulary: essential variables (verified pass rate, cost per verified task, false-green rate, latency), regulation, and audits of the regulators. *Agent Cybernetics* is the closest framing; no claim of firstness. | tldr/02 "What cybernetic means here"; draft §2.2 and §2.7 | [@wang2026agent]; [@ashby1960design] |
 | DP10 | scope | Say where each result was measured (single function, QA, documents or repository scale), so that no single-function result reads as repository-scale evidence. | C1 "Size of the effects"; tldr/01 "The bet" | A hedge beside each [@key] |
 
 ### §3 Architecture and control stack, with Figure 1 (`03-architecture.md`, gap-4161ea)
@@ -122,7 +122,7 @@ yet in `references.bib`; the section that first cites it adds it after checking 
 | AR4 | status | The default topology is one executor node per task. An 11-node per-task subgraph exists behind `--rich-topology`, and its enrichers pass through. | tldr/02 "Plan topology" | `crates/roko-graph/src/convert.rs`; `crates/roko-graph/src/topology.rs`; no tag, since the matrix has no row for it |
 | AR5 | design | The surfaces: the CLI, the TUI, an HTTP API with SSE on :6677, the portal and ACP for editors. Watching runs works; pause, retry and skip do not. | tldr/02; CLAUDE.md "Components"; tldr/03 "Safety, steering and surfaces" | `crates/roko-serve/`; `apps/portal/`; `crates/roko-acp/`; matrix rows SS4 (WIRED) and SS5 (BROKEN, bug-8208a6); ACP is untagged, since the matrix has no row for it |
 | AR6 | design | The control stack in six layers (feedforward, sensors, comparators, fast regulators, slow regulators, second-order audits), each with its target and what runs today. | tldr/02 control-stack table; draft §4.1; W9 PW06 | The matrix rows under each layer, by id and tag; the matrix has no layer-level tags |
-| AR7 | status | Four loops act on plan runs and are WIRED: the provider-health circuit breaker, the plan budget, retry budgets set from gate history, and playbook credit. Prompt experiments are PARTIAL and knowledge retrieval is BROKEN; no loop has a measured benefit, because the loop audit is MISSING. Reworded by gap-4161ea from the status matrix: at `d9e79e9d8` only the first two closed. | The status matrix (rows RC3, RC5, QA7, LM2, LM5, LM3, RG4); README "Rows that moved" | Matrix rows by id; commits `abc1f4b27`, `99adacd6d`, `33e107da1`; spec-6ac537; bug-86117a |
+| AR7 | status | Four loops act on plan runs and are WIRED: the provider-health circuit breaker, the plan budget, retry budgets set from gate history, and playbook credit. Prompt experiments are PARTIAL and knowledge retrieval is BROKEN; no loop has a measured benefit, because the loop audit is MISSING. Reworded by gap-4161ea from the status matrix: at `d9e79e9d8` only the first two closed. Shortened by the review (gap-8d2c79): §3 names the four WIRED loops and knowledge retrieval (BROKEN), and leaves the rest to §5.2. | The status matrix (rows RC3, RC5, QA7, LM2, LM5, LM3, RG4); README "Rows that moved" | Matrix rows by id; commits `abc1f4b27`, `99adacd6d`, `33e107da1`; spec-6ac537; bug-86117a |
 | AR8 | status | What Roko records under `.roko/`, with only the caveats that still hold: checkpoints (used for resume), episodes (only a failed verify writes a verdict), cost records (no cost source), router state (no router-chosen failure reaches its learned stage), and gate thresholds, which now set retry budgets. | tldr/02 "What Roko records" (refreshed at `9dc966af1`) | `crates/roko-cli/src/runtime_feedback/`; commits `33e107da1`, `d4be4e872`, `99adacd6d`; bug-8da8ba; spec-b7303f (E4) |
 | AR9 | scope | Two docs/v3 headline claims are not code: "a Graph of Graphs is just a Graph" and "every Cell is a learner". The paper says it does not repeat them, without a tag: the status matrix, the only source of tags, has no row for them. | tldr/02; tldr/05 §5; A1 | `docs/v3/00-INDEX.md`; gap-cdf3fc, which corrects the first claim only |
 | AR10 | figure | Figure 1: the architecture and the control stack. The section carries its caption and a fenced text diagram; gap-d1d92c draws the SVG. | tldr/02 flow diagram | `figures/fig1-architecture.svg` |
@@ -144,7 +144,7 @@ yet in `references.bib`; the section that first cites it adds it after checking 
 | GP11 | design | Step 11, learn: route, size and specify better next time, from verified outcomes. On the portal runs the router saw one pinned model, so it learned nothing about alternatives. | tldr/04 step 11; B5; B7 | The tags from the appendix (several loops were re-wired on 09-29); spec-6ac537 (E17) |
 | GP12 | status | A summary table of the 11 steps with their tags, and the plain statement that no real task has yet run on a cheap executor with escalation. | tldr/04 "Where it stands"; B7 | An UNPROVEN tag; N3 |
 | GP13 | figure | Figure 2: the loop, with each step marked by its tag. The section carries its caption and a fenced text diagram; gap-d1d92c draws the SVG. | tldr/04 loop table | `figures/fig2-golden-path.svg` |
-| GP14 | number | Plan statistics such as "about 106 of 135 plans are sequential" are recomputed from tracked `plans/` or a frozen snapshot, not copied from the tldr. | tldr/04 step 5; B2 | A footnote naming the commit and the command |
+| GP14 | number | Plan statistics, recomputed from tracked `plans/` rather than copied from the tldr ("about 106 of 135"): at `a17d4dadd`, 102 of the 132 tracked plans set `max_parallel = 1`, and 25 of those have tasks that could run in parallel. | tldr/04 step 5; B2; `git grep` at `a17d4dadd` | A footnote naming the commit and the command |
 
 ### §5 Cybernetic mechanisms (`05-cybernetic-mechanisms.md`, gap-e8cb4d)
 
@@ -158,7 +158,7 @@ yet in `references.bib`; the section that first cites it adds it after checking 
 | CM6 | design | M3, a calibrated self-model: it forecasts the pass probability per task and model, and runs in shadow until it is calibrated. | tldr/05 proposal 18; draft §4.3; S04 | A MISSING tag; spec-6ac537 (E17) |
 | CM7 | design | M4, random deep audits: hidden tests written by another model family, an audit lottery, and a Hájek estimate of the false-green rate. | tldr/05 proposal 17; draft §4.4; S05 | A MISSING tag; spec-6ac537 (E17) |
 | CM8 | design | Guarded commit: every self-modification (router, memory, controller) is accepted only after held-out and anchor checks, with rollback. | tldr/05 proposal 21; tldr/03 "Regulation and audits"; S06 | A MISSING tag; spec-6ac537 (E17) |
-| CM9 | lit | The claim is measured, guarded improvement: in the literature, gains fail to compound, depend on task order and weaken under distribution shift. | tldr/01; tldr/05 §5; C4 | `wang2026compound`, `ye2026fragility`, `lin2026evopath`, `wang2026rethinking` (add them after refcheck) |
+| CM9 | lit | The claim is measured, guarded improvement: in the literature, gains fail to compound, depend on task order and weaken under distribution shift. | tldr/01; tldr/05 §5; C4 | [@wang2026compound]; [@ye2026fragility]; [@lin2026evopath]; [@wang2026rethinking] |
 | CM10 | status | The analogy mechanisms appear in one sentence as proposals to park, not as features: affect, offline batch consolidation, HDC similarity and the conductor. | tldr/05 §3; B6; C4 | Tags from the appendix |
 | CM11 | status | M1 does not revive the conductor's old tick, which caused restart storms. | tldr/05 proposal 22; A5 | The conductor's tag from the appendix |
 
@@ -180,11 +180,11 @@ yet in `references.bib`; the section that first cites it adds it after checking 
 | FE1 | number | The portal build: plans, tasks, tests, attempts, first-try passes, spend and concurrency, all from one frozen source cited by its generation time and sha256. | B7; ROLLUP | A file in `evidence/`; N1, N2, N5, N10 |
 | FE2 | number | One model: all 210 portal attempts pinned `claude-sonnet-4-6`. | B7 | N3 |
 | FE3 | case | CASE-001: a failed task logged as passed, then honest verdicts (N4). | CASES; B7 | The frozen case; the fix items bug-82d47b, bug-521f08, bug-06e2d1 |
-| FE4 | case | CASE-005: parallel lanes, worktrees and merges made by hand. | CASES; B7 | The frozen case; resolve N12 first |
+| FE4 | case | CASE-005: parallel lanes, worktrees and merges made by hand. | CASES; B7 | The frozen case; N12 |
 | FE5 | case | CASE-006: gates green, product unusable: the browser-pass loop (N11). | CASES; B7 | The frozen case |
 | FE6 | case | CASE-007: plan defects that only frontier audits caught. | CASES; B7 | The frozen case |
 | FE7 | number | The operator loop and its cost: about $2.7–3.4k API-equivalent for 09-25 to 09-29, about 16–20× Roko's recorded $172.80 (N6). Use E13's harvested numbers instead if gap-263de5 and gap-ccb87e have landed. | W12; spec-f2463d (E13) | The frozen W12 table, labelled an estimate |
-| FE8 | number | The rollup over every captured run: 42 runs, $192.92 recorded, $1.22 per verified task. Its autonomy index is overstated until bug-7b37c4 lands (N7). | ROLLUP | The frozen rollup and its sha256 |
+| FE8 | number | The rollup over every captured run (2026-09-29T14:37:51, corrected by bug-7b37c4): 42 runs, 124 notes, $192.92 recorded, $1.22 per verified task, autonomy index 2/41 (N7). | ROLLUP | The frozen rollup and its sha256 |
 | FE9 | scope | Everything in the section is observational: no causal claim, and no comparison with the benchmark. | The field README; gap-29a64e | The word "observational" in the text |
 
 ### §8 Evaluation plan (`08-evaluation-plan.md`, gap-2aad7d)
@@ -220,10 +220,10 @@ yet in `references.bib`; the section that first cites it adds it after checking 
 | Id | Kind | Claim | Writer's source | Cite in the text as |
 |---|---|---|---|---|
 | RW1 | lit | Harness engineering and self-improving harnesses: the 2026 papers converge on guarded self-modification. | draft §3.1 (`03a-related-work.md`); C4 | Keys from the draft's `references.bib` |
-| RW2 | lit | Agent frameworks and coding agents, including products that pair a frontier planner with a cheaper executor: `opusplan`, Devin Fusion, aider's architect mode and Kiro's spec waves. | draft §3.2; C3 | `aider2024architect`; `@online` vendor pages with `urldate` |
-| RW3 | lit | Routing and cascades cut cost at parity on single-turn tasks; the evidence for agentic coding is thinner and mixed. | draft §3.4 (`03b-related-work.md`); C1 | `chen2024frugalgpt`; `ong2025routellm` |
+| RW2 | lit | Agent frameworks and coding agents, including products that pair a frontier planner with a cheaper executor: `opusplan`, Devin Fusion, aider's architect mode and Kiro's spec waves. | draft §3.2; C3 | [@aider2024architect]; `@online` vendor pages with `urldate` |
+| RW3 | lit | Routing and cascades cut cost at parity on single-turn tasks; the evidence for agentic coding is thinner and mixed. | draft §3.4 (`03b-related-work.md`); C1 | [@chen2024frugalgpt]; [@ong2025routellm] |
 | RW4 | lit | Verification, specification gaming and audits: visible checks get gamed, and cheap verifiers have blind spots. | draft §3.5; C2 | [@zhao2026specbench]; [@rajput2026cheap]; [@konstantinou2024do] |
-| RW5 | lit | Cybernetics for agents: *Agent Cybernetics* is the closest framing, and the paper claims no firstness. | draft §2.7 and §3.1; C4 | `wang2026agent` (§2 adds it) |
+| RW5 | lit | Cybernetics for agents: *Agent Cybernetics* is the closest framing, and the paper claims no firstness. | draft §2.7 and §3.1; C4 | [@wang2026agent] |
 | RW6 | scope | The survey is dated ("literature as of 2026-09-29") and condenses the draft, keeping its citations and hedges. | gap-ec516e | — |
 
 ## Canonical numbers
@@ -236,15 +236,15 @@ source once it exists in `evidence/`. Where two sources disagree, the row says s
 | N1 | Portal build: 16 plans, 173 tasks (168 gate-verified), about 14.4k LOC, 645 tests | B7 | Portal plans only; B7's attempts run to 2026-09-29 07:41Z | §0, §1, §7 |
 | N2 | Portal agent spend: $174.87 as recorded, excluding the supervising session; median $0.83 and p90 $1.83 per task; 25.6 agent-hours | B7 | As N1. Roko's own records, which have no cost source (B3) | §0, §1, §7 |
 | N3 | All 210 portal attempts pinned `claude-sonnet-4-6` | B7 | As N1 | §0, §1, §4, §7, §9 |
-| N4 | False greens: before the 09-28 fix, 101 of 373 recorded successes (27%) had a failing gate; after it, 0 of 151 | B7; CASE-001 | Before: 430 attempts in 31 plans, 09-05 to the 09-28 fix. After: 168 attempts to 09-29 07:41Z. The companion's 102 of 350 (29.1%) uses a different window: name the window with either figure | §1, §4, §6, §7 |
+| N4 | False greens: before the 09-28 fix, 101 of 373 recorded successes (27%) had a failing gate; after it, 0 of 151 | B7; CASE-001 | Before: 430 attempts in 31 plans, 09-05 to the 09-28 fix. After: 168 attempts to 09-29 07:41Z. The companion's 102 of 350 (29.1%) comes from the same main-tree data (to 09-26 11:29Z), counted in a different unit and denominator; on one basis they agree, 102 against 101 of 373 (gap-cdd5f4). Name the unit with either figure | §1, §4, §6, §7 |
 | N5 | First-try passes after the fix: 138 of 148 worktree tasks | B7 | After the 09-28 fix, to 09-29 07:41Z | §7 |
 | N6 | Supervising sessions, 09-25 to 09-29: about $2.7–3.4k API-equivalent, about 16–20× Roko's recorded $172.80 over the same days | W12 | An estimate at S08's `prices-2026-09-28`, including the research programme. Always label it an estimate | §1, §7 |
-| N7 | Field rollup: 42 runs, 158 tasks, all verified, $192.92 as recorded, $1.22 per verified task; autonomy index 3/41, overstated until bug-7b37c4 lands (about 2/40 after it) | ROLLUP (2026-09-29T11:14:31, 121 notes) | Every captured run, 2026-08-22 to 09-29, portal and other. The worker brief quotes 118 notes and 3/40 from an earlier rollup: freeze one rollup and quote only it | §7 |
+| N7 | Field rollup: 42 runs, 158 tasks, all verified, $192.92 as recorded, $1.22 per verified task; autonomy index 2/41 (5%), 39 interventions | ROLLUP (2026-09-29T14:37:51, 124 notes, corrected by bug-7b37c4), frozen as `evidence/2026-09-29-field-rollup.md` | Every captured run, 2026-08-22 to 09-29, portal and other. Earlier rollups (11:14:31 with 3/41; 3/40 before that) counted 08f-T05, which had interventions: quote only the frozen one | §1, §7 |
 | N8 | Learning loops: Runner-v2 had 16; none was fully wired on Graph at `d9e79e9d8`; several were re-wired on 09-29 | B5; merges `ce3bdcbb8`, `33e107da1` | Take current tags from the appendix | §5, §9 |
 | N9 | Cheap model outside the portal: gpt-oss-120b on Cerebras, 142 attempts, mostly demo, test and bench tasks; verified pass rates bench 98% (n=49), test 87% (n=23), demo 57% (n=60), self-development 50% (n=10); about $0.09 and 12 s per episode against Sonnet's $0.41 and 115 s | B7; B3 | Different tasks, so not a controlled comparison | §4, §9 |
 | N10 | Concurrency: 1.2–2.2 concurrent tasks within a plan (caps 2–4); across plans, four hand-made worktrees averaged 1.59 agents (peak 5) | B7 | Portal lanes; the cross-plan figure covers 09-28 11:42Z to 09-29 07:41Z | §4, §7 |
 | N11 | Product defects found after every gate was green: about 20, then 12, 5 and 4 in browser passes, then 3 more in a smoke test | B7; CASE-006 | Portal programme | §7 |
-| N12 | Hand merges: B7 counts three, each with semantic breaks; tldr/04 (from B2) counts five on 09-28 and 09-29 | B7; B2; CASE-005 | Resolve against the frozen CASE-005 before quoting either | §4, §7 |
+| N12 | Hand merges: five on 09-28 and 09-29 (`3d0ee4d02`, `f7c542b5a`, `98e0af4d6`, `4ca38b5c8`, `188c43c8d`), three of them with semantic breaks | B7 "Corrections"; CASE-005 | Resolved against the frozen CASE-005: B7's TL;DR still says three merges, and its Corrections fix that | §7 |
 | N13 | Proposed parking: about 94k LOC, about 9% of about 1.04M | tldr/05 §3 (A7, B6) | An estimate at `d9e79e9d8`: recompute at a commit, or label it an estimate | §9 |
 
 ## Conventions
@@ -326,7 +326,7 @@ TOML table names such as `[[task.verify]]` inside code spans are not markers.
 
 - Every paragraph, list item or table with a `$` amount, a percentage, an `N×` ratio, an "N of M" count or an
   `N/M` fraction has a footnote in the same block. Its definition names the source: a commit, a work item id, a
-  `[@key]`, or a rollup or snapshot with its id (e.g. "rollup 2026-09-29T11:14:31") together with the frozen file
+  `[@key]`, or a rollup or snapshot with its id (e.g. "rollup 2026-09-29T14:37:51") together with the frozen file
   in `evidence/` that holds it. An inline `[@key]` also counts. The footnote also gives the window or scope.
 - Footnote labels start with the section number, because `build.sh` joins the files: `[^7-portal]`.
 - For example:
@@ -431,7 +431,7 @@ checkout; the published text never cites them.
 | draft §N | `tmp/cybernetic-harness/paper/sections/` | The research draft's sections; outline in `paper/OUTLINE.md`, conventions in `paper/00-README.md` |
 | S01–S11 | `tmp/cybernetic-harness/specs/` | Programme specs; cite the tracked epics that carry them |
 | 01-THESIS | `tmp/cybernetic-harness/01-THESIS.md` | Section 6: safe and avoided claims |
-| ROLLUP | `tmp/cybernetic-harness/evidence/field/ROLLUP.md` | Field rollup (with `rollup.json`), generated 2026-09-29T11:14:31 |
+| ROLLUP | `tmp/cybernetic-harness/evidence/field/ROLLUP.md` | Field rollup (with `rollup.json`), generated 2026-09-29T14:37:51 after bug-7b37c4; frozen in `evidence/` |
 | CASES | `tmp/cybernetic-harness/evidence/field/CASES.md` | Field cases CASE-001 to CASE-008 |
 | Epics and items | `work/items/<id>-*.md` | Tracked, so citable by id |
 

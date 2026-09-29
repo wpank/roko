@@ -15,7 +15,7 @@ discovered_from = "tmp/cybernetic-harness/tldr/05-GAPS-AND-PROPOSALS.md (P0 #3);
 anchors = ["crates/roko-agent/src/claude_cli_agent.rs::build_settings_json", "crates/roko-gate/src/shell.rs::ShellGate", "crates/roko-agent/src/safety/path.rs::canonicalize_with_policy", "crates/roko-cli/tests/secrets_and_git_guard_canary.rs"]
 doc = "tmp/cybernetic-harness/workstreams/PLAN.md"
 lane = "rust-cold"
-links = { depends_on = ["bug-7d7200", "gap-8be530", "gap-5f4852", "bug-7de5df", "bug-a66941", "gap-0e2c40", "gap-8f8544", "bug-f4e133", "bug-66f5a1", "bug-63327d", "find-570af2", "gap-b7a2d5", "bug-6930e6", "gap-a3fc5b", "gap-585bd2"], blocks = [], related = ["spec-ae5f94"], supersedes = [], duplicate_of = "" }
+links = { depends_on = ["bug-7d7200", "gap-8be530", "gap-5f4852", "bug-7de5df", "bug-a66941", "gap-0e2c40", "gap-8f8544", "bug-f4e133", "bug-66f5a1", "bug-63327d", "find-570af2", "gap-b7a2d5", "bug-6930e6", "gap-a3fc5b", "gap-585bd2", "bug-3f3990"], blocks = [], related = ["spec-ae5f94"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "grep -rqw 'fn secrets_and_git_guard_canary' crates/roko-cli/tests/ && cargo test -p roko-cli --test secrets_and_git_guard_canary"
@@ -89,6 +89,7 @@ This is the implementation plan.
 - [ ] bug-6930e6: find_mcp_config hands Claude runs an ancestor directory's or $HOME's .mcp.json
 - [ ] gap-a3fc5b: Claude Code isolation doesn't cover shell snapshots, and a managed-mcp.json makes Claude refuse --strict-mcp-config
 - [ ] gap-585bd2: Every implementer is offered the 17 chain tools, transfer and swap included, whatever the task domain
+- [ ] bug-3f3990: The Linux firejail plugin sandbox ignores sandbox.allowed_paths and filesystem_write, which macOS Seatbelt enforces
 - [ ] The epic's `[[verify]]` command (test C2) passes on the merged branch.
 
 ## Notes

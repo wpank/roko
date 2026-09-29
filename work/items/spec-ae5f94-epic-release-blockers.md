@@ -15,7 +15,7 @@ discovered_from = "tmp/cybernetic-harness/workstreams/PLAN.md (ยง2 goal order; ย
 anchors = ["crates/roko-gate/src/shell.rs::ShellGate", "crates/roko-serve/src/routes/auth.rs::AuthRegistry", "README.md", "Cargo.toml", ".github/workflows/ci.yml"]
 doc = "tmp/cybernetic-harness/workstreams/PLAN.md"
 lane = "rust-cold"
-links = { depends_on = ["bug-7d7200", "bug-da5b41", "bug-09690f", "find-8cc7ac", "bug-911361", "gap-452185", "bug-e1327f", "bug-131421", "bug-8465a2", "bug-1c93b4", "bug-5c25e1", "bug-12153c", "bug-39d54c", "bug-8d7d18", "bug-367f33"], blocks = [], related = ["spec-ba7bea", "spec-9a3131", "bug-7eef96"], supersedes = [], duplicate_of = "" }
+links = { depends_on = ["bug-7d7200", "bug-da5b41", "bug-09690f", "find-8cc7ac", "bug-911361", "gap-452185", "bug-e1327f", "bug-131421", "bug-8465a2", "bug-1c93b4", "bug-5c25e1", "bug-12153c", "bug-39d54c", "bug-8d7d18", "bug-367f33", "bug-647249", "bug-4e7d40"], blocks = [], related = ["spec-ba7bea", "spec-9a3131", "bug-7eef96"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "grep -q 'env_clear()' crates/roko-gate/src/shell.rs && grep -rqw 'fn out_of_band_api_key_survives_server_write' crates/roko-serve/ && ! grep -q '124/124' README.md && grep -q '^repository = \"https://github.com/wpank/roko\"' Cargo.toml && test \"$(git grep -l /Users/will -- . ':!work/' | wc -l)\" -eq 0"
@@ -89,6 +89,8 @@ This is the implementation plan.
 - [x] bug-39d54c: roko serve rewrites agent-tokens.json and relay-tokens.json whole from memory, losing other processes' tokens and revocations
 - [x] bug-8d7d18: Several roko.toml writers skip the check-before-write: config preset, tune and the TUI config and effects saves
 - [x] bug-367f33: roko --config <file> fills missing [budget] keys with the CLI's legacy defaults ($10 per plan, $1 per task) instead of core [budget]'s
+- [ ] bug-647249: About 100 more roko.toml keys are missing from the loader's schema tree, so loading strips them
+- [ ] bug-4e7d40: roko config preset --global edits ~/.roko/roko.toml instead of ~/.roko/config.toml, and fails unless that file exists
 - [ ] Both of the epic's `[[verify]]` commands pass.
 
 ## Notes

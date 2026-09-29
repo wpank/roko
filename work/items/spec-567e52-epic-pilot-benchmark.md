@@ -15,7 +15,7 @@ discovered_from = "tmp/cybernetic-harness/workstreams/assessment/W10-benchmarks-
 anchors = ["benchmarks/viabilitybench/driver/vb.py", "benchmarks/viabilitybench/analysis/report.py", "benchmarks/viabilitybench/reports/pilot/REPORT.md"]
 doc = "tmp/cybernetic-harness/workstreams/PLAN.md"
 lane = "bench"
-links = { depends_on = ["dec-b78874", "gap-0580f7", "gap-2790c5", "gap-4723ff", "gap-9e7079", "gap-7ee7c2", "gap-28ebea", "gap-b24517", "gap-33d54b", "gap-e003ec", "gap-c4f364", "gap-b7ab99", "gap-a8a160", "gap-c33709", "gap-327242", "gap-d9e9fe", "gap-89f393", "gap-1cd676", "q-ab27d3", "gap-419298", "dec-39c781", "bug-993e7e", "gap-204848", "gap-455aef", "gap-db9a26", "gap-8c3752", "gap-04e8e2", "bug-3c1c4a", "bug-2930a8", "bug-979a06", "gap-308373", "gap-6e1381", "gap-154f93", "bug-f62293", "gap-f253cf", "gap-e90ebd", "dec-1089ec"], blocks = [], related = ["bug-7d7200", "bug-35379d", "gap-644040", "bug-28becc", "bug-3a037b", "bug-a22228"], supersedes = [], duplicate_of = "" }
+links = { depends_on = ["dec-b78874", "gap-0580f7", "gap-2790c5", "gap-4723ff", "gap-9e7079", "gap-7ee7c2", "gap-28ebea", "gap-b24517", "gap-33d54b", "gap-e003ec", "gap-c4f364", "gap-b7ab99", "gap-a8a160", "gap-c33709", "gap-327242", "gap-d9e9fe", "gap-89f393", "gap-1cd676", "q-ab27d3", "gap-419298", "dec-39c781", "bug-993e7e", "gap-204848", "gap-455aef", "gap-db9a26", "gap-8c3752", "gap-04e8e2", "bug-3c1c4a", "bug-2930a8", "bug-979a06", "gap-308373", "gap-6e1381", "gap-154f93", "bug-f62293", "gap-f253cf", "gap-e90ebd", "dec-1089ec", "bug-b70d40"], blocks = [], related = ["bug-7d7200", "bug-35379d", "gap-644040", "bug-28becc", "bug-3a037b", "bug-a22228"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "test -f benchmarks/viabilitybench/reports/pilot/REPORT.md && benchmarks/viabilitybench/.venv/bin/python benchmarks/viabilitybench/analysis/report.py --check benchmarks/viabilitybench/reports/pilot"
@@ -135,6 +135,7 @@ providers. This removes the checklist's circular `budget` gate (W10 rec 2).
 - [ ] gap-f253cf: fd_claude keeps WebSearch and WebFetch, so once the repo is public an agent can fetch the hidden suites
 - [ ] gap-e90ebd: Wiring the metering proxy into vb run must configure each task and keep network admission for a loopback proxy URL
 - [ ] dec-1089ec: Raise ViabilityBench budget line BL0's cap from $10 to $14 for Pilot B's seeds 2–3
+- [ ] bug-b70d40: The ViabilityBench provider client ignores a top-level cached_tokens and prices that input at the full rate
 - [ ] The epic's `[[verify]]` command passes: the pilot page is committed, and `report.py --check` accepts its
       bundle.
 

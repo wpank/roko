@@ -2,14 +2,16 @@
 id = "gap-02a66e"
 kind = "gap"
 title = "Research paper: D.12 and §5.4 pick up S09 v1.3's visible-test condition for the plan-level slice"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p2"
 goal = "whitepaper"
 size = "S"
 subsystem = ["paper"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-29
+last_verified_rev = "db453298c"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (20:30, wk-bench-slice's report on gap-455aef)"
 anchors = ["tmp/cybernetic-harness/paper/sections/D-metrics-statistics.md", "tmp/cybernetic-harness/paper/sections/05-evaluation-protocol.md"]
@@ -19,6 +21,11 @@ links = { depends_on = [], blocks = [], related = ["gap-455aef", "gap-204848"], 
 
 [[verify]]
 command = "! grep -q 'no visible-check condition' tmp/cybernetic-harness/paper/sections/D-metrics-statistics.md && ! grep -q 'no visible-check condition' tmp/cybernetic-harness/paper/sections/05-evaluation-protocol.md && python3 tools/paperlint.py --budget 1.2 --check-identifiers tmp/cybernetic-harness/paper/sections/D-metrics-statistics.md tmp/cybernetic-harness/paper/sections/05-evaluation-protocol.md"
+
+[closed]
+at = 2026-09-29
+by = "coordinator (session 7622b882)"
+evidence = "Paper D.12 and §5.4 pick up S09 v1.3 (tmp, wk-rp-appCD): VF = 1[done]·1[vis]·1[wf]·(1-G), with the base's visible tests restored from pristine and passing on a clean re-run of the final commit; the old 'no visible-check condition' sentence replaced with v1.3's reason; a canary hit makes the run leak_suspected (excluded and counted); census label vf (gap-204848); §5.3 and §5.4 aligned; source list, header and CD.25 cite S09 §4.9 v1.2-v1.3. Verify passes; paperlint clean (§5 1.16x)."
 +++
 
 ## Problem

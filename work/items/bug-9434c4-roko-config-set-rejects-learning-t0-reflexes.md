@@ -57,3 +57,4 @@ Each new config field needs its own arm in this list, and new fields keep missin
 ## Notes
 
 - Depends on bug-94151f and bug-b16d55, which add the keys. They are not on BASE yet.
+- **2026-09-29 (wk-filer4):** fixed in substance by 3bf3af074: `learning.t0_reflexes` and the four `learning.dreams` fields are non-Option, so they serialize into the schema tree, and `config set` accepts every schema key since bug-1c93b4 (b351d2be5). The verify names `config_set_accepts_learning_opt_in_keys`, which doesn't exist, so closing needs that test or a re-pointed verify.

@@ -29,6 +29,7 @@ use roko_gate::GatePayload;
 use roko_gate::ShellGate;
 use roko_gate::TurnSnapshot;
 use roko_gate::eval_generator::EvalGenerator;
+use roko_gate::rung_for_gate_name;
 use roko_graph::cell::CellContext;
 use roko_graph::cells::task_executor::TaskGateVerdict;
 use roko_graph::cells::{
@@ -2631,7 +2632,7 @@ impl GraphTaskDispatcher {
                         &spec.plan_id,
                         &task.id,
                         "graph-verify",
-                        0,
+                        failed_step_rung(&step_outcomes),
                         &classification,
                     );
                     if let Ok(line) = serde_json::to_string(&record) {
@@ -4163,6 +4164,24 @@ fn gate_how_ended(reason: &str) -> String {
     } else {
         reason.to_string()
     }
+}
+
+/// Gate rung of the first failed step in `(phase, passed)` verify outcomes:
+/// its canonical rung (0 compile, 1 clippy, 2 test), else the custom shell
+/// gate's rung, since every Graph verify step is a shell command.
+fn failed_step_rung(step_outcomes: &[(String, bool)]) -> u32 {
+    step_outcomes
+        .iter()
+        .find(|(_, passed)| !passed)
+        .and_then(|(phase, _)| rung_for_gate_name(phase))
+        .map_or_else(
+            || {
+                roko_gate::GateRegistry::new()
+                    .rung_for_name("custom")
+                    .map_or(0, u32::from)
+            },
+            |rung| rung.as_index(),
+        )
 }
 
 /// Retry-facing summary of a failed verify run, including skipped steps.
@@ -5735,6 +5754,26 @@ printf '%s\n' '{"type":"result","session_id":"s","model":"claude-sonnet-4-6","to
             persisted["tasks"][task.id.as_str()]["next_attempt"],
             3,
             "the verify failure was attempt 2: {persisted}"
+        );
+    }
+
+    #[test]
+    fn a_failure_record_names_the_failed_steps_rung() {
+        let outcomes = |steps: &[(&str, bool)]| {
+            steps
+                .iter()
+                .map(|(phase, passed)| ((*phase).to_string(), *passed))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            failed_step_rung(&outcomes(&[("compile", true), ("test", false)])),
+            2
+        );
+        assert_eq!(failed_step_rung(&outcomes(&[("clippy", false)])), 1);
+        assert_eq!(
+            failed_step_rung(&outcomes(&[("structural", false)])),
+            5,
+            "shell steps outside the canonical rungs use the custom gate's rung"
         );
     }
 

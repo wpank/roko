@@ -2,164 +2,174 @@
 
 Roko is a Rust toolkit for building agents that build themselves.
 
-Point it at a codebase, describe what you want, and roko handles the rest: it composes prompts, dispatches LLM agents, verifies output with compilation and test gates, persists results as content-addressed signals, and learns from outcomes to get better over time. The core loop is observe, plan, execute, verify, learn, repeat.
+Describe the work and roko turns it into a plan: a graph of small tasks with explicit dependencies.
+Agents carry out the tasks, running independent ones in parallel. Every result has to pass gates
+(compile, lint and test checks plus the task's own verify commands) before it is accepted. Each run
+records signals, episodes and costs, the inputs to roko's learning loops for model routing, prompts
+and gate thresholds. roko's own plans live in [`plans/`](plans/) and run through the same engine.
 
-35 workspace members. ~800K lines of Rust. 9,900+ tests.
+36 workspace members, ~1M lines of Rust, 10,300+ tests.
 
-Current programme rollup (2026-08-17): all 48 epics are accepted in the canonical
-roll-up, with no partial or greenfield epics and 0 remaining epic-manifest tasks. See
-[`.roko/GAPS.md`](.roko/GAPS.md) for the human-readable source of truth and
-[`tmp/status-quo/MASTER-EXECUTION-CHECKLIST.md`](tmp/status-quo/MASTER-EXECUTION-CHECKLIST.md)
-for task-level evidence. The raw E01-E48 metadata count is 393/447; it is not a
-completion score because older accepted manifests remain unreconciled.
+## Status
 
-The latest residual pass completed R01-R04: one supervised HTTP JSON connector; a bounded
-canonical-envelope relay with supervised replay and restart-durable exact-room subscription
-execution; an authorized, restart-safe local arena lifecycle with external scoring evidence;
-and an owner-scoped meta-agent lifecycle with non-widening authority, bounded lineage, exact
-five-head safety evidence, and single-use arena acceptance. The preceding closure pass
-completed E29's portable contracts, E38's marketplace contracts/stubs, E39's local registry
-state machines and critical-path routes/indexer, E40's local arena model, E41's local DeFi
-primitives, and P28 inline image input. These closures do not claim additional connector
-transports, startup discovery, MCP/A2A/x402/finality execution, a durable marketplace,
-deployed registry contracts, the arena eval/flywheel/on-chain system, DeFi risk/venue
-execution, or autonomous Loop 4/ADAS/HGM generation. Those boundaries remain explicit in
-the gaps document.
+roko is under active development, and not every subsystem described below is wired into every run
+path. Status and open work are tracked in the work graph under [`work/`](work/README.md), not in
+this file:
 
-The machine-derived executable queue is **124/124 tasks complete (100%)** across 30
-plans; all 30 executable plans are complete. `architecture-production-residuals` is 4/4
-after the R01-R04 closure above. P34 is 4/4: at its historical 2026-08-16 checkpoint,
-formatting, workspace check, strict default-target/default-feature clippy, the default
-workspace test/doctest run, optimized release build, and release CLI smoke/plan-validation
-gates passed. Subsequent dirty-tree changes require fresh scoped and final verification. The master checklist's
-broader raw census is 211 done / 11 partial / 20 unchecked markers; those markers include
-repeated controls, docs/dogfood proof, and product work rather than only executable plans.
+- [`work/NOW.md`](work/NOW.md): what to work on next, goal by goal.
+- [`work/STATUS.md`](work/STATUS.md): every open item, grouped by subsystem.
 
-Documentation integrity is now bounded and enforced for the maintained operator corpus:
-the exact 109/746/637 status, source-registry, and manifest contracts are checked, local
-paths/anchors pass, and `plans/INDEX.md` has a deterministic non-mutating CI drift check. The
-DOC reconciliation queue is 3/71 done. Direct TUI/show/API/workspace Runner projections share
-the canonical verified snapshot loader; StateHub overlay/SSE cursor atomicity and a single
-immutable resume generation remain open, so broad cross-surface projection closure is partial.
-
-The preceding closure pass completed E24 advanced memory, E26's live inference gateway,
-E27 continuous feeds and recipes, and E28 persisted agent-group coordination. The pass
-before that completed E25 advanced learning loops, E36 paid-feed payments,
-E42 configuration evolution, and E44 cross-cut functors with a live gate-failure cascade.
-Earlier closure passes completed E31 watcher-to-raw-EVM finality/reorg ingress;
-completed E32 through signed semantic-version dependency graphs, all 23 current WASM
-hooks, and authenticated native Gemini CLI MCP dispatch; completed E33 with 39/39
-production variants, including the final six through a durable registered-agent lifecycle
-ingress; completed E23 with EFE/goal ownership plus live energy- and phase-aware dispatch;
-completed strict E34 with monotonic trust-origin IFC, exact capability intersection,
-persistent quarantine, and mandatory audited production hooks; completed E37's typed surface
-contracts and five dedicated projection routes; added automatic provider final-output
-screening plus host-visible tool-result screening, canonical-workspace durable quarantine,
-provider isolation, tool cooldown/isolation, and incident linking; and made Hot Graphs restart-durable
-with fingerprinted Activity, tick-state, and budget checkpoints. Graph plan execution
-also enforces and reports actual per-plan provider cost, while daemon Dreams own adaptive
-idle, cron, and episode-count scheduling. Native Agent-to-E33 telemetry publication,
-provider-internal security visibility, surface rendering, Component hostcalls, Runner-v2
-Graph parity, additional connector/protocol integrations, durable market services, deployed
-chain adapters, arena eval/flywheel/on-chain execution, DeFi risk/venue integration, and
-autonomous structural adaptation stay as separately identified product/roadmap residuals in
-the gaps document.
+The component table in [`CLAUDE.md`](CLAUDE.md) says where each subsystem lives.
 
 ## Quick start
 
+You need Rust 1.91 or newer, `git`, and one LLM provider: the `claude` CLI on your `PATH`, or an
+API key for a supported provider.
+
+### 1. Install
+
+From a clone of this repository:
+
 ```bash
 cargo install --path crates/roko-cli
-roko init my-project && cd my-project
-roko run "add a health check endpoint to the API"
 ```
 
-`roko init` detects your project type, sets up gates (cargo check for Rust, tsc for TypeScript, go build for Go), and writes a working `roko.toml`. `roko run` does everything else.
+The web portal is embedded only if it was exported before the build (`npm ci && npm run build:export`
+in `apps/portal`). Without it, `roko serve` shows a placeholder page at `/`, and the API works as
+usual.
+
+### 2. Set up a workspace
+
+Run `roko init` at the root of an existing Rust or Go project:
+
+```bash
+cd path/to/your-project
+roko init
+roko config providers list
+```
+
+`roko init` writes `roko.toml` and a `.roko/` state directory. If the `claude` CLI is on your
+`PATH`, it becomes the provider, and `roko config providers list` shows it. For any other provider,
+`roko config providers available` lists each kind and the credentials it needs. Add the provider
+under `[providers.<name>]` in `roko.toml` and point the `[models.*]` entries at it (see
+[Configuration](#configuration)).
+
+### 3. Run a prompt
+
+```bash
+roko run "add a unit test for the config parser"
+```
+
+`roko run` sizes the prompt first:
+
+- A small change runs as one agent task. The workspace's `[[gates.rungs]]` check it; when there
+  are none, `cargo check --workspace` (next to a `Cargo.toml`) or `go build ./...` (next to a
+  `go.mod`) does.
+- A larger prompt first has the agent write a plan, then runs that plan the way `roko plan run`
+  does.
+
+In a directory with neither build file, add a rung to `roko.toml` before running a prompt, or the
+run stops with `no gate can verify this change`:
+
+```toml
+[[gates.rungs]]
+name = "test"
+command = "npm test"
+timeout_secs = 300
+required = true
+```
+
+`roko init --profile rust` writes compile, test and lint rungs for a Cargo workspace.
+`roko init --profile typescript` writes `tsc` and `npm test` rungs.
+
+### 4. Run a plan
+
+A plan is a directory holding a `tasks.toml` (the task graph) and a `plan.md`.
+[`plans/demos/`](plans/demos/README.md) has small example plans. This one asks an agent for a
+hello-world program and checks it with `rustc`, and it works in an empty directory:
+
+```bash
+mkdir -p roko-demo/plans && cd roko-demo
+git init && roko init
+cp -R <path-to-roko>/plans/demos/parallel-plans/demo-hello-world plans/
+roko plan run plans/demo-hello-world
+```
+
+`roko plan run` shows a terminal UI when stdout is a terminal (`--no-tui` gives plain logs). It
+also starts the HTTP control plane in the background (`--no-serve` skips it). Progress is
+checkpointed under `.roko/state/graph/<plan>/`. `roko plan status plans/demo-hello-world` shows the
+task states, and `roko plan run plans/ --resume-plan` resumes an interrupted run.
+
+### 5. Start the control plane
+
+```bash
+roko serve
+```
+
+`roko serve` listens on `127.0.0.1:6677` and prints a `portal:` link that carries a one-time token.
+`GET /health` and `GET /ready` are open. The `/api/` routes need that token or an API key.
 
 ## How it works
 
-### One-shot execution
+The conceptual loop is:
 
-The fastest path. One command, full pipeline.
-
-```bash
-roko run "refactor the auth module to use JWT"
+```
+query -> score -> route -> compose -> act -> verify -> write -> react
 ```
 
-Roko composes a prompt from your codebase context, calls the configured LLM agent, runs the output through compile/test/lint gates, and persists the result as a signal. If gates fail, it retries with escalating models.
+A plan run loads `tasks.toml` into the Graph engine (`crates/roko-graph`), the only plan executor.
+For each task, roko assembles a prompt from the role template and the task's declared context
+(`crates/roko-compose`). It dispatches the prompt to the model the router picks (`crates/roko-agent`,
+`crates/roko-learn`), and it accepts the result only when the gates and the task's own `verify`
+commands pass (`crates/roko-gate`). Checkpoints, activity logs and costs go to
+`.roko/state/graph/<plan>/`. Each agent turn is recorded as an episode in `.roko/episodes.jsonl`.
 
 ### Full planning pipeline
 
-For larger work that spans multiple tasks.
+For larger work that spans several tasks:
 
 ```bash
 # 1. Capture what you want to build
 roko prd idea "Add user authentication with OAuth2"
 
-# 2. Research the topic (optional -- uses Perplexity for web-grounded citations)
+# 2. Research the topic (optional; uses Perplexity for web-grounded citations)
 roko research topic "OAuth2 best practices in Rust"
 
-# 3. Generate a detailed PRD (agent-assisted)
+# 3. Draft a PRD (agent-assisted)
 roko prd draft new "oauth2-auth"
 
-# 4. Create an implementation plan with tasks
+# 4. Generate an implementation plan with tasks
 roko prd plan oauth2-auth
 
-# 5. Execute the plan (agents work in parallel, gates verify each task, state persists)
-roko plan run plans/ --engine runner-v2
+# 5. Execute the plans under plans/ through the Graph engine
+roko plan run plans/
 
 # 6. Resume if interrupted
-roko plan run plans/ --engine runner-v2 --resume-plan
+roko plan run plans/ --resume-plan
 
 # 7. Watch progress
 roko dashboard
 ```
 
-Each task in the plan runs through its own agent loop with independent gate verification. Failed tasks feed back into the planner for re-decomposition.
+`roko plan validate plans/<plan>` lints a `tasks.toml` without running it, and
+`roko plan run plans/<plan> --dry-run` lists the tasks and their order. `roko doctor disk` reports
+free space, stale Rust targets, orphaned worktrees and oversized logs without changing anything.
 
-Workspace-mutating commands use a single-writer lock, and plan resume is scoped by plan ID. A snapshot from an unrelated plan is ignored as a clean start; overlapping snapshots still receive strict task-fingerprint validation. Append-only runtime logs rotate at the configured `[resources].log_rotation_max_mb` threshold (100 MB by default), with archive retention and disk-health reporting handled by the resource lifecycle.
+### One-shot prompts
 
-Long-running servers sample the shared metric registry every 30 seconds into
-rotation-bounded telemetry JSONL. The configurable `[cold_storage]` timer moves aged
-signals into deduplicated cold archives and removes them from hot storage only after a
-successful archive write.
-
-The telemetry contract also exposes seven typed Lens projections through
-`/api/projections/{name}` and current materialized values through
-`/api/statehub/{projection_id}`. StateHub retains bounded projection history in a
-restart-durable companion JSONL log; `/api/statehub/{projection_id}/history` supports
-version/time filters and checked `ms`/`s`/`m`/`h`/`d` resolution coalescing. Graph files
-may attach any of the 11 built-in Lenses with top-level `[[lenses]]`;
-`roko graph run` routes matching lifecycle evidence through raw stacks and ordered
-derived chains, then prints resulting versioned projections. Lens state and cardinality
-are bounded, configuration fails closed, and unavailable event metrics are not inferred.
-Typed Workbench, Inbox, Canvas, Minimap, and Autonomy views are also available at
-`/api/projections/workbench`, `/api/projections/inbox`, `/api/projections/canvas`,
-`/api/projections/minimap`, and `/api/projections/autonomy`; their remaining TUI rendering
-and runtime-source limitations are documented rather than filled with synthetic data.
-
-Declarative triggers map event payloads into root-Cell Signals, enforce Space partition,
-Graph visibility, and capability intersections, publish lifecycle evidence on the shared
-Pulse Bus, and expose durable history through CLI and HTTP. Declarative plugin binaries
-require kernel confinement (macOS Seatbelt or Linux firejail/seccomp); Claude/Codex CLI
-providers reach canonical plugin handlers through an authenticated, contract-scoped
-loopback MCP bridge, while unsupported adapters fail closed.
-
-Use `roko doctor disk` for a read-only report of free space, stale Rust targets, orphaned
-worktrees, oversized JSONL logs, and aggregate workspace storage.
-
-### Implicit prompt mode
-
-If no subcommand matches, roko treats the argument as a prompt:
+With no subcommand, roko sends a single turn to the agent, with its tools, and prints the reply:
 
 ```bash
-roko "fix the bug in auth.rs"
+roko "explain what src/auth.rs does"
 ```
 
-This is equivalent to `roko run "fix the bug in auth.rs"`. The shortest path from thought to execution.
+This mode runs no gates, so use `roko run` for a change you want checked. Plain `roko` in a
+terminal opens an interactive chat.
 
 ## Dashboard
 
-`roko dashboard` launches an interactive terminal UI built on ratatui with the rosedust color theme. It has 10 TUI tabs, accessible via F1-F10 (or `0` for Learning):
+`roko dashboard` opens a terminal UI built on ratatui. `F1`–`F10` (or the number keys) switch
+tabs, and `?` shows the key bindings.
 
 | Key | Tab | What it shows |
 |-----|-----|---------------|
@@ -174,451 +184,270 @@ This is equivalent to `roko run "fix the bug in auth.rs"`. The shortest path fro
 | F9 | Atelier | PRD workshop and plan progress |
 | F10 / 0 | Learning | Cascade routing, model health, and efficiency |
 
-Additional keybindings: `q` to quit, `?` for help, `Tab`/`Shift+Tab` to cycle panels, `Enter` to drill into a task, `i` to inject a signal into a running session.
+## Providers
 
-When idle, the dashboard shows recent episodes, gate results, system health, and config summary rather than blank panels.
+roko supports 12 provider kinds:
 
-## Multi-provider support
-
-Roko routes work across 11 LLM backends based on task complexity, cost, and latency. Supported backends:
-
-| Backend | Kind | What it does |
-|---------|------|-------------|
-| AnthropicApi | HTTP API | Anthropic Messages API (Opus, Sonnet, Haiku) |
-| ClaudeCli | CLI subprocess | `claude` CLI with stream-json protocol |
-| GeminiApi | HTTP API | Google Gemini API (1M context, grounding, context caching) |
-| GeminiCli | CLI subprocess | `gemini` CLI subprocess |
-| PerplexityApi | HTTP API | Perplexity Sonar API (web-grounded research with citations) |
-| CerebrasApi | HTTP API | Cerebras inference (ultra-fast) |
-| OpenAiCompat | HTTP API | Any OpenAI chat completions-compatible API (GLM, Kimi, Groq, Together, etc.) |
-| CursorAcp | ACP protocol | Cursor Agent Client Protocol |
-| CursorCli | CLI subprocess | Cursor `agent` CLI (ACP JSON-RPC over stdio) |
+| Kind | Transport | What it is |
+|------|-----------|------------|
+| AnthropicApi | HTTP API | Anthropic Messages API |
+| ClaudeCli | CLI subprocess | `claude` CLI with the stream-json protocol |
+| CodexCli | CLI subprocess | OpenAI `codex` CLI (`codex exec --json`) |
+| OpenAiCompat | HTTP API | Any OpenAI chat-completions-compatible API |
+| CursorAcp | ACP | Cursor Agent Client Protocol |
+| CursorCli | CLI subprocess | Cursor `agent` CLI |
+| PerplexityApi | HTTP API | Perplexity Sonar API (web-grounded research) |
+| GeminiApi | HTTP API | Google Gemini API |
+| GeminiCli | CLI subprocess | `gemini` CLI |
+| CerebrasApi | HTTP API | Cerebras inference |
 | Hermes | HTTP / CLI / ACP | Hermes gateway |
 | OpenClaw | CLI / ACP | OpenClaw inference runtime |
 
-Tier-based model routing assigns the cheapest viable model to each task:
-
-```toml
-[agent.tier_models]
-mechanical = "gemini-2-5-flash-lite"   # imports, renames, trivial edits
-focused = "gemini-2-5-flash"           # single functions, tests
-integrative = "claude-sonnet-4-6"      # multi-module wiring
-architectural = "claude-opus-4-6"      # API design, architecture
-```
-
-On failure, roko escalates to the next tier's model automatically.
-
-For editor-driven ACP sessions, mutation built-ins (`write_file`, `edit_file`,
-and `bash`) request editor permission before execution. Rejection, cancellation,
-disconnect, timeout, or a dropped reply denies the call without side effects;
-workspace-scoped “always allow” decisions are persisted for the selected action.
-
-See `examples/` for complete provider configurations:
-- `roko-gemini.toml` -- Gemini-only with 8 model tiers
-- `roko-multi-provider.toml` -- Claude + Gemini + Perplexity routing
-- `roko-perplexity.toml` -- Research-focused with deep research
+`roko config providers available` lists the credentials each kind needs, and
+`roko config models list` shows the configured models. The cascade router picks a model per task
+from the task's tier and recorded outcomes. `roko config models route <model> --explain` shows its
+reasoning for one model, and `roko learn route` shows its learned state. [`examples/`](examples/)
+has sample `roko-*.toml` provider configurations (Gemini, GLM, Kimi, LM Studio, Ollama, OpenRouter,
+Perplexity, and a multi-provider setup).
 
 ## Architecture
 
-### One noun, core verbs, supporting protocols
+### Signals and kernel traits
 
-Everything in roko is a **Signal** -- a content-addressed (BLAKE3), timestamped, scored record of something that happened. Signals form a DAG through parent pointers, so you can always trace why the agent made a decision by walking backwards through lineage.
-
-Six core workflow traits define what you can do with signals; supporting contracts cover
-storage substrates, buses, observation, connectivity, and triggers:
-
-| Trait | Job |
-|-------|-----|
-| `Substrate` | Store and query signals (memory, disk, chain) |
-| `Scorer` | Rate signal relevance (recency, novelty, priority) |
-| `Gate` | Verify output against ground truth (compile, test, lint) |
-| `Router` | Pick among options (top-K, Thompson bandit, cascade) |
-| `Composer` | Pack signals into token-budgeted prompts |
-| `Policy` | React to patterns over time (episodes, retries, escalation) |
-
-### Universal loop
-
-Every agent runs the same loop:
-
-```
-query -> score -> route -> compose -> act -> verify -> write -> react
-```
-
-Stop at any step and you still have something useful. A prompt composer without an agent is a retrieval pipeline. An agent without gates is a raw LLM wrapper. The pieces are independent.
+The primary noun is the **Signal**: a content-addressed (BLAKE3), timestamped, scored record of
+something that happened. Signals form a DAG through parent pointers, so you can trace a decision
+back through its lineage (`roko replay <hash>`). The kernel in `crates/roko-core` defines 12 traits:
+Store, ColdStore, Score, Verify, Route, Compose, React, Bus, Observe, Connect, Trigger and
+Substrate. Missing or unknown safety contracts fail closed, so an unsupported tool use is denied.
 
 ### Crate map
 
 | Crate | What it does |
 |-------|-------------|
-| `roko-core` | Signal type, core and supporting protocol contracts, config schema, tool system, errors |
-| `roko-agent` | 11 LLM backends (AnthropicApi, ClaudeCli, OpenAiCompat, CursorAcp, CursorCli, PerplexityApi, GeminiApi, GeminiCli, CerebrasApi, Hermes, OpenClaw), pools, tool loop, MCP, safety |
-| `roko-agent-server` | Per-agent HTTP sidecar: `/message`, `/stream` (WS), `/predictions`, `/research`, `/tasks` |
-| `roko-serve` | HTTP control plane: ~317 REST routes + SSE + WebSocket on port 6677 |
-| `roko-gate` | 14 gate types, 7-rung pipeline, adaptive thresholds, artifact store |
-| `roko-compose` | Prompt assembly, 9 role templates, U-shape placement, token budgeting |
-| `roko-conductor` | 10 watchers, circuit breaker, intervention policy, diagnosis |
+| `roko-core` | Signal type, kernel traits, config schema, tool system, errors |
+| `roko-graph` | Graph engine: the DAG of Cells that executes plans, with checkpoints and cost state |
+| `roko-cli` | CLI binary, plan loading and Graph plan execution, merge queue, worktree manager, ratatui TUI |
+| `roko-agent` | Provider adapters, dispatcher, pools, tool loop, MCP client, safety layer |
+| `roko-gate` | Gate implementations, the 7-rung pipeline, adaptive thresholds |
+| `roko-compose` | Prompt assembly, role templates, token budgeting |
 | `roko-learn` | Episodes, playbooks, bandits, model routing, prompt experiments, efficiency tracking |
-| `roko-neuro` | Durable knowledge store, distillation, tier progression, garbage collection |
-| `roko-dreams` | Offline dream cycle: batch episodes, cluster, distill knowledge, promote playbooks |
-| `roko-mcp-code` | Code-intelligence MCP server (symbol lookup, dependency graph) |
-| `roko-mcp-github` / `slack` / `scripts` / `stdio` | Additional MCP integrations |
-| `roko-cli` | CLI binary, interactive ratatui TUI, plan DAG/runner, merge queue, and worktree manager |
-| `roko-fs` | Append-only JSONL substrate with compaction and GC |
-| `roko-std` | Default trait impls (memory substrate, simple routers, no-op scorers) |
-| `roko-plugin` | Plugin SDK, canonical tier/capability manifests, three-root semver/dependency resolution, and kernel-confined declarative local tools |
-| `roko-runtime` | Process supervisor, typed event bus, cancellation |
-| `roko-primitives` | 10,240-bit hyperdimensional vectors, Hamming similarity, tier routing |
-| `roko-index` | Code parser, symbol graph, PageRank, HDC fingerprints |
-| `roko-lang-*` | Language support for Rust, TypeScript, Go |
+| `roko-neuro` | Durable knowledge store, distillation, tier progression |
+| `roko-dreams` | Offline consolidation of episodes into knowledge and playbooks |
+| `roko-daimon` | Affect engine and dispatch modulation |
+| `roko-conductor` | Watchers, circuit breaker, diagnosis |
+| `roko-execution` | Shared runtime services builder for the CLI, serve and ACP |
+| `roko-runtime` | Process supervisor, event bus, cancellation |
+| `roko-serve` | HTTP control plane: REST, SSE and WebSocket on port 6677 |
+| `roko-agent-server` | Per-agent HTTP sidecar |
+| `roko-acp` | Agent Client Protocol server for editors |
+| `roko-gateway` | Inference gateway: provider routing and fallback, caching, cost accounting |
+| `roko-fs` | Append-only JSONL substrate, garbage collection, `.roko/` layout |
+| `roko-std` | Standard tool definitions and MCP resolvers |
+| `roko-plugin` | Plugin manifests, declarative tools, capability policy, dependency resolution |
+| `roko-primitives` | Hyperdimensional vectors, tier routing |
+| `roko-index` | Code parser, symbol graph, HDC fingerprints |
+| `roko-mcp-*` | roko's own MCP servers (code intelligence, GitHub, stdio and others) |
+| `roko-lang-*` | Language support for Rust, TypeScript and Go |
+| `roko-chain` | Optional chain primitives (see below) |
+
+### Optional chain primitives
+
+`crates/roko-chain` holds an optional chain client plus local state machines for a registry, a job
+marketplace (`roko job`), an arena and DeFi primitives. It is off by default (`[chain] enabled =
+false`). Nodes, consensus and on-chain contracts live in a separate repository.
 
 ## Gate pipeline
 
-Every agent output passes through a gate pipeline before it is accepted. Gates run sequentially and short-circuit on the first failure by default.
+Every agent result passes through gates before it is accepted. Plan tasks also carry their own
+`verify` commands, and those must pass too.
 
-### Rungs
-
-The pipeline uses a 7-rung system. Which rungs execute depends on task complexity -- trivial tasks skip expensive checks, complex tasks run all of them.
+The pipeline has 7 rungs. Which rungs run depends on the task: trivial tasks skip the expensive
+checks, and complex tasks run all of them.
 
 | Rung | Gate | What it checks |
 |------|------|---------------|
-| 0 | Compile | `cargo check`, `tsc`, `go build` -- does it build? |
-| 1 | Lint | `cargo clippy`, `eslint` -- does it pass linting? |
-| 2 | Test | `cargo test` -- do existing tests pass? |
-| 3 | Symbol | Symbol manifest check -- did the change break any public API? |
-| 4 | GeneratedTest | Agent-generated behavioral tests |
-| 5 | PropertyTest | Property-based tests (proptest/quickcheck) |
-| 6 | Integration | Full integration scenario |
+| 0 | Compile | `cargo check`, `tsc`, `go build`: does it build? |
+| 1 | Lint | `cargo clippy`, `eslint`: does it pass linting? |
+| 2 | Test | `cargo test`: do the existing tests pass? |
+| 3 | Symbol | Symbol manifest: did the change break a public API? |
+| 4 | GeneratedTest | Agent-generated behavioural tests |
+| 5 | PropertyTest | Property-based tests |
+| 6 | Integration | A full integration scenario |
 
-Additional specialized gates: `DiffGate` (patch analysis), `LlmJudge` (subjective quality), `FactCheck` (search-backed verification), `CodeExec` (sandboxed execution).
+Rungs declared under `[[gates.rungs]]` in `roko.toml` replace the built-in compile, lint and test
+checks for that workspace. Other gates include `DiffGate`, `LlmJudgeGate`, `FactCheckGate`,
+`CodeExecutionGate` and `SecurityScanGate`. Gate thresholds adapt from recorded outcomes and
+persist to `.roko/learn/gate-thresholds.json`, and `roko learn gates` shows them.
 
-### Adaptive thresholds
+## Learning
 
-Gate thresholds adjust over time using exponential moving averages. If a gate consistently passes, its threshold tightens. If it consistently fails, the threshold relaxes. Thresholds persist to `.roko/learn/gate-thresholds.json`.
-
-## Learning and self-improvement
-
-Roko tracks its own performance and gets better with use.
-
-### Cascade router
-
-Three maturity stages govern model selection: Static for 0–49 observations,
-Confidence for 50–199, then UCB/LinUCB from observation 200 onward. Provider health
-is an additional candidate filter, not a maturity stage. Live workflow, bridge, and
-CLI outcomes feed one persisted health registry; runner-v2 maps model slugs to provider
-IDs and filters unhealthy providers before selection. ACP adaptive selection requires
-exact opt-in with `ROKO_ACP_CASCADE_SELECT=1` and never overrides a valid explicit
-session provider/model selection.
+roko records its own performance and feeds it back into routing, prompts and knowledge. Not every
+loop is attached to Graph plan runs yet. [`work/STATUS.md`](work/STATUS.md) tracks the open ones.
 
 ```bash
-roko model route claude-sonnet-4-6 --explain --complexity focused
-```
-
-### Prompt experiments
-
-The experiment store and CLI/TUI/HTTP inspection surfaces track prompt variants and
-their results. Runner/plan-run now assigns variants per exact attempt, replaces the named
-canonical section before composition, binds the final prompt before launch, and settles
-the scoped outcome idempotently from durable terminal events (including rotated logs after
-restart). Serve, LearningRuntime, and ACP outcome writers use the same locked transaction,
-so concurrent updates do not overwrite one another. ACP and serve still inject their
-experiment context rather than using the runner's canonical-section receipt protocol.
-
-```bash
-roko experiment list
-roko experiment show <id>
-```
-
-### Efficiency tracking
-
-Every agent turn records tokens in/out, latency, cost, and gate pass/fail. These events feed the cascade router, the dashboard, and the dream cycle.
-
-### Knowledge distillation (neuro)
-
-Completed episodes are distilled into durable knowledge entries: facts, insights, heuristics, procedures, constraints, and anti-knowledge. Successful gate-backed runner ingestion records confirmation/context evidence and evaluates tier progression immediately. Knowledge decays over time with configurable half-lives (365 days for facts, 30 days for insights, 90 days for heuristics).
-
-```bash
+roko learn all                       # router, experiments, efficiency, episodes, reflexes
+roko learn experiments               # prompt A/B experiments
+roko learn efficiency                # tokens, latency, cost and gate results per turn
 roko knowledge query "authentication patterns"
 roko knowledge stats
-```
-
-### Dream cycle
-
-Offline consolidation that runs between work sessions. The dream engine batches completed episodes, clusters them by task shape, distills knowledge, and promotes reliable success patterns into playbooks. In daemon mode, `[dreams]` can enable adaptive idle scheduling, a fallback `scheduled_cron`, and an `episode_count_trigger`; automatic cycles queue until no managed agent is active and retain their checkpoint across restart.
-
-```bash
-roko dream run
-roko dream report
-roko dream schedule
+roko knowledge dream run             # offline consolidation of recent episodes
+roko knowledge dream report
 ```
 
 ## Deployment
 
-### HTTP control plane (`roko serve`)
+### HTTP control plane
 
 ```bash
-roko serve                           # default bind 127.0.0.1:6677
-roko serve --bind 0.0.0.0 --port 9090
+roko serve                 # 127.0.0.1:6677
+roko serve --port 9090
 ```
 
-Starts an Axum-based HTTP server with ~317 routes grouped by subsystem:
+Besides the portal and the `/api/` routes, it serves SSE and WebSocket streams, `GET /ready`, and
+`GET /health`, the probe that the `Dockerfile` and `fly.toml` use.
+`python3 tools/http_route_inventory.py` lists the routes.
 
-Top-level `GET /health` and `GET /ready` are the stable liveness and readiness probes used
-by Docker and Fly. The richer `/api/health` response remains available for operators.
-
-| Prefix | What it covers |
-|--------|----------------|
-| `/api/health`, `/api/status`, `/api/metrics/*` | Readiness + metric rollups (C-factor, gate rate, cost, velocity, coverage) |
-| `/api/plans/*` | List, create, execute, inspect plans, and report spent/projected cost plus budget status |
-| `/api/prds/*` | PRD lifecycle: ideas → drafts → promote → plan |
-| `/api/research/*` | Research topic, enhance-prd, enhance-plan, enhance-tasks, analyze |
-| `/api/agents/*` | Per-agent discovery, registration, messaging (`POST /api/agents/{id}/message`), topology |
-| `/api/predictions/*` | Session predictions, claims, calibration |
-| `/api/knowledge/*` | Knowledge entries, edges, search |
-| `/api/tasks/*` | Task list, stats, improve feedback |
-| `/api/learn/*` | Efficiency, cascade router, cost tiers, experiments, adaptive thresholds |
-| `/api/extensions`, `/api/extensions/{name}` | Loaded extension layer/tier/version plus live circuit-breaker health |
-| `/api/subscriptions/*`, `/api/templates/*`, `/api/deployments/*` | Ops primitives |
-| `/api/config/*`, `/api/providers/*`, `/api/models/*`, `/api/rate-limits` | Configuration, shared persisted provider health/circuit state, and rolling RPM/TPM utilization |
-| `/ws`, `/api/events`, `/webhooks/*` | Real-time: SSE events, top-level WS, webhook ingestion |
-
-Example responses:
+### Agents and editors
 
 ```bash
-curl http://localhost:6677/api/health
-# {"status":"ok","version":"0.1.0","uptime_seconds":123}
-
-curl http://localhost:6677/api/metrics/c_factor
-# {"overall":0.73,"components":{...},"episode_count":120}
-
-curl http://localhost:6677/api/learn/efficiency
-# {"total_cost":12.45,"cost_per_task":0.83,"tokens_per_task":24500.0,...}
-
-curl http://localhost:6677/api/agents?owner=will
-# [{"agent_id":"nunchi-intelligence","owner":"will","endpoints":{...}}]
+roko agent create --name X --domain Y    # create an agent from a manifest
+roko agent serve --agent-id X            # per-agent HTTP sidecar
+roko agent chat --agent X                # interactive chat with a running agent
+roko acp                                 # Agent Client Protocol server for editors
 ```
 
-### Per-agent sidecar (`roko-agent-server`)
+The sidecar's endpoints are described in [`crates/roko-agent-server/README.md`](crates/roko-agent-server/README.md).
 
-Each registered agent also runs its own small HTTP server (typically on a
-private port, proxied by the control plane):
-
-| Endpoint | What it does |
-|----------|-------------|
-| `GET /health`, `/capabilities`, `/stats` | Always-on introspection |
-| `POST /message` | Single-turn prompt → real LLM dispatch via the agent's configured backend |
-| `GET /stream` (WS) | Streaming turn with `content`, `reasoning`, `tool_call`, `usage`, `done` chunks |
-| `GET/POST /predictions*` | Prediction records + calibration |
-| `POST /research` | Sidecar-local research task |
-| `GET/POST /tasks*` | Agent-owned task queue with typed `Artifact` on completion |
-
-`POST /message` wire shape:
+### Daemon, worker and cloud
 
 ```bash
-curl -X POST http://localhost:6677/api/agents/nunchi-intelligence/message \
-  -H "Content-Type: application/json" \
-  -d '{"prompt":"ping"}'
-# {"response":"Hello, world","reasoning":null,"usage":{...},"session":{...},
-#  "finish_reason":"stop","engram_id":"engram-...","context":{...}}
-```
-
-Missing dispatcher returns `503`. Backend failure returns `502`. See
-`crates/roko-agent-server/README.md` for the full contract.
-
-### Chat with a running agent
-
-```bash
-roko chat --agent nunchi-intelligence
-roko chat --agent nunchi-intelligence --serve-url http://localhost:6677
-```
-
-Opens an interactive REPL that POSTs to the sidecar through the aggregator.
-Useful for ad-hoc debugging, prompt iteration, and smoke-testing a deployed
-agent from your terminal.
-
-### Background daemon
-
-```bash
-roko daemon start --port 9090    # start in background
-roko daemon status               # check if running
-roko daemon logs -f              # tail logs
-roko daemon stop                 # graceful shutdown
-roko daemon install              # install as macOS launchd service
-```
-
-The daemon watches for file changes, processes cron-scheduled tasks, ingests webhooks, and dispatches agents from event subscriptions.
-
-### Cloud worker
-
-```bash
-roko worker --port 8080
-```
-
-Reads a template from environment variables and serves tasks. Designed for Railway, Fly.io, and container platforms.
-
-Control-plane-created workers receive an opaque callback ID and a scoped
-`ROKO_WORKER_CALLBACK_TOKEN`. Callbacks send that token in `X-Roko-Worker-Token`;
-the server persists only its SHA-256 verifier and accepts it through the same global
-authentication stack used when API-key auth is enabled.
-
-### Cloud deployment
-
-```bash
-roko deploy railway    # deploy via Railway GraphQL API
-roko deploy fly        # generate fly.toml and deploy
-roko deploy docker     # build and tag Docker image
+roko daemon start --port 9090    # start in the background
+roko daemon status
+roko daemon logs --follow
+roko daemon stop
+roko daemon install              # install as a launchd or systemd service
+roko worker --port 8080          # run as a deployed worker
+roko deploy railway              # also: fly, docker
 ```
 
 ## Configuration
 
-Roko uses layered TOML configuration: global (`~/.config/roko/config.toml`) merged with project (`./roko.toml`), with environment variables as overrides.
+roko reads the nearest `roko.toml` at or above the working directory and layers it over the
+provider, model and agent defaults in the global `~/.roko/config.toml`. `ROKO_CONFIG=<file>` replaces the project file, and a few named environment
+variables such as `ROKO_MODEL` override single fields (`roko config env` lists them).
+`roko config path` prints the files in use.
 
 ### Minimal config
 
 ```toml
-[agent]
+config_version = 2
+
+[providers.claude_cli]
+kind = "claude_cli"
 command = "claude"
-model = "claude-sonnet-4-6"
 
-[[gate]]
-kind = "compile"
+[models.claude-sonnet-4-6]
+provider = "claude_cli"
+slug = "claude-sonnet-4-6"
 
-[[gate]]
-kind = "test"
+[agent]
+default_model = "claude-sonnet-4-6"
+
+[[gates.rungs]]
+name = "compile"
+command = "cargo check --workspace"
+timeout_secs = 120
+required = true
+
+[[gates.rungs]]
+name = "test"
+command = "cargo test --workspace"
+timeout_secs = 300
+required = true
 
 [budget]
 max_plan_usd = 10.0
 max_task_usd = 1.0
+max_turn_usd = 0.5
 ```
 
-### Full project config
-
-```toml
-[agent]
-command = "claude"
-args = ["--print", "--output-format", "stream-json"]
-model = "claude-sonnet-4-6"
-effort = "high"
-bare_mode = true
-fallback_model = "claude-haiku-4-5"
-timeout_ms = 300000
-
-[agent.tier_models]
-mechanical = "claude-haiku-4-5"
-focused = "claude-sonnet-4-6"
-integrative = "claude-sonnet-4-6"
-architectural = "claude-opus-4-6"
-
-[agent.escalation]
-max_retries = 3
-escalate_model = true
-
-[prompt]
-token_budget = 50000
-role = "You are a Roko agent working on the project."
-
-[budget]
-max_plan_usd = 10.0
-max_task_usd = 1.0
-warn_at_percent = 80
-
-[budget.tier_multipliers]
-mechanical = 0.2
-standard = 1.0
-complex = 3.0
-expert = 5.0
-
-[[gate]]
-kind = "compile"
-
-[[gate]]
-kind = "test"
-```
+`roko init` writes a full `roko.toml` with the defaults spelled out.
 
 ### Config management
 
 ```bash
-roko config init                            # interactive wizard
+roko config init                            # interactive wizard for the global config
 roko config show                            # effective merged config
-roko config set agent.model claude-opus-4-6 # set a value
-roko config validate                        # check syntax and references
-roko config migrate                         # upgrade legacy format
+roko config validate                        # check keys, providers and models
+roko config migrate                         # upgrade a legacy config
 ```
 
 ### GitHub workflow automation
 
-Configure `[github]` in `roko.toml` and export `GITHUB_TOKEN` to let plan runs open draft
-pull requests, report terminal task gates, track failures as issues, require GitHub CI, and
-merge with the configured method. Inspect the effective setup without starting the server:
+The GitHub integration is configured under `[github]` in `roko.toml`, with `GITHUB_TOKEN` exported.
+Inspect the effective setup without starting the server:
 
 ```bash
 roko github status
 roko --json github status
 ```
 
-Inbound webhooks use a separate `GITHUB_WEBHOOK_SECRET`. See the
-[GitHub integration guide](docs/v2/GITHUB-INTEGRATION.md) for least-privilege setup, MCP
-configuration, branch naming, CI validation, and troubleshooting.
+Inbound webhooks use a separate `GITHUB_WEBHOOK_SECRET`. The
+[GitHub integration guide](docs/v2/GITHUB-INTEGRATION.md) covers what the integration automates,
+least-privilege setup, MCP configuration, branch naming, CI validation, and troubleshooting.
 
 ### Fast self-development lane (opt-in)
 
-For a small, well-scoped local plan, use the existing debug binary through the bounded FAST
-wrapper instead of `cargo run`:
+For a small, well-scoped local plan in this repository, the bounded FAST wrapper runs the existing
+debug binary instead of `cargo run`:
 
 ```bash
 ./dev.sh fast plans/my-plan
 ```
 
-Every FAST task must author exactly one `verify` command. The patching agent is instructed not to
-build or test; the runner owns that one check, preserves the warm target, runs headlessly with a
-bounded deadline, and writes a private evidence bundle under `.roko/runs/`. The gate fails closed
-when the task has zero or multiple verification commands. FAST also serializes compile ownership
-and rejects severe disk pressure before launch unless the operator records an explicit override.
+FAST is only partly ported to the Graph engine; check work item `gap-4a6dcb` before relying on it.
+Every FAST task must author exactly one `verify` command. The patching agent is told not to build
+or test, and the runner owns that one check and writes a private evidence bundle under
+`.roko/runs/`.
 
 ```bash
 ./dev.sh feedback --run-id <run-id>             # deterministic factual debrief
 ./dev.sh evidence-validate .roko/runs/<run-id>  # strict terminal/JSONL/secret/size checks
 ./dev.sh score --bundle-root .roko/runs         # p50/p95 across captured runs
 ./dev.sh cache status                           # inspect caches without mutation
-roko run-index repair                           # bounded historical-index dry run
 python3 scripts/dev_benchmark.py list           # inspect fixed-SHA benchmark lanes
 ```
 
-Cache pruning and historical index repair are dry-run by default; mutation requires their explicit
-`--apply` flag. Benchmark automation is implemented, but FAST promotion still requires real
-cold/warm repetitions, manual-lane evidence, escaped-regression review, and a full-CI baseline.
-
 FAST is an interactive feedback lane, not release proof. Do not use it for migrations, auth,
 safety, persistence, payment, or other high-risk changes, and still run the contribution checks
-below before merging. See [Fast development](docs/v2/29-FAST-DEVELOPMENT.md) for the contract,
-security boundaries, and deferred work, and [run evidence bundles](docs/v2/30-EVIDENCE-BUNDLES.md)
-for optional safe GET, CLI, text, and browser proof collection.
-The measured before-state and implementation-vs-verification ledger live in the tracked
-[development-speed audit](tmp/dev-audit/README.md). TUI claims are reconciled separately in the
-[TUI parity index](tmp/tui-parity/00-INDEX.md); source-complete items there are not considered live
-verified until the named interactive run succeeds.
+below before merging. See [Fast development](docs/v2/29-FAST-DEVELOPMENT.md) for the contract and
+security boundaries, and [run evidence bundles](docs/v2/30-EVIDENCE-BUNDLES.md) for optional proof
+collection.
 
 ## CLI quick reference
 
 | Command | What it does |
 |---------|-------------|
-| `roko init [path]` | Create `.roko/` directory and `roko.toml` |
-| `roko run "<prompt>"` | Execute prompt through the full loop |
-| `roko plan run <dir> --engine runner-v2` | Execute a plan directory through runner-v2 |
+| `roko init [path]` | Create `.roko/` and `roko.toml` |
+| `roko run "<prompt>"` | Run a prompt as a checked task, or as a generated plan |
+| `roko plan run <dir>` | Execute a plan directory through the Graph engine |
+| `roko plan status <dir>` | Show a plan's task states |
 | `roko prd idea "<text>"` | Capture a work item |
-| `roko prd draft new "<title>"` | Generate a PRD (agent-assisted) |
-| `roko prd plan <slug>` | Generate implementation plan from PRD |
-| `roko research topic "<topic>"` | Deep research with citations |
+| `roko prd draft new "<title>"` | Draft a PRD (agent-assisted) |
+| `roko prd plan <slug>` | Generate an implementation plan from a PRD |
+| `roko research topic "<topic>"` | Research with citations |
 | `roko status` | Signal counts, recent episodes, gate results |
 | `roko github status` | GitHub config, auth, plan PR, CI, and failure-issue status |
 | `roko dashboard` | Interactive terminal dashboard |
 | `roko knowledge query "<topic>"` | Search durable knowledge |
-| `roko dream run` | Run offline knowledge consolidation |
-| `roko config init` | Interactive setup wizard |
-| `roko serve` | Start HTTP API server |
-| `roko daemon start` | Start background daemon |
+| `roko knowledge dream run` | Run offline knowledge consolidation |
+| `roko config providers list` | Show the configured providers |
+| `roko serve` | Start the HTTP control plane and portal |
+| `roko daemon start` | Start the background daemon |
 | `roko deploy railway` | Deploy to Railway |
 
-Full reference with all 85+ commands, flags, and examples: [docs/v2/CLI-REFERENCE.md](docs/v2/CLI-REFERENCE.md)
+`roko help <command>` documents every command. The full reference, with flags and examples, is
+[docs/v2/CLI-REFERENCE.md](docs/v2/CLI-REFERENCE.md).
 
 ## Building and testing
 
@@ -641,10 +470,18 @@ cargo test -p roko-gate
 
 Contributions are welcome. A few ground rules:
 
-1. **Search before writing.** This codebase has 35 workspace members and ~800K lines. The thing you want to build might already exist. Run `rg 'StructName' crates/ --glob '*.rs'` first.
-2. **Wire, don't build.** The most common pattern in this repo is "built but never connected." Before adding new code, check if existing code needs to be called from the runtime.
-3. **Verify before marking done.** Run the actual CLI code path. Passing unit tests does not mean the feature works end-to-end.
-4. **All tests must pass.** `cargo test --workspace` and `cargo clippy --workspace --no-deps -- -D warnings` must both be clean.
+1. **Search before writing.** With 36 workspace members and ~1M lines, the thing you want to build
+   might already exist. Run `rg 'StructName' crates/ --glob '*.rs'` first.
+2. **Wire, don't build.** The most common pattern in this repo is "built but never connected."
+   Before adding new code, check if existing code needs to be called from the runtime.
+3. **Verify before marking done.** Run the actual CLI code path. Passing unit tests does not mean
+   the feature works end-to-end.
+4. **All checks must pass.** `cargo +nightly fmt --all`, `cargo clippy --workspace --no-deps -- -D warnings`
+   and `cargo test --workspace` must all be clean.
+5. **Track work in the work graph.** Open work is one file per item under `work/items/`; the rules
+   are in [`work/README.md`](work/README.md).
+
+[`CLAUDE.md`](CLAUDE.md) has the component map and the full contributor rules.
 
 ## License
 

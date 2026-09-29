@@ -2,7 +2,7 @@
 id = "gap-89f393"
 kind = "gap"
 title = "Plan-level slice: fixture features that need whole multi-task plans, with hidden whole-feature tests"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "proof"
@@ -11,6 +11,7 @@ subsystem = ["benchmarks/viabilitybench"]
 created = 2026-09-29
 updated = 2026-09-29
 last_verified = 2026-09-29
+last_verified_rev = "20e5cbe04"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e12"
 discovered_from = "workstreams/assessment/W10-benchmarks-proof.md (rec 12); decided 2026-09-29: evaluation covers single tasks plus a plan-level slice"
 anchors = ["benchmarks/viabilitybench/families/plan_slice/"]
@@ -20,6 +21,12 @@ links = { depends_on = ["gap-2790c5"], blocks = [], related = [], supersedes = [
 
 [[verify]]
 command = "grep -qw 'def test_plan_slice_reference_passes_and_stub_fails' benchmarks/viabilitybench/tests/test_plan_slice.py && benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/tests/test_plan_slice.py -k test_plan_slice_reference_passes_and_stub_fails -q"
+
+[closed]
+at = 2026-09-29
+commit = "20e5cbe04"
+by = "commit trailer"
+evidence = "20e5cbe04 adds 6 features (PL01-PL06: 5-7 tasks, width 3-4, 5-7 modules), each with a description, plan skeleton, base stub, reference and hidden whole-feature suite, under benchmarks/viabilitybench/families/plan_slice/. The verify passes: in tests/test_plan_slice.py, every reference is verified and every stub fails both suites. test_slice.py adds that each one-task-short reference fails the hidden suite. pytest benchmarks/viabilitybench: 155 passed. Not met: the suites were written by claude-opus-5-5 (cross_family_review pending)."
 +++
 
 ## Problem
@@ -57,9 +64,9 @@ wide.
 
 ## Done when
 
-- [ ] 6–10 features exist, each with hidden tests, a reference implementation and a stub.
-- [ ] Verifier CI shows that each reference passes and each stub fails.
-- [ ] The `[[verify]]` command passes.
+- [x] 6–10 features exist, each with hidden tests, a reference implementation and a stub.
+- [x] Verifier CI shows that each reference passes and each stub fails.
+- [x] The `[[verify]]` command passes.
 
 ## Notes
 

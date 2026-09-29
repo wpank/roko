@@ -1,0 +1,39 @@
+# speclint golden fixture: HF1. T3 has no role, which means implementer.
+[meta]
+plan = "hf1-implementer-without-verify"
+total = 4
+
+[[task]]
+id = "T1"
+title = "Retry limit"
+description = """Add the retry limit to `parse_config`."""
+role = "implementer"
+files = ["src/config.rs"]
+max_loc = 40
+
+[[task]]
+id = "T2"
+title = "Retry limit"
+description = """Add the retry limit to `parse_config`."""
+role = "scribe"
+files = ["src/config.rs"]
+max_loc = 40
+
+[[task]]
+id = "T3"
+title = "Retry limit"
+description = """Add the retry limit to `parse_config`."""
+files = ["src/config.rs"]
+max_loc = 40
+
+[[task]]
+id = "T4"
+title = "Retry limit"
+description = """Add the retry limit to `parse_config`."""
+role = "implementer"
+files = ["src/config.rs"]
+max_loc = 40
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p fixture --lib config"

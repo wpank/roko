@@ -1,0 +1,46 @@
+# speclint golden fixture: SQ12. 
+[meta]
+plan = "sq12-hidden-hook"
+total = 3
+
+[[task]]
+id = "T1"
+title = "Retry limit"
+description = """Add the retry limit to `parse_config`."""
+role = "implementer"
+files = ["src/config.rs"]
+max_loc = 40
+[task.hidden]
+suite = "auto"
+interface = ["src/config.rs::parse_config"]
+properties = ["missing key", "negative value"]
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p fixture --lib config"
+
+[[task]]
+id = "T2"
+title = "Retry limit"
+description = """Add the retry limit to `parse_config`."""
+role = "implementer"
+files = ["src/config.rs"]
+max_loc = 40
+[task.hidden]
+suite = "none"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p fixture --lib config"
+
+[[task]]
+id = "T3"
+title = "Retry limit"
+description = """Add the retry limit to `parse_config`."""
+role = "implementer"
+files = ["src/config.rs"]
+max_loc = 40
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p fixture --lib config"

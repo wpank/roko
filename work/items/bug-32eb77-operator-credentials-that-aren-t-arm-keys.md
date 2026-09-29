@@ -2,9 +2,10 @@
 id = "bug-32eb77"
 kind = "bug"
 title = "Operator credentials that aren't arm keys, such as ANTHROPIC_API_KEY or GITHUB_TOKEN, stay readable by agents through the driver's environment"
-status = "open"
+status = "done"
 triage = "verified"
 last_verified = 2026-09-29
+last_verified_rev = "1a22d377d"
 severity = "p2"
 goal = "proof"
 size = "S"
@@ -20,6 +21,12 @@ links = { depends_on = [], blocks = [], related = ["bug-979a06", "bug-a66941"], 
 
 [[verify]]
 command = "grep -qw 'def test_the_driver_runs_with_a_scrubbed_environment' benchmarks/viabilitybench/driver/test_secret.py && benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/driver/test_secret.py -k test_the_driver_runs_with_a_scrubbed_environment -q"
+
+[closed]
+at = 2026-09-29
+commit = "1a22d377d"
+by = "wk-bench-fix2"
+evidence = "Once its checks pass on the operator's environment, vb run (and run_cli.py probe) starts itself again with os.execve, same command line and pid, with the environment cut to an allowlist (agent_env.driver_env: paths, locale, CLAUDE_CONFIG_DIR, the driver's VB_* paths, VB_DRIVER_ENV=scrubbed). The checks run first, so a secret or provider key in the original environment is still refused. The [[verify]] command passes: test_the_driver_runs_with_a_scrubbed_environment starts vb.py with ANTHROPIC_API_KEY, GITHUB_TOKEN, AWS_SECRET_ACCESS_KEY, a DATABASE_URL with a password and a marker; the agent's ps -E of the driver shows HOME, LANG and the restart mark and none of them; no record, transcript, archive or workdir holds one; with CEREBRAS_API_KEY set the start exits 2 before any request. benchmarks/viabilitybench: 326 passed, 4 skipped. Out of a driver's reach and documented: other same-user processes stay readable via ps -E -ax."
 +++
 
 ## Problem

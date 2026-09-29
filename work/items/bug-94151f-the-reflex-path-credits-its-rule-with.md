@@ -12,7 +12,7 @@ created = 2026-09-29
 updated = 2026-09-29
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e2"
 discovered_from = "tmp/cybernetic-harness/tldr/05-GAPS-AND-PROPOSALS.md (P0 #2; §4 Remove)"
-anchors = ["crates/roko-cli/src/graph_task_dispatch.rs::GraphTaskDispatcher::dispatch", "crates/roko-cli/src/graph_task_dispatch.rs:3408", "crates/roko-learn/src/reflex_store.rs::ReflexStore::record_gate_pass_for"]
+anchors = ["crates/roko-cli/src/graph_task_dispatch.rs::GraphTaskDispatcher::dispatch", "crates/roko-learn/src/reflex_store.rs::ReflexStore::record_gate_pass_for"]
 lane = "rust-hot"
 parent = "spec-e9d7ec"
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }

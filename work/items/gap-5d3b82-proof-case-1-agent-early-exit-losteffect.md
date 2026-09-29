@@ -14,7 +14,7 @@ last_verified = 2026-09-29
 last_verified_rev = "a17d9d766"
 source = "tmp/archive/MASTER-ACTION-PLAN-2026-09-23.md#5.1 Proof Case 1: Agent early exit / LostEffect"
 discovered_from = "audit:tmp/archive/MASTER-ACTION-PLAN-2026-09-23.md#5.1 Proof Case 1: Agent early exit / LostEffect"
-anchors = ["crates/roko-agent/src/claude_cli_agent.rs:1014", "crates/roko-agent/src/claude_cli_agent.rs:1049", "crates/roko-agent/src/exec.rs", "crates/roko-cli/src/graph_task_dispatch.rs::GraphTaskDispatcher::reconcile_attempt", "crates/roko-cli/src/graph_execution/agent_slots.rs::AgentSlotDispatcher", "crates/roko-runtime/src/run_ledger.rs:523"]
+anchors = ["crates/roko-agent/src/claude_cli_agent.rs:1014", "crates/roko-agent/src/claude_cli_agent.rs:1049", "crates/roko-agent/src/exec.rs", "crates/roko-cli/src/graph_task_dispatch/streaming.rs::GraphTaskDispatcher::reconcile_attempt", "crates/roko-cli/src/graph_execution/agent_slots.rs::AgentSlotDispatcher", "crates/roko-runtime/src/run_ledger.rs:523"]
 links = { depends_on = [], blocks = [], related = ["gap-01b2ff"], supersedes = [], duplicate_of = "" }
 
 [[verify]]

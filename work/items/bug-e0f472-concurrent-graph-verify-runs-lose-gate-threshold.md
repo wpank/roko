@@ -14,7 +14,7 @@ last_verified = 2026-09-29
 last_verified_rev = "33e107da1"
 source = "session:roko-b6 2026-09-29 direct-implementation batch"
 discovered_from = "merge:feat/learning-verify-loops 99adacd6d"
-anchors = ["crates/roko-cli/src/graph_task_dispatch.rs:2438-2500", "crates/roko-cli/src/runner/persist.rs::GateThresholds::load_or_default", "crates/roko-cli/src/runner/persist.rs::GateThresholds::save", "crates/roko-fs/src/atomic.rs::with_locked_json_transaction"]
+anchors = ["crates/roko-cli/src/graph_task_dispatch/verification.rs::GraphTaskDispatcher::settle_task_verification", "crates/roko-cli/src/runner/persist.rs::GateThresholds::load_or_default", "crates/roko-cli/src/runner/persist.rs::GateThresholds::save", "crates/roko-fs/src/atomic.rs::with_locked_json_transaction"]
 links = { depends_on = [], blocks = [], related = ["reg-c7ecf6", "find-4b4344", "gap-7a3527"], supersedes = [], duplicate_of = "" }
 
 [[verify]]

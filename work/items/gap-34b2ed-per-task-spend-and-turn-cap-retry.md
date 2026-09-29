@@ -13,7 +13,7 @@ last_verified = 2026-09-29
 last_verified_rev = "d9e79e9d8"
 source = "dogfood:tmp/dogfood/2026-09-28-portal-programme-continuation.md"
 discovered_from = "agent:e4-perf"
-anchors = ["crates/roko-cli/src/graph_task_dispatch.rs::GraphTaskSpendLedger", "crates/roko-cli/src/graph_task_dispatch.rs::TurnCapRetry", "crates/roko-cli/src/graph_checkpoint.rs"]
+anchors = ["crates/roko-cli/src/graph_task_dispatch/budget.rs::GraphTaskSpendLedger", "crates/roko-cli/src/graph_task_dispatch/turn_policy.rs::TurnCapRetry", "crates/roko-cli/src/graph_checkpoint.rs"]
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
 
 [[verify]]

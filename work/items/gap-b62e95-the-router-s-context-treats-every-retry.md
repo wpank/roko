@@ -13,7 +13,7 @@ last_verified = 2026-09-29
 last_verified_rev = "d9e79e9d8"
 source = "tmp/cybernetic-harness/assessment-2026-09-28/s02-s06-loops.md"
 discovered_from = "audit:tmp/cybernetic-harness/assessment-2026-09-28/s02-s06-loops.md"
-anchors = ["crates/roko-cli/src/graph_task_dispatch.rs::build_routing_context", "crates/roko-cli/src/runtime_feedback/routing.rs::build_fallback_routing_context"]
+anchors = ["crates/roko-cli/src/graph_task_dispatch/routing_context.rs::build_routing_context", "crates/roko-cli/src/runtime_feedback/routing.rs::build_fallback_routing_context"]
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
 
 [[verify]]

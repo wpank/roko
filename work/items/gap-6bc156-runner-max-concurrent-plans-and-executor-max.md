@@ -13,7 +13,7 @@ last_verified = 2026-09-29
 last_verified_rev = "d9e79e9d8"
 source = "dogfood:tmp/dogfood/2026-09-28-portal-programme-continuation.md"
 discovered_from = "agent:d1-parallel-plans"
-anchors = ["crates/roko-core/src/config/schema.rs:2464", "crates/roko-cli/src/config.rs:1960", "crates/roko-cli/src/config_cmd.rs:126", "crates/roko-cli/src/graph_task_dispatch.rs::graph_engine_inert_settings"]
+anchors = ["crates/roko-core/src/config/schema.rs:2464", "crates/roko-cli/src/config.rs:1960", "crates/roko-cli/src/config_cmd.rs:126", "crates/roko-cli/src/graph_task_dispatch/inert_settings.rs::graph_engine_inert_settings"]
 links = { depends_on = [], blocks = [], related = ["gap-7a3527"], supersedes = [], duplicate_of = "" }
 
 [[verify]]

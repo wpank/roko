@@ -14,7 +14,7 @@ last_verified = 2026-09-29
 last_verified_rev = "a17d9d766"
 source = "tmp/backlog/archive/404-batch-branch-integration.md##404 — Batch Branch Integration"
 discovered_from = "audit:tmp/backlog/archive/404-batch-branch-integration.md##404 — Batch Branch Integration"
-anchors = ["crates/roko-cli/src/graph_execution/plan_runner.rs", "crates/roko-cli/src/graph_task_dispatch.rs:3925", "crates/roko-cli/src/graph_execution/delivery.rs::GitDeliveryBackend", "crates/roko-cli/src/graph_execution/delivery.rs::CliCompletionDeliveryService", "crates/roko-cli/src/runner/merge.rs::PlanMerger", "crates/roko-cli/src/orchestrator/merge_queue.rs::MergeQueue", "crates/roko-cli/src/orchestrator/worktree/mod.rs::WorktreeManager::accept_attempt", "crates/roko-graph/src/delivery.rs::CompletionDeliveryRequest"]
+anchors = ["crates/roko-cli/src/graph_execution/plan_runner.rs", "crates/roko-cli/src/graph_task_dispatch.rs::GraphTaskDispatcher::dispatch", "crates/roko-cli/src/graph_execution/delivery.rs::GitDeliveryBackend", "crates/roko-cli/src/graph_execution/delivery.rs::CliCompletionDeliveryService", "crates/roko-cli/src/runner/merge.rs::PlanMerger", "crates/roko-cli/src/orchestrator/merge_queue.rs::MergeQueue", "crates/roko-cli/src/orchestrator/worktree/mod.rs::WorktreeManager::accept_attempt", "crates/roko-graph/src/delivery.rs::CompletionDeliveryRequest"]
 links = { depends_on = [], blocks = [], related = ["gap-415c54"], supersedes = [], duplicate_of = "" }
 
 [[verify]]

@@ -12,7 +12,7 @@ updated = 2026-09-29
 last_verified = 2026-09-29
 last_verified_rev = "a17d9d766"
 source = "tmp/backlog/231-cross-crate-change-impact-scoping.md"
-anchors = ["crates/roko-cli/src/runner/impact_analysis.rs::analyze", "crates/roko-cli/src/runner/preflight.rs::check_declared_change_impact", "crates/roko-cli/src/graph_task_dispatch.rs::GraphTaskDispatcher::settle_task_verification", "crates/roko-cli/src/dispatch/prompt_builder.rs::declared_impact_context", "crates/roko-cli/src/runner/cargo_command.rs::focused_verify_steps", "crates/roko-cli/src/commands/impact.rs::cmd_impact"]
+anchors = ["crates/roko-cli/src/runner/impact_analysis.rs::analyze", "crates/roko-cli/src/runner/preflight.rs::check_declared_change_impact", "crates/roko-cli/src/graph_task_dispatch/verification.rs::GraphTaskDispatcher::settle_task_verification", "crates/roko-cli/src/dispatch/prompt_builder.rs::declared_impact_context", "crates/roko-cli/src/runner/cargo_command.rs::focused_verify_steps", "crates/roko-cli/src/commands/impact.rs::cmd_impact"]
 goal = "core"
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
 

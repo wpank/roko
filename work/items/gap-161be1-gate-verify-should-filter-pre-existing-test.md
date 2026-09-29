@@ -14,7 +14,7 @@ last_verified = 2026-09-29
 last_verified_rev = "a17d9d766"
 source = "tmp/backlog/archive/166-gate-verify-preexisting-filter.md#166 — Gate Verify Should Filter Pre-Existing Test Failures"
 discovered_from = "audit:tmp/backlog/archive/166-gate-verify-preexisting-filter.md#166 — Gate Verify Should Filter Pre-Existing Test Failures"
-anchors = ["crates/roko-cli/src/graph_task_dispatch.rs::GraphTaskDispatcher::settle_task_verification", "crates/roko-cli/src/graph_task_dispatch/sibling_settle.rs::InFlightTasks::settle_failed_step", "crates/roko-cli/src/runner/gate_dispatch.rs::run_focused_baseline_verify", "crates/roko-cli/src/runner/gate_report.rs::filter_preexisting_failures", "crates/roko-core/src/config/gates.rs"]
+anchors = ["crates/roko-cli/src/graph_task_dispatch/verification.rs::GraphTaskDispatcher::settle_task_verification", "crates/roko-cli/src/graph_task_dispatch/sibling_settle.rs::InFlightTasks::settle_failed_step", "crates/roko-cli/src/runner/gate_dispatch.rs::run_focused_baseline_verify", "crates/roko-cli/src/runner/gate_report.rs::filter_preexisting_failures", "crates/roko-core/src/config/gates.rs"]
 links = { depends_on = [], blocks = [], related = ["gap-a534e4"], supersedes = [], duplicate_of = "" }
 
 [[verify]]

@@ -14,7 +14,7 @@ last_verified = 2026-09-29
 last_verified_rev = "a17d9d766"
 source = "tmp/archive/MASTER-ACTION-PLAN-2026-09-23.md#5.2 Proof Case 2: Normal agent diff + gate + merge"
 discovered_from = "audit:tmp/archive/MASTER-ACTION-PLAN-2026-09-23.md#5.2 Proof Case 2: Normal agent diff + gate + merge"
-anchors = ["crates/roko-cli/src/graph_task_dispatch.rs:3924", "crates/roko-cli/src/graph_execution/workspaces.rs::WorktreeExecutionWorkspaceProvider", "crates/roko-graph/src/engine.rs::GraphEngine::with_merge_queue", "crates/roko-cli/src/graph_execution/delivery.rs::CliCompletionDeliveryService", "crates/roko-graph/src/workspace.rs::WorkspaceReleasePolicy", "crates/roko-cli/src/graph_execution/plan_runner.rs:840"]
+anchors = ["crates/roko-cli/src/graph_task_dispatch.rs::GraphTaskDispatcher::dispatch", "crates/roko-cli/src/graph_execution/workspaces.rs::WorktreeExecutionWorkspaceProvider", "crates/roko-graph/src/engine.rs::GraphEngine::with_merge_queue", "crates/roko-cli/src/graph_execution/delivery.rs::CliCompletionDeliveryService", "crates/roko-graph/src/workspace.rs::WorkspaceReleasePolicy", "crates/roko-cli/src/graph_execution/plan_runner.rs:840"]
 links = { depends_on = ["spec-f830c4"], blocks = [], related = ["spec-f830c4"], supersedes = [], duplicate_of = "" }
 
 [[verify]]

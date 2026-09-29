@@ -1389,6 +1389,32 @@ fn failed_override_lowers_success_rate() {
 }
 
 #[test]
+fn a_replayed_failure_earns_zero_reward() {
+    // bug-3ea1f5: a WAL entry journaled before the reward-0 rule carries a
+    // failure's cost and latency reward; replay applies 0 instead.
+    let cascade = CascadeRouter::new(test_slugs());
+    let slug = "claude-sonnet-4-5";
+    let idx = cascade
+        .model_index_for_slug(slug)
+        .expect("slug in the router");
+
+    cascade.replay_observation(slug, &default_ctx().to_features(), idx, 0.45, false);
+
+    assert_eq!(cascade.confidence_snapshot()[slug], (1, 0));
+    let arm = cascade
+        .linucb()
+        .arm_stats()
+        .into_iter()
+        .find(|arm| arm.slug == slug)
+        .expect("arm for the slug");
+    assert_eq!(arm.observations, 1, "the failure reached LinUCB");
+    assert!(
+        arm.b_vector.iter().all(|b| *b == 0.0),
+        "a replayed failure earns no reward"
+    );
+}
+
+#[test]
 fn perplexity_observations_include_citations_latency_and_total_cost() {
     let cascade = CascadeRouter::new(vec![
         "sonar-pro".to_string(),

@@ -206,6 +206,16 @@ const OUTCOME_COST_CEILING_USD: f64 = 1.0;
 /// Latency at which an outcome's normalized latency reaches 1 (P0-05).
 const OUTCOME_LATENCY_CEILING_MS: f64 = 300_000.0;
 
+/// The `LinUCB` reward an outcome earns: `success_reward` for a success, and
+/// 0 for a failure, whose cost and latency bought nothing (bug-8da8ba).
+///
+/// Every router observation applies it, so no entry point can reward a
+/// failure for being cheap or fast (bug-3ea1f5).
+#[must_use]
+pub fn outcome_reward(success: bool, success_reward: f64) -> f64 {
+    if success { success_reward } else { 0.0 }
+}
+
 /// An outcome's cost and latency on the `[0, 1]` scale of the routing
 /// reward: $1.00 per task and 5 minutes reach 1 (P0-05).
 #[must_use]
@@ -1590,12 +1600,10 @@ impl CascadeRouter {
         let Some(model_idx) = self.model_index_for_slug(model_slug) else {
             return false;
         };
-        let reward = if success {
-            let (cost, latency) = normalized_cost_and_latency(cost_usd, duration_ms);
-            compute_routing_reward_with_weights(1.0, cost, latency, &RewardWeights::default())
-        } else {
-            0.0
-        };
+        let (cost, latency) = normalized_cost_and_latency(cost_usd, duration_ms);
+        let success_reward =
+            compute_routing_reward_with_weights(1.0, cost, latency, &RewardWeights::default());
+        let reward = outcome_reward(success, success_reward);
         let weight = dampening.unwrap_or(OVERRIDE_LEARNING_RATE).clamp(0.0, 1.0);
         self.observe_internal(
             &ctx.to_features(),
@@ -1850,7 +1858,8 @@ impl CascadeRouter {
 
     /// Apply one observation: a confidence trial (a success only when
     /// `success`) and a `LinUCB` update carrying `weight` (0.0 to 1.0) of a
-    /// full observation.
+    /// full observation. A failure's reward is 0 whatever the caller passed
+    /// ([`outcome_reward`]), including a WAL entry journaled before that rule.
     fn observe_internal(
         &self,
         context_vec: &[f64],
@@ -1898,6 +1907,7 @@ impl CascadeRouter {
         } // stats lock dropped
 
         // Phase 2: Update LinUCB (internal lock, not nested with ours).
+        let reward = outcome_reward(success, reward);
         self.linucb
             .update_features_weighted(context_vec, model_idx, reward, weight);
 

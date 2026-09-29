@@ -582,6 +582,42 @@ export function applyEvent(
       // Keep agent/cost/token stats across phase changes, but reset on new-generation starts.
       const keepStats = !isOlderGeneration && !!existing;
 
+      // Resolve agentId/role/model in a way that is independent of whether
+      // agent_spawned or task_started arrives first.
+      //
+      // agent_spawned already links an existing task record (see that case below).
+      // But when agent_spawned arrives *before* task_started, there is no task
+      // record yet, so the spawn is recorded only in state.agents. When
+      // task_started then arrives, we must backfill from state.agents; otherwise
+      // the task starts with agentId=null and the stream pane never shows
+      // "agent working" nor marks live steps as live.
+      //
+      // The rule: use the existing record's agent only when it already points at
+      // an *active* agent (i.e. a phase change, not a fresh start or retry).
+      // In all other cases scan state.agents for an active agent whose planId and
+      // taskId match this event. An inactive agent is never picked (guards retries
+      // from inheriting the finished agent) and another task's agent is never
+      // picked (planId+taskId must both match).
+      const existingAgentIsActive =
+        keepStats &&
+        existing!.agentId != null &&
+        state.agents[existing!.agentId]?.active === true;
+
+      let resolvedAgentId: string | null = keepStats ? existing!.agentId : null;
+      let resolvedRole: string | null = keepStats ? existing!.role : null;
+      let resolvedModel: string | null = keepStats ? existing!.model : null;
+
+      if (!existingAgentIsActive) {
+        const earlyAgent = Object.values(state.agents).find(
+          (a) => a.active && a.planId === event.plan_id && a.taskId === event.task_id,
+        );
+        if (earlyAgent) {
+          resolvedAgentId = earlyAgent.agentId;
+          resolvedRole = earlyAgent.role;
+          resolvedModel = earlyAgent.model;
+        }
+      }
+
       const task: TaskRun = {
         planId: event.plan_id,
         taskId: event.task_id,
@@ -591,9 +627,9 @@ export function applyEvent(
         attempts,
         startedAtMs: nowMs,
         finishedAtMs: null,
-        agentId: keepStats ? existing!.agentId : null,
-        role: keepStats ? existing!.role : null,
-        model: keepStats ? existing!.model : null,
+        agentId: resolvedAgentId,
+        role: resolvedRole,
+        model: resolvedModel,
         costUsd: keepStats ? existing!.costUsd : 0,
         inputTokens: keepStats ? existing!.inputTokens : 0,
         outputTokens: keepStats ? existing!.outputTokens : 0,

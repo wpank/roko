@@ -56,11 +56,16 @@ export function Stage({
     ? (plans?.find((p) => p.id === selection.plan) ?? null)
     : null;
 
-  // After a successful generate: refresh the list, navigate to the new plan,
-  // and close the prompt panel.
+  // After a successful generate: await the list refresh BEFORE navigating to
+  // the new plan. resolveSelection (in Workspace) clears a selected plan id
+  // that the loaded list does not contain — so if we called onSelect while the
+  // refetch was still in flight the first plan would be deselected and the
+  // operator left at "Select a plan". Awaiting invalidateQueries guarantees
+  // the fresh list (which now includes the new plan) is in the cache before
+  // we update the selection.
   const handleGenerateDone = React.useCallback(
-    (slug: string) => {
-      void queryClient.invalidateQueries({ queryKey: queryKeys.plans });
+    async (slug: string) => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.plans });
       onSelect({ plan: slug, task: null });
       onClosePrompt();
     },

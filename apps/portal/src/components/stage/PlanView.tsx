@@ -10,12 +10,14 @@
  */
 
 import React, { useCallback, useMemo, useState } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import type { WirePlanSummary } from '@/api/contracts';
 import {
   usePlanTasks,
   useRunPlan,
   useCancelPlan,
   useValidation,
+  queryKeys,
 } from '@/api/queries';
 import { useDashboardStore } from '@/stores/dashboard';
 import { buildTaskRows } from '@/lib/taskRows';
@@ -224,6 +226,7 @@ export function PlanView({
 
   // ── Remote data ───────────────────────────────────────────────────────────
 
+  const queryClient = useQueryClient();
   const run = useDashboardStore((s) => s.run);
   const { data: tasksData } = usePlanTasks(plan.id);
 
@@ -314,10 +317,20 @@ export function PlanView({
     [onSelectTask],
   );
 
-  const handleRevisionDone = useCallback(() => {
-    // useRevisePlan already invalidates tasks/source/validation in onSuccess.
+  const handleRevisionDone = useCallback(async () => {
+    // A revision lands only when its operation completes — after the 202 that
+    // useRevisePlan's onSuccess fired on. Refreshing on the 202 alone left the
+    // old tasks on screen because the server had not yet written the new tasks.
+    // Awaiting all four invalidations here ensures the cache holds the post-
+    // operation data before we close the prompt and the task list re-renders.
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: queryKeys.plans }),
+      queryClient.invalidateQueries({ queryKey: queryKeys.planTasks(plan.id) }),
+      queryClient.invalidateQueries({ queryKey: queryKeys.planSource(plan.id) }),
+      queryClient.invalidateQueries({ queryKey: queryKeys.validation(plan.id) }),
+    ]);
     setRevising(false);
-  }, []);
+  }, [queryClient, plan.id]);
 
   // ── Render ────────────────────────────────────────────────────────────────
 

@@ -2,7 +2,7 @@
 id = "bug-5e71d0"
 kind = "bug"
 title = "Disabled portal buttons explain themselves only in tooltips that can never show (pointer-events: none)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "visibility"
@@ -11,7 +11,7 @@ subsystem = ["apps/portal"]
 created = 2026-09-29
 updated = 2026-09-29
 last_verified = 2026-09-29
-last_verified_rev = "f99e45dba"
+last_verified_rev = "270526b3a"
 source = "plan:portal-programme/09-acceptance#T04"
 discovered_from = "plan:portal-programme/09-acceptance#T04"
 anchors = ["apps/portal/src/components/atoms/Button.tsx:70", "apps/portal/src/styles/globals.css:425", "apps/portal/src/components/rail/PlanRail.tsx:139"]
@@ -19,6 +19,12 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqF --include='*.test.ts' --include='*.test.tsx' 'disabled reason is visible' apps/portal/src && (cd apps/portal && npx vitest run src/components)"
+
+[closed]
+at = 2026-09-29
+commit = "270526b3a"
+by = "commit trailer"
+evidence = "270526b3a: button:disabled (globals.css) and Button's disabled classes no longer set pointer-events: none; disabled keeps cursor not-allowed and hover styling applies only to enabled buttons. apps/portal/src/components/disabledReason.test.tsx ('disabled reason is visible', 2 tests) renders the rail (Run all, group ▶) and the plan view while running (✦ Revise, ✎ Edit) with the portal's button rules applied: each button is disabled, carries its reason as its accessible description, and computes pointer-events other than none with cursor not-allowed; both tests fail on the parent commit. [[verify]] passes (vitest src/components: 30 files, 167 tests)."
 +++
 
 ## Problem

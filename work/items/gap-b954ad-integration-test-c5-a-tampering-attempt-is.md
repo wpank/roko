@@ -3,13 +3,14 @@ id = "gap-b954ad"
 kind = "gap"
 title = "Integration test C5: a tampering attempt is flagged and an empty diff is rejected"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p1"
 goal = "golden-path"
 size = "S"
 subsystem = ["roko-cli/tests"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-29
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e9"
 discovered_from = "tmp/cybernetic-harness/workstreams/assessment/W8-roko-as-executor.md (canary C5)"
 anchors = ["crates/roko-cli/tests/attempt_diff_canary.rs"]
@@ -66,3 +67,9 @@ Checked at `41c7ffbd6`: no test covers tampering or empty diffs on a Graph run.
 
 - The test edits no hot file. It can be written while the fixes land, and it merges last.
 - Use gap-3aa9cb's shared scripted provider if it exists.
+- **wk-tamper (2026-09-29):** Implemented on `work/gap-b72761` at `58f3c89a8`; cargo verification deferred to the
+  batch check. `cargo test -p roko-cli --test attempt_diff_canary` passed locally: 2 tests, 4.5 s, fake provider
+  only. Each scenario is a one-task plan run on its own, not a three-task plan, so the scripted agent never has to
+  tell tasks apart. Checkpoint status, its failed set and `roko plan status` are compared per plan.
+  Checked by hand once: with the screen's diff checks unwired, both tests fail at their first assertion. The
+  tampering T1 and the empty T3 both pass their verify steps (the pinned acceptance test included).

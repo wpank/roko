@@ -1417,6 +1417,7 @@ const DYNAMIC_MAP_SECTIONS: &[&str] = &[
     "agent.roles",
     "agent.tier_models",
     "gates.domain_gates",
+    "gates.max_output_tokens",
     "retrieval.role_token_budgets",
     "tools.profiles",
 ];
@@ -1686,6 +1687,12 @@ fn build_schema_tree() -> toml::Value {
         .domain_gates
         .insert("_schema_sentinel".to_string(), Vec::new());
     config.gates.max_rung = Some(0);
+    // `max_output_tokens` maps roles to output-token caps (a dynamic map
+    // section).
+    config
+        .gates
+        .max_output_tokens
+        .insert("_schema_sentinel".to_string(), 0);
     // `weights` flattens its default `RewardWeights` and may override them
     // per tier.
     let sentinel_weights = RewardWeights {

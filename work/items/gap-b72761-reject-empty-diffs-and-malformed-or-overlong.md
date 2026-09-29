@@ -3,13 +3,14 @@ id = "gap-b72761"
 kind = "gap"
 title = "Reject empty diffs and malformed or overlong agent output before the gates run"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p2"
 goal = "golden-path"
 size = "S"
 subsystem = ["roko-cli/graph_task_dispatch"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-29
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e9"
 discovered_from = "tmp/cybernetic-harness/tldr/research/C1-research-planning-decomposition-cascades.md (implication 5: red-flag pre-gates)"
 anchors = ["crates/roko-cli/src/graph_task_dispatch/red_flags.rs", "crates/roko-cli/src/graph_task_dispatch/verification.rs::GraphTaskDispatcher::settle_task_verification"]
@@ -76,3 +77,17 @@ is missing.
   split (E15.4, gap-c8e1f1).
 - Tasks without `files`, and refactor tasks, are exempt from the empty-diff rule.
 - **From wk-filer (2026-09-29):** reuse `SafetyLayer::post_dispatch_check` (`crates/roko-agent/src/safety/mod.rs`, about line 1107), which today only ACP calls.
+- **wk-tamper (2026-09-29):** Implemented on `work/gap-b72761` at `7ad975322`; cargo verification deferred to the
+  batch check. `cargo check -p roko-cli --lib --tests` passed, and so did the targeted tests
+  (`empty_diff_fails_before_verify_runs`, the overlong, malformed and stub companions, the `graph_task_dispatch` lib
+  suite). `cargo +nightly fmt --all -- --check` passed, and so did `cargo clippy -p roko-core -p roko-gate -p roko-cli
+  --no-deps -- -D warnings`. The screen is `graph_task_dispatch/red_flags.rs`, one call at the top of `settle_task_verification`, and the
+  task's diff comes from `graph_task_dispatch/diff_snapshot.rs`. That diff is cumulative from the task's first
+  attempt, against the lease base or a snapshot taken through a throwaway index, and leaves out paths declared by
+  overlapping siblings. A rejection settles as `gate_failed`/agent with `failure_class.rung = pre_verify:<check>`.
+  The overlong cap is `[gates] max_output_tokens`, per role, 200,000 by default. A resumed run's first attempt is
+  exempt from "no changes". Not done: `SafetyLayer::post_dispatch_check` was not reused, because it checks secret
+  leaks, path escapes and role write bans rather than these red flags. Free-text reviewer output is not judged
+  malformed, because the Graph path asks for no verdict format yet (gap-f4b935). The streaming path records no diff
+  base, so it gets the output checks only: `streaming.rs` belonged to wk-model-truth, and nothing in production
+  calls that path.

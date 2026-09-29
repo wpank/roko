@@ -9,8 +9,12 @@ impl GraphTaskDispatcher {
     /// gate-dependent learning record for this attempt.
     ///
     /// Shared by the batch and streaming dispatch paths so both reach the same
-    /// verdict. Authored verify steps are deterministic: any failure returns
-    /// `RokoError::Verify` (the Graph engine retries up to the task's
+    /// verdict. The pre-verify screen (`red_flags`) goes first: an attempt
+    /// with runaway or malformed output, or an implementer attempt that
+    /// changed nothing, is rejected before any step runs, as a
+    /// `RokoError::Verify` of gate `pre_verify:<check>`, whether or not the
+    /// task has verify steps. Authored verify steps are deterministic: any
+    /// failure returns `RokoError::Verify` (the Graph engine retries up to the task's
     /// `max_retries`, then fails the task) and is never force-accepted. Steps
     /// run fail-fast; the rest are reported as skipped. A step that fails
     /// while sibling tasks edit the same working tree waits for them to
@@ -31,6 +35,16 @@ impl GraphTaskDispatcher {
     ) -> Result<TaskGateVerdict> {
         let effective_workdir = effective_workdir.to_path_buf();
         let retry_key = retry_key.to_string();
+        self.screen_attempt(
+            spec,
+            task,
+            dispatch,
+            &effective_workdir,
+            attempt_key,
+            attempt_number,
+            progress_tx,
+        )
+        .await?;
         if !task.verify.is_empty() {
             let payload = GatePayload::in_dir(&effective_workdir)
                 .with_label(format!("{}/{}", spec.plan_id, task.id))
@@ -1064,6 +1078,7 @@ impl GraphTaskDispatcher {
             self.retrieval_ctx.lock().remove(&retry_key);
         }
 
+        self.forget_diff_base(attempt_key);
         Ok(if task.verify.is_empty() {
             TaskGateVerdict::Unverified
         } else {

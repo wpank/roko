@@ -55,10 +55,12 @@ use crate::task_parser::TaskDef;
 mod attempt;
 mod attempt_workspace;
 mod budget;
+mod diff_snapshot;
 mod failover;
 mod feedback;
 mod inert_settings;
 mod prompt_experiment;
+mod red_flags;
 mod retry_budget;
 mod retry_feedback;
 mod routing_context;
@@ -212,6 +214,9 @@ pub struct GraphTaskDispatcher {
     /// Attempts running now, so a verify step that fails while siblings edit
     /// the same working tree can wait for them to settle.
     in_flight: sibling_settle::InFlightTasks,
+    /// The tree each task started from, which the pre-verify screen
+    /// (`red_flags`) diffs its attempts against.
+    diff_bases: diff_snapshot::DiffBases,
 }
 
 impl GraphTaskDispatcher {
@@ -250,6 +255,7 @@ impl GraphTaskDispatcher {
             task_attempts: parking_lot::Mutex::new(HashMap::new()),
             attempts: AttemptBook::default(),
             in_flight: sibling_settle::InFlightTasks::default(),
+            diff_bases: diff_snapshot::DiffBases::default(),
         }
     }
 
@@ -863,6 +869,14 @@ impl TaskDispatcher for GraphTaskDispatcher {
         // dies from here on, the attempt keeps its key and counts as
         // abandoned.
         let mut attempt = self.open_attempt(spec, &task, ctx);
+        // The tree the task starts from, before its agent runs, for the
+        // pre-verify screen's diff (`red_flags`).
+        self.record_diff_base(
+            &attempt.key.attempt_key(),
+            &effective_workdir,
+            lease.as_ref().map(|lease| lease.base_revision.as_str()),
+        )
+        .await;
         let retry_feedback::NextAttempt {
             attempt: attempt_number,
             feedback: prior_gate_feedback,

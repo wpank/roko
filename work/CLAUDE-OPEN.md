@@ -5,7 +5,6 @@
 40 of 274 verified open items. Full list: `STATUS.md`. Add items per `work/README.md`.
 
 - **P0** [spec-a0403b](items/spec-a0403b-graph-engine-watchdog-integration.md) Graph Engine Watchdog Integration [spec] · size L · verified 2026-09-29
-- **P0** [bug-7eef96](items/bug-7eef96-privy-jwt-grants-admin-on-public-bind.md) Privy JWT grants admin to any Nunchi Privy user on a publicly bound roko serve [bug] · verified 2026-09-29 · **on hold:** Deferred by Will on 2026-09-28 ("file it for later"); do not pick until he lifts the hold
 - **P0** [gap-4ec59f](items/gap-4ec59f-worktree-isolation-flip-default-and-add-startup.md) Worktree Isolation: Flip Default and Add Startup Repair · size L · verified 2026-09-29
 - **P1** [spec-f830c4](items/spec-f830c4-404-batch-branch-integration.md) #404 — Batch Branch Integration [spec] · size L · verified 2026-09-29
 - **P1** [bug-7c8a57](items/bug-7c8a57-plan-audit-t0-06-100-line-cap.md) 100-line cap on read_files context injection [bug] · size S · verified 2026-09-29
@@ -44,3 +43,4 @@
 - **P1** [gap-ff95f5](items/gap-ff95f5-persist-taint-witness-and-custody-provenance-across.md) Persist Taint, Witness, and Custody Provenance Across Restart · size L · verified 2026-09-29
 - **P1** [bug-50caf2](items/bug-50caf2-plangatecell-gates-the-process-working-directory-as.md) PlanGateCell gates the process working directory as attempt 0 [bug] · size M · verified 2026-09-29
 - **P1** [gap-5d3b82](items/gap-5d3b82-proof-case-1-agent-early-exit-losteffect.md) Proof Case 1: Agent early exit / LostEffect · size M · verified 2026-09-29
+- **P1** [gap-415c54](items/gap-415c54-proof-case-2-normal-agent-diff-gate.md) Proof Case 2: Normal agent diff + gate + merge · size M · verified 2026-09-29

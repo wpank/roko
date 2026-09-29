@@ -19,7 +19,7 @@ use crate::tool_loop::{StreamEvent, StreamEventKind};
 use crate::usage::{Usage, UsageObservation, UsageSource};
 use async_trait::async_trait;
 use roko_core::agent::ProviderKind;
-use roko_core::child_env::CredentialScrub;
+use roko_core::child_env::{CredentialScrub, KEY_FILE_NAMES};
 use roko_core::config::model_registry::model_meta;
 use roko_core::defaults::DEFAULT_REQUEST_TIMEOUT_MS;
 use roko_core::{Body, Context, Kind, OperatingFrequency, Provenance, Signal};
@@ -34,46 +34,77 @@ use tokio::process::Command;
 use tokio::sync::mpsc;
 use tokio::time::{Duration, timeout};
 
+/// The PreToolUse guard: destructive git commands anywhere in a Bash
+/// command, recursive `rm`, and provider key files named by a command or a
+/// file tool's path. What it checks is documented at its top.
+const GUARD_SCRIPT: &str = include_str!("claude_cli_guard.py");
+
+/// Claude's file tools, whose path arguments the guard checks for provider
+/// key files.
+const FILE_TOOL_MATCHER: &str = "Read|Edit|MultiEdit|Write|NotebookEdit|Grep|Glob";
+
+/// The shell command of a guard hook running `check` (`bash` or `file`).
+/// Claude Code runs hooks with `sh -c` and blocks the tool call only on exit
+/// 2; any other failure is a non-blocking error that lets the call run. So a
+/// missing `python3`, and a guard that fails for any reason, exit 2 with a
+/// `BLOCKED:` message.
+fn guard_hook_command(check: &str) -> String {
+    format!(
+        "command -v python3 >/dev/null 2>&1 || {{ echo 'BLOCKED: the roko command guard needs python3 on PATH' >&2; exit 2; }}\n\
+         python3 -c '{script}' {check} || {{ status=$?; [ \"$status\" -eq 2 ] || echo \"BLOCKED: the roko command guard failed (python3 exit $status)\" >&2; exit 2; }}",
+        // Close the single-quoted string, add an escaped quote, reopen it.
+        script = GUARD_SCRIPT.replace('\'', r"'\''"),
+    )
+}
+
+/// Permission rules that keep Claude's file tools, and the file commands it
+/// recognizes in Bash (`cat`, `head`, redirections), away from provider key
+/// files. Deny rules hold in every permission mode, including
+/// `--dangerously-skip-permissions`; the guard hooks check the same files
+/// in case a Claude Code version does not apply a rule.
+fn key_file_deny_rules() -> Vec<String> {
+    let mut rules = vec![
+        "Read(~/.roko)".to_string(),
+        "Read(~/.roko/**)".to_string(),
+        "Edit(~/.roko/**)".to_string(),
+    ];
+    for name in KEY_FILE_NAMES {
+        rules.push(format!("Read(//**/.roko/{name})"));
+        rules.push(format!("Edit(//**/.roko/{name})"));
+    }
+    rules
+}
+
 /// Build the Claude CLI `--settings` JSON payload with safety hooks.
 ///
 /// Claude Code hook entries do not support per-hook condition fields. Keep the
 /// filtering inside one command so ordinary Bash calls are allowed while the
 /// destructive commands that should never be launched by a model in this
-/// workspace are blocked.
+/// workspace are blocked. The payload does not depend on the environment:
+/// the guard resolves `~` and the working directory when it runs.
 #[must_use]
 pub fn build_settings_json() -> String {
     serde_json::json!({
+        "permissions": {
+            "deny": key_file_deny_rules(),
+        },
         "hooks": {
-            "PreToolUse": [{
-                "matcher": "Bash",
-                "hooks": [{
-                    "type": "command",
-                    "command": r#"command -v python3 >/dev/null 2>&1 || exit 0
-python3 -c 'import json, re, sys
-try:
-    data = json.load(sys.stdin)
-except Exception:
-    sys.exit(0)
-tool_input = data.get("tool_input") or data.get("toolInput") or {}
-command = tool_input.get("command") or data.get("command") or ""
-if not isinstance(command, str):
-    sys.exit(0)
-checks = [
-    (r"^\s*git\s+checkout(?:\s|$)", "BLOCKED: git checkout forbidden in plan worktrees"),
-    (r"^\s*git\s+switch(?:\s|$)", "BLOCKED: git switch forbidden in plan worktrees"),
-    (r"^\s*git\s+branch\s+-m(?:\s|$)", "BLOCKED: branch rename forbidden in plan worktrees"),
-    (r"^\s*git\s+push(?:\s|$)", "BLOCKED: agents must not push - roko handles merges"),
-    (r"(^|[;&|]\s*)rm\s+-[A-Za-z]*r[A-Za-z]*f[A-Za-z]*(?:\s|$)", "BLOCKED: destructive file deletion forbidden"),
-    (r"(^|[;&|]\s*)rm\s+-[A-Za-z]*f[A-Za-z]*r[A-Za-z]*(?:\s|$)", "BLOCKED: destructive file deletion forbidden"),
-    (r"(^|[;&|]\s*)rm\s+-[A-Za-z]*r[A-Za-z]*(?:\s|$)", "BLOCKED: destructive file deletion forbidden"),
-]
-for pattern, message in checks:
-    if re.search(pattern, command):
-        print(message, file=sys.stderr)
-        sys.exit(2)
-sys.exit(0)'"#
-                }]
-            }]
+            "PreToolUse": [
+                {
+                    "matcher": "Bash",
+                    "hooks": [{
+                        "type": "command",
+                        "command": guard_hook_command("bash"),
+                    }]
+                },
+                {
+                    "matcher": FILE_TOOL_MATCHER,
+                    "hooks": [{
+                        "type": "command",
+                        "command": guard_hook_command("file"),
+                    }]
+                }
+            ]
         }
     })
     .to_string()
@@ -1403,50 +1434,241 @@ mod tests {
             .and_then(Value::as_str)
             .expect("hook command");
         assert!(command.contains("tool_input"));
-        assert!(command.contains("git\\s+checkout"));
-        assert!(command.contains("git\\s+switch"));
-        assert!(command.contains("git\\s+branch"));
-        assert!(command.contains("git\\s+push"));
+        for subcommand in ["checkout", "switch", "restore", "push", "reset", "stash", "clean"] {
+            assert!(command.contains(subcommand), "guard ignores git {subcommand}");
+        }
         assert!(command.contains("rm"));
+        assert!(!command.contains("|| exit 0"), "the guard must not fail open");
     }
 
     #[test]
     fn settings_hook_allows_safe_bash_and_blocks_destructive_bash() {
-        let value: Value = serde_json::from_str(&build_settings_json()).unwrap();
-        let command = value
-            .pointer("/hooks/PreToolUse/0/hooks/0/command")
-            .and_then(Value::as_str)
-            .expect("hook command");
+        let command = bash_hook_command();
 
-        assert_eq!(run_hook_command(command, "echo ok").code(), Some(0));
+        assert_eq!(run_hook_command(&command, "echo ok").code(), Some(0));
         assert_eq!(
-            run_hook_command(command, "git checkout main").code(),
+            run_hook_command(&command, "git checkout main").code(),
             Some(2)
         );
     }
 
-    fn run_hook_command(command: &str, bash_command: &str) -> std::process::ExitStatus {
-        let mut child = StdCommand::new("sh")
-            .arg("-c")
-            .arg(command)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("spawn hook command");
-        let payload = serde_json::json!({
+    #[test]
+    fn settings_hook_denies_destructive_git_anywhere_in_a_command() {
+        let command = bash_hook_command();
+
+        for denied in [
+            "cd x && git checkout main",
+            "git -C . stash",
+            "git reset --hard",
+            "git clean -fdx",
+            "git restore .",
+            "git status; git switch main",
+            "git fetch || git push origin HEAD",
+            "echo ok | git stash pop",
+            "git status\ngit branch -M main",
+            "(cd sub && git stash)",
+            "GIT_DIR=.git git --no-pager branch -D feature",
+            "git --git-dir .git -c core.pager=cat reset --hard HEAD~1",
+            "sudo -u dev git stash",
+            "bash -c \"git clean -f\"",
+            "echo \"$(git checkout -- src)\"",
+            "if git stash; then echo saved; fi",
+            "rm -rf target",
+        ] {
+            assert_eq!(
+                run_hook_command(&command, denied).code(),
+                Some(2),
+                "`{denied}` should be denied"
+            );
+        }
+        for allowed in [
+            "git status",
+            "git stash list",
+            "git stash show -p",
+            "echo ok",
+            "git log --oneline -5 && git diff --stat",
+            "git clean -n",
+            "git reset --soft HEAD~1",
+            "git branch -a",
+            "git commit -m \"docs: never run git stash here\"",
+        ] {
+            assert_eq!(
+                run_hook_command(&command, allowed).code(),
+                Some(0),
+                "`{allowed}` should be allowed"
+            );
+        }
+    }
+
+    #[test]
+    fn settings_hook_fails_closed_without_python3() {
+        let command = bash_hook_command();
+        let no_python = tempdir().unwrap();
+
+        let output = run_hook(
+            &command,
+            &bash_payload("echo ok"),
+            &[("PATH", no_python.path())],
+        );
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "no python3 on PATH must block"
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stderr).starts_with("BLOCKED:"),
+            "{output:?}"
+        );
+
+        // Input the guard cannot read blocks too.
+        for payload in ["not json", r#"{"tool_input":{"command":["git","stash"]}}"#] {
+            let output = run_hook(&command, payload, &[]);
+            assert_eq!(output.status.code(), Some(2), "{payload} should block");
+            assert!(
+                String::from_utf8_lossy(&output.stderr).starts_with("BLOCKED:"),
+                "{output:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn settings_json_denies_reading_key_files() {
+        let value: Value = serde_json::from_str(&build_settings_json()).unwrap();
+        let deny: Vec<&str> = value
+            .pointer("/permissions/deny")
+            .and_then(Value::as_array)
+            .expect("deny rules")
+            .iter()
+            .filter_map(Value::as_str)
+            .collect();
+        for rule in [
+            "Read(~/.roko/**)",
+            "Read(//**/.roko/.env)",
+            "Read(//**/.roko/secrets.toml)",
+            "Read(//**/.roko/credentials.json)",
+        ] {
+            assert!(deny.contains(&rule), "missing {rule} in {deny:?}");
+        }
+
+        // The hooks deny the same files, in case a rule does not apply. HOME
+        // points at an empty directory so no real key file is involved.
+        assert_eq!(
+            value
+                .pointer("/hooks/PreToolUse/1/matcher")
+                .and_then(Value::as_str),
+            Some(FILE_TOOL_MATCHER)
+        );
+        let file_hook = value
+            .pointer("/hooks/PreToolUse/1/hooks/0/command")
+            .and_then(Value::as_str)
+            .expect("file hook command");
+        let bash_hook = bash_hook_command();
+        let home = tempdir().unwrap();
+        let workdir = tempdir().unwrap();
+        let env = [("HOME", home.path())];
+        let file_payload = |tool_input: &Value| {
+            serde_json::json!({ "cwd": workdir.path(), "tool_input": tool_input }).to_string()
+        };
+
+        for tool_input in [
+            serde_json::json!({ "file_path": "~/.roko/.env" }),
+            serde_json::json!({ "file_path": ".roko/.env" }),
+            serde_json::json!({ "file_path": "../other/.roko/secrets.toml" }),
+            serde_json::json!({ "path": "~/.roko" }),
+            serde_json::json!({ "path": ".roko", "pattern": "API_KEY" }),
+        ] {
+            let output = run_hook(file_hook, &file_payload(&tool_input), &env);
+            assert_eq!(
+                output.status.code(),
+                Some(2),
+                "{tool_input} should be denied"
+            );
+        }
+        for tool_input in [
+            serde_json::json!({ "file_path": "src/lib.rs" }),
+            serde_json::json!({ "file_path": ".roko/state/graph/p/checkpoint.json" }),
+            serde_json::json!({ "path": "src", "pattern": "fn main" }),
+            serde_json::json!({ "pattern": "**/*.rs" }),
+        ] {
+            let output = run_hook(file_hook, &file_payload(&tool_input), &env);
+            assert_eq!(
+                output.status.code(),
+                Some(0),
+                "{tool_input} should be allowed"
+            );
+        }
+
+        for denied in [
+            "cat ~/.roko/.env",
+            "cat .roko/secrets.toml",
+            "cd .roko && cat .env",
+            "grep KEY \"$HOME/.roko/credentials.json\"",
+        ] {
+            let output = run_hook(&bash_hook, &bash_payload(denied), &env);
+            assert_eq!(
+                output.status.code(),
+                Some(2),
+                "`{denied}` should be blocked"
+            );
+        }
+        for allowed in ["cat README.md", "ls .roko/state"] {
+            let output = run_hook(&bash_hook, &bash_payload(allowed), &env);
+            assert_eq!(
+                output.status.code(),
+                Some(0),
+                "`{allowed}` should be allowed"
+            );
+        }
+    }
+
+    fn bash_hook_command() -> String {
+        let value: Value = serde_json::from_str(&build_settings_json()).unwrap();
+        value
+            .pointer("/hooks/PreToolUse/0/hooks/0/command")
+            .and_then(Value::as_str)
+            .expect("hook command")
+            .to_string()
+    }
+
+    fn bash_payload(bash_command: &str) -> String {
+        serde_json::json!({
             "tool_input": {
                 "command": bash_command,
             },
         })
-        .to_string();
-        child
+        .to_string()
+    }
+
+    fn run_hook_command(command: &str, bash_command: &str) -> std::process::ExitStatus {
+        run_hook(command, &bash_payload(bash_command), &[]).status
+    }
+
+    /// Run a hook command the way Claude Code does (`sh -c`, input on
+    /// stdin), with `env` overriding the inherited environment.
+    fn run_hook(
+        command: &str,
+        stdin: &str,
+        env: &[(&str, &std::path::Path)],
+    ) -> std::process::Output {
+        // An absolute path, so a test can replace PATH.
+        let mut cmd = StdCommand::new("/bin/sh");
+        cmd.arg("-c")
+            .arg(command)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped());
+        for (key, value) in env {
+            cmd.env(key, value);
+        }
+        let mut child = cmd.spawn().expect("spawn hook command");
+        // The hook may exit before it reads its input (no python3), so a
+        // failed write is expected there.
+        let _ = child
             .stdin
-            .as_mut()
+            .take()
             .expect("hook stdin")
-            .write_all(payload.as_bytes())
-            .expect("write hook payload");
-        child.wait().expect("wait for hook")
+            .write_all(stdin.as_bytes());
+        child.wait_with_output().expect("wait for hook")
     }
 
     #[test]

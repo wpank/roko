@@ -3,13 +3,14 @@ id = "bug-a66941"
 kind = "bug"
 title = "Agents can read the provider key files, such as ~/.roko/.env"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p1"
 goal = "release"
 size = "S"
 subsystem = ["roko-agent/safety", "roko-agent/claude_cli_agent"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-29
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e3"
 discovered_from = "tmp/cybernetic-harness/tldr/05-GAPS-AND-PROPOSALS.md (P0 #3: make key files unreadable to agents); workstreams/assessment/W10-benchmarks-proof.md (VB_SECRET leak)"
 anchors = ["crates/roko-agent/src/safety/path.rs::canonicalize_with_policy", "crates/roko-agent/src/claude_cli_agent.rs::build_settings_json"]
@@ -78,3 +79,4 @@ Unchanged at `41c7ffbd6`. bug-7d7200's fix is uncommitted in `../roko-wt-env`. I
 - **Wait for bug-7d7200.** Do this after bug-7de5df, which edits the same function.
 - **This is best effort without an OS sandbox.** An obfuscated `python3 -c open(…)` still reads the file. Keeping
   keys out of the agent user's reach (a sandbox, the keychain or a separate user) is a decision for the author.
+- Implemented on `work/bug-7de5df` at `9c0d7196b`; cargo verification deferred to the batch check.

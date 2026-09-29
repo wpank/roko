@@ -63,9 +63,7 @@ pub fn build_settler(feedback: &FeedbackBundle) -> FeedbackSettler {
             learn_dir: learn_dir.clone(),
         }),
         // 7: playbook -- optional
-        Box::new(PlaybookSink {
-            learn_dir: learn_dir.clone(),
-        }),
+        Box::new(PlaybookSink),
         // 8: knowledge -- optional
         Box::new(KnowledgeSink {
             learn_dir: learn_dir.clone(),
@@ -448,11 +446,13 @@ impl SettlementSink for ErrorPatternSink {
 // Row 7: playbook (optional)
 // ---------------------------------------------------------------------------
 
-/// Updates playbook success/failure counters.
+/// Playbook success/failure counters.
+///
+/// Receipts carry no playbook ids, so this row never applies: the Graph
+/// dispatcher credits the playbooks each prompt used
+/// (`GraphTaskDispatcher::emit_feedback`).
 #[derive(Debug)]
-struct PlaybookSink {
-    learn_dir: PathBuf,
-}
+struct PlaybookSink;
 
 #[async_trait]
 impl SettlementSink for PlaybookSink {
@@ -461,19 +461,10 @@ impl SettlementSink for PlaybookSink {
     }
 
     fn applicable(&self, _receipt: &TaskAttemptReceiptV1) -> bool {
-        true
+        false
     }
 
-    async fn settle(&self, receipt: &TaskAttemptReceiptV1) -> Result<(), SinkError> {
-        let store = roko_learn::playbook::PlaybookStore::new(self.learn_dir.join("playbooks"));
-        let playbook_id = format!("task-{}", receipt.task_id);
-        store
-            .record_outcome(&playbook_id, receipt.succeeded())
-            .await
-            .map_err(|e| SinkError {
-                sink_key: self.sink_key().to_string(),
-                message: format!("playbook outcome: {e}"),
-            })?;
+    async fn settle(&self, _receipt: &TaskAttemptReceiptV1) -> Result<(), SinkError> {
         Ok(())
     }
 }

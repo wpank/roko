@@ -50,6 +50,7 @@ use crate::runner::tui_bridge::TuiBridge;
 use crate::runtime_feedback::{FeedbackEvent, FeedbackFacade};
 use crate::task_parser::TaskDef;
 
+mod prompt_experiment;
 mod retry_budget;
 mod retry_feedback;
 mod sibling_settle;
@@ -812,18 +813,62 @@ fn timeout_resume_note(previous_ms: u64, timeout_ms: u64) -> String {
     )
 }
 
-/// Short, class-prefixed reason for a failed attempt (`"<class>: <first line>"`),
-/// recorded on its episode.
+/// Longest failure reason recorded on an episode, in bytes.
+const MAX_FAILURE_REASON_BYTES: usize = 2_048;
+
+/// Class-prefixed reason for a failed attempt (`"<class>: <detail>"`),
+/// recorded on its episode. A reason within [`MAX_FAILURE_REASON_BYTES`]
+/// keeps every line, so a verify summary keeps the step that failed; a
+/// longer one keeps its first lines and its tail around an omission marker.
 fn attempt_failure_reason(class: &str, detail: &str) -> String {
-    let first_line = detail
-        .lines()
-        .map(str::trim)
-        .find(|line| !line.is_empty())
-        .unwrap_or("no detail");
-    format!(
-        "{class}: {}",
-        first_line.chars().take(200).collect::<String>()
-    )
+    let detail = detail.trim();
+    let detail = if detail.is_empty() {
+        "no detail"
+    } else {
+        detail
+    };
+    let budget = MAX_FAILURE_REASON_BYTES.saturating_sub(class.len() + 2);
+    format!("{class}: {}", head_and_tail(detail, budget))
+}
+
+/// `text` when it fits in `max` bytes; otherwise its head and tail, cut at
+/// line breaks near the cut points, joined by `… N bytes omitted …`.
+fn head_and_tail(text: &str, max: usize) -> String {
+    if text.len() <= max {
+        return text.to_string();
+    }
+    // Room for the "\n… N bytes omitted …\n" marker.
+    let budget = max.saturating_sub(48);
+    let mut head_end = budget / 2;
+    while !text.is_char_boundary(head_end) {
+        head_end -= 1;
+    }
+    let head = &text[..head_end];
+    let head = head
+        .rfind('\n')
+        .filter(|&cut| cut >= head_end * 3 / 4)
+        .map_or(head, |cut| &head[..cut]);
+    let mut tail_start = text.len() - (budget - budget / 2);
+    while !text.is_char_boundary(tail_start) {
+        tail_start += 1;
+    }
+    let tail = &text[tail_start..];
+    let tail = tail
+        .find('\n')
+        .filter(|&cut| cut <= tail.len() / 4)
+        .map_or(tail, |cut| &tail[cut + 1..]);
+    let omitted = text.len() - head.len() - tail.len();
+    format!("{head}\n… {omitted} bytes omitted …\n{tail}")
+}
+
+/// [`attempt_failure_reason`] for failed verification: the verify summary
+/// itself, which leads with any `blocked_by_sibling = <task>` blame, without
+/// the error's `gate error (…)` wrapper.
+fn verify_failure_reason(error: &RokoError) -> String {
+    match error {
+        RokoError::Verify { message, .. } => attempt_failure_reason("verify", message),
+        other => attempt_failure_reason("verify", &other.to_string()),
+    }
 }
 
 /// [`attempt_failure_reason`] for an unsuccessful provider result.
@@ -1571,6 +1616,31 @@ impl GraphTaskDispatcher {
         attempt_id
     }
 
+    /// Plan a dispatch. When prompt assembly fails with experiment
+    /// treatments (say, two running experiments on one section), plan again
+    /// without them: a broken experiment must not stop the task.
+    fn plan_dispatch(
+        &self,
+        spec: &TaskExecutionSpec,
+        task: &TaskDef,
+        dispatch_ctx: &mut DispatchContext,
+    ) -> Result<crate::dispatch::RunnerDispatchPlan> {
+        match self.factory.dispatcher().plan(task, dispatch_ctx) {
+            Err(error) if dispatch_ctx.prompt_experiment.is_some() => {
+                tracing::warn!(
+                    plan_id = %spec.plan_id,
+                    task_id = %task.id,
+                    %error,
+                    "prompt assembly with experiment treatments failed; dispatching without them"
+                );
+                dispatch_ctx.prompt_experiment = None;
+                self.factory.dispatcher().plan(task, dispatch_ctx)
+            }
+            planned => planned,
+        }
+        .map_err(|error| RokoError::Planning(error.to_string()))
+    }
+
     /// Emit all feedback events after a task dispatch completes.
     ///
     /// This is the Graph engine equivalent of Runner-v2's post-dispatch
@@ -1578,9 +1648,11 @@ impl GraphTaskDispatcher {
     /// but do not block the task result.
     ///
     /// `attempt_id` comes from [`Self::next_attempt_id`]. `failure_reason` is
-    /// the attempt's short class-prefixed reason when `succeeded` is false
+    /// the attempt's bounded class-prefixed reason when `succeeded` is false
     /// (see [`attempt_failure_reason`]); it lands on the episode together with
-    /// the provider-reported turn count.
+    /// the provider-reported turn count. A success of a task with authored
+    /// verify steps also emits [`FeedbackEvent::TaskVerified`], which grows
+    /// durable knowledge.
     async fn emit_feedback(
         &self,
         spec: &TaskExecutionSpec,
@@ -1627,8 +1699,11 @@ impl GraphTaskDispatcher {
         } else {
             ModelChoiceSource::Router
         };
+        let experiment_settlement =
+            prompt_experiment::settlement(succeeded, failure_reason.as_deref());
+        let diagnostics = &dispatch_plan.prompt.diagnostics;
 
-        // ── W04: FeedbackFacade (episodes + routing) ─────────────────────
+        // ── W04: FeedbackFacade (episodes + routing + knowledge) ─────────
         if let Some(facade) = &self.feedback.feedback_facade {
             let outcome = crate::dispatch::AgentOutcome {
                 task_id: task.id.clone(),
@@ -1661,8 +1736,8 @@ impl GraphTaskDispatcher {
                 routing_context,
                 prompt_text: Some(dispatch_plan.prompt.system_prompt.clone()),
                 cache_read_tokens: u64::from(dispatch.result.usage.cache_read_tokens),
-                knowledge_ids: vec![],
-                playbook_ids: vec![],
+                knowledge_ids: diagnostics.knowledge_ids.clone(),
+                playbook_ids: diagnostics.playbook_ids.clone(),
                 initial_model: model_slug.clone(),
                 turns: u64::from(agent_num_turns),
                 failure_reason,
@@ -1674,6 +1749,50 @@ impl GraphTaskDispatcher {
                     %error,
                     "graph feedback facade error (best-effort)"
                 );
+            }
+
+            // Authored verify steps are deterministic and never
+            // force-accepted, so a success of a task that declares them is a
+            // gate-backed pass (`TaskGateVerdict::Passed`). Only those grow
+            // durable knowledge.
+            if succeeded && !task.verify.is_empty() {
+                let verified = crate::runtime_feedback::VerifiedAttempt {
+                    plan_id: spec.plan_id.clone(),
+                    task_id: task.id.clone(),
+                    attempt_id: format!("{}:{attempt_id}", prompt_experiment::run_id()),
+                    title: task.title.clone(),
+                    task_type: task.tier.clone(),
+                    role: role.to_string(),
+                    model: model_slug.clone(),
+                    files: task.files.clone(),
+                    verify_steps: task
+                        .verify
+                        .iter()
+                        .enumerate()
+                        .map(|(index, step)| {
+                            (verify_step_label(index, &step.phase), step.command.clone())
+                        })
+                        .collect(),
+                    knowledge_ids: diagnostics.knowledge_ids.clone(),
+                    agent_output: dispatch
+                        .result
+                        .output
+                        .body
+                        .as_text()
+                        .unwrap_or_default()
+                        .to_string(),
+                };
+                if let Err(error) = facade
+                    .on_event(&FeedbackEvent::TaskVerified(verified))
+                    .await
+                {
+                    tracing::warn!(
+                        plan_id = %spec.plan_id,
+                        task_id = %task.id,
+                        %error,
+                        "graph verified-knowledge feedback error (best-effort)"
+                    );
+                }
             }
         }
 
@@ -1856,16 +1975,20 @@ impl GraphTaskDispatcher {
         }
 
         // ── W07: Playbook outcome recording ──────────────────────────────
+        //
+        // Credit the playbooks prompt assembly actually injected.
         if let Some(playbook_dir) = &self.feedback.playbook_dir {
             let store = roko_learn::playbook::PlaybookStore::new(playbook_dir);
-            let playbook_id = format!("task-{}", task.id);
-            if let Err(error) = store.record_outcome(&playbook_id, succeeded).await {
-                tracing::warn!(
-                    plan_id = %spec.plan_id,
-                    task_id = %task.id,
-                    %error,
-                    "graph playbook outcome recording failed (best-effort)"
-                );
+            for playbook_id in &diagnostics.playbook_ids {
+                if let Err(error) = store.record_outcome(playbook_id, succeeded).await {
+                    tracing::warn!(
+                        plan_id = %spec.plan_id,
+                        task_id = %task.id,
+                        %playbook_id,
+                        %error,
+                        "graph playbook outcome recording failed (best-effort)"
+                    );
+                }
             }
         }
 
@@ -1882,38 +2005,16 @@ impl GraphTaskDispatcher {
         }
 
         // ── W14: Experiment settlement ───────────────────────────────────
+        //
+        // Settles this attempt's prompt treatments (prepared at prompt
+        // assembly, bound to the launched prompt) with its outcome.
         if let Some(store_path) = &self.feedback.experiment_store_path {
-            if store_path.exists() {
-                let settlement = if succeeded {
-                    roko_learn::prompt_experiment::AssignmentSettlement::Observed { success: true }
-                } else {
-                    roko_learn::prompt_experiment::AssignmentSettlement::Observed { success: false }
-                };
-                let attempt_key = roko_learn::prompt_experiment::PromptAttemptKey::new(
-                    "graph",
-                    &spec.plan_id,
-                    &task.id,
-                    0,
-                );
-                if let Err(error) = roko_learn::prompt_experiment::ExperimentStore::settle_attempt(
-                    store_path,
-                    &attempt_key,
-                    settlement,
-                ) {
-                    // AttemptNotFound is normal for non-experiment runs; log others.
-                    if !matches!(
-                        error,
-                        roko_learn::prompt_experiment::PromptAssignmentError::AttemptNotFound(_)
-                    ) {
-                        tracing::warn!(
-                            plan_id = %spec.plan_id,
-                            task_id = %task.id,
-                            %error,
-                            "graph experiment settlement failed (best-effort)"
-                        );
-                    }
-                }
-            }
+            prompt_experiment::settle(
+                store_path,
+                prompt_experiment::attempt_key(&spec.plan_id, &task.id, attempt_id),
+                experiment_settlement,
+            )
+            .await;
         }
     }
 
@@ -2798,12 +2899,14 @@ impl GraphTaskDispatcher {
                     if let Some((strategy, query, results_count, latency_ms)) = ctx_snapshot {
                         // RAG-11: update experiment store with gate-fail outcome.
                         if let Some(exp_path) = &self.feedback.experiment_store_path {
-                            let mut store =
-                                roko_learn::prompt_experiment::ExperimentStore::load_or_new(
-                                    exp_path,
-                                );
-                            store.record_retrieval_outcome(&strategy, false);
-                            let _ = store.save(exp_path);
+                            // Locked: prompt treatments share the file.
+                            let _ = roko_learn::prompt_experiment::ExperimentStore::transaction(
+                                exp_path,
+                                |store| {
+                                    store.record_retrieval_outcome(&strategy, false);
+                                    Ok(())
+                                },
+                            );
                         }
                         // RAG-10: write settled record.
                         if let Some(path) = self.feedback.retrieval_outcomes_path.clone() {
@@ -2924,10 +3027,14 @@ impl GraphTaskDispatcher {
                 if let Some((strategy, query, results_count, latency_ms)) = ctx_snapshot {
                     // RAG-11: update experiment store with gate-pass outcome.
                     if let Some(exp_path) = &self.feedback.experiment_store_path {
-                        let mut store =
-                            roko_learn::prompt_experiment::ExperimentStore::load_or_new(exp_path);
-                        store.record_retrieval_outcome(&strategy, true);
-                        let _ = store.save(exp_path);
+                        // Locked: prompt treatments share the file.
+                        let _ = roko_learn::prompt_experiment::ExperimentStore::transaction(
+                            exp_path,
+                            |store| {
+                                store.record_retrieval_outcome(&strategy, true);
+                                Ok(())
+                            },
+                        );
                     }
                     // RAG-10: write settled record.
                     if let Some(path) = self.feedback.retrieval_outcomes_path.clone() {
@@ -3234,27 +3341,31 @@ fn dream_routing_bias(
 /// RAG-11: assign the retrieval-strategy arm from the experiment store.
 ///
 /// Blocking file I/O: call it from `spawn_blocking`. Assignment is a pure
-/// read of the persisted arm statistics, so the store is written back (same
-/// unlocked load and atomic save as before) only when this call registered
-/// the experiment, not on every dispatch.
+/// read of the persisted arm statistics. The store is written only to
+/// register the experiment, and then under its lock, so the prompt
+/// treatments parallel attempts record in the same file are never lost.
 fn assign_retrieval_strategy_arm(exp_path: &Path) -> String {
     use roko_learn::prompt_experiment::ExperimentStore;
 
     let mut store = ExperimentStore::load_or_new(exp_path);
-    let newly_registered = store
+    if store
         .get(ExperimentStore::RETRIEVAL_STRATEGY_EXPERIMENT_ID)
-        .is_none();
-    store.ensure_retrieval_strategy_experiment();
-    let arm = store
-        .assign_retrieval_strategy()
-        .unwrap_or_else(|| roko_learn::retrieval_outcome::STRATEGY_KEYWORD.to_string());
-    if newly_registered && let Err(error) = store.save(exp_path) {
-        tracing::debug!(
-            %error,
-            "RAG-11: persisting the retrieval-strategy experiment failed (best-effort)"
-        );
+        .is_none()
+    {
+        store.ensure_retrieval_strategy_experiment();
+        if let Err(error) = ExperimentStore::transaction(exp_path, |locked| {
+            locked.ensure_retrieval_strategy_experiment();
+            Ok(())
+        }) {
+            tracing::debug!(
+                %error,
+                "RAG-11: persisting the retrieval-strategy experiment failed (best-effort)"
+            );
+        }
     }
-    arm
+    store
+        .assign_retrieval_strategy()
+        .unwrap_or_else(|| roko_learn::retrieval_outcome::STRATEGY_KEYWORD.to_string())
 }
 
 /// Build a reasonable `RoutingContext` for Graph task dispatch.
@@ -3678,7 +3789,17 @@ impl TaskDispatcher for GraphTaskDispatcher {
         } else {
             None
         };
-        let dispatch_ctx = DispatchContext {
+        // Durable, attempt-scoped prompt treatments from the root workspace's
+        // experiment store; settled with the attempt's outcome in
+        // `emit_feedback`.
+        let prompt_experiment = self
+            .feedback
+            .experiment_store_path
+            .as_deref()
+            .and_then(|store| {
+                prompt_experiment::context(store, &spec.plan_id, &task.id, &efficiency_attempt_id)
+            });
+        let mut dispatch_ctx = DispatchContext {
             plan_id: spec.plan_id.clone(),
             role: role.to_string(),
             workdir: effective_workdir.clone(),
@@ -3694,8 +3815,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
                 budget_reservation.routing_budget_usd(),
             ),
             attempt: attempt_number,
-            // Graph does not yet own runner terminal feedback receipts.
-            prompt_experiment: None,
+            prompt_experiment: prompt_experiment.clone(),
             gate_feedback: prior_gate_feedback,
             routing_context: Some(routing_ctx),
             routing_bias,
@@ -3706,11 +3826,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
             cached_cfactor_context: cached_cfactor_context.clone(),
         };
         let prompt_assembly_started = std::time::Instant::now();
-        let dispatch_plan = self
-            .factory
-            .dispatcher()
-            .plan(&task, &dispatch_ctx)
-            .map_err(|error| RokoError::Planning(error.to_string()))?;
+        let dispatch_plan = self.plan_dispatch(spec, &task, &mut dispatch_ctx)?;
         let prompt_assembly_latency_ms = prompt_assembly_started.elapsed().as_millis() as u64;
 
         // ── RAG-10/11: Retrieval outcome telemetry (pre-gate) ────────────
@@ -3832,6 +3948,16 @@ impl TaskDispatcher for GraphTaskDispatcher {
             max_turns: Some(max_turns),
             live_output: None,
         };
+
+        // Bind the prompt treatments to the exact final prompt before launch;
+        // an attempt that ends before `emit_feedback` abandons them on drop.
+        let _launched_treatments = prompt_experiment::LaunchedTreatments::bind(
+            prompt_experiment,
+            &dispatch_plan.prompt.diagnostics.experiment_assignments,
+            &request.system_prompt,
+            &request.prompt,
+        )
+        .await;
 
         // ── T04: Pre-dispatch agent_spawned ─────────────────────────────
         //
@@ -4071,10 +4197,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
             wall_duration,
             &dispatch_plan,
             Some(routing_ctx_for_feedback),
-            verification
-                .as_ref()
-                .err()
-                .map(|error| attempt_failure_reason("verify", &error.to_string())),
+            verification.as_ref().err().map(verify_failure_reason),
         )
         .await;
 
@@ -4431,7 +4554,16 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
         } else {
             None
         };
-        let dispatch_ctx = DispatchContext {
+        let retry_key = format!("{}/{}", spec.plan_id, task.id);
+        let efficiency_attempt_id = self.next_attempt_id(&retry_key);
+        let prompt_experiment = self
+            .feedback
+            .experiment_store_path
+            .as_deref()
+            .and_then(|store| {
+                prompt_experiment::context(store, &spec.plan_id, &task.id, &efficiency_attempt_id)
+            });
+        let mut dispatch_ctx = DispatchContext {
             plan_id: spec.plan_id.clone(),
             role: role.to_string(),
             workdir: lease.path.clone(),
@@ -4445,7 +4577,7 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
                 budget_reservation.routing_budget_usd(),
             ),
             attempt: 0,
-            prompt_experiment: None,
+            prompt_experiment: prompt_experiment.clone(),
             gate_feedback: None,
             routing_context: Some(routing_ctx),
             routing_bias: None,
@@ -4455,11 +4587,7 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
             cached_workspace_context: cached_workspace_context.clone(),
             cached_cfactor_context: cached_cfactor_context.clone(),
         };
-        let dispatch_plan = self
-            .factory
-            .dispatcher()
-            .plan(&task, &dispatch_ctx)
-            .map_err(|error| RokoError::Planning(error.to_string()))?;
+        let dispatch_plan = self.plan_dispatch(spec, &task, &mut dispatch_ctx)?;
         let contract = effective_agent_contract(role, &task);
         let timeout_ms = base_attempt_timeout_ms(&self.config, spec);
         let request = AgentDispatchRequest {
@@ -4486,6 +4614,13 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
             max_turns: Some(max_turns),
             live_output: None,
         };
+        let _launched_treatments = prompt_experiment::LaunchedTreatments::bind(
+            prompt_experiment,
+            &dispatch_plan.prompt.diagnostics.experiment_assignments,
+            &request.system_prompt,
+            &request.prompt,
+        )
+        .await;
 
         // ── Live output forwarder (streaming path) ────────────────────────
         let request = {
@@ -4603,8 +4738,6 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
                 //
                 // Same verdict logic as the batch path; gates run in the lease
                 // path and progress streams through the event channel.
-                let retry_key = format!("{}/{}", spec.plan_id, task.id);
-                let efficiency_attempt_id = self.next_attempt_id(&retry_key);
                 let verification = if dispatch.result.success {
                     let attempt_number = self.next_retry_attempt(&spec.plan_id, &task.id).attempt;
                     Some(
@@ -4630,7 +4763,7 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
                 // Settled after the gate so learning sees the verified outcome.
                 let failure_reason = match &verification {
                     Some(Ok(_)) => None,
-                    Some(Err(error)) => Some(attempt_failure_reason("verify", &error.to_string())),
+                    Some(Err(error)) => Some(verify_failure_reason(error)),
                     None => Some(provider_failure_reason(
                         dispatch.result.output.body.as_text().unwrap_or_default(),
                     )),
@@ -7729,7 +7862,170 @@ printf '%s\n' '{{"type":"result","session_id":"sess-b","model":"claude-sonnet-4-
         );
         assert_eq!(
             provider_failure_reason("exit 1: claude failed\nmore"),
-            "provider: exit 1: claude failed"
+            "provider: exit 1: claude failed\nmore"
+        );
+    }
+
+    #[test]
+    fn a_verify_failure_reason_keeps_the_failing_step() {
+        let summary = verify_failure_summary(
+            "Write the greeting",
+            3,
+            &[
+                "verify[1:test] `cargo test -p greet` failed: exit code: 101\n\
+               thread 'greets' panicked at src/lib.rs:4:5"
+                    .to_string(),
+            ],
+            &["verify[2:lint] (`cargo clippy`)".to_string()],
+        );
+        let reason = verify_failure_reason(&RokoError::Verify {
+            gate: "graph-verify".into(),
+            message: summary,
+        });
+        assert!(reason.starts_with("verify: 1/3 verify step(s) failed for task"));
+        assert!(reason.contains("verify[1:test] `cargo test -p greet` failed"));
+        assert!(reason.contains("panicked at src/lib.rs:4:5"));
+        assert!(
+            reason.ends_with("Skipped after the first failure: verify[2:lint] (`cargo clippy`)")
+        );
+        assert_eq!(
+            attempt_failure_reason("verify", "  \n"),
+            "verify: no detail"
+        );
+    }
+
+    /// Through the batch dispatch path: a verified attempt grows durable
+    /// knowledge and credits its prompt treatment and the playbook its prompt
+    /// used with a success; a verify failure credits both with a failure and
+    /// keeps the failing step and its output on the episode.
+    #[tokio::test]
+    async fn dispatch_outcomes_feed_knowledge_experiments_playbooks_and_episodes() {
+        use roko_learn::prompt_experiment::{ExperimentStore, PromptExperiment, PromptVariant};
+
+        let temp = tempdir().expect("tempdir");
+        let store_path = temp.path().join(".roko/learn/experiments.json");
+        std::fs::create_dir_all(store_path.parent().unwrap()).unwrap();
+        let mut experiment = PromptExperiment::new(
+            "role-ab",
+            "role_identity",
+            ["terse", "thorough"]
+                .into_iter()
+                .map(|id| PromptVariant {
+                    id: id.into(),
+                    name: id.into(),
+                    section_name: "role_identity".into(),
+                    content: format!("You are the Implementer ({id} variant)."),
+                    slug: None,
+                    active: true,
+                })
+                .collect(),
+        );
+        experiment.role = Some("implementer".into());
+        let mut store = ExperimentStore::new();
+        store.register(experiment);
+        store.save(&store_path).unwrap();
+        let playbook_dir = temp.path().join(".roko/learn/playbooks");
+        let playbooks = roko_learn::playbook::PlaybookStore::new(&playbook_dir);
+        playbooks
+            .save(&roko_learn::playbook::Playbook::new(
+                "banner-steps",
+                "Render a greeting banner",
+            ))
+            .await
+            .unwrap();
+        let episodes_path = temp.path().join(".roko/episodes.jsonl");
+        let facade = crate::runtime_feedback::FeedbackFacade::new()
+            .with_sink(Arc::new(crate::runtime_feedback::EpisodeSink::at(
+                &episodes_path,
+            )))
+            .with_sink(Arc::new(
+                crate::runtime_feedback::VerifiedKnowledgeSink::for_workdir(temp.path()),
+            ));
+        let feedback = GraphFeedbackContext {
+            feedback_facade: Some(Arc::new(facade)),
+            experiment_store_path: Some(store_path.clone()),
+            playbook_dir: Some(playbook_dir),
+            ..GraphFeedbackContext::default()
+        };
+        let (dispatcher, mut task) =
+            make_test_dispatcher(&temp, VERIFY_PROVIDER, no_auto_fix, feedback).await;
+        task.title = "Render the greeting banner".into();
+        task.verify = vec![verify_step("structural", "true")];
+        dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &CellContext::new())
+            .await
+            .expect("the verified attempt passes");
+
+        let mut failing = task.clone();
+        failing.id = "T-FAIL".into();
+        failing.verify = vec![verify_step(
+            "check",
+            "echo 'checking the banner'; echo 'banner.txt: the greeting is missing' >&2; exit 3",
+        )];
+        dispatcher
+            .dispatch(&make_spec(&failing), Vec::new(), &CellContext::new())
+            .await
+            .expect_err("the failing verify step fails the attempt");
+
+        let knowledge = roko_neuro::KnowledgeStore::for_workdir(temp.path())
+            .read_all()
+            .unwrap();
+        assert!(
+            knowledge.iter().any(|entry| {
+                entry.source.as_deref() == Some("runtime:gate_verdict")
+                    && entry.content.contains("Render the greeting banner")
+            }),
+            "{knowledge:#?}"
+        );
+
+        let stats = ExperimentStore::load_strict(&store_path)
+            .unwrap()
+            .get("role-ab")
+            .unwrap()
+            .stats
+            .values()
+            .fold((0, 0), |(trials, successes), stats| {
+                (trials + stats.trials, successes + stats.successes)
+            });
+        assert_eq!(stats, (2, 1), "one observed success and one failure");
+        let playbook = playbooks.load("banner-steps").await.unwrap().unwrap();
+        assert_eq!((playbook.success_count, playbook.failure_count), (1, 1));
+
+        let episodes = roko_learn::episode_logger::EpisodeLogger::read_all(&episodes_path)
+            .await
+            .unwrap();
+        let failed = episodes
+            .iter()
+            .find(|episode| episode.task_id == "T-FAIL")
+            .expect("failure episode");
+        let reason = failed.failure_reason.as_deref().unwrap_or_default();
+        assert!(
+            reason.starts_with("verify: 1/1 verify step(s) failed for task"),
+            "{reason}"
+        );
+        assert!(reason.contains("verify[0:check]"), "{reason}");
+        assert!(reason.contains("the greeting is missing"), "{reason}");
+    }
+
+    #[test]
+    fn a_long_failure_reason_keeps_its_head_and_tail_within_the_bound() {
+        let detail = (0..400)
+            .map(|line| format!("line {line:03} of the failing é output"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let reason = attempt_failure_reason("verify", &detail);
+
+        assert!(reason.len() <= MAX_FAILURE_REASON_BYTES, "{}", reason.len());
+        assert!(reason.starts_with("verify: line 000 of the failing é output\n"));
+        assert!(reason.ends_with("line 399 of the failing é output"));
+        assert!(reason.contains(" bytes omitted …\n"));
+        // Cuts land on line breaks, so no line is kept in part.
+        assert!(
+            reason.lines().all(|line| (line.starts_with("verify: line ")
+                || line.starts_with("line "))
+                && line.ends_with(" output")
+                || line.contains("bytes omitted")),
+            "{reason}"
         );
     }
 

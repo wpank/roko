@@ -11,8 +11,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use roko_learn::episode_logger::{Episode, EpisodeLogger, Usage};
+use roko_learn::episode_logger::{Episode, EpisodeGateVerdict, EpisodeLogger, Usage};
 use roko_learn::hdc_fingerprint::{encode as encode_hdc_fingerprint, fingerprint_episode};
+use roko_learn::hindsight::BLAMED_TASKS_KEY;
 
 use super::{FeedbackEvent, FeedbackSink};
 
@@ -77,6 +78,22 @@ impl FeedbackSink for EpisodeSink {
                     "failure_class".into(),
                     serde_json::Value::String(class.to_string()),
                 );
+            }
+            // An authored verify gate failed: record the verdict, and any
+            // sibling task the failure is attributed to, for hindsight.
+            if let Some(reason) = failure_reason
+                .as_deref()
+                .filter(|r| r.starts_with("verify: "))
+            {
+                episode
+                    .gate_verdicts
+                    .push(EpisodeGateVerdict::new("verify", false));
+                let blamed = super::hindsight::blamed_tasks(plan_id, reason);
+                if !blamed.is_empty() {
+                    episode
+                        .extra
+                        .insert(BLAMED_TASKS_KEY.into(), serde_json::json!(blamed));
+                }
             }
         }
         episode.usage = Usage {
@@ -263,6 +280,44 @@ mod tests {
             contents.contains("\"successful_model\":\"claude-sonnet-4-6\""),
             "extra should contain successful_model"
         );
+    }
+
+    #[tokio::test]
+    async fn verify_failure_keeps_the_full_reason_and_a_failed_verdict() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("episodes.jsonl");
+        let sink = EpisodeSink::at(&path);
+        let reason = "verify: 1/2 verify step(s) failed for task `Greet`:\n\n\
+                      verify[1:test] `cargo test` failed: exit code: 101\n\
+                      thread 'greets' panicked at src/lib.rs:4:5";
+        let mut failed = outcome();
+        failed.is_error = true;
+        sink.on_event(&FeedbackEvent::TaskCompleted {
+            turns: 3,
+            failure_reason: Some(reason.into()),
+            plan_id: "plan-1".into(),
+            task_id: "task-1".into(),
+            outcome: failed,
+            model_source: ModelChoiceSource::Router,
+            succeeded: false,
+            routing_context: None,
+            prompt_text: None,
+            cache_read_tokens: 0,
+            knowledge_ids: vec![],
+            playbook_ids: vec![],
+            initial_model: String::new(),
+        })
+        .await
+        .unwrap();
+
+        let episode = EpisodeLogger::read_all(&path).await.unwrap().remove(0);
+        assert_eq!(episode.failure_reason.as_deref(), Some(reason));
+        assert_eq!(episode.extra["failure_class"], "verify");
+        assert_eq!(
+            episode.gate_verdicts,
+            [EpisodeGateVerdict::new("verify", false)]
+        );
+        assert!(!episode.extra.contains_key(BLAMED_TASKS_KEY));
     }
 
     #[tokio::test]

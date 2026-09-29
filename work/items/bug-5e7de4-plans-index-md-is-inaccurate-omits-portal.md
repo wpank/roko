@@ -2,7 +2,7 @@
 id = "bug-5e7de4"
 kind = "bug"
 title = "plans/INDEX.md is inaccurate (omits portal-programme, zero task counts, counts junk as executable)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "tooling"
@@ -10,11 +10,19 @@ subsystem = ["roko-cli/plan-index"]
 created = 2026-09-25
 updated = 2026-09-29
 last_verified = 2026-09-29
-last_verified_rev = "d9e79e9d8"
+last_verified_rev = "6e5a2d55d"
 source = "plans/INDEX.md:12"
 discovered_from = "audit:plans/INDEX.md:12"
 anchors = ["crates/roko-cli/src/index.rs::count_top_level_tasks", "crates/roko-cli/src/index.rs::collect_plan_index_entries", "plans/INDEX.md"]
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
+
+[[verify]]
+command = "grep -q 'portal-programme/01-backend-plan-service' plans/INDEX.md && grep -qw 'fn plans_index_lists_plans_inside_plan_sets' crates/roko-cli/src/index.rs && grep -qw 'fn plans_index_lists_unrunnable_plans_apart_from_the_backlog' crates/roko-cli/src/index.rs && cargo test -p roko-cli --lib index::tests::plans_index_"
+
+[closed]
+at = 2026-09-29
+commit = "6e5a2d55d"
+evidence = "roko plan index now finds plans with find_plan_dirs (plan sets such as portal-programme/, and plan.md-only dirs), counts [[tasks]] entries, and lists plans roko plan run cannot load (no tasks.toml, [[tasks]] instead of [[task]], no [meta]/meta.plan, no tasks, schema errors) under Not Runnable, outside the executable totals; the master index counts executable plans the same way. plans/INDEX.md regenerated from the tracked plans: 24 executable (18 in portal-programme/), 197 tasks, 6 fixtures; target/debug/roko plan index --check --workdir . passes. Rendering a copy of the main checkout's plans/ (demos/ set, junk moved to demos/_fixtures) gives 24 executable plus 12 fixtures under demos/. Tests: index::tests::plans_index_* (incl. plans_index_lists_plans_inside_plan_sets, plans_index_lists_unrunnable_plans_apart_from_the_backlog) pass."
 +++
 INDEX lists 15 executable plans/17 tasks incl. junk; shows 0 tasks for plans using [[tasks]] (scratch-test, test-fibonacci, audit-test, modal-test, test-check, test-greeting-module); omits nested portal-programme/01-08 and plan.md-only dirs. CLAUDE.md claims 124/124 across 30 plans.
 

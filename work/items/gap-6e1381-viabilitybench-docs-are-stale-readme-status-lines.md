@@ -57,3 +57,4 @@ The code is ahead of the docs. No behaviour depends on these lines, apart from `
 ## Notes
 
 - Status claims belong in `work/`. The README should say only what exists and point at the epic for the rest.
+- 2026-09-29 (wk-bench-ci, wk-bench-proxy): also stale at ad391f99a. `README.md:13-14` still lists the verifier CI (gap-7ee7c2, done) as not built, and `README.md:88` lists the metering proxy (gap-e003ec, done) under "Not yet built". `driver/census.py`'s `CACHE_PARTS` (:61, :123) and F1's `_bytecode_cache` (`families/f1_pyconv/gaming.py:48`, :70) now repeat astcheck's own cache filtering (bug-993e7e) and can go.

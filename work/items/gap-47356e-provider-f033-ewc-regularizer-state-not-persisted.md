@@ -28,3 +28,7 @@ Imported without verification from:
 How to verify: Confirm in crates/roko-learn/src/bandits.rs, crates/roko-learn/src/cascade_router.rs whether still true: EWC regularizer state not persisted in `CascadeSnapshot`
 
 Verified 2026-09-28: EWC state lives on ArmState.ewc (crates/roko-learn/src/model_router.rs:441-443, serde-enabled). Production persistence, though, goes through CascadeSnapshot.linucb_state = LinUCBSnapshot {a_matrices, b_vectors, dim, observations} (crates/roko-learn/src/cascade/persistence.rs:15-23), and export_linucb_snapshot (model_router.rs:1408) / import_linucb_snapshot (:1440) drop it. LinUCBRouter::save/load, which would keep ArmState, are only used in tests. CascadeSnapshot now lives in cascade/persistence.rs, not cascade_router.rs. Severity p2.
+
+## Notes
+
+- 2026-09-29 (wk-router2, from bug-605a8a): on `work/bug-605a8a`, cascade-router saves merge each process's learning by adding its A and b deltas (7769a5ae4), which assumes learning is additive. EWC state (the anchor parameters and Fisher terms on `ArmState.ewc`) does not merge by addition: summing two processes' anchors or Fisher terms double-counts the penalty. When this item persists EWC state, it also needs a merge rule for concurrent saves, for example keeping the snapshot's anchor and combining Fisher terms by a weighted mean, or making one writer own the EWC state.

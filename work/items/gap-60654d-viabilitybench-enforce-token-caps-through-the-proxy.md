@@ -2,14 +2,16 @@
 id = "gap-60654d"
 kind = "gap"
 title = "ViabilityBench: enforce token caps through the proxy, fill the meter cross-check, and bundle proxy.jsonl"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p2"
 goal = "proof"
 size = "S"
 subsystem = ["bench"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-29
+last_verified_rev = "5fc9370d0"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (21:40, wk-bench-fix1's report on gap-e90ebd)"
 anchors = ["benchmarks/viabilitybench/driver/vb.py", "benchmarks/viabilitybench/driver/records.py", "benchmarks/viabilitybench/analysis/report.py"]
@@ -19,6 +21,12 @@ links = { depends_on = [], blocks = [], related = ["gap-e90ebd", "gap-e003ec", "
 
 [[verify]]
 command = "grep -rqw 'def test_proxy_caps_meter_check_and_bundle' benchmarks/viabilitybench/ && cd benchmarks/viabilitybench && .venv/bin/python -m pytest -q -k test_proxy_caps_meter_check_and_bundle"
+
+[closed]
+at = 2026-09-29
+commit = "5fc9370d0"
+by = "wk-bench-fix1"
+evidence = "5fc9370d0: _start_proxy sets input_token_cap = caps.input_tokens_per_task, and _run_one marks a failed or errored task the proxy refused aborted_cap (input_token_cap); records.build writes the proxy figure to costs.meter_cross_check_usd and _run_one flags drift past 5% (ledger._compare) in errors.jsonl; report.py --bundle copies proxy.jsonl scrubbed to PROXY_FIELDS. Verify passes (test_proxy_caps_meter_check_and_bundle, which fails under each of 5 mutations removing a part); full viabilitybench suite 311 passed, 4 skipped. Manual: MAIN's prebuilt roko (33e107da1) through the proxy with a 1,500-token cap ends aborted_cap/input_token_cap, and its record keeps the meter figure ($0.000775) where run_roko leaves the cost unknown."
 +++
 
 ## Problem

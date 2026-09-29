@@ -3,13 +3,14 @@ id = "bug-62e3f4"
 kind = "bug"
 title = "Episodes, costs.json and efficiency.jsonl leave out the three helper calls after each failed gate"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p1"
 goal = "truth"
 size = "M"
 subsystem = ["roko-cli/graph_task_dispatch"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-29
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (20:01, wk-bench-rokoarm's report on gap-b7ab99)"
 anchors = ["crates/roko-cli/src/graph_task_dispatch/routing_context.rs::select_cheap_model_key", "crates/roko-cli/src/graph_task_dispatch.rs:431", "crates/roko-cli/src/graph_task_dispatch/verification.rs::settle_task_verification", "crates/roko-cli/src/graph_task_dispatch/feedback.rs"]
@@ -64,3 +65,8 @@ At BASE (4315add32), the helper calls run outside the task's usage accounting. S
 
 - gap-a6e2c3 is the same kind of hole for plan generation and revision spend.
 - bug-31438d (the provider-reported model) touches the same writers. Fix them together if convenient.
+- Implemented on `work/bug-31438d` at `18070c0dc`; cargo verification deferred to the batch check. `helper_calls_after_a_failed_gate_are_costed` (targeted `cargo test` passed at the branch head). Changes:
+  - `cheap_agent()` returns a `HelperAgent` that counts each call reaching a provider toward the attempt whose verify steps are settling. A tokio task-local set around `settle_task_verification` on both dispatch paths does this, with no edits to `verification.rs` or `routing_context.rs`.
+  - The attempt waits for its background helpers (at most `timeouts.llm_call_secs` + 5 s), then records each call: task spend, the plan's cost ledger (`costs.json`), and a cost row and an efficiency row keyed by the attempt (`role = "helper"`, `attempt_id = <key>/helper-N`).
+  - The totals go on the verdict (`helpers`) and the episode (`extra.helper_calls`, `helper_cost_usd`, `helper_tokens_in/out`), outside the agent run's `usage`.
+  - Not done: a helper call still running when the wait ends is logged, not recorded. Calls refused for exhaustion during failover are accounted in spend but still have no rows.

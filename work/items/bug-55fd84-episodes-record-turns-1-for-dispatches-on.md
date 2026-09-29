@@ -3,13 +3,14 @@ id = "bug-55fd84"
 kind = "bug"
 title = "Episodes record turns = 1 for dispatches on providers that report no turn count"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p2"
 goal = "truth"
 size = "S"
 subsystem = ["roko-cli/graph_task_dispatch", "roko-agent/runtime_events"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-29
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (20:01, wk-bench-rokoarm's report on gap-b7ab99)"
 anchors = ["crates/roko-cli/src/graph_task_dispatch/feedback.rs:141", "crates/roko-cli/src/runtime_feedback/episodes.rs::EpisodeSink", "crates/roko-agent/src/runtime_events.rs"]
@@ -59,3 +60,8 @@ At BASE (4315add32) the fallback is `.unwrap_or(1)`. No non-Claude provider supp
 ## Notes
 
 - bug-f9ae3e covers the efficiency record's tool-call count, which is a different field with a different cause.
+- Implemented on `work/bug-31438d` at `897f558ab` (feedback.rs fallback at `06bdb71be`); cargo verification deferred to the batch check. `episode_turns_count_tool_loop_calls` (targeted `cargo test` passed at the branch head). Changes:
+  - roko's tool loop tags its output `num_turns` with its model calls.
+  - `dispatch_v2::reported_num_turns` returns `None` instead of 1 when the agent reports no count.
+  - The episode takes the verdict's `executed.turns`, and when that is `None` records `turns = 0` with `extra.turns_unknown = true`. Efficiency rows carry `turns_unknown`, and emit_feedback's fallback is 0, the event's documented "unknown".
+  - Not done: `verification.rs`'s gate-pass and gate-fail efficiency rows still fall back to turn 1 (wk-tamper's file).

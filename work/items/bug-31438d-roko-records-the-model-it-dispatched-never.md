@@ -3,13 +3,14 @@ id = "bug-31438d"
 kind = "bug"
 title = "Roko records the model it dispatched, never the model the provider reports serving"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p1"
 goal = "truth"
 size = "M"
 subsystem = ["roko-cli/graph_task_dispatch", "roko-core/usage"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-29
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (20:01, wk-bench-rokoarm's report on gap-b7ab99)"
 anchors = ["crates/roko-cli/src/graph_task_dispatch/feedback.rs:151", "crates/roko-core/src/usage.rs::UsageObservation", "crates/roko-agent/src/translate/openai.rs::parse_usage_observation", "crates/roko-cli/src/runtime_feedback/episodes.rs::EpisodeSink"]
@@ -67,3 +68,9 @@ At BASE (4315add32), the reported model is parsed into `UsageObservation.model` 
 ## Notes
 
 - gap-c4f364 records reported models for the benchmark's Claude Code arm. This item is Roko's own records.
+- Implemented on `work/bug-31438d` at `b0cf98b3d` (feedback.rs rows at `06bdb71be`); cargo verification deferred to the batch check. `records_carry_the_provider_reported_model` and the other tests it adds (targeted `cargo test` passed at the branch head). Changes:
+  - roko's tool loop keeps each response's `model` (`ToolLoopTurnTrace.model`, `BackendResponse::extract_model`), and `usage_obs.model` is the last one named, never the configured slug.
+  - The verdict's `executed` gains `model_dispatched`, `models_reported` and `model_mismatch`.
+  - Episodes (`extra.model_reported`, `extra.model_mismatch`) carry it, and so do cost and efficiency rows (`roko_learn::efficiency::ExecutedRow`).
+  - A substitution is logged at WARN and priced by the model that served, unknown (0) when that model has no price. `served_model::same_model` treats dated snapshots and provider prefixes as the same model. Under `--model` a substitution fails the attempt with a non-retryable `model_substituted` error after it is recorded.
+  - Not done: the CLI adapters (Claude CLI, Codex, Cursor, Gemini native) still fill `usage_obs.model` with the configured slug when the CLI names none. The streaming dispatch path warns and prices but does not fail a pin. The bridge's `model_call` rows still name only the dispatched slug.

@@ -193,7 +193,7 @@ semantics and built-in profiles.
 | `knowledge_error_patterns` | bool | false | Error pattern enrichment |
 | `replan_on_gate_failure` | bool | false | Trigger replan on gate failures |
 | `replan_max_per_plan` | u32 | 1 | Maximum replans per plan |
-| `dream_on_completion` | bool | true | Run dream consolidation on completion |
+| `dream_on_completion` | bool | false | Opt in to dream consolidation on plan completion; otherwise dreams run on demand via `roko knowledge dream run` |
 | `use_lookahead_router` | bool | false | Enable lookahead routing |
 | `gate_threshold_flush_interval` | u64 | 300 | Adaptive threshold flush cadence (seconds) |
 

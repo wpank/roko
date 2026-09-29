@@ -17,10 +17,11 @@ pub const DEFAULT_GATE_THRESHOLD_FLUSH_INTERVAL: u64 = 10;
 pub struct DreamsConfig {
     /// Automatically trigger dream consolidation after a plan completes.
     ///
-    /// When `true` (the default) the runner spawns a non-blocking dream
-    /// consolidation task after each plan that dispatched at least one agent
-    /// turn. Setting this to `false` disables the automatic trigger; dreams
-    /// can still be run manually via `roko knowledge dream run`.
+    /// The trigger fires only when this (default `true`) and
+    /// [`LearningConfig::dream_on_completion`] (default `false`) are both
+    /// `true`, so by default no dream runs. Setting this to `false` disables
+    /// the automatic trigger; dreams can still be run manually via
+    /// `roko knowledge dream run`.
     #[serde(default = "default_true")]
     pub trigger_on_plan_complete: bool,
     /// Maximum number of concurrent dream consolidation runs.
@@ -84,10 +85,11 @@ pub struct LearningConfig {
     pub replan_gate_attempts: u32,
     /// Run dream consolidation after a plan completes.
     ///
-    /// Superseded by [`DreamsConfig::trigger_on_plan_complete`]; both must be
-    /// `true` for the trigger to fire. Kept for backward compatibility with
-    /// existing `roko.toml` files.
-    #[serde(default = "default_true")]
+    /// Defaults to `false`: each automatic dream costs a model call, so dreams
+    /// run on demand, through `roko knowledge dream run`. An explicit `true`
+    /// opts in; [`DreamsConfig::trigger_on_plan_complete`] must also be `true`
+    /// for the trigger to fire.
+    #[serde(default)]
     pub dream_on_completion: bool,
     /// Dreams consolidation subsystem configuration.
     #[serde(default)]
@@ -211,7 +213,7 @@ impl Default for LearningConfig {
             replan_on_gate_failure: true,
             replan_max_per_plan: default_replan_max_per_plan(),
             replan_gate_attempts: default_replan_gate_attempts(),
-            dream_on_completion: default_true(),
+            dream_on_completion: false,
             dreams: DreamsConfig::default(),
             use_lookahead_router: false,
             lookahead_threshold: default_lookahead_threshold(),
@@ -260,5 +262,18 @@ mod tests {
         let zero: LearningConfig =
             toml::from_str("gate_threshold_flush_interval = 0").expect("parse zero interval");
         assert_eq!(zero.effective_gate_threshold_flush_interval(), 1);
+    }
+
+    #[test]
+    fn dream_on_completion_defaults_to_false() {
+        assert!(!LearningConfig::default().dream_on_completion);
+
+        let omitted: LearningConfig = toml::from_str("").expect("parse empty learning config");
+        assert!(!omitted.dream_on_completion);
+
+        // An explicit opt-in is still honoured.
+        let opted_in: LearningConfig =
+            toml::from_str("dream_on_completion = true").expect("parse explicit opt-in");
+        assert!(opted_in.dream_on_completion);
     }
 }

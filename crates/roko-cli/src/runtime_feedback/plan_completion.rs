@@ -31,11 +31,12 @@ const DREAM_TIMEOUT: Duration = Duration::from_secs(300);
 /// Spawns a non-blocking dream consolidation cycle on [`PlanCompleted`].
 ///
 /// The sink checks two config flags before firing:
-/// - `learning.dream_on_completion` (legacy top-level toggle)
-/// - `learning.dreams.trigger_on_plan_complete` (per-subsystem toggle)
+/// - `learning.dream_on_completion` (top-level opt-in, default `false`)
+/// - `learning.dreams.trigger_on_plan_complete` (per-subsystem toggle, default `true`)
 ///
-/// Both must be `true` (the default) for the trigger to fire. A single
-/// background dream is allowed at a time; additional triggers are dropped.
+/// Both must be `true` for the trigger to fire, so by default no dream runs.
+/// A single background dream is allowed at a time; additional triggers are
+/// dropped.
 #[derive(Debug)]
 pub struct DreamConsolidationSink {
     workdir: PathBuf,

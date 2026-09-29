@@ -3496,7 +3496,7 @@ mod tests {
 
     use axum::body::{Body, to_bytes};
     use axum::http::{Request, StatusCode, header::CONTENT_TYPE};
-    use roko_core::foundation::{FeedbackEvent, FeedbackSink};
+    use roko_core::foundation::FeedbackEvent;
     use roko_gate::AdaptiveThresholds;
     use roko_learn::cascade_router::CascadeRouter;
     use roko_learn::model_router::{CONTEXT_DIM, RoutingContext};

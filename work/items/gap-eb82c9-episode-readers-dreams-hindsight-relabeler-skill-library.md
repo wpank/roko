@@ -70,3 +70,4 @@ The readers use `success`.
 - **Left open:** other episode readers outside this item still read `success`: `provider_model_outcome`,
   `pattern_discovery`, `cfactor`, `aggregate`, `post_gate_reflection`, roko-learn's `runtime_feedback/` (wk-router2's
   code) and the dream runner's `replay_insights` API, which has no production caller.
+- 2026-09-29 (wk-model-truth, from bug-31438d): `work/bug-31438d` (not merged at 7fa54b873) adds more episode fields that these readers should honour: `extra.turns_unknown` (the turn count is unknown, not 1) and `extra.model_reported`, `extra.model_mismatch` and `extra.substituted_from` (the served model differs from the dispatched one). Dreams, the hindsight relabeler, the skill library and the curriculum should skip or down-weight mismatched episodes, and treat unknown turns as unknown.

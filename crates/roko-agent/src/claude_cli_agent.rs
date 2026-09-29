@@ -1634,6 +1634,61 @@ mod tests {
     }
 
     #[test]
+    fn settings_hook_denies_destructive_commands_behind_wrappers() {
+        let command = bash_hook_command();
+
+        for denied in [
+            // A command handed to a wrapper as one string.
+            "watch 'rm -rf x'",
+            "watch -n 1 'git stash'",
+            "flock /tmp/l -c 'rm -rf x'",
+            "flock /tmp/l --command='git checkout main'",
+            "su dev -c 'git stash'",
+            "script -c 'rm -rf x' /dev/null",
+            "env -S 'rm -rf x'",
+            // find deletes across the tree it walks.
+            "find . -delete",
+            "find . -name '*.o' -delete",
+            "find . -exec rm -rf {} +",
+            "find . -type f -exec rm {} \\;",
+            "find . -execdir sudo rm {} +",
+            "find . -exec sh -c 'rm \"$1\"' _ {} \\;",
+            "find . -exec git checkout {} \\;",
+            "sudo find . -delete",
+            // Multi-call binaries.
+            "busybox rm -rf x",
+            "/bin/busybox sh -c 'rm -rf x'",
+            "toybox rm -r x",
+            // A user named git hides nothing.
+            "sudo -u git rm -rf x",
+            "sudo -u git git stash",
+        ] {
+            assert_eq!(
+                run_hook_command(&command, denied).code(),
+                Some(2),
+                "`{denied}` should be denied"
+            );
+        }
+        for allowed in [
+            "sudo -u git whoami",
+            "sudo -g git ls",
+            "watch -n 1 'git status'",
+            "flock /tmp/l -c 'cargo build'",
+            "find . -name '*.rs'",
+            "find . -type f -exec grep -l rm {} +",
+            "busybox ls",
+            "ionice -c 3 cargo build",
+            "git commit -m \"watch 'rm -rf x'\"",
+        ] {
+            assert_eq!(
+                run_hook_command(&command, allowed).code(),
+                Some(0),
+                "`{allowed}` should be allowed"
+            );
+        }
+    }
+
+    #[test]
     fn settings_hook_denies_git_aliases_to_denied_commands() {
         let command = bash_hook_command();
         // A repository with its own aliases, and no user or system git
@@ -1749,6 +1804,7 @@ mod tests {
             "Read(//**/.roko/.env)",
             "Read(//**/.roko/secrets.toml)",
             "Read(//**/.roko/credentials.json)",
+            "Read(//**/.roko/config.toml)",
             "Edit(//**/.roko/.env)",
         ] {
             assert!(deny.contains(&rule), "missing {rule} in {deny:?}");
@@ -1782,6 +1838,7 @@ mod tests {
 
         for tool_input in [
             serde_json::json!({ "file_path": "~/.roko/.env" }),
+            serde_json::json!({ "file_path": "~/.roko/config.toml" }),
             serde_json::json!({ "file_path": ".roko/.env" }),
             serde_json::json!({ "file_path": "../other/.roko/secrets.toml" }),
             serde_json::json!({ "path": "~/.roko" }),
@@ -1797,7 +1854,7 @@ mod tests {
         for tool_input in [
             serde_json::json!({ "file_path": "src/lib.rs" }),
             serde_json::json!({ "file_path": ".roko/state/graph/p/checkpoint.json" }),
-            serde_json::json!({ "file_path": "~/.roko/config.toml" }),
+            serde_json::json!({ "file_path": "~/.roko/logs/daemon.log" }),
             serde_json::json!({ "path": "src", "pattern": "fn main" }),
             serde_json::json!({ "pattern": "**/*.rs" }),
         ] {
@@ -1811,10 +1868,14 @@ mod tests {
 
         for denied in [
             "cat ~/.roko/.env",
+            "cat ~/.roko/config.toml",
             "cat .roko/secrets.toml",
             "cd .roko && cat .env",
             "grep KEY \"$HOME/.roko/credentials.json\"",
             "cat ~/.roko/*",
+            "cd ~/.roko && cat *",
+            "cat .ro\"\"ko/.e''nv",
+            "sh -c 'cat .ro\"\"ko/.env'",
         ] {
             let output = run_hook(&bash_hook, &bash_payload(denied), &env);
             assert_eq!(
@@ -1823,7 +1884,7 @@ mod tests {
                 "`{denied}` should be blocked"
             );
         }
-        for allowed in ["cat README.md", "ls .roko/state"] {
+        for allowed in ["cat README.md", "ls .roko/state", "cp .env.example .env"] {
             let output = run_hook(&bash_hook, &bash_payload(allowed), &env);
             assert_eq!(
                 output.status.code(),

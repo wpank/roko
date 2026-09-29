@@ -29,11 +29,11 @@ Each loop senses outcomes and changes a later decision.
 
 Runner-v2 had 16 learning loops in its event loop, and most lost their caller or their data when `6b5da8616` deleted
 it. Merges on 2026-09-29 (`ce3bdcbb8`, `33e107da1`) re-attached several (reg-3f5969, reg-06ae9f, gap-fdd27f,
-gap-5fb9a7): of the 16, two are now wired, five partial, seven orphaned, one broken and one built but
-unwired.[^5-lost] Two limits remain. Most loops still learn from a
-pass/fail flag that counts unverified outcomes as passes (QA2, PARTIAL@ed0c33bd5; spec-e9d7ec). And no loop has a
-measured benefit, under Runner-v2 or since: that learning improves outcomes is UNPROVEN@ed0c33bd5 until M2, a wiring
-census (gap-1f2661) and frozen-learning runs (gap-644040) exist.
+gap-5fb9a7): at `942d2a6c3`, of the 16, two are wired, five partial, seven orphaned, one broken and one built but
+unwired.[^5-lost] Since `04c1da262` (gap-8f6206) every learner reads the settled verdict's learning label, so an
+unverified outcome no longer counts as a pass; the appendix's QA2 (PARTIAL@ed0c33bd5; spec-e9d7ec) predates that. The
+larger limit remains: no loop has a measured benefit, under Runner-v2 or since. That learning improves outcomes is
+UNPROVEN@ed0c33bd5 until M2, a wiring census (gap-1f2661) and frozen-learning runs (gap-644040) exist.
 
 ## 5.3 Second-order mechanisms and guarded commit
 
@@ -79,8 +79,10 @@ Subsystems built on analogies are proposals to park (§9), not features: affect 
 batch consolidation (ORPHANED@ed0c33bd5, LM7), both pending q-6b7cca; HDC similarity (BUILT-UNWIRED@ed0c33bd5, LM10);
 and the conductor (ORPHANED@ed0c33bd5, RG2; gap-ebd656).
 
-[^5-lost]: Research note B5, frozen as `evidence/learning-loops-B5.md` (sha256 `044ad5c96542`), "Re-check at
-    `98ee1418f`": the 16 loops Runner-v2 had, tagged at `98ee1418f`; at `d9e79e9d8` none was wired, eight were
-    partial, seven orphaned and one built but unwired. find-34a4b5 lists the closures in the deleted event loop. The
-    table above groups the loops by mechanism, with the appendix's tags at `ed0c33bd5`.
+[^5-lost]: The re-check of the 16 loops Runner-v2 had, at `942d2a6c3`, frozen as
+    `evidence/2026-09-29-learning-loops-b5-942d2a6c3.md` (sha256 `22f79f28a844`): the tags of the earlier re-check in
+    research note B5, with the evidence behind seven rows updated. At `d9e79e9d8` none was wired, eight were partial,
+    seven orphaned and one built but unwired (`evidence/learning-loops-B5.md`, sha256 `044ad5c96542`). find-34a4b5
+    lists the closures in the deleted event loop. The table above groups the loops by mechanism, with the appendix's
+    tags at `ed0c33bd5`.
 [^5-design]: Design values from the specifications that epic spec-6ac537 carries; none is built at `ed0c33bd5`.

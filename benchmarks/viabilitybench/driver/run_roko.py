@@ -54,14 +54,15 @@ run with `--proxy`. Roko gets the proxy's loopback URL and a placeholder key, an
 the driver's key file. When `<run_dir>/proxy.jsonl` exists, its rows for this task are the meter. The driver sets
 the proxy's active task to the task key before each task (`proxy.configure(task=key)`); rows without that key never
 match, so the attempts fail as `no_proxy_traffic`.
-- Requests are assigned to attempts by `ts`, in whole seconds, in `ordinal` order. An attempt owns the requests up
-  to its episode, so its auxiliary calls, made after that, usually count toward the next attempt; the last attempt
-  owns the rest. An attempt that ended in the same second as the one before cannot be told apart from it. Task
-  totals are exact either way.
+- Requests are assigned to attempts by `ts`, in `ordinal` order. An attempt owns the requests up to its episode, so
+  its auxiliary calls, made after that, usually count toward the next attempt; the last attempt owns the rest. The
+  proxy stamps each request to the microsecond, as Roko stamps its episodes, so attempts that end within one second
+  keep their own requests (bug-09fac4). With whole-second stamps on either side (an older proxy log), an attempt that
+  ended in the same second as the one before cannot be told apart from it. Task totals are exact either way.
 - Every request's `model_requested` and `model_reported` must be the pin.
 - An attempt's usage is the sum of its billed requests (`usage_source` other than `none`), in run-record shape. It
   is priced from the snapshot by the model the provider reported. A billed request without usage leaves the
-  attempt's cost unknown, never 0.
+  attempt's cost unknown, never 0; an attempt whose requests were all unbilled (refused, faulted or failed) cost $0.
 - An attempt whose window saw no request is `no_proxy_traffic`, which makes the task `infra_error`.
 
 **Status.**
@@ -366,7 +367,8 @@ def settle(evidence: Evidence, *, chain_key: str, model: str, provider: str, sna
     if evidence.proxy_rows is not None:
         _meter_from_proxy(attempts, evidence, model, flag)
     for attempt in attempts:
-        attempt.cost = ledger.price(attempt.reported_usage(), snapshot.row(attempt.model_reported))
+        if attempt.cost is None:  # the proxy has already priced an attempt that billed nothing
+            attempt.cost = ledger.price(attempt.reported_usage(), snapshot.row(attempt.model_reported))
     return attempts, problems
 
 
@@ -392,15 +394,18 @@ def _meter_from_verdict(attempt: RokoAttempt, verdict: dict) -> None:
 def _meter_from_proxy(attempts: list[RokoAttempt], evidence: Evidence, model: str, flag) -> None:
     """Assign the proxy's requests to attempts by time and meter each attempt from them (module docstring).
 
-    The proxy stamps whole seconds, so an attempt that ended in the same second as the one before it cannot be told
-    apart from it: its requests count toward the earlier attempt, and its empty window is not flagged.
+    Times compare to the microsecond when every stamp has one. With a whole-second stamp anywhere, they compare in
+    whole seconds, so an attempt that ended in the same second as the one before it cannot be told apart from it: its
+    requests count toward the earlier attempt, and its empty window is not flagged.
     """
     rows = sorted(evidence.proxy_rows or [], key=lambda row: row.get("ordinal") if isinstance(row.get("ordinal"), int)
                   else 0)
-    ends = [_second(episode.get("completed_at") or episode.get("timestamp")) for episode in evidence.episodes]
+    stamps = [episode.get("completed_at") or episode.get("timestamp") for episode in evidence.episodes]
+    clock = _instant if all(_subsecond(stamp) for stamp in [*stamps, *(row.get("ts") for row in rows)]) else _second
+    ends = [clock(stamp) for stamp in stamps]
     windows: list[list[dict]] = [[] for _ in attempts]
     for row in rows:
-        when = _second(row.get("ts"))
+        when = clock(row.get("ts"))
         index = next((i for i, end in enumerate(ends) if when is not None and end is not None and when <= end),
                      len(attempts) - 1)
         if 0 <= index < len(windows):
@@ -424,12 +429,14 @@ def _meter_from_proxy(attempts: list[RokoAttempt], evidence: Evidence, model: st
         usages = [_proxy_usage(row.get("usage")) for row in billed]
         attempt.calls, attempt.calls_known = len(window), True
         attempt.model_reported = served.pop() if len(served) == 1 else None
-        attempt.usage_unknown = not billed or any(usage is None for usage in usages)
+        attempt.usage_unknown = any(usage is None for usage in usages)
         if not attempt.usage_unknown:
             total = ledger.vb_usage(0, 0)
             for usage in usages:
                 total = ledger.add_usage(total, usage)
             attempt.usage = total
+        if not billed:  # every request of the attempt was refused, faulted or failed: none was billed
+            attempt.cost = ledger.Cost(0.0, 0.0, "provider_usage")
 
 
 def _proxy_usage(raw: object) -> dict | None:
@@ -602,6 +609,11 @@ def _second(value: object) -> int | None:
         return int(dt.datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp())
     except ValueError:
         return None
+
+
+def _subsecond(value: object) -> bool:
+    """Whether an ISO 8601 time names a fraction of a second."""
+    return isinstance(value, str) and "." in value.partition("T")[2]
 
 
 def _instant(value: object) -> dt.datetime | None:

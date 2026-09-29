@@ -31,6 +31,7 @@
     "billed_usd": {"type": ["number", "null"]},
     "reserved_usd": {"type": "number", "description": "the worst-case cost reserved against the line before dispatch"},
     "price_snapshot_id": {"type": "string"},
-    "source": {"enum": ["provider_usage", "cli_usage", "estimated", "unknown"]}
+    "source": {"enum": ["provider_usage", "cli_usage", "estimated", "unknown"]},
+    "billed": {"type": "boolean", "description": "whether the account is billed for the attempt: false on a subscription, whose row bills $0 whatever its API-equivalent cost, and true for a billed API row, which never bills $0 for tokens. Ledger.append writes it; a row from before it (bug-a49003) lacks it, and its source and $0 bill then tell a subscription apart"}
   }
 }

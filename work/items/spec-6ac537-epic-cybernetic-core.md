@@ -15,7 +15,7 @@ discovered_from = "tmp/cybernetic-harness/tldr/05-GAPS-AND-PROPOSALS.md (P2 #17â
 anchors = ["crates/roko-learn/src/cascade_router.rs::CascadeRouter::observe_multi_objective", "crates/roko-cli/src/runtime_feedback/routing.rs::RoutingObservationSink", "crates/roko-cli/src/graph_execution/feedback.rs::RoutingSink", "crates/roko-cli/src/graph_task_dispatch.rs::GraphTaskDispatcher::dispatch"]
 doc = "tmp/cybernetic-harness/workstreams/PLAN.md"
 lane = "rust-hot"
-links = { depends_on = ["bug-f68404", "bug-8da8ba", "bug-9c88ac", "bug-012303", "bug-605a8a", "find-0dc1d5", "reg-3f5969", "gap-fdd27f", "gap-644040", "bug-dfb28f", "bug-3ea1f5", "bug-84de98", "bug-7a2630", "bug-8b0d0a", "bug-07bc75", "gap-eb82c9"], blocks = [], related = ["spec-b7303f", "gap-96f7ed", "gap-8cb382", "gap-c8e1f1", "dec-e70592", "gap-25065c", "bug-cfe0be"], supersedes = [], duplicate_of = "" }
+links = { depends_on = ["bug-f68404", "bug-8da8ba", "bug-9c88ac", "bug-012303", "bug-605a8a", "find-0dc1d5", "reg-3f5969", "gap-fdd27f", "gap-644040", "bug-dfb28f", "bug-3ea1f5", "bug-84de98", "bug-7a2630", "bug-8b0d0a", "bug-07bc75", "gap-eb82c9", "bug-efd2b0", "gap-88c547"], blocks = [], related = ["spec-b7303f", "gap-96f7ed", "gap-8cb382", "gap-c8e1f1", "dec-e70592", "gap-25065c", "bug-cfe0be"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "grep -rqw 'fn failed_override_lowers_success_rate' crates/roko-learn/ && grep -rqw 'fn gate_pass_increments_selected_playbook' crates/roko-cli/src/ && grep -rqw 'fn frozen_learning_run_writes_no_learned_state' crates/roko-cli/src/ && cargo test -p roko-learn failed_override_lowers_success_rate && cargo test -p roko-cli --lib gate_pass_increments_selected_playbook && cargo test -p roko-cli --lib frozen_learning_run_writes_no_learned_state"
@@ -125,6 +125,8 @@ verify commands that read E4's attempt record, set `triage = "verified"`, add th
 - [x] bug-8b0d0a: One gateway call can be observed up to three times on serve's shared cascade router
 - [ ] bug-07bc75: The provider bridge still trains the cascade router on pre-gate provider success for every Graph dispatch
 - [ ] gap-eb82c9: Episode readers (dreams, hindsight relabeler, skill library, curriculum) should read the settled learning label
+- [ ] bug-efd2b0: roko-serve template dispatch records a cascade-router outcome on every TurnCompleted, on top of its journaled observation
+- [ ] gap-88c547: The remaining learning consumers still read success instead of the settled learning label
 - [ ] The epic's `[[verify]]` command passes on the merged branch: one named test each for router labels, failure
       memory and frozen learning. Extend it with S02.P1-16's wiring census when the M1â€“M4 items join.
 

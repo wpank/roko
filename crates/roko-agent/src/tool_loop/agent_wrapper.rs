@@ -250,9 +250,10 @@ impl ToolLoopAgent {
     /// The output signal of a run that stopped with `stop_reason`. `output`
     /// is the finished loop, `None` when the run failed before the loop.
     ///
-    /// Tags: `iterations` (tool-call iterations), `model` (the configured
-    /// slug), and `models_reported` when the provider named more than one
-    /// model across the turns.
+    /// Tags: `iterations` (tool-call iterations), `num_turns` (model calls
+    /// the loop made, which dispatch records as the agent's turns), `model`
+    /// (the configured slug), and `models_reported` when the provider named
+    /// more than one model across the turns.
     fn output_signal(
         &self,
         input: &Signal,
@@ -260,10 +261,13 @@ impl ToolLoopAgent {
         stop_reason: &str,
         output: Option<&ToolLoopOutput>,
     ) -> Signal {
-        let iterations = output.map_or(0, |output| output.iterations);
+        let (iterations, turns) = output.map_or((0, 0), |output| {
+            (output.iterations, output.turn_traces.len())
+        });
         let mut builder = derived_output(input, Kind::AgentOutput, Body::text(text))
             .tag("stop_reason", stop_reason)
-            .tag("iterations", iterations.to_string());
+            .tag("iterations", iterations.to_string())
+            .tag("num_turns", turns.to_string());
         let reported = output.map(reported_models).unwrap_or_default();
         if reported.len() > 1 {
             builder = builder.tag("models_reported", reported.join(","));
@@ -796,10 +800,10 @@ mod tests {
     }
 
     /// The configured slug is the model asked for; the result reports the
-    /// model the provider named, and lists the models when the responses
-    /// disagree.
+    /// model the provider named, counts every model call as a turn, and
+    /// lists the models when the responses disagree.
     #[tokio::test]
-    async fn tool_loop_agent_reports_the_served_model() {
+    async fn tool_loop_agent_reports_the_served_model_and_counts_its_calls() {
         let input = Signal::builder(Kind::Prompt)
             .body(Body::text("call the tool"))
             .build();
@@ -824,6 +828,7 @@ mod tests {
         let substituted = run(vec![Some("glm-4.7"); 3]).await;
         assert!(substituted.success);
         assert_eq!(substituted.output.tag("model"), Some("gpt-oss-120b"));
+        assert_eq!(substituted.output.tag("num_turns"), Some("3"));
         assert_eq!(substituted.output.tag("models_reported"), None);
         let usage_obs = substituted.usage_obs.expect("usage_obs populated");
         assert_eq!(usage_obs.model.as_deref(), Some("glm-4.7"));
@@ -840,6 +845,7 @@ mod tests {
         );
 
         let silent = run(vec![None, None]).await;
+        assert_eq!(silent.output.tag("num_turns"), Some("2"));
         assert_eq!(
             silent.usage_obs.expect("usage_obs populated").model,
             None,

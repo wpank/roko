@@ -197,7 +197,8 @@ impl FeedbackSink for EpisodeSink {
 
 /// What the attempt's verdict records that the event's legacy fields cannot
 /// say: the model the provider reported serving (bug-31438d), the failover
-/// that replaced the planned model (bug-35379d).
+/// that replaced the planned model (bug-35379d), and a turn count the agent
+/// never reported (bug-55fd84).
 fn attach_settled_attempt(episode: &mut Episode, settled: &AttemptVerdictRecord) {
     let executed = &settled.executed;
     episode.extra.insert(
@@ -231,6 +232,16 @@ fn attach_settled_attempt(episode: &mut Episode, settled: &AttemptVerdictRecord)
                 "failover_reason".into(),
                 serde_json::Value::String(reason.clone()),
             );
+        }
+    }
+    // An unreported count is unknown, not one turn.
+    match executed.turns {
+        Some(turns) => episode.turns = u64::from(turns),
+        None => {
+            episode.turns = 0;
+            episode
+                .extra
+                .insert("turns_unknown".into(), serde_json::Value::Bool(true));
         }
     }
 }
@@ -376,9 +387,11 @@ mod tests {
     }
 
     /// The settled verdict says what the event's legacy fields cannot: the
-    /// model the provider reported and the failover.
+    /// model the provider reported, the failover, and a turn count the
+    /// agent never reported, which is unknown rather than the event's
+    /// fallback of one.
     #[tokio::test]
-    async fn settled_attempt_records_served_model() {
+    async fn settled_attempt_records_served_model_and_turns() {
         use roko_learn::telemetry::{AttemptIdentity, AttemptKey, AttemptOutcome};
 
         let dir = tempdir().unwrap();
@@ -415,6 +428,8 @@ mod tests {
         .unwrap();
 
         let episode = EpisodeLogger::read_all(&path).await.unwrap().remove(0);
+        assert_eq!(episode.turns, 0);
+        assert_eq!(episode.extra["turns_unknown"], true);
         assert_eq!(episode.model, "claude-sonnet-4-6");
         assert_eq!(episode.extra["model_reported"], "glm-4.7");
         assert_eq!(episode.extra["model_mismatch"], true);

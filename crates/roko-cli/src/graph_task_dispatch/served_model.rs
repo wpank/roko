@@ -184,7 +184,7 @@ mod tests {
     use super::*;
     use crate::graph_task_dispatch::tests::{
         final_turn, jsonl_rows_where, make_bare_dispatcher, make_spec, make_task_def,
-        recording_feedback, spawn_openai_mock,
+        recording_feedback, spawn_openai_mock, tool_call_turn,
     };
 
     const RUN: &str = "graph-served-model-run";
@@ -345,6 +345,64 @@ mod tests {
         let episode = episodes(pinned_dir.path()).await.remove(0);
         assert!(!episode.success);
         assert_eq!(episode.extra["model_reported"], "glm-4.7");
+    }
+
+    /// Each model call of roko's tool loop is a turn: an OpenAI-compatible
+    /// dispatch that calls the provider three times records three turns on
+    /// its verdict, episode and efficiency row.
+    #[tokio::test]
+    async fn episode_turns_count_tool_loop_calls() {
+        let temp = tempdir().expect("tempdir");
+        std::fs::write(temp.path().join("notes.txt"), "draft notes\n").expect("seed notes");
+        let read = |id: &str| {
+            served_as(
+                "gpt-oss-120b",
+                tool_call_turn(id, "read_file", serde_json::json!({ "path": "notes.txt" })),
+            )
+        };
+        let (base_url, requests) = spawn_openai_mock(vec![
+            read("call-1"),
+            read("call-2"),
+            served_as("gpt-oss-120b", final_turn("read it twice")),
+        ]);
+        let mut task = make_task_def("focused");
+        task.model_hint = Some("gpt-oss-120b".to_string());
+        task.timeout_secs = 30;
+        let spec = make_spec(&task);
+        let ctx = CellContext::new().with_run_id(RUN.to_string());
+
+        let dispatcher = make_bare_dispatcher(openai_config(&base_url), temp.path())
+            .await
+            .with_feedback(recording_feedback(temp.path()));
+        dispatcher
+            .dispatch(&spec, Vec::new(), &ctx)
+            .await
+            .expect("three calls, then an answer");
+        drop(dispatcher);
+        assert_eq!(requests.lock().len(), 3, "the provider saw three calls");
+
+        let verdicts = jsonl_rows_where(
+            &temp
+                .path()
+                .join(".roko/runs")
+                .join(RUN)
+                .join("attempts.jsonl"),
+            1,
+            |row| row["schema_version"] == "roko.verdict/1",
+        )
+        .await;
+        assert_eq!(verdicts[0]["executed"]["turns"], 3);
+        assert_eq!(verdicts[0]["executed"]["model_mismatch"], false);
+        let episode = episodes(temp.path()).await.remove(0);
+        assert_eq!(episode.turns, 3);
+        assert!(!episode.extra.contains_key("turns_unknown"));
+        let efficiency = jsonl_rows_where(
+            &temp.path().join(".roko/learn/efficiency.jsonl"),
+            1,
+            |row| row["schema"] == roko_learn::efficiency::AGENT_EFFICIENCY_EVENT_SCHEMA,
+        )
+        .await;
+        assert_eq!(efficiency[0]["turn_number"], 3);
     }
 
     #[test]

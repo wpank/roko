@@ -421,9 +421,10 @@ impl Default for AgentEfficiencyEvent {
 /// `roko.verdict/1` `executed` block that the row type lacks, beside the
 /// row's own fields. The row's `model` names the model the provider bridge
 /// launched; these name the model the provider reported serving
-/// (bug-31438d) and the planned model a failover replaced (bug-35379d).
-/// Like [`crate::telemetry::AttemptKeyed`], a reader that parses the row
-/// type alone still reads the line.
+/// (bug-31438d) and the planned model a failover replaced (bug-35379d), and
+/// mark a turn count the agent never reported (bug-55fd84). Like
+/// [`crate::telemetry::AttemptKeyed`], a reader that parses the row type
+/// alone still reads the line.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ExecutedRow<T> {
     /// The row.
@@ -445,6 +446,10 @@ pub struct ExecutedRow<T> {
     /// Why the planned model did not run.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub substitution_reason: Option<String>,
+    /// The agent reported no turn count, so the row's turn fields are 0 for
+    /// unknown.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub turns_unknown: bool,
 }
 
 impl<T> ExecutedRow<T> {
@@ -458,6 +463,7 @@ impl<T> ExecutedRow<T> {
             models_reported: executed.models_reported.clone(),
             substituted_from: executed.failover_chain.first().cloned(),
             substitution_reason: executed.failover_reason.clone(),
+            turns_unknown: executed.turns.is_none(),
         }
     }
 }
@@ -1257,6 +1263,7 @@ mod tests {
             model_mismatch: true,
             failover_chain: vec!["claude-sonnet".to_string()],
             failover_reason: Some("`claude-sonnet` on `claude_cli`: out of usage".to_string()),
+            turns: Some(3),
             ..Default::default()
         };
         let row = ExecutedRow::new(&event, &executed);
@@ -1268,6 +1275,7 @@ mod tests {
         assert_eq!(json["model_mismatch"], true);
         assert_eq!(json["substituted_from"], "claude-sonnet");
         assert!(json.get("models_reported").is_none());
+        assert!(json.get("turns_unknown").is_none());
         let alone: AgentEfficiencyEvent =
             serde_json::from_value(json.clone()).expect("parse the row alone");
         assert_eq!(alone, event);
@@ -1280,6 +1288,7 @@ mod tests {
         let json = serde_json::to_value(&unreported).expect("serialize");
         assert!(json["model_reported"].is_null(), "unknown is null: {json}");
         assert!(json.get("substituted_from").is_none());
+        assert_eq!(json["turns_unknown"], true);
     }
 
     #[test]

@@ -523,7 +523,8 @@ pub struct ExecutedModel {
     pub failover_chain: Vec<String>,
     /// Why the first model of `failover_chain`, the planned one, did not run.
     pub failover_reason: Option<String>,
-    /// Agent turns taken.
+    /// Agent turns taken: the Claude CLI's `num_turns`, or the model calls
+    /// of roko's tool loop. `None` when the agent did not report a count.
     pub turns: Option<u32>,
 }
 

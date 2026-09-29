@@ -285,10 +285,11 @@ impl AttemptIdentity {
 
 /// The Graph task gate tag (`TaskGateVerdict` in roko-graph's
 /// `cells::task_executor`), mirrored by its wire values because roko-learn
-/// does not depend on roko-graph.
+/// does not depend on roko-graph. roko-core's `GateVerdict` is one gate's
+/// full result, a different thing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum GateVerdict {
+pub enum GateVerdictTag {
     /// Every authored verify step passed.
     Passed,
     /// The task declares no verify steps.
@@ -298,7 +299,7 @@ pub enum GateVerdict {
     ForcedAccept,
 }
 
-impl GateVerdict {
+impl GateVerdictTag {
     /// Tag value, identical to `TaskGateVerdict::as_str`.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
@@ -374,12 +375,12 @@ impl AttemptOutcome {
     }
 }
 
-impl From<GateVerdict> for AttemptOutcome {
-    fn from(verdict: GateVerdict) -> Self {
+impl From<GateVerdictTag> for AttemptOutcome {
+    fn from(verdict: GateVerdictTag) -> Self {
         match verdict {
-            GateVerdict::Passed => Self::Passed,
-            GateVerdict::Unverified => Self::Unverified,
-            GateVerdict::ForcedAccept => Self::ForcedAccept,
+            GateVerdictTag::Passed => Self::Passed,
+            GateVerdictTag::Unverified => Self::Unverified,
+            GateVerdictTag::ForcedAccept => Self::ForcedAccept,
         }
     }
 }
@@ -411,8 +412,9 @@ pub const fn learning_label_for(outcome: AttemptOutcome, blame: Blame) -> Option
 }
 
 /// Typed detail of an attempt that did not pass (`failure_class`, S01 §5.5).
+/// roko-gate's `FailureClass` classifies compiler and test output instead.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct FailureClass {
+pub struct AttemptFailureClass {
     /// The outcome being classified.
     pub kind: AttemptOutcome,
     /// Failing verify rung, e.g. `verify:0/test`.
@@ -429,7 +431,7 @@ pub struct FailureClass {
     pub detail_sha256: Option<String>,
 }
 
-impl FailureClass {
+impl AttemptFailureClass {
     /// A class of `kind` with no detail yet.
     #[must_use]
     pub const fn new(kind: AttemptOutcome) -> Self {
@@ -444,9 +446,10 @@ impl FailureClass {
 }
 
 /// One verify step of a settled attempt (`steps[]`, S01 §5.5).
+/// roko-gate's `StepVerdict` scores reasoning steps instead.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
-pub struct StepVerdict {
+pub struct VerifyStepVerdict {
     /// Rung name, e.g. `verify:0/test`.
     pub rung: String,
     /// `sha256` of the command. The command text is never stored.
@@ -631,9 +634,11 @@ impl AttemptOpenRecord {
     }
 }
 
-/// `roko.verdict/1` (S01 §5.5): the one settled record per attempt.
+/// `roko.verdict/1` (S01 §5.5): the one settled record per attempt. Not
+/// [`crate::verdict_scorer::VerdictRecord`], which is one gate's pass or fail
+/// held in memory for routing penalties.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct VerdictRecord {
+pub struct AttemptVerdictRecord {
     /// The attempt this verdict settles.
     #[serde(flatten)]
     pub identity: AttemptIdentity,
@@ -644,12 +649,12 @@ pub struct VerdictRecord {
     pub task_spec_hash: Option<String>,
     /// The Graph gate tag on the output, when one was stamped.
     #[serde(default)]
-    pub gate_verdict: Option<GateVerdict>,
+    pub gate_verdict: Option<GateVerdictTag>,
     /// How the attempt ended.
     pub outcome: AttemptOutcome,
     /// Detail for outcomes other than `passed` and `unverified`.
     #[serde(default)]
-    pub failure_class: Option<FailureClass>,
+    pub failure_class: Option<AttemptFailureClass>,
     /// Who the outcome is charged to.
     pub blame: Blame,
     /// `1`, `0` or `null`: the only field learners read (S01 §4.1).
@@ -657,7 +662,7 @@ pub struct VerdictRecord {
     pub learning_label: Option<u8>,
     /// Per-rung verify results.
     #[serde(default)]
-    pub steps: Vec<StepVerdict>,
+    pub steps: Vec<VerifyStepVerdict>,
     /// Timestamps.
     #[serde(default)]
     pub timing: AttemptTiming,
@@ -684,7 +689,7 @@ pub struct VerdictRecord {
     pub exposures: Option<ExposureCounts>,
 }
 
-impl VerdictRecord {
+impl AttemptVerdictRecord {
     /// Settle `identity` with `outcome`. Blame and the learning label follow
     /// the S01 §4.3 table; `first_token_seen` only matters for timeouts.
     #[must_use]
@@ -718,7 +723,7 @@ impl VerdictRecord {
 
     /// Settle from the Graph gate tag of a completed attempt.
     #[must_use]
-    pub fn from_gate_verdict(identity: AttemptIdentity, verdict: GateVerdict) -> Self {
+    pub fn from_gate_verdict(identity: AttemptIdentity, verdict: GateVerdictTag) -> Self {
         let mut record = Self::settle(identity, verdict.into(), false);
         record.gate_verdict = Some(verdict);
         record
@@ -755,9 +760,10 @@ pub enum DecisionSource {
 
 /// `roko.run_manifest/1` (S01 §5.1): what produced a run's records. It
 /// lives in [`MANIFEST_FILE`] and is rewritten atomically at open, resume
-/// and close.
+/// and close. It is not roko-runtime's `RunManifest`, the run registry's
+/// lifecycle record in `.roko/state/runs/<plan_id>.json`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct RunManifest {
+pub struct RunProvenanceManifest {
     /// Always [`RUN_MANIFEST_SCHEMA`].
     pub schema_version: String,
     /// Durable run id.
@@ -775,7 +781,7 @@ pub struct RunManifest {
     pub harness: HarnessProvenance,
     /// The configuration fingerprint.
     #[serde(default)]
-    pub config: ConfigProvenance,
+    pub config: ConfigHashProvenance,
     /// The price snapshot.
     #[serde(default)]
     pub prices: PriceProvenance,
@@ -790,7 +796,7 @@ pub struct RunManifest {
     pub closed: Option<RunClosed>,
 }
 
-impl RunManifest {
+impl RunProvenanceManifest {
     /// An open manifest for `run_id`, with no invocations yet.
     pub fn new(run_id: impl Into<String>, kind: impl Into<String>) -> Self {
         Self {
@@ -800,7 +806,7 @@ impl RunManifest {
             plan_ids: Vec::new(),
             invocations: Vec::new(),
             harness: HarnessProvenance::default(),
-            config: ConfigProvenance::default(),
+            config: ConfigHashProvenance::default(),
             prices: PriceProvenance::default(),
             experiment: ExperimentProvenance::default(),
             workspace: WorkspaceProvenance::default(),
@@ -850,10 +856,11 @@ pub struct HarnessProvenance {
     pub profile: Option<String>,
 }
 
-/// The configuration a run used.
+/// The configuration fingerprint a run used. roko-core's
+/// `ConfigProvenance` traces where one config value came from instead.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
-pub struct ConfigProvenance {
+pub struct ConfigHashProvenance {
     /// `b3:` digest of the canonical, secret-redacted config (S01 §4.7).
     pub hash: String,
     /// `b3:` digest of the harness parameters in force.
@@ -958,7 +965,7 @@ impl TelemetryRecord for AttemptOpenRecord {
     }
 }
 
-impl TelemetryRecord for VerdictRecord {
+impl TelemetryRecord for AttemptVerdictRecord {
     const SCHEMA: &'static str = VERDICT_SCHEMA;
     const FILE: RunFile = RunFile::Attempts;
 
@@ -1101,17 +1108,17 @@ mod tests {
     #[test]
     fn verdict_record_round_trips_through_json() {
         let outcome = AttemptOutcome::GateFailed;
-        let mut record = VerdictRecord::settle(identity("T2", 2), outcome, true);
-        record.failure_class = Some(FailureClass {
+        let mut record = AttemptVerdictRecord::settle(identity("T2", 2), outcome, true);
+        record.failure_class = Some(AttemptFailureClass {
             rung: Some("verify:0/test".to_string()),
-            ..FailureClass::new(outcome)
+            ..AttemptFailureClass::new(outcome)
         });
-        record.steps = vec![StepVerdict {
+        record.steps = vec![VerifyStepVerdict {
             rung: "verify:0/test".to_string(),
             passed: Some(false),
             exit_code: Some(1),
             duration_ms: Some(812),
-            ..StepVerdict::default()
+            ..VerifyStepVerdict::default()
         }];
         record.timing.first_token_at = Some(1_759_413_792_310);
         record.timing.ttft_source = Some("stream".to_string());
@@ -1138,7 +1145,7 @@ mod tests {
         assert_eq!(json["failure_class"]["kind"], "gate_failed");
         assert_eq!(json["cost"]["source"], "provider_usage");
         assert_eq!(json["cost"]["vendor_usd"], serde_json::Value::Null);
-        let back: VerdictRecord = serde_json::from_value(json).expect("deserialize");
+        let back: AttemptVerdictRecord = serde_json::from_value(json).expect("deserialize");
         assert_eq!(back, record);
     }
 
@@ -1162,13 +1169,14 @@ mod tests {
             (O::Abandoned, false, Blame::Harness, None),
         ];
         for (outcome, first_token_seen, blame, label) in cases {
-            let record = VerdictRecord::settle(identity("T1", 1), outcome, first_token_seen);
+            let id = identity("T1", 1);
+            let record = AttemptVerdictRecord::settle(id, outcome, first_token_seen);
             let got = (record.blame, record.learning_label);
             assert_eq!(got, (blame, label), "{outcome:?}");
         }
 
-        let verdict = GateVerdict::Unverified;
-        let unverified = VerdictRecord::from_gate_verdict(identity("T3", 1), verdict);
+        let verdict = GateVerdictTag::Unverified;
+        let unverified = AttemptVerdictRecord::from_gate_verdict(identity("T3", 1), verdict);
         assert_eq!(unverified.outcome, AttemptOutcome::Unverified);
         assert_eq!(unverified.gate_verdict, Some(verdict));
         assert_eq!(unverified.learning_label, None);
@@ -1177,15 +1185,15 @@ mod tests {
     #[test]
     fn gate_verdict_wire_values_match_the_graph_tag() {
         for verdict in [
-            GateVerdict::Passed,
-            GateVerdict::Unverified,
-            GateVerdict::ForcedAccept,
+            GateVerdictTag::Passed,
+            GateVerdictTag::Unverified,
+            GateVerdictTag::ForcedAccept,
         ] {
-            assert_eq!(GateVerdict::parse(verdict.as_str()), Some(verdict));
+            assert_eq!(GateVerdictTag::parse(verdict.as_str()), Some(verdict));
             let json = serde_json::to_value(verdict).expect("serialize");
             assert_eq!(json, verdict.as_str());
         }
-        assert_eq!(GateVerdict::parse("failed"), None);
+        assert_eq!(GateVerdictTag::parse("failed"), None);
     }
 
     #[test]
@@ -1209,7 +1217,8 @@ mod tests {
 
     #[test]
     fn run_manifest_round_trips_and_reads_the_spec_example() {
-        let manifest: RunManifest = serde_json::from_str(MANIFEST_EXAMPLE).expect("example");
+        let manifest: RunProvenanceManifest =
+            serde_json::from_str(MANIFEST_EXAMPLE).expect("example");
         assert_eq!(manifest.schema_version, RUN_MANIFEST_SCHEMA);
         assert_eq!(manifest.next_inv(), 2);
         assert_eq!(manifest.experiment.seed, Some(1234));
@@ -1218,10 +1227,10 @@ mod tests {
         assert_eq!(closed.attempts_opened, 4);
 
         let json = serde_json::to_string(&manifest).expect("serialize");
-        let back: RunManifest = serde_json::from_str(&json).expect("reparse");
+        let back: RunProvenanceManifest = serde_json::from_str(&json).expect("reparse");
         assert_eq!(back, manifest);
 
-        let fresh = RunManifest::new("gr-1", "plan_run");
+        let fresh = RunProvenanceManifest::new("gr-1", "plan_run");
         assert_eq!(fresh.schema_version, RUN_MANIFEST_SCHEMA);
         assert_eq!(fresh.next_inv(), 1);
         assert!(fresh.closed.is_none());
@@ -1256,7 +1265,8 @@ mod tests {
 
     #[test]
     fn stamped_lines_flatten_the_envelope_beside_the_record() {
-        let record = VerdictRecord::settle(identity("T2", 2), AttemptOutcome::Passed, true);
+        let passed = AttemptOutcome::Passed;
+        let record = AttemptVerdictRecord::settle(identity("T2", 2), passed, true);
         let line = Stamped {
             schema_version: VERDICT_SCHEMA.to_string(),
             record_id: record.record_id(),
@@ -1269,7 +1279,8 @@ mod tests {
         assert_eq!(json["seq"], 40);
         assert_eq!(json["attempt_key"], "gr-7f3c2a91:loop-census:T2:2");
         assert_eq!(json["learning_label"], 1);
-        let back: Stamped<VerdictRecord> = serde_json::from_value(json).expect("deserialize");
+        let back: Stamped<AttemptVerdictRecord> =
+            serde_json::from_value(json).expect("deserialize");
         assert_eq!(back, line);
     }
 
@@ -1279,7 +1290,8 @@ mod tests {
             b3_digest(b""),
             "b3:af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262"
         );
-        let verdict = VerdictRecord::settle(identity("T2", 2), AttemptOutcome::Passed, false);
+        let passed = AttemptOutcome::Passed;
+        let verdict = AttemptVerdictRecord::settle(identity("T2", 2), passed, false);
         // Pinned with the reference `blake3` Python package.
         assert_eq!(
             verdict.record_id(),

@@ -23,8 +23,8 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
 use super::records::{
-    ATTEMPT_OPEN_SCHEMA, AttemptKey, AttemptOpenRecord, RunFile, Stamped, TelemetryRecord,
-    VerdictRecord, chain_key,
+    ATTEMPT_OPEN_SCHEMA, AttemptKey, AttemptOpenRecord, AttemptVerdictRecord, RunFile, Stamped,
+    TelemetryRecord, chain_key,
 };
 use crate::error::LearnError;
 use crate::routing_log::RoutingDecisionLog;
@@ -42,7 +42,7 @@ pub enum TelemetryEvent {
     /// A `roko.attempt_open/1` line.
     AttemptOpen(Box<AttemptOpenRecord>),
     /// A `roko.verdict/1` line.
-    Verdict(Box<VerdictRecord>),
+    Verdict(Box<AttemptVerdictRecord>),
     /// A `roko.decision/1` route decision.
     Decision(Box<RoutingDecisionLog>),
 }
@@ -53,8 +53,8 @@ impl From<AttemptOpenRecord> for TelemetryEvent {
     }
 }
 
-impl From<VerdictRecord> for TelemetryEvent {
-    fn from(record: VerdictRecord) -> Self {
+impl From<AttemptVerdictRecord> for TelemetryEvent {
+    fn from(record: AttemptVerdictRecord) -> Self {
         Self::Verdict(Box::new(record))
     }
 }
@@ -380,7 +380,7 @@ mod tests {
     use crate::routing_log::RoutingDecisionLog;
     use crate::telemetry::records::{
         ATTEMPT_OPEN_SCHEMA, AttemptIdentity, AttemptKey, AttemptOpenRecord, AttemptOutcome,
-        DECISION_SCHEMA, RunFile, Stamped, VERDICT_SCHEMA, VerdictRecord,
+        AttemptVerdictRecord, DECISION_SCHEMA, RunFile, Stamped, VERDICT_SCHEMA,
     };
     use roko_fs::layout::RokoLayout;
     use tempfile::TempDir;
@@ -412,9 +412,9 @@ mod tests {
         AttemptOpenRecord::new(identity, 1_759_413_791_402)
     }
 
-    fn verdict(task: &str, attempt: u32) -> VerdictRecord {
+    fn verdict(task: &str, attempt: u32) -> AttemptVerdictRecord {
         let identity = AttemptIdentity::new(&key(task, attempt));
-        VerdictRecord::settle(identity, AttemptOutcome::Passed, true)
+        AttemptVerdictRecord::settle(identity, AttemptOutcome::Passed, true)
     }
 
     fn run_file_lines(dir: &TempDir, file: RunFile) -> Vec<serde_json::Value> {
@@ -460,7 +460,7 @@ mod tests {
         assert_eq!(decisions[0]["seq"], 3);
         assert_eq!(decisions[0]["selected_model"], "gpt-oss-120b");
 
-        let line: Stamped<VerdictRecord> =
+        let line: Stamped<AttemptVerdictRecord> =
             serde_json::from_value(attempts[1].clone()).expect("parse verdict line");
         assert_eq!(line.record, verdict("T2", 1));
     }

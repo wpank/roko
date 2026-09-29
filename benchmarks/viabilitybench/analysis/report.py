@@ -288,7 +288,10 @@ def check_bundle(bundle: Path, spend: dict[tuple[str, str], tuple[str, str, floa
         if snapshot and row["price_snapshot_id"] != snapshot:
             problems.append(f"{where} ({row['metric']}): priced from {row['price_snapshot_id']}, not {snapshot}")
     listed = {item.get("record_id") for item in report["false_greens"] if isinstance(item, dict)}
-    actual = {item["record_id"] for item in metrics.false_greens(records)}
+    try:
+        actual = {item["record_id"] for item in metrics.false_greens(records)}
+    except metrics.MetricsError:  # a run that fits no cell, already reported above
+        return problems
     problems += [f"{path}: false green {record_id} is not listed" for record_id in sorted(actual - listed)]
     problems += [f"{path}: listed false green {record_id} is not one" for record_id in sorted(listed - actual, key=str)]
     return problems

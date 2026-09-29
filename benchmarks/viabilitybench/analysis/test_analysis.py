@@ -307,6 +307,14 @@ def drop_ledger_row(path: Path) -> None:
     path.write_text("".join(line + "\n" for line in path.read_text().splitlines()[1:]))
 
 
+def switch_model(path: Path) -> None:
+    """The first record's attempt ran another model than the rest of its run: a single-model arm may not switch."""
+    lines = path.read_text().splitlines()
+    record = json.loads(lines[0])
+    record["execution"]["attempts"][0].update(model_requested="glm-4.7", model_reported="glm-4.7")
+    path.write_text("\n".join([json.dumps(record), *lines[1:]]) + "\n")
+
+
 @pytest.mark.parametrize(("tamper", "expected"), [
     (lambda b: rewrite_json(b / "metrics.json", lambda d: d["records"][0].update(run_ids=["run-z"])),
      "run ids not in the bundle: run-z"),
@@ -319,8 +327,9 @@ def drop_ledger_row(path: Path) -> None:
     (lambda b: drop_ledger_row(b / "run-a" / "ledger.jsonl"), "no row for attempt run-a/F4-l1-0001.s1:1"),
     (lambda b: (b / "metrics.json").unlink(), "no readable metrics file"),
     (lambda b: shutil.copytree(b / "run-b", b / "run-b2"), "does not name its directory run-b2"),
+    (lambda b: switch_model(b / "run-a" / "records.jsonl"), "run run-a of arm cheap_direct requested 2 models"),
 ], ids=["foreign-run-id", "no-run-ids", "unlisted-false-green", "second-snapshot", "unledgered-attempt",
-        "no-metrics", "copied-run"])
+        "no-metrics", "copied-run", "switched-model"])
 def test_check_rejects_a_tampered_bundle(pilot, capsys, tamper, expected):
     bundle = pilot["tmp"] / "bundle"
     make_report(pilot, "--bundle", str(bundle))

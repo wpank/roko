@@ -167,7 +167,7 @@ another Graph (DOCS-ONLY at `7c556bc0a`).
 | Property | Description |
 |---|---|
 | **DAG topology** | Cells are nodes, typed edges carry Signals between them |
-| **Parallel waves** | Independent cells execute concurrently in fan-out waves |
+| **Parallel execution** | A ready queue starts each Cell once its own dependencies settle, bounded by `max_concurrent_nodes` |
 | **Hot Graphs** | Stay resident and re-fire per tick (agent pipelines) |
 | **Snapshot/resume** | Schema-v2 cost state, graph-fingerprinted Activity resume, restart-durable checkpoints |
 | **Cost enforcement** | Atomic USD budget reservations, paid-failure-aware cost tracking |
@@ -414,7 +414,7 @@ Plan execution, graph engine, and runtime service composition.
 
 | Crate | Path | What | Status |
 |---|---|---|---|
-| `roko-graph` | `crates/roko-graph/` | Sole execution engine: DAG cells, topology, cost state, parallel waves, immune Graph | Wired |
+| `roko-graph` | `crates/roko-graph/` | Sole execution engine: DAG cells, topology, cost state, parallel ready queue, immune Graph | Wired |
 | `roko-execution` | `crates/roko-execution/` | RuntimeServices builder (7 profiles), diagnostic service, execution control, feedback settlement | Wired |
 | `roko-conductor` | `crates/roko-conductor/` | 12 watchers, circuit breaker, diagnosis | Built, not wired: nothing evaluates it on plan runs |
 

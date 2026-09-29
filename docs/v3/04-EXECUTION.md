@@ -26,7 +26,7 @@ codebase. The pipeline has five stages:
 
 ```
 plan directory  -->  plan discovery  -->  plan-to-graph conversion
-     -->  graph execution (waves, gates, worktrees)
+     -->  graph execution (ready queue, verify steps)
      -->  delivery (merge queue, snapshot, feedback)
 ```
 
@@ -36,9 +36,10 @@ Every plan passes through the same path:
    `tasks.toml`. Parse frontmatter, validate, rank by priority.
 2. **Convert**: transform the TOML task DAG into a `Graph` of Cells via
    `plan_to_graph()` or `ProductionPlanTopology::build()`.
-3. **Execute**: the `GraphEngine` topologically sorts the graph and runs
-   Cells in bounded parallel waves, dispatching agents, composing prompts,
-   and running gates.
+3. **Execute**: the `GraphEngine` topologically sorts the graph and starts
+   each Cell once its own dependencies settle (bounded by
+   `max_concurrent_nodes`), dispatching agents, composing prompts, and running
+   each task's verify steps.
 4. **Persist**: Activity outputs are recorded to JSONL, checkpoints are
    written to `.roko/state/graph/`, episodes are logged.
 5. **Deliver** (designed, not wired): completed plan branches would enter the
@@ -218,10 +219,10 @@ flowchart LR
     C -->|DAG valid| D["Dependency<br/>resolution"]
     D --> E["Graph nodes<br/>(1 per task)"]
     E --> F["Edges from<br/>depends_on"]
-    F --> G["topological_waves()"]
-    G --> W0["Wave 0<br/>(root tasks)"]
-    G --> W1["Wave 1<br/>(depth-1 tasks)"]
-    G --> WN["Wave N<br/>(leaf tasks)"]
+    F --> G["topological_order()"]
+    G --> W0["Depth 0<br/>(root tasks)"]
+    G --> W1["Depth 1<br/>(depth-1 tasks)"]
+    G --> WN["Depth N<br/>(leaf tasks)"]
 
     style A fill:#2d333b,stroke:#539bf5,color:#adbac7
     style ERR fill:#462c2c,stroke:#e5534b,color:#e5534b
@@ -302,9 +303,15 @@ The `--waves` flag on `roko plan list` renders the cross-plan DAG.
 
 ## 6. Parallel Wave Execution
 
-The `GraphEngine` is the sole execution engine. It topologically sorts
-nodes and groups them into waves where every node in a wave is independent
-of every other.
+> **Corrected 2026-09-29 (at `7c556bc0a`).** The engine no longer executes wave
+> by wave. Since `445a60d0d` (gap-4d835d), `GraphEngine::execute_ready_queue`
+> starts each node as soon as its own predecessors have settled, up to
+> `max_concurrent_nodes`, so the diagram below shows depth layers, not
+> scheduling barriers. [03-GRAPH](03-GRAPH.md) describes the ready queue.
+
+The `GraphEngine` is the sole execution engine. It orders nodes
+topologically; grouped by depth, they form layers ("waves") in which every
+node is independent of every other.
 
 **Source:** `crates/roko-graph/src/engine.rs`, `crates/roko-graph/src/topo.rs`
 
@@ -358,15 +365,17 @@ flowchart TB
 execution order. If the graph contains a cycle, `GraphError::CycleDetected`
 is returned.
 
-`topological_waves()` groups the sorted nodes into parallel waves. Within
-each wave, all nodes have no edges between them and can execute
-concurrently.
+`topological_waves()` groups the sorted nodes into depth layers. Within
+each layer, all nodes have no edges between them and can execute
+concurrently, but the engine does not wait for a layer to finish before
+starting nodes of the next.
 
 ### Bounded parallelism
 
-The graph's `policy.max_concurrent_nodes` caps how many nodes execute
-simultaneously within a wave. The engine uses a Tokio semaphore for
-concurrency limiting.
+The graph's `policy.max_concurrent_nodes` caps how many nodes execute at
+once across the Graph: the ready queue starts a queued node whenever fewer
+than that many are running. With a cap of 1, nodes run one at a time in
+topological order.
 
 ### Conditional routing
 

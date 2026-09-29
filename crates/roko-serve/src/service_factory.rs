@@ -213,8 +213,8 @@ pub struct ServiceBundle {
     /// observes, so they share one router (bug-012303).
     pub cascade_router: Option<Arc<CascadeRouter>>,
     /// Journal for `.roko/learn/cascade-router.json`. Save `cascade_router`
-    /// through it, so the observations the services journaled are folded
-    /// (find-0dc1d5).
+    /// through it, so the journal is truncated once the snapshot holds what
+    /// the services journaled (find-0dc1d5).
     pub cascade_journal: Arc<ModelCallJournal>,
 }
 

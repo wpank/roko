@@ -143,8 +143,8 @@ impl FeedbackService {
     /// WAL before applying them (find-0dc1d5).
     ///
     /// Whoever saves the router must save it through
-    /// [`ModelCallJournal::save`], which marks the journaled observations as
-    /// folded so a replay does not count them twice.
+    /// [`ModelCallJournal::save`], which truncates the journal once the
+    /// snapshot holds its observations, so a replay does not count them twice.
     #[must_use]
     pub fn with_cascade_journal(mut self, journal: Arc<ModelCallJournal>) -> Self {
         self.cascade_journal = Some(journal);

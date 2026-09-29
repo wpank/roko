@@ -4010,16 +4010,15 @@ mod tests {
         let reloaded = CascadeRouter::load_or_new(&router_path, vec![model.to_string()]);
         assert_eq!(reloaded.confidence_snapshot()[model], (2, 1));
         assert_eq!(reloaded.total_observations(), 2);
-        // The journaled model call is in the saved snapshot, and its fold
-        // marker keeps a replay from counting it twice.
-        let wal_path = state.layout.learn_dir().join("wal.jsonl");
-        let wal = roko_learn::wal::replay_wal(&wal_path).expect("read the learning WAL");
-        let journaled = wal.iter().find_map(|entry| match entry {
-            roko_learn::wal::WalEntry::ModelCallObservation { id, .. } => Some(id.as_str()),
-            _ => None,
-        });
-        let folded = roko_learn::wal::folded_model_call_ids(&wal);
-        assert!(journaled.is_some_and(|id| folded.contains(id)));
+        // The journaled model call is in the saved snapshot, and the save
+        // truncated the journal, so a replay cannot count it twice.
+        let learn_dir = state.layout.learn_dir();
+        let segments_dir = learn_dir.join(roko_learn::wal::SEGMENTS_DIR);
+        for segment in std::fs::read_dir(&segments_dir).expect("the journal's segments") {
+            let path = segment.expect("segment").path();
+            let entries = roko_learn::wal::replay_wal(&path).expect("read the segment");
+            assert!(entries.is_empty(), "{} holds saved entries", path.display());
+        }
     }
 
     #[tokio::test]

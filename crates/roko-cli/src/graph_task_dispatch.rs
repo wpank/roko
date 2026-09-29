@@ -50,6 +50,7 @@ use crate::runner::tui_bridge::TuiBridge;
 use crate::runtime_feedback::{FeedbackEvent, FeedbackFacade};
 use crate::task_parser::TaskDef;
 
+mod prompt_experiment;
 mod sibling_settle;
 
 #[cfg(test)]
@@ -1489,6 +1490,31 @@ impl GraphTaskDispatcher {
         attempt_id
     }
 
+    /// Plan a dispatch. When prompt assembly fails with experiment
+    /// treatments (say, two running experiments on one section), plan again
+    /// without them: a broken experiment must not stop the task.
+    fn plan_dispatch(
+        &self,
+        spec: &TaskExecutionSpec,
+        task: &TaskDef,
+        dispatch_ctx: &mut DispatchContext,
+    ) -> Result<crate::dispatch::RunnerDispatchPlan> {
+        match self.factory.dispatcher().plan(task, dispatch_ctx) {
+            Err(error) if dispatch_ctx.prompt_experiment.is_some() => {
+                tracing::warn!(
+                    plan_id = %spec.plan_id,
+                    task_id = %task.id,
+                    %error,
+                    "prompt assembly with experiment treatments failed; dispatching without them"
+                );
+                dispatch_ctx.prompt_experiment = None;
+                self.factory.dispatcher().plan(task, dispatch_ctx)
+            }
+            planned => planned,
+        }
+        .map_err(|error| RokoError::Planning(error.to_string()))
+    }
+
     /// Emit all feedback events after a task dispatch completes.
     ///
     /// This is the Graph engine equivalent of Runner-v2's post-dispatch
@@ -1545,6 +1571,8 @@ impl GraphTaskDispatcher {
         } else {
             ModelChoiceSource::Router
         };
+        let experiment_settlement =
+            prompt_experiment::settlement(succeeded, failure_reason.as_deref());
 
         // ── W04: FeedbackFacade (episodes + routing) ─────────────────────
         if let Some(facade) = &self.feedback.feedback_facade {
@@ -1800,38 +1828,16 @@ impl GraphTaskDispatcher {
         }
 
         // ── W14: Experiment settlement ───────────────────────────────────
+        //
+        // Settles this attempt's prompt treatments (prepared at prompt
+        // assembly, bound to the launched prompt) with its outcome.
         if let Some(store_path) = &self.feedback.experiment_store_path {
-            if store_path.exists() {
-                let settlement = if succeeded {
-                    roko_learn::prompt_experiment::AssignmentSettlement::Observed { success: true }
-                } else {
-                    roko_learn::prompt_experiment::AssignmentSettlement::Observed { success: false }
-                };
-                let attempt_key = roko_learn::prompt_experiment::PromptAttemptKey::new(
-                    "graph",
-                    &spec.plan_id,
-                    &task.id,
-                    0,
-                );
-                if let Err(error) = roko_learn::prompt_experiment::ExperimentStore::settle_attempt(
-                    store_path,
-                    &attempt_key,
-                    settlement,
-                ) {
-                    // AttemptNotFound is normal for non-experiment runs; log others.
-                    if !matches!(
-                        error,
-                        roko_learn::prompt_experiment::PromptAssignmentError::AttemptNotFound(_)
-                    ) {
-                        tracing::warn!(
-                            plan_id = %spec.plan_id,
-                            task_id = %task.id,
-                            %error,
-                            "graph experiment settlement failed (best-effort)"
-                        );
-                    }
-                }
-            }
+            prompt_experiment::settle(
+                store_path,
+                prompt_experiment::attempt_key(&spec.plan_id, &task.id, attempt_id),
+                experiment_settlement,
+            )
+            .await;
         }
     }
 
@@ -2681,12 +2687,14 @@ impl GraphTaskDispatcher {
                     if let Some((strategy, query, results_count, latency_ms)) = ctx_snapshot {
                         // RAG-11: update experiment store with gate-fail outcome.
                         if let Some(exp_path) = &self.feedback.experiment_store_path {
-                            let mut store =
-                                roko_learn::prompt_experiment::ExperimentStore::load_or_new(
-                                    exp_path,
-                                );
-                            store.record_retrieval_outcome(&strategy, false);
-                            let _ = store.save(exp_path);
+                            // Locked: prompt treatments share the file.
+                            let _ = roko_learn::prompt_experiment::ExperimentStore::transaction(
+                                exp_path,
+                                |store| {
+                                    store.record_retrieval_outcome(&strategy, false);
+                                    Ok(())
+                                },
+                            );
                         }
                         // RAG-10: write settled record.
                         if let Some(path) = self.feedback.retrieval_outcomes_path.clone() {
@@ -2807,10 +2815,14 @@ impl GraphTaskDispatcher {
                 if let Some((strategy, query, results_count, latency_ms)) = ctx_snapshot {
                     // RAG-11: update experiment store with gate-pass outcome.
                     if let Some(exp_path) = &self.feedback.experiment_store_path {
-                        let mut store =
-                            roko_learn::prompt_experiment::ExperimentStore::load_or_new(exp_path);
-                        store.record_retrieval_outcome(&strategy, true);
-                        let _ = store.save(exp_path);
+                        // Locked: prompt treatments share the file.
+                        let _ = roko_learn::prompt_experiment::ExperimentStore::transaction(
+                            exp_path,
+                            |store| {
+                                store.record_retrieval_outcome(&strategy, true);
+                                Ok(())
+                            },
+                        );
                     }
                     // RAG-10: write settled record.
                     if let Some(path) = self.feedback.retrieval_outcomes_path.clone() {
@@ -3117,27 +3129,31 @@ fn dream_routing_bias(
 /// RAG-11: assign the retrieval-strategy arm from the experiment store.
 ///
 /// Blocking file I/O: call it from `spawn_blocking`. Assignment is a pure
-/// read of the persisted arm statistics, so the store is written back (same
-/// unlocked load and atomic save as before) only when this call registered
-/// the experiment, not on every dispatch.
+/// read of the persisted arm statistics. The store is written only to
+/// register the experiment, and then under its lock, so the prompt
+/// treatments parallel attempts record in the same file are never lost.
 fn assign_retrieval_strategy_arm(exp_path: &Path) -> String {
     use roko_learn::prompt_experiment::ExperimentStore;
 
     let mut store = ExperimentStore::load_or_new(exp_path);
-    let newly_registered = store
+    if store
         .get(ExperimentStore::RETRIEVAL_STRATEGY_EXPERIMENT_ID)
-        .is_none();
-    store.ensure_retrieval_strategy_experiment();
-    let arm = store
-        .assign_retrieval_strategy()
-        .unwrap_or_else(|| roko_learn::retrieval_outcome::STRATEGY_KEYWORD.to_string());
-    if newly_registered && let Err(error) = store.save(exp_path) {
-        tracing::debug!(
-            %error,
-            "RAG-11: persisting the retrieval-strategy experiment failed (best-effort)"
-        );
+        .is_none()
+    {
+        store.ensure_retrieval_strategy_experiment();
+        if let Err(error) = ExperimentStore::transaction(exp_path, |locked| {
+            locked.ensure_retrieval_strategy_experiment();
+            Ok(())
+        }) {
+            tracing::debug!(
+                %error,
+                "RAG-11: persisting the retrieval-strategy experiment failed (best-effort)"
+            );
+        }
     }
-    arm
+    store
+        .assign_retrieval_strategy()
+        .unwrap_or_else(|| roko_learn::retrieval_outcome::STRATEGY_KEYWORD.to_string())
 }
 
 /// Build a reasonable `RoutingContext` for Graph task dispatch.
@@ -3563,7 +3579,17 @@ impl TaskDispatcher for GraphTaskDispatcher {
         } else {
             None
         };
-        let dispatch_ctx = DispatchContext {
+        // Durable, attempt-scoped prompt treatments from the root workspace's
+        // experiment store; settled with the attempt's outcome in
+        // `emit_feedback`.
+        let prompt_experiment = self
+            .feedback
+            .experiment_store_path
+            .as_deref()
+            .and_then(|store| {
+                prompt_experiment::context(store, &spec.plan_id, &task.id, &efficiency_attempt_id)
+            });
+        let mut dispatch_ctx = DispatchContext {
             plan_id: spec.plan_id.clone(),
             role: role.to_string(),
             workdir: effective_workdir.clone(),
@@ -3579,8 +3605,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
                 budget_reservation.routing_budget_usd(),
             ),
             attempt: attempt_number,
-            // Graph does not yet own runner terminal feedback receipts.
-            prompt_experiment: None,
+            prompt_experiment: prompt_experiment.clone(),
             gate_feedback: prior_gate_feedback,
             routing_context: Some(routing_ctx),
             routing_bias,
@@ -3591,11 +3616,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
             cached_cfactor_context: cached_cfactor_context.clone(),
         };
         let prompt_assembly_started = std::time::Instant::now();
-        let dispatch_plan = self
-            .factory
-            .dispatcher()
-            .plan(&task, &dispatch_ctx)
-            .map_err(|error| RokoError::Planning(error.to_string()))?;
+        let dispatch_plan = self.plan_dispatch(spec, &task, &mut dispatch_ctx)?;
         let prompt_assembly_latency_ms = prompt_assembly_started.elapsed().as_millis() as u64;
 
         // ── RAG-10/11: Retrieval outcome telemetry (pre-gate) ────────────
@@ -3707,6 +3728,16 @@ impl TaskDispatcher for GraphTaskDispatcher {
             max_turns: Some(max_turns),
             live_output: None,
         };
+
+        // Bind the prompt treatments to the exact final prompt before launch;
+        // an attempt that ends before `emit_feedback` abandons them on drop.
+        let _launched_treatments = prompt_experiment::LaunchedTreatments::bind(
+            prompt_experiment,
+            &dispatch_plan.prompt.diagnostics.experiment_assignments,
+            &request.system_prompt,
+            &request.prompt,
+        )
+        .await;
 
         // ── T04: Pre-dispatch agent_spawned ─────────────────────────────
         //
@@ -4280,7 +4311,16 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
         } else {
             None
         };
-        let dispatch_ctx = DispatchContext {
+        let retry_key = format!("{}/{}", spec.plan_id, task.id);
+        let efficiency_attempt_id = self.next_attempt_id(&retry_key);
+        let prompt_experiment = self
+            .feedback
+            .experiment_store_path
+            .as_deref()
+            .and_then(|store| {
+                prompt_experiment::context(store, &spec.plan_id, &task.id, &efficiency_attempt_id)
+            });
+        let mut dispatch_ctx = DispatchContext {
             plan_id: spec.plan_id.clone(),
             role: role.to_string(),
             workdir: lease.path.clone(),
@@ -4294,7 +4334,7 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
                 budget_reservation.routing_budget_usd(),
             ),
             attempt: 0,
-            prompt_experiment: None,
+            prompt_experiment: prompt_experiment.clone(),
             gate_feedback: None,
             routing_context: Some(routing_ctx),
             routing_bias: None,
@@ -4304,11 +4344,7 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
             cached_workspace_context: cached_workspace_context.clone(),
             cached_cfactor_context: cached_cfactor_context.clone(),
         };
-        let dispatch_plan = self
-            .factory
-            .dispatcher()
-            .plan(&task, &dispatch_ctx)
-            .map_err(|error| RokoError::Planning(error.to_string()))?;
+        let dispatch_plan = self.plan_dispatch(spec, &task, &mut dispatch_ctx)?;
         let contract = effective_agent_contract(role, &task);
         let effective_timeout_secs = if spec.timeout_secs == 0 {
             self.config.timeouts.agent_dispatch_secs
@@ -4340,6 +4376,13 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
             max_turns: Some(max_turns),
             live_output: None,
         };
+        let _launched_treatments = prompt_experiment::LaunchedTreatments::bind(
+            prompt_experiment,
+            &dispatch_plan.prompt.diagnostics.experiment_assignments,
+            &request.system_prompt,
+            &request.prompt,
+        )
+        .await;
 
         // ── Live output forwarder (streaming path) ────────────────────────
         let request = {
@@ -4455,8 +4498,6 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
                 //
                 // Same verdict logic as the batch path; gates run in the lease
                 // path and progress streams through the event channel.
-                let retry_key = format!("{}/{}", spec.plan_id, task.id);
-                let efficiency_attempt_id = self.next_attempt_id(&retry_key);
                 let verification = if dispatch.result.success {
                     let attempt_number = self
                         .gate_retry_context

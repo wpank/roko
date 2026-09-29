@@ -219,11 +219,12 @@ impl AttemptContext {
             gate_verdict,
             first_token_seen,
             failure_reason,
+            rung,
         } = settlement;
         let mut verdict = AttemptVerdictRecord::settle(self.identity, outcome, first_token_seen);
         verdict.task_spec_hash = Some(self.task_spec_hash);
         verdict.gate_verdict = gate_verdict;
-        verdict.failure_class = failure_class(outcome, failure_reason.as_deref());
+        verdict.failure_class = failure_class(outcome, failure_reason.as_deref(), rung);
         verdict.timing = self.timing;
         // Neither path sees the first token's time yet (S01 P0-5).
         verdict.timing.ttft_source = Some("unavailable".to_string());
@@ -249,10 +250,15 @@ pub(super) struct Settlement {
     /// the agent's, before it the provider's.
     first_token_seen: bool,
     failure_reason: Option<String>,
+    /// The check that failed the attempt, when it names one:
+    /// `pre_verify:<check>` for the pre-verify screen (`red_flags`).
+    rung: Option<String>,
 }
 
 impl Settlement {
-    /// The verify steps' verdict on a successful provider call.
+    /// The verify steps' verdict on a successful provider call. An attempt
+    /// the pre-verify screen rejected is a verify failure too: the agent's,
+    /// with the screen's check as its rung.
     pub(super) fn verified(verification: &Result<TaskGateVerdict>) -> Self {
         match verification {
             Ok(verdict) => {
@@ -262,6 +268,7 @@ impl Settlement {
                     gate_verdict: Some(tag),
                     first_token_seen: true,
                     failure_reason: None,
+                    rung: None,
                 }
             }
             Err(error) => Self {
@@ -269,6 +276,14 @@ impl Settlement {
                 gate_verdict: None,
                 first_token_seen: true,
                 failure_reason: Some(verify_failure_reason(error)),
+                rung: match error {
+                    RokoError::Verify { gate, .. }
+                        if gate.starts_with(red_flags::PRE_VERIFY_GATE_PREFIX) =>
+                    {
+                        Some(gate.clone())
+                    }
+                    _ => None,
+                },
             },
         }
     }
@@ -281,6 +296,7 @@ impl Settlement {
             gate_verdict: None,
             first_token_seen,
             failure_reason: Some(provider_failure_reason(message)),
+            rung: None,
         }
     }
 }
@@ -371,6 +387,7 @@ const fn gate_verdict_tag(verdict: TaskGateVerdict) -> GateVerdictTag {
 fn failure_class(
     outcome: AttemptOutcome,
     failure_reason: Option<&str>,
+    rung: Option<String>,
 ) -> Option<AttemptFailureClass> {
     if matches!(
         outcome,
@@ -379,6 +396,7 @@ fn failure_class(
         return None;
     }
     let mut class = AttemptFailureClass::new(outcome);
+    class.rung = rung;
     class.detail_sha256 = failure_reason.map(sha256_hex);
     Some(class)
 }
@@ -715,5 +733,41 @@ printf '%s\n' '{"type":"result","session_id":"sess-r","model":"claude-sonnet-4-6
             })
             .collect();
         assert_eq!(keys, [5, 6], "each open mints the chain's next ordinal");
+    }
+
+    /// An attempt the pre-verify screen rejected settles as the agent's
+    /// failed gate, so no learner credits it, and its rung names the check.
+    #[test]
+    fn a_pre_verify_rejection_names_its_check_as_the_rung() {
+        let book = AttemptBook::default();
+        let task = make_task_def("focused");
+        let spec = make_spec(&task);
+        let rung = |gate: &str| {
+            let error = RokoError::Verify {
+                gate: gate.to_string(),
+                message: "rejected".to_string(),
+            };
+            let settled = book.open(None, "run-1", &spec, &task, None).settle(
+                Settlement::verified(&Err(error)),
+                "model-a",
+                None,
+            );
+            let verdict = &settled.verdict;
+            assert_eq!(
+                (verdict.outcome, verdict.blame, verdict.learning_label),
+                (AttemptOutcome::GateFailed, Blame::Agent, Some(0)),
+                "{gate}"
+            );
+            assert!(!settled.succeeded());
+            verdict
+                .failure_class
+                .as_ref()
+                .and_then(|class| class.rung.clone())
+        };
+        assert_eq!(
+            rung("pre_verify:no_changes").as_deref(),
+            Some("pre_verify:no_changes")
+        );
+        assert_eq!(rung("graph-verify"), None, "a failed verify step");
     }
 }

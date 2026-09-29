@@ -59,6 +59,10 @@ const fn default_sibling_settle_secs() -> u64 {
     600
 }
 
+/// Output-token cap of a Graph attempt whose role `[gates] max_output_tokens`
+/// does not list: about five times the largest attempt recorded so far.
+pub const DEFAULT_MAX_OUTPUT_TOKENS: u64 = 200_000;
+
 // ---- [gates.adaptive] defaults -------------------------------------------
 
 const fn default_ema_alpha() -> f64 {
@@ -162,6 +166,13 @@ pub struct GatesConfig {
     /// the wait, so every failure counts at once. Default: 600.
     #[serde(default = "default_sibling_settle_secs")]
     pub sibling_settle_secs: u64,
+    /// Runaway-output guard for Graph task attempts: the most output tokens
+    /// an attempt may report before it fails as a red flag, without running
+    /// its verify steps. Keyed by task role, with `default` for roles not
+    /// listed, e.g. `{ default = 150000, reviewer = 20000 }`; `0` turns the
+    /// cap off. Roles neither lists get [`DEFAULT_MAX_OUTPUT_TOKENS`].
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub max_output_tokens: HashMap<String, u64>,
     /// Extra roko environment variables that gate commands (task `verify`
     /// steps, build and test gates) may inherit: exact names or `PREFIX*`
     /// patterns, e.g. `["DATABASE_URL", "AWS_*"]`.
@@ -254,6 +265,7 @@ impl Default for GatesConfig {
             impact_max_targets: default_impact_max_targets(),
             compile_concurrency: default_compile_concurrency(),
             sibling_settle_secs: default_sibling_settle_secs(),
+            max_output_tokens: HashMap::new(),
             env_passthrough: Vec::new(),
             domain_gates: HashMap::new(),
             custom_rungs: Vec::new(),
@@ -269,6 +281,19 @@ impl Default for GatesConfig {
 }
 
 impl GatesConfig {
+    /// Output-token cap of an attempt of `role` (`max_output_tokens`), or
+    /// `None` when the cap is off.
+    #[must_use]
+    pub fn max_output_tokens_for(&self, role: &str) -> Option<u64> {
+        let cap = self
+            .max_output_tokens
+            .get(role)
+            .or_else(|| self.max_output_tokens.get("default"))
+            .copied()
+            .unwrap_or(DEFAULT_MAX_OUTPUT_TOKENS);
+        (cap > 0).then_some(cap)
+    }
+
     /// Returns true when `[[gates.rungs]]` custom gate configuration is present.
     #[must_use]
     pub fn has_custom_rungs(&self) -> bool {
@@ -668,5 +693,22 @@ max_turns = 0
         let cfg =
             RokoConfig::from_toml("[gates]\nwrite_eval_artifacts = true\n").expect("config parses");
         assert!(cfg.gates.write_eval_artifacts);
+    }
+
+    #[test]
+    fn output_token_caps_fall_back_from_role_to_default_to_builtin() {
+        let builtin = super::GatesConfig::default();
+        assert_eq!(
+            builtin.max_output_tokens_for("implementer"),
+            Some(super::DEFAULT_MAX_OUTPUT_TOKENS)
+        );
+
+        let cfg = RokoConfig::from_toml(
+            "[gates.max_output_tokens]\ndefault = 5000\nreviewer = 800\nscribe = 0\n",
+        )
+        .expect("config parses");
+        assert_eq!(cfg.gates.max_output_tokens_for("reviewer"), Some(800));
+        assert_eq!(cfg.gates.max_output_tokens_for("implementer"), Some(5000));
+        assert_eq!(cfg.gates.max_output_tokens_for("scribe"), None, "0 is off");
     }
 }

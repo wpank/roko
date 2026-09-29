@@ -9,7 +9,7 @@
 //! result counts. A failure that persists with every located error in a
 //! sibling's `files` names it: `blocked_by_sibling = <task>`.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 use std::path::{Component, Path, PathBuf};
 use std::sync::LazyLock;
@@ -24,9 +24,22 @@ use tokio::sync::watch;
 /// sibling editing the same working tree may have caused it.
 pub(crate) struct InFlightTasks {
     attempts: parking_lot::Mutex<BTreeMap<u64, InFlightAttempt>>,
+    /// Attempts that have ended, by id, so the siblings that overlapped a
+    /// task's attempts can still be named afterwards
+    /// ([`Self::sibling_files_since`]).
+    ended: parking_lot::Mutex<Vec<(u64, InFlightAttempt)>>,
     next_id: AtomicU64,
     /// Bumped whenever an attempt ends or starts settling.
     changed: watch::Sender<u64>,
+}
+
+/// Where a task's window of edits to its working tree starts: the attempts
+/// in flight then, and the id the next attempt to register gets. The
+/// siblings that overlap the window are those attempts and every later one.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct WriterMark {
+    next_id: u64,
+    in_flight: BTreeSet<u64>,
 }
 
 struct InFlightAttempt {
@@ -71,6 +84,7 @@ impl Default for InFlightTasks {
     fn default() -> Self {
         Self {
             attempts: parking_lot::Mutex::default(),
+            ended: parking_lot::Mutex::default(),
             next_id: AtomicU64::new(0),
             changed: watch::channel(0).0,
         }
@@ -79,7 +93,10 @@ impl Default for InFlightTasks {
 
 impl Drop for InFlightGuard<'_> {
     fn drop(&mut self) {
-        self.tasks.attempts.lock().remove(&self.id);
+        let ended = self.tasks.attempts.lock().remove(&self.id);
+        if let Some(attempt) = ended {
+            self.tasks.ended.lock().push((self.id, attempt));
+        }
         self.tasks.bump();
     }
 }
@@ -93,8 +110,11 @@ impl InFlightTasks {
         workdir: &Path,
         files: &[String],
     ) -> InFlightGuard<'_> {
+        // The id is taken under the lock, so a [`WriterMark`] never sees an
+        // id handed out whose attempt is not in the map yet.
+        let mut attempts = self.attempts.lock();
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        self.attempts.lock().insert(
+        attempts.insert(
             id,
             InFlightAttempt {
                 key: key.to_string(),
@@ -104,6 +124,44 @@ impl InFlightTasks {
             },
         );
         InFlightGuard { tasks: self, id }
+    }
+
+    /// Start a window from which [`Self::sibling_files_since`] names the
+    /// sibling attempts that may edit a task's working tree.
+    pub(crate) fn mark(&self) -> WriterMark {
+        let attempts = self.attempts.lock();
+        WriterMark {
+            next_id: self.next_id.load(Ordering::Relaxed),
+            in_flight: attempts.keys().copied().collect(),
+        }
+    }
+
+    /// The `files` declared by attempts of tasks other than `key` in
+    /// `workdir` that were in flight at `mark` or started since, ended or
+    /// not: what they edited there is theirs, not `key`'s.
+    pub(crate) fn sibling_files_since(
+        &self,
+        mark: &WriterMark,
+        key: &str,
+        workdir: &Path,
+    ) -> Vec<String> {
+        let overlaps = |id: u64, attempt: &InFlightAttempt| {
+            attempt.key != key
+                && attempt.workdir == workdir
+                && (id >= mark.next_id || mark.in_flight.contains(&id))
+        };
+        let mut files = BTreeSet::new();
+        for (id, attempt) in self.attempts.lock().iter() {
+            if overlaps(*id, attempt) {
+                files.extend(attempt.files.iter().cloned());
+            }
+        }
+        for (id, attempt) in self.ended.lock().iter() {
+            if overlaps(*id, attempt) {
+                files.extend(attempt.files.iter().cloned());
+            }
+        }
+        files.into_iter().collect()
     }
 
     /// Settle a verify step that failed while siblings may be editing its
@@ -438,7 +496,7 @@ fn lexical(path: &Path) -> PathBuf {
 /// Whether the task `files` entry `declared` covers `located`: the same file
 /// or a directory holding it, or either path a suffix of the other, since a
 /// tool run in a subproject (`cd web && tsc`) reports paths relative to it.
-fn declares(declared: &str, located: &Path) -> bool {
+pub(super) fn declares(declared: &str, located: &Path) -> bool {
     let declared = lexical(Path::new(declared.trim()));
     !declared.as_os_str().is_empty()
         && !located.as_os_str().is_empty()
@@ -762,5 +820,27 @@ mod tests {
         // The first to fail waits for the other, which sees it settling and
         // keeps its own failure.
         assert_ne!(a_verdict.passed, b_verdict.passed);
+    }
+
+    #[test]
+    fn sibling_files_since_names_every_attempt_that_overlapped_the_window() {
+        let tasks = InFlightTasks::default();
+        let workdir = Path::new(WORKDIR);
+        let before = tasks.register("plan/BEFORE", workdir, &files(&["done.rs"]));
+        drop(before);
+        let running = tasks.register("plan/RUNNING", workdir, &files(&["running.rs"]));
+        let own = tasks.register("plan/OWN", workdir, &files(&["own.rs"]));
+
+        let mark = tasks.mark();
+        // A sibling that starts and ends inside the window still counts.
+        drop(tasks.register("plan/BRIEF", workdir, &files(&["brief.rs"])));
+        drop(running);
+        let _elsewhere = tasks.register("plan/OTHER", Path::new("/other"), &files(&["x.rs"]));
+
+        assert_eq!(
+            tasks.sibling_files_since(&mark, "plan/OWN", workdir),
+            ["brief.rs", "running.rs"]
+        );
+        drop(own);
     }
 }

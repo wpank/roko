@@ -50,7 +50,11 @@ use crate::runner::tui_bridge::TuiBridge;
 use crate::runtime_feedback::{FeedbackEvent, FeedbackFacade};
 use crate::task_parser::TaskDef;
 
+mod retry_budget;
+mod retry_feedback;
 mod sibling_settle;
+
+pub(crate) use retry_budget::TaskRetryBudgets;
 
 #[cfg(test)]
 mod gate_output_accept;
@@ -836,8 +840,9 @@ pub struct InertGraphSetting {
 #[must_use]
 pub fn graph_engine_inert_settings(config: &RokoConfig) -> Vec<InertGraphSetting> {
     const LEGACY_GATES: &str = "only the legacy Runner-v2 gate pipeline (--engine legacy) reads it";
-    const ADAPTIVE: &str =
-        "only AdaptiveThresholds reads it, and no run constructs one (Graph uses a fixed EMA)";
+    const ADAPTIVE: &str = "of the adaptive-threshold settings the Graph engine reads only \
+                            adaptive_min_retries and adaptive_max_retries (task retry budgets); \
+                            its gate EMA uses a fixed alpha";
     const NOT_ENFORCED: &str = "not enforced by the Graph engine";
     const NO_READER: &str = "no production code reads it";
     const DISPLAY_ONLY: &str = "shown by config views; no routing decision reads it";
@@ -897,16 +902,6 @@ pub fn graph_engine_inert_settings(config: &RokoConfig) -> Vec<InertGraphSetting
         (
             gates.ema_alpha.to_bits() != default_gates.ema_alpha.to_bits(),
             "gates.ema_alpha",
-            ADAPTIVE,
-        ),
-        (
-            gates.adaptive_min_retries != default_gates.adaptive_min_retries,
-            "gates.adaptive_min_retries",
-            ADAPTIVE,
-        ),
-        (
-            gates.adaptive_max_retries != default_gates.adaptive_max_retries,
-            "gates.adaptive_max_retries",
             ADAPTIVE,
         ),
         (
@@ -1183,12 +1178,12 @@ pub struct GraphTaskDispatcher {
     live_agent_output: Option<LiveAgentOutput>,
     /// Per-task gate failure context carried across retries.
     ///
-    /// When a task's verify steps fail, the structured gate output is stored
-    /// here keyed by `"{plan_id}/{task_id}"`. On the next retry of the same
-    /// task, the dispatcher reads this feedback and injects it into the
+    /// When a task's verify steps fail, the structured gate output is left
+    /// here for the task's next attempt, which injects it into the
     /// `DispatchContext` so the agent prompt includes the previous errors.
-    /// The value is `(feedback, attempt_number)`.
-    gate_retry_context: parking_lot::Mutex<HashMap<String, (GateFeedback, u32)>>,
+    /// Plans with a Graph checkpoint also keep it on disk
+    /// ([`Self::attach_retry_feedback`]), so a resumed run gets it too.
+    gate_retry_context: retry_feedback::RetryFeedbackBook,
     /// Aggregate input tokens accumulated across all dispatches in this run.
     agg_tokens_in: AtomicU64,
     /// Aggregate output tokens accumulated across all dispatches in this run.
@@ -1259,7 +1254,7 @@ impl GraphTaskDispatcher {
             workspace_provider: None,
             tui_bridge: None,
             live_agent_output: None,
-            gate_retry_context: parking_lot::Mutex::new(HashMap::new()),
+            gate_retry_context: retry_feedback::RetryFeedbackBook::default(),
             agg_tokens_in: AtomicU64::new(0),
             agg_tokens_out: AtomicU64::new(0),
             agg_dispatch_count: AtomicU64::new(0),
@@ -1378,6 +1373,57 @@ impl GraphTaskDispatcher {
         checkpoint: GraphCostLedgerCheckpoint,
     ) -> Result<()> {
         self.budget_ledger.attach_checkpoint(plan_id, checkpoint)
+    }
+
+    /// Keep `plan_id`'s pending retry feedback in `path`, beside its Graph
+    /// checkpoint of run `run_id`, restoring what an earlier process of that
+    /// run left for its tasks' next attempts.
+    pub fn attach_retry_feedback(&self, plan_id: &str, path: PathBuf, run_id: &str) {
+        let restored = self
+            .gate_retry_context
+            .attach(plan_id, path.clone(), run_id);
+        if !restored.is_empty() {
+            tracing::info!(
+                plan_id,
+                tasks = %restored.join(", "),
+                path = %path.display(),
+                "restored gate feedback for the next attempts of resumed tasks"
+            );
+        }
+    }
+
+    /// Retry budgets of the tasks of the plan in `plan_dir`: authored ones as
+    /// written, the rest set by `[gates]` and the adaptive gate thresholds
+    /// this dispatcher's verify runs record (see [`TaskRetryBudgets`]).
+    pub(crate) fn task_retry_budgets(&self, plan_dir: &Path) -> TaskRetryBudgets {
+        let tasks_toml = [plan_dir.to_path_buf(), self.workdir.join(plan_dir)]
+            .into_iter()
+            .map(|dir| dir.join("tasks.toml"))
+            .find(|path| path.is_file())
+            .unwrap_or_else(|| plan_dir.join("tasks.toml"));
+        TaskRetryBudgets::load(
+            self.feedback.gate_thresholds_path.as_deref(),
+            &self.config.gates,
+            &tasks_toml,
+        )
+    }
+
+    /// This run's index of the attempt of `task_key` that
+    /// [`Self::next_attempt_id`] numbered last: attempt `k` is the Graph
+    /// engine's retry `k`.
+    fn attempt_in_run(&self, task_key: &str) -> u32 {
+        self.task_attempts
+            .lock()
+            .get(task_key)
+            .map_or(0, |started| started.saturating_sub(1))
+    }
+
+    /// Attempt number and pending gate feedback of the dispatch of `task_id`
+    /// that [`Self::next_attempt_id`] just numbered.
+    fn next_retry_attempt(&self, plan_id: &str, task_id: &str) -> retry_feedback::NextAttempt {
+        let attempt_in_run = self.attempt_in_run(&format!("{plan_id}/{task_id}"));
+        self.gate_retry_context
+            .next_attempt(plan_id, task_id, attempt_in_run)
     }
 
     /// Return the current cost state for `plan_id`.
@@ -1882,6 +1928,13 @@ impl GraphTaskDispatcher {
             // we can feed outcomes into GateThresholds::observe after all steps
             // complete (including any post-auto-fix re-run).
             let mut step_outcomes: Vec<(String, bool)> = Vec::new();
+            // P1-08: the CodingOracle's test pass-rate forecast for this
+            // attempt, taken before its steps feed the oracle below.
+            let test_pass_forecast = self
+                .feedback
+                .coding_oracle
+                .as_ref()
+                .map(|oracle| oracle.predict_test_pass_rate());
             // P4-03: PromiseTracker for early termination of doomed attempts.
             let mut promise_tracker = crate::runner::promise_tracker::PromiseTracker::new();
             let mut promise_terminated = false;
@@ -2276,14 +2329,17 @@ impl GraphTaskDispatcher {
                         GateThresholds::default()
                     }
                 };
-                for (phase, passed) in &step_outcomes {
-                    // Map the verify step's phase label to a canonical rung
-                    // index using the same registry used by the Runner-v2
-                    // gate pipeline (rung_for_gate_name strips attribution
-                    // prefixes like "baseline:" automatically).
-                    if let Some(rung) = rung_for_gate_name(phase.as_str()).map(|r| r.as_index()) {
-                        thresholds.observe(rung, *passed);
-                    }
+                // Each step whose phase maps to a canonical rung updates its
+                // EMA; test-rung steps also feed the oracle residual (P1-08).
+                let residuals = thresholds.observe_verify_steps(&step_outcomes, test_pass_forecast);
+                if !residuals.is_empty() {
+                    tracing::debug!(
+                        plan_id = %spec.plan_id,
+                        task_id = %task.id,
+                        ?residuals,
+                        forecast = ?test_pass_forecast,
+                        "P1-08: oracle residual fed to adaptive gate thresholds"
+                    );
                 }
                 match thresholds.save(gt_path) {
                     Ok(()) => {
@@ -2562,31 +2618,55 @@ impl GraphTaskDispatcher {
 
                 // ── Store gate feedback for retry injection ─────────────
                 //
-                // Parse the raw failure text into structured GateFeedback
-                // and store it keyed by task so the next dispatch attempt
-                // can inject the errors into the agent's prompt.
-                // Prepend the enriched diagnosis to raw_output so the prompt
-                // builder surfaces the focused summary ahead of the raw output.
-                let feedback_raw = if enriched_diagnosis.is_empty() {
-                    raw_for_feedback.clone()
-                } else {
-                    format!("Diagnosis: {enriched_diagnosis}\n\n{raw_for_feedback}")
-                };
-                if let Some(feedback) = GateFeedback::from_raw(&feedback_raw) {
+                // Parse the raw failure text into structured GateFeedback,
+                // with the diagnosis rendered ahead of the errors, and leave
+                // it for the task's next attempt prompt. Plans with a Graph
+                // checkpoint keep it on disk, so the attempt a resumed run
+                // starts gets it even after this run's retries ran out.
+                if let Some(feedback) = GateFeedback::from_raw(&raw_for_feedback) {
+                    let feedback = feedback.with_diagnosis(&enriched_diagnosis);
                     let next_attempt = attempt_number.saturating_add(1);
+                    let retries_left = spec
+                        .max_retries
+                        .saturating_sub(self.attempt_in_run(&retry_key));
                     tracing::info!(
                         plan_id = %spec.plan_id,
                         task_id = %task.id,
                         compile_errors = feedback.compile_errors.len(),
                         test_failures = feedback.test_failures.len(),
                         clippy_warnings = feedback.clippy_warnings.len(),
-                        has_enriched_diagnosis = !enriched_diagnosis.is_empty(),
+                        has_enriched_diagnosis = feedback.diagnosis.is_some(),
                         next_attempt,
+                        retries_left,
                         "storing gate feedback for retry injection"
                     );
-                    self.gate_retry_context
-                        .lock()
-                        .insert(retry_key.clone(), (feedback, next_attempt));
+                    let kept_in = self.gate_retry_context.record(
+                        &spec.plan_id,
+                        &task.id,
+                        feedback,
+                        next_attempt,
+                    );
+                    if retries_left == 0 {
+                        match kept_in {
+                            Some(path) => tracing::warn!(
+                                plan_id = %spec.plan_id,
+                                task_id = %task.id,
+                                attempt = attempt_number,
+                                max_retries = spec.max_retries,
+                                feedback = %path.display(),
+                                "verify failed on the last attempt the retry budget allows; \
+                                 `roko plan run --resume-plan` retries the task with this feedback"
+                            ),
+                            None => tracing::warn!(
+                                plan_id = %spec.plan_id,
+                                task_id = %task.id,
+                                attempt = attempt_number,
+                                max_retries = spec.max_retries,
+                                "verify failed on the last attempt the retry budget allows; \
+                                 its feedback is not kept for a resumed run"
+                            ),
+                        }
+                    }
                 }
                 // ── W13: Persist structured gate failure record ──────────
                 //
@@ -2601,7 +2681,7 @@ impl GraphTaskDispatcher {
                         &spec.plan_id,
                         &task.id,
                         "graph-verify",
-                        0,
+                        failed_step_rung(&step_outcomes),
                         &classification,
                     );
                     if let Ok(line) = serde_json::to_string(&record) {
@@ -2846,7 +2926,7 @@ impl GraphTaskDispatcher {
                 }
             }
             // Clear any stale gate retry context on success.
-            self.gate_retry_context.lock().remove(&retry_key);
+            self.gate_retry_context.clear(&spec.plan_id, &task.id);
             self.retrieval_ctx.lock().remove(&retry_key);
         }
 
@@ -3520,21 +3600,19 @@ impl TaskDispatcher for GraphTaskDispatcher {
         // ── Gate retry context lookup ──────────────────────────────────
         //
         // If this task was previously dispatched and failed verification,
-        // the gate_retry_context map holds the structured errors and attempt
-        // count. Injecting this into the DispatchContext causes the prompt
-        // assembler to include a "Previous attempt feedback" section with
-        // the actual compile/test/clippy errors so the agent can fix them.
+        // the gate_retry_context holds the structured errors. Injecting them
+        // into the DispatchContext causes the prompt assembler to include a
+        // "Previous attempt feedback" section with the actual
+        // compile/test/clippy errors so the agent can fix them. The attempt
+        // number counts every earlier dispatch, as the engine's retries do.
         let retry_key = format!("{}/{}", spec.plan_id, task.id);
-        let (prior_gate_feedback, attempt_number) = self
-            .gate_retry_context
-            .lock()
-            .get(&retry_key)
-            .cloned()
-            .map(|(fb, attempt)| (Some(fb), attempt))
-            .unwrap_or((None, 0));
         let efficiency_attempt_id = self.next_attempt_id(&retry_key);
+        let retry_feedback::NextAttempt {
+            attempt: attempt_number,
+            feedback: prior_gate_feedback,
+        } = self.next_retry_attempt(&spec.plan_id, &task.id);
 
-        if attempt_number > 0 {
+        if prior_gate_feedback.is_some() {
             tracing::info!(
                 plan_id = %spec.plan_id,
                 task_id = %task.id,
@@ -4152,6 +4230,24 @@ fn gate_how_ended(reason: &str) -> String {
     }
 }
 
+/// Gate rung of the first failed step in `(phase, passed)` verify outcomes:
+/// its canonical rung (0 compile, 1 clippy, 2 test), else the custom shell
+/// gate's rung, since every Graph verify step is a shell command.
+fn failed_step_rung(step_outcomes: &[(String, bool)]) -> u32 {
+    step_outcomes
+        .iter()
+        .find(|(_, passed)| !passed)
+        .and_then(|(phase, _)| rung_for_gate_name(phase))
+        .map_or_else(
+            || {
+                roko_gate::GateRegistry::new()
+                    .rung_for_name("custom")
+                    .map_or(0, u32::from)
+            },
+            |rung| rung.as_index(),
+        )
+}
+
 /// Retry-facing summary of a failed verify run, including skipped steps.
 fn verify_failure_summary(
     title: &str,
@@ -4478,11 +4574,7 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
                 let retry_key = format!("{}/{}", spec.plan_id, task.id);
                 let efficiency_attempt_id = self.next_attempt_id(&retry_key);
                 let verification = if dispatch.result.success {
-                    let attempt_number = self
-                        .gate_retry_context
-                        .lock()
-                        .get(&retry_key)
-                        .map_or(0, |(_, attempt)| *attempt);
+                    let attempt_number = self.next_retry_attempt(&spec.plan_id, &task.id).attempt;
                     Some(
                         self.settle_task_verification(
                             spec,
@@ -5577,6 +5669,173 @@ printf '%s\n' '{"type":"result","session_id":"sess-v1","model":"claude-sonnet-4-
             "{message}"
         );
         assert!(!marker.exists(), "fail-fast must not run later steps");
+    }
+
+    /// Provider that answers diagnosis requests with a fixed diagnosis, logs
+    /// every other prompt (argv, which carries the system prompt, then stdin)
+    /// to `prompts/<n>.txt`, and writes `fixed` once a prompt carries
+    /// previous-attempt feedback.
+    const FEEDBACK_PROVIDER: &str = r#"#!/bin/sh
+set -eu
+input="$(cat)"
+case "$input" in
+  *"Diagnosis:"*) text="The fixture file named fixed was never created. Create it first." ;;
+  *)
+    mkdir -p prompts
+    n=$(ls prompts | wc -l | tr -d ' ')
+    printf '%s\n---\n%s\n' "$*" "$input" > "prompts/$n.txt"
+    case "$*" in *"Your previous attempt FAILED verification"*) : > fixed ;; esac
+    text="task-output" ;;
+esac
+printf '{"type":"content_block_delta","delta":{"text":"%s"}}\n' "$text"
+printf '%s\n' '{"type":"result","session_id":"s","model":"claude-sonnet-4-6","total_cost_usd":0.01,"usage":{"input_tokens":5,"output_tokens":10}}'
+"#;
+
+    /// Lets the test model serve as the cheap diagnosis model too.
+    fn diagnosing(config: &mut RokoConfig) {
+        no_auto_fix(config);
+        if let Some(model) = config.models.get_mut("stream-model") {
+            model.supports_tools = true;
+        }
+    }
+
+    #[tokio::test]
+    async fn verify_feedback_outlives_the_process_and_reaches_the_resumed_prompt() {
+        let temp = tempdir().expect("tempdir");
+        let feedback_file = temp.path().join("state/retry-feedback.json");
+        let (dispatcher, mut task) = make_test_dispatcher(
+            &temp,
+            FEEDBACK_PROVIDER,
+            diagnosing,
+            GraphFeedbackContext::default(),
+        )
+        .await;
+        task.verify = vec![verify_step("structural", "test -f fixed")];
+        let spec = make_spec(&task);
+        dispatcher.attach_retry_feedback(&spec.plan_id, feedback_file.clone(), "run-1");
+
+        let error = dispatcher
+            .dispatch(&spec, Vec::new(), &CellContext::new())
+            .await
+            .expect_err("`fixed` does not exist yet");
+        assert!(matches!(error, RokoError::Verify { .. }), "{error}");
+        let persisted: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&feedback_file).expect("feedback persisted"))
+                .expect("feedback json");
+        let entry = &persisted["tasks"][task.id.as_str()];
+        assert_eq!(entry["next_attempt"], 1, "{persisted}");
+        assert_eq!(
+            entry["feedback"]["diagnosis"],
+            "The fixture file named fixed was never created. Create it first.",
+            "{persisted}"
+        );
+
+        // Another process resumes the same checkpoint run.
+        drop(dispatcher);
+        let (resumed, _) = make_test_dispatcher(
+            &temp,
+            FEEDBACK_PROVIDER,
+            diagnosing,
+            GraphFeedbackContext::default(),
+        )
+        .await;
+        resumed.attach_retry_feedback(&spec.plan_id, feedback_file.clone(), "run-1");
+        resumed
+            .dispatch(&spec, Vec::new(), &CellContext::new())
+            .await
+            .expect("the resumed attempt gets the feedback and passes");
+
+        let first = std::fs::read_to_string(temp.path().join("prompts/0.txt")).expect("prompt 0");
+        assert!(!first.contains("# Previous attempt feedback"), "{first}");
+        let resumed_prompt =
+            std::fs::read_to_string(temp.path().join("prompts/1.txt")).expect("prompt 1");
+        assert!(
+            resumed_prompt.contains("# Previous attempt feedback"),
+            "{resumed_prompt}"
+        );
+        assert!(
+            resumed_prompt.contains(
+                "## Diagnosis\nThe fixture file named fixed was never created. Create it first."
+            ),
+            "{resumed_prompt}"
+        );
+        assert!(resumed_prompt.contains("test -f fixed"), "{resumed_prompt}");
+        assert!(
+            !feedback_file.exists(),
+            "a pass clears the persisted feedback"
+        );
+    }
+
+    #[tokio::test]
+    async fn feedback_attempt_numbers_count_provider_failures_like_the_retry_budget() {
+        let temp = tempdir().expect("tempdir");
+        // Two provider failures, then a completed attempt whose verify fails:
+        // the Graph engine's third attempt of a `max_retries = 2` task.
+        let provider = r#"#!/bin/sh
+set -eu
+cat >/dev/null
+calls=$(cat calls 2>/dev/null || echo 0)
+echo $((calls + 1)) > calls
+if [ "$calls" -lt 2 ]; then
+  printf '%s\n' '{"type":"result","session_id":"s","model":"claude-sonnet-4-6","total_cost_usd":0.0,"usage":{"input_tokens":1,"output_tokens":1},"is_error":true}'
+  exit 1
+fi
+printf '%s\n' '{"type":"content_block_delta","delta":{"text":"done"}}'
+printf '%s\n' '{"type":"result","session_id":"s","model":"claude-sonnet-4-6","total_cost_usd":0.01,"usage":{"input_tokens":5,"output_tokens":10}}'
+"#;
+        let feedback_file = temp.path().join("retry-feedback.json");
+        let (dispatcher, mut task) = make_test_dispatcher(
+            &temp,
+            provider,
+            no_auto_fix,
+            GraphFeedbackContext::default(),
+        )
+        .await;
+        task.max_retries = 2;
+        task.verify = vec![verify_step("structural", "exit 1")];
+        let spec = make_spec(&task);
+        dispatcher.attach_retry_feedback(&spec.plan_id, feedback_file.clone(), "run-1");
+
+        for expected in ["provider", "provider", "verify"] {
+            let error = dispatcher
+                .dispatch(&spec, Vec::new(), &CellContext::new())
+                .await
+                .expect_err("every attempt fails");
+            let kind = if matches!(error, RokoError::Verify { .. }) {
+                "verify"
+            } else {
+                "provider"
+            };
+            assert_eq!(kind, expected, "{error}");
+        }
+        let persisted: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&feedback_file).expect("feedback persisted"))
+                .expect("feedback json");
+        assert_eq!(
+            persisted["tasks"][task.id.as_str()]["next_attempt"],
+            3,
+            "the verify failure was attempt 2: {persisted}"
+        );
+    }
+
+    #[test]
+    fn a_failure_record_names_the_failed_steps_rung() {
+        let outcomes = |steps: &[(&str, bool)]| {
+            steps
+                .iter()
+                .map(|(phase, passed)| ((*phase).to_string(), *passed))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            failed_step_rung(&outcomes(&[("compile", true), ("test", false)])),
+            2
+        );
+        assert_eq!(failed_step_rung(&outcomes(&[("clippy", false)])), 1);
+        assert_eq!(
+            failed_step_rung(&outcomes(&[("structural", false)])),
+            5,
+            "shell steps outside the canonical rungs use the custom gate's rung"
+        );
     }
 
     /// Dispatches `task` beside a fake sibling `T12` of the same plan that
@@ -7374,6 +7633,7 @@ printf '%s\n' '{{"type":"result","session_id":"sess-b","model":"claude-sonnet-4-
         config.pipeline.focused.max_turns = 50;
         config.budget.max_task_usd = 2.0;
         config.gates.write_eval_artifacts = true;
+        config.gates.adaptive_max_retries = 8;
         let keys = graph_engine_inert_settings(&config)
             .iter()
             .map(|setting| setting.key)

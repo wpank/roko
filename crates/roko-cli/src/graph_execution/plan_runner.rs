@@ -1879,7 +1879,10 @@ async fn run_one_plan(
         );
     }
 
-    // Convert Runner v2 tasks into PlanTaskInfo for the converter.
+    // Convert Runner v2 tasks into PlanTaskInfo for the converter. Each
+    // task's retry budget is `--max-retries`, else what it authors, else set
+    // by the adaptive gate thresholds.
+    let retry_budgets = ctx.graph_task_dispatcher.task_retry_budgets(&plan.dir);
     let tasks: Vec<(String, PlanTaskInfo)> = plan
         .tasks
         .tasks
@@ -1895,7 +1898,9 @@ async fn run_one_plan(
                 depends_on: t.depends_on.clone(),
                 depends_on_plan: t.depends_on_plan.clone(),
                 timeout_secs: t.timeout_secs,
-                max_retries: ctx.max_retries.unwrap_or(t.max_retries),
+                max_retries: ctx
+                    .max_retries
+                    .unwrap_or_else(|| retry_budgets.max_retries(&plan.id, t)),
                 domain: t.domain.as_ref().map(|d| format!("{d:?}")),
                 sequence: t.sequence,
                 full_config_json: serde_json::to_value(t).unwrap_or_default(),
@@ -2010,6 +2015,11 @@ async fn run_one_plan(
     // hashing it into the plan fingerprint would stop every checkpoint written
     // under the FailFast default from resuming.
     graph.policy.failure_strategy = roko_graph::FailureStrategy::SkipFailed;
+    ctx.graph_task_dispatcher.attach_retry_feedback(
+        &plan.id,
+        checkpoint.paths().retry_feedback(),
+        &run_id,
+    );
     let mut engine = GraphEngine::new(graph, registry)
         .with_recorder(checkpoint.take_recorder())
         .with_telemetry(Arc::clone(ctx.graph_telemetry))

@@ -3,13 +3,14 @@ id = "bug-470de8"
 kind = "bug"
 title = "Every plan run pays for a dream consolidation nobody reads: dream_on_completion defaults to true"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p1"
 goal = "core"
 size = "S"
 subsystem = ["roko-core/config"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-29
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e15"
 discovered_from = "tmp/cybernetic-harness/tldr/05-GAPS-AND-PROPOSALS.md (P0 #6; §3 park dreams; §6 decision 12); tldr/research/B6-cognitive-subsystems.md"
 anchors = ["crates/roko-core/src/config/learning.rs::LearningConfig", "crates/roko-core/src/config/presets.rs::minimal", "crates/roko-core/src/config/presets.rs::thorough", "roko.toml:373"]
@@ -68,3 +69,7 @@ needs no change. No doc states the default.
 
 - A user config that says `true` explicitly keeps dreaming. That is intended.
 - Parking the dream items themselves is a separate question: dec-e70592.
+- Premise check at `a17d4dadd`: no production code emits `FeedbackEvent::PlanCompleted` (q-6b7cca), so Graph plan
+  runs do not dream today and the cost is latent. The default change still stands: it keeps dreams opt-in once that
+  event is wired.
+- Implemented on `work/bug-470de8` at `1f312c78c`; cargo verification deferred to the batch check.

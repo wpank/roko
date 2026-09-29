@@ -11,6 +11,10 @@
 //!   cut off or does not parse. The provider adapters already fail a
 //!   non-zero exit, a turn cap hit and, for the Claude CLI, an empty
 //!   response;
+//! - its role's post-dispatch safety check, the one ACP runs
+//!   ([`SafetyLayer::post_dispatch_check`]), blocks it: a secret in the
+//!   output, a changed path outside the working tree, or a changed file under
+//!   a role whose contract forbids file writes;
 //! - the task's changes tamper with what checks it
 //!   ([`roko_gate::attempt_diff`], S05 check A1): a weakened, deleted or
 //!   skipped test, an edited verify script, `tasks.toml`, pinned acceptance
@@ -28,6 +32,7 @@
 
 use std::path::Component;
 
+use roko_agent::safety::{SafetyLayer, SafetyViolation, ViolationSeverity};
 use roko_core::config::gates::DiffScope;
 use roko_gate::attempt_diff::{
     AttemptChange, AttemptDiffPolicy, ChangeKind, DiffFinding, PinnedTest, check_attempt_diff,
@@ -76,15 +81,23 @@ impl GraphTaskDispatcher {
     ) -> Result<()> {
         let role = task.role.as_deref().unwrap_or("implementer");
         let mut rejection = output_red_flag(&self.config, role, dispatch);
+        let diff = if rejection.is_none() {
+            self.attempt_diff(spec, task, attempt_key, workdir).await
+        } else {
+            None
+        };
+        if rejection.is_none() {
+            rejection = self.post_dispatch_red_flag(spec, task, role, dispatch, diff.as_ref());
+        }
         if rejection.is_none()
-            && let Some(diff) = self.attempt_diff(spec, task, attempt_key, workdir).await
+            && let Some(diff) = &diff
         {
             rejection = match self
-                .attempt_diff_red_flag(spec, task, workdir, attempt_number, &diff)
+                .attempt_diff_red_flag(spec, task, workdir, attempt_number, diff)
                 .await
             {
                 Some(rejection) => Some(rejection),
-                None => no_changes_red_flag(task, role, &diff, attempt_number).await,
+                None => no_changes_red_flag(task, role, diff, attempt_number).await,
             };
         }
         let Some(Rejection { check, message }) = rejection else {
@@ -121,6 +134,64 @@ impl GraphTaskDispatcher {
             );
         }
         Err(RokoError::Verify { gate, message })
+    }
+
+    /// The role's post-dispatch safety check, the one ACP runs
+    /// ([`SafetyLayer::post_dispatch_check`]), over the attempt's output and
+    /// the paths its task changed.
+    ///
+    /// A blocking violation rejects the attempt: a secret in the output, a
+    /// changed path outside the working tree, or a changed file under a role
+    /// whose contract forbids file writes. A warning is logged. Without a
+    /// diff (a working tree git cannot snapshot), only the output is checked.
+    fn post_dispatch_red_flag(
+        &self,
+        spec: &TaskExecutionSpec,
+        task: &TaskDef,
+        role: &str,
+        dispatch: &crate::dispatch_v2::AgentResultDispatch,
+        diff: Option<&AttemptDiff>,
+    ) -> Option<Rejection> {
+        let changed_files: Vec<String> = diff
+            .map(|diff| {
+                diff.changes
+                    .iter()
+                    .map(|change| change.path.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+        let output = dispatch.result.output.body.as_text().unwrap_or_default();
+        let (blocks, warnings): (Vec<SafetyViolation>, Vec<SafetyViolation>) =
+            SafetyLayer::from_config(&self.config)
+                .with_contract(effective_agent_contract(role, task))
+                .post_dispatch_check(&spec.plan_id, &task.id, role, output, &changed_files)
+                .into_iter()
+                .partition(|violation| violation.severity == ViolationSeverity::Block);
+        for warning in &warnings {
+            tracing::warn!(
+                plan_id = %spec.plan_id,
+                task_id = %task.id,
+                violation = %warning.violation_type,
+                message = %warning.message,
+                "post-dispatch safety warning"
+            );
+        }
+        if blocks.is_empty() {
+            return None;
+        }
+        let violations = blocks
+            .iter()
+            .map(|violation| format!("- {}: {}", violation.violation_type, violation.message))
+            .collect::<Vec<_>>()
+            .join("\n");
+        Some(Rejection {
+            check: "safety",
+            message: format!(
+                "Safety: the attempt broke its role's post-dispatch contract:\n{violations}\n\
+                 Keep credentials out of the output, and change only what the `{role}` role \
+                 may change."
+            ),
+        })
     }
 
     /// The attempt diff check (S05 check A1) over the task's changes: a
@@ -697,6 +768,52 @@ printf '%s\n' '{{"type":"result","session_id":"s","model":"claude-sonnet-4-6","t
                 assert!(message.contains("outside_scope `README.md`"), "{message}");
             }
         }
+    }
+
+    #[tokio::test]
+    async fn the_pre_verify_screen_runs_post_dispatch_check() {
+        // A reviewer, whose contract forbids file writes, changes a file.
+        let temp = tempdir().expect("tempdir");
+        commit_repo(temp.path(), &[("src/lib.rs", "pub fn one() -> u8 {\n    1\n}\n")]);
+        let writes = provider(
+            "printf '// reviewed\\n' >> src/lib.rs",
+            "Looks right.",
+            10,
+        );
+        let (dispatcher, mut task) =
+            make_test_dispatcher(&temp, &writes, no_auto_fix, GraphFeedbackContext::default())
+                .await;
+        let marker = temp.path().join("verify-ran");
+        task.role = Some("reviewer".to_string());
+        task.verify = vec![verify_step(
+            "structural",
+            &format!("touch {}", marker.display()),
+        )];
+        let (gate, message) = rejected(&dispatcher, &task, &marker).await;
+        assert_eq!(gate, "pre_verify:safety");
+        assert!(message.contains("contract_violation"), "{message}");
+        assert!(message.contains("forbids file writes"), "{message}");
+
+        // An implementer's output carries a credential. Git cannot snapshot
+        // this tree, so the output alone is checked.
+        let temp = tempdir().expect("tempdir");
+        let credential = format!("AKIA{}", "IOSFODNN7EXAMPLE");
+        let leaks = provider(":", &format!("Configured the client with {credential}."), 10);
+        let (dispatcher, mut task) =
+            make_test_dispatcher(&temp, &leaks, no_auto_fix, GraphFeedbackContext::default())
+                .await;
+        let marker = temp.path().join("verify-ran");
+        task.verify = vec![verify_step(
+            "structural",
+            &format!("touch {}", marker.display()),
+        )];
+        let (gate, message) = rejected(&dispatcher, &task, &marker).await;
+        assert_eq!(gate, "pre_verify:safety");
+        assert!(message.contains("secret_leak"), "{message}");
+        assert!(
+            !message.contains(&credential),
+            "the rejection must not repeat the secret: {message}"
+        );
     }
 
     #[tokio::test]

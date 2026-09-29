@@ -342,10 +342,14 @@ impl RoleToolProfile {
     ) -> Vec<RoleToolProfile> {
         use std::collections::HashMap;
 
+        // Count each episode as its learning label says (S01 §4.1); one
+        // without a label (unverified, failed at the provider) is left out.
+        let episodes = crate::episode_logger::learnable_episodes(episodes.iter().cloned());
+
         // Group episodes by (role, category).
         let mut groups: HashMap<(String, String), Vec<&crate::episode_logger::Episode>> =
             HashMap::new();
-        for ep in episodes {
+        for ep in &episodes {
             let role = if ep.agent_template.is_empty() {
                 "unknown".to_string()
             } else {

@@ -322,6 +322,12 @@ impl ModelCallService {
             .map_or_else(Vec::new, |limiter| limiter.snapshot())
     }
 
+    /// The sink model-call outcomes are recorded into, if one is attached.
+    #[must_use]
+    pub fn feedback_sink(&self) -> Option<&Arc<dyn FeedbackSink>> {
+        self.feedback_sink.as_ref()
+    }
+
     /// Provide an Anthropic API key for service-created agents.
     #[must_use]
     pub fn with_anthropic_api_key(mut self, key: String) -> Self {

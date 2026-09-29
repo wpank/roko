@@ -449,6 +449,7 @@ impl ServerBuilder {
         let _orchestrator_bridge =
             start_orchestrator_event_bridge_dedup(Arc::clone(&state), bridge_dedup);
         let _state_saver = start_state_snapshot_saver(Arc::clone(&state));
+        let _cascade_router_saver = start_cascade_router_saver(Arc::clone(&state));
         let _job_runner = job_runner::start_job_runner(Arc::clone(&state));
         let _cold_archival = start_cold_archival_timer(Arc::clone(&state));
         let _workspace_gc = start_workspace_gc(Arc::clone(&state));
@@ -1010,6 +1011,7 @@ pub async fn run_server_with_state(state: Arc<AppState>, bind: &str, port: u16) 
     let _orchestrator_bridge =
         start_orchestrator_event_bridge_dedup(Arc::clone(&state), bridge_dedup);
     let _state_saver = start_state_snapshot_saver(Arc::clone(&state));
+    let _cascade_router_saver = start_cascade_router_saver(Arc::clone(&state));
     let _job_runner = job_runner::start_job_runner(Arc::clone(&state));
     let _cold_archival = start_cold_archival_timer(Arc::clone(&state));
     let router = build_server_router(
@@ -1177,38 +1179,20 @@ fn build_app_state(
         state.local_access = crate::state::LocalAccess::new(launch_token);
     }
 
-    // Warm the cached cascade router once so gateway selection reuses the
-    // persisted bandit state instead of rebuilding it on the first request.
-    {
-        let config = state.load_roko_config();
-        let mut model_slugs: Vec<String> = config.model_slugs_for_cascade();
-        model_slugs.sort();
-
-        if !model_slugs.is_empty() {
-            let router_path = state.layout.cascade_router_path();
-            if !router_path.exists() {
-                info!(
-                    path = %router_path.display(),
-                    "no persisted CascadeRouter; starting fresh"
-                );
-            }
-            let router =
-                roko_learn::cascade_router::CascadeRouter::load_or_new(&router_path, model_slugs);
-            let observations = router.total_observations();
-
-            tokio::task::block_in_place(|| {
-                *state.cascade_router.blocking_write() = Some(router);
-            });
-
-            if observations > 0 {
-                info!(
-                    observations = observations,
-                    path = %router_path.display(),
-                    "loaded persisted CascadeRouter"
-                );
-            } else {
-                debug!(path = %router_path.display(), "initialized fresh CascadeRouter");
-            }
+    // AppState loaded the cascade router every surface shares (bug-012303)
+    // from the persisted snapshot, so gateway selection reuses the learned
+    // bandit state instead of rebuilding it on the first request.
+    if let Some(router) = state.cascade_router.get_mut().as_ref() {
+        let router_path = state.layout.cascade_router_path();
+        let observations = router.total_observations();
+        if observations > 0 {
+            info!(
+                observations = observations,
+                path = %router_path.display(),
+                "loaded persisted CascadeRouter"
+            );
+        } else {
+            debug!(path = %router_path.display(), "initialized fresh CascadeRouter");
         }
     }
 
@@ -2197,6 +2181,25 @@ fn start_state_snapshot_saver(state: Arc<AppState>) -> JoinHandle<()> {
             }
             if let Err(err) = state.save_snapshot().await {
                 warn!(error = %err, "periodic server state snapshot save failed");
+            }
+        }
+    })
+}
+
+/// Periodically save the cascade router every serve surface shares
+/// (bug-012303), so what serve learns reaches other processes while it runs.
+/// Each save merges into the snapshot on disk; shutdown saves once more.
+fn start_cascade_router_saver(state: Arc<AppState>) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
+        interval.tick().await; // skip the first immediate tick
+        loop {
+            tokio::select! {
+                _ = state.cancel.cancelled() => break,
+                _ = interval.tick() => {}
+            }
+            if let Err(err) = state.save_cascade_router().await {
+                warn!(error = %err, "periodic cascade router save failed");
             }
         }
     })
@@ -3493,9 +3496,10 @@ mod tests {
 
     use axum::body::{Body, to_bytes};
     use axum::http::{Request, StatusCode, header::CONTENT_TYPE};
+    use roko_core::foundation::FeedbackEvent;
     use roko_gate::AdaptiveThresholds;
     use roko_learn::cascade_router::CascadeRouter;
-    use roko_learn::model_router::CONTEXT_DIM;
+    use roko_learn::model_router::{CONTEXT_DIM, RoutingContext};
     use serde_json::Value;
     use std::collections::BTreeMap;
     use std::sync::{Arc, Mutex};
@@ -3923,7 +3927,7 @@ mod tests {
         router.observe(vec![0.0; CONTEXT_DIM], 0, 1.0);
         {
             let mut guard = state.cascade_router.write().await;
-            *guard = Some(router);
+            *guard = Some(Arc::new(router));
         }
 
         state.shutdown().await;
@@ -3933,6 +3937,89 @@ mod tests {
             vec!["claude-sonnet-4-6".to_string()],
         );
         assert_eq!(reloaded.total_observations(), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn shared_cascade_router_persists_gateway_and_feedback_observations() {
+        // bug-012303: serve builds one cascade router. The inference gateway
+        // and the model-call feedback service observe into it, and saving
+        // AppState's router persists what both observed.
+        let dir = tempdir().expect("tempdir");
+        let model = "claude-sonnet-4-6";
+        let mut config = roko_core::config::schema::RokoConfig::default();
+        config.models.insert(
+            "claude-sonnet".to_string(),
+            roko_core::config::schema::ModelProfile {
+                provider: "anthropic".to_string(),
+                slug: model.to_string(),
+                ..Default::default()
+            },
+        );
+        let state = build_app_state(
+            dir.path().to_path_buf(),
+            Arc::new(NoOpRuntime),
+            config,
+            None,
+            None,
+            None,
+        )
+        .expect("build_app_state");
+        let router = state
+            .cascade_router
+            .read()
+            .await
+            .clone()
+            .expect("serve loads one cascade router");
+        let gateway_router = state.gateway_http.gateway.cascade_router();
+        assert!(
+            Arc::ptr_eq(gateway_router, &router),
+            "the gateway observes into the shared router"
+        );
+
+        // A failed provider attempt, as the gateway records one.
+        gateway_router.record_observation(&RoutingContext::default(), model, 0.0, false);
+        // A successful model call, as the model-call service reports one.
+        state
+            .model_call_service
+            .feedback_sink()
+            .expect("model calls report feedback")
+            .record(FeedbackEvent::ModelCall {
+                run_id: None,
+                request_id: None,
+                prompt_section_ids: Vec::new(),
+                knowledge_ids: Vec::new(),
+                model: Some(model.to_string()),
+                provider: Some("anthropic".to_string()),
+                token_usage: None,
+                cost: None,
+                role: "implementer".to_string(),
+                input_tokens: 100,
+                output_tokens: 20,
+                cost_usd: 0.01,
+                latency_ms: 1_500,
+                success: true,
+                error_class: None,
+            })
+            .await
+            .expect("record the model call");
+        assert_eq!(router.confidence_snapshot()[model], (2, 1));
+
+        state.shutdown().await;
+
+        let router_path = state.layout.cascade_router_path();
+        let reloaded = CascadeRouter::load_or_new(&router_path, vec![model.to_string()]);
+        assert_eq!(reloaded.confidence_snapshot()[model], (2, 1));
+        assert_eq!(reloaded.total_observations(), 2);
+        // The journaled model call is in the saved snapshot, and its fold
+        // marker keeps a replay from counting it twice.
+        let wal_path = state.layout.learn_dir().join("wal.jsonl");
+        let wal = roko_learn::wal::replay_wal(&wal_path).expect("read the learning WAL");
+        let journaled = wal.iter().find_map(|entry| match entry {
+            roko_learn::wal::WalEntry::ModelCallObservation { id, .. } => Some(id.as_str()),
+            _ => None,
+        });
+        let folded = roko_learn::wal::folded_model_call_ids(&wal);
+        assert!(journaled.is_some_and(|id| folded.contains(id)));
     }
 
     #[tokio::test]

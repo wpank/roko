@@ -1698,3 +1698,179 @@ fn stage2_confidence_uses_task_category_delta() {
         "Stage 2 should prefer the model with the better Refactor pass rate"
     );
 }
+
+// ── Persistence across processes (bug-605a8a, bug-9c88ac) ───────────
+
+/// LinUCB updates the arm for `slug` has absorbed: every context vector sets
+/// bias feature 16 to 1, so each update adds 1 to `A[16][16]`.
+fn arm_updates(router: &CascadeRouter, slug: &str) -> f64 {
+    let arm = router
+        .linucb()
+        .arm_stats()
+        .into_iter()
+        .find(|arm| arm.slug == slug)
+        .expect("arm for the slug");
+    arm.a_matrix[16][16] - 1.0
+}
+
+#[test]
+fn narrower_slug_list_keeps_other_models_state() {
+    // bug-605a8a: a router loaded with fewer models, in another order, gets
+    // each model's own LinUCB arm, and its save keeps the counters and arm
+    // of the model it does not track.
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("cascade-router.json");
+    let ctx = default_ctx();
+    let full = CascadeRouter::new(test_slugs());
+    for _ in 0..3 {
+        full.record_observation(&ctx, "claude-haiku-4-5", 0.9, true);
+    }
+    full.record_observation(&ctx, "claude-sonnet-4-5", 0.1, false);
+    for _ in 0..2 {
+        full.record_observation(&ctx, "claude-opus-4-6", 0.6, true);
+    }
+    full.save(&path).unwrap();
+
+    // Opus first and no haiku: opus now sits where haiku's arm was saved.
+    let narrow = CascadeRouter::load_or_new(
+        &path,
+        vec![
+            "claude-opus-4-6".to_string(),
+            "claude-sonnet-4-5".to_string(),
+        ],
+    );
+    assert_eq!(
+        arm_updates(&narrow, "claude-opus-4-6"),
+        2.0,
+        "opus gets its own arm, not haiku's"
+    );
+    assert_eq!(arm_updates(&narrow, "claude-sonnet-4-5"), 1.0);
+    let narrow_confidence = narrow.confidence_snapshot();
+    assert!(!narrow_confidence.contains_key("claude-haiku-4-5"));
+    narrow.record_observation(&ctx, "claude-sonnet-4-5", 0.8, true);
+    narrow.save(&path).unwrap();
+
+    let reloaded = CascadeRouter::load_or_new(&path, test_slugs());
+    let confidence = reloaded.confidence_snapshot();
+    assert_eq!(
+        confidence["claude-haiku-4-5"],
+        (3, 3),
+        "the narrower router's save keeps haiku's counters"
+    );
+    assert_eq!(confidence["claude-sonnet-4-5"], (2, 1));
+    assert_eq!(confidence["claude-opus-4-6"], (2, 2));
+    assert_eq!(
+        arm_updates(&reloaded, "claude-haiku-4-5"),
+        3.0,
+        "and haiku's arm"
+    );
+    assert_eq!(arm_updates(&reloaded, "claude-sonnet-4-5"), 2.0);
+    assert_eq!(arm_updates(&reloaded, "claude-opus-4-6"), 2.0);
+    assert_eq!(reloaded.total_observations(), 7);
+}
+
+#[test]
+fn legacy_snapshot_arms_follow_model_slugs() {
+    // Snapshots written before arms carried their slugs list the arms in
+    // `model_slugs` order; a reordered router still gets each model's arm.
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("cascade-router.json");
+    let ctx = default_ctx();
+    let full = CascadeRouter::new(test_slugs());
+    for _ in 0..3 {
+        full.record_observation(&ctx, "claude-haiku-4-5", 0.9, true);
+    }
+    full.record_observation(&ctx, "claude-opus-4-6", 0.6, true);
+    full.save(&path).unwrap();
+    let mut legacy: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    legacy["linucb_state"]
+        .as_object_mut()
+        .unwrap()
+        .remove("slugs");
+    std::fs::write(&path, legacy.to_string()).unwrap();
+
+    let reordered = CascadeRouter::load_or_new(
+        &path,
+        vec![
+            "claude-opus-4-6".to_string(),
+            "claude-sonnet-4-5".to_string(),
+            "claude-haiku-4-5".to_string(),
+        ],
+    );
+    assert_eq!(arm_updates(&reordered, "claude-opus-4-6"), 1.0);
+    assert_eq!(arm_updates(&reordered, "claude-sonnet-4-5"), 0.0);
+    assert_eq!(arm_updates(&reordered, "claude-haiku-4-5"), 3.0);
+}
+
+#[test]
+fn concurrent_saves_merge_observations() {
+    // bug-9c88ac: processes that load the same snapshot and each save what
+    // they learned keep each other's observations; the last writer no
+    // longer wins.
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("cascade-router.json");
+    let ctx = default_ctx();
+    let seed = CascadeRouter::new(test_slugs());
+    seed.record_observation(&ctx, "claude-sonnet-4-5", 0.8, true);
+    seed.save(&path).unwrap();
+
+    let serve = CascadeRouter::load_or_new(&path, test_slugs());
+    let cli = CascadeRouter::load_or_new(&path, vec!["claude-sonnet-4-5".to_string()]);
+    serve.record_observation(&ctx, "claude-sonnet-4-5", 0.8, true);
+    serve.record_observation(&ctx, "claude-opus-4-6", 0.9, true);
+    cli.record_observation(&ctx, "claude-sonnet-4-5", 0.0, false);
+    cli.save(&path).unwrap();
+    serve.save(&path).unwrap();
+    // Saving again adds nothing: the first save already wrote it all.
+    serve.save(&path).unwrap();
+
+    let merged = CascadeRouter::load_or_new(&path, test_slugs());
+    let confidence = merged.confidence_snapshot();
+    assert_eq!(confidence["claude-sonnet-4-5"], (3, 2));
+    assert_eq!(confidence["claude-opus-4-6"], (1, 1));
+    assert_eq!(arm_updates(&merged, "claude-sonnet-4-5"), 3.0);
+    assert_eq!(arm_updates(&merged, "claude-opus-4-6"), 1.0);
+    assert_eq!(merged.total_observations(), 4);
+
+    // Routers racing for the snapshot lock lose nothing either.
+    let workers = (0..4)
+        .map(|_| {
+            let path = path.clone();
+            std::thread::spawn(move || {
+                let router = CascadeRouter::load_or_new(&path, test_slugs());
+                for _ in 0..5 {
+                    router.record_observation(&default_ctx(), "claude-haiku-4-5", 0.7, true);
+                }
+                router.save(&path).unwrap();
+            })
+        })
+        .collect::<Vec<_>>();
+    for worker in workers {
+        worker.join().unwrap();
+    }
+    let merged = CascadeRouter::load_or_new(&path, test_slugs());
+    assert_eq!(merged.confidence_snapshot()["claude-haiku-4-5"], (20, 20));
+    assert_eq!(arm_updates(&merged, "claude-haiku-4-5"), 20.0);
+    assert_eq!(merged.total_observations(), 24);
+}
+
+#[test]
+fn save_replaces_an_unreadable_snapshot() {
+    // A corrupt snapshot is backed up and replaced, as loading one is;
+    // otherwise the merge could never save again.
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("cascade-router.json");
+    std::fs::write(&path, "{ not json").unwrap();
+
+    let router = CascadeRouter::load_or_new(&path, test_slugs());
+    router.record_observation(&default_ctx(), "claude-sonnet-4-5", 0.8, true);
+    router.save(&path).unwrap();
+
+    let reloaded = CascadeRouter::load_or_new(&path, test_slugs());
+    assert_eq!(reloaded.confidence_snapshot()["claude-sonnet-4-5"], (1, 1));
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("cascade-router.json.corrupted")).unwrap(),
+        "{ not json"
+    );
+}

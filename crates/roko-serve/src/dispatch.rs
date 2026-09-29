@@ -42,9 +42,7 @@ use roko_learn::episode_logger::{
     Episode, EpisodeGateVerdict, EpisodeLogger, Usage as EpisodeUsage,
 };
 use roko_learn::events::{AgentEvent, EventBus as LearningEventBus};
-use roko_learn::model_call_feedback::{
-    ModelCallFeedback, ModelCallFeedbackRecorder, observe_model_call_on_router,
-};
+use roko_learn::model_call_feedback::{ModelCallFeedback, ModelCallFeedbackRecorder};
 use roko_learn::prompt_experiment::ExperimentStore;
 use roko_neuro::spawn_episode_distillation;
 use roko_std::tool::StaticToolRegistry;
@@ -2085,15 +2083,21 @@ async fn record_template_dispatch_feedback(
     let cascade_path = learn_dir.join("cascade-router.json");
     let used_cached_router = if learn_dir == global_learn_dir.as_path() {
         let router_guard = state.cascade_router.read().await;
-        if let Some(router) = router_guard.as_ref() {
-            observe_model_call_on_router(
+        // A model the shared router does not track is observed by the
+        // recorder below, on a router loaded with the template's models.
+        if let Some(router) = router_guard
+            .as_ref()
+            .filter(|router| router.model_index_for_slug(&model_slug).is_some())
+        {
+            // The observation is journaled until the save below folds it.
+            state.cascade_journal.observe_model_call(
                 router,
                 &model_slug,
                 "template_dispatch",
                 learning_success,
                 latency_ms,
             );
-            if let Err(error) = router.save(&cascade_path) {
+            if let Err(error) = state.cascade_journal.save(router) {
                 warn!(
                     path = %cascade_path.display(),
                     error = %error,
@@ -2810,8 +2814,9 @@ async fn record_cascade_router_outcome_with_layout(
         let router_guard = state.cascade_router.read().await;
         if let Some(router) = router_guard.as_ref() {
             if router.record_confidence_outcome(&template.model, success) {
-                router
-                    .save(&path)
+                state
+                    .cascade_journal
+                    .save(router)
                     .with_context(|| format!("save {}", path.display()))?;
             }
             return Ok(());
@@ -3463,8 +3468,10 @@ printf '%s\n' '{"type":"content_block_delta","delta":{"text":"template-ok"}}'
         );
         let cascade_path = state.layout.cascade_router_path();
         let cascade_slugs = config.model_slugs_for_cascade();
-        *state.cascade_router.write().await =
-            Some(CascadeRouter::load_or_new(&cascade_path, cascade_slugs));
+        *state.cascade_router.write().await = Some(Arc::new(CascadeRouter::load_or_new(
+            &cascade_path,
+            cascade_slugs,
+        )));
 
         let template = AgentTemplate {
             name: "feedback-template".into(),

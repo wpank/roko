@@ -545,6 +545,12 @@ impl InferenceGateway {
         Ok(response)
     }
 
+    /// The cascade router this gateway routes with and observes into.
+    #[must_use]
+    pub const fn cascade_router(&self) -> &Arc<CascadeRouter> {
+        &self.cascade_router
+    }
+
     /// Last pipeline trace for a session.
     #[must_use]
     pub fn last_trace(&self, session_id: &str) -> Vec<PipelineStage> {

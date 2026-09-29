@@ -2,14 +2,16 @@
 id = "gap-263de5"
 kind = "gap"
 title = "Transcript harvester: tokens, model and time per backlog item from Claude Code transcripts"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p1"
 goal = "proof"
 size = "M"
 subsystem = ["tools/work"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-29
+last_verified_rev = "84da4f5e7"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e13"
 discovered_from = "tmp/cybernetic-harness/workstreams/assessment/W12-evidence-from-dev-process.md (A4, F2)"
 anchors = ["tools/work_harvest.py", "tools/test_work_harvest.py", "work/telemetry/harvest/"]
@@ -19,6 +21,12 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -qw 'def test_harvest_joins_calls_to_items_by_branch' tools/test_work_harvest.py && grep -qw 'def test_harvest_keeps_no_message_content' tools/test_work_harvest.py && python3 tools/test_work_harvest.py -k test_harvest_joins_calls_to_items_by_branch -k test_harvest_keeps_no_message_content"
+
+[closed]
+at = 2026-09-29
+commit = "84da4f5e7"
+by = "wk-harvest (claude-agent)"
+evidence = "84da4f5e7: tools/work_harvest.py writes derived-only rows (D27) to work/telemetry/harvest/<date>.jsonl, joined to items by gitBranch work/<id>, else the first prompt or a worker's ITEM: line, with overhead apart and each call counted once by message.id; incremental, idempotent state in .roko/work-harvest/. The [[verify]] passes, and all 8 tests in tools/test_work_harvest.py pass. A dry run over the 20 project directories on 2026-09-29 read 4,506 transcripts (138.7k calls, 28 dates, 3,642 rows, 1.7 MB, 0 unreadable lines), and a repeated run wrote no file. No harvest run is committed; the daily rollup (gap-ccb87e) does that."
 +++
 
 ## Problem
@@ -60,10 +68,10 @@ children (`sdk-cli`).
 
 ## Done when
 
-- [ ] A fixture of two sessions and a subagent on `work/gap-aaaaaa` yields one item row with summed tokens; repeated
+- [x] A fixture of two sessions and a subagent on `work/gap-aaaaaa` yields one item row with summed tokens; repeated
       lines of one message count once.
-- [ ] No output row contains message or tool text.
-- [ ] The `[[verify]]` command passes.
+- [x] No output row contains message or tool text.
+- [x] The `[[verify]]` command passes.
 
 ## Notes
 
@@ -72,3 +80,7 @@ children (`sdk-cli`).
 - Sum per-call `message.usage` from the subagent files; whether an Agent result's `usage` covers the whole agent is
   unchecked (W12 risk 4).
 - **Decided 2026-09-29 (Will):** commit the harvested rows (counts and session ids, no content) under `work/telemetry/`.
+- **Checked 2026-09-29 (W12 risk 4):** an Agent result's `usage` covers only the agent's final call, not the
+  whole agent. It equals the last call's usage for 2,008 of the 2,180 agents that have a transcript, and its
+  output is below the summed calls for 2,064 of them. `totalTokens` is that final call's input, output, cache-read
+  and cache-write tokens together. The harvester therefore sums per-call usage from the subagent files.

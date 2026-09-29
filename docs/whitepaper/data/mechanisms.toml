@@ -619,8 +619,8 @@ tag = "WIRED"
 verdict = "fix"
 note = """
 Since `763596768` outcomes are credited to the playbooks a prompt actually used (reg-3f5969), and selection adds each
-playbook's success count to its relevance. A floor still puts three playbooks into every prompt, and nothing
-measures whether they help.
+playbook's net successes (successes minus failures) to its relevance. A floor still puts three playbooks into every
+prompt, and nothing measures whether they help.
 """
 anchors = ["crates/roko-cli/src/dispatch/prompt_builder.rs::collect_playbooks_cached"]
 evidence = ["763596768", "reg-3f5969"]

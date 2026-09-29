@@ -1690,7 +1690,11 @@ depends_on = ["T1"]
         let temp = TempDir::new().unwrap();
         let root = temp.path();
         fs::create_dir_all(root.join("plans/demo/accept")).unwrap();
-        fs::write(root.join("plans/demo/accept/x.test.ts"), "test('x', () => {});\n").unwrap();
+        fs::write(
+            root.join("plans/demo/accept/x.test.ts"),
+            "test('x', () => {});\n",
+        )
+        .unwrap();
         fs::write(
             root.join("plans/demo/tasks.toml"),
             r#"
@@ -1739,8 +1743,16 @@ files = [
             .map(|diag| diag.message.as_str())
             .collect::<Vec<_>>();
         assert_eq!(errors.len(), 2, "{report:?}");
-        assert!(errors.iter().any(|m| m.contains("src `accept/missing.test.ts` is missing")));
-        assert!(errors.iter().any(|m| m.contains("count of `accept/x.test.ts` is 0")));
+        assert!(
+            errors
+                .iter()
+                .any(|m| m.contains("src `accept/missing.test.ts` is missing"))
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|m| m.contains("count of `accept/x.test.ts` is 0"))
+        );
         let warnings = accept
             .iter()
             .filter(|diag| diag.severity == Severity::Warning)
@@ -1748,7 +1760,9 @@ files = [
         assert_eq!(warnings.len(), 1, "{report:?}");
         assert_eq!(warnings[0].task_id.as_deref(), Some("T2"));
         assert!(
-            accept.iter().all(|diag| diag.task_id.as_deref() == Some("T2")),
+            accept
+                .iter()
+                .all(|diag| diag.task_id.as_deref() == Some("T2")),
             "T1's entry is valid: {report:?}"
         );
         // T1 has no [[task.verify]], yet its pinned test verifies it.

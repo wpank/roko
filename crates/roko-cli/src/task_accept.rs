@@ -149,8 +149,9 @@ impl AcceptStore {
         task_id: &str,
         entry: &AcceptFile,
     ) -> Result<PinnedAccept> {
-        let src = contained_path(&entry.src)
-            .map_err(|problem| anyhow::anyhow!("task {task_id}: accept src `{}` {problem}", entry.src))?;
+        let src = contained_path(&entry.src).map_err(|problem| {
+            anyhow::anyhow!("task {task_id}: accept src `{}` {problem}", entry.src)
+        })?;
         let src_path = plan_dir.join(&src);
         let bytes = std::fs::read(&src_path).with_context(|| {
             format!(
@@ -180,9 +181,8 @@ impl AcceptStore {
                 write_pinned(&stored, &bytes)?;
             }
             Err(error) => {
-                return Err(error).with_context(|| {
-                    format!("read pinned acceptance test {}", stored.display())
-                });
+                return Err(error)
+                    .with_context(|| format!("read pinned acceptance test {}", stored.display()));
             }
         }
         Ok(PinnedAccept { stored, sha256 })
@@ -465,11 +465,10 @@ fn workspace_key(workdir: &Path) -> String {
         .canonicalize()
         .unwrap_or_else(|_| workdir.to_path_buf());
     let digest = sha256_hex(canonical.to_string_lossy().as_bytes());
-    let name = canonical
-        .file_name()
-        .map_or_else(|| "workspace".to_string(), |name| {
-            path_component(&name.to_string_lossy())
-        });
+    let name = canonical.file_name().map_or_else(
+        || "workspace".to_string(),
+        |name| path_component(&name.to_string_lossy()),
+    );
     format!("{name}-{}", &digest[..12])
 }
 
@@ -603,10 +602,20 @@ command = "true"
             }])
         );
 
-        let added = pin_task(&fx.store, &fx.workdir, "accept-demo", &fx.plan_dir, &mut task)
-            .expect("pin");
+        let added = pin_task(
+            &fx.store,
+            &fx.workdir,
+            "accept-demo",
+            &fx.plan_dir,
+            &mut task,
+        )
+        .expect("pin");
         assert_eq!(added, 1);
-        assert_eq!(task.verify.len(), 2, "the pinned step runs before the authored one");
+        assert_eq!(
+            task.verify.len(),
+            2,
+            "the pinned step runs before the authored one"
+        );
         let step = task.verify[0].clone();
         assert!(is_pinned_step(&step));
         assert_eq!(step.phase, "test");
@@ -620,7 +629,10 @@ command = "true"
             .join("accept")
             .join("x.test.txt");
         assert!(stored.starts_with(fx.store.root()));
-        assert!(!stored.starts_with(&fx.workdir), "the store is outside the working tree");
+        assert!(
+            !stored.starts_with(&fx.workdir),
+            "the store is outside the working tree"
+        );
         assert_eq!(
             std::fs::read_to_string(&stored).expect("read pin"),
             PINNED_TEST
@@ -633,8 +645,14 @@ command = "true"
         // Pinning again adds nothing, and the steps survive the JSON round
         // trip the Graph engine makes without being compiled twice.
         assert_eq!(
-            pin_task(&fx.store, &fx.workdir, "accept-demo", &fx.plan_dir, &mut task)
-                .expect("re-pin"),
+            pin_task(
+                &fx.store,
+                &fx.workdir,
+                "accept-demo",
+                &fx.plan_dir,
+                &mut task
+            )
+            .expect("re-pin"),
             0
         );
         let json = serde_json::to_string(&task).expect("serialize");
@@ -654,10 +672,12 @@ command = "true"
         std::fs::write(fx.plan_dir.join("accept").join("x.test.txt"), "gutted\n")
             .expect("agent edits src");
         let (passed, output) = run_step(&step, &fx.workdir);
-        assert!(passed, "the pinned test passes with exactly 2 tests:\n{output}");
+        assert!(
+            passed,
+            "the pinned test passes with exactly 2 tests:\n{output}"
+        );
         assert_eq!(
-            std::fs::read_to_string(fx.workdir.join("src").join("x.test.txt"))
-                .expect("read dest"),
+            std::fs::read_to_string(fx.workdir.join("src").join("x.test.txt")).expect("read dest"),
             PINNED_TEST
         );
 
@@ -683,7 +703,14 @@ command = "true"
     fn accept_store_rejects_a_changed_source() {
         let fx = fixture();
         let mut task = demo_task();
-        pin_task(&fx.store, &fx.workdir, "accept-demo", &fx.plan_dir, &mut task).expect("pin");
+        pin_task(
+            &fx.store,
+            &fx.workdir,
+            "accept-demo",
+            &fx.plan_dir,
+            &mut task,
+        )
+        .expect("pin");
         let step = task.verify[0].clone();
         let stored = fx
             .store
@@ -711,8 +738,14 @@ command = "true"
         std::fs::write(&stored, PINNED_TEST).expect("restore the pin");
         std::fs::write(fx.plan_dir.join("accept").join("x.test.txt"), "gutted\n")
             .expect("edit the source");
-        let error = pin_task(&fx.store, &fx.workdir, "accept-demo", &fx.plan_dir, &mut demo_task())
-            .expect_err("a changed source is rejected");
+        let error = pin_task(
+            &fx.store,
+            &fx.workdir,
+            "accept-demo",
+            &fx.plan_dir,
+            &mut demo_task(),
+        )
+        .expect_err("a changed source is rejected");
         let message = format!("{error:#}");
         assert!(message.contains("changed after it was pinned"), "{message}");
         assert!(message.contains("tampering"), "{message}");
@@ -726,7 +759,16 @@ command = "true"
         std::fs::remove_file(fx.plan_dir.join("accept").join("x.test.txt"))
             .expect("remove the source");
         let other = AcceptStore::at(fx.store.root().join("fresh"));
-        assert!(pin_task(&other, &fx.workdir, "accept-demo", &fx.plan_dir, &mut demo_task()).is_err());
+        assert!(
+            pin_task(
+                &other,
+                &fx.workdir,
+                "accept-demo",
+                &fx.plan_dir,
+                &mut demo_task()
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -753,8 +795,9 @@ command = "true"
         });
         task.verify.push(VerifyStep {
             phase: "test".to_string(),
-            command: "cd apps/portal && cp ../../plans/p/accept/x.test.ts src/x.test.ts && npm test"
-                .to_string(),
+            command:
+                "cd apps/portal && cp ../../plans/p/accept/x.test.ts src/x.test.ts && npm test"
+                    .to_string(),
             fail_msg: None,
             timeout_ms: 1_000,
         });
@@ -764,28 +807,73 @@ command = "true"
             .filter(|issue| issue.blocking)
             .map(|issue| issue.message.as_str())
             .collect();
-        assert!(errors.iter().any(|m| m.contains("count of `accept/missing.test.txt` is 0")));
-        assert!(errors.iter().any(|m| m.contains("src `accept/missing.test.txt` is missing")));
-        assert!(errors.iter().any(|m| m.contains("src `../outside.txt` leaves its directory")));
-        assert!(errors.iter().any(|m| m.contains("dest `/etc/passwd` is absolute")));
-        assert!(errors.iter().any(|m| m.contains("runner of `../outside.txt` is empty")));
+        assert!(
+            errors
+                .iter()
+                .any(|m| m.contains("count of `accept/missing.test.txt` is 0"))
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|m| m.contains("src `accept/missing.test.txt` is missing"))
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|m| m.contains("src `../outside.txt` leaves its directory"))
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|m| m.contains("dest `/etc/passwd` is absolute"))
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|m| m.contains("runner of `../outside.txt` is empty"))
+        );
         let warnings: Vec<&AcceptIssue> = issues.iter().filter(|issue| !issue.blocking).collect();
         assert_eq!(warnings.len(), 1, "{issues:?}");
-        assert!(warnings[0].message.contains("verify step 2 copies a test out of accept/"));
+        assert!(
+            warnings[0]
+                .message
+                .contains("verify step 2 copies a test out of accept/")
+        );
 
         // The fixture's own entry is clean.
         assert!(accept_issues(&demo_task(), &fx.plan_dir).is_empty());
         // A malformed entry never pins.
-        assert!(pin_task(&fx.store, &fx.workdir, "accept-demo", &fx.plan_dir, &mut task).is_err());
+        assert!(
+            pin_task(
+                &fx.store,
+                &fx.workdir,
+                "accept-demo",
+                &fx.plan_dir,
+                &mut task
+            )
+            .is_err()
+        );
     }
 
     #[test]
     fn passed_count_reads_common_runner_summaries() {
         let cases = [
-            ("test result: ok. 5 passed; 0 failed\ntest result: ok. 2 passed; 0 failed\n", "7"),
-            (" Test Files  1 passed (1)\n      Tests  16 passed (16)\n", "16"),
-            ("Test Suites: 1 passed, 1 total\nTests:       15 passed, 15 total\n", "15"),
-            ("=========== 16 passed, 2 warnings in 0.31s ===========\n", "16"),
+            (
+                "test result: ok. 5 passed; 0 failed\ntest result: ok. 2 passed; 0 failed\n",
+                "7",
+            ),
+            (
+                " Test Files  1 passed (1)\n      Tests  16 passed (16)\n",
+                "16",
+            ),
+            (
+                "Test Suites: 1 passed, 1 total\nTests:       15 passed, 15 total\n",
+                "15",
+            ),
+            (
+                "=========== 16 passed, 2 warnings in 0.31s ===========\n",
+                "16",
+            ),
             ("# tests 4\n# pass 4\n# fail 0\n", "4"),
             ("Ran 4 tests in 0.001s\n\nOK (skipped=1)\n", "3"),
             ("all good\n", "none"),

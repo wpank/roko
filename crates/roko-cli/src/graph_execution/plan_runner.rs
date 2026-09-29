@@ -2700,10 +2700,7 @@ depends_on_plan = [{depends_on_plan}]
     /// plus `extra_config`, and one single-task plan per `(plan_id, file,
     /// depends_on_plan)` whose task passes its verify step.
     #[cfg(unix)]
-    fn verified_plan_set(
-        plans: &[(&str, &str, &[&str])],
-        extra_config: &str,
-    ) -> tempfile::TempDir {
+    fn verified_plan_set(plans: &[(&str, &str, &[&str])], extra_config: &str) -> tempfile::TempDir {
         let dir = tempfile::tempdir().expect("tempdir");
         fake_provider_workspace(dir.path(), 0.0, extra_config);
         std::fs::write(dir.path().join("README.md"), "# plan set test\n").expect("readme");

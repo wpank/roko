@@ -90,8 +90,9 @@ pub enum FeedbackEvent {
         initial_model: String,
         /// Agent turns the provider reported for this attempt (0 = unknown).
         turns: u64,
-        /// Short class-prefixed reason when the attempt failed
-        /// (`"turn_cap: …"`, `"provider: …"`, `"verify: …"`).
+        /// Class-prefixed reason when the attempt failed (`"turn_cap: …"`,
+        /// `"provider: …"`, `"verify: …"`), bounded but keeping every line of
+        /// a short reason.
         failure_reason: Option<String>,
     },
     /// A gate verdict landed for a task.

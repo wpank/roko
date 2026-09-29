@@ -747,18 +747,62 @@ fn turn_cap_resume_note(previous: TurnCapRetry, cap: u32) -> String {
     )
 }
 
-/// Short, class-prefixed reason for a failed attempt (`"<class>: <first line>"`),
-/// recorded on its episode.
+/// Longest failure reason recorded on an episode, in bytes.
+const MAX_FAILURE_REASON_BYTES: usize = 2_048;
+
+/// Class-prefixed reason for a failed attempt (`"<class>: <detail>"`),
+/// recorded on its episode. A reason within [`MAX_FAILURE_REASON_BYTES`]
+/// keeps every line, so a verify summary keeps the step that failed; a
+/// longer one keeps its first lines and its tail around an omission marker.
 fn attempt_failure_reason(class: &str, detail: &str) -> String {
-    let first_line = detail
-        .lines()
-        .map(str::trim)
-        .find(|line| !line.is_empty())
-        .unwrap_or("no detail");
-    format!(
-        "{class}: {}",
-        first_line.chars().take(200).collect::<String>()
-    )
+    let detail = detail.trim();
+    let detail = if detail.is_empty() {
+        "no detail"
+    } else {
+        detail
+    };
+    let budget = MAX_FAILURE_REASON_BYTES.saturating_sub(class.len() + 2);
+    format!("{class}: {}", head_and_tail(detail, budget))
+}
+
+/// `text` when it fits in `max` bytes; otherwise its head and tail, cut at
+/// line breaks near the cut points, joined by `… N bytes omitted …`.
+fn head_and_tail(text: &str, max: usize) -> String {
+    if text.len() <= max {
+        return text.to_string();
+    }
+    // Room for the "\n… N bytes omitted …\n" marker.
+    let budget = max.saturating_sub(48);
+    let mut head_end = budget / 2;
+    while !text.is_char_boundary(head_end) {
+        head_end -= 1;
+    }
+    let head = &text[..head_end];
+    let head = head
+        .rfind('\n')
+        .filter(|&cut| cut >= head_end * 3 / 4)
+        .map_or(head, |cut| &head[..cut]);
+    let mut tail_start = text.len() - (budget - budget / 2);
+    while !text.is_char_boundary(tail_start) {
+        tail_start += 1;
+    }
+    let tail = &text[tail_start..];
+    let tail = tail
+        .find('\n')
+        .filter(|&cut| cut <= tail.len() / 4)
+        .map_or(tail, |cut| &tail[cut + 1..]);
+    let omitted = text.len() - head.len() - tail.len();
+    format!("{head}\n… {omitted} bytes omitted …\n{tail}")
+}
+
+/// [`attempt_failure_reason`] for failed verification: the verify summary
+/// itself, which leads with any `blocked_by_sibling = <task>` blame, without
+/// the error's `gate error (…)` wrapper.
+fn verify_failure_reason(error: &RokoError) -> String {
+    match error {
+        RokoError::Verify { message, .. } => attempt_failure_reason("verify", message),
+        other => attempt_failure_reason("verify", &other.to_string()),
+    }
 }
 
 /// [`attempt_failure_reason`] for an unsuccessful provider result.
@@ -1452,7 +1496,7 @@ impl GraphTaskDispatcher {
     /// but do not block the task result.
     ///
     /// `attempt_id` comes from [`Self::next_attempt_id`]. `failure_reason` is
-    /// the attempt's short class-prefixed reason when `succeeded` is false
+    /// the attempt's bounded class-prefixed reason when `succeeded` is false
     /// (see [`attempt_failure_reason`]); it lands on the episode together with
     /// the provider-reported turn count.
     async fn emit_feedback(
@@ -3897,10 +3941,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
             wall_duration,
             &dispatch_plan,
             Some(routing_ctx_for_feedback),
-            verification
-                .as_ref()
-                .err()
-                .map(|error| attempt_failure_reason("verify", &error.to_string())),
+            verification.as_ref().err().map(verify_failure_reason),
         )
         .await;
 
@@ -4445,7 +4486,7 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
                 // Settled after the gate so learning sees the verified outcome.
                 let failure_reason = match &verification {
                     Some(Ok(_)) => None,
-                    Some(Err(error)) => Some(attempt_failure_reason("verify", &error.to_string())),
+                    Some(Err(error)) => Some(verify_failure_reason(error)),
                     None => Some(provider_failure_reason(
                         dispatch.result.output.body.as_text().unwrap_or_default(),
                     )),
@@ -7348,7 +7389,57 @@ printf '%s\n' '{{"type":"result","session_id":"sess-b","model":"claude-sonnet-4-
         );
         assert_eq!(
             provider_failure_reason("exit 1: claude failed\nmore"),
-            "provider: exit 1: claude failed"
+            "provider: exit 1: claude failed\nmore"
+        );
+    }
+
+    #[test]
+    fn a_verify_failure_reason_keeps_the_failing_step() {
+        let summary = verify_failure_summary(
+            "Write the greeting",
+            3,
+            &[
+                "verify[1:test] `cargo test -p greet` failed: exit code: 101\n\
+               thread 'greets' panicked at src/lib.rs:4:5"
+                    .to_string(),
+            ],
+            &["verify[2:lint] (`cargo clippy`)".to_string()],
+        );
+        let reason = verify_failure_reason(&RokoError::Verify {
+            gate: "graph-verify".into(),
+            message: summary,
+        });
+        assert!(reason.starts_with("verify: 1/3 verify step(s) failed for task"));
+        assert!(reason.contains("verify[1:test] `cargo test -p greet` failed"));
+        assert!(reason.contains("panicked at src/lib.rs:4:5"));
+        assert!(
+            reason.ends_with("Skipped after the first failure: verify[2:lint] (`cargo clippy`)")
+        );
+        assert_eq!(
+            attempt_failure_reason("verify", "  \n"),
+            "verify: no detail"
+        );
+    }
+
+    #[test]
+    fn a_long_failure_reason_keeps_its_head_and_tail_within_the_bound() {
+        let detail = (0..400)
+            .map(|line| format!("line {line:03} of the failing é output"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let reason = attempt_failure_reason("verify", &detail);
+
+        assert!(reason.len() <= MAX_FAILURE_REASON_BYTES, "{}", reason.len());
+        assert!(reason.starts_with("verify: line 000 of the failing é output\n"));
+        assert!(reason.ends_with("line 399 of the failing é output"));
+        assert!(reason.contains(" bytes omitted …\n"));
+        // Cuts land on line breaks, so no line is kept in part.
+        assert!(
+            reason.lines().all(|line| (line.starts_with("verify: line ")
+                || line.starts_with("line "))
+                && line.ends_with(" output")
+                || line.contains("bytes omitted")),
+            "{reason}"
         );
     }
 

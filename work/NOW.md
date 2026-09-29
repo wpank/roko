@@ -4,7 +4,7 @@
 
 What to work on next: the top checked, open items of each goal, highest-priority goal first. Reorder or change goals in `goals.toml`; pin an item higher with `rank = 1` (lower first).
 
-**Drift:** 57 anchor gone · 115 changed since checked · 3 mentioned in commits. Re-check them before relying on this list: `DRIFT.md`.
+**Drift:** 53 anchor gone · 115 changed since checked · 6 mentioned in commits. Re-check them before relying on this list: `DRIFT.md`.
 
 ## 1. Public release: security, licence, CI, first run
 
@@ -20,7 +20,7 @@ _20 more open · 5 unchecked (`TRIAGE.md`) · `goal = "release"`_
 - **P1** [gap-e08b4d](items/gap-e08b4d-research-paper-4-rebuild-4-1-around.md) Research paper §4: rebuild §4.1 around the control stack and the golden-path loop, and tag designed identifiers · size M · verified 2026-09-29
 - **P1** [gap-ac4ce8](items/gap-ac4ce8-research-paper-5-record-the-decided-evaluation.md) Research paper §5: record the decided evaluation scope and trim the protocol to budget · size M · verified 2026-09-29
 
-_6 more open · 15 unchecked (`TRIAGE.md`) · `goal = "whitepaper"`_
+_13 more open · 13 unchecked (`TRIAGE.md`) · `goal = "whitepaper"`_
 
 ## 3. Roko tells the truth and is safe (P0)
 
@@ -32,13 +32,13 @@ _0 more open · 11 unchecked (`TRIAGE.md`) · `goal = "truth"`_
 
 - nothing checked and open
 
-_0 more open · 31 unchecked (`TRIAGE.md`) · `goal = "golden-path"`_
+_0 more open · 30 unchecked (`TRIAGE.md`) · `goal = "golden-path"`_
 
 ## 5. Proof: the pilot benchmark and a record of the work
 
 - nothing checked and open
 
-_0 more open · 25 unchecked (`TRIAGE.md`) · `goal = "proof"`_
+_0 more open · 23 unchecked (`TRIAGE.md`) · `goal = "proof"`_
 
 ## 6. Learning from verified outcomes, M1-M4 (P2)
 

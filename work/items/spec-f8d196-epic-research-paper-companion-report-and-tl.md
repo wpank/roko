@@ -16,7 +16,7 @@ discovered_from = "tmp/cybernetic-harness/workstreams/assessment/W9-paper-workst
 anchors = ["tmp/cybernetic-harness/paper/", "tmp/cybernetic-harness/companion-audit/", "tmp/cybernetic-harness/tldr/"]
 doc = "tmp/cybernetic-harness/workstreams/PLAN.md"
 lane = "paper"
-links = { depends_on = ["gap-aad48c", "gap-e08b4d", "gap-ac4ce8", "gap-56a1b4", "gap-04b0ff", "gap-2abf34", "gap-c4d630", "gap-cdd5f4", "gap-652d05", "gap-b64fba"], blocks = [], related = [], supersedes = [], duplicate_of = "" }
+links = { depends_on = ["gap-aad48c", "gap-e08b4d", "gap-ac4ce8", "gap-56a1b4", "gap-04b0ff", "gap-2abf34", "gap-c4d630", "gap-cdd5f4", "gap-652d05", "gap-b64fba", "gap-b409fa", "gap-420202", "gap-0ef29d", "gap-856053", "gap-987510"], blocks = [], related = [], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "test -f tools/paperlint.py && python3 tools/paperlint.py --report tmp/cybernetic-harness/paper/sections/*.md"
@@ -69,6 +69,11 @@ This is the implementation plan.
 - [x] gap-cdd5f4: Companion report: re-derive every number at the audit/baseline-2026-09-28 tag
 - [x] gap-652d05: Companion report: draft the E10 main text with E1 number markers
 - [x] gap-b64fba: Refresh the TL;DR against the 2026-09-29 merges and fix three known errors
+- [ ] gap-b409fa: Companion report: fill the re-derived numbers into the E10 draft and fix the flagged source errors
+- [ ] gap-420202: Research paper §6: align the economics results template with the thesis, add the plan-level template, and trim
+- [ ] gap-0ef29d: Research paper §7: fix the dormant-loop claim in §7.3, align with the thesis, and trim
+- [ ] gap-856053: Research paper appendices A and B: match the benchmark and the spec standard as built
+- [ ] gap-987510: Research paper appendices C and D: align the audit protocol and metrics with S05, S09 and the ViabilityBench analysis
 - [ ] The `[[verify]]` command passes (paperlint reports on every section).
 
 ## Notes

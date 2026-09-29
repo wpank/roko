@@ -2,7 +2,7 @@
 id = "bug-7eef96"
 kind = "bug"
 title = "Privy JWT grants admin to any Nunchi Privy user on a publicly bound roko serve"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p0"
 hold = "Deferred by Will on 2026-09-28 (\"file it for later\"); do not pick until he lifts the hold"
@@ -11,7 +11,7 @@ subsystem = ["roko-serve/auth"]
 created = 2026-09-28
 updated = 2026-09-29
 last_verified = 2026-09-29
-last_verified_rev = "d9e79e9d8"
+last_verified_rev = "3fd7bfc76"
 source = "dogfood:tmp/dogfood/2026-09-28-portal-programme-continuation.md#security-finding"
 discovered_from = "session:roko-55 (tmp/cybernetic-harness/research/F-fix-inventory.md), verified by session roko-b6"
 anchors = ["crates/roko-serve/src/lib.rs::build_app_state", "crates/roko-serve/src/routes/middleware.rs::try_privy_jwt", "crates/roko-serve/src/jwks.rs::NUNCHI_PRIVY_APP_ID"]
@@ -23,6 +23,11 @@ command = "grep -n 'No role filter configured' crates/roko-serve/src/routes/midd
 
 [[verify]]
 command = "! grep -q 'No role filter configured' crates/roko-serve/src/routes/middleware.rs && cargo test -p roko-serve --lib privy_jwt_without_allow_list_is_not_authenticated"
+
+[closed]
+at = 2026-09-29
+commit = "3fd7bfc76"
+evidence = "Privy JWT auth is off unless serve.auth.privy_app_id is set explicitly (build_app_state no longer injects NUNCHI_PRIVY_APP_ID); try_privy_jwt rejects every Privy JWT unless privy_allowed_roles or privy_workspace_id is configured, warning once (and at startup). cargo test -p roko-serve --lib: 141 passed, including privy_jwt_without_allow_list_is_not_authenticated, privy_jwt_scope_follows_the_role_allow_list, privy_jwt_workspace_allow_list_admits_only_members, privy_jwt_is_ignored_without_an_explicit_app_id, public_bind_does_not_turn_on_privy_jwt_auth (real ES256 tokens, offline JWKS cache); clippy -p roko-serve/-p roko-core -D warnings clean; repro grep no longer matches."
 +++
 
 `roko-serve/src/lib.rs` always sets `serve.auth.privy_app_id` to the Nunchi Privy app id

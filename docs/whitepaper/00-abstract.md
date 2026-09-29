@@ -14,7 +14,7 @@ pinned one mid-tier model, so the cheap-model half of the thesis is UNPROVEN@a17
 cost per verified task with Claude Code on Opus 5.5 on hidden-test tasks (§8).
 
 [^0-portal]: Research note B7, frozen by gap-29a64e as `evidence/2026-09-29-b7-real-run-evidence.md` (sha256
-    `799b6a2b6184`), "TL;DR": Roko's records for the portal plans, attempts to 2026-09-29 07:41Z, costs as
-    recorded. The supervising sessions: assessment note W12, frozen as
+    `799b6a2b6184`), "TL;DR", and its Findings row "Cheap models on mechanical tasks" for the 210 attempts: Roko's
+    records for the portal plans, attempts to 2026-09-29 07:41Z, costs as recorded. The supervising sessions: assessment note W12, frozen as
     `evidence/2026-09-29-w12-operator-loop-cost.md` (sha256 `82676de5eee4`), an API-equivalent estimate for
     2026-09-25 to 09-29 against the $172.80 Roko recorded over those days (§7).

@@ -54,12 +54,12 @@ days.[^1-operator] Across 42 captured runs, Roko recovered from a failure by its
   commit (appendix).
 
 [^1-portal]: Research note B7, frozen as `evidence/2026-09-29-b7-real-run-evidence.md` (sha256 `799b6a2b6184`),
-    "TL;DR": Roko's records for the portal plans, attempts to 2026-09-29 07:41Z; costs as recorded, without a cost
+    "TL;DR", and its Findings row "Cheap models on mechanical tasks" for the 210 attempts: Roko's records for the portal plans, attempts to 2026-09-29 07:41Z; costs as recorded, without a cost
     source or the supervising sessions.
 
 [^1-verdicts]: B7 as above, "Method" and "TL;DR": recorded successes whose own gate failed. Before the fix
-    (`725f21e05`): 430 attempts in 31 plans from 2026-09-05; after it, 168 attempts to 2026-09-29 07:41Z. Items
-    bug-82d47b, bug-521f08, bug-06e2d1.
+    (`725f21e05`, named in CASE-001 of `evidence/2026-09-29-field-cases.md`, sha256 `d03e50476fb0`): 430 attempts in
+    31 plans from 2026-09-05; after it, 168 attempts to 2026-09-29 07:41Z. Items bug-82d47b, bug-521f08, bug-06e2d1.
 
 [^1-operator]: Assessment note W12, table F2, frozen as `evidence/2026-09-29-w12-operator-loop-cost.md` (sha256
     `82676de5eee4`): an estimate from the sessions' token counts, 2026-09-25 to 09-29, at API list prices and

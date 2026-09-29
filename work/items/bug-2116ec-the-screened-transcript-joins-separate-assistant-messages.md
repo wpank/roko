@@ -2,7 +2,7 @@
 id = "bug-2116ec"
 kind = "bug"
 title = "The screened transcript joins separate assistant messages with no separator"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "visibility"
@@ -11,7 +11,7 @@ subsystem = ["roko-agent/claude-cli", "roko-cli/graph-dispatch"]
 created = 2026-09-29
 updated = 2026-09-29
 last_verified = 2026-09-29
-last_verified_rev = "f99e45dba"
+last_verified_rev = "85ba4cb4d"
 source = "plan:portal-programme/09-acceptance#T04"
 discovered_from = "plan:portal-programme/09-acceptance#T04"
 anchors = ["crates/roko-agent/src/provider/claude_cli/stream.rs:164", "crates/roko-cli/src/graph_task_dispatch.rs:2842"]
@@ -19,6 +19,11 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "cargo build -p roko-cli && bash -c 'source plans/portal-programme/_harness/lib.sh && require_binary && make_workspace && touch \"$WS/.roko/fake-claude-live\" && start_server && start_capture && [ \"$(api POST /api/plans/live-b/execute)\" = 202 ] && wait_idle live-b 120 && sleep 3 && stop_capture && sse has agent_output plan_id=live-b \"content~Wrote the requested artifacts\" \"content!~.Wrote the requested\"'"
+
+[closed]
+at = 2026-09-29
+commit = "85ba4cb4d"
+evidence = "85ba4cb4d: BackendResponse::extract_text (the Claude CLI screened body) starts a new paragraph for text from a different assistant message; blocks of one message still join as-is. [[verify]] passes (fake-agent live run: screened text 'Working on out/live-b-t01.txt.\\n\\nWrote the requested artifacts.'); tests output_text_separates_assistant_messages, stream_json_extract_text_separates_assistant_messages, stream_json_extract_text_joins_blocks_of_one_message pass; live-output-check.sh 15/15 PASS"
 +++
 
 ## Problem

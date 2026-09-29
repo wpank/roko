@@ -106,7 +106,7 @@ This is the implementation plan, in order.
 - [x] bug-7a6da3: The markdown link checker reads footnote definitions as reference links
 - [x] gap-9cb0b9: paperlint: count a footnote that cites a frozen evidence file by sha256 as a source
 - [ ] gap-fcea53: Whitepaper: re-pin the status matrix at a post-merge commit before the whitepaper-v1 tag
-- [ ] gap-65ed57: Whitepaper §10: name the closest partial matches from the D13 prior-art search
+- [x] gap-65ed57: Whitepaper §10: name the closest partial matches from the D13 prior-art search
 - [x] gap-274092: paperlint: scope the status-tag rule and the claims-ledger skip so the companion lints correctly
 - [ ] gap-daa246: Whitepaper figures README still says pandoc converts the SVGs, which build.sh now does
 - [ ] The epic's `[[verify]]` command passes: strict paperlint over `docs/whitepaper/` with every section reviewed,

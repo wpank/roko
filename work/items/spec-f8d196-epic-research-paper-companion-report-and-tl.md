@@ -85,7 +85,7 @@ This is the implementation plan.
 - [ ] gap-cb86e4: Companion report: make the draft pass paperlint --strict apart from the rater and author markers
 - [x] gap-9899b0: Research paper: cite the frozen evidence copies in §1.2, §4.1, §7 and Appendix F
 - [x] gap-e2d092: Research paper: pick up S09 v1.2 and S01 v1.2 in §5, Appendices A, D and E, and fix S01 §4.5
-- [ ] gap-b4e597: Research paper: apply the D13 prior-art edits, since C1.23 is false as worded
+- [x] gap-b4e597: Research paper: apply the D13 prior-art edits, since C1.23 is false as worded
 - [ ] gap-5d95a5: Companion report: trim §3, §7, §5 and §1 to budget, and fix the mapping-table misreadings and the zhang2025darwin venue
 - [ ] gap-8cf47b: Research paper Appendix E: Table E.2 says no S01 record type exists at a17d4dadd; recheck Built by at a newer pin
 - [ ] gap-85f86a: Research paper: re-run the prior-art listing sweep (Q13–Q15, Q17) in submission week and read the Li 2026 lead

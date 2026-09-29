@@ -119,7 +119,7 @@ providers. This removes the checklist's circular `budget` gate (W10 rec 2).
 - [ ] q-ab27d3: Should the fd_claude_lite arm run Claude Sonnet 5.5, which is priced the same as Sonnet 5?
 - [x] gap-419298: S09 v1.2: register the plan-level slice as an exploratory experiment
 - [ ] dec-39c781: Confirm decisions D28–D36 before the pre-registration lock
-- [ ] bug-993e7e: ViabilityBench astcheck counts the __pycache__ an honest agent's test run writes as an added test file
+- [x] bug-993e7e: ViabilityBench astcheck counts the __pycache__ an honest agent's test run writes as an added test file
 - [ ] gap-204848: ViabilityBench schemas can't hold a plan-slice run record without a placeholder ladder, or a PL task
 - [ ] gap-455aef: S09 §4.9 says the plan-slice arms share no visible checks, but both get the same base repo and its tests
 - [ ] gap-db9a26: The plan-slice hidden suites were written by the arms' own model family and need a cross-family review

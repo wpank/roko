@@ -2,14 +2,16 @@
 id = "gap-b4e597"
 kind = "gap"
 title = "Research paper: apply the D13 prior-art edits, since C1.23 is false as worded"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p1"
 goal = "whitepaper"
 size = "M"
 subsystem = ["paper"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-29
+last_verified_rev = "860b10a88"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (16:40, wk-prior-art's report on gap-bb619d)"
 anchors = ["tmp/cybernetic-harness/paper/sections/01-introduction.md", "tmp/cybernetic-harness/paper/sections/03a-related-work.md", "tmp/cybernetic-harness/paper/sections/03b-related-work.md", "tmp/cybernetic-harness/paper/sections/08-discussion.md", "tmp/cybernetic-harness/paper/sections/B-spec-standard.md", "tmp/cybernetic-harness/paper/OUTLINE.md", "tmp/cybernetic-harness/paper/REVIEW-SKELETON.md", "tmp/cybernetic-harness/paper/bibliography/"]
@@ -19,6 +21,11 @@ links = { depends_on = [], blocks = [], related = ["gap-bb619d"], supersedes = [
 
 [[verify]]
 command = "! grep -q 'We know of no harness that estimates how often its passes are still' tmp/cybernetic-harness/paper/sections/01-introduction.md && grep -q 'kill-search D13 run 2026-09-29' tmp/cybernetic-harness/paper/sections/03a-related-work.md && grep -q 'kill-search D13 run 2026-09-29' tmp/cybernetic-harness/paper/sections/03b-related-work.md && python3 tools/paperlint.py --budget 1.2 --check-identifiers tmp/cybernetic-harness/paper/sections/01-introduction.md tmp/cybernetic-harness/paper/sections/03a-related-work.md tmp/cybernetic-harness/paper/sections/03b-related-work.md tmp/cybernetic-harness/paper/sections/08-discussion.md tmp/cybernetic-harness/paper/sections/B-spec-standard.md"
+
+[closed]
+at = 2026-09-29
+by = "coordinator (session 7622b882)"
+evidence = "D13 prior-art edits applied (tmp, wk-rp-priorart): E1-E17 in §1, §3a, §3b, §8, App B, OUTLINE, REVIEW-SKELETON and the specs/research notes (S07, S04, P-positioning, M4, M2); E18 in §5.3, §5.4 and §6.6. C1.23 now claims M4 as a combination citing PinSieve and Bounded Loops; C3b.6 keyed to FIRE. 33 records in bibliography/new-refs-D13.jsonl, re-checked with refcheck; bib rebuilt (286 cited keys, 0 unknown); doc citations rebuilt; CLAIMS-EVIDENCE regenerated (429 claims). paperlint --budget 1.2 --check-identifiers: 18 files clean. PRIOR-ART-D13.md §4 marked applied."
 +++
 
 ## Problem

@@ -12,12 +12,14 @@ snapshot (S08 §4.12). It writes `metrics.json` (`--out`, by default in the expe
     {"schema_version": "vb.metrics/1", "experiment_id", "price_snapshot_id", "analysis_commit", "computed_at",
      "label", "records": [vb.metric_record/1, ...], "false_greens": [...], "excluded": [...], "plan_slice": {...}}
 
-and prints each arm's table, every false green with its run id, and the excluded runs. `metrics.py` defines the
-metrics. Every MetricRecord lists its run ids, seeds, commits and config hashes, its exact `record_filter`,
-`label_source` "vs_census", a `cost_basis` (null for a metric that is not a cost), and the experiment's one
-`price_snapshot_id`. The report is descriptive: `preregistered` is false, `prereg_id` null and `blinded` false. It
-computes no confidence intervals (`ci_method` "none"): those come with the pilot page (gap-d9e9fe). The exception is
-the plan-level slice's Clopper-Pearson interval, which S09 §4.9 asks for.
+and prints each cell's table, every false green with its run id, and the excluded runs. `metrics.py` defines the
+metrics and the cells: a cell is an arm, or an arm and a model when the arm ran more than one model, and such a
+cell's rows name the model and its filters add `model == "<slug>"`. Every MetricRecord lists its run ids, seeds,
+commits and config hashes, its exact `record_filter`, `label_source` "vs_census", a `cost_basis` (null for a metric
+that is not a cost), and the experiment's one `price_snapshot_id`. The report is descriptive: `preregistered` is
+false, `prereg_id` null and `blinded` false. It computes no confidence intervals (`ci_method` "none"): those come
+with the pilot page (gap-d9e9fe). The exception is the plan-level slice's Clopper-Pearson interval, which S09 §4.9
+asks for.
 
 **Bundle.** `--bundle DIR` also writes the summary bundle that gets committed under `reports/` (D4). It holds
 `metrics.json`, and for each run a `<run_id>/` directory with its `manifest.json`, `order-*.json`, `records.jsonl`,
@@ -161,8 +163,8 @@ def build(records: list[dict], experiment_id: str, *, ks: tuple[int, ...], analy
         raise ReportError(f"records of other experiments ({', '.join(others)}) are mixed into {experiment_id}")
     metrics.check_unique(records)
     snapshot = single_snapshot(records)
-    arms = sorted({record["arm"] for record in records if record["task"]["family"] != metrics.PLAN_SLICE})
-    found = [metric for arm in arms for metric in metrics.arm_metrics(records, experiment_id, arm, ks)]
+    found = [metric for arm, model in metrics.cells(records)
+             for metric in metrics.arm_metrics(records, experiment_id, arm, ks, model=model)]
     section, slice_metrics = metrics.plan_slice(records, experiment_id)
     found += slice_metrics
     report = {
@@ -365,17 +367,18 @@ def dumps(report: dict) -> str:
 
 
 def render(report: dict, found: list[Metric]) -> str:
-    """The printed report: a table per arm (overall and per level), the false greens and the excluded runs."""
-    cells: dict[tuple[str, str], dict[tuple[str, str | None], Metric]] = {}
+    """The printed report: a table per arm, or per arm and model (overall and per level), the false greens and the
+    excluded runs."""
+    cells: dict[tuple[str, str], dict[tuple[str, str | None], Metric]] = {}  # (arm or "arm (model)", cell)
     for metric in found:
         if metric.cell == "all" or metric.cell[0] == "l":
-            arm = metric.cut.rows[0]["arm"]
-            cells.setdefault((arm, metric.cell), {})[(metric.metric, metric.cost_basis)] = metric
+            name = metrics.cell_name(metric.cut.rows[0]["arm"], metric.model)
+            cells.setdefault((name, metric.cell), {})[(metric.metric, metric.cost_basis)] = metric
     ks = sorted({int(m.metric.split("_")[2]) for m in found if m.metric.startswith("pass_hat_")})
     lines = [f"ViabilityBench report: experiment {report['experiment_id']} ({report['label']}; "
              f"{report['price_snapshot_id']})"]
-    for arm in sorted({arm for arm, _ in cells}):
-        runs = cells[(arm, "all")][("infra_error_runs", None)].cut.rows  # every run of the arm, excluded ones too
+    for arm in sorted({name for name, _ in cells}):
+        runs = cells[(arm, "all")][("infra_error_runs", None)].cut.rows  # every run of the cell, excluded ones too
         lines += ["", f"{arm}: {len(runs)} runs in {', '.join(_distinct(runs, 'run_id'))}",
                   "| cell | runs kept | VS rate | VS, unknown = 1 | " + "".join(f"pass^{k} | " for k in ks)
                   + "$/VS | spend | false greens | FG rate | cap-censored | infra_error | leak_suspected |",
@@ -400,8 +403,9 @@ def render(report: dict, found: list[Metric]) -> str:
                          f"{show('cap_censored_runs')} | {show('infra_error_runs')} | {show('leak_suspected_runs')} |")
     for title, key in (("False greens", "false_greens"), ("Excluded runs", "excluded")):
         lines += ["", f"{title} ({len(report[key])}):"]
-        lines += [f"- {item['arm']} {item['instance_id']} seed {item['seed']} ({item['status']}): run {item['run_id']},"
-                  f" record {item['record_id']}; failed: {', '.join(item['failed']) or '-'}" for item in report[key]]
+        lines += [f"- {metrics.cell_name(item['arm'], item.get('model'))} {item['instance_id']} seed {item['seed']} "
+                  f"({item['status']}): run {item['run_id']}, record {item['record_id']}; failed: "
+                  f"{', '.join(item['failed']) or '-'}" for item in report[key]]
     section = report["plan_slice"]
     if section:
         lines += ["", f"Plan-level slice, {section['label']}:"]

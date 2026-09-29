@@ -6,6 +6,13 @@ Every function reads `vb.run_record/1` dicts, as `records.jsonl` holds them (S08
   is a placeholder (5), and S09 §4.9 reports them only descriptively (`plan_slice`). `infra_error` and
   `leak_suspected` runs are excluded and counted. `aborted_cap` and `timeout` runs stay in with VS = 0, and they are
   counted as cap censoring (D.1).
+- **Cells.** A cell is an arm, or an (arm, model) pair when the arm's runs in the experiment requested more than one
+  model: S09 §4.2's `cheap_direct` runs gpt-oss-120b and the pool's best cheap model, and no metric pools them. A
+  run's model is what its attempts requested (`execution.attempts[].model_requested`). One `vb run` pins one model,
+  so a record with no attempt takes the model of its run's other records. Such a cell's filter adds
+  `model == "<slug>"`, where `model` is that derived field; an arm that ran one model keeps its arm-only cell and
+  filter. A routed arm (`ROUTED_ARMS`) may switch models within a run, so its cell is always the arm. A run of any
+  other arm that requested two models is an error, and so is a run with no model call in an arm that ran two.
 - **Labels.** The headline label VS- is `vs.label`, and 0 when `vs.unknown`. The bound VS+ is 1 when `vs.unknown`.
   Every label metric is computed with VS- and again with VS+, as `<metric>_unknown_as_1`, the result shown beside it.
 - **VS rate** (D.1): the mean over tasks of each task's share of verified successes, c/n. A task is an (instance,
@@ -33,10 +40,14 @@ filter applied. A metric with no run behind it is not emitted.
 
 API:
     Clause(field, op, value); Cut(clauses, rows); cut(records, clauses) -> Cut
-    Metric(metric, value, n, estimator, cost_basis, cut, cell, ladder, ci, ci_method)
+    Metric(metric, value, n, estimator, cost_basis, cut, cell, ladder, ci, ci_method, model)
     vs_minus(record) -> int; vs_plus(record) -> int; reported_pass(record) -> bool
-    check_unique(records) -> None                    # raises MetricsError when a run repeats
-    arm_metrics(records, experiment_id, arm, ks=(3,)) -> list[Metric]
+    check_unique(records) -> None                    # raises MetricsError when a run repeats or fits no cell
+    run_models(records) -> {(experiment_id, arm, run_id): model | None}
+    with_models(records) -> list[dict]               # copies, each with its cell's `model`
+    cells(records) -> list[(arm, model | None)]      # the report's cells outside the plan-level slice
+    cell_name(arm, model) -> str
+    arm_metrics(records, experiment_id, arm, ks=(3,), model=None) -> list[Metric]
     false_greens(records) -> list[dict]; excluded(records) -> list[dict]
     plan_slice(records, experiment_id) -> (section: dict | None, metrics: list[Metric])
     clopper_pearson(successes, n, alpha=0.05) -> (low, high)
@@ -44,6 +55,7 @@ API:
 
 from __future__ import annotations
 
+import dataclasses
 import datetime as dt
 import json
 import math
@@ -59,6 +71,8 @@ EXCLUDED = ("infra_error", "leak_suspected")
 CENSORED = ("aborted_cap", "timeout")
 # S09 §4.2's arm registry: these arms run Roko, and their reported pass is the gate's final verdict.
 ROKO_ARMS = frozenset({"roko_fixed", "roko_full", "fr_claude", "roko_plan"})
+# S09 §4.2 and §4.9: arms whose runs may switch models (routing, the tier ladder, a planner, escalation).
+ROUTED_ARMS = frozenset({"roko_full", "roko_plan", "hybrid"})
 NOT_PASSED = ("unverified", "forced_accept")
 PL_RATIO = ("roko_plan", "fd_claude")  # S09 §4.9: the slice's ratios are roko_plan / fd_claude
 
@@ -118,6 +132,7 @@ class Metric:
     ladder: int | None = None
     ci: tuple[float, float] | None = None
     ci_method: str = "none"
+    model: str | None = None  # the cell's model when its arm ran more than one, else None
 
 
 def vs_minus(record: dict) -> int:
@@ -152,14 +167,65 @@ def task_key(record: dict) -> tuple[str, str]:
 
 
 def check_unique(records: Iterable[dict]) -> None:
-    """Raise MetricsError when an arm has two runs of one task with the same seed and replicate."""
+    """Raise MetricsError when a cell ran one task twice with the same seed and replicate, or a run fits no cell."""
     seen: dict[tuple, str] = {}
-    for record in records:
-        key = (record["arm"], *task_key(record), record["seed"], record["replicate"])
+    for record in with_models(records):
+        key = (record["arm"], record["model"], *task_key(record), record["seed"], record["replicate"])
         if key in seen:
-            raise MetricsError(f"arm {key[0]} ran {key[1]} ({key[2]}) with seed {key[3]} and replicate {key[4]} "
-                               f"twice (runs {seen[key]} and {record['run_id']}); a repeat is not an independent run")
+            raise MetricsError(f"arm {cell_name(key[0], key[1])} ran {key[2]} ({key[3]}) with seed {key[4]} and "
+                               f"replicate {key[5]} twice (runs {seen[key]} and {record['run_id']}); a repeat is not "
+                               "an independent run")
         seen[key] = record["run_id"]
+
+
+def run_models(records: Iterable[dict]) -> dict[tuple[str, str, str], str | None]:
+    """Each run's model, keyed by (experiment, arm, run id): the one model its attempts requested (a `vb run` pins
+    one). None for a routed arm's run and for a run that made no attempt. A run of any other arm that requested two
+    models raises MetricsError."""
+    requested: dict[tuple[str, str, str], set[str]] = {}
+    for record in records:
+        key = (record["experiment_id"], record["arm"], record["run_id"])
+        attempts = record["execution"]["attempts"]
+        requested.setdefault(key, set()).update(attempt["model_requested"] for attempt in attempts)
+    models: dict[tuple[str, str, str], str | None] = {}
+    for (experiment_id, arm, run_id), found in requested.items():
+        if len(found) > 1 and arm not in ROUTED_ARMS:
+            raise MetricsError(f"run {run_id} of arm {arm} requested {len(found)} models ({', '.join(sorted(found))}); "
+                               f"only a routed arm ({', '.join(sorted(ROUTED_ARMS))}) may switch models within a run")
+        models[(experiment_id, arm, run_id)] = found.pop() if len(found) == 1 and arm not in ROUTED_ARMS else None
+    return models
+
+
+def with_models(records: Iterable[dict]) -> list[dict]:
+    """Copies of the records, each with `model`, its cell's model: its run's model when its arm ran more than one
+    model in the experiment, else None. Raises MetricsError for a run that has no cell (module docstring)."""
+    records = list(records)
+    by_run = run_models(records)
+    ran: dict[tuple[str, str], set[str]] = {}
+    for (experiment_id, arm, _), model in by_run.items():
+        if model is not None:
+            ran.setdefault((experiment_id, arm), set()).add(model)
+    out = []
+    for record in records:
+        models = ran.get((record["experiment_id"], record["arm"]), set())
+        model = by_run[(record["experiment_id"], record["arm"], record["run_id"])] if len(models) > 1 else None
+        if len(models) > 1 and model is None:
+            raise MetricsError(f"run {record['run_id']} of arm {record['arm']} made no model call, so it belongs to "
+                               f"none of the models the arm ran ({', '.join(sorted(models))})")
+        out.append({**record, "model": model})
+    return out
+
+
+def cell_name(arm: str, model: str | None) -> str:
+    """A cell as the report names it: the arm, with its model in parentheses when it has one."""
+    return f"{arm} ({model})" if model else arm
+
+
+def cells(records: Iterable[dict]) -> list[tuple[str, str | None]]:
+    """The report's cells outside the plan-level slice: (arm, None) for an arm that ran one model or routes between
+    models, and (arm, model) for each model of an arm that ran more than one."""
+    return sorted({(row["arm"], row["model"]) for row in with_models(records) if row["task"]["family"] != PLAN_SLICE},
+                  key=lambda cell: (cell[0], cell[1] or ""))
 
 
 def vs_rate(records: Iterable[dict], label: Callable[[dict], int] = vs_minus) -> float | None:
@@ -170,24 +236,34 @@ def vs_rate(records: Iterable[dict], label: Callable[[dict], int] = vs_minus) ->
     return float(sum((Fraction(sum(runs), len(runs)) for runs in tasks.values()), Fraction(0)) / len(tasks))
 
 
-def arm_metrics(records: Iterable[dict], experiment_id: str, arm: str, ks: Sequence[int] = (3,)) -> list[Metric]:
-    """Every metric of one arm outside the plan-level slice: overall, at each level, and per family x level."""
-    base = cut(records, (Clause("experiment_id", "==", experiment_id), Clause("arm", "==", arm),
-                         Clause("task.family", "!=", PLAN_SLICE)))
+def arm_metrics(records: Iterable[dict], experiment_id: str, arm: str, ks: Sequence[int] = (3,),
+                model: str | None = None) -> list[Metric]:
+    """Every metric of one cell outside the plan-level slice: overall, at each level, and per family x level. The
+    cell is the arm, or the arm and `model` when the arm ran more than one model (see `cells`)."""
+    rows = with_models(records)
+    ran = sorted({row["model"] for row in rows if row["experiment_id"] == experiment_id and row["arm"] == arm} - {None})
+    if (model is None and ran) or (model is not None and model not in ran):
+        raise MetricsError(f"arm {arm} ran {', '.join(ran) if ran else 'one model'} in {experiment_id}; its cells "
+                           f"are {', '.join(cell_name(arm, name) for name in ran) if ran else arm}, not "
+                           f"{cell_name(arm, model)}")
+    clauses = [Clause("experiment_id", "==", experiment_id), Clause("arm", "==", arm)]
+    if model is not None:
+        clauses.append(Clause("model", "==", model))
+    base = cut(rows, (*clauses, Clause("task.family", "!=", PLAN_SLICE)))
     out = _cell_metrics(base, arm, ks, "all", None)
     for level in sorted({row["task"]["ladder"] for row in base.rows}):
         out += _cell_metrics(base.narrow(Clause("task.ladder", "==", level)), arm, ks, f"l{level}", level)
     for family, level in sorted({(row["task"]["family"], row["task"]["ladder"]) for row in base.rows}):
         stratum = base.narrow(Clause("task.family", "==", family), Clause("task.ladder", "==", level))
         out += _label_metrics(_kept(stratum), ks, f"{family}-l{level}", level)
-    return out
+    return [dataclasses.replace(metric, model=model) for metric in out]
 
 
 def false_greens(records: Iterable[dict]) -> list[dict]:
     """Every false green outside the plan-level slice among the included runs, with its run id (App. D.1)."""
     found = [dict(_identity(row), reported_by="gate" if row["arm"] in ROKO_ARMS else "visible",
                   unknown=row["vs"]["unknown"], failed=list(row["vs"]["failed"]))
-             for row in records
+             for row in with_models(records)
              if row["task"]["family"] != PLAN_SLICE and row["execution"]["status"] not in EXCLUDED
              and reported_pass(row) and not vs_minus(row)]
     return sorted(found, key=_order)
@@ -196,7 +272,7 @@ def false_greens(records: Iterable[dict]) -> list[dict]:
 def excluded(records: Iterable[dict]) -> list[dict]:
     """Every run excluded from the metrics (`infra_error`, `leak_suspected`), with its run id and reason."""
     found = [dict(_identity(row), failed=list(row["vs"]["failed"]))
-             for row in records if row["execution"]["status"] in EXCLUDED]
+             for row in with_models(records) if row["execution"]["status"] in EXCLUDED]
     return sorted(found, key=_order)
 
 
@@ -426,15 +502,18 @@ def _feature_cell(row: dict | None) -> dict | None:
 
 
 def _identity(row: dict) -> dict:
+    """The run's identity in the false-green and excluded lists; `model` only when its arm ran more than one."""
     task = row["task"]
-    return {"arm": row["arm"], "run_id": row["run_id"], "record_id": row["record_id"],
+    model = {"model": row["model"]} if row.get("model") is not None else {}
+    return {"arm": row["arm"], **model, "run_id": row["run_id"], "record_id": row["record_id"],
             "instance_id": task["instance_id"], "spec_variant": task["spec_variant"], "family": task["family"],
             "ladder": task["ladder"], "seed": row["seed"], "replicate": row["replicate"],
             "status": row["execution"]["status"]}
 
 
 def _order(item: dict) -> tuple:
-    return item["arm"], item["instance_id"], item["spec_variant"], item["seed"], item["replicate"], item["run_id"]
+    return (item["arm"], item.get("model") or "", item["instance_id"], item["spec_variant"], item["seed"],
+            item["replicate"], item["run_id"])
 
 
 def _bisect(reached: Callable[[float], bool]) -> float:

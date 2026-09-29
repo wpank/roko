@@ -2,15 +2,16 @@
 id = "gap-44632a"
 kind = "gap"
 title = "No CI workflow runs the ViabilityBench verifier CI in benchmarks/viabilitybench/ci/"
-status = "open"
+status = "done"
 triage = "verified"
 last_verified = 2026-09-30
+last_verified_rev = "8640a17f9"
 severity = "p3"
 goal = "proof"
 size = "S"
 subsystem = ["benchmarks/viabilitybench/ci", "ci/workflows"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-09-30
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-rp-appAB's report)"
 anchors = ["benchmarks/viabilitybench/ci/verify_verifiers.py", ".github/workflows/"]
@@ -20,6 +21,12 @@ links = { depends_on = [], blocks = [], related = ["gap-7ee7c2", "find-8cc7ac"],
 
 [[verify]]
 command = "grep -rqE 'viabilitybench/ci|verify_verifiers' .github/workflows/"
+
+[closed]
+at = 2026-09-30
+commit = "8640a17f9"
+by = "wk-bench-fix2"
+evidence = "New workflow .github/workflows/viabilitybench-ci.yml (no existing workflow edited): on pushes to main and pull requests touching benchmarks/viabilitybench/** it makes the hash-locked venv on pinned Python 3.12.8 and runs verify_verifiers.py on F1/F4 levels 1-5 seeds 1-2 (20 cells), the plan slice (pl, seeds 3) and ci/test_ci.py; permissions contents: read, no secrets, offline. The [[verify]] command passes (grep finds verify_verifiers in .github/workflows/); the YAML parses (PyYAML, structural checks; actionlint is not installed); every step passed locally: 20/20, 18/18, 6 passed."
 +++
 
 ## Problem

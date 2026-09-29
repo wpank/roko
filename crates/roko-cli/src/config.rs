@@ -185,7 +185,7 @@ impl Config {
                 dangerously_skip_permissions: core.runner.dangerously_skip_permissions,
             },
             runtime: RuntimeControlConfig::default(),
-            budget: BudgetConfig::default(),
+            budget: BudgetConfig::from_core(&core.budget),
             providers: core.providers.clone(),
             models: core.models.clone(),
             learning: LearningLayer::from_core_learning(&core.learning),
@@ -534,6 +534,22 @@ impl BudgetConfig {
     }
     const fn default_warn_pct() -> u32 {
         80
+    }
+
+    /// Take the spend caps from the core `[budget]` section.
+    ///
+    /// A cap of `0.0` means no cap there, and it must stay `0.0` here: the
+    /// legacy defaults of this type (`$10` plan, `$1` task and turn) would
+    /// otherwise cap a workspace whose `roko.toml` sets no cap. Settings the
+    /// core section lacks keep their defaults.
+    #[must_use]
+    pub fn from_core(core: &roko_core::config::BudgetConfig) -> Self {
+        Self {
+            max_plan_usd: f64::from(core.max_plan_usd),
+            max_turn_usd: f64::from(core.max_turn_usd),
+            max_task_usd: f64::from(core.max_task_usd),
+            ..Self::default()
+        }
     }
 
     /// Return the USD spend at which the plan should start warning.

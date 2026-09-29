@@ -189,12 +189,13 @@ export function buildTaskRows(
  *
  * Priority:
  *   1. `selected` when it names an existing row
- *   2. First active row
- *   3. First failed row
+ *   2. First failed row — a failure takes the stream even while other tasks
+ *      run (design §11); only a selection keeps it elsewhere
+ *   3. First active row
  *   4. Last finished row (passed / accepted_with_failures / skipped)
  *   5. null
  *
- * "Last finished" uses row order (wave order, then input order) — not time.
+ * "First" and "last" use row order (wave order, then input order) — not time.
  */
 export function focusTaskId(
   rows: readonly TaskRowModel[],
@@ -205,13 +206,13 @@ export function focusTaskId(
     return selected;
   }
 
-  // 2. First active row.
-  const active = rows.find((r) => r.status === 'active');
-  if (active) return active.id;
-
-  // 3. First failed row.
+  // 2. First failed row.
   const failed = rows.find((r) => r.status === 'failed');
   if (failed) return failed.id;
+
+  // 3. First active row.
+  const active = rows.find((r) => r.status === 'active');
+  if (active) return active.id;
 
   // 4. Last finished row — iterate forward; final assignment wins.
   let lastFinished: TaskRowModel | null = null;

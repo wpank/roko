@@ -1,5 +1,6 @@
 /**
- * rungs.ts — CHECKS cell helpers for the run band.
+ * rungs.ts — verify-ladder helpers for the run band's CHECKS cell and the
+ * stream's checks view.
  *
  * A task's authored verify steps form a "ladder". The event stream reports
  * each step by name (`verify[i:phase]`) as it starts and ends. buildRungs
@@ -16,6 +17,8 @@ export interface Rung {
   index: number | null;
   label: string;
   state: 'passed' | 'failed' | 'running' | 'pending';
+  /** The step's result so far; null while it has not been reached. */
+  check: CheckRun | null;
 }
 
 // ── buildRungs ─────────────────────────────────────────────────────────────────
@@ -42,6 +45,7 @@ export function buildRungs(
       index: c.index,
       label: labelFor(c.phase, c.index, c.name),
       state: c.status,
+      check: c,
     }));
   }
 
@@ -62,11 +66,12 @@ export function buildRungs(
   // One rung per declared step.
   for (let i = 0; i < declared.length; i++) {
     const decl = declared[i]!;
-    const check = byIndex.get(i);
+    const check = byIndex.get(i) ?? null;
     rungs.push({
       index: i,
       label: decl.phase || `verify[${i}]`,
       state: check ? check.status : 'pending',
+      check,
     });
   }
 
@@ -76,6 +81,7 @@ export function buildRungs(
       index: c.index,
       label: labelFor(c.phase, c.index, c.name),
       state: c.status,
+      check: c,
     });
   }
 

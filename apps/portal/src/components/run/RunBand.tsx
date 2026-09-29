@@ -23,35 +23,18 @@ import { useDashboardStore } from '@/stores/dashboard';
 import type { Selection } from '@/lib/selection';
 import { buildRoster } from '@/lib/agentRoster';
 import { checkFocusTask, buildRungs } from '@/lib/rungs';
-import type { Rung } from '@/lib/rungs';
 import { buildBurn } from '@/lib/burn';
 import { taskKey } from '@/lib/runState';
 import type { CheckRun } from '@/lib/runState';
 import { StatusGlyph } from '@/components/primitives/StatusGlyph';
 import { compactDuration, formatTokens, shortModel } from '@/lib/formatters';
-import type { GlyphState } from '@/lib/glyphs';
+import { glyphStateForCheck } from '@/lib/glyphs';
 import { useNow } from '@/lib/useNow';
 
 // ── Constants ────────────────────────────────────────────────────────────────────
 
 /** Number of content rows rendered per cell; the rest are counted in the head note. */
 const BAND_ROWS = 2;
-
-// ── Helpers ─────────────────────────────────────────────────────────────────────
-
-/** Map a rung state to the StatusGlyph GlyphState. */
-function rungGlyphState(state: Rung['state']): GlyphState {
-  switch (state) {
-    case 'passed':
-      return 'done';
-    case 'running':
-      return 'active';
-    case 'failed':
-      return 'failed';
-    case 'pending':
-      return 'pending';
-  }
-}
 
 // ── RunBand ─────────────────────────────────────────────────────────────────────
 
@@ -229,7 +212,7 @@ function RunBandInner({
                 key={rung.index ?? `x${i}`}
                 data-rung={rung.state}
                 className="rd-band__rung"
-              ><StatusGlyph state={rungGlyphState(rung.state)} />{' '}{rung.label}</span>
+              ><StatusGlyph state={glyphStateForCheck(rung.state)} />{' '}{rung.label}</span>
             ))}
           </div>
         ) : (

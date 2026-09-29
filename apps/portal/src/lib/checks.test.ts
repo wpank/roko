@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { digestOutput } from './checks';
+import { digestEnding, digestHeadline, digestOutput } from './checks';
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -220,5 +220,41 @@ describe('digestOutput – unparsed retention', () => {
     expect(() => digestOutput('null\x00bytes\nand\ttabs\n\n\n')).not.toThrow();
     expect(() => digestOutput('\n\n\n')).not.toThrow();
     expect(() => digestOutput('$')).not.toThrow();
+  });
+});
+
+describe('digestEnding', () => {
+  it('says how a step ended, and no output when it printed nothing', () => {
+    expect(digestEnding(digestOutput('$ test -f MISSING.md\n✗ exit status 1'))).toBe('exit status 1 · no output');
+    expect(digestEnding(digestOutput(lines('$ make', 'make: *** No rule', '✗ exit status 2')))).toBe('exit status 2');
+    expect(digestEnding(digestOutput('$ test -f MISSING.md'))).toBe('no output');
+    expect(digestEnding(digestOutput(lines('$ make', 'make: *** No rule')))).toBeNull();
+  });
+});
+
+describe('digestHeadline', () => {
+  it('names the first diagnostic with its location', () => {
+    const d = digestOutput(lines(
+      '$ cargo build',
+      'warning: unused import',
+      '  --> src/lib.rs:1:1',
+      'error[E0425]: cannot find value `x` in this scope',
+      '  --> src/main.rs:2:5',
+      '✗ exit status 101',
+    ));
+    expect(digestHeadline(d)).toBe('src/main.rs:2:5 cannot find value `x` in this scope');
+  });
+
+  it('leaves out a column it does not know', () => {
+    expect(digestHeadline(digestOutput('src/a.c:7: warning: unused variable'))).toBe('src/a.c:7 unused variable');
+  });
+
+  it('falls back to the first output line, past the runner’s framing', () => {
+    const d = digestOutput(lines('$ cargo build', '… 12 earlier lines not shown', '', '---stderr---', 'error: could not compile `hello`', '✗ exit status 101'));
+    expect(digestHeadline(d)).toBe('error: could not compile `hello`');
+  });
+
+  it('says how a silent step ended', () => {
+    expect(digestHeadline(digestOutput('$ test -f MISSING.md\n✗ exit status 1'))).toBe('exit status 1 · no output');
   });
 });

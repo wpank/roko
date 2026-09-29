@@ -65,7 +65,9 @@ export function Transcript({
   }, []);
 
   // ── Empty state ───────────────────────────────────────────────────────────
-  if (transcript === undefined && !working) {
+  // A transcript left with no entries (agent_completed drops unscreened
+  // records) is as empty as a missing one.
+  if (!transcript?.entries.length && !working) {
     const emptyMsg =
       taskStatus === 'pending'
         ? 'This task has not started.'
@@ -142,6 +144,15 @@ export function Transcript({
                   {' '}· {firstOutputLine}
                 </span>
               )}
+              {block.truncated && (
+                <span
+                  data-truncated=""
+                  className="transcript-truncated"
+                  style={{ color: 'var(--text-faint)' }}
+                >
+                  {' '}· server kept only the tail
+                </span>
+              )}
             </summary>
             {block.input && (
               <pre
@@ -157,26 +168,16 @@ export function Transcript({
               </pre>
             )}
             {block.output !== null && (
-              <div>
-                {block.truncated && (
-                  <div
-                    className="transcript-truncated"
-                    style={{ color: 'var(--text-faint)', fontSize: 'var(--type-meta)', paddingLeft: '1.25em' }}
-                  >
-                    (server kept only the tail of this output)
-                  </div>
-                )}
-                <pre
-                  style={{
-                    whiteSpace: 'pre-wrap',
-                    margin: 0,
-                    fontFamily: 'monospace',
-                    paddingLeft: '1.25em',
-                  }}
-                >
-                  {block.output}
-                </pre>
-              </div>
+              <pre
+                style={{
+                  whiteSpace: 'pre-wrap',
+                  margin: 0,
+                  fontFamily: 'monospace',
+                  paddingLeft: '1.25em',
+                }}
+              >
+                {block.output}
+              </pre>
             )}
           </details>
         );

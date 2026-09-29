@@ -495,8 +495,25 @@ pub struct PlanDisplayState {
     pub tasks_done: usize,
     /// Tasks that failed.
     pub tasks_failed: usize,
+    /// Tasks accepted although their verification failed. Plan progress treats
+    /// them as done, so they are counted in `tasks_done` as well.
+    #[serde(default)]
+    pub tasks_accepted_with_failures: usize,
     /// Whether the plan is still executing.
     pub active: bool,
+    /// When the plan's latest run started (Unix ms), stamped as its
+    /// `PlanStarted` is applied. `None` until it starts.
+    #[serde(default)]
+    pub started_at_ms: Option<u64>,
+    /// When the plan's latest run ended (Unix ms), stamped as its
+    /// `PlanCompleted` or the run's `RunCompleted` is applied. `None` before
+    /// it ends.
+    #[serde(default)]
+    pub finished_at_ms: Option<u64>,
+    /// What the plan's latest run has cost so far, in USD: the sum of the
+    /// `cost_usd` efficiency events that name the plan.
+    #[serde(default)]
+    pub cost_usd: f64,
 }
 
 /// Backward-compatibility alias. Prefer `PlanDisplayState`.
@@ -1445,6 +1462,10 @@ impl DashboardSnapshot {
                     });
                 if !plan.active {
                     self.stats.plans_active += 1;
+                    // The run's clock starts here; a repeated start of a
+                    // running plan leaves it alone.
+                    plan.started_at_ms = Some(ts);
+                    plan.finished_at_ms = None;
                 }
                 plan.phase = "started".into();
                 plan.tasks_total = plan.tasks_total.max(*tasks_total);
@@ -1473,6 +1494,10 @@ impl DashboardSnapshot {
                     plan.tasks_total = entry.tasks_total;
                     plan.tasks_done = 0;
                     plan.tasks_failed = 0;
+                    plan.tasks_accepted_with_failures = 0;
+                    plan.started_at_ms = None;
+                    plan.finished_at_ms = None;
+                    plan.cost_usd = 0.0;
                 }
                 self.plan_set = Some(PlanSetState {
                     tasks_total: plans.iter().map(|entry| entry.tasks_total).sum(),
@@ -1489,6 +1514,10 @@ impl DashboardSnapshot {
                     // failed prerequisite, or rejected before execution) is
                     // terminal too.
                     newly_terminal = plan.active || plan.phase == PLAN_SET_PENDING_PHASE;
+                    // A repeated completion keeps the first end time.
+                    if newly_terminal {
+                        plan.finished_at_ms = Some(ts);
+                    }
                     plan.active = false;
                     plan.phase = if *success {
                         "completed".into()
@@ -1525,6 +1554,7 @@ impl DashboardSnapshot {
                 self.surviving_agent_pids.clone_from(surviving_agent_pids);
                 for plan in self.plans.values_mut().filter(|plan| plan.active) {
                     plan.active = false;
+                    plan.finished_at_ms = Some(ts);
                     plan.phase = match outcome.as_str() {
                         "succeeded" => "completed",
                         "cancelled" => "cancelled",
@@ -1607,6 +1637,7 @@ impl DashboardSnapshot {
                             self.stats.tasks_accepted_with_failures += 1;
                             if let Some(plan) = self.plans.get_mut(plan_id) {
                                 plan.tasks_done += 1;
+                                plan.tasks_accepted_with_failures += 1;
                             }
                         }
                         TaskOutcomeClass::Passed => {
@@ -1859,6 +1890,11 @@ impl DashboardSnapshot {
                         {
                             agent.cost_usd += value;
                             agent.last_event_at_ms = ts;
+                        }
+                        // Whatever spent it, a cost that names a known plan
+                        // belongs to that plan's current run.
+                        if let Some(plan) = self.plans.get_mut(plan_id) {
+                            plan.cost_usd += value;
                         }
                         self.stats.cost_usd_total += value;
                     }
@@ -2802,6 +2838,7 @@ fn bootstrap_plan_state(
             tasks_done,
             tasks_failed,
             active,
+            ..PlanState::default()
         },
     );
 
@@ -2972,6 +3009,7 @@ fn apply_runner_lifecycle_projection(
         plan.tasks_total = 0;
         plan.tasks_done = 0;
         plan.tasks_failed = 0;
+        plan.tasks_accepted_with_failures = 0;
     }
 
     let lifecycle = runner
@@ -4230,6 +4268,140 @@ mod tests {
         assert!(snap.plans["live"].active);
         assert_eq!(snap.plans["live"].phase, "started");
         assert_eq!(snap.stats.plans_active, 1);
+    }
+
+    #[test]
+    fn plan_display_state_carries_times_cost_and_accepted() {
+        let mut snap = DashboardSnapshot::default();
+        snap.apply_with_ts(&plan_set_event(&[("p1", 2)]), 1_000);
+        snap.apply_with_ts(
+            &DashboardEvent::PlanStarted {
+                plan_id: "p1".into(),
+                tasks_total: 2,
+            },
+            2_000,
+        );
+        for task_id in ["t1", "t2"] {
+            snap.apply_with_ts(
+                &DashboardEvent::TaskStarted {
+                    plan_id: "p1".into(),
+                    task_id: task_id.into(),
+                    title: task_id.into(),
+                    phase: "implement".into(),
+                },
+                2_100,
+            );
+        }
+        let usage = |plan_id: &str, metric: &str, value: f64| DashboardEvent::EfficiencyEvent {
+            plan_id: plan_id.into(),
+            task_id: "t1".into(),
+            metric: metric.into(),
+            value,
+        };
+        snap.apply_with_ts(&usage("p1", "cost_usd", 0.25), 2_200);
+        snap.apply_with_ts(&usage("p1", "cost_usd", 0.5), 2_300);
+        // Tokens, and what another plan spends, are not this plan's cost.
+        snap.apply_with_ts(&usage("p1", "input_tokens", 900.0), 2_400);
+        snap.apply_with_ts(&usage("other", "cost_usd", 4.0), 2_500);
+        for (task_id, outcome, ts) in [
+            ("t1", "passed", 3_000),
+            ("t2", TASK_OUTCOME_ACCEPTED_WITH_FAILURES, 3_500),
+        ] {
+            snap.apply_with_ts(
+                &DashboardEvent::TaskCompleted {
+                    plan_id: "p1".into(),
+                    task_id: task_id.into(),
+                    outcome: outcome.into(),
+                },
+                ts,
+            );
+        }
+        assert_eq!(snap.plans["p1"].started_at_ms, Some(2_000));
+        assert_eq!(snap.plans["p1"].finished_at_ms, None);
+
+        snap.apply_with_ts(
+            &DashboardEvent::PlanCompleted {
+                plan_id: "p1".into(),
+                success: true,
+            },
+            4_000,
+        );
+        // A repeated completion does not move the end.
+        snap.apply_with_ts(
+            &DashboardEvent::PlanCompleted {
+                plan_id: "p1".into(),
+                success: true,
+            },
+            9_000,
+        );
+
+        let plan = &snap.plans["p1"];
+        assert_eq!(plan.started_at_ms, Some(2_000));
+        assert_eq!(plan.finished_at_ms, Some(4_000));
+        assert_eq!(plan.cost_usd, 0.75);
+        assert_eq!(plan.tasks_done, 2);
+        assert_eq!(plan.tasks_accepted_with_failures, 1);
+        assert_eq!(snap.stats.cost_usd_total, 4.75);
+
+        // The snapshot a reloading client fetches carries them.
+        let wire = serde_json::to_value(&snap).expect("serialize snapshot");
+        let wire_plan = &wire["plans"]["p1"];
+        assert_eq!(wire_plan["started_at_ms"], 2_000);
+        assert_eq!(wire_plan["finished_at_ms"], 4_000);
+        assert_eq!(wire_plan["cost_usd"], 0.75);
+        assert_eq!(wire_plan["tasks_accepted_with_failures"], 1);
+
+        // The plan's next run starts from nothing.
+        snap.apply_with_ts(&plan_set_event(&[("p1", 2)]), 10_000);
+        let next = &snap.plans["p1"];
+        assert_eq!((next.started_at_ms, next.finished_at_ms), (None, None));
+        assert_eq!(next.cost_usd, 0.0);
+        assert_eq!(next.tasks_accepted_with_failures, 0);
+    }
+
+    #[test]
+    fn run_completed_ends_the_clock_of_the_plans_it_stops() {
+        let mut snap = DashboardSnapshot::default();
+        snap.apply_with_ts(&plan_set_event(&[("a", 1), ("b", 1)]), 1_000);
+        snap.apply_with_ts(
+            &DashboardEvent::PlanStarted {
+                plan_id: "a".into(),
+                tasks_total: 1,
+            },
+            2_000,
+        );
+        snap.apply_with_ts(
+            &DashboardEvent::RunCompleted {
+                outcome: "cancelled".into(),
+                duration_ms: 5_000,
+                cleanup_degraded: false,
+                surviving_agent_ids: Vec::new(),
+                surviving_agent_pids: Vec::new(),
+            },
+            6_000,
+        );
+        assert_eq!(snap.plans["a"].started_at_ms, Some(2_000));
+        assert_eq!(snap.plans["a"].finished_at_ms, Some(6_000));
+        // A member that never started has neither time.
+        assert_eq!(snap.plans["b"].started_at_ms, None);
+        assert_eq!(snap.plans["b"].finished_at_ms, None);
+    }
+
+    #[test]
+    fn plan_display_state_reads_snapshots_written_before_run_stats() {
+        let plan: PlanDisplayState = serde_json::from_value(serde_json::json!({
+            "plan_id": "p1",
+            "phase": "completed",
+            "tasks_total": 2,
+            "tasks_done": 2,
+            "tasks_failed": 0,
+            "active": false,
+        }))
+        .expect("older plan state");
+        assert_eq!(plan.tasks_done, 2);
+        assert_eq!(plan.tasks_accepted_with_failures, 0);
+        assert_eq!((plan.started_at_ms, plan.finished_at_ms), (None, None));
+        assert_eq!(plan.cost_usd, 0.0);
     }
 
     #[test]

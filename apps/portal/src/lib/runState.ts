@@ -109,6 +109,7 @@ export interface RunState {
   transcripts: Record<string, Transcript>;
   errors: { message: string; atMs: number }[];
   run: { startedAtMs: number | null; durationMs: number | null; outcome: string | null };
+  /** Everything the server has recorded since it started; see `runCostUsd` for a run's cost. */
   totals: { costUsd: number; inputTokens: number; outputTokens: number };
   usage: { atMs: number; tokens: number }[];
 }
@@ -341,6 +342,22 @@ export function initialRunState(): RunState {
   };
 }
 
+// ── runCostUsd ─────────────────────────────────────────────────────────────────
+
+/**
+ * What the current run has cost (the last run's, once it ends): the cost of
+ * the plans in its announced plan set, else of the running plans. Each plan's
+ * cost restarts with its run, so this never carries earlier runs' spend.
+ */
+export function runCostUsd(state: RunState): number {
+  const running = Object.values(state.plans).filter((p) => p.phase === 'running');
+  const setIds = state.planSet?.planIds ?? [];
+  // A plan running outside the announced set means the set is from an earlier run.
+  const inSet = setIds.length > 0 && running.every((p) => setIds.includes(p.planId));
+  const ids = inSet ? setIds : running.map((p) => p.planId);
+  return ids.reduce((sum, id) => sum + (state.plans[id]?.costUsd ?? 0), 0);
+}
+
 // ── applyEvent ─────────────────────────────────────────────────────────────────
 
 /**
@@ -483,6 +500,11 @@ export function applyEvent(
     case 'plan_completed': {
       const existing = state.plans[event.plan_id];
       if (!existing) return state;
+      // A repeated completion keeps the first end time, as the server does.
+      const finishedAtMs =
+        TERMINAL_PLAN_PHASES.has(existing.phase) && existing.finishedAtMs !== null
+          ? existing.finishedAtMs
+          : nowMs;
       return {
         ...state,
         plans: {
@@ -490,7 +512,7 @@ export function applyEvent(
           [event.plan_id]: {
             ...existing,
             phase: event.success ? 'completed' : 'failed',
-            finishedAtMs: nowMs,
+            finishedAtMs,
           },
         },
       };
@@ -1066,11 +1088,11 @@ export function fromSnapshot(snapshot: WireDashboardSnapshot, nowMs: number): Ru
       tasksTotal: p.tasks_total,
       tasksDone: p.tasks_done,
       tasksFailed: p.tasks_failed,
-      tasksAccepted: 0,
-      startedAtMs: null,
-      finishedAtMs: null,
+      tasksAccepted: p.tasks_accepted_with_failures ?? 0,
+      startedAtMs: p.started_at_ms ?? null,
+      finishedAtMs: p.finished_at_ms ?? null,
       etaMinutes: null,
-      costUsd: 0,
+      costUsd: p.cost_usd ?? 0,
     };
   }
 
@@ -1102,13 +1124,17 @@ export function fromSnapshot(snapshot: WireDashboardSnapshot, nowMs: number): Ru
             plan = { ...plan, title: entry.title };
           }
 
+          // Older servers send no plan times; derive what the set implies.
+          const timesUnknown = plan.startedAtMs === null && plan.finishedAtMs === null;
+
           // Position 0 while running: startedAtMs = loadedAtMs
-          if (i === 0 && plan.phase === 'running') {
+          if (timesUnknown && i === 0 && plan.phase === 'running') {
             plan = { ...plan, startedAtMs: loadedAtMs };
           }
 
           // One-plan set, not pending/running, run_duration_ms known: derive timing
           if (
+            timesUnknown &&
             isOnePlanSet &&
             plan.phase !== 'pending' &&
             plan.phase !== 'running' &&

@@ -694,4 +694,82 @@ mod tests {
 
         assert_eq!(err.status, axum::http::StatusCode::INTERNAL_SERVER_ERROR);
     }
+
+    /// gap-bfd447: a client that reloads mid-run or after it rebuilds each
+    /// plan from this snapshot, so it must carry the plan's times, cost and
+    /// accepted count.
+    #[tokio::test]
+    async fn statehub_snapshot_carries_each_plans_times_cost_and_accepted_count() {
+        use roko_core::DashboardEvent;
+        use roko_core::dashboard_snapshot::{PlanSetEntry, TASK_OUTCOME_ACCEPTED_WITH_FAILURES};
+
+        let (_dir, state) = test_state();
+        let hub = state.state_hub.sender();
+        hub.publish(DashboardEvent::PlanSetLoaded {
+            plans: vec![PlanSetEntry {
+                plan_id: "hello".into(),
+                title: "Hello world".into(),
+                tasks_total: 1,
+                ..PlanSetEntry::default()
+            }],
+        });
+        hub.publish(DashboardEvent::PlanStarted {
+            plan_id: "hello".into(),
+            tasks_total: 1,
+        });
+        hub.publish(DashboardEvent::TaskStarted {
+            plan_id: "hello".into(),
+            task_id: "T01".into(),
+            title: "Print hello".into(),
+            phase: "implement".into(),
+        });
+        hub.publish(DashboardEvent::EfficiencyEvent {
+            plan_id: "hello".into(),
+            task_id: "T01".into(),
+            metric: "cost_usd".into(),
+            value: 0.125,
+        });
+        hub.publish(DashboardEvent::TaskCompleted {
+            plan_id: "hello".into(),
+            task_id: "T01".into(),
+            outcome: TASK_OUTCOME_ACCEPTED_WITH_FAILURES.into(),
+        });
+        hub.publish(DashboardEvent::PlanCompleted {
+            plan_id: "hello".into(),
+            success: true,
+        });
+
+        let app = build_router(
+            Arc::clone(&state),
+            &[],
+            ServeAuthConfig {
+                enabled: false,
+                ..ServeAuthConfig::default()
+            },
+        );
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/api/statehub/snapshot")
+                    .body(AxumBody::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("snapshot response");
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read body");
+        let payload: Value = serde_json::from_slice(&body).expect("parse snapshot response");
+
+        let plan = &payload["data"]["plans"]["hello"];
+        let started = plan["started_at_ms"].as_u64().expect("started_at_ms");
+        let finished = plan["finished_at_ms"].as_u64().expect("finished_at_ms");
+        assert!(started > 0 && finished >= started, "{plan}");
+        assert_eq!(plan["cost_usd"], 0.125);
+        assert_eq!(plan["tasks_done"], 1);
+        assert_eq!(plan["tasks_accepted_with_failures"], 1);
+        assert_eq!(plan["phase"], "completed");
+    }
 }

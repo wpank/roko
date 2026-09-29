@@ -105,14 +105,26 @@ export type WireDashboardEvent =
 // Dashboard snapshot — fields the portal reads
 // ---------------------------------------------------------------------------
 
-/** Live state of one plan (PlanDisplayState / PlanState in Rust). */
+/**
+ * Live state of one plan (PlanDisplayState / PlanState in Rust). The run
+ * fields describe the plan's latest run; older servers omit them.
+ */
 export interface WirePlanDisplayState {
   plan_id: string;
   phase: string;
   tasks_total: number;
+  /** Includes the tasks accepted with failures. */
   tasks_done: number;
   tasks_failed: number;
+  /** Tasks accepted although their verification failed. */
+  tasks_accepted_with_failures?: number;
   active: boolean;
+  /** When the run started (Unix ms); null until it starts. */
+  started_at_ms?: number | null;
+  /** When the run ended (Unix ms); null until it ends. */
+  finished_at_ms?: number | null;
+  /** What the run has cost so far, in USD. */
+  cost_usd?: number;
 }
 
 /** Live state of one task (TaskState in Rust). */

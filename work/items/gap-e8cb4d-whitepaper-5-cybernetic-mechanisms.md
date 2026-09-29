@@ -3,13 +3,14 @@ id = "gap-e8cb4d"
 kind = "gap"
 title = "Whitepaper §5 Cybernetic mechanisms"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p1"
 goal = "whitepaper"
 size = "M"
 subsystem = ["docs/whitepaper"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-29
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e1"
 discovered_from = "tmp/cybernetic-harness/tldr/03-MECHANISMS.md (learning and memory; regulation and audits)"
 anchors = ["docs/whitepaper/05-cybernetic-mechanisms.md"]
@@ -81,3 +82,9 @@ Checked at `41c7ffbd6`.
 - **Needs `tools/paperlint.py`** (gap-af0b57) to close.
 - **How the specs are cited** depends on dec-2cd76a, part 5.
 - Lane `paper`; no hot files.
+- **2026-09-29, wk-wp-s5:** written on `work/gap-e8cb4d` at `d231cb588`, with the four new bibliography keys in
+  `352c79b88` and claim CM3 reworded in `8ffa71cd4` (the count of 16 loops has no tracked source). Every tag is taken
+  from the status matrix pinned at `a17d4dadd`, as its rows stand on `work/gap-35a614` at `e035b5efe`. The static
+  half of the verify passes. The paperlint half can't run here, because `tools/paperlint.py` hasn't merged; the
+  in-progress copy from `work/gap-af0b57` passes `--strict`, `--budget 1.3` and `--check-identifiers` (977 words,
+  1.15×). Close once gap-af0b57 and gap-35a614 have merged and the verify passes on the merged branch.

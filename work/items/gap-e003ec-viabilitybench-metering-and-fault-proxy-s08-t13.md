@@ -2,14 +2,16 @@
 id = "gap-e003ec"
 kind = "gap"
 title = "ViabilityBench metering and fault proxy (S08.T13)"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p2"
 goal = "proof"
 size = "S"
 subsystem = ["benchmarks/viabilitybench/driver"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-29
+last_verified_rev = "73f5b55f4"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e12"
 discovered_from = "tmp/cybernetic-harness/specs/S08-benchmark-suite.md (§4.6 provider_fault, §4.11, §6 T13; checklist S08.T13)"
 anchors = ["benchmarks/viabilitybench/driver/faultproxy.py", "benchmarks/viabilitybench/driver/test_faultproxy.py"]
@@ -22,6 +24,12 @@ command = "grep -qw 'def test_fault_rates_within_two_points' benchmarks/viabilit
 
 [[verify]]
 command = "grep -qw 'def test_meter_equals_upstream_usage' benchmarks/viabilitybench/driver/test_faultproxy.py && benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/driver/test_faultproxy.py -k test_meter_equals_upstream_usage -q"
+
+[closed]
+at = 2026-09-29
+commit = "73f5b55f4"
+by = "wk-bench-proxy"
+evidence = "Adds driver/faultproxy.py, the S08 T13 metering and fault proxy. It meters usage in S01 v1.2's disjoint classes, priced from prices-2026-09-28, with stream include_usage handling and a per-task input-token cap. It injects six seeded fault profiles, balanced per 20 requests, has a token-protected /_vb/control, and logs every call to proxy.jsonl. driver/test_faultproxy.py holds 11 offline tests against local stub upstreams. test_fault_rates_within_two_points puts all six profiles within 2 points over 1,000 requests each, with every fault seen by the client at the logged request. test_meter_equals_upstream_usage shows meter usage and cost equal the stub's reported usage, including under drop_usage and truncate. Both [[verify]] commands pass; the viabilitybench suite has 223 passed."
 +++
 
 ## Problem
@@ -68,13 +76,33 @@ Checked at `41c7ffbd6`: nothing exists.
 
 ## Done when
 
-- [ ] Against a local stub upstream, each profile's injected fault rate is within ±2 points of its target over
+- [x] Against a local stub upstream, each profile's injected fault rate is within ±2 points of its target over
       1,000 requests.
-- [ ] The meter's totals equal the usage the stub reports.
-- [ ] Both `[[verify]]` commands pass.
+- [x] The meter's totals equal the usage the stub reports.
+- [x] Both `[[verify]]` commands pass.
 
 ## Notes
 
 - **Scope.** The manifest sizes this item S; S08 says M. Keep to metering and the six profiles.
 - **When the pilots use it.** Pilot A does not need the proxy. Pilot B uses it only if it has landed by then.
 - **No hot files.**
+- **Built 2026-09-29 (wk-bench-proxy).** `driver/faultproxy.py` implements the item and `driver/test_faultproxy.py`
+  tests it, 11 tests, offline against local stub upstreams. Three choices go beyond the plan:
+  - **Faults are balanced within blocks of 20 requests.** Each request still has probability p, but the rate stays
+    on target for every seed. With independent draws, one seed in seven misses ±2 points over 1,000 requests at
+    p = 0.3, which was measured over 300 seeds.
+  - **Metering and logging come first.** Each call is metered and logged before the client can see the end of its
+    response, so a runner can cross-check right after a call returns.
+  - **The proxy counts input for the cap.** When a call's usage is missing, its request bytes count as input
+    toward the cap.
+  - **Upstream connections are kept alive and reused.** A call then pays no extra TLS setup. It also stops a run
+    from exhausting ephemeral ports: with fresh connections, the 6,000-request test ran the loopback out of ports
+    (`EADDRNOTAVAIL`) on back-to-back runs.
+- **Not wired into `vb run` yet.** A direct-arm run needs three hunks in `vb.py`:
+  - a flag;
+  - in `cmd_run`, start the proxy on the endpoint's upstream after admission, and swap in `proxy.endpoint(...)`;
+  - in `_run_one`, call `configure(task=...)`.
+
+  Admission must keep judging the upstream URL, because a loopback `--provider-url` that fronts a paid provider
+  otherwise counts as offline. The test `test_a_driver_run_through_the_proxy_matches_its_ledger` shows that the
+  ledger and the meter agree when the driver is routed through the proxy.

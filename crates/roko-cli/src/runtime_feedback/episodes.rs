@@ -62,6 +62,7 @@ impl FeedbackSink for EpisodeSink {
             initial_model,
             turns,
             failure_reason,
+            settled,
             ..
         } = event
         else {
@@ -69,6 +70,14 @@ impl FeedbackSink for EpisodeSink {
         };
 
         let mut episode = Episode::new(outcome.task_id.clone(), task_id.clone());
+        // The attempt this episode records (S01): it joins the attempt's
+        // verdict, efficiency and cost rows.
+        if let Some(settled) = settled {
+            episode.extra.insert(
+                "attempt_key".into(),
+                serde_json::Value::String(settled.identity.attempt_key.clone()),
+            );
+        }
         episode.success = *succeeded;
         episode.turns = *turns;
         if !*succeeded {
@@ -237,6 +246,7 @@ mod tests {
         let event = FeedbackEvent::TaskCompleted {
             turns: 0,
             failure_reason: None,
+            settled: None,
             plan_id: "plan-1".into(),
             task_id: "task-1".into(),
             outcome: outcome(),
@@ -295,6 +305,7 @@ mod tests {
         sink.on_event(&FeedbackEvent::TaskCompleted {
             turns: 3,
             failure_reason: Some(reason.into()),
+            settled: None,
             plan_id: "plan-1".into(),
             task_id: "task-1".into(),
             outcome: failed,

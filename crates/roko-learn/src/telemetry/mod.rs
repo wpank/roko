@@ -11,8 +11,8 @@
 //!
 //! A run's files live in `.roko/runs/<run_id>/`: `attempts.jsonl` holds the
 //! attempt-open lines and verdicts, next to `decisions.jsonl` and
-//! `manifest.json`. Dispatch does not call any of this yet: gap-96f7ed
-//! threads the key through dispatch, verification and feedback.
+//! `manifest.json`. Graph task dispatch mints the key, writes both lines and
+//! stamps the legacy efficiency and cost rows with it ([`AttemptKeyed`]).
 //!
 //! The schemas and field names are S01's. Some type names are not, because
 //! the workspace already uses S01's names for other types: the verdict is
@@ -27,7 +27,7 @@ pub mod writer;
 
 pub use assign::{Arm, Assignment, AssignmentUnit, LayerSpec, assign};
 pub use records::{
-    AttemptCost, AttemptFailureClass, AttemptIdentity, AttemptKey, AttemptOpenRecord,
+    AttemptCost, AttemptFailureClass, AttemptIdentity, AttemptKey, AttemptKeyed, AttemptOpenRecord,
     AttemptOutcome, AttemptTiming, AttemptUsage, AttemptVerdictRecord, Blame, CostSource,
     DecisionSource, ExecutedModel, GateVerdictTag, RunFile, RunProvenanceManifest, Stamped,
     TelemetryRecord, VerifyStepVerdict,

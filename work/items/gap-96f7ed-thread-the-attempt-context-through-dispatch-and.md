@@ -3,16 +3,17 @@ id = "gap-96f7ed"
 kind = "gap"
 title = "Thread the attempt context through dispatch and settle one outcome per attempt (S01.P0-1)"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p1"
 goal = "truth"
 size = "M"
 subsystem = ["roko-cli/graph_task_dispatch", "roko-cli/runtime_feedback"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-29
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e4"
 discovered_from = "tmp/cybernetic-harness/specs/S01-instrumentation.md (P0-1, P0-3, P0-7); workstreams/assessment/W5-contention-parallelism.md (rec 4)"
-anchors = ["crates/roko-cli/src/graph_task_dispatch/feedback.rs::GraphTaskDispatcher::emit_feedback", "crates/roko-cli/src/graph_task_dispatch.rs::GraphTaskDispatcher::next_attempt_id", "crates/roko-cli/src/runtime_feedback/mod.rs::FeedbackEvent"]
+anchors = ["crates/roko-cli/src/graph_task_dispatch/feedback.rs::GraphTaskDispatcher::emit_feedback", "crates/roko-cli/src/graph_task_dispatch/attempt.rs::GraphTaskDispatcher::open_attempt", "crates/roko-cli/src/runtime_feedback/mod.rs::FeedbackEvent"]
 lane = "rust-hot"
 parent = "spec-b7303f"
 links = { depends_on = ["gap-528762", "gap-c8e1f1"], blocks = [], related = ["bug-c34782", "bug-35379d", "gap-ad0d39"], supersedes = [], duplicate_of = "" }
@@ -85,3 +86,17 @@ These are hot files. Start only after the env and learn-a branches merge and the
   `AttemptKey` is 1-based with the same string layout. Pick one base here and convert the other.
 - Prompt-experiment keys use a per-process `graph-<uuid>` run id and 0-based ordinals, so they won't join to
   `AttemptKey` until this item switches them to the attempt context.
+- Implemented on `work/gap-96f7ed` at `5d65eaf27`; cargo verification deferred to the batch check.
+- **Decisions (2026-09-29):** one base, 1-based: the receipt's `attempt` doc now says so (no production code builds
+  receipts). Efficiency rows keep a unique `attempt_id` (the key, `/gate-pass` or `/gate-fail` on gate rows, which
+  `tests/cost_dedup.rs` needs) and gain an exact `attempt_key` through `roko_learn::telemetry::AttemptKeyed`, as cost
+  rows do; episodes get `extra.attempt_key`. The anchor `next_attempt_id` became `attempt.rs::open_attempt`.
+- **Left for later items:** the sinks still read `succeeded` (unverified counts as a success) until bug-c34782,
+  bug-35379d and gap-ad0d39 move them to the verdict; the verdict's usage, dollar costs, TTFT, verify steps and
+  failover chain stay `null` (P0-4, P0-5, P0-6, bug-35379d). Prompt-assembly and cost-ledger errors after the open
+  line leave no verdict yet, so they read as abandoned (P0-3).
+- **Batch 5 (2026-09-29):** `graph_feedback_records_share_attempt_key` failed because the provider bridge
+  (`dispatch_v2`, through `roko_learn::feedback_service`) also appends `"kind":"model_call"` rows to
+  `.roko/learn/efficiency.jsonl`. Those rows use the feedback schema and have no attempt key. The test now selects
+  the Graph dispatcher's `agent_efficiency_event/v1` rows. Keying the `model_call` rows needs the attempt key in
+  `AgentDispatchRequest` (S01 P0-8 passes it through `DispatchContext`).

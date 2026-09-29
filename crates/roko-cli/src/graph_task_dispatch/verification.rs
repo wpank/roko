@@ -26,7 +26,7 @@ impl GraphTaskDispatcher {
         effective_workdir: &Path,
         retry_key: &str,
         attempt_number: u32,
-        attempt_id: &str,
+        attempt_key: &str,
         progress_tx: Option<&tokio::sync::mpsc::Sender<GraphTaskEvent>>,
     ) -> Result<TaskGateVerdict> {
         let effective_workdir = effective_workdir.to_path_buf();
@@ -662,7 +662,7 @@ impl GraphTaskDispatcher {
                             model: dispatch.target.model_slug.clone(),
                             plan_id: spec.plan_id.clone(),
                             task_id: task.id.clone(),
-                            attempt_id: format!("{attempt_id}/gate-fail"),
+                            attempt_id: format!("{attempt_key}/gate-fail"),
                             input_tokens: 0,
                             output_tokens: 0,
                             reasoning_tokens: 0,
@@ -691,7 +691,11 @@ impl GraphTaskDispatcher {
                             strategy_attempted: "replan".to_string(),
                             timestamp: chrono::Utc::now().to_rfc3339(),
                         };
-                        if let Ok(line) = serde_json::to_string(&gate_event) {
+                        let row = AttemptKeyed {
+                            attempt_key: attempt_key.to_string(),
+                            row: &gate_event,
+                        };
+                        if let Ok(line) = serde_json::to_string(&row) {
                             let path = eff_path.clone();
                             tokio::spawn(async move {
                                 if let Err(error) = append_jsonl_line_async(path, line).await {
@@ -963,7 +967,7 @@ impl GraphTaskDispatcher {
                     task_id: task.id.clone(),
                     // Suffixed so it stays distinct from, yet joins, the
                     // attempt's dispatch event.
-                    attempt_id: format!("{attempt_id}/gate-pass"),
+                    attempt_id: format!("{attempt_key}/gate-pass"),
                     input_tokens: 0,
                     output_tokens: 0,
                     reasoning_tokens: 0,
@@ -992,7 +996,11 @@ impl GraphTaskDispatcher {
                     strategy_attempted: String::new(),
                     timestamp: chrono::Utc::now().to_rfc3339(),
                 };
-                if let Ok(line) = serde_json::to_string(&gate_pass_event) {
+                let row = AttemptKeyed {
+                    attempt_key: attempt_key.to_string(),
+                    row: &gate_pass_event,
+                };
+                if let Ok(line) = serde_json::to_string(&row) {
                     let path = eff_path.clone();
                     let plan_id = spec.plan_id.clone();
                     let task_id = task.id.clone();
@@ -1642,17 +1650,24 @@ printf '%s\n' '{"type":"result","session_id":"s","model":"claude-sonnet-4-6","to
 
         // The provider succeeded all three times; learning must record the
         // verified outcome, so the failed-verify attempt is a failure. Each
-        // attempt gets its own identity, which its gate-pass record extends.
-        let task_key = format!("{}/{}", make_spec(&task).plan_id, task.id);
+        // attempt gets its own key, which its gate-pass record extends; with
+        // no Graph run in the cell context, the key names the dispatcher's
+        // own run.
+        let chain = format!(
+            "{}:{}:{}",
+            dispatcher.attempts.fallback_run_id(),
+            make_spec(&task).plan_id,
+            task.id
+        );
         let attempt =
-            |suffix: &str, outcome: &str| (format!("{task_key}/{suffix}"), outcome.to_string());
+            |suffix: &str, outcome: &str| (format!("{chain}:{suffix}"), outcome.to_string());
         assert_eq!(
             efficiency_records(&efficiency, 4).await,
             vec![
-                attempt("a0", "success"),
-                attempt("a1", "success"),
-                attempt("a1/gate-pass", "gate_pass"),
-                attempt("a2", "failure"),
+                attempt("1", "success"),
+                attempt("2", "success"),
+                attempt("2/gate-pass", "gate_pass"),
+                attempt("3", "failure"),
             ]
         );
     }

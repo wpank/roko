@@ -94,6 +94,12 @@ impl RetryFeedbackBook {
         task_ids
     }
 
+    /// The Graph checkpoint run `plan_id`'s feedback is attached to.
+    pub(crate) fn run_id(&self, plan_id: &str) -> Option<String> {
+        let state = self.state.lock();
+        state.files.get(plan_id).map(|(_, run_id)| run_id.clone())
+    }
+
     /// Number the dispatch of `task_id` that is attempt `attempt_in_run` of
     /// this process, and return the feedback it starts with.
     pub(crate) fn next_attempt(

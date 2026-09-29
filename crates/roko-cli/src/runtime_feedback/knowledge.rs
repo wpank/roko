@@ -328,6 +328,7 @@ mod tests {
         sink.on_event(&FeedbackEvent::TaskCompleted {
             turns: 0,
             failure_reason: None,
+            settled: None,
             plan_id: "p".into(),
             task_id: "t".into(),
             outcome: outcome(),
@@ -355,6 +356,7 @@ mod tests {
         sink.on_event(&FeedbackEvent::TaskCompleted {
             turns: 0,
             failure_reason: None,
+            settled: None,
             plan_id: "p".into(),
             task_id: "t".into(),
             outcome: outcome(),
@@ -381,6 +383,7 @@ mod tests {
         sink.on_event(&FeedbackEvent::TaskCompleted {
             turns: 0,
             failure_reason: None,
+            settled: None,
             plan_id: "plan-x".into(),
             task_id: "task-y".into(),
             outcome: outcome(),

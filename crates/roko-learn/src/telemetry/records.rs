@@ -194,8 +194,9 @@ impl AttemptKey {
     }
 }
 
-/// Carries the ordinal unchanged. Prompt keys minted before S01 count from
-/// 0, so they do not meet the 1-based rule.
+/// Carries the ordinal unchanged. Graph dispatch mints prompt keys from the
+/// attempt key; prompt keys minted before that counted from 0, so they do
+/// not meet the 1-based rule.
 impl From<PromptAttemptKey> for AttemptKey {
     fn from(key: PromptAttemptKey) -> Self {
         Self {
@@ -954,6 +955,20 @@ pub struct Stamped<T> {
     pub record: T,
 }
 
+/// A pre-S01 learning-log row stamped with its attempt's key (S01 §5).
+///
+/// The legacy logs (`learn/efficiency.jsonl`, `learn/costs.jsonl`) gain
+/// `attempt_key` this way. The row's own fields sit beside the key, so a
+/// reader that parses the row type alone still reads the line.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AttemptKeyed<T> {
+    /// [`AttemptKey::attempt_key`] of the attempt the row belongs to.
+    pub attempt_key: String,
+    /// The row.
+    #[serde(flatten)]
+    pub row: T,
+}
+
 /// A record type the writer appends to a run file.
 pub trait TelemetryRecord: Serialize {
     /// `schema_version` of every line of this type.
@@ -1295,6 +1310,39 @@ mod tests {
         let back: Stamped<AttemptVerdictRecord> =
             serde_json::from_value(json).expect("deserialize");
         assert_eq!(back, line);
+    }
+
+    #[test]
+    fn keyed_legacy_rows_still_parse_as_the_row_alone() {
+        let cost = crate::costs_db::CostRecord {
+            timestamp: "2026-10-02T14:03:21.950Z".to_string(),
+            model: "gpt-oss-120b".to_string(),
+            provider: "cerebras".to_string(),
+            role: "implementer".to_string(),
+            plan_id: PLAN.to_string(),
+            task_id: "T2".to_string(),
+            complexity_band: "focused".to_string(),
+            input_tokens: 38_211,
+            output_tokens: 2_904,
+            cached_tokens: 0,
+            cost_usd: 0.0156,
+            duration_ms: 9_461,
+            success: false,
+            session_id: String::new(),
+        };
+        let keyed = AttemptKeyed {
+            attempt_key: AttemptKey::new(RUN, PLAN, "T2", 2).attempt_key(),
+            row: cost.clone(),
+        };
+        let json = serde_json::to_value(&keyed).expect("serialize");
+        assert_eq!(json["attempt_key"], "gr-7f3c2a91:loop-census:T2:2");
+        assert_eq!(json["model"], "gpt-oss-120b");
+        let row: crate::costs_db::CostRecord =
+            serde_json::from_value(json.clone()).expect("parse the row alone");
+        assert_eq!(row, cost);
+        let back: AttemptKeyed<crate::costs_db::CostRecord> =
+            serde_json::from_value(json).expect("parse the keyed row");
+        assert_eq!(back, keyed);
     }
 
     #[test]

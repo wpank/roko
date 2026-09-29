@@ -5,9 +5,9 @@
 //! is set, and swaps each assigned variant into its canonical section. This
 //! module owns the Graph side of the lifecycle around that:
 //!
-//! 1. [`context`] names the attempt (this process's run, plan, task, attempt
-//!    ordinal) and the root workspace store, when the store holds a prompt
-//!    experiment.
+//! 1. [`context`] names the attempt by its durable attempt key (S01: run,
+//!    plan, task and 1-based ordinal, so a resumed run never reuses one) and
+//!    the root workspace store, when the store holds a prompt experiment.
 //! 2. [`LaunchedTreatments::bind`] marks the treatments that survived
 //!    composition dispatched with the hash of the exact final prompt,
 //!    immediately before provider launch.
@@ -17,41 +17,19 @@
 //!    and no trial is counted.
 
 use std::path::Path;
-use std::sync::OnceLock;
 
 use roko_learn::prompt_experiment::{
     AssignmentSettlement, ExperimentStore, PromptAssignmentError, PromptAttemptKey,
 };
+use roko_learn::telemetry::AttemptKey;
 
 use crate::dispatch::{PromptExperimentAssignmentDiagnostic, PromptExperimentContext};
 
-/// Run identity of this process's Graph attempts. Attempt ordinals restart
-/// in every process, so a resumed plan must not reuse an earlier run's keys.
-pub(super) fn run_id() -> &'static str {
-    static RUN_ID: OnceLock<String> = OnceLock::new();
-    RUN_ID.get_or_init(|| format!("graph-{}", uuid::Uuid::new_v4().simple()))
-}
-
-/// Durable experiment key of the attempt `attempt_id` (`"{plan}/{task}/a{n}"`,
-/// from `GraphTaskDispatcher::next_attempt_id`).
-pub(super) fn attempt_key(plan_id: &str, task_id: &str, attempt_id: &str) -> PromptAttemptKey {
-    let ordinal = attempt_id
-        .rsplit_once("/a")
-        .and_then(|(_, ordinal)| ordinal.parse().ok())
-        .unwrap_or(0);
-    PromptAttemptKey::new(run_id(), plan_id, task_id, ordinal)
-}
-
-/// Experiment context for one attempt, or `None` when the store at
+/// Experiment context for the attempt `key`, or `None` when the store at
 /// `store_path` holds no prompt experiment (the retrieval-strategy
 /// experiment is not one) or cannot be read. An unreadable store is skipped
 /// rather than failing prompt assembly.
-pub(super) fn context(
-    store_path: &Path,
-    plan_id: &str,
-    task_id: &str,
-    attempt_id: &str,
-) -> Option<PromptExperimentContext> {
+pub(super) fn context(store_path: &Path, key: &AttemptKey) -> Option<PromptExperimentContext> {
     if !store_path.is_file() {
         return None;
     }
@@ -72,7 +50,7 @@ pub(super) fn context(
             experiment.experiment_id != ExperimentStore::RETRIEVAL_STRATEGY_EXPERIMENT_ID
         })
         .then(|| PromptExperimentContext {
-            attempt_key: attempt_key(plan_id, task_id, attempt_id),
+            attempt_key: key.to_prompt_attempt_key(),
             store_path: store_path.to_path_buf(),
         })
 }
@@ -245,32 +223,39 @@ mod tests {
         store.save(path).unwrap();
     }
 
+    fn key(task_id: &str) -> AttemptKey {
+        AttemptKey::new("graph-p-run", "p", task_id, 1)
+    }
+
     #[test]
-    fn attempt_keys_follow_the_attempt_ordinal_within_one_run() {
-        let first = attempt_key("plan", "T1", "plan/T1/a0");
-        let retry = attempt_key("plan", "T1", "plan/T1/a3");
-        assert_eq!(first.attempt, 0);
-        assert_eq!(retry.attempt, 3);
-        assert_eq!(first.run_id, retry.run_id);
-        assert!(first.run_id.starts_with("graph-"));
+    fn prompt_keys_are_the_attempt_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("experiments.json");
+        save_store(&path);
+        let retry = AttemptKey::new("graph-p-run", "p", "T1", 3);
+        let ctx = context(&path, &retry).expect("context");
+        assert_eq!(
+            ctx.attempt_key,
+            PromptAttemptKey::new("graph-p-run", "p", "T1", 3)
+        );
     }
 
     #[test]
     fn only_a_prompt_experiment_store_gives_a_context() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("experiments.json");
-        assert!(context(&path, "p", "T1", "p/T1/a0").is_none(), "no store");
+        assert!(context(&path, &key("T1")).is_none(), "no store");
 
         let mut retrieval_only = ExperimentStore::new();
         retrieval_only.ensure_retrieval_strategy_experiment();
         retrieval_only.save(&path).unwrap();
-        assert!(context(&path, "p", "T1", "p/T1/a0").is_none());
+        assert!(context(&path, &key("T1")).is_none());
 
         std::fs::write(&path, "{ not json").unwrap();
-        assert!(context(&path, "p", "T1", "p/T1/a0").is_none(), "unreadable");
+        assert!(context(&path, &key("T1")).is_none(), "unreadable");
 
         save_store(&path);
-        let ctx = context(&path, "p", "T1", "p/T1/a0").expect("context");
+        let ctx = context(&path, &key("T1")).expect("context");
         assert_eq!(ctx.store_path, path);
         assert_eq!(ctx.attempt_key.task_id, "T1");
     }
@@ -348,7 +333,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("experiments.json");
         save_store(&path);
-        let ctx = context(&path, "p", "T1", "p/T1/a0").unwrap();
+        let ctx = context(&path, &key("T1")).unwrap();
         let assignments = prepare(&path, &ctx.attempt_key);
         assert_eq!(assignments.len(), 1);
 
@@ -374,7 +359,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("experiments.json");
         save_store(&path);
-        let ctx = context(&path, "p", "T2", "p/T2/a0").unwrap();
+        let ctx = context(&path, &key("T2")).unwrap();
         let assignments = prepare(&path, &ctx.attempt_key);
 
         let guard = LaunchedTreatments::bind(Some(ctx.clone()), &assignments, "s", "u").await;

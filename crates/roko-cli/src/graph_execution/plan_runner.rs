@@ -1078,6 +1078,8 @@ async fn run_graph_plan_body(params: GraphPlanRunParams) -> anyhow::Result<i32> 
         gate_thresholds_path: Some(graph_layout.gate_thresholds_path()),
         // RAG-10: retrieval outcome JSONL for gate-pass correlation telemetry.
         retrieval_outcomes_path: Some(graph_learn_dir.join("retrieval-outcomes.jsonl")),
+        // S01: every attempt's open line and verdict, per checkpoint run.
+        runs_dir: Some(graph_layout.runs_dir()),
     };
 
     // ── TUI vs inline progress decision ──────────────────────────────
@@ -1596,9 +1598,19 @@ async fn run_graph_plan_body(params: GraphPlanRunParams) -> anyhow::Result<i32> 
                     .get(id)
                     .copied()
                     .unwrap_or(TaskVerdictCounts::not_run(plan_tasks));
-                plan_metrics(id, *succeeded, tasks)
+                roko_learn::run_metrics::PlanMetrics {
+                    run_id: graph_task_dispatcher.plan_run_id(id),
+                    ..plan_metrics(id, *succeeded, tasks)
+                }
             })
             .collect();
+        // One run id, not two (S01 §4.2): a single plan's metrics carry its
+        // checkpoint run, as its attempt keys do.
+        let run_id = match per_plan.as_slice() {
+            [plan] => plan.run_id.clone(),
+            _ => None,
+        }
+        .unwrap_or_else(|| format!("graph-run-{}", chrono::Utc::now().timestamp_millis().max(0)));
         let tasks_completed: usize = per_plan.iter().map(|p| p.tasks_completed).sum();
         let tasks_failed: usize = per_plan.iter().map(|p| p.tasks_failed).sum();
         let tasks_unverified: usize = per_plan.iter().map(|p| p.tasks_unverified).sum();
@@ -1609,7 +1621,7 @@ async fn run_graph_plan_body(params: GraphPlanRunParams) -> anyhow::Result<i32> 
         let (agg_tokens_in, agg_tokens_out, agg_dispatch_count) =
             graph_task_dispatcher.run_aggregate_stats();
         let record = roko_learn::run_metrics::RunMetricsRecord {
-            run_id: format!("graph-run-{}", chrono::Utc::now().timestamp_millis().max(0)),
+            run_id,
             timestamp: chrono::Utc::now().to_rfc3339(),
             duration_ms,
             total_tasks,
@@ -2494,7 +2506,7 @@ impl TaskVerdictCounts {
 }
 
 /// The run-metrics row of one plan: whether it succeeded, and its tasks
-/// counted by verdict.
+/// counted by verdict. The caller adds the plan's checkpoint run.
 fn plan_metrics(
     plan_id: &str,
     succeeded: bool,
@@ -2507,6 +2519,7 @@ fn plan_metrics(
         tasks_failed: tasks.failed,
         tasks_unverified: tasks.unverified,
         tasks_skipped: tasks.skipped,
+        run_id: None,
     }
 }
 

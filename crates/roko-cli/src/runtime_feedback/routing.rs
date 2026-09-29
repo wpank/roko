@@ -234,6 +234,7 @@ mod tests {
         let event = FeedbackEvent::TaskCompleted {
             turns: 0,
             failure_reason: None,
+            settled: None,
             plan_id: "p".into(),
             task_id: "t".into(),
             outcome: outcome(true),
@@ -269,6 +270,7 @@ mod tests {
         let event = FeedbackEvent::TaskCompleted {
             turns: 0,
             failure_reason: None,
+            settled: None,
             plan_id: "p".into(),
             task_id: "t".into(),
             outcome: outcome(false),
@@ -316,6 +318,7 @@ mod tests {
         let event = FeedbackEvent::TaskCompleted {
             turns: 0,
             failure_reason: None,
+            settled: None,
             plan_id: "p".into(),
             task_id: "t".into(),
             outcome: outcome(true),
@@ -348,6 +351,7 @@ mod tests {
         let event = FeedbackEvent::TaskCompleted {
             turns: 0,
             failure_reason: None,
+            settled: None,
             plan_id: "p".into(),
             task_id: "t".into(),
             outcome: bad_outcome,
@@ -386,6 +390,7 @@ mod tests {
         let event = FeedbackEvent::TaskCompleted {
             turns: 0,
             failure_reason: None,
+            settled: None,
             plan_id: "p".into(),
             task_id: "t".into(),
             outcome: outcome(true),
@@ -421,6 +426,7 @@ mod tests {
         let event = FeedbackEvent::TaskCompleted {
             turns: 0,
             failure_reason: None,
+            settled: None,
             plan_id: "p".into(),
             task_id: "t".into(),
             outcome: outcome(true),

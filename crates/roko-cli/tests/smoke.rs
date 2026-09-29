@@ -457,11 +457,18 @@ async fn item_09_roko_serve_serves_api_status() {
     init_workspace(tmp.path());
 
     let serve = spawn_roko_serve_on_random_port(tmp.path());
-    let response = wait_for_http_ok(
-        &format!("{}/api/status", serve.base_url),
-        Duration::from_secs(10),
-    )
-    .await;
+    // A fresh `roko init` workspace keeps serve auth on: the server writes a
+    // launch token (0600) that the portal link and the CLI use.
+    let token = common::wait_for_serve_token(tmp.path(), Duration::from_secs(10)).await;
+    let status_url = format!("{}/api/status", serve.base_url);
+    let unauthenticated = reqwest::get(&status_url).await.expect("status request");
+    assert_eq!(
+        unauthenticated.status(),
+        reqwest::StatusCode::UNAUTHORIZED,
+        "an unauthenticated /api/status must be refused"
+    );
+    let response =
+        common::wait_for_http_ok_with_bearer(&status_url, &token, Duration::from_secs(10)).await;
     let status: serde_json::Value = response.json().await.expect("status json");
 
     assert!(

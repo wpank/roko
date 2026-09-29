@@ -445,6 +445,56 @@ pub fn spawn_roko_agent_serve_on_random_port(
     ServeHandle { base_url, child }
 }
 
+/// Wait for `roko serve` to write its launch token to
+/// `<workdir>/.roko/runtime/serve.token` (mode 0600) and return it.
+pub async fn wait_for_serve_token(workdir: &Path, timeout: Duration) -> String {
+    let path = workdir.join(".roko").join("runtime").join("serve.token");
+    let deadline = Instant::now() + timeout;
+    loop {
+        if let Ok(token) = fs::read_to_string(&path) {
+            let token = token.trim().to_string();
+            if !token.is_empty() {
+                return token;
+            }
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for the launch token at {}",
+            path.display()
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+/// Like [`wait_for_http_ok`], but authenticates with the server's launch token
+/// as a bearer credential (a fresh `roko init` workspace keeps serve auth on).
+pub async fn wait_for_http_ok_with_bearer(
+    url: &str,
+    token: &str,
+    timeout: Duration,
+) -> reqwest::Response {
+    let deadline = Instant::now() + timeout;
+    let client = reqwest::Client::builder()
+        .connect_timeout(timeout.min(Duration::from_millis(250)))
+        .timeout(timeout.min(Duration::from_secs(1)))
+        .build()
+        .expect("build smoke-test HTTP client");
+
+    loop {
+        let last_error = match client.get(url).bearer_auth(token).send().await {
+            Ok(response) if response.status().is_success() => return response,
+            Ok(response) => format!("unexpected status {}", response.status()),
+            Err(err) => err.to_string(),
+        };
+
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for {url}: {last_error}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
 pub async fn wait_for_http_ok(url: &str, timeout: Duration) -> reqwest::Response {
     let deadline = Instant::now() + timeout;
     let client = reqwest::Client::builder()

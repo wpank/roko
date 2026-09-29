@@ -3,13 +3,14 @@ id = "bug-07bc75"
 kind = "bug"
 title = "The provider bridge still trains the cascade router on pre-gate provider success for every Graph dispatch"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p1"
 goal = "cybernetic"
 size = "S"
 subsystem = ["learn", "dispatch"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-29
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (22:20, wk-settle's report on gap-8f6206)"
 anchors = ["crates/roko-cli/src/dispatch_v2.rs::record_agent_dispatch_feedback", "crates/roko-learn/src/model_call_feedback.rs::observe_model_call_on_router"]
@@ -48,3 +49,18 @@ Graph dispatches update the router from provider success.
 
 - [ ] A Graph dispatch updates the router only from its settled verdict.
 - [ ] The `[[verify]]` command passes.
+
+## Notes
+
+- Implemented on `work/bug-07bc75` at `57ea5133f`; cargo verification deferred to the batch check. The branch is
+  `work/gap-8f6206` (e23fe1990) with `df18d9ece` merged in (`fe0f5e6e5`), because gap-8f6206 was not merged yet
+  and MAIN had rewritten `model_call_feedback.rs`. In the worktree's own target clone, `cargo check -p roko-cli --lib
+  --tests` and the targeted tests passed: `graph_dispatch_router_learns_only_from_settled_verdicts`, `dispatch_v2::`,
+  `graph_task_dispatch::feedback::` and `::attempt::`.
+- **Decision (2026-09-29):** every production `AgentDispatchRequest` comes from Graph dispatch: the batch path, the
+  streaming path and the cheap helper agent. So the bridge (`record_agent_dispatch_feedback`) drops the router
+  observation entirely, through `ModelCallFeedbackRecorder::without_cascade_router`, rather than taking a
+  per-request flag that would also touch `streaming.rs` and `routing_context.rs`. It still writes the `model_call`
+  efficiency row and the provider's health. Chat, serve, `dispatch_via_model_call_service`, ACP and the vision
+  loop keep their own recorders. After a Graph run, `cascade-router.json` is the run's in-memory router, saved at
+  run end and trained only by `RoutingObservationSink`.

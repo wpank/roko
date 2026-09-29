@@ -59,8 +59,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio::sync::mpsc;
 
-use crate::learning_helpers::capture_runtime_model_slugs;
-
 /// A single tool execution output captured from a dispatch response.
 #[derive(Debug, Clone)]
 pub struct ToolOutput {
@@ -1610,14 +1608,7 @@ impl AgentDispatcherV2 {
             }
         }
 
-        record_agent_dispatch_feedback(
-            &self.config,
-            &request,
-            &created.target,
-            &result,
-            latency_ms,
-        )
-        .await;
+        record_agent_dispatch_feedback(&request, &created.target, &result, latency_ms).await;
         let events = dispatch_events_from_result(&request, &created.target, &result);
         Ok(AgentResultDispatch {
             target: created.target,
@@ -1715,14 +1706,7 @@ impl AgentDispatcherV2 {
             })
             .await;
 
-        record_agent_dispatch_feedback(
-            &self.config,
-            &request,
-            &created.target,
-            &result,
-            latency_ms,
-        )
-        .await;
+        record_agent_dispatch_feedback(&request, &created.target, &result, latency_ms).await;
 
         Ok(result)
     }
@@ -1833,7 +1817,7 @@ impl AgentDispatcherV2 {
             }
         }
 
-        record_agent_dispatch_feedback(&self.config, &request, &target, &result, latency_ms).await;
+        record_agent_dispatch_feedback(&request, &target, &result, latency_ms).await;
         let events = dispatch_events_from_result(&request, &target, &result);
         Ok(AgentResultDispatch {
             target,
@@ -1953,15 +1937,21 @@ pub(crate) fn classify_provider_error(output_text_lower: &str) -> &'static str {
     }
 }
 
+/// Record one bridge call's model-call feedback: its efficiency row and the
+/// provider's health.
+///
+/// The bridge never teaches the cascade router (bug-07bc75). Its callers are
+/// Graph dispatch's attempts and helper calls: the router learns each
+/// attempt's settled verdict through `RoutingObservationSink`, and a
+/// provider call's own success, before any gate ran, is no quality evidence.
 async fn record_agent_dispatch_feedback(
-    config: &RokoConfig,
     request: &AgentDispatchRequest,
     target: &ProviderDispatchSpec,
     result: &AgentResult,
     latency_ms: u64,
 ) {
-    let cascade_model_slugs = capture_runtime_model_slugs(config, &target.model_slug);
-    let recorder = ModelCallFeedbackRecorder::from_workdir(&request.workdir, cascade_model_slugs);
+    let learn_dir = roko_fs::RokoLayout::for_project(&request.workdir).learn_dir();
+    let recorder = ModelCallFeedbackRecorder::without_cascade_router(learn_dir);
     if let Err(error) = recorder
         .record(ModelCallFeedback {
             run_id: None,
@@ -3259,10 +3249,12 @@ printf '%s\n' '{"type":"content_block_delta","delta":{"text":"dispatch-ok"}}'
         // The registry normalizes provider keys (hyphens to underscores).
         assert!(provider_health.contains("dispatch_cli"));
 
-        let cascade_router =
-            std::fs::read_to_string(tmp.path().join(".roko/learn/cascade-router.json"))
-                .expect("read cascade router");
-        assert!(cascade_router.contains("claude-sonnet-4-6"));
+        // The bridge never teaches the router (bug-07bc75): Graph dispatch
+        // does, from each attempt's settled verdict.
+        assert!(
+            !tmp.path().join(".roko/learn/cascade-router.json").exists(),
+            "the bridge must not observe or save the cascade router"
+        );
     }
 
     /// E04-T06: Verify that the default Claude CLI dispatch path exercises

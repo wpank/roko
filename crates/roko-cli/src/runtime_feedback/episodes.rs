@@ -11,7 +11,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use roko_learn::episode_logger::{Episode, EpisodeGateVerdict, EpisodeLogger, Usage};
+use roko_learn::episode_logger::{
+    Episode, EpisodeGateVerdict, EpisodeLogger, LEARNING_LABEL_KEY, Usage,
+};
 use roko_learn::hdc_fingerprint::{encode as encode_hdc_fingerprint, fingerprint_episode};
 use roko_learn::hindsight::BLAMED_TASKS_KEY;
 
@@ -84,7 +86,10 @@ impl FeedbackSink for EpisodeSink {
             let verdict = [
                 ("outcome", serde_json::json!(settled.outcome)),
                 ("blame", serde_json::json!(settled.blame)),
-                ("learning_label", serde_json::json!(settled.learning_label)),
+                (
+                    LEARNING_LABEL_KEY,
+                    serde_json::json!(settled.learning_label),
+                ),
             ];
             for (key, value) in verdict {
                 episode.extra.insert(key.into(), value);

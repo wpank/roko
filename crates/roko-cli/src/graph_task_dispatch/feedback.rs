@@ -723,6 +723,56 @@ printf '%s\n' '{"type":"result","session_id":"sess-v1","model":"claude-sonnet-4-
         );
     }
 
+    /// bug-07bc75: a Graph dispatch teaches the router only through its
+    /// settled verdict. The provider bridge still records every call's
+    /// efficiency row and the provider's health, but it no longer observes
+    /// or saves `cascade-router.json` from the provider's own success,
+    /// before any gate ran.
+    #[tokio::test]
+    async fn graph_dispatch_router_learns_only_from_settled_verdicts() {
+        let temp = tempdir().expect("tempdir");
+        let router = Arc::new(CascadeRouter::new(vec!["claude-sonnet-4-6".into()]));
+        let facade = FeedbackFacade::new().with_sink(Arc::new(
+            crate::runtime_feedback::RoutingObservationSink::new(Arc::clone(&router)),
+        ));
+        let feedback = GraphFeedbackContext {
+            feedback_facade: Some(Arc::new(facade)),
+            ..GraphFeedbackContext::default()
+        };
+        let (dispatcher, mut task) =
+            make_test_dispatcher(&temp, FLAKY_PROVIDER, no_auto_fix, feedback).await;
+        let ctx = CellContext::new();
+
+        dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &ctx)
+            .await
+            .expect("an attempt without verify steps completes unverified");
+        std::fs::write(temp.path().join("fail-next"), "").unwrap();
+        dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &ctx)
+            .await
+            .expect_err("the provider call fails");
+        task.verify = vec![verify_step("check", "true")];
+        dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &ctx)
+            .await
+            .expect("the verify step passes");
+
+        assert_eq!(router_counts(&router), ((1, 1), 1), "only the settled pass");
+        let learn = temp.path().join(".roko/learn");
+        assert!(
+            !learn.join("cascade-router.json").exists(),
+            "the provider bridge trained the router"
+        );
+        let model_calls = std::fs::read_to_string(learn.join("efficiency.jsonl"))
+            .unwrap_or_default()
+            .lines()
+            .filter(|line| line.contains(r#""kind":"model_call""#))
+            .count();
+        assert!(model_calls >= 3, "one efficiency row per provider call");
+        assert!(learn.join("provider-health.json").exists());
+    }
+
     /// S01 §4.1 through the batch dispatch path: an unverified attempt, a
     /// provider transport error and a prompt-assembly failure carry no
     /// learning label, so none of them moves a learner (router, playbooks,

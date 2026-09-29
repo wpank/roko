@@ -99,14 +99,17 @@ impl HindsightRelabeler {
                 continue;
             }
 
-            if episode.success {
+            // Only learning labels count (S01 §4.1): an unverified success
+            // or a provider failure is neither relabeled nor evidence.
+            let learned = episode.learning_success();
+            if learned == Some(true) {
                 let files = episode_files(episode);
                 let later_start = index.saturating_add(1);
                 let regression = episodes[later_start..]
                     .iter()
                     .enumerate()
                     .find(|(offset, later)| {
-                        if later.success
+                        if later.learning_success() != Some(false)
                             || later.timestamp < episode.timestamp
                             || !same_plan(episode, later)
                             || !later.gate_verdicts.iter().any(|verdict| !verdict.passed)
@@ -143,11 +146,13 @@ impl HindsightRelabeler {
                     });
                     continue;
                 }
-            } else if episodes[index.saturating_add(1)..].iter().any(|later| {
-                later.success
-                    && later.timestamp >= episode.timestamp
-                    && reused_episode(later, &episode.id)
-            }) {
+            } else if learned == Some(false)
+                && episodes[index.saturating_add(1)..].iter().any(|later| {
+                    later.learning_success() == Some(true)
+                        && later.timestamp >= episode.timestamp
+                        && reused_episode(later, &episode.id)
+                })
+            {
                 adjustments.push(EpisodeAdjustment {
                     original_episode_id: episode.id.clone(),
                     adjustment_kind: AdjustmentKind::SuccessfulReuse,

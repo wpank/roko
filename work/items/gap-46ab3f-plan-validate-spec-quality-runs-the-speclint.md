@@ -2,7 +2,7 @@
 id = "gap-46ab3f"
 kind = "gap"
 title = "plan validate --spec-quality runs the speclint rules when a plan loads (S07.9)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "golden-path"
@@ -11,6 +11,7 @@ subsystem = ["roko-gate/spec_quality", "roko-cli/plan_validate"]
 created = 2026-09-29
 updated = 2026-09-29
 last_verified = 2026-09-29
+last_verified_rev = "abc655b5e"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e8"
 discovered_from = "tmp/cybernetic-harness/execution/checklist.json (S07.9, with the S07.7 scorer)"
 anchors = ["crates/roko-gate/src/spec_quality.rs", "crates/roko-cli/src/commands/plan.rs::cmd_plan_validate", "crates/roko-cli/src/main.rs:1988"]
@@ -23,6 +24,11 @@ command = "grep -rqw 'fn spec_quality_matches_speclint_golden_fixtures' crates/r
 
 [[verify]]
 command = "grep -rqw 'fn spec_quality_flag_reports_scores_and_hard_fails' crates/roko-cli/tests/ && cargo test -p roko-cli --test plan_validate spec_quality_flag_reports_scores_and_hard_fails"
+
+[closed]
+at = 2026-09-29
+by = "coordinator (session 7622b882)"
+evidence = "roko_gate::spec_quality ports speclint sq-1 (SQ01-SQ12, HF1-HF5; SQ06/HF3 unknown in static mode); plan validate --spec-quality prints per-task score/band/rules/hard fails (text and --json), exit 1 only on hard fails under --strict, output unchanged without the flag; golden fixtures vendored with the parity test; rust_parity.py --strict over 132 files and 551 tasks: max score delta 0.00, 0 hard-fail/band/rule/detail differences (d0cad4760 + clippy fix 24be02c53; merged 31bc6ba3d). Batch 7 gate (work/rust-batch-5 tree = MAIN crates after the merges): cargo check --workspace --tests clean; nightly rustfmt clean after fmt-only 15d3eb5f2; clippy -p roko-cli -p roko-learn -p roko-gate -p roko-agent -p roko-std -p roko-core --no-deps -D warnings clean; lib tests (8 threads) roko-cli 3091, roko-agent 2252 (after test fix f7ad8de76), roko-core 1923, roko-learn 1178, roko-std 221, roko-gate 685 (one pre-existing flaky test, tautology_filter_discards_preexisting_passing_tests, failed once and passed on rerun)."
 +++
 
 ## Problem

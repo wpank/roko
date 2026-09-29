@@ -2,7 +2,7 @@
 id = "bug-63327d"
 kind = "bug"
 title = "roko-std's file tools don't check key files, so a dispatch without SafetyLayer can read .roko/.env"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "release"
@@ -11,6 +11,7 @@ subsystem = ["safety"]
 created = 2026-09-29
 updated = 2026-09-29
 last_verified = 2026-09-29
+last_verified_rev = "abc655b5e"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (15:47, wk-guard's report on bug-a66941)"
 anchors = ["crates/roko-std/src/tool/builtin/read_file.rs", "crates/roko-core/src/child_env.rs::is_key_file"]
@@ -20,6 +21,11 @@ links = { depends_on = [], blocks = [], related = ["bug-a66941"], supersedes = [
 
 [[verify]]
 command = "grep -rqw 'fn std_file_tools_refuse_key_files' crates/roko-std/src/ && cargo test -p roko-std --lib std_file_tools_refuse_key_files"
+
+[closed]
+at = 2026-09-29
+by = "coordinator (session 7622b882)"
+evidence = "roko-std's file tools refuse key files in sandbox::require_within_worktree and grep skips them (c37492fd8; merged abc655b5e). Batch 7 gate (work/rust-batch-5 tree = MAIN crates after the merges): cargo check --workspace --tests clean; nightly rustfmt clean after fmt-only 15d3eb5f2; clippy -p roko-cli -p roko-learn -p roko-gate -p roko-agent -p roko-std -p roko-core --no-deps -D warnings clean; lib tests (8 threads) roko-cli 3091, roko-agent 2252 (after test fix f7ad8de76), roko-core 1923, roko-learn 1178, roko-std 221, roko-gate 685 (one pre-existing flaky test, tautology_filter_discards_preexisting_passing_tests, failed once and passed on rerun)."
 +++
 
 ## Problem

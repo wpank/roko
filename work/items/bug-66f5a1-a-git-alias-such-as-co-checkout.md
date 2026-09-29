@@ -2,7 +2,7 @@
 id = "bug-66f5a1"
 kind = "bug"
 title = "A git alias such as co = checkout bypasses the agent git guard"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "release"
@@ -11,6 +11,7 @@ subsystem = ["safety"]
 created = 2026-09-29
 updated = 2026-09-29
 last_verified = 2026-09-29
+last_verified_rev = "abc655b5e"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (15:47, wk-guard's report on bug-7de5df)"
 anchors = ["crates/roko-agent/src/claude_cli_guard.py"]
@@ -20,6 +21,11 @@ links = { depends_on = [], blocks = [], related = ["bug-7de5df"], supersedes = [
 
 [[verify]]
 command = "grep -rqw 'fn settings_hook_denies_git_aliases_to_denied_commands' crates/roko-agent/src/ && cargo test -p roko-agent --lib settings_hook_denies_git_aliases_to_denied_commands"
+
+[closed]
+at = 2026-09-29
+by = "coordinator (session 7622b882)"
+evidence = "The guard resolves git aliases with git config in the hook's working directory (honouring -C/-c) and denies unknown subcommands (b1607e91b + test fix f7ad8de76; merged abc655b5e). Batch 7 gate (work/rust-batch-5 tree = MAIN crates after the merges): cargo check --workspace --tests clean; nightly rustfmt clean after fmt-only 15d3eb5f2; clippy -p roko-cli -p roko-learn -p roko-gate -p roko-agent -p roko-std -p roko-core --no-deps -D warnings clean; lib tests (8 threads) roko-cli 3091, roko-agent 2252 (after test fix f7ad8de76), roko-core 1923, roko-learn 1178, roko-std 221, roko-gate 685 (one pre-existing flaky test, tautology_filter_discards_preexisting_passing_tests, failed once and passed on rerun)."
 +++
 
 ## Problem

@@ -2,7 +2,7 @@
 id = "gap-96f7ed"
 kind = "gap"
 title = "Thread the attempt context through dispatch and settle one outcome per attempt (S01.P0-1)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "truth"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/graph_task_dispatch", "roko-cli/runtime_feedback"]
 created = 2026-09-29
 updated = 2026-09-29
 last_verified = 2026-09-29
+last_verified_rev = "abc655b5e"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e4"
 discovered_from = "tmp/cybernetic-harness/specs/S01-instrumentation.md (P0-1, P0-3, P0-7); workstreams/assessment/W5-contention-parallelism.md (rec 4)"
 anchors = ["crates/roko-cli/src/graph_task_dispatch/feedback.rs::GraphTaskDispatcher::emit_feedback", "crates/roko-cli/src/graph_task_dispatch/attempt.rs::GraphTaskDispatcher::open_attempt", "crates/roko-cli/src/runtime_feedback/mod.rs::FeedbackEvent"]
@@ -23,6 +24,11 @@ command = "grep -rqw 'fn graph_feedback_records_share_attempt_key' crates/roko-c
 
 [[verify]]
 command = "grep -rqw 'fn graph_attempt_ordinal_survives_resume' crates/roko-cli/src/ && cargo test -p roko-cli --lib graph_attempt_ordinal_survives_resume"
+
+[closed]
+at = 2026-09-29
+by = "coordinator (session 7622b882)"
+evidence = "Each Graph dispatch attempt opens with a durable 1-based AttemptKey (graph_task_dispatch/attempt.rs) before prompt assembly, writing roko.attempt_open/1 to .roko/runs/<run>/attempts.jsonl with ordinals resumed from that file; each attempt settles once into roko.verdict/1 (outcome, blame, learning_label, executed model, cost source); emit_feedback takes a SettledAttempt; FeedbackEvent::AttemptSettled deduplicated; efficiency/cost rows and episodes carry attempt_key; prompt-experiment keys use it; the receipt is 1-based. Tests graph_feedback_records_share_attempt_key, graph_attempt_ordinal_survives_resume, settlements_follow_the_outcome_table pass (5d65eaf27, merge c51d02313, test fix dcc68916f; merged 42349d8ee). Sinks still read succeeded: gap-8f6206. Batch 7 gate (work/rust-batch-5 tree = MAIN crates after the merges): cargo check --workspace --tests clean; nightly rustfmt clean after fmt-only 15d3eb5f2; clippy -p roko-cli -p roko-learn -p roko-gate -p roko-agent -p roko-std -p roko-core --no-deps -D warnings clean; lib tests (8 threads) roko-cli 3091, roko-agent 2252 (after test fix f7ad8de76), roko-core 1923, roko-learn 1178, roko-std 221, roko-gate 685 (one pre-existing flaky test, tautology_filter_discards_preexisting_passing_tests, failed once and passed on rerun)."
 +++
 
 ## Problem

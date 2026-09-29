@@ -81,10 +81,10 @@ This is the implementation plan.
 - [x] bug-a66941: Agents can read the provider key files, such as ~/.roko/.env
 - [ ] gap-0e2c40: Integration test C2: no provider key reaches an agent, a gate or a log, and the git guard denies destructive commands
 - [ ] gap-8f8544: Sandbox levels are enforced only in-process: no OS sandbox confines agent processes
-- [ ] bug-f4e133: The agent command guard lets recursive rm through under sudo, -R, subshells and sh -c
-- [ ] bug-66f5a1: A git alias such as co = checkout bypasses the agent git guard
-- [ ] bug-63327d: roko-std's file tools don't check key files, so a dispatch without SafetyLayer can read .roko/.env
-- [ ] find-570af2: When HOME is the workdir, the key-file policy refuses agents the whole .roko directory
+- [x] bug-f4e133: The agent command guard lets recursive rm through under sudo, -R, subshells and sh -c
+- [x] bug-66f5a1: A git alias such as co = checkout bypasses the agent git guard
+- [x] bug-63327d: roko-std's file tools don't check key files, so a dispatch without SafetyLayer can read .roko/.env
+- [x] find-570af2: When HOME is the workdir, the key-file policy refuses agents the whole .roko directory
 - [ ] gap-b7a2d5: roko chat and dispatch_v2 spawn claude without the Claude Code isolation flags
 - [ ] bug-6930e6: find_mcp_config hands Claude runs an ancestor directory's or $HOME's .mcp.json
 - [ ] gap-a3fc5b: Claude Code isolation doesn't cover shell snapshots, and a managed-mcp.json makes Claude refuse --strict-mcp-config

@@ -101,7 +101,7 @@ This is the implementation plan.
 - [ ] find-70edcb: Plan generation/validation does not flag weak verify gates (existing item)
 - [ ] gap-a8d786: Plan lint: tasks that can run at the same time must not share files
 - [ ] gap-1d1fa6: Task size limits per executor tier in plan validate
-- [ ] gap-46ab3f: plan validate --spec-quality runs the speclint rules when a plan loads (S07.9)
+- [x] gap-46ab3f: plan validate --spec-quality runs the speclint rules when a plan loads (S07.9)
 - [x] bug-477ede: prd plan escalation drops a planner model outside the haiku/sonnet/opus chain to the cheapest model
 - [ ] gap-1b5636: Prompts paste each pinned acceptance script verbatim; show pinned steps by their header line only
 - [ ] gap-ba4d01: Portal plans 08b–08e and 08g still hand-copy their acceptance tests instead of pinning them with [task.accept]

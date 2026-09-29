@@ -86,7 +86,7 @@ and state digests). The census lists them in `EXPECTED_MISSING`, and E17 files t
 ## Done when
 
 - [x] gap-528762: Attempt records: AttemptKey, record types and a telemetry writer (S01.P0-0)
-- [ ] gap-96f7ed: Thread the attempt context through dispatch and settle one outcome per attempt (S01.P0-1)
+- [x] gap-96f7ed: Thread the attempt context through dispatch and settle one outcome per attempt (S01.P0-1)
 - [ ] bug-c34782: Cascade router learns from the provider call's success flag before gates run (existing item)
 - [ ] bug-35379d: Provider failover silently runs a different model and records it as if it had been chosen (existing item)
 - [ ] gap-ad0d39: Cost records miss Claude per-model usage and reasoning tokens, and price unknown models as Sonnet (existing item)

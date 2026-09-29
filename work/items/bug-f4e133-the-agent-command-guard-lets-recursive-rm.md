@@ -2,7 +2,7 @@
 id = "bug-f4e133"
 kind = "bug"
 title = "The agent command guard lets recursive rm through under sudo, -R, subshells and sh -c"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "release"
@@ -11,6 +11,7 @@ subsystem = ["safety"]
 created = 2026-09-29
 updated = 2026-09-29
 last_verified = 2026-09-29
+last_verified_rev = "abc655b5e"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (15:47, wk-guard's report on bug-7de5df)"
 anchors = ["crates/roko-agent/src/claude_cli_guard.py", "crates/roko-agent/src/claude_cli_agent.rs::build_settings_json"]
@@ -20,6 +21,11 @@ links = { depends_on = [], blocks = [], related = ["bug-7de5df"], supersedes = [
 
 [[verify]]
 command = "grep -rqw 'fn settings_hook_denies_recursive_rm_in_any_form' crates/roko-agent/src/ && cargo test -p roko-agent --lib settings_hook_denies_recursive_rm_in_any_form"
+
+[closed]
+at = 2026-09-29
+by = "coordinator (session 7622b882)"
+evidence = "The guard checks rm after command parsing, so -r/-R/--recursive are denied through sudo, subshells, sh -c, eval and $() (976496b27; merged abc655b5e). Batch 7 gate (work/rust-batch-5 tree = MAIN crates after the merges): cargo check --workspace --tests clean; nightly rustfmt clean after fmt-only 15d3eb5f2; clippy -p roko-cli -p roko-learn -p roko-gate -p roko-agent -p roko-std -p roko-core --no-deps -D warnings clean; lib tests (8 threads) roko-cli 3091, roko-agent 2252 (after test fix f7ad8de76), roko-core 1923, roko-learn 1178, roko-std 221, roko-gate 685 (one pre-existing flaky test, tautology_filter_discards_preexisting_passing_tests, failed once and passed on rerun)."
 +++
 
 ## Problem

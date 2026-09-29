@@ -114,8 +114,10 @@ export function Stage({
         />
       )}
 
+      {/* Keyed by plan: another plan gets a fresh view, never this one's editor text. */}
       {showPlan && (
         <PlanView
+          key={selectedPlan!.id}
           plan={selectedPlan!}
           selectedTaskId={selection.task}
           onSelectTask={(id) => onSelect({ task: id })}

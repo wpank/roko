@@ -5,8 +5,7 @@ import { usePlanTasks, useWorkspace } from '@/api/queries';
 import { useDashboardStore } from '@/stores/dashboard';
 import { buildTaskRows, focusTaskId } from '@/lib/taskRows';
 import { taskKey } from '@/lib/runState';
-import { describeEmpty } from '@/lib/emptyState';
-import { queuePosition, waitReason } from '@/lib/planSet';
+import { describeEmpty, planState } from '@/lib/emptyState';
 import { Transcript } from './Transcript';
 import { Checks } from './Checks';
 
@@ -20,6 +19,7 @@ import { Checks } from './Checks';
  *   selectedTaskId  — explicitly selected task (null = auto-focus)
  *   open            — whether the body is visible
  *   onToggle        — called when the collapse control is clicked
+ *   planCount       — plans in the workspace (tells "none yet" from "none selected")
  *
  * The pane resolves the focused task via focusTaskId (priority: explicit
  * selection → first failed → first active → last finished) and shows either the
@@ -43,11 +43,13 @@ export function StreamPane({
   selectedTaskId,
   open,
   onToggle,
+  planCount = 0,
 }: {
   planId: string | null;
   selectedTaskId: string | null;
   open: boolean;
   onToggle(): void;
+  planCount?: number;
 }) {
   // ── Remote / store data ────────────────────────────────────────────────────
   const { data: tasksData } = usePlanTasks(planId ?? undefined);
@@ -56,10 +58,11 @@ export function StreamPane({
   const connection = useDashboardStore((s) => s.connection);
 
   // ── Task rows + focused task ────────────────────────────────────────────────
-  const rows = useMemo(() => {
+  const { rows, waves } = useMemo(() => {
     const tasks = tasksData?.tasks;
-    if (!tasks?.length || planId === null) return [];
-    return buildTaskRows(tasks, run, planId, Date.now()).rows;
+    if (!tasks?.length || planId === null) return { rows: [], waves: 0 };
+    const built = buildTaskRows(tasks, run, planId, Date.now());
+    return { rows: built.rows, waves: built.waves.waves.length };
   }, [tasksData, run, planId]);
 
   const focusedId = focusTaskId(rows, selectedTaskId);
@@ -131,74 +134,13 @@ export function StreamPane({
     setPicked({ key, view: v });
   }
 
-  // ── Empty state inputs ─────────────────────────────────────────────────────
+  // ── Empty state ────────────────────────────────────────────────────────────
   // When focusedId is null nothing ran; show describeEmpty instead of dead tabs.
-  const livePlan = planId !== null ? (run.plans[planId] ?? null) : null;
-  const planCount =
-    run.planSet?.planIds.length ?? (planId !== null ? 1 : 0);
-  const tasksActive =
-    planId !== null
-      ? Object.values(run.tasks).filter(
-          (t) => t.planId === planId && t.status === 'active',
-        ).length
-      : 0;
-
-  // A live 'pending' plan is queued only while the plan-set is still active.
-  // Once the run ends (outcome is set) the set goes inactive and we treat the
-  // plan as never-run so it shows "Ready — N tasks" rather than "Plan was
-  // cancelled."
-  const isQueued =
-    planId !== null && queuePosition(run, planId) !== null;
-
-  const emptyPlan = livePlan
-    ? livePlan.phase === 'pending' && isQueued
-      ? {
-          id: planId!,
-          phase: 'pending' as const,
-          tasksTotal: livePlan.tasksTotal,
-          tasksDone: livePlan.tasksDone,
-          tasksActive,
-          tasksAccepted: livePlan.tasksAccepted,
-          waitReason: waitReason(run, planId!),
-        }
-      : livePlan.phase === 'pending'
-        ? {
-            // Set is over — plan never ran; treat as never_run.
-            id: planId!,
-            phase: 'never_run' as const,
-            tasksTotal: livePlan.tasksTotal,
-            tasksDone: 0,
-            tasksActive: 0,
-            tasksAccepted: 0,
-          }
-        : {
-            id: planId!,
-            phase: livePlan.phase,
-            tasksTotal: livePlan.tasksTotal,
-            tasksDone: livePlan.tasksDone,
-            tasksActive,
-            tasksAccepted: livePlan.tasksAccepted,
-            durationMs:
-              livePlan.finishedAtMs != null && livePlan.startedAtMs != null
-                ? livePlan.finishedAtMs - livePlan.startedAtMs
-                : undefined,
-          }
-    : planId !== null
-      ? {
-          id: planId,
-          phase: 'never_run' as const,
-          tasksTotal: rows.length,
-          tasksDone: 0,
-          tasksActive: 0,
-          tasksAccepted: 0,
-        }
-      : undefined;
-
   const emptySentence = describeEmpty({
     workspace: wsData?.name ?? 'workspace',
     connection,
     planCount,
-    plan: emptyPlan,
+    plan: planId !== null ? planState(run, planId, rows, waves) : undefined,
   });
 
   // ── Render ─────────────────────────────────────────────────────────────────

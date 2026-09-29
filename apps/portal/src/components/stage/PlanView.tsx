@@ -19,12 +19,13 @@ import {
   useValidation,
   queryKeys,
 } from '@/api/queries';
-import { useDashboardStore } from '@/stores/dashboard';
+import { confirmDiscard, useDashboardStore } from '@/stores/dashboard';
 import { buildTaskRows } from '@/lib/taskRows';
 import { computeWaves } from '@/lib/waves';
 import { progressSegments } from '@/lib/planRows';
 import { cn } from '@/lib/cn';
 import { describeRequestError } from '@/lib/apiErrors';
+import { describePlan, planState } from '@/lib/emptyState';
 import { planSetActive, queuePosition, waitReason } from '@/lib/planSet';
 import { statusFields } from '@/lib/statusLine';
 import { useNow } from '@/lib/useNow';
@@ -55,20 +56,22 @@ export interface PrimaryAction {
  * - otherwise      → run
  *
  * Disabled while:
- *   • editing is active ("Save or discard your edits first")
+ *   • the plan's editor holds unsaved text ("Save or discard your edits first")
  *   • validation reports errors ("Fix N validation errors first")
  *   • a plan-set run is active and this plan is not running in it
  *
- * The `r` key may call perform() for run / retry / run-again (T10 wires it).
+ * The header button and the `r` key each call this hook; both read the unsaved
+ * text from the store, so neither runs a plan other than the one on screen.
  */
 export function usePrimaryAction(
   planId: string | null,
-  opts: { editing?: boolean; onError?: (msg: string) => void } = {},
+  opts: { onError?: (msg: string) => void } = {},
 ): PrimaryAction {
-  const { editing = false, onError } = opts;
+  const { onError } = opts;
 
   // Live run state
   const run = useDashboardStore((s) => s.run);
+  const unsaved = useDashboardStore((s) => planId !== null && s.unsavedPlan === planId);
 
   // Validation (disabled when planId is null)
   const { data: validation } = useValidation(planId ?? undefined);
@@ -104,7 +107,7 @@ export function usePrimaryAction(
   let reason: string | null = null;
 
   if (planId) {
-    if (editing) {
+    if (unsaved) {
       disabled = true;
       reason = 'Save or discard your edits first';
     } else {
@@ -206,7 +209,8 @@ export interface PlanViewProps {
  *
  * 1. Header — title, group/id, primary CTA, ✦ Revise, ✎ Edit
  * 2. Status line — pre-run: task/wave/estimate/parallel counts + ValidationBadge;
- *                  post-run: progress bar + done/total, elapsed, eta, cost, agents
+ *                  post-run: progress bar + done/total, elapsed, eta, cost, agents,
+ *                  then the run summary sentence
  * 3. WaveStrip + TaskList — or SourceEditor / PromptPanel(revise) while open
  */
 export function PlanView({
@@ -218,11 +222,13 @@ export function PlanView({
   // ── Panel toggle state ────────────────────────────────────────────────────
 
   const [editing, setEditing] = useState(false);
-  // editorDirty is true only when the SourceEditor holds unsaved text.
-  // The open-but-clean editor (e.g. showing the "not supported" notice) must
-  // not block Run, so usePrimaryAction receives `editing && editorDirty`.
-  const [editorDirty, setEditorDirty] = useState(false);
   const [revising, setRevising] = useState(false);
+  // The editor's unsaved text is marked in the store, where Run, the `r` key,
+  // Run all and the selection all see it. An open editor that holds none (or
+  // shows the "not supported" notice) blocks nothing.
+  const dirty = useDashboardStore((s) => s.unsavedPlan === plan.id);
+  const setUnsaved = useDashboardStore((s) => s.setUnsaved);
+  const markDirty = useCallback((d: boolean) => setUnsaved(plan.id, d), [setUnsaved, plan.id]);
 
   // ── Remote data ───────────────────────────────────────────────────────────
 
@@ -254,13 +260,7 @@ export function PlanView({
 
   // ── Primary action ────────────────────────────────────────────────────────
 
-  const primaryAction = usePrimaryAction(plan.id, {
-    // Only block Run when the editor is open *and* holds unsaved text.
-    // An open editor that only shows the "not supported" notice keeps editorDirty
-    // false, so Run (or Run again) remains available.
-    editing: editing && editorDirty,
-    onError: onRequestError,
-  });
+  const primaryAction = usePrimaryAction(plan.id, { onError: onRequestError });
 
   // ── Derived metrics ───────────────────────────────────────────────────────
 
@@ -382,8 +382,9 @@ export function PlanView({
                 : undefined
             }
             onClick={() => {
+              if (!confirmDiscard(dirty)) return;
               setRevising((r) => !r);
-              if (editing) setEditing(false);
+              setEditing(false);
             }}
           >
             ✦ Revise
@@ -401,11 +402,9 @@ export function PlanView({
                 : undefined
             }
             onClick={() => {
+              if (!confirmDiscard(dirty)) return;
               setEditing((e) => !e);
-              // Synchronously clear dirty so Run is free as soon as the editor
-              // closes — whether the user clicks ✎ Edit or discards changes.
-              setEditorDirty(false);
-              if (revising) setRevising(false);
+              setRevising(false);
             }}
           >
             ✎ Edit
@@ -475,14 +474,22 @@ export function PlanView({
         )}
       </div>
 
+      {/* Run summary (design §7) — what the run is doing or came to, whatever
+          task has focus. Before a run the status line says it. */}
+      {hasRun && (
+        <p data-region="run-summary" className="rd-meta font-mono">
+          {describePlan(planState(run, plan.id, rows, waveCount))}
+        </p>
+      )}
+
       {/* ── 3. Content area ───────────────────────────────────────────────── */}
       {editing ? (
         /* SourceEditor replaces the list while open */
         <SourceEditor
           planId={plan.id}
           running={isRunning}
-          onClose={() => { setEditing(false); setEditorDirty(false); }}
-          onDirtyChange={setEditorDirty}
+          onClose={() => setEditing(false)}
+          onDirtyChange={markDirty}
         />
       ) : revising ? (
         /* PromptPanel in revise mode replaces the list while open */

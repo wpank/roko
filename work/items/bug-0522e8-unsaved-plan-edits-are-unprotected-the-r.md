@@ -2,7 +2,7 @@
 id = "bug-0522e8"
 kind = "bug"
 title = "Unsaved plan edits are unprotected: the r key runs the saved plan, and the Edit or Revise buttons discard the text without asking"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "visibility"
@@ -11,7 +11,7 @@ subsystem = ["apps/portal"]
 created = 2026-09-29
 updated = 2026-09-29
 last_verified = 2026-09-29
-last_verified_rev = "f99e45dba"
+last_verified_rev = "843b9f972"
 source = "plan:portal-programme/09-acceptance#T04"
 discovered_from = "plan:portal-programme/09-acceptance#T04"
 anchors = ["apps/portal/src/components/shell/Workspace.tsx:138", "apps/portal/src/components/stage/PlanView.tsx:384", "apps/portal/src/components/stage/PlanView.tsx:403"]
@@ -19,6 +19,12 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqF --include='*.test.ts' --include='*.test.tsx' 'protects unsaved edits' apps/portal/src && (cd apps/portal && npx vitest run src/components/stage src/components/shell)"
+
+[closed]
+at = 2026-09-29
+commit = "843b9f972"
+by = "commit trailer"
+evidence = "843b9f972: the unsaved-text mark moved to the dashboard store (unsavedPlan/setUnsaved), which usePrimaryAction reads, so the header Run and the r key share it; the Edit and Revise buttons (PlanView), leaving the plan (useSelection.select) and the generate field (Workspace openPrompt) confirm 'Discard unsaved edits?' first; Run all and group runs wait with 'Save or discard your edits first'; Stage keys PlanView by plan id so no plan inherits another plan's editor text. apps/portal/src/components/shell/unsavedEdits.test.tsx ('protects unsaved edits', 7 DOM tests: r key, Edit, Revise, another plan by click and arrow key, n and + New plan, Run all, no prompt when clean); the [[verify]] passes (16 files, 92 tests)."
 +++
 
 ## Problem

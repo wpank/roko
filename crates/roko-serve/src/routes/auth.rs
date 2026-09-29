@@ -15,13 +15,19 @@
 //! - `POST   /api/relay-tokens`           — issue a narrowed, parent-linked delegation
 //! - `DELETE /api/relay-tokens/:token_id` — revoke a delegation and its descendants
 //!
-//! Keys are stored as SHA-256 hashes in `.roko/api-keys.json`.
+//! Keys are stored as SHA-256 hashes in `.roko/api-keys.json`. Other processes
+//! (a second server on the same workspace, a key-management CLI) may change
+//! that file while the server runs, so every writer must hold
+//! `.roko/api-keys.json.lock` across a read-merge-write of its one change;
+//! `roko_fs::with_locked_json_transaction` does exactly that.
 //! Agent tokens are stored in `.roko/agent-tokens.json`.
 //! Relay tokens are stored in `.roko/relay-tokens.json`.
 
 use std::collections::HashSet;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::SystemTime;
 
 use axum::Json;
 use axum::Router;
@@ -33,6 +39,7 @@ use base64::Engine;
 use chrono::{DateTime, Duration, Utc};
 use rand::RngCore;
 use roko_core::config::ApiKeyEntry;
+use roko_fs::with_locked_json_transaction;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio::io::AsyncWriteExt;
@@ -187,16 +194,69 @@ pub struct AgentTokenSummary {
 
 // ─── Shared credential registry ─────────────────────────────────────────────
 
+/// A key's `last_used_at` is persisted at most this often. Every API-key
+/// request records a use; rewriting the key file each time would queue all
+/// API-key traffic behind the file lock and its fsyncs.
+const API_KEY_USE_PERSIST_INTERVAL_SECS: i64 = 60;
+
 /// In-memory credential registry backed by atomically replaced JSON files.
 ///
 /// All read-modify-write operations hold the corresponding lock until the
 /// replacement file is durable, preventing `last_used_at` updates from
 /// clobbering concurrent rotations or revocations.
+///
+/// API keys may also change on disk while the server runs. Each API-key write
+/// is a locked read-merge-write of one change against the file as it is now
+/// (`update_api_keys`), and lookups re-read the file when it has changed, so a
+/// key another process adds works at once and a key it revokes stops working
+/// at once.
 pub(crate) struct AuthRegistry {
     workdir: PathBuf,
-    api_keys: RwLock<Vec<ApiKeyEntry>>,
+    api_keys: RwLock<ApiKeyState>,
     agent_tokens: RwLock<Vec<AgentToken>>,
     relay_tokens: RwLock<Vec<RelayToken>>,
+}
+
+/// This process's cached view of `.roko/api-keys.json`.
+struct ApiKeyState {
+    /// The file's keys, then `unseeded`.
+    entries: Vec<ApiKeyEntry>,
+    /// Configured `[serve.auth.api_keys]` entries the file does not have yet.
+    /// The next write adds them, as the old whole-list writes did. Once this
+    /// process sees a key in the file, only the file decides whether it
+    /// exists, so a later revocation is not undone from configuration.
+    unseeded: Vec<ApiKeyEntry>,
+    /// The file version `entries` was read from (`Some(None)`: there was no
+    /// file). `None` after this process writes, so the next lookup re-reads.
+    read_from: Option<Option<FileStamp>>,
+}
+
+impl ApiKeyState {
+    fn new(
+        file_keys: Vec<ApiKeyEntry>,
+        stamp: Option<FileStamp>,
+        configured_keys: &[ApiKeyEntry],
+    ) -> Self {
+        let mut entries = file_keys;
+        let on_disk = entries.len();
+        seed_configured_keys(&mut entries, configured_keys);
+        let unseeded = entries[on_disk..].to_vec();
+        Self {
+            entries,
+            unseeded,
+            read_from: Some(stamp),
+        }
+    }
+
+    /// Replace the cached keys with `keys`, the file's current contents.
+    fn absorb(&mut self, keys: Vec<ApiKeyEntry>, read_from: Option<Option<FileStamp>>) {
+        // Once the file has a configured key, the file alone decides its fate.
+        self.unseeded.retain(|key| !has_key(&keys, &key.name));
+        let mut entries = keys;
+        seed_configured_keys(&mut entries, &self.unseeded);
+        self.entries = entries;
+        self.read_from = read_from;
+    }
 }
 
 impl AuthRegistry {
@@ -204,51 +264,105 @@ impl AuthRegistry {
     /// already present on disk. Invalid registry JSON fails server startup
     /// rather than silently disabling every credential.
     pub(crate) fn load(workdir: &Path, configured_keys: &[ApiKeyEntry]) -> anyhow::Result<Self> {
-        let mut api_keys: Vec<ApiKeyEntry> = load_registry_file(&api_keys_path(workdir))?;
-        for configured in configured_keys {
-            if !api_keys.iter().any(|entry| entry.name == configured.name) {
-                api_keys.push(configured.clone());
-            }
-        }
+        let (api_keys, stamp) = read_registry_file(&api_keys_path(workdir))?;
         let agent_tokens = load_registry_file(&agent_tokens_path(workdir))?;
         let relay_tokens = load_relay_registry(workdir)?;
         Ok(Self {
             workdir: workdir.to_path_buf(),
-            api_keys: RwLock::new(api_keys),
+            api_keys: RwLock::new(ApiKeyState::new(api_keys, stamp, configured_keys)),
             agent_tokens: RwLock::new(agent_tokens),
             relay_tokens: RwLock::new(relay_tokens),
         })
     }
 
+    /// Keys to authenticate against, re-read first if the file has changed.
+    ///
+    /// A key file that cannot be read or parsed cannot vouch for any named
+    /// key, so this fails closed with an empty list.
     pub(crate) async fn api_keys_snapshot(&self) -> Vec<ApiKeyEntry> {
-        self.api_keys.read().await.clone()
+        match self.current_api_keys().await {
+            Ok(keys) => keys,
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    "API-key registry is unreadable; rejecting all named API keys"
+                );
+                Vec::new()
+            }
+        }
+    }
+
+    /// The current API keys: the cached copy while the file is unchanged,
+    /// otherwise a fresh read.
+    ///
+    /// Writers replace the file by rename, so a plain read sees one whole
+    /// version and needs no lock.
+    async fn current_api_keys(&self) -> Result<Vec<ApiKeyEntry>, ApiError> {
+        let path = api_keys_path(&self.workdir);
+        let on_disk = registry_file_stamp(&path)
+            .map_err(|error| ApiError::internal(format!("read {}: {error}", path.display())))?;
+        {
+            let state = self.api_keys.read().await;
+            if state.read_from == Some(on_disk) {
+                return Ok(state.entries.clone());
+            }
+        }
+        let mut state = self.api_keys.write().await;
+        let (keys, stamp) = read_registry_file(&path)?;
+        state.absorb(keys, Some(stamp));
+        Ok(state.entries.clone())
+    }
+
+    /// Apply one change to the API-key file as a locked read-merge-write.
+    ///
+    /// `change` sees the file as it is on disk now, plus configured keys not
+    /// written yet, never this process's cached copy, so keys another process
+    /// added or revoked stay that way. The cache is replaced with the result.
+    /// If the file cannot be read or parsed, or `change` fails, nothing is
+    /// written.
+    async fn update_api_keys<R, F>(&self, change: F) -> Result<R, ApiError>
+    where
+        R: Send + 'static,
+        F: FnOnce(&mut Vec<ApiKeyEntry>) -> Result<R, ApiError> + Send + 'static,
+    {
+        // Held across the file transaction so this process's writes apply in order.
+        let mut state = self.api_keys.write().await;
+        let path = api_keys_path(&self.workdir);
+        let transaction_path = path.clone();
+        let unseeded = state.unseeded.clone();
+        let (result, keys) = tokio::task::spawn_blocking(move || {
+            apply_api_key_change(&transaction_path, &unseeded, change)
+        })
+        .await
+        .map_err(|error| ApiError::internal(format!("update {}: {error}", path.display())))??;
+        // The file now has every configured key that `change` kept.
+        state.unseeded.clear();
+        state.absorb(keys, None);
+        Ok(result)
     }
 
     pub(crate) async fn insert_api_key(&self, entry: ApiKeyEntry) -> Result<(), ApiError> {
-        let mut guard = self.api_keys.write().await;
-        if guard.iter().any(|existing| existing.name == entry.name) {
-            return Err(ApiError::conflict(format!(
-                "API key with name '{}' already exists",
-                entry.name
-            )));
-        }
-        let mut updated = guard.clone();
-        updated.push(entry);
-        persist_registry_file(&api_keys_path(&self.workdir), &updated).await?;
-        *guard = updated;
-        Ok(())
+        self.update_api_keys(move |keys| {
+            if has_key(keys, &entry.name) {
+                return Err(ApiError::conflict(format!(
+                    "API key with name '{}' already exists",
+                    entry.name
+                )));
+            }
+            keys.push(entry);
+            Ok(())
+        })
+        .await
     }
 
     async fn remove_api_key(&self, name: &str) -> Result<bool, ApiError> {
-        let mut guard = self.api_keys.write().await;
-        let mut updated = guard.clone();
-        updated.retain(|entry| entry.name != name);
-        if updated.len() == guard.len() {
-            return Ok(false);
-        }
-        persist_registry_file(&api_keys_path(&self.workdir), &updated).await?;
-        *guard = updated;
-        Ok(true)
+        let name = name.to_string();
+        self.update_api_keys(move |keys| {
+            let before = keys.len();
+            keys.retain(|entry| entry.name != name);
+            Ok(keys.len() != before)
+        })
+        .await
     }
 
     async fn rotate_api_key(
@@ -258,44 +372,65 @@ impl AuthRegistry {
         created_at: String,
         grace_expires: String,
     ) -> Result<ApiKeyEntry, ApiError> {
-        let mut guard = self.api_keys.write().await;
-        let mut updated = guard.clone();
-        let entry = updated
-            .iter_mut()
-            .find(|entry| entry.name == name)
-            .ok_or_else(|| ApiError::not_found(format!("API key with name '{name}' not found")))?;
+        let name = name.to_string();
+        self.update_api_keys(move |keys| {
+            let entry = keys
+                .iter_mut()
+                .find(|entry| entry.name == name)
+                .ok_or_else(|| {
+                    ApiError::not_found(format!("API key with name '{name}' not found"))
+                })?;
 
-        let now = Utc::now();
-        entry
-            .previous_key_hashes
-            .retain(|(_, expiry)| parse_rfc3339(expiry).is_some_and(|expiry| expiry > now));
-        entry
-            .previous_key_hashes
-            .push((entry.key_hash.clone(), grace_expires));
-        if entry.previous_key_hashes.len() > 2 {
-            let excess = entry.previous_key_hashes.len() - 2;
-            entry.previous_key_hashes.drain(..excess);
-        }
-        entry.key_hash = new_hash;
-        entry.created_at = created_at;
-        entry.last_used_at = None;
-        let rotated = entry.clone();
-
-        persist_registry_file(&api_keys_path(&self.workdir), &updated).await?;
-        *guard = updated;
-        Ok(rotated)
+            let now = Utc::now();
+            entry
+                .previous_key_hashes
+                .retain(|(_, expiry)| parse_rfc3339(expiry).is_some_and(|expiry| expiry > now));
+            entry
+                .previous_key_hashes
+                .push((entry.key_hash.clone(), grace_expires));
+            if entry.previous_key_hashes.len() > 2 {
+                let excess = entry.previous_key_hashes.len() - 2;
+                entry.previous_key_hashes.drain(..excess);
+            }
+            entry.key_hash = new_hash;
+            entry.created_at = created_at;
+            entry.last_used_at = None;
+            Ok(entry.clone())
+        })
+        .await
     }
 
     pub(crate) async fn record_api_key_use(&self, name: &str) -> Result<(), ApiError> {
-        let mut guard = self.api_keys.write().await;
-        let mut updated = guard.clone();
-        let Some(entry) = updated.iter_mut().find(|entry| entry.name == name) else {
-            return Ok(());
+        let now = Utc::now();
+        let interval = Duration::seconds(API_KEY_USE_PERSIST_INTERVAL_SECS);
+        let recorded_recently = move |entry: &ApiKeyEntry| {
+            entry
+                .last_used_at
+                .as_deref()
+                .and_then(parse_rfc3339)
+                .is_some_and(|last| now - last < interval)
         };
-        entry.last_used_at = Some(Utc::now().to_rfc3339());
-        persist_registry_file(&api_keys_path(&self.workdir), &updated).await?;
-        *guard = updated;
-        Ok(())
+        let already_recorded = self
+            .api_keys
+            .read()
+            .await
+            .entries
+            .iter()
+            .any(|entry| entry.name == name && recorded_recently(entry));
+        if already_recorded {
+            return Ok(());
+        }
+        let name = name.to_string();
+        self.update_api_keys(move |keys| {
+            let unrecorded = keys
+                .iter_mut()
+                .find(|entry| entry.name == name && !recorded_recently(entry));
+            if let Some(entry) = unrecorded {
+                entry.last_used_at = Some(now.to_rfc3339());
+            }
+            Ok(())
+        })
+        .await
     }
 
     pub(crate) async fn insert_agent_token(&self, token: AgentToken) -> Result<(), ApiError> {
@@ -334,12 +469,111 @@ impl AuthRegistry {
 }
 
 fn load_registry_file<T: for<'de> Deserialize<'de>>(path: &Path) -> anyhow::Result<Vec<T>> {
-    match std::fs::read_to_string(path) {
-        Ok(data) => serde_json::from_str(&data)
-            .map_err(|error| anyhow::anyhow!("parse {}: {error}", path.display())),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
-        Err(error) => Err(anyhow::anyhow!("read {}: {error}", path.display())),
+    read_registry_file(path).map(|(entries, _)| entries)
+}
+
+/// Read a registry file and the version read (`None`: there is no file).
+///
+/// The version comes from the open handle, so it describes these bytes even
+/// if another process replaces the file meanwhile.
+fn read_registry_file<T: for<'de> Deserialize<'de>>(
+    path: &Path,
+) -> anyhow::Result<(Vec<T>, Option<FileStamp>)> {
+    let mut file = match std::fs::File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok((Vec::new(), None));
+        }
+        Err(error) => return Err(anyhow::anyhow!("read {}: {error}", path.display())),
+    };
+    let stamp = file
+        .metadata()
+        .map(|metadata| FileStamp::of(&metadata))
+        .map_err(|error| anyhow::anyhow!("read {}: {error}", path.display()))?;
+    let mut data = String::new();
+    file.read_to_string(&mut data)
+        .map_err(|error| anyhow::anyhow!("read {}: {error}", path.display()))?;
+    let entries = serde_json::from_str(&data)
+        .map_err(|error| anyhow::anyhow!("parse {}: {error}", path.display()))?;
+    Ok((entries, Some(stamp)))
+}
+
+/// The version of a registry file now on disk (`None`: there is no file).
+fn registry_file_stamp(path: &Path) -> std::io::Result<Option<FileStamp>> {
+    match std::fs::metadata(path) {
+        Ok(metadata) => Ok(Some(FileStamp::of(&metadata))),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
     }
+}
+
+/// Identifies one version of a registry file. Writers rename a new file over
+/// the old one, so a new version also gets a new inode, not only a new mtime.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct FileStamp {
+    len: u64,
+    modified: Option<SystemTime>,
+    #[cfg(unix)]
+    inode: u64,
+}
+
+impl FileStamp {
+    fn of(metadata: &std::fs::Metadata) -> Self {
+        Self {
+            len: metadata.len(),
+            modified: metadata.modified().ok(),
+            #[cfg(unix)]
+            inode: std::os::unix::fs::MetadataExt::ino(metadata),
+        }
+    }
+}
+
+fn has_key(keys: &[ApiKeyEntry], name: &str) -> bool {
+    keys.iter().any(|entry| entry.name == name)
+}
+
+/// Add each configured key that `keys` lacks. On a name clash the entry
+/// already in `keys` wins, as the file's entry does at startup.
+fn seed_configured_keys(keys: &mut Vec<ApiKeyEntry>, configured: &[ApiKeyEntry]) {
+    for entry in configured {
+        if !has_key(keys, &entry.name) {
+            keys.push(entry.clone());
+        }
+    }
+}
+
+/// Why a locked API-key file update did not apply.
+enum RegistryUpdateError {
+    /// The file could not be locked, read, parsed or written.
+    Io(std::io::Error),
+    /// The change itself was refused, for example a duplicate name.
+    Rejected(ApiError),
+}
+
+impl From<std::io::Error> for RegistryUpdateError {
+    fn from(error: std::io::Error) -> Self {
+        Self::Io(error)
+    }
+}
+
+/// Run one change against the API-key file while holding its sibling lock.
+/// Blocking: call it from `spawn_blocking`.
+fn apply_api_key_change<R>(
+    path: &Path,
+    unseeded: &[ApiKeyEntry],
+    change: impl FnOnce(&mut Vec<ApiKeyEntry>) -> Result<R, ApiError>,
+) -> Result<(R, Vec<ApiKeyEntry>), ApiError> {
+    with_locked_json_transaction::<Vec<ApiKeyEntry>, _, RegistryUpdateError, _>(path, |keys| {
+        seed_configured_keys(keys, unseeded);
+        let result = change(keys).map_err(RegistryUpdateError::Rejected)?;
+        Ok((result, keys.clone()))
+    })
+    .map_err(|error| match error {
+        RegistryUpdateError::Io(error) => {
+            ApiError::internal(format!("update {}: {error}", path.display()))
+        }
+        RegistryUpdateError::Rejected(error) => error,
+    })
 }
 
 async fn persist_registry_file<T: Serialize + ?Sized>(
@@ -1032,8 +1266,10 @@ async fn create_api_key(
 }
 
 /// `GET /api/api-keys` — list all stored API keys (metadata only).
-async fn list_api_keys(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
-    let keys = state.auth_registry.api_keys_snapshot().await;
+async fn list_api_keys(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let keys = state.auth_registry.current_api_keys().await?;
     let summaries: Vec<ApiKeySummary> = keys
         .into_iter()
         .map(|k| ApiKeySummary {
@@ -1044,7 +1280,7 @@ async fn list_api_keys(State(state): State<Arc<AppState>>) -> Json<serde_json::V
             last_used_at: k.last_used_at,
         })
         .collect();
-    Json(json!({ "keys": summaries }))
+    Ok(Json(json!({ "keys": summaries })))
 }
 
 /// `DELETE /api/api-keys/:name` — revoke an API key by name.
@@ -1483,6 +1719,201 @@ mod tests {
             .err()
             .expect("malformed registry must fail");
         assert!(error.to_string().contains("parse"));
+    }
+
+    // Out-of-band key file changes (bug-da5b41)
+
+    /// Change the key file as another process would: under the shared lock,
+    /// behind the back of any loaded registry.
+    fn edit_key_file(workdir: &Path, edit: impl FnOnce(&mut Vec<ApiKeyEntry>)) {
+        with_locked_json_transaction::<Vec<ApiKeyEntry>, _, std::io::Error, _>(
+            &api_keys_path(workdir),
+            |keys| {
+                edit(keys);
+                Ok(())
+            },
+        )
+        .expect("edit key file out of band");
+    }
+
+    fn key_names_on_disk(workdir: &Path) -> Vec<String> {
+        load_registry_file::<ApiKeyEntry>(&api_keys_path(workdir))
+            .expect("read key file")
+            .into_iter()
+            .map(|entry| entry.name)
+            .collect()
+    }
+
+    fn accepts(keys: &[ApiKeyEntry], secret: &str) -> bool {
+        match_api_key_entry_for_test(secret, keys) == Some(true)
+    }
+
+    #[tokio::test]
+    async fn out_of_band_api_key_survives_server_write() {
+        let dir = tmp_workdir();
+        let registry = AuthRegistry::load(dir.path(), &[]).expect("empty registry");
+        registry
+            .insert_api_key(test_api_key("server", "server-secret"))
+            .await
+            .expect("insert server key");
+        // A CLI or a second server adds a key behind the loaded registry.
+        edit_key_file(dir.path(), |keys| {
+            keys.push(test_api_key("cli", "cli-secret"));
+        });
+
+        registry
+            .record_api_key_use("server")
+            .await
+            .expect("record usage");
+        assert_eq!(key_names_on_disk(dir.path()), ["server", "cli"]);
+        registry
+            .insert_api_key(test_api_key("temp", "temp-secret"))
+            .await
+            .expect("insert temporary key");
+        assert_eq!(key_names_on_disk(dir.path()), ["server", "cli", "temp"]);
+        registry
+            .rotate_api_key(
+                "server",
+                hash_api_key("rotated-secret"),
+                Utc::now().to_rfc3339(),
+                (Utc::now() + Duration::minutes(5)).to_rfc3339(),
+            )
+            .await
+            .expect("rotate server key");
+        assert_eq!(key_names_on_disk(dir.path()), ["server", "cli", "temp"]);
+        assert!(
+            registry
+                .remove_api_key("temp")
+                .await
+                .expect("remove the temporary key")
+        );
+        assert_eq!(key_names_on_disk(dir.path()), ["server", "cli"]);
+
+        // The running server accepts the new key without a restart.
+        let keys = registry.api_keys_snapshot().await;
+        assert!(accepts(&keys, "cli-secret"));
+        assert!(accepts(&keys, "rotated-secret"));
+    }
+
+    #[tokio::test]
+    async fn out_of_band_revocation_is_not_undone_by_server_write() {
+        let dir = tmp_workdir();
+        let registry = AuthRegistry::load(dir.path(), &[]).expect("empty registry");
+        for (name, secret) in [("kept", "kept-secret"), ("gone", "gone-secret")] {
+            registry
+                .insert_api_key(test_api_key(name, secret))
+                .await
+                .expect("insert key");
+        }
+        // Another process revokes a key that this registry still has cached.
+        edit_key_file(dir.path(), |keys| {
+            keys.retain(|key| key.name != "gone");
+        });
+
+        registry
+            .record_api_key_use("kept")
+            .await
+            .expect("record usage");
+        assert_eq!(key_names_on_disk(dir.path()), ["kept"]);
+        let keys = registry.api_keys_snapshot().await;
+        assert!(accepts(&keys, "kept-secret"));
+        assert!(!accepts(&keys, "gone-secret"));
+    }
+
+    #[tokio::test]
+    async fn configured_key_is_written_once_and_stays_revoked() {
+        let dir = tmp_workdir();
+        let configured = [test_api_key("configured", "cfg-secret")];
+        let registry = AuthRegistry::load(dir.path(), &configured).expect("load registry");
+        // The first write adds the configured key to the file, as before.
+        registry
+            .insert_api_key(test_api_key("server", "server-secret"))
+            .await
+            .expect("insert server key");
+        assert_eq!(key_names_on_disk(dir.path()), ["configured", "server"]);
+
+        // Once another process revokes it, neither the configuration nor the
+        // registry's cached copy may bring it back.
+        edit_key_file(dir.path(), |keys| {
+            keys.retain(|key| key.name != "configured");
+        });
+        registry
+            .record_api_key_use("server")
+            .await
+            .expect("record usage");
+        assert_eq!(key_names_on_disk(dir.path()), ["server"]);
+        let keys = registry.api_keys_snapshot().await;
+        assert!(!accepts(&keys, "cfg-secret"));
+    }
+
+    #[tokio::test]
+    async fn unreadable_key_file_fails_closed_while_running() {
+        let dir = tmp_workdir();
+        let registry = AuthRegistry::load(dir.path(), &[]).expect("empty registry");
+        registry
+            .insert_api_key(test_api_key("server", "server-secret"))
+            .await
+            .expect("insert server key");
+        let path = api_keys_path(dir.path());
+        std::fs::write(&path, "not-json").expect("corrupt key file");
+
+        // No named key authenticates, and no write replaces the file from the
+        // cached copy.
+        assert!(registry.api_keys_snapshot().await.is_empty());
+        let error = registry
+            .insert_api_key(test_api_key("new", "new-secret"))
+            .await
+            .expect_err("merging into an unreadable file must fail");
+        assert_eq!(error.status, StatusCode::INTERNAL_SERVER_ERROR);
+        let on_disk = std::fs::read_to_string(&path).expect("read key file");
+        assert_eq!(on_disk, "not-json");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_writers_on_one_workspace_keep_every_key() {
+        let dir = tmp_workdir();
+        // Two registries on one workspace stand in for two server processes.
+        let first = Arc::new(AuthRegistry::load(dir.path(), &[]).expect("load first"));
+        let second = Arc::new(AuthRegistry::load(dir.path(), &[]).expect("load second"));
+        let mut writers = Vec::new();
+        for index in 0..8 {
+            for (label, registry) in [("first", &first), ("second", &second)] {
+                let registry = Arc::clone(registry);
+                let name = format!("{label}-{index}");
+                writers.push(tokio::spawn(async move {
+                    let entry = test_api_key(&name, &name);
+                    registry.insert_api_key(entry).await
+                }));
+            }
+        }
+        for writer in writers {
+            writer.await.expect("writer task").expect("insert key");
+        }
+
+        assert_eq!(key_names_on_disk(dir.path()).len(), 16);
+        assert_eq!(first.api_keys_snapshot().await.len(), 16);
+        assert_eq!(second.api_keys_snapshot().await.len(), 16);
+    }
+
+    #[tokio::test]
+    async fn repeated_use_is_persisted_at_most_once_per_interval() {
+        let dir = tmp_workdir();
+        let registry = AuthRegistry::load(dir.path(), &[]).expect("empty registry");
+        registry
+            .insert_api_key(test_api_key("busy", "busy-secret"))
+            .await
+            .expect("insert key");
+        let mut recorded = Vec::new();
+        for _ in 0..2 {
+            registry
+                .record_api_key_use("busy")
+                .await
+                .expect("record the key's use");
+            let keys = registry.api_keys_snapshot().await;
+            recorded.push(keys[0].last_used_at.clone());
+        }
+        assert!(recorded[0].is_some());
+        assert_eq!(recorded[0], recorded[1]);
     }
 
     // Relay token delegation tests (E35-T06)

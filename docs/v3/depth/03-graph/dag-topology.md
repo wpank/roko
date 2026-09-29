@@ -158,7 +158,10 @@ Wave 2: [depends on wave 1]  -- unblocked after wave 1 completes
 ```
 
 Within each wave, all nodes are independent -- no edges connect them -- so they
-may execute concurrently, bounded by `policy.max_concurrent_nodes`.
+may execute concurrently, bounded by `policy.max_concurrent_nodes`. The engine no
+longer schedules by wave (since `445a60d0d`): each node starts once its own
+predecessors settle ([03-GRAPH.md](../../03-GRAPH.md), "Parallel Execution: the
+Ready Queue").
 
 ### Helper Functions
 

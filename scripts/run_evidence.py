@@ -49,11 +49,46 @@ MAX_ENDPOINTS = 32
 DEFAULT_MIN_FREE_BYTES = 5 * 1024 * 1024 * 1024
 DEFAULT_MIN_FREE_PERCENT = 3.0
 OUTPUT_TRUNCATION_MARKER = b"\n[run-evidence output truncated at 16 MiB]\n"
+# The run ledgers are Runner-v2 surfaces; they are sliced when present and
+# recorded as absent otherwise. `.roko/events.jsonl` is written only by runs
+# that were given it as --log-file (bug-230de6).
 DEFAULT_APPEND_LOGS = (
     ".roko/events.jsonl",
     ".roko/state/run-ledger.jsonl",
     ".roko/run-ledger.jsonl",
 )
+# A Graph plan run (the only plan engine) keeps each plan's checkpoint.json,
+# activities.jsonl and costs.json under state/graph/<plan>/.
+GRAPH_STATE_DIR = ".roko/state/graph"
+# Append-only ledgers a Graph run writes. Their rows name plans and tasks but
+# not the run, so they are sliced by offset and by the plans the run touched.
+GRAPH_LEDGER_LOGS = (
+    ".roko/learn/efficiency.jsonl",
+    ".roko/learn/gate-failures.jsonl",
+    ".roko/learn/costs.jsonl",
+    ".roko/learn/run-metrics.jsonl",
+)
+# Ledger fields a bundle keeps: the whitelist of the field-evidence capture
+# (tmp/cybernetic-harness/tools/field_capture.py), so both name facts alike.
+LEDGER_ATTEMPT_FIELDS = (
+    "timestamp", "ts", "plan_id", "task_id", "attempt_id", "agent_id", "iteration", "is_final_turn",
+    "model", "resolved_model", "provider", "backend", "role", "outcome", "success", "gate_passed",
+    "error_class", "duration_ms", "latency_ms", "time_to_first_token_ms", "input_tokens",
+    "output_tokens", "cache_read_tokens", "cache_write_tokens", "reasoning_tokens",
+    "system_prompt_tokens", "cost_usd", "cost_usd_without_cache", "strategy_attempted", "frequency",
+)
+LEDGER_GATE_FAILURE_FIELDS = (
+    "timestamp", "plan_id", "task_id", "gate_name", "rung", "failure_kind", "primary_class",
+    "recommended_action", "cargo_fix_candidate", "replan_candidate", "error_count", "warning_count",
+)
+GRAPH_HEAD_BYTES = 64 * 1024
+MAX_GRAPH_ACTIVITY_READ_BYTES = 64 * 1024 * 1024
+MAX_GRAPH_PLANS = 16
+MAX_DIAGNOSE_BYTES = 1024 * 1024
+GRAPH_FAILED_STATUSES = {"failed", "cancelled", "canceled", "aborted", "budget_exhausted"}
+PASSED_OUTCOMES = {"passed", "succeeded", "success", "completed"}
+# How a Graph verify step reports its own timeout in `dashboard.gate_result`.
+GATE_TIMEOUT_RE = re.compile(r"timed out after (\d+)\s*ms")
 DEFAULT_SAFE_GET_PATHS = (
     "/health",
     "/ready",
@@ -162,10 +197,30 @@ def utc_now() -> str:
     )
 
 
+def unhome(text: str) -> str:
+    """Write the home directory as ``~`` so metadata names neither the operator
+    nor the home layout. Only whole path components match: with home
+    /Users/ada, /Users/ada/x becomes ~/x and /Users/adam stays as it is."""
+    if not text:
+        return text
+    home = os.path.expanduser("~")
+    homes = {value.rstrip("/") for value in (home, os.path.realpath(home))}
+    homes = sorted(
+        (value for value in homes if len(value) > 1 and os.path.isabs(value)),
+        key=len,
+        reverse=True,
+    )
+    if not homes:
+        return text
+    return re.sub("(?:" + "|".join(map(re.escape, homes)) + r")(?![\w-])", "~", text)
+
+
+# The collector's own metadata is written with the home directory as ~.
+# Command output, Git diffs and the runner's event log stay verbatim.
 def write_json(path: pathlib.Path, value: Any) -> None:
     temporary = path.with_name(f".{path.name}.tmp-{os.getpid()}")
     with temporary.open("w", encoding="utf-8") as stream:
-        json.dump(value, stream, indent=2, sort_keys=True)
+        stream.write(unhome(json.dumps(value, indent=2, sort_keys=True)))
         stream.write("\n")
     os.replace(temporary, path)
     os.chmod(path, 0o600)
@@ -173,7 +228,7 @@ def write_json(path: pathlib.Path, value: Any) -> None:
 
 def append_jsonl(path: pathlib.Path, value: Any) -> None:
     with path.open("a", encoding="utf-8") as stream:
-        stream.write(json.dumps(value, sort_keys=True, separators=(",", ":")))
+        stream.write(unhome(json.dumps(value, sort_keys=True, separators=(",", ":"))))
         stream.write("\n")
         stream.flush()
         os.fsync(stream.fileno())
@@ -181,7 +236,7 @@ def append_jsonl(path: pathlib.Path, value: Any) -> None:
 
 
 def write_text(path: pathlib.Path, value: str) -> None:
-    path.write_text(value, encoding="utf-8")
+    path.write_text(unhome(value), encoding="utf-8")
     os.chmod(path, 0o600)
 
 
@@ -189,7 +244,7 @@ def write_jsonl_records(path: pathlib.Path, records: Iterable[dict[str, Any]]) -
     temporary = path.with_name(f".{path.name}.tmp-{os.getpid()}")
     with temporary.open("w", encoding="utf-8") as stream:
         for record in records:
-            stream.write(json.dumps(record, sort_keys=True, separators=(",", ":")))
+            stream.write(unhome(json.dumps(record, sort_keys=True, separators=(",", ":"))))
             stream.write("\n")
     os.replace(temporary, path)
     os.chmod(path, 0o600)
@@ -1302,6 +1357,457 @@ def filter_append_logs(
     return index_value
 
 
+def read_bounded_json(path: pathlib.Path, limit: int = MAX_JSON_ARTIFACT_BYTES) -> Any:
+    """Parse a small JSON file; None when it is absent, too large or malformed."""
+    try:
+        payload, truncated = bounded_read(path, limit)
+        return None if truncated else json.loads(payload.decode("utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+
+
+def graph_plan_fingerprint(plan_dir: pathlib.Path) -> dict[str, Any]:
+    """The facts that show whether a command touched one plan's Graph state."""
+    activities = plan_dir / "activities.jsonl"
+    try:
+        size = activities.stat().st_size
+        with activities.open("rb") as stream:
+            head = stream.read(min(size, GRAPH_HEAD_BYTES))
+    except OSError:
+        size, head = 0, b""
+    manifest = read_bounded_json(plan_dir / "checkpoint.json")
+    return {
+        "activities_bytes": size,
+        "activities_head_sha256": hashlib.sha256(head).hexdigest(),
+        "checkpoint_sha256": sha256_file(plan_dir / "checkpoint.json"),
+        "costs_sha256": sha256_file(plan_dir / "costs.json"),
+        "run_id": manifest.get("run_id") if isinstance(manifest, dict) else None,
+    }
+
+
+def graph_state_baselines(cwd: pathlib.Path) -> dict[str, dict[str, Any]]:
+    root = cwd / GRAPH_STATE_DIR
+    if root.is_symlink() or not root.is_dir():
+        return {}
+    return {
+        plan_dir.name: graph_plan_fingerprint(plan_dir)
+        for plan_dir in sorted(root.iterdir())
+        if plan_dir.is_dir() and not plan_dir.is_symlink()
+    }
+
+
+def graph_activity_row(entry: dict[str, Any]) -> dict[str, Any]:
+    """An Activity record reduced to derived facts: ids, signal kinds, tags and
+    body sizes. Signal bodies hold agent output and never enter the bundle."""
+    signals = []
+    for item in entry.get("signals") if isinstance(entry.get("signals"), list) else []:
+        if not isinstance(item, dict):
+            continue
+        body = item.get("body") if isinstance(item.get("body"), dict) else {}
+        tags = item.get("tags") if isinstance(item.get("tags"), dict) else {}
+        signals.append(
+            {
+                "id": item.get("id"),
+                "kind": item.get("kind"),
+                "created_at_ms": item.get("created_at_ms"),
+                "tags": {
+                    str(key): value[:200] if isinstance(value, str) else value
+                    for key, value in tags.items()
+                    if isinstance(value, (str, int, float, bool))
+                },
+                "body_format": body.get("format"),
+                "body_bytes": len(json.dumps(body.get("data"), separators=(",", ":")).encode("utf-8")),
+            }
+        )
+    return {
+        "graph_id": entry.get("graph_id"),
+        "run_id": entry.get("run_id"),
+        "node_id": entry.get("node_id"),
+        "tick": entry.get("tick"),
+        "signals": signals,
+    }
+
+
+def slice_graph_activities(
+    source: pathlib.Path,
+    offset: int,
+    run_id: str | None,
+    artifact: pathlib.Path,
+) -> dict[str, Any]:
+    """Write the derived rows of `run_id`'s Activity records from `offset` on."""
+    record: dict[str, Any] = {
+        "offset": offset,
+        "lines_considered": 0,
+        "lines_selected": 0,
+        "other_run_lines": 0,
+        "parse_errors": 0,
+        "truncated": False,
+    }
+    selected: list[dict[str, Any]] = []
+    selected_bytes = 0
+    bytes_read = 0
+    if source.is_file() and run_id:
+        try:
+            with source.open("rb") as stream:
+                stream.seek(offset)
+                while True:
+                    line = stream.readline(MAX_JSON_ARTIFACT_BYTES + 1)
+                    if not line:
+                        break
+                    bytes_read += len(line)
+                    if bytes_read > MAX_GRAPH_ACTIVITY_READ_BYTES or len(line) > MAX_JSON_ARTIFACT_BYTES:
+                        record["truncated"] = True
+                        break
+                    if not line.strip():
+                        continue
+                    record["lines_considered"] += 1
+                    try:
+                        value = json.loads(line)
+                    except (json.JSONDecodeError, UnicodeDecodeError):
+                        record["parse_errors"] += 1
+                        continue
+                    if not isinstance(value, dict) or value.get("run_id") != run_id:
+                        record["other_run_lines"] += 1
+                        continue
+                    row = redact_json(graph_activity_row(value))
+                    encoded_size = len(json.dumps(row, separators=(",", ":")).encode("utf-8")) + 1
+                    if selected_bytes + encoded_size > MAX_JSON_ARTIFACT_BYTES:
+                        record["truncated"] = True
+                        break
+                    selected.append(row)
+                    selected_bytes += encoded_size
+        except OSError as error:
+            record["error"] = f"{type(error).__name__}: {error}"
+    write_jsonl_records(artifact, selected)
+    record["lines_selected"] = len(selected)
+    return record
+
+
+def copy_graph_json(source: pathlib.Path, destination: pathlib.Path, bundle: pathlib.Path) -> dict[str, Any]:
+    """Copy one small Graph state file through the JSON redactor."""
+    if not source.is_file():
+        return {"copied": False, "reason": "absent"}
+    value = read_bounded_json(source)
+    if value is None:
+        return {"copied": False, "reason": "malformed or larger than the JSON artifact limit"}
+    write_json(destination, redact_json(value))
+    return {
+        "copied": True,
+        "artifact": str(destination.relative_to(bundle)),
+        "sha256": sha256_file(destination),
+    }
+
+
+def roko_plan_run_binary(argv: Sequence[str], cwd: pathlib.Path) -> pathlib.Path | None:
+    """The binary of a wrapped `roko ... plan run` command, which can diagnose it."""
+    words = list(argv[1:])
+    if not argv or pathlib.Path(argv[0]).name != "roko" or not any(
+        words[index] == "plan" and words[index + 1] == "run" for index in range(len(words) - 1)
+    ):
+        return None
+    if "/" in argv[0]:
+        binary = pathlib.Path(argv[0]).expanduser()
+        binary = binary if binary.is_absolute() else cwd / binary
+    else:
+        found = shutil.which(argv[0])
+        if found is None:
+            return None
+        binary = pathlib.Path(found)
+    return binary if binary.is_file() and os.access(binary, os.X_OK) else None
+
+
+def capture_graph_diagnose(
+    binary: pathlib.Path,
+    plan_id: str,
+    cwd: pathlib.Path,
+    env: dict[str, str],
+    timeout: float,
+    destination: pathlib.Path,
+    bundle: pathlib.Path,
+) -> tuple[dict[str, Any], Any]:
+    """Run the read-only `roko diagnose <plan>` and keep its bounded answer."""
+    started = time.monotonic()
+    result = run_bounded_command(
+        [str(binary), "diagnose", plan_id],
+        cwd,
+        timeout=timeout,
+        stdout_limit=MAX_DIAGNOSE_BYTES,
+        env=env,
+    )
+    record: dict[str, Any] = {
+        "argv": ["roko", "diagnose", plan_id],
+        "duration_ms": round((time.monotonic() - started) * 1000),
+        **bounded_capture_metadata(result),
+    }
+    value: Any = None
+    if not result.stdout_truncated:
+        try:
+            value = json.loads(result.stdout.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            value = None
+    if value is not None:
+        artifact = destination.with_suffix(".json")
+        write_json(artifact, redact_json(value))
+    else:
+        artifact = destination.with_suffix(".txt")
+        write_text(artifact, redact_text(result.stdout.decode("utf-8", errors="replace"), env))
+    if result.stderr:
+        record["stderr_excerpt"] = redact_text(result.stderr.decode("utf-8", errors="replace")[:500], env)
+    record["artifact"] = str(artifact.relative_to(bundle))
+    record["sha256"] = sha256_file(artifact)
+    return record, value
+
+
+def ledger_baselines(cwd: pathlib.Path) -> dict[str, int]:
+    baselines: dict[str, int] = {}
+    for relative in GRAPH_LEDGER_LOGS:
+        try:
+            baselines[relative] = (cwd / relative).stat().st_size
+        except OSError:
+            baselines[relative] = 0
+    return baselines
+
+
+def slim_ledger_row(name: str, row: dict[str, Any]) -> dict[str, Any]:
+    """The whitelisted, scrubbed part of one ledger row."""
+    if name == "efficiency.jsonl":
+        slim = {key: row[key] for key in LEDGER_ATTEMPT_FIELDS if key in row}
+        slim["knowledge_ids_n"] = len(row.get("knowledge_ids") or [])
+        slim["prompt_sections_n"] = len(row.get("prompt_section_ids") or row.get("prompt_sections") or [])
+        slim["gate_errors_n"] = len(row.get("gate_errors") or [])
+        return slim
+    if name == "gate-failures.jsonl":
+        slim = {key: row[key] for key in LEDGER_GATE_FAILURE_FIELDS if key in row}
+        if isinstance(row.get("summary"), str):
+            slim["summary"] = re.sub(r"\s+", " ", redact_text(row["summary"], {})).strip()[:240]
+        return slim
+    if name == "costs.jsonl":
+        return {key: value for key, value in row.items() if key != "session_id"}
+    return row
+
+
+def slice_graph_ledgers(
+    cwd: pathlib.Path,
+    destination: pathlib.Path,
+    bundle: pathlib.Path,
+    offsets: dict[str, int],
+    plan_ids: set[str],
+) -> tuple[list[dict[str, Any]], dict[str, list[dict[str, Any]]]]:
+    """Slice each ledger to the rows appended during the command that name one
+    of `plan_ids`. Rows naming no plan (model-call rows) are counted, not kept."""
+    records: list[dict[str, Any]] = []
+    kept: dict[str, list[dict[str, Any]]] = {}
+    for relative in GRAPH_LEDGER_LOGS:
+        source = cwd / relative
+        name = pathlib.Path(relative).name
+        record: dict[str, Any] = {
+            "source": relative,
+            "offset": offsets.get(relative, 0),
+            "present": source.is_file(),
+            "lines_considered": 0,
+            "lines_selected": 0,
+            "rows_without_plan_id": 0,
+            "parse_errors": 0,
+            "truncated": False,
+            "artifact": None,
+        }
+        rows: list[dict[str, Any]] = []
+        if source.is_file() and plan_ids:
+            selected_bytes = 0
+            bytes_read = 0
+            try:
+                with source.open("rb") as stream:
+                    offset = record["offset"]
+                    stream.seek(offset if source.stat().st_size >= offset else 0)
+                    while True:
+                        line = stream.readline(MAX_JSON_ARTIFACT_BYTES + 1)
+                        if not line:
+                            break
+                        bytes_read += len(line)
+                        if bytes_read > MAX_GRAPH_ACTIVITY_READ_BYTES or len(line) > MAX_JSON_ARTIFACT_BYTES:
+                            record["truncated"] = True
+                            break
+                        if not line.strip():
+                            continue
+                        record["lines_considered"] += 1
+                        try:
+                            value = json.loads(line)
+                        except (json.JSONDecodeError, UnicodeDecodeError):
+                            record["parse_errors"] += 1
+                            continue
+                        if not isinstance(value, dict):
+                            continue
+                        plans = value.get("plans") if isinstance(value.get("plans"), list) else []
+                        candidates = [value.get("plan_id")]
+                        candidates.extend(plan.get("plan_id") for plan in plans if isinstance(plan, dict))
+                        named = {candidate for candidate in candidates if isinstance(candidate, str) and candidate}
+                        if not named:
+                            record["rows_without_plan_id"] += 1
+                            continue
+                        if not named & plan_ids:
+                            continue
+                        row = redact_json(slim_ledger_row(name, value))
+                        encoded_size = len(json.dumps(row, separators=(",", ":")).encode("utf-8")) + 1
+                        if selected_bytes + encoded_size > MAX_JSON_ARTIFACT_BYTES:
+                            record["truncated"] = True
+                            break
+                        rows.append(row)
+                        selected_bytes += encoded_size
+            except OSError as error:
+                record["error"] = f"{type(error).__name__}: {error}"
+            artifact = destination / name
+            write_jsonl_records(artifact, rows)
+            record["artifact"] = str(artifact.relative_to(bundle))
+            record["sha256"] = sha256_file(artifact)
+        record["lines_selected"] = len(rows)
+        kept[name] = rows
+        records.append(record)
+    return records, kept
+
+
+def gate_timeout_agreement(
+    graph_gates: Sequence[dict[str, Any]], gate_failures: Sequence[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """For each gate the event stream shows timing out, what the gate-failure
+    ledger recorded for the same task."""
+    checks = []
+    for gate in graph_gates:
+        if gate.get("timeout_ms") is None:
+            continue
+        rows = [
+            row
+            for row in gate_failures
+            if row.get("plan_id") == gate.get("plan_id") and row.get("task_id") == gate.get("task_id")
+        ]
+        kinds = sorted({str(row.get("failure_kind")) for row in rows})
+        checks.append(
+            {
+                "plan_id": gate.get("plan_id"),
+                "task_id": gate.get("task_id"),
+                "gate": gate.get("gate"),
+                "event_timeout_ms": gate.get("timeout_ms"),
+                "event_gate_duration_ms": gate.get("duration_ms"),
+                "ledger_rows": len(rows),
+                "ledger_failure_kinds": kinds,
+                "agrees": bool(rows) and kinds == ["timeout"],
+            }
+        )
+    return checks
+
+
+def collect_graph_state(
+    bundle: pathlib.Path,
+    cwd: pathlib.Path,
+    baselines: dict[str, dict[str, Any]],
+    offsets: dict[str, int],
+    event_facts: dict[str, Any],
+    diagnose_binary: pathlib.Path | None,
+    env: dict[str, str],
+    timeout: float,
+) -> dict[str, Any]:
+    """Collect the Graph state of every plan the command touched: its checkpoint
+    and cost ledger, its Activity records sliced to the checkpoint's run ID,
+    `roko diagnose` output, and the learning-ledger rows naming it."""
+    destination = bundle / "graph"
+    destination.mkdir(mode=0o700, exist_ok=True)
+    root = cwd / GRAPH_STATE_DIR
+    event_plan_ids = set(event_facts.get("plan_ids", []))
+    touched: list[tuple[pathlib.Path, str, Any, dict[str, Any] | None, dict[str, Any]]] = []
+    if root.is_dir() and not root.is_symlink():
+        for plan_dir in sorted(root.iterdir()):
+            if not plan_dir.is_dir() or plan_dir.is_symlink():
+                continue
+            before = baselines.get(plan_dir.name)
+            after = graph_plan_fingerprint(plan_dir)
+            manifest = read_bounded_json(plan_dir / "checkpoint.json")
+            plan_id = manifest.get("plan_id") if isinstance(manifest, dict) else None
+            plan_id = plan_id if isinstance(plan_id, str) and plan_id else plan_dir.name
+            if after == before and plan_id not in event_plan_ids:
+                continue
+            touched.append((plan_dir, plan_id, manifest, before, after))
+
+    plans: list[dict[str, Any]] = []
+    for index, (plan_dir, plan_id, manifest, before, after) in enumerate(touched[:MAX_GRAPH_PLANS]):
+        manifest = manifest if isinstance(manifest, dict) else {}
+        output = destination / f"{index:02d}-{re.sub(r'[^A-Za-z0-9._-]+', '-', plan_dir.name)[:48]}"
+        output.mkdir(mode=0o700, exist_ok=True)
+        run_id = after["run_id"]
+        # A fresh run truncates the Activity log, so a byte offset only holds
+        # while the checkpoint keeps its run ID and its earlier bytes.
+        offset = 0
+        if before is None:
+            mode = "new"
+        elif before.get("run_id") != run_id:
+            mode = "fresh"
+        else:
+            mode = "rewritten"
+            if after["activities_bytes"] >= before["activities_bytes"]:
+                try:
+                    with (plan_dir / "activities.jsonl").open("rb") as stream:
+                        head = stream.read(min(before["activities_bytes"], GRAPH_HEAD_BYTES))
+                    if hashlib.sha256(head).hexdigest() == before["activities_head_sha256"]:
+                        mode, offset = "resumed", before["activities_bytes"]
+                except OSError:
+                    pass
+        state_dir = f"{GRAPH_STATE_DIR}/{plan_dir.name}"
+        activities = slice_graph_activities(plan_dir / "activities.jsonl", offset, run_id, output / "activities.jsonl")
+        activities["source"] = f"{state_dir}/activities.jsonl"
+        activities["artifact"] = str((output / "activities.jsonl").relative_to(bundle))
+        activities["sha256"] = sha256_file(output / "activities.jsonl")
+        costs_value = read_bounded_json(plan_dir / "costs.json")
+        spent = costs_value.get("spent_micro_usd") if isinstance(costs_value, dict) else None
+        verdicts: Any = manifest
+        for key in ("extensions", "roko.gate.verdict@1", "value", "verdicts"):
+            verdicts = verdicts.get(key) if isinstance(verdicts, dict) else None
+        verdicts = verdicts if isinstance(verdicts, dict) else {}
+        record: dict[str, Any] = {
+            "plan_id": plan_id,
+            "run_id": run_id,
+            "status": manifest.get("status"),
+            "mode": mode,
+            "state_dir": state_dir,
+            "updated_at_ms": manifest.get("updated_at_ms"),
+            "tasks_with_verdict": len(verdicts),
+            "verdicts": dict(Counter(map(str, verdicts.values()))),
+            "cost_usd_ledger": round(spent / 1e6, 6) if isinstance(spent, (int, float)) else None,
+            "activities": activities,
+            "checkpoint": copy_graph_json(plan_dir / "checkpoint.json", output / "checkpoint.json", bundle),
+            "costs": copy_graph_json(plan_dir / "costs.json", output / "costs.json", bundle),
+        }
+        if diagnose_binary is None:
+            record["diagnose"] = {"skipped_reason": "the command is not a `roko plan run`"}
+        else:
+            record["diagnose"], diagnosis = capture_graph_diagnose(
+                diagnose_binary, plan_id, cwd, env, timeout, output / "diagnose", bundle
+            )
+            failed_task = diagnosis.get("failed_task") if isinstance(diagnosis, dict) else None
+            if isinstance(failed_task, dict):
+                record["failed_task"] = {
+                    "task_id": failed_task.get("task_id"),
+                    "last_error": re.sub(r"\s+", " ", redact_text(str(failed_task.get("last_error") or ""), env)).strip()[:240],
+                }
+        plans.append(record)
+
+    ledger_dir = destination / "ledgers"
+    ledger_dir.mkdir(mode=0o700, exist_ok=True)
+    ledgers, ledger_rows = slice_graph_ledgers(cwd, ledger_dir, bundle, offsets, {plan["plan_id"] for plan in plans})
+    index = {
+        "schema_version": SCHEMA_VERSION,
+        "run_id": bundle.name,
+        "state_dir": GRAPH_STATE_DIR,
+        "graph_run_ids": sorted({plan["run_id"] for plan in plans if plan.get("run_id")}),
+        "plans": plans,
+        "plans_omitted": max(0, len(touched) - MAX_GRAPH_PLANS),
+        "ledgers": ledgers,
+        "gate_timeouts": gate_timeout_agreement(
+            event_facts.get("graph_gates", []), ledger_rows.get("gate-failures.jsonl", [])
+        ),
+        "skipped_reason": None if plans else "no Graph plan state was written during the command",
+    }
+    write_json(destination / "index.json", index)
+    return index
+
+
 class NoRedirectHandler(urllib.request.HTTPRedirectHandler):
     def redirect_request(
         self,
@@ -1835,11 +2341,14 @@ def event_metrics(events_path: pathlib.Path) -> dict[str, Any]:
     terminal_agent_calls: int | None = None
     prompt_estimated_tokens = 0
     phase_totals: defaultdict[str, int] = defaultdict(int)
+    graph_gates: list[dict[str, Any]] = []
+    gate_started_ms: dict[str, int | float] = {}
+    tasks_with_gate_result: set[str] = set()
     for event in events:
         event_type = normalized_event_type(event) or "missing"
         types[event_type] += 1
         runner_run_ids.update(collect_named_values(event, "run_id"))
-        plan_ids.update(collect_named_values(event, "plan_id"))
+        plan_ids.update(value for value in collect_named_values(event, "plan_id") if value)
         if not isinstance(event, dict):
             continue
         timestamp_ms = event.get("timestamp_ms") or event.get("monotonic_ms")
@@ -1877,8 +2386,61 @@ def event_metrics(events_path: pathlib.Path) -> dict[str, Any]:
                     if isinstance(duration, (int, float)):
                         phase_totals[str(name)] += int(duration)
             outcome = str(event.get("outcome", "")).lower()
-            if first_failure is None and outcome not in {"passed", "succeeded", "success", "completed"}:
+            if first_failure is None and outcome not in PASSED_OUTCOMES:
                 first_failure = {"type": event_type, "timestamp": event.get("timestamp"), "failure_kind": event.get("failure_kind") or outcome}
+        # Graph runs log `dashboard.<kind>` lines that wrap a DashboardEvent.
+        payload = event.get("event") if isinstance(event.get("event"), dict) else {}
+        task_key = f"{payload.get('plan_id', '')}/{payload.get('task_id', '')}"
+        if event_type == "dashboard.agent_spawned":
+            dispatches[f"{task_key}/{payload.get('attempt', '')}"] += 1
+            for key, counter in (("model", models), ("provider", providers)):
+                value = payload.get(key)
+                if isinstance(value, str) and value:
+                    counter[value] += 1
+        elif event_type == "dashboard.gate_rung_started" and isinstance(event.get("ts_millis"), (int, float)):
+            gate_started_ms[task_key] = event["ts_millis"]
+        elif event_type == "dashboard.gate_result":
+            passed = payload.get("passed") is True
+            timeout = GATE_TIMEOUT_RE.search(str(payload.get("output_text") or ""))
+            gate = {
+                "plan_id": payload.get("plan_id"),
+                "task_id": payload.get("task_id"),
+                "gate": payload.get("gate"),
+                "passed": passed,
+                "timeout_ms": int(timeout.group(1)) if timeout else None,
+                "duration_ms": None,
+            }
+            started = gate_started_ms.pop(task_key, None)
+            if started is not None and isinstance(event.get("ts_millis"), (int, float)):
+                gate["duration_ms"] = event["ts_millis"] - started
+            graph_gates.append(gate)
+            tasks_with_gate_result.add(task_key)
+            if passed:
+                gate_passed += 1
+            else:
+                gate_failed += 1
+                timeouts += 1 if timeout else 0
+                if first_failure is None:
+                    first_failure = {
+                        "type": event_type,
+                        "plan_id": gate["plan_id"],
+                        "task_id": gate["task_id"],
+                        "gate": gate["gate"],
+                        "failure_kind": "timeout" if timeout else "gate_failed",
+                        "timeout_ms": gate["timeout_ms"],
+                    }
+        elif event_type == "dashboard.task_completed":
+            outcome = str(payload.get("outcome", "")).lower()
+            if first_failure is None and outcome not in PASSED_OUTCOMES:
+                # A task that failed with no gate verdict failed in or before
+                # its agent: an agent that exits before its first event lands here.
+                first_failure = {
+                    "type": event_type,
+                    "plan_id": payload.get("plan_id"),
+                    "task_id": payload.get("task_id"),
+                    "failure_kind": "gate_failed" if task_key in tasks_with_gate_result else "failed_before_gate",
+                    "outcome": outcome,
+                }
         if event_type in RUN_TERMINAL_NAMES:
             if isinstance(event.get("total_cost_usd"), (int, float)):
                 terminal_cost_usd = float(event["total_cost_usd"])
@@ -1907,6 +2469,7 @@ def event_metrics(events_path: pathlib.Path) -> dict[str, Any]:
         "total_cost_usd": terminal_cost_usd,
         "terminal_agent_calls": terminal_agent_calls,
         "phase_duration_ms": dict(sorted(phase_totals.items())),
+        "graph_gates": graph_gates,
         "first_failure": first_failure,
     }
 
@@ -2073,6 +2636,12 @@ def build_debrief(
     provider = metrics.get("provider", {})
     first_failure = metrics.get("first_failure")
     validation_state = validation.get("valid") if validation else "pending"
+    graph = summary.get("graph") if isinstance(summary.get("graph"), dict) else {}
+    graph_plans = "; ".join(
+        f"{plan.get('plan_id')}={plan.get('status')} ({plan.get('mode')})"
+        for plan in graph.get("plans", [])
+        if isinstance(plan, dict)
+    )
     lines = [
         f"# Evidence debrief — `{markdown_value(manifest.get('run_id'))}`",
         "",
@@ -2084,6 +2653,7 @@ def build_debrief(
         f"- Process exit: `{markdown_value(summary.get('process_exit_code'))}`; wrapper exit: `{markdown_value(summary.get('exit_code'))}`",
         f"- Timed out: `{markdown_value(summary.get('timed_out'))}`; evidence valid: `{markdown_value(validation_state)}`",
         f"- Admission/artifact limit: `{markdown_value(summary.get('admission_error') or summary.get('artifact_limit_exceeded'))}`",
+        f"- Graph plans: `{markdown_value(graph_plans or None)}` (evidence in `graph/index.json`)",
         "",
         "## 2. Phase timeline",
         "",
@@ -2262,6 +2832,7 @@ def validate_bundle(
         "screenshots/manifest.json",
         "gates.json",
         "filtered-logs/index.json",
+        "graph/index.json",
     )
     for relative in versioned_json:
         value = parsed_json.get(relative)
@@ -2340,6 +2911,53 @@ def validate_bundle(
             f"events.jsonl lifecycle imbalance: {detail}"
             for detail in events_validation.get("lifecycle_errors", [])
         )
+
+    # Graph state evidence. Bundles written before the collector read Graph
+    # state do not name it in their manifest and are not held to it.
+    collection = manifest.get("collection", {}) if isinstance(manifest, dict) else {}
+    graph_index = parsed_json.get("graph/index.json")
+    if isinstance(collection, dict) and collection.get("graph_state") and graph_index is None:
+        errors.append("missing required artifact: graph/index.json")
+    if isinstance(graph_index, dict):
+        indexed_plans: set[Any] = set()
+        failed_plans: list[str] = []
+        for plan in graph_index.get("plans", []):
+            if not isinstance(plan, dict):
+                errors.append("graph/index.json holds a malformed plan record")
+                continue
+            plan_id = plan.get("plan_id")
+            indexed_plans.add(plan_id)
+            for key in ("activities", "checkpoint", "costs", "diagnose"):
+                entry = plan.get(key)
+                artifact = entry.get("artifact") if isinstance(entry, dict) else None
+                if artifact and not (bundle / artifact).is_file():
+                    errors.append(f"Graph evidence for plan {plan_id} names a missing artifact: {artifact}")
+            activities = plan.get("activities")
+            rows = parsed_jsonl.get(activities.get("artifact"), []) if isinstance(activities, dict) else []
+            if any(not isinstance(row, dict) or row.get("run_id") != plan.get("run_id") for row in rows):
+                errors.append(f"Graph activities for plan {plan_id} contain another run_id")
+            if any(
+                isinstance(row, dict)
+                and any(isinstance(item, dict) and "body" in item for item in row.get("signals") or [])
+                for row in rows
+            ):
+                errors.append(f"Graph activities for plan {plan_id} hold signal bodies")
+            if str(plan.get("status", "")).lower() in GRAPH_FAILED_STATUSES:
+                failed_plans.append(str(plan_id))
+        if failed_plans and isinstance(summary, dict) and summary.get("state") == "succeeded":
+            errors.append(f"Graph plan(s) {', '.join(failed_plans)} failed but the command is reported successful")
+        for row in parsed_jsonl.get("events.jsonl", []):
+            if isinstance(row, dict) and normalized_event_type(row) in RUN_START_NAMES:
+                for plan_id in row.get("plan_ids") if isinstance(row.get("plan_ids"), list) else []:
+                    if plan_id not in indexed_plans:
+                        warnings.append(f"no Graph state evidence for plan {plan_id} named by run.started")
+        for check in graph_index.get("gate_timeouts", []):
+            if isinstance(check, dict) and check.get("agrees") is False:
+                warnings.append(
+                    f"gate {check.get('gate')} of {check.get('plan_id')}/{check.get('task_id')} timed out after "
+                    f"{check.get('event_timeout_ms')} ms, but the gate-failure ledger records "
+                    f"{check.get('ledger_failure_kinds') or 'no row'}"
+                )
 
     command_rows = parsed_jsonl.get("commands.jsonl", [])
     primary_commands = [
@@ -2627,6 +3245,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         status_source = cwd / status_source
     status_source = status_source.resolve(strict=False)
     log_baselines = append_log_baselines(cwd, args.append_log)
+    graph_baselines = graph_state_baselines(cwd)
+    graph_ledger_offsets = ledger_baselines(cwd)
+    diagnose_binary = roko_plan_run_binary(execution_argv, cwd)
     roko_screenshot_root = cwd / ".roko" / "screenshots"
     roko_screenshot_before = {
         str(path.resolve(strict=False))
@@ -2688,6 +3309,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             "png_hooks": [raw.split("=", 1)[0] for raw in args.png_hook],
             "collect_roko_screenshots": args.collect_roko_screenshots,
             "resource_admission": args.admit_resources,
+            "graph_state": GRAPH_STATE_DIR,
+            "graph_ledgers": list(GRAPH_LEDGER_LOGS),
+            "graph_diagnose": diagnose_binary is not None,
         },
         "requirements": {
             "events": args.require_events,
@@ -2951,6 +3575,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     if plan_id is None and len(initial_event_facts.get("plan_ids", [])) == 1:
         plan_id = initial_event_facts["plan_ids"][0]
     log_filter = filter_append_logs(log_baselines, bundle, {run_id, *runner_run_ids})
+    graph_state = collect_graph_state(
+        bundle,
+        cwd,
+        graph_baselines,
+        graph_ledger_offsets,
+        initial_event_facts,
+        diagnose_binary,
+        env,
+        args.hook_timeout,
+    )
     endpoint_results = collect_endpoints(
         bundle,
         args.endpoint_base if admission_error is None else None,
@@ -3136,9 +3770,24 @@ def main(argv: Sequence[str] | None = None) -> int:
             "diff_stat_capture": bounded_capture_metadata(diff_stat_result),
         },
         "events": events_validation,
+        "graph": {
+            "plans": [
+                {key: plan.get(key) for key in ("plan_id", "run_id", "status", "mode")}
+                for plan in graph_state["plans"]
+            ],
+            "skipped_reason": graph_state["skipped_reason"],
+        },
         "collection": {
             "status_samples": status_sampler.samples,
             "status_parse_errors": status_sampler.parse_errors,
+            # Recorded as skipped, never as sampled, when the runner wrote no
+            # status revision (the Graph engine does not write status.json).
+            "status_sampling": (
+                {"state": "sampled", "reason": None}
+                if status_sampler.samples
+                else {"state": "skipped", "reason": "no status-file revision was observed during the command"}
+            ),
+            "graph_plans": len(graph_state["plans"]),
             "filtered_log_lines": sum(row.get("lines_selected", 0) for row in log_filter["sources"]),
             "endpoint_requests": len(endpoint_results.get("results", [])),
             "cli_smokes": len(smoke_results.get("results", [])),
@@ -3155,6 +3804,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "resource_admission": "resource-admission.json",
             "artifact_limits": "artifact-limits.json",
             "filtered_logs": "filtered-logs/index.json",
+            "graph": "graph/index.json",
             "endpoints": "endpoints.json",
             "cli_smoke": "cli-smoke.json",
             "screenshots": "screenshots/manifest.json",

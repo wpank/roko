@@ -10,6 +10,12 @@
 **Parent:** [08-LEARNING](../../08-LEARNING.md) section 10
 
 **Source:** `crates/roko-learn/src/aggregate.rs`
+
+> **Status (2026-09-29): a hypothesis, not a result.** In short, no measurement shows
+> Roko's learning compounding, and recent studies argue against expecting it (the status
+> note in [08-LEARNING](../../08-LEARNING.md) section 10 cites them). The defensible
+> claim is bounded, audited improvement with rollback. The metric functions in
+> `aggregate.rs` have no production caller at `7c556bc0a`.
 (`AutocatalyticMetrics`, `compute_compounding_metrics`),
 `crates/roko-learn/src/cfactor.rs` (C-Factor trend tracking)
 

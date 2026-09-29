@@ -73,8 +73,11 @@ pub const TASK_OUTCOME_EXTENSION: &str = "roko.task.outcome@1";
 pub enum GraphCheckpointStatus {
     /// The process may have stopped before every node reached a terminal state.
     Running,
-    /// Every graph node completed successfully.
+    /// Every graph node completed and every task passed its verify steps.
     Succeeded,
+    /// Every graph node completed and no task failed, but some tasks ran no
+    /// verify step, so the plan did not succeed.
+    Unverified,
     /// At least one graph node failed.
     Failed,
     /// An operator cancelled the plan before every node finished.
@@ -91,6 +94,7 @@ impl GraphCheckpointStatus {
         match self {
             Self::Running => "running",
             Self::Succeeded => "succeeded",
+            Self::Unverified => "unverified",
             Self::Failed => "failed",
             Self::Cancelled => "cancelled",
             Self::Interrupted => "interrupted",
@@ -1834,6 +1838,7 @@ mod tests {
                 inputs: Vec::new(),
                 outputs: Vec::new(),
                 execution_class: roko_graph::ExecutionClass::Activity,
+                exclusive: Vec::new(),
             })
             .expect("node");
         graph
@@ -1861,6 +1866,7 @@ mod tests {
                 inputs: Vec::new(),
                 outputs: Vec::new(),
                 execution_class: roko_graph::ExecutionClass::Activity,
+                exclusive: Vec::new(),
             })
             .expect("node");
         graph

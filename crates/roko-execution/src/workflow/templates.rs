@@ -237,6 +237,7 @@ pub mod cell_types {
 /// The `generation` index is embedded in node IDs to prevent aliasing across
 /// generations.
 #[must_use]
+#[allow(clippy::too_many_lines)]
 pub fn build_generation_subgraph(
     descriptor: &WorkflowTemplateDescriptor,
     generation: u32,
@@ -264,6 +265,7 @@ pub fn build_generation_subgraph(
             inputs: vec![],
             outputs: vec!["prompt".to_string()],
             execution_class: ExecutionClass::Workflow,
+            exclusive: vec![],
         })
         .expect("compose node is first, cannot duplicate");
 
@@ -275,6 +277,7 @@ pub fn build_generation_subgraph(
             inputs: vec!["prompt".to_string()],
             outputs: vec!["output".to_string()],
             execution_class: ExecutionClass::Activity,
+            exclusive: vec![],
         })
         .expect("implement node unique within generation");
 
@@ -286,6 +289,7 @@ pub fn build_generation_subgraph(
             inputs: vec!["output".to_string()],
             outputs: vec!["verdict".to_string()],
             execution_class: ExecutionClass::Activity,
+            exclusive: vec![],
         })
         .expect("gate node unique within generation");
 
@@ -319,6 +323,7 @@ pub fn build_generation_subgraph(
                 inputs: vec!["verdict".to_string()],
                 outputs: vec!["review_verdict".to_string()],
                 execution_class: ExecutionClass::Activity,
+                exclusive: vec![],
             })
             .expect("review node unique within generation");
 
@@ -344,6 +349,7 @@ pub fn build_generation_subgraph(
                 inputs: vec![],
                 outputs: vec!["commit_hash".to_string()],
                 execution_class: ExecutionClass::Activity,
+                exclusive: vec![],
             })
             .expect("commit node unique within generation");
 
@@ -363,6 +369,7 @@ pub fn build_generation_subgraph(
 ///
 /// Topology: `Compose(failure evidence) -> AutoFix(Activity) -> Gate -> [Review] -> [Commit]`
 #[must_use]
+#[allow(clippy::too_many_lines)]
 pub fn build_autofix_subgraph(descriptor: &WorkflowTemplateDescriptor, generation: u32) -> Graph {
     let prefix = format!("gen{generation}");
     let mut graph = Graph::new(GraphMetadata {
@@ -386,6 +393,7 @@ pub fn build_autofix_subgraph(descriptor: &WorkflowTemplateDescriptor, generatio
             inputs: vec![],
             outputs: vec!["prompt".to_string()],
             execution_class: ExecutionClass::Workflow,
+            exclusive: vec![],
         })
         .expect("compose node first");
 
@@ -397,6 +405,7 @@ pub fn build_autofix_subgraph(descriptor: &WorkflowTemplateDescriptor, generatio
             inputs: vec!["prompt".to_string()],
             outputs: vec!["output".to_string()],
             execution_class: ExecutionClass::Activity,
+            exclusive: vec![],
         })
         .expect("autofix node unique");
 
@@ -408,6 +417,7 @@ pub fn build_autofix_subgraph(descriptor: &WorkflowTemplateDescriptor, generatio
             inputs: vec!["output".to_string()],
             outputs: vec!["verdict".to_string()],
             execution_class: ExecutionClass::Activity,
+            exclusive: vec![],
         })
         .expect("gate node unique");
 
@@ -438,6 +448,7 @@ pub fn build_autofix_subgraph(descriptor: &WorkflowTemplateDescriptor, generatio
                 inputs: vec!["verdict".to_string()],
                 outputs: vec!["review_verdict".to_string()],
                 execution_class: ExecutionClass::Activity,
+                exclusive: vec![],
             })
             .expect("review node unique");
 
@@ -461,6 +472,7 @@ pub fn build_autofix_subgraph(descriptor: &WorkflowTemplateDescriptor, generatio
                 inputs: vec![],
                 outputs: vec!["commit_hash".to_string()],
                 execution_class: ExecutionClass::Activity,
+                exclusive: vec![],
             })
             .expect("commit node unique");
 

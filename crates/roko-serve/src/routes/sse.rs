@@ -2,6 +2,7 @@
 //!
 //! Clients connect at `/api/events` and receive `DashboardEvent` payloads as
 //! SSE `data:` frames. Each event carries a monotonic `id:` for reconnection.
+//! An idle stream sends an `event: keepalive` frame every 8 s.
 
 use std::convert::Infallible;
 use std::sync::Arc;
@@ -12,8 +13,10 @@ use axum::http::{HeaderMap, HeaderValue};
 use axum::response::IntoResponse;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::routing::get;
+use futures::Stream;
 use futures::stream::{self, StreamExt};
 use roko_core::dashboard_snapshot::DashboardSnapshot;
+use roko_runtime::cancel::CancelToken;
 use roko_runtime::event_bus::Envelope;
 use roko_runtime::state_hub::StateHubCursorSnapshot;
 use serde::{Deserialize, Serialize};
@@ -135,16 +138,41 @@ async fn sse_handler(
     );
 
     // Use a shorter keep-alive interval than the default 15s to survive
-    // aggressive proxy timeouts (Railway 30s, Nginx 60s). The "keepalive"
-    // text triggers a proper SSE comment event in clients that ignore
-    // empty comments.
-    let sse = Sse::new(stream::iter(replay).chain(live)).keep_alive(
+    // aggressive proxy timeouts (Railway 30s, Nginx 60s).
+    let sse = Sse::new(until_shutdown(
+        stream::iter(replay).chain(live),
+        state.cancel.clone(),
+    ))
+    .keep_alive(
         KeepAlive::new()
             .interval(std::time::Duration::from_secs(8))
-            .text("keepalive"),
+            .event(keepalive_event()),
     );
 
     (sse_response_headers(), sse)
+}
+
+/// Ends `events` once the server starts shutting down.
+///
+/// Graceful shutdown waits for every open response to finish, and an event
+/// stream never finishes by itself: one open `/api/events` client kept
+/// `roko serve` from exiting on Ctrl-C. Every SSE route wraps its stream in
+/// this.
+pub(crate) fn until_shutdown<S: Stream>(
+    events: S,
+    shutdown: CancelToken,
+) -> impl Stream<Item = S::Item> {
+    events.take_until(async move { shutdown.cancelled().await })
+}
+
+/// The keep-alive frame of `/api/events`: `event: keepalive` with `{}` as data.
+///
+/// It is a named event rather than an SSE comment because `EventSource` never
+/// hands comments to script, so the portal's silence watchdog could not tell
+/// an idle stream from a dead one. `EventSource` clients that do not listen
+/// for `keepalive` never see it, and a browser drops an event without data.
+fn keepalive_event() -> Event {
+    Event::default().event("keepalive").data("{}")
 }
 
 fn dashboard_event(envelope: Envelope<roko_core::DashboardEvent>, scrubber: &LogScrubber) -> Event {
@@ -206,7 +234,77 @@ fn replay_start(headers: &HeaderMap, query: &ReplayQuery) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use http_body_util::BodyExt as _;
     use roko_runtime::StateHub;
+
+    use crate::deploy::create_backend;
+    use crate::runtime::NoOpRuntime;
+
+    fn test_state() -> (tempfile::TempDir, Arc<AppState>) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let deploy_backend =
+            Arc::from(create_backend("manual", None, None, None).expect("manual backend"));
+        let state = Arc::new(
+            AppState::new(
+                dir.path().to_path_buf(),
+                Arc::new(NoOpRuntime),
+                roko_core::config::schema::RokoConfig::default(),
+                deploy_backend,
+            )
+            .expect("AppState::new"),
+        );
+        (dir, state)
+    }
+
+    /// Open `/api/events` and return its response body.
+    async fn open_event_stream(state: Arc<AppState>) -> axum::body::Body {
+        sse_handler(
+            HeaderMap::new(),
+            Query(ReplayQuery::default()),
+            State(state),
+        )
+        .await
+        .into_response()
+        .into_body()
+    }
+
+    /// An idle stream's keep-alive is a named `keepalive` event, which
+    /// `EventSource` hands to the portal's silence watchdog. An SSE comment
+    /// never reaches script, so the portal reopened idle streams every 60 s.
+    #[tokio::test(start_paused = true)]
+    async fn idle_stream_sends_a_named_keepalive_event_every_8_seconds() {
+        let (_dir, state) = test_state();
+        let mut body = open_event_stream(state).await;
+
+        for _ in 0..2 {
+            let started = tokio::time::Instant::now();
+            let frame = body
+                .frame()
+                .await
+                .expect("the stream stays open")
+                .expect("a frame")
+                .into_data()
+                .expect("a data frame");
+            assert_eq!(&frame[..], b"event: keepalive\ndata: {}\n\n");
+            assert_eq!(started.elapsed(), std::time::Duration::from_secs(8));
+        }
+    }
+
+    /// Graceful shutdown waits for open responses, so the stream must end when
+    /// the server is cancelled: one client that never disconnects kept
+    /// `roko serve` from exiting.
+    #[tokio::test]
+    async fn stream_ends_when_the_server_shuts_down() {
+        let (_dir, state) = test_state();
+        let mut body = open_event_stream(Arc::clone(&state)).await;
+
+        state.cancel.cancel();
+
+        let end = tokio::time::timeout(std::time::Duration::from_secs(1), body.frame())
+            .await
+            .expect("the stream ends promptly");
+        assert!(end.is_none(), "no frame after shutdown: {end:?}");
+    }
 
     #[test]
     fn replay_starts_after_last_acknowledged_event() {

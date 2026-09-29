@@ -26,7 +26,7 @@ use std::time::Instant;
 
 use axum::Router;
 use axum::extract::State;
-use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
+use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade, close_code};
 use axum::response::IntoResponse;
 use axum::routing::get;
 use futures::SinkExt;
@@ -265,6 +265,17 @@ async fn handle_ws(state: Arc<AppState>, socket: WebSocket) {
                     }
                     _ => {}
                 }
+            }
+            // The server is shutting down: say so, rather than leave the socket
+            // open until the process exits.
+            () = state.cancel.cancelled() => {
+                let _ = sink
+                    .send(Message::Close(Some(CloseFrame {
+                        code: close_code::AWAY,
+                        reason: "server shutting down".into(),
+                    })))
+                    .await;
+                break;
             }
             // Outgoing events.
             event = rx.recv() => {

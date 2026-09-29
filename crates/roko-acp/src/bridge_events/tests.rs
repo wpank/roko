@@ -1615,6 +1615,39 @@ async fn append_acp_episode_records_pipeline_kind() {
 }
 
 #[test]
+fn acp_episodes_start_no_dream_when_dreams_are_off() {
+    let tmp = tempfile::tempdir().expect("create tmpdir");
+    let workdir = tmp.path();
+    let roko_dir = workdir.join(".roko");
+    std::fs::create_dir_all(&roko_dir).expect("create .roko");
+    let episode_log: String = (0..12)
+        .map(|i| {
+            let episode = Episode::new("code", format!("acp-session-{i}"));
+            serde_json::to_string(&episode).expect("serialize episode") + "\n"
+        })
+        .collect();
+    std::fs::write(roko_dir.join("episodes.jsonl"), episode_log).expect("write episode log");
+    assert!(!roko_dir.join("dreams").exists(), "no dream report yet");
+
+    // Default config: 12 episodes and no dream report start no dream.
+    let config = RokoConfig::default();
+    assert!(!config.learning.dreams.trigger_on_acp_episodes);
+    assert_eq!(acp_dream_due(workdir, &config), None);
+    // No Tokio runtime runs this test, so spawning a dream would panic.
+    maybe_spawn_dream_consolidation(workdir, &config);
+    assert!(!roko_dir.join("dreams").exists());
+
+    // The opt-in key starts one, with the threshold read from config.
+    let mut opted_in = RokoConfig::default();
+    opted_in.learning.dreams.trigger_on_acp_episodes = true;
+    opted_in.learning.dreams.acp_episode_threshold = 10;
+    assert_eq!(acp_dream_due(workdir, &opted_in), Some(12));
+
+    opted_in.learning.dreams.acp_episode_threshold = 13;
+    assert_eq!(acp_dream_due(workdir, &opted_in), None);
+}
+
+#[test]
 fn acp_routing_context_maps_modes_to_roles() {
     let tmp = tempfile::tempdir().expect("create tmpdir");
     let workdir = tmp.path();
@@ -3083,6 +3116,38 @@ async fn cascade_observation_updates_the_dispatched_config_key() {
     let stats = router_loaded.observation_snapshot();
     assert_eq!(stats.get(&config_key).map(|entry| entry.trials), Some(1));
     assert_eq!(stats.get(&config_key).map(|entry| entry.successes), Some(1));
+}
+
+/// A failed dispatch is a trial without a success, and still reaches LinUCB
+/// (bug-8da8ba).
+#[tokio::test]
+async fn cascade_observation_counts_failed_dispatch_as_failure() {
+    use roko_learn::cascade_router::CascadeRouter;
+
+    let tmp = tempfile::tempdir().expect("create tmpdir");
+    let router_dir = tmp.path().join(".roko").join("learn");
+    std::fs::create_dir_all(&router_dir).expect("create router dir");
+    let router_path = router_dir.join("cascade-router.json");
+    let config_key = "my-custom-model-key".to_string();
+
+    record_cascade_observation(
+        router_path.clone(),
+        config_key.clone(),
+        RoutingContext::default(),
+        false,
+        1_000,
+        None,
+        vec![config_key.clone()],
+    )
+    .await
+    .expect("observation task");
+
+    let router_loaded = CascadeRouter::load_or_new(&router_path, vec![config_key.clone()]);
+    assert_eq!(router_loaded.total_observations(), 1);
+    assert_eq!(
+        router_loaded.confidence_snapshot().get(&config_key),
+        Some(&(1, 0))
+    );
 }
 
 // ── P2-ACP-3: client capability declaration ──────────────────────────────────

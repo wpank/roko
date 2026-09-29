@@ -2,14 +2,16 @@
 id = "gap-b3fa0a"
 kind = "gap"
 title = "Red-on-base checker: prove each task's verify step fails on a clean base (S07.2)"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p1"
 goal = "golden-path"
 size = "M"
 subsystem = ["benchmarks/viabilitybench"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-29
+last_verified_rev = "9a442b443"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e8"
 discovered_from = "tmp/cybernetic-harness/execution/checklist.json (S07.2); tldr/04 design rule 3"
 anchors = ["benchmarks/viabilitybench/speclint/dynamic.py", "benchmarks/viabilitybench/speclint/tests/test_dynamic.py"]
@@ -22,6 +24,12 @@ command = "grep -qw 'def test_verify_passing_on_base_is_hf3' benchmarks/viabilit
 
 [[verify]]
 command = "grep -qw 'def test_removes_only_its_own_worktrees' benchmarks/viabilitybench/speclint/tests/test_dynamic.py && benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/speclint/tests/test_dynamic.py -k test_removes_only_its_own_worktrees -q"
+
+[closed]
+at = 2026-09-29
+commit = "9a442b443"
+by = "commit trailer"
+evidence = "9a442b443: `speclint.py plans/ --dynamic` (speclint/dynamic.py) runs each implementer task's verify steps twice, as bash -o pipefail -c, in a detached worktree of the base in a scratch directory outside every worktree (120 s cap). The same step red in both runs is fail (SQ06 = 1), all steps green is pass (HF3), and disagreement, a timeout, a failing pass_on_base step or no known base is unknown (0, flagged). Fixture fixtures/dynamic/red-on-base covers every outcome: fail, pass/HF3, flaky, timeout, not run, base_broken, and archived no_base. tests/test_dynamic.py (25 tests) proves a run leaves worktrees, refs, admin entries, the checkout and a prunable foreign worktree exactly as it found them, also after an interrupt and a mid-step SIGTERM (the step's process group is killed). Mutations that skip the worktree removal, prune, skip the reset between runs, skip the plan-directory copy, skip the landed check, drop the SIGTERM handler or kill only the step's leader each fail a test. Both [[verify]] commands pass, and the speclint suite passes 79 of 79."
 +++
 
 ## Problem
@@ -72,3 +80,17 @@ Checked at `41c7ffbd6`: nothing exists. gap-1cd8d3 (the static slice) comes firs
   directory.
 - Expect many `unknown` results on archived plans whose base no longer builds. Report them; do not fail on them.
 - The Rust port is a later `plan validate --spec-quality --dynamic` flag (S07.9), after gap-46ab3f.
+- 2026-09-29 (wk-redbase): built at `9a442b443`. Where it differs from the Plan:
+  - **One worktree per base commit, not per plan.** Before every run of every task the worktree is reset
+    (`git reset --hard`, `git clean -ffdx`) and the plan's directory is copied in from the checkout. That is
+    stricter than one worktree per plan, and an uncommitted plan still brings its own harness.
+  - **"Has not run" comes from git**, because plan metadata cannot be trusted. Every portal-programme plan says
+    `status = "ready"`, `done = 0`, and 7 of them have no checkpoint in `.roko/state/graph`.
+    - Without `--base`, archived plans are `unknown`.
+    - So is a plan whose `files` were touched by the commit that added it, or by any later commit. That catches
+      the bulk commit `9c6ec420c`, which landed 30 plans together with their code.
+    - At `7c556bc0a` the default checks 11 active plans at HEAD (9 demos, `qa-workflow-validation`,
+      `workspace-doctor-improvements`). It reports 25 landed plans (every portal plan among them) and 96 archived
+      plans as `unknown`.
+  - **Not run on the real corpus**, because its steps run cargo. In a fresh worktree there is no `target/`, so
+    expect most cargo steps to hit the 120 s cap and come out `unknown`.

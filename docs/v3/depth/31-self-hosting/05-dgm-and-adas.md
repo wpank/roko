@@ -73,7 +73,7 @@ DGM's components map to existing Roko subsystems:
 |---|---|---|
 | Archive of solutions | Episode log (`.roko/episodes.jsonl`) + skill library + playbook store | Wired |
 | Candidate generation | Prompt experiment variants (ExperimentStore) | Wired |
-| Empirical evaluation | 19-gate pipeline + 4 key metrics | Wired |
+| Empirical evaluation | Per-task verify commands (the 19-gate pipeline runs only in tests) + 4 key metrics | Partial |
 | Selection pressure | UCB1/Thompson bandit algorithms | Wired |
 | Population management | Experiment archival with significance tests | Wired |
 | Open-ended evolution | ADAS-style architecture search | Not implemented |
@@ -117,7 +117,8 @@ Roko has all the components needed for ADAS:
 
 1. **Architecture representation in code:** `roko.toml` configuration +
    `SystemPromptBuilder` templates + Graph TOML definitions
-2. **Evaluation harness:** 19-gate pipeline with deterministic verification
+2. **Evaluation harness:** deterministic verification by each task's authored
+   `verify` commands (the 19-gate pipeline runs only in tests)
 3. **Performance metrics:** C-Factor, 4 key metrics, regression detection
 4. **Experiment framework:** `ExperimentStore` for A/B testing
 5. **Search strategy:** Cascade router bandits (extensible to architecture)

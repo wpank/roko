@@ -12,7 +12,7 @@ created = 2026-09-29
 updated = 2026-09-29
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e5"
 discovered_from = "tmp/cybernetic-harness/tldr/research/B1-plan-authoring.md (Tier → model routing row); tldr/05 P1 #8"
-anchors = ["crates/roko-core/src/task.rs::TaskComplexityBand", "crates/roko-cli/src/graph_task_dispatch.rs::build_routing_context", "crates/roko-cli/src/graph_task_dispatch.rs::is_express_task", "crates/roko-core/src/config/budget.rs::BudgetConfig::task_limit_usd", "crates/roko-core/src/config/gates.rs::PipelineConfig::for_tier", "crates/roko-cli/src/plan_generate.rs::TaskTier", "crates/roko-cli/src/dispatch/model_routing.rs::tier_to_complexity"]
+anchors = ["crates/roko-core/src/task.rs::TaskComplexityBand", "crates/roko-cli/src/graph_task_dispatch/routing_context.rs::build_routing_context", "crates/roko-cli/src/graph_task_dispatch/turn_policy.rs::is_express_task", "crates/roko-core/src/config/budget.rs::BudgetConfig::task_limit_usd", "crates/roko-core/src/config/gates.rs::PipelineConfig::for_tier", "crates/roko-cli/src/plan_generate.rs::TaskTier", "crates/roko-cli/src/dispatch/model_routing.rs::tier_to_complexity"]
 lane = "rust-hot"
 parent = "spec-98f76d"
 links = { depends_on = ["gap-96f7ed"], blocks = [], related = ["gap-0f3980", "gap-1d1fa6", "gap-5a6e01"], supersedes = [], duplicate_of = "" }

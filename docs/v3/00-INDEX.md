@@ -5,12 +5,15 @@
 > **Scope**: Complete protocol specification for the Roko agent toolkit -- a Rust system
 > where agents build themselves. Defines the vocabulary, composition rules, behavioral
 > contracts, and implementation state for 39 workspace members (~1M LOC, 10,300+ tests).
-> **Implementation status**: WIRED -- The plan-execute-gate-persist loop works end-to-end.
-> Graph is the sole execution engine. 48/48 epics accepted. 124/124 executable tasks
-> complete. All 9 protocols are defined as Rust traits. The 5 primitives
-> (Signal, Pulse, Cell, Graph, Protocol) are implemented. Core self-hosting workflow is
-> operational. Chain/economic runtime integration, fresh dogfood proof, and several
-> product residuals remain.
+> **Implementation status** (corrected 2026-09-29 at `7c556bc0a`): WIRED -- The
+> plan-execute-verify-persist loop works end-to-end. Its largest recorded use is Roko's
+> portal build: 16 plans and 173 tasks, 168 of them gate-verified, run under a supervising
+> operator session (`docs/whitepaper/evidence/2026-09-29-b7-real-run-evidence.md`).
+> Graph is the sole execution engine. All 9 protocols are defined as Rust traits. The 5
+> primitives (Signal, Pulse, Cell, Graph, Protocol) are implemented. The earlier "48/48
+> epics accepted" and "all executable tasks complete" figures were programme bookkeeping,
+> not runs of this workflow, and are withdrawn (section 13). Chain/economic runtime
+> integration, a fresh live self-hosting rerun, and several product residuals remain.
 
 ---
 
@@ -23,8 +26,12 @@ CrewAI, or AutoGen.
 
 Roko's core thesis is the **scaffold thesis**: given the same LLM, agent performance varies
 dramatically based on the surrounding harness -- context engineering, verification, learning
-loops, and cognitive architecture. Roko is that scaffold, made composable and
-domain-agnostic. Empirical evidence supports this:
+loops, and cognitive architecture. Roko aims to be that scaffold, composable and
+domain-agnostic. Today it is code-first (PARTIAL at `7c556bc0a`): its one domain-neutral
+verifier is a shell command (custom `[[gates.rungs]]` and per-task `verify` steps), while
+the default gate ladder runs `cargo build`, `cargo clippy` and `cargo test`
+(`GatesConfig::effective_rungs`), the role templates are code roles, and isolation and
+integration assume git. Empirical evidence supports the scaffold thesis:
 
 - **SWE-bench Verified** (Jimenez et al. 2024): The same Claude Sonnet 3.5 achieves 30-65%
   solve rates depending on the harness. The difference is the scaffolding.
@@ -125,9 +132,15 @@ downstream reactions; only those worth persisting get promoted to Signals via **
 ### 3.3 Cell
 
 The **Cell** is the atomic computation unit. Signals in, Signals out. Every Cell declares
-its typed I/O, capabilities, and protocol conformances. Every Cell is a learner via the
-**predict-publish-correct** loop (Friston 2006): the Graph Engine calls `Cell::predict`
+its typed I/O, capabilities, and protocol conformances. By design every Cell learns through
+the **predict-publish-correct** loop (Friston 2006): the Graph Engine calls `Cell::predict`
 before execution, then `Cell::correct` after, so the Cell can update its internal model.
+That is PARTIAL at `7c556bc0a`. The engine hook runs (`execute_cell_with_retries` in
+`crates/roko-graph/src/engine.rs`), but `predict` defaults to `None`, which leaves the loop
+off, and `correct` runs only after a successful execution. `TaskExecutorCell`, which runs
+every plan task, has no `predict`, so no plan run exercises the loop. The one production
+Cell that predicts is `AssessCell` (`crates/roko-graph/src/cells/cognitive.rs`), which
+predicts its output count from its input count.
 
 | Property | Description |
 |---|---|
@@ -146,13 +159,15 @@ before execution, then `Cell::correct` after, so the Cell can update its interna
 ### 3.4 Graph
 
 The **Graph** is the universal composition mechanism. A typed DAG of Cells connected by
-edges. TOML-defined, serializable, runtime-interpreted. Graphs are themselves Cells
-(fractal composition: a Graph of Graphs is just a Graph).
+edges. TOML-defined, serializable, runtime-interpreted. In the design, Graphs are
+themselves Cells, so Graphs nest (fractal composition). That is not implemented: there is
+no `impl Cell for Graph` in `crates/roko-graph/src/`, so a Graph cannot run as a node of
+another Graph (DOCS-ONLY at `7c556bc0a`).
 
 | Property | Description |
 |---|---|
 | **DAG topology** | Cells are nodes, typed edges carry Signals between them |
-| **Parallel waves** | Independent cells execute concurrently in fan-out waves |
+| **Parallel execution** | A ready queue starts each Cell once its own dependencies settle, bounded by `max_concurrent_nodes` |
 | **Hot Graphs** | Stay resident and re-fire per tick (agent pipelines) |
 | **Snapshot/resume** | Schema-v2 cost state, graph-fingerprinted Activity resume, restart-durable checkpoints |
 | **Cost enforcement** | Atomic USD budget reservations, paid-failure-aware cost tracking |
@@ -169,9 +184,12 @@ cycle.
 ### 3.5 Protocol
 
 A **Protocol** is a behavioral contract that a Cell conforms to. Roko defines 9 protocols.
-Each supports the predict-publish-correct learning loop. A Cell publishes its prediction as
-a Pulse, reality publishes the outcome, a CalibrationPolicy joins by lineage and computes
-error, and the Cell subscribes to its error topic to update. Learning is structural.
+Each supports the predict-publish-correct learning loop. In the design, a Cell publishes its
+prediction as a Pulse, reality publishes the outcome, a CalibrationPolicy joins by lineage
+and computes error, and the Cell subscribes to its error topic to update. Learning is
+structural. The join is not wired at `7c556bc0a`: `CalibrationPolicy` runs only inside
+`run_learning_subscriber` (`crates/roko-learn/src/event_subscriber.rs`), which has no
+production caller, and the only production Cell that predicts is `AssessCell` (section 3.3).
 
 See section 4 below for the full protocol table.
 
@@ -256,9 +274,10 @@ four recurring Graph topologies.
 | **Functor** | Cross-cut that enriches Signals pre/post a Cell without changing the Graph's topology. Endofunctor F: Signal -> Signal. | Composable orthogonal concerns. | Memory enrichment, Daimon affect bias, Dreams consolidation, Safety constraints |
 | **Space** | Graph that owns a Bus partition + Store partition. Members share these resources under access control. | Isolation + collaboration boundary. | Agent, Group, Workspace, Namespace, Sandbox |
 
-**Fractal composition**: Graphs are Cells. A Graph of Graphs is just a Graph. A Pipeline
-of Pipelines is just a Pipeline. A Loop containing a Pipeline is just a Loop. This
-eliminates special glue code between subsystems.
+**Fractal composition** (design, not implemented): if Graphs were Cells, a Pipeline of
+Pipelines would itself be a Pipeline and a Loop could contain a Pipeline, with no special
+glue code between subsystems. There is no `impl Cell for Graph` in `crates/roko-graph/src/`
+at `7c556bc0a`, so today these patterns compose only inside a single Graph.
 
 ---
 
@@ -374,7 +393,7 @@ Concrete implementations of the 9 protocol traits.
 | Crate | Path | What | Status |
 |---|---|---|---|
 | `roko-std` | `crates/roko-std/` | 35 default tool definitions (16 executable local + 19 GitHub MCP); 52 with typed optional-chain placeholders | Stable |
-| `roko-gate` | `crates/roko-gate/` | 19 gates, 7-rung pipeline, adaptive thresholds | Wired |
+| `roko-gate` | `crates/roko-gate/` | 19 gates, 7-rung pipeline, adaptive thresholds | Partial: plan runs use `ShellGate` for authored verify commands; the rung pipeline runs only in tests |
 | `roko-eval` | `crates/roko-eval/` | Unified evaluation framework: EvidenceCollector, Criterion, Profile traits | Wired |
 | `roko-fs` | `crates/roko-fs/` | FileSubstrate (JSONL), GC, layout | Stable |
 | `roko-compose` | `crates/roko-compose/` | Prompt assembly, 11 role templates, 9-layer SystemPromptBuilder, enrichment | Wired |
@@ -395,9 +414,9 @@ Plan execution, graph engine, and runtime service composition.
 
 | Crate | Path | What | Status |
 |---|---|---|---|
-| `roko-graph` | `crates/roko-graph/` | Sole execution engine: DAG cells, topology, cost state, parallel waves, immune Graph | Wired |
+| `roko-graph` | `crates/roko-graph/` | Sole execution engine: DAG cells, topology, cost state, parallel ready queue, immune Graph | Wired |
 | `roko-execution` | `crates/roko-execution/` | RuntimeServices builder (7 profiles), diagnostic service, execution control, feedback settlement | Wired |
-| `roko-conductor` | `crates/roko-conductor/` | 12 watchers, circuit breaker, diagnosis | Wired |
+| `roko-conductor` | `crates/roko-conductor/` | 12 watchers, circuit breaker, diagnosis | Built, not wired: nothing evaluates it on plan runs |
 
 ### Cognition layer
 
@@ -408,7 +427,7 @@ Learning, memory, affect, and dreams.
 | `roko-learn` | `crates/roko-learn/` | Episodes, playbooks, bandits, model routing, experiments, efficiency | Wired |
 | `roko-neuro` | `crates/roko-neuro/` | Durable knowledge store, distillation, tier progression | Wired |
 | `roko-dreams` | `crates/roko-dreams/` | Offline consolidation (hypnagogia, imagination, cycle), scheduling | Wired |
-| `roko-daimon` | `crates/roko-daimon/` | Affect engine, somatic markers, PAD vector, dispatch modulation | Wired |
+| `roko-daimon` | `crates/roko-daimon/` | Affect engine, somatic markers, PAD vector, dispatch modulation | Partial: affect feeds routing; `modulate_dispatch` and somatic markers have no caller |
 
 ### Infrastructure layer
 
@@ -416,8 +435,8 @@ Gateway, plugins, connectivity, and configuration.
 
 | Crate | Path | What | Status |
 |---|---|---|---|
-| `roko-gateway` | `crates/roko-gateway/` | 9-stage inference pipeline: routing, caching, backpressure, cost accounting | Wired |
-| `roko-plugin` | `crates/roko-plugin/` | Plugin manifests, WASM hooks, signed deps, semantic-version resolution | Wired |
+| `roko-gateway` | `crates/roko-gateway/` | 9-stage inference pipeline: routing, caching, backpressure, cost accounting | Wired in `roko serve` only; plan runs don't use it |
+| `roko-plugin` | `crates/roko-plugin/` | Plugin manifests, WASM hook validation (no hook runtime), signed deps, semantic-version resolution | Wired |
 | `roko-chain` | `crates/roko-chain/` | Optional chain client/runtime primitives, local registry, marketplace, arena, DeFi state machines | Partial (local state machines tested; chain transport/indexing remain Phase 2+) |
 
 ### Code intelligence layer
@@ -605,7 +624,9 @@ only path into the audit DAG). **Projection** converts Signal -> Pulse (lossy br
 **Predict-publish-correct** via Bus (Friston 2006). Every Cell publishes its prediction as
 a Pulse, subscribes to its own error topic, and adjusts. Learning is structural -- it
 emerges from the same pub/sub fabric that carries heartbeats and gate verdicts, not from a
-separate bolted-on subsystem.
+separate bolted-on subsystem. This is the design principle; at `7c556bc0a` it holds only
+in part: no Cell that runs plan tasks predicts, and nothing joins predictions with outcomes
+(sections 3.3 and 3.5).
 
 ### P3: Demurrage is default
 
@@ -751,23 +772,23 @@ persistence, migration, payment, or other high-risk changes.
 
 ## 13. Implementation Status Summary
 
-As of 2026-09-15 (source: CLAUDE.md):
+As of 2026-09-15 (source: CLAUDE.md), with the rows corrected on 2026-09-29 marked:
 
 | Component | Status | Key Milestone |
 |---|---|---|
 | Plan-execute-gate-persist loop | **End-to-end** | Graph engine is sole executor |
-| 48/48 epics | **Accepted** | No partial or greenfield epics remain |
-| 124/124 executable tasks | **Complete (100%)** | Across 30 plans |
+| 48/48 epics | **Accepted (manifest only)** | Corrected 2026-09-29: accepted as programme manifests, mostly built outside this workflow (note below) |
+| Executable-task count | **Withdrawn** | Corrected 2026-09-29: the old "all 124 tasks complete" count was stale (note below) |
 | Safety layer (E34 8/8) | **Complete** | Trust-origin IFC, 5-head corrigibility, immune Graph, sandbox policy |
 | Telemetry Lens (E33 9/9) | **Complete** | 11 built-in executors, 39 event variants, restart-durable history |
-| Agent cognitive autonomy (E23 10/10) | **Complete** | Lifecycle type-state, behavioral vitality, CorticalState, EFE routing |
-| Advanced learning (E25 10/10) | **Complete** | HDC consolidation, hindsight, c-factor governance, playbook enrichment |
+| Agent cognitive autonomy (E23 manifest 10/10) | **Partial** | Corrected 2026-09-29: lifecycle type-state, behavioral vitality and CorticalState are built; affect reaches routing only, and EFE routing has no caller (11-AFFECT) |
+| Advanced learning (E25 manifest 10/10) | **Partial** | Corrected 2026-09-29: HDC consolidation, hindsight, c-factor governance and playbook enrichment are built; 2 of the 8 feedback loops close on plan runs (08-LEARNING section 11) |
 | Advanced memory (E24 10/10) | **Complete** | Demurrage, falsifiers, HDC lookup, temporal query, distillation, dreams |
-| Inference gateway (E26 12/12) | **Complete** | 9-stage pipeline, caching, backpressure, cost accounting, key rotation |
+| Inference gateway (E26 12/12) | **Complete, `roko serve` only** | 9-stage pipeline, caching, backpressure, cost accounting, key rotation. Corrected 2026-09-29: plan runs don't use it (20-GATEWAY) |
 | Feeds and recipes (E27 10/10) | **Complete** | Cell-composed feeds, discovery, Bus bridging, recipe DAG evaluation |
 | Agent groups (E28 8/8) | **Complete** | Membership, permissions, coordination, knowledge flows, privacy filtering |
 | Triggers (E31 8/8) | **Complete** | 7 sources, IANA/DST cron, EVM ABI/finality/reorg, CA-verified mTLS |
-| Tools/plugins (E32 8/8) | **Complete** | Signed deps, WASM hooks, strict admission, verified relay/install |
+| Tools/plugins (E32 8/8) | **Partial** | Signed deps, strict admission, verified relay/install. Corrected 2026-09-29: WASM hooks are validated at install but never run; their runtime was removed with Runner-v2 (19-TOOLS-PLUGINS) |
 | Named surfaces (E37 9/9) | **Complete** | Workbench/Inbox/Canvas/Minimap/Autonomy projections, StateHub routes |
 | Marketplace contracts (E38 9/9) | **Complete (contract/stub)** | Artifact/package/publish/economics tested; durable storage remains |
 | Payments (E36 8/8) | **Complete** | x402 batching, MPP sessions, reputation pricing, cost persistence |
@@ -779,6 +800,15 @@ As of 2026-09-15 (source: CLAUDE.md):
 | Arenas/evals (E40 + R03) | **Scoped complete** | Arena registry, attempt submission, settlement, leaderboard/prize/reputation |
 | Meta-agent lineage (R04) | **Scoped complete** | Owner-scoped lifecycle, non-widening authority, 5-head evidence |
 | Engine convergence | **Done** | Graph sole engine (#260/#276); Runner-v2 retained as --engine legacy |
+
+> **Correction (2026-09-29, at `7c556bc0a`).** The 48 epics were accepted as programme
+> manifests; accepting them did not mean running this workflow. The frozen status table lists
+> the executable-task count as stale (`work/history/claude-md-status-2026-09-28.md`), and the
+> companion audit of the repository history (2026-09-28) credits Roko's own plan runner with
+> 0.22-0.67% of the Rust lines added and finds no runner record for at least 122 of the 124
+> tasks. The best current evidence that the workflow runs end-to-end is the portal build: 16
+> plans and 173 tasks, 168 of them gate-verified
+> (`docs/whitepaper/evidence/2026-09-29-b7-real-run-evidence.md`).
 
 ### Remaining work
 
@@ -813,11 +843,11 @@ As of 2026-09-15 (source: CLAUDE.md):
 |---|---|---|---|
 | **[05](05-AGENT.md)** | Agent Runtime | 12 provider kinds. Dual-process EFE routing. 3 cognitive timescales. Vitality and type-state lifecycle. CorticalState. Somatic markers. | WIRED |
 | **[06](06-COMPOSITION.md)** | Composition | Prompt assembly. 11 role templates. 9-layer SystemPromptBuilder. VCG attention auction. Section effect tracking. Token budget management. | WIRED |
-| **[07](07-GATES.md)** | Gates and Verification | 19 gates. 7-rung pipeline. Adaptive EMA thresholds. Conjunctive hard + Pareto soft. Evidence typing. Gate dispatch wiring. | WIRED |
-| **[08](08-LEARNING.md)** | Learning Loops | 4 learning loops. Autocatalytic compounding. Playbooks. Episodes. CascadeRouter. A/B experiments. Adaptive thresholds. HDC clustering. | COMPLETE (E25 10/10) |
+| **[07](07-GATES.md)** | Gates and Verification | 19 gates. 7-rung pipeline. Adaptive EMA thresholds. Conjunctive hard + Pareto soft. Evidence typing. Gate dispatch wiring. | PARTIAL (plan tasks run their authored verify commands) |
+| **[08](08-LEARNING.md)** | Learning Loops | 4 learning loops. Autocatalytic compounding (hypothesis). Playbooks. Episodes. CascadeRouter. A/B experiments. Adaptive thresholds. HDC clustering. | PARTIAL (E25 manifest 10/10) |
 | **[09](09-MEMORY.md)** | Memory and Knowledge | Neuro store. Demurrage economics. HDC algebra. 6 knowledge types. 4 validation tiers. Temporal knowledge graph. Distillation. | COMPLETE (E24 10/10) |
 | **[10](10-DREAMS.md)** | Dreams and Consolidation | 3-phase cycle (NREM/REM/integration). Scheduling triggers. Journals. Hypnagogia engine. Sleep-time compute. | WIRED |
-| **[11](11-AFFECT.md)** | Affect Engine | PAD vector. ALMA 3-layer temporal model. Somatic markers (Damasio). 6 behavioral states. Affect-modulated routing. Energy accounting. | WIRED |
+| **[11](11-AFFECT.md)** | Affect Engine | PAD vector. ALMA 3-layer temporal model. Somatic markers (Damasio). 6 behavioral states. Affect-modulated routing. Energy accounting. | PARTIAL |
 | **[12](12-SAFETY.md)** | Security Model | Taint lattice IFC. 5-layer immune Pipeline Graph. Capability intersection. 5-level sandbox. CaMeL. 5-head corrigibility. Quarantine. | COMPLETE (E34 8/8) |
 | **[13](13-TELEMETRY.md)** | Telemetry | 11 Lens executors. StateHub projections. 39 event variants. Bounded delivery. Breaker controls. Restart-durable history. c-factor computation. | COMPLETE (E33 9/9) |
 
@@ -830,8 +860,8 @@ As of 2026-09-15 (source: CLAUDE.md):
 | **[16](16-COORDINATION.md)** | Coordination | Stigmergy (Dorigo 1992). Digital pheromones. Morphogenetic specialization. Collective intelligence metrics. c-factor. | WIRED |
 | **[17](17-GROUPS.md)** | Groups | Persisted invitations/membership. 4 coordination modes. Knowledge/pheromone/message/event flows. Privacy filtering. | COMPLETE (E28 8/8) |
 | **[18](18-CONNECTIVITY.md)** | Connectivity and Relay | 5-method relay contract. HTTP JSON adapter. Bounded envelope delivery. Atomic cursor restore. Fail-closed reconciliation. | SCOPED COMPLETE (E29+R01/R02) |
-| **[19](19-TOOLS-PLUGINS.md)** | Tools and Plugins | 35+ shipped tool definitions. Plugin manifests. Signed dep graphs. 23-hook WASM. Strict admission. Verified relay/install. | COMPLETE (E32 8/8) |
-| **[20](20-GATEWAY.md)** | Inference Gateway | 9-stage Pipeline. Routing/fallback. Exact + semantic caches. Tool/output/thinking controls. 3-level backpressure. Key rotation. | COMPLETE (E26 12/12) |
+| **[19](19-TOOLS-PLUGINS.md)** | Tools and Plugins | 35+ shipped tool definitions. Plugin manifests. Signed dep graphs. 23-hook WASM validation (no hook runtime). Strict admission. Verified relay/install. | PARTIAL (E32 manifest 8/8) |
+| **[20](20-GATEWAY.md)** | Inference Gateway | 9-stage Pipeline. Routing/fallback. Exact + semantic caches. Tool/output/thinking controls. 3-level backpressure. Key rotation. | COMPLETE (E26 12/12); `roko serve` only |
 
 ### Configuration and surfaces
 
@@ -856,8 +886,8 @@ As of 2026-09-15 (source: CLAUDE.md):
 | # | Document | What It Defines | Status |
 |---|---|---|---|
 | **[29](29-HEARTBEAT.md)** | Universal Cognitive Loop | CoALA 9-step pipeline. 3 cognitive speeds (T0/T1/T2). Gamma/theta/delta loops. Adaptive clock. VCG attention auction. | WIRED |
-| **[30](30-CONDUCTOR.md)** | Conductor | 12 watchers. Circuit breaker. Graduated interventions. Diagnosis engine. OODA cybernetic loop. Yerkes-Dodson pressure. | WIRED |
-| **[31](31-SELF-HOSTING.md)** | Self-Hosting | 8-step CLI loop. FAST self-development. RSI taxonomy (arXiv:2607.07663). Bounded self-refinement. Gate-failure replan. GRASP admission. Autocatalytic compounding. DGM/ADAS. AI4AI-Bench. Triple-loop learning. Dogfood evidence. | WIRED |
+| **[30](30-CONDUCTOR.md)** | Conductor | 12 watchers. Circuit breaker. Graduated interventions. Diagnosis engine. OODA cybernetic loop. Yerkes-Dodson pressure. | BUILT-UNWIRED |
+| **[31](31-SELF-HOSTING.md)** | Self-Hosting | 8-step CLI loop. FAST self-development. RSI taxonomy (arXiv:2607.07663). Bounded self-refinement. Gate-failure replan (built, not wired). GRASP admission. Autocatalytic compounding. DGM/ADAS. AI4AI-Bench. Triple-loop learning. Dogfood evidence. | WIRED |
 
 ### Deployment and meta
 

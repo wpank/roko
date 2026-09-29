@@ -682,10 +682,9 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
 
                 let ids = parse_backlog_ids(backlog_ids_str)?;
                 let backlog_dir = workdir.join(DEFAULT_BACKLOG_DIR);
-                let model_key = roko_cli::model_selection::resolve_effective_model_key(
+                let model_key = roko_cli::model_selection::resolve_planner_model(
                     &workdir,
                     cli.model.clone(),
-                    Some("strategist"),
                     "plan generate --from-backlog",
                 )?;
 
@@ -827,11 +826,10 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                     );
                 }
 
-                let model_key = roko_cli::model_selection::resolve_effective_model_key(
+                let model_key = roko_cli::model_selection::resolve_planner_model(
                     &workdir,
                     cli.model.clone(),
-                    Some("strategist"),
-                    "plan generate",
+                    "plan generate --from-notes",
                 )?;
 
                 for cluster in &clusters {
@@ -925,10 +923,9 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                 &source_text,
                 source_type,
             );
-            let model_key = roko_cli::model_selection::resolve_effective_model_key(
+            let model_key = roko_cli::model_selection::resolve_planner_model(
                 &workdir,
                 cli.model.clone(),
-                Some("strategist"),
                 "plan generate",
             )?;
 
@@ -1058,10 +1055,9 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
             let source_path = find_plan_source_document(&plan_dir)?;
             let source_content = std::fs::read_to_string(&source_path)
                 .with_context(|| format!("read {}", source_path.display()))?;
-            let model_key = roko_cli::model_selection::resolve_effective_model_key(
+            let model_key = roko_cli::model_selection::resolve_planner_model(
                 &workdir,
                 cli.model.clone(),
-                Some("strategist"),
                 "plan regenerate",
             )?;
 
@@ -1500,6 +1496,7 @@ async fn cmd_plan_dir_status(
     let status_str = if let Some(gs) = &graph_status {
         match gs.as_str() {
             "succeeded" => "complete",
+            "unverified" => "unverified",
             "failed" => "failed",
             "running" => "running",
             _ => {

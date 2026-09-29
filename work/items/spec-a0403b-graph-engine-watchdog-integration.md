@@ -14,7 +14,7 @@ last_verified = 2026-09-29
 last_verified_rev = "a17d9d766"
 source = "tmp/backlog/archive/401-graph-engine-watchdog-integration.md#401 — Graph Engine Watchdog Integration"
 discovered_from = "audit:tmp/backlog/archive/401-graph-engine-watchdog-integration.md#401 — Graph Engine Watchdog Integration"
-anchors = ["crates/roko-cli/src/graph_task_dispatch.rs::GraphTaskDispatcher", "crates/roko-cli/src/graph_task_dispatch.rs::dispatch_streaming", "crates/roko-cli/src/graph_execution/plan_runner.rs::run_graph_plan", "crates/roko-cli/src/runner/conductor_adapter.rs::ConductorRing", "crates/roko-cli/src/runner/types.rs::RunConfig::from_roko_config", "crates/roko-cli/src/graph_execution/control_adapter.rs::GraphExecutionControlAdapter", "crates/roko-graph/src/cells/task_executor.rs::GraphTaskEvent", "crates/roko-core/src/config/schema.rs::ConductorConfig"]
+anchors = ["crates/roko-cli/src/graph_task_dispatch.rs::GraphTaskDispatcher", "crates/roko-cli/src/graph_task_dispatch/streaming.rs::dispatch_streaming", "crates/roko-cli/src/graph_execution/plan_runner.rs::run_graph_plan", "crates/roko-cli/src/runner/conductor_adapter.rs::ConductorRing", "crates/roko-cli/src/runner/types.rs::RunConfig::from_roko_config", "crates/roko-cli/src/graph_execution/control_adapter.rs::GraphExecutionControlAdapter", "crates/roko-graph/src/cells/task_executor.rs::GraphTaskEvent", "crates/roko-core/src/config/schema.rs::ConductorConfig"]
 links = { depends_on = [], blocks = [], related = ["gap-ebd656", "gap-fab31c"], supersedes = [], duplicate_of = "" }
 
 [[verify]]

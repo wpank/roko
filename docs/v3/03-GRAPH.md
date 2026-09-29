@@ -1,15 +1,18 @@
 # 03 -- Graph Engine
 
-> **Implementation status (2026-09):** WIRED -- Graph is the sole execution engine since
-> #260 (default) and #276 (WorkflowEngine retired). Bounded parallel waves, conditional
-> routing, TOML-defined topology, fingerprinted resume, cost enforcement, and durable
-> checkpoints are shipping. Runner-v2 retained as `--engine legacy` for one release cycle.
+> **Implementation status (2026-09; corrected 2026-09-29 at `7c556bc0a`):** WIRED -- Graph
+> is the sole execution engine since #260 (default) and #276 (WorkflowEngine retired).
+> Bounded parallel execution (a ready queue: each node starts once its own dependencies
+> settle), conditional routing, TOML-defined topology, fingerprinted resume, cost
+> enforcement, and durable checkpoints are shipping. The Runner-v2 event loop was deleted
+> on 2026-09-06 (`6b5da8616`); `--engine legacy` and `--engine runner-v2` now exit with an
+> error.
 
 > The sole execution engine for Roko. Every plan, cognitive loop, and immune
 > pipeline is a directed acyclic graph of Cells wired by typed, conditional
 > edges. TOML-defined, fingerprinted, resumable. Graph became the default
-> engine in #260, the sole engine in #276 (WorkflowEngine retired), and
-> Runner-v2 is now being removed (decided 2026-09-15).
+> engine in #260, the sole engine in #276 (WorkflowEngine retired), and the
+> Runner-v2 event loop was deleted on 2026-09-06.
 
 ---
 
@@ -73,6 +76,7 @@ pub struct Node {
     pub inputs:          Vec<String>,     // named input slots
     pub outputs:         Vec<String>,     // named output slots
     pub execution_class: ExecutionClass,  // Workflow | Activity
+    pub exclusive:       Vec<String>,     // paths written in a shared tree (see Exclusive Paths)
 }
 ```
 
@@ -121,12 +125,13 @@ pub struct GraphPolicy {
 }
 ```
 
-`max_concurrent_nodes` bounds how many Cells may execute concurrently within
-a single wave. It does not limit how many waves run in total.
+`max_concurrent_nodes` bounds how many Cells may execute at once across the
+whole Graph (see the ready queue below). With 1, nodes run one at a time in
+topological order.
 
 ---
 
-## DAG Topology and Parallel Wave Execution
+## DAG Topology and Parallel Execution
 
 ### Topological Sort
 
@@ -138,25 +143,29 @@ all nodes, `GraphError::CycleDetected` is returned.
 Source: crates/roko-graph/src/topo.rs
 ```
 
-### Parallel Waves
+### Parallel Execution: the Ready Queue
 
-`topological_waves()` groups nodes into depth layers. Within each wave, all
-nodes are independent -- no edges connect them -- so they may execute
-concurrently, bounded by `policy.max_concurrent_nodes`.
+> **Corrected 2026-09-29 (at `7c556bc0a`).** Earlier revisions described wave-by-wave
+> execution, where a whole depth layer had to finish before the next one started.
+> That has been stale since `445a60d0d` (gap-4d835d).
 
-**Algorithm:**
+With `max_concurrent_nodes` above 1, the engine runs a ready queue
+(`GraphEngine::execute_ready_queue` in `crates/roko-graph/src/engine.rs`). A node
+is decided once all of its predecessors have settled: it is condition-skipped,
+skipped after a failed dependency, replayed from the Activity log, or queued to
+run. Queued nodes start in topological order whenever fewer than
+`policy.max_concurrent_nodes` cells are running, so the rest of a node's depth
+layer never holds it back. With `max_concurrent_nodes = 1`, nodes run one at a
+time in topological order.
 
-1. Compute topological order via petgraph.
-2. For each node in order, compute `depth = max(depth of predecessors) + 1`.
-   Root nodes have depth 0.
-3. Group nodes by depth level. Each group is one wave.
+A failed node blocks only its dependants, unless the policy is `FailFast`: then
+no further node starts after the first failure. Nodes already running always
+finish, and their Activity outputs are recorded, so a resumed run can replay
+them.
 
-```
-Wave 0: [roots]              -- all zero-in-degree nodes
-Wave 1: [depends on wave 0]  -- unblocked after wave 0 completes
-Wave 2: [depends on wave 1]  -- unblocked after wave 1 completes
-...
-```
+`topological_waves()` in `crates/roko-graph/src/topo.rs` still groups nodes into
+depth layers (`depth = max(depth of predecessors) + 1`, roots at depth 0), but the
+engine does not schedule by layer.
 
 **Example: Diamond DAG**
 
@@ -166,13 +175,38 @@ Wave 2: [depends on wave 1]  -- unblocked after wave 1 completes
   [B]   [C]
     \   /
      [D]
-
-Wave 0: [A]
-Wave 1: [B, C]     <-- parallel
-Wave 2: [D]
 ```
 
-Within wave 1, B and C execute concurrently up to `max_concurrent_nodes`.
+B and C start together once A finishes, up to `max_concurrent_nodes`, and D
+starts once both have settled. If C is slow and a node E needs only B, E starts
+as soon as B finishes, while C still runs (test
+`a_ready_node_does_not_wait_for_its_wave` in `crates/roko-graph/src/engine.rs`).
+
+### Exclusive Paths
+
+A node's `exclusive` list names the files and directories it writes in a
+working tree it shares with other nodes. The engine never runs two nodes whose
+exclusive paths overlap at the same time. Paths overlap when they are the same,
+or when one is a directory holding the other; they are compared lexically,
+component by component, so `src/app` covers `src/app/view.tsx` but not
+`src/app.rs`.
+
+When a ready node's paths overlap a running node's, the node waits in the
+queue until that node finishes, and the engine logs which node it waits for.
+It holds no `max_concurrent_nodes` slot while it waits, so ready nodes behind
+it may start first. Exclusive paths order nodes but are not dependencies: if
+the running node fails, the waiting node still runs. A node with no
+exclusive paths never waits.
+
+Graph TOML declares them per node (`exclusive = ["src/lib.rs"]`), and plan
+conversion fills them from each task's `files`. They are not part of the
+Graph fingerprints, so adding or changing them never stops a checkpoint from
+resuming.
+
+```
+Source: crates/roko-graph/src/engine.rs (execute_ready_queue),
+        crates/roko-graph/src/exclusion.rs
+```
 
 ### Edge Condition Evaluation
 
@@ -318,10 +352,10 @@ flowchart TD
     Execute --> PerNode["8. Per-node: resolve Cell,<br/>evaluate edge conditions,<br/>dispatch Cell::execute(),<br/>record Activity outputs"]
     PerNode --> Budget{"9. Budget check<br/>(tokens, cost, deadline)"}
     Budget -->|Exceeded| Skip["Skip remaining nodes<br/>GraphError::BudgetExceeded"]
-    Budget -->|OK| NextNode["Next node in wave"]
+    Budget -->|OK| NextNode["Next ready node"]
     NextNode --> PerNode
     Skip --> Receipt["10. Terminal receipt + cleanup<br/>(resource release, snapshot flush)"]
-    NextNode -->|All waves done| Receipt
+    NextNode -->|All nodes settled| Receipt
     Receipt --> Feedback["11. FeedbackSettler: 12 ordered sinks<br/>(episode, efficiency, routing, knowledge, ...)"]
 
     style CLI fill:#e1f5fe
@@ -407,8 +441,9 @@ Wave 10: [T2.gate]        [T3.gate]
 Wave 11: [T2.success]     [T3.success]
 ```
 
-With `max_concurrent_nodes = 2`, waves 7-11 execute T2 and T3 nodes
-concurrently, two at a time.
+The wave labels are depth layers, not scheduling barriers: each node starts
+once its own dependencies settle. With `max_concurrent_nodes = 2`, T2's and
+T3's nodes run concurrently, two at a time.
 
 ---
 
@@ -719,7 +754,7 @@ When any limit is exceeded, the engine returns `GraphError::BudgetExceeded`
 and skips remaining nodes.
 
 Cost is tracked in microdollars (1 USD = 1,000,000) using `AtomicU64` for
-lock-free concurrent updates from parallel wave execution.
+lock-free concurrent updates from nodes that run in parallel.
 
 ### BudgetEnforcer
 
@@ -856,7 +891,7 @@ let engine = GraphEngine::new(graph, registry)
 | Method | Mode | Concurrency |
 |---|---|---|
 | `execute()` | OneShot | Sequential (one node at a time) |
-| `execute_parallel()` | OneShot | Bounded parallel waves |
+| `execute_parallel()` | OneShot | Bounded parallel ready queue |
 | `execute_at_tick(tick)` | Hot | Sequential, tick-driven |
 | `execute_parallel_at_tick(tick)` | Hot | Parallel, tick-driven |
 | `start()` | OneShot | Background task with `FlowHandle` |
@@ -893,7 +928,7 @@ Every production stage is classified for replay and idempotency:
 |---|---|---|
 | Plan loading, DAG construction | Workflow | Re-derive from `tasks.toml` |
 | Graph conversion, fingerprinting | Workflow | Deterministic given same input |
-| Topological sort, wave planning | Workflow | Re-derive from graph structure |
+| Topological sort, ready-queue ordering | Workflow | Re-derive from graph structure |
 | Budget reservation and tracking | Workflow | Re-derive from policy + consumed totals |
 | Compose/prompt assembly | Workflow | Deterministic given same context |
 | **Provider dispatch (LLM call)** | **Activity** | **Record output; replay substitutes** |

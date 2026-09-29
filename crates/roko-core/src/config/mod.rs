@@ -8,6 +8,7 @@
 use thiserror::Error;
 
 pub mod agent;
+pub mod authoring;
 pub mod budget;
 pub mod cache;
 pub mod chain;

@@ -14,7 +14,7 @@ last_verified = 2026-09-29
 last_verified_rev = "33e107da1"
 source = "session:roko-b6 2026-09-29 direct-implementation batch"
 discovered_from = "merge:fix/dispatch-timeouts-cost e0673e3e0"
-anchors = ["crates/roko-cli/src/dispatch_v2.rs::run_agent_result_bridge_with_tools_and_cli_mcp", "crates/roko-cli/src/dispatch_v2.rs::run_agent_result_bridge", "crates/roko-cli/src/dispatch_v2.rs::classify_provider_error", "crates/roko-learn/src/provider_health.rs::record_failure", "crates/roko-cli/src/graph_task_dispatch.rs::blocked_provider"]
+anchors = ["crates/roko-cli/src/dispatch_v2.rs::run_agent_result_bridge_with_tools_and_cli_mcp", "crates/roko-cli/src/dispatch_v2.rs::run_agent_result_bridge", "crates/roko-cli/src/dispatch_v2.rs::classify_provider_error", "crates/roko-learn/src/provider_health.rs::record_failure", "crates/roko-cli/src/graph_task_dispatch/failover.rs::blocked_provider"]
 links = { depends_on = [], blocks = [], related = ["gap-28ceb9", "find-cb5eeb", "find-43768e"], supersedes = [], duplicate_of = "" }
 
 [[verify]]

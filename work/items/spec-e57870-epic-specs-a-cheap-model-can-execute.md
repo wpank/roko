@@ -93,11 +93,11 @@ This is the implementation plan.
 
 ## Done when
 
-- [ ] gap-853b31: Frontier planner everywhere: an [authoring] planner_model on every plan generate and revise path
+- [x] gap-853b31: Frontier planner everywhere: an [authoring] planner_model on every plan generate and revise path
 - [ ] gap-2623b2: One plan generator instead of three prompts, without the 8,000-character PRD and 5-file caps
 - [ ] gap-d14a43: Planner-written acceptance tests in [task.accept], stored out of the agent's reach
 - [x] gap-1cd8d3: speclint first slice: static spec-quality rules SQ01–SQ12 with hard fails (S07.1)
-- [ ] gap-b3fa0a: Red-on-base checker: prove each task's verify step fails on a clean base (S07.2)
+- [x] gap-b3fa0a: Red-on-base checker: prove each task's verify step fails on a clean base (S07.2)
 - [ ] find-70edcb: Plan generation/validation does not flag weak verify gates (existing item)
 - [ ] gap-a8d786: Plan lint: tasks that can run at the same time must not share files
 - [ ] gap-1d1fa6: Task size limits per executor tier in plan validate

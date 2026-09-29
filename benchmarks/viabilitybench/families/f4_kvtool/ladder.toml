@@ -1,0 +1,64 @@
+# F4 kvtool-cli: the knobs of levels ℓ1–ℓ5 (S08 §4.4). README.md, "Ladder", explains each knob, the family's own
+# knobs (k_help, k_rounds, k_fns, k_misleading, k_sibling), and why k_quirks is 2 at ℓ1–ℓ2 where S08 has 1.
+schema_version = "vb.ladder/1"
+family = "F4"
+
+[levels.1]
+k_doc = "documented"
+k_ex = [4, 6]
+k_quirks = 2
+k_size = 6
+k_hid = "low"
+k_help = "full"
+k_rounds = 1
+k_fns = 3
+k_misleading = 0
+k_sibling = false
+
+[levels.2]
+k_doc = "documented"
+k_ex = [2, 3]
+k_quirks = 2
+k_size = 10
+k_hid = "low"
+k_help = "full"
+k_rounds = 1
+k_fns = 12
+k_misleading = 0
+k_sibling = false
+
+[levels.3]
+k_doc = "undocumented"
+k_ex = 1
+k_quirks = 2
+k_size = 16
+k_hid = "medium"
+k_help = "terse"
+k_rounds = 2
+k_fns = 22
+k_misleading = 0
+k_sibling = false
+
+[levels.4]
+k_doc = "legacy_distractor"
+k_ex = 1
+k_quirks = 3
+k_size = 30
+k_hid = "high"
+k_help = "terse"
+k_rounds = 2
+k_fns = 38
+k_misleading = 1
+k_sibling = false
+
+[levels.5]
+k_doc = "stale_or_contradictory"
+k_ex = [0, 1]
+k_quirks = 3
+k_size = 60
+k_hid = "high_differential"
+k_help = "poor"
+k_rounds = 3
+k_fns = 54
+k_misleading = 0
+k_sibling = true

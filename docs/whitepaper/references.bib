@@ -143,6 +143,7 @@
 }
 
 % Added 2026-09-29 (gap-e8cb4d) for section 5, "The claim": the four results on whether harness and memory gains last.
+% The other three (wang2026rethinking, ye2026fragility, lin2026evopath) follow section 10's harness keys.
 
 % arXiv 2607.14004 (DataCite); a technical report by RELAI, whose own method is one of the three it compares
 @misc{wang2026compound,
@@ -154,6 +155,7 @@
   url = {https://arxiv.org/abs/2607.14004},
   howpublished = {arXiv:2607.14004}
 }
+
 % Added 2026-09-29 for section 10, related work (gap-ec516e). The literature entries are copied from the
 % programme's verified bibliography and re-checked with refcheck that day. Two venue fields lost an internal
 % provenance note, and Agentless's journal field is split into volume, number and pages. The vendor pages are online
@@ -247,6 +249,7 @@
   url = {https://arxiv.org/abs/2609.24663},
   howpublished = {arXiv:2609.24663}
 }
+
 % Vendor pages cited in section 6 (gap-424bf8). refcheck.py checks papers only, so each page was fetched on
 % 2026-09-29, when it returned HTTP 200, and the wording quoted in its comment was read on it. The pages are
 % undated: year is the access year. A vendor's numbers stay the vendor's claims.
@@ -275,6 +278,7 @@
 }
 
 % Fusion "delivers frontier intelligence for cheaper by pairing a frontier lead model with a cost-efficient sidekick".
+% The page does not say which model plans and which executes. Sections 6 and 10 both cite this key.
 @online{cognition2026models,
   title = {Models},
   author = {{Cognition}},
@@ -307,7 +311,8 @@
   urldate = {2026-09-29},
   note = {Factory documentation}
 }
-% arXiv 2607.14004 (DataCite)
+
+% arXiv 2405.15793 (DataCite); DOI 10.52202/079017-1601 (Crossref)
 @inproceedings{yang2024sweagent,
   title = {SWE-agent: Agent-Computer Interfaces Enable Automated Software Engineering},
   author = {John Yang and Carlos E. Jimenez and Alexander Wettig and Kilian Lieret and Shunyu Yao and Karthik Narasimhan and Ofir Press},
@@ -382,7 +387,7 @@
 @article{chen2024frugalgpt,
   title = {FrugalGPT: How to Use Large Language Models While Reducing Cost and Improving Performance},
   author = {Lingjiao Chen and Matei Zaharia and James Zou},
-  journal = {Transactions on Machine Learning Research (TMLR), 2024},
+  journal = {Transactions on Machine Learning Research},
   year = {2024},
   eprint = {2305.05176},
   archivePrefix = {arXiv},
@@ -467,7 +472,7 @@
   howpublished = {arXiv:2607.28317}
 }
 
-% DOI 10.1007/978-94-015-1320-3 (Crossref)
+% DOI 10.1109/seams.2015.12 (Crossref)
 @inproceedings{filieri2015software,
   title = {Software Engineering Meets Control Theory},
   author = {Antonio Filieri and Martina Maggio and Konstantinos Angelopoulos and Nicolas D'Ippolito and Ilias Gerostathopoulos and Andreas Berndt Hempel and Henry Hoffmann and Pooyan Jamshidi and Evangelia Kalyvianaki and Cristian Klein and Filip Krikava and Sasa Misailovic and Alessandro Vittorio Papadopoulos and Suprio Ray and Amir M. Sharifloo and Stepan Shevtsov and Mateusz Ujma and Thomas Vogel},
@@ -477,7 +482,7 @@
   url = {https://doi.org/10.1109/seams.2015.12}
 }
 
-% arXiv 2605.10754 (DataCite)
+% arXiv 2607.25408 (DataCite)
 @misc{paul2026context,
   title = {Context Assembly as the Controlled Variable: A Control-Theoretic View of Harness Policies for Frozen LLM Agents},
   author = {Debjyoti Paul},
@@ -496,16 +501,6 @@
   author = {{Anthropic}},
   year = {2026},
   url = {https://code.claude.com/docs/en/model-config},
-  urldate = {2026-09-29}
-}
-
-% Fetched 2026-09-29: "Fusion" "delivers frontier intelligence for cheaper by pairing a frontier lead model with a
-% cost-efficient sidekick". The page does not say which model plans and which executes.
-@online{cognition2026fusion,
-  title = {Models (Devin CLI documentation)},
-  author = {{Cognition AI}},
-  year = {2026},
-  url = {https://docs.devin.ai/cli/models.md},
   urldate = {2026-09-29}
 }
 
@@ -530,6 +525,7 @@
   url = {https://kiro.dev/docs/specs/},
   urldate = {2026-09-29}
 }
+
 % Added 2026-09-29 by §1 (gap-353d57): the studies behind the introduction's claim IN2.
 
 % arXiv 2502.15964 (DataCite)
@@ -543,5 +539,6 @@
   howpublished = {arXiv:2502.15964}
 }
 
-% arXiv 2305.05176 (DataCite, OpenAlex). The key is the research corpus's, which records a TMLR 2024 version;
-% refcheck confirmed only the 2023 arXiv preprint, so that is what this entry cites.
+% chen2024frugalgpt and ong2025routellm, also behind IN2, are listed with section 10's keys. The dedupe kept those
+% copies, which give the venues (TMLR 2024, ICLR 2025) as the programme's verified bibliography records them;
+% refcheck confirmed their arXiv ids.

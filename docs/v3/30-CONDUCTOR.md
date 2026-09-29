@@ -4,13 +4,19 @@
 > about its own pipeline -- the subsystem that watches execution unfold
 > and asks: is this going where I predicted?
 
-> **Implementation status (2026-09):** 12 watchers, circuit breaker, diagnosis
-> engine, stuck detector, health monitor, state machine, pattern detector,
-> threshold learner, Yerkes-Dodson pressure framework, and self-healing policy
-> are built and wired. The Conductor is used by executor internals during plan
-> execution. The `ConductorBandit` learned policy exists in `roko-learn` but is
-> not yet wired into the live `evaluate()` path; static `WorstSeverityPolicy`
-> remains the production default.
+> **Implementation status (corrected 2026-09-29 at `7c556bc0a`): BUILT-UNWIRED.**
+> 12 watchers, circuit breaker, diagnosis engine, stuck detector, health monitor,
+> state machine, pattern detector, threshold learner, Yerkes-Dodson pressure
+> framework, and self-healing policy are built and unit-tested in `roko-conductor`.
+> None of them runs during plan execution. The Conductor's tick lived in the
+> Runner-v2 event loop, deleted on 2026-09-06 (`6b5da8616`). The Graph plan runner
+> still builds a `Conductor` from `[conductor]` config (`RunConfig::from_roko_config`
+> in `crates/roko-cli/src/runner/types.rs`), but `Conductor::evaluate_full` is called
+> only from tests (`crates/roko-cli/src/runner/conductor_adapter.rs`), so no watcher
+> fires, no intervention is taken and the plan circuit breaker never trips. The
+> `[conductor]` keys `max_agents`, `max_parallel_plans` and `plan_failure_policy` do
+> apply: the Graph plan runner reads them directly. The `ConductorBandit` learned
+> policy in `roko-learn` is not wired either; `WorstSeverityPolicy` is the default.
 
 ### Implementation sources
 
@@ -244,10 +250,15 @@ Intervention signals carry tags: `watcher` (which watcher fired), `severity`
 
 ## 3. Circuit Breaker Pattern
 
-> "A plan can fail a maximum of two times. After that, it requires human
-> attention. This is not configurable. This is law."
+> Design rule: a plan can fail at most twice before it needs human attention,
+> and the limit is not configurable.
+>
+> **Status (2026-09-29, at `7c556bc0a`): not enforced.** Nothing on the Graph path
+> evaluates the Conductor, so this breaker never trips on plan runs. What bounds a
+> failing plan today is each task's `max_retries` and the plan's failure policy
+> (`[conductor] plan_failure_policy`, read by the Graph plan runner).
 
-The circuit breaker enforces a hard failure budget per plan. After
+The circuit breaker is designed to enforce a hard failure budget per plan. After
 `MAX_PLAN_FAILURES` (default 2) failures, the plan is permanently tripped -- no
 further retries. This prevents the pathological case where a fundamentally broken
 plan cycles through retry after retry, burning tokens on every attempt.

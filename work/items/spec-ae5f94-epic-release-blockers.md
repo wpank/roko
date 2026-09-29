@@ -15,7 +15,7 @@ discovered_from = "tmp/cybernetic-harness/workstreams/PLAN.md (ยง2 goal order; ย
 anchors = ["crates/roko-gate/src/shell.rs::ShellGate", "crates/roko-serve/src/routes/auth.rs::AuthRegistry", "README.md", "Cargo.toml", ".github/workflows/ci.yml"]
 doc = "tmp/cybernetic-harness/workstreams/PLAN.md"
 lane = "rust-cold"
-links = { depends_on = ["bug-7d7200", "bug-da5b41", "bug-09690f", "find-8cc7ac", "bug-911361", "gap-452185"], blocks = [], related = ["spec-ba7bea", "spec-9a3131", "bug-7eef96"], supersedes = [], duplicate_of = "" }
+links = { depends_on = ["bug-7d7200", "bug-da5b41", "bug-09690f", "find-8cc7ac", "bug-911361", "gap-452185", "bug-e1327f", "bug-131421", "bug-8465a2", "bug-1c93b4", "bug-5c25e1"], blocks = [], related = ["spec-ba7bea", "spec-9a3131", "bug-7eef96"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "grep -q 'env_clear()' crates/roko-gate/src/shell.rs && grep -rqw 'fn out_of_band_api_key_survives_server_write' crates/roko-serve/ && ! grep -q '124/124' README.md && grep -q '^repository = \"https://github.com/wpank/roko\"' Cargo.toml && test \"$(git grep -l /Users/will -- . ':!work/' | wc -l)\" -eq 0"
@@ -75,11 +75,16 @@ This is the implementation plan.
 ## Done when
 
 - [x] bug-7d7200: Agents and verify commands inherit roko's whole environment, including provider API keys (existing item)
-- [ ] bug-da5b41: A running roko serve erases API keys created by the CLI (existing item)
-- [ ] bug-09690f: README's quick start fails, and the README claims 100% completion (existing item)
+- [x] bug-da5b41: A running roko serve erases API keys created by the CLI (existing item)
+- [x] bug-09690f: README's quick start fails, and the README claims 100% completion (existing item)
 - [ ] find-8cc7ac: Some GitHub workflows fail on main and required checks are undefined (existing item)
 - [ ] bug-911361: Cargo.toml's repository and homepage point at an unrelated GitHub account (existing item)
 - [ ] gap-452185: 52 tracked files contain local absolute paths under /Users/will, including CLAUDE.md (existing item)
+- [ ] bug-e1327f: roko init without claude on PATH writes a roko.toml that fails every command with config invariant 3
+- [ ] bug-131421: roko setup --quick writes no roko.toml in a fresh directory, and after init writes a key that validation rejects
+- [ ] bug-8465a2: roko config validate passes a budget table that the core config loader rejects
+- [ ] bug-1c93b4: roko config set --project writes a legacy agent.model key that validation rejects, and refuses v2 keys
+- [ ] bug-5c25e1: roko run in a fresh workspace fails budget admission against a $1 turn cap although roko.toml sets max_turn_usd = 0
 - [ ] Both of the epic's `[[verify]]` commands pass.
 
 ## Notes

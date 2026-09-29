@@ -2,7 +2,7 @@
 id = "gap-856053"
 kind = "gap"
 title = "Research paper appendices A and B: match the benchmark and the spec standard as built"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "whitepaper"
@@ -11,6 +11,7 @@ subsystem = ["paper"]
 created = 2026-09-29
 updated = 2026-09-29
 last_verified = 2026-09-29
+last_verified_rev = "48d35a67f"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e18"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wave-1 reports)"
 anchors = ["tmp/cybernetic-harness/paper/sections/A-benchmark.md", "tmp/cybernetic-harness/paper/sections/B-spec-standard.md"]
@@ -20,6 +21,11 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "test -f tools/paperlint.py && python3 tools/paperlint.py --budget 1.2 --check-identifiers tmp/cybernetic-harness/paper/sections/A-benchmark.md tmp/cybernetic-harness/paper/sections/B-spec-standard.md"
+
+[closed]
+at = 2026-09-29
+by = "coordinator (session 7622b882)"
+evidence = "Appendices A and B (tmp, wk-rp-appAB) match the merged artifacts: ViabilityBench tree (7bdc61da3) and speclint SQ01-SQ12 (43ac00c28) tagged at their commits, speclint's 75.3% of 551 tasks without acceptance criteria; CB.13 recast as the prototype-linter observation; A.7 adds the plan-level slice as exploratory task set PL (designed: gap-89f393, gap-1cd676) with ledger row CA.17; notation V0-V4. paperlint --budget 1.2 --check-identifiers clean on both."
 +++
 
 ## Problem

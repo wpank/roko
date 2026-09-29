@@ -226,7 +226,8 @@ pub const fn classify_tool_error(error: &ToolError) -> FailureKind {
         ToolError::SchemaInvalid(_) => FailureKind::SchemaInvalid,
         ToolError::PermissionDenied(_)
         | ToolError::CommandNotAllowed(_)
-        | ToolError::NetworkBlocked(_) => FailureKind::PermissionDenied,
+        | ToolError::NetworkBlocked(_)
+        | ToolError::KeyFileBlocked(_) => FailureKind::PermissionDenied,
         ToolError::Timeout { .. } => FailureKind::Timeout,
         ToolError::Cancelled => FailureKind::Cancelled,
         ToolError::PathOutsideWorktree(_) => FailureKind::PathEscape,
@@ -1206,6 +1207,12 @@ mod tests {
     }
 
     #[test]
+    fn classify_key_file_blocked() {
+        let e = ToolError::KeyFileBlocked(std::path::PathBuf::from("/repo/.roko/.env"));
+        assert_eq!(classify_tool_error(&e), FailureKind::PermissionDenied);
+    }
+
+    #[test]
     fn classify_handler_panic() {
         let e = ToolError::HandlerPanic("unwrap on None".into());
         assert_eq!(classify_tool_error(&e), FailureKind::ToolHandlerError);
@@ -1226,6 +1233,7 @@ mod tests {
             ToolError::HandlerPanic("c".into()),
             ToolError::Timeout { after_ms: 1 },
             ToolError::PathOutsideWorktree(std::path::PathBuf::from("/x")),
+            ToolError::KeyFileBlocked(std::path::PathBuf::from("/x/.roko/.env")),
             ToolError::CommandNotAllowed("d".into()),
             ToolError::NetworkBlocked("e".into()),
             ToolError::Cancelled,

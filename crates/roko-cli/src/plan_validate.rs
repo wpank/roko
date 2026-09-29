@@ -462,6 +462,23 @@ fn validate_tasks_file(
             });
         }
 
+        // gap-29a84b: a task that runs no verify step ends unverified, and a
+        // plan with an unverified task does not succeed. A warning, so
+        // `--strict` rejects it.
+        if !task.has_verify_steps {
+            diagnostics.push(Diagnostic {
+                severity: Severity::Warning,
+                rule_id: "PLAN_037".to_string(),
+                plan_id: Some(plan_id.clone()),
+                task_id: task.task_id.clone(),
+                message: format!(
+                    "task '{}' has no verify steps: it can only end unverified, and then \
+                     its plan does not succeed",
+                    task.label()
+                ),
+            });
+        }
+
         if let Some(contract_value) = &task.acceptance_contract {
             match contract_value.clone().try_into::<AcceptanceContract>() {
                 Ok(contract) => {
@@ -1590,6 +1607,53 @@ read_files = [
                 .iter()
                 .any(|diag| diag.rule_id == "PLAN_031")
         );
+    }
+
+    /// gap-29a84b: a task with no verify steps is a PLAN_037 warning, which
+    /// `plan validate --strict` rejects.
+    #[test]
+    fn task_without_verify_is_rejected_in_strict_mode() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path();
+        fs::create_dir_all(root.join("plans/demo")).unwrap();
+        fs::write(
+            root.join("plans/demo/tasks.toml"),
+            r#"
+[meta]
+plan = "demo"
+
+[[task]]
+id = "T1"
+title = "Write the code"
+role = "implementer"
+files = ["src/lib.rs"]
+depends_on = []
+verify = [{ phase = "compile", command = "cargo check -p roko-cli" }]
+
+[[task]]
+id = "T2"
+title = "Document it"
+role = "scribe"
+files = ["docs/guide.md"]
+depends_on = ["T1"]
+"#,
+        )
+        .unwrap();
+
+        let report = validate_plans_dir(root.join("plans").as_path(), None).unwrap();
+
+        let unverifiable = report
+            .plans
+            .iter()
+            .flat_map(|plan| &plan.diagnostics)
+            .filter(|diag| diag.rule_id == "PLAN_037")
+            .collect::<Vec<_>>();
+        assert_eq!(unverifiable.len(), 1, "{report:?}");
+        assert_eq!(unverifiable[0].task_id.as_deref(), Some("T2"));
+        assert_eq!(unverifiable[0].severity, Severity::Warning);
+        assert_eq!(report.totals.errors, 0, "{report:?}");
+        assert_eq!(report.exit_code(false), 0, "a warning without --strict");
+        assert_eq!(report.exit_code(true), 1, "--strict rejects it");
     }
 
     #[test]

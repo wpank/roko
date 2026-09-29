@@ -14,7 +14,7 @@ last_verified = 2026-09-29
 last_verified_rev = "a17d9d766"
 source = "tmp/dev-audit/09-additional-live-run-findings.md#Timeout loses provider usage and cost"
 discovered_from = "audit:tmp/dev-audit/09-additional-live-run-findings.md#Timeout loses provider usage and cost"
-anchors = ["crates/roko-agent/src/claude_cli_agent.rs::ClaudeCliAgent::failure", "crates/roko-agent/src/exec.rs:643", "crates/roko-cli/src/graph_task_dispatch.rs:3796", "crates/roko-cli/src/graph_execution/plan_runner.rs::run_graph_plan", "crates/roko-cli/src/graph_execution/event_log.rs::run_recorded", "crates/roko-cli/src/graph_checkpoint.rs::GraphCheckpointStatus", "crates/roko-cli/src/graph_execution/fast_lane.rs::arm_plan_deadline"]
+anchors = ["crates/roko-agent/src/claude_cli_agent.rs::ClaudeCliAgent::failure", "crates/roko-agent/src/exec.rs:643", "crates/roko-cli/src/graph_task_dispatch.rs::GraphTaskDispatcher::dispatch", "crates/roko-cli/src/graph_execution/plan_runner.rs::run_graph_plan", "crates/roko-cli/src/graph_execution/event_log.rs::run_recorded", "crates/roko-cli/src/graph_checkpoint.rs::GraphCheckpointStatus", "crates/roko-cli/src/graph_execution/fast_lane.rs::arm_plan_deadline"]
 links = { depends_on = ["bug-690dc6"], blocks = [], related = [], supersedes = [], duplicate_of = "" }
 
 [[verify]]

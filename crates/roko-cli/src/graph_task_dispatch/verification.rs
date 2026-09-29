@@ -1,0 +1,1677 @@
+//! Authored verify steps of a Graph task attempt, and the gate-dependent learning
+//! records their verdict settles.
+
+use super::tui_forward::append_jsonl_line_async;
+use super::*;
+
+impl GraphTaskDispatcher {
+    /// Run a task's authored `[[task.verify]]` steps and settle every
+    /// gate-dependent learning record for this attempt.
+    ///
+    /// Shared by the batch and streaming dispatch paths so both reach the same
+    /// verdict. Authored verify steps are deterministic: any failure returns
+    /// `RokoError::Verify` (the Graph engine retries up to the task's
+    /// `max_retries`, then fails the task) and is never force-accepted. Steps
+    /// run fail-fast; the rest are reported as skipped. A step that fails
+    /// while sibling tasks edit the same working tree waits for them to
+    /// settle and re-runs once; only that result counts (`sibling_settle`).
+    /// The caller releases any worktree lease and settles episode feedback
+    /// with the result.
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+    pub(super) async fn settle_task_verification(
+        &self,
+        spec: &TaskExecutionSpec,
+        task: &TaskDef,
+        dispatch: &crate::dispatch_v2::AgentResultDispatch,
+        effective_workdir: &Path,
+        retry_key: &str,
+        attempt_number: u32,
+        attempt_id: &str,
+        progress_tx: Option<&tokio::sync::mpsc::Sender<GraphTaskEvent>>,
+    ) -> Result<TaskGateVerdict> {
+        let effective_workdir = effective_workdir.to_path_buf();
+        let retry_key = retry_key.to_string();
+        if !task.verify.is_empty() {
+            let payload = GatePayload::in_dir(&effective_workdir)
+                .with_label(format!("{}/{}", spec.plan_id, task.id))
+                .with_env_passthrough(self.config.gates.env_passthrough.iter().cloned());
+            let gate_signal = Signal::builder(Kind::Task)
+                .body(
+                    Body::from_json(&payload)
+                        .unwrap_or_else(|_| Body::text("gate-payload-fallback")),
+                )
+                .build();
+            let gate_ctx = Context::now();
+
+            let mut failures: Vec<String> = Vec::new();
+            // P2-LRN-6 Loop 1: Collect (phase, passed) for each verify step so
+            // we can feed outcomes into GateThresholds::observe after all steps
+            // complete (including any post-auto-fix re-run).
+            let mut step_outcomes: Vec<(String, bool)> = Vec::new();
+            // P1-08: the CodingOracle's test pass-rate forecast for this
+            // attempt, taken before its steps feed the oracle below.
+            let test_pass_forecast = self
+                .feedback
+                .coding_oracle
+                .as_ref()
+                .map(|oracle| oracle.predict_test_pass_rate());
+            // P4-03: PromiseTracker for early termination of doomed attempts.
+            let mut promise_tracker = crate::runner::promise_tracker::PromiseTracker::new();
+            let mut promise_terminated = false;
+            // Steps not run because an earlier step already failed.
+            let mut skipped_steps: Vec<String> = Vec::new();
+            // Siblings whose files hold every error of a failure that
+            // persisted after they settled.
+            let mut blocked_by_sibling: Option<String> = None;
+            let total_steps = u32::try_from(task.verify.len()).unwrap_or(u32::MAX);
+
+            for (i, step) in task.verify.iter().enumerate() {
+                let step_label = verify_step_label(i, &step.phase);
+
+                // Fail fast: once a step has failed (or P4-03 declared the
+                // attempt doomed), report later steps as skipped instead of
+                // paying for, say, a full compile after a cheap grep failed.
+                if promise_terminated || !failures.is_empty() {
+                    skipped_steps.push(format!("{step_label} (`{}`)", step.command));
+                    continue;
+                }
+
+                if let Some(progress_tx) = progress_tx {
+                    let _ = progress_tx
+                        .send(GraphTaskEvent::Progress {
+                            message: format!("verify: {}", step.command),
+                            completed: Some(u32::try_from(i).unwrap_or(u32::MAX)),
+                            total: Some(total_steps),
+                        })
+                        .await;
+                }
+
+                tracing::info!(
+                    plan_id = %spec.plan_id,
+                    task_id = %task.id,
+                    step = i,
+                    phase = %step.phase,
+                    command = %step.command,
+                    timeout_ms = step.timeout_ms,
+                    "graph verify step starting"
+                );
+
+                // P2-TUI-4: Notify the TUI that a gate rung is starting so it
+                // can show the active rung name and a spinner.
+                if let Some(tui) = &self.tui_bridge {
+                    tui.gate_rung_started(&spec.plan_id, &task.id, &step_label);
+                }
+
+                let gate = ShellGate::new(
+                    "bash",
+                    vec![
+                        "-o".into(),
+                        "pipefail".into(),
+                        "-c".into(),
+                        step.command.clone(),
+                    ],
+                )
+                .with_timeout_ms(step.timeout_ms)
+                .with_name(&step_label);
+
+                let compile_permit = verify_compile_permit(
+                    &effective_workdir,
+                    self.config.gates.compile_concurrency,
+                    step,
+                    &spec.plan_id,
+                    &task.id,
+                )
+                .await;
+                let mut verdict = gate.verify(&gate_signal, &gate_ctx).await;
+                if !verdict.passed {
+                    // A sibling editing this working tree may have caused the
+                    // failure: let it settle, then re-run the step once. The
+                    // compile lock is released meanwhile so the sibling's own
+                    // cargo steps can finish.
+                    drop(compile_permit);
+                    let failed_step = sibling_settle::FailedStep {
+                        plan_id: &spec.plan_id,
+                        task_id: &task.id,
+                        files: &task.files,
+                        label: &step_label,
+                        workdir: &effective_workdir,
+                        settle_limit: std::time::Duration::from_secs(
+                            self.config.gates.sibling_settle_secs,
+                        ),
+                    };
+                    (verdict, blocked_by_sibling) = self
+                        .in_flight
+                        .settle_failed_step(&failed_step, verdict, || async {
+                            let _compile_permit = verify_compile_permit(
+                                &effective_workdir,
+                                self.config.gates.compile_concurrency,
+                                step,
+                                &spec.plan_id,
+                                &task.id,
+                            )
+                            .await;
+                            gate.verify(&gate_signal, &gate_ctx).await
+                        })
+                        .await;
+                }
+
+                tracing::info!(
+                    plan_id = %spec.plan_id,
+                    task_id = %task.id,
+                    step = i,
+                    gate = %verdict.gate,
+                    passed = verdict.passed,
+                    duration_ms = verdict.duration_ms,
+                    "graph verify step completed"
+                );
+
+                // P2-LRN-6 Loop 1: Record this step's (phase, passed) outcome
+                // for gate threshold EMA update after the full verify sequence.
+                step_outcomes.push((step.phase.clone(), verdict.passed));
+
+                // P2-TUI-4: Forward the gate verdict to the TUI so the
+                // dashboard can display pass/fail status and captured output.
+                // The command leads the output so failure summaries name it.
+                if let Some(tui) = &self.tui_bridge {
+                    tui.gate_result_with_output(
+                        &spec.plan_id,
+                        &task.id,
+                        &step_label,
+                        verdict.passed,
+                        Some(&published_gate_output(&step.command, &verdict)),
+                    );
+                }
+
+                // ── P0-04: CodingOracle observations ────────────────────
+                //
+                // Feed each verdict into the CodingOracle so it can refine
+                // its build-time and test-pass-rate predictions.
+                if let Some(oracle) = &self.feedback.coding_oracle {
+                    let now_ms = chrono::Utc::now().timestamp_millis();
+                    let gate_lower = step.phase.to_ascii_lowercase();
+                    if gate_lower.contains("compile")
+                        || step.command.contains("cargo check")
+                        || step.command.contains("cargo build")
+                    {
+                        oracle.observe_build(BuildRecord {
+                            duration_secs: verdict.duration_ms as f64 / 1000.0,
+                            success: verdict.passed,
+                            warnings: 0,
+                            ts_ms: now_ms,
+                        });
+                    }
+                    if gate_lower.contains("test") || step.command.contains("cargo test") {
+                        let (passed, failed, total) =
+                            if verdict.passed { (1, 0, 1) } else { (0, 1, 1) };
+                        oracle.observe_test(TestRecord {
+                            passed,
+                            failed,
+                            total,
+                            ts_ms: now_ms,
+                        });
+                    }
+                }
+
+                // ── P4-03: PromiseTracker per-step check ────────────────
+                //
+                // Build a TurnSnapshot from this verify step and check
+                // whether the attempt should be terminated early.
+                {
+                    let core_verdict = if verdict.passed {
+                        roko_core::Verdict::pass(&step_label)
+                    } else {
+                        roko_core::Verdict::fail(&step_label, &verdict.reason)
+                    };
+                    let snapshot = TurnSnapshot {
+                        rung: i as u32,
+                        verdicts: vec![core_verdict],
+                        error_count: if verdict.passed { 0 } else { 1 },
+                        diff_lines: 0,
+                    };
+                    let decision = promise_tracker.record_and_check(snapshot);
+                    if let crate::runner::promise_tracker::PromiseDecision::Terminate {
+                        promise,
+                        consecutive_turns,
+                    } = decision
+                    {
+                        tracing::warn!(
+                            plan_id = %spec.plan_id,
+                            task_id = %task.id,
+                            step = i,
+                            promise,
+                            consecutive_turns,
+                            "P4-03: PRM early termination — abandoning doomed verify sequence"
+                        );
+                        failures.push(format!(
+                            "early termination: promise {promise:.3} below threshold \
+                             for {consecutive_turns} consecutive verify steps"
+                        ));
+                        promise_terminated = true;
+                        // Don't break here; fall through to record the current failure.
+                    }
+                }
+
+                if !verdict.passed {
+                    let fail_msg = step.fail_msg.as_deref().unwrap_or(&verdict.reason);
+                    let detail_snippet = verdict
+                        .detail
+                        .as_deref()
+                        .map(|d| {
+                            // Include a bounded tail of the output for diagnostics.
+                            let lines: Vec<&str> = d.lines().collect();
+                            let start = lines.len().saturating_sub(30);
+                            lines[start..].join("\n")
+                        })
+                        .unwrap_or_default();
+
+                    failures.push(format!(
+                        "{step_label} (`{cmd}`): {fail_msg}\n{detail_snippet}",
+                        cmd = step.command,
+                    ));
+                }
+            }
+
+            // ── P1-CLI-2: Compile auto-fix before agent retry ────────────
+            //
+            // Mirror the Runner-v2 path in gate_dispatch.rs: when verify steps
+            // fail and `cargo_fix_enabled` is set (default: true), attempt
+            // `cargo fix --allow-dirty` (or the build-system equivalent).
+            // If the fix applies cleanly, re-run the verify steps once so the
+            // caller sees the corrected result without waiting for a full agent
+            // retry loop. Only applies when promise-tracker did NOT terminate
+            // early (those failures are structural, not fixable by `cargo fix`).
+            if !failures.is_empty() && !promise_terminated && self.config.gates.cargo_fix_enabled {
+                // Use the phase of the first failing step as the gate name so
+                // `attempt_auto_fix` can pick the right fix command.
+                let first_fail_phase = step_outcomes
+                    .iter()
+                    .find(|(phase, passed)| !passed && !phase.is_empty())
+                    .map_or("compile", |(phase, _)| phase.as_str());
+                let raw_failures = failures.join("\n---\n");
+                match crate::runner::gate_dispatch::attempt_auto_fix(
+                    &effective_workdir,
+                    first_fail_phase,
+                    &raw_failures,
+                    crate::runner::gate_dispatch::AutoFixBounds::from_config(
+                        &self.config,
+                        &task.files,
+                    ),
+                )
+                .await
+                {
+                    Ok(outcome) if outcome.fix_applied => {
+                        tracing::info!(
+                            plan_id = %spec.plan_id,
+                            task_id = %task.id,
+                            gate = first_fail_phase,
+                            command = ?outcome.command,
+                            "P1-CLI-2: auto-fix applied — re-running verify steps"
+                        );
+                        // Re-run verify steps with a fresh failures list.
+                        // P2-LRN-6 Loop 1: Also collect retry outcomes to replace
+                        // the original step_outcomes with post-fix results.
+                        let mut retry_failures: Vec<String> = Vec::new();
+                        let mut retry_step_outcomes: Vec<(String, bool)> = Vec::new();
+                        let mut retry_skipped: Vec<String> = Vec::new();
+                        for (i, step) in task.verify.iter().enumerate() {
+                            let step_label = verify_step_label(i, &step.phase);
+                            if !retry_failures.is_empty() {
+                                retry_skipped.push(format!("{step_label} (`{}`)", step.command));
+                                continue;
+                            }
+                            // P2-TUI-4: Notify the TUI of the post-fix re-run.
+                            if let Some(tui) = &self.tui_bridge {
+                                tui.gate_rung_started(&spec.plan_id, &task.id, &step_label);
+                            }
+                            let retry_gate = ShellGate::new(
+                                "bash",
+                                vec![
+                                    "-o".into(),
+                                    "pipefail".into(),
+                                    "-c".into(),
+                                    step.command.clone(),
+                                ],
+                            )
+                            .with_timeout_ms(step.timeout_ms)
+                            .with_name(&step_label);
+                            let retry_verdict = retry_gate.verify(&gate_signal, &gate_ctx).await;
+                            tracing::info!(
+                                plan_id = %spec.plan_id,
+                                task_id = %task.id,
+                                step = i,
+                                gate = %retry_verdict.gate,
+                                passed = retry_verdict.passed,
+                                duration_ms = retry_verdict.duration_ms,
+                                "P1-CLI-2: post-fix verify step completed"
+                            );
+                            // P2-LRN-6 Loop 1: Record retry step outcome.
+                            retry_step_outcomes.push((step.phase.clone(), retry_verdict.passed));
+
+                            // P2-TUI-4: Forward post-fix verdict to the TUI.
+                            if let Some(tui) = &self.tui_bridge {
+                                tui.gate_result_with_output(
+                                    &spec.plan_id,
+                                    &task.id,
+                                    &step_label,
+                                    retry_verdict.passed,
+                                    Some(&published_gate_output(&step.command, &retry_verdict)),
+                                );
+                            }
+                            if !retry_verdict.passed {
+                                let fail_msg =
+                                    step.fail_msg.as_deref().unwrap_or(&retry_verdict.reason);
+                                let detail_snippet = retry_verdict
+                                    .detail
+                                    .as_deref()
+                                    .map(|d| {
+                                        let lines: Vec<&str> = d.lines().collect();
+                                        let start = lines.len().saturating_sub(30);
+                                        lines[start..].join("\n")
+                                    })
+                                    .unwrap_or_default();
+                                retry_failures.push(format!(
+                                    "{step_label} (`{cmd}`): {fail_msg}\n{detail_snippet}",
+                                    cmd = step.command,
+                                ));
+                            }
+                        }
+                        // Replace the original failure list and step outcomes with
+                        // the post-fix results. The retry outcomes are the ground
+                        // truth for gate threshold EMA updates (P2-LRN-6 Loop 1).
+                        failures = retry_failures;
+                        step_outcomes = retry_step_outcomes;
+                        skipped_steps = retry_skipped;
+                        blocked_by_sibling = None;
+                    }
+                    Ok(outcome) => {
+                        tracing::debug!(
+                            plan_id = %spec.plan_id,
+                            task_id = %task.id,
+                            was_candidate = outcome.was_candidate,
+                            fix_applied = outcome.fix_applied,
+                            "P1-CLI-2: auto-fix not applied — proceeding to agent retry"
+                        );
+                    }
+                    Err(err) => {
+                        tracing::warn!(
+                            plan_id = %spec.plan_id,
+                            task_id = %task.id,
+                            error = %err,
+                            "P1-CLI-2: auto-fix error (non-fatal) — proceeding to agent retry"
+                        );
+                    }
+                }
+            }
+
+            if let Some(progress_tx) = progress_tx {
+                let message = if failures.is_empty() {
+                    "verify: all steps passed".to_string()
+                } else {
+                    format!(
+                        "verify: {} failed, {} skipped of {total_steps}",
+                        failures.len(),
+                        skipped_steps.len()
+                    )
+                };
+                let _ = progress_tx
+                    .send(GraphTaskEvent::Progress {
+                        message,
+                        completed: Some(total_steps),
+                        total: Some(total_steps),
+                    })
+                    .await;
+            }
+
+            // ── P2-LRN-6 Loop 1: Gate threshold EMA updates ─────────────
+            //
+            // Feed each completed verify step's pass/fail outcome into the
+            // persisted `GateThresholds` store so the EMA converges toward the
+            // workspace's actual gate history. Both pass and fail outcomes are
+            // recorded; the EMA is a smoothed pass rate per rung.
+            //
+            // Steps: load → observe each (phase→rung) pair → atomic save →
+            // notify the TUI bridge so the dashboard reflects updated EMAs.
+            //
+            // All I/O is synchronous and lightweight (one JSON file read+write).
+            // On any error we log at warn and proceed — a missed flush is
+            // non-fatal; the next task will attempt its own update.
+            if let Some(gt_path) = &self.feedback.gate_thresholds_path {
+                // Load existing thresholds or start from defaults if missing.
+                let mut thresholds = match GateThresholds::load_or_default(gt_path) {
+                    Ok(t) => t,
+                    Err(err) => {
+                        tracing::warn!(
+                            plan_id = %spec.plan_id,
+                            task_id = %task.id,
+                            error = %err,
+                            "P2-LRN-6 Loop 1: gate threshold load failed (non-fatal)"
+                        );
+                        GateThresholds::default()
+                    }
+                };
+                // Each step whose phase maps to a canonical rung updates its
+                // EMA; test-rung steps also feed the oracle residual (P1-08).
+                let residuals = thresholds.observe_verify_steps(&step_outcomes, test_pass_forecast);
+                if !residuals.is_empty() {
+                    tracing::debug!(
+                        plan_id = %spec.plan_id,
+                        task_id = %task.id,
+                        ?residuals,
+                        forecast = ?test_pass_forecast,
+                        "P1-08: oracle residual fed to adaptive gate thresholds"
+                    );
+                }
+                match thresholds.save(gt_path) {
+                    Ok(()) => {
+                        // Notify the TUI bridge so the learning tab reflects
+                        // the updated per-rung EMA thresholds immediately.
+                        if let Some(tui) = &self.tui_bridge {
+                            if let Ok(json) = serde_json::to_string(&thresholds) {
+                                tui.gate_thresholds_updated(&json);
+                            }
+                        }
+                        tracing::debug!(
+                            plan_id = %spec.plan_id,
+                            task_id = %task.id,
+                            steps = step_outcomes.len(),
+                            "P2-LRN-6 Loop 1: gate thresholds updated"
+                        );
+                    }
+                    Err(err) => {
+                        tracing::warn!(
+                            plan_id = %spec.plan_id,
+                            task_id = %task.id,
+                            error = %err,
+                            "P2-LRN-6 Loop 1: gate threshold save failed (non-fatal)"
+                        );
+                    }
+                }
+            }
+
+            // ── Post-verify: GateGamingDetector + HoldoutExperiment ─────
+            //
+            // These run after all verify steps complete (or early-terminate)
+            // regardless of pass/fail, matching the Runner-v2 gate completion
+            // callback pattern.
+            let all_passed = failures.is_empty();
+            let model_slug = &dispatch.target.model_slug;
+
+            // ── quality_judge + P1-01 GateGamingDetector (best-effort) ────
+            //
+            // The judge score only feeds the gaming detector: it never gates
+            // the retry decision or the retry prompt, so it runs in the
+            // background instead of blocking the retry. The LLM judge is only
+            // consulted when verify failed and a detector is configured; all
+            // passed maps to the deterministic high-quality score.
+            if let Some(detector) = self.feedback.gate_gaming_detector.clone() {
+                // P3-17: Modulate the judge score with daimon affect valence.
+                let affect_bonus = self
+                    .feedback
+                    .daimon_state
+                    .as_ref()
+                    .and_then(|d| d.lock().ok())
+                    .map(|state| state.state.alma.effective_affect().pleasure)
+                    .unwrap_or(0.0);
+                let judge = if all_passed { None } else { self.cheap_agent() };
+                let judge_timeout = self.config.timeouts.llm_call();
+                let agent_text = dispatch
+                    .result
+                    .output
+                    .body
+                    .as_text()
+                    .unwrap_or("")
+                    .to_string();
+                let title = spec.title.clone();
+                let plan_id = spec.plan_id.clone();
+                let task_id = task.id.clone();
+                let model_slug = model_slug.clone();
+                tokio::spawn(async move {
+                    let judge_quality_score: f64 = if all_passed {
+                        0.9
+                    } else if let Some(cheap_agent) = judge {
+                        let rubric = "Did the agent make meaningful progress toward the task even though verify steps failed?";
+                        match tokio::time::timeout(
+                            judge_timeout,
+                            roko_learn::quality_judge::judge_quality(
+                                &cheap_agent,
+                                &title,
+                                &agent_text,
+                                rubric,
+                            ),
+                        )
+                        .await
+                        {
+                            Ok(score) => {
+                                tracing::debug!(
+                                    plan_id = %plan_id,
+                                    task_id = %task_id,
+                                    model = %model_slug,
+                                    quality_score = score,
+                                    "quality_judge: gate output scored"
+                                );
+                                score
+                            }
+                            Err(_) => {
+                                tracing::warn!(
+                                    plan_id = %plan_id,
+                                    task_id = %task_id,
+                                    "quality_judge timed out; using heuristic score"
+                                );
+                                0.2
+                            }
+                        }
+                    } else {
+                        // No model configured — fall through to heuristic score.
+                        0.2
+                    };
+                    let quality_score = (judge_quality_score + affect_bonus * 0.1).clamp(0.0, 1.0);
+                    let mut det = detector.lock().await;
+                    if let Err(err) = det
+                        .observe_and_detect(&model_slug, all_passed, quality_score)
+                        .await
+                    {
+                        tracing::warn!(
+                            error = %err,
+                            model = %model_slug,
+                            "P1-01: gate gaming detection I/O error (non-fatal)"
+                        );
+                    }
+                });
+            }
+
+            // P1-04: HoldoutExperiment outcome recording and learning gate.
+            if let Some(holdout) = &self.feedback.holdout_experiment {
+                let holdout_task_key = format!("{}:{}", spec.plan_id, task.id);
+                if let Ok(mut exp) = holdout.try_lock() {
+                    exp.record_outcome(&holdout_task_key, all_passed, 0.0);
+                    if let Some(alert) = exp.check_overfitting() {
+                        tracing::warn!(
+                            train_pass_rate = alert.train_pass_rate,
+                            holdout_pass_rate = alert.holdout_pass_rate,
+                            divergence_pp = alert.divergence_pp,
+                            "P1-04: holdout overfitting detected"
+                        );
+                    }
+                    // Gate learning updates: only Train partition tasks update
+                    // the routing model; holdout tasks are observed but never
+                    // feed back into learned state. This affects the playbook,
+                    // efficiency, and experiment settlement paths above.
+                    let should_update = exp.should_update_learning(&holdout_task_key);
+                    tracing::debug!(
+                        plan_id = %spec.plan_id,
+                        task_id = %task.id,
+                        should_update_learning = should_update,
+                        "P1-04: holdout partition check"
+                    );
+                }
+            }
+
+            if !failures.is_empty() {
+                // Authored verify steps are deterministic, so a failure is never
+                // force-accepted: the Graph engine retries up to the task's
+                // `max_retries` and then fails the task. (`gates.max_review_cycles`
+                // may only bound non-deterministic review/judge verdicts, and
+                // the Graph dispatcher gates on none.)
+                let mut summary = verify_failure_summary(
+                    &spec.title,
+                    task.verify.len(),
+                    &failures,
+                    &skipped_steps,
+                );
+                // Lead with the blamed sibling so one-line failure reasons,
+                // such as the episode's, keep it.
+                if let Some(sibling) = &blocked_by_sibling {
+                    summary = format!("blocked_by_sibling = {sibling}: {summary}");
+                }
+                tracing::warn!(
+                    plan_id = %spec.plan_id,
+                    task_id = %task.id,
+                    failed_count = failures.len(),
+                    skipped_count = skipped_steps.len(),
+                    total_count = task.verify.len(),
+                    attempt = attempt_number,
+                    "graph verify steps failed"
+                );
+                // ── W12: Gate failure replan signal ───────────────────────
+                if self.feedback.replan_on_gate_failure {
+                    tracing::info!(
+                        plan_id = %spec.plan_id,
+                        task_id = %task.id,
+                        failed_count = failures.len(),
+                        "gate failure replan enabled; Graph engine will retry via max_retries"
+                    );
+                    // Update efficiency gate_passed if we wrote one.
+                    if let Some(eff_path) = &self.feedback.efficiency_path {
+                        // P3-02: Propagate actual turn count from the
+                        // dispatch that preceded this gate failure.
+                        let gate_turn_number = dispatch
+                            .events
+                            .iter()
+                            .rev()
+                            .find_map(|ev| match ev {
+                                roko_agent::AgentRuntimeEvent::TurnCompleted {
+                                    num_turns, ..
+                                } => *num_turns,
+                                _ => None,
+                            })
+                            .unwrap_or(1);
+                        let gate_event = roko_learn::efficiency::AgentEfficiencyEvent {
+                            agent_id: format!("{}/{}", spec.plan_id, task.id),
+                            role: task.role.as_deref().unwrap_or("implementer").to_string(),
+                            backend: dispatch.target.provider_id.clone(),
+                            model: dispatch.target.model_slug.clone(),
+                            plan_id: spec.plan_id.clone(),
+                            task_id: task.id.clone(),
+                            attempt_id: format!("{attempt_id}/gate-fail"),
+                            input_tokens: 0,
+                            output_tokens: 0,
+                            reasoning_tokens: 0,
+                            cache_read_tokens: 0,
+                            cache_write_tokens: 0,
+                            cost_usd: 0.0,
+                            cost_usd_without_cache: 0.0,
+                            prompt_sections: vec![],
+                            total_prompt_tokens: 0,
+                            system_prompt_tokens: 0,
+                            tools_available: 0,
+                            tools_used: 0,
+                            tool_calls: vec![],
+                            wall_time_ms: 0,
+                            duration_ms: 0,
+                            time_to_first_token_ms: 0,
+                            was_warm_start: false,
+                            iteration: gate_turn_number,
+                            turn_number: gate_turn_number,
+                            is_final_turn: false,
+                            gate_passed: Some(false),
+                            outcome: "gate_failure".to_string(),
+                            gate_errors: failures.clone(),
+                            model_used: dispatch.target.model_slug.clone(),
+                            frequency: roko_core::OperatingFrequency::Gamma,
+                            strategy_attempted: "replan".to_string(),
+                            timestamp: chrono::Utc::now().to_rfc3339(),
+                        };
+                        if let Ok(line) = serde_json::to_string(&gate_event) {
+                            let path = eff_path.clone();
+                            tokio::spawn(async move {
+                                if let Err(error) = append_jsonl_line_async(path, line).await {
+                                    tracing::warn!(
+                                        %error,
+                                        "graph gate-failure efficiency event write failed"
+                                    );
+                                }
+                            });
+                        }
+                    }
+                }
+                // ── error_enrichment: enrich gate failure before retry ───
+                //
+                // Ask a cheap judge model for a two-sentence diagnosis of the
+                // raw failure so the retry prompt carries a focused summary
+                // rather than raw compiler noise. Falls back deterministically
+                // when no model is configured or the call fails.
+                let raw_for_feedback = failures.join("\n---\n");
+                // The diagnosis feeds the retry prompt, so it stays inline but
+                // is bounded by `timeouts.llm_call_secs`; on timeout the retry
+                // proceeds with the raw gate output alone.
+                let enriched_diagnosis = if let Some(cheap_agent) = self.cheap_agent() {
+                    tokio::time::timeout(
+                        self.config.timeouts.llm_call(),
+                        roko_learn::error_enrichment::enrich_error_digest(
+                            &raw_for_feedback,
+                            &cheap_agent,
+                            &spec.title,
+                        ),
+                    )
+                    .await
+                    .unwrap_or_else(|_| {
+                        tracing::warn!(
+                            plan_id = %spec.plan_id,
+                            task_id = %task.id,
+                            "error enrichment timed out; retrying with raw gate output"
+                        );
+                        String::new()
+                    })
+                } else {
+                    String::new()
+                };
+
+                // ── Store gate feedback for retry injection ─────────────
+                //
+                // Parse the raw failure text into structured GateFeedback,
+                // with the diagnosis rendered ahead of the errors, and leave
+                // it for the task's next attempt prompt. Plans with a Graph
+                // checkpoint keep it on disk, so the attempt a resumed run
+                // starts gets it even after this run's retries ran out.
+                if let Some(feedback) = GateFeedback::from_raw(&raw_for_feedback) {
+                    let feedback = feedback.with_diagnosis(&enriched_diagnosis);
+                    let next_attempt = attempt_number.saturating_add(1);
+                    let retries_left = spec
+                        .max_retries
+                        .saturating_sub(self.attempt_in_run(&retry_key));
+                    tracing::info!(
+                        plan_id = %spec.plan_id,
+                        task_id = %task.id,
+                        compile_errors = feedback.compile_errors.len(),
+                        test_failures = feedback.test_failures.len(),
+                        clippy_warnings = feedback.clippy_warnings.len(),
+                        has_enriched_diagnosis = feedback.diagnosis.is_some(),
+                        next_attempt,
+                        retries_left,
+                        "storing gate feedback for retry injection"
+                    );
+                    let kept_in = self.gate_retry_context.record(
+                        &spec.plan_id,
+                        &task.id,
+                        feedback,
+                        next_attempt,
+                    );
+                    if retries_left == 0 {
+                        match kept_in {
+                            Some(path) => tracing::warn!(
+                                plan_id = %spec.plan_id,
+                                task_id = %task.id,
+                                attempt = attempt_number,
+                                max_retries = spec.max_retries,
+                                feedback = %path.display(),
+                                "verify failed on the last attempt the retry budget allows; \
+                                 `roko plan run --resume-plan` retries the task with this feedback"
+                            ),
+                            None => tracing::warn!(
+                                plan_id = %spec.plan_id,
+                                task_id = %task.id,
+                                attempt = attempt_number,
+                                max_retries = spec.max_retries,
+                                "verify failed on the last attempt the retry budget allows; \
+                                 its feedback is not kept for a resumed run"
+                            ),
+                        }
+                    }
+                }
+                // ── W13: Persist structured gate failure record ──────────
+                //
+                // Classify the raw failure text and append a GateFailureRecord
+                // to `.roko/learn/gate-failures.jsonl` for fast triage and
+                // adaptive threshold learning (#218).
+                if let Some(gf_path) = &self.feedback.gate_failures_path {
+                    let raw_for_classification = failures.join("\n---\n");
+                    let classification =
+                        roko_gate::classify_gate_failure("graph-verify", &raw_for_classification);
+                    let record = roko_gate::GateFailureRecord::from_classification(
+                        &spec.plan_id,
+                        &task.id,
+                        "graph-verify",
+                        failed_step_rung(&step_outcomes),
+                        &classification,
+                    );
+                    if let Ok(line) = serde_json::to_string(&record) {
+                        let path = gf_path.clone();
+                        tokio::spawn(async move {
+                            if let Err(error) = append_jsonl_line_async(path, line).await {
+                                tracing::warn!(
+                                    %error,
+                                    "gate failure record write failed (non-fatal)"
+                                );
+                            }
+                        });
+                    }
+                }
+                // ── P2-PLN-2: Post-gate LLM reflection ───────────────────
+                //
+                // When `replan_on_gate_failure` is enabled and a cheap
+                // agent is available, ask the LLM for a one-sentence
+                // reflection explaining the root cause. The lesson is
+                // stored in the PostGateReflectionStore (at
+                // `.roko/learn/post-gate-reflections.json`) so subsequent
+                // retry prompts and playbook extraction see real LLM
+                // analysis instead of the deterministic pattern template.
+                if self.feedback.replan_on_gate_failure {
+                    if let Some((reflection_path, cheap_agent)) = self
+                        .feedback
+                        .post_gate_reflection_path
+                        .as_ref()
+                        .cloned()
+                        .zip(self.cheap_agent())
+                    {
+                        let raw_for_reflection = failures.join("\n---\n");
+                        let task_desc = spec.title.clone();
+                        let plan_id = spec.plan_id.clone();
+                        let task_id = task.id.clone();
+                        tokio::spawn(async move {
+                            let lesson =
+                                roko_learn::post_gate_reflection::generate_post_gate_reflection(
+                                    &cheap_agent,
+                                    &task_desc,
+                                    "graph-verify",
+                                    &raw_for_reflection,
+                                )
+                                .await;
+                            tracing::info!(
+                                plan_id = %plan_id,
+                                task_id = %task_id,
+                                lesson_chars = lesson.len(),
+                                "post-gate LLM reflection generated"
+                            );
+                            let input = roko_learn::post_gate_reflection::ReflectionInput {
+                                plan_id: Some(plan_id),
+                                task_id: Some(task_id),
+                                episode_id: None,
+                                trigger_gate: "graph-verify".to_string(),
+                                outcome:
+                                    roko_learn::post_gate_reflection::ReflectionGateOutcome::Failed,
+                                failure_pattern_ids: vec![],
+                                pass_evidence: vec![],
+                                proposed_lesson: lesson,
+                            };
+                            let mut store =
+                                roko_learn::post_gate_reflection::PostGateReflectionStore::load(
+                                    &reflection_path,
+                                );
+                            store.observe(
+                                input,
+                                roko_learn::post_gate_reflection::ReflectionPromotionConfig::default(),
+                            );
+                            if let Err(error) = store.save(&reflection_path) {
+                                tracing::warn!(
+                                    %error,
+                                    "post-gate reflection store write failed (non-fatal)"
+                                );
+                            }
+                        });
+                    }
+                }
+                // ── RAG-10/11: Retrieval outcome settlement (gate fail) ──
+                {
+                    let ctx_snapshot = self.retrieval_ctx.lock().get(&retry_key).cloned();
+                    if let Some((strategy, query, results_count, latency_ms)) = ctx_snapshot {
+                        // RAG-11: update experiment store with gate-fail outcome.
+                        if let Some(exp_path) = &self.feedback.experiment_store_path {
+                            // Locked: prompt treatments share the file.
+                            let _ = roko_learn::prompt_experiment::ExperimentStore::transaction(
+                                exp_path,
+                                |store| {
+                                    store.record_retrieval_outcome(&strategy, false);
+                                    Ok(())
+                                },
+                            );
+                        }
+                        // RAG-10: write settled record.
+                        if let Some(path) = self.feedback.retrieval_outcomes_path.clone() {
+                            let record =
+                                roko_learn::retrieval_outcome::RetrievalOutcomeRecord::settled(
+                                    &spec.plan_id,
+                                    &task.id,
+                                    &query,
+                                    &strategy,
+                                    results_count,
+                                    false,
+                                )
+                                .with_latency_ms(latency_ms);
+                            tokio::spawn(async move {
+                                if let Err(error) =
+                                    roko_learn::retrieval_outcome::RetrievalOutcomeStore::at(&path)
+                                        .without_fsync()
+                                        .append(&record)
+                                        .await
+                                {
+                                    tracing::warn!(
+                                        %error,
+                                        "RAG-10: gate-fail retrieval outcome write failed (best-effort)"
+                                    );
+                                }
+                            });
+                        }
+                    }
+                }
+                return Err(RokoError::Verify {
+                    gate: "graph-verify".to_string(),
+                    message: summary,
+                });
+            }
+
+            tracing::info!(
+                plan_id = %spec.plan_id,
+                task_id = %task.id,
+                step_count = task.verify.len(),
+                "all graph verify steps passed"
+            );
+            // ── P0-GA-1: Emit gate-pass efficiency event ──────────────────
+            //
+            // The initial efficiency event (W05 in emit_feedback) is written
+            // before gate execution with gate_passed: None, so the metric was
+            // always 0%. Write a follow-up record now that we know all verify
+            // steps passed so readers that filter by gate_passed == Some(true)
+            // see the correct pass count.
+            if let Some(eff_path) = &self.feedback.efficiency_path {
+                let gate_turn_number = dispatch
+                    .events
+                    .iter()
+                    .rev()
+                    .find_map(|ev| match ev {
+                        roko_agent::AgentRuntimeEvent::TurnCompleted { num_turns, .. } => {
+                            *num_turns
+                        }
+                        _ => None,
+                    })
+                    .unwrap_or(1);
+                let gate_pass_event = roko_learn::efficiency::AgentEfficiencyEvent {
+                    agent_id: format!("{}/{}", spec.plan_id, task.id),
+                    role: task.role.as_deref().unwrap_or("implementer").to_string(),
+                    backend: dispatch.target.provider_id.clone(),
+                    model: dispatch.target.model_slug.clone(),
+                    plan_id: spec.plan_id.clone(),
+                    task_id: task.id.clone(),
+                    // Suffixed so it stays distinct from, yet joins, the
+                    // attempt's dispatch event.
+                    attempt_id: format!("{attempt_id}/gate-pass"),
+                    input_tokens: 0,
+                    output_tokens: 0,
+                    reasoning_tokens: 0,
+                    cache_read_tokens: 0,
+                    cache_write_tokens: 0,
+                    cost_usd: 0.0,
+                    cost_usd_without_cache: 0.0,
+                    prompt_sections: vec![],
+                    total_prompt_tokens: 0,
+                    system_prompt_tokens: 0,
+                    tools_available: 0,
+                    tools_used: 0,
+                    tool_calls: vec![],
+                    wall_time_ms: 0,
+                    duration_ms: 0,
+                    time_to_first_token_ms: 0,
+                    was_warm_start: false,
+                    iteration: gate_turn_number,
+                    turn_number: gate_turn_number,
+                    is_final_turn: true,
+                    gate_passed: Some(true),
+                    outcome: "gate_pass".to_string(),
+                    gate_errors: vec![],
+                    model_used: dispatch.target.model_slug.clone(),
+                    frequency: roko_core::OperatingFrequency::Gamma,
+                    strategy_attempted: String::new(),
+                    timestamp: chrono::Utc::now().to_rfc3339(),
+                };
+                if let Ok(line) = serde_json::to_string(&gate_pass_event) {
+                    let path = eff_path.clone();
+                    let plan_id = spec.plan_id.clone();
+                    let task_id = task.id.clone();
+                    tokio::spawn(async move {
+                        if let Err(error) = append_jsonl_line_async(path, line).await {
+                            tracing::warn!(
+                                plan_id = %plan_id,
+                                task_id = %task_id,
+                                %error,
+                                "graph gate-pass efficiency event write failed (best-effort)"
+                            );
+                        }
+                    });
+                }
+            }
+            // ── RAG-10/11: Retrieval outcome settlement (gate pass) ───────
+            {
+                let ctx_snapshot = self.retrieval_ctx.lock().get(&retry_key).cloned();
+                if let Some((strategy, query, results_count, latency_ms)) = ctx_snapshot {
+                    // RAG-11: update experiment store with gate-pass outcome.
+                    if let Some(exp_path) = &self.feedback.experiment_store_path {
+                        // Locked: prompt treatments share the file.
+                        let _ = roko_learn::prompt_experiment::ExperimentStore::transaction(
+                            exp_path,
+                            |store| {
+                                store.record_retrieval_outcome(&strategy, true);
+                                Ok(())
+                            },
+                        );
+                    }
+                    // RAG-10: write settled record.
+                    if let Some(path) = self.feedback.retrieval_outcomes_path.clone() {
+                        let record =
+                            roko_learn::retrieval_outcome::RetrievalOutcomeRecord::settled(
+                                &spec.plan_id,
+                                &task.id,
+                                &query,
+                                &strategy,
+                                results_count,
+                                true,
+                            )
+                            .with_latency_ms(latency_ms);
+                        tokio::spawn(async move {
+                            if let Err(error) =
+                                roko_learn::retrieval_outcome::RetrievalOutcomeStore::at(&path)
+                                    .without_fsync()
+                                    .append(&record)
+                                    .await
+                            {
+                                tracing::warn!(
+                                    %error,
+                                    "RAG-10: gate-pass retrieval outcome write failed (best-effort)"
+                                );
+                            }
+                        });
+                    }
+                }
+            }
+            // Clear any stale gate retry context on success.
+            self.gate_retry_context.clear(&spec.plan_id, &task.id);
+            self.retrieval_ctx.lock().remove(&retry_key);
+        }
+
+        Ok(if task.verify.is_empty() {
+            TaskGateVerdict::Unverified
+        } else {
+            TaskGateVerdict::Passed
+        })
+    }
+}
+
+/// Queue a cargo verify step on the per-repository compile lock before its
+/// timeout starts, so a build by a plan running beside this one cannot time
+/// the step out. Other steps take no permit.
+async fn verify_compile_permit(
+    workdir: &Path,
+    compile_concurrency: usize,
+    step: &crate::task_parser::VerifyStep,
+    plan_id: &str,
+    task_id: &str,
+) -> Option<tokio::sync::OwnedSemaphorePermit> {
+    let runs_cargo = step
+        .command
+        .split(|c: char| c.is_whitespace() || "&|;({".contains(c))
+        .any(|word| word == "cargo");
+    if !runs_cargo {
+        return None;
+    }
+    crate::runner::gate_dispatch::acquire_compile_ownership(
+        workdir,
+        compile_concurrency,
+        std::time::Duration::from_millis(step.timeout_ms),
+        plan_id,
+        task_id,
+        &step.command,
+    )
+    .await
+    .inspect_err(|error| {
+        tracing::warn!(%error, "running the cargo verify step without the compile lock");
+    })
+    .ok()
+}
+
+/// Stable label for the `index`-th verify step (`verify[i]` or `verify[i:phase]`).
+pub(super) fn verify_step_label(index: usize, phase: &str) -> String {
+    if phase.is_empty() {
+        format!("verify[{index}]")
+    } else {
+        format!("verify[{index}:{phase}]")
+    }
+}
+
+/// Maximum number of output lines kept from a gate's detail for dashboard
+/// display.  Lines beyond this are replaced by a "… N earlier lines not shown"
+/// leader.
+const GATE_OUTPUT_TAIL_LINES: usize = 60;
+
+/// Maximum byte size of the kept tail before a hard byte truncation kicks in.
+/// When the 60-line tail still exceeds this, the last 16 KiB is kept (aligned
+/// to a UTF-8 char boundary) and prefixed with "… earlier output not shown".
+const GATE_OUTPUT_TAIL_BYTES: usize = 16 * 1024;
+
+/// Gate output published to the dashboard: `$ {command}`, then (when
+/// non-empty after trimming) the last 60 lines / 16 KiB of the gate's detail,
+/// and finally — when the verdict failed — `✗ ` and how it ended.
+pub(super) fn published_gate_output(command: &str, verdict: &roko_core::Verdict) -> String {
+    let mut result = format!("$ {command}");
+
+    let trimmed = verdict.detail.as_deref().unwrap_or("").trim_end();
+    if !trimmed.is_empty() {
+        result.push('\n');
+        result.push_str(&gate_output_tail(trimmed));
+    }
+
+    if !verdict.passed {
+        result.push_str("\n✗ ");
+        result.push_str(&gate_how_ended(&verdict.reason));
+    }
+
+    result
+}
+
+/// Keep the last [`GATE_OUTPUT_TAIL_LINES`] lines of `detail`; prepend a
+/// "… N earlier lines not shown" message when lines are dropped.  If the
+/// resulting tail still exceeds [`GATE_OUTPUT_TAIL_BYTES`], truncate to the
+/// last 16 KiB (aligned to a UTF-8 char boundary) and prepend
+/// "… earlier output not shown".
+fn gate_output_tail(detail: &str) -> String {
+    let all_lines: Vec<&str> = detail.lines().collect();
+    let total = all_lines.len();
+
+    let (tail_lines, dropped) = if total > GATE_OUTPUT_TAIL_LINES {
+        let dropped = total - GATE_OUTPUT_TAIL_LINES;
+        (&all_lines[dropped..], dropped)
+    } else {
+        (&all_lines[..], 0)
+    };
+
+    let mut tail = tail_lines.join("\n");
+
+    if tail.len() > GATE_OUTPUT_TAIL_BYTES {
+        // Move the cut forward to a UTF-8 char boundary so we keep at most
+        // GATE_OUTPUT_TAIL_BYTES bytes.
+        let ideal = tail.len() - GATE_OUTPUT_TAIL_BYTES;
+        let mut byte_pos = ideal;
+        while !tail.is_char_boundary(byte_pos) {
+            byte_pos += 1;
+        }
+        let kept = tail[byte_pos..].to_string();
+        tail = format!("… earlier output not shown\n{kept}");
+    } else if dropped > 0 {
+        tail = format!("… {dropped} earlier lines not shown\n{tail}");
+    }
+
+    tail
+}
+
+/// Translate the verdict's `reason` field into a human-readable closing line.
+///
+/// - `"exit code: <n>"` → `"exit status <n>"`
+/// - `"exit code: terminated by signal"` → `"terminated by a signal"`
+/// - `""` (empty) → `"failed"`
+/// - anything else → unchanged
+fn gate_how_ended(reason: &str) -> String {
+    if reason.is_empty() {
+        "failed".to_string()
+    } else if let Some(code) = reason.strip_prefix("exit code: ") {
+        if code == "terminated by signal" {
+            "terminated by a signal".to_string()
+        } else {
+            format!("exit status {code}")
+        }
+    } else {
+        reason.to_string()
+    }
+}
+
+/// Gate rung of the first failed step in `(phase, passed)` verify outcomes:
+/// its canonical rung (0 compile, 1 clippy, 2 test), else the custom shell
+/// gate's rung, since every Graph verify step is a shell command.
+fn failed_step_rung(step_outcomes: &[(String, bool)]) -> u32 {
+    step_outcomes
+        .iter()
+        .find(|(_, passed)| !passed)
+        .and_then(|(phase, _)| rung_for_gate_name(phase))
+        .map_or_else(
+            || {
+                roko_gate::GateRegistry::new()
+                    .rung_for_name("custom")
+                    .map_or(0, u32::from)
+            },
+            |rung| rung.as_index(),
+        )
+}
+
+/// Retry-facing summary of a failed verify run, including skipped steps.
+pub(super) fn verify_failure_summary(
+    title: &str,
+    total: usize,
+    failures: &[String],
+    skipped: &[String],
+) -> String {
+    let summary = format!(
+        "{n}/{total} verify step(s) failed for task `{title}`:\n\n{details}",
+        n = failures.len(),
+        details = failures.join("\n\n---\n\n"),
+    );
+    if skipped.is_empty() {
+        summary
+    } else {
+        format!(
+            "{summary}\n\nSkipped after the first failure: {}",
+            skipped.join(", ")
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tempfile::tempdir;
+
+    use super::*;
+    use crate::graph_task_dispatch::tests::{
+        VERIFY_PROVIDER, make_spec, make_test_dispatcher, no_auto_fix, verify_step,
+    };
+
+    // ─── Verify verdict tests ───────────────────────────────────────────────
+
+    /// Sorted `(attempt_id, outcome)` of every efficiency record, once
+    /// `expected` records have landed from the background writers.
+    async fn efficiency_records(path: &Path, expected: usize) -> Vec<(String, String)> {
+        // Generous deadline: the writers are background tasks, and a loaded
+        // test run can starve them for seconds. Returns as soon as they land.
+        for _ in 0..600 {
+            let mut records: Vec<(String, String)> = std::fs::read_to_string(path)
+                .unwrap_or_default()
+                .lines()
+                .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+                .map(|record| {
+                    let field = |name: &str| record[name].as_str().unwrap_or_default().to_string();
+                    (field("attempt_id"), field("outcome"))
+                })
+                .collect();
+            if records.len() >= expected {
+                records.sort();
+                return records;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        panic!("efficiency records were not written to {}", path.display());
+    }
+
+    #[tokio::test]
+    async fn failing_authored_verify_is_never_force_accepted() {
+        let temp = tempdir().expect("tempdir");
+        let (dispatcher, mut task) = make_test_dispatcher(
+            &temp,
+            VERIFY_PROVIDER,
+            |config| {
+                // The retired review-cycle cap force-accepted at this count.
+                config.gates.max_review_cycles = 1;
+                no_auto_fix(config);
+            },
+            GraphFeedbackContext::default(),
+        )
+        .await;
+        task.verify = vec![verify_step("structural", "exit 1")];
+        let spec = make_spec(&task);
+
+        for attempt in 0..3 {
+            let error = dispatcher
+                .dispatch(&spec, Vec::new(), &CellContext::new())
+                .await
+                .expect_err("a failing authored verify step must fail the attempt");
+            assert!(
+                matches!(error, RokoError::Verify { .. }),
+                "attempt {attempt}: {error}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn verify_fails_fast_and_reports_skipped_steps() {
+        let temp = tempdir().expect("tempdir");
+        let (dispatcher, mut task) = make_test_dispatcher(
+            &temp,
+            VERIFY_PROVIDER,
+            no_auto_fix,
+            GraphFeedbackContext::default(),
+        )
+        .await;
+        let marker = temp.path().join("compile-ran");
+        task.verify = vec![
+            verify_step("structural", "grep -q missing-symbol /dev/null"),
+            verify_step("compile", &format!("touch {}", marker.display())),
+        ];
+
+        let error = dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &CellContext::new())
+            .await
+            .expect_err("structural failure");
+        let RokoError::Verify { message, .. } = error else {
+            panic!("expected a verify failure, got {error}");
+        };
+        assert!(message.contains("1/2 verify step(s) failed"), "{message}");
+        assert!(message.contains("grep -q missing-symbol"), "{message}");
+        assert!(
+            message.contains("Skipped after the first failure: verify[1:compile]"),
+            "{message}"
+        );
+        assert!(!marker.exists(), "fail-fast must not run later steps");
+    }
+
+    /// Provider that answers diagnosis requests with a fixed diagnosis, logs
+    /// every other prompt (argv, which carries the system prompt, then stdin)
+    /// to `prompts/<n>.txt`, and writes `fixed` once a prompt carries
+    /// previous-attempt feedback.
+    const FEEDBACK_PROVIDER: &str = r#"#!/bin/sh
+set -eu
+input="$(cat)"
+case "$input" in
+  *"Diagnosis:"*) text="The fixture file named fixed was never created. Create it first." ;;
+  *)
+    mkdir -p prompts
+    n=$(ls prompts | wc -l | tr -d ' ')
+    printf '%s\n---\n%s\n' "$*" "$input" > "prompts/$n.txt"
+    case "$*" in *"Your previous attempt FAILED verification"*) : > fixed ;; esac
+    text="task-output" ;;
+esac
+printf '{"type":"content_block_delta","delta":{"text":"%s"}}\n' "$text"
+printf '%s\n' '{"type":"result","session_id":"s","model":"claude-sonnet-4-6","total_cost_usd":0.01,"usage":{"input_tokens":5,"output_tokens":10}}'
+"#;
+
+    /// Lets the test model serve as the cheap diagnosis model too.
+    fn diagnosing(config: &mut RokoConfig) {
+        no_auto_fix(config);
+        if let Some(model) = config.models.get_mut("stream-model") {
+            model.supports_tools = true;
+        }
+    }
+
+    #[tokio::test]
+    async fn verify_feedback_outlives_the_process_and_reaches_the_resumed_prompt() {
+        let temp = tempdir().expect("tempdir");
+        let feedback_file = temp.path().join("state/retry-feedback.json");
+        let (dispatcher, mut task) = make_test_dispatcher(
+            &temp,
+            FEEDBACK_PROVIDER,
+            diagnosing,
+            GraphFeedbackContext::default(),
+        )
+        .await;
+        task.verify = vec![verify_step("structural", "test -f fixed")];
+        let spec = make_spec(&task);
+        dispatcher.attach_retry_feedback(&spec.plan_id, feedback_file.clone(), "run-1");
+
+        let error = dispatcher
+            .dispatch(&spec, Vec::new(), &CellContext::new())
+            .await
+            .expect_err("`fixed` does not exist yet");
+        assert!(matches!(error, RokoError::Verify { .. }), "{error}");
+        let persisted: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&feedback_file).expect("feedback persisted"))
+                .expect("feedback json");
+        let entry = &persisted["tasks"][task.id.as_str()];
+        assert_eq!(entry["next_attempt"], 1, "{persisted}");
+        assert_eq!(
+            entry["feedback"]["diagnosis"],
+            "The fixture file named fixed was never created. Create it first.",
+            "{persisted}"
+        );
+
+        // Another process resumes the same checkpoint run.
+        drop(dispatcher);
+        let (resumed, _) = make_test_dispatcher(
+            &temp,
+            FEEDBACK_PROVIDER,
+            diagnosing,
+            GraphFeedbackContext::default(),
+        )
+        .await;
+        resumed.attach_retry_feedback(&spec.plan_id, feedback_file.clone(), "run-1");
+        resumed
+            .dispatch(&spec, Vec::new(), &CellContext::new())
+            .await
+            .expect("the resumed attempt gets the feedback and passes");
+
+        let first = std::fs::read_to_string(temp.path().join("prompts/0.txt")).expect("prompt 0");
+        assert!(!first.contains("# Previous attempt feedback"), "{first}");
+        let resumed_prompt =
+            std::fs::read_to_string(temp.path().join("prompts/1.txt")).expect("prompt 1");
+        assert!(
+            resumed_prompt.contains("# Previous attempt feedback"),
+            "{resumed_prompt}"
+        );
+        assert!(
+            resumed_prompt.contains(
+                "## Diagnosis\nThe fixture file named fixed was never created. Create it first."
+            ),
+            "{resumed_prompt}"
+        );
+        assert!(resumed_prompt.contains("test -f fixed"), "{resumed_prompt}");
+        assert!(
+            !feedback_file.exists(),
+            "a pass clears the persisted feedback"
+        );
+    }
+
+    #[tokio::test]
+    async fn feedback_attempt_numbers_count_provider_failures_like_the_retry_budget() {
+        let temp = tempdir().expect("tempdir");
+        // Two provider failures, then a completed attempt whose verify fails:
+        // the Graph engine's third attempt of a `max_retries = 2` task.
+        let provider = r#"#!/bin/sh
+set -eu
+cat >/dev/null
+calls=$(cat calls 2>/dev/null || echo 0)
+echo $((calls + 1)) > calls
+if [ "$calls" -lt 2 ]; then
+  printf '%s\n' '{"type":"result","session_id":"s","model":"claude-sonnet-4-6","total_cost_usd":0.0,"usage":{"input_tokens":1,"output_tokens":1},"is_error":true}'
+  exit 1
+fi
+printf '%s\n' '{"type":"content_block_delta","delta":{"text":"done"}}'
+printf '%s\n' '{"type":"result","session_id":"s","model":"claude-sonnet-4-6","total_cost_usd":0.01,"usage":{"input_tokens":5,"output_tokens":10}}'
+"#;
+        let feedback_file = temp.path().join("retry-feedback.json");
+        let (dispatcher, mut task) = make_test_dispatcher(
+            &temp,
+            provider,
+            no_auto_fix,
+            GraphFeedbackContext::default(),
+        )
+        .await;
+        task.max_retries = 2;
+        task.verify = vec![verify_step("structural", "exit 1")];
+        let spec = make_spec(&task);
+        dispatcher.attach_retry_feedback(&spec.plan_id, feedback_file.clone(), "run-1");
+
+        for expected in ["provider", "provider", "verify"] {
+            let error = dispatcher
+                .dispatch(&spec, Vec::new(), &CellContext::new())
+                .await
+                .expect_err("every attempt fails");
+            let kind = if matches!(error, RokoError::Verify { .. }) {
+                "verify"
+            } else {
+                "provider"
+            };
+            assert_eq!(kind, expected, "{error}");
+        }
+        let persisted: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&feedback_file).expect("feedback persisted"))
+                .expect("feedback json");
+        assert_eq!(
+            persisted["tasks"][task.id.as_str()]["next_attempt"],
+            3,
+            "the verify failure was attempt 2: {persisted}"
+        );
+    }
+
+    #[test]
+    fn a_failure_record_names_the_failed_steps_rung() {
+        let outcomes = |steps: &[(&str, bool)]| {
+            steps
+                .iter()
+                .map(|(phase, passed)| ((*phase).to_string(), *passed))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            failed_step_rung(&outcomes(&[("compile", true), ("test", false)])),
+            2
+        );
+        assert_eq!(failed_step_rung(&outcomes(&[("clippy", false)])), 1);
+        assert_eq!(
+            failed_step_rung(&outcomes(&[("structural", false)])),
+            5,
+            "shell steps outside the canonical rungs use the custom gate's rung"
+        );
+    }
+
+    /// Dispatches `task` beside a fake sibling `T12` of the same plan that
+    /// edits `web/src/PlanView.tsx` in the same working tree and finishes its
+    /// attempt once `failed_once` exists, first creating `sibling_done`.
+    async fn dispatch_beside_editing_sibling(
+        dispatcher: &GraphTaskDispatcher,
+        task: &TaskDef,
+        failed_once: &Path,
+        sibling_done: &Path,
+    ) -> Result<Vec<Signal>> {
+        let spec = make_spec(task);
+        let sibling = dispatcher.in_flight.register(
+            &format!("{}/T12", spec.plan_id),
+            &dispatcher.workdir,
+            &["web/src/PlanView.tsx".to_string()],
+        );
+        let finish_sibling = async {
+            while !failed_once.exists() {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+            std::fs::write(sibling_done, "").expect("sibling edit");
+            drop(sibling);
+        };
+        let ctx = CellContext::new();
+        let (outcome, ()) = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+            tokio::join!(dispatcher.dispatch(&spec, Vec::new(), &ctx), finish_sibling)
+        })
+        .await
+        .expect("the failed step settles once the sibling finishes");
+        outcome
+    }
+
+    fn settle_quickly(config: &mut RokoConfig) {
+        config.gates.cargo_fix_enabled = false;
+        config.gates.sibling_settle_secs = 30;
+    }
+
+    #[tokio::test]
+    async fn a_verify_failure_beside_an_editing_sibling_is_rerun_once_it_settles() {
+        let temp = tempdir().expect("tempdir");
+        let (dispatcher, mut task) = make_test_dispatcher(
+            &temp,
+            VERIFY_PROVIDER,
+            settle_quickly,
+            GraphFeedbackContext::default(),
+        )
+        .await;
+        let failed_once = temp.path().join("failed-once");
+        let sibling_done = temp.path().join("sibling-done");
+        task.verify = vec![verify_step(
+            "typecheck",
+            &format!(
+                "test -f {} || {{ touch {}; exit 2; }}",
+                sibling_done.display(),
+                failed_once.display()
+            ),
+        )];
+
+        let outputs =
+            dispatch_beside_editing_sibling(&dispatcher, &task, &failed_once, &sibling_done)
+                .await
+                .expect("the re-run after the sibling settled passes");
+
+        assert!(
+            failed_once.exists(),
+            "the first run failed beside the sibling"
+        );
+        assert_eq!(
+            TaskGateVerdict::from_signals(&outputs),
+            Some(TaskGateVerdict::Passed)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_verify_failure_left_in_a_sibling_file_blames_the_sibling() {
+        let temp = tempdir().expect("tempdir");
+        let (dispatcher, mut task) = make_test_dispatcher(
+            &temp,
+            VERIFY_PROVIDER,
+            settle_quickly,
+            GraphFeedbackContext::default(),
+        )
+        .await;
+        let failed_once = temp.path().join("failed-once");
+        let sibling_done = temp.path().join("sibling-done");
+        task.verify = vec![verify_step(
+            "typecheck",
+            &format!(
+                "touch {}; echo 'src/PlanView.tsx(448,24): error TS2304: \
+                 Cannot find name formatDuration.' >&2; exit 2",
+                failed_once.display()
+            ),
+        )];
+
+        let error =
+            dispatch_beside_editing_sibling(&dispatcher, &task, &failed_once, &sibling_done)
+                .await
+                .expect_err("the failure persists after the sibling settled");
+
+        let RokoError::Verify { message, .. } = error else {
+            panic!("expected a verify failure, got {error}");
+        };
+        assert!(
+            message.starts_with("blocked_by_sibling = T12: 1/1 verify step(s) failed"),
+            "{message}"
+        );
+        assert!(
+            message.contains("first at src/PlanView.tsx:448:24"),
+            "{message}"
+        );
+    }
+
+    #[tokio::test]
+    async fn verified_outcome_drives_output_verdict_and_feedback() {
+        let temp = tempdir().expect("tempdir");
+        let efficiency = temp.path().join("efficiency.jsonl");
+        let feedback = GraphFeedbackContext {
+            efficiency_path: Some(efficiency.clone()),
+            ..GraphFeedbackContext::default()
+        };
+        let (dispatcher, mut task) =
+            make_test_dispatcher(&temp, VERIFY_PROVIDER, no_auto_fix, feedback).await;
+
+        let unverified = dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &CellContext::new())
+            .await
+            .expect("dispatch without verify steps");
+        assert_eq!(
+            TaskGateVerdict::from_signals(&unverified),
+            Some(TaskGateVerdict::Unverified)
+        );
+
+        task.verify = vec![verify_step("structural", "true")];
+        let passed = dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &CellContext::new())
+            .await
+            .expect("verified dispatch");
+        assert_eq!(
+            TaskGateVerdict::from_signals(&passed),
+            Some(TaskGateVerdict::Passed)
+        );
+
+        task.verify = vec![verify_step("structural", "false")];
+        dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &CellContext::new())
+            .await
+            .expect_err("verify failure");
+
+        // The provider succeeded all three times; learning must record the
+        // verified outcome, so the failed-verify attempt is a failure. Each
+        // attempt gets its own identity, which its gate-pass record extends.
+        let task_key = format!("{}/{}", make_spec(&task).plan_id, task.id);
+        let attempt =
+            |suffix: &str, outcome: &str| (format!("{task_key}/{suffix}"), outcome.to_string());
+        assert_eq!(
+            efficiency_records(&efficiency, 4).await,
+            vec![
+                attempt("a0", "success"),
+                attempt("a1", "success"),
+                attempt("a1/gate-pass", "gate_pass"),
+                attempt("a2", "failure"),
+            ]
+        );
+    }
+
+    #[test]
+    fn published_gate_output_leads_with_the_command() {
+        assert_eq!(
+            published_gate_output(
+                "cargo check -p roko-cli",
+                &roko_core::Verdict::fail("verify[0]", "exit code: 101")
+                    .with_detail("error[E0425]\n"),
+            ),
+            "$ cargo check -p roko-cli\nerror[E0425]\n✗ exit status 101"
+        );
+        assert_eq!(
+            published_gate_output("true", &roko_core::Verdict::pass("verify[0]")),
+            "$ true"
+        );
+        assert_eq!(verify_step_label(2, ""), "verify[2]");
+        assert_eq!(verify_step_label(0, "compile"), "verify[0:compile]");
+    }
+}

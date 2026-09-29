@@ -3,7 +3,8 @@
 > **v3 depth file** -- `/docs/v3/depth/00-architecture/implementation-readiness-audit.md`
 > Canonical source: v1 `docs/v1/00-architecture/31-implementation-readiness-audit.md`
 > Status: **Updated for current state** -- 39 workspace members, ~1M LOC, 10,300+ tests.
-> 48/48 epics accepted, 124/124 executable tasks complete. Graph is the sole execution
+> 48/48 epics accepted as programme manifests (the executable-task count was withdrawn
+> on 2026-09-29 as stale). Graph is the sole execution
 > engine. The v1 audit covered 36 members at ~322K LOC with 3,761 tests; this revision
 > reflects the 2026-09-15 reality.
 
@@ -44,7 +45,7 @@ File classifications:
 | Total tests | 3,761 | 10,300+ |
 | Crates wired to CLI | 12 | 30+ |
 | Epics accepted | 0 | 48/48 |
-| Executable tasks complete | 0 | 124/124 |
+| Executable tasks complete | 0 | Withdrawn 2026-09-29 (stale count) |
 | Execution engine | WorkflowEngine | Graph (sole engine) |
 | HTTP routes | 0 | ~376 canonical (~421 incl. aliases) |
 | ACP tests | 0 | 180 |

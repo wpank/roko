@@ -1,4 +1,4 @@
-Status: draft · budget 550 words · owner gap-2aad7d
+Status: reviewed · budget 550 words · owner gap-2aad7d
 
 # 8 Evaluation plan
 
@@ -36,10 +36,10 @@ ids:[^8-metrics] the verified success rate; cost per verified task, or per verif
 that all k seeds succeed; false greens, accepted runs that hidden tests reject; and wall-clock time, or a plan's
 makespan.
 
-Safeguards: the hidden-test secret sits in a driver-only file, read only after the agent exits (gap-a8a160); Claude Code
-runs with a fresh config, free of the user's memory, hooks, plugins, MCP servers and fallback model
-(gap-c4f364); and each run starts fresh, with every attempt's model checked, because failover can switch it
-silently (PARTIAL@a17d4dadd, row RC4; gap-b7ab99).
+Safeguards: the hidden-test secret sits in a driver-only file, read only after the agent exits (gap-a8a160); Claude
+Code runs with an isolated config, free of the user's memory, hooks and plugins (gap-c4f364); and each run starts
+fresh, with every attempt's model checked, because failover can switch it silently (PARTIAL@a17d4dadd, row RC4;
+gap-b7ab99).
 
 ## 8.4 Falsifiers
 
@@ -69,9 +69,12 @@ replaces `roko bench`, which leaks the SWE-bench gold patch (bug-28becc).
 No arm has run: the pilot's results are pending gap-d9e9fe (`vb report --pilot`), and the plan slice's
 gap-1cd676.
 
-[^8-pilot]: spec-567e52. The direct arms run in gap-c33709, the Roko and Claude Code arms in gap-327242.
+[^8-pilot]: spec-567e52. The direct arms run in gap-c33709, the Roko and Claude Code arms in gap-327242. The full
+    comparison's arms and the 48-task probe: programme spec S09 v1.1, frozen as `evidence/2026-09-28-s09-h1-bar.md`
+    (sha256 `029756b064eb`), "Design (D1)".
 
 [^8-metrics]: gap-d9e9fe, which labels the pilot's page "pilot, descriptive".
 
-[^8-bar]: The author's bar, decided on 2026-09-28; gap-c4f364 and gap-d9e9fe refer to it, and spec-567e52
-    defers `roko_full` until its mechanisms are live.
+[^8-bar]: The author's bar (D3), decided on 2026-09-28: S09 v1.1, frozen as `evidence/2026-09-28-s09-h1-bar.md`
+    (sha256 `029756b064eb`), "Envelope procedure" and H1's "Primary", which also give the expectation. gap-c4f364
+    and gap-d9e9fe refer to the bar, and spec-567e52 defers `roko_full` until its mechanisms are live.

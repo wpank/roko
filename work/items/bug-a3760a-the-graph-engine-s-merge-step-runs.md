@@ -2,7 +2,7 @@
 id = "bug-a3760a"
 kind = "bug"
 title = "The Graph engine's merge step runs git checkout in the user's working tree"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 size = "M"
@@ -11,7 +11,7 @@ subsystem = ["roko-cli/graph-execution"]
 created = 2026-09-28
 updated = 2026-09-29
 last_verified = 2026-09-29
-last_verified_rev = "a17d9d766"
+last_verified_rev = "584abd414"
 source = "tmp/cybernetic-harness/assessment-2026-09-28/process-capacity.md"
 discovered_from = "audit:tmp/cybernetic-harness/assessment-2026-09-28/process-capacity.md"
 anchors = ["crates/roko-cli/src/graph_execution/delivery.rs::GitDeliveryBackend::git_merge", "crates/roko-cli/src/graph_execution/delivery.rs::GitDeliveryBackend", "crates/roko-cli/src/graph_execution/delivery.rs::CliCompletionDeliveryService", "crates/roko-cli/src/runner/merge.rs::GitMergeBackend"]
@@ -19,6 +19,11 @@ links = { depends_on = [], blocks = [], related = ["gap-a85a1f", "gap-3b5361"], 
 
 [[verify]]
 command = "grep -rqw 'fn merge_leaves_the_user_checkout_alone' crates/roko-cli/src/graph_execution/ && cargo test -p roko-cli --lib merge_leaves_the_user_checkout_alone && ! grep -qE '\"(checkout|switch)\", *&?target' crates/roko-cli/src/graph_execution/delivery.rs"
+
+[closed]
+at = 2026-09-29
+by = "coordinator (session 7622b882)"
+evidence = "GitDeliveryBackend merges with plumbing only (merge-base, merge-tree --write-tree, commit-tree, update-ref with the expected old value): a target checked out in any worktree fails closed and the result is parked at refs/roko/delivered/<plan>; conflicts change no refs; regression runs in a temporary detached worktree (809ae920d + rustfmt 18f21c698, merged 9cfef9505). Batch 2 gate (work/rust-batch-2; crates tree identical to MAIN after the merges): cargo check --workspace --tests clean; nightly rustfmt clean; clippy -p roko-cli -p roko-graph -p roko-execution -p roko-core -p roko-acp -p roko-learn --no-deps -D warnings clean; lib tests roko-cli 3060 passed (8 threads; two timing tests flaked only under full parallel load and pass alone), roko-graph 460, roko-execution 252, roko-core 1913, roko-acp 196, roko-learn 1166."
 +++
 
 ## Problem
@@ -144,6 +149,33 @@ Expected: delivering a branch never changes the user's checked-out branch, index
   only the temporary regression worktree.
 - Safe to do in parallel with most work. It touches only `delivery.rs`, plus a small helper shared with
   `runner/merge.rs`.
+- 2026-09-29 (wk-merge-safety): Implemented on `work/bug-a3760a` at `809ae920d`; cargo verification deferred to
+  the batch check.
+  - Approach: git plumbing, not a dedicated merge worktree. Plumbing needs no checkout at all, and a worktree
+    cannot check out a target that is already checked out elsewhere. `merge-base --is-ancestor` covers the
+    already-merged and fast-forward cases. Otherwise `merge-tree --write-tree` then `commit-tree`. The target
+    moves only by `update-ref <ref> <new> <old>`. The `merge-tree` call and its parsing now live in
+    `runner::merge::git_merge_tree`, which `GitMergeBackend`'s G06 pre-check also uses. Its conflicted paths are
+    now file paths, not `CONFLICT` message lines.
+  - A target checked out in any worktree, clean or dirty, never moves: that checkout's index and files would no
+    longer match its HEAD. The merge fails closed (`merged: false`, so the service records `Conflict` with
+    `RetainForReview`). The result is parked at `refs/roko/delivered/<plan_id>` by compare-and-swap, and the
+    summary says to run `git merge --ff-only refs/roko/delivered/<plan_id>` in that checkout. Failing closed for a
+    clean checkout too keeps a receipt from saying `Delivered` when the target did not move.
+  - The regression runs in a temporary detached worktree of the merge commit, under the system temp dir, with
+    `gate_dispatch`'s `RegisteredBaselineWorktree` guard (now `pub(crate)`). `run_regression` now receives the
+    merge commit. Outside the repo, the checkout never shows in the user's `git status`; `roko init` does not
+    gitignore `.roko/`. `with_regression_command` replaces the hard-coded `cargo check`; tests use it, and
+    gap-60233f can set it from `[meta] verify`.
+  - The fire-and-forget `MergeQueue::enqueue` is gone, and `GitDeliveryBackend::new` takes only the workdir. The
+    service's merge slot serializes deliveries; the compare-and-swap guards against other writers. Git commands
+    drop `GIT_DIR`, `GIT_WORK_TREE` and `GIT_INDEX_FILE`, which git sets inside hooks.
+  - Tests in `delivery.rs`: `merge_leaves_the_user_checkout_alone`, `merge_into_checked_out_target_does_not_move_it`,
+    `merge_conflict_is_reported_without_touching_refs`, `merge_fast_forwards_a_target_that_is_behind` and
+    `regression_runs_in_a_temporary_checkout_of_the_merge`. The same git command sequence passed these scenarios
+    in a scratch mirror on git 2.39.5.
+  - Left for later: the regression's `cargo check` starts cold in a fresh checkout, with no shared target dir. The
+    merge takes the branch head and does not compare it with `request.commit_oid`.
 
 ## Original notes
 

@@ -67,6 +67,28 @@ Override fields: `model`, `backend`, `effort`, `temperament`, `context_limit_k`,
 
 ---
 
+## `[authoring]` -- AuthoringConfig
+
+Which model writes and revises plans. Frontier models plan and cheap models
+execute, so the planner is chosen apart from the models that run tasks.
+
+```toml
+[authoring]
+planner_model = "claude-opus-4-6"   # a key from [models], or a builtin slug
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `planner_model` | String | `""` (unset) | Model for every plan generate and revise path: `roko prd plan`, `roko plan generate` / `regenerate`, the plan-writing bands of `roko do`, and the serve runtime's generate and revise |
+
+Precedence (`model_selection::resolve_planner_model`): `--model`, then
+`[authoring] planner_model`, then `[agent.roles.strategist] model`, then
+`[agent] model`. An empty value counts as unset. It is a string rather than an
+optional value so the key survives the loader, which drops keys that the
+serialized default config lacks.
+
+---
+
 ## `[runner]` -- CoreRunnerConfig
 
 | Field | Type | Default | Description |
@@ -184,18 +206,53 @@ semantics and built-in profiles.
 
 ## `[learning]` -- LearningConfig
 
+Defaults come from `LearningConfig` (`crates/roko-core/src/config/learning.rs`), whose serde
+defaults and `Default` impl agree. Checked at `7c556bc0a` (2026-09-29), most of these keys
+change nothing: "No effect" marks a key that only the config tooling reads (loading,
+`roko config set`, presets and config views). "No effect on Graph runs" marks a key that
+`roko plan run`, and the plans that `roko run` and `roko serve` start, never read. When the
+replan keys are set to a non-default value, `roko config doctor` reports them
+(`graph_engine_inert_settings` in `crates/roko-cli/src/graph_task_dispatch.rs`).
+
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `auto_playbook_refresh` | bool | false | Refresh playbooks automatically |
-| `knowledge_file_intel` | bool | false | File intelligence enrichment |
-| `knowledge_warnings` | bool | false | Warning pattern enrichment |
-| `knowledge_wave_context` | bool | false | Wave context enrichment |
-| `knowledge_error_patterns` | bool | false | Error pattern enrichment |
-| `replan_on_gate_failure` | bool | false | Trigger replan on gate failures |
-| `replan_max_per_plan` | u32 | 1 | Maximum replans per plan |
-| `dream_on_completion` | bool | true | Run dream consolidation on completion |
-| `use_lookahead_router` | bool | false | Enable lookahead routing |
-| `gate_threshold_flush_interval` | u64 | 300 | Adaptive threshold flush cadence (seconds) |
+| `auto_playbook_refresh` | bool | true | Refresh playbook rules after successful tasks. No effect |
+| `knowledge_file_intel` | bool | true | Inject file difficulty profiles into agent context. No effect |
+| `knowledge_warnings` | bool | true | Inject knowledge-store warnings into agent context. No effect |
+| `knowledge_wave_context` | bool | true | Pass wave context between tasks. No effect |
+| `knowledge_error_patterns` | bool | true | Match error signatures against known patterns. No effect |
+| `learning_min_occurrences` | usize | 2 | Occurrences before a learned rule is promoted. No effect |
+| `file_intel_max_entries` | usize | 15 | Maximum file-intel entries injected per task. No effect |
+| `warning_max_entries` | usize | 5 | Maximum warning entries injected per task. No effect |
+| `replan_on_gate_failure` | bool | true | Graph runs never revise a plan: a failed task is retried up to its `max_retries`. When true and a cheap model is available, each failed verify also gets an LLM reflection, saved to `.roko/learn/post-gate-reflections.json` |
+| `replan_max_per_plan` | u32 | 2 | Maximum gate-failure plan revisions per plan. No effect on Graph runs (gap-7a3527) |
+| `replan_gate_attempts` | u32 | 3 | Consecutive gate failures before a plan revision. No effect on Graph runs (gap-7a3527) |
+| `dream_on_completion` | bool | false | Opt in to dream consolidation on plan completion; otherwise dreams run on demand via `roko knowledge dream run`. No effect on Graph runs: nothing emits the plan-completion event (q-6b7cca) |
+| `use_lookahead_router` | bool | false | Pass the cascade router's pick through `LookaheadRouter`, which may choose a cheaper tier. No effect |
+| `lookahead_threshold` | f64 | 0.7 | Success probability at which the lookahead router accepts a cheaper tier. No effect |
+| `override_learning_dampening` | Option\<f64\> | None | Weight of a manual model override's outcome in router learning. No effect: the router always uses 0.5 (`OVERRIDE_LEARNING_RATE`) |
+| `gate_threshold_flush_interval` | u64 | 10 | Gate observations (a count, not seconds) between writes of `.roko/learn/gate-thresholds.json`; 0 is read as 1. No effect on Graph runs, which save the thresholds after every task (reg-c7ecf6) |
+| `t0_reflexes` | bool | false | Run the T0 reflex path in Graph task dispatch. Off by default until reflex rules are credited after verify (bug-94151f) |
+
+The `dreams` and `knowledge` fields are the two sub-tables below.
+
+### `[learning.dreams]` -- DreamsConfig
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `trigger_on_plan_complete` | bool | true | Plan-completion dream trigger; fires only when `learning.dream_on_completion` is also true. No effect on Graph runs: nothing emits the plan-completion event (q-6b7cca) |
+| `max_concurrent` | usize | 1 | Intended cap on concurrent dream runs; no code reads it yet (the plan-completion trigger runs one dream at a time, the ACP trigger has no cap) |
+| `trigger_on_acp_episodes` | bool | false | Opt in to a dream consolidation from ACP sessions once `acp_episode_threshold` episodes accumulate since the last dream report; independent of the plan-completion switches |
+| `acp_episode_threshold` | usize | 10 | Episodes since the last dream report before an ACP session starts a dream (0 is treated as 1) |
+
+### `[learning.knowledge]` -- KnowledgeProgressionConfig
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `transient_confirmations` | u32 | 2 | Confirmations for Transient -> Working promotion. No effect |
+| `working_contexts` | u32 | 3 | Distinct contexts for Working -> Consolidated promotion. No effect |
+| `consolidated_age_days` | u32 | 14 | Minimum age in days for Consolidated -> Persistent promotion. No effect |
+| `demotion_balance_threshold` | f64 | 0.1 | Minimum balance before an entry is considered for demotion. No effect |
 
 ---
 

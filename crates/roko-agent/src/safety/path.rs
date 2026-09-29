@@ -16,15 +16,19 @@
 //!    **canonicalize the deepest existing ancestor** and re-attach the
 //!    missing tail components. We never call [`std::fs::canonicalize`] on
 //!    a non-existent leaf because the platform behavior differs.
-//! 3. If `policy.prevent_escapes` is set (default), the canonical
+//! 3. A provider key file ([`roko_core::child_env::is_key_file`]: the
+//!    `.roko/.env` and `.roko/secrets.toml` of a checkout, anything in
+//!    `~/.roko`) is refused with [`ToolError::KeyFileBlocked`], inside the
+//!    worktree too and whatever the policy says.
+//! 4. If `policy.prevent_escapes` is set (default), the canonical
 //!    `joined` must `starts_with` the canonical worktree root. Otherwise
 //!    we return [`ToolError::PathOutsideWorktree`] carrying the canonical
 //!    form of the escape.
-//! 4. If `policy.deny_symlinks` is set, we walk the on-disk components
+//! 5. If `policy.deny_symlinks` is set, we walk the on-disk components
 //!    and reject with [`ToolError::Other`] if any extant component is a
 //!    symlink. (Non-existent components can't be symlinks, so they're
 //!    ignored.)
-//! 5. We compute the relative form by stripping the canonical worktree
+//! 6. We compute the relative form by stripping the canonical worktree
 //!    prefix and return a [`CanonicalPath`].
 //!
 //! # Backward compatibility
@@ -44,6 +48,7 @@
 
 use std::path::{Path, PathBuf};
 
+use roko_core::child_env::is_key_file;
 use roko_core::tool::ToolError;
 
 // ─── Types ────────────────────────────────────────────────────────────────
@@ -111,6 +116,8 @@ pub fn canonicalize_under(worktree: &Path, arg_path: &str) -> Result<PathBuf, To
 ///
 /// # Errors
 ///
+/// - [`ToolError::KeyFileBlocked`] when the joined path, as given or with
+///   symlinks resolved, is a provider key file, whatever the policy.
 /// - [`ToolError::PathOutsideWorktree`] when `prevent_escapes` is set
 ///   and the canonical joined path sits outside the canonical worktree.
 /// - [`ToolError::Other`] when `deny_symlinks` is set and any on-disk
@@ -136,17 +143,32 @@ pub fn canonicalize_with_policy(
         .unwrap_or_else(|_| worktree.to_path_buf());
     let canonical_joined = canonicalize_existing_or_parent(&joined);
 
-    // 3. Escape check.
+    // 3. Provider key files, by the path as given and as resolved (either
+    //    may be a symlink to the other). The plan may run in the operator's
+    //    checkout, so `.roko/.env` can sit inside the worktree.
+    let home = std::env::var_os("HOME")
+        .filter(|home| !home.is_empty())
+        .map(PathBuf::from);
+    let lexical = normalize(&joined);
+    if is_key_file(&lexical, home.as_deref()) {
+        return Err(ToolError::KeyFileBlocked(lexical));
+    }
+    let canonical_home = home.as_deref().map(canonicalize_existing_or_parent);
+    if is_key_file(&canonical_joined, canonical_home.as_deref()) {
+        return Err(ToolError::KeyFileBlocked(canonical_joined));
+    }
+
+    // 4. Escape check.
     if policy.prevent_escapes && !canonical_joined.starts_with(&canonical_worktree) {
         return Err(ToolError::PathOutsideWorktree(canonical_joined));
     }
 
-    // 4. Symlink check (walk existing prefix components only).
+    // 5. Symlink check (walk existing prefix components only).
     if policy.deny_symlinks {
         check_no_symlink_components(&canonical_joined)?;
     }
 
-    // 5. Compute relative form by stripping the worktree prefix.
+    // 6. Compute relative form by stripping the worktree prefix.
     let relative = canonical_joined
         .strip_prefix(&canonical_worktree)
         .map_or_else(|_| canonical_joined.clone(), Path::to_path_buf);
@@ -465,6 +487,59 @@ mod tests {
         std::fs::create_dir_all(root.join("sub")).expect("mkdir");
         let got = canonicalize_under(&root, "sub/new.txt").expect("ok");
         assert_eq!(got, root.join("sub").join("new.txt"));
+    }
+
+    #[test]
+    fn path_policy_denies_provider_key_files() {
+        let (_dir, root) = tempdir();
+        std::fs::create_dir_all(root.join(".roko")).expect("mkdir");
+        std::fs::write(root.join(".roko/.env"), b"OPENAI_API_KEY=sk-test-not-real").expect("write");
+        std::fs::write(root.join(".roko/state.json"), b"{}").expect("write");
+        let loose = PathPolicy {
+            deny_symlinks: false,
+            prevent_escapes: false,
+        };
+
+        for policy in [PathPolicy::default(), loose] {
+            // The operator's checkout is the default worktree, so its key
+            // files are inside it.
+            for arg in [".roko/.env", ".roko/secrets.toml", "sub/../.roko/.env"] {
+                let err = canonicalize_with_policy(&root, arg, &policy).expect_err("key file");
+                assert!(
+                    matches!(err, ToolError::KeyFileBlocked(_)),
+                    "{arg}: expected KeyFileBlocked, got {err:?}"
+                );
+            }
+            canonicalize_with_policy(&root, ".roko/state.json", &policy)
+                .expect("the rest of .roko stays readable");
+        }
+
+        // Anything in ~/.roko, even when escapes are allowed. The check only
+        // resolves the path; it never opens the file.
+        if let Some(home) = std::env::var_os("HOME").filter(|home| !home.is_empty()) {
+            for name in [".env", "credentials.json", "config.toml"] {
+                let path = PathBuf::from(&home).join(".roko").join(name);
+                let arg = path.to_str().expect("utf8 home");
+                let err = canonicalize_with_policy(&root, arg, &loose).expect_err("home key file");
+                assert!(
+                    matches!(err, ToolError::KeyFileBlocked(_)),
+                    "{arg}: expected KeyFileBlocked, got {err:?}"
+                );
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn path_policy_denies_a_symlink_to_a_key_file() {
+        use std::os::unix::fs::symlink;
+        let (_dir, root) = tempdir();
+        std::fs::create_dir_all(root.join(".roko")).expect("mkdir");
+        std::fs::write(root.join(".roko/secrets.toml"), b"[llm]").expect("write");
+        symlink(root.join(".roko/secrets.toml"), root.join("notes.txt")).expect("symlink");
+
+        let err = canonicalize_under(&root, "notes.txt").expect_err("resolves to a key file");
+        assert!(matches!(err, ToolError::KeyFileBlocked(_)), "{err:?}");
     }
 
     #[test]

@@ -1,0 +1,29 @@
+# Arm fd_api (S08 §4.9, S09 §4.2): the billed frontier check, gpt-5.4 in the same direct loop as cheap_direct.
+# Pilot A runs it on five tasks (budget line BL8) to check billed cost accounting on a frontier model.
+schema_version = "vb.arm/1"
+
+[arm]
+id = "fd_api"
+harness = "mini-loop"
+models_allow = ["gpt-5.4"]
+line = "BL8"
+billed = true
+label = "billed check"
+
+[caps]                                # the cheap_direct caps, with a dollar cap for gpt-5.4's rates
+turns_per_attempt = 12
+input_tokens_per_attempt = 150000
+turns_per_task = 30
+input_tokens_per_task = 300000
+wallclock_s = 1200
+model_calls_per_task = 30
+identical_calls = 5
+usd_per_task = 1.00                   # binds before the token caps ($4.44 at gpt-5.4's list rates)
+max_output_tokens = 8192
+command_timeout_s = 60
+observation_chars = 10000
+
+[providers.openai]
+base_url = "https://api.openai.com/v1"
+api_key_env = "OPENAI_API_KEY"
+max_tokens_param = "max_completion_tokens"

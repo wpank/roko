@@ -13,7 +13,7 @@ last_verified = 2026-09-29
 last_verified_rev = "33e107da1"
 source = "tmp/dogfood/2026-09-25-portal-programme-run.md#N-2. `timeouts.agent_dispatch_secs = 600` is too low for any task that builds"
 discovered_from = "audit:tmp/dogfood/2026-09-25-portal-programme-run.md#N-2. `timeouts.agent_dispatch_secs = 600` is too low for any task that builds"
-anchors = ["crates/roko-core/src/config/timeouts.rs::default_agent_dispatch_secs", "roko.toml:393", "crates/roko-cli/src/graph_task_dispatch.rs::GraphTaskDispatcher::dispatch", "crates/roko-cli/src/graph_task_dispatch.rs:3626", "crates/roko-cli/src/graph_task_dispatch.rs:4272", "crates/roko-graph/src/engine.rs::max_retries"]
+anchors = ["crates/roko-core/src/config/timeouts.rs::default_agent_dispatch_secs", "roko.toml:393", "crates/roko-cli/src/graph_task_dispatch.rs::GraphTaskDispatcher::dispatch", "crates/roko-cli/src/graph_task_dispatch/turn_policy.rs::base_attempt_timeout_ms", "crates/roko-cli/src/graph_task_dispatch/streaming.rs::dispatch_streaming", "crates/roko-graph/src/engine.rs::max_retries"]
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
 
 [[verify]]

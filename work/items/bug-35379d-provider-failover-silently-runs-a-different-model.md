@@ -13,7 +13,7 @@ last_verified = 2026-09-29
 last_verified_rev = "d9e79e9d8"
 source = "tmp/cybernetic-harness/assessment-2026-09-28/measurement-validity.md"
 discovered_from = "audit:tmp/cybernetic-harness/assessment-2026-09-28/measurement-validity.md"
-anchors = ["crates/roko-cli/src/graph_task_dispatch.rs::run_bridge_with_failover", "crates/roko-cli/src/graph_task_dispatch.rs::failover_model", "roko.toml:282"]
+anchors = ["crates/roko-cli/src/graph_task_dispatch/failover.rs::run_bridge_with_failover", "crates/roko-cli/src/graph_task_dispatch/failover.rs::failover_model", "roko.toml:282"]
 links = { depends_on = [], blocks = [], related = ["find-229e9c", "bug-f68404"], supersedes = [], duplicate_of = "" }
 
 [[verify]]

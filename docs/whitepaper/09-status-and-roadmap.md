@@ -1,4 +1,4 @@
-Status: draft · budget 550 words · owner gap-c19902
+Status: reviewed · budget 550 words · owner gap-c19902
 
 # 9 Status, limitations and roadmap
 
@@ -6,23 +6,14 @@ Status: draft · budget 550 words · owner gap-c19902
 
 The [status matrix](appendix-status-matrix.md) tags the paper's 71 mechanisms against the code at `a17d4dadd`: 21
 wired, 23 partial, 2 broken, 7 orphaned, 7 built but unwired, 10 missing and 1 removed (Figure 3).[^9-matrix] What is
-WIRED@a17d4dadd is the core loop: planning, the Graph engine with resume, verify commands, retries and budgets.
+WIRED@a17d4dadd is the core loop: plan generation and validation, the Graph engine with resume, verify commands,
+retries and budgets.
 Merges on 2026-09-29 changed scheduling (`bbf6517fc`), retry budgets (`99adacd6d`), the cost of timed-out attempts
 (`d4be4e872`), environment isolation (`1d923e377`) and learning loops (`ce3bdcbb8`, `33e107da1`).
 
-Figure 3: The status matrix at `a17d4dadd`: mechanisms per status.
+![Figure 3: status matrix chart](figures/fig3-status-matrix.svg)
 
-<!-- gap-d1d92c generates this as figures/fig3-status-matrix.svg; the image include then replaces the text diagram. -->
-
-```text
-WIRED          21  #####################
-PARTIAL        23  #######################
-BROKEN          2  ##
-ORPHANED        7  #######
-BUILT-UNWIRED   7  #######
-MISSING        10  ##########
-REMOVED         1  #
-```
+**Figure 3:** The status matrix at `a17d4dadd`: mechanisms per status and group.
 
 None of the ten vision claims is fully met:
 
@@ -43,9 +34,8 @@ None of the ten vision claims is fully met:
 
 - **One harness, one model.** All the evidence comes from Roko's own development, and all 210 portal attempts
   pinned `claude-sonnet-4-6`.[^9-model] The cheap-model half of the thesis is untested (V3, V7).
-- **Observational evidence.** §7 has no control arm, so it supports no causal claim. Supervising frontier sessions
-  did much of the work, writing and auditing the plans, fixing engine defects and merging by hand, at an estimated
-  16–20× Roko's recorded spend.[^9-operator]
+- **Observational evidence.** §7 has no control arm, so it supports no causal claim, and supervising frontier
+  sessions did much of the work, at an estimated 16–20× Roko's recorded spend.[^9-operator]
 - **Code-first in practice.** Shell-command verifiers are the only check not tied to code, and triggers cannot start
   agent work (appendix rows DM1–DM3). No epic covers other domains.
 - **Safety.** There is no OS sandbox in v1 (decided 2026-09-29; spec-ba7bea), and agents work in the operator's
@@ -72,8 +62,9 @@ Epic numbers match §4.12.
 4. **Cybernetic core** (E17, spec-6ac537): routing that learns from verified failures and a frozen-learning mode,
    then the audits, self-model and controller of §5. Exit: tests for router labels, playbook credit and frozen runs.
 
-Four matrix rows call for work that has no item yet: split or replan on failure (EX8), an OS sandbox after v1 (IS6),
-calibrating output screening (SS3), and choosing gates by task domain (DM2).
+Two matrix rows have only parked items: split or replan on failure (EX8, gap-3b170b) and calibrating output
+screening (SS3, gap-f75dc8). Gates chosen by task domain (DM2) are gap-7a3527; an OS sandbox (IS6) is gap-8f8544,
+filed after the matrix's commit and on hold for v1.
 
 ## 9.4 Proposed parking
 
@@ -83,10 +74,12 @@ extra modules. The four crates it would park whole hold 6.1% of the Rust in `cra
 modules, about 9%, an estimate.[^9-park]
 
 [^9-matrix]: gap-35a614's matrix, each tag re-checked against the code at `a17d4dadd` (2026-09-29).
-[^9-model]: Portal plans, attempts to 2026-09-29 07:41Z, from Roko's efficiency records (spec-f09094, gap-e21595);
-    §7 cites the frozen source.
-[^9-operator]: An estimate carried by gap-263de5: about $2.7–3.4k API-equivalent for 2026-09-25 to 2026-09-29,
-    research programme included, against the $172.80 Roko recorded.
+[^9-model]: Research note B7, frozen as `evidence/2026-09-29-b7-real-run-evidence.md` (sha256 `799b6a2b6184`),
+    "TL;DR": portal plans, attempts to 2026-09-29 07:41Z, from Roko's efficiency records; also spec-f09094 and
+    gap-e21595.
+[^9-operator]: Assessment note W12, table F2, frozen by gap-29a64e as
+    `evidence/2026-09-29-w12-operator-loop-cost.md` (sha256 `82676de5eee4`): an estimate of about $2.7–3.4k
+    API-equivalent for 2026-09-25 to 2026-09-29, research programme included, against the $172.80 Roko recorded.
 [^9-park]: Lines of the tracked `.rs` files in `crates/roko-chain`, `crates/roko-dreams`, `crates/roko-conductor` and
     `crates/roko-daimon` at `1f4481133` (`wc -l`): 64,066 of 1,052,880. The 9%, about 94k lines, adds the other
     modules, estimated at `d9e79e9d8`.

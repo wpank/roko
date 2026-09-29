@@ -24,6 +24,7 @@ class FakeEventSource {
   onmessage: ((frame: Frame) => void) | null = null;
   onerror: (() => void) | null = null;
   private gapListener: ((frame: Frame) => void) | null = null;
+  private keepaliveListener: ((frame: Frame) => void) | null = null;
 
   constructor(readonly url: string) {
     opened.push(this);
@@ -31,6 +32,7 @@ class FakeEventSource {
 
   addEventListener(type: string, listener: (frame: Frame) => void): void {
     if (type === 'gap') this.gapListener = listener;
+    if (type === 'keepalive') this.keepaliveListener = listener;
   }
 
   close(): void {
@@ -48,6 +50,11 @@ class FakeEventSource {
 
   gap(payload: unknown, lastEventId: string): void {
     this.gapListener?.({ data: JSON.stringify(payload), lastEventId });
+  }
+
+  /** The server's idle keep-alive frame: `event: keepalive`, data `{}`. */
+  keepalive(): void {
+    this.keepaliveListener?.({ data: '{}', lastEventId: '' });
   }
 
   /** The connection drops; the browser would retry on its own (CONNECTING). */
@@ -160,6 +167,20 @@ describe('SseClient', () => {
     expect(opened).toHaveLength(2);
     expect(opened[0]!.readyState).toBe(FakeEventSource.CLOSED);
     expect(cursorOf(latest())).toBe('7');
+  });
+
+  it('keeps an idle stream open while keepalive frames arrive, and passes none of them on', () => {
+    const { events } = start();
+    latest().open();
+    for (let beat = 0; beat < 10; beat++) {
+      vi.advanceTimersByTime(8_000);
+      latest().keepalive();
+    }
+    expect(opened).toHaveLength(1);
+    expect(events).toEqual([]);
+
+    vi.advanceTimersByTime(60_000);
+    expect(opened).toHaveLength(2);
   });
 
   it('passes typed events through and drops frames it cannot read', () => {

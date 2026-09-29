@@ -14,7 +14,7 @@ last_verified = 2026-09-29
 last_verified_rev = "33e107da1"
 source = "session:roko-b6 2026-09-29 direct-implementation batch"
 discovered_from = "merge:fix/dispatch-timeouts-cost e0673e3e0"
-anchors = ["crates/roko-cli/src/graph_execution/plan_runner.rs::run_one_plan", "crates/roko-cli/src/graph_execution/plan_runner.rs::INTERRUPT_DRAIN_TIMEOUT", "crates/roko-cli/src/graph_execution/plan_runner.rs::force_exit", "crates/roko-cli/src/graph_task_dispatch.rs::GraphPlanBudgetReservation", "crates/roko-cli/src/graph_task_dispatch.rs:4031"]
+anchors = ["crates/roko-cli/src/graph_execution/plan_runner.rs::run_one_plan", "crates/roko-cli/src/graph_execution/plan_runner.rs::INTERRUPT_DRAIN_TIMEOUT", "crates/roko-cli/src/graph_execution/plan_runner.rs::force_exit", "crates/roko-cli/src/graph_task_dispatch/budget.rs::GraphPlanBudgetReservation", "crates/roko-cli/src/graph_task_dispatch.rs::GraphTaskDispatcher::dispatch"]
 links = { depends_on = [], blocks = [], related = ["bug-690dc6", "q-1faa0c", "gap-36f3fb", "gap-b367bf", "bug-ceb581", "gap-288e38", "spec-b7303f"], supersedes = [], duplicate_of = "" }
 
 [[verify]]

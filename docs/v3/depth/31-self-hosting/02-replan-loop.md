@@ -5,6 +5,10 @@
 > **Cross-references:** [07-GATES](../../07-GATES.md) (gate pipeline, failure
 > classification), [04-EXECUTION](../../04-EXECUTION.md) (plan mutation,
 > checkpoint extension)
+>
+> **Status (2026-09-29, at `7c556bc0a`): BUILT-UNWIRED.** Nothing outside
+> `replan_controller.rs` uses the controller. On Graph runs a failed task is retried
+> with its gate feedback up to `max_retries` and then fails; no replan strategy runs.
 
 ---
 

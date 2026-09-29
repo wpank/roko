@@ -2217,15 +2217,15 @@ async fn run_focused_baseline_verify(
 }
 
 /// Cancellation-safe owner for a temporary registered Git worktree.
-struct RegisteredBaselineWorktree {
+pub(crate) struct RegisteredBaselineWorktree {
     repository: PathBuf,
-    checkout: PathBuf,
+    pub(crate) checkout: PathBuf,
     parent: Option<tempfile::TempDir>,
-    cleanup_required: bool,
+    pub(crate) cleanup_required: bool,
 }
 
 impl RegisteredBaselineWorktree {
-    fn new(repository: &Path, parent: tempfile::TempDir) -> Self {
+    pub(crate) fn new(repository: &Path, parent: tempfile::TempDir) -> Self {
         let checkout = parent.path().join("checkout");
         Self {
             repository: repository.to_path_buf(),

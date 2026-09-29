@@ -14,7 +14,7 @@ last_verified = 2026-09-29
 last_verified_rev = "a17d9d766"
 source = "tmp/archive/provider-audit/29-FINDINGS-REGISTER.md#F019"
 discovered_from = "audit:tmp/archive/provider-audit/29-FINDINGS-REGISTER.md#F019"
-anchors = ["crates/roko-agent/src/safety/data_llm.rs::DataLlmRouter", "crates/roko-agent/src/tool_loop/mod.rs::ToolLoop", "crates/roko-agent/src/dispatcher/mod.rs::tool_result_taint", "crates/roko-core/src/config/agent.rs::DataLlmConfig", "crates/roko-cli/src/graph_task_dispatch.rs::graph_engine_inert_settings"]
+anchors = ["crates/roko-agent/src/safety/data_llm.rs::DataLlmRouter", "crates/roko-agent/src/tool_loop/mod.rs::ToolLoop", "crates/roko-agent/src/dispatcher/mod.rs::tool_result_taint", "crates/roko-core/src/config/agent.rs::DataLlmConfig", "crates/roko-cli/src/graph_task_dispatch/inert_settings.rs::graph_engine_inert_settings"]
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
 
 [[verify]]

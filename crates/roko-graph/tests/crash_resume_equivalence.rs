@@ -67,6 +67,7 @@ fn activity_node(id: &str, cell_type: &str) -> Node {
         inputs: Vec::new(),
         outputs: Vec::new(),
         execution_class: ExecutionClass::Activity,
+        exclusive: Vec::new(),
     }
 }
 

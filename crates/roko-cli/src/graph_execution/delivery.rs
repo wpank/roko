@@ -1,8 +1,9 @@
 //! CLI adapter implementing [`CompletionDeliveryService`] for graph-executed plans.
 //!
-//! This module bridges the graph-layer delivery port to the CLI's existing
-//! `MergeQueue`, `PlanMerger` regression gate, and `GitHubWorkflow` publication
-//! services.
+//! This module bridges the graph-layer delivery port to git: a plumbing merge
+//! into the target branch, a post-merge regression check in a temporary
+//! checkout, and a `git push` for publication. None of them touches the
+//! user's checkout (see [`GitDeliveryBackend`]).
 //!
 //! The service advances through the fixed state sequence:
 //!   `Prepared -> Queued -> Merged -> RegressionPassed -> Published -> Delivered`
@@ -15,7 +16,7 @@
 //! The adapter never writes the execution terminal state or releases a workspace
 //! lease -- those are outer-controller concerns.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use roko_graph::delivery::{
@@ -28,7 +29,8 @@ use roko_graph::delivery::{
 use roko_graph::delivery::ReleasePolicy;
 use tracing::{debug, info, warn};
 
-use crate::orchestrator::{MergeQueue, MergeRequest};
+use crate::runner::gate_dispatch::RegisteredBaselineWorktree;
+use crate::runner::merge::{MergeTree, git_command, git_merge_tree, git_output};
 
 // ---------------------------------------------------------------------------
 // Merge backend port (subset of runner::merge for this service)
@@ -75,10 +77,11 @@ pub trait DeliveryBackend: Send + Sync + std::fmt::Debug {
     /// Apply the merge: merge the branch into the target branch.
     async fn merge(&self, request: &CompletionDeliveryRequest) -> DeliveryMergeOutcome;
 
-    /// Run post-merge regression gate.
+    /// Run the post-merge regression gate against `merge_commit`.
     async fn run_regression(
         &self,
         request: &CompletionDeliveryRequest,
+        merge_commit: &str,
     ) -> DeliveryRegressionOutcome;
 
     /// Publish to GitHub (push branch, create/update PR, etc.).
@@ -90,170 +93,285 @@ pub trait DeliveryBackend: Send + Sync + std::fmt::Debug {
 }
 
 // ---------------------------------------------------------------------------
-// Git + MergeQueue backend
+// Git backend
 // ---------------------------------------------------------------------------
 
-/// Production backend that delegates to the existing `MergeQueue` for merge
-/// serialization, the runner's regression gate for post-merge checks, and
-/// `GitHubWorkflow` for remote publication.
+/// Production backend: merges with git plumbing, runs the regression check in
+/// a temporary detached worktree, and publishes with `git push`.
+///
+/// It never runs `checkout`, `switch`, `merge` or `reset` in `workdir`, and
+/// never changes the files, index or HEAD of any existing worktree:
+///
+/// - The merge is computed in the object database (`merge-tree`,
+///   `commit-tree`), and the target branch moves only by compare-and-swap
+///   (`update-ref <ref> <new> <old>`). A target that moved in the meantime
+///   is left alone.
+/// - A target that is checked out anywhere never moves, because its checkout
+///   would no longer match its HEAD. The merge fails closed, and the result
+///   is parked at `refs/roko/delivered/<plan_id>`.
+///
+/// The service's merge slot serializes deliveries; the compare-and-swap
+/// guards against every other writer.
 #[derive(Debug)]
 pub struct GitDeliveryBackend {
-    merge_queue: MergeQueue,
     workdir: PathBuf,
+    regression_command: Vec<String>,
 }
 
 impl GitDeliveryBackend {
-    /// Create a new git-backed delivery backend.
+    /// Create a git-backed delivery backend for the repository at `workdir`.
     #[must_use]
-    pub fn new(merge_queue: MergeQueue, workdir: PathBuf) -> Self {
+    pub fn new(workdir: PathBuf) -> Self {
         Self {
-            merge_queue,
             workdir,
+            regression_command: ["cargo", "check", "--workspace", "--quiet"]
+                .map(String::from)
+                .into(),
         }
     }
 
-    /// Attempt a git merge of the branch into the target.
-    async fn git_merge(&self, branch: &str, target: &str) -> DeliveryMergeOutcome {
-        // Checkout target branch
-        let checkout = tokio::process::Command::new("git")
-            .args(["checkout", target])
-            .current_dir(&self.workdir)
-            .env("GIT_TERMINAL_PROMPT", "0")
-            .output()
-            .await;
-        if let Err(e) = &checkout {
-            return DeliveryMergeOutcome {
-                merged: false,
-                merge_commit: None,
-                summary: format!("failed to checkout target branch '{target}': {e}"),
-            };
-        }
-        if let Ok(ref out) = checkout {
-            if !out.status.success() {
-                let stderr = String::from_utf8_lossy(&out.stderr);
-                return DeliveryMergeOutcome {
-                    merged: false,
-                    merge_commit: None,
-                    summary: format!("checkout '{target}' failed: {}", stderr.trim()),
-                };
-            }
-        }
+    /// Replace the post-merge regression command (by default
+    /// `cargo check --workspace --quiet`). It runs in a temporary checkout of
+    /// the merge commit.
+    #[must_use]
+    pub fn with_regression_command(mut self, command: Vec<String>) -> Self {
+        self.regression_command = command;
+        self
+    }
 
-        // Try fast-forward first, fall back to --no-ff
-        let ff_result = tokio::process::Command::new("git")
-            .args(["merge", "--ff-only", branch])
-            .current_dir(&self.workdir)
-            .env("GIT_TERMINAL_PROMPT", "0")
-            .output()
-            .await;
-        let merge_ok = match &ff_result {
-            Ok(o) if o.status.success() => true,
-            _ => {
-                let noff = tokio::process::Command::new("git")
-                    .args(["merge", "--no-ff", "--no-edit", branch])
-                    .current_dir(&self.workdir)
-                    .env("GIT_TERMINAL_PROMPT", "0")
-                    .output()
-                    .await;
-                match noff {
-                    Ok(ref o) if o.status.success() => true,
-                    Ok(ref o) => {
-                        // Abort the failed merge
-                        let _ = tokio::process::Command::new("git")
-                            .args(["merge", "--abort"])
-                            .current_dir(&self.workdir)
-                            .env("GIT_TERMINAL_PROMPT", "0")
-                            .output()
-                            .await;
-                        let stderr = String::from_utf8_lossy(&o.stderr);
-                        return DeliveryMergeOutcome {
-                            merged: false,
-                            merge_commit: None,
-                            summary: format!(
-                                "merge conflict: branch '{branch}' into '{target}': {}",
-                                stderr.trim()
-                            ),
-                        };
-                    }
-                    Err(e) => {
-                        return DeliveryMergeOutcome {
-                            merged: false,
-                            merge_commit: None,
-                            summary: format!("failed to spawn git merge: {e}"),
-                        };
-                    }
+    /// Merge the request's branch into its target with git plumbing only.
+    ///
+    /// `Err` carries the summary of a merge that did not happen. Apart from
+    /// the parked result for a checked-out target, no ref has changed.
+    async fn git_merge(
+        &self,
+        request: &CompletionDeliveryRequest,
+    ) -> Result<DeliveryMergeOutcome, String> {
+        let workdir = self.workdir.as_path();
+        let (branch, target) = (&request.branch, &request.target_branch);
+        let target_ref = format!("refs/heads/{target}");
+        let old = resolve_commit(workdir, &target_ref)
+            .await
+            .map_err(|e| format!("target branch '{target}' does not resolve to a commit: {e}"))?;
+        let theirs = resolve_commit(workdir, branch)
+            .await
+            .map_err(|e| format!("branch '{branch}' does not resolve to a commit: {e}"))?;
+
+        if is_ancestor(workdir, &theirs, &old).await? {
+            return Ok(DeliveryMergeOutcome {
+                merged: true,
+                merge_commit: Some(old),
+                summary: format!("'{target}' already contains branch '{branch}'"),
+            });
+        }
+        let merge = if is_ancestor(workdir, &old, &theirs).await? {
+            theirs
+        } else {
+            let tree = match git_merge_tree(workdir, &old, &theirs).await {
+                Ok(MergeTree::Clean { tree }) => tree,
+                Ok(MergeTree::Conflicted { paths }) => {
+                    return Err(format!(
+                        "merge conflict: branch '{branch}' into '{target}'; conflicted paths: {}",
+                        paths.join(", ")
+                    ));
                 }
-            }
+                Err(e) => return Err(format!("git merge-tree failed (needs git 2.38+): {e}")),
+            };
+            let message = format!("Merge branch '{branch}' into {target}");
+            git_output(
+                workdir,
+                &[
+                    "commit-tree",
+                    &tree,
+                    "-p",
+                    &old,
+                    "-p",
+                    &theirs,
+                    "-m",
+                    &message,
+                ],
+            )
+            .await
+            .map_err(|e| format!("git commit-tree failed: {e}"))?
+            .trim()
+            .to_string()
         };
 
-        if !merge_ok {
-            return DeliveryMergeOutcome {
-                merged: false,
-                merge_commit: None,
-                summary: "merge failed".to_string(),
-            };
+        if let Some(checkout) = checked_out_at(workdir, &target_ref).await? {
+            return Err(park_merge(workdir, request, &checkout, &merge).await);
         }
 
-        // Get the merge commit OID
-        let head = tokio::process::Command::new("git")
-            .args(["rev-parse", "HEAD"])
-            .current_dir(&self.workdir)
+        let reflog = format!("roko delivery: merge {branch}");
+        git_output(
+            workdir,
+            &["update-ref", "-m", &reflog, &target_ref, &merge, &old],
+        )
+        .await
+        .map_err(|e| format!("'{target}' moved during the merge, so it was left alone: {e}"))?;
+        Ok(DeliveryMergeOutcome {
+            merged: true,
+            merge_commit: Some(merge),
+            summary: format!("merged branch '{branch}' into '{target}'"),
+        })
+    }
+
+    /// Run the regression command in a temporary detached checkout of
+    /// `commit`, never in `workdir`, and remove that checkout afterwards.
+    async fn regression_output(&self, commit: &str) -> Result<std::process::Output, String> {
+        let (program, args) = self
+            .regression_command
+            .split_first()
+            .ok_or("the regression command is empty")?;
+        let parent = tempfile::Builder::new()
+            .prefix("roko-delivery-regression-")
+            .tempdir()
+            .map_err(|e| format!("failed to create a regression checkout: {e}"))?;
+        let mut scratch = RegisteredBaselineWorktree::new(&self.workdir, parent);
+        let added = git_command(&self.workdir)
+            .args(["worktree", "add", "--detach"])
+            .arg(&scratch.checkout)
+            .arg(commit)
+            .output()
+            .await
+            .map_err(|e| format!("failed to spawn git worktree add: {e}"))?;
+        if !added.status.success() {
+            return Err(format!(
+                "failed to check out {commit} for the regression: {}",
+                String::from_utf8_lossy(&added.stderr).trim()
+            ));
+        }
+        scratch.cleanup_required = true;
+
+        let output = tokio::process::Command::new(program)
+            .args(args)
+            .current_dir(&scratch.checkout)
+            .kill_on_drop(true)
+            .output()
+            .await
+            .map_err(|e| format!("failed to spawn regression gate: {e}"));
+        let removed = git_command(&self.workdir)
+            .args(["worktree", "remove", "--force"])
+            .arg(&scratch.checkout)
             .output()
             .await;
-        let merge_commit = match head {
-            Ok(ref out) if out.status.success() => {
-                Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
-            }
-            _ => None,
-        };
-
-        DeliveryMergeOutcome {
-            merged: true,
-            merge_commit,
-            summary: format!("merged branch '{branch}' into '{target}'"),
+        if removed.is_ok_and(|out| out.status.success()) {
+            scratch.cleanup_required = false;
         }
+        output
+    }
+}
+
+/// The commit that `rev` names.
+async fn resolve_commit(workdir: &Path, rev: &str) -> Result<String, String> {
+    let spec = format!("{rev}^{{commit}}");
+    git_output(
+        workdir,
+        &["rev-parse", "--verify", "--end-of-options", &spec],
+    )
+    .await
+    .map(|oid| oid.trim().to_string())
+}
+
+/// Whether `ancestor` is `descendant` or one of its ancestors.
+async fn is_ancestor(workdir: &Path, ancestor: &str, descendant: &str) -> Result<bool, String> {
+    let output = git_command(workdir)
+        .args(["merge-base", "--is-ancestor", ancestor, descendant])
+        .output()
+        .await
+        .map_err(|e| format!("failed to spawn git merge-base: {e}"))?;
+    match output.status.code() {
+        Some(0) => Ok(true),
+        Some(1) => Ok(false),
+        _ => Err(format!(
+            "git merge-base --is-ancestor failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )),
+    }
+}
+
+/// The path of the worktree that has `branch_ref` checked out, if any.
+async fn checked_out_at(workdir: &Path, branch_ref: &str) -> Result<Option<String>, String> {
+    let listed = git_output(
+        workdir,
+        &["for-each-ref", "--format=%(worktreepath)", branch_ref],
+    )
+    .await
+    .map_err(|e| format!("could not tell whether {branch_ref} is checked out: {e}"))?;
+    Ok(listed
+        .lines()
+        .map(str::trim)
+        .find(|path| !path.is_empty())
+        .map(ToOwned::to_owned))
+}
+
+/// Park `merge` for a target that is checked out at `checkout`, and say how
+/// to take it. The target branch itself never moves.
+async fn park_merge(
+    workdir: &Path,
+    request: &CompletionDeliveryRequest,
+    checkout: &str,
+    merge: &str,
+) -> String {
+    let target = &request.target_branch;
+    let parked = format!("refs/roko/delivered/{}", request.plan_id);
+    let left_alone = format!(
+        "target branch '{target}' is checked out at {checkout}, so it was left alone \
+         (moving it would put that checkout out of step with its HEAD)"
+    );
+    // Compare-and-swap against the parked ref's current value, or require
+    // that it does not exist yet.
+    let current = git_output(workdir, &["rev-parse", "--verify", "--quiet", &parked])
+        .await
+        .map_or_else(|_| "0".repeat(merge.len()), |oid| oid.trim().to_string());
+    let parked_write = git_output(
+        workdir,
+        &[
+            "update-ref",
+            "-m",
+            "roko delivery: park merge",
+            &parked,
+            merge,
+            &current,
+        ],
+    )
+    .await;
+    match parked_write {
+        Ok(_) => format!(
+            "{left_alone}; the merge is parked at {parked} ({merge}): run \
+             `git merge --ff-only {parked}` in that checkout to take it"
+        ),
+        Err(e) => format!(
+            "{left_alone}; the merge is commit {merge} (writing {parked} failed: {e}): run \
+             `git merge --ff-only {merge}` in that checkout to take it"
+        ),
     }
 }
 
 #[async_trait::async_trait]
 impl DeliveryBackend for GitDeliveryBackend {
     async fn merge(&self, request: &CompletionDeliveryRequest) -> DeliveryMergeOutcome {
-        // Enqueue in the merge queue for serialization
-        let merge_req = MergeRequest {
-            plan_id: request.plan_id.clone(),
-            branch_name: request.branch.clone(),
-            files_changed: request.changed_files.clone(),
-            priority: 0,
-            retry_count: 0,
-        };
-        let _ = self.merge_queue.enqueue(merge_req);
-
-        self.git_merge(&request.branch, &request.target_branch)
+        self.git_merge(request)
             .await
+            .unwrap_or_else(|summary| DeliveryMergeOutcome {
+                merged: false,
+                merge_commit: None,
+                summary,
+            })
     }
 
     async fn run_regression(
         &self,
         request: &CompletionDeliveryRequest,
+        merge_commit: &str,
     ) -> DeliveryRegressionOutcome {
-        let workdir = self.workdir.clone();
-        let plan_id = request.plan_id.clone();
-
-        let result = tokio::task::spawn_blocking(move || {
-            std::process::Command::new("cargo")
-                .args(["check", "--workspace", "--quiet"])
-                .current_dir(&workdir)
-                .output()
-        })
-        .await;
-
-        match result {
-            Ok(Ok(output)) if output.status.success() => DeliveryRegressionOutcome {
+        let plan_id = &request.plan_id;
+        match self.regression_output(merge_commit).await {
+            Ok(output) if output.status.success() => DeliveryRegressionOutcome {
                 passed: true,
                 summary: format!("post-merge regression passed for {plan_id}"),
                 evidence_ref: None,
             },
-            Ok(Ok(output)) => {
+            Ok(output) => {
                 let stderr = String::from_utf8_lossy(&output.stderr);
                 DeliveryRegressionOutcome {
                     passed: false,
@@ -264,14 +382,9 @@ impl DeliveryBackend for GitDeliveryBackend {
                     evidence_ref: None,
                 }
             }
-            Ok(Err(e)) => DeliveryRegressionOutcome {
+            Err(summary) => DeliveryRegressionOutcome {
                 passed: false,
-                summary: format!("failed to spawn regression gate: {e}"),
-                evidence_ref: None,
-            },
-            Err(e) => DeliveryRegressionOutcome {
-                passed: false,
-                summary: format!("regression gate task aborted: {e}"),
+                summary,
                 evidence_ref: None,
             },
         }
@@ -434,7 +547,14 @@ impl CliCompletionDeliveryService {
                 }
 
                 CompletionDeliveryState::Merged => {
-                    let outcome = self.backend.run_regression(&receipt.request).await;
+                    let merge_commit = receipt
+                        .merge_commit
+                        .as_deref()
+                        .unwrap_or(&receipt.request.commit_oid);
+                    let outcome = self
+                        .backend
+                        .run_regression(&receipt.request, merge_commit)
+                        .await;
 
                     // Release merge slot after regression (success or failure)
                     self.store
@@ -713,6 +833,7 @@ mod tests {
         async fn run_regression(
             &self,
             _request: &CompletionDeliveryRequest,
+            _merge_commit: &str,
         ) -> DeliveryRegressionOutcome {
             if self.regression_succeeds.load(Ordering::Relaxed) {
                 DeliveryRegressionOutcome {
@@ -1049,5 +1170,211 @@ mod tests {
 
         assert_eq!(service.store().len(), 1);
         assert!(service.store().get("d-track").is_some());
+    }
+
+    // ── GitDeliveryBackend against a real repository ────────────────────
+
+    /// Run git in `repo` and return its trimmed stdout.
+    fn git(repo: &Path, args: &[&str]) -> String {
+        let output = std::process::Command::new("git")
+            .args(args)
+            .current_dir(repo)
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_INDEX_FILE")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    }
+
+    fn commit_all(repo: &Path, message: &str) {
+        git(repo, &["add", "-A"]);
+        git(repo, &["commit", "--quiet", "-m", message]);
+    }
+
+    /// A repository where `main` and `roko/plan-a` each added their own file
+    /// on top of `shared.txt`, so they merge cleanly. `main` is checked out.
+    fn diverged_repo() -> tempfile::TempDir {
+        let repo = tempfile::tempdir().unwrap();
+        let path = repo.path();
+        git(path, &["init", "--quiet", "--initial-branch=main"]);
+        git(path, &["config", "user.name", "roko"]);
+        git(path, &["config", "user.email", "roko@nunchi.dev"]);
+        git(path, &["config", "commit.gpgsign", "false"]);
+        std::fs::write(path.join("shared.txt"), "base\n").unwrap();
+        commit_all(path, "base");
+        git(path, &["checkout", "--quiet", "-b", "roko/plan-a"]);
+        std::fs::write(path.join("plan.txt"), "plan-a\n").unwrap();
+        commit_all(path, "plan-a");
+        git(path, &["checkout", "--quiet", "main"]);
+        std::fs::write(path.join("main.txt"), "main\n").unwrap();
+        commit_all(path, "main moves on");
+        repo
+    }
+
+    #[tokio::test]
+    async fn merge_leaves_the_user_checkout_alone() {
+        let repo = diverged_repo();
+        let path = repo.path();
+        // The user works on their own branch, with an uncommitted edit.
+        git(path, &["checkout", "--quiet", "-b", "work"]);
+        std::fs::write(path.join("shared.txt"), "base\nuser edit\n").unwrap();
+        let head = git(path, &["rev-parse", "HEAD"]);
+        let status = git(path, &["status", "--porcelain"]);
+        let main_before = git(path, &["rev-parse", "main"]);
+        let plan_head = git(path, &["rev-parse", "roko/plan-a"]);
+
+        let backend = GitDeliveryBackend::new(path.to_path_buf());
+        let outcome = backend.merge(&test_request("d-git-merge")).await;
+
+        assert!(outcome.merged, "{}", outcome.summary);
+        assert_eq!(git(path, &["symbolic-ref", "HEAD"]), "refs/heads/work");
+        assert_eq!(git(path, &["rev-parse", "HEAD"]), head);
+        assert_eq!(git(path, &["status", "--porcelain"]), status);
+        assert_eq!(
+            std::fs::read_to_string(path.join("shared.txt")).unwrap(),
+            "base\nuser edit\n"
+        );
+        assert!(!path.join("plan.txt").exists());
+        // `main` moved to a merge of its old head and the plan branch.
+        let main_after = git(path, &["rev-parse", "main"]);
+        assert_eq!(outcome.merge_commit.as_deref(), Some(main_after.as_str()));
+        assert_eq!(git(path, &["rev-parse", "main^1"]), main_before);
+        assert_eq!(git(path, &["rev-parse", "main^2"]), plan_head);
+    }
+
+    #[tokio::test]
+    async fn merge_into_checked_out_target_does_not_move_it() {
+        let repo = diverged_repo();
+        let path = repo.path();
+        // The user has the target, `main`, checked out with an uncommitted edit.
+        std::fs::write(path.join("shared.txt"), "base\nuser edit\n").unwrap();
+        let status = git(path, &["status", "--porcelain"]);
+        let main_before = git(path, &["rev-parse", "main"]);
+        let plan_head = git(path, &["rev-parse", "roko/plan-a"]);
+
+        let backend = GitDeliveryBackend::new(path.to_path_buf());
+        let outcome = backend.merge(&test_request("d-git-checked-out")).await;
+
+        let summary = &outcome.summary;
+        assert!(!outcome.merged, "{summary}");
+        assert!(outcome.merge_commit.is_none());
+        assert!(summary.contains("checked out"), "{summary}");
+        assert_eq!(git(path, &["rev-parse", "main"]), main_before);
+        assert_eq!(git(path, &["symbolic-ref", "HEAD"]), "refs/heads/main");
+        assert_eq!(git(path, &["status", "--porcelain"]), status);
+        assert_eq!(
+            std::fs::read_to_string(path.join("shared.txt")).unwrap(),
+            "base\nuser edit\n"
+        );
+        // The prepared merge is parked where the summary says.
+        let parked = "refs/roko/delivered/plan-a";
+        assert!(summary.contains(parked), "{summary}");
+        let first_parent = git(path, &["rev-parse", &format!("{parked}^1")]);
+        let second_parent = git(path, &["rev-parse", &format!("{parked}^2")]);
+        assert_eq!(first_parent, main_before);
+        assert_eq!(second_parent, plan_head);
+    }
+
+    #[tokio::test]
+    async fn merge_conflict_is_reported_without_touching_refs() {
+        let repo = diverged_repo();
+        let path = repo.path();
+        // Both branches rewrite shared.txt; the user is on a third branch.
+        std::fs::write(path.join("shared.txt"), "main's version\n").unwrap();
+        commit_all(path, "main rewrites shared.txt");
+        git(path, &["checkout", "--quiet", "roko/plan-a"]);
+        std::fs::write(path.join("shared.txt"), "plan's version\n").unwrap();
+        commit_all(path, "plan rewrites shared.txt");
+        git(path, &["checkout", "--quiet", "-b", "work"]);
+        let refs = git(path, &["for-each-ref"]);
+        let head = git(path, &["rev-parse", "HEAD"]);
+
+        let backend = GitDeliveryBackend::new(path.to_path_buf());
+        let outcome = backend.merge(&test_request("d-git-conflict")).await;
+
+        let summary = &outcome.summary;
+        assert!(!outcome.merged, "{summary}");
+        assert!(outcome.merge_commit.is_none());
+        assert!(summary.contains("conflict"), "{summary}");
+        assert!(summary.contains("shared.txt"), "{summary}");
+        assert_eq!(git(path, &["for-each-ref"]), refs);
+        assert_eq!(git(path, &["rev-parse", "HEAD"]), head);
+        assert_eq!(git(path, &["status", "--porcelain"]), "");
+    }
+
+    #[tokio::test]
+    async fn merge_fast_forwards_a_target_that_is_behind() {
+        let repo = diverged_repo();
+        let path = repo.path();
+        // `main` sits at the plan branch's base; the user is on `work`.
+        git(path, &["checkout", "--quiet", "-b", "work"]);
+        git(path, &["branch", "--force", "main", "roko/plan-a~1"]);
+        let plan_head = git(path, &["rev-parse", "roko/plan-a"]);
+        let backend = GitDeliveryBackend::new(path.to_path_buf());
+
+        let outcome = backend.merge(&test_request("d-git-ff")).await;
+
+        assert!(outcome.merged, "{}", outcome.summary);
+        assert_eq!(outcome.merge_commit.as_deref(), Some(plan_head.as_str()));
+        assert_eq!(git(path, &["rev-parse", "main"]), plan_head);
+
+        // Delivering the branch again finds nothing left to merge.
+        let again = backend.merge(&test_request("d-git-ff-again")).await;
+
+        assert!(again.merged, "{}", again.summary);
+        assert_eq!(again.merge_commit.as_deref(), Some(plan_head.as_str()));
+        assert_eq!(git(path, &["rev-parse", "main"]), plan_head);
+    }
+
+    #[tokio::test]
+    async fn regression_runs_in_a_temporary_checkout_of_the_merge() {
+        let repo = diverged_repo();
+        let path = repo.path();
+        git(path, &["checkout", "--quiet", "-b", "work"]);
+        let status = git(path, &["status", "--porcelain"]);
+        let worktrees = git(path, &["worktree", "list", "--porcelain"]);
+        let record = tempfile::tempdir().unwrap();
+        let ran_in = record.path().join("ran-in");
+        // The check records where it ran, and passes only on the merge commit.
+        let script = format!(
+            "pwd -P > '{}' && test -f plan.txt && test -f main.txt",
+            ran_in.display()
+        );
+        let backend = GitDeliveryBackend::new(path.to_path_buf()).with_regression_command(vec![
+            "sh".into(),
+            "-c".into(),
+            script,
+        ]);
+        let service = CliCompletionDeliveryService::new(Arc::new(backend));
+
+        let receipt = service
+            .deliver(test_request_no_publish("d-git-regression"))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            receipt.state,
+            CompletionDeliveryState::Delivered,
+            "{:?}",
+            receipt.error
+        );
+        let main = git(path, &["rev-parse", "main"]);
+        assert_eq!(receipt.merge_commit.as_deref(), Some(main.as_str()));
+        let ran_in = PathBuf::from(std::fs::read_to_string(&ran_in).unwrap().trim());
+        assert!(
+            !ran_in.starts_with(path.canonicalize().unwrap()),
+            "the regression ran in the user's checkout: {}",
+            ran_in.display()
+        );
+        assert!(!ran_in.exists(), "the regression checkout was not removed");
+        assert_eq!(git(path, &["worktree", "list", "--porcelain"]), worktrees);
+        assert_eq!(git(path, &["status", "--porcelain"]), status);
     }
 }

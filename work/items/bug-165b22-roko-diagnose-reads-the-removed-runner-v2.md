@@ -2,7 +2,7 @@
 id = "bug-165b22"
 kind = "bug"
 title = "roko diagnose reads the removed Runner-v2 snapshot and fails for every Graph run"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "core"
@@ -10,7 +10,7 @@ subsystem = ["roko-cli/diagnose"]
 created = 2026-09-29
 updated = 2026-09-29
 last_verified = 2026-09-29
-last_verified_rev = "d9e79e9d8"
+last_verified_rev = "a36180342"
 source = "dogfood:tmp/dogfood/2026-09-28-portal-programme-continuation.md#10-05"
 discovered_from = "plan:portal-programme/08f-final-polish"
 anchors = ["crates/roko-cli/src/commands/diagnose.rs::build_report", "crates/roko-cli/src/commands/diagnose.rs:136"]
@@ -21,6 +21,12 @@ command = "! (roko diagnose 08f-final-polish 2>&1 | grep -q 'No state snapshot f
 
 [[verify]]
 command = "grep -qE 'graph_checkpoint|GraphCheckpoint' crates/roko-cli/src/commands/diagnose.rs && cargo test -p roko-cli --bin roko commands::diagnose::tests::diagnose_reads_graph_checkpoint. This is a test the fix must add: write a failed .roko/state/graph/<plan>/checkpoint.json and assert the report shows the failed node, last error and cost; the existing test no_snapshot_gives_helpful_error must then change. The current verify is unsound for two reasons. commands/ is a bin module (main.rs:38 'mod commands;'), so 'cargo test -p roko-cli --lib commands::diagnose' matches zero tests and passes vacuously. And the literal 'state/graph' grep passes on a comment alone, while missing a fix that uses the graph_checkpoint.rs helpers."
+
+[closed]
+at = 2026-09-29
+commit = "05f8854ce"
+by = "roko-b6"
+evidence = "roko diagnose builds its report from .roko/state/graph/<plan>/ plus costs.jsonl, gate-failures.jsonl and episodes; legacy snapshot only as fallback (05f8854ce, merged 66ad156f0). commands::diagnose tests (34) passed in the full workspace run and roko-cli lib 3042/3042 at 875482152. In main via #79."
 +++
 
 `roko diagnose <plan-id>` builds its report from `load_durable_runner_projection`, the

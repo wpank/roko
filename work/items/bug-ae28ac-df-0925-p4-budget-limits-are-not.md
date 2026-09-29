@@ -14,7 +14,7 @@ last_verified = 2026-09-29
 last_verified_rev = "a17d9d766"
 source = "tmp/dogfood/2026-09-25-portal-programme-run.md#P4 — dead config and dead code"
 discovered_from = "audit:tmp/dogfood/2026-09-25-portal-programme-run.md#P4 — dead config and dead code"
-anchors = ["crates/roko-cli/src/graph_task_dispatch.rs::graph_engine_inert_settings", "crates/roko-cli/src/graph_task_dispatch.rs::GraphTaskDispatcher::admit_task_budget", "crates/roko-cli/src/graph_task_dispatch.rs::task_budget_ceiling_usd", "crates/roko-cli/src/graph_execution/plan_runner.rs::resolve_budget_ceiling", "crates/roko-learn/src/costs_log.rs::CostsLog::cost_today", "crates/roko-core/src/config/budget.rs::BudgetConfig"]
+anchors = ["crates/roko-cli/src/graph_task_dispatch/inert_settings.rs::graph_engine_inert_settings", "crates/roko-cli/src/graph_task_dispatch.rs::GraphTaskDispatcher::admit_task_budget", "crates/roko-cli/src/graph_task_dispatch/budget.rs::task_budget_ceiling_usd", "crates/roko-cli/src/graph_execution/plan_runner.rs::resolve_budget_ceiling", "crates/roko-learn/src/costs_log.rs::CostsLog::cost_today", "crates/roko-core/src/config/budget.rs::BudgetConfig"]
 links = { depends_on = [], blocks = [], related = ["gap-d31457", "q-778b4f", "q-e23804"], supersedes = [], duplicate_of = "" }
 
 [[verify]]

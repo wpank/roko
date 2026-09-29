@@ -17,10 +17,11 @@ pub const DEFAULT_GATE_THRESHOLD_FLUSH_INTERVAL: u64 = 10;
 pub struct DreamsConfig {
     /// Automatically trigger dream consolidation after a plan completes.
     ///
-    /// When `true` (the default) the runner spawns a non-blocking dream
-    /// consolidation task after each plan that dispatched at least one agent
-    /// turn. Setting this to `false` disables the automatic trigger; dreams
-    /// can still be run manually via `roko knowledge dream run`.
+    /// The trigger fires only when this (default `true`) and
+    /// [`LearningConfig::dream_on_completion`] (default `false`) are both
+    /// `true`, so by default no dream runs. Setting this to `false` disables
+    /// the automatic trigger; dreams can still be run manually via
+    /// `roko knowledge dream run`.
     #[serde(default = "default_true")]
     pub trigger_on_plan_complete: bool,
     /// Maximum number of concurrent dream consolidation runs.
@@ -29,10 +30,32 @@ pub struct DreamsConfig {
     /// Defaults to `1`.
     #[serde(default = "default_max_concurrent")]
     pub max_concurrent: usize,
+    /// Let ACP sessions trigger dream consolidation once
+    /// [`Self::acp_episode_threshold`] episodes accumulate since the last
+    /// dream report.
+    ///
+    /// Defaults to `false`: each automatic dream costs a model call, so ACP
+    /// sessions start none unless this is `true`. It is independent of
+    /// [`Self::trigger_on_plan_complete`] and
+    /// [`LearningConfig::dream_on_completion`].
+    #[serde(default)]
+    pub trigger_on_acp_episodes: bool,
+    /// Episodes recorded since the last dream report before an ACP session
+    /// triggers a dream, when [`Self::trigger_on_acp_episodes`] is `true`.
+    ///
+    /// Defaults to `10`. Zero is normalized to one at the runtime boundary
+    /// (see [`Self::effective_acp_episode_threshold`]), so a dream always
+    /// needs at least one new episode.
+    #[serde(default = "default_acp_episode_threshold")]
+    pub acp_episode_threshold: usize,
 }
 
 fn default_max_concurrent() -> usize {
     1
+}
+
+const fn default_acp_episode_threshold() -> usize {
+    10
 }
 
 impl Default for DreamsConfig {
@@ -40,6 +63,20 @@ impl Default for DreamsConfig {
         Self {
             trigger_on_plan_complete: true,
             max_concurrent: default_max_concurrent(),
+            trigger_on_acp_episodes: false,
+            acp_episode_threshold: default_acp_episode_threshold(),
+        }
+    }
+}
+
+impl DreamsConfig {
+    /// Return the runtime-safe ACP episode threshold.
+    #[must_use]
+    pub const fn effective_acp_episode_threshold(&self) -> usize {
+        if self.acp_episode_threshold == 0 {
+            1
+        } else {
+            self.acp_episode_threshold
         }
     }
 }
@@ -84,10 +121,11 @@ pub struct LearningConfig {
     pub replan_gate_attempts: u32,
     /// Run dream consolidation after a plan completes.
     ///
-    /// Superseded by [`DreamsConfig::trigger_on_plan_complete`]; both must be
-    /// `true` for the trigger to fire. Kept for backward compatibility with
-    /// existing `roko.toml` files.
-    #[serde(default = "default_true")]
+    /// Defaults to `false`: each automatic dream costs a model call, so dreams
+    /// run on demand, through `roko knowledge dream run`. An explicit `true`
+    /// opts in; [`DreamsConfig::trigger_on_plan_complete`] must also be `true`
+    /// for the trigger to fire.
+    #[serde(default)]
     pub dream_on_completion: bool,
     /// Dreams consolidation subsystem configuration.
     #[serde(default)]
@@ -104,6 +142,13 @@ pub struct LearningConfig {
     /// Defaults to 0.7.
     #[serde(default = "default_lookahead_threshold")]
     pub lookahead_threshold: f64,
+    /// Serve plan tasks that author no verify steps from matching T0 reflex
+    /// rules (`.roko/learn/reflexes.jsonl`) instead of dispatching a model.
+    ///
+    /// Off by default: a reflex skips the provider and every gate, so its
+    /// output is unverified and its rule earns no gate pass.
+    #[serde(default)]
+    pub t0_reflexes: bool,
     /// Dampening factor for manual model override learning (UX34).
     ///
     /// When a user manually overrides the model via `--model` /
@@ -211,10 +256,11 @@ impl Default for LearningConfig {
             replan_on_gate_failure: true,
             replan_max_per_plan: default_replan_max_per_plan(),
             replan_gate_attempts: default_replan_gate_attempts(),
-            dream_on_completion: default_true(),
+            dream_on_completion: false,
             dreams: DreamsConfig::default(),
             use_lookahead_router: false,
             lookahead_threshold: default_lookahead_threshold(),
+            t0_reflexes: false,
             override_learning_dampening: None,
             gate_threshold_flush_interval: default_gate_threshold_flush_interval(),
             knowledge: KnowledgeProgressionConfig::default(),
@@ -260,5 +306,38 @@ mod tests {
         let zero: LearningConfig =
             toml::from_str("gate_threshold_flush_interval = 0").expect("parse zero interval");
         assert_eq!(zero.effective_gate_threshold_flush_interval(), 1);
+    }
+
+    #[test]
+    fn dream_on_completion_defaults_to_false() {
+        assert!(!LearningConfig::default().dream_on_completion);
+
+        let omitted: LearningConfig = toml::from_str("").expect("parse empty learning config");
+        assert!(!omitted.dream_on_completion);
+
+        // An explicit opt-in is still honoured.
+        let opted_in: LearningConfig =
+            toml::from_str("dream_on_completion = true").expect("parse explicit opt-in");
+        assert!(opted_in.dream_on_completion);
+    }
+
+    #[test]
+    fn acp_dream_trigger_defaults_to_off() {
+        let defaults = DreamsConfig::default();
+        assert!(!defaults.trigger_on_acp_episodes);
+        assert_eq!(defaults.acp_episode_threshold, 10);
+
+        let omitted: LearningConfig = toml::from_str("").expect("parse empty learning config");
+        assert_eq!(omitted.dreams, defaults);
+
+        let opted_in: LearningConfig =
+            toml::from_str("[dreams]\ntrigger_on_acp_episodes = true\nacp_episode_threshold = 4")
+                .expect("parse ACP dream opt-in");
+        assert!(opted_in.dreams.trigger_on_acp_episodes);
+        assert_eq!(opted_in.dreams.effective_acp_episode_threshold(), 4);
+
+        let zero: LearningConfig = toml::from_str("[dreams]\nacp_episode_threshold = 0")
+            .expect("parse zero ACP threshold");
+        assert_eq!(zero.dreams.effective_acp_episode_threshold(), 1);
     }
 }

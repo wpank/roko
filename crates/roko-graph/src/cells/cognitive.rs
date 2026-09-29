@@ -677,6 +677,7 @@ pub fn build_cognitive_loop_graph(
             inputs: vec![],
             outputs: vec![],
             execution_class,
+            exclusive: vec![],
         };
         graph
             .add_node(node)

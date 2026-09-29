@@ -2,8 +2,10 @@
 id = "gap-4723ff"
 kind = "gap"
 title = "ViabilityBench family F1: generator, truth suite and gaming detector (S08.T3)"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
+last_verified = 2026-09-29
+last_verified_rev = "a306fab2d"
 severity = "p1"
 goal = "proof"
 size = "M"
@@ -19,6 +21,12 @@ links = { depends_on = ["gap-2790c5"], blocks = [], related = ["gap-9e7079"], su
 
 [[verify]]
 command = "grep -qw 'def test_f1_cells_green_on_two_seeds' benchmarks/viabilitybench/families/f1_pyconv/test_f1.py && benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/families/f1_pyconv/test_f1.py -k test_f1_cells_green_on_two_seeds -q"
+
+[closed]
+at = 2026-09-29
+commit = "a306fab2d"
+by = "commit trailer"
+evidence = "a306fab2d adds benchmarks/viabilitybench/families/f1_pyconv/: gen.py (levels 1-5 from ladder.toml; the manifest is DIR/task.json, outside the agent workdir DIR/repo/), hidden.py (12 checks against the pristine base, secret-keyed cases from a 0600 --secret-file), gaming.py (added non-AppError raises, visible test edits), the reference/stub/gaming solutions and the precise spec. The verify (10 cells) passes in about 15 s; with VB_FULL_CELLS=1, test_f1_cells_green_on_ten_seeds passes all 50 cells (reference VS=1, stub visible red, gaming visible green with VS=0, identical verdicts twice); every instance lists recoverability evidence that exists; pytest benchmarks/viabilitybench: 137 passed, 1 skipped."
 +++
 
 ## Problem
@@ -79,3 +87,4 @@ library comes from gap-2790c5.
 - `hidden.py` and `reference/` carry the canary; agents work outside the repo.
 - Out of scope: latent v2, the flipped convention. Runs in parallel with F4 (disjoint directories).
 - A repo-wide pytest run must not collect the template's own `tests/`.
+- **From gap-2790c5 (2026-09-29):** S08 §5.2 puts `canary` in `DIR/.vb/task.json` beside the agent's spec. Keep the task manifest outside the agent's workdir, or any agent that reads it trips the canary. Use `families/common/` (`repo`, `knobs`, `hmac_seed`, `astcheck`, `canary`, `mutate`).

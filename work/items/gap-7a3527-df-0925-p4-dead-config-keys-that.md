@@ -14,7 +14,7 @@ last_verified = 2026-09-29
 last_verified_rev = "33e107da1"
 source = "tmp/dogfood/2026-09-25-portal-programme-run.md#P4 — dead config and dead code"
 discovered_from = "audit:tmp/dogfood/2026-09-25-portal-programme-run.md#P4 — dead config and dead code"
-anchors = ["crates/roko-core/src/config/gates.rs::GatesConfig", "crates/roko-core/src/config/learning.rs::LearningConfig", "crates/roko-core/src/config/agent.rs::AgentConfig", "crates/roko-gate/src/adaptive_threshold.rs::AdaptiveThresholds::from_gates_config", "crates/roko-cli/src/runner/persist.rs::GateThresholds::observe", "crates/roko-cli/src/graph_task_dispatch.rs::graph_engine_inert_settings", "crates/roko-cli/src/config.rs::LearningLayer"]
+anchors = ["crates/roko-core/src/config/gates.rs::GatesConfig", "crates/roko-core/src/config/learning.rs::LearningConfig", "crates/roko-core/src/config/agent.rs::AgentConfig", "crates/roko-gate/src/adaptive_threshold.rs::AdaptiveThresholds::from_gates_config", "crates/roko-cli/src/runner/persist.rs::GateThresholds::observe", "crates/roko-cli/src/graph_task_dispatch/inert_settings.rs::graph_engine_inert_settings", "crates/roko-cli/src/config.rs::LearningLayer"]
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
 
 [[verify]]

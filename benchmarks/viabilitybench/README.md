@@ -8,8 +8,10 @@ one dated price snapshot.
 The design is spec S08 (`tmp/cybernetic-harness/specs/S08-benchmark-suite.md` in the author's workspace; the
 `§` references below point into it). Suite id `vb`; schemas `vb.*/1`.
 
-**Status (2026-09-29).** Only `schema/` and the price snapshot exist. The rest of the layout is built by the items
-of epic `spec-567e52` in `work/items/`.
+**Status (2026-09-29).** Built: `schema/` and the price snapshot (gap-0580f7), the common library
+`families/common/` (gap-2790c5), `speclint/` (S07.1), and the direct-arm driver `driver/` with `arms/cheap_direct.toml`,
+`arms/fd_api.toml` and `streams/pilot.toml` (gap-28ebea). Not built yet: the families F1 and F4 that the pilot stream
+names, verifier CI, analysis and reports, and the other arms. Epic `spec-567e52` in `work/items/` tracks them.
 
 ## Rules
 
@@ -44,7 +46,48 @@ $VB_RESULTS (default ~/.roko-bench/viability)/<experiment_id>/<run_id>/
 
 Beyond S08's block, the tree also holds `experiments/` (S09 §6: manifests, budget lines, the pre-registration
 lock), `reports/` (committed pilot summaries), `schema/validate.py`, `schema/test_schemas.py`, `schema/examples/`,
-`requirements.in`, `requirements.lock` and a `.gitignore` for the venv.
+`requirements.in`, `requirements.lock` and a `.gitignore` for the venv. `driver/` adds `layout.py`, `provider.py`,
+`stub_provider.py`, `harness.py`, `agent_env.py`, `test_driver.py` and a toy family in `testdata/`.
+
+## The driver (direct arm)
+
+`driver/vb.py` runs a stream of tasks on one arm and one model (S08 §4.9–4.10, §5.7). The direct loop
+(`mini_loop.py`, harness `mini-loop`) serves `cheap_direct` and `fd_api`: one model, one bash tool, no Roko prompt.
+
+```bash
+PY=benchmarks/viabilitybench/.venv/bin/python
+$PY benchmarks/viabilitybench/driver/vb.py estimate --stream pilot --arm cheap_direct --model gpt-oss-120b --seeds 1-3
+$PY benchmarks/viabilitybench/driver/vb.py run --experiment PILOT-A --stream pilot --arm cheap_direct \
+    --model gpt-oss-120b --seeds 1-3 --allow-network --max-cost-usd 10     # spends money: Pilot A only
+```
+
+- **Admission.** A non-loopback provider is called only with both `--allow-network` and `--max-cost-usd` (the rule of
+  `scripts/dev_benchmark.py`). The budget is enforced per task: a task starts only while the ledger's spend plus the
+  most one task can cost under the arm's caps still fits. A model missing from the price snapshot is refused.
+  `--provider-url` with a loopback URL runs offline, and the tests use it with `driver/stub_provider.py`.
+- **Caps** (`caps.py`, from the arm's `[caps]`). Per attempt: 12 turns and 150K input tokens, after which a fresh
+  attempt starts. Per task: 30 turns, 300K input tokens and 20 minutes. The runaway detector stops a task at 30 model
+  calls, 5 identical commands in a row, or its dollar cap. Caps are checked before each call, so none is exceeded; a
+  capped task ends `aborted_cap` (or `timeout`) with VS = 0.
+- **Isolation.** Each (task, seed) gets a fresh workdir under `$VB_WORK` (default `~/vb-work/<run_id>/`). The task
+  manifest, which holds the canary, and the pristine bundle live in the run's `private/` directory, never in a
+  workdir. Agent processes get an allowlisted environment (`agent_env.py`): no `VB_*` variables, no provider keys, a
+  per-task HOME.
+- **Label.** The driver commits the final tree as c_i with `families/common/repo.export_tree`, never with git in the
+  agent's repo, then archives it (a git bundle, a tarball and the diff). The census (`census.py`) re-runs the visible
+  checks on a clean export with the test files restored, runs the family's `hidden.py --secret-file` and the integrity
+  checks, and counts canary hits; any hit makes the run `leak_suspected`.
+- **Outputs** in `$VB_RESULTS/<experiment>/<run_id>/`: `manifest.json`, `order-<seed>.json`, `records.jsonl`
+  (`vb.run_record/1`, validated before each write, `simulated: false`), `ledger.jsonl` (one validated row per
+  attempt, priced from the snapshot; an unknown cost is null), `archives/`, `private/`, `errors.jsonl`, and
+  `transcripts/` with `--transcripts`.
+- **The secret** is a file (`--secret-file`, `$VB_SECRET_FILE`, default `~/.config/viabilitybench/secret`, mode 0600),
+  read only by the census. Proving that it never reaches an agent is gap-a8a160.
+- **A new arm** adds `arms/<id>.toml` and, for a new harness, one `driver/<runner>.py` with `run_task(ctx)`
+  (`harness.py` has the protocol); `vb.py` does not change.
+- **Not yet built:** budget-line caps in the ledger (gap-33d54b), the metering and fault proxy (gap-e003ec), the
+  Claude Code and Roko arms (gap-c4f364, gap-b7ab99), `vb census`/`vb report`, and S01's BLAKE3 `config_hash`:
+  records carry `sha256:` digests until `driver/fingerprint.py` and its golden vectors exist.
 
 ## Schemas
 

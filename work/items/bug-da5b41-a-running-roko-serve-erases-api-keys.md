@@ -2,7 +2,7 @@
 id = "bug-da5b41"
 kind = "bug"
 title = "A running roko serve erases API keys created by the CLI"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 size = "M"
@@ -11,7 +11,7 @@ subsystem = ["roko-serve/auth"]
 created = 2026-09-28
 updated = 2026-09-29
 last_verified = 2026-09-29
-last_verified_rev = "a17d9d766"
+last_verified_rev = "c651ddc57"
 source = "local-audit-2026-09-26"
 discovered_from = "audit:local-defect-review-2026-09-26 (untracked design notes)"
 anchors = ["crates/roko-serve/src/routes/auth.rs::AuthRegistry", "crates/roko-serve/src/routes/auth.rs::persist_registry_file", "crates/roko-serve/src/routes/auth.rs::load_registry_file", "crates/roko-serve/src/routes/middleware.rs::require_api_key"]
@@ -19,6 +19,11 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqw 'fn out_of_band_api_key_survives_server_write' crates/roko-serve/ && cargo test -p roko-serve routes::auth::tests::out_of_band_api_key_survives_server_write"
+
+[closed]
+at = 2026-09-29
+by = "coordinator (session 7622b882)"
+evidence = "API-key writes are locked read-merge-write transactions (roko_fs::with_locked_json_transaction, atomic rename, fail closed on an unreadable file); api_keys_snapshot re-reads the file when it changes, so keys added or revoked by the CLI take effect on the next request; test out_of_band_api_key_survives_server_write (1098aead2, merged c651ddc57). Agent and relay token files are a follow-up. Batch 3 gate (work/rust-batch-3; crates tree identical to MAIN after the merges): cargo check --workspace --tests clean; nightly rustfmt clean after fmt-only commits db7f3f861 and 26947cd62; clippy -p roko-cli -p roko-learn -p roko-gateway -p roko-acp -p roko-serve -p roko-core --no-deps -D warnings clean; lib tests roko-cli 3072, roko-core 1919, roko-learn 1172, roko-serve 950, roko-acp 197, roko-gateway 41, 0 failed."
 +++
 
 ## Problem
@@ -122,6 +127,10 @@ Expected: B is still there.
 - Adding `fs2` to `crates/roko-serve/Cargo.toml` is a new direct dependency (already in the lockfile).
 - Touches only `routes/auth.rs` (and possibly `middleware.rs` for the auth-miss reload). Safe to do in
   parallel with work outside roko-serve auth.
+- 2026-09-29: Implemented on `work/bug-da5b41` at `1098aead2`; cargo verification deferred to the batch check.
+  Plan steps 1-3 and 5 are done. Writes use the existing `roko_fs::with_locked_json_transaction`, so no new
+  dependency. Every lookup re-reads the file when its stamp changes (not only on an auth miss), so
+  out-of-band revocations also apply at once. Step 4 (agent/relay token files) is left for a follow-up item.
 
 ## Original notes
 

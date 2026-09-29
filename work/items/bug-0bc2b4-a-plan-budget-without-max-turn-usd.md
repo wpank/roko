@@ -14,7 +14,7 @@ last_verified = 2026-09-29
 last_verified_rev = "33e107da1"
 source = "session:roko-b6 2026-09-29 direct-implementation batch"
 discovered_from = "merge:fix/graph-ready-queue 9ef6f4aad"
-anchors = ["crates/roko-cli/src/graph_task_dispatch.rs::GraphPlanBudgetPolicy::from_limits", "crates/roko-cli/src/graph_task_dispatch.rs::GraphPlanBudgetLedger::reserve", "crates/roko-cli/src/graph_task_dispatch.rs::dispatch", "crates/roko-graph/src/engine.rs::execute_cell_with_retries"]
+anchors = ["crates/roko-cli/src/graph_task_dispatch/budget.rs::GraphPlanBudgetPolicy::from_limits", "crates/roko-cli/src/graph_task_dispatch/budget.rs::GraphPlanBudgetLedger::reserve", "crates/roko-cli/src/graph_task_dispatch.rs::dispatch", "crates/roko-graph/src/engine.rs::execute_cell_with_retries"]
 links = { depends_on = [], blocks = [], related = ["gap-e95077", "gap-4665ac", "gap-4d835d"], supersedes = [], duplicate_of = "" }
 
 [[verify]]

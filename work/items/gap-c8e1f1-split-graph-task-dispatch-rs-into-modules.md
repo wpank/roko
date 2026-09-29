@@ -2,14 +2,16 @@
 id = "gap-c8e1f1"
 kind = "gap"
 title = "Split graph_task_dispatch.rs into modules without changing behaviour"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p1"
 goal = "tooling"
 size = "M"
 subsystem = ["roko-cli/graph_task_dispatch"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-29
+last_verified_rev = "584abd414"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e15"
 discovered_from = "tmp/cybernetic-harness/workstreams/assessment/W5-contention-parallelism.md (F4, rec 2a and 2d)"
 anchors = ["crates/roko-cli/src/graph_task_dispatch.rs", "crates/roko-cli/src/graph_task_dispatch/"]
@@ -19,6 +21,11 @@ links = { depends_on = [], blocks = [], related = ["gap-96f7ed", "spec-e9d7ec"],
 
 [[verify]]
 command = "test -f crates/roko-cli/src/graph_task_dispatch/verification.rs && test -f crates/roko-cli/src/graph_task_dispatch/feedback.rs && test -f crates/roko-cli/src/graph_task_dispatch/budget.rs && test -f crates/roko-cli/src/graph_task_dispatch/streaming.rs && test -f crates/roko-cli/src/graph_task_dispatch/failover.rs && test \"$(wc -l < crates/roko-cli/src/graph_task_dispatch.rs)\" -lt 3000 && cargo test -p roko-cli --lib graph_task_dispatch"
+
+[closed]
+at = 2026-09-29
+by = "coordinator (session 7622b882)"
+evidence = "graph_task_dispatch.rs split into 9 modules (budget, turn_policy, inert_settings, routing_context, feedback, verification, tui_forward, streaming, failover): root 8,251 -> 1,862 lines; moves plus use/mod/visibility only; 92 tests before and after (55 #[test] + 37 #[tokio::test]); 50 open items re-anchored (a729fb911, merged 328123077). Batch 2 gate (work/rust-batch-2; crates tree identical to MAIN after the merges): cargo check --workspace --tests clean; nightly rustfmt clean; clippy -p roko-cli -p roko-graph -p roko-execution -p roko-core -p roko-acp -p roko-learn --no-deps -D warnings clean; lib tests roko-cli 3060 passed (8 threads; two timing tests flaked only under full parallel load and pass alone), roko-graph 460, roko-execution 252, roko-core 1913, roko-acp 196, roko-learn 1166."
 +++
 
 ## Problem
@@ -79,3 +86,11 @@ Unsplit at `41c7ffbd6`. Two in-flight worktrees hold uncommitted edits to this f
 - This is a hot file: one writer only, and nothing else in flight on it.
 - Keeping the root file name means spine anchors such as `graph_task_dispatch.rs::GraphTaskDispatcher::dispatch`
   stay valid.
+- 2026-09-29: Implemented on `work/gap-c8e1f1` at `a729fb911`; cargo verification deferred to the batch check.
+  The root file is 1,862 lines; the nine modules are budget (717), turn_policy (538), inert_settings (256),
+  routing_context (552), feedback (613), verification (1,677), tui_forward (220), streaming (943) and
+  failover (1,052). Test count under `graph_task_dispatch`: 92 before (59 in the root file, 33 in the directory)
+  and 92 after (3 in the root file, 89 in the directory); 55 `#[test]` and 37 `#[tokio::test]` both times.
+  `cargo check -p roko-cli --lib --tests` passed with no warnings. The anchors of 50 open items now point at the
+  new modules; six items another session was editing (bug-017c2d, bug-951930, bug-a843d4, bug-f9ae3e,
+  gap-644040, reg-c7ecf6) still carry line anchors into this file.

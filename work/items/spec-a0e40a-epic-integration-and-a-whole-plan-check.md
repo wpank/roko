@@ -15,7 +15,7 @@ discovered_from = "tmp/cybernetic-harness/tldr/05-GAPS-AND-PROPOSALS.md (P1 #12;
 anchors = ["crates/roko-cli/src/orchestrator/worktree/mod.rs::accept_attempt", "crates/roko-cli/src/graph_execution/delivery.rs::GitDeliveryBackend", "crates/roko-cli/src/graph_execution/plan_runner.rs::run_one_plan", "crates/roko-cli/src/task_parser.rs::TaskMeta"]
 doc = "tmp/cybernetic-harness/workstreams/PLAN.md"
 lane = "rust-hot"
-links = { depends_on = ["gap-3b5361", "bug-a3760a", "spec-f830c4", "gap-60233f", "bug-50caf2", "gap-4ec59f", "gap-af00b1"], blocks = [], related = ["gap-d58ae8", "gap-415c54", "bug-53475e", "gap-439794"], supersedes = [], duplicate_of = "" }
+links = { depends_on = ["gap-3b5361", "bug-a3760a", "spec-f830c4", "gap-60233f", "bug-50caf2", "gap-4ec59f", "gap-af00b1", "gap-0d64d5", "bug-aaa924", "bug-453481", "bug-207f35"], blocks = [], related = ["gap-d58ae8", "gap-415c54", "bug-53475e", "gap-439794"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "grep -rqw 'fn c3_each_passed_task_commits_once_on_the_plan_branch' crates/roko-cli/tests/ && grep -rqw 'fn c4_meta_verify_catches_tasks_that_break_together' crates/roko-cli/tests/ && cargo test -p roko-cli --test plan_branch_integration"
@@ -99,12 +99,16 @@ Order: 1 and 2 now. Then 3 → 4 → 5 → 6 → 7, one at a time, because they 
 ## Done when
 
 - [ ] gap-3b5361: Successful plan attempts are never accepted: accept_attempt has no production caller (existing item)
-- [ ] bug-a3760a: The Graph engine's merge step runs git checkout in the user's working tree (existing item)
+- [x] bug-a3760a: The Graph engine's merge step runs git checkout in the user's working tree (existing item)
 - [ ] spec-f830c4: #404 — Batch Branch Integration (existing item)
 - [ ] gap-60233f: [meta] verify: a whole-plan gate that runs on the integrated result
 - [ ] bug-50caf2: PlanGateCell gates the process working directory as attempt 0 (existing item)
 - [ ] gap-4ec59f: Worktree Isolation: Flip Default and Add Startup Repair (existing item)
 - [ ] gap-af00b1: Integration tests C3 and C4: per-task commits on a plan branch, and a whole-plan gate that catches
+- [ ] gap-0d64d5: Golden-path step 10: an opt-in hold that shows each task's diff and waits for approval before it merges
+- [ ] bug-aaa924: The delivery regression check builds the workspace from a cold target dir on every delivery
+- [ ] bug-453481: Delivery merges the branch head instead of the verified commit_oid, so later commits land unverified
+- [ ] bug-207f35: GitMergeBackend still merges in, and auto-commits, the checkout it is given
       tasks that break together
 - [ ] The epic's `[[verify]]` command (tests C3 and C4) passes on the merged branch.
 

@@ -222,6 +222,7 @@ impl ProductionPlanTopology {
     }
 
     /// Add the 11-node subgraph for a single task.
+    #[allow(clippy::too_many_lines)]
     fn add_task_subgraph(
         &self,
         graph: &mut Graph,
@@ -239,6 +240,7 @@ impl ProductionPlanTopology {
             inputs: vec![],
             outputs: vec![],
             execution_class: ExecutionClass::Workflow,
+            exclusive: vec![],
         })?;
 
         // 2. Enricher nodes (all parallel, all Workflow class).
@@ -252,6 +254,7 @@ impl ProductionPlanTopology {
                 inputs: vec![],
                 outputs: vec![],
                 execution_class: ExecutionClass::Workflow,
+                exclusive: vec![],
             })?;
 
             // Edge: context -> enricher (unconditional).
@@ -271,6 +274,7 @@ impl ProductionPlanTopology {
             inputs: vec![],
             outputs: vec![],
             execution_class: ExecutionClass::Workflow,
+            exclusive: vec![],
         })?;
 
         // Edges: each enricher -> compose.
@@ -299,6 +303,9 @@ impl ProductionPlanTopology {
             inputs: vec![],
             outputs: vec![],
             execution_class: ExecutionClass::Activity,
+            // The executor writes the task's files and the gate checks them:
+            // both hold the files, so no overlapping task edits them meanwhile.
+            exclusive: task.files.clone(),
         })?;
 
         // Edge: compose -> executor.
@@ -318,6 +325,7 @@ impl ProductionPlanTopology {
             inputs: vec![],
             outputs: vec![],
             execution_class: ExecutionClass::Activity,
+            exclusive: task.files.clone(),
         })?;
 
         // Edge: executor -> gate (on success only).
@@ -336,6 +344,7 @@ impl ProductionPlanTopology {
             inputs: vec![],
             outputs: vec![],
             execution_class: ExecutionClass::Workflow,
+            exclusive: vec![],
         })?;
 
         // Edge: gate -> success boundary (on success only).
@@ -798,5 +807,21 @@ mod tests {
         let engine = GraphEngine::new(graph, registry).with_allow_test_stubs(true);
         let issues = engine.validate();
         assert!(issues.is_empty(), "validation issues: {issues:?}");
+    }
+
+    /// gap-439794: a task's executor writes its files and its gate checks
+    /// them, so both hold the files. No other node of the subgraph does.
+    #[test]
+    fn executor_and_gate_hold_the_task_files() {
+        let topo = ProductionPlanTopology::new("files", "/tmp", 2);
+        let mut task = make_task("T1", &[]);
+        task.files = vec!["src/lib.rs".to_string()];
+        let (graph, _) = topo.build(&[task]).unwrap();
+
+        for node in graph.inner.node_weights() {
+            let holds = node.id == "task.T1.executor" || node.id == "task.T1.gate";
+            let expected: &[&str] = if holds { &["src/lib.rs"] } else { &[] };
+            assert_eq!(node.exclusive, expected, "{}", node.id);
+        }
     }
 }

@@ -15,7 +15,7 @@ discovered_from = "tmp/cybernetic-harness/tldr/05-GAPS-AND-PROPOSALS.md (P1 #11)
 anchors = ["crates/roko-graph/src/engine.rs::execute_ready_queue", "crates/roko-cli/src/graph_execution/plan_runner.rs::run_one_plan", "crates/roko-cli/src/task_parser.rs::default_max_parallel"]
 doc = "tmp/cybernetic-harness/workstreams/PLAN.md"
 lane = "rust-hot"
-links = { depends_on = ["gap-4d835d", "gap-96d348", "gap-439794", "gap-272448", "gap-c89b40", "gap-987064"], blocks = [], related = ["gap-a8d786", "gap-7147bb", "gap-4ec59f"], supersedes = [], duplicate_of = "" }
+links = { depends_on = ["gap-4d835d", "gap-96d348", "gap-439794", "gap-272448", "gap-c89b40", "gap-987064", "gap-1920ba", "gap-51deff", "gap-19e596"], blocks = [], related = ["gap-a8d786", "gap-7147bb", "gap-4ec59f"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "grep -rqw 'fn scheduler_canary' crates/roko-cli/tests/ && cargo test -p roko-cli --test scheduler_canary"
@@ -82,14 +82,17 @@ This is the implementation plan.
 
 ## Done when
 
-- [ ] gap-4d835d: Graph engine runs a plan wave by wave, so a ready task waits for its whole wave (existing item;
+- [x] gap-4d835d: Graph engine runs a plan wave by wave, so a ready task waits for its whole wave (existing item;
       looks done, close with `445a60d0d`)
 - [x] gap-96d348: FailureStrategy::SkipFailed unreachable; FailFast hardcoded (existing item; looks done, close with
       `3e7552acd`)
-- [ ] gap-439794: File-conflict detection before same-wave task dispatch (existing item)
+- [x] gap-439794: File-conflict detection before same-wave task dispatch (existing item)
 - [ ] gap-272448: max_parallel defaults to the plan's DAG width when task write sets are disjoint
 - [ ] gap-c89b40: Nothing limits concurrent cargo builds across processes that share a target dir (existing item)
 - [ ] gap-987064: Integration test C6: independent tasks still run after a failure, and tasks with overlapping files
+- [ ] gap-1920ba: File exclusion misses read-against-write races: a whole-project verify reads a sibling's half-written file
+- [ ] gap-51deff: In the rich topology a task's files are free between its executor and its gate, so an overlapping task can run in between
+- [ ] gap-19e596: Turn file exclusion off under --worktree-per-task, where tasks do not share a tree
       never run together
 - [ ] The epic's `[[verify]]` command (test C6) passes on the merged branch.
 

@@ -12,7 +12,7 @@ created = 2026-09-29
 updated = 2026-09-29
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e4"
 discovered_from = "tmp/cybernetic-harness/specs/S01-instrumentation.md (P0-1, P0-3, P0-7); workstreams/assessment/W5-contention-parallelism.md (rec 4)"
-anchors = ["crates/roko-cli/src/graph_task_dispatch.rs::GraphTaskDispatcher::emit_feedback", "crates/roko-cli/src/graph_task_dispatch.rs::GraphTaskDispatcher::next_attempt_id", "crates/roko-cli/src/runtime_feedback/mod.rs::FeedbackEvent"]
+anchors = ["crates/roko-cli/src/graph_task_dispatch/feedback.rs::GraphTaskDispatcher::emit_feedback", "crates/roko-cli/src/graph_task_dispatch.rs::GraphTaskDispatcher::next_attempt_id", "crates/roko-cli/src/runtime_feedback/mod.rs::FeedbackEvent"]
 lane = "rust-hot"
 parent = "spec-b7303f"
 links = { depends_on = ["gap-528762", "gap-c8e1f1"], blocks = [], related = ["bug-c34782", "bug-35379d", "gap-ad0d39"], supersedes = [], duplicate_of = "" }
@@ -80,3 +80,8 @@ Checked at `41c7ffbd6`:
 ## Notes
 
 These are hot files. Start only after the env and learn-a branches merge and the dispatch split (gap-c8e1f1) lands.
+
+- **From gap-528762 (2026-09-29):** `TaskAttemptReceiptV1.attempt` is documented as 0-based (`receipt.rs:80`), but
+  `AttemptKey` is 1-based with the same string layout. Pick one base here and convert the other.
+- Prompt-experiment keys use a per-process `graph-<uuid>` run id and 0-based ordinals, so they won't join to
+  `AttemptKey` until this item switches them to the attempt context.

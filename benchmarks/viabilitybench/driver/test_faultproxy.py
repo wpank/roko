@@ -492,6 +492,38 @@ def test_the_input_cap_bounds_a_tasks_input(tmp_path):
     assert meter["input_tokens"] <= bound * 3 // 2 and meter["reserved"] == 0
 
 
+
+def test_the_input_bound_covers_image_parts(proxy, upstream, log):
+    # bug-d34a29: a token is never shorter than a byte of text, but an image, audio or a file costs tokens that are no
+    # function of its bytes. While a cap is set, such a request is refused before it is forwarded; a text-only one,
+    # tools and all, still goes through.
+    def asking(*parts: dict) -> dict:
+        return {"model": MODEL, "messages": [{"role": "user", "content": [{"type": "text", "text": "Describe it."},
+                                                                           *parts]}]}
+
+    linked = asking({"type": "image_url", "image_url": {"url": "https://example.com/chart.png"}})
+    inline = asking({"type": "image_url", "image_url": {"url": "data:image/png;base64,iVBORw0KGgo="}})
+    audio = asking({"type": "input_audio", "input_audio": {"data": "UklGRiQAAABXQVZF", "format": "wav"}})
+    tools = {**asking(), "tools": [{"type": "function", "function": {"name": "read", "parameters": {
+        "type": "object", "properties": {"file": {"type": "string"}}}}}]}  # a parameter may be called "file"
+    proxy.configure(task="capped", input_token_cap=1_000_000)
+    assert post(completions(proxy), asking()).status == 200
+    for body in (linked, inline, audio):
+        reply = post(completions(proxy), body)
+        assert reply.status == 403 and reply.json()["error"]["code"] == "unbounded_input", reply.body
+    assert post(completions(proxy), tools).status == 200
+    assert len(upstream.requests) == 2  # a refused request never reaches the provider
+    lines = read_log(log, "capped")
+    assert [(line["refused"], line["input_bound"] is None) for line in lines] == [
+        (None, False), ("unbounded_input", True), ("unbounded_input", True), ("unbounded_input", True), (None, False)]
+    [meter] = [row for row in proxy.state()["tasks"] if row["task"] == "capped"]
+    assert (meter["unbounded"], meter["refused"], meter["reserved"]) == (3, 0, 0)
+    assert faultproxy._unbounded_part({"input": [{"role": "user", "content": [
+        {"type": "input_image", "image_url": "https://example.com/chart.png"}]}]}) == "image_url"  # the Responses API
+    # Without a cap there is nothing to bound: the proxy forwards and meters an image like any other request.
+    proxy.configure(task="uncapped", input_token_cap=None)
+    assert post(completions(proxy), linked).status == 200 and len(upstream.requests) == 3
+
 def test_control_endpoint_needs_the_token(proxy, upstream):
     control = proxy.url + faultproxy.CONTROL_PATH
     assert call("GET", control).status == 401

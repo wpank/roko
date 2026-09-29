@@ -2,14 +2,16 @@
 id = "bug-d34a29"
 kind = "bug"
 title = "The metering proxy's input-token bound (request bytes + 256) assumes text-only requests; an image by URL can cost more"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p3"
 goal = "proof"
 size = "S"
 subsystem = ["benchmarks/viabilitybench/driver"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-09-30
+last_verified = 2026-09-30
+last_verified_rev = "95fdcd0b0"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-bench-fix1's report on bug-c30764)"
 anchors = ["benchmarks/viabilitybench/driver/faultproxy.py"]
@@ -19,6 +21,12 @@ links = { depends_on = [], blocks = [], related = ["bug-c30764", "gap-e003ec"], 
 
 [[verify]]
 command = "grep -qw 'def test_the_input_bound_covers_image_parts' benchmarks/viabilitybench/driver/test_faultproxy.py && benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/driver/test_faultproxy.py -k test_the_input_bound_covers_image_parts -q"
+
+[closed]
+at = 2026-09-30
+commit = "95fdcd0b0"
+by = "wk-bench-fix1"
+evidence = "95fdcd0b0: while a task has an input cap, faultproxy refuses (403 vb_unbounded_input, never forwarded) a request with a non-text message part or a media key in its messages or Responses input, since no byte bound holds for media; the meter counts these as `unbounded`, apart from cap refusals. Verify passes (test_the_input_bound_covers_image_parts: a linked image, an inline image and audio are refused under a cap, text with a 'file' tool parameter passes, an uncapped image request is forwarded); driver tests 71 passed, 2 skipped."
 +++
 
 ## Problem

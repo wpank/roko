@@ -19,6 +19,7 @@ import pytest
 
 import agent_env
 import caps
+import disturb
 import faultproxy
 import layout
 import ledger
@@ -473,6 +474,64 @@ def test_proxy_caps_meter_check_and_bundle(places, tmp_path, monkeypatch):
     assert sorted(flag["task"] for flag in flags) == ["F1-l1-0001.s1", "F1-l1-0002.s1"]
     assert all(flag["stage"] == "meter check" and "±5%" in flag["error"] for flag in flags)
 
+
+
+def test_vb_run_applies_the_chosen_disturbance_profile(places, tmp_path, monkeypatch):
+    # gap-15bb83: a vb.disturbance/1 spec picks H6's hooks and the stream positions they cover. A budget cut covers
+    # position 1, a fault profile position 2, and a harder mix serves level 5 first from position 2 on. Each record
+    # names the hooks that covered it, and each attempt the fault the proxy injected into its calls.
+    monkeypatch.setattr(mini_loop.time, "sleep", lambda seconds: None)
+    stream = tmp_path / "mixed.toml"
+    stream.write_text('schema_version = "vb.stream/1"\n\n[stream]\nid = "mixed"\nspec_variant = "precise"\n'
+                      'families = { F1 = "driver/testdata/toy_family" }\n'
+                      'instances = ["F1-l1-0001", "F1-l2-0001", "F1-l5-0001", "F1-l1-0002"]\n')
+    spec = tmp_path / "h6.toml"
+    spec.write_text('schema_version = "vb.disturbance/1"\n\n'
+                    '[[disturbance]]\nkind = "budget_cut"\nend_at = 1\n\n'
+                    '[[disturbance]]\nkind = "provider_fault"\nstart_at = 2\nend_at = 2\nseed = 3\n'
+                    'params = { name = "http_5xx", p = 1.0 }\n\n'
+                    '[[disturbance]]\nkind = "harder_mix"\nstart_at = 2\nparams = { levels = [5] }\n')
+
+    def run(spec_path: Path, *extra: str) -> int:
+        return vb.main(["run", "--experiment", "TEST-OFFLINE", "--run-id", "run-1", "--stream", str(stream),
+                        "--arm", "cheap_direct", "--model", "gpt-oss-120b", "--seeds", "1", "--provider-url", stub.url,
+                        "--disturbance", str(spec_path), "--results", str(places["results"]), "--work",
+                        str(places["work"]), "--secret-file", str(places["secret"]), *extra])
+
+    with StubServer(lambda body: bash("echo VB_SUBMIT")) as stub:
+        # A spec the run cannot apply is refused before anything runs.
+        refused = {"model_swap": 'kind = "model_swap"', "convention_flip": 'kind = "convention_flip"',
+                   "no proxy": 'kind = "provider_fault"\nparams = { name = "http_5xx", p = 1.0 }'}
+        for name, table in refused.items():
+            bad = tmp_path / f"{name.replace(' ', '_')}.toml"
+            bad.write_text(f'schema_version = "vb.disturbance/1"\n\n[[disturbance]]\n{table}\n')
+            assert run(bad) == 2, name  # the toy family renders no latent v2; provider_fault needs the proxy
+        assert not places["results"].exists()
+        assert run(spec, "--proxy") == 0
+    out = run_dir(places)
+    base = vb.load_stream(str(stream)).order(1)
+    level = {instance: int(instance.split("-l")[1][0]) for instance in base}
+    order = json.loads((out / "order-1.json").read_text())["order"]
+    assert order == base[:1] + [i for i in base[1:] if level[i] == 5] + [i for i in base[1:] if level[i] != 5]
+    assert order != base  # seed 1 puts the level-5 instance last; the harder mix moves it to position 2
+    rows = {record["stream"]["position"]: record for record in read_jsonl(out / "records.jsonl")}
+    assert {position: row["stream"]["perturbations_active"] for position, row in rows.items()} == {
+        1: ["budget_cut"], 2: ["harder_mix", "provider_fault"], 3: ["harder_mix"], 4: ["harder_mix"]}
+    assert [attempt["fault_injected"] for attempt in rows[2]["execution"]["attempts"]] == ["http_5xx"]
+    assert rows[2]["execution"]["status"] == "infra_error"  # every call of that task met a 500
+    assert all(attempt["fault_injected"] is None for position in (1, 3, 4)
+               for attempt in rows[position]["execution"]["attempts"])
+    faulted = {row["task"] for row in read_jsonl(out / "proxy.jsonl") if row["fault_injected"] == "http_5xx"}
+    assert faulted == {f"{order[1]}.s1"}
+    # The budget cut halved the first task's caps, so its attempt reserved less than an uncut one.
+    reserved = {row["attempt_key"].split("/")[1].split(":")[0]: row["reserved_usd"]
+                for row in read_jsonl(out / "ledger.jsonl")}
+    assert reserved[f"{order[0]}.s1"] < reserved[f"{order[2]}.s1"]
+    config = json.loads((out / "manifest.json").read_text())["config"]
+    assert [(one["kind"], one["params"]) for one in config["disturbances"]] == [
+        ("budget_cut", {"factor": 0.5}), ("provider_fault", {"name": "http_5xx", "p": 1.0}),
+        ("harder_mix", {"levels": [5]})]
+    assert [one.kind for one in disturb.load(spec)] == ["budget_cut", "provider_fault", "harder_mix"]
 
 def test_agent_env_is_an_allowlist(tmp_path, monkeypatch):
     for name, value in {"VB_SECRET_FILE": "/somewhere", "CEREBRAS_API_KEY": FAKE_KEY, "OPENAI_API_KEY": FAKE_KEY,

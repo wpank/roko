@@ -3,13 +3,14 @@ id = "gap-c19902"
 kind = "gap"
 title = "Whitepaper §9 Status, limitations and roadmap"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p1"
 goal = "whitepaper"
 size = "S"
 subsystem = ["docs/whitepaper"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-29
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e1"
 discovered_from = "tmp/cybernetic-harness/tldr/05-GAPS-AND-PROPOSALS.md (§1 scorecard; §2 P0-P3)"
 anchors = ["docs/whitepaper/09-status-and-roadmap.md"]
@@ -65,7 +66,7 @@ lists them.
 
 ## Done when
 
-- [ ] Every limitation names its evidence or item.
+- [x] Every limitation names its evidence or item.
 - [ ] The `[[verify]]` command passes.
 
 ## Notes
@@ -73,3 +74,8 @@ lists them.
 - **Needs `tools/paperlint.py`** (gap-af0b57) to close.
 - **PLAN §4's time estimates are internal.** Publish them only if the author agrees.
 - Lane `paper`; no hot files.
+- **2026-09-29 (wk-wp-s9):** drafted on `work/gap-c19902` at `c3579aa9a` (606 words; status `draft`). The verify
+  cannot pass on this branch yet: `tools/paperlint.py` (gap-af0b57) and `appendix-status-matrix.md` (gap-35a614) are
+  not merged. The in-progress paperlint `--strict` passes except for the appendix link, which resolves once gap-35a614
+  merges. The counts quote `work/gap-35a614` at `e035b5efe` (71 rows at `a17d4dadd`); re-sync them if the matrix
+  changes before the review.

@@ -115,16 +115,16 @@ Each step's tag, its appendix rows, and the epics that would change it:
 | Step | Status | Matrix rows | Next |
 |---|---|---|---|
 | 1 Author | PARTIAL@a17d4dadd | AU1, AU2, V2 | E8 specs (spec-e57870) |
-| 2 Compile the spec | PARTIAL@a17d4dadd | AU4, AU6, AU7 | E8 specs |
+| 2 Compile the spec | PARTIAL@a17d4dadd | AU3, AU4, AU6, AU7 | E8 specs |
 | 3 Size and split | MISSING@a17d4dadd | V3 | E8 specs; E7 scheduler (spec-a78d57) |
 | 4 Route | MISSING@a17d4dadd | RC2, V3 | E5 tier ladder (spec-98f76d) |
 | 5 Schedule | PARTIAL@a17d4dadd | EX3, V4 | E7 scheduler |
 | 6 Isolate | PARTIAL@a17d4dadd | IS1, IS4, IS5, IS6 | E6 integration (spec-a0e40a); E3 secrets (spec-ba7bea) |
-| 7 Verify | PARTIAL@a17d4dadd | QA1, QA2, QA4, QA5 | E2 verdicts (spec-e9d7ec); E9 diff check (spec-9230a9); E17 audits |
+| 7 Verify | PARTIAL@a17d4dadd | QA1, QA2, QA3, QA4, QA5 | E2 verdicts (spec-e9d7ec); E9 diff check (spec-9230a9); E17 audits |
 | 8 Recover | PARTIAL@a17d4dadd | EX6, EX7, EX8, EX9, QA7 | E5 tier ladder; E10 watchdog (spec-edda86) |
 | 9 Integrate | ORPHANED@a17d4dadd, MISSING@a17d4dadd | IS2, IS3 | E6 integration |
 | 10 Review | MISSING@a17d4dadd | SS6 | None yet |
-| 11 Learn | PARTIAL@a17d4dadd | V8, RC2 | E17 cybernetic core (spec-6ac537) |
+| 11 Learn | PARTIAL@a17d4dadd | V8, LM3, RC2 | E17 cybernetic core (spec-6ac537) |
 | Whole path: cheaper at equal quality | UNPROVEN@a17d4dadd | V7 | E11 acceptance tests (spec-f09094); E12 pilot (spec-567e52) |
 
 No step yet does everything its design asks, and the central promise is untested. Every portal attempt pinned

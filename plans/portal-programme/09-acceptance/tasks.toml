@@ -14,12 +14,15 @@ estimated_total_minutes = 160
 #   navigation, and the program prints hello world.
 #
 # Runs in the MAIN tree after every other portal-programme plan has merged:
-# backend 01-04, 03b, 03c and 04b, portal 05-08 and 08b-08f. T01 builds roko and
-# the portal's static export; T02 and T03 drive a real browser (the Playwright
+# backend 01-04, 03b, 03c and 04b, portal 05-08 and 08b-08g. T01 builds roko,
+# the portal's static export and the demo app; T02 and T03 drive a real browser
+# (the Playwright
 # that demo/demo-app already installs, with its headless Chromium) against
 # scratch workspaces under /tmp, each with its own `roko serve` on a free port —
 # a scratch workspace has its own .roko, so nothing contends with the
-# `roko plan run` executing this plan:
+# `roko plan run` executing this plan. A dry run of T02's flow on the merged
+# tree (2026-09-29, fake agent) passed end to end once 08g's three first-run
+# fixes were applied; without them it stops at "generate":
 #
 #   T02  deterministic and free: the plans/portal-programme/_harness fake agent.
 #        The two-action flow in a workspace with no plans, auth on (the printed
@@ -35,7 +38,9 @@ estimated_total_minutes = 160
 # /api/auth/session and the roko_session cookie; the portal at / from
 # apps/portal/out with no ROKO_SPA_DIR, the demo app under /demo; live tool steps
 # (`tool_start` records with `live: true` and a target) and the startup line
-# `live agent output: tool_steps`. Those checks fail until 03c merges.
+# `live agent output: tool_steps`. 03c has merged; those shapes held in the dry
+# run. A plan generated in a workspace without `plans/` lands in
+# `.roko/plans/<slug>/`, which the server lists like `plans/`.
 #
 # Both checks are verify gates: this plan fails when the flow fails. Their
 # evidence (check output, event captures, server logs, screenshots) lands in
@@ -55,6 +60,10 @@ Build what the checks run, from the merged tree:
    `NEXT_TELEMETRY_DISABLED=1 npm run build:export`. Keep `apps/portal/out/`: it
    is what `roko serve` serves at / (03c). `apps/portal/out/` is gitignored; do
    not edit any .gitignore.
+3. In `demo/demo-app`: `npm ci --no-audit --no-fund` only when `node_modules` is
+   missing (T02 borrows its Playwright), then `npm run build`. Its build uses base
+   `/demo/`, which is where `roko serve` serves `demo/demo-app/dist` (03c); a
+   stale dist built for `/` answers /demo with a page whose assets 404.
 
 If either build fails, report the error; do not change source to make it pass —
 that belongs to the plan that owns the code.
@@ -67,11 +76,12 @@ timeout_secs = 2700
 max_retries = 1
 estimated_minutes = 25
 depends_on = []
-files = ["apps/portal/out"]
+files = ["apps/portal/out", "demo/demo-app/dist"]
 
 [task.context]
 read_files = [
     { path = "apps/portal/package.json", why = "the test and build:export scripts" },
+    { path = "demo/demo-app/package.json", why = "the demo app's build script" },
 ]
 anti_patterns = [
     "Do not edit source files to make a build pass.",
@@ -86,8 +96,8 @@ timeout_ms = 2700000
 
 [[task.verify]]
 phase = "structural"
-command = "test -x target/debug/roko && test -f apps/portal/out/index.html && grep -q 'name=\"roko-portal\"' apps/portal/out/index.html && test -d apps/portal/node_modules/jsdom"
-fail_msg = "the roko binary, the portal export (with its roko-portal meta tag) or a fresh portal install is missing"
+command = "test -x target/debug/roko && test -f apps/portal/out/index.html && grep -q 'name=\"roko-portal\"' apps/portal/out/index.html && test -d apps/portal/node_modules/jsdom && grep -q '/demo/assets/' demo/demo-app/dist/index.html"
+fail_msg = "the roko binary, the portal export (with its roko-portal meta tag), a fresh portal install or the demo build for /demo is missing"
 
 [[task]]
 id = "T02"
@@ -288,7 +298,8 @@ This is the user's path exactly: no fixtures, no fake agent, no `ROKO_SPA_DIR`
    file holding `fn main`, compile it with rustc, and check the same.
 7. Print the run's cost from `GET /api/statehub/snapshot` (bearer;
    `stats.cost_usd_total`). Copy the capture, serve.log, the browser json and
-   screenshots, the generated tasks.toml and the program's source to
+   screenshots, the generated tasks.toml (`plans/<slug>/` or, in a workspace
+   without `plans/`, `.roko/plans/<slug>/`) and the program's source to
    `$REPO_ROOT/tmp/portal-audit/evidence/hello-world-real/`, then
    `finish "HELLO-WORLD-REAL"`.
 '''

@@ -2,7 +2,7 @@
 id = "bug-a5dcaa"
 kind = "bug"
 title = "The /api/events keepalive is an SSE comment EventSource never delivers, so the portal reopens idle streams every 60 s"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "visibility"
@@ -11,12 +11,18 @@ subsystem = ["roko-serve/sse"]
 created = 2026-09-29
 updated = 2026-09-29
 last_verified = 2026-09-29
+last_verified_rev = "1bff443b0"
 source = "session:roko-b6 2026-09-29 portal close-out"
 anchors = ["crates/roko-serve/src/routes/sse.rs::keepalive_event", "crates/roko-serve/src/routes/sse.rs::sse_handler", "apps/portal/src/api/sse-client.ts::SseClient"]
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "grep -qw 'fn idle_stream_sends_a_named_keepalive_event_every_8_seconds' crates/roko-serve/src/routes/sse.rs && grep -qF 'keeps an idle stream open while keepalive frames arrive' apps/portal/src/api/sse-client.test.ts && cargo test -p roko-serve --lib routes::sse::tests::idle_stream_sends_a_named_keepalive_event && (cd apps/portal && npx vitest run src/api/sse-client.test.ts)"
+
+[closed]
+at = 2026-09-29
+commit = "1bff443b0"
+evidence = "1bff443b0: the /api/events keep-alive (crates/roko-serve/src/routes/sse.rs::keepalive_event, used by sse_handler) is now a named event, 'event: keepalive' with data '{}', every 8 s while idle, instead of an SSE comment that EventSource never delivers; apps/portal/src/api/sse-client.ts resets its 60 s watchdog on it (one addEventListener line). EventSource clients without the listener never see it; roko-cli's sse_stream client and the harness sse.py skip it. [[verify]] passes: routes::sse::tests::idle_stream_sends_a_named_keepalive_event_every_8_seconds (reads exactly 'event: keepalive\\ndata: {}\\n\\n' at 8 s and 16 s of idle) and the portal sse-client.test.ts (10 tests; the new 'keeps an idle stream open while keepalive frames arrive, and passes none of them on' fails without the listener). Portal tsc --noEmit and clippy -p roko-serve -D warnings are clean."
 +++
 
 ## Problem

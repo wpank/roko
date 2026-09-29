@@ -2,14 +2,16 @@
 id = "gap-b605cf"
 kind = "gap"
 title = "Research paper: notation table, figure and table map, budget-line names and bibliography venues"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p2"
 goal = "whitepaper"
 size = "M"
 subsystem = ["paper"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-29
+last_verified_rev = "cac54e574"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (14:50 wk-rp-appx finding 2; 14:58 item d; 14:59 wk-rp-framing; 15:04; 15:13; 15:25)"
 anchors = ["tmp/cybernetic-harness/paper/OUTLINE.md", "tmp/cybernetic-harness/paper/FIGURES-TABLES.md", "tmp/cybernetic-harness/paper/bibliography/references.bib", "tmp/cybernetic-harness/paper/bibliography/build_main_bib.py"]
@@ -25,6 +27,11 @@ command = "test -f tmp/cybernetic-harness/paper/FIGURES-TABLES.md && ! grep -q '
 
 [[verify]]
 command = "test -f tmp/cybernetic-harness/paper/bibliography/references.bib && ! grep -qE 'per (tmp|refs|research)/' tmp/cybernetic-harness/paper/bibliography/references.bib"
+
+[closed]
+at = 2026-09-29
+by = "coordinator (session 7622b882)"
+evidence = "Paper notation and maps (tmp, wk-rp-notation): NOTATION.md added; OUTLINE's figure and table map carries F11 and T10; FIGURES-TABLES, budget-line names and the PL table spec updated; bibliography venues no longer cite internal paths, rebuilt with build_main_bib.py (292 entries). Verify passes in MAIN."
 +++
 
 ## Problem

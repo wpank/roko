@@ -75,16 +75,16 @@ This is the implementation plan.
 - [x] gap-856053: Research paper appendices A and B: match the benchmark and the spec standard as built
 - [x] gap-987510: Research paper appendices C and D: align the audit protocol and metrics with S05, S09 and the ViabilityBench analysis
 - [x] gap-4d516a: TL;DR: fix four statements left stale after the 2026-09-29 refresh
-- [ ] gap-b605cf: Research paper: notation table, figure and table map, budget-line names and bibliography venues
+- [x] gap-b605cf: Research paper: notation table, figure and table map, budget-line names and bibliography venues
 - [x] gap-184da5: Research paper: cite the frozen rollup, B7, W12 and the field cases from docs/whitepaper/evidence/
-- [ ] gap-a3031b: Companion report E12: internal review and bibliography QA
-- [ ] gap-3986d0: Freeze a tarball of .roko state with each audit tag
-- [ ] gap-bb619d: Research paper: the final prior-art kill-search (Track D13) before submission
+- [x] gap-a3031b: Companion report E12: internal review and bibliography QA
+- [x] gap-3986d0: Freeze a tarball of .roko state with each audit tag
+- [x] gap-bb619d: Research paper: the final prior-art kill-search (Track D13) before submission
 - [ ] dec-536bbd: Decide how paperlint --strict treats numbers in the claims-ledger rows
 - [x] gap-f3be74: TL;DR: fix the stale statements found by the second refresh pass
 - [ ] gap-cb86e4: Companion report: make the draft pass paperlint --strict apart from the rater and author markers
 - [x] gap-9899b0: Research paper: cite the frozen evidence copies in §1.2, §4.1, §7 and Appendix F
-- [ ] gap-e2d092: Research paper: pick up S09 v1.2 and S01 v1.2 in §5, Appendices A, D and E, and fix S01 §4.5
+- [x] gap-e2d092: Research paper: pick up S09 v1.2 and S01 v1.2 in §5, Appendices A, D and E, and fix S01 §4.5
 - [ ] The `[[verify]]` command passes (paperlint reports on every section).
 
 ## Notes

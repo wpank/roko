@@ -2,14 +2,16 @@
 id = "gap-a3031b"
 kind = "gap"
 title = "Companion report E12: internal review and bibliography QA"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p2"
 goal = "whitepaper"
 size = "M"
 subsystem = ["companion"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-29
+last_verified_rev = "cac54e574"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (14:47, wk-companion-e10's report on gap-652d05); tmp/cybernetic-harness/execution/checklist.json#E12"
 anchors = ["tmp/cybernetic-harness/companion-audit/E10-DRAFT.md", "tmp/cybernetic-harness/companion-audit/05-RELATED-WORK-MAP.md", "tmp/cybernetic-harness/companion-audit/06-REVIEW.md", "tmp/cybernetic-harness/companion-audit/03-OUTLINE.md"]
@@ -19,6 +21,11 @@ links = { depends_on = ["gap-b409fa"], blocks = [], related = ["gap-652d05", "ga
 
 [[verify]]
 command = "test -f tmp/cybernetic-harness/companion-audit/E10-DRAFT.md && ! grep -v '^>' tmp/cybernetic-harness/companion-audit/E10-DRAFT.md | grep -q '\\[\\[CHECK:' && test -f tmp/cybernetic-harness/companion-audit/05-RELATED-WORK-MAP.md && ! grep -q 'Neither appears in MAST' tmp/cybernetic-harness/companion-audit/05-RELATED-WORK-MAP.md"
+
+[closed]
+at = 2026-09-29
+by = "coordinator (session 7622b882)"
+evidence = "Companion E12 internal review (tmp, wk-companion-review): CHECK markers resolved against the papers; 9 misdescribed citations fixed; the rejected statements in 05 fixed; 03 synced; §4 2,261 -> 1,352 words and §6 1,796 -> 1,088 (within budget, no number or anchor dropped); bib QA: all 67 keys resolve, no internal paths in 400 entries, 34 DOIs match Crossref; paperlint --strict 114 -> 91 (identifiers and header 0). Recorded in 06-REVIEW.md 'E12 internal review'. Verify passes."
 +++
 
 ## Problem

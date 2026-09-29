@@ -15,7 +15,7 @@ discovered_from = "tmp/cybernetic-harness/tldr/05-GAPS-AND-PROPOSALS.md (P0 #4);
 anchors = ["crates/roko-cli/src/graph_task_dispatch.rs::GraphTaskDispatcher::emit_feedback", "crates/roko-cli/src/runtime_feedback/mod.rs::FeedbackEvent", "crates/roko-learn/src/routing_log.rs::RoutingDecisionLog", "crates/roko-cli/tests/learning_wiring_census.rs"]
 doc = "tmp/cybernetic-harness/workstreams/PLAN.md"
 lane = "rust-hot"
-links = { depends_on = ["gap-528762", "gap-96f7ed", "bug-c34782", "bug-35379d", "gap-ad0d39", "bug-690dc6", "gap-8cb382", "gap-1f2661", "gap-c7c946", "gap-3c430e", "bug-b72a37"], blocks = [], related = ["gap-7a8474", "bug-f9ae3e", "spec-e9d7ec"], supersedes = [], duplicate_of = "" }
+links = { depends_on = ["gap-528762", "gap-96f7ed", "bug-c34782", "bug-35379d", "gap-ad0d39", "bug-690dc6", "gap-8cb382", "gap-1f2661", "gap-c7c946", "gap-3c430e", "bug-b72a37", "gap-4468bd"], blocks = [], related = ["gap-7a8474", "bug-f9ae3e", "spec-e9d7ec"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "grep -rqw 'fn loop_census_fixture_settles_one_record_per_attempt' crates/roko-cli/tests/ && cargo test -p roko-cli --test learning_wiring_census"
@@ -96,6 +96,7 @@ and state digests). The census lists them in `EXPECTED_MISSING`, and E17 files t
 - [ ] gap-c7c946: roko learn telemetry: check and route-report over the attempt records (S01.P0-13)
 - [x] gap-3c430e: Specs S01, S05, S06 and S08 disagree on token classes, the audit hash, a decision-point name and a budget-line name
 - [ ] bug-b72a37: OpenAI-compatible providers price cached input tokens twice
+- [ ] gap-4468bd: Credit or demote a T0 reflex rule only from the settled attempt record, after verify
 - [ ] The epic's `[[verify]]` command passes on the merged branch: the census fixture shows, for every attempt, a row
       with the attempt key, verdict, executed model and cost source.
 

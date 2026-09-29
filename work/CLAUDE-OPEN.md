@@ -24,7 +24,6 @@
 - **P1** [bug-ae28ac](items/bug-ae28ac-df-0925-p4-budget-limits-are-not.md) Daily and agent-lifetime budget limits are not enforced by the Graph engine [bug] · size M · verified 2026-09-29
 - **P1** [gap-f118b3](items/gap-f118b3-deliver-roko-inject-through-the-canonical-acknowledged.md) Deliver `roko inject` Through the Canonical Acknowledged Control Transport · size L · verified 2026-09-29
 - **P1** [q-1faa0c](items/q-1faa0c-da-09-10-dev-audit-runtime-fixes.md) Dev-audit runtime fixes unverified on the Graph engine after Runner-v2 deletion [question] · size L · verified 2026-09-29
-- **P1** [gap-09e478](items/gap-09e478-dogfood-session-evidence-bundle.md) Dogfood Session Evidence Bundle · size M · verified 2026-09-29
 - **P1** [spec-f8d196](items/spec-f8d196-epic-research-paper-companion-report-and-tl.md) Epic: research paper, companion report and TL;DR upkeep [spec] · size L · verified 2026-09-29
 - **P1** [bug-53475e](items/bug-53475e-git-g07-failed-worktree-cleanup-retains-kernel.md) Failed worktree cleanup retains kernel mutation lock requiring operator intervention [bug] · size M · verified 2026-09-29
 - **P1** [gap-af73a8](items/gap-af73a8-fresh-live-dogfood-rerun-of-the-full.md) Fresh live dogfood rerun of the full self-hosting workflow (blocked by SnapshotRebased arm gap) · size M · verified 2026-09-29
@@ -41,6 +40,7 @@
 - **P1** [bug-50caf2](items/bug-50caf2-plangatecell-gates-the-process-working-directory-as.md) PlanGateCell gates the process working directory as attempt 0 [bug] · size M · verified 2026-09-29
 - **P1** [gap-5d3b82](items/gap-5d3b82-proof-case-1-agent-early-exit-losteffect.md) Proof Case 1: Agent early exit / LostEffect · size M · verified 2026-09-29
 - **P1** [gap-415c54](items/gap-415c54-proof-case-2-normal-agent-diff-gate.md) Proof Case 2: Normal agent diff + gate + merge · size M · verified 2026-09-29
+- **P1** [gap-8117a8](items/gap-8117a8-publish-the-whitepaper-pdf-build-release-tag.md) Publish the whitepaper: PDF build, release tag and venue · size S · verified 2026-09-29
 - **P1** [gap-5f4852](items/gap-5f4852-tool-t036-secret-canary-persistence-test-never.md) Secret-canary persistence test never run for scrubbers/persistent sinks · size L · verified 2026-09-29
 - **P1** [find-8cc7ac](items/find-8cc7ac-some-github-workflows-fail-on-main-and.md) Some GitHub workflows fail on main and required checks are undefined [finding] · size M · verified 2026-09-29
 - **P1** [gap-aabeff](items/gap-aabeff-tool-t003-tui-paths-still-consume-string.md) TUI paths still consume string/tail projections that lose semantics (TUI adoption unproven) · size L · verified 2026-09-29

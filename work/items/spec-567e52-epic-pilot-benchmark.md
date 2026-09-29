@@ -100,10 +100,10 @@ providers. This removes the checklist's circular `budget` gate (W10 rec 2).
 - [x] gap-0580f7: ViabilityBench tree, schemas and price snapshot (S08.T1)
 - [x] gap-2790c5: ViabilityBench common library: pristine repos, knobs, seeding, AST checks and canaries (S08.T2)
 - [ ] gap-4723ff: ViabilityBench family F1: generator, truth suite and gaming detector (S08.T3)
-- [ ] gap-9e7079: ViabilityBench family F4: store-state truth suite and partial-failure injection (S08.T4)
+- [x] gap-9e7079: ViabilityBench family F4: store-state truth suite and partial-failure injection (S08.T4)
 - [ ] gap-7ee7c2: ViabilityBench verifier CI: reference, stub and gaming solutions, determinism and leak checks
       (S08.T5)
-- [ ] gap-28ebea: ViabilityBench driver for the direct arm (S08.T6)
+- [x] gap-28ebea: ViabilityBench driver for the direct arm (S08.T6)
 - [ ] gap-b24517: ViabilityBench report: verified success, cost per verified success, pass^k and false greens
       with run ids (S08.T7)
 - [ ] gap-33d54b: ViabilityBench budget lines and caps in the run ledger (S09.E2)
@@ -114,7 +114,7 @@ providers. This removes the checklist's circular `budget` gate (W10 rec 2).
 - [ ] gap-c33709: Pilot A: the direct arms on 20 tasks (S09.E1a)
 - [ ] gap-327242: Pilot B plus seeds 2–3: the Roko and Claude Code arms on the same tasks (S09.E1b)
 - [ ] gap-d9e9fe: vb report --pilot: a one-page pilot result with confidence intervals and run ids
-- [ ] gap-89f393: Plan-level slice: fixture features that need whole multi-task plans (added 2026-09-29)
+- [x] gap-89f393: Plan-level slice: fixture features that need whole multi-task plans (added 2026-09-29)
 - [ ] gap-1cd676: Run the plan-level slice: Roko with the ladder against Claude Code (added 2026-09-29)
 - [ ] q-ab27d3: Should the fd_claude_lite arm run Claude Sonnet 5.5, which is priced the same as Sonnet 5?
 - [x] gap-419298: S09 v1.2: register the plan-level slice as an exploratory experiment

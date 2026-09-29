@@ -4,7 +4,7 @@
 
 What to work on next: the top checked, open items of each goal, highest-priority goal first. Reorder or change goals in `goals.toml`; pin an item higher with `rank = 1` (lower first).
 
-**Drift:** 45 anchor gone · 121 changed since checked · 4 mentioned in commits. Re-check them before relying on this list: `DRIFT.md`.
+**Drift:** 41 anchor gone · 122 changed since checked · 4 mentioned in commits. Re-check them before relying on this list: `DRIFT.md`.
 
 ## 1. Public release: security, licence, CI, first run
 
@@ -17,26 +17,27 @@ _20 more open · on hold: gap-8f8544 · 12 unchecked (`TRIAGE.md`) · `goal = "r
 ## 2. Whitepaper v1 and the research papers
 
 - **P1** [spec-f8d196](items/spec-f8d196-epic-research-paper-companion-report-and-tl.md) Epic: research paper, companion report and TL;DR upkeep [spec] · size L · verified 2026-09-29
+- **P1** [gap-8117a8](items/gap-8117a8-publish-the-whitepaper-pdf-build-release-tag.md) Publish the whitepaper: PDF build, release tag and venue · size S · verified 2026-09-29
 
-_0 more open · on hold: gap-bb619d · 10 unchecked (`TRIAGE.md`) · `goal = "whitepaper"`_
+_0 more open · 5 unchecked (`TRIAGE.md`) · `goal = "whitepaper"`_
 
 ## 3. Roko tells the truth and is safe (P0)
 
 - nothing checked and open
 
-_0 more open · 10 unchecked (`TRIAGE.md`) · `goal = "truth"`_
+_0 more open · 11 unchecked (`TRIAGE.md`) · `goal = "truth"`_
 
 ## 4. Frontier plans, cheap models execute, the result integrates (P1)
 
 - nothing checked and open
 
-_0 more open · 30 unchecked (`TRIAGE.md`) · `goal = "golden-path"`_
+_0 more open · 36 unchecked (`TRIAGE.md`) · `goal = "golden-path"`_
 
 ## 5. Proof: the pilot benchmark and a record of the work
 
 - nothing checked and open
 
-_0 more open · 26 unchecked (`TRIAGE.md`) · `goal = "proof"`_
+_0 more open · 21 unchecked (`TRIAGE.md`) · `goal = "proof"`_
 
 ## 6. Learning from verified outcomes, M1-M4 (P2)
 
@@ -71,10 +72,10 @@ _22 more open · on hold: bug-429315, bug-8c5d32, bug-b9be1d, bug-dd5dca, bug-de
 ## 10. Tooling, CLI polish and code hygiene
 
 - **P1** [gap-759041](items/gap-759041-backlog-and-plan-state-reconciliation.md) Backlog and Plan State Reconciliation · size M · verified 2026-09-29
-- **P1** [gap-09e478](items/gap-09e478-dogfood-session-evidence-bundle.md) Dogfood Session Evidence Bundle · size M · verified 2026-09-29
 - **P2** [bug-97c2dc](items/bug-97c2dc-async-runtime-anti-patterns-drop-spawn-unbounded.md) Async Runtime Anti-Patterns (Drop+Spawn, Unbounded Channels, Mutex Across Await) [bug] · size M · verified 2026-09-29
+- **P2** [gap-8921a3](items/gap-8921a3-df-0925-p4-dead-code-paths-graphexecutionevent.md) Dead code paths (GraphExecutionEvent sink, duplicate streaming verify path, build_fix_prompt) · size S · verified 2026-09-29
 
-_39 more open · 13 unchecked (`TRIAGE.md`) · `goal = "tooling"`_
+_38 more open · 14 unchecked (`TRIAGE.md`) · `goal = "tooling"`_
 
 ## 11. Feature ideas
 

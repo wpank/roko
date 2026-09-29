@@ -2,14 +2,16 @@
 id = "gap-e2d092"
 kind = "gap"
 title = "Research paper: pick up S09 v1.2 and S01 v1.2 in §5, Appendices A, D and E, and fix S01 §4.5"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p2"
 goal = "whitepaper"
 size = "S"
 subsystem = ["paper"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-29
+last_verified_rev = "cac54e574"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (16:03, wk-specs' report on gap-3c430e and gap-419298)"
 anchors = ["tmp/cybernetic-harness/paper/sections/05-evaluation-protocol.md", "tmp/cybernetic-harness/paper/sections/A-benchmark.md", "tmp/cybernetic-harness/paper/sections/D-metrics-statistics.md", "tmp/cybernetic-harness/paper/sections/E-reproducibility.md", "tmp/cybernetic-harness/specs/S01-instrumentation.md"]
@@ -19,6 +21,11 @@ links = { depends_on = [], blocks = [], related = ["gap-419298", "gap-3c430e"], 
 
 [[verify]]
 command = "grep -q 'BL13' tmp/cybernetic-harness/paper/sections/05-evaluation-protocol.md && grep -q 'BL13' tmp/cybernetic-harness/paper/sections/D-metrics-statistics.md && ! grep -q 'no S09 budget line yet' tmp/cybernetic-harness/paper/sections/D-metrics-statistics.md && ! grep -q 'not yet registered in S09' tmp/cybernetic-harness/paper/sections/A-benchmark.md && python3 tools/paperlint.py --budget 1.2 --check-identifiers tmp/cybernetic-harness/paper/sections/05-evaluation-protocol.md tmp/cybernetic-harness/paper/sections/A-benchmark.md tmp/cybernetic-harness/paper/sections/D-metrics-statistics.md tmp/cybernetic-harness/paper/sections/E-reproducibility.md"
+
+[closed]
+at = 2026-09-29
+by = "coordinator (session 7622b882)"
+evidence = "Paper picks up S09 v1.2 and S01 v1.2 (tmp, wk-rp-appCD): §5.3 T2a names roko_plan and resolves to BL13 + exploratory.PL; §5.7 T2b adds BL13 and caps BL1 160 / BL6 44 / BL7 26 ($353.4 of $390; C5.23, C5.28); App A line 382 and A.7/A.8 add roko_plan on BL13 (CA.17 cites §4.9); App D.12 cites S09 v1.2 §4.9 with its process measures, reporting and NOT RUN rules (EX7 tag fixed to ORPHANED); App E: SHA-256 audit ids, TODO 226 resolved, note 266 trimmed, CE.18 says the specs agree; S01 §4.5/§5.3 route S06's retry budget and verify-depth floor through its harness_policy row. Verify passes (greps plus paperlint clean on 4 files; §5 1.14x)."
 +++
 
 ## Problem

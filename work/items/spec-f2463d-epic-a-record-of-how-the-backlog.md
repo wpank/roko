@@ -78,9 +78,9 @@ after the P0/P1 fixes (W12 Phase B).
 - [x] gap-7984a5: DEFINITIONS.md: the development record's metrics, fixed in advance
 - [ ] gap-ccb87e: Daily rollup of the development record with a committed manifest
 - [ ] gap-dc6775: Backfill executors for already-closed items from [closed].by and the reflog
-- [ ] gap-09e478: Dogfood session evidence bundle (existing item)
-- [ ] bug-652bb7: Field capture can snapshot a resumed run twice, and the rollup's by-run table is not in date order
-- [ ] bug-469537: Field snapshots record absolute home-directory paths, so they cannot be published as they are
+- [x] gap-09e478: Dogfood session evidence bundle (existing item)
+- [x] bug-652bb7: Field capture can snapshot a resumed run twice, and the rollup's by-run table is not in date order
+- [x] bug-469537: Field snapshots record absolute home-directory paths, so they cannot be published as they are
 - [ ] The epic's `[[verify]]` command (the rollup test, with `DEFINITIONS.md` present) passes on the merged branch.
 
 ## Notes

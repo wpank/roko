@@ -15,7 +15,7 @@ discovered_from = "tmp/cybernetic-harness/tldr/05-GAPS-AND-PROPOSALS.md (P0 #6-7
 anchors = ["crates/roko-cli/src/graph_task_dispatch.rs", "crates/roko-cli/src/main.rs", "crates/roko-serve/src/routes/plans.rs", "crates/roko-core/src/config/learning.rs::LearningConfig", "docs/v3/", ".github/workflows/ci.yml"]
 doc = "tmp/cybernetic-harness/workstreams/PLAN.md"
 lane = "rust-cold"
-links = { depends_on = ["find-8cc7ac", "bug-470de8", "dec-e70592", "gap-c8e1f1", "gap-0d0e81", "gap-a6de8d", "gap-cdf3fc", "bug-b16d55", "bug-b17805"], blocks = [], related = ["spec-ae5f94", "spec-b7303f", "gap-b23ebd"], supersedes = [], duplicate_of = "" }
+links = { depends_on = ["find-8cc7ac", "bug-470de8", "dec-e70592", "gap-c8e1f1", "gap-0d0e81", "gap-a6de8d", "gap-cdf3fc", "bug-b16d55", "bug-b17805", "bug-91af0e", "bug-31bca6", "bug-9434c4"], blocks = [], related = ["spec-ae5f94", "spec-b7303f", "gap-b23ebd"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "test -f crates/roko-cli/src/graph_task_dispatch/verification.rs && test -f crates/roko-serve/src/routes/plans/run_control.rs && ! grep -qE 'enum (LearnCmd|PlanCmd) [{]' crates/roko-cli/src/main.rs && grep -q '^dream_on_completion = false' roko.toml && ! grep -q 'This is law' docs/v3/30-CONDUCTOR.md"
@@ -92,9 +92,12 @@ This is the implementation plan.
 - [x] gap-c8e1f1: Split graph_task_dispatch.rs into modules without changing behaviour
 - [ ] gap-0d0e81: Split main.rs: move the clap command enums into their command modules
 - [ ] gap-a6de8d: Split roko-serve routes/plans.rs into run-control, authoring, merge and read modules
-- [ ] gap-cdf3fc: Correct the 13 docs claims that the code or the literature contradicts
+- [x] gap-cdf3fc: Correct the 13 docs claims that the code or the literature contradicts
 - [x] bug-b16d55: ACP starts a paid dream consolidation every 10 episodes, and no config flag turns it off
-- [ ] bug-b17805: The docs/v3 [learning] config table gives wrong defaults for eight fields
+- [x] bug-b17805: The docs/v3 [learning] config table gives wrong defaults for eight fields
+- [ ] bug-91af0e: The graph_execution module doc still says delivery is backed by MergeQueue and GitHubWorkflow
+- [ ] bug-31bca6: Nothing reads learning.dreams.max_concurrent, so the ACP trigger starts another dream on every turn while one runs
+- [ ] bug-9434c4: roko config set rejects learning.t0_reflexes and every learning.dreams key
 - [ ] Both of the epic's `[[verify]]` commands pass.
 
 ## Notes

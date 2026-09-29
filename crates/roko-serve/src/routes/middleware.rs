@@ -1985,6 +1985,56 @@ mod tests {
         assert_eq!(events[0].actor, "api-key:tracked");
     }
 
+    /// Change `.roko/api-keys.json` as another process would, under its lock.
+    fn edit_api_key_file(workdir: &std::path::Path, edit: impl FnOnce(&mut Vec<ApiKeyEntry>)) {
+        roko_fs::with_locked_json_transaction::<Vec<ApiKeyEntry>, _, std::io::Error, _>(
+            &workdir.join(".roko").join("api-keys.json"),
+            |keys| {
+                edit(keys);
+                Ok(())
+            },
+        )
+        .expect("edit API-key file");
+    }
+
+    async fn status_with_api_key(app: &Router, key: &str) -> StatusCode {
+        auth_response(app.clone(), |req| req.header("X-Api-Key", key))
+            .await
+            .status()
+    }
+
+    #[tokio::test]
+    async fn out_of_band_api_key_changes_apply_without_restart() {
+        let dir = tempdir().expect("tempdir");
+        let auth = keyed_auth("configured", "configured-secret", "admin");
+        let state = make_test_state_at(dir.path(), auth);
+        let app = Router::new()
+            .route("/test", get(|| async { StatusCode::NO_CONTENT }))
+            .layer(axum::middleware::from_fn_with_state(
+                Arc::clone(&state),
+                require_api_key,
+            ));
+
+        // Another process adds a key while the server runs: it works at once.
+        edit_api_key_file(dir.path(), |keys| {
+            keys.extend(keyed_auth("cli", "cli-secret", "admin").api_keys);
+        });
+        let status = status_with_api_key(&app, "cli-secret").await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+
+        // It then revokes the key: the server stops accepting it at once, and
+        // the server's own usage write does not bring it back.
+        edit_api_key_file(dir.path(), |keys| {
+            keys.retain(|key| key.name != "cli");
+        });
+        let status = status_with_api_key(&app, "cli-secret").await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        let status = status_with_api_key(&app, "configured-secret").await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        let status = status_with_api_key(&app, "cli-secret").await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+
     #[tokio::test]
     async fn expired_named_key_returns_header_and_audits_rejection() {
         let dir = tempdir().expect("tempdir");

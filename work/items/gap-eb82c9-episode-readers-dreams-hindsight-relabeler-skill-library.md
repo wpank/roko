@@ -2,15 +2,16 @@
 id = "gap-eb82c9"
 kind = "gap"
 title = "Episode readers (dreams, hindsight relabeler, skill library, curriculum) should read the settled learning label"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "cybernetic"
 size = "S"
 subsystem = ["learn"]
 created = 2026-09-29
-updated = 2026-09-29
-last_verified = 2026-09-29
+updated = 2026-09-30
+last_verified = 2026-09-30
+last_verified_rev = "546d90ae1"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (22:20, wk-settle's report on gap-8f6206)"
 anchors = ["crates/roko-dreams/", "crates/roko-learn/src/episodes.rs", "crates/roko-cli/src/runtime_feedback/episodes.rs"]
@@ -20,6 +21,11 @@ links = { depends_on = ["gap-8f6206"], blocks = [], related = ["gap-8f6206"], su
 
 [[verify]]
 command = "grep -rqw 'fn episode_readers_use_the_learning_label' crates/ && cargo test --workspace --lib episode_readers_use_the_learning_label"
+
+[closed]
+at = 2026-09-30
+by = "coordinator (session 7622b882)"
+evidence = "Episode::learning_success and learnable_episodes (legacy rows keep success) drive the hindsight relabeler, the skill library (candidates, Voyager extract, evolve_skills), the curriculum and DreamCycle::run_budgeted; tests episode_readers_use_the_learning_label and dreams_skip_episodes_without_a_learning_label (de3d1e22b; merged 754c1deb7). Batch 10 gate (dedicated target dir; batch tree = MAIN crates after the merges): cargo check --workspace --tests clean; nightly rustfmt clean; clippy -p roko-cli -p roko-learn -p roko-dreams -p roko-agent -p roko-serve -p roko-acp --no-deps -D warnings clean; lib tests roko-cli 3100, roko-agent 2256, roko-learn 1182, roko-serve 956, roko-acp 197, roko-dreams pass, 0 failed."
 +++
 
 ## Problem

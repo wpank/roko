@@ -123,8 +123,8 @@ verify commands that read E4's attempt record, set `triage = "verified"`, add th
 - [x] bug-84de98: LearningRuntime::open replays a running writer's unsaved model-call observations, which that writer later saves again
 - [x] bug-7a2630: WAL replay drops entries for models the router doesn't track and then truncates wal.jsonl, and serve never truncates it
 - [x] bug-8b0d0a: One gateway call can be observed up to three times on serve's shared cascade router
-- [ ] bug-07bc75: The provider bridge still trains the cascade router on pre-gate provider success for every Graph dispatch
-- [ ] gap-eb82c9: Episode readers (dreams, hindsight relabeler, skill library, curriculum) should read the settled learning label
+- [x] bug-07bc75: The provider bridge still trains the cascade router on pre-gate provider success for every Graph dispatch
+- [x] gap-eb82c9: Episode readers (dreams, hindsight relabeler, skill library, curriculum) should read the settled learning label
 - [ ] bug-efd2b0: roko-serve template dispatch records a cascade-router outcome on every TurnCompleted, on top of its journaled observation
 - [ ] gap-88c547: The remaining learning consumers still read success instead of the settled learning label
 - [ ] The epic's `[[verify]]` command passes on the merged branch: one named test each for router labels, failure

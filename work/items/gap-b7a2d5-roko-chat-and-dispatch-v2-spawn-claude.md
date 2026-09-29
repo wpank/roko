@@ -2,15 +2,16 @@
 id = "gap-b7a2d5"
 kind = "gap"
 title = "roko chat and dispatch_v2 spawn claude without the Claude Code isolation flags"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "release"
 size = "S"
 subsystem = ["roko-cli/chat", "roko-cli/dispatch-v2"]
 created = 2026-09-29
-updated = 2026-09-29
-last_verified = 2026-09-29
+updated = 2026-09-30
+last_verified = 2026-09-30
+last_verified_rev = "546d90ae1"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (16:47, wk-cc-isolate's report on gap-8be530, branch work/gap-8be530)"
 anchors = ["crates/roko-cli/src/chat_session.rs::build_streaming_command", "crates/roko-cli/src/dispatch_v2.rs::build_claude_invocation", "crates/roko-agent/src/claude_cli_agent.rs::build_command"]
@@ -20,6 +21,11 @@ links = { depends_on = ["gap-8be530"], blocks = [], related = ["bug-76dc76", "bu
 
 [[verify]]
 command = "grep -q -- 'setting-sources' crates/roko-cli/src/chat_session.rs && grep -q -- 'setting-sources' crates/roko-cli/src/dispatch_v2.rs && grep -rqw 'fn claude_spawns_carry_the_isolation_flags' crates/roko-cli/src/ && cargo test -p roko-cli --lib claude_spawns_carry_the_isolation_flags"
+
+[closed]
+at = 2026-09-30
+by = "coordinator (session 7622b882)"
+evidence = "New ClaudeIsolation (roko-agent) builds the isolation args, env and tags for ClaudeCliAgent, roko chat's streaming command and dispatch_v2's build_claude_invocation (flags after provider args, request env wins); test claude_spawns_carry_the_isolation_flags (bab3d07a9; merged 546d90ae1). Batch 10 gate (dedicated target dir; batch tree = MAIN crates after the merges): cargo check --workspace --tests clean; nightly rustfmt clean; clippy -p roko-cli -p roko-learn -p roko-dreams -p roko-agent -p roko-serve -p roko-acp --no-deps -D warnings clean; lib tests roko-cli 3100, roko-agent 2256, roko-learn 1182, roko-serve 956, roko-acp 197, roko-dreams pass, 0 failed."
 +++
 
 ## Problem

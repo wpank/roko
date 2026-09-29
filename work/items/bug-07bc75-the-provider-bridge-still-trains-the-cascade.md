@@ -2,15 +2,16 @@
 id = "bug-07bc75"
 kind = "bug"
 title = "The provider bridge still trains the cascade router on pre-gate provider success for every Graph dispatch"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "cybernetic"
 size = "S"
 subsystem = ["learn", "dispatch"]
 created = 2026-09-29
-updated = 2026-09-29
-last_verified = 2026-09-29
+updated = 2026-09-30
+last_verified = 2026-09-30
+last_verified_rev = "546d90ae1"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (22:20, wk-settle's report on gap-8f6206)"
 anchors = ["crates/roko-cli/src/dispatch_v2.rs::record_agent_dispatch_feedback", "crates/roko-learn/src/model_call_feedback.rs::observe_model_call_on_router"]
@@ -20,6 +21,11 @@ links = { depends_on = ["gap-8f6206"], blocks = [], related = ["gap-8f6206", "bu
 
 [[verify]]
 command = "grep -rqw 'fn graph_dispatch_router_learns_only_from_settled_verdicts' crates/roko-cli/src/ && cargo test -p roko-cli --lib graph_dispatch_router_learns_only_from_settled_verdicts"
+
+[closed]
+at = 2026-09-30
+by = "coordinator (session 7622b882)"
+evidence = "Graph dispatch's provider bridge (dispatch_v2::record_agent_dispatch_feedback) uses ModelCallFeedbackRecorder::without_cascade_router: it still writes model_call efficiency rows and provider health but never trains or saves the cascade router; chat, serve, direct dispatch, ACP and vision keep their own recorders; test graph_dispatch_router_learns_only_from_settled_verdicts (57ea5133f; merged 754c1deb7). Batch 10 gate (dedicated target dir; batch tree = MAIN crates after the merges): cargo check --workspace --tests clean; nightly rustfmt clean; clippy -p roko-cli -p roko-learn -p roko-dreams -p roko-agent -p roko-serve -p roko-acp --no-deps -D warnings clean; lib tests roko-cli 3100, roko-agent 2256, roko-learn 1182, roko-serve 956, roko-acp 197, roko-dreams pass, 0 failed."
 +++
 
 ## Problem

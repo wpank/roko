@@ -1328,6 +1328,8 @@ fn override_without_context_records_multi_objective() {
             &cascade,
             "claude-sonnet-4-5",
             true,
+            0.1,
+            30_000,
         )
     );
 
@@ -1341,6 +1343,49 @@ fn override_without_context_records_multi_objective() {
         cascade.confidence_snapshot().get("claude-sonnet-4-5"),
         Some(&(1, 1))
     );
+}
+
+#[test]
+fn failed_override_lowers_success_rate() {
+    // bug-f68404: a failed override counts as a failed trial and earns no
+    // LinUCB reward, and each override carries only the dampened weight of
+    // an observation.
+    let cascade = CascadeRouter::new(test_slugs());
+    let ctx = default_ctx();
+    let slug = "claude-sonnet-4-5";
+    let arm_of = |cascade: &CascadeRouter| {
+        cascade
+            .linucb()
+            .arm_stats()
+            .into_iter()
+            .find(|arm| arm.slug == slug)
+            .expect("arm for the slug")
+    };
+
+    assert!(cascade.record_override_outcome(slug, &ctx, true, 0.1, 30_000, None));
+    let after_success = arm_of(&cascade);
+    assert!(
+        after_success.b_vector[16] > 0.0,
+        "a successful override earns a reward"
+    );
+
+    assert!(cascade.record_override_outcome(slug, &ctx, false, 0.05, 1_000, None));
+    assert_eq!(
+        cascade.confidence_snapshot()[slug],
+        (2, 1),
+        "the failed override lowers the success rate"
+    );
+    let after_failure = arm_of(&cascade);
+    assert_eq!(
+        after_failure.b_vector, after_success.b_vector,
+        "a failed override earns no reward, however cheap and fast"
+    );
+    // The bias feature is 1, so each update adds its weight to A[16][16].
+    assert!(
+        (after_failure.a_matrix[16][16] - 2.0).abs() < 1e-12,
+        "each override carries half an observation's weight"
+    );
+    assert_eq!(cascade.total_observations(), 2);
 }
 
 #[test]

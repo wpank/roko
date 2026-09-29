@@ -395,24 +395,28 @@ impl SettlementSink for RoutingSink {
         let Some(succeeded) = gate_verdict(receipt) else {
             return Ok(());
         };
+        // The receipt carries no dispatch-time routing context, so LinUCB sees
+        // the fallback context.
+        let ctx = crate::runtime_feedback::routing::build_fallback_routing_context(
+            &receipt.resolved_model,
+        );
         if receipt.choice_source == ChoiceSource::ManualOverride {
             // Manual override: use the dampened path so the learned policy is
             // not dominated by operator preferences. The override is still
-            // recorded (dampened quality signal) so the router can learn which
-            // models work well for which task types when explicitly chosen.
-            use roko_agent::model_call_service::ForceBackendOverrideRecorder;
-            ForceBackendOverrideRecorder::record_override_outcome(
-                router.as_ref(),
+            // recorded (at a fraction of an observation's weight) so the router
+            // can learn which models work well for which task types when
+            // explicitly chosen.
+            router.record_override_outcome(
                 &receipt.resolved_model,
+                &ctx,
                 succeeded,
+                receipt.cost_usd(),
+                receipt.duration_ms(),
+                None,
             );
         } else {
             // Router-selected or experiment: successes and failures feed the
-            // same learners (bug-8da8ba). The receipt carries no dispatch-time
-            // routing context, so LinUCB sees the fallback context.
-            let ctx = crate::runtime_feedback::routing::build_fallback_routing_context(
-                &receipt.resolved_model,
-            );
+            // same learners (bug-8da8ba).
             crate::runtime_feedback::routing::observe_router_outcome(
                 router,
                 &receipt.resolved_model,

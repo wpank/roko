@@ -395,10 +395,11 @@ pub(crate) const HYSTERESIS_THRESHOLD: f64 = 0.10;
 pub(crate) const PARETO_RECOMPUTE_INTERVAL: u64 = 50;
 /// Dampening factor for force_backend override learning (UX34).
 ///
-/// Override observations use half the normal reward weight because a
-/// user-selected model succeeding may reflect domain knowledge about the task
-/// rather than intrinsic model capability. Over many observations the signal
-/// still accumulates, but a single override cannot dominate the bandit.
+/// An override's `LinUCB` update carries half the weight of a normal
+/// observation, because a user-selected model succeeding may reflect domain
+/// knowledge about the task rather than intrinsic model capability. Over many
+/// observations the signal still accumulates, but a single override cannot
+/// dominate the bandit (bug-f68404).
 pub(crate) const OVERRIDE_LEARNING_RATE: f64 = 0.5;
 /// Weight applied to category-specific pass-rate deviations when adjusting
 /// confidence scores (audit #84). A model whose category pass rate differs

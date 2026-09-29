@@ -2,7 +2,7 @@
 id = "gap-fa61f8"
 kind = "gap"
 title = "Live tool-step targets are absolute paths for real providers, so every step carries the full workspace path"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "visibility"
@@ -11,7 +11,7 @@ subsystem = ["roko-agent/live-output"]
 created = 2026-09-29
 updated = 2026-09-29
 last_verified = 2026-09-29
-last_verified_rev = "f99e45dba"
+last_verified_rev = "85ba4cb4d"
 source = "plan:portal-programme/09-acceptance#T04"
 discovered_from = "plan:portal-programme/09-acceptance#T04"
 anchors = ["crates/roko-agent/src/live_output.rs::tool_step_target"]
@@ -19,6 +19,11 @@ links = { depends_on = [], blocks = [], related = ["find-0d280d"], supersedes = 
 
 [[verify]]
 command = "grep -rqw 'fn tool_step_target_is_workspace_relative' crates/roko-agent/ && cargo test -p roko-agent tool_step_target_is_workspace_relative"
+
+[closed]
+at = 2026-09-29
+commit = "15e754bda"
+evidence = "15e754bda: tool_step_target shows file_path/notebook_path/path inside the dispatch working dir relative to it (root as given or canonicalized; outside or ..-escaping paths stay absolute); the provider factory hands AgentOptions::working_dir to the immune boundary. [[verify]] passes; also tool_step_target_matches_the_canonical_workspace_root and factory_boundary_shows_tool_steps_relative_to_the_working_dir. Live harness with the fake agent patched to report absolute paths (/private/tmp/roko-live-*/out/live-b-t01.txt) published target out/live-b-t01.txt; live-output-check.sh 15/15 PASS"
 +++
 
 ## Problem

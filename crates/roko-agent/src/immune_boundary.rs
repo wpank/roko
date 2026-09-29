@@ -245,6 +245,8 @@ pub struct ImmuneScreenedAgent {
     store: BoundaryStore,
     pipeline: ImmunePipelineGraph,
     live_output: Option<LiveOutput>,
+    /// Directory live tool-step targets are shown relative to.
+    tool_step_root: Option<PathBuf>,
 }
 
 /// Validate a provider agent identity without reflecting its contents.
@@ -293,6 +295,7 @@ impl ImmuneScreenedAgent {
             store: BoundaryStore::durable(workspace_root),
             pipeline: ImmunePipelineGraph::default(),
             live_output: None,
+            tool_step_root: None,
         }
     }
 
@@ -313,6 +316,7 @@ impl ImmuneScreenedAgent {
             store: BoundaryStore::Injected(store),
             pipeline: ImmunePipelineGraph::default(),
             live_output: None,
+            tool_step_root: None,
         }
     }
 
@@ -372,6 +376,14 @@ impl ImmuneScreenedAgent {
         self
     }
 
+    /// Show live tool-step targets inside `root`, the directory the provider
+    /// runs in, relative to it (see [`tool_step_target`]).
+    #[must_use]
+    pub fn with_tool_step_root(mut self, root: impl Into<PathBuf>) -> Self {
+        self.tool_step_root = Some(root.into());
+        self
+    }
+
     /// Shared inner loop: buffers provider stream events, counts against the
     /// limits, and forwards to the live output channel when one is present.
     ///
@@ -382,6 +394,7 @@ impl ImmuneScreenedAgent {
             .live_output
             .as_ref()
             .map(|lo| (lo.sink.clone(), lo.trusted));
+        let tool_step_root = self.tool_step_root.as_deref();
         let collect = async move {
             let mut chunk_count = 0_usize;
             let mut byte_count = 0_usize;
@@ -394,7 +407,7 @@ impl ImmuneScreenedAgent {
                 if let Some((ref sink, trusted)) = live_sink {
                     match &event.kind {
                         StreamEventKind::ToolCallEnd { id, name, args } => {
-                            let target = tool_step_target(name, args);
+                            let target = tool_step_target(name, args, tool_step_root);
                             let _ = sink.try_send(LiveAgentEvent::ToolStep {
                                 id: id.clone(),
                                 name: name.clone(),
@@ -848,11 +861,15 @@ fn stream_event_bytes(event: &StreamEvent) -> usize {
 }
 
 /// Wrap one factory-created agent at the automatic provider boundary.
+///
+/// `working_dir` is the directory the provider runs in; live tool steps show
+/// paths inside it relative to it.
 #[must_use]
 pub(crate) fn wrap_provider_agent(
     agent: Box<dyn Agent>,
     requested_agent_id: &str,
     immune_root: Option<&Path>,
+    working_dir: Option<&Path>,
     live_output: Option<LiveOutput>,
 ) -> Box<dyn Agent> {
     let workspace_root = immune_root
@@ -862,6 +879,9 @@ pub(crate) fn wrap_provider_agent(
     let mut boundary = ImmuneScreenedAgent::durable(agent, requested_agent_id, workspace_root);
     if let Some(live) = live_output {
         boundary = boundary.with_live_output(live);
+        if let Some(working_dir) = working_dir {
+            boundary = boundary.with_tool_step_root(working_dir);
+        }
     }
     Box::new(boundary)
 }
@@ -1900,6 +1920,75 @@ mod tests {
                 .iter()
                 .any(|e| matches!(e, LiveAgentEvent::ToolStep { .. })),
             "ToolStep must have been sent even for a denied run"
+        );
+    }
+
+    /// An inner agent that streams one `Write` call with the given arguments,
+    /// then returns clean output.
+    struct WritingAgent {
+        args: serde_json::Value,
+    }
+
+    #[async_trait::async_trait]
+    impl Agent for WritingAgent {
+        async fn run(&self, input: &Signal, _ctx: &Context) -> AgentResult {
+            AgentResult::ok(
+                input
+                    .derive(Kind::AgentOutput, Body::text("clean output"))
+                    .build(),
+            )
+        }
+
+        fn name(&self) -> &str {
+            "writing-agent"
+        }
+
+        fn supports_streaming(&self) -> bool {
+            true
+        }
+
+        async fn run_streaming(
+            &self,
+            input: &Signal,
+            ctx: &Context,
+            event_tx: mpsc::Sender<StreamEvent>,
+        ) -> AgentResult {
+            let _ = event_tx
+                .send(StreamEvent::now(StreamEventKind::ToolCallEnd {
+                    id: "call-1".to_string(),
+                    name: "Write".to_string(),
+                    args: self.args.clone(),
+                }))
+                .await;
+            self.run(input, ctx).await
+        }
+    }
+
+    #[tokio::test]
+    async fn factory_boundary_shows_tool_steps_relative_to_the_working_dir() {
+        let workspace = tempdir().expect("temp workspace");
+        let attempt = workspace.path().join("attempt-worktree");
+        std::fs::create_dir_all(&attempt).unwrap();
+        let (live_tx, mut live_rx) = mpsc::channel::<LiveAgentEvent>(16);
+        let agent = wrap_provider_agent(
+            Box::new(WritingAgent {
+                args: serde_json::json!({ "file_path": attempt.join("hello/main.rs") }),
+            }),
+            "relative-step-agent",
+            Some(workspace.path()),
+            Some(&attempt),
+            Some(LiveOutput {
+                sink: live_tx,
+                trusted: false,
+            }),
+        );
+
+        let result = agent.run(&prompt(), &Context::now()).await;
+        assert!(result.success, "clean output must be accepted");
+        let event = live_rx.try_recv().expect("ToolStep");
+        assert!(
+            matches!(&event, LiveAgentEvent::ToolStep { target, .. } if target == "hello/main.rs"),
+            "unexpected event: {event:?}"
         );
     }
 }

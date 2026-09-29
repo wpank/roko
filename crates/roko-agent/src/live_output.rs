@@ -6,8 +6,11 @@
 //! to emit those events.
 //!
 //! [`tool_step_target`] extracts the single human-readable "what is this call
-//! touching" string from a tool's JSON input object, scrubs secrets from it,
-//! collapses whitespace, and truncates to 120 characters.
+//! touching" string from a tool's JSON input object, makes a path inside the
+//! workspace relative to it, scrubs secrets from it, collapses whitespace, and
+//! truncates to 120 characters.
+
+use std::path::{Component, Path};
 
 use tokio::sync::mpsc;
 
@@ -76,6 +79,11 @@ const TARGET_MAX_CHARS: usize = 120;
 /// 7. `query`
 /// 8. `description`
 ///
+/// An absolute path from one of the three path fields that lies inside
+/// `workspace_root` (the dispatch working directory) is shown relative to it,
+/// `.` for the root itself, so a step does not carry the absolute workspace
+/// path. Paths outside the root are kept as they are.
+///
 /// The result is then:
 /// - scrubbed for secrets via [`scrub_secrets`] with the default [`ScrubPolicy`];
 /// - whitespace-collapsed (runs of `\t`, `\n`, `\r`, etc. → single space, then trimmed);
@@ -84,7 +92,11 @@ const TARGET_MAX_CHARS: usize = 120;
 /// If none of the fields are present or all are empty, an empty string is returned.
 /// Nothing else from `input` is allowed to appear in the output.
 #[must_use]
-pub fn tool_step_target(_name: &str, input: &serde_json::Value) -> String {
+pub fn tool_step_target(
+    _name: &str,
+    input: &serde_json::Value,
+    workspace_root: Option<&Path>,
+) -> String {
     // Priority-ordered field names.
     const FIELDS: &[&str] = &[
         "file_path",
@@ -96,6 +108,7 @@ pub fn tool_step_target(_name: &str, input: &serde_json::Value) -> String {
         "query",
         "description",
     ];
+    const PATH_FIELDS: &[&str] = &["file_path", "notebook_path", "path"];
 
     let raw: Option<String> = FIELDS.iter().find_map(|&field| {
         let s = input.get(field)?.as_str()?;
@@ -106,6 +119,10 @@ pub fn tool_step_target(_name: &str, input: &serde_json::Value) -> String {
         if field == "command" {
             let first = s.lines().next().unwrap_or("").trim().to_string();
             if first.is_empty() { None } else { Some(first) }
+        } else if PATH_FIELDS.contains(&field)
+            && let Some(relative) = workspace_root.and_then(|root| workspace_relative(s, root))
+        {
+            Some(relative)
         } else {
             Some(s.to_string())
         }
@@ -139,6 +156,27 @@ pub fn tool_step_target(_name: &str, input: &serde_json::Value) -> String {
     }
 }
 
+/// `path` relative to `root` when it is absolute and lies inside it, `.` for
+/// the root itself. The root matches as given or canonicalized, since a
+/// provider may report either form (on macOS `/tmp` is `/private/tmp`).
+fn workspace_relative(path: &str, root: &Path) -> Option<String> {
+    let path = Path::new(path);
+    if !path.is_absolute() {
+        return None;
+    }
+    let relative = path
+        .strip_prefix(root)
+        .ok()
+        .or_else(|| path.strip_prefix(root.canonicalize().ok()?).ok())?;
+    if relative.components().any(|c| c == Component::ParentDir) {
+        return None;
+    }
+    if relative.as_os_str().is_empty() {
+        return Some(".".to_string());
+    }
+    Some(relative.to_string_lossy().into_owned())
+}
+
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -147,9 +185,9 @@ mod tests {
 
     use super::*;
 
-    // Helper: call with a dummy tool name.
+    // Helper: call with a dummy tool name and no workspace root.
     fn target(input: serde_json::Value) -> String {
-        tool_step_target("dummy", &input)
+        tool_step_target("dummy", &input, None)
     }
 
     // ── Write path ───────────────────────────────────────────────────────────
@@ -258,5 +296,67 @@ mod tests {
     fn empty_field_falls_through_to_next() {
         let t = target(json!({ "file_path": "", "path": "fallback.rs" }));
         assert_eq!(t, "fallback.rs");
+    }
+
+    // ── Workspace-relative paths ──────────────────────────────────────────────
+
+    #[test]
+    fn tool_step_target_is_workspace_relative() {
+        // The targets of the 09 real-model run (`hello-world-real-run1`).
+        let root = Path::new("/private/tmp/roko-hello-JdC7dN");
+        let step = |input: serde_json::Value| tool_step_target("dummy", &input, Some(root));
+
+        assert_eq!(
+            step(json!({ "file_path": "/private/tmp/roko-hello-JdC7dN/src/main.rs" })),
+            "src/main.rs"
+        );
+        assert_eq!(
+            step(json!({ "notebook_path": "/private/tmp/roko-hello-JdC7dN/nb/a.ipynb" })),
+            "nb/a.ipynb"
+        );
+        assert_eq!(
+            step(json!({ "path": "/private/tmp/roko-hello-JdC7dN" })),
+            "."
+        );
+        assert_eq!(
+            step(json!({ "file_path": "hello/main.rs" })),
+            "hello/main.rs"
+        );
+
+        // Outside the workspace, in a sibling sharing its name as a prefix,
+        // or escaping it through `..`: kept absolute.
+        for outside in [
+            "/etc/hosts",
+            "/private/tmp/roko-hello-JdC7dN-other/main.rs",
+            "/private/tmp/roko-hello-JdC7dN/../secrets.txt",
+        ] {
+            assert_eq!(step(json!({ "file_path": outside })), outside);
+        }
+
+        // Only path fields are rewritten, and only when a root is known.
+        let command = "cat /private/tmp/roko-hello-JdC7dN/src/main.rs";
+        assert_eq!(step(json!({ "command": command })), command);
+        let absolute = "/private/tmp/roko-hello-JdC7dN/src/main.rs";
+        assert_eq!(target(json!({ "file_path": absolute })), absolute);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn tool_step_target_matches_the_canonical_workspace_root() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let real = dir.path().join("real");
+        std::fs::create_dir(&real).expect("mkdir");
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).expect("symlink");
+        let canonical = real.canonicalize().expect("canonicalize");
+
+        // The dispatch names the workspace through a symlink; the provider
+        // reports the resolved path.
+        let path = canonical.join("src/main.rs");
+        let input = json!({ "file_path": path.to_str().expect("utf-8 path") });
+        assert_eq!(
+            tool_step_target("Write", &input, Some(&link)),
+            "src/main.rs"
+        );
     }
 }

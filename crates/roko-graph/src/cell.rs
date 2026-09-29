@@ -25,12 +25,17 @@ pub struct CellResources {
     /// Populated by the engine from the host-supplied gate service.
     /// `GatePipelineCell` accesses this as `ctx.resources.gates`.
     pub gates: Option<Arc<dyn SharedGateEvaluator>>,
+    /// Workspace provider for cells that settle an attempt's checkout: the
+    /// rich topology's `plan.gate` accepts or keeps the worktree the task's
+    /// executor handed on.
+    pub workspaces: Option<Arc<dyn crate::workspace::ExecutionWorkspaceProvider>>,
 }
 
 impl std::fmt::Debug for CellResources {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("CellResources")
             .field("gates", &self.gates.is_some())
+            .field("workspaces", &self.workspaces.is_some())
             .finish()
     }
 }
@@ -374,6 +379,7 @@ mod tests {
 
         let r = CellResources {
             gates: Some(Arc::new(MockEvaluator)),
+            workspaces: None,
         };
         let ctx = CellContext::new().with_resources(r);
         assert!(ctx.resources.gates.is_some());

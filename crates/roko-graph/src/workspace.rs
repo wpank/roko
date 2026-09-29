@@ -235,6 +235,42 @@ pub enum WorkspaceError {
     /// An underlying I/O or git error.
     #[error("workspace I/O error: {0}")]
     Io(String),
+
+    /// The attempt's work conflicts with the work already accepted for its
+    /// plan, so it could not be accepted. Nothing was changed.
+    #[error("workspace conflict: {0}")]
+    Conflict(String),
+}
+
+// ---------------------------------------------------------------------------
+// Acceptance
+// ---------------------------------------------------------------------------
+
+/// Why a host accepts an attempt, recorded with the commits acceptance writes
+/// (see [`ExecutionWorkspaceProvider::accept`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkspaceAcceptRequest {
+    /// Graph run the attempt belongs to.
+    pub run_id: String,
+    /// Durable key of the accepted attempt (`run:plan:task:ordinal`).
+    pub attempt_key: String,
+    /// The attempt's settled verdict (`passed`, `unverified`).
+    pub verdict: String,
+    /// Task title, for the commit subject.
+    pub title: String,
+}
+
+/// An accepted attempt: the commit holding its work, and where its plan now
+/// stands.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkspaceAcceptance {
+    /// Commit holding the attempt's work, on the attempt's own branch.
+    pub attempt_commit: String,
+    /// Branch the plan's accepted attempts accumulate on.
+    pub plan_branch: String,
+    /// The plan branch's tip once the attempt was folded in: the base of the
+    /// plan's later attempts.
+    pub accepted_commit: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -307,6 +343,20 @@ pub trait ExecutionWorkspaceProvider: Send + Sync {
         lease: &WorkspaceLease,
         policy: WorkspaceReleasePolicy,
     ) -> Result<WorkspaceLeaseState, WorkspaceError>;
+
+    /// Accept the attempt holding `lease`, whose settled verdict lets its
+    /// work land: commit what its checkout holds, and fold that commit into
+    /// its plan's branch, which the plan's later attempts start from.
+    ///
+    /// Acceptance never changes another checkout. It fails without moving
+    /// the plan's branch when the work cannot be folded in:
+    /// [`WorkspaceError::Conflict`] when it conflicts with work accepted
+    /// meanwhile. The lease stays held: release it afterwards.
+    async fn accept(
+        &self,
+        lease: &WorkspaceLease,
+        request: &WorkspaceAcceptRequest,
+    ) -> Result<WorkspaceAcceptance, WorkspaceError>;
 }
 
 // ---------------------------------------------------------------------------
@@ -326,6 +376,7 @@ pub mod fake {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     use parking_lot::Mutex;
+    use roko_core::ContentHash;
 
     use super::*;
 
@@ -585,6 +636,28 @@ pub mod fake {
 
             entry.1 = terminal_state;
             Ok(terminal_state)
+        }
+
+        async fn accept(
+            &self,
+            lease: &WorkspaceLease,
+            request: &WorkspaceAcceptRequest,
+        ) -> Result<WorkspaceAcceptance, WorkspaceError> {
+            let mut guard = self.leases.lock();
+            let entry = guard
+                .get_mut(&lease.lease_fingerprint)
+                .filter(|(_, state)| state.is_active())
+                .ok_or_else(|| WorkspaceError::LeaseNotFound(lease.lease_id.clone()))?;
+            entry.1 = WorkspaceLeaseState::Accepted;
+            let commit = ContentHash::of(
+                format!("{}\0{}", lease.lease_fingerprint, request.attempt_key).as_bytes(),
+            )
+            .to_hex();
+            Ok(WorkspaceAcceptance {
+                attempt_commit: commit.clone(),
+                plan_branch: format!("roko/plan/{}", lease.attempt_id.plan_id),
+                accepted_commit: commit,
+            })
         }
     }
 }

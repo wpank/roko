@@ -34,7 +34,8 @@ use roko_graph::cell::CellContext;
 use roko_graph::cells::task_executor::TaskGateVerdict;
 use roko_graph::cells::{
     AttemptReconciliation, GraphTaskEvent, ProviderAttemptRecorder, StreamingTaskDispatcher,
-    TaskDispatchOutcome, TaskDispatchOutcomeKind, TaskDispatcher, TaskExecutionSpec, TaskLease,
+    TaskAttempt, TaskDispatchOutcome, TaskDispatchOutcomeKind, TaskDispatcher, TaskExecutionSpec,
+    TaskLease,
 };
 use roko_learn::costs_db::CostRecord;
 use roko_learn::oracles::coding::{BuildRecord, CodingOracle, TestRecord};
@@ -52,6 +53,7 @@ use crate::runtime_feedback::{FeedbackEvent, FeedbackFacade};
 use crate::task_parser::TaskDef;
 
 mod attempt;
+mod attempt_workspace;
 mod budget;
 mod failover;
 mod feedback;
@@ -134,9 +136,13 @@ pub struct GraphTaskDispatcher {
     feedback: GraphFeedbackContext,
     /// Optional per-task worktree isolation provider. When `Some`, each task
     /// dispatch acquires an isolated git worktree via this provider, runs the
-    /// agent and verify steps inside it, and releases the worktree on
-    /// completion. When `None` (the default), all tasks share `self.workdir`.
+    /// agent and verify steps inside it, and on success accepts the attempt
+    /// onto its plan branch (see [`Self::accept_attempt`]). When `None` (the
+    /// default), all tasks share `self.workdir`.
     workspace_provider: Option<Arc<dyn roko_graph::workspace::ExecutionWorkspaceProvider>>,
+    /// Checkout generation per task (`"{plan_id}/{task_id}"`): see
+    /// [`Self::worktree_generation`].
+    worktree_generations: parking_lot::Mutex<HashMap<String, u32>>,
     /// Optional TUI bridge for forwarding live agent output events to the
     /// dashboard. When set, completed dispatch events (text deltas, tool
     /// calls, tool outputs) are published through the StateHub so the TUI
@@ -227,6 +233,7 @@ impl GraphTaskDispatcher {
             dangerously_skip_permissions: false,
             feedback: GraphFeedbackContext::default(),
             workspace_provider: None,
+            worktree_generations: parking_lot::Mutex::new(HashMap::new()),
             tui_bridge: None,
             live_agent_output: None,
             gate_retry_context: retry_feedback::RetryFeedbackBook::default(),
@@ -275,7 +282,10 @@ impl GraphTaskDispatcher {
     /// When set, each `dispatch` call will:
     /// 1. Acquire an isolated worktree for the task attempt.
     /// 2. Run the agent and verify steps inside the worktree.
-    /// 3. Release the worktree on success (`Delete`) or failure (`RetainForFailure`).
+    /// 3. On success, accept the attempt onto its plan branch and keep the
+    ///    worktree for review (`RetainForReview`); on failure, keep it for
+    ///    post-mortem (`RetainForFailure`). A task whose `plan.gate` follows
+    ///    hands the worktree on to it instead.
     ///
     /// This is opt-in via `--worktree-per-task` and defaults to `None` (shared workdir).
     #[must_use]
@@ -736,11 +746,12 @@ impl TaskDispatcher for GraphTaskDispatcher {
         let attempt_id = roko_graph::workspace::WorkspaceAttemptId {
             plan_id: spec.plan_id.clone(),
             task_id: task.id.clone(),
-            // CellContext does not carry an attempt counter; the graph engine
-            // handles retries by re-executing the cell. Use 0 here -- the
-            // workspace provider's idempotent acquire ensures the same
-            // (plan_id, task_id, 0) triple reuses the existing worktree.
-            attempt: 0,
+            // The task's checkout, not one attempt's: the provider's acquire
+            // is idempotent, so every retry reuses it and resumes the work its
+            // predecessor left, until the plan branch refuses that work (see
+            // `worktree_generation`). The attempt itself is named by its key
+            // (`open_attempt`).
+            attempt: self.worktree_generation(&task_spend_key),
         };
         let lease = if let Some(provider) = &self.workspace_provider {
             let lease = provider
@@ -1339,28 +1350,28 @@ impl TaskDispatcher for GraphTaskDispatcher {
             }
         };
 
-        // ── Worktree isolation: release on success ──────────────────────
+        // ── Worktree isolation: hand on, or accept on success ───────────
         //
-        // On success, release the worktree with Delete policy. The changes
-        // are already on the worktree's branch and can be merged separately
-        // via the delivery pipeline. For now the worktree is cleaned up.
+        // When a later cell of the task judges this checkout (the rich
+        // topology's `plan.gate`), it must outlive the dispatch: the lease
+        // travels on the output, and that cell accepts or keeps it.
+        // Otherwise the attempt is accepted onto its plan branch now, as its
+        // settled verdict allows (gap-3b5361).
+        let mut handed_on = None;
+        let mut accepted = None;
         if let Some((provider, lease)) = self.workspace_provider.as_ref().zip(lease.as_ref()) {
-            tracing::info!(
-                plan_id = %spec.plan_id,
-                task_id = %task.id,
-                worktree = %lease.path.display(),
-                "releasing isolated worktree after successful task"
-            );
-            if let Err(e) = provider
-                .release(lease, roko_graph::workspace::WorkspaceReleasePolicy::Delete)
-                .await
-            {
-                tracing::warn!(
+            if spec.keep_workspace {
+                tracing::info!(
                     plan_id = %spec.plan_id,
                     task_id = %task.id,
-                    error = %e,
-                    "worktree release failed (best-effort); worktree may remain on disk"
+                    worktree = %lease.path.display(),
+                    "handing the attempt's worktree on to the task's gate"
                 );
+                handed_on = Some(lease.clone());
+            } else {
+                accepted = self
+                    .accept_attempt(spec, &task, &settled, verdict, provider.as_ref(), lease)
+                    .await?;
             }
         }
 
@@ -1374,6 +1385,20 @@ impl TaskDispatcher for GraphTaskDispatcher {
                 .build();
         }
         let mut outputs = vec![output];
+        // The output names the exact attempt and checkout that produced it,
+        // so the task's later cells act on them (bug-50caf2).
+        let key = settled.key();
+        TaskAttempt {
+            plan_id: spec.plan_id.clone(),
+            task_id: task.id.clone(),
+            run_id: Some(key.run_id),
+            attempt_key: Some(settled.attempt_key().to_string()),
+            attempt: key.attempt,
+            workspace: lease.as_ref().map(|lease| lease.path.clone()),
+            lease: handed_on,
+            accepted,
+        }
+        .stamp(&mut outputs);
         verdict.stamp(&mut outputs);
         Ok(outputs)
     }
@@ -1576,6 +1601,20 @@ printf '%s\n' '{"type":"result","session_id":"sess-v1","model":"claude-sonnet-4-
         configure: impl FnOnce(&mut RokoConfig),
         feedback: GraphFeedbackContext,
     ) -> (Arc<GraphTaskDispatcher>, TaskDef) {
+        make_test_dispatcher_with(temp, script_content, configure, feedback, |dispatcher| {
+            dispatcher
+        })
+        .await
+    }
+
+    /// Like [`make_test_dispatcher`], finishing the dispatcher with `finish`.
+    pub(super) async fn make_test_dispatcher_with(
+        temp: &tempfile::TempDir,
+        script_content: &str,
+        configure: impl FnOnce(&mut RokoConfig),
+        feedback: GraphFeedbackContext,
+        finish: impl FnOnce(GraphTaskDispatcher) -> GraphTaskDispatcher,
+    ) -> (Arc<GraphTaskDispatcher>, TaskDef) {
         let script = temp.path().join("fake-claude-stream.sh");
         std::fs::write(&script, script_content).expect("write stream provider script");
         let mut permissions = std::fs::metadata(&script)
@@ -1618,11 +1657,11 @@ printf '%s\n' '{"type":"result","session_id":"sess-v1","model":"claude-sonnet-4-
         let config = Arc::new(config);
         let factory =
             Arc::new(SharedAgentFactory::new(Arc::clone(&config), None, None, None).await);
-        let dispatcher = Arc::new(
+        let dispatcher = Arc::new(finish(
             GraphTaskDispatcher::new(factory, Arc::clone(&config), temp.path().to_path_buf())
                 .with_plan_budget(1.00, 0.50, false)
                 .with_feedback(feedback),
-        );
+        ));
 
         let task = TaskDef {
             id: "T-STREAM".to_string(),
@@ -1671,6 +1710,7 @@ printf '%s\n' '{"type":"result","session_id":"sess-v1","model":"claude-sonnet-4-
             timeout_secs: task.timeout_secs,
             max_retries: task.max_retries,
             task_def_json: serde_json::to_string(task).expect("serialize task"),
+            keep_workspace: false,
         }
     }
 

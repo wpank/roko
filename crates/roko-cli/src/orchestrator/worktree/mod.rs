@@ -24,6 +24,7 @@
 //! - §15.8 Clean-only removal (via [`WorktreeManager::remove`])
 //! - §15.9 Prune stale git metadata ([`WorktreeManager::prune`])
 
+mod acceptance;
 mod cleanup;
 mod creation_journal;
 mod git_ops;
@@ -163,8 +164,26 @@ pub struct WorktreeHandle {
 pub struct AcceptedWorktree {
     /// Exact attempt checkout.
     pub handle: WorktreeHandle,
-    /// Accepted full commit ID.
+    /// Commit holding the attempt's work, on the attempt's own branch.
+    pub attempt_commit: String,
+    /// The plan branch's tip once the attempt was folded in: the base of the
+    /// plan's later attempts.
     pub commit_oid: String,
+}
+
+/// Why an attempt is accepted, recorded as trailers of the commits
+/// [`WorktreeManager::accept_attempt`] writes.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AttemptAcceptance {
+    /// Graph run the attempt belongs to. A plan branch whose tip names
+    /// another run is not continued (see [`WorktreeManager::accept_attempt`]).
+    pub run_id: String,
+    /// Durable attempt key (`run:plan:task:ordinal`).
+    pub attempt_key: String,
+    /// The attempt's settled verdict (`passed`, `unverified`).
+    pub verdict: String,
+    /// Task title, for the commit subject.
+    pub title: String,
 }
 /// Health of a tracked worktree (§15.5).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -237,6 +256,15 @@ pub enum WorktreeError {
     BudgetExhausted {
         /// The configured cap.
         max: usize,
+    },
+    /// An accepted attempt's work conflicts with the work already on its
+    /// plan branch. The plan branch did not move.
+    #[error("attempt conflicts with `{branch}`; conflicted paths: {paths}")]
+    Conflict {
+        /// The plan branch.
+        branch: String,
+        /// Conflicted paths, comma-separated.
+        paths: String,
     },
     /// Cleanup was requested for a dirty checkout.
     #[error("worktree `{id}` is dirty; preserving owned or unknown changes: {paths}")]
@@ -881,26 +909,50 @@ impl WorktreeManager {
     pub fn get_attempt(&self, plan: &str, task: &str, attempt: u32) -> Option<WorktreeHandle> {
         self.get(&format_attempt_worktree_id(plan, task, attempt))
     }
-    /// Advance a plan's accepted immutable tip to an exact committed attempt.
+    /// Accept an exact attempt (gap-3b5361): commit what its checkout holds
+    /// on its attempt branch, fold that commit into the plan branch
+    /// ([`format_branch_name`]), and make the plan branch's new tip the base
+    /// of the plan's later attempts.
+    ///
+    /// Only the attempt's own checkout, the object database and the plan
+    /// branch change: every step is plumbing, and no other checkout's
+    /// branch, index or files are touched. The plan branch moves only by
+    /// compare-and-swap: a fast-forward when it has not moved since the
+    /// attempt started, else a merge computed with `git merge-tree`. A
+    /// conflict ([`WorktreeError::Conflict`]) leaves the plan branch where it
+    /// was, and a plan branch checked out anywhere is never moved, since that
+    /// checkout would no longer match its HEAD.
+    ///
+    /// The first acceptance of a plan in this process continues its branch
+    /// only when the branch's tip names the same run (a resumed run). A
+    /// branch left by another run is kept under
+    /// `refs/roko/plan-archive/<plan_id>/<tip>`, and the plan branch starts
+    /// afresh from this attempt.
     pub async fn accept_attempt(
         &self,
         plan_id: &str,
         task_id: &str,
         attempt: u32,
+        acceptance: &AttemptAcceptance,
     ) -> Result<AcceptedWorktree, WorktreeError> {
         let id = format_attempt_worktree_id(plan_id, task_id, attempt);
         let handle = self
             .get(&id)
             .ok_or_else(|| WorktreeError::NotFound(id.clone()))?;
-        let commit_oid = self
-            .git_probe_stdout_at(&handle.path, &["rev-parse", "--verify", "HEAD^{commit}"])
-            .await?;
-        let accepted = AcceptedWorktree { handle, commit_oid };
-        let _ = self
-            .accepted
-            .lock()
-            .insert(plan_id.into(), accepted.clone());
-        Ok(accepted)
+        let operation = Arc::clone(&self.operations).lock_owned().await;
+        let manager = self.clone();
+        let plan_id = plan_id.to_string();
+        let task_id = task_id.to_string();
+        let acceptance = acceptance.clone();
+        await_owned_operation(operation, move |lifecycle| async move {
+            let repository_lock = manager.acquire_repository_mutation_lock()?;
+            let result = manager
+                .accept_locked(&plan_id, &task_id, handle, &acceptance, &lifecycle)
+                .await;
+            retain_lock_if_cleanup_unproved(repository_lock, &lifecycle);
+            result
+        })
+        .await
     }
     /// Last accepted attempt for a plan, used by plan verification and merge.
     pub fn accepted_for_plan(&self, plan_id: &str) -> Option<AcceptedWorktree> {

@@ -9,15 +9,21 @@
 //! - `release(Delete)` → `WorktreeManager::remove`
 //! - `release(RetainFor*)` → keep manager entry, return `Retained`
 //! - `reset_for_retry` → release old with `RetainForFailure`, acquire new
+//! - `accept` → `WorktreeManager::accept_attempt`: commit the attempt and fold
+//!   it into its plan branch
 
 use std::path::PathBuf;
 
 use roko_graph::workspace::{
-    ExecutionWorkspaceProvider, WorkspaceAttemptId, WorkspaceError, WorkspaceLease,
-    WorkspaceLeaseState, WorkspaceReconcileResult, WorkspaceReleasePolicy,
+    ExecutionWorkspaceProvider, WorkspaceAcceptRequest, WorkspaceAcceptance, WorkspaceAttemptId,
+    WorkspaceError, WorkspaceLease, WorkspaceLeaseState, WorkspaceReconcileResult,
+    WorkspaceReleasePolicy,
 };
 
-use crate::orchestrator::worktree::{WorktreeHealth, WorktreeManager, format_attempt_worktree_id};
+use crate::orchestrator::worktree::{
+    AttemptAcceptance, WorktreeError, WorktreeHealth, WorktreeManager, format_attempt_worktree_id,
+    format_branch_name,
+};
 
 /// CLI adapter that implements [`ExecutionWorkspaceProvider`] by delegating to
 /// the existing [`WorktreeManager`].
@@ -210,6 +216,56 @@ impl ExecutionWorkspaceProvider for WorktreeExecutionWorkspaceProvider {
                 Ok(WorkspaceLeaseState::Retained)
             }
         }
+    }
+
+    async fn accept(
+        &self,
+        lease: &WorkspaceLease,
+        request: &WorkspaceAcceptRequest,
+    ) -> Result<WorkspaceAcceptance, WorkspaceError> {
+        let attempt_id = &lease.attempt_id;
+        let tracked =
+            self.manager
+                .get_attempt(&attempt_id.plan_id, &attempt_id.task_id, attempt_id.attempt);
+        match tracked {
+            Some(handle) if handle.path == lease.path && handle.branch == lease.branch => {}
+            Some(handle) => {
+                return Err(WorkspaceError::Io(format!(
+                    "tracked worktree {} is at {} on {}, but the lease names {} on {}",
+                    handle.id,
+                    handle.path.display(),
+                    handle.branch,
+                    lease.path.display(),
+                    lease.branch
+                )));
+            }
+            None => return Err(WorkspaceError::LeaseNotFound(lease.lease_id.clone())),
+        }
+        let acceptance = AttemptAcceptance {
+            run_id: request.run_id.clone(),
+            attempt_key: request.attempt_key.clone(),
+            verdict: request.verdict.clone(),
+            title: request.title.clone(),
+        };
+        let accepted = self
+            .manager
+            .accept_attempt(
+                &attempt_id.plan_id,
+                &attempt_id.task_id,
+                attempt_id.attempt,
+                &acceptance,
+            )
+            .await
+            .map_err(|error| match error {
+                WorktreeError::Conflict { .. } => WorkspaceError::Conflict(error.to_string()),
+                WorktreeError::NotFound(_) => WorkspaceError::LeaseNotFound(lease.lease_id.clone()),
+                other => WorkspaceError::Io(other.to_string()),
+            })?;
+        Ok(WorkspaceAcceptance {
+            attempt_commit: accepted.attempt_commit,
+            plan_branch: format_branch_name(&attempt_id.plan_id),
+            accepted_commit: accepted.commit_oid,
+        })
     }
 }
 

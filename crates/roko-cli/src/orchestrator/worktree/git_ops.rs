@@ -848,6 +848,11 @@ pub(super) fn is_stale_lock(path: &Path) -> bool {
         .is_ok_and(|age| age.as_secs() >= super::STALE_LOCK_SECS)
 }
 
+/// Config directories [`isolate_worktree_config`] copies into a new worktree.
+/// Accepting an attempt leaves them out of its commit, unless the repository
+/// tracks them.
+pub(super) const ISOLATION_DIRS: &[&str] = &[".cursor"];
+
 /// G08: Copy isolated config directories from the main repo into a new worktree
 /// so concurrent agents do not contend on shared config files.
 ///
@@ -855,9 +860,6 @@ pub(super) fn is_stale_lock(path: &Path) -> bool {
 /// configuration. Failure is non-fatal -- the agent can still run without
 /// isolated config; we just log a debug warning.
 pub(super) fn isolate_worktree_config(repo_root: &Path, worktree_path: &Path) {
-    // Directories to copy for config isolation.
-    const ISOLATION_DIRS: &[&str] = &[".cursor"];
-
     for dir_name in ISOLATION_DIRS {
         let source = repo_root.join(dir_name);
         let target = worktree_path.join(dir_name);

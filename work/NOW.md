@@ -12,7 +12,7 @@ What to work on next: the top checked, open items of each goal, highest-priority
 - **P1** [gap-5f4852](items/gap-5f4852-tool-t036-secret-canary-persistence-test-never.md) Secret-canary persistence test never run for scrubbers/persistent sinks · size L · verified 2026-09-29
 - **P1** [find-8cc7ac](items/find-8cc7ac-some-github-workflows-fail-on-main-and.md) Some GitHub workflows fail on main and required checks are undefined [finding] · size M · verified 2026-09-29
 
-_19 more open · on hold: gap-8f8544 · 8 unchecked (`TRIAGE.md`) · `goal = "release"`_
+_19 more open · on hold: gap-8f8544 · 13 unchecked (`TRIAGE.md`) · `goal = "release"`_
 
 ## 2. Whitepaper v1 and the research papers
 
@@ -25,25 +25,25 @@ _0 more open · on hold: gap-85f86a · 5 unchecked (`TRIAGE.md`) · `goal = "whi
 
 - nothing checked and open
 
-_0 more open · 20 unchecked (`TRIAGE.md`) · `goal = "truth"`_
+_0 more open · 21 unchecked (`TRIAGE.md`) · `goal = "truth"`_
 
 ## 4. Frontier plans, cheap models execute, the result integrates (P1)
 
 - nothing checked and open
 
-_0 more open · 37 unchecked (`TRIAGE.md`) · `goal = "golden-path"`_
+_0 more open · 38 unchecked (`TRIAGE.md`) · `goal = "golden-path"`_
 
 ## 5. Proof: the pilot benchmark and a record of the work
 
 - nothing checked and open
 
-_0 more open · 21 unchecked (`TRIAGE.md`) · `goal = "proof"`_
+_0 more open · 26 unchecked (`TRIAGE.md`) · `goal = "proof"`_
 
 ## 6. Learning from verified outcomes, M1-M4 (P2)
 
 - nothing checked and open
 
-_0 more open · 5 unchecked (`TRIAGE.md`) · `goal = "cybernetic"`_
+_0 more open · 6 unchecked (`TRIAGE.md`) · `goal = "cybernetic"`_
 
 ## 7. Plan runs work reliably
 
@@ -75,7 +75,7 @@ _16 more open · on hold: bug-429315, bug-8c5d32, bug-b9be1d, bug-dd5dca, bug-de
 - **P2** [bug-97c2dc](items/bug-97c2dc-async-runtime-anti-patterns-drop-spawn-unbounded.md) Async Runtime Anti-Patterns (Drop+Spawn, Unbounded Channels, Mutex Across Await) [bug] · size M · verified 2026-09-29
 - **P2** [gap-8921a3](items/gap-8921a3-df-0925-p4-dead-code-paths-graphexecutionevent.md) Dead code paths (GraphExecutionEvent sink, duplicate streaming verify path, build_fix_prompt) · size S · verified 2026-09-29
 
-_37 more open · 20 unchecked (`TRIAGE.md`) · `goal = "tooling"`_
+_37 more open · 22 unchecked (`TRIAGE.md`) · `goal = "tooling"`_
 
 ## 11. Feature ideas
 

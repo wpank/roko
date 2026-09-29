@@ -15,7 +15,7 @@ discovered_from = "tmp/cybernetic-harness/tldr/05-GAPS-AND-PROPOSALS.md (P0 #3);
 anchors = ["crates/roko-agent/src/claude_cli_agent.rs::build_settings_json", "crates/roko-gate/src/shell.rs::ShellGate", "crates/roko-agent/src/safety/path.rs::canonicalize_with_policy", "crates/roko-cli/tests/secrets_and_git_guard_canary.rs"]
 doc = "tmp/cybernetic-harness/workstreams/PLAN.md"
 lane = "rust-cold"
-links = { depends_on = ["bug-7d7200", "gap-8be530", "gap-5f4852", "bug-7de5df", "bug-a66941", "gap-0e2c40", "gap-8f8544", "bug-f4e133", "bug-66f5a1", "bug-63327d", "find-570af2", "gap-b7a2d5", "bug-6930e6", "gap-a3fc5b", "gap-585bd2", "bug-3f3990", "bug-62e7e6", "bug-0bc728", "bug-ceab60", "bug-34c16c"], blocks = [], related = ["spec-ae5f94"], supersedes = [], duplicate_of = "" }
+links = { depends_on = ["bug-7d7200", "gap-8be530", "gap-5f4852", "bug-7de5df", "bug-a66941", "gap-0e2c40", "gap-8f8544", "bug-f4e133", "bug-66f5a1", "bug-63327d", "find-570af2", "gap-b7a2d5", "bug-6930e6", "gap-a3fc5b", "gap-585bd2", "bug-3f3990", "bug-62e7e6", "bug-0bc728", "bug-ceab60", "bug-34c16c", "bug-a9a251", "gap-e9660f", "bug-c6ad88", "bug-997c6a"], blocks = [], related = ["spec-ae5f94"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "grep -rqw 'fn secrets_and_git_guard_canary' crates/roko-cli/tests/ && cargo test -p roko-cli --test secrets_and_git_guard_canary"
@@ -94,6 +94,10 @@ This is the implementation plan.
 - [x] bug-0bc728: The command guard misses command strings passed to wrappers, find -exec and -delete, and busybox rm
 - [ ] bug-ceab60: The agent command guard lets deletes through find | xargs rm, fd -x rm, and command strings given to ssh or parallel
 - [ ] bug-34c16c: The project roko.toml can hold serve.auth.api_key, and agents can read it
+- [ ] bug-a9a251: roko chat's resolve_mcp_config still falls back to ~/.claude/mcp-config.json
+- [ ] gap-e9660f: Whole-project reads such as grep -r, rg or cat * can still show agents a secret stored in roko.toml
+- [ ] bug-c6ad88: ACP's builtin tools don't check for key files
+- [ ] bug-997c6a: ls | xargs rm and xargs rm < list still pass the agent command guard
 - [ ] The epic's `[[verify]]` command (test C2) passes on the merged branch.
 
 ## Notes

@@ -94,7 +94,10 @@ pub struct TaskDef {
     pub context: Option<TaskContext>,
     /// Verification pipeline.
     pub verify: Vec<VerifyStep>,
-    /// Per-task timeout in seconds.
+    /// Per-attempt agent timeout in seconds; `0` uses
+    /// `timeouts.agent_dispatch_secs`. On the Graph path, the retry of an
+    /// attempt that ran out of time gets half again as long, up to four
+    /// times this base.
     pub timeout_secs: u64,
     /// Maximum retry attempts for this task.
     pub max_retries: u32,

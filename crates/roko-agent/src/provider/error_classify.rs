@@ -646,6 +646,20 @@ pub fn detect_turn_cap(text: &str) -> Option<TurnCapHit> {
     })
 }
 
+// ---- Attempt timeout -----------------------------------------------------
+
+/// Failure text a subprocess adapter emits when it kills an agent run at its
+/// wall-clock timeout (`"timed out after 600000 ms"`), so the dispatcher can
+/// give the retry more time after the text has crossed the `AgentResult`
+/// boundary.
+pub const ATTEMPT_TIMEOUT_MARKER: &str = "timed out after";
+
+/// Whether `text` reports an agent run killed at its wall-clock timeout.
+#[must_use]
+pub fn detect_attempt_timeout(text: &str) -> bool {
+    text.contains(ATTEMPT_TIMEOUT_MARKER)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1197,5 +1211,17 @@ mod turn_cap_tests {
         };
         assert_eq!(detect_turn_cap(&unknown.to_string()), Some(unknown));
         assert_eq!(detect_turn_cap("exit 1: claude failed"), None);
+    }
+
+    #[test]
+    fn attempt_timeout_text_is_neither_a_turn_cap_nor_an_exhaustion() {
+        let text = format!("{ATTEMPT_TIMEOUT_MARKER} 600000 ms");
+        assert!(detect_attempt_timeout(&text));
+        assert!(detect_attempt_timeout(
+            "cursor-cli timed out after 5000 ms (collected 12 bytes)"
+        ));
+        assert_eq!(detect_turn_cap(&text), None);
+        assert!(detect_provider_exhaustion(&text).is_none(), "{text}");
+        assert!(!detect_attempt_timeout("exit 1: claude failed"));
     }
 }

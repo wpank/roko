@@ -1423,9 +1423,9 @@ mod tests {
             "Read the plan at {plan_dir}/plan.md",
             plan_dir = plan_dir.display()
         );
-        // The prompt should NOT contain hardcoded .roko/plans/
-        // (plans_dir returns /project/.roko/plans when no top-level plans/ exists,
-        // but the point is that it uses the resolver, not a literal)
+        // The prompt should NOT contain a hardcoded plans path: plans_dir
+        // returns /project/plans here, or .roko/plans in a workspace that
+        // keeps its plans there.
         assert!(prompt.contains(&plan_dir.display().to_string()));
     }
 

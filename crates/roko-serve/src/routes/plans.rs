@@ -2488,21 +2488,18 @@ async fn write_prompt_prd(
     Ok(prd_path)
 }
 
-/// Resolve the plans directory for the given workspace root.
+/// Resolve the plans directory for the given workspace root: `plans/`, unless
+/// the workspace keeps its plans in the legacy `.roko/plans/` (see
+/// [`roko_fs::workspace_plans::workspace_plans_dir`]).
 ///
-/// Prefers the top-level `plans/` directory when it already exists as a
-/// directory, and falls back to the legacy `.roko/plans` location otherwise.
-/// This mirrors the identical helper in `roko-cli` so that `create_plan`
-/// writes to the same location that `list_plans` / `get_plan` read from.
+/// roko-cli's `plan::plans_dir` calls the same resolver, so the runtime writes
+/// new plans (`create_plan`, `generate_plan_from_prd`) where `list_plans` /
+/// `get_plan` read them and where these handlers run them.
 ///
-/// Note: this function only *probes* whether the top-level directory exists —
-/// it never creates it as a side effect.
+/// Note: this function only *probes* the filesystem — it never creates the
+/// directory. In a new workspace `plans/` appears with the first plan.
 fn plans_dir(workdir: &std::path::Path) -> std::path::PathBuf {
-    let top = workdir.join("plans");
-    if top.is_dir() {
-        return top;
-    }
-    workdir.join(".roko").join("plans")
+    roko_fs::workspace_plans::workspace_plans_dir(workdir)
 }
 
 /// Load a plan by id using the runtime's plan-discovery methods.
@@ -3530,21 +3527,40 @@ mod tests {
         assert_eq!(result, top, "should return top-level plans/ directory");
     }
 
-    /// When `<workdir>/plans/` does not exist, `plans_dir` should fall back
-    /// to the legacy `.roko/plans` path (without creating any directory).
+    /// In a new workspace — no `plans/`, and at most the empty `.roko/plans`
+    /// that `roko init` creates — the first plan goes to `plans/`, which
+    /// `plans_dir` returns without creating.
     #[test]
-    fn plans_dir_falls_back_to_dotted_roko_when_top_level_absent() {
+    fn plans_dir_is_top_level_in_a_new_workspace() {
         let dir = tempdir().expect("tempdir");
-        // Do NOT create `plans/` — only the dotted path should be returned.
-        let expected = dir.path().join(".roko").join("plans");
+        let expected = dir.path().join("plans");
 
-        let result = plans_dir(dir.path());
-        assert_eq!(result, expected, "should fall back to .roko/plans");
+        assert_eq!(plans_dir(dir.path()), expected);
+
+        std::fs::create_dir_all(dir.path().join(".roko").join("plans"))
+            .expect("create empty .roko/plans");
+        assert_eq!(
+            plans_dir(dir.path()),
+            expected,
+            "an empty .roko/plans must not make the workspace legacy"
+        );
         // Confirm the helper did not create the directory as a side effect.
         assert!(
-            !dir.path().join("plans").exists(),
+            !expected.exists(),
             "plans_dir must not create the top-level directory"
         );
+    }
+
+    /// A workspace that already keeps its plans in `.roko/plans` (and has no
+    /// `plans/`) goes on using it, for reads and for new plans.
+    #[test]
+    fn plans_dir_keeps_a_legacy_workspace_in_dotted_roko() {
+        let dir = tempdir().expect("tempdir");
+        let legacy = dir.path().join(".roko").join("plans");
+        std::fs::create_dir_all(legacy.join("old-plan")).expect("create legacy plan");
+        std::fs::write(legacy.join("old-plan").join("tasks.toml"), "").expect("write tasks");
+
+        assert_eq!(plans_dir(dir.path()), legacy);
     }
 
     /// After `execute_plan` returns, the event bus must carry **no**
@@ -3675,10 +3691,9 @@ mod tests {
         );
 
         // The plan directory must be plans/<group>/<id>, not plans/<id>.
-        // workdir has no top-level `plans/` dir, so plans_dir returns .roko/plans.
+        // The workdir holds no plans on disk, so plans_dir returns plans/.
         let expected_dir = state
             .workdir
-            .join(".roko")
             .join("plans")
             .join("portal-programme")
             .join("my-plan");

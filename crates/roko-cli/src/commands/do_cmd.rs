@@ -526,12 +526,14 @@ async fn run_standard_path(
             String::new()
         }
     };
+    let plans_rel = roko_cli::workspace_paths::workspace_relative_plans_dir(workdir);
     let task_prompt = format!(
-        "Read the source below and generate implementation plan directories under .roko/plans/. \
+        "Read the source below and generate implementation plan directories under {plans}/. \
          Search the codebase first to understand what exists. \
          Create plan.md and tasks.toml files with tier, model_hint, context (read_files with line ranges), \
          mcp_servers (per-task MCP server names), and verify steps (executable shell commands). \
-         Use the cheapest model tier for each task.\n\n{prompt}{context_block}"
+         Use the cheapest model tier for each task.\n\n{prompt}{context_block}",
+        plans = plans_rel.display()
     );
 
     let effort = cli.effort.map(|e| e.to_string());
@@ -870,12 +872,14 @@ async fn run_standard_path_inner(
     )?;
 
     let system = roko_cli::plan_generate::build_generation_prompt(workdir, prompt, "prompt");
+    let plans_rel = roko_cli::workspace_paths::workspace_relative_plans_dir(workdir);
     let task_prompt = format!(
-        "Read the source below and generate implementation plan directories under .roko/plans/. \
+        "Read the source below and generate implementation plan directories under {plans}/. \
          Search the codebase first to understand what exists. \
          Create plan.md and tasks.toml files with tier, model_hint, context (read_files with line ranges), \
          mcp_servers (per-task MCP server names), and verify steps (executable shell commands). \
-         Use the cheapest model tier for each task.\n\n{prompt}"
+         Use the cheapest model tier for each task.\n\n{prompt}",
+        plans = plans_rel.display()
     );
 
     let effort = cli.effort.map(|e| e.to_string());

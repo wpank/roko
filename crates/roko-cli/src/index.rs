@@ -262,7 +262,8 @@ pub fn render_plans_index(workdir: &Path) -> Result<String> {
     Ok(out)
 }
 
-/// Rebuild `.roko/plans/INDEX.md` from all plan directories.
+/// Rebuild the plans index, `INDEX.md` in the workspace plans directory, from
+/// all plan directories. Creates the plans directory when it does not exist.
 pub fn rebuild_plans_index(workdir: &Path) -> Result<()> {
     let path = plans_index_path(workdir);
     if let Some(parent) = path.parent() {
@@ -564,7 +565,15 @@ pub fn rebuild_master_index(workdir: &Path) -> Result<()> {
         out,
         "## Plans ({plan_count} executable, {complete_count} complete, {remaining_count} tasks remaining, {superseded_count} superseded)"
     );
-    let _ = writeln!(out, "→ [Full index](.roko/plans/INDEX.md)\n");
+    let plans_index = plans_index_path(workdir);
+    let _ = writeln!(
+        out,
+        "→ [Full index]({})\n",
+        plans_index
+            .strip_prefix(workdir)
+            .unwrap_or(&plans_index)
+            .display()
+    );
 
     // Research summary
     let research_count = list_md_sorted(&workdir.join(".roko/research"))
@@ -605,9 +614,15 @@ pub fn rebuild_master_index(workdir: &Path) -> Result<()> {
 }
 
 /// Rebuild ALL indexes. Call this after any mutation.
+///
+/// The plans index is rebuilt only when the workspace plans directory exists:
+/// a PRD or research command must not create `plans/` in a workspace that has
+/// no plans yet.
 pub fn rebuild_all(workdir: &Path) -> Result<()> {
     rebuild_prd_index(workdir)?;
-    rebuild_plans_index(workdir)?;
+    if plans_dir(workdir).is_dir() {
+        rebuild_plans_index(workdir)?;
+    }
     rebuild_research_index(workdir)?;
     rebuild_master_index(workdir)?;
     Ok(())
@@ -849,12 +864,46 @@ mod tests {
     }
 
     #[test]
-    fn plans_index_writes_under_dot_roko() {
+    fn plans_index_writes_into_the_workspace_plans_dir() {
         let tmp = tempfile::tempdir().unwrap();
 
         rebuild_plans_index(tmp.path()).unwrap();
 
-        assert!(plans_index_path(tmp.path()).exists());
+        assert!(tmp.path().join("plans/INDEX.md").is_file());
+    }
+
+    #[test]
+    fn plans_index_stays_in_a_legacy_plans_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let legacy = tmp.path().join(".roko/plans");
+        std::fs::create_dir_all(legacy.join("old-plan")).unwrap();
+        std::fs::write(
+            legacy.join("old-plan/tasks.toml"),
+            "[meta]\nplan = \"old\"\n\n[[task]]\nid = \"T1\"\n",
+        )
+        .unwrap();
+
+        rebuild_all(tmp.path()).unwrap();
+
+        assert!(legacy.join("INDEX.md").is_file());
+        assert!(!tmp.path().join("plans").exists());
+        let master = std::fs::read_to_string(master_index_path(tmp.path())).unwrap();
+        assert!(master.contains("[Full index](.roko/plans/INDEX.md)"));
+    }
+
+    #[test]
+    fn rebuild_all_does_not_create_plans_dir_in_a_workspace_without_plans() {
+        let tmp = tempfile::tempdir().unwrap();
+        // `roko init` leaves an empty `.roko/plans/`.
+        std::fs::create_dir_all(tmp.path().join(".roko/plans")).unwrap();
+
+        rebuild_all(tmp.path()).unwrap();
+
+        assert!(!tmp.path().join("plans").exists());
+        assert!(!tmp.path().join(".roko/plans/INDEX.md").exists());
+        let master = std::fs::read_to_string(master_index_path(tmp.path())).unwrap();
+        assert!(master.contains("## Plans (0 executable"));
+        assert!(master.contains("[Full index](plans/INDEX.md)"));
     }
 
     #[test]

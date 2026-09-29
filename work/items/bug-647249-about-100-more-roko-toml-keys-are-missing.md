@@ -2,7 +2,7 @@
 id = "bug-647249"
 kind = "bug"
 title = "About 100 more roko.toml keys are missing from the loader's schema tree, so loading strips them"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "release"
@@ -11,7 +11,7 @@ subsystem = ["roko-core/config"]
 created = 2026-09-29
 updated = 2026-09-29
 last_verified = 2026-09-29
-last_verified_rev = "13f7a1358"
+last_verified_rev = "607d9a1fc"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-onboard's report on bug-12153c, branch work/bug-12153c)"
 anchors = ["crates/roko-core/src/config/loader.rs::build_schema_tree", "crates/roko-core/src/config/loader.rs::strip_unknown_fields", "crates/roko-core/src/config/serve.rs", "crates/roko-core/src/config/provider.rs", "crates/roko-core/src/config/agent.rs"]
@@ -21,6 +21,11 @@ links = { depends_on = ["bug-12153c"], blocks = [], related = ["bug-12153c", "bu
 
 [[verify]]
 command = "grep -rqw 'fn every_accepted_config_field_is_in_the_schema_tree' crates/roko-core/src/ && cargo test -p roko-core --lib every_accepted_config_field_is_in_the_schema_tree"
+
+[closed]
+at = 2026-09-29
+by = "coordinator (session 7622b882)"
+evidence = "Every stripped static-section key has a schema-tree sentinel (serve.auth.*, deploy webhooks, server.auth_token, timeouts.* and the rest), with templates for roles, profiles, provider limits, model routing and watchers; gates.domain_gates, retrieval.role_token_budgets and providers.*.extra_headers are dynamic sections; guard tests every_accepted_config_field_is_in_the_schema_tree and documented_optional_keys_survive_a_load pass (162ef67c6 + fmt b38c70a5e; merged). Batch 8 gate (router WAL and config branches on ef9676771): cargo check --workspace --tests clean; nightly rustfmt clean after fmt-only b38c70a5e and 474732a71; clippy -p roko-cli -p roko-core -p roko-learn -p roko-serve -p roko-gateway --no-deps -D warnings clean; lib tests roko-cli 3091, roko-core 1925, roko-learn 1181, roko-serve 956, roko-gateway pass, 0 failed."
 +++
 
 ## Problem

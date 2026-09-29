@@ -2,7 +2,7 @@
 id = "bug-4e7d40"
 kind = "bug"
 title = "roko config preset --global edits ~/.roko/roko.toml instead of ~/.roko/config.toml, and fails unless that file exists"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "release"
@@ -11,7 +11,7 @@ subsystem = ["roko-cli/config"]
 created = 2026-09-29
 updated = 2026-09-29
 last_verified = 2026-09-29
-last_verified_rev = "13f7a1358"
+last_verified_rev = "607d9a1fc"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-onboard's report)"
 anchors = ["crates/roko-cli/src/commands/tune.rs::cmd_config_preset", "crates/roko-cli/src/tui/config_meta.rs::save_pending_edits", "crates/roko-core/src/config/loader.rs::global_config_path"]
@@ -21,6 +21,11 @@ links = { depends_on = [], blocks = [], related = ["bug-12153c"], supersedes = [
 
 [[verify]]
 command = "grep -rqw 'fn preset_global_writes_the_global_config_file' crates/roko-cli/src/ && cargo test -p roko-cli preset_global_writes_the_global_config_file"
+
+[closed]
+at = 2026-09-29
+by = "coordinator (session 7622b882)"
+evidence = "config preset --global writes the global config.toml the way config set --global does, via save_pending_edits_to and tune.rs write_preset; project files keep the check (fa59ec6d6; merged). Batch 8 gate (router WAL and config branches on ef9676771): cargo check --workspace --tests clean; nightly rustfmt clean after fmt-only b38c70a5e and 474732a71; clippy -p roko-cli -p roko-core -p roko-learn -p roko-serve -p roko-gateway --no-deps -D warnings clean; lib tests roko-cli 3091, roko-core 1925, roko-learn 1181, roko-serve 956, roko-gateway pass, 0 failed."
 +++
 
 ## Problem

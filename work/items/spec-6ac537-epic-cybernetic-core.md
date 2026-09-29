@@ -120,9 +120,9 @@ verify commands that read E4's attempt record, set `triage = "verified"`, add th
 - [ ] gap-644040: No way to run with learning frozen: prompts and routing change from run to run (existing item)
 - [ ] bug-dfb28f: Graph runs save the cascade router only when the run ends, so a crash loses the run's routing learning
 - [ ] bug-3ea1f5: LearningRuntime rewards a failed attempt with up to 0.5 through cost and latency, unlike every other router path
-- [ ] bug-84de98: LearningRuntime::open replays a running writer's unsaved model-call observations, which that writer later saves again
-- [ ] bug-7a2630: WAL replay drops entries for models the router doesn't track and then truncates wal.jsonl, and serve never truncates it
-- [ ] bug-8b0d0a: One gateway call can be observed up to three times on serve's shared cascade router
+- [x] bug-84de98: LearningRuntime::open replays a running writer's unsaved model-call observations, which that writer later saves again
+- [x] bug-7a2630: WAL replay drops entries for models the router doesn't track and then truncates wal.jsonl, and serve never truncates it
+- [x] bug-8b0d0a: One gateway call can be observed up to three times on serve's shared cascade router
 - [ ] The epic's `[[verify]]` command passes on the merged branch: one named test each for router labels, failure
       memory and frozen learning. Extend it with S02.P1-16's wiring census when the M1–M4 items join.
 

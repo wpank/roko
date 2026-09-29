@@ -2,7 +2,7 @@
 id = "bug-8b0d0a"
 kind = "bug"
 title = "One gateway call can be observed up to three times on serve's shared cascade router"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "cybernetic"
@@ -11,6 +11,7 @@ subsystem = ["roko-serve", "roko-gateway", "roko-agent/model_call_service"]
 created = 2026-09-29
 updated = 2026-09-29
 last_verified = 2026-09-29
+last_verified_rev = "607d9a1fc"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-router2's report on bug-605a8a, branch work/bug-605a8a)"
 anchors = ["crates/roko-gateway/src/gateway.rs", "crates/roko-learn/src/model_call_feedback.rs", "crates/roko-agent/src/model_call_service.rs", "crates/roko-serve/src/service_factory.rs"]
@@ -20,6 +21,11 @@ links = { depends_on = ["bug-605a8a"], blocks = [], related = ["bug-605a8a", "bu
 
 [[verify]]
 command = "grep -rqw 'fn a_gateway_call_is_observed_once_on_the_shared_router' crates/roko-serve/src/ && cargo test -p roko-serve --lib a_gateway_call_is_observed_once_on_the_shared_router"
+
+[closed]
+at = 2026-09-29
+by = "coordinator (session 7622b882)"
+evidence = "Model-call feedback is the one observer of a serve model call: GatewayConfig::without_outcome_observation is set in serve and the factory attaches no override recorder; test a_gateway_call_is_observed_once_on_the_shared_router (1df06a526; merged). Template-dispatch double-recording filed separately. Batch 8 gate (router WAL and config branches on ef9676771): cargo check --workspace --tests clean; nightly rustfmt clean after fmt-only b38c70a5e and 474732a71; clippy -p roko-cli -p roko-core -p roko-learn -p roko-serve -p roko-gateway --no-deps -D warnings clean; lib tests roko-cli 3091, roko-core 1925, roko-learn 1181, roko-serve 956, roko-gateway pass, 0 failed."
 +++
 
 ## Problem

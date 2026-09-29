@@ -299,18 +299,20 @@ def test_a_loopback_proxy_url_still_needs_network_admission(places, monkeypatch)
     monkeypatch.setattr(mini_loop.time, "sleep", lambda seconds: None)
     monkeypatch.delenv("CEREBRAS_API_KEY", raising=False)
     base = ["run", "--experiment", "TEST-NET", "--run-id", "run-1", "--stream", TOY_STREAM, "--arm", "cheap_direct",
-            "--model", "gpt-oss-120b", "--limit", "1", "--proxy", "--results", str(places["results"]),
+            "--model", "gpt-oss-120b", "--limit", "1", "--results", str(places["results"]),
             "--work", str(places["work"]), "--secret-file", str(places["secret"])]
     for flags in ([], ["--allow-network"], ["--max-cost-usd", "5"], ["--allow-network", "--max-cost-usd", "0.01"],
                   ["--allow-network", "--max-cost-usd", "5"]):  # the last is admitted, but has no key to send
-        assert vb.main([*base, *flags]) == 2, flags
+        assert vb.main([*base, "--proxy", *flags]) == 2, flags
     assert attempts == [] and not places["results"].exists() and not places["work"].exists()
 
-    # Admitted, the proxy calls the provider, and nothing else leaves the machine: the test refuses its connection.
+    # Admitted, a billed network run goes through the proxy even without --proxy. Only the proxy calls the provider,
+    # and nothing else leaves the machine: the test refuses that one connection.
     monkeypatch.setenv("CEREBRAS_API_KEY", FAKE_KEY)
     assert vb.main([*base, "--allow-network", "--max-cost-usd", "5"]) == 0
     out = places["results"] / "TEST-NET" / "run-1"
-    assert json.loads((out / "manifest.json").read_text())["network"] is True
+    manifest = json.loads((out / "manifest.json").read_text())
+    assert manifest["network"] is True and manifest["proxy"]["log"] == "proxy.jsonl"
     assert set(attempts) == {("api.cerebras.ai", 443)}
     rows = read_jsonl(out / "proxy.jsonl")
     assert len(rows) == 1 + mini_loop.RETRIES and {(row["task"], row["upstream"], row["status"], row["forwarded"])

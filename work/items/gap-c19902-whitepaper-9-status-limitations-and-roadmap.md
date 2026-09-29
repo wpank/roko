@@ -74,8 +74,9 @@ lists them.
 - **Needs `tools/paperlint.py`** (gap-af0b57) to close.
 - **PLAN §4's time estimates are internal.** Publish them only if the author agrees.
 - Lane `paper`; no hot files.
-- **2026-09-29 (wk-wp-s9):** drafted on `work/gap-c19902` at `c3579aa9a` (606 words; status `draft`). The verify
-  cannot pass on this branch yet: `tools/paperlint.py` (gap-af0b57) and `appendix-status-matrix.md` (gap-35a614) are
-  not merged. The in-progress paperlint `--strict` passes except for the appendix link, which resolves once gap-35a614
-  merges. The counts quote `work/gap-35a614` at `e035b5efe` (71 rows at `a17d4dadd`); re-sync them if the matrix
-  changes before the review.
+- **2026-09-29 (wk-wp-s9):** drafted on `work/gap-c19902` (status `draft`, 655 words); the roadmap update is
+  `2d8e9cb5c`, and SR11 is added to the README in `98f9b60d5`. The verify cannot pass on this branch alone, because
+  `tools/paperlint.py` (gap-af0b57) and the appendix (gap-35a614) are not in its history. A simulated merge into the
+  main checkout's branch at `12df83425`, with paperlint from `work/gap-af0b57` at `764bb5f2c`, passes the full
+  verify ("1 file clean"). Close this item after merging, once paperlint has landed. The counts match the merged
+  matrix: 71 rows at `a17d4dadd`.

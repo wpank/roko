@@ -16,7 +16,7 @@ use crate::orchestrator::{ReplanStrategy, detect_cycle_nodes};
 use crate::task_accept::TaskAccept;
 use anyhow::{Context as _, Result};
 use roko_agent::safety::contract::{AgentContract, ContractLoadMode, RoleCapabilities};
-use roko_core::{OperatingFrequency, TaskDomain};
+use roko_core::{OperatingFrequency, TaskDomain, TaskTier};
 use roko_gate::AcceptanceContract;
 use roko_std::denied_tools_for_role;
 use serde::{Deserialize, Deserializer, Serialize};
@@ -454,6 +454,13 @@ fn infer_operating_frequency(description: Option<&str>) -> OperatingFrequency {
 }
 
 impl TaskDef {
+    /// This task's tier, read by [`TaskTier::parse`]. A missing or unknown
+    /// tier reads as focused.
+    #[must_use]
+    pub fn tier_class(&self) -> TaskTier {
+        TaskTier::parse(&self.tier).unwrap_or_default()
+    }
+
     /// Whether this task may benefit from pre-dispatch search context enrichment.
     ///
     /// Returns `true` for complex tiers (`architectural`, `integrative`) that
@@ -461,7 +468,10 @@ impl TaskDef {
     /// found via the Perplexity Sonar search API.
     #[must_use]
     pub fn needs_external_context(&self) -> bool {
-        matches!(self.tier.as_str(), "architectural" | "integrative")
+        matches!(
+            self.tier_class(),
+            TaskTier::Integrative | TaskTier::Architectural
+        )
     }
 
     /// Map the task to an operating frequency.
@@ -490,19 +500,18 @@ impl TaskDef {
         if let Some(ref hint) = self.model_hint {
             return normalize_model_alias(hint).to_owned();
         }
+        let Some(tier) = TaskTier::parse(&self.tier) else {
+            return fallback.into();
+        };
         // Check config tier_models first
-        if let Some(models) = tier_models {
-            if let Some(model) = models.get(&self.tier) {
-                return model.clone();
-            }
+        if let Some(model) = tier_models.and_then(|models| models.get(tier.label())) {
+            return model.clone();
         }
         // Built-in defaults
-        match self.tier.as_str() {
-            "mechanical" => "claude-haiku-4-5".into(),
-            "focused" => "claude-sonnet-4-6".into(),
-            "integrative" => "claude-sonnet-4-6".into(),
-            "architectural" => "claude-opus-4-6".into(),
-            _ => fallback.into(),
+        match tier {
+            TaskTier::Mechanical => "claude-haiku-4-5".into(),
+            TaskTier::Focused | TaskTier::Integrative => "claude-sonnet-4-6".into(),
+            TaskTier::Architectural => "claude-opus-4-6".into(),
         }
     }
 
@@ -910,7 +919,7 @@ impl TasksFile {
         let mut issues = Vec::new();
         for task in &self.tasks {
             let tid = &task.id;
-            if task.tier.is_empty() || task.tier == "unknown" {
+            if TaskTier::parse(&task.tier).is_none() {
                 issues.push(format!("{tid}: missing or unknown tier"));
             }
             if task.verify.is_empty() && !task.has_accept_tests() {
@@ -976,11 +985,12 @@ impl TasksFile {
     /// Validate task definitions against the field schema.
     ///
     /// Checks that role, tier, and status values are from the known set,
-    /// and that role-specific required fields are present.
+    /// and that role-specific required fields are present. A tier is known
+    /// when [`TaskTier::parse`] reads it (a label or an alias); an empty or
+    /// `"unknown"` tier is left to [`Self::validate`].
     /// Returns a list of issues (empty = valid).
     pub fn validate_against_schema(&self) -> Vec<String> {
         const VALID_ROLES: &[&str] = PLAN_TASK_ROLES;
-        const VALID_TIERS: &[&str] = &["mechanical", "focused", "integrative", "architectural"];
         const VALID_STATUSES: &[&str] =
             &["pending", "ready", "active", "done", "blocked", "skipped"];
         // Role -> required fields
@@ -1031,12 +1041,13 @@ impl TasksFile {
             // Check tier is valid.
             if !task.tier.is_empty()
                 && task.tier != "unknown"
-                && !VALID_TIERS.contains(&task.tier.as_str())
+                && TaskTier::parse(&task.tier).is_none()
             {
+                let valid = TaskTier::ALL.map(TaskTier::label);
                 issues.push(format!(
                     "{task_label}: unknown tier '{}' (valid: {})",
                     task.tier,
-                    VALID_TIERS.join(", ")
+                    valid.join(", ")
                 ));
             }
 
@@ -1950,9 +1961,23 @@ command = "cargo check -p roko-cli"
             tier: "focused".into(),
             model_hint: Some("custom-model".into()),
             replan_strategy: None,
-            ..task
+            ..task.clone()
         };
         assert_eq!(t3.effective_model("fallback", None), "custom-model");
+
+        // Aliases read through `TaskTier::parse`; an unknown tier falls back.
+        let t4 = TaskDef {
+            tier: "Fast".into(),
+            ..task.clone()
+        };
+        assert_eq!(t4.effective_model("fallback", None), "claude-haiku-4-5");
+        assert!(!t4.needs_external_context());
+        let t5 = TaskDef {
+            tier: "mechancial".into(),
+            ..task
+        };
+        assert_eq!(t5.effective_model("fallback", None), "fallback");
+        assert!(t2.needs_external_context());
     }
 
     #[test]
@@ -2841,6 +2866,58 @@ max_loc = 0
         assert!(
             max_loc_issues.is_empty(),
             "max_loc=0 should not produce validation errors"
+        );
+    }
+
+    #[test]
+    fn schema_validation_reads_tiers_through_task_tier() {
+        let toml = r#"
+[meta]
+plan = "test"
+
+[[task]]
+id = "T1"
+title = "an alias with padding"
+role = "researcher"
+tier = " T0 "
+
+[[task]]
+id = "T2"
+title = "an alias in capitals"
+role = "researcher"
+tier = "Premium"
+
+[[task]]
+id = "T3"
+title = "a typo"
+role = "researcher"
+tier = "mechancial"
+"#;
+        let parsed: TasksFile = toml::from_str(toml).unwrap();
+        let tier_issues: Vec<String> = parsed
+            .validate_against_schema()
+            .into_iter()
+            .filter(|issue| issue.contains("tier"))
+            .collect();
+        assert_eq!(
+            tier_issues,
+            [
+                "T3: unknown tier 'mechancial' (valid: mechanical, focused, integrative, architectural)"
+            ]
+        );
+        let tiers: Vec<TaskTier> = parsed.tasks.iter().map(TaskDef::tier_class).collect();
+        assert_eq!(
+            tiers,
+            [
+                TaskTier::Mechanical,
+                TaskTier::Architectural,
+                TaskTier::Focused
+            ]
+        );
+        assert!(
+            parsed
+                .validate()
+                .contains(&"T3: missing or unknown tier".to_string())
         );
     }
 

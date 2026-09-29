@@ -126,6 +126,122 @@ impl TaskComplexityBand {
     }
 }
 
+/// A plan task's tier: how much it changes, and so how capable a model it
+/// needs.
+///
+/// `tasks.toml` keeps `tier` as free text. This is its one reading, shared by
+/// model routing, per-task budgets, turn caps, express mode, `plan validate`
+/// and the plan generator; [`Self::parse`] holds the only alias table.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum TaskTier {
+    /// Imports, renames, field additions. At most 20 lines of change.
+    Mechanical,
+    /// A single function or test. At most 50 lines of change. A task whose
+    /// tier is missing or unknown counts as focused.
+    #[default]
+    Focused,
+    /// Connects several modules. At most 150 lines of change.
+    Integrative,
+    /// API design and decomposition. At most 300 lines of change.
+    Architectural,
+}
+
+impl TaskTier {
+    /// Every tier, least demanding first.
+    pub const ALL: [Self; 4] = [
+        Self::Mechanical,
+        Self::Focused,
+        Self::Integrative,
+        Self::Architectural,
+    ];
+
+    /// Read a tier label or alias, ignoring case and surrounding whitespace.
+    ///
+    /// | Tier | Accepted |
+    /// |---|---|
+    /// | mechanical | `mechanical`, `trivial`, `fast`, `quick`, `t0`, `0` |
+    /// | focused | `focused`, `standard`, `t1`, `1` |
+    /// | integrative | `integrative`, `complex`, `t2`, `2` |
+    /// | architectural | `architectural`, `premium`, `expert`, `deep`, `t3`, `3` |
+    ///
+    /// Anything else, including an empty string, is `None`.
+    #[must_use]
+    pub fn parse(tier: &str) -> Option<Self> {
+        match tier.trim().to_ascii_lowercase().as_str() {
+            "mechanical" | "trivial" | "fast" | "quick" | "t0" | "0" => Some(Self::Mechanical),
+            "focused" | "standard" | "t1" | "1" => Some(Self::Focused),
+            "integrative" | "complex" | "t2" | "2" => Some(Self::Integrative),
+            "architectural" | "premium" | "expert" | "deep" | "t3" | "3" => {
+                Some(Self::Architectural)
+            }
+            _ => None,
+        }
+    }
+
+    /// Canonical `tasks.toml` label.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Mechanical => "mechanical",
+            Self::Focused => "focused",
+            Self::Integrative => "integrative",
+            Self::Architectural => "architectural",
+        }
+    }
+
+    /// Most lines of change the plan generator gives a task of this tier.
+    #[must_use]
+    pub const fn max_loc(self) -> u32 {
+        match self {
+            Self::Mechanical => 20,
+            Self::Focused => 50,
+            Self::Integrative => 150,
+            Self::Architectural => 300,
+        }
+    }
+
+    /// Routing band: mechanical is fast, focused standard, and integrative
+    /// and architectural complex.
+    #[must_use]
+    pub const fn complexity_band(self) -> TaskComplexityBand {
+        match self {
+            Self::Mechanical => TaskComplexityBand::Fast,
+            Self::Focused => TaskComplexityBand::Standard,
+            Self::Integrative | Self::Architectural => TaskComplexityBand::Complex,
+        }
+    }
+}
+
+impl std::fmt::Display for TaskTier {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.label())
+    }
+}
+
+impl Serialize for TaskTier {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(self.label())
+    }
+}
+
+impl<'de> Deserialize<'de> for TaskTier {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let label = String::deserialize(deserializer)?;
+        Self::parse(&label).ok_or_else(|| {
+            de::Error::custom(format!(
+                "unknown task tier '{label}' (expected mechanical, focused, integrative or \
+                 architectural)"
+            ))
+        })
+    }
+}
+
 /// Broad class of work — drives playbook recall and prompt templates.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -697,6 +813,75 @@ mod tests {
     fn complexity_band_orders_fast_to_complex() {
         assert!(TaskComplexityBand::Fast < TaskComplexityBand::Standard);
         assert!(TaskComplexityBand::Standard < TaskComplexityBand::Complex);
+    }
+
+    #[test]
+    fn task_tier_parses_every_alias() {
+        let table: [(TaskTier, &[&str]); 4] = [
+            (
+                TaskTier::Mechanical,
+                &["mechanical", "trivial", "fast", "quick", "t0", "0"],
+            ),
+            (TaskTier::Focused, &["focused", "standard", "t1", "1"]),
+            (
+                TaskTier::Integrative,
+                &["integrative", "complex", "t2", "2"],
+            ),
+            (
+                TaskTier::Architectural,
+                &["architectural", "premium", "expert", "deep", "t3", "3"],
+            ),
+        ];
+        for (tier, aliases) in table {
+            for alias in aliases {
+                assert_eq!(TaskTier::parse(alias), Some(tier), "{alias}");
+                let padded_upper = format!("  {}\t", alias.to_ascii_uppercase());
+                assert_eq!(
+                    TaskTier::parse(&padded_upper),
+                    Some(tier),
+                    "{padded_upper:?}"
+                );
+            }
+            assert_eq!(TaskTier::parse(tier.label()), Some(tier));
+            assert_eq!(tier.to_string(), tier.label());
+        }
+        assert_eq!(table.map(|(tier, _)| tier), TaskTier::ALL);
+
+        for unknown in ["mechancial", "", "  ", "unknown", "t4", "4", "fast-ish"] {
+            assert_eq!(TaskTier::parse(unknown), None, "{unknown:?}");
+        }
+        assert_eq!(TaskTier::default(), TaskTier::Focused);
+    }
+
+    #[test]
+    fn task_tier_sets_band_and_loc_budget() {
+        let bands = TaskTier::ALL.map(TaskTier::complexity_band);
+        assert_eq!(
+            bands,
+            [
+                TaskComplexityBand::Fast,
+                TaskComplexityBand::Standard,
+                TaskComplexityBand::Complex,
+                TaskComplexityBand::Complex,
+            ]
+        );
+        assert_eq!(TaskTier::ALL.map(TaskTier::max_loc), [20, 50, 150, 300]);
+        assert!(TaskTier::Mechanical < TaskTier::Architectural);
+    }
+
+    #[test]
+    fn task_tier_serde_reads_aliases_and_writes_labels() {
+        for tier in TaskTier::ALL {
+            let json = serde_json::to_string(&tier).unwrap();
+            assert_eq!(json, format!("\"{}\"", tier.label()));
+            assert_eq!(serde_json::from_str::<TaskTier>(&json).unwrap(), tier);
+        }
+        assert_eq!(
+            serde_json::from_str::<TaskTier>("\"T0\"").unwrap(),
+            TaskTier::Mechanical
+        );
+        let error = serde_json::from_str::<TaskTier>("\"mechancial\"").unwrap_err();
+        assert!(error.to_string().contains("unknown task tier 'mechancial'"));
     }
 
     #[test]

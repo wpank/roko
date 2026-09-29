@@ -14,7 +14,8 @@ const EXPRESS_MAX_TURNS: u32 = 5;
 ///
 /// Express mode is enabled when:
 /// - `conductor.express_mode = true` in the workspace config, AND
-/// - The task tier is `"mechanical"` or `"trivial"`.
+/// - The task tier reads as mechanical ([`TaskDef::tier_class`]: `mechanical`,
+///   `trivial`, `fast`, ...).
 ///
 /// When active, the dispatcher:
 /// - Routes to `routing.fast_task_model` (cheapest available model).
@@ -24,22 +25,18 @@ pub(super) fn is_express_task(
     config: &roko_core::config::schema::RokoConfig,
     task: &TaskDef,
 ) -> bool {
-    if !config.conductor.express_mode {
-        return false;
-    }
-    let tier_lower = task.tier.to_ascii_lowercase();
-    matches!(tier_lower.as_str(), "mechanical" | "trivial")
+    config.conductor.express_mode && task.tier_class() == roko_core::task::TaskTier::Mechanical
 }
 
 /// Provider turn cap for one Graph task dispatch.
 ///
 /// Every task gets its tier's `[pipeline.<tier>] max_turns` (unknown tiers
-/// use the `focused` band, so the cap is never unbounded); express dispatch
+/// read as focused, so the cap is never unbounded); express dispatch
 /// lowers it further to [`EXPRESS_MAX_TURNS`]. The provider adapter decides
 /// how the cap binds (`ProviderAdapter::turn_cap_enforcement`), and agent
 /// construction warns when a provider can treat it only as advisory.
 pub(super) fn task_turn_limit(config: &RokoConfig, task: &TaskDef, express_active: bool) -> u32 {
-    let tier_limit = config.pipeline.max_turns_for_tier(&task.tier);
+    let tier_limit = config.pipeline.max_turns_for_tier(task.tier_class());
     if express_active {
         tier_limit.min(EXPRESS_MAX_TURNS)
     } else {

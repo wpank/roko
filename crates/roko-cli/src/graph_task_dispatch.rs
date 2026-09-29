@@ -685,8 +685,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
             && self.config.gates.write_eval_artifacts
             && !skip_enrichment
         {
-            let tier_lower = task.tier.to_ascii_lowercase();
-            let is_standard_or_above = !matches!(tier_lower.as_str(), "mechanical" | "trivial");
+            let is_standard_or_above = task.tier_class() != roko_core::task::TaskTier::Mechanical;
             if is_standard_or_above {
                 let target_crates = crate::task_helpers::task_target_crates(Some(&task));
                 let primary_crate = target_crates

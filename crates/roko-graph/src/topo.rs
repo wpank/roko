@@ -156,6 +156,7 @@ mod tests {
             inputs: vec![],
             outputs: vec![],
             execution_class: crate::types::ExecutionClass::default(),
+            exclusive: vec![],
         }
     }
 

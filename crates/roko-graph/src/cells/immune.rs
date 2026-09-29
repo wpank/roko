@@ -400,6 +400,7 @@ pub fn immune_pipeline_graph() -> std::result::Result<Graph, GraphError> {
             inputs: vec!["state".to_string()],
             outputs: vec!["state".to_string()],
             execution_class: ExecutionClass::Workflow,
+            exclusive: vec![],
         })?;
     }
     for (from, to) in [

@@ -6,7 +6,7 @@ use roko_core::ContentHash;
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::types::{ExecutionClass, Graph, GraphPolicy};
+use crate::types::{ExecutionClass, Graph, GraphPolicy, Node};
 
 const FINGERPRINT_SCHEMA_VERSION: u32 = 1;
 
@@ -26,7 +26,9 @@ const EXECUTION_META_FIELDS: &[&str] = &["max_parallel", "skip_enrichment"];
 /// Compute a stable BLAKE3 identity for the execution-relevant parts of a Graph.
 ///
 /// Node and edge insertion order and metadata-label map order do not affect the
-/// result. Checkpoint callers use this identity to reject replay after graph
+/// result, and neither do nodes' exclusive paths, which decide only when a
+/// node may start.
+/// Checkpoint callers use this identity to reject replay after graph
 /// definition or policy drift. Converted plans use [`plan_graph_fingerprint`]
 /// instead, but checkpoints written before it existed recorded this value, so
 /// [`legacy_graph_execution_fingerprint`] must keep reproducing it.
@@ -39,7 +41,7 @@ pub fn graph_execution_fingerprint(graph: &Graph) -> Result<String, serde_json::
         version: &'a Option<String>,
         labels: BTreeMap<&'a str, &'a str>,
         policy: &'a crate::types::GraphPolicy,
-        nodes: Vec<&'a crate::types::Node>,
+        nodes: Vec<NodeFingerprint<'a>>,
         edges: Vec<&'a crate::types::Edge>,
     }
 
@@ -64,11 +66,41 @@ pub fn graph_execution_fingerprint(graph: &Graph) -> Result<String, serde_json::
             .map(|(key, value)| (key.as_str(), value.as_str()))
             .collect(),
         policy: &graph.policy,
-        nodes,
+        nodes: nodes.into_iter().map(NodeFingerprint::from).collect(),
         edges,
     };
     let encoded = serde_json::to_vec(&identity)?;
     Ok(ContentHash::of(&encoded).to_hex())
+}
+
+/// A node as [`graph_execution_fingerprint`] hashes it: every field but
+/// [`Node::exclusive`].
+///
+/// Exclusive paths decide only when a node may start, never what it
+/// produces, and checkpoints recorded this identity before nodes had them.
+/// This serializes exactly as a [`Node`] with no exclusive paths does, so
+/// filling them in (plan conversion does) keeps those checkpoints resumable.
+#[derive(Serialize)]
+struct NodeFingerprint<'a> {
+    id: &'a str,
+    cell_type: &'a str,
+    config: &'a toml::Value,
+    inputs: &'a [String],
+    outputs: &'a [String],
+    execution_class: ExecutionClass,
+}
+
+impl<'a> From<&'a Node> for NodeFingerprint<'a> {
+    fn from(node: &'a Node) -> Self {
+        Self {
+            id: &node.id,
+            cell_type: &node.cell_type,
+            config: &node.config,
+            inputs: &node.inputs,
+            outputs: &node.outputs,
+            execution_class: node.execution_class,
+        }
+    }
 }
 
 /// The identity plan checkpoints recorded before [`plan_graph_fingerprint`].
@@ -290,6 +322,7 @@ mod tests {
                 inputs: Vec::new(),
                 outputs: Vec::new(),
                 execution_class: ExecutionClass::Workflow,
+                exclusive: Vec::new(),
             })
             .expect("node");
         graph
@@ -453,5 +486,40 @@ depends_on = ["T1"]
         ] {
             assert_ne!(base, plan_fingerprint(&changed, max_parallel), "{changed}");
         }
+    }
+
+    /// gap-439794: filling nodes' exclusive paths, as plan conversion does,
+    /// changes none of the identities a checkpoint may record, so
+    /// checkpoints written before nodes had them still resume.
+    #[test]
+    fn exclusive_paths_change_no_fingerprint() {
+        let before = converted::<TaskV1>(TASKS_TOML, 2);
+        let mut after = before.clone();
+        for node in after.inner.node_weights_mut() {
+            node.exclusive = vec!["src/parser.rs".to_string()];
+        }
+        assert_ne!(before.get_node("T1"), after.get_node("T1"));
+
+        assert_eq!(
+            legacy_graph_execution_fingerprint(&before).expect("fingerprint"),
+            legacy_graph_execution_fingerprint(&after).expect("fingerprint")
+        );
+        let authored = AuthoredPlan::from_tasks_toml(TASKS_TOML).expect("authored plan");
+        assert_eq!(
+            plan_graph_fingerprint(&before, &authored).expect("fingerprint"),
+            plan_graph_fingerprint(&after, &authored).expect("fingerprint")
+        );
+    }
+
+    /// A node without exclusive paths hashes exactly as nodes did before
+    /// they had them.
+    #[test]
+    fn a_node_without_exclusive_paths_hashes_as_before() {
+        let built = graph(1);
+        let node = built.get_node("node").expect("node");
+        assert_eq!(
+            serde_json::to_string(&NodeFingerprint::from(node)).expect("projection"),
+            serde_json::to_string(node).expect("node")
+        );
     }
 }

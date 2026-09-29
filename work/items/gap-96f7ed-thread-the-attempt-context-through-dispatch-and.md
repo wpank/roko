@@ -95,3 +95,8 @@ These are hot files. Start only after the env and learn-a branches merge and the
   bug-35379d and gap-ad0d39 move them to the verdict; the verdict's usage, dollar costs, TTFT, verify steps and
   failover chain stay `null` (P0-4, P0-5, P0-6, bug-35379d). Prompt-assembly and cost-ledger errors after the open
   line leave no verdict yet, so they read as abandoned (P0-3).
+- **Batch 5 (2026-09-29):** `graph_feedback_records_share_attempt_key` failed because the provider bridge
+  (`dispatch_v2`, through `roko_learn::feedback_service`) also appends `"kind":"model_call"` rows to
+  `.roko/learn/efficiency.jsonl`. Those rows use the feedback schema and have no attempt key. The test now selects
+  the Graph dispatcher's `agent_efficiency_event/v1` rows. Keying the `model_call` rows needs the attempt key in
+  `AgentDispatchRequest` (S01 P0-8 passes it through `DispatchContext`).

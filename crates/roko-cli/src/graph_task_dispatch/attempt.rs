@@ -452,14 +452,19 @@ mod tests {
 
     const RUN: &str = "graph-stream-plan-run";
 
-    /// The rows of the JSONL file at `path`, once at least `expected` have
-    /// landed from the background writers.
-    async fn jsonl_rows(path: &Path, expected: usize) -> Vec<serde_json::Value> {
+    /// The rows of the JSONL file at `path` that `keep` accepts, once at least
+    /// `expected` of them have landed from the background writers.
+    async fn jsonl_rows_where(
+        path: &Path,
+        expected: usize,
+        keep: impl Fn(&serde_json::Value) -> bool,
+    ) -> Vec<serde_json::Value> {
         for _ in 0..600 {
             let rows: Vec<serde_json::Value> = std::fs::read_to_string(path)
                 .unwrap_or_default()
                 .lines()
                 .filter_map(|line| serde_json::from_str(line).ok())
+                .filter(|row| keep(row))
                 .collect();
             if rows.len() >= expected {
                 return rows;
@@ -467,6 +472,12 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
         panic!("{expected} rows were not written to {}", path.display());
+    }
+
+    /// Every row of the JSONL file at `path`, once at least `expected` have
+    /// landed.
+    async fn jsonl_rows(path: &Path, expected: usize) -> Vec<serde_json::Value> {
+        jsonl_rows_where(path, expected, |_| true).await
     }
 
     fn field<'a>(rows: &'a [serde_json::Value], name: &str) -> Vec<&'a str> {
@@ -520,8 +531,13 @@ mod tests {
         assert_eq!(verdict["executed"]["provider"], "stream-cli");
         assert!(verdict["cost"]["source"].is_string(), "{verdict}");
 
-        // The dispatch row's id is the key; the gate-pass row extends it.
-        let efficiency = jsonl_rows(&roko.join("learn/efficiency.jsonl"), 2).await;
+        // The dispatch row's id is the key; the gate-pass row extends it. The
+        // provider bridge logs its own `model_call` rows to the same file,
+        // under the feedback schema and with no attempt key.
+        let efficiency = jsonl_rows_where(&roko.join("learn/efficiency.jsonl"), 2, |row| {
+            row["schema"] == roko_learn::efficiency::AGENT_EFFICIENCY_EVENT_SCHEMA
+        })
+        .await;
         let mut ids = field(&efficiency, "attempt_id");
         ids.sort_unstable();
         assert_eq!(ids, [key.clone(), format!("{key}/gate-pass")]);

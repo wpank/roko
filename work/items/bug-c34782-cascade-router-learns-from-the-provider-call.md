@@ -151,6 +151,17 @@ quality observations.
 - Do not change retry or gate behaviour. This is only about what learning records.
 - Parallel safety: it edits `emit_feedback` and its call sites in `graph_task_dispatch.rs`. Do not run it in
   parallel with `gap-0f3980` (routing context in the same file) or `bug-35379d` (failover attribution).
+- 2026-09-29: folded into gap-8f6206, implemented on `work/gap-8f6206` at `04c1da262`; cargo verification deferred
+  to the batch check (the targeted tests passed under that item's cargo exception). Option A: the routing sink
+  reads the settled verdict's learning label. A pass is a success, and a gate failure, turn-cap stop or timeout
+  after output is a failure. Unverified, force-accepted, provider-failed and harness-failed attempts update no
+  counter, override or bandit. `costs.jsonl` rows add `outcome` and `learning_label`, and `success` keeps its
+  meaning. `routing_learns_only_from_gate_verdicts` drives a pass, a gate failure, an unverified attempt, a
+  transport error and exhausted usage through batch dispatch. The unwired receipt settler's routing row now skips
+  `AttemptFailed` and `Cancelled` receipts.
+- Still open: the provider bridge (`dispatch_v2::record_agent_dispatch_feedback`, feedback Path B) observes the
+  persisted `cascade-router.json` from the provider's pre-gate `success` on every Graph dispatch, so this bug's
+  headline survives there. The run-end save overwrites it after a clean Graph run, but not after a crash.
 
 ## Original notes
 

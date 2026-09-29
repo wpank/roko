@@ -1,4 +1,4 @@
-Status: draft · budget 450 words · owner gap-424bf8
+Status: reviewed · budget 450 words · owner gap-424bf8
 
 # 6 Measured trust
 

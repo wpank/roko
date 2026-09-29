@@ -1,4 +1,4 @@
-Status: draft · budget 550 words · owner gap-c19902
+Status: reviewed · budget 550 words · owner gap-c19902
 
 # 9 Status, limitations and roadmap
 

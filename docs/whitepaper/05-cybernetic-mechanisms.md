@@ -1,4 +1,4 @@
-Status: draft · budget 850 words · owner gap-e8cb4d
+Status: reviewed · budget 850 words · owner gap-e8cb4d
 
 # 5 Cybernetic mechanisms
 

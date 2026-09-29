@@ -1,4 +1,4 @@
-Status: draft · budget 700 words · owner gap-4161ea
+Status: reviewed · budget 700 words · owner gap-4161ea
 
 # 3 Architecture and control stack
 

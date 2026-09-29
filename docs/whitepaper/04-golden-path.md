@@ -1,4 +1,4 @@
-Status: draft · budget 950 words · owner gap-ac4646
+Status: reviewed · budget 950 words · owner gap-ac4646
 
 # 4 The golden path, step by step
 

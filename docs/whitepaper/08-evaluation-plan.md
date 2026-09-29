@@ -1,4 +1,4 @@
-Status: draft · budget 550 words · owner gap-2aad7d
+Status: reviewed · budget 550 words · owner gap-2aad7d
 
 # 8 Evaluation plan
 

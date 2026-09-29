@@ -1,4 +1,4 @@
-Status: draft · budget 550 words · owner gap-370d3c
+Status: reviewed · budget 550 words · owner gap-370d3c
 
 # 2 Design principles
 

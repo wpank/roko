@@ -1337,6 +1337,11 @@ impl RokoConfig {
             "max_parallel_plans = {}",
             c.conductor.max_parallel_plans
         );
+        let _ = writeln!(
+            out,
+            "plan_failure_policy = \"{}\"",
+            c.conductor.plan_failure_policy.as_str()
+        );
         let _ = writeln!(out, "parallel_enabled = {}", c.conductor.parallel_enabled);
         let _ = writeln!(out, "express_mode = {}", c.conductor.express_mode);
         let _ = writeln!(
@@ -1683,6 +1688,29 @@ pub(crate) fn validate_references(config: &RokoConfig) -> Vec<ValidationWarning>
 
 // ---- Conductor (not extracted, stays in schema) --------------------------
 
+/// What a Graph plan run does when one of its tasks fails.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PlanFailurePolicy {
+    /// Skip only the failed task's dependants. Tasks that do not depend on it
+    /// still run, and the plan reports failure once every task has settled.
+    #[default]
+    SkipFailed,
+    /// Start no further task after the first failure; running tasks finish.
+    FailFast,
+}
+
+impl PlanFailurePolicy {
+    /// The `roko.toml` / `tasks.toml` spelling.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::SkipFailed => "skip_failed",
+            Self::FailFast => "fail_fast",
+        }
+    }
+}
+
 /// Conductor (meta-orchestrator) settings.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1696,6 +1724,10 @@ pub struct ConductorConfig {
     /// `roko plan run --max-parallel-plans` overrides it for one run.
     #[serde(default = "default_max_parallel_plans")]
     pub max_parallel_plans: usize,
+    /// What a Graph plan run does when one of its tasks fails. A plan's
+    /// `[meta] failure_policy` overrides it.
+    #[serde(default)]
+    pub plan_failure_policy: PlanFailurePolicy,
     /// Not read by the Graph engine: `max_parallel_plans` alone sets how
     /// many plans run at once.
     #[serde(default)]
@@ -1797,6 +1829,7 @@ impl Default for ConductorConfig {
         Self {
             max_agents: default_max_agents(),
             max_parallel_plans: default_max_parallel_plans(),
+            plan_failure_policy: PlanFailurePolicy::default(),
             parallel_enabled: false,
             express_mode: false,
             max_auto_fix_attempts: default_max_auto_fix(),

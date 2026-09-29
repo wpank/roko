@@ -20,7 +20,7 @@ use crate::execution_control::{
     CommandAckReceiver, CommandAckStatus, ExecutionCommandKind, ExecutionCommandSender, ack_for,
 };
 use crate::exit_codes::{EXIT_FAILURE, EXIT_SUCCESS};
-use crate::graph_checkpoint::GraphCheckpointStatus;
+use crate::graph_checkpoint::{GraphCheckpointStatus, TaskOutcomeSummary};
 
 // ── Private helpers ──────────────────────────────────────────────────────
 
@@ -1331,6 +1331,7 @@ async fn run_graph_plan_body(params: GraphPlanRunParams) -> anyhow::Result<i32> 
         launch_tui,
         task_dispatcher: &task_dispatcher,
         graph_task_dispatcher: &graph_task_dispatcher,
+        plan_failure_policy: roko_config.conductor.plan_failure_policy,
         graph_tui_bridge: &graph_tui_bridge,
         graph_telemetry: &graph_telemetry,
         graph_event_logger: graph_event_logger.as_ref(),
@@ -1687,7 +1688,10 @@ struct PlanRunContext<'a> {
     json: bool,
     launch_tui: bool,
     task_dispatcher: &'a Arc<dyn roko_graph::cells::TaskDispatcher>,
-    graph_task_dispatcher: &'a crate::graph_task_dispatch::GraphTaskDispatcher,
+    graph_task_dispatcher: &'a Arc<crate::graph_task_dispatch::GraphTaskDispatcher>,
+    /// `[conductor] plan_failure_policy`; a plan's `[meta] failure_policy`
+    /// overrides it.
+    plan_failure_policy: roko_core::config::PlanFailurePolicy,
     graph_tui_bridge: &'a crate::runner::graph_tui_bridge::GraphTuiBridge,
     graph_telemetry: &'a Arc<dyn roko_core::TelemetryEventSink>,
     graph_event_logger: Option<&'a Arc<dyn roko_graph::events::GraphEventSink>>,
@@ -2003,16 +2007,33 @@ async fn run_one_plan(
     let replayed_entries = checkpoint.replayed_entries();
     ctx.graph_task_dispatcher
         .attach_plan_budget_checkpoint(&plan.id, checkpoint.take_cost_ledger())?;
-    // A failed task blocks only its own dependants: the tasks that do not
-    // depend on it keep running, and the plan reports failure once every task
-    // has settled. This is set after the checkpoint identity is taken: the
-    // failure strategy does not change what a replayed task produced, and
-    // hashing it into the plan fingerprint would stop every checkpoint written
-    // under the FailFast default from resuming.
-    graph.policy.failure_strategy = roko_graph::FailureStrategy::SkipFailed;
+    // By default a failed task blocks only its own dependants: the tasks that
+    // do not depend on it keep running, and the plan reports failure once
+    // every task has settled. `fail_fast` (from `[meta] failure_policy`, else
+    // `[conductor] plan_failure_policy`) starts no further task after the
+    // first failure instead. This is set after the checkpoint identity is
+    // taken: the failure strategy does not change what a replayed task
+    // produced, and hashing it into the plan fingerprint would stop
+    // checkpoints written under another policy from resuming.
+    graph.policy.failure_strategy = match plan
+        .tasks
+        .meta
+        .failure_policy
+        .unwrap_or(ctx.plan_failure_policy)
+    {
+        roko_core::config::PlanFailurePolicy::SkipFailed => roko_graph::FailureStrategy::SkipFailed,
+        roko_core::config::PlanFailurePolicy::FailFast => roko_graph::FailureStrategy::FailFast,
+    };
+    // Whatever the failure policy, a plan whose budget is spent starts no
+    // further task; tasks already running finish.
+    let budget_dispatcher = Arc::clone(ctx.graph_task_dispatcher);
+    let budget_plan_id = plan.id.clone();
     let mut engine = GraphEngine::new(graph, registry)
         .with_recorder(checkpoint.take_recorder())
         .with_telemetry(Arc::clone(ctx.graph_telemetry))
+        .with_dispatch_stop(Arc::new(move || {
+            budget_dispatcher.plan_dispatch_stop(&budget_plan_id)
+        }))
         // Allow stub cells when using the rich topology. Enricher cells are
         // PassthroughCell stubs; without this the engine rejects the graph
         // at validate_for_start time.
@@ -2179,6 +2200,7 @@ async fn run_one_plan(
         graph_tui_bridge.plan_completed(&plan.id, false);
 
         tracing::error!(plan_id = %plan.id, "plan execution failed: no output");
+        checkpoint.record_task_outcomes(&TaskOutcomeSummary::default())?;
         checkpoint.finish_with_status(plan_checkpoint_status(
             false,
             interrupted_by.is_some(),
@@ -2214,6 +2236,28 @@ async fn run_one_plan(
         &final_statuses,
         &node_titles,
     );
+    // Say why each task that did not run was held back; a resume runs them
+    // and the failed tasks again.
+    let task_outcomes = task_outcomes(&output, &node_titles);
+    for (task_id, blocker) in &task_outcomes.blocked_by {
+        graph_tui_bridge.log_event(
+            "graph.task_blocked",
+            &format!(
+                "plan '{}': task '{task_id}' blocked by failed task '{blocker}'",
+                plan.id
+            ),
+        );
+    }
+    for (task_id, reason) in &task_outcomes.not_started {
+        graph_tui_bridge.log_event(
+            "graph.task_not_started",
+            &format!(
+                "plan '{}': task '{task_id}' did not start: {reason}",
+                plan.id
+            ),
+        );
+    }
+    checkpoint.record_task_outcomes(&task_outcomes)?;
     graph_tui_bridge.plan_completed(&plan.id, execution_succeeded);
 
     if !ctx.quiet && !ctx.json {
@@ -2245,6 +2289,7 @@ async fn run_one_plan(
                     tracing::warn!(
                         node_id = %result.node_id,
                         status = ?result.status,
+                        blocked_by = result.blocked_by.as_deref().unwrap_or_default(),
                         %error,
                         "node failed"
                     );
@@ -2285,8 +2330,45 @@ async fn run_one_plan(
     })
 }
 
+/// How `output` left the plan's tasks that did not complete. Helper nodes of
+/// the rich topology, which are absent from `node_titles`, are left out.
+fn task_outcomes(
+    output: &roko_graph::GraphOutput,
+    node_titles: &HashMap<String, String>,
+) -> TaskOutcomeSummary {
+    use roko_graph::engine::NodeStatus;
+
+    let mut summary = TaskOutcomeSummary::default();
+    for result in output
+        .node_results
+        .iter()
+        .filter(|result| node_titles.contains_key(&result.node_id))
+    {
+        match (result.status, &result.blocked_by) {
+            (NodeStatus::Failed, _) => {
+                summary.failed.insert(result.node_id.clone());
+            }
+            (NodeStatus::Skipped, Some(blocker)) => {
+                summary
+                    .blocked_by
+                    .insert(result.node_id.clone(), blocker.clone());
+            }
+            (NodeStatus::Skipped, None) => {
+                summary.not_started.insert(
+                    result.node_id.clone(),
+                    result.error.clone().unwrap_or_default(),
+                );
+            }
+            _ => {}
+        }
+    }
+    summary
+}
+
 #[cfg(test)]
 mod tests {
+    use std::collections::{BTreeMap, BTreeSet};
+
     use super::*;
 
     fn test_plan(id: &str, title: &str, task_count: usize) -> crate::runner::plan_loader::Plan {
@@ -2473,6 +2555,17 @@ depends_on_plan = [{depends_on_plan}]
         max_parallel_plans: Option<usize>,
         interrupt: Option<PlanRunInterruptHandle>,
     ) -> (i32, Vec<String>, crate::state_hub::SharedStateHub) {
+        run_plan_set_with(dir, max_parallel_plans, interrupt, true).await
+    }
+
+    /// [`run_plan_set`], enforcing the workspace's `[budget]` unless
+    /// `no_budget`.
+    async fn run_plan_set_with(
+        dir: &Path,
+        max_parallel_plans: Option<usize>,
+        interrupt: Option<PlanRunInterruptHandle>,
+        no_budget: bool,
+    ) -> (i32, Vec<String>, crate::state_hub::SharedStateHub) {
         let hub = crate::state_hub::shared_state_hub();
         let exit_code = run_graph_plan(GraphPlanRunParams {
             plans_dir: dir.join("plans"),
@@ -2485,7 +2578,7 @@ depends_on_plan = [{depends_on_plan}]
             max_retries: None,
             max_tasks: 0,
             budget_override: None,
-            no_budget: true,
+            no_budget,
             cli_model_override: None,
             dangerously_skip_permissions: false,
             log_file: None,
@@ -2569,31 +2662,33 @@ depends_on_plan = [{depends_on_plan}]
         }
     }
 
-    /// Stand-in `claude_cli` provider: it ignores its prompt and reports a
-    /// finished turn, so each task's verify step alone decides its outcome.
-    const FAKE_PROVIDER_SCRIPT: &str = r#"#!/bin/sh
-set -eu
-cat >/dev/null
-printf '%s\n' '{"type":"content_block_delta","delta":{"text":"done"}}'
-printf '%s\n' '{"type":"result","session_id":"fake","model":"claude-sonnet-4-6","total_cost_usd":0.0,"usage":{"input_tokens":1,"output_tokens":1},"is_error":false}'
-"#;
-
-    /// gap-4d835d: in a plan run a failed task blocks only its own
-    /// dependants. `T3` does not depend on the failed `T1` and becomes ready
-    /// only after `T1` has failed, yet it still runs; `T4` needs `T1` and is
-    /// skipped; the plan reports failure once every task has settled.
+    /// Write a stand-in `claude_cli` provider and a `roko.toml` that routes
+    /// every task to it, followed by `extra_config`. The provider ignores its
+    /// prompt, appends a line to `provider-calls`, and reports a finished turn
+    /// costing `cost_usd`, so each task's verify step alone decides its
+    /// outcome.
     #[cfg(unix)]
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn a_failed_task_blocks_only_its_dependants() {
+    fn fake_provider_workspace(dir: &Path, cost_usd: f64, extra_config: &str) {
         use std::os::unix::fs::PermissionsExt as _;
 
-        let dir = tempfile::tempdir().expect("tempdir");
-        let provider = dir.path().join("fake-provider.sh");
-        std::fs::write(&provider, FAKE_PROVIDER_SCRIPT).expect("provider script");
+        let provider = dir.join("fake-provider.sh");
+        std::fs::write(
+            &provider,
+            format!(
+                r#"#!/bin/sh
+set -eu
+cat >/dev/null
+printf 'call\n' >> "$(dirname "$0")/provider-calls"
+printf '%s\n' '{{"type":"content_block_delta","delta":{{"text":"done"}}}}'
+printf '%s\n' '{{"type":"result","session_id":"fake","model":"claude-sonnet-4-6","total_cost_usd":{cost_usd},"usage":{{"input_tokens":1,"output_tokens":1}},"is_error":false}}'
+"#
+            ),
+        )
+        .expect("provider script");
         std::fs::set_permissions(&provider, std::fs::Permissions::from_mode(0o755))
             .expect("make provider executable");
         std::fs::write(
-            dir.path().join("roko.toml"),
+            dir.join("roko.toml"),
             format!(
                 r#"
 [agent]
@@ -2612,14 +2707,27 @@ context_window = 200000
 
 [gates]
 sibling_settle_secs = 0
-"#,
+{extra_config}"#,
                 provider = provider.display().to_string()
             ),
         )
         .expect("config");
-        let task = |id: &str, depends_on: &str, verify: &str| {
-            format!(
-                r#"
+    }
+
+    /// Write plan `plan_id` with the extra `[meta]` lines `meta` and one task
+    /// per `(id, depends_on, verify)`, where `verify` is the task's single
+    /// verify command.
+    fn write_verify_plan(dir: &Path, plan_id: &str, meta: &str, tasks: &[(&str, &[&str], &str)]) {
+        let tasks = tasks
+            .iter()
+            .map(|(id, depends_on, verify)| {
+                let depends_on = depends_on
+                    .iter()
+                    .map(|dependency| format!("{dependency:?}"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!(
+                    r#"
 [[task]]
 id = "{id}"
 title = "Task {id}"
@@ -2634,23 +2742,40 @@ verify = [{{ phase = "structural", command = "{verify}", fail_msg = "{id} failed
 timeout_secs = 60
 max_retries = 0
 "#
-            )
-        };
-        let plan_dir = dir.path().join("plans").join("isolation");
+                )
+            })
+            .collect::<String>();
+        let plan_dir = dir.join("plans").join(plan_id);
         std::fs::create_dir_all(&plan_dir).expect("plan dir");
         std::fs::write(
             plan_dir.join("tasks.toml"),
-            format!(
-                "[meta]\nplan = \"isolation\"\nmax_parallel = 2\nskip_enrichment = true\n{}{}{}{}",
-                task("T1", "", "false"),
-                task("T2", "", "sleep 2 && touch T2.verified"),
-                task("T3", "\"T2\"", "touch T3.verified"),
-                task("T4", "\"T1\"", "touch T4.verified"),
-            ),
+            format!("[meta]\nplan = \"{plan_id}\"\nskip_enrichment = true\n{meta}\n{tasks}"),
         )
         .expect("tasks.toml");
+    }
 
-        let (exit_code, _, _) = run_plan_set(dir.path(), Some(1), None).await;
+    /// `T1` fails; `T2` passes once `T1` has failed; `T3` needs only `T2`;
+    /// `T4` needs `T1`. Each passing task leaves a `<id>.verified` file.
+    const ISOLATION_TASKS: &[(&str, &[&str], &str)] = &[
+        ("T1", &[], "false"),
+        ("T2", &[], "sleep 2 && touch T2.verified"),
+        ("T3", &["T2"], "touch T3.verified"),
+        ("T4", &["T1"], "touch T4.verified"),
+    ];
+
+    /// gap-4d835d: in a plan run a failed task blocks only its own
+    /// dependants. `T3` does not depend on the failed `T1` and becomes ready
+    /// only after `T1` has failed, yet it still runs; `T4` needs `T1`, is
+    /// skipped, and is reported and recorded as blocked by `T1`; the plan
+    /// reports failure once every task has settled.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_failed_task_blocks_only_its_dependants() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        fake_provider_workspace(dir.path(), 0.0, "");
+        write_verify_plan(dir.path(), "isolation", "max_parallel = 2", ISOLATION_TASKS);
+
+        let (exit_code, _, hub) = run_plan_set(dir.path(), Some(1), None).await;
 
         assert_eq!(exit_code, EXIT_FAILURE);
         assert!(dir.path().join("T2.verified").exists(), "T2 passes");
@@ -2666,6 +2791,101 @@ max_retries = 0
             crate::graph_checkpoint::canonical_checkpoint_status(dir.path(), "isolation"),
             Some(GraphCheckpointStatus::Failed)
         );
+        let outcomes = crate::graph_checkpoint::canonical_task_outcomes(dir.path(), "isolation")
+            .expect("recorded task outcomes");
+        assert_eq!(outcomes.failed, BTreeSet::from(["T1".to_string()]));
+        assert_eq!(
+            outcomes.blocked_by,
+            BTreeMap::from([("T4".to_string(), "T1".to_string())])
+        );
+        assert!(outcomes.not_started.is_empty(), "{outcomes:?}");
+        assert!(
+            hub.current_snapshot().event_log.iter().any(|entry| {
+                entry.event_type == "graph.task_blocked"
+                    && entry
+                        .message
+                        .contains("task 'T4' blocked by failed task 'T1'")
+            }),
+            "the block is reported"
+        );
+    }
+
+    /// `fail_fast`, from `[conductor] plan_failure_policy` or a plan's
+    /// `[meta] failure_policy`, starts no further task after the first
+    /// failure: `T3` never runs and is recorded as not started.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn fail_fast_policy_stops_a_plan_at_its_first_failure() {
+        for (config, meta) in [
+            (
+                "[conductor]\nplan_failure_policy = \"fail_fast\"\n",
+                "max_parallel = 2",
+            ),
+            ("", "max_parallel = 2\nfailure_policy = \"fail_fast\""),
+        ] {
+            let dir = tempfile::tempdir().expect("tempdir");
+            fake_provider_workspace(dir.path(), 0.0, config);
+            write_verify_plan(dir.path(), "isolation", meta, ISOLATION_TASKS);
+
+            let (exit_code, _, _) = run_plan_set(dir.path(), Some(1), None).await;
+
+            assert_eq!(exit_code, EXIT_FAILURE, "{config}{meta}");
+            assert!(dir.path().join("T2.verified").exists(), "T2 was running");
+            assert!(
+                !dir.path().join("T3.verified").exists(),
+                "no task starts after the failure ({config}{meta})"
+            );
+            let outcomes =
+                crate::graph_checkpoint::canonical_task_outcomes(dir.path(), "isolation")
+                    .expect("recorded task outcomes");
+            assert_eq!(outcomes.failed, BTreeSet::from(["T1".to_string()]));
+            assert_eq!(
+                outcomes.not_started.get("T3").map(String::as_str),
+                Some("aborted after graph failure")
+            );
+        }
+    }
+
+    /// Once a plan's settled spend reaches `[budget] max_plan_usd`, no further
+    /// task starts, even under the default `skip_failed` policy: the tasks
+    /// waiting on the spent one are recorded as not started, not failed.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_spent_plan_budget_starts_no_further_task() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        fake_provider_workspace(
+            dir.path(),
+            0.002,
+            "[budget]\nmax_plan_usd = 0.001\nmax_turn_usd = 0.001\n",
+        );
+        write_verify_plan(
+            dir.path(),
+            "budget",
+            "max_parallel = 2",
+            &[
+                ("T1", &[], "touch T1.verified"),
+                ("T2", &["T1"], "touch T2.verified"),
+                ("T3", &["T1"], "touch T3.verified"),
+            ],
+        );
+
+        let (exit_code, _, _) = run_plan_set_with(dir.path(), Some(1), None, false).await;
+
+        assert_eq!(exit_code, EXIT_FAILURE);
+        assert!(
+            dir.path().join("T1.verified").exists(),
+            "T1 spends the budget"
+        );
+        let provider_calls =
+            std::fs::read_to_string(dir.path().join("provider-calls")).expect("provider call log");
+        assert_eq!(provider_calls.lines().count(), 1, "only T1 was dispatched");
+        let outcomes = crate::graph_checkpoint::canonical_task_outcomes(dir.path(), "budget")
+            .expect("recorded task outcomes");
+        assert!(outcomes.failed.is_empty(), "{outcomes:?}");
+        for task_id in ["T2", "T3"] {
+            let reason = outcomes.not_started.get(task_id).expect("not started");
+            assert!(reason.starts_with("plan budget exhausted"), "{reason}");
+        }
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

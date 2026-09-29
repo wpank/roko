@@ -22,7 +22,7 @@
 //!   extensions/receipts and its existing cost ledger preserved; v3 is written
 //!   on the next atomic checkpoint. Versions other than 2 or 3 fail closed.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -63,6 +63,9 @@ pub const GATE_VERDICT_EXTENSION: &str = "roko.gate.verdict@1";
 
 /// Known extension namespace for completion delivery state (#254).
 pub const DELIVERY_EXTENSION: &str = roko_graph::delivery::DELIVERY_EXTENSION_KEY;
+
+/// Known extension namespace for the tasks the last run did not complete.
+pub const TASK_OUTCOME_EXTENSION: &str = "roko.task.outcome@1";
 
 /// Lifecycle state persisted beside a Graph Activity recording.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -212,6 +215,23 @@ pub struct GateVerdictSummary {
     pub invalidated_on_resume: Vec<InvalidatedActivity>,
 }
 
+/// Value stored under [`TASK_OUTCOME_EXTENSION`]: how the last run left the
+/// tasks it did not complete. A resume runs every one of them again.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskOutcomeSummary {
+    /// Tasks that failed.
+    #[serde(default)]
+    pub failed: BTreeSet<String>,
+    /// Tasks skipped because a task they depend on failed, each with the
+    /// failed task that blocked it.
+    #[serde(default)]
+    pub blocked_by: BTreeMap<String, String>,
+    /// Tasks that never started for another reason, such as a spent plan
+    /// budget or a fail-fast stop, each with that reason.
+    #[serde(default)]
+    pub not_started: BTreeMap<String, String>,
+}
+
 /// Task nodes whose recorded outputs must carry a passing gate verdict before
 /// they may be replayed: every task with authored verify steps. A task whose
 /// definition cannot be decoded is treated as verify-bearing (fail closed).
@@ -299,16 +319,23 @@ fn recorded_gate_verdicts(path: &Path) -> BTreeMap<String, TaskGateVerdict> {
 
 /// Build the [`GATE_VERDICT_EXTENSION`] entry for `summary`.
 fn gate_verdict_extension(summary: &GateVerdictSummary) -> Result<CheckpointExtension> {
-    let (namespace, version) = GATE_VERDICT_EXTENSION
-        .split_once('@')
-        .context("gate verdict extension key has no schema version")?;
     let value = serde_json::to_value(summary).context("serialize gate verdict summary")?;
-    let bytes = serde_json::to_vec(&value).context("serialize gate verdict summary")?;
+    host_extension(GATE_VERDICT_EXTENSION, value)
+}
+
+/// Build the optional, host-owned extension entry for `key`
+/// (`<namespace>@<schema_version>`) holding `value`.
+fn host_extension(key: &str, value: serde_json::Value) -> Result<CheckpointExtension> {
+    let (namespace, version) = key
+        .split_once('@')
+        .with_context(|| format!("extension key `{key}` has no schema version"))?;
+    let bytes =
+        serde_json::to_vec(&value).with_context(|| format!("serialize extension `{key}`"))?;
     Ok(CheckpointExtension {
         namespace: namespace.to_string(),
         schema_version: version
             .parse()
-            .context("gate verdict extension schema version")?,
+            .with_context(|| format!("extension `{key}` schema version"))?,
         required: false,
         fingerprint: blake3::hash(&bytes).to_hex().to_string(),
         value,
@@ -623,6 +650,21 @@ impl PreparedGraphCheckpoint {
     #[must_use]
     pub fn invalidated_activities(&self) -> &[InvalidatedActivity] {
         &self.invalidated_on_resume
+    }
+
+    /// Record how this run left the tasks it did not complete, replacing the
+    /// previous run's record. The next terminal write persists it.
+    pub fn record_task_outcomes(&mut self, summary: &TaskOutcomeSummary) -> Result<()> {
+        if summary == &TaskOutcomeSummary::default() {
+            self.manifest.extensions.remove(TASK_OUTCOME_EXTENSION);
+            return Ok(());
+        }
+        let value = serde_json::to_value(summary).context("serialize task outcomes")?;
+        self.manifest.extensions.insert(
+            TASK_OUTCOME_EXTENSION.to_string(),
+            host_extension(TASK_OUTCOME_EXTENSION, value)?,
+        );
+        Ok(())
     }
 
     /// Decode the persisted [`GATE_VERDICT_EXTENSION`] summary, if any.
@@ -1276,6 +1318,32 @@ pub fn canonical_checkpoint_status(workdir: &Path, plan_id: &str) -> Option<Grap
     serde_json::from_slice::<StatusOnly>(&bytes)
         .ok()
         .map(|manifest| manifest.status)
+}
+
+/// Task outcomes recorded by the last run in `plan_id`'s canonical
+/// checkpoint under `.roko/state/graph/`, or `None` when there are none.
+#[must_use]
+pub fn canonical_task_outcomes(workdir: &Path, plan_id: &str) -> Option<TaskOutcomeSummary> {
+    #[derive(Deserialize)]
+    struct ExtensionsOnly {
+        #[serde(default)]
+        extensions: BTreeMap<String, CheckpointExtension>,
+    }
+
+    let manifest = workdir
+        .join(".roko/state/graph")
+        .join(safe_plan_component(plan_id))
+        .join("checkpoint.json");
+    let bytes = std::fs::read(manifest).ok()?;
+    let manifest = serde_json::from_slice::<ExtensionsOnly>(&bytes).ok()?;
+    serde_json::from_value(
+        manifest
+            .extensions
+            .get(TASK_OUTCOME_EXTENSION)?
+            .value
+            .clone(),
+    )
+    .ok()
 }
 
 // ---------------------------------------------------------------------------

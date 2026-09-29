@@ -174,6 +174,7 @@ semantics and built-in profiles.
 |-------|------|---------|-------------|
 | `max_agents` | usize | 8 | Maximum concurrent agents |
 | `max_parallel_plans` | usize | 2 | Maximum parallel plan executions |
+| `plan_failure_policy` | `skip_failed` or `fail_fast` | `skip_failed` | When a plan task fails: skip only its dependants and run the rest, or start no further task. A plan's `[meta] failure_policy` overrides it |
 | `parallel_enabled` | bool | false | Enable parallel execution |
 | `express_mode` | bool | false | Skip non-essential steps |
 | `max_auto_fix_attempts` | u32 | 3 | Auto-fix retry limit |

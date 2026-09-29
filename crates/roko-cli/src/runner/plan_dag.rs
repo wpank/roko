@@ -643,6 +643,7 @@ mod tests {
                     estimated_total_minutes: 10,
                     skip_enrichment: false,
                     source_prd: None,
+                    failure_policy: None,
                 },
                 tasks,
             },

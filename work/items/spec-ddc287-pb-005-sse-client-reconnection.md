@@ -78,6 +78,9 @@ comments to script. The 60 s watchdog therefore also reopens an idle but healthy
 so no events are lost. The comment on `KEEPALIVE_TIMEOUT_MS` now says this. A named keepalive event from
 roko-serve would let the watchdog tell an idle stream from a dead one.
 
+2026-09-29: bug-a5dcaa (1bff443b0) made the keepalive a named event (`event: keepalive`, data `{}`) that the
+client's watchdog listens for, so an idle, healthy stream is no longer reopened.
+
 ## Original notes
 
 SSE client + reconnection. Implement the SSE event client that connects to `GET /api/events` on roko-serve. This is the primary real-time data source — 99% of live updates flow through SSE.

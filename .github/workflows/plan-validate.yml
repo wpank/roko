@@ -42,9 +42,11 @@ jobs:
       - name: Discover and validate every tracked plan directory
         shell: bash
         run: |
+          # Test fixtures (some invalid on purpose) and archived plans (kept for
+          # reference only, see plans/archive/README.md) are not validated.
           mapfile -t plan_dirs < <(
             git ls-files |
-              awk '/(^|\/)tasks\.toml$/{sub("/tasks.toml$", ""); print}' |
+              awk '/(^|\/)tasks\.toml$/ && !/(^|\/)fixtures\// && !/^plans\/archive\//{sub("/tasks.toml$", ""); print}' |
               sort -u
           )
 

@@ -3296,7 +3296,10 @@ mod cascade_router_tests {
         assert_eq!(router.confidence_snapshot()["claude-sonnet-4-5"], (2, 1));
         let arms = router.linucb().arm_stats();
         assert_eq!(arms[0].observations, 2);
-        assert!(arms[0].b_vector.iter().any(|b| *b > 0.0), "a success earns a positive reward");
+        assert!(
+            arms[0].b_vector.iter().any(|b| *b > 0.0),
+            "a success earns a positive reward"
+        );
     }
 
     // ── Cross-restart LinUCB persistence ────────────────────────────────

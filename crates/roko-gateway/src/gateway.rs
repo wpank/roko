@@ -1150,11 +1150,8 @@ mod tests {
             "primary".into(),
             "fallback".into(),
         ]));
-        let mut config = GatewayConfig::new(
-            Arc::clone(&router),
-            vec![primary, fallback],
-            cost_table(),
-        );
+        let mut config =
+            GatewayConfig::new(Arc::clone(&router), vec![primary, fallback], cost_table());
         config.max_fallbacks = 2;
         let gateway = InferenceGateway::new(config);
         gateway

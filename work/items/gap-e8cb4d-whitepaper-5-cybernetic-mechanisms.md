@@ -2,7 +2,7 @@
 id = "gap-e8cb4d"
 kind = "gap"
 title = "Whitepaper §5 Cybernetic mechanisms"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "whitepaper"
@@ -11,6 +11,7 @@ subsystem = ["docs/whitepaper"]
 created = 2026-09-29
 updated = 2026-09-29
 last_verified = 2026-09-29
+last_verified_rev = "dc371b1ae"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e1"
 discovered_from = "tmp/cybernetic-harness/tldr/03-MECHANISMS.md (learning and memory; regulation and audits)"
 anchors = ["docs/whitepaper/05-cybernetic-mechanisms.md"]
@@ -20,6 +21,11 @@ links = { depends_on = ["gap-0191eb", "gap-35a614", "gap-af0b57"], blocks = [], 
 
 [[verify]]
 command = "test -f docs/whitepaper/05-cybernetic-mechanisms.md && grep -qi 'guarded commit' docs/whitepaper/05-cybernetic-mechanisms.md && test -f tools/paperlint.py && python3 tools/paperlint.py --strict docs/whitepaper/05-cybernetic-mechanisms.md"
+
+[closed]
+at = 2026-09-29
+by = "coordinator (session 7622b882)"
+evidence = "Whitepaper §5 cybernetic mechanisms merged in ddad1f2bf; tags match the matrix; paperlint --strict passes."
 +++
 
 ## Problem

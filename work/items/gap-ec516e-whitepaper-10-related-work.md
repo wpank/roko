@@ -2,7 +2,7 @@
 id = "gap-ec516e"
 kind = "gap"
 title = "Whitepaper §10 Related work"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "whitepaper"
@@ -11,6 +11,7 @@ subsystem = ["docs/whitepaper"]
 created = 2026-09-29
 updated = 2026-09-29
 last_verified = 2026-09-29
+last_verified_rev = "dc371b1ae"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e1"
 discovered_from = "tmp/cybernetic-harness/paper/sections/03a-related-work.md and 03b-related-work.md (§3.1-3.7)"
 anchors = ["docs/whitepaper/10-related-work.md"]
@@ -20,6 +21,11 @@ links = { depends_on = ["gap-0191eb", "gap-af0b57"], blocks = [], related = ["ga
 
 [[verify]]
 command = "test -f docs/whitepaper/10-related-work.md && test $(grep -oF '[@' docs/whitepaper/10-related-work.md | wc -l) -ge 10 && test -f tools/paperlint.py && python3 tools/paperlint.py --strict docs/whitepaper/10-related-work.md"
+
+[closed]
+at = 2026-09-29
+by = "coordinator (session 7622b882)"
+evidence = "Whitepaper §10 related work merged in 360becba3 (27 citations; bib deduped and repaired in 86e7f6ea1, 260a54f40, 3796db34e; pandoc citeproc clean); verify passes."
 +++
 
 ## Problem

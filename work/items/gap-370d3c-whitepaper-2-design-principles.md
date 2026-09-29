@@ -2,7 +2,7 @@
 id = "gap-370d3c"
 kind = "gap"
 title = "Whitepaper §2 Design principles"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "whitepaper"
@@ -11,6 +11,7 @@ subsystem = ["docs/whitepaper"]
 created = 2026-09-29
 updated = 2026-09-29
 last_verified = 2026-09-29
+last_verified_rev = "dc371b1ae"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e1"
 discovered_from = "tmp/cybernetic-harness/tldr/04-FRONTIER-PLANS-CHEAP-EXECUTES.md (design rules 1-8)"
 anchors = ["docs/whitepaper/02-design-principles.md"]
@@ -20,6 +21,11 @@ links = { depends_on = ["gap-0191eb", "gap-af0b57"], blocks = [], related = ["ga
 
 [[verify]]
 command = "test -f docs/whitepaper/02-design-principles.md && test $(grep -oF '[@' docs/whitepaper/02-design-principles.md | wc -l) -ge 8 && test -f tools/paperlint.py && python3 tools/paperlint.py --strict docs/whitepaper/02-design-principles.md"
+
+[closed]
+at = 2026-09-29
+by = "coordinator (session 7622b882)"
+evidence = "Whitepaper §2 design principles merged in 29a9dc4a7 (eight rules, 14 citations); verify passes at HEAD."
 +++
 
 ## Problem

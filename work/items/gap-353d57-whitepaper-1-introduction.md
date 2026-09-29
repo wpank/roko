@@ -2,7 +2,7 @@
 id = "gap-353d57"
 kind = "gap"
 title = "Whitepaper §1 Introduction"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "whitepaper"
@@ -11,6 +11,7 @@ subsystem = ["docs/whitepaper"]
 created = 2026-09-29
 updated = 2026-09-29
 last_verified = 2026-09-29
+last_verified_rev = "dc371b1ae"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e1"
 discovered_from = "tmp/cybernetic-harness/tldr/01-WHAT-AND-WHY.md (the idea; where it stands)"
 anchors = ["docs/whitepaper/01-introduction.md", "docs/whitepaper/00-abstract.md"]
@@ -20,6 +21,11 @@ links = { depends_on = ["gap-0191eb", "gap-af0b57"], blocks = [], related = ["ga
 
 [[verify]]
 command = "test -f docs/whitepaper/00-abstract.md && test -f docs/whitepaper/01-introduction.md && test -f tools/paperlint.py && python3 tools/paperlint.py --strict docs/whitepaper/00-abstract.md docs/whitepaper/01-introduction.md"
+
+[closed]
+at = 2026-09-29
+by = "coordinator (session 7622b882)"
+evidence = "Whitepaper abstract and §1 merged in d6f962ac1; paperlint --strict passes on both files at HEAD."
 +++
 
 ## Problem

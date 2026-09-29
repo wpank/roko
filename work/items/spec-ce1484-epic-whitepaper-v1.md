@@ -88,18 +88,18 @@ This is the implementation plan, in order.
 
 - [x] dec-2cd76a: Decide the whitepaper's title, audience, length and venue
 - [x] gap-0191eb: Whitepaper outline and section stubs: the claims each section makes and their sources
-- [ ] gap-af0b57: paperlint: a whitepaper check that fails on unsupported claims
-- [ ] gap-35a614: Status matrix: every Roko mechanism with its status tag at a commit
-- [ ] gap-353d57: Whitepaper §1 Introduction
-- [ ] gap-370d3c: Whitepaper §2 Design principles
-- [ ] gap-4161ea: Whitepaper §3 Architecture and control stack, with Figure 1
-- [ ] gap-ac4646: Whitepaper §4 The golden path step by step, with Figure 2
-- [ ] gap-e8cb4d: Whitepaper §5 Cybernetic mechanisms
-- [ ] gap-424bf8: Whitepaper §6 Measured trust
-- [ ] gap-29a64e: Whitepaper §7 Field evidence
-- [ ] gap-2aad7d: Whitepaper §8 Evaluation plan
-- [ ] gap-c19902: Whitepaper §9 Status, limitations and roadmap
-- [ ] gap-ec516e: Whitepaper §10 Related work
+- [x] gap-af0b57: paperlint: a whitepaper check that fails on unsupported claims
+- [x] gap-35a614: Status matrix: every Roko mechanism with its status tag at a commit
+- [x] gap-353d57: Whitepaper §1 Introduction
+- [x] gap-370d3c: Whitepaper §2 Design principles
+- [x] gap-4161ea: Whitepaper §3 Architecture and control stack, with Figure 1
+- [x] gap-ac4646: Whitepaper §4 The golden path step by step, with Figure 2
+- [x] gap-e8cb4d: Whitepaper §5 Cybernetic mechanisms
+- [x] gap-424bf8: Whitepaper §6 Measured trust
+- [x] gap-29a64e: Whitepaper §7 Field evidence
+- [x] gap-2aad7d: Whitepaper §8 Evaluation plan
+- [x] gap-c19902: Whitepaper §9 Status, limitations and roadmap
+- [x] gap-ec516e: Whitepaper §10 Related work
 - [ ] gap-d1d92c: Whitepaper figures: architecture, golden-path loop and status matrix
 - [ ] gap-8d2c79: Whitepaper review: an independent read and a strict paperlint pass
 - [ ] gap-8117a8: Publish the whitepaper: PDF build, release tag and venue

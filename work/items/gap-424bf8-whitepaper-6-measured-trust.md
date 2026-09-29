@@ -2,7 +2,7 @@
 id = "gap-424bf8"
 kind = "gap"
 title = "Whitepaper §6 Measured trust"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "whitepaper"
@@ -11,6 +11,7 @@ subsystem = ["docs/whitepaper"]
 created = 2026-09-29
 updated = 2026-09-29
 last_verified = 2026-09-29
+last_verified_rev = "dc371b1ae"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e1"
 discovered_from = "tmp/cybernetic-harness/tldr/research/C3-competitive-landscape.md (what no product documents)"
 anchors = ["docs/whitepaper/06-measured-trust.md"]
@@ -20,6 +21,11 @@ links = { depends_on = ["gap-0191eb", "gap-af0b57"], blocks = [], related = ["ga
 
 [[verify]]
 command = "test -f docs/whitepaper/06-measured-trust.md && grep -qi 'false-green rate' docs/whitepaper/06-measured-trust.md && test -f tools/paperlint.py && python3 tools/paperlint.py --strict docs/whitepaper/06-measured-trust.md"
+
+[closed]
+at = 2026-09-29
+by = "coordinator (session 7622b882)"
+evidence = "Whitepaper §6 measured trust merged in b9384f659; verify passes."
 +++
 
 ## Problem

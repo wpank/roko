@@ -2,7 +2,7 @@
 id = "gap-2aad7d"
 kind = "gap"
 title = "Whitepaper §8 Evaluation plan"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "whitepaper"
@@ -11,6 +11,7 @@ subsystem = ["docs/whitepaper"]
 created = 2026-09-29
 updated = 2026-09-29
 last_verified = 2026-09-29
+last_verified_rev = "dc371b1ae"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e1"
 discovered_from = "tmp/cybernetic-harness/tldr/04-FRONTIER-PLANS-CHEAP-EXECUTES.md (How to prove it)"
 anchors = ["docs/whitepaper/08-evaluation-plan.md"]
@@ -20,6 +21,11 @@ links = { depends_on = ["gap-0191eb", "gap-af0b57"], blocks = [], related = ["sp
 
 [[verify]]
 command = "test -f docs/whitepaper/08-evaluation-plan.md && grep -qi 'cost per verified task' docs/whitepaper/08-evaluation-plan.md && test -f tools/paperlint.py && python3 tools/paperlint.py --strict docs/whitepaper/08-evaluation-plan.md"
+
+[closed]
+at = 2026-09-29
+by = "coordinator (session 7622b882)"
+evidence = "Whitepaper §8 evaluation plan merged in 79ab7cfcb (S09 arm ids, plan-level slice, falsifiers); verify passes."
 +++
 
 ## Problem

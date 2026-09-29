@@ -2,7 +2,7 @@
 id = "gap-35a614"
 kind = "gap"
 title = "Status matrix: every Roko mechanism with its status tag at a commit"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "whitepaper"
@@ -11,6 +11,7 @@ subsystem = ["docs/whitepaper", "tools/status_matrix"]
 created = 2026-09-29
 updated = 2026-09-29
 last_verified = 2026-09-29
+last_verified_rev = "dc371b1ae"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e1"
 discovered_from = "tmp/cybernetic-harness/tldr/03-MECHANISMS.md (68 mechanisms, tagged at d9e79e9d8)"
 anchors = ["docs/whitepaper/appendix-status-matrix.md", "docs/whitepaper/data/mechanisms.toml", "tools/status_matrix.py", "tools/test_status_matrix.py"]
@@ -23,6 +24,11 @@ command = "test -f tools/status_matrix.py && python3 tools/status_matrix.py --ch
 
 [[verify]]
 command = "test -f docs/whitepaper/appendix-status-matrix.md && test -f tools/paperlint.py && python3 tools/paperlint.py --strict docs/whitepaper/appendix-status-matrix.md"
+
+[closed]
+at = 2026-09-29
+by = "coordinator (session 7622b882)"
+evidence = "Status matrix: docs/whitepaper/data/mechanisms.toml (71 rows pinned a17d4dadd), tools/status_matrix.py with 20 tests, appendix-status-matrix.md; merged 5eac79f0d, 6b660092a, 2117b8b6b, d5313d77d. status_matrix --check and paperlint --strict on the appendix pass."
 +++
 
 ## Problem

@@ -2,7 +2,7 @@
 id = "gap-29a64e"
 kind = "gap"
 title = "Whitepaper §7 Field evidence"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "whitepaper"
@@ -11,7 +11,7 @@ subsystem = ["docs/whitepaper"]
 created = 2026-09-29
 updated = 2026-09-29
 last_verified = 2026-09-29
-last_verified_rev = "1f4481133"
+last_verified_rev = "dc371b1ae"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e1"
 discovered_from = "tmp/cybernetic-harness/evidence/field/CASES.md (CASE-001 to CASE-008)"
 anchors = ["docs/whitepaper/07-field-evidence.md", "docs/whitepaper/evidence"]
@@ -21,6 +21,11 @@ links = { depends_on = ["gap-0191eb", "bug-7b37c4", "gap-af0b57"], blocks = [], 
 
 [[verify]]
 command = "test -f docs/whitepaper/07-field-evidence.md && grep -qi 'observational' docs/whitepaper/07-field-evidence.md && test -f tools/paperlint.py && python3 tools/paperlint.py --strict docs/whitepaper/07-field-evidence.md"
+
+[closed]
+at = 2026-09-29
+by = "coordinator (session 7622b882)"
+evidence = "Whitepaper §7 field evidence merged in f5b070d86 with docs/whitepaper/evidence/ (frozen rollup 14:37:51, CASES, B7, W12 excerpt, SHA256SUMS; no absolute paths); every number footnoted; paperlint --strict passes."
 +++
 
 ## Problem

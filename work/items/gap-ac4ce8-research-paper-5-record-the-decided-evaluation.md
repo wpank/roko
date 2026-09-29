@@ -2,7 +2,7 @@
 id = "gap-ac4ce8"
 kind = "gap"
 title = "Research paper §5: record the decided evaluation scope and trim the protocol to budget"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "whitepaper"
@@ -11,6 +11,7 @@ subsystem = ["paper"]
 created = 2026-09-29
 updated = 2026-09-29
 last_verified = 2026-09-29
+last_verified_rev = "dc371b1ae"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e18"
 discovered_from = "tmp/cybernetic-harness/workstreams/assessment/W9-paper-workstream.md"
 anchors = ["tmp/cybernetic-harness/paper/sections/05-evaluation-protocol.md"]
@@ -23,6 +24,11 @@ command = "test -f tools/paperlint.py && python3 tools/paperlint.py --budget 1.2
 
 [[verify]]
 command = "grep -qi 'plan-level slice' tmp/cybernetic-harness/paper/sections/05-evaluation-protocol.md"
+
+[closed]
+at = 2026-09-29
+by = "coordinator (session 7622b882)"
+evidence = "Research paper §5 records the decided scope (single tasks plus the exploratory plan-level slice, S09 arm ids) at 1.12x budget; both verifies pass."
 +++
 
 ## Problem

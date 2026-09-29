@@ -59,13 +59,13 @@ This is the implementation plan.
 
 ## Done when
 
-- [ ] gap-aad48c: Research paper: align the outline, abstract, introduction and conclusion with the golden-path thesis
-- [ ] gap-e08b4d: Research paper §4: rebuild §4.1 around the control stack and the golden-path loop, and tag designed identifiers
-- [ ] gap-ac4ce8: Research paper §5: record the decided evaluation scope and trim the protocol to budget
-- [ ] gap-56a1b4: Research paper §3: trim the related work to budget
-- [ ] gap-04b0ff: Research paper §8 and §9: the operator loop, field-evidence threats, and trims
-- [ ] gap-2abf34: Research paper appendices E and F: reproducibility formats and the cost of the supervising sessions
-- [ ] gap-c4d630: Research paper claims aggregator: regenerate CLAIMS-EVIDENCE.md from the section ledgers
+- [x] gap-aad48c: Research paper: align the outline, abstract, introduction and conclusion with the golden-path thesis
+- [x] gap-e08b4d: Research paper §4: rebuild §4.1 around the control stack and the golden-path loop, and tag designed identifiers
+- [x] gap-ac4ce8: Research paper §5: record the decided evaluation scope and trim the protocol to budget
+- [x] gap-56a1b4: Research paper §3: trim the related work to budget
+- [x] gap-04b0ff: Research paper §8 and §9: the operator loop, field-evidence threats, and trims
+- [x] gap-2abf34: Research paper appendices E and F: reproducibility formats and the cost of the supervising sessions
+- [x] gap-c4d630: Research paper claims aggregator: regenerate CLAIMS-EVIDENCE.md from the section ledgers
 - [x] gap-cdd5f4: Companion report: re-derive every number at the audit/baseline-2026-09-28 tag
 - [x] gap-652d05: Companion report: draft the E10 main text with E1 number markers
 - [x] gap-b64fba: Refresh the TL;DR against the 2026-09-29 merges and fix three known errors

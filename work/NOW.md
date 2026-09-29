@@ -4,7 +4,7 @@
 
 What to work on next: the top checked, open items of each goal, highest-priority goal first. Reorder or change goals in `goals.toml`; pin an item higher with `rank = 1` (lower first).
 
-**Drift:** 53 anchor gone · 115 changed since checked · 6 mentioned in commits. Re-check them before relying on this list: `DRIFT.md`.
+**Drift:** 50 anchor gone · 115 changed since checked · 5 mentioned in commits. Re-check them before relying on this list: `DRIFT.md`.
 
 ## 1. Public release: security, licence, CI, first run
 
@@ -17,10 +17,10 @@ _20 more open · 5 unchecked (`TRIAGE.md`) · `goal = "release"`_
 ## 2. Whitepaper v1 and the research papers
 
 - **P1** [spec-f8d196](items/spec-f8d196-epic-research-paper-companion-report-and-tl.md) Epic: research paper, companion report and TL;DR upkeep [spec] · size L · verified 2026-09-29
-- **P1** [gap-e08b4d](items/gap-e08b4d-research-paper-4-rebuild-4-1-around.md) Research paper §4: rebuild §4.1 around the control stack and the golden-path loop, and tag designed identifiers · size M · verified 2026-09-29
-- **P1** [gap-ac4ce8](items/gap-ac4ce8-research-paper-5-record-the-decided-evaluation.md) Research paper §5: record the decided evaluation scope and trim the protocol to budget · size M · verified 2026-09-29
+- **P2** [gap-b409fa](items/gap-b409fa-companion-report-fill-the-re-derived-numbers.md) Companion report: fill the re-derived numbers into the E10 draft and fix the flagged source errors · size M · verified 2026-09-29
+- **P2** [gap-856053](items/gap-856053-research-paper-appendices-a-and-b-match.md) Research paper appendices A and B: match the benchmark and the spec standard as built · size M · verified 2026-09-29
 
-_13 more open · 13 unchecked (`TRIAGE.md`) · `goal = "whitepaper"`_
+_3 more open · 4 unchecked (`TRIAGE.md`) · `goal = "whitepaper"`_
 
 ## 3. Roko tells the truth and is safe (P0)
 
@@ -60,7 +60,7 @@ _78 more open · 1 unchecked (`TRIAGE.md`) · `goal = "core"`_
 - **P1** [gap-aabeff](items/gap-aabeff-tool-t003-tui-paths-still-consume-string.md) TUI paths still consume string/tail projections that lose semantics (TUI adoption unproven) · size L · verified 2026-09-29
 - **P1** [find-f489db](items/find-f489db-tool-dispatch-observability-gaps-td-003-td.md) Tool Dispatch Observability Gaps (TD-003, TD-004, TD-005) [finding] · size M · verified 2026-09-29
 
-_25 more open · `goal = "visibility"`_
+_24 more open · `goal = "visibility"`_
 
 ## 9. Learning loops on the Graph path
 
@@ -76,7 +76,7 @@ _22 more open · on hold: bug-429315, bug-8c5d32, bug-b9be1d, bug-dd5dca, bug-de
 - **P1** [gap-09e478](items/gap-09e478-dogfood-session-evidence-bundle.md) Dogfood Session Evidence Bundle · size M · verified 2026-09-29
 - **P2** [bug-97c2dc](items/bug-97c2dc-async-runtime-anti-patterns-drop-spawn-unbounded.md) Async Runtime Anti-Patterns (Drop+Spawn, Unbounded Channels, Mutex Across Await) [bug] · size M · verified 2026-09-29
 
-_38 more open · 13 unchecked (`TRIAGE.md`) · `goal = "tooling"`_
+_37 more open · 13 unchecked (`TRIAGE.md`) · `goal = "tooling"`_
 
 ## 11. Feature ideas
 

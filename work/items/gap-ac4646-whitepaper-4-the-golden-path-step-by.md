@@ -2,7 +2,7 @@
 id = "gap-ac4646"
 kind = "gap"
 title = "Whitepaper §4 The golden path step by step, with Figure 2"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "whitepaper"
@@ -11,6 +11,7 @@ subsystem = ["docs/whitepaper"]
 created = 2026-09-29
 updated = 2026-09-29
 last_verified = 2026-09-29
+last_verified_rev = "dc371b1ae"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e1"
 discovered_from = "tmp/cybernetic-harness/tldr/04-FRONTIER-PLANS-CHEAP-EXECUTES.md (the loop, steps 1-11)"
 anchors = ["docs/whitepaper/04-golden-path.md"]
@@ -20,6 +21,11 @@ links = { depends_on = ["gap-0191eb", "gap-35a614", "gap-af0b57"], blocks = [], 
 
 [[verify]]
 command = "test -f docs/whitepaper/04-golden-path.md && grep -q 'Figure 2' docs/whitepaper/04-golden-path.md && test $(grep -cE '(WIRED|PARTIAL|ORPHANED|BUILT-UNWIRED|DOCS-ONLY|MISSING|REMOVED|BROKEN|UNPROVEN)@[0-9a-f]{7}' docs/whitepaper/04-golden-path.md) -ge 11 && test -f tools/paperlint.py && python3 tools/paperlint.py --strict docs/whitepaper/04-golden-path.md"
+
+[closed]
+at = 2026-09-29
+by = "coordinator (session 7622b882)"
+evidence = "Whitepaper §4 golden path merged in d1fcc21f7 and 596625d8a (11 steps tagged against the matrix, §4.12 table, Figure 2); verify passes."
 +++
 
 ## Problem

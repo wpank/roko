@@ -2,7 +2,7 @@
 id = "gap-4161ea"
 kind = "gap"
 title = "Whitepaper §3 Architecture and control stack, with Figure 1"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "whitepaper"
@@ -11,6 +11,7 @@ subsystem = ["docs/whitepaper"]
 created = 2026-09-29
 updated = 2026-09-29
 last_verified = 2026-09-29
+last_verified_rev = "dc371b1ae"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e1"
 discovered_from = "tmp/cybernetic-harness/tldr/02-HOW-IT-WORKS.md (the flow; the control stack)"
 anchors = ["docs/whitepaper/03-architecture.md"]
@@ -20,6 +21,11 @@ links = { depends_on = ["gap-0191eb", "gap-af0b57"], blocks = [], related = ["ga
 
 [[verify]]
 command = "test -f docs/whitepaper/03-architecture.md && grep -q 'Figure 1' docs/whitepaper/03-architecture.md && test -f tools/paperlint.py && python3 tools/paperlint.py --strict docs/whitepaper/03-architecture.md"
+
+[closed]
+at = 2026-09-29
+by = "coordinator (session 7622b882)"
+evidence = "Whitepaper §3 architecture and control stack merged in 972ceef2f and dc371b1ae (tags from the status matrix, Figure 1); paperlint --strict passes."
 +++
 
 ## Problem

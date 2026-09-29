@@ -2,7 +2,7 @@
 id = "gap-c19902"
 kind = "gap"
 title = "Whitepaper §9 Status, limitations and roadmap"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "whitepaper"
@@ -11,6 +11,7 @@ subsystem = ["docs/whitepaper"]
 created = 2026-09-29
 updated = 2026-09-29
 last_verified = 2026-09-29
+last_verified_rev = "dc371b1ae"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e1"
 discovered_from = "tmp/cybernetic-harness/tldr/05-GAPS-AND-PROPOSALS.md (§1 scorecard; §2 P0-P3)"
 anchors = ["docs/whitepaper/09-status-and-roadmap.md"]
@@ -20,6 +21,11 @@ links = { depends_on = ["gap-35a614", "gap-af0b57"], blocks = [], related = ["ga
 
 [[verify]]
 command = "test -f docs/whitepaper/09-status-and-roadmap.md && grep -q 'appendix-status-matrix' docs/whitepaper/09-status-and-roadmap.md && test -f tools/paperlint.py && python3 tools/paperlint.py --strict docs/whitepaper/09-status-and-roadmap.md"
+
+[closed]
+at = 2026-09-29
+by = "coordinator (session 7622b882)"
+evidence = "Whitepaper §9 status, limitations and roadmap merged in ead159496; verify passes."
 +++
 
 ## Problem

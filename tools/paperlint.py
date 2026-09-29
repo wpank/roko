@@ -15,7 +15,9 @@ Python 3 and git, and never writes. Code identifiers, paths and commits are look
       marker       a [[…]] marker left outside code; TOML headers such as [[task.verify]] are not markers
       citation     a [@key] missing from the paper's references.bib
       identifier   as for --check-identifiers
-      status-tag   a status tag (WIRED, PARTIAL, … MISSING) without @<commit>, or whose commit is not in HEAD's history
+      status-tag   a status tag (WIRED, PARTIAL, … MISSING) in prose without @<commit>, or a TAG@<commit> whose commit
+                   is not in HEAD's history. In a table or a code span a bare tag is a name, and so is a word that a
+                   "<!-- paperlint: claim-levels WIRED PARTIAL -->" line declares as the file's own claim level
       number       a $ amount, percentage, N× ratio, "N of M" or N/M count in a paragraph, list item or table with
                    neither an inline [@key] nor a footnote naming a commit, work item, [@key], snapshot or rollup,
                    or an existing evidence/ file ("95% CI" and "step 3 of 11" are not counts)
@@ -33,9 +35,9 @@ Python 3 and git, and never writes. Code identifiers, paths and commits are look
 
 Word counts cover headings and prose after line 1, tables and captions included (docs/whitepaper/README.md). They
 leave out code blocks, footnote definitions, HTML comments, a blockquote note right under the title, every section
-under a heading that says "Claims ledger" (its table is metadata for paper/tools/claims.py), and the "Placeholder
-map" and "Alternative …" sections. A slot marker (RESULT, FIG, TAB, CITE?, CITE-COMPANION, E1, FIELD)
-counts as one word; other markers count their words.
+whose heading is just "Claims ledger" or "Claims ledger (§…)" (its table is metadata for paper/tools/claims.py; a
+numbered "4.1 Claims ledger" is prose), and the "Placeholder map" and "Alternative …" sections. A slot marker
+(RESULT, FIG, TAB, CITE?, CITE-COMPANION, E1, FIELD) counts as one word; other markers count their words.
 
 The budget comes from an outline table in OUTLINE.md or README.md, in the file's directory or up to two above it:
 the column whose header says "budget" (words) or "pages" (times the outline's "N words per page", else 550). A row
@@ -58,13 +60,14 @@ STRICT_RANGE = (0.5, 1.3)
 UNWRITTEN = {"stub", "skeleton"}
 WORDS_PER_PAGE = 550
 SECTION_FILE = re.compile(r"^(?:\d{2}[a-z]?|[A-Z]|appendix)-[a-z0-9][a-z0-9-]*\.md$")
-LEDGER = re.compile(r"\bclaims ledger\b", re.I)  # anywhere in a heading, as paper/tools/claims.py finds it
+LEDGER = re.compile(r"claims ledger(?:\s*\([^()]*\))?", re.I)  # the whole heading: "Claims ledger (§3.1–§3.3)"
 EDITORIAL = re.compile(r"^(?:placeholder map|alternative\b)", re.I)
 
 HEADER = re.compile(r"^Status:\s*([A-Za-z][\w-]*)")
 HEADER_BUDGET = re.compile(r"\bbudget\s*[:=]?\s*[~≈]?\s*(\d[\d,]*)\s*words?\b", re.I)
 FENCE = re.compile(r"^\s*(`{3,}|~{3,})")
 COMMENT = re.compile(r"<!--.*?-->", re.S)
+LEVELS = re.compile(r"^[ \t]*<!--[ \t]*paperlint:[ \t]*claim-levels\b(.*?)-->[ \t]*$", re.M)  # a line of its own
 CODE_SPAN = re.compile(r"(?<!`)(`+)(?!`)(.+?)(?<!`)\1(?!`)")
 HEADING = re.compile(r"^ {0,3}(#{1,6})(?:[ \t]+|$)(.*)$")
 TABLE_ROW = re.compile(r"^\s*(?:>\s*)*\|")
@@ -241,7 +244,11 @@ class Doc:
             prev_blank = not line.strip()
             if line.strip() and not line.startswith(("    ", "\t")):
                 last = "list" if LIST_ITEM.match(line) else "footnote" if FOOTNOTE_DEF.match(line) else "other"
-        self.code = COMMENT.sub(lambda c: blank(c.group(0)), "\n".join(lines))
+        joined = "\n".join(lines)
+        # The companion's claim levels (EFFECTIVE … UNKNOWN) share WIRED and PARTIAL with the status tags; a file
+        # whose own scale does so says which words are its levels, and only their TAG@sha form is then a tag.
+        self.levels = {t.group(1) for d in LEVELS.finditer(joined) for t in TAG.finditer(d.group(1))}
+        self.code = COMMENT.sub(lambda c: blank(c.group(0)), joined)
         self.spans = [(c.start(2), c.group(2)) for c in CODE_SPAN.finditer(self.code)]
         self.prose = CODE_SPAN.sub(lambda c: blank(c.group(0)), self.code)
         self.markers: list[Marker] = []
@@ -352,7 +359,7 @@ class Doc:
             if h:
                 headings.append((i, len(h.group(1)), h.group(2).strip()))
         for n, (i, level, title) in enumerate(headings):
-            if LEDGER.search(title) or EDITORIAL.match(re.sub(r"^[\d.§\s]+", "", title)):
+            if LEDGER.fullmatch(title) or EDITORIAL.match(re.sub(r"^[\d.§\s]+", "", title)):
                 end = next((j for j, lv, _ in headings[n + 1:] if lv <= level), len(lines))
                 skip.update(range(i, end))
         if headings:
@@ -756,8 +763,11 @@ def check_commits(doc: Doc, repo: Repo | None) -> list[tuple[int, str]]:
 
 
 def check_tags(doc: Doc, repo: Repo | None) -> list[tuple[int, str]]:
-    """Tags in prose need @<commit>. In code a bare tag is a mention, but a TAG@sha still has its commit checked."""
-    found = [(t.start(), t.group(1), t.group(2)) for t in TAG.finditer(doc.bare)]
+    """Tags in prose need @<commit>. In a table or code a bare tag is a name (a column, a legend row, a mention), as
+    is a claim level the file declares; a TAG@sha has its commit checked everywhere."""
+    tables = [(b.start, b.end) for b in doc.blocks if b.kind == "table"]
+    found = [(t.start(), t.group(1), t.group(2)) for t in TAG.finditer(doc.bare)
+             if t.group(2) or not (t.group(1) in doc.levels or any(s <= t.start() < e for s, e in tables))]
     found += [(off + t.start(), t.group(1), t.group(2)) for off, content in doc.spans for t in TAG.finditer(content)
               if t.group(2)]
     out = []

@@ -68,8 +68,9 @@ impl RunFile {
 
 // ── Digests ───────────────────────────────────────────────────────────
 
-/// `"b3:"` plus the full hex BLAKE3 digest of `bytes`: the form of every
-/// telemetry digest and id (`task_spec_hash`, `record_id`).
+/// `"b3:"` plus the full hex BLAKE3 digest of `bytes`: the form of this
+/// module's digests and ids (`task_spec_hash`, `record_id`). S05's audit
+/// ledger (`roko.audit/1`) is the exception: its digests are `sha256:`.
 #[must_use]
 pub fn b3_digest(bytes: &[u8]) -> String {
     format!("b3:{}", blake3::hash(bytes).to_hex())
@@ -77,6 +78,8 @@ pub fn b3_digest(bytes: &[u8]) -> String {
 
 /// The id readers dedupe on (S01 §4.7):
 /// `blake3(schema | attempt_key | decision_point | item | seq_scope)`.
+/// `roko.audit/1` rows compute the same id with SHA-256; none are written
+/// here.
 #[must_use]
 pub fn record_id(
     schema: &str,
@@ -511,17 +514,24 @@ pub struct ExecutedModel {
     pub turns: Option<u32>,
 }
 
-/// Token usage of one attempt; `None` when the backend did not report it.
+/// Token usage of one attempt in five disjoint classes (S01 §4.4): no token
+/// is in two of them. A class is `None` when the backend did not report it.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AttemptUsage {
-    /// Input tokens.
+    /// Uncached input only. OpenAI-style counts include cached tokens, so the
+    /// usage parser subtracts them first.
     pub tokens_in: Option<u64>,
-    /// Output tokens.
+    /// Output, reasoning included.
     pub tokens_out: Option<u64>,
-    /// Input tokens served from the prompt cache.
+    /// Input read from the prompt cache.
     pub tokens_cache_read: Option<u64>,
-    /// Reasoning tokens.
+    /// Input written to the prompt cache with a 5-minute TTL.
+    pub tokens_cache_write_5m: Option<u64>,
+    /// Input written to the prompt cache with a 1-hour TTL.
+    pub tokens_cache_write_1h: Option<u64>,
+    /// Reasoning tokens. Not a sixth class: they are already inside
+    /// `tokens_out` and are never priced again.
     pub tokens_reasoning: Option<u64>,
 }
 
@@ -1124,6 +1134,7 @@ mod tests {
         record.timing.ttft_source = Some("stream".to_string());
         record.executed.model_reported = Some("gpt-oss-120b".to_string());
         record.usage.tokens_in = Some(38_211);
+        record.usage.tokens_cache_write_5m = Some(1_024);
         record.cost = AttemptCost {
             billed_usd: Some(0.0118),
             api_equiv_usd: Some(0.0118),
@@ -1144,6 +1155,8 @@ mod tests {
         assert_eq!(json["learning_label"], 0);
         assert_eq!(json["failure_class"]["kind"], "gate_failed");
         assert_eq!(json["cost"]["source"], "provider_usage");
+        assert_eq!(json["usage"]["tokens_cache_write_5m"], 1_024);
+        assert!(json["usage"]["tokens_cache_write_1h"].is_null());
         assert_eq!(json["cost"]["vendor_usd"], serde_json::Value::Null);
         let back: AttemptVerdictRecord = serde_json::from_value(json).expect("deserialize");
         assert_eq!(back, record);

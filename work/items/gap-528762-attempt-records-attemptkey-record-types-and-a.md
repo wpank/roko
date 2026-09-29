@@ -92,5 +92,6 @@ W3a: extend one of them; do not add a third.
   (`roko_learn::verdict_scorer::VerdictRecord` exists) and the manifest is `RunProvenanceManifest` (roko-runtime
   has a `RunManifest`). The others are `GateVerdictTag` (roko-core `GateVerdict`), `AttemptFailureClass` and
   `VerifyStepVerdict` (roko-gate `FailureClass`, `StepVerdict`), and `ConfigHashProvenance` (roko-core
-  `ConfigProvenance`). The wire schemas and field names are S01's. S01's `PredictionRecord` also needs a new name,
-  because `roko_learn::prediction::PredictionRecord` exists; this item adds no prediction type.
+  `ConfigProvenance`). The wire schemas and field names are S01's. S01's `PredictionRecord` will be
+  `AttemptPredictionRecord` (S01 §5), because `roko_learn::prediction::PredictionRecord` and
+  `roko_core::cell::PredictionRecord` exist. S04 adds it; this item adds no prediction type.

@@ -369,3 +369,41 @@ describe('waitForOperation: transient fetch errors', () => {
     expect(result).toEqual({ slug: 'my-plan' });
   });
 });
+
+// ---------------------------------------------------------------------------
+// 11. new-plan: the plan is asked for only once the operation is unknown
+// ---------------------------------------------------------------------------
+
+describe('waitForOperation: new-plan — waits on a known operation', () => {
+  it('does not poll the plan while the operation runs', async () => {
+    let fetchCount = 0;
+    const deps = makeDeps({
+      fetchOperation: vi.fn().mockImplementation(() => {
+        fetchCount++;
+        return Promise.resolve(fetchCount >= 4 ? completedOp('my-plan') : runningOp());
+      }),
+    });
+
+    const result = await waitForOperation(makeAccepted(), deps, { expect: 'new-plan' });
+    expect(result).toEqual({ slug: 'my-plan' });
+    expect(deps.fetchOperation).toHaveBeenCalledTimes(4);
+    expect(deps.planExists).not.toHaveBeenCalled();
+  });
+
+  it('asks for the plan once the server no longer knows the operation', async () => {
+    // Running twice, then swept (404) before a poll saw it complete.
+    let fetchCount = 0;
+    const deps = makeDeps({
+      fetchOperation: vi.fn().mockImplementation(() => {
+        fetchCount++;
+        return Promise.resolve(fetchCount <= 2 ? runningOp() : null);
+      }),
+      planExists: vi.fn().mockResolvedValue(true),
+    });
+
+    const result = await waitForOperation(makeAccepted(), deps, { expect: 'new-plan' });
+    expect(result).toEqual({ slug: 'my-plan' });
+    expect(deps.planExists).toHaveBeenCalledTimes(1);
+    expect(deps.planExists).toHaveBeenCalledWith('my-plan');
+  });
+});

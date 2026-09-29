@@ -9,6 +9,8 @@
  * Rules:
  * - Never call Date.now() or setTimeout() directly — use the injected deps.
  * - Never diff the plan list to detect creation — that race is policy-forbidden.
+ * - Never ask for a new plan while its operation runs: GET /api/plans/{id}
+ *   answers 404 until the plan is written, and each 404 is a console error.
  */
 
 import type { WireAccepted, WireOperation } from '@/api/contracts';
@@ -18,7 +20,10 @@ import type { WireAccepted, WireOperation } from '@/api/contracts';
 // ---------------------------------------------------------------------------
 
 export interface OperationDeps {
-  /** Returns true if GET /api/plans/{id} is 200 (the plan has been created). */
+  /**
+   * Returns true if GET /api/plans/{id} is 200 (the plan has been created).
+   * Asked only once the server no longer knows the operation.
+   */
   planExists(id: string): Promise<boolean>;
   /** Returns the operation record, or null when the server replies 404. */
   fetchOperation(id: string): Promise<WireOperation | null>;
@@ -30,9 +35,9 @@ export interface OperationDeps {
 
 export interface WaitForOperationOpts {
   /**
-   * 'new-plan': the plan does not exist yet; the primary resolution signal is
-   *   planExists() becoming true, with the operation's result.slug as a fallback
-   *   (for older servers that do not include plan_id in WireAccepted).
+   * 'new-plan': the plan does not exist yet; the operation reports the end, and
+   *   once the server no longer knows the operation, planExists() becoming true
+   *   is the signal instead.
    * 'revision': the plan already exists; only the operation can signal completion.
    */
   expect: 'new-plan' | 'revision';
@@ -68,15 +73,18 @@ function leadingWord(status: string): string {
  *
  * Polls deps.fetchOperation every intervalMs milliseconds (default 1 000).
  *
- * Resolution rules:
- *   • A 'failed' operation always rejects with its error message (or a generic
- *     fallback when the field is absent), regardless of the `expect` mode.
- *   • 'new-plan': resolves `{slug}` as soon as planExists(plan_id) is true, OR
- *     as soon as the operation reaches "completed" with a result.slug. A null
- *     operation (404) is ignored — the plan appearing is the primary signal.
- *   • 'revision': the plan already exists, so only the operation can report
- *     completion. Resolves when the operation reaches "completed". Three
- *     consecutive null operations reject with "the revision cannot be tracked".
+ * Resolution rules, in both `expect` modes:
+ *   • A 'failed' operation rejects with its error message (or a generic
+ *     fallback when the field is absent).
+ *   • A 'completed' operation resolves `{slug}` from result.slug, else plan_id.
+ *   • A running operation is left to finish; nothing else is requested.
+ *
+ * A null operation (404) means the server no longer knows it: finished
+ * operations are swept within a minute, and a restart forgets them all.
+ *   • 'new-plan': the plan appearing is the only signal left, so resolves
+ *     `{slug: plan_id}` once planExists(plan_id) is true.
+ *   • 'revision': the plan already exists, so three consecutive null
+ *     operations reject with "the revision cannot be tracked".
  *
  * Error-tolerance rules:
  *   • Up to three consecutive fetchOperation errors are swallowed; the fourth
@@ -126,46 +134,32 @@ export async function waitForOperation(
       continue;
     }
 
-    // ── Evaluate terminal conditions ────────────────────────────────────────
-    if (expect === 'new-plan') {
-      if (op !== null) {
-        const word = leadingWord(op.status);
-
-        if (word === 'failed') {
-          throw new Error(op.error ?? `Operation ${accepted.id} failed`);
+    // ── Unknown operation (404): swept, or lost in a restart ────────────────
+    if (op === null) {
+      if (expect === 'new-plan') {
+        // The plan appearing is the only signal left.
+        if (await deps.planExists(planId)) {
+          return { slug: planId };
         }
-
-        if (word === 'completed') {
-          // result.slug is populated on current servers; fall back to planId
-          // for servers that don't include it.
-          return { slug: op.result?.slug ?? planId };
-        }
+      } else if (++consecutiveNullOps >= 3) {
+        // 'revision': the plan already exists; only the operation knows when it's done.
+        throw new Error('the revision cannot be tracked');
       }
+      continue;
+    }
 
-      // op is null (404) or still running — the plan appearing is the signal.
-      if (await deps.planExists(planId)) {
-        return { slug: planId };
-      }
-    } else {
-      // 'revision': the plan already exists; only the operation knows when it's done.
-      if (op === null) {
-        consecutiveNullOps++;
-        if (consecutiveNullOps >= 3) {
-          throw new Error('the revision cannot be tracked');
-        }
-        continue;
-      }
+    // ── Known operation: wait for it to report the end ──────────────────────
+    consecutiveNullOps = 0;
+    const word = leadingWord(op.status);
 
-      consecutiveNullOps = 0;
-      const word = leadingWord(op.status);
+    if (word === 'failed') {
+      throw new Error(op.error ?? `Operation ${accepted.id} failed`);
+    }
 
-      if (word === 'failed') {
-        throw new Error(op.error ?? `Operation ${accepted.id} failed`);
-      }
-
-      if (word === 'completed') {
-        return { slug: op.result?.slug ?? planId };
-      }
+    if (word === 'completed') {
+      // result.slug is populated on current servers; fall back to planId
+      // for servers that don't include it.
+      return { slug: op.result?.slug ?? planId };
     }
   }
 }

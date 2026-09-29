@@ -24,9 +24,9 @@ command = "test -f docs/whitepaper/REVIEW.md && grep -q '^Verdict: accept' docs/
 
 [closed]
 at = 2026-09-29
-commit = "e84bd3462"
+commit = "f5a6ac64b"
 by = "wk-wp-review (claude-agent)"
-evidence = "Review recorded in docs/whitepaper/REVIEW.md: 26 findings with dispositions (fixes in f173fa9e1, 97c0c22e1, 7df1354b5, d8cd83b23, 856e52cac, 5c144601f; appendix moved to reviewed in 45829814d with the coordinator's approval), ending 'Verdict: accept'. §0–§10 and the appendix say Status: reviewed. The [[verify]] passes: paperlint --strict --require-status reviewed docs/whitepaper reports 12 files clean; status_matrix.py --check and the evidence SHA256SUMS pass. §0–§10 total 7,123 words (1.10× of 6,500) with the figures merged."
+evidence = "Review recorded in docs/whitepaper/REVIEW.md: 28 findings with dispositions, ending 'Verdict: accept'. Fixes: f173fa9e1, 97c0c22e1, 7df1354b5, d8cd83b23, 856e52cac, 5c144601f, c2f4772e8. README publication-clean: fbfdedb5b, 1852c5d5b. Matrix, with the coordinator's approval: 45829814d (appendix status reviewed); eee9c3dd5 (next items for EX8, SS3 and DM2). SS6 and IS6 are unchanged, because the tool checks items at the pin. Synced with the coordinator branch at 80fa2171b (d64ba4434). The [[verify]] passes at f5a6ac64b: paperlint --strict --require-status reviewed docs/whitepaper reports 12 files clean, and the *.md glob reports 14 clean. status_matrix.py --check and the evidence SHA256SUMS pass. §0–§10 total 7,135 words (1.10× of 6,500)."
 +++
 
 ## Problem
@@ -83,3 +83,9 @@ Checked at `41c7ffbd6`: there is nothing to review yet. This item waits for the 
   verify's one remaining failure was the appendix header, which `data/mechanisms.toml` rendered as `draft`. With the
   coordinator's approval, `45829814d` set `[matrix] status` to `reviewed` and regenerated the appendix; the verify
   then passed.
+- **Follow-ups on the same branch, after the first close at `e84bd3462`:**
+  - the README became publication-clean;
+  - the matrix's next-item ids were fixed;
+  - the coordinator branch was synced.
+
+  The `[closed]` block now points at `f5a6ac64b`, where the verify still passes.

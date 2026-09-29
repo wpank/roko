@@ -198,7 +198,7 @@ async fn create_plan(
         }
         CreatePlanOutcome::Rejected { validation } => Err(ApiError::bad_request(format!(
             "starter source validation failed: {} error(s)",
-            validation.errors
+            validation.errors.len()
         ))),
     }
 }
@@ -2056,8 +2056,10 @@ async fn revise_plan(
                         ("plan_revise.completed", true)
                     } else {
                         // Rejected by validation.
-                        let error_msg =
-                            format!("plan revision rejected: {} error(s)", dto.validation.errors);
+                        let error_msg = format!(
+                            "plan revision rejected: {} error(s)",
+                            dto.validation.errors.len()
+                        );
                         if let Some(h) = state_for_task.operations.write().await.get_mut(&op_id) {
                             h.status = crate::state::OperationStatus::Failed {
                                 error: error_msg.clone(),
@@ -2267,22 +2269,26 @@ async fn put_plan_source(
 
 /// Request body for `POST /api/plans/{id}/validate`.
 ///
-/// The entire body is optional: omit it to validate the file on disk.
+/// The entire body is optional, and so is `toml`: no body, `{}` and
+/// `{"toml": null}` all validate the file on disk.
 #[derive(Deserialize)]
 struct ValidatePlanRequest {
-    toml: String,
+    #[serde(default)]
+    toml: Option<String>,
 }
 
 /// `POST /api/plans/{id}/validate` — validate a plan source without saving.
 ///
-/// - With no body: validates the plan file currently on disk.
+/// - With no body, or a body without `toml`: validates the plan file
+///   currently on disk.
 /// - With `{ "toml": "..." }`: validates that text exactly as a save would,
 ///   without writing anything.
 ///
 /// Always returns 200 with `{ "valid", "errors", "warnings", "diagnostics" }`
 /// regardless of whether the plan is valid — an invalid plan is a normal
-/// editing state; the portal renders its badge from the counts and anchors
-/// each diagnostic to the task it names via `task_id`.
+/// editing state. `errors` and `warnings` are arrays of lines; the portal
+/// renders its badge from `valid` and the diagnostics, and anchors each
+/// diagnostic to the task it names via `task_id`.
 ///
 /// - 404 when the plan does not exist.
 /// - 400 for a malformed request body.
@@ -2293,13 +2299,13 @@ async fn validate_plan(
 ) -> Result<Json<Value>, ApiError> {
     validate_path_segment(&id, "plan id")?;
 
-    // Parse optional body: empty body → validate the on-disk file;
-    // body with `{ "toml": "..." }` → validate that text without writing.
+    // Parse the optional body: no body or no `toml` → validate the on-disk
+    // file; `{ "toml": "..." }` → validate that text without writing.
     let toml: Option<String> = if body.is_empty() {
         None
     } else {
         let req: ValidatePlanRequest = serde_json::from_slice(&body).map_err(ApiError::parse)?;
-        Some(req.toml)
+        req.toml
     };
 
     let dto: PlanValidationDto = state
@@ -2811,12 +2817,9 @@ mod tests {
                     return Ok(None);
                 }
             }
-            Ok(Some(crate::plan_types::PlanValidationDto {
-                valid: true,
-                errors: 0,
-                warnings: 0,
-                diagnostics: vec![],
-            }))
+            Ok(Some(
+                crate::plan_types::PlanValidationDto::from_diagnostics(vec![]),
+            ))
         }
 
         /// Validate a plan source text without saving.
@@ -2834,12 +2837,9 @@ mod tests {
                     return Ok(None);
                 }
             }
-            Ok(Some(crate::plan_types::PlanValidationDto {
-                valid: true,
-                errors: 0,
-                warnings: 0,
-                diagnostics: vec![],
-            }))
+            Ok(Some(
+                crate::plan_types::PlanValidationDto::from_diagnostics(vec![]),
+            ))
         }
 
         /// Create a new plan.

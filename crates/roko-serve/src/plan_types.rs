@@ -144,17 +144,44 @@ pub struct PlanDiagnosticDto {
 }
 
 /// Result of validating or saving a plan source.
+///
+/// Serialized as-is by `POST /api/plans/{id}/validate` and in the
+/// `PUT /api/plans/{id}/source` bodies, so its shape is the portal contract's
+/// (ask P-3): `errors` and `warnings` are arrays, not counts.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlanValidationDto {
     /// `true` when there are no error-level diagnostics.
     pub valid: bool,
-    /// Count of error-severity diagnostics.
-    pub errors: usize,
-    /// Count of warning-severity diagnostics.
-    pub warnings: usize,
+    /// One `"<rule_id>: <message>"` line per error-severity diagnostic.
+    pub errors: Vec<String>,
+    /// One `"<rule_id>: <message>"` line per warning-severity diagnostic.
+    pub warnings: Vec<String>,
     /// All diagnostics, errors first.
     #[serde(default)]
     pub diagnostics: Vec<PlanDiagnosticDto>,
+}
+
+impl PlanValidationDto {
+    /// Build a report from its diagnostics: `valid` when none is an error, and
+    /// the `errors` and `warnings` lines derived from them.
+    #[must_use]
+    pub fn from_diagnostics(diagnostics: Vec<PlanDiagnosticDto>) -> Self {
+        let lines = |severity: &str| -> Vec<String> {
+            diagnostics
+                .iter()
+                .filter(|d| d.severity == severity)
+                .map(|d| format!("{}: {}", d.rule_id, d.message))
+                .collect()
+        };
+        let errors = lines("error");
+        let warnings = lines("warning");
+        Self {
+            valid: errors.is_empty(),
+            errors,
+            warnings,
+            diagnostics,
+        }
+    }
 }
 
 /// Result of a plan revision request.

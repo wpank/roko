@@ -22,7 +22,9 @@ use http_body_util::BodyExt;
 use roko_core::config::ServeAuthConfig;
 use roko_core::config::schema::RokoConfig;
 use roko_serve::deploy::create_backend;
-use roko_serve::plan_types::{PlanSummaryDto, PlanTasksDto, PlanValidationDto, RevisionDto};
+use roko_serve::plan_types::{
+    PlanDiagnosticDto, PlanSummaryDto, PlanTasksDto, PlanValidationDto, RevisionDto,
+};
 use roko_serve::routes::build_router;
 use roko_serve::runtime::{
     CliRuntime, DashboardInfo, PlanExecutionResult, RunResult, SessionStatusInfo,
@@ -161,22 +163,21 @@ impl CliRuntime for StubRevisionRuntime {
             RevisionFixture::Success { task_count } => Ok(Some(RevisionDto {
                 revised: true,
                 task_count,
-                validation: PlanValidationDto {
-                    valid: true,
-                    errors: 0,
-                    warnings: 0,
-                    diagnostics: Vec::new(),
-                },
+                validation: PlanValidationDto::from_diagnostics(Vec::new()),
             })),
             RevisionFixture::Rejected { error_count } => Ok(Some(RevisionDto {
                 revised: false,
                 task_count: 0,
-                validation: PlanValidationDto {
-                    valid: false,
-                    errors: error_count,
-                    warnings: 0,
-                    diagnostics: Vec::new(),
-                },
+                validation: PlanValidationDto::from_diagnostics(
+                    (0..error_count)
+                        .map(|i| PlanDiagnosticDto {
+                            severity: "error".to_string(),
+                            rule_id: "PLAN_TEST".to_string(),
+                            task_id: None,
+                            message: format!("stub validation error {i}"),
+                        })
+                        .collect(),
+                ),
             })),
         }
     }

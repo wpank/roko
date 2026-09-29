@@ -179,7 +179,7 @@ export function pickAlert(input: AlertInput): Alert | null {
     const alert = tryAlert({
       key,
       severity: 'warning',
-      text: `${validationErrors} validation errors`,
+      text: `${validationErrors} validation error${validationErrors === 1 ? '' : 's'}`,
       actions: [],
     });
     if (alert) return alert;

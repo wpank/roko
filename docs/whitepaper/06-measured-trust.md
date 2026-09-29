@@ -1,29 +1,39 @@
-Status: stub · budget 450 words · owner gap-424bf8
+Status: draft · budget 450 words · owner gap-424bf8
 
 # 6 Measured trust
 
-[[TODO: Write this section to gap-424bf8's plan, in about 450 words. It contains "false-green rate", and each measure is defined with its denominator and tagged. Keep line 1 and set it to `draft`, then replace everything below the heading, this list of claims included. Conventions and canonical numbers: `README.md` in this directory.]]
+Cheap executors are worth using only if a team can tell which results to trust. Roko is designed to report three
+measures of that trust from the team's own runs, defined below by what each counts, its denominator and how it is
+reported, and tagged from the appendix's status matrix. None is produced today. §5 describes the mechanisms; §8,
+how they will be evaluated.
 
-## Claims
+## 6.1 Three measures
 
-| Id | Kind | Claim | Writer's source | Cite in the text as |
+| Measure | Counts | Denominator | Reported as | Mechanism and status |
 |---|---|---|---|---|
-| MT1 | design | Routing learned from your own verified outcomes, across vendors: what it counts and its denominator. Today the router is PARTIAL (its LinUCB stage learns from successes only), and M3 routing on verified labels is MISSING. | tldr/00 point 9; tldr/01 selling point 3; B3 | Tags from the appendix; bug-f68404; bug-8da8ba; spec-6ac537 (E17) |
-| MT2 | design | A false-green rate estimated from random audits with hidden tests, reported with a confidence interval (M4). | tldr/01 selling point 5; tldr/05 proposal 17; S05 | A MISSING tag; spec-6ac537 (E17) |
-| MT3 | design | Per-loop evidence that learning helps: exposure, influence and benefit for each loop, against a withheld control (M2). | tldr/01 selling point 6; tldr/05 proposal 20; S03 | A MISSING tag; spec-6ac537 (E17) |
-| MT4 | number | What exists today: honest per-task verdicts since the 09-28 fix, with 0 false greens in 151 passes, from the visible verify only. That is not an audited false-green rate. | B7 | Footnote as for N4 |
-| MT5 | lit | As documented on 2026-09-29, we found no product that documents these three measures; several pair a frontier planner with a cheaper executor. No claim of firstness. | C3 (vendor docs fetched 2026-09-29) | An `@online` entry with `urldate` for each vendor page |
-| MT6 | design | Pointers: §5 for the mechanisms, §8 for how they will be evaluated. | This README | Section cross-references |
+| Routing learned from verified outcomes | Verified passes on any vendor's model, credited to the model that ran | Settled attempts per model and kind of task; an unverified attempt counts as failed | Pass rate and cost per verified task, with forecast calibration | M3, a calibrated self-model: MISSING@a17d4dadd (row RG5; spec-6ac537). Its base, the router, is PARTIAL@a17d4dadd (row RC2): failures of its own picks never reach LinUCB, failed overrides count as successes, and unverified work earns full reward (bug-8da8ba, bug-f68404, bug-c34782) |
+| False-green rate | Accepted tasks that fail an independent audit: a tamper check, a clean re-run, and hidden tests written from the spec by another model family | Tasks accepted in a window. A keyed lottery audits each with a known chance, and weights it by the inverse of that chance | A Hájek estimate with a confidence interval, per model and kind of task | M4, random deep audits: MISSING@a17d4dadd (row QA5; spec-6ac537) |
+| Per-loop evidence that learning helps | Per loop: exposure (learned state reached the decision), influence (the decision left the default, net of A/A noise) and benefit (the change in verified success) | Decisions the loop could change; a random holdout keeps some on the default as the control | The three figures, with anytime-valid intervals; a harmful loop is demoted to its default | M2, the loop-liveness audit: MISSING@a17d4dadd (row RG4; spec-6ac537). It needs frozen learning (gap-644040) |
 
-## Sources
+## 6.2 What exists today
 
-Writer inputs; the paths under `tmp/` are gitignored and are never cited in the text.
+Today Roko has only the base these measures need: verdicts honest about its own gates. Since the 09-28 fix, 0 of
+151 recorded passes had a failing gate, against 101 of 373 (27%) before.[^6-verdicts] But those gates are each
+task's visible verify commands, which the agent can read and could game. So the figure shows that Roko no longer
+records a failed check as a pass; it is not a false-green rate, since nothing yet re-checks a pass against tests
+the agent never saw.
 
-- tldr/00: `tmp/cybernetic-harness/tldr/00-README.md`. The ten things to know; the status-tag vocabulary.
-- tldr/01: `tmp/cybernetic-harness/tldr/01-WHAT-AND-WHY.md`. The idea, the bet, where it stands, selling points, positioning.
-- tldr/05: `tmp/cybernetic-harness/tldr/05-GAPS-AND-PROPOSALS.md`. Scorecard V1-V10, proposals P0-P3, parking, doc corrections, decisions.
-- B3: `tmp/cybernetic-harness/tldr/research/B3-routing-cost.md`. Routing and cost in the code.
-- B7: `tmp/cybernetic-harness/tldr/research/B7-real-run-evidence.md`. Real-run evidence: the portal build, false greens, concurrency.
-- C3: `tmp/cybernetic-harness/tldr/research/C3-competitive-landscape.md`. Competitors, from vendor docs fetched 2026-09-29.
-- S01–S11: `tmp/cybernetic-harness/specs/`. Programme specs; cite the tracked epics that carry them.
-- matrix: `docs/whitepaper/appendix-status-matrix.md`. The status matrix (gap-35a614): every tag at one pinned commit.
+## 6.3 The field
+
+As documented on 2026-09-29, we found no product that documents any of the three measures. Several pair a stronger
+model with a cheaper one: Claude Code's `opusplan` plans on Opus and executes on Sonnet, and Devin's Fusion pairs
+"a frontier lead model with a cost-efficient sidekick" [@anthropic2026advisor; @cognition2026models]. Model choice
+is tied to one vendor or made by the vendor's router: Claude Code's workers are always Claude sessions, Cursor's
+router is "managed by Cursor", and Factory's sends routine steps to cheaper models and escalates when one struggles
+[@anthropic2026agents; @cursor2026router; @factory2026router]. None of these pages says that routing learns from
+the user's own verdicts, reports how often a pass is wrong, or gives evidence per learning mechanism. This
+describes documentation on one date, not a claim of priority.
+
+[^6-verdicts]: Fix commit `725f21e05` (bug-82d47b, bug-521f08, bug-06e2d1); counts as quoted in spec-ce1484 and
+    spec-e9d7ec. Before: 430 attempts in 31 plans, 2026-09-05 to the fix; after: 168 attempts to 2026-09-29 07:41Z.
+    §7 gives the full case.

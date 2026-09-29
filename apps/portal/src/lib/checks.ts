@@ -16,6 +16,7 @@
  *
  * digestOutput() parses the remaining lines into a structured Digest without
  * ever throwing, and without dropping any line that didn't fit a known format.
+ * digestEnding() and digestHeadline() render a Digest's ending and first line.
  */
 
 export interface DigestEntry {
@@ -54,6 +55,9 @@ const RE_CMD = /^\$ (.+)$/;
 
 /** Closing runner line: `✗ exit status 1`, `✗ timed out after …`, etc. */
 const RE_EXIT = /^✗ (.+)$/;
+
+/** Runner framing, not output: the dropped-lines leader and the stderr separator. */
+const RE_FRAMING = /^(… (\d+ )?earlier (lines|output) not shown|---stderr---)$/;
 
 /** rustc / cargo: `error[E0425]: msg` or `warning[xxx]: msg` or bare `error: msg` */
 const RE_RUSTC = /^(error|warning)(?:\[[\w:]+\])?: (.+)$/;
@@ -107,6 +111,37 @@ export function digestOutput(output: string): Digest {
     const unparsed = output ? output.split('\n') : [];
     return { command: null, groups: [], unparsed, exit: null, errorCount: 0, warningCount: 0 };
   }
+}
+
+/** True when the step printed nothing besides its `$ command` and closing `✗` lines. */
+export function printedNothing(d: Digest): boolean {
+  return d.groups.length === 0 && d.unparsed.every((l) => l.trim() === '');
+}
+
+/**
+ * How a failed step ended, as the checks view says it: the closing line's
+ * text (`exit status 1`), plus `no output` when the step printed nothing.
+ * null when there is neither.
+ */
+export function digestEnding(d: Digest): string | null {
+  const parts = [d.exit, printedNothing(d) ? 'no output' : null].filter((p) => p !== null);
+  return parts.length > 0 ? parts.join(' · ') : null;
+}
+
+/**
+ * The digest's first line, as one line: the first diagnostic with its
+ * location (`src/main.rs:2:5 cannot find value`), else the first output line
+ * the digest kept unparsed, else how the step ended.
+ */
+export function digestHeadline(d: Digest): string | null {
+  const group = d.groups[0];
+  const entry = group?.entries[0];
+  if (group && entry) {
+    const at = entry.line === null ? '' : `:${entry.line}${entry.column === null ? '' : `:${entry.column}`}`;
+    return `${group.file}${at} ${entry.message}`;
+  }
+  const line = d.unparsed.map((l) => l.trim()).find((l) => l !== '' && !RE_FRAMING.test(l));
+  return line ?? digestEnding(d);
 }
 
 // ── Internal ──────────────────────────────────────────────────────────────────

@@ -22,11 +22,11 @@ import { Checks } from './Checks';
  *   onToggle        — called when the collapse control is clicked
  *
  * The pane resolves the focused task via focusTaskId (priority: explicit
- * selection → first active → first failed → last finished) and shows either the
+ * selection → first failed → first active → last finished) and shows either the
  * Transcript or the Checks view.
  *
- * Auto-switches to Checks when the focused task first gains a failed step; the
- * operator's manual tab pick re-pins the view until the focused task changes.
+ * Shows Checks while the focused task has a failed step (design §11), else the
+ * Transcript; the operator's tab pick holds for the task it was made on.
  *
  * Bar always visible:  <task-id> · transcript │ checks  [▼/▶]
  *   — inactive view carries a count badge (checks = failed steps;
@@ -63,6 +63,7 @@ export function StreamPane({
   }, [tasksData, run, planId]);
 
   const focusedId = focusTaskId(rows, selectedTaskId);
+  const focusedRow = rows.find((r) => r.id === focusedId) ?? null;
   const key = planId !== null && focusedId !== null ? taskKey(planId, focusedId) : null;
 
   const liveTask = key !== null ? (run.tasks[key] ?? null) : null;
@@ -88,29 +89,14 @@ export function StreamPane({
     liveTask === null ? 'pending' : liveTask.status === 'active' ? 'active' : 'finished';
 
   // ── View state ─────────────────────────────────────────────────────────────
-  const [view, setView] = useState<'transcript' | 'checks'>('transcript');
-  // True once the operator has manually chosen a view; blocks auto-switch.
-  const [operatorPicked, setOperatorPicked] = useState(false);
-
-  // Reset both state flags when the focused task changes.
-  const prevFocusedIdRef = useRef<string | null>(null);
-  useEffect(() => {
-    if (focusedId !== prevFocusedIdRef.current) {
-      prevFocusedIdRef.current = focusedId;
-      setView('transcript');
-      setOperatorPicked(false);
-    }
-  }, [focusedId]);
-
-  // Auto-switch to checks the first time a failed step appears.
+  // The operator's pick holds for the task it was made on; otherwise a task
+  // with a failed step shows its checks, any other its transcript.
+  const [picked, setPicked] = useState<{ key: string | null; view: 'transcript' | 'checks' } | null>(null);
   const failedCount = checks.filter((c) => c.status === 'failed').length;
-  const prevFailedRef = useRef(0);
-  useEffect(() => {
-    if (!operatorPicked && failedCount > prevFailedRef.current && failedCount > 0) {
-      setView('checks');
-    }
-    prevFailedRef.current = failedCount;
-  }, [failedCount, operatorPicked]);
+  const view =
+    picked !== null && picked.key === key
+      ? picked.view
+      : failedCount > 0 ? 'checks' : 'transcript';
 
   // ── Badge counts ───────────────────────────────────────────────────────────
   // Transcript badge: entries added since transcript view was last active.
@@ -142,8 +128,7 @@ export function StreamPane({
 
   // ── Operator view pick ─────────────────────────────────────────────────────
   function pickView(v: 'transcript' | 'checks') {
-    setView(v);
-    setOperatorPicked(true);
+    setPicked({ key, view: v });
   }
 
   // ── Empty state inputs ─────────────────────────────────────────────────────
@@ -356,7 +341,7 @@ export function StreamPane({
           ) : view === 'transcript' ? (
             <Transcript transcript={transcript} working={working} taskStatus={taskStatus} />
           ) : (
-            <Checks checks={checks} />
+            <Checks checks={checks} declared={focusedRow?.verify ?? null} />
           )}
         </div>
       )}

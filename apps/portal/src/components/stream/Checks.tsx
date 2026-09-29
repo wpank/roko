@@ -2,21 +2,14 @@
 
 import { useState } from 'react';
 import type { CheckRun } from '@/lib/runState';
-import { digestOutput } from '@/lib/checks';
+import { digestEnding, digestOutput, printedNothing } from '@/lib/checks';
 import type { DigestGroup, DigestEntry } from '@/lib/checks';
+import { buildRungs } from '@/lib/rungs';
+import type { Rung } from '@/lib/rungs';
 import { StatusGlyph } from '@/components/primitives/StatusGlyph';
-import type { GlyphState } from '@/lib/glyphs';
+import { glyphStateForCheck } from '@/lib/glyphs';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
-
-/** Map a CheckRun status to a GlyphState. */
-function glyphForCheck(status: CheckRun['status']): GlyphState {
-  switch (status) {
-    case 'passed':  return 'done';
-    case 'failed':  return 'failed';
-    case 'running': return 'active';
-  }
-}
 
 /** Format a location prefix: `line:col` or just `line` when col is null. */
 function loc(line: number | null, col: number | null): string {
@@ -145,19 +138,18 @@ function OutputTail({ output }: { output: string }) {
 
 // ── CheckRow ───────────────────────────────────────────────────────────────────
 
-function CheckRow({ check }: { check: CheckRun }) {
-  const glyph = glyphForCheck(check.status);
-  // Display the phase when it is non-empty, otherwise fall back to full name.
-  const label = check.phase || check.name;
-
-  // Extract the command from the digest (or raw output prefix).
-  const digest = check.status === 'failed' ? digestOutput(check.output) : null;
-  const command = digest?.command ?? extractCommand(check.output);
+function CheckRow({ rung, declaredCommand }: { rung: Rung; declaredCommand: string | null }) {
+  const { label, state } = rung;
+  const output = rung.check?.output ?? '';
+  const digest = rung.check ? digestOutput(output) : null;
+  // The command the step printed first, else the authored one (unreached steps).
+  const command = digest?.command ?? declaredCommand;
+  const ending = state === 'failed' && digest ? digestEnding(digest) : null;
 
   return (
     <div
       className="check-row"
-      data-status={check.status}
+      data-status={state}
       style={{ marginBottom: '0.75em' }}
     >
       {/* Header: glyph · label · $ command */}
@@ -165,7 +157,10 @@ function CheckRow({ check }: { check: CheckRun }) {
         className="check-row-header"
         style={{ display: 'flex', alignItems: 'baseline', gap: '0.5em' }}
       >
-        <StatusGlyph state={glyph} title={`${label}: ${check.status}`} />
+        <StatusGlyph
+          state={glyphStateForCheck(state)}
+          title={`${label}: ${state === 'pending' ? 'not reached' : state}`}
+        />
         <span className="check-row-label">{label}</span>
         {command && (
           <span
@@ -177,8 +172,8 @@ function CheckRow({ check }: { check: CheckRun }) {
         )}
       </div>
 
-      {/* Failed: digest first, then raw output toggle */}
-      {check.status === 'failed' && digest && (
+      {/* Failed: digest first, then how it ended, then the raw output toggle */}
+      {state === 'failed' && digest && (
         <div className="check-row-digest" style={{ marginTop: '0.4em', paddingLeft: '1.5em' }}>
           {digest.groups.map((group, i) => (
             <DigestGroupView key={i} group={group} />
@@ -197,71 +192,70 @@ function CheckRow({ check }: { check: CheckRun }) {
               {digest.unparsed.join('\n')}
             </pre>
           )}
-          {(() => {
-            // Show the exit line when: the digest captured one, or the step
-            // printed nothing (no groups and only blank unparsed lines).
-            const noOutput =
-              digest.groups.length === 0 &&
-              digest.unparsed.every((l) => l.trim() === '');
-            if (!digest.exit && !noOutput) return null;
-            const parts: string[] = [];
-            if (digest.exit) parts.push(digest.exit);
-            if (noOutput) parts.push('no output');
-            return (
-              <div
-                className="check-row-exit"
-                data-exit=""
-                style={{ fontFamily: 'monospace', color: 'var(--text-strong)' }}
-              >
-                {parts.join(' · ')}
-              </div>
-            );
-          })()}
-          {check.output && <RawOutputToggle output={check.output} />}
+          {ending && (
+            <div
+              className="check-row-exit"
+              data-exit=""
+              style={{ fontFamily: 'monospace', color: 'var(--text-strong)' }}
+            >
+              {ending}
+            </div>
+          )}
+          {output && <RawOutputToggle output={output} />}
         </div>
       )}
 
       {/* Running: live output tail */}
-      {check.status === 'running' && check.output && (
+      {state === 'running' && output && (
         <div style={{ paddingLeft: '1.5em' }}>
-          <OutputTail output={check.output} />
+          <OutputTail output={output} />
         </div>
       )}
 
-      {/* Passed: output collapsed — nothing shown */}
+      {/* Passed: what it printed, behind the same toggle a failure uses */}
+      {state === 'passed' && digest && !printedNothing(digest) && (
+        <div style={{ paddingLeft: '1.5em' }}>
+          <RawOutputToggle output={output} />
+        </div>
+      )}
     </div>
   );
-}
-
-/** Extract a `$ command` from the first line of raw output, if present. */
-function extractCommand(output: string): string | null {
-  if (!output) return null;
-  const first = output.split('\n')[0] ?? '';
-  const m = /^\$ (.+)$/.exec(first);
-  return m ? m[1]! : null;
 }
 
 // ── Checks ─────────────────────────────────────────────────────────────────────
 
 /**
- * Checks — lists all gate verify steps for a task, in index order.
+ * Checks — a task's verify steps in `verify[i:phase]` order (design §5).
  *
- * - CheckRun arrives pre-sorted by index from runState.
- * - Failed step: digestOutput digest leads, raw output is behind a toggle.
+ * - `declared` is the task's authored verify list: a step not reached yet
+ *   shows `·` and its command. Steps outside the list follow it.
+ * - Failed step: the digest leads, then how the step ended; raw output is
+ *   behind a toggle.
+ * - Passed step: its output is behind the same toggle.
  * - Running step: live output tail is shown.
- * - Passed step: output is collapsed (nothing shown).
- * - No checks yet: a single "no verify step has run" line.
+ * - No step declared or run: a single "no verify step has run" line.
  */
-export function Checks({ checks }: { checks: CheckRun[] }) {
+export function Checks({
+  checks,
+  declared = null,
+}: {
+  checks: CheckRun[];
+  declared?: readonly { phase: string; command: string }[] | null;
+}) {
+  const rungs = buildRungs(checks, declared);
   return (
     <div data-region="checks" className="checks-region rd-stream-body">
-      {checks.length === 0 ? (
+      {rungs.length === 0 ? (
         <div className="checks-empty" style={{ color: 'var(--text-faint)' }}>
           no verify step has run
         </div>
       ) : (
-        checks.map((check) => (
-          <CheckRow key={check.name} check={check} />
+        rungs.map((rung, i) => (
+          <CheckRow
+            key={rung.check?.name ?? `verify-${i}`}
+            rung={rung}
+            declaredCommand={(rung.index !== null && declared?.[rung.index]?.command) || null}
+          />
         ))
       )}
     </div>

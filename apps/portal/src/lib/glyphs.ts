@@ -80,6 +80,25 @@ export function glyphStateForTask(status: TaskStatus | 'pending'): GlyphState {
   }
 }
 
+// ── glyphStateForCheck ─────────────────────────────────────────────────────────
+
+/**
+ * Map a verify step's state to a GlyphState: passed → done, running → active,
+ * failed → failed, pending (not reached) → pending.
+ */
+export function glyphStateForCheck(state: 'passed' | 'running' | 'failed' | 'pending'): GlyphState {
+  switch (state) {
+    case 'passed':
+      return 'done';
+    case 'running':
+      return 'active';
+    case 'failed':
+      return 'failed';
+    case 'pending':
+      return 'pending';
+  }
+}
+
 // ── progressToken ──────────────────────────────────────────────────────────────
 
 /**

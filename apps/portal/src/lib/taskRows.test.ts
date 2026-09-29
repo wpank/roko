@@ -348,18 +348,20 @@ describe('focusTaskId', () => {
     expect(focusTaskId(rows, null)).toBeNull();
   });
 
-  it('prefers active over failed when both exist', () => {
+  it('prefers failed over active when both exist (design §11)', () => {
     const tasks = [
       makeWireTask({ id: 'T01' }),
       makeWireTask({ id: 'T02' }),
     ];
     const run = makeRunState({
       tasks: {
-        [taskKey(PLAN_ID, 'T01')]: makeLiveTask('T01', { status: 'failed' }),
-        [taskKey(PLAN_ID, 'T02')]: makeLiveTask('T02', { status: 'active' }),
+        [taskKey(PLAN_ID, 'T01')]: makeLiveTask('T01', { status: 'active' }),
+        [taskKey(PLAN_ID, 'T02')]: makeLiveTask('T02', { status: 'failed' }),
       },
     });
     const { rows } = buildTaskRows(tasks, run, PLAN_ID, NOW_MS);
     expect(focusTaskId(rows, null)).toBe('T02');
+    // A selection still wins.
+    expect(focusTaskId(rows, 'T01')).toBe('T01');
   });
 });

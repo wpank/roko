@@ -5,8 +5,9 @@
  *
  * Each row shows: glyph · id · title · role·model · time · cost · retry count · check chips.
  * The selected row expands to show description, files, dependencies, and verify commands.
- * Failed rows show the first meaningful check output line; the Retry button appears only
- * when onRetry is provided (the plan header is the one Retry — see PlanView.tsx).
+ * A failed row shows the first line of its failed check's digest under the row, expanded
+ * or not (design §11); the Retry button appears only when onRetry is provided (the plan
+ * header is the one Retry — see PlanView.tsx).
  * accepted_with_failures rows are amber and list their failing checks.
  */
 
@@ -18,6 +19,7 @@ import { cn } from '@/lib/cn';
 import { formatSpan, shortModel, formatCost } from '@/lib/formatters';
 import type { CheckRun } from '@/lib/runState';
 import { GLYPHS } from '@/lib/glyphs';
+import { digestHeadline, digestOutput } from '@/lib/checks';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -31,22 +33,10 @@ export interface TaskListProps {
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
-/**
- * Return the first output line of the first failed check that does not start
- * with "$ " (shell echo), or null if none exists.
- */
-function firstFailedCheckLine(checks: CheckRun[]): string | null {
-  for (const check of checks) {
-    if (check.status !== 'failed') continue;
-    const lines = check.output.split('\n');
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (trimmed.length === 0) continue;
-      if (trimmed.startsWith('$ ')) continue;
-      return trimmed;
-    }
-  }
-  return null;
+/** The first line of the first failed check's digest, or null when no check failed. */
+function failureHeadline(checks: CheckRun[]): string | null {
+  const failed = checks.find((c) => c.status === 'failed');
+  return failed ? digestHeadline(digestOutput(failed.output)) : null;
 }
 
 // ── CheckChip ─────────────────────────────────────────────────────────────────
@@ -83,7 +73,6 @@ function ExpandedDetail({
   onRetry?(): void;
 }) {
   const failedChecks = row.checks.filter((c) => c.status === 'failed');
-  const firstOutputLine = firstFailedCheckLine(row.checks);
 
   return (
     <div className="mt-2 pl-6 flex flex-col gap-3 text-sm font-mono">
@@ -94,17 +83,9 @@ function ExpandedDetail({
         </pre>
       )}
 
-      {/* ── Failed: first output line + optional Retry button ─────────────── */}
+      {/* ── Failed: optional Retry button (the digest line is on the row) ── */}
       {row.status === 'failed' && (
         <div className="flex flex-col gap-2">
-          {firstOutputLine && (
-            <p
-              className="text-xs font-mono text-accent-error truncate"
-              title={firstOutputLine}
-            >
-              {firstOutputLine}
-            </p>
-          )}
           {onRetry && (
             <div>
               <button
@@ -230,6 +211,7 @@ function TaskRow({
   const timeStr = formatSpan(row.time);
   const costStr = row.costUsd != null ? formatCost(row.costUsd) : null;
   const isAccepted = row.status === 'accepted_with_failures';
+  const headline = row.status === 'failed' ? failureHeadline(row.checks) : null;
 
   return (
     <li
@@ -313,6 +295,17 @@ function TaskRow({
           ))}
         </span>
       </div>
+
+      {/* ── Failed: the digest's first line, on the row itself ───────────── */}
+      {headline !== null && (
+        <p
+          data-digest=""
+          className="pl-6 text-xs font-mono text-accent-error truncate"
+          title={headline}
+        >
+          {headline}
+        </p>
+      )}
 
       {/* ── Expanded detail ──────────────────────────────────────────────── */}
       {selected && (

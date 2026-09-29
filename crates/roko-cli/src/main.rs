@@ -1555,6 +1555,11 @@ enum LearnCmd {
         #[arg(long)]
         workdir: Option<PathBuf>,
     },
+    /// Check a run's attempt records, or report routing outcomes from them (read-only).
+    Telemetry {
+        #[command(subcommand)]
+        cmd: commands::learn::TelemetryCmd,
+    },
     /// (deprecated: use `roko learn inspect`) Tune adaptive thresholds and model routing parameters.
     #[command(hide = true)]
     Tune {

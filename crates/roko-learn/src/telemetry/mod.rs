@@ -10,6 +10,8 @@
 //!   [`AttemptOrdinals`].
 //! - [`manifest`]: reading and writing `manifest.json`, and the
 //!   [`AttemptTally`] of a run's attempts.
+//! - [`report`]: the read-only `check` and `route_report` over a run's
+//!   files (`roko learn telemetry`).
 //!
 //! A run's files live in `.roko/runs/<run_id>/`: `attempts.jsonl` holds the
 //! attempt-open lines and verdicts, next to `decisions.jsonl` and
@@ -26,6 +28,7 @@
 pub mod assign;
 pub mod manifest;
 pub mod records;
+pub mod report;
 pub mod writer;
 
 pub use assign::{Arm, Assignment, AssignmentUnit, LayerSpec, assign};

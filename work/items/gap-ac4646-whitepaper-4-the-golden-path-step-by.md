@@ -3,13 +3,14 @@ id = "gap-ac4646"
 kind = "gap"
 title = "Whitepaper §4 The golden path step by step, with Figure 2"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p1"
 goal = "whitepaper"
 size = "M"
 subsystem = ["docs/whitepaper"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-29
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e1"
 discovered_from = "tmp/cybernetic-harness/tldr/04-FRONTIER-PLANS-CHEAP-EXECUTES.md (the loop, steps 1-11)"
 anchors = ["docs/whitepaper/04-golden-path.md"]
@@ -72,3 +73,7 @@ Since then:
 - **Recompute tldr/04's figures** (for example, the share of sequential plans) from tracked data such as `plans/`, or
   from a frozen snapshot, and give each a footnote.
 - Lane `paper`; no hot files.
+- **Written on `work/gap-ac4646` at `4bc903cea`** (2026-09-29). Tags are at the status matrix's `a17d4dadd` (the
+  gap-35a614 draft), re-checked with greps at `1f4481133`; no golden-path code moved between the two. The verify's
+  static part passes (29 tag lines), and `paperlint --strict` from the gap-af0b57 draft is clean (1,188 words, 1.25×).
+  Close once gap-af0b57 merges `tools/paperlint.py`; if the matrix is re-pinned, re-check the tags and move `@a17d4dadd`.

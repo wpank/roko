@@ -520,17 +520,21 @@ pub struct BudgetConfig {
 }
 
 impl BudgetConfig {
-    const fn default_max_plan() -> f64 {
-        10.0
+    // The spend caps default to core's `[budget]` defaults (`0.0`, no cap),
+    // so a key a file leaves out gets the same cap whether the file is the
+    // workspace roko.toml or is passed with `roko --config`.
+    fn default_max_plan() -> f64 {
+        f64::from(roko_core::config::BudgetConfig::default().max_plan_usd)
     }
-    const fn default_max_task() -> f64 {
-        1.0
+    fn default_max_task() -> f64 {
+        f64::from(roko_core::config::BudgetConfig::default().max_task_usd)
     }
-    const fn default_max_turn() -> f64 {
-        1.0
+    fn default_max_turn() -> f64 {
+        f64::from(roko_core::config::BudgetConfig::default().max_turn_usd)
     }
-    const fn default_max_session() -> f64 {
-        50.0
+    /// `max_session_usd` is the v1 name of core's `max_plan_usd`.
+    fn default_max_session() -> f64 {
+        Self::default_max_plan()
     }
     const fn default_warn_pct() -> u32 {
         80
@@ -538,10 +542,8 @@ impl BudgetConfig {
 
     /// Take the spend caps from the core `[budget]` section.
     ///
-    /// A cap of `0.0` means no cap there, and it must stay `0.0` here: the
-    /// legacy defaults of this type (`$10` plan, `$1` task and turn) would
-    /// otherwise cap a workspace whose `roko.toml` sets no cap. Settings the
-    /// core section lacks keep their defaults.
+    /// A cap of `0.0` means no cap in both. Settings the core section lacks
+    /// keep this type's defaults.
     #[must_use]
     pub fn from_core(core: &roko_core::config::BudgetConfig) -> Self {
         Self {
@@ -2945,9 +2947,45 @@ command = "x${ROKO_TEST_MISSING_DEF456:-}y"
 
     #[test]
     fn budget_warn_threshold_defaults_to_eighty_percent() {
-        let budget = BudgetConfig::default();
+        let budget = BudgetConfig {
+            max_plan_usd: 10.0,
+            ..BudgetConfig::default()
+        };
         assert_eq!(budget.warn_at_percent, 80);
         assert!((budget.warn_threshold_usd() - 8.0).abs() < f64::EPSILON);
+    }
+
+    /// bug-367f33: `roko --config <file>` parses the file into this legacy
+    /// `Config`, whose own defaults ($10 plan, $1 task and turn) filled the
+    /// keys a `[budget]` table left out, while the same file loaded as the
+    /// workspace roko.toml got core's (0.0, no cap).
+    #[test]
+    fn config_flag_budget_defaults_match_core() {
+        let options = roko_core::config::loader::LoadOptions {
+            merge_global: false,
+            apply_env_overrides: false,
+            apply_hierarchical_env: false,
+            strict_validation: false,
+        };
+        for text in [
+            "[agent]\n\n[budget]\n",
+            "[agent]\n\n[budget]\nmax_plan_usd = 5.0\n",
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("roko.toml");
+            std::fs::write(&path, text).unwrap();
+
+            // What `roko --config <file>` loads.
+            let flag = Config::from_file(&path).unwrap().budget;
+            // What the workspace loader makes of the same file.
+            let core = roko_core::config::loader::load_config_file(&path, &options).unwrap();
+            let workspace = Config::from_roko_config(&core).unwrap().budget;
+
+            assert_eq!(flag.max_plan_usd, workspace.max_plan_usd, "{text:?}");
+            assert_eq!(flag.max_task_usd, workspace.max_task_usd, "{text:?}");
+            assert_eq!(flag.max_turn_usd, workspace.max_turn_usd, "{text:?}");
+            assert_eq!(flag.max_task_usd, 0.0, "a missing cap means no cap");
+        }
     }
 
     #[test]

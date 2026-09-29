@@ -1394,6 +1394,7 @@ const DYNAMIC_MAP_SECTIONS: &[&str] = &[
     "models",
     "profiles",
     "agent.roles",
+    "agent.tier_models",
     "tools.profiles",
 ];
 
@@ -1463,6 +1464,12 @@ pub fn schema_value_for_path(path: &str) -> Option<toml::Value> {
 /// with `skip_serializing_if = "Vec::is_empty"` (subscriptions, agents,
 /// groups, repos) and conditional structs (watcher, profiles) are omitted.
 /// We populate those with sentinel entries so the walker accepts them.
+///
+/// Loading strips every key this tree lacks, so a field that a default
+/// config does not serialize (an unset `Option`, an empty collection with
+/// `skip_serializing_if`) needs a sentinel here, or its value is silently
+/// dropped from every roko.toml. `every_optional_config_key_survives_a_load`
+/// covers the fields that have one.
 fn build_schema_tree() -> toml::Value {
     use super::agent::RoleOverride;
     use super::provider::{ModelProfile, ProviderConfig};
@@ -1544,6 +1551,13 @@ fn build_schema_tree() -> toml::Value {
     config.agent.mcp_config = Some(std::path::PathBuf::new());
     config.agent.default_agent_id = Some(String::new());
     config.agent.disabled_providers = vec![String::new()];
+    config.agent.fallback_model = Some(String::new());
+    // `tier_models` maps tier names to models (a dynamic map section): one
+    // entry puts the table and the type of its values in the tree.
+    config
+        .agent
+        .tier_models
+        .insert("_schema_sentinel".to_string(), String::new());
     // Routing and gate lists skip serialization when empty; without these
     // sentinels `strip_unknown_fields` would silently drop them from every
     // roko.toml.
@@ -1554,6 +1568,8 @@ fn build_schema_tree() -> toml::Value {
     // appear in the serialized schema tree and are not stripped.
     config.github.owner = Some(String::new());
     config.github.repo = Some(String::new());
+    config.serve.port = Some(0);
+    config.project.default_domain = Some(crate::task::TaskDomain::Code);
     config.subscriptions.push(SubscriptionConfig::default());
 
     let mut value =
@@ -3467,6 +3483,105 @@ strict_validation = true
         assert_eq!(schema_value_for_path("budget.max_plna_usd"), None);
         // v1 names are not v2 keys.
         assert_eq!(schema_value_for_path("agent.model"), None);
+    }
+
+    /// bug-12153c: loading strips every key that `build_schema_tree` lacks,
+    /// so an optional field without a sentinel was dropped from roko.toml
+    /// with no error. A default config serializes none of these keys.
+    #[test]
+    fn every_optional_config_key_survives_a_load() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("roko.toml");
+        std::fs::write(
+            &path,
+            r#"
+schema_version = 2
+config_version = 2
+
+[project]
+default_domain = "research"
+
+[agent]
+fallback_model = "claude-haiku-4-5"
+command = "claude"
+args = ["--verbose"]
+timeout_ms = 1234
+env = [["ROKO_TEST_VAR", "1"]]
+env_passthrough = ["AWS_*"]
+extensions = ["ext-a"]
+mcp_config = ".mcp.json"
+default_agent_id = "agent-a"
+disabled_providers = ["gemini"]
+
+[agent.tier_models]
+mechanical = "claude-haiku-4-5"
+architectural = "claude-opus-4-6"
+
+[agent.data_llm]
+model = "data-model"
+
+[routing]
+disabled_providers = ["openai"]
+fallback_models = ["claude-haiku-4-5"]
+
+[gates]
+env_passthrough = ["CARGO_*"]
+
+[github]
+owner = "nunchi"
+repo = "roko"
+
+[serve]
+port = 7788
+"#,
+        )
+        .expect("write roko.toml");
+
+        let config = load_config_file(
+            &path,
+            &LoadOptions {
+                merge_global: false,
+                apply_env_overrides: false,
+                apply_hierarchical_env: false,
+                strict_validation: false,
+            },
+        )
+        .expect("load roko.toml");
+
+        // The keys that had no sentinel.
+        let domain = config.project.default_domain.clone();
+        assert_eq!(domain, Some(crate::task::TaskDomain::Research));
+        let agent = &config.agent;
+        assert_eq!(agent.fallback_model.as_deref(), Some("claude-haiku-4-5"));
+        // Exactly the file's entries: the schema sentinel never reaches a config.
+        let tiers = HashMap::from([
+            ("mechanical".to_string(), "claude-haiku-4-5".to_string()),
+            ("architectural".to_string(), "claude-opus-4-6".to_string()),
+        ]);
+        assert_eq!(agent.tier_models, tiers);
+        assert_eq!(config.serve.port, Some(7788));
+
+        // The keys that already had one.
+        assert_eq!(agent.command.as_deref(), Some("claude"));
+        assert_eq!(agent.args, Some(vec!["--verbose".to_string()]));
+        assert_eq!(agent.timeout_ms, Some(1234));
+        let env = vec![("ROKO_TEST_VAR".to_string(), "1".to_string())];
+        assert_eq!(agent.env, Some(env));
+        assert_eq!(agent.env_passthrough, vec!["AWS_*".to_string()]);
+        assert_eq!(agent.extensions, vec!["ext-a".to_string()]);
+        let mcp_config = agent.mcp_config.as_deref();
+        assert_eq!(mcp_config, Some(std::path::Path::new(".mcp.json")));
+        assert_eq!(agent.default_agent_id.as_deref(), Some("agent-a"));
+        assert_eq!(agent.disabled_providers, vec!["gemini".to_string()]);
+        let data_model = agent.data_llm.as_ref().map(|llm| llm.model.as_str());
+        assert_eq!(data_model, Some("data-model"));
+        let routing = &config.routing;
+        assert_eq!(routing.disabled_providers, vec!["openai".to_string()]);
+        let fallbacks = vec!["claude-haiku-4-5".to_string()];
+        assert_eq!(routing.fallback_models, fallbacks);
+        assert_eq!(config.gates.env_passthrough, vec!["CARGO_*".to_string()]);
+        assert_eq!(config.github.owner.as_deref(), Some("nunchi"));
+        assert_eq!(config.github.repo.as_deref(), Some("roko"));
     }
 
     #[test]

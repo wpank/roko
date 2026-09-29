@@ -721,7 +721,9 @@ pub fn format_toml_value(value: &toml::Value) -> String {
 ///
 /// Reads the existing file as a TOML value tree, patches the changed keys,
 /// and writes the result back. Uses the `toml` crate (already a dependency)
-/// rather than `toml_edit` to avoid adding a new dep.
+/// rather than `toml_edit` to avoid adding a new dep. The result must pass
+/// the checks of `roko config validate`, or the file is left unchanged and
+/// the error says why.
 #[allow(clippy::implicit_hasher)]
 pub fn save_pending_edits(root: &Path, pending: &HashMap<String, String>) -> Result<(), String> {
     if pending.is_empty() {
@@ -748,7 +750,10 @@ pub fn save_pending_edits(root: &Path, pending: &HashMap<String, String>) -> Res
     let toml_str =
         toml::to_string_pretty(&root_val).map_err(|e| format!("serialize roko.toml: {e}"))?;
 
-    std::fs::write(&config_path, toml_str).map_err(|e| format!("write roko.toml: {e}"))?;
+    // Refuse edits that `roko config validate` would reject; the file then
+    // keeps its previous contents.
+    crate::config_cmd::write_checked_config(&config_path, &toml_str)
+        .map_err(|e| format!("{e:#}"))?;
 
     Ok(())
 }

@@ -3,13 +3,15 @@ id = "bug-367f33"
 kind = "bug"
 title = "roko --config <file> fills missing [budget] keys with the CLI's legacy defaults ($10 per plan, $1 per task) instead of core [budget]'s"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p2"
 goal = "release"
 size = "S"
 subsystem = ["roko-cli/config", "roko-core/config"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-29
+last_verified_rev = "407ce30d5"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (17:09, wk-onboard's report on bug-e1327f, branch work/bug-e1327f)"
 anchors = ["crates/roko-cli/src/config.rs::BudgetConfig", "crates/roko-core/src/config/budget.rs::BudgetConfig"]
@@ -49,3 +51,10 @@ The two sets of defaults were checked on `work/bug-e1327f` (`fab9168a9`). This c
 
 - [ ] A key missing from `[budget]` gets core's default however the file is passed.
 - [ ] The `[[verify]]` command passes.
+
+## Notes
+
+- Premise confirmed at `407ce30d5` with `target/debug/roko` (built at `33e107da1`): `roko --config other.toml run` with `[agent] command = "claude"` and an empty `[budget]` fails admission with `predicted turn cost $1.5000 exceeds max_turn_usd $1.0000`. `resolve_config_for_workdir` loads `--config` through `Config::from_file`, whose `BudgetConfig` defaulted to $10 plan, $1 task and turn, $50 session.
+- The CLI type's serde defaults now read core's `BudgetConfig::default()`; `max_session_usd`, the v1 name of `max_plan_usd`, follows the plan cap.
+- Overlap: neither gap-4665ac nor bug-ae28ac covers this, and this covers neither. gap-4665ac asks whether core's defaults should stay 0.0 (parked as q-778b4f and q-e23804); after this change `--config` follows whatever core picks. bug-ae28ac is about the Graph engine enforcing `max_daily_usd` and `max_agent_lifetime_usd`. bug-4ed3c2 (`plan run` ignores `--config`) is a different path.
+- Implemented on `work/bug-12153c` at `940c12561`; cargo verification deferred to the batch check.

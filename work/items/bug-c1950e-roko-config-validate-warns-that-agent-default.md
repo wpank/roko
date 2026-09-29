@@ -3,13 +3,15 @@ id = "bug-c1950e"
 kind = "bug"
 title = "roko config validate warns that agent.default_model references a missing model when the model is a builtin"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p3"
 goal = "tooling"
 size = "S"
 subsystem = ["roko-cli/config"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-29
+last_verified_rev = "407ce30d5"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (17:09, wk-onboard's report on bug-e1327f, branch work/bug-e1327f)"
 anchors = ["crates/roko-cli/src/config_cmd.rs"]
@@ -47,3 +49,9 @@ Checked on `work/bug-e1327f` (`fab9168a9`): the check is `!models.contains_key(d
 
 - [ ] A builtin model in `agent.default_model` gives no warning, and an unknown name still does.
 - [ ] The `[[verify]]` command passes.
+
+## Notes
+
+- Premise confirmed at `407ce30d5`: the three checks tested `[models]` keys only; a fresh workspace on the builtin `claude-sonnet-4-6` got the warning (seen with `target/debug/roko` on bug-e1327f's no-provider template).
+- A reference now resolves to a `[models]` key or a builtin model (aliases included), the rule core's `routing.unresolved_model` check uses.
+- Implemented on `work/bug-12153c` at `7b5f32d2b`; cargo verification deferred to the batch check.

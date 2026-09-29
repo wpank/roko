@@ -1465,8 +1465,15 @@ async fn semantic_validate_config(
         }
     }
 
+    // A model reference resolves to a `[models]` key or a builtin model, as at
+    // runtime; only a name that neither knows is missing.
+    let resolves = |name: &str| {
+        models.contains_key(name)
+            || roko_core::config::model_registry::builtin_model(name).is_some()
+    };
+
     let default_model = config.agent.default_model.trim();
-    if !default_model.is_empty() && !models.contains_key(default_model) {
+    if !default_model.is_empty() && !resolves(default_model) {
         report.schema_warnings.push(format!(
             "agent.default_model references missing model '{default_model}'"
         ));
@@ -1478,7 +1485,7 @@ async fn semantic_validate_config(
             report
                 .schema_warnings
                 .push("agent.fallback_model must not be empty".to_string());
-        } else if !models.contains_key(fallback_model) {
+        } else if !resolves(fallback_model) {
             report.schema_warnings.push(format!(
                 "agent.fallback_model references missing model '{fallback_model}'"
             ));
@@ -1497,7 +1504,7 @@ async fn semantic_validate_config(
             report
                 .schema_warnings
                 .push(format!("agent.tier_models.{tier} must not be empty"));
-        } else if !models.contains_key(model.trim()) {
+        } else if !resolves(model.trim()) {
             report.schema_warnings.push(format!(
                 "agent.tier_models.{tier} references missing model '{}'",
                 model.trim()
@@ -2048,6 +2055,43 @@ scheduled_cron = "invalid cron"
             .expect("setup leaves a roko.toml that validation accepts");
     }
 
+    /// bug-8d7d18: `config preset`, `tune` and the TUI's config and effects
+    /// saves wrote roko.toml without the check that `config set` runs. Each
+    /// library writer now refuses a result that validation rejects and keeps
+    /// the old file.
+    #[test]
+    fn every_roko_toml_writer_checks_before_writing() {
+        use crate::tui::config_meta::save_pending_edits;
+        use crate::tui::effects_config::{EffectsPreset, save_preset_to_root};
+
+        fn turn_cap(usd: &str) -> HashMap<String, String> {
+            HashMap::from([("budget.max_turn_usd".to_string(), usd.to_string())])
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("roko.toml");
+        let valid = "[budget]\nmax_plan_usd = 10.0\n";
+        fs::write(&path, valid).unwrap();
+
+        // The TUI config editor and `roko config preset`: a $20 turn cap
+        // above the $10 plan cap fails config invariant 1.
+        let err = save_pending_edits(dir.path(), &turn_cap("20")).unwrap_err();
+        assert!(err.contains("invariant 1"), "{err}");
+        assert_eq!(fs::read_to_string(&path).unwrap(), valid);
+        // A valid edit still saves.
+        save_pending_edits(dir.path(), &turn_cap("2")).unwrap();
+        let saved = fs::read_to_string(&path).unwrap();
+        assert!(saved.contains("max_turn_usd = 2.0"), "{saved}");
+
+        // The TUI effects preset: a save into a config that fails the check
+        // is refused too.
+        let invalid = "[budget]\nmax_plan_usd = 1.0\nmax_turn_usd = 2.0\n";
+        fs::write(&path, invalid).unwrap();
+        let err = save_preset_to_root(dir.path(), EffectsPreset::Full).unwrap_err();
+        assert!(err.contains("invariant 1"), "{err}");
+        assert_eq!(fs::read_to_string(&path).unwrap(), invalid);
+    }
+
     #[test]
     fn set_dotted_key_sets_prompt_budget() {
         let mut doc = empty_doc();
@@ -2435,24 +2479,63 @@ command = "claude"
         let client = reqwest::Client::builder().build().unwrap();
         let mut config = RokoConfig::default();
         config.models.clear();
-        config.agent.default_model = "claude-sonnet-4-6".to_string();
+        // Names that neither `[models]` nor the builtin models know.
+        config.agent.default_model = "no-default".to_string();
         config
             .agent
             .tier_models
-            .insert("mechanical".to_string(), "claude-haiku-4-5".to_string());
-        config.agent.fallback_model = Some("claude-haiku-4-5".to_string());
+            .insert("mechanical".to_string(), "no-tier-model".to_string());
+        config.agent.fallback_model = Some("no-fallback".to_string());
 
         let report = semantic_validate_config(&config, &client).await;
 
+        assert!(
+            report
+                .schema_warnings
+                .contains(&"agent.default_model references missing model 'no-default'".to_string())
+        );
+        assert!(
+            report.schema_warnings.contains(
+                &"agent.fallback_model references missing model 'no-fallback'".to_string()
+            )
+        );
         assert!(report.schema_warnings.contains(
-            &"agent.default_model references missing model 'claude-sonnet-4-6'".to_string()
+            &"agent.tier_models.mechanical references missing model 'no-tier-model'".to_string()
         ));
-        assert!(report.schema_warnings.contains(
-            &"agent.fallback_model references missing model 'claude-haiku-4-5'".to_string()
-        ));
-        assert!(report.schema_warnings.contains(
-            &"agent.tier_models.mechanical references missing model 'claude-haiku-4-5'".to_string()
-        ));
+    }
+
+    /// bug-c1950e: a builtin model needs no `[models]` entry, yet validation
+    /// warned that it was missing.
+    #[tokio::test]
+    async fn validate_accepts_a_builtin_default_model() {
+        let client = reqwest::Client::builder().build().unwrap();
+        let mut config = RokoConfig::default();
+        config.models.clear();
+        config.agent.default_model = "claude-sonnet-4-6".to_string();
+        config.agent.fallback_model = Some("claude-haiku-4-5".to_string());
+        // A builtin alias resolves too.
+        config
+            .agent
+            .tier_models
+            .insert("mechanical".to_string(), "haiku".to_string());
+
+        let report = semantic_validate_config(&config, &client).await;
+        let model_warnings = report
+            .schema_warnings
+            .iter()
+            .filter(|warning| warning.contains("references missing model"))
+            .collect::<Vec<_>>();
+        assert!(model_warnings.is_empty(), "{model_warnings:?}");
+
+        // A name that neither `[models]` nor the builtins know still warns.
+        config.agent.default_model = "not-a-model".to_string();
+        let report = semantic_validate_config(&config, &client).await;
+        let missing = "agent.default_model references missing model 'not-a-model'".to_string();
+        assert!(
+            report.schema_warnings.contains(&missing),
+            "{:?}",
+            report.schema_warnings
+        );
     }
 
     #[tokio::test]

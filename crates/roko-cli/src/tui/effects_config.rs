@@ -222,8 +222,10 @@ pub fn save_preset_to_root(root: &Path, preset: EffectsPreset) -> Result<(), Str
         *preset_item = toml_edit::value(preset.as_toml_value());
     }
 
-    std::fs::write(&config_path, document.to_string())
-        .map_err(|e| format!("write roko.toml: {e}"))?;
+    // Refuse to leave a config that `roko config validate` would reject; the
+    // file then keeps its previous contents.
+    crate::config_cmd::write_checked_config(&config_path, &document.to_string())
+        .map_err(|e| format!("{e:#}"))?;
     Ok(())
 }
 

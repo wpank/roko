@@ -1,0 +1,59 @@
+# speclint golden fixture: HF4. T3's file is missing but its dependency T4 writes it.
+[meta]
+plan = "hf4-missing-context"
+total = 4
+
+[[task]]
+id = "T1"
+title = "Retry limit"
+description = """Add the retry limit to `parse_config`."""
+role = "implementer"
+files = ["src/config.rs"]
+max_loc = 40
+[task.context]
+read_files = [{ path = "docs/config.md", why = "the documented keys" }]
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p fixture --lib config"
+
+[[task]]
+id = "T2"
+title = "Retry limit"
+description = """Add the retry limit to `parse_config`."""
+role = "implementer"
+files = ["src/config.rs"]
+max_loc = 40
+[task.context]
+read_files = [{ path = "docs/missing.md", why = "the documented keys" }]
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p fixture --lib config"
+
+[[task]]
+id = "T3"
+title = "Retry limit"
+description = """Add the retry limit to `parse_config`."""
+role = "implementer"
+files = ["src/config.rs"]
+max_loc = 40
+depends_on = ["T4"]
+[task.context]
+read_files = [{ path = "docs/generated.md", why = "written by T4" }]
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p fixture --lib config"
+
+[[task]]
+id = "T4"
+title = "Retry limit"
+description = """Add the retry limit to `parse_config`."""
+role = "implementer"
+files = ["docs/generated.md"]
+max_loc = 40
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p fixture --lib config"

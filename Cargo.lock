@@ -6551,6 +6551,7 @@ dependencies = [
  "futures",
  "libc",
  "proptest",
+ "regex",
  "roko-agent",
  "roko-core",
  "roko-std",

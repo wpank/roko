@@ -1635,6 +1635,77 @@ mod tests {
     }
 
     #[test]
+    fn settings_hook_denies_git_aliases_to_denied_commands() {
+        let command = bash_hook_command();
+        // A repository with its own aliases, and no user or system git
+        // config, so the invoking user's aliases play no part.
+        let home = tempdir().unwrap();
+        let repo = tempdir().unwrap();
+        let global_config = home.path().join("gitconfig");
+        let isolated = [
+            ("HOME", home.path()),
+            ("XDG_CONFIG_HOME", home.path()),
+            ("GIT_CONFIG_GLOBAL", global_config.as_path()),
+            ("GIT_CONFIG_NOSYSTEM", std::path::Path::new("1")),
+        ];
+        let setup: [&[&str]; 7] = [
+            &["init", "-q"],
+            &["config", "alias.co", "checkout"],
+            &["config", "alias.back", "co"],
+            &["config", "alias.save", "stash push"],
+            &["config", "alias.nuke", "!git clean -fdx"],
+            &["config", "alias.wipe", "!rm"],
+            &["config", "alias.st", "status --short"],
+        ];
+        for args in setup {
+            let status = StdCommand::new("git")
+                .args(args)
+                .current_dir(repo.path())
+                .envs(isolated)
+                .status()
+                .expect("run git");
+            assert!(status.success(), "git {args:?}");
+        }
+        let run = |bash_command: &str| {
+            let payload = serde_json::json!({
+                "cwd": repo.path(),
+                "tool_input": { "command": bash_command },
+            });
+            run_hook(&command, &payload.to_string(), &isolated)
+                .status
+                .code()
+        };
+
+        for denied in [
+            "git co main",
+            "git CO main",
+            "git back main",
+            "git save",
+            "git nuke",
+            "git wipe -rf target",
+            "sudo git co main",
+            "bash -c 'git co main'",
+            "git -c alias.sw=switch sw main",
+            // Defined by the command itself, so unknown when the guard runs.
+            "git config alias.drop-all 'reset --hard' && git drop-all",
+            "git frobnicate",
+            // Another directory's config may give the alias another meaning.
+            "cd sub && git st",
+        ] {
+            assert_eq!(run(denied), Some(2), "`{denied}` should be denied");
+        }
+        for allowed in [
+            "git st",
+            "git -c alias.lg='log --oneline' lg -5",
+            "git config alias.co",
+            "git count-objects -v",
+            "timeout 30 grep -rn git src",
+        ] {
+            assert_eq!(run(allowed), Some(0), "`{allowed}` should be allowed");
+        }
+    }
+
+    #[test]
     fn settings_hook_fails_closed_without_python3() {
         let command = bash_hook_command();
         let no_python = tempdir().unwrap();

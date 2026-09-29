@@ -20,6 +20,13 @@
 # past git's global options (-C, -c, --git-dir, --work-tree). Commands run by
 # subshells, sh -c, eval, $(...) and backquotes are checked too.
 #
+# A git subcommand that is not one of git's own commands is looked up as an
+# alias, where the Bash call runs and with the command's -C and -c options,
+# and the alias is checked in its place (a ! alias as a shell command). A
+# subcommand that is neither is denied, since it may be an alias the same
+# command defines, and so is an alias in a command that changes directory
+# or git's environment, where the alias may mean something else.
+#
 # `file` (Read, Edit, Write, Grep, Glob and the like) denies a file_path,
 # notebook_path or path argument that is a provider key file: .env,
 # secrets.toml or credentials.json in any .roko directory, or anything in
@@ -30,13 +37,15 @@
 # error and runs the call anyway, so every failure here, including
 # unreadable input, exits 2.
 #
-# This is best effort, not a sandbox: a script file, a git alias or a
-# variable can still hide a command or a path from it.
+# This is best effort, not a sandbox: a script file or a variable can still
+# hide a command or a path from it.
 
+import functools
 import json
 import os
 import re
 import shlex
+import subprocess
 import sys
 
 
@@ -61,8 +70,25 @@ GIT_VALUE_OPTIONS = {
     "-C", "-c", "--git-dir", "--work-tree", "--namespace", "--super-prefix", "--config-env",
     "--attr-source",
 }
+# git global options that change which configuration git reads, and so its
+# aliases. The guard passes them on when it looks an alias up.
+GIT_CONFIG_OPTIONS = {"-C", "-c", "--config-env", "--git-dir", "--bare"}
+# Commands git ships, which no alias can replace: git looks for an alias only
+# when it has no command of that name. The guard asks git about the others.
+GIT_COMMANDS = set("""
+    add am apply bisect blame branch cat-file checkout cherry-pick clean clone commit config
+    describe diff fetch format-patch grep help init log ls-files ls-remote ls-tree merge
+    merge-base mv notes pull push rebase reflog remote reset restore rev-list rev-parse revert rm
+    shortlog show show-ref stash status submodule switch tag worktree
+""".split())
+# Changing directory or git's configuration environment, after which an
+# alias can mean something else than where the hook looked it up.
+CONTEXT_CHANGE = re.compile(
+    r"(?<![\w./-])(cd|pushd|popd)(?![\w./-])|\b(GIT_\w*|HOME|XDG_CONFIG_HOME)="
+)
 
 ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
+DURATION = re.compile(r"[0-9.]+[smhd]?$")
 SUBSTITUTION = re.compile(r"\$\(([^()]*)\)|`([^`]*)`")
 # An rm argument that can expand to options: an option built from a
 # variable, or the positional parameters, through which a function or a git
@@ -73,6 +99,10 @@ SEPARATOR_CHARS = set(";&|()\n")
 OPERATOR_CHARS = SEPARATOR_CHARS | set("<>")
 FALLBACK_TOKEN = re.compile(r"[;&|()<>\n]+|[^\s;&|()<>]+")
 MAX_DEPTH = 8
+
+# The Bash call being checked (check_bash sets it): the directory git
+# aliases are looked up in, and the whole command.
+BASH_CALL = {"cwd": None, "command": ""}
 
 
 def tokens(text):
@@ -120,7 +150,9 @@ def program_name(word):
     return os.path.basename(word)
 
 
-def check_words(words, depth):
+def check_words(words, depth, maybe_argument=False):
+    """Check one command. `maybe_argument`: its first word may be an
+    argument of a wrapper rather than the program the wrapper runs."""
     while words and (words[0] in SHELL_KEYWORDS or ASSIGNMENT.match(words[0])):
         words = words[1:]
     if not words:
@@ -129,12 +161,20 @@ def check_words(words, depth):
     if program in WRAPPERS:
         # The wrapper's own options come first, and an option's value can
         # name a program too (sudo -u git rm -rf x), so every later word that
-        # names a program this guard checks starts a command to check.
+        # names a program this guard checks starts a command to check. After
+        # a word that is not an option, an assignment, a number (timeout's
+        # duration) or another wrapper, it may be an argument instead
+        # (timeout 5 grep git src).
         for index in range(1, len(words)):
             if program_name(words[index]) in CHECKED_PROGRAMS:
-                check_words(words[index:], depth)
+                after_argument = not all(
+                    word.startswith("-") or ASSIGNMENT.match(word) or DURATION.match(word)
+                    or program_name(word) in WRAPPERS
+                    for word in words[1:index]
+                )
+                check_words(words[index:], depth, after_argument)
     elif program == "git":
-        check_git(words[1:])
+        check_git(words[1:], depth, maybe_argument)
     elif program == "rm":
         check_rm(words[1:])
     elif program in SHELLS:
@@ -168,16 +208,30 @@ def check_rm(arguments):
         block("rm options taken from a variable cannot be checked")
 
 
-def check_git(arguments):
-    index = 0
+def check_git(arguments, depth, maybe_argument=False):
+    index, options = 0, []
     while index < len(arguments) and arguments[index].startswith("-"):
-        index += 2 if arguments[index] in GIT_VALUE_OPTIONS else 1
+        width = 2 if arguments[index] in GIT_VALUE_OPTIONS else 1
+        if arguments[index].split("=", 1)[0] in GIT_CONFIG_OPTIONS:
+            options += arguments[index:index + width]
+        index += width
     if index >= len(arguments):
         return
     subcommand, rest = arguments[index], arguments[index + 1:]
-    flags = short_flags(rest)
     if "$" in subcommand or "`" in subcommand:
         block("a git subcommand taken from a variable cannot be checked")
+    try:
+        alias = git_alias(subcommand, options)
+    except Unresolved as error:
+        # Where git may be an argument (timeout 5 grep git src), its next
+        # word need not be a git command at all.
+        if maybe_argument:
+            return
+        block(str(error))
+    if alias is not None:
+        check_git_alias(subcommand, alias, options, rest, depth)
+        return
+    flags = short_flags(rest)
     if subcommand == "checkout":
         block("git checkout forbidden: agents must not switch branches or discard changes")
     if subcommand == "switch":
@@ -197,6 +251,65 @@ def check_git(arguments):
         block("git stash forbidden (stash list and stash show are allowed): it can lose uncommitted work")
     if subcommand == "clean" and "n" not in flags and "--dry-run" not in rest:
         block("git clean forbidden (dry runs with -n are allowed): it deletes untracked files")
+
+
+def check_git_alias(name, alias, options, rest, depth):
+    """Check `git <name> <rest>`, which runs `alias`."""
+    if depth >= MAX_DEPTH:
+        block("git alias " + name + " nests too deeply to check")
+    if alias.startswith("!"):
+        # git runs a shell alias with sh, the arguments appended.
+        check_command(" ".join([alias[1:]] + [shlex.quote(word) for word in rest]), depth + 1)
+    else:
+        try:
+            words = shlex.split(alias)
+        except ValueError:
+            block("git alias " + name + " cannot be parsed")
+        check_git(options + words + rest, depth + 1)
+    if CONTEXT_CHANGE.search(BASH_CALL["command"]):
+        block("git alias " + name + " cannot be checked where the command changes directory or git's environment")
+
+
+class Unresolved(Exception):
+    """git cannot tell what a subcommand runs."""
+
+
+def git_alias(name, options):
+    """The alias `git <name>` runs, with the command's global `options`, or
+    None when name is one of git's commands. Raises Unresolved when name is
+    neither, or git cannot tell."""
+    if name in GIT_COMMANDS or name in git_commands():
+        return None
+    result = run_git(options + ["config", "--get", "alias." + name])
+    if result.returncode == 1 and not result.stderr:
+        raise Unresolved("git " + name + " is neither a git command nor an alias here, so it cannot be checked")
+    if result.returncode != 0:
+        raise Unresolved("git alias " + name + " cannot be resolved: " + git_failure(result))
+    return result.stdout.rstrip("\n")
+
+
+@functools.lru_cache(maxsize=None)
+def git_commands():
+    """The commands git runs rather than an alias: its own and git-* programs on PATH."""
+    result = run_git(["--list-cmds=main,others"])
+    if result.returncode != 0:
+        raise Unresolved("git's commands cannot be listed: " + git_failure(result))
+    return frozenset(result.stdout.split())
+
+
+def run_git(arguments):
+    """Run git where the Bash call runs."""
+    try:
+        return subprocess.run(
+            ["git"] + arguments, cwd=BASH_CALL["cwd"], stdin=subprocess.DEVNULL,
+            capture_output=True, text=True, timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        raise Unresolved("git cannot run to resolve an alias: %s" % (error,))
+
+
+def git_failure(result):
+    return result.stderr.strip() or "git exited %d" % result.returncode
 
 
 # Files in a .roko directory that hold provider keys or roko credentials
@@ -249,19 +362,24 @@ def is_key_path(path, cwd, search_root):
     return False
 
 
+def hook_cwd(data):
+    """The directory the tool call runs in."""
+    cwd = data.get("cwd")
+    return cwd if isinstance(cwd, str) and cwd else os.getcwd()
+
+
 def check_bash(tool_input, data):
     command = tool_input.get("command", data.get("command"))
     if not isinstance(command, str):
         block("the Bash command is not a string")
     if names_key_file(command):
         block(KEY_FILE_REASON)
+    BASH_CALL.update(cwd=hook_cwd(data), command=command)
     check_command(command)
 
 
 def check_file(tool_input, data):
-    cwd = data.get("cwd")
-    if not isinstance(cwd, str) or not cwd:
-        cwd = os.getcwd()
+    cwd = hook_cwd(data)
     # Read, Edit and Write take file_path, NotebookEdit notebook_path, and
     # Grep and Glob path, the directory they search.
     for field in ("file_path", "notebook_path", "path"):

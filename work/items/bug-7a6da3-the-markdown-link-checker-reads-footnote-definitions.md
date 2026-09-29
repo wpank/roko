@@ -2,7 +2,7 @@
 id = "bug-7a6da3"
 kind = "bug"
 title = "The markdown link checker reads footnote definitions as reference links"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "whitepaper"
@@ -11,6 +11,7 @@ subsystem = ["tooling/docs-integrity"]
 created = 2026-09-29
 updated = 2026-09-29
 last_verified = 2026-09-29
+last_verified_rev = "b13c1f44e"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (15:13, next paper wave)"
 anchors = ["tools/docs_integrity/check_markdown_links.py:81", "tools/docs_integrity/check_markdown_links.py:357", "tools/docs_integrity/test_check_markdown_links.py"]
@@ -20,6 +21,12 @@ links = { depends_on = [], blocks = [], related = ["bug-f279ea", "gap-af0b57"], 
 
 [[verify]]
 command = "grep -qw 'def test_footnote_definitions_are_not_links' tools/docs_integrity/test_check_markdown_links.py && python3 -m unittest tools.docs_integrity.test_check_markdown_links -k test_footnote_definitions_are_not_links"
+
+[closed]
+at = 2026-09-29
+commit = "b13c1f44e"
+by = "wk-readme"
+evidence = "check_markdown_links.py: _REFERENCE_TARGET_RE now rejects labels starting with ^, so [^n]: footnote definitions are no longer read as reference-link targets; inline links inside footnotes are still checked. New test_footnote_definitions_are_not_links fails on the old pattern (Commit/Measured/See findings) and passes now; python3 -m unittest tools.docs_integrity.test_check_markdown_links passes (18 tests)."
 +++
 
 ## Problem

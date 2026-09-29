@@ -26,16 +26,17 @@ need a $17 flag for a pilot budgeted at $10 (60 cheap_direct runs at $0.29 worst
 typical), and the flag would then no longer cap anything. `vb estimate` and the run manifest show the whole-run
 worst case. A model without a price row cannot be bounded and is refused. `--provider-url` with a loopback URL (such
 as `stub_provider`'s) runs offline, with neither flag. A loopback URL in front of a network provider would skip
-admission, so a run meters a network provider with `--proxy`, never through a proxy started by hand.
+admission, so `--provider-url` never names a proxy started by hand: `vb run` starts its own (below).
 
-**The metering proxy** (`--proxy`; `faultproxy.py`, S08 T13). Once the run is admitted, `vb run --proxy` starts the
-proxy inside the driver's process with one upstream: the arm's provider, or the `--provider-url` that overrides it.
-The runners reach the model only through it: they get its loopback URL and no key, and it sends the provider's key.
-It logs every call to `<run_dir>/proxy.jsonl`, and before each task the driver sets its task to the task key,
-`<instance_id>.s<seed>`; the Roko arm finds its rows by that key (`run_roko`). Admission judges the provider's own
-URL, never the proxy's, so a network provider behind the loopback proxy still needs both flags. The profile is
-`clean`: it meters and injects no fault. A network provider without an `api_key_env` (a subscription CLI signs in by
-itself) cannot go through the proxy, which drops a client's own credentials.
+**The metering proxy** (`faultproxy.py`, S08 T13). A billed run on a network provider always goes through it, and
+`--proxy` sends any other run through it too, such as an offline one on a stub. Once the run is admitted, `vb run`
+starts the proxy inside the driver's process with one upstream: the arm's provider, or the `--provider-url` that
+overrides it. The runners reach the model only through it: they get its loopback URL and no key, and it sends the
+provider's key. It logs every call to `<run_dir>/proxy.jsonl`, and before each task the driver sets its task to the
+task key, `<instance_id>.s<seed>`; the Roko arm finds its rows by that key (`run_roko`). Admission judges the
+provider's own URL, never the proxy's, so a network provider behind the loopback proxy still needs both flags. The
+profile is `clean`: it meters and injects no fault. A network provider without an `api_key_env` (a subscription CLI
+signs in by itself) cannot go through the proxy, which drops a client's own credentials.
 
 The benchmark secret reaches only `hidden.py`, in the census, as a file path: `--secret-file`, else
 `$VB_SECRET_FILE`, else `~/.config/viabilitybench/secret` (mode 0600; `driver/secret.py init` makes one). Before the
@@ -59,6 +60,7 @@ import secrets
 import stat
 import sys
 import tomllib
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from types import ModuleType
@@ -288,8 +290,11 @@ def cmd_run(args: argparse.Namespace) -> int:
     # A subscription arm's CLI signs in by itself; only a billed arm needs the driver's key.
     if not plan.endpoint.offline and plan.arm["arm"]["billed"] and not os.environ.get(plan.endpoint.api_key_env or ""):
         raise DriverError(f"set {plan.endpoint.api_key_env} for {plan.endpoint.provider}")
-    if args.proxy and not plan.endpoint.offline and not os.environ.get(plan.endpoint.api_key_env or ""):
-        raise DriverError(f"--proxy sends {plan.endpoint.provider}'s key: " + (
+    # A billed network run always meters through the proxy, which alone sends the provider's key (module docstring).
+    proxied = args.proxy or (plan.arm["arm"]["billed"] and not plan.endpoint.offline)
+    keys = {name: os.environ[name] for name in [plan.endpoint.api_key_env] if name and os.environ.get(name)}
+    if proxied and not plan.endpoint.offline and not keys:
+        raise DriverError(f"the metering proxy sends {plan.endpoint.provider}'s key: " + (
             f"set {plan.endpoint.api_key_env}" if plan.endpoint.api_key_env else
             "the arm names no api_key_env, since its client signs in by itself"))
     for family, directory in sorted(plan.stream.families.items()):
@@ -332,11 +337,11 @@ def cmd_run(args: argparse.Namespace) -> int:
         "started_at": harness.utc_now(), "argv": args.argv, "harness_sha": head[0],
         "dirty": head[1], "config_hash": config_hash, "config": config, "suite": suite,
         "offline": plan.endpoint.offline,
-        "proxy": {"log": PROXY_LOG, "profile": faultproxy.Profile().as_json()} if args.proxy else None,
+        "proxy": {"log": PROXY_LOG, "profile": faultproxy.Profile().as_json()} if proxied else None,
         "secret_file": str(secret_file), "work_dir": str(work_dir), **plan.summary()})
     book = ledger.Ledger(run_dir / "ledger.jsonl", line=line, experiment_id=args.experiment, run_id=run_id,
                          price_snapshot_id=plan.snapshot.id)
-    proxy = _start_proxy(plan, run_dir) if args.proxy else None
+    proxy = _start_proxy(plan, run_dir, keys=keys) if proxied else None
     endpoint = proxy.endpoint(plan.endpoint) if proxy else plan.endpoint
     run = Run(args=args, plan=plan, runner=runner, endpoint=endpoint, chat=provider.OpenAICompatible(endpoint),
               book=book, secret_file=secret_file, run_dir=run_dir, work_dir=work_dir, run_id=run_id,
@@ -454,11 +459,14 @@ def _endpoint(arm: dict, row: dict | None, provider_url: str | None) -> provider
     return provider.Endpoint(provider=name, base_url=provider_url or table["base_url"], **fields)
 
 
-def _start_proxy(plan: Plan, run_dir: Path) -> faultproxy.FaultProxy:
-    """The metering proxy in front of the plan's endpoint, logging to `<run_dir>/proxy.jsonl` (module docstring)."""
+def _start_proxy(plan: Plan, run_dir: Path, *, keys: Mapping[str, str]) -> faultproxy.FaultProxy:
+    """The metering proxy in front of the plan's endpoint, logging to `<run_dir>/proxy.jsonl` (module docstring).
+    `keys` maps the upstream's `api_key_env` to its key: the proxy sends it, and the runners' endpoint names none."""
+    upstream = faultproxy.Upstream.from_endpoint(plan.endpoint)
     try:
-        return faultproxy.FaultProxy([faultproxy.Upstream.from_endpoint(plan.endpoint)], log_path=run_dir / PROXY_LOG,
-                                     snapshot=plan.snapshot).start()
+        if upstream.api_key_env and not keys.get(upstream.api_key_env):
+            raise faultproxy.ProxyError(f"no key for {upstream.name}'s {upstream.api_key_env}")
+        return faultproxy.FaultProxy([upstream], log_path=run_dir / PROXY_LOG, snapshot=plan.snapshot).start()
     except (faultproxy.ProxyError, OSError) as err:
         archive.remove_tree(run_dir)  # made by this run a moment ago; nothing has run
         raise DriverError(f"the metering proxy cannot start: {err}") from None
@@ -559,7 +567,8 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("--allow-network", action="store_true", help="allow calls to a non-loopback provider")
     run.add_argument("--max-cost-usd", type=_positive_float, help="required with --allow-network")
     run.add_argument("--proxy", action="store_true",
-                     help="route model calls through the metering proxy (faultproxy.py), logged to proxy.jsonl")
+                     help="route an offline or unbilled run through the metering proxy (faultproxy.py), as every "
+                          "billed network run is; its log is proxy.jsonl")
     run.add_argument("--secret-file", type=Path, help="default: $VB_SECRET_FILE, then " + str(DEFAULT_SECRET_FILE))
     run.add_argument("--results", type=Path, help="default: $VB_RESULTS, then " + str(DEFAULT_RESULTS))
     run.add_argument("--work", type=Path, help="default: $VB_WORK, then " + str(DEFAULT_WORK))

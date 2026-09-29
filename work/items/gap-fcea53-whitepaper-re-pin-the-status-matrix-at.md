@@ -2,14 +2,16 @@
 id = "gap-fcea53"
 kind = "gap"
 title = "Whitepaper: re-pin the status matrix at a post-merge commit before the whitepaper-v1 tag"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p2"
 goal = "whitepaper"
 size = "M"
 subsystem = ["paper"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-29
+last_verified_rev = "12a8d7793"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (16:12, wk-wp-review's report on gap-8d2c79)"
 anchors = ["docs/whitepaper/data/mechanisms.toml", "docs/whitepaper/appendix-status-matrix.md", "docs/whitepaper/figures/fig3-status-matrix.svg", "tools/status_matrix.py"]
@@ -19,6 +21,12 @@ links = { depends_on = ["gap-8d2c79"], blocks = [], related = ["gap-8d2c79", "ga
 
 [[verify]]
 command = "python3 tools/status_matrix.py --check && ! grep -q 'pin = \"a17d4dadd\"' docs/whitepaper/data/mechanisms.toml && python3 tools/paperlint.py --strict --require-status reviewed docs/whitepaper/*.md"
+
+[closed]
+at = 2026-09-29
+commit = "12a8d7793"
+by = "commit trailer"
+evidence = "12a8d7793 re-checks all 71 rows at ed0c33bd5 and re-pins the matrix, appendix, Figures 1-3 and every section tag there: AU3 MISSING to PARTIAL, AU7 and IS4 PARTIAL to WIRED; SS6 names gap-0d64d5, IS6 gap-8f8544. Verify passes: status_matrix.py --check (71 rows ok at ed0c33bd5) and paperlint --strict --require-status reviewed (14 files clean)."
 +++
 
 ## Problem
@@ -56,5 +64,12 @@ Everything is pinned at `a17d4dadd`, and the matrix is marked reviewed (gap-8d2c
 
 ## Done when
 
-- [ ] The matrix and all tags are pinned at the new commit.
-- [ ] The `[[verify]]` command passes.
+- [x] The matrix and all tags are pinned at the new commit.
+- [x] The `[[verify]]` command passes.
+
+## Notes
+
+- 2026-09-29 (wk-repin): pinned at `ed0c33bd5`. Totals there: 23 wired, 22 partial, 2 broken, 7 orphaned, 7 built but
+  unwired, 9 missing, 1 removed (was 21/23/2/7/7/10/1). `REVIEW.md` keeps its record of the review at `a17d4dadd`.
+- The verify's middle check, `! grep -q 'pin = "a17d4dadd"'`, can never fail: the key is `pinned`, so the pattern
+  never matches. `status_matrix.py --check` and the section tags carry the real check.

@@ -151,8 +151,10 @@ impl GraphTaskDispatcher {
         let failure_reason = settled.failure_reason.clone();
         let attempt_key = settled.attempt_key();
         let role = task.role.as_deref().unwrap_or("implementer");
-        // P3-02: Agent turns as reported by the provider (the Claude CLI's
-        // `num_turns`), so episodes and efficiency records carry real counts.
+        // P3-02: Agent turns as the agent reported them (the Claude CLI's
+        // `num_turns`, the model calls of roko's tool loop), so episodes and
+        // efficiency records carry real counts. 0 when it did not say: the
+        // count is unknown, not one turn (bug-55fd84).
         let agent_num_turns = dispatch
             .events
             .iter()
@@ -161,7 +163,7 @@ impl GraphTaskDispatcher {
                 roko_agent::AgentRuntimeEvent::TurnCompleted { num_turns, .. } => *num_turns,
                 _ => None,
             })
-            .unwrap_or(1);
+            .unwrap_or(0);
         let provider_id = &dispatch.target.provider_id;
         let model_slug = &dispatch.target.model_slug;
         let cost_usd = f64::from(dispatch.result.usage.cost_usd);
@@ -364,7 +366,7 @@ impl GraphTaskDispatcher {
             };
             let row = AttemptKeyed {
                 attempt_key: attempt_key.to_string(),
-                row: &event,
+                row: roko_learn::efficiency::ExecutedRow::new(&event, &settled.verdict.executed),
             };
             match serde_json::to_string(&row) {
                 Ok(line) => {
@@ -419,7 +421,10 @@ impl GraphTaskDispatcher {
             };
             let row = AttemptKeyed {
                 attempt_key: attempt_key.to_string(),
-                row: &cost_record,
+                row: roko_learn::efficiency::ExecutedRow::new(
+                    &cost_record,
+                    &settled.verdict.executed,
+                ),
             };
             match serde_json::to_string(&row) {
                 Ok(line) => {

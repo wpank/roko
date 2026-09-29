@@ -26,8 +26,9 @@ command = "grep -rqF --include='*.test.ts' 'does not poll the plan while the ope
 `waitForOperation` (expecting `new-plan`) polls `GET /api/operations/{id}` every second. While the
 operation is `running`, it also calls `planExists(planId)`, a `GET /api/plans/{id}` that answers 404
 until the plan is written. The real-model run's console
-(`tmp/portal-audit/evidence/hello-world-real/browser-real.json`) holds 30 "404 (Not Found)" entries
-for a 29 s generation.
+(`tmp/portal-audit/evidence/hello-world-real-run1/browser-real.json`) holds 30 "404 (Not Found)" entries
+for a 29 s generation. The 11:40 re-run holds 22 for a 20.7 s generation
+(`tmp/portal-audit/evidence/hello-world-real/browser-real.json`).
 
 Since plan 04, the server finalizes a generate operation with `status: completed` and `result.slug`.
 The plan poll is only needed for servers whose operations never finish (bug-a0f01e covers other

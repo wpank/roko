@@ -26,7 +26,7 @@ command = "grep -rqw 'fn tool_step_target_is_workspace_relative' crates/roko-age
 In the 09 real-model run, the four live tool steps carried these targets:
 `/private/tmp/roko-hello-JdC7dN/roko.toml` (Read), `/private/tmp/roko-hello-JdC7dN` (Grep),
 `/private/tmp/roko-hello-JdC7dN/Cargo.toml` and `/private/tmp/roko-hello-JdC7dN/src/main.rs` (Write)
-(`tmp/portal-audit/evidence/hello-world-real/events.sse`).
+(`tmp/portal-audit/evidence/hello-world-real-run1/events.sse`).
 
 `tool_step_target` takes `file_path` or `path` verbatim, then scrubs secrets and truncates to 120
 characters, and Claude Code passes absolute paths. The design and the fake agent show

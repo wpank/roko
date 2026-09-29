@@ -29,7 +29,7 @@ through the hub. After `run_plan` returns, the route's spawned task publishes
 
 Every single-plan capture in the 09 evidence shows `plan_completed, run_completed, plan_completed`:
 both runs in `tmp/portal-audit/evidence/portal-check/events.sse`, and the run in
-`tmp/portal-audit/evidence/hello-world-real/events.sse`. The set run (`POST /api/plans/execute`,
+`tmp/portal-audit/evidence/hello-world-real-run1/events.sse`. The set run (`POST /api/plans/execute`,
 `par-events.sse`) publishes one per plan.
 
 Reproduced on 2026-09-29: in a harness workspace, execute `live-b`, and

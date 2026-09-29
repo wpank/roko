@@ -22,7 +22,7 @@ links = { depends_on = [], blocks = [], related = ["bug-9f340c"], supersedes = [
 In a fresh `roko init` workspace, which is the path 09 T03 proves, the portal's first generated plan
 is written to `.roko/plans/<slug>/tasks.toml`. The real run's `serve.log` reads "Wrote tasks.toml
 (1290 bytes) to /private/tmp/roko-hello-JdC7dN/.roko/plans/a-rust-app-that-prints-hello-world"
-(`tmp/portal-audit/evidence/hello-world-real/serve.log`). `plans_dir` returns `plans/` only when it
+(`tmp/portal-audit/evidence/hello-world-real-run1/serve.log`). `plans_dir` returns `plans/` only when it
 already exists; otherwise it returns `.roko/plans`, which its own doc comment calls the legacy
 location. `.roko/` is roko's runtime-state directory (checkpoints, logs, `runtime/serve.token`), so
 the user's first plan sits beside runtime state rather than with their code. bug-9f340c (residual 2)

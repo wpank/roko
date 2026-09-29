@@ -23,13 +23,18 @@ command = "cargo build -p roko-cli && bash -c 'source plans/portal-programme/_ha
 
 ## Problem
 
-The 09 real-model run (`tmp/portal-audit/evidence/hello-world-real/events.sse`) generated its plan
+The first 09 real-model run (`tmp/portal-audit/evidence/hello-world-real-run1/events.sse`) generated its plan
 with claude-sonnet-4-6 in 29.4 s (`plan_generate.started` at 1790672049774 ms, `.completed` at
 1790672079192 ms), then ran one task. The stream carries `efficiency_event` usage and
 `cost_usd = 0.0587` for the task only, and nothing between the two generate events. The snapshot's
 `stats.cost_usd_total` is fed by those events, so both the portal's cost and the server's total leave
 out generation. Revision presumably behaves the same (it reuses the generation pipeline, 04b) but was
 not checked. The 09 verdict could not state the real run's total cost.
+
+The re-run at 11:40, with the script's patched snapshot lookup, printed
+`cost_usd_total=0.061694398522377014`. That is exactly its task's one `cost_usd` event, although its
+generation turn ran 20.5 s (`serve.log`: `agent=20528ms`; `tmp/portal-audit/evidence/hello-world-real/`).
+The snapshot total leaves generation out.
 
 Reproduced with the fake agent, which reports `total_cost_usd` for generation too: after a generate,
 there is no `efficiency_event metric=cost_usd` between `plan_generate.started` and

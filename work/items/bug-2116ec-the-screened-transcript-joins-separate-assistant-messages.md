@@ -27,7 +27,8 @@ The real-model task's screened transcript is a single `text` record: "I'll start
 relevant files to understand the current state of the repository.No `Cargo.toml` exists yet. I'll
 create both files now.Both files are created. Here's a summary…". That is three assistant messages,
 separated by tool calls in the session, joined with nothing between them. The portal shows it that
-way (`tmp/portal-audit/evidence/hello-world-real/3-done.png`).
+way (`tmp/portal-audit/evidence/hello-world-real-run1/3-done.png`). The 11:40 re-run shows the same: "…the workspace
+state.No `Cargo.toml` exists yet. I'll create both files now.Both files are created…".
 
 The fake agent reproduces it: its two assistant messages arrive as "Working on
 out/live-b-t01.txt.Wrote the requested artifacts.", while the CLI's own `result` field holds only the

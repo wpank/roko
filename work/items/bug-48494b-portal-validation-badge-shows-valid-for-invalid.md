@@ -52,7 +52,7 @@ Separately, `Workspace.tsx:153` passes `validationErrors: 0` to `pickAlert`, so 
 validation alert can never fire.
 
 Every 09 run logged these 400s in the browser console (`tmp/portal-audit/evidence/*/browser-*.json`:
-6 in the fake-agent flow, 1 in the parallel flow, 3 in the real-model run). The checks do not assert
+6 in the fake-agent flow, 1 in the parallel flow, 3 in each of the two real-model runs). The checks do not assert
 on console errors, and none opens an invalid plan, so both checks passed.
 
 ## Why it matters

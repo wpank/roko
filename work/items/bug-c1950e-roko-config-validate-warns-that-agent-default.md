@@ -2,7 +2,7 @@
 id = "bug-c1950e"
 kind = "bug"
 title = "roko config validate warns that agent.default_model references a missing model when the model is a builtin"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "tooling"
@@ -11,7 +11,7 @@ subsystem = ["roko-cli/config"]
 created = 2026-09-29
 updated = 2026-09-29
 last_verified = 2026-09-29
-last_verified_rev = "407ce30d5"
+last_verified_rev = "b11ca807d"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (17:09, wk-onboard's report on bug-e1327f, branch work/bug-e1327f)"
 anchors = ["crates/roko-cli/src/config_cmd.rs"]
@@ -21,6 +21,11 @@ links = { depends_on = [], blocks = [], related = ["bug-e1327f"], supersedes = [
 
 [[verify]]
 command = "grep -rqw 'fn validate_accepts_a_builtin_default_model' crates/roko-cli/src/ && cargo test -p roko-cli --lib validate_accepts_a_builtin_default_model"
+
+[closed]
+at = 2026-09-29
+by = "coordinator (session 7622b882)"
+evidence = "config validate counts a model reference as present when it is a [models] key or a builtin (aliases included) (7b5f32d2b, merged b351d2be5). Batch 6 gate (work/rust-batch-5 tree plus fmt-only and unused-import fixes fdb2a9b72, 579ffd0e6, a8dd7f09f, 2aa55ab1f): cargo check --workspace --tests clean; clippy -p roko-cli -p roko-core -p roko-agent -p roko-serve -p roko-learn -p roko-gateway --no-deps -D warnings clean; lib tests roko-cli 3087, roko-agent 2249, roko-core 1922, roko-learn 1177, roko-serve 955, roko-gate 685, roko-gateway 41, 0 failed; merged MAIN tree re-checked (cargo check --workspace --tests clean)."
 +++
 
 ## Problem

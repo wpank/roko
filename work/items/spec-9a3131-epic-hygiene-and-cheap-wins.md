@@ -99,7 +99,7 @@ This is the implementation plan.
 - [ ] bug-31bca6: Nothing reads learning.dreams.max_concurrent, so the ACP trigger starts another dream on every turn while one runs
 - [ ] bug-9434c4: roko config set rejects learning.t0_reflexes and every learning.dreams key
 - [ ] bug-919fe8: roko redirects any workdir under a .roko directory to the outer project, including per-task worktrees in .roko/worktrees
-- [ ] bug-c1950e: roko config validate warns that agent.default_model references a missing model when the model is a builtin
+- [x] bug-c1950e: roko config validate warns that agent.default_model references a missing model when the model is a builtin
 - [ ] Both of the epic's `[[verify]]` commands pass.
 
 ## Notes

@@ -111,9 +111,9 @@ verify commands that read E4's attempt record, set `triage = "verified"`, add th
 
 - [ ] bug-f68404: Manual --model overrides are always recorded as router successes (existing item)
 - [x] bug-8da8ba: Router-chosen failures never update the LinUCB model (existing item)
-- [ ] bug-9c88ac: roko serve overwrites router state learned by concurrent CLI runs (existing item)
-- [ ] bug-012303: Serve dispatch paths build CascadeRouter instances whose learning is never saved (existing item)
-- [ ] bug-605a8a: Loading the router with a narrower model list drops or misaligns other models' state (existing item)
+- [x] bug-9c88ac: roko serve overwrites router state learned by concurrent CLI runs (existing item)
+- [x] bug-012303: Serve dispatch paths build CascadeRouter instances whose learning is never saved (existing item)
+- [x] bug-605a8a: Loading the router with a narrower model list drops or misaligns other models' state (existing item)
 - [x] find-0dc1d5: Path B cascade observations not covered by WAL (write-ahead log) (existing item)
 - [x] reg-3f5969: Graph dispatch drops selected playbook IDs; outcomes are recorded under synthetic task IDs (existing item)
 - [x] gap-fdd27f: Prompt experiments are never assigned on the Graph execution path (existing item)

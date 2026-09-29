@@ -2,7 +2,7 @@
 id = "bug-8d7d18"
 kind = "bug"
 title = "Several roko.toml writers skip the check-before-write: config preset, tune and the TUI config and effects saves"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "release"
@@ -11,7 +11,7 @@ subsystem = ["roko-cli/config"]
 created = 2026-09-29
 updated = 2026-09-29
 last_verified = 2026-09-29
-last_verified_rev = "407ce30d5"
+last_verified_rev = "b11ca807d"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (17:09, wk-onboard's report on bug-e1327f, branch work/bug-e1327f)"
 anchors = ["crates/roko-cli/src/commands/tune.rs::cmd_config_preset", "crates/roko-cli/src/commands/tune.rs::ensure_project_config", "crates/roko-cli/src/tui/config_meta.rs::save_pending_edits", "crates/roko-cli/src/tui/effects_config.rs::save_preset_to_root", "crates/roko-cli/src/tui/app/actions.rs::dispatch_action"]
@@ -21,6 +21,11 @@ links = { depends_on = ["bug-e1327f"], blocks = [], related = ["bug-e2cfdf"], su
 
 [[verify]]
 command = "grep -qE 'write_checked_config|check_config_text' crates/roko-cli/src/tui/config_meta.rs && grep -qE 'write_checked_config|check_config_text' crates/roko-cli/src/tui/effects_config.rs && grep -qE 'write_checked_config|check_config_text' crates/roko-cli/src/commands/tune.rs && grep -rqw 'fn every_roko_toml_writer_checks_before_writing' crates/roko-cli/src/ && cargo test -p roko-cli --lib every_roko_toml_writer_checks_before_writing"
+
+[closed]
+at = 2026-09-29
+by = "coordinator (session 7622b882)"
+evidence = "save_pending_edits (config preset, tune, TUI editor), save_preset_to_root and ensure_project_config write through write_checked_config; the TUI welcome action writes the checked init template (0108d9f98, merged b351d2be5). config migrate and edit left ungated on purpose, reasons in the item. Batch 6 gate (work/rust-batch-5 tree plus fmt-only and unused-import fixes fdb2a9b72, 579ffd0e6, a8dd7f09f, 2aa55ab1f): cargo check --workspace --tests clean; clippy -p roko-cli -p roko-core -p roko-agent -p roko-serve -p roko-learn -p roko-gateway --no-deps -D warnings clean; lib tests roko-cli 3087, roko-agent 2249, roko-core 1922, roko-learn 1177, roko-serve 955, roko-gate 685, roko-gateway 41, 0 failed; merged MAIN tree re-checked (cargo check --workspace --tests clean)."
 +++
 
 ## Problem

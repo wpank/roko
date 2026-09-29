@@ -82,7 +82,7 @@ This is the implementation plan.
 - [ ] spec-a0403b: Graph Engine Watchdog Integration (existing item)
 - [ ] reg-7cf6f9: Disk-aware worktree admission and the disk_budget_remaining metric were lost with Runner-v2
       (existing item)
-- [ ] gap-a791b4: Per-tier turn caps reach only Claude CLI; other providers ignore AgentOptions.max_turns (existing
+- [x] gap-a791b4: Per-tier turn caps reach only Claude CLI; other providers ignore AgentOptions.max_turns (existing
       item)
 - [ ] gap-5a6e01: Turn caps and timeouts set from each tier's p95 over successful tasks
 - [ ] gap-9eebcb: Integration test C7: the watchdog kills a silent agent, and a low-disk run refuses to start

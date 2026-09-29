@@ -2,7 +2,7 @@
 id = "bug-39d54c"
 kind = "bug"
 title = "roko serve rewrites agent-tokens.json and relay-tokens.json whole from memory, losing other processes' tokens and revocations"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "release"
@@ -11,7 +11,7 @@ subsystem = ["roko-serve/auth"]
 created = 2026-09-29
 updated = 2026-09-29
 last_verified = 2026-09-29
-last_verified_rev = "407ce30d5"
+last_verified_rev = "b11ca807d"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (16:47, wk-serve-keys's report on bug-da5b41, branch work/bug-da5b41)"
 anchors = ["crates/roko-serve/src/routes/auth.rs::insert_agent_token", "crates/roko-serve/src/routes/auth.rs::revoke_agent_token", "crates/roko-serve/src/routes/auth.rs::persist_registry_file"]
@@ -21,6 +21,11 @@ links = { depends_on = ["bug-da5b41"], blocks = [], related = [], supersedes = [
 
 [[verify]]
 command = "grep -rqw 'fn a_token_revoked_by_another_process_stays_revoked' crates/roko-serve/src/ && cargo test -p roko-serve --lib a_token_revoked_by_another_process_stays_revoked"
+
+[closed]
+at = 2026-09-29
+by = "coordinator (session 7622b882)"
+evidence = "agent-tokens.json and relay-tokens.json writes are locked read-merge-write changes through a generic apply_registry_change (shared with API keys); RegistryCache re-reads on file change so another process's revocation applies on the next lookup; unreadable files fail closed; test a_token_revoked_by_another_process_stays_revoked (e6dd57a6f, merged 3b98206e3). Batch 6 gate (work/rust-batch-5 tree plus fmt-only and unused-import fixes fdb2a9b72, 579ffd0e6, a8dd7f09f, 2aa55ab1f): cargo check --workspace --tests clean; clippy -p roko-cli -p roko-core -p roko-agent -p roko-serve -p roko-learn -p roko-gateway --no-deps -D warnings clean; lib tests roko-cli 3087, roko-agent 2249, roko-core 1922, roko-learn 1177, roko-serve 955, roko-gate 685, roko-gateway 41, 0 failed; merged MAIN tree re-checked (cargo check --workspace --tests clean)."
 +++
 
 ## Problem

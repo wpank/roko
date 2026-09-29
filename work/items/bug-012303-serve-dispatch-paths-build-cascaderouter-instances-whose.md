@@ -2,7 +2,7 @@
 id = "bug-012303"
 kind = "bug"
 title = "Serve dispatch paths build CascadeRouter instances whose learning is never saved"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "learning"
@@ -10,7 +10,7 @@ subsystem = ["roko-serve/dispatch", "roko-learn/cascade-router"]
 created = 2026-09-28
 updated = 2026-09-29
 last_verified = 2026-09-29
-last_verified_rev = "d9e79e9d8"
+last_verified_rev = "b11ca807d"
 source = "local-audit-2026-09-26"
 discovered_from = "audit:local-defect-review-2026-09-26 (untracked design notes)"
 anchors = ["crates/roko-serve/src/lib.rs:1206", "crates/roko-serve/src/state.rs:1042", "crates/roko-serve/src/service_factory.rs:245", "crates/roko-serve/src/dispatch.rs::record_cascade_router_observation_at", "crates/roko-gateway/src/gateway.rs:530", "crates/roko-learn/src/feedback_service.rs:694"]
@@ -18,6 +18,11 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "! grep -n 'CascadeRouter::new(gateway_models)' crates/roko-serve/src/state.rs && cargo test -p roko-serve shared_cascade_router_persists_gateway_and_feedback_observations"
+
+[closed]
+at = 2026-09-29
+by = "coordinator (session 7622b882)"
+evidence = "Serve shares one CascadeRouter across the gateway, FeedbackService and template dispatch, saved through its ModelCallJournal every 30 s, after template dispatch and at shutdown; override outcomes journaled via JournaledOverrideRecorder; test shared_cascade_router_persists_gateway_and_feedback_observations (d32a4609c + 2aa55ab1f, merged b11ca807d). Batch 6 gate (work/rust-batch-5 tree plus fmt-only and unused-import fixes fdb2a9b72, 579ffd0e6, a8dd7f09f, 2aa55ab1f): cargo check --workspace --tests clean; clippy -p roko-cli -p roko-core -p roko-agent -p roko-serve -p roko-learn -p roko-gateway --no-deps -D warnings clean; lib tests roko-cli 3087, roko-agent 2249, roko-core 1922, roko-learn 1177, roko-serve 955, roko-gate 685, roko-gateway 41, 0 failed; merged MAIN tree re-checked (cargo check --workspace --tests clean)."
 +++
 
 Besides `AppState.cascade_router` (loaded at `lib.rs:1096`, saved on shutdown), serve builds more routers with `CascadeRouter::load_or_new` in `dispatch.rs:2839` and `:3461` and for the inference gateway; only one template-dispatch path saves its copy (`dispatch.rs:2090`).

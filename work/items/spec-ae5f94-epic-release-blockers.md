@@ -85,10 +85,10 @@ This is the implementation plan.
 - [x] bug-8465a2: roko config validate passes a budget table that the core config loader rejects
 - [x] bug-1c93b4: roko config set --project writes a legacy agent.model key that validation rejects, and refuses v2 keys
 - [x] bug-5c25e1: roko run in a fresh workspace fails budget admission against a $1 turn cap although roko.toml sets max_turn_usd = 0
-- [ ] bug-12153c: The config loader silently drops agent.fallback_model, agent.tier_models, serve.port and project.default_domain from roko.toml
-- [ ] bug-39d54c: roko serve rewrites agent-tokens.json and relay-tokens.json whole from memory, losing other processes' tokens and revocations
-- [ ] bug-8d7d18: Several roko.toml writers skip the check-before-write: config preset, tune and the TUI config and effects saves
-- [ ] bug-367f33: roko --config <file> fills missing [budget] keys with the CLI's legacy defaults ($10 per plan, $1 per task) instead of core [budget]'s
+- [x] bug-12153c: The config loader silently drops agent.fallback_model, agent.tier_models, serve.port and project.default_domain from roko.toml
+- [x] bug-39d54c: roko serve rewrites agent-tokens.json and relay-tokens.json whole from memory, losing other processes' tokens and revocations
+- [x] bug-8d7d18: Several roko.toml writers skip the check-before-write: config preset, tune and the TUI config and effects saves
+- [x] bug-367f33: roko --config <file> fills missing [budget] keys with the CLI's legacy defaults ($10 per plan, $1 per task) instead of core [budget]'s
 - [ ] Both of the epic's `[[verify]]` commands pass.
 
 ## Notes

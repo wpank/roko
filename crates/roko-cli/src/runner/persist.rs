@@ -355,11 +355,8 @@ impl GateThresholds {
     /// When oracles systematically overestimate task success, the absolute
     /// residual tightens the gate threshold for the corresponding rung.
     /// Uses a softer alpha (0.05) to avoid over-reacting to single
-    /// observations.
-    ///
-    /// Wired in tests; production caller (oracle residual feedback path) not
-    /// yet connected.
-    #[allow(dead_code)]
+    /// observations. Graph verify runs feed it through
+    /// [`Self::observe_verify_steps`].
     pub(crate) fn observe_residual(&mut self, rung: u32, residual: f64) {
         let stats = self.rungs.entry(rung).or_default();
         let abs_residual = residual.abs().clamp(0.0, 1.0);
@@ -368,6 +365,44 @@ impl GateThresholds {
             let adjustment = RESIDUAL_ALPHA * abs_residual;
             stats.ema_pass_rate = (stats.ema_pass_rate - adjustment).clamp(0.0, 1.0);
         }
+    }
+
+    /// Feed one Graph verify sequence, as `(phase, passed)` per step, into
+    /// the thresholds: each step whose phase names a canonical rung updates
+    /// that rung's EMA. A test-rung step also feeds
+    /// [`Self::observe_residual`] with how far the CodingOracle's test
+    /// pass-rate forecast for the attempt missed, when that forecast
+    /// (`(predicted, confidence)`, taken before the steps ran, so it never
+    /// saw them) is confident enough to act on. Returns the `(rung,
+    /// residual)` pairs observed.
+    pub(crate) fn observe_verify_steps(
+        &mut self,
+        step_outcomes: &[(String, bool)],
+        test_pass_forecast: Option<(f64, f64)>,
+    ) -> Vec<(u32, f64)> {
+        /// The CodingOracle's own bar for acting on its forecast.
+        const MIN_FORECAST_CONFIDENCE: f64 = 0.1;
+        let test_rung = roko_gate::Rung::Test.as_index();
+        let forecast = test_pass_forecast
+            .filter(|(predicted, confidence)| {
+                predicted.is_finite() && *confidence > MIN_FORECAST_CONFIDENCE
+            })
+            .map(|(predicted, _)| predicted);
+        let mut residuals = Vec::new();
+        for (phase, passed) in step_outcomes {
+            // `rung_for_gate_name` is the registry the gate pipeline uses.
+            let Some(rung) = roko_gate::rung_for_gate_name(phase).map(|rung| rung.as_index())
+            else {
+                continue;
+            };
+            self.observe(rung, *passed);
+            if let Some(predicted) = forecast.filter(|_| rung == test_rung) {
+                let residual = predicted - if *passed { 1.0 } else { 0.0 };
+                self.observe_residual(rung, residual);
+                residuals.push((rung, residual));
+            }
+        }
+        residuals
     }
 
     /// P1-09: Apply neuro-derived knowledge hints to threshold tuning.
@@ -1735,8 +1770,8 @@ mod tests {
 
         // Observe compile (rung 0) passing and lint (rung 1) failing.
         let mut gt = GateThresholds::load_or_default(&gt_path).unwrap();
-        gt.observe(0, true);   // compile pass
-        gt.observe(1, false);  // lint fail
+        gt.observe(0, true); // compile pass
+        gt.observe(1, false); // lint fail
         gt.save(&gt_path).unwrap();
 
         // Reload confirms the EMA was updated and persisted.
@@ -1767,5 +1802,43 @@ mod tests {
             reloaded.rungs[&1].ema_pass_rate.abs() < 1e-9,
             "lint EMA should be 0.0 after one failing observation"
         );
+    }
+
+    #[test]
+    fn verify_steps_feed_rung_emas_and_test_rung_forecast_residuals() {
+        let mut thresholds = GateThresholds::default();
+        for _ in 0..10 {
+            thresholds.observe(2, true);
+        }
+        let steps = [
+            ("compile".to_string(), true),
+            ("structural".to_string(), true),
+            ("test".to_string(), false),
+        ];
+
+        // The oracle forecast a 0.8 pass rate; the test step failed.
+        let residuals = thresholds.observe_verify_steps(&steps, Some((0.8, 0.5)));
+        assert_eq!(residuals.len(), 1);
+        assert_eq!(residuals[0].0, 2);
+        assert!((residuals[0].1 - 0.8).abs() < 1e-9);
+        assert_eq!(thresholds.rungs[&0].total_count, 1);
+        assert!(
+            !thresholds.rungs.contains_key(&5),
+            "a phase outside the canonical rungs updates nothing"
+        );
+        let test = &thresholds.rungs[&2];
+        assert_eq!((test.pass_count, test.total_count), (10, 11));
+        // observe: 0.9 * 1.0 = 0.9; residual: 0.9 - 0.05 * 0.8 = 0.86.
+        assert!((test.ema_pass_rate - 0.86).abs() < 1e-9, "{test:?}");
+
+        // Without a confident forecast only the EMA moves.
+        let mut unforecast = GateThresholds::default();
+        assert!(
+            unforecast
+                .observe_verify_steps(&steps, Some((0.8, 0.1)))
+                .is_empty()
+        );
+        assert!(unforecast.observe_verify_steps(&steps, None).is_empty());
+        assert_eq!(unforecast.rungs[&2].total_count, 2);
     }
 }

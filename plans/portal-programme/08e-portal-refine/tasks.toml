@@ -1,0 +1,541 @@
+[meta]
+plan = "08e-portal-refine"
+total = 7
+done = 0
+status = "ready"
+max_parallel = 3
+skip_enrichment = true
+estimated_total_minutes = 130
+
+# Findings of the third browser preview (i1, 2026-09-28, against 08d), for the
+# worktree after 08d:
+# 1. State colours: running was --rose-bright #e87070 — the Run button's rose
+#    family and the selection outline — so work in progress read as an error;
+#    failed (ember #c08040, 30°) and accepted-with-failures (warning #c0a040,
+#    45°) sat 15° apart (ΔE 21); the implementer role's cyan was the ⓘ info
+#    colour.
+# 2. Task table: time and cost were not grid columns (row 1's "11s" at x≈1180,
+#    row 2's at x≈1275; ~600px between title and role) — optional chips moved
+#    them.
+# 3. Run band: 112px of mostly half-empty cells.
+# 4. Transcript: 10.8px, the smallest text on screen; "agent working" after the
+#    agent completed; "The agent has not produced output yet." on a finished
+#    (replayed) task.
+# 5. Generate's error was a bare red line outside the shared ⓘ notice; the
+#    editor's Close was a separate button 1000px wide; row glyph, time and cost
+#    sizes were off the 18/13/12 scale.
+#
+# Design decisions (p2, 2026-09-28), a deliberate departure from mori's terminal
+# palette because in a browser rose reads as error: running indigo #8993f0 (hue
+# 234°) with a calm 2.4s pulse (still under prefers-reduced-motion), failed red
+# #ef6a6a (0°), accepted-with-failures amber #e0b040 (42°), done leaf #6cbf6c
+# (120°): pairwise ≥ 42° and ΔE ≥ 56; running is 116° from the Run button's
+# rose and 34° from info cyan. Every hue passes 5.5:1 on --bg-highlight. The
+# selection outline is neutral bone. A bar takes its state's colour, never its
+# fraction's. Roles leave the state and info hues: implementer orchid (280°),
+# strategist mint (160°), architect blush (318°), quick-reviewer lime (76°).
+# The band is 60px: a head line (title + summary) and two content lines per
+# cell. The task row is an 8-track grid. The stream body is 13px with relaxed
+# leading. Every request failure is the one Notice, with a compact Close.
+#
+# Same gate style as 08b-08d: tests in accept/ are copied into apps/portal/src by
+# each gate and must pass with their exact count; each fails on the tree its task
+# starts from and passed on a reference implementation (with only the task's
+# dependencies applied, then with its files; tsc clean). One production build,
+# in T07.
+
+[[task]]
+id = "T01"
+title = "Give states browser hues and add this pass's shell classes"
+description = '''
+CSS, plus the rail bar colour. Values below are the reference's; the acceptance
+test recomputes hue gaps, ΔE and the shell classes from the files.
+
+apps/portal/src/styles/rosedust.css
+- After --lilac, a documented block "Accents — browser state and role hues"
+  (mori ran "running" in rose; in a browser rose and red read as error) with one
+  /** doc */ line per primitive: --indigo #8993f0 (running), --signal-red #ef6a6a
+  (failed), --amber #e0b040 (accepted with failures), --leaf #6cbf6c (done),
+  --orchid #c886ea (implementer), --mint #8fd6be (strategist), --blush #e28dc9
+  (architect), --lime #c4d78e (quick-reviewer).
+- --accent-error: var(--signal-red).
+apps/portal/src/styles/tokens.css
+- --state-done var(--leaf), --state-active var(--indigo), --state-accepted
+  var(--amber), --state-failed var(--signal-red).
+- --focus-border: var(--bone) — the selection outline is neutral.
+- --progress-low, --progress-mid, --progress-high: all var(--state-active) — a
+  running bar is the running colour at any fraction.
+- Roles: implementer var(--orchid), strategist var(--mint), architect
+  var(--blush), quick-reviewer var(--lime); scribe, other, impl and reviewer stay.
+- --band-height: 60px.
+- Rewrite the comments that name the old hues (state header, each state, focus,
+  progress bands, roles, band height).
+apps/portal/src/styles/globals.css — components layer, tokens only:
+- .rd-band line-height 1.4. .rd-band__cell padding var(--space-1)
+  var(--space-3) and overflow hidden (a head line and two content lines fill
+  60px; never a scrollbar). .rd-band__rungs gap `0 var(--space-3)`.
+  .rd-band__title: flex-shrink 0 instead of margin-bottom.
+- New .rd-band__head { display: flex; align-items: baseline; gap:
+  var(--space-2); overflow: hidden; white-space: nowrap } and .rd-band__note {
+  min-width: 0; overflow: hidden; color: var(--text-muted); text-overflow:
+  ellipsis }.
+- New @keyframes rd-pulse (opacity 1 at 0% and 100%, 0.55 at 50%); .rd-pulse {
+  animation: rd-pulse 2.4s ease-in-out infinite }; and
+  `@media (prefers-reduced-motion: reduce) { .rd-pulse { animation: none; } }`.
+- New .rd-task-row { display: grid; grid-template-columns: 2ch 8ch minmax(0, 1fr)
+  22ch 7ch 8ch 4ch 30ch; column-gap: var(--space-2); align-items: baseline;
+  font-size: var(--type-row) } — glyph · id · title · role·model · time · cost ·
+  retries · checks; `.rd-task-row > *` { min-width: 0; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap }; .rd-task-row__meta {
+  font-size: var(--type-meta) }; .rd-task-row__num { font-size:
+  var(--type-meta); font-variant-numeric: tabular-nums; text-align: right }.
+- New .rd-stream-body { font-size: var(--type-row); line-height:
+  var(--leading-relaxed) } and `.rd-stream-body pre` { font-size: inherit;
+  line-height: inherit }.
+- Notice: `.rd-notice[data-notice="error"]` border-left-color
+  var(--state-failed) and its .rd-notice__glyph colour var(--state-failed);
+  .rd-notice__text { flex: 1; min-width: 0 }; .rd-notice__close { flex-shrink: 0;
+  padding: 0 var(--space-2); border: 1px solid var(--border-default);
+  background: transparent; color: var(--text-muted); font-size:
+  var(--type-meta) } and a :hover (border var(--border-hover), colour
+  var(--text-strong)).
+- Base layer: the focus-ring comment says "neutral", not "rose".
+apps/portal/src/lib/planRows.ts — a rail bar takes its plan state's colour:
+planBarToken(state) returns GLYPHS[state].token (import GLYPHS from
+@/lib/glyphs) instead of fraction bands; drop BAR_HIGH/BAR_MID/BAR_LOW and fix
+the header comment. apps/portal/src/lib/planRows.test.ts: test 6 expects
+var(--state-accepted) (and not var(--state-done)), test 7 var(--state-active);
+rename both tests and their header lines to match.
+apps/portal/src/lib/glyphs.ts — progressToken's comment: the three bands are all
+the running colour; finished bars use state tokens.
+Keep 08d's legibility.accept (12), 08b's styles.accept (12), planRows.test (20)
+and glyphs.test (13) passing.
+Acceptance: accept/semantics.accept.test.ts (12) → src/styles/ and
+accept/planBars.accept.test.ts (3) → src/lib/.
+'''
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 30
+depends_on = []
+files = [
+    "apps/portal/src/styles/rosedust.css",
+    "apps/portal/src/styles/tokens.css",
+    "apps/portal/src/styles/globals.css",
+    "apps/portal/src/lib/planRows.ts",
+    "apps/portal/src/lib/planRows.test.ts",
+    "apps/portal/src/lib/glyphs.ts",
+    "apps/portal/src/styles/semantics.accept.test.ts",
+    "apps/portal/src/lib/planBars.accept.test.ts",
+]
+
+[task.context]
+read_files = [
+    { path = "plans/portal-programme/08e-portal-refine/accept/semantics.accept.test.ts", why = "the acceptance test the gate runs", lines = "1-" },
+    { path = "plans/portal-programme/08e-portal-refine/accept/planBars.accept.test.ts", why = "the bar acceptance test", lines = "1-" },
+    { path = "apps/portal/src/styles/rosedust.css", why = "accent primitives and --accent-error", lines = "50-125" },
+    { path = "apps/portal/src/styles/tokens.css", why = "state, focus, progress, role and layout tokens", lines = "1-" },
+    { path = "apps/portal/src/styles/globals.css", why = "the band, notice and type classes in the components layer", lines = "650-954" },
+    { path = "apps/portal/src/lib/planRows.ts", why = "planBarToken and its constants", lines = "1-90" },
+    { path = "apps/portal/src/lib/planRows.test.ts", why = "tests 6 and 7 pin the bar tokens (their header lines are 10-11)", lines = "155-192" },
+    { path = "apps/portal/src/lib/glyphs.ts", why = "GLYPHS and progressToken", lines = "30-97" },
+]
+symbols = ["function planBarToken", "export function progressToken"]
+anti_patterns = [
+    "Do not use colour literals in the components layer; add a primitive in rosedust.css and a token.",
+    "Do not give a role a state hue or the info cyan.",
+    "Do not colour a bar by its fraction.",
+    "Do not edit the copied acceptance tests; the gate overwrites them.",
+    "Do not edit a file outside this task's files; a gate failure in one usually means a concurrent task is mid-edit, so re-run the gate first.",
+]
+
+[[task.verify]]
+phase = "test"
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && A=../../plans/portal-programme/08e-portal-refine/accept && cp $A/semantics.accept.test.ts src/styles/semantics.accept.test.ts && cp $A/planBars.accept.test.ts src/lib/planBars.accept.test.ts && node scripts/vitest-min.mjs src/styles/semantics.accept.test.ts 12 && node scripts/vitest-min.mjs src/lib/planBars.accept.test.ts 3'
+fail_msg = "the colour-semantics acceptance test (12) or the plan-bar test (3) does not pass"
+timeout_ms = 600000
+
+[[task.verify]]
+phase = "test"
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && node scripts/vitest-min.mjs src/styles/legibility.accept.test.ts 12 && node scripts/vitest-min.mjs src/styles/styles.accept.test.ts 12 && node scripts/vitest-min.mjs src/lib/planRows.test.ts 20 && node scripts/vitest-min.mjs src/lib/glyphs.test.ts 13'
+fail_msg = "08d's legibility test, 08b's styles test, planRows.test or glyphs.test broke"
+timeout_ms = 600000
+
+[[task.verify]]
+phase = "compile"
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && A=../../plans/portal-programme/08e-portal-refine/accept && cp $A/semantics.accept.test.ts src/styles/semantics.accept.test.ts && cp $A/planBars.accept.test.ts src/lib/planBars.accept.test.ts && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit --incremental false'
+fail_msg = "the portal does not type-check"
+timeout_ms = 600000
+
+[[task]]
+id = "T02"
+title = "Pulse the running glyph"
+description = '''
+apps/portal/src/components/primitives/StatusGlyph.tsx: the span gains
+`data-glyph={state}` and, for state 'active' only, `className="rd-pulse"` — T01
+defines the calm 2.4s pulse and stops it under prefers-reduced-motion. Colour,
+aria-label, title and glyph are unchanged; add one line to the doc comment.
+Every running glyph (task rows, wave strip, rail, check chips, band rungs) then
+pulses; no other state moves.
+Keep 08b's TaskList.accept (4) passing.
+Acceptance: accept/pulse.accept.test.tsx (3) → src/components/primitives/.
+'''
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 5
+depends_on = []
+files = [
+    "apps/portal/src/components/primitives/StatusGlyph.tsx",
+    "apps/portal/src/components/primitives/pulse.accept.test.tsx",
+]
+
+[task.context]
+read_files = [
+    { path = "plans/portal-programme/08e-portal-refine/accept/pulse.accept.test.tsx", why = "the acceptance test the gate runs", lines = "1-" },
+    { path = "apps/portal/src/components/primitives/StatusGlyph.tsx", why = "the glyph span", lines = "1-" },
+]
+anti_patterns = [
+    "Do not animate any state but 'active'.",
+    "Do not edit the copied acceptance test; the gate overwrites it.",
+    "Do not edit a file outside this task's files; a gate failure in one usually means a concurrent task is mid-edit, so re-run the gate first.",
+]
+
+[[task.verify]]
+phase = "test"
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && cp ../../plans/portal-programme/08e-portal-refine/accept/pulse.accept.test.tsx src/components/primitives/pulse.accept.test.tsx && node scripts/vitest-min.mjs src/components/primitives/pulse.accept.test.tsx 3 && node scripts/vitest-min.mjs src/components/stage/TaskList.accept.test.tsx 4'
+fail_msg = "the pulse acceptance test (3) or 08b's TaskList test does not pass"
+timeout_ms = 600000
+
+[[task.verify]]
+phase = "compile"
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && cp ../../plans/portal-programme/08e-portal-refine/accept/pulse.accept.test.tsx src/components/primitives/pulse.accept.test.tsx && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit --incremental false'
+fail_msg = "the portal does not type-check"
+timeout_ms = 600000
+
+[[task]]
+id = "T03"
+title = "Lay the task table on fixed grid tracks"
+description = '''
+apps/portal/src/components/stage/TaskList.tsx. Time and cost were not columns:
+the summary row was a flex row whose optional parts (role·model hidden below md,
+check chips hidden below sm, retries only when > 1) moved them — row 1's "11s"
+at x≈1180, row 2's at x≈1275 — leaving ~600px between title and role.
+
+Replace the summary row's `<div className="flex items-center gap-2 min-w-0">`
+with `<div className="rd-task-row">` (T01's eight-track grid) holding exactly
+eight spans, in this order, on every row — empty when there is nothing to show:
+1. data-cell="glyph": the StatusGlyph;
+2. data-cell="id", className "rd-meta font-mono", title={row.id};
+3. data-cell="title", className "rd-row font-mono";
+4. data-cell="role", className "rd-task-row__meta font-mono text-text-faint":
+   the data-role span, "·" and the shortModel span as today;
+5. data-cell="time", className "rd-task-row__num": a MetricCell (no width) only
+   when there is a time;
+6. data-cell="cost", className "rd-task-row__num": the same for the cost;
+7. data-cell="attempts", className "rd-task-row__num", colour
+   var(--state-accepted), title "N attempts" when N > 1: `↻N` when attempts > 1,
+   else empty;
+8. data-cell="checks", className "rd-task-row__meta": the CheckChips separated by
+   a single space (a React.Fragment with ' ' before every chip but the first),
+   no flex wrapper.
+The grid sizes and truncates the cells, so drop their shrink-0, w-*, max-w-*,
+truncate, flex-1 and hidden/md:/sm: breakpoint classes. Sizes come from the row
+(--type-row) and the __meta/__num classes (--type-meta): the 18/13/12 scale.
+Update the comment above the row. Keep the expanded detail, selection and
+data-task-row unchanged; keep 08b's TaskList.accept (4), 08d's rows.accept (9)
+and 08b's PlanView.accept (15) passing.
+Acceptance: accept/taskGrid.accept.test.tsx (5) → src/components/stage/.
+'''
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 20
+depends_on = ["T01", "T02", "T06"]
+files = [
+    "apps/portal/src/components/stage/TaskList.tsx",
+    "apps/portal/src/components/stage/taskGrid.accept.test.tsx",
+]
+
+[task.context]
+read_files = [
+    { path = "plans/portal-programme/08e-portal-refine/accept/taskGrid.accept.test.tsx", why = "the acceptance test the gate runs", lines = "1-" },
+    { path = "apps/portal/src/components/stage/TaskList.tsx", why = "CheckChip, TaskRow and its summary row", lines = "1-" },
+]
+symbols = ["function CheckChip", "function TaskRow"]
+anti_patterns = [
+    "Do not render a cell conditionally; render it empty.",
+    "Do not hide cells at breakpoints; the grid keeps every track.",
+    "Do not edit the copied acceptance test; the gate overwrites it.",
+    "Do not edit a file outside this task's files; a gate failure in one usually means a concurrent task is mid-edit, so re-run the gate first.",
+]
+
+[[task.verify]]
+phase = "test"
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && cp ../../plans/portal-programme/08e-portal-refine/accept/taskGrid.accept.test.tsx src/components/stage/taskGrid.accept.test.tsx && node scripts/vitest-min.mjs src/components/stage/taskGrid.accept.test.tsx 5 && node scripts/vitest-min.mjs src/components/stage/TaskList.accept.test.tsx 4 && node scripts/vitest-min.mjs src/components/stage/rows.accept.test.tsx 9 && node scripts/vitest-min.mjs src/components/stage/PlanView.accept.test.tsx 15'
+fail_msg = "the task grid acceptance test (5) or an existing task-list, rows or plan-view test does not pass"
+timeout_ms = 600000
+
+[[task.verify]]
+phase = "compile"
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && cp ../../plans/portal-programme/08e-portal-refine/accept/taskGrid.accept.test.tsx src/components/stage/taskGrid.accept.test.tsx && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit --incremental false'
+fail_msg = "the portal does not type-check"
+timeout_ms = 600000
+
+[[task]]
+id = "T04"
+title = "Halve the run band: a head line and two rows per cell"
+description = '''
+apps/portal/src/components/run/RunBand.tsx. The band was 112px of mostly
+half-empty cells; T01 makes it 60px (--band-height) with overflow hidden — room
+for a head line and two content lines per cell, and it stays fixed-height.
+
+- Every cell opens with `<div className="rd-band__head">`: its
+  `.rd-band__title`, then a `.rd-band__note` summary beside it:
+  BURN — note className "rd-band__note rd-band__total": `{tokens} tok` and
+    ` · {rate}/min` as today (no longer its own line);
+  AGENTS — note: the non-empty parts joined with " · ": `+N more` (running
+    agents beyond the two shown), `+N finished`, `idle ×N`; rendered only when
+    there is a part. The footer line goes away;
+  CHECKS — title `CHECKS · {taskId}` (just `CHECKS` without a focus task), note
+    className "rd-band__note rd-band__focus": `{task title} · {planId}`; the
+    rungs follow on the next line in .rd-band__rungs.
+- `const BAND_ROWS = 2` (content lines under the head): render only the first
+  two roster rows and the first two burn roles (byRole is sorted by tokens);
+  count the rest in the note — `+N more` for agents, ` · +N more` after the BURN
+  total. Rename the footer parts to note parts.
+- Keep data-cell, data-agent, data-role-share, data-rung, the empty lines ("no
+  agent working yet", "no task is being checked") and the cell order BURN,
+  AGENTS, CHECKS; update the header comment (it still lists AGENTS first).
+Keep 08b's RunBand.accept (9) and 08d's band.accept (5) passing.
+Acceptance: accept/bandCompact.accept.test.tsx (5) → src/components/run/.
+'''
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 20
+depends_on = ["T02"]
+files = [
+    "apps/portal/src/components/run/RunBand.tsx",
+    "apps/portal/src/components/run/bandCompact.accept.test.tsx",
+]
+
+[task.context]
+read_files = [
+    { path = "plans/portal-programme/08e-portal-refine/accept/bandCompact.accept.test.tsx", why = "the acceptance test the gate runs", lines = "1-" },
+    { path = "apps/portal/src/components/run/RunBand.tsx", why = "the three cells", lines = "1-" },
+]
+anti_patterns = [
+    "Do not let a cell grow past two content lines; count the rest in its note.",
+    "Do not edit the copied acceptance test; the gate overwrites it.",
+    "Do not edit a file outside this task's files; a gate failure in one usually means a concurrent task is mid-edit, so re-run the gate first.",
+]
+
+[[task.verify]]
+phase = "test"
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && cp ../../plans/portal-programme/08e-portal-refine/accept/bandCompact.accept.test.tsx src/components/run/bandCompact.accept.test.tsx && node scripts/vitest-min.mjs src/components/run/bandCompact.accept.test.tsx 5 && node scripts/vitest-min.mjs src/components/run/RunBand.accept.test.tsx 9 && node scripts/vitest-min.mjs src/components/run/band.accept.test.tsx 5'
+fail_msg = "the compact band acceptance test (5) or an existing run band test does not pass"
+timeout_ms = 600000
+
+[[task.verify]]
+phase = "compile"
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && cp ../../plans/portal-programme/08e-portal-refine/accept/bandCompact.accept.test.tsx src/components/run/bandCompact.accept.test.tsx && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit --incremental false'
+fail_msg = "the portal does not type-check"
+timeout_ms = 600000
+
+[[task]]
+id = "T05"
+title = "Make the stream truthful and set it at row size"
+description = '''
+apps/portal/src/components/stream/: StreamPane.tsx, Transcript.tsx, Checks.tsx.
+1. "agent working" showed after the agent had completed (its checks were
+   running). StreamPane sets `working` only when the focused task's status is
+   'active' AND its agent (run.agents[liveTask.agentId]) is active; sinceMs as
+   today.
+2. "The agent has not produced output yet." showed on a finished (replayed)
+   task. Transcript gains `taskStatus?: 'pending' | 'active' | 'finished'`
+   (default 'active'); with no transcript and no working line it says: pending
+   "This task has not started.", active "The agent has not produced output
+   yet.", finished "No transcript was kept for this task." StreamPane passes
+   'pending' when the focused task has no live record, 'active' while its status
+   is 'active', else 'finished'.
+3. 10.8px was the smallest text on screen. The transcript region (the empty one
+   and the filled one, both data-region="transcript") and the checks region
+   (data-region="checks") gain the class "rd-stream-body" — T01 sets it at
+   --type-row (13px) with --leading-relaxed, and pre elements inherit both.
+Keep 08b's stream.accept (7), 08c's liveTranscript.accept (6) and 08d's
+streamLegibility.accept (3) passing.
+Acceptance: accept/streamTruth.accept.test.tsx (6) → src/components/stream/.
+'''
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 20
+depends_on = ["T02"]
+files = [
+    "apps/portal/src/components/stream/StreamPane.tsx",
+    "apps/portal/src/components/stream/Transcript.tsx",
+    "apps/portal/src/components/stream/Checks.tsx",
+    "apps/portal/src/components/stream/streamTruth.accept.test.tsx",
+]
+
+[task.context]
+read_files = [
+    { path = "plans/portal-programme/08e-portal-refine/accept/streamTruth.accept.test.tsx", why = "the acceptance test the gate runs", lines = "1-" },
+    { path = "apps/portal/src/components/stream/StreamPane.tsx", why = "the working indicator and where the Transcript renders", lines = "1-" },
+    { path = "apps/portal/src/components/stream/Transcript.tsx", why = "props, the empty state and the filled region", lines = "1-" },
+    { path = "apps/portal/src/components/stream/Checks.tsx", why = "the checks region", lines = "225-249" },
+    { path = "apps/portal/src/lib/runState.ts", why = "TaskRun and AgentRun", lines = "25-92" },
+]
+anti_patterns = [
+    "Do not show agent working once the task's agent is inactive.",
+    "Do not change data-region values or the transcript's rendering of entries.",
+    "Do not edit the copied acceptance test; the gate overwrites it.",
+    "Do not edit a file outside this task's files; a gate failure in one usually means a concurrent task is mid-edit, so re-run the gate first.",
+]
+
+[[task.verify]]
+phase = "test"
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && cp ../../plans/portal-programme/08e-portal-refine/accept/streamTruth.accept.test.tsx src/components/stream/streamTruth.accept.test.tsx && node scripts/vitest-min.mjs src/components/stream/streamTruth.accept.test.tsx 6 && node scripts/vitest-min.mjs src/components/stream/stream.accept.test.tsx 7 && node scripts/vitest-min.mjs src/components/stream/liveTranscript.accept.test.tsx 6 && node scripts/vitest-min.mjs src/components/stream/streamLegibility.accept.test.tsx 3'
+fail_msg = "the stream truth acceptance test (6) or an 08b/08c/08d stream test does not pass"
+timeout_ms = 600000
+
+[[task.verify]]
+phase = "compile"
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && cp ../../plans/portal-programme/08e-portal-refine/accept/streamTruth.accept.test.tsx src/components/stream/streamTruth.accept.test.tsx && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit --incremental false'
+fail_msg = "the portal does not type-check"
+timeout_ms = 600000
+
+[[task]]
+id = "T06"
+title = "Close every request failure from inside its Notice"
+description = '''
+Generate's error was a bare red line outside the shared ⓘ notice, and the
+editor's Close was a separate button stretched 1000px wide.
+1. apps/portal/src/components/primitives/Notice.tsx: kind gains 'error' (a
+   failed request; T01 draws its rule and glyph in the failed red) and an
+   optional `onClose?: () => void`. With onClose, after the text span, render
+   `<button type="button" className="rd-notice__close" onClick={onClose}>Close</button>`
+   inside the notice row; without it, nothing (08d's notice.accept pins the
+   text). Update the doc comment.
+2. apps/portal/src/components/stage/SourceEditor.tsx:
+   - Any load failure renders one Notice inside
+     `<div className="flex flex-col h-full p-4 gap-4">`: kind 'unsupported' for
+     a missing route (isMissingRoute), else 'error'; text
+     describeRequestError(loadError, 'editing plans') (from @/lib/apiErrors — it
+     returns the unsupported sentence for a missing route); onClose={onClose}.
+     The separate Close button and the centred red text go away.
+   - The save notice (unsupported) and the inline save error (409, network)
+     become Notices, kind 'unsupported' and 'error', each with an onClose that
+     clears it, inside their existing bordered wrappers.
+3. apps/portal/src/components/stage/PromptPanel.tsx: noticeError renders as
+   `<Notice kind="unsupported" onClose={() => setNoticeError(null)}>` and error
+   as `<Notice kind="error" onClose={() => setError(null)}><span
+   data-error>{error}</span></Notice>` instead of the red <p>.
+Keep 08d's notice.accept (6) and authoring.accept (5) and 08b's
+missingRoutes.accept (3) passing.
+Acceptance: accept/noticeClose.accept.test.tsx (6) → src/components/stage/.
+'''
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 20
+depends_on = []
+files = [
+    "apps/portal/src/components/primitives/Notice.tsx",
+    "apps/portal/src/components/stage/SourceEditor.tsx",
+    "apps/portal/src/components/stage/PromptPanel.tsx",
+    "apps/portal/src/components/stage/noticeClose.accept.test.tsx",
+]
+
+[task.context]
+read_files = [
+    { path = "plans/portal-programme/08e-portal-refine/accept/noticeClose.accept.test.tsx", why = "the acceptance test the gate runs", lines = "1-" },
+    { path = "apps/portal/src/components/primitives/Notice.tsx", why = "the Notice", lines = "1-" },
+    { path = "apps/portal/src/components/stage/SourceEditor.tsx", why = "load errors, the save notice and the inline error", lines = "1-" },
+    { path = "apps/portal/src/components/stage/PromptPanel.tsx", why = "the notice and error rendering", lines = "240-265" },
+    { path = "apps/portal/src/lib/apiErrors.ts", why = "isMissingRoute and describeRequestError", lines = "1-" },
+]
+anti_patterns = [
+    "Do not render a Close outside the notice or one that stretches to the container.",
+    "Do not show a raw parser message; describeRequestError already maps it.",
+    "Do not edit the copied acceptance test; the gate overwrites it.",
+    "Do not edit a file outside this task's files; a gate failure in one usually means a concurrent task is mid-edit, so re-run the gate first.",
+]
+
+[[task.verify]]
+phase = "test"
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && cp ../../plans/portal-programme/08e-portal-refine/accept/noticeClose.accept.test.tsx src/components/stage/noticeClose.accept.test.tsx && node scripts/vitest-min.mjs src/components/stage/noticeClose.accept.test.tsx 6 && node scripts/vitest-min.mjs src/components/primitives/notice.accept.test.tsx 6 && node scripts/vitest-min.mjs src/components/stage/authoring.accept.test.tsx 5 && node scripts/vitest-min.mjs src/components/stage/missingRoutes.accept.test.tsx 3'
+fail_msg = "the notice close acceptance test (6) or an existing notice, authoring or missing-route test does not pass"
+timeout_ms = 600000
+
+[[task.verify]]
+phase = "compile"
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && cp ../../plans/portal-programme/08e-portal-refine/accept/noticeClose.accept.test.tsx src/components/stage/noticeClose.accept.test.tsx && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit --incremental false'
+fail_msg = "the portal does not type-check"
+timeout_ms = 600000
+
+[[task]]
+id = "T07"
+title = "Prove the refinement together and build once"
+description = '''
+Run everything together and build the export once.
+
+The gates re-copy this plan's seven acceptance tests from
+plans/portal-programme/08e-portal-refine/accept/ (they must be unchanged), then
+require: the full suite with at least 645 passing tests (605 after 08d plus this
+plan's 40) and none failing; the orphan check; tsc; and the one production
+build, whose exported CSS must carry the pulse, task-grid, band-head,
+stream-body and notice-close classes.
+
+Fix only what a gate reports, in the module the failing test exercises. Do not
+edit the acceptance copies.
+'''
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 15
+depends_on = ["T01", "T03", "T04", "T05", "T06"]
+files = ["apps/portal/src"]
+
+[task.context]
+read_files = [
+    { path = "plans/portal-programme/08e-portal-refine/accept/semantics.accept.test.ts", why = "the colour and shell-class checks", lines = "1-" },
+    { path = "apps/portal/package.json", why = "test and build:export scripts" },
+]
+anti_patterns = [
+    "Do not weaken or skip a test to make the suite pass.",
+    "Do not leave apps/portal/out behind.",
+]
+
+[[task.verify]]
+phase = "test"
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && A=../../plans/portal-programme/08e-portal-refine/accept && for p in styles/semantics.accept.test.ts lib/planBars.accept.test.ts components/primitives/pulse.accept.test.tsx components/stage/taskGrid.accept.test.tsx components/run/bandCompact.accept.test.tsx components/stream/streamTruth.accept.test.tsx components/stage/noticeClose.accept.test.tsx; do cp $A/${p##*/} src/$p || exit 1; done && node scripts/vitest-min.mjs src 645'
+fail_msg = "the full suite, with every acceptance test, lacks 645 passing tests or has a failure"
+timeout_ms = 900000
+
+[[task.verify]]
+phase = "structural"
+command = 'cd apps/portal && node scripts/orphans.mjs'
+fail_msg = "a source module is unreachable from src/app"
+timeout_ms = 60000
+
+[[task.verify]]
+phase = "integration"
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && rm -rf .next/types out && ./node_modules/.bin/tsc --noEmit --incremental false && NEXT_TELEMETRY_DISABLED=1 npm run build:export && test -f out/index.html && grep -q "rd-pulse" out/_next/static/css/*.css && grep -q "rd-task-row" out/_next/static/css/*.css && grep -q "rd-band__head" out/_next/static/css/*.css && grep -q "rd-stream-body" out/_next/static/css/*.css && grep -q "rd-notice__close" out/_next/static/css/*.css && rm -rf out'
+fail_msg = "the portal does not type-check, the static export fails, or its CSS lacks the pulse, grid, band-head, stream-body or notice-close classes"
+timeout_ms = 900000

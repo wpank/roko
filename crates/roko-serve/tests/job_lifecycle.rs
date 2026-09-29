@@ -565,8 +565,16 @@ async fn test_job_cancellation_from_in_progress() {
     // POST /api/jobs/{id}/cancel from in_progress.
     let (status, cancelled) =
         post_json(&app, "/api/jobs/cancel-ip/cancel", serde_json::json!({})).await;
-    assert_eq!(status, StatusCode::OK, "POST cancel should return 200");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "POST cancel should return 200: {cancelled}"
+    );
     assert_eq!(cancelled["state"], "cancelled");
+    assert_eq!(cancelled["id"], "cancel-ip");
+    assert_eq!(cancelled["receipt"]["prior_status"], "in_progress");
+    assert_eq!(cancelled["receipt"]["new_status"], "cancelled");
+    assert_eq!(cancelled["receipt"]["mode"], "serve");
 
     // Verify via GET.
     let (status, fetched) = get_json(&app, "/api/jobs/cancel-ip").await;
@@ -844,7 +852,7 @@ async fn test_cancel_terminal_job_fails_422() {
     assert_eq!(
         status,
         StatusCode::UNPROCESSABLE_ENTITY,
-        "POST cancel on completed job should also fail with 422"
+        "POST cancel on completed job should also fail with 422: {err_body}"
     );
     assert!(
         err_body["message"]
@@ -1360,12 +1368,17 @@ async fn test_patch_empty_body_returns_400() {
 
 #[tokio::test]
 async fn test_cancel_from_assigned_state() {
-    let (_dir, app) = test_app();
+    let (dir, app) = test_app();
 
     let (s, _) = post_json(
         &app,
         "/api/jobs",
-        serde_json::json!({ "id": "cancel-assigned", "title": "Cancel from assigned" }),
+        serde_json::json!({
+            "id": "cancel-assigned",
+            "title": "Cancel from assigned",
+            "metadata": { "source": "portal" },
+            "required_capabilities": ["rust"]
+        }),
     )
     .await;
     assert_eq!(s, StatusCode::CREATED);
@@ -1385,8 +1398,58 @@ async fn test_cancel_from_assigned_state() {
         serde_json::json!({}),
     )
     .await;
-    assert_eq!(status, StatusCode::OK);
+    assert_eq!(status, StatusCode::OK, "POST cancel body: {cancelled}");
     assert_eq!(cancelled["state"], "cancelled");
+    assert_eq!(cancelled["receipt"]["prior_status"], "assigned");
+    assert_eq!(cancelled["receipt"]["acknowledged"], true);
+
+    // The execution service rewrote the file; serve must still read it, with
+    // one status key on disk and serve-only fields preserved.
+    let (status, fetched) = get_json(&app, "/api/jobs/cancel-assigned").await;
+    assert_eq!(status, StatusCode::OK, "GET after cancel: {fetched}");
+    assert_eq!(fetched["state"], "cancelled");
+    assert_eq!(fetched["metadata"]["source"], "portal");
+    assert_eq!(fetched["required_capabilities"][0], "rust");
+    let (status, listed) = get_json(&app, "/api/jobs").await;
+    assert_eq!(status, StatusCode::OK, "list after cancel: {listed}");
+    let disk: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(dir.path().join(".roko/jobs/cancel-assigned.json"))
+            .expect("read persisted job"),
+    )
+    .expect("parse persisted job");
+    assert_eq!(disk["status"], "cancelled");
+    assert!(
+        disk.get("state").is_none(),
+        "stale state key on disk: {disk}"
+    );
+}
+
+#[tokio::test]
+async fn test_cancel_unknown_or_prefix_id_returns_404() {
+    let (_dir, app) = test_app();
+
+    let (status, err_body) =
+        post_json(&app, "/api/jobs/no-such-job/cancel", serde_json::json!({})).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "unknown job: {err_body}");
+
+    let (s, _) = post_json(
+        &app,
+        "/api/jobs",
+        serde_json::json!({ "id": "cancel-prefix-target", "title": "Prefix target" }),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED);
+
+    // The HTTP API addresses jobs by exact id, never by prefix.
+    let (status, err_body) = post_json(
+        &app,
+        "/api/jobs/cancel-prefix/cancel",
+        serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "prefix id: {err_body}");
+    let (_, fetched) = get_json(&app, "/api/jobs/cancel-prefix-target").await;
+    assert_eq!(fetched["state"], "open");
 }
 
 // -------------------------------------------------------------------------

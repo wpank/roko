@@ -24,6 +24,7 @@ fn doctor_json_exits_nonzero_when_workspace_is_not_bootstrapped() {
 
     Command::cargo_bin("roko")
         .unwrap()
+        .current_dir(temp.path())
         .args(["doctor", "--workdir"])
         .arg(temp.path())
         .arg("--json")
@@ -46,6 +47,7 @@ fn doctor_human_output_succeeds_for_bootstrapped_workspace() {
 
     Command::cargo_bin("roko")
         .unwrap()
+        .current_dir(temp.path())
         .args(["doctor", "--workdir"])
         .arg(temp.path())
         .assert()
@@ -68,6 +70,7 @@ fn doctor_network_json_produces_summary_and_checks() {
 
     Command::cargo_bin("roko")
         .unwrap()
+        .current_dir(temp.path())
         .args(["doctor", "network", "--workdir"])
         .arg(temp.path())
         .arg("--json")

@@ -319,6 +319,7 @@ impl ProviderModelOutcomeStore {
             .open(&self.path)
             .await?;
         file.write_all(line.as_bytes()).await?;
+        file.flush().await?;
         if self.fsync {
             file.sync_data().await?;
         }

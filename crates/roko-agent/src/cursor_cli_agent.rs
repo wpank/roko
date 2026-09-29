@@ -13,11 +13,13 @@
 
 use crate::agent::{Agent, AgentResult};
 use crate::process::{
-    GRACE_STDIN_CLOSE_MS, ResourceLimits, confined_command, kill_tree, register_spawned_pid,
-    set_process_group, unregister_pid,
+    GRACE_STDIN_CLOSE_MS, ResourceLimits, apply_credential_scrub, confined_command, kill_tree,
+    register_spawned_pid, set_process_group, unregister_pid,
 };
 use crate::usage::Usage;
 use async_trait::async_trait;
+use roko_core::agent::ProviderKind;
+use roko_core::child_env::CredentialScrub;
 use roko_core::defaults::DEFAULT_REQUEST_TIMEOUT_MS;
 use roko_core::{Body, Context, Kind, Signal};
 use serde::{Deserialize, Serialize};
@@ -239,6 +241,7 @@ struct CursorConnection {
 
 impl CursorConnection {
     /// Spawn the `agent` subprocess and wire up readers.
+    #[allow(clippy::too_many_arguments)]
     async fn spawn(
         command: &str,
         working_dir: &PathBuf,
@@ -246,6 +249,7 @@ impl CursorConnection {
         event_tx: mpsc::Sender<CursorEvent>,
         turn_done_tx: mpsc::Sender<()>,
         resource_limits: Option<&ResourceLimits>,
+        credential_scrub: &CredentialScrub,
         env: &[(String, String)],
     ) -> Result<Self, String> {
         let mut cmd = confined_command(command, resource_limits)
@@ -262,6 +266,9 @@ impl CursorConnection {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+
+        // Keep other providers' keys and keys only roko loaded out of the agent.
+        apply_credential_scrub(&mut cmd, credential_scrub);
 
         // Limit cargo parallelism for multi-agent scenarios.
         cmd.env("CARGO_INCREMENTAL", "0");
@@ -584,6 +591,8 @@ pub struct CursorCliAgent {
     system_prompt: Option<String>,
     /// Environment variables forwarded to the spawned subprocess.
     env: Vec<(String, String)>,
+    /// Which inherited provider credentials the subprocess loses.
+    credential_scrub: CredentialScrub,
 }
 
 impl CursorCliAgent {
@@ -600,6 +609,7 @@ impl CursorCliAgent {
             mcp_servers: Vec::new(),
             system_prompt: None,
             env: Vec::new(),
+            credential_scrub: CredentialScrub::for_kind(ProviderKind::CursorCli),
         }
     }
 
@@ -652,6 +662,14 @@ impl CursorCliAgent {
         self
     }
 
+    /// Replace the policy for which inherited credentials the subprocess
+    /// loses (default: [`CredentialScrub::for_kind`] of `CursorCli`).
+    #[must_use]
+    pub fn with_credential_scrub(mut self, scrub: CredentialScrub) -> Self {
+        self.credential_scrub = scrub;
+        self
+    }
+
     /// Spawn a fresh subprocess, initialize it, and create a session.
     /// Returns the connection and its event/turn-done receivers.
     async fn spawn_connection(
@@ -683,6 +701,7 @@ impl CursorCliAgent {
             event_tx,
             turn_done_tx,
             self.resource_limits.as_ref(),
+            &self.credential_scrub,
             &self.env,
         )
         .await?;

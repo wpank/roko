@@ -99,6 +99,11 @@ pub enum ServerEvent {
     /// A plan execution has completed.
     PlanCompleted { plan_id: String, success: bool },
 
+    /// A runner selected its complete plan set, listed in execution order.
+    PlanSetLoaded {
+        plans: Vec<roko_core::dashboard_snapshot::PlanSetEntry>,
+    },
+
     /// An agent process was spawned.
     AgentSpawned {
         agent_id: String,
@@ -1200,7 +1205,7 @@ mod tests {
         .await
         .expect("subscriber should publish without handler-side execution");
         assert_eq!(graduated.tags["plan_id"], "async-plan");
-        assert!(tempdir.path().join(".roko/engrams.jsonl").exists());
+        assert!(tempdir.path().join(".roko/signals.jsonl").exists());
 
         state.cancel.cancel();
         subscriber.await.expect("subscriber join");

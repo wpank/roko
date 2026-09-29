@@ -1,0 +1,1 @@
+ACP client uses bounded channels via ACP_NOTIFICATION_CAP

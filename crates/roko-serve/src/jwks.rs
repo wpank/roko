@@ -16,6 +16,10 @@ use tokio::task::JoinHandle;
 pub use roko_core::config::JwksProvider;
 
 /// The Nunchi Privy application ID. Project-level constant, not a secret.
+///
+/// `roko serve` never applies it on its own: anyone can sign in to this app,
+/// so an operator who wants `roko login` tokens accepted sets it as
+/// `serve.auth.privy_app_id` together with an allow-list.
 pub const NUNCHI_PRIVY_APP_ID: &str = "cmhw01vut003tjx0d5lmqc8zs";
 
 /// Default JWKS endpoint for Privy.
@@ -485,6 +489,72 @@ pub fn new_jwks_cache_with_providers(
     ))
 }
 
+/// A test signing key and a cache that trusts it, shared with the auth
+/// middleware tests.
+#[cfg(test)]
+pub(crate) mod test_support {
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
+    use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
+    use serde_json::{Value, json};
+
+    use super::{CachedProviderKeys, JwksCache, JwksProvider, JwksResponse};
+
+    const TEST_X: &str = "w7JAoU_gJbZJvV-zCOvU9yFJq0FNC_edCMRM78P8eQQ";
+    const TEST_Y: &str = "wQg1EytcsEmGrM70Gb53oluoDbVhCZ3Uq3hHMslHVb4";
+    pub(crate) const TEST_PRIVATE_KEY: &str = r#"-----BEGIN PRIVATE KEY-----
+MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgWTFfCGljY6aw3Hrt
+kHmPRiazukxPLb6ilpRAewjW8nihRANCAATDskChT+Altkm9X7MI69T3IUmrQU0L
+950IxEzvw/x5BMEINRMrXLBJhqzO9Bm+d6JbqA21YQmd1Kt4RzLJR1W+
+-----END PRIVATE KEY-----"#;
+
+    /// A JWKS document holding the test public key under `kid`.
+    pub(crate) fn jwks(kid: &str) -> Value {
+        json!({
+            "keys": [{
+                "kid": kid,
+                "kty": "EC",
+                "crv": "P-256",
+                "x": TEST_X,
+                "y": TEST_Y
+            }]
+        })
+    }
+
+    /// Cache the test key for `provider` as if it was fetched `age` ago.
+    pub(crate) async fn seed(cache: &JwksCache, provider: JwksProvider, kid: &str, age: Duration) {
+        cache.cache.write().await.push(CachedProviderKeys {
+            provider,
+            keys: serde_json::from_value::<JwksResponse>(jwks(kid))
+                .expect("test JWKS")
+                .keys,
+            fetched_at: Instant::now() - age,
+        });
+    }
+
+    /// A cache whose only provider (for `issuer`) already holds fresh test
+    /// keys, so validation never touches the network.
+    pub(crate) async fn seeded_cache(issuer: &str, kid: &str) -> Arc<JwksCache> {
+        let provider = JwksProvider::new("http://127.0.0.1:1/jwks", issuer);
+        let cache = JwksCache::with_providers(reqwest::Client::new(), vec![provider.clone()]);
+        seed(&cache, provider, kid, Duration::ZERO).await;
+        Arc::new(cache)
+    }
+
+    /// Sign `claims` with the test key, naming `kid` in the header.
+    pub(crate) fn sign(kid: &str, claims: &Value) -> String {
+        let mut header = Header::new(Algorithm::ES256);
+        header.kid = Some(kid.to_string());
+        encode(
+            &header,
+            claims,
+            &EncodingKey::from_ec_pem(TEST_PRIVATE_KEY.as_bytes()).expect("test EC key"),
+        )
+        .expect("encode test JWT")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -494,18 +564,12 @@ mod tests {
     use axum::{Json, Router};
     use jsonwebtoken::{EncodingKey, Header, encode};
     use serde::Serialize;
-    use serde_json::{Value, json};
+    use serde_json::Value;
 
+    use super::test_support::{TEST_PRIVATE_KEY, jwks, seed};
     use super::*;
 
     const TEST_APP_ID: &str = "test-app";
-    const TEST_X: &str = "w7JAoU_gJbZJvV-zCOvU9yFJq0FNC_edCMRM78P8eQQ";
-    const TEST_Y: &str = "wQg1EytcsEmGrM70Gb53oluoDbVhCZ3Uq3hHMslHVb4";
-    const TEST_PRIVATE_KEY: &str = r#"-----BEGIN PRIVATE KEY-----
-MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgWTFfCGljY6aw3Hrt
-kHmPRiazukxPLb6ilpRAewjW8nihRANCAATDskChT+Altkm9X7MI69T3IUmrQU0L
-950IxEzvw/x5BMEINRMrXLBJhqzO9Bm+d6JbqA21YQmd1Kt4RzLJR1W+
------END PRIVATE KEY-----"#;
 
     #[derive(Clone)]
     struct TestServerState {
@@ -520,18 +584,6 @@ kHmPRiazukxPLb6ilpRAewjW8nihRANCAATDskChT+Altkm9X7MI69T3IUmrQU0L
         iss: &'a str,
         aud: &'a str,
         exp: u64,
-    }
-
-    fn jwks(kid: &str) -> Value {
-        json!({
-            "keys": [{
-                "kid": kid,
-                "kty": "EC",
-                "crv": "P-256",
-                "x": TEST_X,
-                "y": TEST_Y
-            }]
-        })
     }
 
     fn token(kid: &str, issuer: &str) -> String {
@@ -603,16 +655,6 @@ kHmPRiazukxPLb6ilpRAewjW8nihRANCAATDskChT+Altkm9X7MI69T3IUmrQU0L
             vec![JwksProvider::new(url, issuer)],
             Duration::from_millis(250),
         )
-    }
-
-    async fn seed(cache: &JwksCache, provider: JwksProvider, kid: &str, age: Duration) {
-        cache.cache.write().await.push(CachedProviderKeys {
-            provider,
-            keys: serde_json::from_value::<JwksResponse>(jwks(kid))
-                .expect("test JWKS")
-                .keys,
-            fetched_at: Instant::now() - age,
-        });
     }
 
     #[tokio::test]

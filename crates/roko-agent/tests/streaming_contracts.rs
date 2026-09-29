@@ -35,6 +35,7 @@ fn event_tag(kind: &StreamEventKind) -> &'static str {
         StreamEventKind::ToolCallStart { .. } => "tool_call_start",
         StreamEventKind::ToolCallDelta { .. } => "tool_call_delta",
         StreamEventKind::ToolCallEnd { .. } => "tool_call_end",
+        StreamEventKind::ToolResult { .. } => "tool_result",
         StreamEventKind::Usage(_) => "usage",
         StreamEventKind::Done { .. } => "done",
     }

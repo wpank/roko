@@ -14,8 +14,6 @@
 //! ```
 
 mod dry_run_fs;
-#[path = "plan_validate.rs"]
-mod plan_validate;
 
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
@@ -1087,7 +1085,7 @@ async fn maybe_generate_plan_after_promote(
         prd_path.to_path_buf(),
         auto_execute,
         |slug, path, dry_run| async move {
-            generate_plan_from_prd_with_outcome(&slug, &path, dry_run, None, None).await
+            generate_plan_from_prd_with_outcome(&slug, &path, dry_run, None, None, true).await
         },
     )
     .await
@@ -1148,25 +1146,39 @@ where
 }
 
 async fn run_generated_plans(workdir: &Path, plans_root: &Path) -> Result<()> {
-    let plans = crate::runner::load_plans(plans_root)?;
-    let roko_config = roko_core::config::loader::load_config_unified(workdir)
-        .with_context(|| format!("load roko config from {}", workdir.display()))?;
-    let run_config = crate::runner::RunConfig::from_roko_config(
-        workdir.to_path_buf(),
-        plans_root.to_path_buf(),
-        roko_config,
-    );
-    let state_hub = crate::state_hub::StateHub::default_capacity();
-    #[allow(deprecated)] // Runner-v2 removed; this call now returns an error
-    let report = crate::runner::run(
-        plans,
-        &run_config,
-        &state_hub,
-        tokio_util::sync::CancellationToken::new(),
-    )
-    .await?;
-    if !report.all_succeeded() {
-        return Err(anyhow!("generated plan execution failed"));
+    // Library path (CLI promote and the serve PRD subscriber): no TUI and no
+    // signal handlers of its own.
+    let exit_code =
+        crate::graph_execution::run_graph_plan(crate::graph_execution::GraphPlanRunParams {
+            plans_dir: plans_root.to_path_buf(),
+            workdir: workdir.to_path_buf(),
+            quiet: false,
+            json: false,
+            resume_plan: None,
+            fresh: false,
+            force_resume: false,
+            max_retries: None,
+            max_tasks: 0,
+            budget_override: None,
+            no_budget: false,
+            cli_model_override: None,
+            dangerously_skip_permissions: false,
+            log_file: None,
+            worktree_per_task: false,
+            rich_topology: false,
+            no_tui: true,
+            state_hub: None,
+            interrupt: None,
+            max_parallel_plans: None,
+            fail_fast: false,
+            only_plans: None,
+            live_agent_output: crate::graph_task_dispatch::LiveAgentOutput::ToolSteps,
+        })
+        .await?;
+    if exit_code != crate::exit_codes::EXIT_SUCCESS {
+        return Err(anyhow!(
+            "generated plan execution failed (exit {exit_code})"
+        ));
     }
     Ok(())
 }
@@ -1195,7 +1207,18 @@ fn auto_plan_enabled(workdir: &Path) -> Result<bool> {
 /// Generate implementation plans from a published PRD file.
 pub async fn generate_plan_from_prd(slug: &str, prd_path: &Path, dry_run: bool) -> Result<PathBuf> {
     let (plans_root, _) =
-        generate_plan_from_prd_with_outcome(slug, prd_path, dry_run, None, None).await?;
+        generate_plan_from_prd_with_outcome(slug, prd_path, dry_run, None, None, true).await?;
+    Ok(plans_root)
+}
+
+/// Generate implementation plans from a published PRD file without triggering
+/// old-format plan regeneration across all existing plans.
+///
+/// Use this from the API so that a single "Generate" request does not start one
+/// LLM agent per old-format plan in the repository.
+pub async fn generate_plan_from_prd_isolated(slug: &str, prd_path: &Path) -> Result<PathBuf> {
+    let (plans_root, _) =
+        generate_plan_from_prd_with_outcome(slug, prd_path, false, None, None, false).await?;
     Ok(plans_root)
 }
 
@@ -1208,7 +1231,7 @@ pub async fn generate_plan_from_prd_with_model(
     model: Option<&str>,
 ) -> Result<PathBuf> {
     let (plans_root, _) =
-        generate_plan_from_prd_with_outcome(slug, prd_path, dry_run, None, model).await?;
+        generate_plan_from_prd_with_outcome(slug, prd_path, dry_run, None, model, true).await?;
     Ok(plans_root)
 }
 
@@ -1222,7 +1245,7 @@ pub async fn generate_plan_from_prd_with_failure_context(
     model: Option<&str>,
 ) -> Result<PathBuf> {
     let (plans_root, _) =
-        generate_plan_from_prd_with_outcome(slug, prd_path, dry_run, failure_context, model)
+        generate_plan_from_prd_with_outcome(slug, prd_path, dry_run, failure_context, model, true)
             .await?;
     Ok(plans_root)
 }
@@ -1288,6 +1311,7 @@ async fn generate_plan_from_prd_with_outcome(
     dry_run: bool,
     failure_context: Option<&str>,
     model: Option<&str>,
+    regenerate_old_plans: bool,
 ) -> Result<(PathBuf, GenerationOutcome)> {
     let workdir = prd_workdir(prd_path)?;
     let result = async {
@@ -1605,15 +1629,97 @@ async fn generate_plan_from_prd_with_outcome(
                     template_kind.max_task_count(),
                 );
                 let policy_issues = crate::plan_policy::validate_plan_budgets(&parsed, policy);
-                if policy_issues.is_empty() {
-                    Ok(validated)
-                } else {
-                    Err(format!(
+                if !policy_issues.is_empty() {
+                    return Err(format!(
                         "generated plan violates the `{}` structural budget:\n{}",
                         template_kind.label(),
                         policy_issues
                             .iter()
                             .map(|issue| format!("  - {issue}"))
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                    ));
+                }
+
+                // Run the same context check that plan_loader.rs enforces at
+                // load time so the written tasks.toml is guaranteed to pass.
+                // PLAN_ARTIFACT_MISSING is suppressed because tasks.toml has
+                // not been written yet; PLAN_SOURCE_PRD_MISSING is suppressed
+                // because source_prd is injected after this closure returns.
+                let plan_dir = plans_root.join(slug);
+                let mut ctx_violations = crate::plan_policy::validate_plan_context(
+                    &parsed,
+                    workdir_ref,
+                    &plan_dir,
+                    crate::plan_policy::PlanExecutionPolicy::for_environment(),
+                );
+                ctx_violations.retain(|v| {
+                    !matches!(v.code, "PLAN_ARTIFACT_MISSING" | "PLAN_SOURCE_PRD_MISSING")
+                });
+
+                if ctx_violations.is_empty() {
+                    return Ok(validated);
+                }
+
+                // Collect paths flagged as PLAN_CONTEXT_MISSING and drop them
+                // so the written tasks.toml always passes the loader's check.
+                let missing_paths: HashSet<String> = ctx_violations
+                    .iter()
+                    .filter(|v| v.code == "PLAN_CONTEXT_MISSING")
+                    .filter_map(|v| {
+                        v.message
+                            .strip_prefix("declared context file `")
+                            .and_then(|s| s.find('`').map(|end| s[..end].to_string()))
+                    })
+                    .collect();
+
+                if missing_paths.is_empty() {
+                    // Violations are not PLAN_CONTEXT_MISSING — cannot auto-fix.
+                    return Err(format!(
+                        "generated plan violates execution context policy:\n{}",
+                        ctx_violations
+                            .iter()
+                            .map(|v| format!("  - {v}"))
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                    ));
+                }
+
+                // Drop the unreachable entries and re-serialize.
+                let mut fixed = parsed.clone();
+                for task in &mut fixed.tasks {
+                    if let Some(ctx) = task.context.as_mut() {
+                        ctx.read_files.retain(|f| !missing_paths.contains(&f.path));
+                    }
+                }
+                let re_serialized = toml::to_string_pretty(&fixed).map_err(|e| {
+                    format!("re-serialize after dropping missing read_files: {e}")
+                })?;
+                let re_parsed = TasksFile::parse_str(&re_serialized).map_err(|e| {
+                    format!("re-parse after dropping missing read_files: {e}")
+                })?;
+
+                // Second context check — must be clean now.
+                let mut remaining = crate::plan_policy::validate_plan_context(
+                    &re_parsed,
+                    workdir_ref,
+                    &plan_dir,
+                    crate::plan_policy::PlanExecutionPolicy::for_environment(),
+                );
+                remaining.retain(|v| {
+                    !matches!(v.code, "PLAN_ARTIFACT_MISSING" | "PLAN_SOURCE_PRD_MISSING")
+                });
+
+                if remaining.is_empty() {
+                    Ok(re_serialized)
+                } else {
+                    Err(format!(
+                        "generated plan still violates execution context policy \
+                         after dropping {} missing read_files:\n{}",
+                        missing_paths.len(),
+                        remaining
+                            .iter()
+                            .map(|v| format!("  - {v}"))
                             .collect::<Vec<_>>()
                             .join("\n")
                     ))
@@ -1866,7 +1972,7 @@ async fn generate_plan_from_prd_with_outcome(
         let t_phase = Instant::now();
         let generated_changed = dry_run_fs::changed_tasks_files(&plans_root, &tasks_before);
 
-        if !dry_run {
+        if !dry_run && regenerate_old_plans {
             if let Err(e) = regenerate_old_format_plans(
                 workdir_ref,
                 model.or_else(|| resolved.config.agent.model.as_deref()),
@@ -1915,7 +2021,7 @@ async fn generate_plan_from_prd_with_outcome(
             );
         }
 
-        match self::plan_validate::validate_plans_dir_with_workdir(
+        match crate::plan_validate::validate_plans_dir_with_workdir(
             &plans_root,
             None,
             Some(workdir_ref),
@@ -2242,7 +2348,7 @@ fn strip_markdown_code_fence(output: &str) -> &str {
 /// Looks for `` ```tag `` or `` ```<tag> `` and returns the inner content.
 /// Handles nested fences by matching the closing `` ``` `` that sits alone
 /// on a line (possibly with trailing whitespace).
-fn extract_fenced_block<'a>(text: &'a str, tag: &str) -> Option<&'a str> {
+pub(crate) fn extract_fenced_block<'a>(text: &'a str, tag: &str) -> Option<&'a str> {
     let fence_plain = format!("```{tag}");
     let fence_angle = format!("```<{tag}>");
     let start = text
@@ -2284,7 +2390,7 @@ fn extract_fenced_block<'a>(text: &'a str, tag: &str) -> Option<&'a str> {
 /// `[[task]]`.  Trailing explanatory text (markdown headings, horizontal rules,
 /// prose paragraphs after a blank line) is trimmed so that `toml::from_str`
 /// doesn't choke on non-TOML content the LLM appended after the plan.
-fn extract_toml_content_fallback(output: &str) -> Option<&str> {
+pub(crate) fn extract_toml_content_fallback(output: &str) -> Option<&str> {
     let meta_start = output.find("[meta]")?;
     // Find the start of the line containing [meta]
     let line_start = output[..meta_start].rfind('\n').map(|i| i + 1).unwrap_or(0);
@@ -4280,6 +4386,174 @@ command = "cargo test -p <crate> -- <test_name>"
         assert_eq!(
             next_tier_model(Some("claude-haiku-4-5"), &empty_tier, &configured),
             None,
+        );
+    }
+
+    // ── context-check integration tests ──────────────────────────────────────
+
+    /// Verify that `validate_plan_context` produces a `PLAN_CONTEXT_MISSING`
+    /// violation whose message is parseable by the path-extraction code in the
+    /// `try_extract_and_validate` closure.  This test pins the message format so
+    /// a future change to `plan_policy` cannot silently break the auto-fix path.
+    #[test]
+    fn plan_context_missing_message_is_parseable() {
+        use crate::plan_policy::{PlanExecutionPolicy, validate_plan_context};
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        let plan_dir = dir.path().join("my-plan");
+        std::fs::create_dir_all(&plan_dir).unwrap();
+        // Write tasks.toml so PLAN_ARTIFACT_MISSING doesn't fire.
+        std::fs::write(plan_dir.join("tasks.toml"), "[meta]\n").unwrap();
+
+        // Write only "src/lib.rs"; "src/missing.rs" is intentionally absent.
+        std::fs::create_dir(dir.path().join("src")).unwrap();
+        std::fs::write(dir.path().join("src/lib.rs"), "").unwrap();
+
+        // Build a minimal TasksFile via TOML so we don't need to construct
+        // every optional field of TaskDef by hand.
+        let toml_src = r#"
+[meta]
+plan = "my-plan"
+total = 1
+done = 0
+status = "ready"
+max_parallel = 1
+
+[[task]]
+id = "T1"
+title = "test"
+role = "implementer"
+status = "ready"
+tier = "focused"
+files = ["src/lib.rs"]
+
+[task.context]
+[[task.context.read_files]]
+path = "src/lib.rs"
+why = "exists"
+
+[[task.context.read_files]]
+path = "src/missing.rs"
+why = "does not exist on disk"
+
+[[task.verify]]
+phase = "structural"
+command = "true"
+"#;
+        let tasks_file =
+            crate::task_parser::TasksFile::parse_str(toml_src).expect("test TOML must parse");
+
+        let violations = validate_plan_context(
+            &tasks_file,
+            dir.path(),
+            &plan_dir,
+            PlanExecutionPolicy::normal(),
+        );
+
+        let missing: Vec<_> = violations
+            .iter()
+            .filter(|v| v.code == "PLAN_CONTEXT_MISSING")
+            .collect();
+        assert!(
+            !missing.is_empty(),
+            "expected a PLAN_CONTEXT_MISSING violation"
+        );
+
+        // This is the exact extraction logic used in try_extract_and_validate.
+        let path = missing[0]
+            .message
+            .strip_prefix("declared context file `")
+            .and_then(|s| s.find('`').map(|end| s[..end].to_string()))
+            .expect("PLAN_CONTEXT_MISSING message format must be parseable");
+        assert_eq!(path, "src/missing.rs");
+    }
+
+    /// Verify that after dropping PLAN_CONTEXT_MISSING paths from a TasksFile
+    /// and re-validating, no further PLAN_CONTEXT_MISSING violations remain.
+    #[test]
+    fn dropping_missing_read_files_clears_context_violations() {
+        use crate::plan_policy::{PlanExecutionPolicy, validate_plan_context};
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        let plan_dir = dir.path().join("my-plan");
+        std::fs::create_dir_all(&plan_dir).unwrap();
+        std::fs::write(plan_dir.join("tasks.toml"), "[meta]\n").unwrap();
+        std::fs::create_dir(dir.path().join("src")).unwrap();
+        std::fs::write(dir.path().join("src/lib.rs"), "").unwrap();
+
+        let toml_src = r#"
+[meta]
+plan = "my-plan"
+total = 1
+done = 0
+status = "ready"
+max_parallel = 1
+
+[[task]]
+id = "T1"
+title = "test"
+role = "implementer"
+status = "ready"
+tier = "focused"
+files = ["src/lib.rs"]
+
+[task.context]
+[[task.context.read_files]]
+path = "src/lib.rs"
+why = "exists"
+
+[[task.context.read_files]]
+path = "src/missing.rs"
+why = "does not exist on disk"
+
+[[task.verify]]
+phase = "structural"
+command = "true"
+"#;
+        let mut tasks_file =
+            crate::task_parser::TasksFile::parse_str(toml_src).expect("test TOML must parse");
+
+        // Collect the missing paths.
+        let violations = validate_plan_context(
+            &tasks_file,
+            dir.path(),
+            &plan_dir,
+            PlanExecutionPolicy::normal(),
+        );
+        let missing_paths: std::collections::HashSet<String> = violations
+            .iter()
+            .filter(|v| v.code == "PLAN_CONTEXT_MISSING")
+            .filter_map(|v| {
+                v.message
+                    .strip_prefix("declared context file `")
+                    .and_then(|s| s.find('`').map(|end| s[..end].to_string()))
+            })
+            .collect();
+        assert!(!missing_paths.is_empty());
+
+        // Drop the missing paths (mirrors the logic in try_extract_and_validate).
+        for task in &mut tasks_file.tasks {
+            if let Some(ctx) = task.context.as_mut() {
+                ctx.read_files.retain(|f| !missing_paths.contains(&f.path));
+            }
+        }
+
+        // Re-validate — no PLAN_CONTEXT_MISSING should remain.
+        let remaining = validate_plan_context(
+            &tasks_file,
+            dir.path(),
+            &plan_dir,
+            PlanExecutionPolicy::normal(),
+        );
+        let still_missing: Vec<_> = remaining
+            .iter()
+            .filter(|v| v.code == "PLAN_CONTEXT_MISSING")
+            .collect();
+        assert!(
+            still_missing.is_empty(),
+            "no PLAN_CONTEXT_MISSING should remain after dropping: {still_missing:?}"
         );
     }
 }

@@ -1,0 +1,403 @@
+[meta]
+plan = "09-acceptance"
+total = 4
+done = 0
+status = "ready"
+max_parallel = 1
+skip_enrichment = true
+estimated_total_minutes = 160
+
+# The acceptance test for the portal programme, run live.
+#
+#   In an empty folder, open the link `roko serve` prints, type "a rust app that
+#   prints hello world", press Run, and watch it get built: two actions, no
+#   navigation, and the program prints hello world.
+#
+# Runs in the MAIN tree after every other portal-programme plan has merged:
+# backend 01-04, 03b, 03c and 04b, portal 05-08 and 08b-08g. T01 builds roko,
+# the portal's static export and the demo app; T02 and T03 drive a real browser
+# (the Playwright
+# that demo/demo-app already installs, with its headless Chromium) against
+# scratch workspaces under /tmp, each with its own `roko serve` on a free port —
+# a scratch workspace has its own .roko, so nothing contends with the
+# `roko plan run` executing this plan. A dry run of T02's flow on the merged
+# tree (2026-09-29, fake agent) passed end to end once 08g's three first-run
+# fixes were applied; without them it stops at "generate":
+#
+#   T02  deterministic and free: the plans/portal-programme/_harness fake agent.
+#        The two-action flow in a workspace with no plans, auth on (the printed
+#        `#token=` link signs the browser in), a live tool step, the run band, a
+#        reload, a revision and a second run; then two plans at once under
+#        `[conductor] max_parallel_plans = 2`.
+#   T03  the real model on the user's exact path — `roko init`, `roko serve`, the
+#        printed link, the same two actions in the browser. Costs a few dollars.
+#
+# Written against today's code and, where 03c is still unbuilt, against
+# tmp/portal-audit/03-CONTRACT.md §3.5 and §4.3 (the shapes 03c builds): the
+# printed `portal: http://127.0.0.1:<port>/#token=<token>` line, POST
+# /api/auth/session and the roko_session cookie; the portal at / from
+# apps/portal/out with no ROKO_SPA_DIR, the demo app under /demo; live tool steps
+# (`tool_start` records with `live: true` and a target) and the startup line
+# `live agent output: tool_steps`. 03c has merged; those shapes held in the dry
+# run. A plan generated in a workspace without `plans/` lands in
+# `.roko/plans/<slug>/`, which the server lists like `plans/`.
+#
+# Both checks are verify gates: this plan fails when the flow fails. Their
+# evidence (check output, event captures, server logs, screenshots) lands in
+# tmp/portal-audit/evidence/, which is where to look when a gate is red. T04
+# writes the verdict and files the gaps only when both checks pass.
+
+[[task]]
+id = "T01"
+title = "Build roko and the portal's static export"
+description = '''
+Build what the checks run, from the merged tree:
+
+1. `cargo build -p roko-cli` (it relinks `target/debug/roko`, the binary running
+   this plan; that is safe — the running process keeps its inode).
+2. In `apps/portal`: `npm ci --no-audit --no-fund` (always: the tree's
+   node_modules can predate a dependency), then `npm test`, then
+   `NEXT_TELEMETRY_DISABLED=1 npm run build:export`. Keep `apps/portal/out/`: it
+   is what `roko serve` serves at / (03c). `apps/portal/out/` is gitignored; do
+   not edit any .gitignore.
+3. In `demo/demo-app`: `npm ci --no-audit --no-fund` only when `node_modules` is
+   missing (T02 borrows its Playwright), then `npm run build`. Its build uses base
+   `/demo/`, which is where `roko serve` serves `demo/demo-app/dist` (03c); a
+   stale dist built for `/` answers /demo with a page whose assets 404.
+
+If either build fails, report the error; do not change source to make it pass —
+that belongs to the plan that owns the code.
+'''
+status = "ready"
+role = "implementer"
+tier = "mechanical"
+model_hint = "claude-sonnet-4-6"
+timeout_secs = 2700
+max_retries = 1
+estimated_minutes = 25
+depends_on = []
+files = ["apps/portal/out", "demo/demo-app/dist"]
+
+[task.context]
+read_files = [
+    { path = "apps/portal/package.json", why = "the test and build:export scripts" },
+    { path = "demo/demo-app/package.json", why = "the demo app's build script" },
+]
+anti_patterns = [
+    "Do not edit source files to make a build pass.",
+    "Do not modify any .gitignore.",
+]
+
+[[task.verify]]
+phase = "compile"
+command = 'cargo build -p roko-cli'
+fail_msg = "roko-cli does not build"
+timeout_ms = 2700000
+
+[[task.verify]]
+phase = "structural"
+command = "test -x target/debug/roko && test -f apps/portal/out/index.html && grep -q 'name=\"roko-portal\"' apps/portal/out/index.html && test -d apps/portal/node_modules/jsdom && grep -q '/demo/assets/' demo/demo-app/dist/index.html"
+fail_msg = "the roko binary, the portal export (with its roko-portal meta tag), a fresh portal install or the demo build for /demo is missing"
+
+[[task]]
+id = "T02"
+title = "Prove the flow through the portal in a browser, with the deterministic agent"
+description = '''
+Write `plans/portal-programme/09-acceptance/portal-check.sh` and
+`plans/portal-programme/09-acceptance/browser-flow.cjs`, and give the fake agent
+a slow knob. The verify step runs the shell script; write everything, check it
+with `bash -n`, `node --check` and a python3 `ast.parse` of fake-claude, and leave
+the full run to the verify step.
+
+0. `plans/portal-programme/_harness/fake-claude`: when `.roko/fake-claude-slow`
+   exists in the working directory, a task waits the number of seconds it holds
+   (the larger of that and any `SLOW n`), after the live blocks it streams in live
+   mode and before writing. Document it in the module docstring beside live
+   mode. Nothing else changes: the backend checks rely on the rest.
+
+browser-flow.cjs (Playwright, CommonJS) — `node browser-flow.cjs <mode> <url>
+<evidence dir> [<workspace name>]`, modes `flow`, `real` and `parallel`.
+- Load `playwright` from `$REPO_ROOT/demo/demo-app/node_modules` (resolve the repo
+  root from the script's own directory). Launch `chromium.launch()`, else
+  `{ channel: 'chrome' }`, else each existing
+  `~/Library/Caches/ms-playwright/chromium_headless_shell-*/chrome-headless-shell-*/chrome-headless-shell`
+  as `executablePath`. If none starts, print `BROWSER-UNAVAILABLE <reason>` and
+  exit 3. Viewport 1440×900; accept every dialog; record console errors and
+  page errors to `<evidence dir>/browser-<mode>.json`.
+- Each step prints `BROWSER <step>: PASS|FAIL <detail>`; the first FAIL saves
+  `fail-<step>.png` and exits 1. Wait with polling (`page.waitForFunction` or
+  locator waits), never fixed sleeps. Selectors below are the portal's own
+  (08b-08f); do not invent others.
+- `flow` (the url is the printed `#token=` link; timeouts in brackets are for
+  `real`, which runs the same steps with the real model):
+  1. open — `[data-region="rail"]` visible within 30s.
+  2. signed-in — within 15s `location.hash` no longer holds `token=`;
+     `[data-region="header"] [data-slot="workspace"]` contains the workspace
+     name; no `[data-region="alert"]` mentions "Not signed in".
+  3. first-run — `[data-prompt]` is visible with no click and there is no
+     `[data-plan-row]`.
+  4. generate (action 1) — fill `[data-prompt]` with `a rust app that prints
+     hello world`, press Control+Enter; within 120s [660s] a
+     `[data-plan-row][aria-current="true"]` exists, `location.search` holds
+     `plan=<slug>` (the slug is that row's `data-plan-row`) and there is at least
+     one `[data-task-row]`. Screenshot `1-generated.png`.
+  5. run (action 2) — click `[data-action="run"]` once it is enabled (≤ 30s).
+  6. running — within 60s [600s] a `[data-task-row][data-state="active"]`; the
+     stream shows `[data-region="transcript"]` with no click; `[data-region=
+     "run-band"] [data-cell="agents"] [data-agent]` has a row whose text
+     contains `<slug> · `; `[data-cell="checks"]` holds at least one
+     `[data-rung]`. Screenshot `2-running.png`.
+  7. live-step (`flow` only) — while a task is still active, the transcript
+     shows a `[data-step]` whose text contains `Write` and whose `[data-target]`
+     reads `hello/main.rs`, carrying `[data-live]` (08c + 03c).
+  8. reload — open the url without its fragment; within 30s the rail renders,
+     `[data-plan-row="<slug>"][aria-current="true"]` again and no alert mentions
+     "Not signed in" (the session cookie carries the sign-in).
+  9. done — within 180s [1800s] `[data-plan-row="<slug>"]` has
+     `data-state="done"`, every `[data-task-row]` has `data-state="done"` and
+     `[data-region="run-band"]` is gone. Screenshot `3-done.png`.
+  10. revise (`flow` only) — click `[data-action="revise"]`, fill `[data-prompt]`
+      with `add a closing task`, press Control+Enter; within 120s
+      `[data-task-row="T99"]` exists. Screenshot `4-revised.png`.
+  11. run-again (`flow` only) — click `[data-action="run-again"]`; within 30s the
+      plan row leaves `done`, within 180s it is `done` again with
+      `[data-task-row="T99"]` done.
+  Finally print `BROWSER-SLUG <slug>` and `BROWSER-ACTIONS <n>`, counting only
+  the clicks and key presses that built hello world (steps 4 and 5).
+- `parallel` (auth off): open the url; click `[data-action="run-all"]`; within
+  60s `[data-region="header"] [data-slot="run"]` contains `2 running` while
+  `[data-cell="agents"]` holds `[data-agent]` rows of two different plans (a
+  row's plan is the text before ` · ` in its plan cell). Screenshot
+  `5-parallel.png`. Within 300s every `[data-plan-row]` has `data-state="done"`.
+
+portal-check.sh sources `plans/portal-programme/_harness/lib.sh` (resolve it from
+the script's directory) and uses its helpers (`make_workspace`, `start_server`,
+`stop_server`, `stop_capture`, `sse`, `jcheck`, `jget`, `check`, `finish`). The
+run runs its sections one after another; keep every workspace path in a list and
+remove them at exit unless a check failed or KEEP_WS is set (lib.sh's trap only
+knows the last one). `unset ROKO_SPA_DIR` first: the portal must come from
+apps/portal/out on its own.
+
+A. The two-action flow, in a scratch workspace with no plans and auth on.
+1. `make_portal_workspace`, defined in the script: lib.sh's `make_workspace`, then
+   remove `plans/`, `slow-plans/` and `par-plans/` and commit — the first-run
+   case. Set `[serve.auth] enabled = true` and `api_key = ""` (as
+   `_harness/access-check.sh` does), `touch .roko/fake-claude-live` and write `8`
+   to `.roko/fake-claude-slow`.
+2. `start_server`; read the launch token from the `#token=` in serve.log (FAIL
+   naming backend plan 03c when there is none). Define `authed_api` and
+   `authed_capture`, mirroring lib.sh's `api` and `start_capture` with
+   `Authorization: Bearer <token>`, and start the capture.
+3. Checks over HTTP: serve.log carries `live agent output: tool_steps`; `/` serves
+   the portal (`name="roko-portal"`) and the first `/_next/static/…js` it
+   references answers 200; `/demo/` serves the demo app (`/demo/assets/` in its
+   HTML); `GET /api/plans` answers 401 without a credential and `[]` with it.
+4. `node browser-flow.cjs flow "http://127.0.0.1:$PORT/#token=$TOKEN" <evidence
+   dir> <workspace name>`; each `BROWSER <step>: PASS|FAIL` line becomes a check.
+   Exit 3 is a FAIL too (`browser unavailable: <reason>`): this check exists to
+   prove the portal, so it never falls back to HTTP.
+5. After the flow: `hello/hello-bin` prints `hello world`; `BROWSER-ACTIONS` ≤ 2;
+   the capture shows the run live — `sse has task_started plan_id=<slug>`, `sse
+   before agent_output plan_id=<slug> 'content~"kind":"tool_start"'
+   'content~"live":true' 'content~"target":"hello/main.rs"' -- task_completed
+   plan_id=<slug>`, `sse has agent_heartbeat plan_id=<slug>`, `sse has
+   task_completed plan_id=<slug> outcome=passed`, `sse positive run_completed
+   duration_ms outcome=succeeded`, and two runs: `sse count plan_started
+   plan_id=<slug> --ge 2`.
+6. `stop_capture`, `stop_server`.
+
+B. Two plans at once, in a second workspace: lib.sh's `make_workspace` (auth off),
+   then leave exactly `par-plans/par-a` and `par-plans/par-b` (T01 waits 8s each)
+   under `plans/` — move them there, delete the other fixture plans — add
+   `[conductor]` with `max_parallel_plans = 2` to roko.toml and commit. Start a
+   server and a capture; run `browser-flow.cjs parallel <url> <evidence dir>` and
+   turn its lines into checks; then the capture shows a second `plan_started`
+   before the first `plan_completed` (`sse between plan_started -- plan_started
+   -- plan_completed`) and both `out/par-a.txt` and `out/par-b.txt` exist.
+
+C. Copy every capture, serve.log, browser json and screenshot to
+   `$REPO_ROOT/tmp/portal-audit/evidence/portal-check/`, then
+   `finish "PORTAL-CHECK"`.
+'''
+status = "ready"
+role = "implementer"
+tier = "integrative"
+model_hint = "claude-sonnet-4-6"
+timeout_secs = 2700
+max_retries = 1
+estimated_minutes = 60
+depends_on = ["T01"]
+files = [
+    "plans/portal-programme/09-acceptance/portal-check.sh",
+    "plans/portal-programme/09-acceptance/browser-flow.cjs",
+    "plans/portal-programme/_harness/fake-claude",
+]
+
+[task.context]
+read_files = [
+    { path = "plans/portal-programme/_harness/lib.sh", why = "the workspace, server, capture and check helpers to reuse", lines = "1-" },
+    { path = "plans/portal-programme/_harness/sse.py", why = "the assertions available over an event capture", lines = "1-" },
+    { path = "plans/portal-programme/_harness/fake-claude", why = "its generate, revise and live modes, and where the slow knob goes", lines = "1-" },
+    { path = "plans/portal-programme/_harness/access-check.sh", why = "how auth is switched on and the launch token read and used", lines = "1-" },
+    { path = "plans/portal-programme/_harness/live-output-check.sh", why = "the live tool-step assertions", lines = "1-" },
+    { path = "demo/demo-app/playwright.config.ts", why = "the Playwright install this check borrows" },
+]
+symbols = ["make_workspace", "start_server", "start_capture", "stop_server"]
+anti_patterns = [
+    "Do not install Playwright or browsers; use what demo/demo-app already has.",
+    "Do not fall back to HTTP or count a missing browser as a pass; the browser is what this check proves.",
+    "Do not set ROKO_SPA_DIR or disable auth in the flow workspace.",
+    "Do not point the check at the repository's own workspace or its roko serve.",
+    "Do not change fake-claude's existing modes; the backend checks use them.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = 'bash -n plans/portal-programme/09-acceptance/portal-check.sh && node --check plans/portal-programme/09-acceptance/browser-flow.cjs && python3 -c "import ast, sys; ast.parse(open(sys.argv[1]).read())" plans/portal-programme/_harness/fake-claude'
+fail_msg = "portal-check.sh, browser-flow.cjs or fake-claude does not parse"
+timeout_ms = 60000
+
+[[task.verify]]
+phase = "integration"
+command = 'bash plans/portal-programme/09-acceptance/portal-check.sh'
+fail_msg = "the portal flow failed; see tmp/portal-audit/evidence/portal-check/"
+timeout_ms = 2400000
+
+[[task]]
+id = "T03"
+title = "Prove hello world end to end with the real model, in the browser"
+description = '''
+Write `plans/portal-programme/09-acceptance/hello-world-real.sh`. The verify step
+runs it; write it and check it with `bash -n`. It dispatches real agents and costs
+a few dollars, so do not run it yourself.
+
+This is the user's path exactly: no fixtures, no fake agent, no `ROKO_SPA_DIR`
+(unset it), auth as `roko init` leaves it. Source
+`plans/portal-programme/_harness/lib.sh` for `start_server`, `sse`, `jcheck`,
+`check` and `finish`, then:
+
+1. A fresh folder: `WS=$(mktemp -d /tmp/roko-hello-XXXXXX)`, `git init`, then
+   `"$ROKO_BIN" init --profile rust .`.
+2. `start_server`. Checks: serve.log prints the portal link,
+   `portal: http://127.0.0.1:<port>/#token=<token>` (03c), whose token the script
+   reads; `/` serves the portal (`name="roko-portal"`) with no extra
+   configuration; an API request without a credential answers 401.
+3. Capture the event stream with `Authorization: Bearer <token>` (define
+   `authed_capture` as portal-check.sh does).
+4. `node plans/portal-programme/09-acceptance/browser-flow.cjs real
+   "http://127.0.0.1:$PORT/#token=$TOKEN" <evidence dir> <workspace name>`: the
+   same two actions as T02's flow — sign in by the link, generate from the
+   sentence, Run — with the real model's timeouts; each `BROWSER <step>` line
+   becomes a check; exit 3 (no browser) is a FAIL. Read the slug from
+   `BROWSER-SLUG` and check `BROWSER-ACTIONS` ≤ 2.
+5. The capture has `task_started`, `agent_output` and `task_completed
+   outcome=passed` for the slug, and `run_completed outcome=succeeded`.
+6. Find the Cargo.toml the plan created (outside `target/` and `.roko/`);
+   `cargo run --quiet` there (5-minute timeout) prints `hello world`,
+   case-insensitively, an optional comma allowed. No Cargo.toml: find the `.rs`
+   file holding `fn main`, compile it with rustc, and check the same.
+7. Print the run's cost from `GET /api/statehub/snapshot` (bearer;
+   `stats.cost_usd_total`). Copy the capture, serve.log, the browser json and
+   screenshots, the generated tasks.toml (`plans/<slug>/` or, in a workspace
+   without `plans/`, `.roko/plans/<slug>/`) and the program's source to
+   `$REPO_ROOT/tmp/portal-audit/evidence/hello-world-real/`, then
+   `finish "HELLO-WORLD-REAL"`.
+'''
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+timeout_secs = 2700
+max_retries = 1
+estimated_minutes = 45
+depends_on = ["T02"]
+files = ["plans/portal-programme/09-acceptance/hello-world-real.sh"]
+
+[task.context]
+read_files = [
+    { path = "plans/portal-programme/_harness/lib.sh", why = "the server, capture and check helpers to reuse", lines = "1-" },
+    { path = "plans/portal-programme/_harness/sse.py", why = "the event assertions", lines = "1-" },
+    { path = "plans/portal-programme/09-acceptance/portal-check.sh", why = "the token reading and authed capture to mirror" },
+    { path = "plans/portal-programme/09-acceptance/browser-flow.cjs", why = "the browser steps the real mode runs" },
+]
+symbols = ["start_server", "start_capture", "wait_idle"]
+anti_patterns = [
+    "Do not use the fake agent, a fixture roko.toml or ROKO_SPA_DIR here; this check exists to prove the user's path.",
+    "Do not disable auth; the printed link is part of what is being proved.",
+    "Do not fall back to HTTP; the portal is what this check proves.",
+    "Do not round a partial result up: a failed check fails the script.",
+    "Do not run the script from the task; the verify step runs it once.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = 'bash -n plans/portal-programme/09-acceptance/hello-world-real.sh'
+fail_msg = "hello-world-real.sh does not parse"
+timeout_ms = 60000
+
+[[task.verify]]
+phase = "integration"
+command = 'bash plans/portal-programme/09-acceptance/hello-world-real.sh'
+fail_msg = "the real-model hello world flow failed; see tmp/portal-audit/evidence/hello-world-real/"
+timeout_ms = 2700000
+
+[[task]]
+id = "T04"
+title = "Record the verdict and file what is still open"
+description = '''
+Both checks passed. Record the outcome from evidence, not from memory.
+
+1. Write `plans/portal-programme/09-acceptance/VERDICT.md`:
+   - The verdict of each check with its PASS/FAIL lines (re-run
+     `bash plans/portal-programme/09-acceptance/portal-check.sh`, which is free and
+     deterministic; quote the real-model run from
+     `tmp/portal-audit/evidence/hello-world-real/`), the browser action counts of
+     both runs, wall time and cost, and links to the screenshots.
+   - Measured portal numbers: routes (`find apps/portal/src/app -name page.tsx`),
+     files and lines under `apps/portal/src`, test files and passing tests
+     (`npm test`), runtime dependencies — beside the targets in the budget table of
+     `tmp/portal-audit/02-DESIGN.md` §14.
+   - Each contract ask P-1 to P-12 (`tmp/portal-audit/03-CONTRACT.md` §6 and §6.1):
+     landed or open, with the check or file that shows it.
+   - A section headed exactly `## Gaps filed` listing the work items below by id.
+2. File one work item per open ask, defect or unbuilt design element under
+   `work/items/`, in the format of `work/README.md`: its hash id rule
+   (`<prefix>-<first 6 hex of sha256("<kind>|<title>|<created>|<source>")>`,
+   computed with `shasum -a 256`), TOML front matter, at least one anchor, and a
+   `[[verify]]` command where one can be written — the check scripts in this plan
+   usually are one — with `discovered_from = "plan:portal-programme/09-acceptance#T04"`.
+   `.roko/GAPS.md` is frozen; do not append to it.
+3. Add a section headed exactly `## OUTCOME portal-programme` to
+   `tmp/portal-audit/00-README.md` with the verdict and the measured budget.
+
+Be accurate rather than tidy: an optimistic entry costs more than an honest one.
+'''
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+timeout_secs = 1800
+max_retries = 2
+estimated_minutes = 30
+depends_on = ["T03"]
+files = [
+    "plans/portal-programme/09-acceptance/VERDICT.md",
+    "tmp/portal-audit/00-README.md",
+    "work/items",
+]
+
+[task.context]
+read_files = [
+    { path = "work/README.md", why = "the work item format, id rule and closure rules" },
+    { path = "tmp/portal-audit/00-README.md", why = "the README gaining the outcome section" },
+]
+anti_patterns = [
+    "Do not claim an ask landed without the check or file that shows it.",
+    "Do not append to .roko/GAPS.md; it is frozen.",
+    "Do not leave a budget target where a measurement is available.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "test -f plans/portal-programme/09-acceptance/VERDICT.md && grep -q '^## Gaps filed' plans/portal-programme/09-acceptance/VERDICT.md && grep -q 'PORTAL-CHECK' plans/portal-programme/09-acceptance/VERDICT.md && grep -q 'HELLO-WORLD-REAL' plans/portal-programme/09-acceptance/VERDICT.md && grep -q 'OUTCOME portal-programme' tmp/portal-audit/00-README.md && grep -rlq 'plan:portal-programme/09-acceptance' work/items"
+fail_msg = "the verdict, its gap list, the README outcome, or the filed work items are missing"

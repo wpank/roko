@@ -264,15 +264,29 @@ pub enum ConfirmAction {
     RepairPlanClean(String),
     SoftRetryPlan(String),
     GitReconcile,
-    IngestTask { plan_num: usize, task_id: String },
-    MergeBatchToMain { plan_id: String, branch: String },
-    MergePlan { plan_id: String, branch: String },
-    MergeAllDone { branches: Vec<String> },
+    IngestTask {
+        plan_num: usize,
+        task_id: String,
+    },
+    MergeBatchToMain {
+        plan_id: String,
+        branch: String,
+    },
+    MergePlan {
+        plan_id: String,
+        branch: String,
+    },
+    MergeAllDone {
+        branches: Vec<String>,
+    },
     /// Cancel (skip) a specific running agent's task (P3-TUI-4).
     ///
     /// `plan_id` and `task_id` are empty when fired from the key handler and
     /// are filled in by `resolve_confirm_action` from the selected agent row.
-    CancelAgent { plan_id: String, task_id: String },
+    CancelAgent {
+        plan_id: String,
+        task_id: String,
+    },
 }
 
 impl std::fmt::Display for ConfirmAction {

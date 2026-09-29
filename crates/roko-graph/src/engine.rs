@@ -1,10 +1,11 @@
 //! Graph execution engine: conditional sequential/parallel execution of Cell DAGs.
 //!
 //! The `GraphEngine` takes a `Graph` and a `CellRegistry`, topologically sorts
-//! the nodes, and executes Cells sequentially or in bounded topological waves.
+//! the nodes, and executes Cells sequentially or with bounded parallelism,
+//! starting each Cell as soon as the nodes it depends on have settled.
 //! Only active conditional edges contribute upstream outputs to downstream Cells.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -17,10 +18,13 @@ use tracing::{info, warn};
 use roko_core::{ContentHash, LensScope, ObservableEvent, TelemetryEventSink};
 
 use crate::cell::{Cell, CellContext};
+use crate::cells::task_executor::TaskGateVerdict;
 use crate::registry::CellRegistry;
 use crate::replay::{ActivityRecorder, ActivityReplayer};
-use crate::topo::{topological_order, topological_waves};
-use crate::types::{EdgeCondition, ExecutionClass, Graph, GraphError, GraphPolicy, NodeId};
+use crate::topo::topological_order;
+use crate::types::{
+    EdgeCondition, ExecutionClass, Graph, GraphError, GraphNodeIdx, GraphPolicy, Node, NodeId,
+};
 
 // ─── MergeEnqueuer trait ────────────────────────────────────────────────────
 
@@ -123,7 +127,12 @@ enum NodeActivation {
     /// No conditional route selected the node. This is a successful no-op.
     ConditionSkipped(String),
     /// A required dependency did not complete successfully.
-    UpstreamFailed(String),
+    UpstreamFailed {
+        /// Why the node cannot run.
+        reason: String,
+        /// The required dependency that did not complete, if any.
+        dependency: Option<NodeId>,
+    },
 }
 
 /// Execution result for a single node.
@@ -143,6 +152,9 @@ pub struct NodeResult {
     pub output_count: usize,
     /// Whether the cell backing this node is a stub/placeholder.
     pub is_stub: bool,
+    /// For a node skipped because a node it depends on failed: the failed
+    /// node behind it, followed through any skipped dependencies in between.
+    pub blocked_by: Option<NodeId>,
 }
 
 /// Output of a full graph execution.
@@ -156,6 +168,9 @@ pub struct GraphOutput {
     pub node_results: Vec<NodeResult>,
     /// Total wall-clock duration for the full graph execution.
     pub total_duration: Duration,
+    /// Gate verdicts stamped on node outputs (live or replayed), keyed by
+    /// node. Nodes whose outputs carry no verdict tag are absent.
+    pub gate_verdicts: BTreeMap<NodeId, TaskGateVerdict>,
 }
 
 impl GraphOutput {
@@ -250,8 +265,8 @@ impl FlowHandle {
 
     /// Request cancellation of the running graph execution.
     ///
-    /// The background task will stop after the currently-executing node
-    /// completes. Already-started nodes are not interrupted.
+    /// No further node starts. Nodes already running are not interrupted;
+    /// the background task stops once they complete.
     pub fn cancel(&self) {
         self.cancel.cancel();
     }
@@ -294,8 +309,15 @@ pub struct ValidatedGraph {
     _private: (),
 }
 
+/// Asked just before a node's cell starts; see [`GraphEngine::with_dispatch_stop`].
+///
+/// `Some(reason)` stops the run: no further node starts, nodes already
+/// running finish, and every node that has not started is skipped with
+/// `reason`.
+pub type DispatchStop = Arc<dyn Fn() -> Option<String> + Send + Sync>;
+
 /// The graph execution engine. Holds a graph and registry, executing nodes
-/// sequentially or in bounded parallel topological waves according to policy.
+/// sequentially or with bounded parallelism according to policy.
 pub struct GraphEngine {
     graph: Graph,
     registry: CellRegistry,
@@ -332,6 +354,8 @@ pub struct GraphEngine {
     /// starts set this to `false` (the default) and reject any graph containing
     /// stub descriptors.
     allow_test_stubs: bool,
+    /// Asked before each node's cell starts; `Some(reason)` stops the run.
+    dispatch_stop: Option<DispatchStop>,
 }
 
 impl GraphEngine {
@@ -351,6 +375,7 @@ impl GraphEngine {
             tick_state: parking_lot::Mutex::new(HashMap::new()),
             pre_validated: std::sync::atomic::AtomicBool::new(false),
             allow_test_stubs: false,
+            dispatch_stop: None,
         }
     }
 
@@ -455,6 +480,25 @@ impl GraphEngine {
     pub fn with_allow_test_stubs(mut self, allow: bool) -> Self {
         self.allow_test_stubs = allow;
         self
+    }
+
+    /// Stop starting nodes once `stop` returns a reason.
+    ///
+    /// `stop` is asked just before each node's cell starts, in every
+    /// execution path. Once it returns `Some(reason)`, no further node
+    /// starts: nodes already running finish, and each node that has not
+    /// started is skipped with `reason`. Replayed Activity outputs start no
+    /// cell, so they are not held back. Plan runs use this to stop at a spent
+    /// budget.
+    #[must_use]
+    pub fn with_dispatch_stop(mut self, stop: DispatchStop) -> Self {
+        self.dispatch_stop = Some(stop);
+        self
+    }
+
+    /// Why no further node may start, when the dispatch stop says so.
+    fn dispatch_stopped(&self) -> Option<String> {
+        self.dispatch_stop.as_ref().and_then(|stop| stop())
     }
 
     /// Return a reference to the graph event sequence counter.
@@ -606,7 +650,8 @@ impl GraphEngine {
         let mut outputs = self.initial_tick_outputs();
         let mut statuses: HashMap<NodeId, NodeStatus> = HashMap::new();
         let mut results: Vec<NodeResult> = Vec::with_capacity(order.len());
-        let mut fail_fast_abort = false;
+        // Once set, no further node starts: why the rest are skipped.
+        let mut abort: Option<String> = None;
         let mut resumed_emitted = false;
 
         // 3. Execute each node in order
@@ -616,16 +661,8 @@ impl GraphEngine {
                 continue;
             };
 
-            if fail_fast_abort {
-                let result = NodeResult {
-                    node_id: node_id.clone(),
-                    cell_type: node.cell_type.clone(),
-                    status: NodeStatus::Skipped,
-                    duration: Duration::ZERO,
-                    error: Some("aborted after graph failure".to_string()),
-                    output_count: 0,
-                    is_stub: false,
-                };
+            if let Some(reason) = &abort {
+                let result = skipped_result(node, NodeStatus::Skipped, reason.clone());
                 statuses.insert(node_id.clone(), result.status);
                 results.push(result);
                 continue;
@@ -643,20 +680,18 @@ impl GraphEngine {
                         error: Some(reason),
                         output_count: 0,
                         is_stub: false,
+                        blocked_by: None,
                     };
                     statuses.insert(node_id.clone(), result.status);
                     results.push(result);
                     continue;
                 }
-                NodeActivation::UpstreamFailed(reason) => {
+                NodeActivation::UpstreamFailed { reason, dependency } => {
                     let result = NodeResult {
-                        node_id: node_id.clone(),
-                        cell_type: node.cell_type.clone(),
-                        status: NodeStatus::Skipped,
-                        duration: Duration::ZERO,
-                        error: Some(reason),
-                        output_count: 0,
-                        is_stub: false,
+                        blocked_by: dependency
+                            .as_deref()
+                            .and_then(|dependency| failed_root(dependency, &statuses, &results)),
+                        ..skipped_result(node, NodeStatus::Skipped, reason)
                     };
                     statuses.insert(node_id.clone(), result.status);
                     results.push(result);
@@ -701,7 +736,17 @@ impl GraphEngine {
                     error: None,
                     output_count: count,
                     is_stub: false,
+                    blocked_by: None,
                 });
+                continue;
+            }
+
+            if let Some(reason) = self.dispatch_stopped() {
+                info!(node_id = %node_id, %reason, "dispatch stopped: starting no further nodes");
+                let result = skipped_result(node, NodeStatus::Skipped, reason.clone());
+                statuses.insert(node_id.clone(), result.status);
+                results.push(result);
+                abort = Some(reason);
                 continue;
             }
 
@@ -801,6 +846,7 @@ impl GraphEngine {
                         error: None,
                         output_count: count,
                         is_stub: cell_is_stub,
+                        blocked_by: None,
                     });
                 }
                 Err(e) => {
@@ -814,10 +860,12 @@ impl GraphEngine {
                         "node failed"
                     );
                     statuses.insert(node_id.clone(), NodeStatus::Failed);
-                    fail_fast_abort = matches!(
+                    if matches!(
                         self.graph.policy.failure_strategy,
                         crate::types::FailureStrategy::FailFast
-                    );
+                    ) {
+                        abort.get_or_insert_with(|| "aborted after graph failure".to_string());
+                    }
                     self.emit_telemetry(
                         &ObservableEvent::CellFailed {
                             block: node_id.clone(),
@@ -835,6 +883,7 @@ impl GraphEngine {
                         error: Some(msg),
                         output_count: 0,
                         is_stub: cell_is_stub,
+                        blocked_by: None,
                     });
                 }
             }
@@ -894,21 +943,21 @@ impl GraphEngine {
             success,
             node_results: results,
             total_duration,
+            gate_verdicts: collect_gate_verdicts(&outputs),
         })
     }
 
-    /// Execute the graph with parallel node execution within topological waves.
+    /// Execute the graph with bounded parallel node execution.
     ///
     /// Validates all edges for type-schema compatibility before executing any
     /// node.
     ///
-    /// Nodes are grouped into waves using [`topological_waves`]. Within each
-    /// wave, nodes execute concurrently via `tokio::task::JoinSet`, limited by
-    /// [`GraphPolicy::max_concurrent_nodes`] through a [`tokio::sync::Semaphore`].
-    ///
-    /// Between waves, execution is sequential: wave N+1 only starts after all
-    /// nodes in wave N have completed. If any node fails and the failure
-    /// strategy is `FailFast`, remaining waves are skipped.
+    /// Each node starts as soon as every node it depends on has settled, on a
+    /// `tokio::task::JoinSet`, with at most
+    /// [`GraphPolicy::max_concurrent_nodes`] running at once. A node never
+    /// waits for nodes it does not depend on. A failed node blocks only its
+    /// dependants, unless the failure strategy is `FailFast`: then no further
+    /// node starts after the first failure, and nodes already running finish.
     ///
     /// # Errors
     /// Returns `GraphError::EdgeValidationFailed` if edges have incompatible schemas,
@@ -919,7 +968,7 @@ impl GraphEngine {
         self.execute_parallel_at_tick(ctx, 0).await
     }
 
-    /// Execute bounded parallel topological waves at a specific Hot Graph tick.
+    /// Execute with bounded parallelism at a specific Hot Graph tick.
     ///
     /// Validates all edges for type-schema compatibility before executing any
     /// node. The tick is part of Activity replay/record identity; keeping it
@@ -935,14 +984,11 @@ impl GraphEngine {
     }
 
     /// Internal: execute parallel at tick after validation has been performed.
-    #[allow(clippy::too_many_lines)]
     async fn execute_parallel_at_tick_validated(
         &self,
         ctx: &CellContext,
         tick: u64,
     ) -> Result<GraphOutput, GraphError> {
-        use tokio::task::JoinSet;
-
         let start = Instant::now();
         let graph_name = self.graph.metadata.name.clone();
         let run_id = ctx.run_id.clone().unwrap_or_else(|| graph_name.clone());
@@ -956,312 +1002,24 @@ impl GraphEngine {
             &graph_ancestry,
         )
         .await;
-        let max_concurrent = self.graph.policy.max_concurrent_nodes.max(1);
 
-        // 1. Compute waves
-        let waves = topological_waves(&self.graph)?;
-
-        // 2. Track outputs and failures
-        let outputs: Arc<parking_lot::Mutex<HashMap<NodeId, Vec<roko_core::Signal>>>> =
-            Arc::new(parking_lot::Mutex::new(self.initial_tick_outputs()));
-        let statuses: Arc<parking_lot::Mutex<HashMap<NodeId, NodeStatus>>> =
-            Arc::new(parking_lot::Mutex::new(HashMap::new()));
-        let failed_nodes: Arc<parking_lot::Mutex<HashSet<NodeId>>> =
-            Arc::new(parking_lot::Mutex::new(HashSet::new()));
-        let mut results: Vec<NodeResult> = Vec::new();
-        let mut resumed_emitted = false;
-
-        let semaphore = Arc::new(tokio::sync::Semaphore::new(max_concurrent));
-        let mut total_cost_usd = 0.0;
-
-        // 3. Execute wave by wave
-        for wave in &waves {
-            let mut join_set: JoinSet<(NodeResult, f64, Vec<roko_core::Signal>, bool)> =
-                JoinSet::new();
-            for node_id in wave {
-                let Some(node) = self.graph.get_node(node_id) else {
-                    continue;
-                };
-
-                let activation = {
-                    let status_guard = statuses.lock();
-                    let output_guard = outputs.lock();
-                    evaluate_node_activation(&self.graph, node_id, &status_guard, &output_guard)
-                };
-                let input = match activation {
-                    NodeActivation::Root => {
-                        let output_guard = outputs.lock();
-                        self.root_tick_inputs(node_id, &output_guard)
-                    }
-                    NodeActivation::Ready(input) => input,
-                    NodeActivation::ConditionSkipped(reason) => {
-                        let result = NodeResult {
-                            node_id: node_id.clone(),
-                            cell_type: node.cell_type.clone(),
-                            status: NodeStatus::ConditionSkipped,
-                            duration: Duration::ZERO,
-                            error: Some(reason),
-                            output_count: 0,
-                            is_stub: false,
-                        };
-                        statuses.lock().insert(node_id.clone(), result.status);
-                        results.push(result);
-                        continue;
-                    }
-                    NodeActivation::UpstreamFailed(reason) => {
-                        let result = NodeResult {
-                            node_id: node_id.clone(),
-                            cell_type: node.cell_type.clone(),
-                            status: NodeStatus::Skipped,
-                            duration: Duration::ZERO,
-                            error: Some(reason),
-                            output_count: 0,
-                            is_stub: false,
-                        };
-                        statuses.lock().insert(node_id.clone(), result.status);
-                        results.push(result);
-                        continue;
-                    }
-                };
-                let input_hash = input_signal_hash(&input);
-                let is_activity = node.execution_class == ExecutionClass::Activity;
-
-                if is_activity
-                    && let Some(replayer) = &self.replayer
-                    && let Some(recorded) = replayer.lookup(node_id, tick)
-                {
-                    let mut recorded = recorded.clone();
-                    propagate_input_taint(&input, &mut recorded, node_id);
-                    let count = recorded.len();
-                    if !resumed_emitted {
-                        self.emit_telemetry(
-                            &ObservableEvent::GraphResumed {
-                                graph: graph_name.clone(),
-                                run: run_id.clone(),
-                            },
-                            &graph_ancestry,
-                        )
-                        .await;
-                        resumed_emitted = true;
-                    }
-                    outputs.lock().insert(node_id.clone(), recorded);
-                    statuses
-                        .lock()
-                        .insert(node_id.clone(), NodeStatus::Complete);
-                    results.push(NodeResult {
-                        node_id: node_id.clone(),
-                        cell_type: node.cell_type.clone(),
-                        status: NodeStatus::Complete,
-                        duration: Duration::ZERO,
-                        error: None,
-                        output_count: count,
-                        is_stub: false,
-                    });
-                    continue;
-                }
-
-                // Instantiate cell from registry
-                let cell: Arc<dyn Cell> = self
-                    .registry
-                    .create(&node.cell_type, node.config.clone())?
-                    .into();
-
-                let sem = semaphore.clone();
-                let node_id = node_id.clone();
-                let cell_type = node.cell_type.clone();
-                let cell_is_stub = cell.is_stub();
-                let ctx = ctx.clone();
-                let graph_name = graph_name.clone();
-                let run_id = run_id.clone();
-                let telemetry = self.telemetry.clone();
-                let estimated_cost_usd = cell.estimated_cost().unwrap_or_default();
-                let max_retries = max_retries(&self.graph.policy);
-                statuses.lock().insert(node_id.clone(), NodeStatus::Running);
-
-                join_set.spawn(async move {
-                    let Ok(_permit) = sem.acquire().await else {
-                        return (
-                            NodeResult {
-                                node_id: node_id.clone(),
-                                cell_type,
-                                status: NodeStatus::Failed,
-                                duration: Duration::ZERO,
-                                error: Some("semaphore closed".into()),
-                                output_count: 0,
-                                is_stub: cell_is_stub,
-                            },
-                            0.0,
-                            Vec::new(),
-                            is_activity,
-                        );
-                    };
-
-                    let ancestry = [
-                        LensScope::Cell(node_id.clone()),
-                        LensScope::Graph(graph_name.clone()),
-                    ];
-                    emit_telemetry_to(
-                        telemetry.as_ref(),
-                        &ObservableEvent::CellStarted {
-                            block: node_id.clone(),
-                            run: run_id.clone(),
-                            input_hash,
-                        },
-                        &ancestry,
-                    )
-                    .await;
-
-                    let node_start = Instant::now();
-                    let (execution, attempts) = execute_cell_with_retries(
-                        cell.as_ref(),
-                        input,
-                        &ctx,
-                        max_retries,
-                        telemetry.as_ref(),
-                        &node_id,
-                        &run_id,
-                        &ancestry,
-                    )
-                    .await;
-                    let attempt_cost = estimated_cost_usd * f64::from(attempts);
-                    let (result, output_signals) = match execution {
-                        Ok(output_signals) => {
-                            let duration = node_start.elapsed();
-                            let duration_ms = duration_ms(duration);
-                            let count = output_signals.len();
-                            emit_telemetry_to(
-                                telemetry.as_ref(),
-                                &ObservableEvent::CellCompleted {
-                                    block: node_id.clone(),
-                                    run: run_id.clone(),
-                                    duration_ms,
-                                    cost_usd: attempt_cost,
-                                },
-                                &ancestry,
-                            )
-                            .await;
-                            emit_telemetry_to(
-                                telemetry.as_ref(),
-                                &ObservableEvent::GraphNodeCompleted {
-                                    graph: graph_name,
-                                    run: run_id,
-                                    node: node_id.clone(),
-                                    duration_ms,
-                                },
-                                &ancestry,
-                            )
-                            .await;
-                            (
-                                NodeResult {
-                                    node_id: node_id.clone(),
-                                    cell_type,
-                                    status: NodeStatus::Complete,
-                                    duration,
-                                    error: None,
-                                    output_count: count,
-                                    is_stub: cell_is_stub,
-                                },
-                                output_signals,
-                            )
-                        }
-                        Err(e) => {
-                            let duration = node_start.elapsed();
-                            let error = e.to_string();
-                            emit_telemetry_to(
-                                telemetry.as_ref(),
-                                &ObservableEvent::CellFailed {
-                                    block: node_id.clone(),
-                                    run: run_id,
-                                    error: error.clone(),
-                                },
-                                &ancestry,
-                            )
-                            .await;
-                            (
-                                NodeResult {
-                                    node_id: node_id.clone(),
-                                    cell_type,
-                                    status: NodeStatus::Failed,
-                                    duration,
-                                    error: Some(error),
-                                    output_count: 0,
-                                    is_stub: cell_is_stub,
-                                },
-                                Vec::new(),
-                            )
-                        }
-                    };
-                    (result, attempt_cost, output_signals, is_activity)
-                });
-            }
-
-            // Await all tasks in this wave
-            while let Some(join_result) = join_set.join_next().await {
-                match join_result {
-                    Ok((node_result, attempt_cost, output_signals, is_activity)) => {
-                        total_cost_usd += attempt_cost;
-                        if node_result.status == NodeStatus::Failed {
-                            failed_nodes.lock().insert(node_result.node_id.clone());
-                            statuses
-                                .lock()
-                                .insert(node_result.node_id.clone(), NodeStatus::Failed);
-                        } else if node_result.status == NodeStatus::Complete {
-                            if is_activity
-                                && let Some(recorder) = &self.recorder
-                                && let Err(error) = recorder.lock().record(
-                                    &graph_name,
-                                    &node_result.node_id,
-                                    tick,
-                                    output_signals.clone(),
-                                )
-                            {
-                                return Err(GraphError::NodeFailed {
-                                    node_id: node_result.node_id,
-                                    reason: format!("persist Activity checkpoint: {error}"),
-                                });
-                            }
-                            outputs
-                                .lock()
-                                .insert(node_result.node_id.clone(), output_signals);
-                            statuses
-                                .lock()
-                                .insert(node_result.node_id.clone(), NodeStatus::Complete);
-                        }
-                        results.push(node_result);
-                    }
-                    Err(join_err) => {
-                        warn!(error = %join_err, "parallel node task panicked");
-                    }
-                }
-            }
-
-            // Check if we need to abort (FailFast with any failure in this wave)
-            if matches!(
-                self.graph.policy.failure_strategy,
-                crate::types::FailureStrategy::FailFast
-            ) && failed_nodes.lock().iter().next().is_some()
-            {
-                // Mark remaining waves as skipped
-                for remaining_wave in waves.iter().skip_while(|w| *w != wave).skip(1) {
-                    for node_id in remaining_wave {
-                        if let Some(node) = self.graph.get_node(node_id) {
-                            let result = NodeResult {
-                                node_id: node_id.clone(),
-                                cell_type: node.cell_type.clone(),
-                                status: NodeStatus::Skipped,
-                                duration: Duration::ZERO,
-                                error: Some("aborted: upstream wave had failure".to_string()),
-                                output_count: 0,
-                                is_stub: false,
-                            };
-                            statuses.lock().insert(node_id.clone(), result.status);
-                            results.push(result);
-                        }
-                    }
-                }
-                break;
-            }
-        }
+        let statuses = parking_lot::Mutex::new(HashMap::new());
+        let ReadyQueueRun {
+            outputs,
+            results,
+            total_cost_usd,
+            ..
+        } = self
+            .execute_ready_queue(
+                ctx,
+                ReadyQueueOptions {
+                    tick,
+                    statuses: &statuses,
+                    cancel: None,
+                    announce_resume: true,
+                },
+            )
+            .await?;
 
         let total_duration = start.elapsed();
         let success = graph_execution_succeeded(&results);
@@ -1290,7 +1048,7 @@ impl GraphEngine {
         }
 
         if success && let Some(merge_queue) = &self.merge_queue {
-            let files_changed = Self::collect_files_changed(&outputs.lock());
+            let files_changed = Self::collect_files_changed(&outputs);
             if !files_changed.is_empty() {
                 let accepted = merge_queue.enqueue(MergeRequest {
                     plan_id: graph_name.clone(),
@@ -1302,13 +1060,326 @@ impl GraphEngine {
             }
         }
 
-        self.persist_tick_outputs(&outputs.lock());
+        self.persist_tick_outputs(&outputs);
 
         Ok(GraphOutput {
             graph_name,
             success,
             node_results: results,
             total_duration,
+            gate_verdicts: collect_gate_verdicts(&outputs),
+        })
+    }
+
+    /// Run the Graph with bounded parallelism, starting each node as soon as
+    /// every one of its predecessors has settled.
+    ///
+    /// A node is decided once all of its predecessors are terminal: it is
+    /// condition-skipped, skipped after a failed dependency, replayed from the
+    /// Activity log, or queued to run. Queued nodes start in topological order
+    /// whenever fewer than `max_concurrent_nodes` cells are running, so a node
+    /// never waits for nodes it does not depend on.
+    ///
+    /// A failed node blocks only its dependants, unless the policy is
+    /// `FailFast`: then no further node starts after the first failure. No
+    /// further node starts once `cancel` fires either. Nodes already running
+    /// always finish, and their Activity outputs are recorded, so a resumed
+    /// run can replay them.
+    #[allow(clippy::too_many_lines)]
+    async fn execute_ready_queue(
+        &self,
+        ctx: &CellContext,
+        options: ReadyQueueOptions<'_>,
+    ) -> Result<ReadyQueueRun, GraphError> {
+        use tokio::task::JoinSet;
+
+        let ReadyQueueOptions {
+            tick,
+            statuses,
+            cancel,
+            announce_resume,
+        } = options;
+        let graph_name = self.graph.metadata.name.clone();
+        let run_id = ctx.run_id.clone().unwrap_or_else(|| graph_name.clone());
+        let max_concurrent = self.graph.policy.max_concurrent_nodes.max(1);
+        let max_retries = max_retries(&self.graph.policy);
+        let fail_fast = matches!(
+            self.graph.policy.failure_strategy,
+            crate::types::FailureStrategy::FailFast
+        );
+
+        let mut queue = ReadyQueue::new(&self.graph)?;
+        {
+            let mut statuses = statuses.lock();
+            for pos in 0..queue.len() {
+                statuses.insert(queue.node(pos).id.clone(), NodeStatus::Pending);
+            }
+        }
+        let mut outputs = self.initial_tick_outputs();
+        let mut results: Vec<NodeResult> = Vec::with_capacity(queue.len());
+        let mut total_cost_usd = 0.0;
+        let mut resumed_emitted = false;
+        let mut was_cancelled = false;
+        let mut halt: Option<Halt> = None;
+        // Nodes cleared to run that wait for a free slot, with their input.
+        let mut runnable: BTreeMap<usize, Vec<roko_core::Signal>> = BTreeMap::new();
+        let mut running: JoinSet<NodeRun> = JoinSet::new();
+        let mut running_nodes: HashMap<tokio::task::Id, usize> = HashMap::new();
+
+        loop {
+            if !matches!(halt, Some(Halt::Cancelled))
+                && cancel.is_some_and(CancellationToken::is_cancelled)
+            {
+                info!(graph = %graph_name, "flow cancelled: starting no further nodes");
+                halt = Some(Halt::Cancelled);
+            }
+            if halt.is_some() {
+                // Queued nodes will not start: decide them again as halted.
+                queue
+                    .ready
+                    .extend(std::mem::take(&mut runnable).into_keys());
+            }
+
+            // Decide every ready node in topological order. Settling a node
+            // can make its dependants ready; they are decided in this pass.
+            while let Some(pos) = queue.ready.pop_first() {
+                let node = queue.node(pos);
+                if let Some(halt) = &halt {
+                    statuses.lock().insert(node.id.clone(), NodeStatus::Skipped);
+                    match halt {
+                        Halt::Cancelled => {
+                            was_cancelled = true;
+                            self.emit_telemetry(
+                                &ObservableEvent::CellCancelled {
+                                    block: node.id.clone(),
+                                    run: run_id.clone(),
+                                },
+                                &[
+                                    LensScope::Cell(node.id.clone()),
+                                    LensScope::Graph(graph_name.clone()),
+                                ],
+                            )
+                            .await;
+                        }
+                        Halt::FailFast => results.push(skipped_result(
+                            node,
+                            NodeStatus::Skipped,
+                            "aborted after graph failure".to_string(),
+                        )),
+                        Halt::Stopped(reason) => {
+                            results.push(skipped_result(node, NodeStatus::Skipped, reason.clone()));
+                        }
+                    }
+                    queue.settle(pos);
+                    continue;
+                }
+
+                let activation = {
+                    let status_guard = statuses.lock();
+                    evaluate_node_activation(&self.graph, &node.id, &status_guard, &outputs)
+                };
+                let input = match activation {
+                    NodeActivation::Root => self.root_tick_inputs(&node.id, &outputs),
+                    NodeActivation::Ready(input) => input,
+                    NodeActivation::ConditionSkipped(reason) => {
+                        statuses
+                            .lock()
+                            .insert(node.id.clone(), NodeStatus::ConditionSkipped);
+                        results.push(skipped_result(node, NodeStatus::ConditionSkipped, reason));
+                        queue.settle(pos);
+                        continue;
+                    }
+                    NodeActivation::UpstreamFailed { reason, dependency } => {
+                        let mut status_guard = statuses.lock();
+                        let blocked_by = dependency.as_deref().and_then(|dependency| {
+                            failed_root(dependency, &status_guard, &results)
+                        });
+                        status_guard.insert(node.id.clone(), NodeStatus::Skipped);
+                        drop(status_guard);
+                        results.push(NodeResult {
+                            blocked_by,
+                            ..skipped_result(node, NodeStatus::Skipped, reason)
+                        });
+                        queue.settle(pos);
+                        continue;
+                    }
+                };
+
+                // Activity nodes with a recorded output are replayed, not run.
+                if node.execution_class == ExecutionClass::Activity
+                    && let Some(replayer) = &self.replayer
+                    && let Some(recorded) = replayer.lookup(&node.id, tick)
+                {
+                    let mut recorded = recorded.clone();
+                    propagate_input_taint(&input, &mut recorded, &node.id);
+                    if announce_resume && !resumed_emitted {
+                        self.emit_telemetry(
+                            &ObservableEvent::GraphResumed {
+                                graph: graph_name.clone(),
+                                run: run_id.clone(),
+                            },
+                            &[LensScope::Graph(graph_name.clone())],
+                        )
+                        .await;
+                        resumed_emitted = true;
+                    }
+                    let count = recorded.len();
+                    info!(
+                        node_id = %node.id,
+                        tick,
+                        outputs = count,
+                        "replay: substituting recorded Activity output"
+                    );
+                    outputs.insert(node.id.clone(), recorded);
+                    statuses
+                        .lock()
+                        .insert(node.id.clone(), NodeStatus::Complete);
+                    results.push(NodeResult {
+                        node_id: node.id.clone(),
+                        cell_type: node.cell_type.clone(),
+                        status: NodeStatus::Complete,
+                        duration: Duration::ZERO,
+                        error: None,
+                        output_count: count,
+                        is_stub: false,
+                        blocked_by: None,
+                    });
+                    queue.settle(pos);
+                    continue;
+                }
+
+                runnable.insert(pos, input);
+            }
+
+            // Start queued nodes, in topological order, while slots are free.
+            while running.len() < max_concurrent
+                && let Some((pos, input)) = runnable.pop_first()
+            {
+                if let Some(reason) = self.dispatch_stopped() {
+                    info!(graph = %graph_name, %reason, "dispatch stopped: starting no further nodes");
+                    runnable.insert(pos, input);
+                    halt = Some(Halt::Stopped(reason));
+                    break;
+                }
+                let node = queue.node(pos);
+                let cell = self.registry.create(&node.cell_type, node.config.clone())?;
+                statuses.lock().insert(node.id.clone(), NodeStatus::Running);
+                let task = running.spawn(run_node(NodeLaunch {
+                    node_id: node.id.clone(),
+                    cell_type: node.cell_type.clone(),
+                    cell,
+                    input,
+                    ctx: ctx.clone(),
+                    graph_name: graph_name.clone(),
+                    run_id: run_id.clone(),
+                    telemetry: self.telemetry.clone(),
+                    max_retries,
+                }));
+                running_nodes.insert(task.id(), pos);
+            }
+
+            if halt.is_some() && !runnable.is_empty() {
+                // The dispatch stop just fired: settle the queued nodes.
+                continue;
+            }
+            // Nothing is running, so nothing can become ready: every node
+            // has settled.
+            if running.is_empty() {
+                break;
+            }
+
+            // Wait for the next node to finish, or for cancellation.
+            let next = match cancel {
+                Some(cancel) if !matches!(halt, Some(Halt::Cancelled)) => {
+                    tokio::select! {
+                        next = running.join_next_with_id() => next,
+                        () = cancel.cancelled() => continue,
+                    }
+                }
+                _ => running.join_next_with_id().await,
+            };
+            let (task, outcome) = match next {
+                Some(Ok((task, run))) => (task, Ok(run)),
+                Some(Err(error)) => (error.id(), Err(error)),
+                None => continue,
+            };
+            let Some(pos) = running_nodes.remove(&task) else {
+                continue;
+            };
+            let node = queue.node(pos);
+            let run = match outcome {
+                Ok(run) => run,
+                Err(error) => {
+                    // A panicking cell fails its node, so its dependants are
+                    // skipped rather than left waiting.
+                    let error = format!("node task panicked: {error}");
+                    self.emit_telemetry(
+                        &ObservableEvent::CellFailed {
+                            block: node.id.clone(),
+                            run: run_id.clone(),
+                            error: error.clone(),
+                        },
+                        &[
+                            LensScope::Cell(node.id.clone()),
+                            LensScope::Graph(graph_name.clone()),
+                        ],
+                    )
+                    .await;
+                    NodeRun {
+                        result: NodeResult {
+                            node_id: node.id.clone(),
+                            cell_type: node.cell_type.clone(),
+                            status: NodeStatus::Failed,
+                            duration: Duration::ZERO,
+                            error: Some(error),
+                            output_count: 0,
+                            is_stub: false,
+                            blocked_by: None,
+                        },
+                        cost_usd: 0.0,
+                        outputs: Vec::new(),
+                    }
+                }
+            };
+
+            total_cost_usd += run.cost_usd;
+            if run.result.status == NodeStatus::Complete {
+                // Persist Activity outputs so a future --resume-plan can
+                // substitute them instead of re-calling the provider.
+                if node.execution_class == ExecutionClass::Activity
+                    && let Some(recorder) = &self.recorder
+                    && let Err(error) =
+                        recorder
+                            .lock()
+                            .record(&graph_name, &node.id, tick, run.outputs.clone())
+                {
+                    return Err(GraphError::NodeFailed {
+                        node_id: node.id.clone(),
+                        reason: format!("persist Activity checkpoint: {error}"),
+                    });
+                }
+                outputs.insert(node.id.clone(), run.outputs);
+            } else {
+                warn!(
+                    node_id = %node.id,
+                    error = run.result.error.as_deref().unwrap_or_default(),
+                    "parallel node failed"
+                );
+                if fail_fast && halt.is_none() {
+                    halt = Some(Halt::FailFast);
+                }
+            }
+            statuses.lock().insert(node.id.clone(), run.result.status);
+            results.push(run.result);
+            queue.settle(pos);
+        }
+
+        results.sort_by_key(|result| queue.position_of(&result.node_id));
+        Ok(ReadyQueueRun {
+            outputs,
+            results,
+            total_cost_usd,
+            was_cancelled,
         })
     }
 
@@ -1484,6 +1555,7 @@ impl GraphEngine {
                         error: None,
                         output_count,
                         is_stub: false,
+                        blocked_by: None,
                     });
                     continue;
                 }
@@ -1497,6 +1569,7 @@ impl GraphEngine {
                         error: Some("conditional route was not selected in snapshot".to_string()),
                         output_count: 0,
                         is_stub: false,
+                        blocked_by: None,
                     });
                     continue;
                 }
@@ -1510,6 +1583,7 @@ impl GraphEngine {
                         error: Some("skipped in snapshot".to_string()),
                         output_count: 0,
                         is_stub: false,
+                        blocked_by: None,
                     });
                     continue;
                 }
@@ -1523,6 +1597,7 @@ impl GraphEngine {
                         error: Some("failed in snapshot".to_string()),
                         output_count: 0,
                         is_stub: false,
+                        blocked_by: None,
                     });
                     continue;
                 }
@@ -1541,19 +1616,18 @@ impl GraphEngine {
                         error: Some(reason),
                         output_count: 0,
                         is_stub: false,
+                        blocked_by: None,
                     });
                     continue;
                 }
-                NodeActivation::UpstreamFailed(reason) => {
+                NodeActivation::UpstreamFailed { reason, dependency } => {
+                    let blocked_by = dependency
+                        .as_deref()
+                        .and_then(|dependency| failed_root(dependency, &statuses, &results));
                     statuses.insert(node_id.clone(), NodeStatus::Skipped);
                     results.push(NodeResult {
-                        node_id: node_id.clone(),
-                        cell_type: node.cell_type.clone(),
-                        status: NodeStatus::Skipped,
-                        duration: Duration::ZERO,
-                        error: Some(reason),
-                        output_count: 0,
-                        is_stub: false,
+                        blocked_by,
+                        ..skipped_result(node, NodeStatus::Skipped, reason)
                     });
                     continue;
                 }
@@ -1582,6 +1656,7 @@ impl GraphEngine {
                         error: None,
                         output_count: count,
                         is_stub: cell_is_stub,
+                        blocked_by: None,
                     });
                 }
                 Err(e) => {
@@ -1596,6 +1671,7 @@ impl GraphEngine {
                         error: Some(msg),
                         output_count: 0,
                         is_stub: cell_is_stub,
+                        blocked_by: None,
                     });
                 }
             }
@@ -1609,6 +1685,7 @@ impl GraphEngine {
             success,
             node_results: results,
             total_duration,
+            gate_verdicts: collect_gate_verdicts(&outputs),
         })
     }
 
@@ -1745,12 +1822,13 @@ impl GraphEngine {
 
     /// Internal: execute the graph while publishing per-node status into `node_statuses`.
     ///
-    /// Respects the cancellation token -- stops after the current node (sequential)
-    /// or between waves (parallel) if cancelled.
+    /// Respects the cancellation token: once it is cancelled no further node
+    /// starts, and nodes already running finish.
     ///
-    /// When `policy.max_concurrent_nodes > 1` the graph is executed as bounded
-    /// parallel topological waves (same algorithm as `execute_parallel_at_tick_validated`).
-    /// When `max_concurrent_nodes == 1` nodes run sequentially in topological order.
+    /// When `policy.max_concurrent_nodes > 1` nodes run with bounded
+    /// parallelism, each starting as soon as its predecessors have settled
+    /// (the scheduler `execute_parallel_at_tick_validated` uses). When
+    /// `max_concurrent_nodes == 1` nodes run sequentially in topological order.
     #[allow(clippy::too_many_lines)] // Keep status transitions adjacent to graph execution.
     async fn execute_with_status_tracking(
         &self,
@@ -1796,7 +1874,8 @@ impl GraphEngine {
         let mut results: Vec<NodeResult> = Vec::with_capacity(order.len());
         let mut total_cost_usd = 0.0;
         let mut was_cancelled = false;
-        let mut fail_fast_abort = false;
+        // Once set, no further node starts: why the rest are skipped.
+        let mut abort: Option<String> = None;
 
         // Seed all nodes as Pending.
         {
@@ -1829,19 +1908,11 @@ impl GraphEngine {
                 continue;
             };
 
-            if fail_fast_abort {
+            if let Some(reason) = &abort {
                 node_statuses
                     .lock()
                     .insert(node_id.clone(), NodeStatus::Skipped);
-                results.push(NodeResult {
-                    node_id: node_id.clone(),
-                    cell_type: node.cell_type.clone(),
-                    status: NodeStatus::Skipped,
-                    duration: Duration::ZERO,
-                    error: Some("aborted after graph failure".to_string()),
-                    output_count: 0,
-                    is_stub: false,
-                });
+                results.push(skipped_result(node, NodeStatus::Skipped, reason.clone()));
                 continue;
             }
 
@@ -1863,22 +1934,21 @@ impl GraphEngine {
                             error: Some(reason),
                             output_count: 0,
                             is_stub: false,
+                            blocked_by: None,
                         });
                         continue;
                     }
-                    NodeActivation::UpstreamFailed(reason) => {
+                    NodeActivation::UpstreamFailed { reason, dependency } => {
+                        let blocked_by = dependency
+                            .as_deref()
+                            .and_then(|dependency| failed_root(dependency, &statuses, &results));
                         drop(statuses);
                         node_statuses
                             .lock()
                             .insert(node_id.clone(), NodeStatus::Skipped);
                         results.push(NodeResult {
-                            node_id: node_id.clone(),
-                            cell_type: node.cell_type.clone(),
-                            status: NodeStatus::Skipped,
-                            duration: Duration::ZERO,
-                            error: Some(reason),
-                            output_count: 0,
-                            is_stub: false,
+                            blocked_by,
+                            ..skipped_result(node, NodeStatus::Skipped, reason)
                         });
                         continue;
                     }
@@ -1917,7 +1987,18 @@ impl GraphEngine {
                     error: None,
                     output_count: count,
                     is_stub: false,
+                    blocked_by: None,
                 });
+                continue;
+            }
+
+            if let Some(reason) = self.dispatch_stopped() {
+                info!(node_id = %node_id, %reason, "flow: dispatch stopped, starting no further nodes");
+                node_statuses
+                    .lock()
+                    .insert(node_id.clone(), NodeStatus::Skipped);
+                results.push(skipped_result(node, NodeStatus::Skipped, reason.clone()));
+                abort = Some(reason);
                 continue;
             }
 
@@ -1964,12 +2045,10 @@ impl GraphEngine {
                     // the provider.
                     if is_activity
                         && let Some(recorder) = &self.recorder
-                        && let Err(error) = recorder.lock().record(
-                            &graph_name,
-                            node_id,
-                            0,
-                            output_signals.clone(),
-                        )
+                        && let Err(error) =
+                            recorder
+                                .lock()
+                                .record(&graph_name, node_id, 0, output_signals.clone())
                     {
                         return Err(GraphError::NodeFailed {
                             node_id: node_id.clone(),
@@ -2009,6 +2088,7 @@ impl GraphEngine {
                         error: None,
                         output_count: count,
                         is_stub: cell_is_stub,
+                        blocked_by: None,
                     });
                 }
                 Err(e) => {
@@ -2028,10 +2108,12 @@ impl GraphEngine {
                     node_statuses
                         .lock()
                         .insert(node_id.clone(), NodeStatus::Failed);
-                    fail_fast_abort = matches!(
+                    if matches!(
                         self.graph.policy.failure_strategy,
                         crate::types::FailureStrategy::FailFast
-                    );
+                    ) {
+                        abort.get_or_insert_with(|| "aborted after graph failure".to_string());
+                    }
                     results.push(NodeResult {
                         node_id: node_id.clone(),
                         cell_type: node.cell_type.clone(),
@@ -2040,6 +2122,7 @@ impl GraphEngine {
                         error: Some(msg),
                         output_count: 0,
                         is_stub: cell_is_stub,
+                        blocked_by: None,
                     });
                 }
             }
@@ -2086,32 +2169,28 @@ impl GraphEngine {
             success,
             node_results: results,
             total_duration,
+            gate_verdicts: collect_gate_verdicts(&outputs),
         })
     }
 
     /// Parallel variant of status-tracking execution (max_concurrent_nodes > 1).
     ///
-    /// Nodes are grouped into topological waves; within each wave nodes are
-    /// dispatched concurrently via `JoinSet` bounded by a `Semaphore`.
-    /// The shared `node_statuses` Arc is updated as nodes start, complete, or fail
-    /// so `FlowHandle::status()` reflects live parallel progress.
-    /// Cancellation is honoured between waves.
-    #[allow(clippy::too_many_lines)]
+    /// Runs the ready-queue scheduler shared with
+    /// `execute_parallel_at_tick_validated`: each node starts as soon as its
+    /// predecessors have settled, within `max_concurrent_nodes`. The shared
+    /// `node_statuses` map is updated as nodes start, complete, or fail, so
+    /// `FlowHandle::status()` reflects live parallel progress. Once `cancel`
+    /// fires no further node starts; nodes already running finish.
     async fn execute_with_status_tracking_parallel(
         &self,
         ctx: &CellContext,
         node_statuses: &Arc<parking_lot::Mutex<HashMap<NodeId, NodeStatus>>>,
         cancel: &CancellationToken,
     ) -> Result<GraphOutput, GraphError> {
-        use tokio::task::JoinSet;
-
         let start = Instant::now();
         let graph_name = self.graph.metadata.name.clone();
         let run_id = ctx.run_id.clone().unwrap_or_else(|| graph_name.clone());
         let graph_ancestry = [LensScope::Graph(graph_name.clone())];
-
-        let waves = topological_waves(&self.graph)?;
-        let max_concurrent = self.graph.policy.max_concurrent_nodes.max(1);
 
         self.emit_telemetry(
             &ObservableEvent::GraphStarted {
@@ -2123,368 +2202,23 @@ impl GraphEngine {
         )
         .await;
 
-        // Seed all nodes as Pending up front.
-        {
-            let mut statuses = node_statuses.lock();
-            for wave in &waves {
-                for node_id in wave {
-                    statuses.insert(node_id.clone(), NodeStatus::Pending);
-                }
-            }
-        }
-
-        // Shared outputs map written after each wave node completes.
-        let outputs: Arc<parking_lot::Mutex<HashMap<NodeId, Vec<roko_core::Signal>>>> =
-            Arc::new(parking_lot::Mutex::new(self.initial_tick_outputs()));
-
-        let semaphore = Arc::new(tokio::sync::Semaphore::new(max_concurrent));
-        let mut results: Vec<NodeResult> = Vec::new();
-        let mut total_cost_usd = 0.0;
-        let mut was_cancelled = false;
-        let mut any_failed = false;
-
-        'wave_loop: for wave in &waves {
-            // Honour cancellation between waves.
-            if cancel.is_cancelled() {
-                info!("flow cancelled before wave");
-                was_cancelled = true;
-                // Emit CellCancelled for every node in remaining waves that
-                // hasn't been given a terminal status yet.
-                for node_id in wave {
-                    node_statuses
-                        .lock()
-                        .insert(node_id.clone(), NodeStatus::Skipped);
-                    self.emit_telemetry(
-                        &ObservableEvent::CellCancelled {
-                            block: node_id.clone(),
-                            run: run_id.clone(),
-                        },
-                        &[
-                            LensScope::Cell(node_id.clone()),
-                            LensScope::Graph(graph_name.clone()),
-                        ],
-                    )
-                    .await;
-                }
-                break 'wave_loop;
-            }
-
-            // If a previous wave contained a failure and FailFast is set,
-            // skip all remaining waves.
-            if any_failed
-                && matches!(
-                    self.graph.policy.failure_strategy,
-                    crate::types::FailureStrategy::FailFast
-                )
-            {
-                for node_id in wave {
-                    let node_cell_type = self
-                        .graph
-                        .get_node(node_id)
-                        .map(|n| n.cell_type.clone())
-                        .unwrap_or_default();
-                    node_statuses
-                        .lock()
-                        .insert(node_id.clone(), NodeStatus::Skipped);
-                    results.push(NodeResult {
-                        node_id: node_id.clone(),
-                        cell_type: node_cell_type,
-                        status: NodeStatus::Skipped,
-                        duration: Duration::ZERO,
-                        error: Some("aborted after graph failure".to_string()),
-                        output_count: 0,
-                        is_stub: false,
-                    });
-                }
-                continue 'wave_loop;
-            }
-
-            // Dispatch all nodes in this wave concurrently.
-            // The bool in the tuple indicates whether the node is an Activity
-            // so the collection loop can persist the output to the recorder.
-            let mut join_set: JoinSet<(NodeResult, f64, Vec<roko_core::Signal>, bool)> =
-                JoinSet::new();
-
-            for node_id in wave {
-                let Some(node) = self.graph.get_node(node_id) else {
-                    continue;
-                };
-
-                // Evaluate activation using current statuses + outputs.
-                let activation = {
-                    let status_guard = node_statuses.lock();
-                    let output_guard = outputs.lock();
-                    evaluate_node_activation(&self.graph, node_id, &status_guard, &output_guard)
-                };
-
-                let input = match activation {
-                    NodeActivation::Root => {
-                        let output_guard = outputs.lock();
-                        self.root_tick_inputs(node_id, &output_guard)
-                    }
-                    NodeActivation::Ready(input) => input,
-                    NodeActivation::ConditionSkipped(reason) => {
-                        node_statuses
-                            .lock()
-                            .insert(node_id.clone(), NodeStatus::ConditionSkipped);
-                        results.push(NodeResult {
-                            node_id: node_id.clone(),
-                            cell_type: node.cell_type.clone(),
-                            status: NodeStatus::ConditionSkipped,
-                            duration: Duration::ZERO,
-                            error: Some(reason),
-                            output_count: 0,
-                            is_stub: false,
-                        });
-                        continue;
-                    }
-                    NodeActivation::UpstreamFailed(reason) => {
-                        node_statuses
-                            .lock()
-                            .insert(node_id.clone(), NodeStatus::Skipped);
-                        results.push(NodeResult {
-                            node_id: node_id.clone(),
-                            cell_type: node.cell_type.clone(),
-                            status: NodeStatus::Skipped,
-                            duration: Duration::ZERO,
-                            error: Some(reason),
-                            output_count: 0,
-                            is_stub: false,
-                        });
-                        continue;
-                    }
-                };
-
-                // Mark as Running immediately so FlowHandle sees it.
-                node_statuses
-                    .lock()
-                    .insert(node_id.clone(), NodeStatus::Running);
-
-                // For Activity nodes: check the replayer for a pre-recorded result.
-                // `start()` always drives tick 0; skip spawning when a recording
-                // is available so the provider is not called again on resume.
-                let is_activity = node.execution_class == ExecutionClass::Activity;
-                if is_activity
-                    && let Some(replayer) = &self.replayer
-                    && let Some(recorded) = replayer.lookup(node_id, 0)
-                {
-                    let mut recorded = recorded.clone();
-                    propagate_input_taint(&input, &mut recorded, node_id);
-                    let count = recorded.len();
-                    info!(
-                        node_id = %node_id,
-                        outputs = count,
-                        "flow-parallel: substituting recorded Activity output"
-                    );
-                    outputs.lock().insert(node_id.clone(), recorded);
-                    node_statuses
-                        .lock()
-                        .insert(node_id.clone(), NodeStatus::Complete);
-                    results.push(NodeResult {
-                        node_id: node_id.clone(),
-                        cell_type: node.cell_type.clone(),
-                        status: NodeStatus::Complete,
-                        duration: Duration::ZERO,
-                        error: None,
-                        output_count: count,
-                        is_stub: false,
-                    });
-                    continue;
-                }
-
-                // Clone everything the spawned task needs.
-                let cell: Arc<dyn Cell> = self
-                    .registry
-                    .create(&node.cell_type, node.config.clone())?
-                    .into();
-                let sem = semaphore.clone();
-                let node_id = node_id.clone();
-                let cell_type = node.cell_type.clone();
-                let cell_is_stub = cell.is_stub();
-                let is_activity_t = is_activity;
-                let estimated_cost_usd = cell.estimated_cost().unwrap_or_default();
-                let ctx = ctx.clone();
-                let graph_name_t = graph_name.clone();
-                let run_id_t = run_id.clone();
-                let telemetry = self.telemetry.clone();
-                let max_retries = max_retries(&self.graph.policy);
-                let input_hash = input_signal_hash(&input);
-
-                join_set.spawn(async move {
-                    let Ok(_permit) = sem.acquire().await else {
-                        return (
-                            NodeResult {
-                                node_id: node_id.clone(),
-                                cell_type,
-                                status: NodeStatus::Failed,
-                                duration: Duration::ZERO,
-                                error: Some("semaphore closed".into()),
-                                output_count: 0,
-                                is_stub: cell_is_stub,
-                            },
-                            0.0,
-                            Vec::new(),
-                            is_activity_t,
-                        );
-                    };
-
-                    let ancestry = [
-                        LensScope::Cell(node_id.clone()),
-                        LensScope::Graph(graph_name_t.clone()),
-                    ];
-                    emit_telemetry_to(
-                        telemetry.as_ref(),
-                        &ObservableEvent::CellStarted {
-                            block: node_id.clone(),
-                            run: run_id_t.clone(),
-                            input_hash,
-                        },
-                        &ancestry,
-                    )
-                    .await;
-
-                    let node_start = Instant::now();
-                    let (execution, attempts) = execute_cell_with_retries(
-                        cell.as_ref(),
-                        input,
-                        &ctx,
-                        max_retries,
-                        telemetry.as_ref(),
-                        &node_id,
-                        &run_id_t,
-                        &ancestry,
-                    )
-                    .await;
-                    let attempt_cost = estimated_cost_usd * f64::from(attempts);
-
-                    match execution {
-                        Ok(output_signals) => {
-                            let duration = node_start.elapsed();
-                            let duration_ms = duration_ms(duration);
-                            let count = output_signals.len();
-                            emit_telemetry_to(
-                                telemetry.as_ref(),
-                                &ObservableEvent::CellCompleted {
-                                    block: node_id.clone(),
-                                    run: run_id_t.clone(),
-                                    duration_ms,
-                                    cost_usd: attempt_cost,
-                                },
-                                &ancestry,
-                            )
-                            .await;
-                            emit_telemetry_to(
-                                telemetry.as_ref(),
-                                &ObservableEvent::GraphNodeCompleted {
-                                    graph: graph_name_t,
-                                    run: run_id_t,
-                                    node: node_id.clone(),
-                                    duration_ms,
-                                },
-                                &ancestry,
-                            )
-                            .await;
-                            (
-                                NodeResult {
-                                    node_id,
-                                    cell_type,
-                                    status: NodeStatus::Complete,
-                                    duration,
-                                    error: None,
-                                    output_count: count,
-                                    is_stub: cell_is_stub,
-                                },
-                                attempt_cost,
-                                output_signals,
-                                is_activity_t,
-                            )
-                        }
-                        Err(e) => {
-                            let duration = node_start.elapsed();
-                            let error = e.to_string();
-                            emit_telemetry_to(
-                                telemetry.as_ref(),
-                                &ObservableEvent::CellFailed {
-                                    block: node_id.clone(),
-                                    run: run_id_t,
-                                    error: error.clone(),
-                                },
-                                &ancestry,
-                            )
-                            .await;
-                            warn!(node_id = %node_id, error = %error, "flow: parallel node failed");
-                            (
-                                NodeResult {
-                                    node_id,
-                                    cell_type,
-                                    status: NodeStatus::Failed,
-                                    duration,
-                                    error: Some(error),
-                                    output_count: 0,
-                                    is_stub: cell_is_stub,
-                                },
-                                attempt_cost,
-                                Vec::new(),
-                                is_activity_t,
-                            )
-                        }
-                    }
-                });
-            }
-
-            // Collect all results from this wave.
-            while let Some(join_result) = join_set.join_next().await {
-                match join_result {
-                    Ok((node_result, attempt_cost, output_signals, is_activity_result)) => {
-                        total_cost_usd += attempt_cost;
-                        match node_result.status {
-                            NodeStatus::Complete => {
-                                // For Activity nodes: persist the output so a future
-                                // --resume-plan can substitute it instead of re-calling
-                                // the provider.
-                                if is_activity_result
-                                    && let Some(recorder) = &self.recorder
-                                    && let Err(error) = recorder.lock().record(
-                                        &graph_name,
-                                        &node_result.node_id,
-                                        0,
-                                        output_signals.clone(),
-                                    )
-                                {
-                                    return Err(GraphError::NodeFailed {
-                                        node_id: node_result.node_id.clone(),
-                                        reason: format!(
-                                            "persist Activity checkpoint: {error}"
-                                        ),
-                                    });
-                                }
-                                outputs
-                                    .lock()
-                                    .insert(node_result.node_id.clone(), output_signals);
-                                node_statuses
-                                    .lock()
-                                    .insert(node_result.node_id.clone(), NodeStatus::Complete);
-                            }
-                            NodeStatus::Failed => {
-                                any_failed = true;
-                                node_statuses
-                                    .lock()
-                                    .insert(node_result.node_id.clone(), NodeStatus::Failed);
-                            }
-                            _ => {
-                                node_statuses
-                                    .lock()
-                                    .insert(node_result.node_id.clone(), node_result.status);
-                            }
-                        }
-                        results.push(node_result);
-                    }
-                    Err(join_err) => {
-                        warn!(error = %join_err, "parallel flow node task panicked");
-                    }
-                }
-            }
-        }
+        // `start()` always drives tick 0.
+        let ReadyQueueRun {
+            outputs,
+            results,
+            total_cost_usd,
+            was_cancelled,
+        } = self
+            .execute_ready_queue(
+                ctx,
+                ReadyQueueOptions {
+                    tick: 0,
+                    statuses: node_statuses,
+                    cancel: Some(cancel),
+                    announce_resume: false,
+                },
+            )
+            .await?;
 
         let total_duration = start.elapsed();
         let success = !was_cancelled && graph_execution_succeeded(&results);
@@ -2527,6 +2261,7 @@ impl GraphEngine {
             success,
             node_results: results,
             total_duration,
+            gate_verdicts: collect_gate_verdicts(&outputs),
         })
     }
 
@@ -2600,6 +2335,287 @@ impl GraphEngine {
     }
 }
 
+// ─── Ready-queue scheduling ─────────────────────────────────────────────────
+
+/// Settings that differ between the bounded-parallel entry points.
+struct ReadyQueueOptions<'a> {
+    /// Tick under which Activity outputs are replayed and recorded.
+    tick: u64,
+    /// Live per-node status map. `start()` shares it with its [`FlowHandle`].
+    statuses: &'a parking_lot::Mutex<HashMap<NodeId, NodeStatus>>,
+    /// Once cancelled, no further node starts (`start()` only).
+    cancel: Option<&'a CancellationToken>,
+    /// Emit `GraphResumed` before the first replayed Activity output.
+    announce_resume: bool,
+}
+
+/// What a bounded-parallel run produced, before Graph-level telemetry.
+struct ReadyQueueRun {
+    /// Outputs of the completed nodes.
+    outputs: HashMap<NodeId, Vec<roko_core::Signal>>,
+    /// Per-node results in topological order. Cancelled nodes have none.
+    results: Vec<NodeResult>,
+    /// Estimated cost of every attempt of every started node.
+    total_cost_usd: f64,
+    /// Whether cancellation kept at least one node from starting.
+    was_cancelled: bool,
+}
+
+/// Why the ready-queue scheduler starts no further node.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Halt {
+    /// A node failed under the `FailFast` failure strategy.
+    FailFast,
+    /// The engine's dispatch stop gave this reason.
+    Stopped(String),
+    /// The run was cancelled.
+    Cancelled,
+}
+
+/// Dependency bookkeeping for [`GraphEngine::execute_ready_queue`].
+///
+/// Nodes are addressed by topological position, so ready nodes are decided
+/// and started in a deterministic order.
+struct ReadyQueue<'g> {
+    graph: &'g Graph,
+    /// Node indices in topological order.
+    order: Vec<GraphNodeIdx>,
+    /// Topological position of each node, indexed by its petgraph index.
+    position: Vec<usize>,
+    /// Incoming edges of each node whose source has not settled yet.
+    unsettled_inputs: Vec<usize>,
+    /// Nodes whose predecessors have all settled and that are not decided yet.
+    ready: BTreeSet<usize>,
+}
+
+impl<'g> ReadyQueue<'g> {
+    fn new(graph: &'g Graph) -> Result<Self, GraphError> {
+        let order = topological_order(graph)?
+            .iter()
+            .map(|node_id| {
+                graph
+                    .node_map
+                    .get(node_id)
+                    .copied()
+                    .ok_or_else(|| GraphError::NodeNotFound(node_id.clone()))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut position = vec![0; graph.inner.node_count()];
+        for (pos, idx) in order.iter().enumerate() {
+            position[idx.index()] = pos;
+        }
+        let unsettled_inputs: Vec<usize> = order
+            .iter()
+            .map(|&idx| {
+                graph
+                    .inner
+                    .edges_directed(idx, petgraph::Direction::Incoming)
+                    .count()
+            })
+            .collect();
+        let ready = (0..order.len())
+            .filter(|&pos| unsettled_inputs[pos] == 0)
+            .collect();
+        Ok(Self {
+            graph,
+            order,
+            position,
+            unsettled_inputs,
+            ready,
+        })
+    }
+
+    fn len(&self) -> usize {
+        self.order.len()
+    }
+
+    /// The node at topological position `pos`.
+    fn node(&self, pos: usize) -> &'g Node {
+        &self.graph.inner[self.order[pos]]
+    }
+
+    /// Record that the node at `pos` reached a terminal status. Each dependant
+    /// whose last unsettled input this was becomes ready.
+    fn settle(&mut self, pos: usize) {
+        for edge in self
+            .graph
+            .inner
+            .edges_directed(self.order[pos], petgraph::Direction::Outgoing)
+        {
+            let target = self.position[edge.target().index()];
+            self.unsettled_inputs[target] -= 1;
+            if self.unsettled_inputs[target] == 0 {
+                self.ready.insert(target);
+            }
+        }
+    }
+
+    /// Topological position of `node_id`, used to order results.
+    fn position_of(&self, node_id: &str) -> usize {
+        self.graph
+            .node_map
+            .get(node_id)
+            .map_or(usize::MAX, |idx| self.position[idx.index()])
+    }
+}
+
+/// A node the scheduler starts on its own task, with everything that task needs.
+struct NodeLaunch {
+    node_id: NodeId,
+    cell_type: String,
+    cell: Box<dyn Cell>,
+    input: Vec<roko_core::Signal>,
+    ctx: CellContext,
+    graph_name: String,
+    run_id: String,
+    telemetry: Option<Arc<dyn TelemetryEventSink>>,
+    max_retries: u32,
+}
+
+/// How a started node ended.
+struct NodeRun {
+    result: NodeResult,
+    /// Estimated cost of all of the node's attempts.
+    cost_usd: f64,
+    /// Output signals; empty unless the node completed.
+    outputs: Vec<roko_core::Signal>,
+}
+
+/// Execute a started node's cell under the Graph's retry policy, emitting
+/// its Cell lifecycle telemetry.
+async fn run_node(launch: NodeLaunch) -> NodeRun {
+    let NodeLaunch {
+        node_id,
+        cell_type,
+        cell,
+        input,
+        ctx,
+        graph_name,
+        run_id,
+        telemetry,
+        max_retries,
+    } = launch;
+    let is_stub = cell.is_stub();
+    let estimated_cost_usd = cell.estimated_cost().unwrap_or_default();
+    let ancestry = [
+        LensScope::Cell(node_id.clone()),
+        LensScope::Graph(graph_name.clone()),
+    ];
+    emit_telemetry_to(
+        telemetry.as_ref(),
+        &ObservableEvent::CellStarted {
+            block: node_id.clone(),
+            run: run_id.clone(),
+            input_hash: input_signal_hash(&input),
+        },
+        &ancestry,
+    )
+    .await;
+
+    let node_start = Instant::now();
+    let (execution, attempts) = execute_cell_with_retries(
+        cell.as_ref(),
+        input,
+        &ctx,
+        max_retries,
+        telemetry.as_ref(),
+        &node_id,
+        &run_id,
+        &ancestry,
+    )
+    .await;
+    let duration = node_start.elapsed();
+    let cost_usd = estimated_cost_usd * f64::from(attempts);
+    let (status, error, outputs) = match execution {
+        Ok(outputs) => {
+            let duration_ms = duration_ms(duration);
+            emit_telemetry_to(
+                telemetry.as_ref(),
+                &ObservableEvent::CellCompleted {
+                    block: node_id.clone(),
+                    run: run_id.clone(),
+                    duration_ms,
+                    cost_usd,
+                },
+                &ancestry,
+            )
+            .await;
+            emit_telemetry_to(
+                telemetry.as_ref(),
+                &ObservableEvent::GraphNodeCompleted {
+                    graph: graph_name,
+                    run: run_id,
+                    node: node_id.clone(),
+                    duration_ms,
+                },
+                &ancestry,
+            )
+            .await;
+            (NodeStatus::Complete, None, outputs)
+        }
+        Err(error) => {
+            let error = error.to_string();
+            emit_telemetry_to(
+                telemetry.as_ref(),
+                &ObservableEvent::CellFailed {
+                    block: node_id.clone(),
+                    run: run_id,
+                    error: error.clone(),
+                },
+                &ancestry,
+            )
+            .await;
+            (NodeStatus::Failed, Some(error), Vec::new())
+        }
+    };
+    NodeRun {
+        result: NodeResult {
+            node_id,
+            cell_type,
+            status,
+            duration,
+            error,
+            output_count: outputs.len(),
+            is_stub,
+            blocked_by: None,
+        },
+        cost_usd,
+        outputs,
+    }
+}
+
+/// The failed node that blocks a node whose required `dependency` did not
+/// complete: the dependency itself when it failed, or the failed node that
+/// blocked it when it was skipped in turn.
+fn failed_root(
+    dependency: &str,
+    statuses: &HashMap<NodeId, NodeStatus>,
+    results: &[NodeResult],
+) -> Option<NodeId> {
+    match statuses.get(dependency) {
+        Some(NodeStatus::Failed) => Some(dependency.to_string()),
+        Some(NodeStatus::Skipped) => results
+            .iter()
+            .find(|result| result.node_id == dependency)
+            .and_then(|result| result.blocked_by.clone()),
+        _ => None,
+    }
+}
+
+/// Result for a node that settled without running its cell.
+fn skipped_result(node: &Node, status: NodeStatus, reason: String) -> NodeResult {
+    NodeResult {
+        node_id: node.id.clone(),
+        cell_type: node.cell_type.clone(),
+        status,
+        duration: Duration::ZERO,
+        error: Some(reason),
+        output_count: 0,
+        is_stub: false,
+        blocked_by: None,
+    }
+}
+
 /// Evaluate the incoming edge set for one node.
 ///
 /// Unconditional and `Always` edges are required dependencies (AND). The
@@ -2614,7 +2630,10 @@ fn evaluate_node_activation(
     use petgraph::Direction;
 
     let Some(&idx) = graph.node_map.get(node_id) else {
-        return NodeActivation::UpstreamFailed(format!("node `{node_id}` is not in the graph"));
+        return NodeActivation::UpstreamFailed {
+            reason: format!("node `{node_id}` is not in the graph"),
+            dependency: None,
+        };
     };
 
     let mut has_incoming = false;
@@ -2641,14 +2660,16 @@ fn evaluate_node_activation(
                     ));
                 }
                 NodeStatus::Failed | NodeStatus::Skipped => {
-                    return NodeActivation::UpstreamFailed(format!(
-                        "required dependency `{source_id}` did not complete"
-                    ));
+                    return NodeActivation::UpstreamFailed {
+                        reason: format!("required dependency `{source_id}` did not complete"),
+                        dependency: Some(source_id.clone()),
+                    };
                 }
                 NodeStatus::Pending | NodeStatus::Running => {
-                    return NodeActivation::UpstreamFailed(format!(
-                        "required dependency `{source_id}` is not complete"
-                    ));
+                    return NodeActivation::UpstreamFailed {
+                        reason: format!("required dependency `{source_id}` is not complete"),
+                        dependency: Some(source_id.clone()),
+                    };
                 }
             },
             Some(condition) => {
@@ -2824,6 +2845,18 @@ async fn execute_cell_with_retries(
             Err(error) => return (Err(error), retry_attempt.saturating_add(1)),
         }
     }
+}
+
+/// Collect the gate verdicts stamped on each node's outputs.
+fn collect_gate_verdicts(
+    outputs: &HashMap<NodeId, Vec<roko_core::Signal>>,
+) -> BTreeMap<NodeId, TaskGateVerdict> {
+    outputs
+        .iter()
+        .filter_map(|(node_id, signals)| {
+            TaskGateVerdict::from_signals(signals).map(|verdict| (node_id.clone(), verdict))
+        })
+        .collect()
 }
 
 /// Enforce the Graph IFC boundary after every Cell execution and replay.
@@ -5245,9 +5278,7 @@ to = "b"
             let begin = Instant::now();
             tokio::time::sleep(self.delay).await;
             let end = Instant::now();
-            self.intervals
-                .lock()
-                .push((self.id.clone(), begin, end));
+            self.intervals.lock().push((self.id.clone(), begin, end));
             Ok(input)
         }
     }
@@ -5309,7 +5340,11 @@ cell_type = "timed-right"
             .expect("flow output");
 
         assert!(output.success, "both nodes should complete successfully");
-        assert_eq!(output.node_results.len(), 2, "both nodes must appear in results");
+        assert_eq!(
+            output.node_results.len(),
+            2,
+            "both nodes must appear in results"
+        );
         for r in &output.node_results {
             assert_eq!(
                 r.status,
@@ -5334,5 +5369,721 @@ cell_type = "timed-right"
             "nodes ran sequentially but should have overlapped: \
              left [{begin_0:?}..{end_0:?}] right [{begin_1:?}..{end_1:?}]"
         );
+    }
+
+    // ─── gap-4d835d: ready-queue dispatch ────────────────────────────────────
+
+    /// Shared record of how [`SleepCell`] runs interleave.
+    #[derive(Default)]
+    struct SleepLog {
+        /// `<label>:start` and `<label>:end`, in the order they happened.
+        events: parking_lot::Mutex<Vec<String>>,
+        running: AtomicU64,
+        max_running: AtomicU64,
+    }
+
+    impl SleepLog {
+        fn events(&self) -> Vec<String> {
+            self.events.lock().clone()
+        }
+
+        fn saw(&self, event: &str) -> bool {
+            self.events().iter().any(|seen| seen == event)
+        }
+
+        fn position(&self, event: &str) -> usize {
+            let events = self.events();
+            events
+                .iter()
+                .position(|seen| seen == event)
+                .unwrap_or_else(|| panic!("`{event}` never happened: {events:?}"))
+        }
+    }
+
+    /// Sleeps for `delay_ms` from its node config, logging `<label>:start` and
+    /// `<label>:end`, then fails when `fail = true` and succeeds otherwise.
+    struct SleepCell {
+        label: String,
+        delay: Duration,
+        fail: bool,
+        log: Arc<SleepLog>,
+    }
+
+    #[async_trait::async_trait]
+    impl Cell for SleepCell {
+        fn cell_id(&self) -> &str {
+            "sleep"
+        }
+
+        fn cell_name(&self) -> &str {
+            "SleepCell"
+        }
+
+        async fn execute(
+            &self,
+            input: Vec<roko_core::Signal>,
+            _ctx: &CellContext,
+        ) -> roko_core::Result<Vec<roko_core::Signal>> {
+            self.log.events.lock().push(format!("{}:start", self.label));
+            let running = self.log.running.fetch_add(1, Ordering::SeqCst) + 1;
+            self.log.max_running.fetch_max(running, Ordering::SeqCst);
+            tokio::time::sleep(self.delay).await;
+            self.log.running.fetch_sub(1, Ordering::SeqCst);
+            self.log.events.lock().push(format!("{}:end", self.label));
+            if self.fail {
+                Err(roko_core::RokoError::invalid(format!(
+                    "{} failed on purpose",
+                    self.label
+                )))
+            } else {
+                Ok(input)
+            }
+        }
+    }
+
+    fn sleep_registry(log: &Arc<SleepLog>) -> CellRegistry {
+        let log = Arc::clone(log);
+        let mut registry = noop_registry();
+        registry.register("sleep", move |config| {
+            Box::new(SleepCell {
+                label: config
+                    .get("label")
+                    .and_then(toml::Value::as_str)
+                    .unwrap_or("unlabelled")
+                    .to_string(),
+                delay: Duration::from_millis(
+                    config
+                        .get("delay_ms")
+                        .and_then(toml::Value::as_integer)
+                        .map_or(0, i64::unsigned_abs),
+                ),
+                fail: config
+                    .get("fail")
+                    .and_then(toml::Value::as_bool)
+                    .unwrap_or(false),
+                log: Arc::clone(&log),
+            })
+        });
+        registry
+    }
+
+    /// gap-4d835d: a node starts as soon as its own dependencies finish, not
+    /// once every node of the previous topological wave has.
+    ///
+    /// `slow` and `fast` form wave 0; `after-fast` needs only `fast`. It must
+    /// start and finish while `slow` still runs, through `execute` (graph
+    /// runs, Hot Graphs) and through `start` (plan runs).
+    #[tokio::test(start_paused = true)]
+    async fn a_ready_node_does_not_wait_for_its_wave() {
+        let graph = load_from_str(
+            r#"
+[graph]
+name = "ready-queue"
+
+[graph.policy]
+max_concurrent_nodes = 4
+
+[[nodes]]
+id = "slow"
+cell_type = "sleep"
+config = { label = "slow", delay_ms = 60000 }
+
+[[nodes]]
+id = "fast"
+cell_type = "sleep"
+config = { label = "fast", delay_ms = 10 }
+
+[[nodes]]
+id = "after-fast"
+cell_type = "sleep"
+config = { label = "after-fast", delay_ms = 10 }
+
+[[edges]]
+from = "fast"
+to = "after-fast"
+"#,
+        )
+        .unwrap();
+
+        let log = Arc::new(SleepLog::default());
+        let output = GraphEngine::new(graph.clone(), sleep_registry(&log))
+            .execute(&CellContext::new())
+            .await
+            .unwrap();
+        assert!(output.success);
+        assert!(
+            log.position("after-fast:end") < log.position("slow:end"),
+            "after-fast waited for slow: {:?}",
+            log.events()
+        );
+
+        let log = Arc::new(SleepLog::default());
+        let handle = GraphEngine::new(graph, sleep_registry(&log)).start(CellContext::new());
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        let statuses = handle.status().node_statuses;
+        assert_eq!(statuses["slow"], NodeStatus::Running);
+        assert_eq!(statuses["after-fast"], NodeStatus::Complete);
+        let output = handle.await_completion().await.expect("flow output");
+        assert!(output.success);
+        assert!(log.position("after-fast:end") < log.position("slow:end"));
+    }
+
+    /// A failed node blocks only its own dependants. Nodes that do not depend
+    /// on it still run, including one that becomes ready after the failure,
+    /// and the graph reports failure once everything has settled.
+    #[tokio::test(start_paused = true)]
+    async fn a_failed_node_blocks_only_its_dependants() {
+        let graph = load_from_str(
+            r#"
+[graph]
+name = "failure-isolation"
+
+[graph.policy]
+failure_strategy = "skip_failed"
+max_concurrent_nodes = 4
+
+[[nodes]]
+id = "broken"
+cell_type = "sleep"
+config = { label = "broken", delay_ms = 10, fail = true }
+
+[[nodes]]
+id = "after-broken"
+cell_type = "sleep"
+config = { label = "after-broken" }
+
+[[nodes]]
+id = "slow"
+cell_type = "sleep"
+config = { label = "slow", delay_ms = 1000 }
+
+[[nodes]]
+id = "after-slow"
+cell_type = "sleep"
+config = { label = "after-slow", delay_ms = 10 }
+
+[[edges]]
+from = "broken"
+to = "after-broken"
+
+[[edges]]
+from = "slow"
+to = "after-slow"
+"#,
+        )
+        .unwrap();
+
+        for through_start in [false, true] {
+            let log = Arc::new(SleepLog::default());
+            let engine = GraphEngine::new(graph.clone(), sleep_registry(&log));
+            let output = if through_start {
+                engine
+                    .start(CellContext::new())
+                    .await_completion()
+                    .await
+                    .expect("flow output")
+            } else {
+                engine.execute(&CellContext::new()).await.unwrap()
+            };
+
+            assert!(!output.success, "through_start = {through_start}");
+            assert_eq!(result_status(&output, "broken"), NodeStatus::Failed);
+            assert_eq!(result_status(&output, "after-broken"), NodeStatus::Skipped);
+            assert_eq!(result_status(&output, "slow"), NodeStatus::Complete);
+            assert_eq!(result_status(&output, "after-slow"), NodeStatus::Complete);
+            assert!(!log.saw("after-broken:start"));
+            assert!(
+                log.position("broken:end") < log.position("after-slow:start"),
+                "after-slow should start after the failure: {:?}",
+                log.events()
+            );
+        }
+    }
+
+    /// Under `FailFast` (the default) no node starts after the first failure,
+    /// but a node already running finishes.
+    #[tokio::test(start_paused = true)]
+    async fn fail_fast_starts_no_node_after_the_first_failure() {
+        let graph = load_from_str(
+            r#"
+[graph]
+name = "fail-fast"
+
+[graph.policy]
+max_concurrent_nodes = 4
+
+[[nodes]]
+id = "broken"
+cell_type = "sleep"
+config = { label = "broken", delay_ms = 10, fail = true }
+
+[[nodes]]
+id = "slow"
+cell_type = "sleep"
+config = { label = "slow", delay_ms = 1000 }
+
+[[nodes]]
+id = "after-slow"
+cell_type = "sleep"
+config = { label = "after-slow" }
+
+[[edges]]
+from = "slow"
+to = "after-slow"
+"#,
+        )
+        .unwrap();
+        let log = Arc::new(SleepLog::default());
+
+        let output = GraphEngine::new(graph, sleep_registry(&log))
+            .execute(&CellContext::new())
+            .await
+            .unwrap();
+
+        assert!(!output.success);
+        assert_eq!(result_status(&output, "broken"), NodeStatus::Failed);
+        assert_eq!(result_status(&output, "slow"), NodeStatus::Complete);
+        assert_eq!(result_status(&output, "after-slow"), NodeStatus::Skipped);
+        assert!(!log.saw("after-slow:start"));
+    }
+
+    /// Ready nodes never run more than `max_concurrent_nodes` at once, and a
+    /// node waiting for a slot stays `Pending` rather than `Running`.
+    #[tokio::test(start_paused = true)]
+    async fn ready_nodes_respect_max_concurrent_nodes() {
+        let graph = load_from_str(
+            r#"
+[graph]
+name = "bounded"
+
+[graph.policy]
+max_concurrent_nodes = 2
+
+[[nodes]]
+id = "a"
+cell_type = "sleep"
+config = { label = "a", delay_ms = 100 }
+
+[[nodes]]
+id = "b"
+cell_type = "sleep"
+config = { label = "b", delay_ms = 100 }
+
+[[nodes]]
+id = "c"
+cell_type = "sleep"
+config = { label = "c", delay_ms = 100 }
+
+[[nodes]]
+id = "d"
+cell_type = "sleep"
+config = { label = "d", delay_ms = 100 }
+"#,
+        )
+        .unwrap();
+        let log = Arc::new(SleepLog::default());
+
+        let handle = GraphEngine::new(graph, sleep_registry(&log)).start(CellContext::new());
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let statuses = handle.status().node_statuses;
+        let count = |status| statuses.values().filter(|s| **s == status).count();
+        assert_eq!(count(NodeStatus::Running), 2, "{statuses:?}");
+        assert_eq!(count(NodeStatus::Pending), 2, "{statuses:?}");
+
+        let output = handle.await_completion().await.expect("flow output");
+        assert!(output.success);
+        assert_eq!(log.max_running.load(Ordering::SeqCst), 2);
+    }
+
+    /// Cancelling a parallel flow starts no further node, even under
+    /// `SkipFailed` after a failure. A node already running finishes, and the
+    /// nodes that wait on it are cancelled.
+    #[tokio::test(start_paused = true)]
+    async fn cancelling_a_parallel_flow_starts_no_further_node() {
+        let graph = load_from_str(
+            r#"
+[graph]
+name = "cancel-parallel"
+
+[graph.policy]
+failure_strategy = "skip_failed"
+max_concurrent_nodes = 4
+
+[[nodes]]
+id = "broken"
+cell_type = "sleep"
+config = { label = "broken", delay_ms = 10, fail = true }
+
+[[nodes]]
+id = "slow"
+cell_type = "sleep"
+config = { label = "slow", delay_ms = 1000 }
+
+[[nodes]]
+id = "after-slow"
+cell_type = "sleep"
+config = { label = "after-slow" }
+
+[[edges]]
+from = "slow"
+to = "after-slow"
+"#,
+        )
+        .unwrap();
+        let log = Arc::new(SleepLog::default());
+        let telemetry = Arc::new(RecordingTelemetry::default());
+
+        let handle = GraphEngine::new(graph, sleep_registry(&log))
+            .with_telemetry(telemetry.clone())
+            .start(CellContext::new().with_run_id("cancel-parallel-run".into()));
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        handle.cancel();
+        let output = handle.await_completion().await.expect("flow output");
+
+        assert!(!output.success);
+        assert_eq!(result_status(&output, "broken"), NodeStatus::Failed);
+        assert_eq!(result_status(&output, "slow"), NodeStatus::Complete);
+        assert!(!log.saw("after-slow:start"));
+        assert_eq!(
+            handle.status().node_statuses["after-slow"],
+            NodeStatus::Skipped
+        );
+        let events = telemetry
+            .events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert!(events.iter().any(|(event, _)| matches!(
+            event,
+            ObservableEvent::CellCancelled { block, .. } if block == "after-slow"
+        )));
+        assert!(matches!(
+            events.last().map(|entry| &entry.0),
+            Some(ObservableEvent::GraphPaused { .. })
+        ));
+    }
+
+    struct PanicCell;
+
+    #[async_trait::async_trait]
+    impl Cell for PanicCell {
+        fn cell_id(&self) -> &str {
+            "panic"
+        }
+
+        fn cell_name(&self) -> &str {
+            "PanicCell"
+        }
+
+        async fn execute(
+            &self,
+            _input: Vec<roko_core::Signal>,
+            _ctx: &CellContext,
+        ) -> roko_core::Result<Vec<roko_core::Signal>> {
+            panic!("cell panicked on purpose");
+        }
+    }
+
+    /// A cell that panics fails its node, so the graph reports the node and
+    /// skips its dependants instead of losing track of them.
+    #[tokio::test]
+    async fn a_panicking_cell_fails_its_node() {
+        let graph = load_from_str(
+            r#"
+[graph]
+name = "panic"
+
+[graph.policy]
+failure_strategy = "skip_failed"
+max_concurrent_nodes = 2
+
+[[nodes]]
+id = "boom"
+cell_type = "panic"
+
+[[nodes]]
+id = "after-boom"
+cell_type = "noop"
+
+[[nodes]]
+id = "other"
+cell_type = "noop"
+
+[[edges]]
+from = "boom"
+to = "after-boom"
+"#,
+        )
+        .unwrap();
+        let mut registry = noop_registry();
+        registry.register("panic", |_| Box::new(PanicCell));
+
+        let output = GraphEngine::new(graph, registry)
+            .execute(&CellContext::new())
+            .await
+            .unwrap();
+
+        assert!(!output.success);
+        let boom = output
+            .node_results
+            .iter()
+            .find(|result| result.node_id == "boom")
+            .expect("boom result");
+        assert_eq!(boom.status, NodeStatus::Failed);
+        assert!(
+            boom.error
+                .as_deref()
+                .is_some_and(|e| e.contains("panicked")),
+            "{:?}",
+            boom.error
+        );
+        assert_eq!(result_status(&output, "after-boom"), NodeStatus::Skipped);
+        assert_eq!(result_status(&output, "other"), NodeStatus::Complete);
+    }
+
+    /// A node skipped because a dependency failed names the failed node,
+    /// even through a dependency that was skipped in turn, whichever
+    /// execution path runs the graph.
+    #[tokio::test(start_paused = true)]
+    async fn a_skipped_node_names_the_failed_node_that_blocked_it() {
+        let graph = load_from_str(
+            r#"
+[graph]
+name = "blocked-by"
+
+[graph.policy]
+failure_strategy = "skip_failed"
+
+[[nodes]]
+id = "broken"
+cell_type = "sleep"
+config = { label = "broken", fail = true }
+
+[[nodes]]
+id = "child"
+cell_type = "sleep"
+config = { label = "child" }
+
+[[nodes]]
+id = "grandchild"
+cell_type = "sleep"
+config = { label = "grandchild" }
+
+[[nodes]]
+id = "other"
+cell_type = "sleep"
+config = { label = "other" }
+
+[[edges]]
+from = "broken"
+to = "child"
+
+[[edges]]
+from = "child"
+to = "grandchild"
+"#,
+        )
+        .unwrap();
+
+        for max_concurrent_nodes in [1, 4] {
+            for through_start in [false, true] {
+                let case =
+                    format!("max_concurrent_nodes {max_concurrent_nodes}, start {through_start}");
+                let mut graph = graph.clone();
+                graph.policy.max_concurrent_nodes = max_concurrent_nodes;
+                let log = Arc::new(SleepLog::default());
+                let engine = GraphEngine::new(graph, sleep_registry(&log));
+                let output = if through_start {
+                    engine
+                        .start(CellContext::new())
+                        .await_completion()
+                        .await
+                        .expect("flow output")
+                } else {
+                    engine.execute(&CellContext::new()).await.unwrap()
+                };
+                let blocked_by = |node_id: &str| {
+                    output
+                        .node_results
+                        .iter()
+                        .find(|result| result.node_id == node_id)
+                        .and_then(|result| result.blocked_by.clone())
+                };
+
+                assert!(!output.success, "{case}");
+                assert_eq!(
+                    result_status(&output, "other"),
+                    NodeStatus::Complete,
+                    "{case}"
+                );
+                assert_eq!(blocked_by("broken"), None, "{case}");
+                assert_eq!(blocked_by("child").as_deref(), Some("broken"), "{case}");
+                assert_eq!(
+                    blocked_by("grandchild").as_deref(),
+                    Some("broken"),
+                    "{case}"
+                );
+            }
+        }
+    }
+
+    /// The dispatch stop halts a `SkipFailed` run the way a spent plan budget
+    /// must: once it fires no further node starts, nodes already running
+    /// finish, and every node that had not started is skipped with its
+    /// reason.
+    #[tokio::test(start_paused = true)]
+    async fn a_dispatch_stop_starts_no_further_node() {
+        let graph = load_from_str(
+            r#"
+[graph]
+name = "dispatch-stop"
+
+[graph.policy]
+failure_strategy = "skip_failed"
+max_concurrent_nodes = 3
+
+[[nodes]]
+id = "broken"
+cell_type = "sleep"
+config = { label = "broken", delay_ms = 10, fail = true }
+
+[[nodes]]
+id = "spender"
+cell_type = "sleep"
+config = { label = "spender", delay_ms = 50 }
+
+[[nodes]]
+id = "long"
+cell_type = "sleep"
+config = { label = "long", delay_ms = 200 }
+
+[[nodes]]
+id = "after-spender"
+cell_type = "sleep"
+config = { label = "after-spender" }
+
+[[nodes]]
+id = "after-long"
+cell_type = "sleep"
+config = { label = "after-long" }
+
+[[edges]]
+from = "spender"
+to = "after-spender"
+
+[[edges]]
+from = "long"
+to = "after-long"
+"#,
+        )
+        .unwrap();
+
+        for through_start in [false, true] {
+            let log = Arc::new(SleepLog::default());
+            let spent = Arc::clone(&log);
+            let engine = GraphEngine::new(graph.clone(), sleep_registry(&log)).with_dispatch_stop(
+                Arc::new(move || {
+                    spent
+                        .saw("spender:end")
+                        .then(|| "plan budget exhausted".to_string())
+                }),
+            );
+            let output = if through_start {
+                engine
+                    .start(CellContext::new())
+                    .await_completion()
+                    .await
+                    .expect("flow output")
+            } else {
+                engine.execute(&CellContext::new()).await.unwrap()
+            };
+
+            assert!(!output.success, "through_start = {through_start}");
+            assert_eq!(result_status(&output, "broken"), NodeStatus::Failed);
+            assert_eq!(result_status(&output, "spender"), NodeStatus::Complete);
+            assert_eq!(result_status(&output, "long"), NodeStatus::Complete);
+            for waiting in ["after-spender", "after-long"] {
+                let result = output
+                    .node_results
+                    .iter()
+                    .find(|result| result.node_id == waiting)
+                    .expect("result");
+                assert_eq!(result.status, NodeStatus::Skipped);
+                assert_eq!(result.error.as_deref(), Some("plan budget exhausted"));
+                assert!(!log.saw(&format!("{waiting}:start")));
+            }
+        }
+    }
+
+    /// A sequential run (one node at a time) honours the dispatch stop too.
+    #[tokio::test(start_paused = true)]
+    async fn a_dispatch_stop_halts_a_sequential_run() {
+        let graph = load_from_str(
+            r#"
+[graph]
+name = "dispatch-stop-sequential"
+
+[graph.policy]
+failure_strategy = "skip_failed"
+max_concurrent_nodes = 1
+
+[[nodes]]
+id = "first"
+cell_type = "sleep"
+config = { label = "first", delay_ms = 10 }
+
+[[nodes]]
+id = "second"
+cell_type = "sleep"
+config = { label = "second", delay_ms = 10 }
+
+[[nodes]]
+id = "third"
+cell_type = "sleep"
+config = { label = "third", delay_ms = 10 }
+
+[[edges]]
+from = "first"
+to = "second"
+
+[[edges]]
+from = "second"
+to = "third"
+"#,
+        )
+        .unwrap();
+
+        for through_start in [false, true] {
+            let log = Arc::new(SleepLog::default());
+            let spent = Arc::clone(&log);
+            let engine = GraphEngine::new(graph.clone(), sleep_registry(&log)).with_dispatch_stop(
+                Arc::new(move || {
+                    spent
+                        .saw("first:end")
+                        .then(|| "plan budget exhausted".to_string())
+                }),
+            );
+            let output = if through_start {
+                engine
+                    .start(CellContext::new())
+                    .await_completion()
+                    .await
+                    .expect("flow output")
+            } else {
+                engine.execute(&CellContext::new()).await.unwrap()
+            };
+
+            assert!(!output.success, "through_start = {through_start}");
+            assert_eq!(result_status(&output, "first"), NodeStatus::Complete);
+            for waiting in ["second", "third"] {
+                let result = output
+                    .node_results
+                    .iter()
+                    .find(|result| result.node_id == waiting)
+                    .expect("result");
+                assert_eq!(result.status, NodeStatus::Skipped);
+                assert_eq!(result.error.as_deref(), Some("plan budget exhausted"));
+            }
+            assert!(!log.saw("second:start"));
+        }
     }
 }

@@ -36,6 +36,7 @@
 //! If the first run fails and `retry_once` is enabled (default), the gate
 //! sleeps 2s and re-runs once before reporting failure.
 
+use crate::gate_env::inherit_gate_env;
 use crate::payload::GatePayload;
 use async_trait::async_trait;
 use roko_core::{Context, Signal, Verdict, Verify};
@@ -161,13 +162,10 @@ impl VerifyChainGate {
         cmd.stderr(std::process::Stdio::piped());
         if let Some(p) = payload {
             cmd.current_dir(&p.working_dir);
+            p.apply_env(&mut cmd);
             cmd.env("REPO_ROOT", &p.working_dir);
-            if let Some(ref tgt) = p.target_dir {
-                cmd.env("CARGO_TARGET_DIR", tgt);
-            }
-            for (k, v) in &p.extra_env {
-                cmd.env(k, v);
-            }
+        } else {
+            inherit_gate_env(&mut cmd, &[]);
         }
         cmd.output().await
     }

@@ -24,6 +24,21 @@ use crate::routes::auth::{AgentCapability, AgentCredentialClaims, parse_rfc3339}
 use crate::state::AppState;
 
 static UNSAFE_PUBLIC_CORS_WARNING: OnceLock<()> = OnceLock::new();
+static PRIVY_ALLOW_LIST_WARNING: OnceLock<()> = OnceLock::new();
+
+/// Operator hint logged when `privy_app_id` is set without an allow-list.
+pub(crate) const PRIVY_ALLOW_LIST_HINT: &str = "serve.auth.privy_app_id is set without a Privy \
+     allow-list, so every Privy JWT is rejected. To let Privy users in, set \
+     serve.auth.privy_allowed_roles (matched against the JWT `role` claim) or \
+     serve.auth.privy_workspace_id (matched against the JWT `org_id` claim).";
+
+/// Whether the operator has said which Privy users may authenticate.
+///
+/// Anyone can sign in to a Privy app, so a valid signature for
+/// `privy_app_id` alone proves nothing about who the caller is.
+pub(crate) fn privy_allow_list_configured(auth: &ServeAuthConfig) -> bool {
+    !auth.privy_allowed_roles.is_empty() || auth.privy_workspace_id.is_some()
+}
 
 /// Header containing an ERC-3009 payment authorization as JSON.
 pub const X_PAYMENT_AUTHORIZATION: &str = "x-payment-authorization";
@@ -216,6 +231,10 @@ pub enum AuthMethod {
     Bearer,
     /// Authenticated via a deployment-scoped worker callback token.
     WorkerToken,
+    /// Authenticated via the server launch token (via `X-Api-Key` or `Authorization: Bearer`).
+    LaunchToken,
+    /// Authenticated via a browser session cookie (`roko_session`).
+    Session,
 }
 
 impl AuthMethod {
@@ -226,6 +245,8 @@ impl AuthMethod {
             Self::Jwt => "jwt",
             Self::Bearer => "bearer",
             Self::WorkerToken => "worker_token",
+            Self::LaunchToken => "launch_token",
+            Self::Session => "session",
         }
     }
 }
@@ -402,12 +423,15 @@ fn authenticate_api_key(
 
 /// Attempt to validate a Bearer token as a Privy JWT using the JWKS cache.
 ///
-/// Performs three checks in order:
-/// 1. Signature + app-id verification via JWKS.
-/// 2. Workspace membership: if `privy_workspace_id` is configured the JWT
+/// Privy auth is off unless the operator set `privy_app_id`. Performs four
+/// checks in order:
+/// 1. Allow-list: `privy_allowed_roles` or `privy_workspace_id` must be
+///    configured. Without either, no Privy JWT authenticates (fail closed).
+/// 2. Signature + app-id verification via JWKS.
+/// 3. Workspace membership: if `privy_workspace_id` is configured the JWT
 ///    `org_id` claim **must** match. Tokens without an `org_id` claim are
 ///    rejected (fail closed).
-/// 3. Role authorization: if `privy_allowed_roles` is non-empty the JWT
+/// 4. Role authorization: if `privy_allowed_roles` is non-empty the JWT
 ///    `role` claim must be present and contained in the allowed list.
 ///    Tokens with an unrecognised or missing role are downgraded to
 ///    `"read"` scope instead of receiving `"admin"`.
@@ -418,6 +442,12 @@ async fn try_privy_jwt(
 ) -> Option<(AuthMethod, String, Option<String>)> {
     let privy_app_id = auth.privy_app_id.as_deref()?;
     if !is_structurally_valid_jwt(token) {
+        return None;
+    }
+    if !privy_allow_list_configured(auth) {
+        if PRIVY_ALLOW_LIST_WARNING.set(()).is_ok() {
+            tracing::warn!("{PRIVY_ALLOW_LIST_HINT}");
+        }
         return None;
     }
     let claims = state.jwks_cache.validate(token, privy_app_id).await?;
@@ -440,7 +470,7 @@ async fn try_privy_jwt(
 
     // --- Role authorization ---
     let scope = if auth.privy_allowed_roles.is_empty() {
-        // No role filter configured — grant admin (legacy behaviour).
+        // The allow-list is the workspace alone, and the caller is a member.
         "admin".to_string()
     } else {
         match claims.role.as_deref() {
@@ -567,16 +597,112 @@ fn expired_key_response() -> Response {
     resp
 }
 
+/// Extract the value of the `roko_session` cookie from the `Cookie` request header.
+///
+/// Parses the cookie string naively (splits on `;`, trims whitespace) to avoid
+/// pulling in a cookie-parsing dependency. Returns `None` when the cookie is
+/// absent or its value is empty.
+///
+/// The raw value is **never logged**; it is passed to [`crate::state::LocalAccess`]
+/// which hashes it before any comparison.
+fn extract_session_cookie(headers: &HeaderMap) -> Option<&str> {
+    let cookie_str = headers.get("Cookie")?.to_str().ok()?;
+    for part in cookie_str.split(';') {
+        let part = part.trim();
+        if let Some(value) = part.strip_prefix("roko_session=") {
+            let value = value.trim();
+            if !value.is_empty() {
+                return Some(value);
+            }
+        }
+    }
+    None
+}
+
+/// Verify that a cookie-authenticated state-changing request satisfies the
+/// same-origin constraint.
+///
+/// Safe methods (GET, HEAD, OPTIONS) always pass. For mutations the check
+/// fails with 403 when an `Origin` header is present but its host:port does
+/// not equal the request's `Host` header (or is the special value `"null"`
+/// produced by sandboxed iframes).
+///
+/// `SameSite=Strict` prevents cookies from being sent on cross-site
+/// navigation, but a *different page on the same local host* is still
+/// same-site, so an explicit `Origin` comparison is the defense here.
+#[allow(clippy::result_large_err)]
+fn check_cookie_same_origin(req: &Request<Body>) -> Result<(), Response> {
+    if matches!(*req.method(), Method::GET | Method::HEAD | Method::OPTIONS) {
+        return Ok(());
+    }
+
+    let Some(origin_value) = req.headers().get("Origin") else {
+        // No Origin header: allow. Non-browser clients and same-origin fetches
+        // may omit it, and the `SameSite=Strict` cookie attribute keeps
+        // cross-site browsers from sending the cookie in the first place.
+        return Ok(());
+    };
+
+    let Ok(origin_str) = origin_value.to_str() else {
+        return Err(cookie_cross_origin_response());
+    };
+
+    // The special value "null" is sent by sandboxed iframes and data URIs;
+    // it can never match a real host so we reject it immediately.
+    if origin_str == "null" {
+        return Err(cookie_cross_origin_response());
+    }
+
+    // Parse out the authority (host:port) from the Origin URI.
+    let Ok(origin_uri) = origin_str.parse::<axum::http::Uri>() else {
+        return Err(cookie_cross_origin_response());
+    };
+    let Some(origin_authority) = origin_uri.authority() else {
+        return Err(cookie_cross_origin_response());
+    };
+
+    // The HTTP/1.1 `Host` header is always host[:port] — exactly what we need
+    // for the comparison. HTTP/2 uses `:authority` but axum normalises it.
+    let Some(host_value) = req.headers().get("Host") else {
+        // Absent Host is abnormal; allow to avoid breaking HTTP/2 clients.
+        return Ok(());
+    };
+    let Ok(host_str) = host_value.to_str() else {
+        return Err(cookie_cross_origin_response());
+    };
+
+    if origin_authority.as_str().eq_ignore_ascii_case(host_str) {
+        return Ok(());
+    }
+
+    Err(cookie_cross_origin_response())
+}
+
+fn cookie_cross_origin_response() -> Response {
+    (
+        StatusCode::FORBIDDEN,
+        axum::Json(serde_json::json!({
+            "code": "forbidden",
+            "message": "cross-origin cookie authentication is not permitted for state-changing requests"
+        })),
+    )
+        .into_response()
+}
+
 /// Require a matching API credential for the request to continue.
 ///
 /// Supports callback-scoped credentials on the worker callback route, then
-/// five user/agent credential sources:
+/// the following credential sources (checked in order):
 /// 1. `X-Roko-Worker-Token` on `POST /api/deployments/:id/callback`
-/// 2. `X-Api-Key` header (API key only)
-/// 3. `Authorization: Bearer roko_agent_*` — agent bearer tokens (T02)
-/// 4. `Authorization: Bearer <token>` matched against API keys
-/// 5. `Authorization: Bearer <jwt>` verified via Privy JWKS
-/// 6. Named API keys from `api_keys` list (SHA-256 hash comparison)
+/// 2. `X-Api-Key` header — launch token checked first, then named API keys
+/// 3. `Authorization: Bearer <launch-token>` — launch token as admin
+/// 4. `Authorization: Bearer roko_agent_*` — agent bearer tokens
+/// 5. `Authorization: Bearer roko_relay_*` — relay bearer tokens
+/// 6. `Authorization: Bearer <token>` — matched against API keys
+/// 7. `Authorization: Bearer <jwt>` — verified via Privy JWKS
+/// 8. `Cookie: roko_session=<id>` — live session cookie (admin scope)
+///    when no explicit header credential is present; state-changing requests
+///    must additionally pass the same-origin check.
 ///
 /// On success, injects [`AuthContext`] into request extensions so downstream
 /// routes can inspect the caller's scope and identity.
@@ -624,43 +750,69 @@ pub async fn require_api_key(
     let (auth_method, ctx, key_name_for_tracking, agent_context) =
         match api_credential(req.headers()) {
             ApiCredential::XApiKey(supplied) => {
-                match authenticate_api_key(supplied, &auth, &named_api_keys, true) {
-                    ApiKeyAuthResult::Ok(method, scope, user_id) => {
-                        let name = user_id.clone();
-                        (
-                            method,
-                            AuthContext {
+                // Check launch token first; it takes priority over named API keys.
+                if state.local_access.launch_token_matches(supplied) {
+                    (
+                        AuthMethod::LaunchToken,
+                        AuthContext {
+                            method: AuthMethod::LaunchToken,
+                            scope: "admin".to_string(),
+                            user_id: None,
+                        },
+                        None,
+                        None,
+                    )
+                } else {
+                    match authenticate_api_key(supplied, &auth, &named_api_keys, true) {
+                        ApiKeyAuthResult::Ok(method, scope, user_id) => {
+                            let name = user_id.clone();
+                            (
                                 method,
-                                scope,
-                                user_id,
-                            },
-                            name,
-                            None,
-                        )
-                    }
-                    ApiKeyAuthResult::KeyExpired(name) => {
-                        append_auth_audit(
-                            &state,
-                            crate::auth_audit::AuthAuditEvent::new(
-                                format!("api-key:{name}"),
-                                crate::auth_audit::AuthAuditAction::KeyExpired,
-                                route_label.clone(),
-                                crate::auth_audit::AuthOutcome::Denied,
-                            ),
-                        );
-                        return Ok(expired_key_response());
-                    }
-                    ApiKeyAuthResult::NoMatch => {
-                        return Err(ApiError::unauthorized(
-                            "invalid or missing X-Api-Key header",
-                        ));
+                                AuthContext {
+                                    method,
+                                    scope,
+                                    user_id,
+                                },
+                                name,
+                                None,
+                            )
+                        }
+                        ApiKeyAuthResult::KeyExpired(name) => {
+                            append_auth_audit(
+                                &state,
+                                crate::auth_audit::AuthAuditEvent::new(
+                                    format!("api-key:{name}"),
+                                    crate::auth_audit::AuthAuditAction::KeyExpired,
+                                    route_label.clone(),
+                                    crate::auth_audit::AuthOutcome::Denied,
+                                ),
+                            );
+                            return Ok(expired_key_response());
+                        }
+                        ApiKeyAuthResult::NoMatch => {
+                            return Err(ApiError::unauthorized(
+                                "invalid or missing X-Api-Key header",
+                            ));
+                        }
                     }
                 }
             }
             ApiCredential::Bearer(supplied) => {
+                // Check launch token first; it takes priority over all other Bearer auth.
+                if state.local_access.launch_token_matches(supplied) {
+                    (
+                        AuthMethod::LaunchToken,
+                        AuthContext {
+                            method: AuthMethod::LaunchToken,
+                            scope: "admin".to_string(),
+                            user_id: None,
+                        },
+                        None,
+                        None,
+                    )
                 // Detect agent tokens by their `roko_agent_` prefix and route them
                 // to the dedicated agent token validator (T02).
-                if supplied.starts_with("roko_agent_") {
+                } else if supplied.starts_with("roko_agent_") {
                     if let Some(agent) = try_named_agent_token(supplied, &state).await {
                         req.extensions_mut()
                             .insert(AuthenticatedAgentId(agent.agent_id.clone()));
@@ -783,9 +935,34 @@ pub async fn require_api_key(
                 ));
             }
             ApiCredential::Missing => {
-                return Err(ApiError::unauthorized(
-                    "missing X-Api-Key header or Authorization bearer token",
-                ));
+                // No explicit credential header — fall back to the `roko_session` cookie.
+                if let Some(session_id) = extract_session_cookie(req.headers()) {
+                    if state.local_access.session_valid(session_id) {
+                        // Cookie auth on a state-changing request must satisfy the
+                        // same-origin constraint before we grant access.
+                        if let Err(cross_origin_response) = check_cookie_same_origin(&req) {
+                            return Ok(cross_origin_response);
+                        }
+                        (
+                            AuthMethod::Session,
+                            AuthContext {
+                                method: AuthMethod::Session,
+                                scope: "admin".to_string(),
+                                user_id: None,
+                            },
+                            None,
+                            None,
+                        )
+                    } else {
+                        return Err(ApiError::unauthorized(
+                            "missing X-Api-Key header or Authorization bearer token",
+                        ));
+                    }
+                } else {
+                    return Err(ApiError::unauthorized(
+                        "missing X-Api-Key header or Authorization bearer token",
+                    ));
+                }
             }
         };
 
@@ -2217,6 +2394,142 @@ mod tests {
             response.status(),
             StatusCode::UNAUTHORIZED,
             "Middleware must reject Privy JWT that fails signature verification"
+        );
+    }
+
+    // --- Privy allow-list tests (signed tokens, offline JWKS cache) ---
+
+    const PRIVY_TEST_APP_ID: &str = "privy-test-app";
+    const PRIVY_TEST_KID: &str = "privy-test-key";
+    const PRIVY_TEST_SUB: &str = "did:privy:test-user";
+
+    fn privy_auth(roles: &[&str], workspace: Option<&str>) -> ServeAuthConfig {
+        ServeAuthConfig {
+            enabled: true,
+            privy_app_id: Some(PRIVY_TEST_APP_ID.to_string()),
+            privy_workspace_id: workspace.map(str::to_string),
+            privy_allowed_roles: roles.iter().map(|role| role.to_string()).collect(),
+            ..Default::default()
+        }
+    }
+
+    /// A test state whose JWKS cache already trusts the test signing key.
+    async fn privy_test_state(auth: ServeAuthConfig) -> Arc<AppState> {
+        let mut state = make_test_state(auth);
+        Arc::get_mut(&mut state)
+            .expect("invariant: a fresh test state is unshared")
+            .jwks_cache = crate::jwks::test_support::seeded_cache("privy.io", PRIVY_TEST_KID).await;
+        state
+    }
+
+    fn privy_test_jwt(aud: &str, role: Option<&str>, org_id: Option<&str>) -> String {
+        crate::jwks::test_support::sign(
+            PRIVY_TEST_KID,
+            &serde_json::json!({
+                "sub": PRIVY_TEST_SUB,
+                "iss": "privy.io",
+                "aud": aud,
+                "exp": Utc::now().timestamp() + 3600,
+                "role": role,
+                "org_id": org_id,
+            }),
+        )
+    }
+
+    async fn privy_middleware_status(state: Arc<AppState>, jwt: &str) -> StatusCode {
+        let app = Router::new()
+            .route("/test", get(|| async { StatusCode::NO_CONTENT }))
+            .layer(axum::middleware::from_fn_with_state(state, require_api_key));
+        auth_response(app, |req| {
+            req.header(AUTHORIZATION, format!("Bearer {jwt}"))
+        })
+        .await
+        .status()
+    }
+
+    #[tokio::test]
+    async fn privy_jwt_without_allow_list_is_not_authenticated() {
+        let auth = privy_auth(&[], None);
+        let state = privy_test_state(auth.clone()).await;
+        let jwt = privy_test_jwt(PRIVY_TEST_APP_ID, Some("admin"), Some("org-a"));
+        // The token is valid; only the missing allow-list keeps it out.
+        assert!(
+            state
+                .jwks_cache
+                .validate(&jwt, PRIVY_TEST_APP_ID)
+                .await
+                .is_some()
+        );
+
+        assert_eq!(try_privy_jwt(&jwt, &auth, &state).await, None);
+        assert_eq!(
+            privy_middleware_status(state, &jwt).await,
+            StatusCode::UNAUTHORIZED
+        );
+    }
+
+    #[tokio::test]
+    async fn privy_jwt_scope_follows_the_role_allow_list() {
+        let auth = privy_auth(&["admin"], None);
+        let state = privy_test_state(auth.clone()).await;
+
+        let admin = privy_test_jwt(PRIVY_TEST_APP_ID, Some("admin"), None);
+        assert_eq!(
+            try_privy_jwt(&admin, &auth, &state).await,
+            Some((
+                AuthMethod::Jwt,
+                "admin".to_string(),
+                Some(PRIVY_TEST_SUB.to_string())
+            ))
+        );
+        for role in [Some("viewer"), None] {
+            let jwt = privy_test_jwt(PRIVY_TEST_APP_ID, role, None);
+            let scope = try_privy_jwt(&jwt, &auth, &state)
+                .await
+                .map(|(_, scope, _)| scope);
+            assert_eq!(scope.as_deref(), Some("read"), "role {role:?}");
+        }
+        assert_eq!(
+            privy_middleware_status(state, &admin).await,
+            StatusCode::NO_CONTENT
+        );
+    }
+
+    #[tokio::test]
+    async fn privy_jwt_workspace_allow_list_admits_only_members() {
+        let auth = privy_auth(&[], Some("org-a"));
+        let state = privy_test_state(auth.clone()).await;
+
+        let member = privy_test_jwt(PRIVY_TEST_APP_ID, None, Some("org-a"));
+        let scope = try_privy_jwt(&member, &auth, &state)
+            .await
+            .map(|(_, scope, _)| scope);
+        assert_eq!(scope.as_deref(), Some("admin"));
+        for org_id in [Some("org-b"), None] {
+            let jwt = privy_test_jwt(PRIVY_TEST_APP_ID, Some("admin"), org_id);
+            assert_eq!(
+                try_privy_jwt(&jwt, &auth, &state).await,
+                None,
+                "org {org_id:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn privy_jwt_is_ignored_without_an_explicit_app_id() {
+        // A Nunchi Privy token does not authenticate unless the operator
+        // configured that app id, even when the allow-list would match.
+        let auth = ServeAuthConfig {
+            privy_app_id: None,
+            ..privy_auth(&["admin"], None)
+        };
+        let state = privy_test_state(auth.clone()).await;
+        let jwt = privy_test_jwt(crate::jwks::NUNCHI_PRIVY_APP_ID, Some("admin"), None);
+
+        assert_eq!(try_privy_jwt(&jwt, &auth, &state).await, None);
+        assert_eq!(
+            privy_middleware_status(state, &jwt).await,
+            StatusCode::UNAUTHORIZED
         );
     }
 
@@ -4041,5 +4354,328 @@ mod tests {
             roko_core::config::EnforcementMode::default(),
             roko_core::config::EnforcementMode::Enforce,
         );
+    }
+
+    // ── Launch token and session cookie tests ────────────────────────────────
+
+    /// Build a test state with a launch token wired in.
+    fn make_test_state_with_launch_token(token: &str) -> Arc<AppState> {
+        let tempdir = tempdir().expect("invariant: tempdir creates");
+        let config = RokoConfig::default();
+        let mut state = AppState::new(
+            tempdir.path().to_path_buf(),
+            Arc::new(NoOpRuntime),
+            config,
+            Arc::new(ManualBackend::default()),
+        )
+        .expect("AppState::new");
+        state.local_access = crate::state::LocalAccess::new(Some(token.to_string()));
+        Arc::new(state)
+    }
+
+    /// Build a test router for launch-token and session-cookie tests.
+    fn local_access_test_app(state: Arc<AppState>) -> Router {
+        Router::new()
+            .route("/test", get(|| async { StatusCode::NO_CONTENT }))
+            .route("/test", post(|| async { StatusCode::NO_CONTENT }))
+            .layer(axum::middleware::from_fn_with_state(state, require_api_key))
+    }
+
+    // --- cookie extraction unit tests ----------------------------------------
+
+    #[test]
+    fn cookie_parsing_finds_roko_session_among_others() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "Cookie",
+            "session_id=abc; roko_session=deadbeef0123; user=will"
+                .parse()
+                .unwrap(),
+        );
+        assert_eq!(extract_session_cookie(&headers), Some("deadbeef0123"));
+    }
+
+    #[test]
+    fn cookie_parsing_returns_none_without_roko_session() {
+        let mut headers = HeaderMap::new();
+        headers.insert("Cookie", "other=foo; another=bar".parse().unwrap());
+        assert_eq!(extract_session_cookie(&headers), None);
+    }
+
+    #[test]
+    fn cookie_parsing_returns_none_when_no_cookie_header() {
+        let headers = HeaderMap::new();
+        assert_eq!(extract_session_cookie(&headers), None);
+    }
+
+    #[test]
+    fn cookie_parsing_handles_session_as_sole_cookie() {
+        let mut headers = HeaderMap::new();
+        headers.insert("Cookie", "roko_session=only-cookie".parse().unwrap());
+        assert_eq!(extract_session_cookie(&headers), Some("only-cookie"));
+    }
+
+    // --- Origin / same-origin rule unit tests --------------------------------
+
+    #[test]
+    fn same_origin_get_always_passes() {
+        // GET requests should always pass regardless of Origin.
+        let req = Request::builder()
+            .method(Method::GET)
+            .uri("/test")
+            .header("Host", "localhost:6677")
+            .header("Origin", "http://evil.example.com")
+            .body(Body::empty())
+            .unwrap();
+        assert!(check_cookie_same_origin(&req).is_ok());
+    }
+
+    #[test]
+    fn same_origin_post_with_matching_origin_passes() {
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/test")
+            .header("Host", "localhost:6677")
+            .header("Origin", "http://localhost:6677")
+            .body(Body::empty())
+            .unwrap();
+        assert!(check_cookie_same_origin(&req).is_ok());
+    }
+
+    #[test]
+    fn same_origin_post_with_cross_origin_is_rejected() {
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/test")
+            .header("Host", "localhost:6677")
+            .header("Origin", "http://evil.example.com")
+            .body(Body::empty())
+            .unwrap();
+        let result = check_cookie_same_origin(&req);
+        assert!(result.is_err());
+        let response = result.unwrap_err();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[test]
+    fn same_origin_post_without_origin_header_passes() {
+        // No Origin header means same-origin or non-browser; allow.
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/test")
+            .header("Host", "localhost:6677")
+            .body(Body::empty())
+            .unwrap();
+        assert!(check_cookie_same_origin(&req).is_ok());
+    }
+
+    #[test]
+    fn same_origin_null_origin_is_rejected() {
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/test")
+            .header("Host", "localhost:6677")
+            .header("Origin", "null")
+            .body(Body::empty())
+            .unwrap();
+        let result = check_cookie_same_origin(&req);
+        assert!(result.is_err());
+    }
+
+    // --- launch token as X-Api-Key -------------------------------------------
+
+    #[tokio::test]
+    async fn launch_token_via_x_api_key_is_authenticated_as_admin() {
+        let token = "my-launch-token-123";
+        let state = make_test_state_with_launch_token(token);
+        let app = local_access_test_app(state);
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/test")
+                    .header("X-Api-Key", token)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+        assert_eq!(resp.headers()["x-auth-method"], "launch_token");
+    }
+
+    #[tokio::test]
+    async fn launch_token_wrong_value_via_x_api_key_is_rejected() {
+        let state = make_test_state_with_launch_token("real-token");
+        let app = local_access_test_app(state);
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/test")
+                    .header("X-Api-Key", "wrong-token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    // --- launch token as Authorization: Bearer --------------------------------
+
+    #[tokio::test]
+    async fn launch_token_via_bearer_is_authenticated_as_admin() {
+        let token = "my-launch-bearer-token";
+        let state = make_test_state_with_launch_token(token);
+        let app = local_access_test_app(state);
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/test")
+                    .header(AUTHORIZATION, format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+        assert_eq!(resp.headers()["x-auth-method"], "launch_token");
+    }
+
+    #[tokio::test]
+    async fn launch_token_wrong_value_via_bearer_is_rejected() {
+        let state = make_test_state_with_launch_token("real-token");
+        // No api_key configured so the fallback chain fails with Privy/no-match.
+        let app = local_access_test_app(state);
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/test")
+                    .header(AUTHORIZATION, "Bearer wrong-token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    // --- session cookie authentication ---------------------------------------
+
+    #[tokio::test]
+    async fn session_cookie_authenticates_get_request() {
+        let state = make_test_state(ServeAuthConfig::default());
+        let session_id = state.local_access.create_session();
+        let app = local_access_test_app(Arc::clone(&state));
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/test")
+                    .header("Cookie", format!("roko_session={session_id}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+        assert_eq!(resp.headers()["x-auth-method"], "session");
+    }
+
+    #[tokio::test]
+    async fn session_cookie_authenticates_same_origin_post() {
+        let state = make_test_state(ServeAuthConfig::default());
+        let session_id = state.local_access.create_session();
+        let app = local_access_test_app(Arc::clone(&state));
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/test")
+                    .header("Host", "localhost:6677")
+                    .header("Origin", "http://localhost:6677")
+                    .header("Cookie", format!("roko_session={session_id}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+        assert_eq!(resp.headers()["x-auth-method"], "session");
+    }
+
+    #[tokio::test]
+    async fn session_cookie_rejects_cross_origin_post() {
+        let state = make_test_state(ServeAuthConfig::default());
+        let session_id = state.local_access.create_session();
+        let app = local_access_test_app(Arc::clone(&state));
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/test")
+                    .header("Host", "localhost:6677")
+                    .header("Origin", "http://evil.example.com")
+                    .header("Cookie", format!("roko_session={session_id}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        // Must be 403 (cross-origin), not 401 (missing credentials).
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn session_cookie_rejects_invalid_session_id() {
+        let state = make_test_state(ServeAuthConfig::default());
+        let app = local_access_test_app(Arc::clone(&state));
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/test")
+                    .header("Cookie", "roko_session=0000000000000000000000000000000000000000000000000000000000000000")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn session_cookie_amid_other_cookies_is_found() {
+        let state = make_test_state(ServeAuthConfig::default());
+        let session_id = state.local_access.create_session();
+        let app = local_access_test_app(Arc::clone(&state));
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/test")
+                    .header(
+                        "Cookie",
+                        format!("other=foo; roko_session={session_id}; another=bar"),
+                    )
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+        assert_eq!(resp.headers()["x-auth-method"], "session");
     }
 }

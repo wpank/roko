@@ -28,6 +28,8 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::cells::task_executor::TaskGateVerdict;
+
 /// A single recorded Activity node execution.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RecordEntry {
@@ -140,6 +142,9 @@ impl ActivityRecorder {
 pub struct ActivityReplayer {
     /// Map from (node_id, tick) to the recorded output signals.
     entries: HashMap<(String, u64), Vec<roko_core::Signal>>,
+    /// Records whose gate verdict forbids replay (for example a forced
+    /// accept). They are never substituted, so the node re-executes.
+    rejected: Vec<(String, u64)>,
 }
 
 impl ActivityReplayer {
@@ -170,6 +175,7 @@ impl ActivityReplayer {
         let file = File::open(path)?;
         let reader = BufReader::new(file);
         let mut entries: HashMap<(String, u64), Vec<roko_core::Signal>> = HashMap::new();
+        let mut rejected = Vec::new();
 
         for (line_num, line) in reader.lines().enumerate() {
             let line = line?;
@@ -195,6 +201,21 @@ impl ActivityReplayer {
                         ));
                     }
                     let key = (entry.node_id, entry.tick);
+                    // A recorded output whose verdict is not a pass (e.g. a
+                    // forced accept) must never be replayed as a completed
+                    // node. Skipping it also lets the re-executed node's
+                    // fresh record supersede it without a duplicate error.
+                    if TaskGateVerdict::from_signals(&entry.signals)
+                        .is_some_and(|verdict| !verdict.is_replayable())
+                    {
+                        tracing::warn!(
+                            node_id = %key.0,
+                            tick = key.1,
+                            "replay: recorded Activity output is not verified; node will re-run"
+                        );
+                        rejected.push(key);
+                        continue;
+                    }
                     if entries.insert(key.clone(), entry.signals).is_some() && expected.is_some() {
                         return Err(std::io::Error::new(
                             std::io::ErrorKind::InvalidData,
@@ -223,7 +244,7 @@ impl ActivityReplayer {
             }
         }
 
-        Ok(Self { entries })
+        Ok(Self { entries, rejected })
     }
 
     /// Look up the recorded outputs for the given node at the given tick.
@@ -239,6 +260,13 @@ impl ActivityReplayer {
     #[must_use]
     pub fn entry_count(&self) -> usize {
         self.entries.len()
+    }
+
+    /// `(node_id, tick)` keys of records refused for replay because their
+    /// gate verdict is not a pass.
+    #[must_use]
+    pub fn rejected_entries(&self) -> &[(String, u64)] {
+        &self.rejected
     }
 
     /// Validate that every record belongs to a current Activity node and does
@@ -271,6 +299,49 @@ impl ActivityReplayer {
         }
         Ok(())
     }
+}
+
+/// Rewrite an Activity log keeping only the records accepted by `keep`.
+///
+/// Rejected records are removed atomically (temp file, fsync, rename) so a
+/// re-executed node can append its fresh record without tripping the
+/// duplicate-record guard on a later resume. Lines that do not parse are kept
+/// verbatim for the fail-closed loader to report. Returns the removed
+/// `(node_id, tick)` keys; the file is untouched when nothing is removed.
+///
+/// # Errors
+/// Returns an `std::io::Error` if the log cannot be read or rewritten.
+pub fn retain_recorded_activities(
+    path: impl AsRef<Path>,
+    mut keep: impl FnMut(&RecordEntry) -> bool,
+) -> std::io::Result<Vec<(String, u64)>> {
+    let path = path.as_ref();
+    let content = std::fs::read_to_string(path)?;
+    let mut kept = String::with_capacity(content.len());
+    let mut removed = Vec::new();
+    for line in content.lines() {
+        if let Ok(entry) = serde_json::from_str::<RecordEntry>(line.trim())
+            && !keep(&entry)
+        {
+            removed.push((entry.node_id, entry.tick));
+            continue;
+        }
+        kept.push_str(line);
+        kept.push('\n');
+    }
+    if removed.is_empty() {
+        return Ok(removed);
+    }
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(".compact");
+    let tmp = PathBuf::from(tmp);
+    {
+        let mut file = File::create(&tmp)?;
+        file.write_all(kept.as_bytes())?;
+        file.sync_all()?;
+    }
+    std::fs::rename(&tmp, path)?;
+    Ok(removed)
 }
 
 #[cfg(test)]
@@ -377,5 +448,84 @@ mod tests {
             .err()
             .expect("corrupt checkpoint must fail closed");
         assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+    }
+
+    fn verdict_signal(text: &str, verdict: TaskGateVerdict) -> Signal {
+        let mut signals = vec![make_signal(text)];
+        verdict.stamp(&mut signals);
+        signals.remove(0)
+    }
+
+    #[test]
+    fn forced_accept_record_is_never_replayed_and_can_be_superseded() {
+        let tmp = NamedTempFile::new().unwrap();
+        let mut rec = ActivityRecorder::create_fresh("run", tmp.path()).unwrap();
+        rec.record(
+            "g",
+            "forced",
+            0,
+            vec![verdict_signal("BLOCK", TaskGateVerdict::ForcedAccept)],
+        )
+        .unwrap();
+        rec.record(
+            "g",
+            "verified",
+            0,
+            vec![verdict_signal("ok", TaskGateVerdict::Passed)],
+        )
+        .unwrap();
+        // The re-executed node appends a fresh, verified record.
+        rec.record(
+            "g",
+            "forced",
+            0,
+            vec![verdict_signal("fixed", TaskGateVerdict::Passed)],
+        )
+        .unwrap();
+        drop(rec);
+
+        let rep = ActivityReplayer::load_scoped(tmp.path(), "g", "run").unwrap();
+        assert_eq!(rep.entry_count(), 2);
+        assert_eq!(rep.rejected_entries(), &[("forced".to_string(), 0)]);
+        let replayed = rep.lookup("forced", 0).expect("superseding record");
+        assert_eq!(replayed[0].body.as_text().unwrap(), "fixed");
+    }
+
+    #[test]
+    fn forced_accept_record_alone_forces_re_execution() {
+        let tmp = NamedTempFile::new().unwrap();
+        let mut rec = ActivityRecorder::create_fresh("run", tmp.path()).unwrap();
+        rec.record(
+            "g",
+            "t01",
+            0,
+            vec![verdict_signal("BLOCK", TaskGateVerdict::ForcedAccept)],
+        )
+        .unwrap();
+        drop(rec);
+
+        let rep = ActivityReplayer::load_scoped(tmp.path(), "g", "run").unwrap();
+        assert!(rep.lookup("t01", 0).is_none());
+        assert_eq!(rep.entry_count(), 0);
+    }
+
+    #[test]
+    fn retain_recorded_activities_removes_rejected_records_atomically() {
+        let tmp = NamedTempFile::new().unwrap();
+        let mut rec = ActivityRecorder::create_fresh("run", tmp.path()).unwrap();
+        rec.record("g", "keep", 0, vec![make_signal("a")]).unwrap();
+        rec.record("g", "drop", 0, vec![make_signal("b")]).unwrap();
+        drop(rec);
+
+        let removed =
+            retain_recorded_activities(tmp.path(), |entry| entry.node_id != "drop").unwrap();
+        assert_eq!(removed, vec![("drop".to_string(), 0)]);
+        let rep = ActivityReplayer::load_scoped(tmp.path(), "g", "run").unwrap();
+        assert_eq!(rep.entry_count(), 1);
+        assert!(rep.lookup("keep", 0).is_some());
+
+        // Nothing rejected: the file is left as-is.
+        let unchanged = retain_recorded_activities(tmp.path(), |_| true).unwrap();
+        assert!(unchanged.is_empty());
     }
 }

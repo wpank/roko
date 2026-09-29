@@ -1,0 +1,84 @@
+[meta]
+plan = "validate-foundation"
+total = 4
+done = 0
+status = "ready"
+max_parallel = 2
+skip_enrichment = true
+estimated_total_minutes = 5
+
+[[task]]
+id = "FND-T01"
+title = "Verify budget defaults are non-zero"
+description = """Read the file `crates/roko-core/src/config/budget.rs` and verify that
+BudgetConfig::default() returns non-zero values for max_plan_usd and max_turn_usd.
+Write a one-line confirmation to `demo/foundation-check/budget-ok.txt` with the actual default values found."""
+status = "ready"
+tier = "mechanical"
+max_loc = 3
+model_hint = "cerebras-gptoss"
+files = ["demo/foundation-check/budget-ok.txt"]
+role = "implementer"
+depends_on = []
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'max_plan_usd' demo/foundation-check/budget-ok.txt && grep -q 'max_turn_usd' demo/foundation-check/budget-ok.txt"
+fail_msg = "Budget defaults not verified"
+
+[[task]]
+id = "FND-T02"
+title = "Verify file context uses byte budget not line count"
+description = """Search for '.take(100)' in crates/roko-cli/src/task_parser.rs and crates/roko-compose/src/context_provider.rs.
+If found, this is a bug. If NOT found, search for 'FILE_BYTE_BUDGET' to confirm the byte-based limit is in place.
+Write the result to `demo/foundation-check/file-cap-ok.txt`."""
+status = "ready"
+tier = "mechanical"
+max_loc = 3
+model_hint = "cerebras-gptoss"
+files = ["demo/foundation-check/file-cap-ok.txt"]
+role = "implementer"
+depends_on = []
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'FILE_BYTE_BUDGET' demo/foundation-check/file-cap-ok.txt"
+fail_msg = "File byte budget not confirmed"
+
+[[task]]
+id = "FND-T03"
+title = "Verify conductor is wired into graph dispatch"
+description = """Search for 'roko_conductor::Conductor' in crates/roko-cli/src/graph_task_dispatch.rs.
+Confirm it's imported and used (circuit_breaker check, evaluate_full call).
+Write findings to `demo/foundation-check/conductor-ok.txt`."""
+status = "ready"
+tier = "mechanical"
+max_loc = 5
+model_hint = "cerebras-gptoss"
+files = ["demo/foundation-check/conductor-ok.txt"]
+role = "implementer"
+depends_on = []
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'Conductor' demo/foundation-check/conductor-ok.txt"
+fail_msg = "Conductor wiring not confirmed"
+
+[[task]]
+id = "FND-T04"
+title = "Verify StateHub IPC socket support exists"
+description = """Search for 'hub.sock' or 'start_hub_ipc_server' in crates/roko-cli/src/.
+Confirm the Unix socket IPC layer for cross-process dashboard exists.
+Write findings to `demo/foundation-check/ipc-ok.txt`."""
+status = "ready"
+tier = "mechanical"
+max_loc = 5
+model_hint = "cerebras-gptoss"
+files = ["demo/foundation-check/ipc-ok.txt"]
+role = "implementer"
+depends_on = ["FND-T01"]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -qE 'hub.sock|IPC|ipc' demo/foundation-check/ipc-ok.txt"
+fail_msg = "IPC support not confirmed"

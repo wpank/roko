@@ -998,6 +998,7 @@ mod tests {
                 estimated_total_minutes: 1,
                 skip_enrichment: false,
                 source_prd: None,
+                failure_policy: None,
             },
             tasks: vec![task],
         }

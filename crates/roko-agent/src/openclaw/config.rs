@@ -6,6 +6,8 @@ use std::ffi::OsString;
 use std::time::Duration;
 
 use crate::process::ResourceLimits;
+use roko_core::agent::ProviderKind;
+use roko_core::child_env::CredentialScrub;
 
 /// Top-level OpenClaw configuration, dispatched by `transport` field.
 #[derive(Clone, Debug)]
@@ -65,6 +67,8 @@ pub struct OpenClawInferConfig {
     pub resource_limits: Option<ResourceLimits>,
     /// Optional system prompt passed via `--system-prompt`.
     pub system_prompt: Option<String>,
+    /// Which inherited provider credentials the subprocess loses.
+    pub credential_scrub: CredentialScrub,
 }
 
 impl Default for OpenClawInferConfig {
@@ -79,6 +83,7 @@ impl Default for OpenClawInferConfig {
             timeout: Duration::from_millis(90_000),
             resource_limits: None,
             system_prompt: None,
+            credential_scrub: CredentialScrub::for_kind(ProviderKind::OpenClaw),
         }
     }
 }

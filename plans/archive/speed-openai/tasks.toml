@@ -1,0 +1,26 @@
+[meta]
+plan = "speed-openai"
+total = 1
+done = 0
+status = "ready"
+max_parallel = 1
+skip_enrichment = true
+estimated_total_minutes = 1
+
+[[task]]
+id = "OAI-T01"
+title = "Write one line to a file via OpenAI"
+description = """Write the text `openai-speed-ok` to the file `demo/speed-openai-output.txt`.
+Nothing else. One file, one line. Stop immediately after."""
+status = "ready"
+tier = "mechanical"
+max_loc = 1
+model_hint = "gpt-4o-mini"
+files = ["demo/speed-openai-output.txt"]
+role = "implementer"
+depends_on = []
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'openai-speed-ok' demo/speed-openai-output.txt"
+fail_msg = "demo/speed-openai-output.txt missing or wrong content"

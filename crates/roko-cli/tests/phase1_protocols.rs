@@ -39,6 +39,7 @@ fn doctor_human_output_contains_v2_abstractions() {
 
     Command::cargo_bin("roko")
         .unwrap()
+        .current_dir(temp.path())
         .args(["doctor", "--workdir"])
         .arg(temp.path())
         .assert()
@@ -59,6 +60,7 @@ fn doctor_json_output_contains_v2_abstractions() {
 
     Command::cargo_bin("roko")
         .unwrap()
+        .current_dir(temp.path())
         .args(["doctor", "--workdir"])
         .arg(temp.path())
         .arg("--json")
@@ -76,6 +78,7 @@ fn doctor_v2_abstractions_passes_even_when_workspace_unhealthy() {
 
     let output = Command::cargo_bin("roko")
         .unwrap()
+        .current_dir(temp.path())
         .args(["doctor", "--workdir"])
         .arg(temp.path())
         .output()

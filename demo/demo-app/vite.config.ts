@@ -1,9 +1,11 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 
-export default defineConfig({
+export default defineConfig(({ command }) => ({
   plugins: [react()],
-  base: '/',
+  // Build for /demo/ so assets resolve correctly under roko serve.
+  // Dev server stays at / so Playwright e2e specs (baseURL: localhost:5173) work unchanged.
+  base: command === 'build' ? '/demo/' : '/',
   build: {
     outDir: 'dist',
     sourcemap: false,
@@ -52,4 +54,4 @@ export default defineConfig({
       overlay: true,
     },
   },
-});
+}));

@@ -2397,7 +2397,7 @@ impl RuntimeFeedbackProjection {
             );
         let knowledge_path = roko.join("neuro").join("knowledge.jsonl");
         let runner_events_path = roko.join("events.jsonl");
-        let signal_log_path = roko.join("engrams.jsonl");
+        let signal_log_path = roko.join("signals.jsonl");
 
         let episodes = read_project_episodes_lossy(workdir)
             .await

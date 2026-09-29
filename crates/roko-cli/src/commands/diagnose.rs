@@ -1,15 +1,51 @@
 //! `roko diagnose <plan-id>` — structured JSON diagnostic report for plan failures.
+//!
+//! A Graph run is reported from the plan's checkpoint under
+//! `.roko/state/graph/<plan>/` (status, recorded task outputs, spend), the
+//! plan's `tasks.toml`, and the logs Graph task dispatch appends:
+//! `.roko/learn/costs.jsonl` (one row per provider attempt),
+//! `.roko/learn/gate-failures.jsonl` (failed verify steps) and
+//! `.roko/episodes.jsonl` (failure reasons). The Runner-v2 snapshot at
+//! `.roko/state/state-snapshot.json` is read only for a plan without a Graph
+//! checkpoint.
 
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::io::BufRead;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
+use std::sync::LazyLock;
 
 use anyhow::{Context, Result, bail};
+use chrono::{DateTime, SecondsFormat, Utc};
 use regex::Regex;
+use roko_fs::RokoLayout;
+use roko_gate::{FailureClass, GateFailureAction, GateFailureKind, GateFailureRecord};
+use roko_graph::cells::task_executor::TaskGateVerdict;
+use roko_learn::costs_db::CostRecord;
+use roko_learn::episode_logger::Episode;
+use roko_runtime::{
+    DurableRunnerProjection, STATE_SNAPSHOT_RELATIVE_PATH, load_durable_runner_projection,
+};
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 use serde_json::Value;
 
-use roko_runtime::{STATE_SNAPSHOT_RELATIVE_PATH, load_durable_runner_projection};
+use crate::graph_checkpoint::{
+    CheckpointInspection, GraphCheckpointStatus, InvalidatedActivity, ResumeAction, ResumeOptions,
+    ResumePreview, inspect_canonical_checkpoint, preview_plan_resume,
+};
+use crate::runner::plan_loader::Plan;
+use crate::task_parser::{TaskDef, TasksFile};
+
+/// Canonical Graph checkpoint root, relative to the workspace.
+const GRAPH_STATE_DIR: &str = ".roko/state/graph";
+
+/// Largest gap between an attempt's row in `costs.jsonl` and its episode.
+/// Graph task dispatch writes both when the attempt ends.
+const EPISODE_MATCH_WINDOW_MS: i64 = 5_000;
+
+/// Episode ids kept on [`FailedTaskInfo`].
+const FAILED_TASK_EPISODE_IDS: usize = 5;
 
 /// Run the diagnose command, printing a JSON report to stdout.
 pub fn cmd_diagnose(workdir: &Path, plan_id: &str, verbose: bool) -> Result<i32> {
@@ -26,18 +62,50 @@ pub fn cmd_diagnose(workdir: &Path, plan_id: &str, verbose: bool) -> Result<i32>
 #[derive(Debug, Serialize)]
 pub struct DiagnoseReport {
     pub plan_id: String,
+    /// `completed`, `failed`, `running`, `cancelled` or `interrupted` for a
+    /// Graph run; derived from the plan phase for a Runner-v2 snapshot.
     pub status: String,
+    /// Where the run state came from.
+    pub source: ReportSource,
     pub phase: Option<String>,
     pub iteration: Option<u32>,
+    /// The run the plan's Graph checkpoint records.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub graph_run: Option<GraphRunInfo>,
+    /// Directory holding the plan's `tasks.toml`, relative to the workspace.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plan_dir: Option<String>,
     pub failed_task: Option<FailedTaskInfo>,
+    /// Every plan task as the Graph run left it, in plan order, followed by
+    /// tasks the run recorded that the plan no longer defines.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub tasks: Vec<TaskDiagnosis>,
     pub gate_results: Vec<GateResultInfo>,
     pub run_state: Option<RunStateSummary>,
+    /// What re-running the plan would do with its Graph checkpoint.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resume: Option<ResumeInfo>,
     pub git_state: Option<GitStateInfo>,
     pub suggested_recovery: Vec<String>,
-    /// Top-level plan cost derived from `.roko/learn/efficiency.jsonl`.
-    /// `None` when no efficiency data exists for this plan.
+    /// What the report could not read or left out.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<String>,
+    /// Top-level plan cost derived from `.roko/learn/efficiency.jsonl`,
+    /// summed over every recorded run of the plan. `None` when no efficiency
+    /// data exists for this plan. A Graph run's own spend is
+    /// `graph_run.spent_usd`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub total_cost_usd: Option<f64>,
+}
+
+/// Where a report's run state came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReportSource {
+    /// The plan's Graph checkpoint under `.roko/state/graph/<plan>/`.
+    GraphCheckpoint,
+    /// The Runner-v2 state snapshot, for a plan without a Graph checkpoint.
+    RunnerSnapshot,
 }
 
 #[derive(Debug, Serialize)]
@@ -53,6 +121,9 @@ pub struct FailedTaskInfo {
 
 #[derive(Debug, Serialize)]
 pub struct GateResultInfo {
+    /// Task whose verify step failed. `None` for a Runner-v2 snapshot.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub task_id: Option<String>,
     pub gate_name: String,
     pub rung: u32,
     pub passed: bool,
@@ -121,44 +192,897 @@ pub struct GitStateInfo {
     pub plan_branch_exists: bool,
 }
 
+/// The run a plan's Graph checkpoint records.
+#[derive(Debug, Serialize)]
+pub struct GraphRunInfo {
+    /// Run id stamped on every Activity record.
+    pub run_id: String,
+    /// Fingerprint of the plan graph the run executed.
+    pub graph_fingerprint: String,
+    /// Status as the checkpoint records it.
+    pub checkpoint_status: GraphCheckpointStatus,
+    /// Last checkpoint write, RFC 3339 UTC.
+    pub updated_at: Option<String>,
+    /// Checkpoint manifest, relative to the workspace.
+    pub checkpoint: String,
+    /// Actual provider spend in the run's cost ledger, in USD.
+    pub spent_usd: Option<f64>,
+    /// Spend reserved for a provider call that never settled, in USD.
+    pub reserved_usd: Option<f64>,
+    /// When the checkpoint replaced an earlier run's. Attempts, gate failures
+    /// and episodes from before this time belong to that run and are left out.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub earlier_runs_before: Option<String>,
+    /// Task outputs the last resume discarded because their gate verdict was
+    /// not a pass; those tasks ran again.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub invalidated_on_resume: Vec<InvalidatedActivity>,
+}
+
+/// How a plan task ended in the diagnosed Graph run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskState {
+    /// The run recorded the task's output.
+    Completed,
+    /// The task ran without completing, and the run failed.
+    Failed,
+    /// The task ran without completing, and the run has not failed: it is
+    /// still running, or was interrupted or cancelled.
+    Incomplete,
+    /// Nothing was recorded for the task in this run.
+    NeverRan,
+}
+
+/// One plan task as the diagnosed Graph run left it.
+#[derive(Debug, Serialize)]
+pub struct TaskDiagnosis {
+    pub task_id: String,
+    /// Title from `tasks.toml`; `None` for a task the plan no longer defines.
+    pub title: Option<String>,
+    pub state: TaskState,
+    /// One line saying why the task is in `state`.
+    pub reason: String,
+    pub depends_on: Vec<String>,
+    /// For a task that never ran: the tasks that did not complete and that it
+    /// waits on, directly or through dependencies that never ran either.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub blocked_by: Vec<String>,
+    /// Gate verdict recorded with the task's output.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gate_verdict: Option<TaskGateVerdict>,
+    pub attempt_count: usize,
+    pub failed_attempts: usize,
+    pub timed_out_attempts: usize,
+    /// Most recent failure: the last failed verify step, or the failure
+    /// reason of the last failed attempt when it is more recent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+    /// Provider attempts, oldest first. Listed for tasks that did not
+    /// complete, and for every task with `--verbose`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub attempts: Vec<AttemptInfo>,
+    /// Failed verify steps, oldest first. Listed like `attempts`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub gate_failures: Vec<GateFailureInfo>,
+    /// Episodes from `.roko/episodes.jsonl`, oldest first. Listed like
+    /// `attempts`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub episode_ids: Vec<String>,
+}
+
+/// One provider attempt at a task, from `.roko/learn/costs.jsonl`.
+#[derive(Debug, Serialize)]
+pub struct AttemptInfo {
+    /// When the attempt ended.
+    pub timestamp: String,
+    pub model: String,
+    pub provider: String,
+    /// Whether the attempt succeeded, verify steps included.
+    pub success: bool,
+    pub duration_ms: u64,
+    pub cost_usd: f64,
+    /// The attempt's failure reason says it timed out.
+    pub timed_out: bool,
+    /// Failure reason recorded on the attempt's episode.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub failure_reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub episode_id: Option<String>,
+}
+
+/// One failed verify step, from `.roko/learn/gate-failures.jsonl`.
+#[derive(Debug, Serialize)]
+pub struct GateFailureInfo {
+    pub timestamp: String,
+    pub gate_name: String,
+    /// The verify step the summary names.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub verify_step: Option<VerifyStepInfo>,
+    pub failure_kind: GateFailureKind,
+    pub primary_class: FailureClass,
+    pub recommended_action: GateFailureAction,
+    /// Summary as recorded; it is cut at 200 characters.
+    pub summary: String,
+}
+
+/// A task's verify step.
+#[derive(Debug, Serialize)]
+pub struct VerifyStepInfo {
+    /// Zero-based position among the task's `[[task.verify]]` steps.
+    pub index: usize,
+    /// Phase label, such as `test`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub phase: Option<String>,
+    /// The step's full command in the current `tasks.toml`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+}
+
+impl VerifyStepInfo {
+    /// `1 (test)`, or `1` without a phase.
+    fn label(&self) -> String {
+        match &self.phase {
+            Some(phase) => format!("{} ({phase})", self.index),
+            None => self.index.to_string(),
+        }
+    }
+}
+
+/// What re-running the plan with default options would do with its Graph
+/// checkpoint.
+#[derive(Debug, Serialize)]
+pub struct ResumeInfo {
+    /// The command that re-runs the plan.
+    pub command: String,
+    /// The checkpoint preview `roko plan run --dry-run` prints.
+    #[serde(flatten)]
+    pub preview: ResumePreview,
+}
+
 // ---------------------------------------------------------------------------
 // Report builder
 // ---------------------------------------------------------------------------
 
-fn build_report(workdir: &Path, plan_id: &str, _verbose: bool) -> Result<DiagnoseReport> {
-    let projection = load_durable_runner_projection(workdir).context("reading state snapshot")?;
+fn build_report(workdir: &Path, plan_id: &str, verbose: bool) -> Result<DiagnoseReport> {
+    let checkpoint = inspect_canonical_checkpoint(workdir, plan_id)
+        .with_context(|| format!("reading the Graph checkpoint of plan '{plan_id}'"))?;
+    if let Some(checkpoint) = checkpoint {
+        return Ok(build_graph_report(workdir, plan_id, &checkpoint, verbose));
+    }
 
-    let projection = match projection {
-        Some(p) => p,
-        None => {
-            let snapshot_path = workdir.join(STATE_SNAPSHOT_RELATIVE_PATH);
-            bail!(
-                "No state snapshot found at {}. Run `roko plan run` first.",
-                snapshot_path.display()
-            );
+    // Only a plan that last ran under the removed Runner-v2 engine has no
+    // Graph checkpoint; its state is in the unified snapshot.
+    let projection = load_durable_runner_projection(workdir).context("reading state snapshot")?;
+    let Some(projection) = projection else {
+        bail!(
+            "No run state for plan '{plan_id}': it has no Graph checkpoint under {} and there is no Runner-v2 snapshot at {}.{} Run `roko plan run` first.",
+            workdir.join(GRAPH_STATE_DIR).display(),
+            workdir.join(STATE_SNAPSHOT_RELATIVE_PATH).display(),
+            checkpointed_plans_hint(workdir),
+        );
+    };
+    build_legacy_report(workdir, plan_id, &projection)
+}
+
+/// ` Plans with a Graph checkpoint: a, b.`, or empty when there are none.
+fn checkpointed_plans_hint(workdir: &Path) -> String {
+    let mut plans: Vec<String> = std::fs::read_dir(workdir.join(GRAPH_STATE_DIR))
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| entry.path().join("checkpoint.json").is_file())
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .collect();
+    if plans.is_empty() {
+        return String::new();
+    }
+    plans.sort();
+    format!(" Plans with a Graph checkpoint: {}.", plans.join(", "))
+}
+
+// ---------------------------------------------------------------------------
+// Graph runs
+// ---------------------------------------------------------------------------
+
+/// A plan's directory and parsed `tasks.toml`.
+struct PlanDefinition {
+    dir: PathBuf,
+    tasks: TasksFile,
+}
+
+/// What Graph task dispatch logged for one plan during one run.
+struct RunRecords {
+    /// Provider attempts from `.roko/learn/costs.jsonl`.
+    attempts: Vec<CostRecord>,
+    /// Failed verify steps from `.roko/learn/gate-failures.jsonl`.
+    gate_failures: Vec<GateFailureRecord>,
+    /// Task episodes from `.roko/episodes.jsonl`.
+    episodes: Vec<Episode>,
+}
+
+impl RunRecords {
+    /// `plan_id`'s records written at or after `since_ms` (all of them when
+    /// `None`). A record whose time cannot be read is kept.
+    fn load(workdir: &Path, plan_id: &str, since_ms: Option<i64>) -> Self {
+        let layout = RokoLayout::for_project(workdir);
+        let in_run = |at_ms: Option<i64>| since_ms.zip(at_ms).is_none_or(|(since, at)| at >= since);
+        Self {
+            attempts: read_jsonl_lossy::<CostRecord>(&layout.learn_dir().join("costs.jsonl"))
+                .into_iter()
+                .filter(|record| record.plan_id == plan_id && in_run(rfc3339_ms(&record.timestamp)))
+                .collect(),
+            gate_failures: read_jsonl_lossy::<GateFailureRecord>(&layout.gate_failures_path())
+                .into_iter()
+                .filter(|record| {
+                    record.plan_id == plan_id && in_run(Some(record.timestamp.timestamp_millis()))
+                })
+                .collect(),
+            episodes: read_jsonl_lossy::<Episode>(&layout.episodes_path())
+                .into_iter()
+                .filter(|episode| {
+                    episode_plan_id(episode) == Some(plan_id)
+                        && in_run(Some(episode.timestamp.timestamp_millis()))
+                })
+                .collect(),
         }
+    }
+
+    /// Every task id the records mention.
+    fn task_ids(&self) -> impl Iterator<Item = &str> {
+        self.attempts
+            .iter()
+            .map(|record| record.task_id.as_str())
+            .chain(
+                self.gate_failures
+                    .iter()
+                    .map(|record| record.task_id.as_str()),
+            )
+            .chain(self.episodes.iter().map(|episode| episode.task_id.as_str()))
+            .filter(|task_id| !task_id.is_empty())
+    }
+}
+
+/// Report a plan's Graph run from its checkpoint, its `tasks.toml` and the
+/// logs Graph task dispatch appended during the run.
+fn build_graph_report(
+    workdir: &Path,
+    plan_id: &str,
+    checkpoint: &CheckpointInspection,
+    verbose: bool,
+) -> DiagnoseReport {
+    let mut notes = Vec::new();
+    let status = checkpoint.manifest.status;
+    let since_ms = checkpoint
+        .replaced_at_ms
+        .and_then(|ms| i64::try_from(ms).ok());
+    let records = RunRecords::load(workdir, plan_id, since_ms);
+    let definition = load_plan_definition(workdir, plan_id, &mut notes);
+    let tasks = diagnose_tasks(checkpoint, definition.as_ref(), &records, verbose);
+    let resume = definition
+        .as_ref()
+        .and_then(|definition| resume_info(workdir, plan_id, definition, &mut notes));
+
+    let failed_task = tasks
+        .iter()
+        .find(|task| task.state == TaskState::Failed)
+        .map(|task| {
+            let recent = task
+                .episode_ids
+                .len()
+                .saturating_sub(FAILED_TASK_EPISODE_IDS);
+            FailedTaskInfo {
+                task_id: task.task_id.clone(),
+                last_error: task.last_error.clone(),
+                files_changed: Vec::new(),
+                episode_ids: task.episode_ids[recent..].to_vec(),
+            }
+        });
+    let unfinished: HashSet<&str> = tasks
+        .iter()
+        .filter(|task| matches!(task.state, TaskState::Failed | TaskState::Incomplete))
+        .map(|task| task.task_id.as_str())
+        .collect();
+    let gate_results: Vec<GateResultInfo> = records
+        .gate_failures
+        .iter()
+        .filter(|record| unfinished.contains(record.task_id.as_str()))
+        .map(|record| GateResultInfo {
+            task_id: Some(record.task_id.clone()),
+            gate_name: record.gate_name.clone(),
+            rung: record.rung,
+            passed: false,
+            summary: record.summary.clone(),
+            duration_ms: 0,
+            classified_errors: classify_recorded_failure(record),
+        })
+        .collect();
+
+    let ids_in = |state: TaskState| -> Vec<String> {
+        tasks
+            .iter()
+            .filter(|task| task.state == state)
+            .map(|task| task.task_id.clone())
+            .collect()
+    };
+    let completed_tasks = ids_in(TaskState::Completed);
+    let failed_tasks = ids_in(TaskState::Failed);
+    let run_state = RunStateSummary {
+        tasks_total: definition
+            .as_ref()
+            .map_or(tasks.len(), |definition| definition.tasks.tasks.len()),
+        tasks_completed: completed_tasks.len(),
+        tasks_failed: failed_tasks.len(),
+        total_cost_usd: checkpoint.spent_micro_usd.map_or_else(
+            || records.attempts.iter().map(|record| record.cost_usd).sum(),
+            micro_to_usd,
+        ),
+        total_tokens_in: records
+            .attempts
+            .iter()
+            .map(|record| record.input_tokens)
+            .sum(),
+        total_tokens_out: records
+            .attempts
+            .iter()
+            .map(|record| record.output_tokens)
+            .sum(),
+        total_agent_calls: records.attempts.len(),
+        completed_tasks,
+        failed_tasks,
     };
 
+    let git_state = collect_git_state(workdir, plan_id);
+    let suggested_recovery =
+        graph_recovery_suggestions(status, &tasks, resume.as_ref(), git_state.as_ref());
+
+    DiagnoseReport {
+        plan_id: plan_id.to_string(),
+        status: match status {
+            GraphCheckpointStatus::Succeeded => "completed".to_string(),
+            other => other.as_str().to_string(),
+        },
+        source: ReportSource::GraphCheckpoint,
+        phase: None,
+        iteration: None,
+        graph_run: Some(GraphRunInfo {
+            run_id: checkpoint.manifest.run_id.clone(),
+            graph_fingerprint: checkpoint.manifest.graph_fingerprint.clone(),
+            checkpoint_status: status,
+            updated_at: ms_to_rfc3339(checkpoint.manifest.updated_at_ms),
+            checkpoint: relative_display(workdir, &checkpoint.paths.manifest),
+            spent_usd: checkpoint.spent_micro_usd.map(micro_to_usd),
+            reserved_usd: checkpoint.reserved_micro_usd.map(micro_to_usd),
+            earlier_runs_before: checkpoint.replaced_at_ms.and_then(ms_to_rfc3339),
+            invalidated_on_resume: checkpoint.invalidated_on_resume.clone(),
+        }),
+        plan_dir: definition
+            .as_ref()
+            .map(|definition| relative_display(workdir, &definition.dir)),
+        failed_task,
+        tasks,
+        gate_results,
+        run_state: Some(run_state),
+        resume,
+        git_state,
+        suggested_recovery,
+        notes,
+        total_cost_usd: collect_total_cost_usd(workdir, plan_id),
+    }
+}
+
+/// Find `plan_id`'s definition the way checkpoints name plans: by leaf
+/// directory name under the workspace plans root, inside plan sets too.
+fn load_plan_definition(
+    workdir: &Path,
+    plan_id: &str,
+    notes: &mut Vec<String>,
+) -> Option<PlanDefinition> {
+    let Some(plan_dir) = crate::plan::plan_dirs_by_id(workdir).remove(plan_id) else {
+        notes.push(format!(
+            "plan '{plan_id}' was not found under {}: tasks are limited to those the run recorded, and there is no resume preview",
+            relative_display(workdir, &crate::plan::plans_dir(workdir)),
+        ));
+        return None;
+    };
+    let tasks_path = plan_dir.dir.join("tasks.toml");
+    match TasksFile::parse(&tasks_path) {
+        Ok(tasks) => Some(PlanDefinition {
+            dir: plan_dir.dir,
+            tasks,
+        }),
+        Err(error) => {
+            notes.push(format!(
+                "cannot read {}: {error:#}; tasks are limited to those the run recorded",
+                relative_display(workdir, &tasks_path)
+            ));
+            None
+        }
+    }
+}
+
+/// What `roko plan run <plan dir>` would do with the checkpoint.
+fn resume_info(
+    workdir: &Path,
+    plan_id: &str,
+    definition: &PlanDefinition,
+    notes: &mut Vec<String>,
+) -> Option<ResumeInfo> {
+    let plan = Plan {
+        id: plan_id.to_string(),
+        dir: definition.dir.clone(),
+        tasks: definition.tasks.clone(),
+        prd_excerpt: String::new(),
+    };
+    match preview_plan_resume(workdir, &plan, 1, &ResumeOptions::default()) {
+        Ok(preview) => Some(ResumeInfo {
+            command: format!(
+                "roko plan run {}",
+                relative_display(workdir, &definition.dir)
+            ),
+            preview,
+        }),
+        Err(error) => {
+            notes.push(format!("no resume preview: {error:#}"));
+            None
+        }
+    }
+}
+
+/// Every task of the plan, then the tasks the run recorded that the plan no
+/// longer defines, as the run left them.
+fn diagnose_tasks(
+    checkpoint: &CheckpointInspection,
+    definition: Option<&PlanDefinition>,
+    records: &RunRecords,
+    verbose: bool,
+) -> Vec<TaskDiagnosis> {
+    let plan_tasks: &[TaskDef] =
+        definition.map_or(&[], |definition| definition.tasks.tasks.as_slice());
+    let defined: BTreeMap<&str, &TaskDef> = plan_tasks
+        .iter()
+        .map(|task| (task.id.as_str(), task))
+        .collect();
+    let mut ids: Vec<&str> = plan_tasks.iter().map(|task| task.id.as_str()).collect();
+    let undefined: BTreeSet<&str> = checkpoint
+        .recorded
+        .keys()
+        .map(String::as_str)
+        .chain(records.task_ids())
+        .filter(|task_id| !defined.contains_key(task_id))
+        .collect();
+    ids.extend(undefined);
+
+    let attempted: HashSet<&str> = records.task_ids().collect();
+    let states: BTreeMap<&str, TaskState> = ids
+        .iter()
+        .map(|&task_id| {
+            let state = if checkpoint.recorded.contains_key(task_id) {
+                TaskState::Completed
+            } else if !attempted.contains(task_id) {
+                TaskState::NeverRan
+            } else if checkpoint.manifest.status == GraphCheckpointStatus::Failed {
+                TaskState::Failed
+            } else {
+                TaskState::Incomplete
+            };
+            (task_id, state)
+        })
+        .collect();
+
+    ids.iter()
+        .map(|&task_id| {
+            let task = defined.get(task_id).copied();
+            let state = states[task_id];
+            let attempts = task_attempts(records, task_id);
+            let gate_failures: Vec<GateFailureInfo> = records
+                .gate_failures
+                .iter()
+                .filter(|record| record.task_id == task_id)
+                .map(|record| GateFailureInfo {
+                    timestamp: record
+                        .timestamp
+                        .to_rfc3339_opts(SecondsFormat::Millis, true),
+                    gate_name: record.gate_name.clone(),
+                    verify_step: verify_step(&record.summary, task),
+                    failure_kind: record.failure_kind.clone(),
+                    primary_class: record.primary_class.clone(),
+                    recommended_action: record.recommended_action.clone(),
+                    summary: record.summary.clone(),
+                })
+                .collect();
+            let episode_ids: Vec<String> = records
+                .episodes
+                .iter()
+                .filter(|episode| episode.task_id == task_id)
+                .map(episode_id)
+                .collect();
+            // Listed for every task that did not complete; a completed task's
+            // history only with `--verbose`.
+            let listed = verbose || state != TaskState::Completed;
+            let mut diagnosis = TaskDiagnosis {
+                task_id: task_id.to_string(),
+                title: task.map(|task| task.title.clone()),
+                state,
+                reason: String::new(),
+                depends_on: task.map(|task| task.depends_on.clone()).unwrap_or_default(),
+                blocked_by: if state == TaskState::NeverRan {
+                    blockers(task_id, &defined, &states)
+                } else {
+                    Vec::new()
+                },
+                gate_verdict: checkpoint.recorded.get(task_id).copied().flatten(),
+                attempt_count: attempts.len(),
+                failed_attempts: attempts.iter().filter(|attempt| !attempt.success).count(),
+                timed_out_attempts: attempts.iter().filter(|attempt| attempt.timed_out).count(),
+                last_error: last_error(records, task_id),
+                attempts: if listed { attempts } else { Vec::new() },
+                gate_failures: if listed { gate_failures } else { Vec::new() },
+                episode_ids: if listed { episode_ids } else { Vec::new() },
+            };
+            diagnosis.reason = describe_task(&diagnosis, checkpoint.manifest.status, &states);
+            diagnosis
+        })
+        .collect()
+}
+
+/// `task_id`'s provider attempts, oldest first, each with the failure reason
+/// of its episode.
+fn task_attempts(records: &RunRecords, task_id: &str) -> Vec<AttemptInfo> {
+    let mut episodes: Vec<&Episode> = records
+        .episodes
+        .iter()
+        .filter(|episode| episode.task_id == task_id)
+        .collect();
+    records
+        .attempts
+        .iter()
+        .filter(|record| record.task_id == task_id)
+        .map(|record| {
+            let episode = rfc3339_ms(&record.timestamp).and_then(|ended_ms| {
+                let index = episodes.iter().position(|episode| {
+                    episode.success == record.success
+                        && (episode.timestamp.timestamp_millis() - ended_ms).abs()
+                            <= EPISODE_MATCH_WINDOW_MS
+                })?;
+                Some(episodes.remove(index))
+            });
+            let failure_reason = episode
+                .and_then(|episode| episode.failure_reason.clone())
+                .filter(|reason| !reason.trim().is_empty());
+            AttemptInfo {
+                timestamp: record.timestamp.clone(),
+                model: record.model.clone(),
+                provider: record.provider.clone(),
+                success: record.success,
+                duration_ms: record.duration_ms,
+                cost_usd: record.cost_usd,
+                timed_out: failure_reason.as_deref().is_some_and(mentions_timeout),
+                failure_reason,
+                episode_id: episode.map(episode_id),
+            }
+        })
+        .collect()
+}
+
+/// `task_id`'s most recent failure. A verify step failure is preferred over
+/// the attempt's failure reason from the same moment: the reason only says
+/// how many steps failed, the gate failure names the step.
+fn last_error(records: &RunRecords, task_id: &str) -> Option<String> {
+    let episode = records
+        .episodes
+        .iter()
+        .filter(|episode| episode.task_id == task_id && !episode.success)
+        .filter_map(|episode| {
+            let reason = episode.failure_reason.as_deref()?.trim();
+            (!reason.is_empty()).then(|| (episode.timestamp.timestamp_millis(), reason))
+        })
+        .next_back();
+    let gate_failure = records
+        .gate_failures
+        .iter()
+        .filter(|record| record.task_id == task_id)
+        .map(|record| (record.timestamp.timestamp_millis(), record.summary.as_str()))
+        .next_back();
+    let (_, error) = match (episode, gate_failure) {
+        (Some(episode), Some(gate_failure))
+            if episode.0 > gate_failure.0 + EPISODE_MATCH_WINDOW_MS =>
+        {
+            episode
+        }
+        (_, Some(gate_failure)) => gate_failure,
+        (Some(episode), None) => episode,
+        (None, None) => return None,
+    };
+    Some(error.to_string())
+}
+
+/// The tasks that did not complete and that never-ran `task_id` waits on,
+/// directly or through dependencies that never ran either.
+fn blockers(
+    task_id: &str,
+    tasks: &BTreeMap<&str, &TaskDef>,
+    states: &BTreeMap<&str, TaskState>,
+) -> Vec<String> {
+    let mut found = BTreeSet::new();
+    let mut seen = HashSet::new();
+    let mut pending = vec![task_id];
+    while let Some(current) = pending.pop() {
+        let Some(task) = tasks.get(current) else {
+            continue;
+        };
+        for dependency in &task.depends_on {
+            if !seen.insert(dependency.as_str()) {
+                continue;
+            }
+            match states.get(dependency.as_str()) {
+                Some(TaskState::Failed | TaskState::Incomplete) => {
+                    found.insert(dependency.clone());
+                }
+                Some(TaskState::NeverRan) => pending.push(dependency),
+                Some(TaskState::Completed) | None => {}
+            }
+        }
+    }
+    found.into_iter().collect()
+}
+
+/// One line saying why `task` is in its state.
+fn describe_task(
+    task: &TaskDiagnosis,
+    status: GraphCheckpointStatus,
+    states: &BTreeMap<&str, TaskState>,
+) -> String {
+    let timed_out = if task.timed_out_attempts > 0 {
+        format!(" ({} timed out)", task.timed_out_attempts)
+    } else {
+        String::new()
+    };
+    let attempts = if task.attempt_count > 0 {
+        format!(
+            " after {} attempt{}{timed_out}",
+            task.attempt_count,
+            plural(task.attempt_count)
+        )
+    } else {
+        String::new()
+    };
+    let last_error = task.last_error.as_deref().map_or_else(
+        || "; no failure reason was recorded".to_string(),
+        |error| format!("; last error: {error}"),
+    );
+    match task.state {
+        TaskState::Completed => {
+            let retries = if task.failed_attempts > 0 {
+                format!(
+                    " after {} failed attempt{}{timed_out}",
+                    task.failed_attempts,
+                    plural(task.failed_attempts)
+                )
+            } else {
+                String::new()
+            };
+            let verdict = match task.gate_verdict {
+                Some(TaskGateVerdict::Passed) => "; its verify steps passed",
+                Some(TaskGateVerdict::Unverified) => "; it has no verify steps",
+                Some(TaskGateVerdict::ForcedAccept) => {
+                    "; its verify steps failed and it was force-accepted, so a resume runs it again"
+                }
+                None => "",
+            };
+            format!("completed{retries}{verdict}")
+        }
+        TaskState::Failed => format!("failed{attempts}{last_error}"),
+        TaskState::Incomplete => format!(
+            "did not complete{attempts}, and the run is {}{last_error}",
+            status.as_str()
+        ),
+        TaskState::NeverRan if !task.blocked_by.is_empty() => {
+            let all_failed = task
+                .blocked_by
+                .iter()
+                .all(|blocker| states.get(blocker.as_str()) == Some(&TaskState::Failed));
+            format!(
+                "never ran: {} {} {}",
+                if task.blocked_by.len() == 1 {
+                    "dependency"
+                } else {
+                    "dependencies"
+                },
+                task.blocked_by.join(", "),
+                if all_failed {
+                    "failed"
+                } else {
+                    "did not complete"
+                }
+            )
+        }
+        TaskState::NeverRan => match status {
+            GraphCheckpointStatus::Running => "has not started".to_string(),
+            GraphCheckpointStatus::Succeeded => {
+                "never ran: the recorded run did not include it".to_string()
+            }
+            _ => "never ran: the run stopped before it started".to_string(),
+        },
+    }
+}
+
+/// The verify step named by a Graph verify failure summary, which starts
+/// with `verify[<index>]` or `verify[<index>:<phase>]`.
+fn verify_step(summary: &str, task: Option<&TaskDef>) -> Option<VerifyStepInfo> {
+    static LABEL: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"^verify\[(\d+)(?::([^\]]*))?\]").expect("valid regex"));
+    let captures = LABEL.captures(summary.trim_start())?;
+    let index: usize = captures.get(1)?.as_str().parse().ok()?;
+    Some(VerifyStepInfo {
+        index,
+        phase: captures
+            .get(2)
+            .map(|phase| phase.as_str().to_string())
+            .filter(|phase| !phase.is_empty()),
+        command: task
+            .and_then(|task| task.verify.get(index))
+            .map(|step| step.command.clone()),
+    })
+}
+
+/// Classify a recorded Graph gate failure by the class the gate recorded.
+fn classify_recorded_failure(record: &GateFailureRecord) -> Vec<ClassifiedError> {
+    let class = match record.primary_class {
+        FailureClass::SyntaxError
+        | FailureClass::ImportError
+        | FailureClass::TypeError
+        | FailureClass::MissingDependencyOrFeature
+        | FailureClass::BorrowOrLifetime => ErrorClass::CompileError,
+        FailureClass::TestExpectationFailure => ErrorClass::TestFailure,
+        _ if mentions_timeout(&record.summary) => ErrorClass::Timeout,
+        _ => ErrorClass::Unknown,
+    };
+    vec![ClassifiedError {
+        error_class: class,
+        file: None,
+        line: None,
+        error_summary: truncate(&record.summary, 200),
+        suggestion: suggestion_for(class),
+    }]
+}
+
+/// Recovery steps for a Graph run.
+fn graph_recovery_suggestions(
+    status: GraphCheckpointStatus,
+    tasks: &[TaskDiagnosis],
+    resume: Option<&ResumeInfo>,
+    git_state: Option<&GitStateInfo>,
+) -> Vec<String> {
+    let mut suggestions = Vec::new();
+    let unfinished: Vec<&TaskDiagnosis> = tasks
+        .iter()
+        .filter(|task| matches!(task.state, TaskState::Failed | TaskState::Incomplete))
+        .collect();
+    for task in &unfinished {
+        let task_id = &task.task_id;
+        if task.timed_out_attempts > 0 {
+            suggestions.push(format!(
+                "{task_id}: {} attempt{} timed out; raise the task's `timeout_secs` or split the task.",
+                task.timed_out_attempts,
+                plural(task.timed_out_attempts)
+            ));
+        }
+        if let Some(failure) = task.gate_failures.last() {
+            let step = failure.verify_step.as_ref().map_or_else(
+                || "a verify step".to_string(),
+                |step| format!("verify step {}", step.label()),
+            );
+            let class = enum_label(&failure.primary_class);
+            match failure.recommended_action {
+                GateFailureAction::Blocked => suggestions.push(format!(
+                    "{task_id}: {step} is blocked by its environment ({class}); fix that before running the task again."
+                )),
+                GateFailureAction::NeedsReplan => suggestions.push(format!(
+                    "{task_id}: {step} failed in a way the gate says needs a revised plan ({class})."
+                )),
+                GateFailureAction::NeedsHuman => suggestions.push(format!(
+                    "{task_id}: {step} needs human input before the task runs again ({class})."
+                )),
+                GateFailureAction::Retry => {}
+            }
+            if let Some(command) = failure
+                .verify_step
+                .as_ref()
+                .and_then(|step| step.command.as_deref())
+            {
+                suggestions.push(format!(
+                    "{task_id}: reproduce the failing {step} with `{command}`"
+                ));
+            }
+        } else if task.failed_attempts > 0 && task.last_error.is_none() {
+            suggestions.push(format!(
+                "{task_id}: no failure reason was recorded for its failed attempts; check the `roko plan run` output of this run."
+            ));
+        }
+    }
+    if status == GraphCheckpointStatus::Failed && unfinished.is_empty() {
+        suggestions.push(
+            "No task failure was recorded for this run, so the plan failed outside its tasks; check the `roko plan run` output."
+                .to_string(),
+        );
+    }
+    if status == GraphCheckpointStatus::Running {
+        suggestions.push(
+            "The checkpoint still says `running`. If no `roko plan run` is active for this plan, the run stopped without recording an outcome."
+                .to_string(),
+        );
+    }
+    if status != GraphCheckpointStatus::Succeeded
+        && let Some(resume) = resume
+    {
+        suggestions.push(resume_suggestion(resume));
+    }
+    if git_state.is_some_and(|git| git.has_uncommitted_changes) {
+        suggestions.push(
+            "Uncommitted changes detected. Consider committing or stashing before retry."
+                .to_string(),
+        );
+    }
+    if suggestions.is_empty() && status == GraphCheckpointStatus::Succeeded {
+        suggestions.push("Plan completed successfully. No recovery needed.".to_string());
+    }
+    suggestions
+}
+
+/// How re-running the plan continues from its checkpoint.
+fn resume_suggestion(resume: &ResumeInfo) -> String {
+    let command = &resume.command;
+    let preview = &resume.preview;
+    let tasks = |tasks: &[String]| {
+        if tasks.is_empty() {
+            "nothing".to_string()
+        } else {
+            tasks.join(", ")
+        }
+    };
+    let reason = preview.reason.as_deref().unwrap_or("see `--dry-run`");
+    match preview.action {
+        ResumeAction::Resume => format!(
+            "Resume with `{command}`: it restores {} and runs {}.",
+            tasks(&preview.restored_tasks),
+            tasks(&preview.tasks_to_run)
+        ),
+        ResumeAction::Refuse => format!("`{command}` cannot resume this checkpoint: {reason}."),
+        ResumeAction::Archive => {
+            format!("`{command}` archives this checkpoint and runs every task: {reason}.")
+        }
+        ResumeAction::Start => format!("Run the plan with `{command}`."),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Runner-v2 snapshots
+// ---------------------------------------------------------------------------
+
+/// Report from the Runner-v2 snapshot, for a plan without a Graph checkpoint.
+fn build_legacy_report(
+    workdir: &Path,
+    plan_id: &str,
+    projection: &DurableRunnerProjection,
+) -> Result<DiagnoseReport> {
     // ── Extract executor plan states ────────────────────────────────────
     let plan_states = projection
         .executor
         .get("plan_states")
         .and_then(Value::as_object);
 
-    let plan_state = plan_states.and_then(|states| states.get(plan_id));
-
-    if plan_state.is_none() {
+    let Some(plan_state) = plan_states.and_then(|states| states.get(plan_id)) else {
         let available: Vec<String> = plan_states
             .map(|states| states.keys().cloned().collect())
             .unwrap_or_default();
         bail!(
-            "Plan '{}' not found in state snapshot. Available plans: [{}]",
+            "Plan '{}' not found in state snapshot. Available plans: [{}].{}",
             plan_id,
-            available.join(", ")
+            available.join(", "),
+            checkpointed_plans_hint(workdir)
         );
-    }
-    // SAFETY: we just checked `plan_state.is_none()` above and bailed.
-    let plan_state = plan_state.expect("checked above");
+    };
 
     // ── Phase / status ──────────────────────────────────────────────────
     let phase = plan_state
@@ -213,6 +1137,7 @@ fn build_report(workdir: &Path, plan_id: &str, _verbose: bool) -> Result<Diagnos
                     };
 
                     Some(GateResultInfo {
+                        task_id: None,
                         gate_name,
                         rung: v.get("rung")?.as_u64()? as u32,
                         passed,
@@ -313,13 +1238,19 @@ fn build_report(workdir: &Path, plan_id: &str, _verbose: bool) -> Result<Diagnos
     Ok(DiagnoseReport {
         plan_id: plan_id.to_string(),
         status,
+        source: ReportSource::RunnerSnapshot,
         phase,
         iteration,
+        graph_run: None,
+        plan_dir: None,
         failed_task,
+        tasks: Vec::new(),
         gate_results,
         run_state,
+        resume: None,
         git_state,
         suggested_recovery,
+        notes: Vec::new(),
         total_cost_usd,
     })
 }
@@ -439,9 +1370,11 @@ fn classify_output_lines(output: &str) -> Vec<ClassifiedError> {
     let re_test = Regex::new(r"^test .+ \.\.\. FAILED").expect("valid regex");
     // Regex: `thread '...' panicked at '...'`
     let re_panic = Regex::new(r"thread '.+' panicked at").expect("valid regex");
-    // Regex: linker error patterns
-    let re_link = Regex::new(r"(?i)(linker|ld|undefined (reference|symbol)|symbol\(s\) not found)")
-        .expect("valid regex");
+    // Regex: linker error patterns. Whole words only, so `build` or `world`
+    // is not read as `ld`.
+    let re_link =
+        Regex::new(r"(?i)\b(linker|ld|undefined (reference|symbol)|symbol\(s\) not found)\b")
+            .expect("valid regex");
 
     let mut errors: Vec<ClassifiedError> = Vec::new();
 
@@ -554,12 +1487,85 @@ fn suggestion_for(class: ErrorClass) -> Option<String> {
     )
 }
 
+/// The first `max` characters of `s`, marked with `...` when cut.
 fn truncate(s: &str, max: usize) -> String {
-    if s.len() <= max {
-        s.to_string()
-    } else {
-        format!("{}...", &s[..max])
+    match s.char_indices().nth(max) {
+        Some((cut, _)) => format!("{}...", &s[..cut]),
+        None => s.to_string(),
     }
+}
+
+/// Whether a failure reason says the attempt or step ran out of time.
+fn mentions_timeout(text: &str) -> bool {
+    text.to_ascii_lowercase().contains("timed out")
+}
+
+/// The snake_case name a gate failure enum serializes to.
+fn enum_label(value: &impl Serialize) -> String {
+    serde_json::to_value(value)
+        .ok()
+        .and_then(|value| value.as_str().map(str::to_string))
+        .unwrap_or_default()
+}
+
+// ---------------------------------------------------------------------------
+// Log helpers
+// ---------------------------------------------------------------------------
+
+/// Every line of a JSONL file that parses as `T`. Blank and malformed lines
+/// are skipped; a missing file has no records.
+fn read_jsonl_lossy<T: DeserializeOwned>(path: &Path) -> Vec<T> {
+    let Ok(file) = std::fs::File::open(path) else {
+        return Vec::new();
+    };
+    std::io::BufReader::new(file)
+        .split(b'\n')
+        .map_while(Result::ok)
+        .filter_map(|line| serde_json::from_slice(&line).ok())
+        .collect()
+}
+
+/// Plan an episode belongs to; Graph task dispatch records it in `extra`.
+fn episode_plan_id(episode: &Episode) -> Option<&str> {
+    episode.extra.get("plan_id").and_then(Value::as_str)
+}
+
+/// An episode's id: `id`, else the deprecated `episode_id`.
+fn episode_id(episode: &Episode) -> String {
+    if episode.id.is_empty() {
+        episode.episode_id.clone()
+    } else {
+        episode.id.clone()
+    }
+}
+
+/// Unix milliseconds of an RFC 3339 timestamp.
+fn rfc3339_ms(timestamp: &str) -> Option<i64> {
+    DateTime::parse_from_rfc3339(timestamp)
+        .ok()
+        .map(|at| at.timestamp_millis())
+}
+
+/// RFC 3339 UTC form of Unix milliseconds.
+fn ms_to_rfc3339(ms: u128) -> Option<String> {
+    DateTime::<Utc>::from_timestamp_millis(i64::try_from(ms).ok()?)
+        .map(|at| at.to_rfc3339_opts(SecondsFormat::Millis, true))
+}
+
+fn micro_to_usd(micro_usd: u64) -> f64 {
+    micro_usd as f64 / 1_000_000.0
+}
+
+/// `path` relative to `workdir` when it lies inside it.
+fn relative_display(workdir: &Path, path: &Path) -> String {
+    path.strip_prefix(workdir)
+        .unwrap_or(path)
+        .display()
+        .to_string()
+}
+
+fn plural(count: usize) -> &'static str {
+    if count == 1 { "" } else { "s" }
 }
 
 // ---------------------------------------------------------------------------
@@ -569,45 +1575,23 @@ fn truncate(s: &str, max: usize) -> String {
 /// Read `.roko/episodes.jsonl` and return up to 5 episode IDs whose
 /// `task_id` matches the given failed task. Returns most-recent-last.
 fn collect_episode_ids(workdir: &Path, task_id: &str) -> Vec<String> {
-    let path = workdir.join(".roko").join("episodes.jsonl");
-    let file = match std::fs::File::open(&path) {
-        Ok(f) => f,
-        Err(_) => return Vec::new(),
-    };
-    let reader = std::io::BufReader::new(file);
-
-    let mut ids: Vec<String> = Vec::new();
-    for line_result in reader.lines() {
-        let line = match line_result {
-            Ok(l) => l,
-            Err(_) => continue,
-        };
-        if line.trim().is_empty() {
-            continue;
-        }
-        // Lightweight: parse only the fields we need.
-        let val: Value = match serde_json::from_str(&line) {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-        let ep_task = val.get("task_id").and_then(Value::as_str).unwrap_or("");
-        if ep_task == task_id {
+    let mut ids: Vec<String> =
+        read_jsonl_lossy::<Value>(&RokoLayout::for_project(workdir).episodes_path())
+            .iter()
+            .filter(|episode| episode.get("task_id").and_then(Value::as_str) == Some(task_id))
             // Prefer `id`; fall back to deprecated `episode_id`.
-            let ep_id = val
-                .get("id")
-                .or_else(|| val.get("episode_id"))
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_string();
-            if !ep_id.is_empty() {
-                ids.push(ep_id);
-            }
-        }
-    }
+            .filter_map(|episode| {
+                episode
+                    .get("id")
+                    .or_else(|| episode.get("episode_id"))
+                    .and_then(Value::as_str)
+            })
+            .filter(|id| !id.is_empty())
+            .map(String::from)
+            .collect();
 
     // Keep only the last 5 (most recent).
-    let start = ids.len().saturating_sub(5);
-    ids[start..].to_vec()
+    ids.split_off(ids.len().saturating_sub(FAILED_TASK_EPISODE_IDS))
 }
 
 // ---------------------------------------------------------------------------
@@ -618,38 +1602,17 @@ fn collect_episode_ids(workdir: &Path, task_id: &str) -> Vec<String> {
 /// `plan_id` matches. Returns `None` when no matching records exist or
 /// the file is absent.
 fn collect_total_cost_usd(workdir: &Path, plan_id: &str) -> Option<f64> {
-    let path = workdir.join(".roko").join("learn").join("efficiency.jsonl");
-    let file = match std::fs::File::open(&path) {
-        Ok(f) => f,
-        Err(_) => return None,
-    };
-    let reader = std::io::BufReader::new(file);
-
-    let mut total: f64 = 0.0;
-    let mut found = false;
-
-    for line_result in reader.lines() {
-        let line = match line_result {
-            Ok(l) => l,
-            Err(_) => continue,
-        };
-        if line.trim().is_empty() {
-            continue;
-        }
-        let val: Value = match serde_json::from_str(&line) {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-        let ep_plan = val.get("plan_id").and_then(Value::as_str).unwrap_or("");
-        if ep_plan == plan_id
-            && let Some(cost) = val.get("cost_usd").and_then(Value::as_f64)
-        {
-            total += cost;
-            found = true;
-        }
+    let costs: Vec<f64> =
+        read_jsonl_lossy::<Value>(&RokoLayout::for_project(workdir).efficiency_path())
+            .iter()
+            .filter(|event| event.get("plan_id").and_then(Value::as_str) == Some(plan_id))
+            .filter_map(|event| event.get("cost_usd").and_then(Value::as_f64))
+            .collect();
+    if costs.is_empty() {
+        None
+    } else {
+        Some(costs.iter().sum())
     }
-
-    if found { Some(total) } else { None }
 }
 
 // ---------------------------------------------------------------------------
@@ -750,6 +1713,7 @@ mod tests {
     #[test]
     fn recovery_suggestions_compile_failure() {
         let gates = vec![GateResultInfo {
+            task_id: None,
             gate_name: "compile:cargo".into(),
             rung: 1,
             passed: false,
@@ -777,15 +1741,6 @@ mod tests {
         };
         let suggestions = build_recovery_suggestions("failed", None, &[], Some(&git));
         assert!(suggestions.iter().any(|s| s.contains("Uncommitted")));
-    }
-
-    #[test]
-    fn no_snapshot_gives_helpful_error() {
-        let tmp = tempfile::tempdir().unwrap();
-        let result = build_report(tmp.path(), "nonexistent", false);
-        assert!(result.is_err());
-        let err = result.unwrap_err().to_string();
-        assert!(err.contains("No state snapshot found"));
     }
 
     // ── ClassifiedError tests ────────────────────────────────────────
@@ -850,6 +1805,12 @@ warning: unused variable: `x`";
     }
 
     #[test]
+    fn classify_words_containing_ld_are_not_link_errors() {
+        let output = "cargo build of hello-world held the old build lock";
+        assert!(classify_output_lines(output).is_empty());
+    }
+
+    #[test]
     fn classify_fallback_from_summary_when_no_output() {
         let errors = classify_gate_errors("compile:cargo", "build failed with 3 errors", "");
         assert_eq!(errors.len(), 1);
@@ -876,6 +1837,13 @@ warning: unused variable: `x`";
         // classify_output_lines returns nothing for benign output.
         let errors = classify_output_lines("Compiling roko-cli v0.1.0\nFinished dev [unoptimized]");
         assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn truncate_cuts_on_character_boundaries() {
+        assert_eq!(truncate("short", 200), "short");
+        assert_eq!(truncate("✗✗✗✗", 2), "✗✗...");
+        assert_eq!(truncate("abcd", 4), "abcd");
     }
 
     // ── Episode ID tests ─────────────────────────────────────────────
@@ -991,13 +1959,30 @@ warning: unused variable: `x`";
 
     // ── Serialization tests ──────────────────────────────────────────
 
+    fn empty_report(status: &str) -> DiagnoseReport {
+        DiagnoseReport {
+            plan_id: "test-plan".into(),
+            status: status.into(),
+            source: ReportSource::RunnerSnapshot,
+            phase: Some("done".into()),
+            iteration: Some(1),
+            graph_run: None,
+            plan_dir: None,
+            failed_task: None,
+            tasks: Vec::new(),
+            gate_results: vec![],
+            run_state: None,
+            resume: None,
+            git_state: None,
+            suggested_recovery: vec![],
+            notes: Vec::new(),
+            total_cost_usd: None,
+        }
+    }
+
     #[test]
     fn report_serializes_with_new_fields() {
         let report = DiagnoseReport {
-            plan_id: "test-plan".into(),
-            status: "failed".into(),
-            phase: Some("failed".into()),
-            iteration: Some(1),
             failed_task: Some(FailedTaskInfo {
                 task_id: "task-1".into(),
                 last_error: Some("compile error".into()),
@@ -1005,6 +1990,7 @@ warning: unused variable: `x`";
                 episode_ids: vec!["ep-1".into(), "ep-2".into()],
             }),
             gate_results: vec![GateResultInfo {
+                task_id: None,
                 gate_name: "compile:cargo".into(),
                 rung: 1,
                 passed: false,
@@ -1018,10 +2004,8 @@ warning: unused variable: `x`";
                     suggestion: Some("Fix the type error".into()),
                 }],
             }],
-            run_state: None,
-            git_state: None,
-            suggested_recovery: vec![],
             total_cost_usd: Some(0.42),
+            ..empty_report("failed")
         };
 
         let json = serde_json::to_string_pretty(&report).expect("serialize");
@@ -1045,23 +2029,555 @@ warning: unused variable: `x`";
         assert_eq!(classified[0]["error_class"].as_str(), Some("compile_error"));
         assert_eq!(classified[0]["file"].as_str(), Some("src/main.rs"));
         assert_eq!(classified[0]["line"].as_u64(), Some(42));
+        assert_eq!(parsed["source"].as_str(), Some("runner_snapshot"));
+        assert!(parsed.get("tasks").is_none());
     }
 
     #[test]
     fn report_omits_null_total_cost() {
-        let report = DiagnoseReport {
-            plan_id: "test-plan".into(),
-            status: "completed".into(),
-            phase: Some("done".into()),
-            iteration: Some(1),
-            failed_task: None,
-            gate_results: vec![],
-            run_state: None,
-            git_state: None,
-            suggested_recovery: vec![],
-            total_cost_usd: None,
-        };
-        let json = serde_json::to_string(&report).expect("serialize");
+        let json = serde_json::to_string(&empty_report("completed")).expect("serialize");
         assert!(!json.contains("total_cost_usd"));
+    }
+
+    // ── Graph runs ───────────────────────────────────────────────────
+
+    use crate::graph_checkpoint::start_plan_checkpoint;
+    use roko_core::{Body, Kind, Signal};
+
+    const PLAN_ID: &str = "demo";
+
+    /// T2 has two verify steps; T3 waits on T2; T4 is independent.
+    const PLAN_TOML: &str = r#"
+[meta]
+plan = "demo"
+
+[[task]]
+id = "T1"
+title = "Write the parser"
+
+[[task]]
+id = "T2"
+title = "Wire the parser"
+depends_on = ["T1"]
+
+[[task.verify]]
+phase = "structural"
+command = "test -f src/parser.rs"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p demo --lib parser -- --include-ignored --test-threads 1 a_filter_long_enough_that_the_recorded_summary_cuts_it_off"
+
+[[task]]
+id = "T3"
+title = "Document the parser"
+depends_on = ["T2"]
+
+[[task]]
+id = "T4"
+title = "Tidy the changelog"
+"#;
+
+    /// A workspace with the plan inside a plan set, as `plans/<set>/<plan>`.
+    fn workspace() -> tempfile::TempDir {
+        let workspace = tempfile::tempdir().expect("tempdir");
+        let plan_dir = workspace.path().join("plans/programme").join(PLAN_ID);
+        std::fs::create_dir_all(&plan_dir).expect("plan dir");
+        std::fs::write(plan_dir.join("tasks.toml"), PLAN_TOML).expect("tasks.toml");
+        std::fs::create_dir_all(workspace.path().join(".roko/learn")).expect("learn dir");
+        workspace
+    }
+
+    fn passed_output() -> Vec<Signal> {
+        let mut signals = vec![
+            Signal::builder(Kind::AgentOutput)
+                .body(Body::text("done"))
+                .build(),
+        ];
+        TaskGateVerdict::Passed.stamp(&mut signals);
+        signals
+    }
+
+    /// Run the plan's checkpoint to `status` with `recorded` tasks completed
+    /// and `spent_micro_usd` in its cost ledger.
+    fn record_run(
+        workdir: &Path,
+        recorded: &[&str],
+        spent_micro_usd: u64,
+        status: GraphCheckpointStatus,
+    ) {
+        let dir = workdir.join("plans/programme").join(PLAN_ID);
+        let plan = Plan {
+            id: PLAN_ID.to_string(),
+            tasks: TasksFile::parse(&dir.join("tasks.toml")).expect("parse tasks.toml"),
+            dir,
+            prd_excerpt: String::new(),
+        };
+        let mut checkpoint = start_plan_checkpoint(workdir, &plan).expect("checkpoint");
+        let mut recorder = checkpoint.take_recorder();
+        for task_id in recorded {
+            recorder
+                .record(PLAN_ID, task_id, 0, passed_output())
+                .expect("record");
+        }
+        checkpoint
+            .take_cost_ledger()
+            .persist(spent_micro_usd, 0)
+            .expect("cost ledger");
+        checkpoint.finish_with_status(status).expect("finish");
+    }
+
+    fn at(timestamp: &str) -> DateTime<Utc> {
+        DateTime::parse_from_rfc3339(timestamp)
+            .expect("timestamp")
+            .with_timezone(&Utc)
+    }
+
+    fn attempt(task_id: &str, timestamp: &str, success: bool, cost_usd: f64) -> CostRecord {
+        CostRecord {
+            timestamp: timestamp.to_string(),
+            model: "claude-sonnet-4-6".into(),
+            provider: "claude_cli".into(),
+            role: "implementer".into(),
+            plan_id: PLAN_ID.into(),
+            task_id: task_id.into(),
+            complexity_band: "focused".into(),
+            input_tokens: 100,
+            output_tokens: 50,
+            cached_tokens: 0,
+            cost_usd,
+            duration_ms: 600_500,
+            success,
+            session_id: String::new(),
+        }
+    }
+
+    fn episode(
+        id: &str,
+        plan_id: &str,
+        task_id: &str,
+        timestamp: &str,
+        failure_reason: Option<&str>,
+    ) -> Episode {
+        let mut episode = Episode::new(task_id, task_id);
+        episode.id = id.to_string();
+        episode.timestamp = at(timestamp);
+        episode.success = failure_reason.is_none();
+        episode.failure_reason = failure_reason.map(str::to_string);
+        episode
+            .extra
+            .insert("plan_id".into(), Value::String(plan_id.to_string()));
+        episode
+    }
+
+    fn gate_failure(task_id: &str, timestamp: &str, summary: &str) -> GateFailureRecord {
+        GateFailureRecord {
+            plan_id: PLAN_ID.into(),
+            task_id: task_id.into(),
+            gate_name: "graph-verify".into(),
+            rung: 0,
+            failure_kind: GateFailureKind::Resource,
+            primary_class: FailureClass::ExternalEnvironment,
+            summary: summary.into(),
+            recommended_action: GateFailureAction::Blocked,
+            cargo_fix_candidate: false,
+            replan_candidate: false,
+            error_count: 1,
+            warning_count: 0,
+            timestamp: at(timestamp),
+        }
+    }
+
+    fn write_jsonl<T: Serialize>(path: &Path, rows: &[T]) {
+        let lines: Vec<String> = rows
+            .iter()
+            .map(|row| serde_json::to_string(row).expect("serialize row"))
+            .collect();
+        std::fs::write(path, lines.join("\n") + "\n").expect("write jsonl");
+    }
+
+    fn task<'a>(report: &'a DiagnoseReport, task_id: &str) -> &'a TaskDiagnosis {
+        report
+            .tasks
+            .iter()
+            .find(|task| task.task_id == task_id)
+            .unwrap_or_else(|| panic!("task {task_id} in report"))
+    }
+
+    /// T1 completed; T2 timed out once, then failed its test step; T3 never
+    /// ran behind T2; T4 never started. An earlier run's attempt and another
+    /// plan's T2 episode must stay out of the report.
+    fn failed_run() -> tempfile::TempDir {
+        let workspace = workspace();
+        let root = workspace.path();
+        record_run(root, &["T1"], 1_250_000, GraphCheckpointStatus::Failed);
+        // An earlier run of the plan was archived at 07:00.
+        let archived_at = at("2026-09-29T07:00:00Z").timestamp_millis();
+        std::fs::write(
+            root.join(GRAPH_STATE_DIR)
+                .join(PLAN_ID)
+                .join(format!("checkpoint.json.bak.{archived_at}")),
+            "{}",
+        )
+        .expect("archived checkpoint");
+
+        let learn = root.join(".roko/learn");
+        write_jsonl(
+            &learn.join("costs.jsonl"),
+            &[
+                attempt("T2", "2026-09-28T09:00:00+00:00", false, 0.5),
+                attempt("T1", "2026-09-29T07:10:00.000+00:00", true, 0.25),
+                attempt("T2", "2026-09-29T07:20:00.100+00:00", false, 0.0),
+                attempt("T2", "2026-09-29T07:30:00.100+00:00", false, 1.0),
+            ],
+        );
+        write_jsonl(
+            &learn.join("gate-failures.jsonl"),
+            &[gate_failure(
+                "T2",
+                "2026-09-29T07:30:00.090Z",
+                "verify[1:test] (`cargo test -p demo --lib parser -- --include-ignored --test-threads 1 a_filter_long",
+            )],
+        );
+        write_jsonl(
+            &root.join(".roko/episodes.jsonl"),
+            &[
+                episode("ep-t1", PLAN_ID, "T1", "2026-09-29T07:10:00.004Z", None),
+                episode(
+                    "ep-t2-a",
+                    PLAN_ID,
+                    "T2",
+                    "2026-09-29T07:20:00.095Z",
+                    Some("provider: timed out after 600000 ms"),
+                ),
+                episode(
+                    "ep-t2-b",
+                    PLAN_ID,
+                    "T2",
+                    "2026-09-29T07:30:00.095Z",
+                    Some("verify: gate error (graph-verify): 1/2 verify step(s) failed"),
+                ),
+                episode(
+                    "ep-other-plan",
+                    "other-plan",
+                    "T2",
+                    "2026-09-29T07:31:00Z",
+                    Some("provider: other plan"),
+                ),
+            ],
+        );
+        workspace
+    }
+
+    #[test]
+    fn graph_report_explains_a_failed_run() {
+        let workspace = failed_run();
+        let report = build_report(workspace.path(), PLAN_ID, false).expect("report");
+
+        assert_eq!(report.source, ReportSource::GraphCheckpoint);
+        assert_eq!(report.status, "failed");
+        assert_eq!(report.plan_dir.as_deref(), Some("plans/programme/demo"));
+        let graph_run = report.graph_run.as_ref().expect("graph run");
+        assert_eq!(graph_run.checkpoint_status, GraphCheckpointStatus::Failed);
+        assert!(graph_run.run_id.starts_with("graph-demo-"));
+        assert_eq!(graph_run.spent_usd, Some(1.25));
+        assert_eq!(
+            graph_run.earlier_runs_before.as_deref(),
+            Some("2026-09-29T07:00:00.000Z")
+        );
+
+        let states: Vec<(&str, TaskState)> = report
+            .tasks
+            .iter()
+            .map(|task| (task.task_id.as_str(), task.state))
+            .collect();
+        assert_eq!(
+            states,
+            [
+                ("T1", TaskState::Completed),
+                ("T2", TaskState::Failed),
+                ("T3", TaskState::NeverRan),
+                ("T4", TaskState::NeverRan),
+            ]
+        );
+
+        let t1 = task(&report, "T1");
+        assert_eq!(t1.gate_verdict, Some(TaskGateVerdict::Passed));
+        assert_eq!(t1.attempt_count, 1);
+        assert!(t1.attempts.is_empty(), "completed history needs --verbose");
+
+        // The attempt from before the archive is left out.
+        let t2 = task(&report, "T2");
+        assert_eq!(t2.attempt_count, 2);
+        assert_eq!(t2.failed_attempts, 2);
+        assert_eq!(t2.timed_out_attempts, 1);
+        assert!(t2.attempts[0].timed_out);
+        assert_eq!(t2.attempts[0].episode_id.as_deref(), Some("ep-t2-a"));
+        assert_eq!(
+            t2.attempts[1].failure_reason.as_deref(),
+            Some("verify: gate error (graph-verify): 1/2 verify step(s) failed")
+        );
+        assert_eq!(t2.episode_ids, ["ep-t2-a", "ep-t2-b"]);
+        let step = t2.gate_failures[0].verify_step.as_ref().expect("step");
+        assert_eq!(step.index, 1);
+        assert_eq!(step.phase.as_deref(), Some("test"));
+        assert!(
+            step.command
+                .as_deref()
+                .is_some_and(|command| command.ends_with("cuts_it_off")),
+            "the full command comes from tasks.toml"
+        );
+        assert!(
+            t2.last_error
+                .as_deref()
+                .is_some_and(|error| error.starts_with("verify[1:test]"))
+        );
+        assert!(
+            t2.reason
+                .starts_with("failed after 2 attempts (1 timed out)")
+        );
+
+        let t3 = task(&report, "T3");
+        assert_eq!(t3.blocked_by, ["T2"]);
+        assert_eq!(t3.reason, "never ran: dependency T2 failed");
+        let t4 = task(&report, "T4");
+        assert!(t4.blocked_by.is_empty());
+        assert_eq!(t4.reason, "never ran: the run stopped before it started");
+
+        let failed = report.failed_task.as_ref().expect("failed task");
+        assert_eq!(failed.task_id, "T2");
+        assert_eq!(report.gate_results.len(), 1);
+        assert_eq!(report.gate_results[0].task_id.as_deref(), Some("T2"));
+
+        let run_state = report.run_state.as_ref().expect("run state");
+        assert_eq!(run_state.tasks_total, 4);
+        assert_eq!(run_state.completed_tasks, ["T1"]);
+        assert_eq!(run_state.failed_tasks, ["T2"]);
+        assert_eq!(run_state.total_agent_calls, 3);
+        assert!((run_state.total_cost_usd - 1.25).abs() < 1e-9);
+
+        let resume = report.resume.as_ref().expect("resume preview");
+        assert_eq!(resume.command, "roko plan run plans/programme/demo");
+        assert_eq!(resume.preview.action, ResumeAction::Resume);
+        assert_eq!(resume.preview.restored_tasks, ["T1"]);
+        assert_eq!(resume.preview.tasks_to_run, ["T2", "T3", "T4"]);
+
+        let suggestions = report.suggested_recovery.join("\n");
+        assert!(suggestions.contains("T2: 1 attempt timed out"));
+        assert!(suggestions.contains("blocked by its environment (external_environment)"));
+        assert!(suggestions.contains("cuts_it_off`"));
+        assert!(suggestions.contains(
+            "Resume with `roko plan run plans/programme/demo`: it restores T1 and runs T2, T3, T4."
+        ));
+    }
+
+    #[test]
+    fn graph_report_serializes_tasks_and_resume() {
+        let workspace = failed_run();
+        let report = build_report(workspace.path(), PLAN_ID, false).expect("report");
+        let json = serde_json::to_value(&report).expect("serialize");
+
+        assert_eq!(json["source"], "graph_checkpoint");
+        assert_eq!(json["graph_run"]["checkpoint_status"], "failed");
+        assert_eq!(json["tasks"][1]["state"], "failed");
+        assert_eq!(json["tasks"][2]["state"], "never_ran");
+        assert_eq!(
+            json["tasks"][1]["gate_failures"][0]["primary_class"],
+            "external_environment"
+        );
+        assert_eq!(json["resume"]["action"], "resume");
+        assert_eq!(json["resume"]["tasks_to_run"][0], "T2");
+        assert!(json["tasks"][0].get("attempts").is_none());
+    }
+
+    #[test]
+    fn graph_report_for_a_succeeded_run_counts_retries() {
+        let workspace = workspace();
+        let root = workspace.path();
+        record_run(
+            root,
+            &["T1", "T2", "T3", "T4"],
+            400_000,
+            GraphCheckpointStatus::Succeeded,
+        );
+        write_jsonl(
+            &root.join(".roko/learn/costs.jsonl"),
+            &[
+                attempt("T2", "2026-09-29T07:20:00+00:00", false, 0.0),
+                attempt("T2", "2026-09-29T07:40:00+00:00", true, 0.4),
+            ],
+        );
+        write_jsonl(
+            &root.join(".roko/episodes.jsonl"),
+            &[episode(
+                "ep-1",
+                PLAN_ID,
+                "T2",
+                "2026-09-29T07:20:00.010Z",
+                Some("provider: timed out after 600000 ms"),
+            )],
+        );
+
+        let report = build_report(root, PLAN_ID, false).expect("report");
+        assert_eq!(report.status, "completed");
+        assert!(report.failed_task.is_none());
+        assert!(
+            report
+                .tasks
+                .iter()
+                .all(|task| task.state == TaskState::Completed)
+        );
+        let t2 = task(&report, "T2");
+        assert_eq!(
+            (t2.attempt_count, t2.failed_attempts, t2.timed_out_attempts),
+            (2, 1, 1)
+        );
+        assert!(t2.attempts.is_empty());
+        assert_eq!(
+            t2.reason,
+            "completed after 1 failed attempt (1 timed out); its verify steps passed"
+        );
+        assert_eq!(
+            report.suggested_recovery,
+            ["Plan completed successfully. No recovery needed."]
+        );
+
+        let verbose = build_report(root, PLAN_ID, true).expect("verbose report");
+        let t2 = task(&verbose, "T2");
+        assert_eq!(t2.attempts.len(), 2);
+        assert_eq!(t2.episode_ids, ["ep-1"]);
+    }
+
+    #[test]
+    fn graph_report_without_the_plan_definition_uses_recorded_tasks() {
+        let workspace = failed_run();
+        let root = workspace.path();
+        std::fs::remove_dir_all(root.join("plans")).expect("remove plans");
+
+        let report = build_report(root, PLAN_ID, false).expect("report");
+        assert!(report.plan_dir.is_none());
+        assert!(report.resume.is_none());
+        assert!(
+            report
+                .notes
+                .iter()
+                .any(|note| note.contains("was not found"))
+        );
+        let states: Vec<(&str, TaskState)> = report
+            .tasks
+            .iter()
+            .map(|task| (task.task_id.as_str(), task.state))
+            .collect();
+        assert_eq!(
+            states,
+            [("T1", TaskState::Completed), ("T2", TaskState::Failed)]
+        );
+        assert!(task(&report, "T2").title.is_none());
+    }
+
+    #[test]
+    fn graph_report_of_an_interrupted_run_marks_attempted_tasks_incomplete() {
+        let workspace = workspace();
+        let root = workspace.path();
+        record_run(root, &["T1"], 0, GraphCheckpointStatus::Interrupted);
+        write_jsonl(
+            &root.join(".roko/learn/costs.jsonl"),
+            &[attempt("T2", "2026-09-29T07:20:00+00:00", false, 0.1)],
+        );
+
+        let report = build_report(root, PLAN_ID, false).expect("report");
+        assert_eq!(report.status, "interrupted");
+        assert_eq!(task(&report, "T2").state, TaskState::Incomplete);
+        assert_eq!(
+            task(&report, "T3").reason,
+            "never ran: dependency T2 did not complete"
+        );
+        assert!(report.failed_task.is_none());
+    }
+
+    #[test]
+    fn verify_step_reads_the_label_and_the_full_command() {
+        let tasks = TasksFile::parse_str(PLAN_TOML).expect("parse");
+        let t2 = tasks.tasks.iter().find(|task| task.id == "T2");
+        let step = verify_step(
+            "verify[0:structural] (`test -f src/parser.rs`): missing",
+            t2,
+        )
+        .expect("step");
+        assert_eq!(step.index, 0);
+        assert_eq!(step.phase.as_deref(), Some("structural"));
+        assert_eq!(step.command.as_deref(), Some("test -f src/parser.rs"));
+        let bare = verify_step("verify[3] (`true`)", t2).expect("bare label");
+        assert_eq!((bare.index, bare.phase, bare.command), (3, None, None));
+        assert!(verify_step("gate error: something else", t2).is_none());
+    }
+
+    // ── Fallbacks ────────────────────────────────────────────────────
+
+    #[test]
+    fn a_plan_without_a_graph_checkpoint_uses_the_runner_snapshot() {
+        let workspace = tempfile::tempdir().expect("tempdir");
+        let state = workspace.path().join(".roko/state");
+        std::fs::create_dir_all(&state).expect("state dir");
+        let executor = serde_json::json!({
+            "schema_version": 1,
+            "plan_states": {
+                "legacy-plan": {
+                    "plan_id": "legacy-plan",
+                    "current_phase": { "kind": "implementing" },
+                    "iteration": 2,
+                    "last_error": "gate compile:cargo failed",
+                    "files_changed": ["src/lib.rs"],
+                    "gate_results": [{
+                        "gate_name": "compile:cargo",
+                        "rung": 1,
+                        "passed": false,
+                        "summary": "3 errors",
+                        "duration_ms": 1200
+                    }]
+                }
+            }
+        });
+        std::fs::write(
+            state.join("executor.json"),
+            serde_json::to_vec(&executor).expect("serialize"),
+        )
+        .expect("executor.json");
+
+        let report = build_report(workspace.path(), "legacy-plan", false).expect("report");
+        assert_eq!(report.source, ReportSource::RunnerSnapshot);
+        assert_eq!(report.status, "failed");
+        assert_eq!(report.iteration, Some(2));
+        let failed = report.failed_task.as_ref().expect("failed task");
+        assert_eq!(
+            failed.last_error.as_deref(),
+            Some("gate compile:cargo failed")
+        );
+        assert_eq!(failed.files_changed, ["src/lib.rs"]);
+        assert_eq!(report.gate_results[0].gate_name, "compile:cargo");
+        assert!(report.graph_run.is_none());
+        assert!(report.tasks.is_empty());
+    }
+
+    #[test]
+    fn missing_run_state_names_both_locations_and_the_checkpointed_plans() {
+        let workspace = tempfile::tempdir().expect("tempdir");
+        let other = workspace.path().join(GRAPH_STATE_DIR).join("other-plan");
+        std::fs::create_dir_all(&other).expect("checkpoint dir");
+        std::fs::write(other.join("checkpoint.json"), "{}").expect("checkpoint");
+
+        let error = build_report(workspace.path(), "nonexistent", false)
+            .expect_err("no run state")
+            .to_string();
+        assert!(
+            error.contains("No run state for plan 'nonexistent'"),
+            "{error}"
+        );
+        assert!(error.contains(".roko/state/graph"), "{error}");
+        assert!(error.contains("state-snapshot.json"), "{error}");
+        assert!(
+            error.contains("Plans with a Graph checkpoint: other-plan."),
+            "{error}"
+        );
     }
 }

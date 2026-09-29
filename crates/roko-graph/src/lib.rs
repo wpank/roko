@@ -68,9 +68,10 @@ pub mod workspace;
 // Re-export primary types at crate root for convenience.
 pub use cell::{Cell, CellContext, CellResources, CellVersion};
 pub use engine::{
-    FlowHandle, FlowStatus, GRAPH_SNAPSHOT_SCHEMA_VERSION, GraphEngine, GraphOutput, GraphSnapshot,
-    GraphSnapshotV2, MergeEnqueuer, MergeRequest, NodeResult, NodeStatus, SerializableNodeStatus,
-    SerializableSignal, ValidatedGraph, default_registry, reconcile_running_status,
+    DispatchStop, FlowHandle, FlowStatus, GRAPH_SNAPSHOT_SCHEMA_VERSION, GraphEngine, GraphOutput,
+    GraphSnapshot, GraphSnapshotV2, MergeEnqueuer, MergeRequest, NodeResult, NodeStatus,
+    SerializableNodeStatus, SerializableSignal, ValidatedGraph, default_registry,
+    reconcile_running_status,
 };
 pub use registry::{CellDescriptor, CellFactory, CellRegistry};
 pub use types::{
@@ -86,7 +87,10 @@ pub use budget::{
 pub use condition::{CompareOp, Condition, evaluate};
 pub use convert::{PlanTaskInfo, plan_to_graph, plan_to_graph_with_endpoints};
 pub use error::Result as GraphResult;
-pub use fingerprint::graph_execution_fingerprint;
+pub use fingerprint::{
+    AuthoredPlan, graph_execution_fingerprint, legacy_graph_execution_fingerprint,
+    plan_graph_fingerprint,
+};
 pub use hot::{
     HotCheckpointError, HotCheckpointOptions, HotGraphCheckpointManifest, HotGraphFailure,
     HotGraphHandle, HotPolicy, LoopLevel, start_hot, start_hot_resumable,

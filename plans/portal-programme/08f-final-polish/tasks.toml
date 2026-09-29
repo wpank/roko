@@ -1,0 +1,494 @@
+[meta]
+plan = "08f-final-polish"
+total = 6
+done = 0
+status = "ready"
+max_parallel = 4
+skip_enrichment = true
+estimated_total_minutes = 170
+
+# Findings of the fourth browser preview (i1, 2026-09-28, against 08e), for the
+# main tree after 08e merged, before 09-acceptance:
+# 1. The transcript tab's count badge is white on indigo, 2.8:1 (fails AA), and
+#    borrows the running hue for a plain count. (The checks badge, white on red,
+#    is 3.0:1.)
+# 2. A failed plan's bar is all red although T01 passed.
+# 3. The alert reads "plan broken completed with task-level failures" — the
+#    server's generic line — and a failed task shows Retry twice (plan header
+#    and task row).
+# 4. The implementer role's orchid #c886ea sits ΔE 24 from running indigo
+#    #8993f0 and reads as running.
+# 5. A failed verify step never says why: the published check output carries
+#    only `$ test -f MISSING.md`.
+#
+# Design decisions (p2, 2026-09-28): count badges are a neutral bone with black
+# text (11.9:1), the failed count red with black text (6.9:1). A bar is a row of
+# state segments: verified green, accepted amber, failed red, running indigo.
+# A failure alert reads "<plan title>: T02 failed (structural check)" and offers
+# Show; the one Retry is the plan header's. A coloured role keeps ≥ 60° and
+# ΔE ≥ 35 from running and ≥ 30° from the other states and info: implementer
+# moves to blush (ΔE 37); the wheel has no room left for a fifth hue, so
+# architect joins scribe in bone. A failed step's published output ends with how
+# it ended — `✗ exit status 1` — after at most 60 lines (16 KiB) of its output,
+# and the checks view shows that ending, with "no output" when nothing printed.
+#
+# Same gate style as 08b-08e: tests in accept/ are copied into the tree by each
+# gate and must pass with their exact count; each failed on the tree its task
+# starts from and passed on a reference implementation (tsc and clippy clean).
+# semantics.accept.test.ts replaces 08e's file of the same name. The main tree's
+# apps/portal/node_modules predates 08b's jsdom, so every portal gate installs
+# when node_modules/jsdom is missing. One production build, in T06.
+
+[[task]]
+id = "T01"
+title = "Keep roles and count badges off the state hues, and style bar segments"
+description = '''
+CSS only; the acceptance test recomputes hue gaps, ΔE, Lab chroma and WCAG
+contrast from the token files.
+
+apps/portal/src/styles/rosedust.css
+- Remove the --orchid primitive (nothing uses it after this task). Re-document
+  --blush as the implementer accent (pink; ≥ 60° and ΔE ≥ 35 from indigo).
+apps/portal/src/styles/tokens.css
+- --role-implementer: var(--blush); --role-architect: var(--bone-bright);
+  strategist mint, scribe bone and quick-reviewer lime stay.
+- Rewrite the role section's comment: a coloured role sits ≥ 60° and ΔE ≥ 35
+  from running and ≥ 30° from every other state hue and from --accent-cyan; the
+  wheel has no room left for a fifth hue, so the rare roles read in bone.
+apps/portal/src/styles/globals.css (components layer, tokens only):
+- .rd-plan-row__bar: `display: flex` (height 4px, overflow hidden, background
+  var(--bg-highlight)); drop its position:relative and the absolutely positioned
+  `.rd-plan-row__bar > span` rule. .rd-progress gains `display: flex`; drop the
+  `.rd-progress > span` rule.
+- New .rd-seg { flex: none; height: 100%; transition: width
+  var(--duration-slow) var(--ease-out) } and one rule per state:
+  `.rd-seg[data-segment="done"]` background var(--state-done), and likewise
+  accepted → var(--state-accepted), failed → var(--state-failed), active →
+  var(--state-active).
+- New .rd-badge { margin-left: 0.25em; padding: 0 3px; border-radius: 3px;
+  background: var(--bone); color: var(--void); font-size: var(--type-meta);
+  line-height: 1.4 } and .rd-badge--failed { background: var(--state-failed) }.
+Keep 08d's legibility.accept (12) and 08b's styles.accept (12) passing.
+Acceptance: accept/semantics.accept.test.ts (16) → src/styles/, replacing 08e's
+file of the same name (it asked for ≥ 4 roles coloured by HSL saturation; bright
+bone counts as coloured there, so the 08f version judges colour by Lab chroma).
+'''
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 25
+depends_on = []
+files = [
+    "apps/portal/src/styles/rosedust.css",
+    "apps/portal/src/styles/tokens.css",
+    "apps/portal/src/styles/globals.css",
+    "apps/portal/src/styles/semantics.accept.test.ts",
+]
+
+[task.context]
+read_files = [
+    { path = "plans/portal-programme/08f-final-polish/accept/semantics.accept.test.ts", why = "the acceptance test the gate runs", lines = "1-" },
+    { path = "apps/portal/src/styles/rosedust.css", why = "the state and role primitives", lines = "60-135" },
+    { path = "apps/portal/src/styles/tokens.css", why = "role tokens", lines = "60-105" },
+    { path = "apps/portal/src/styles/globals.css", why = "rail bar, progress bar and the end of the components layer", lines = "850-930" },
+]
+anti_patterns = [
+    "Do not use colour literals in the components layer; use tokens.",
+    "Do not give a count badge a state hue unless it counts failures.",
+    "Do not edit the copied acceptance test; the gate overwrites it.",
+    "Do not edit a file outside this task's files; a gate failure in one usually means a concurrent task is mid-edit, so re-run the gate first.",
+]
+
+[[task.verify]]
+phase = "test"
+command = 'cd apps/portal && { [ -d node_modules/jsdom ] || npm ci --no-audit --no-fund --silent; } && cp ../../plans/portal-programme/08f-final-polish/accept/semantics.accept.test.ts src/styles/semantics.accept.test.ts && node scripts/vitest-min.mjs src/styles/semantics.accept.test.ts 16 && node scripts/vitest-min.mjs src/styles/legibility.accept.test.ts 12 && node scripts/vitest-min.mjs src/styles/styles.accept.test.ts 12'
+fail_msg = "the colour semantics test (16) or 08d's legibility / 08b's styles test does not pass"
+timeout_ms = 600000
+
+[[task.verify]]
+phase = "compile"
+command = 'cd apps/portal && { [ -d node_modules/jsdom ] || npm ci --no-audit --no-fund --silent; } && cp ../../plans/portal-programme/08f-final-polish/accept/semantics.accept.test.ts src/styles/semantics.accept.test.ts && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit --incremental false'
+fail_msg = "the portal does not type-check"
+timeout_ms = 600000
+
+[[task]]
+id = "T02"
+title = "Draw each plan's bar as state segments"
+description = '''
+A failed plan's bar was all red although T01 passed. A bar now shows what the
+plan's tasks came to, one segment per state, in the order verified, accepted,
+failed, running.
+
+1. apps/portal/src/lib/planRows.ts:
+   - Export `interface BarSegment { state: 'done' | 'accepted' | 'failed' |
+     'active'; share: number }` and
+     `progressSegments(counts: { done; accepted; failed; active }, total): BarSegment[]`:
+     [] when total ≤ 0; otherwise walk the four states in that order, take
+     `n = min(max(0, count), tasks left)`, skip n = 0, push `{ state, share:
+     n / total }` and subtract n from the tasks left — integer bookkeeping, so
+     shares are exact (8 of 10 is 0.8, not 0.7999…) and never sum past 1.
+   - PlanRowModel gains `segments: BarSegment[]`: done = the row's `done` minus
+     accepted; accepted = live tasksAccepted (0 without a live run); failed =
+     live tasksFailed, else the disk summary's tasks_failed; active = tasks in
+     run.tasks for the plan whose status is 'active', while the plan runs; the
+     total the row already uses. Keep barToken (08e's planBars.accept pins it).
+2. apps/portal/src/components/rail/PlanRow.tsx: the `.rd-plan-row__bar` span
+   holds one `<span className="rd-seg" data-segment={state} style={{ width:
+   `${(share * 100).toFixed(1)}%` }} />` per segment instead of its single
+   barToken span (drop the now unused pct).
+3. apps/portal/src/components/stage/PlanView.tsx: the header's progress bar
+   (role="progressbar", keep its aria attributes) gets `className="rd-progress
+   rounded-full"` and the same segment spans, from progressSegments with done =
+   tasksDone − tasksAccepted, the live tasksAccepted and tasksFailed, and the
+   plan's active tasks. Remove the barColor computation and the progressToken
+   import.
+T01 styles .rd-seg per data-segment. Keep 08e's planBars.accept (3),
+planRows.test (20), 08b's rail.accept (11), PlanView.accept (15), 08d's
+planHeader.accept (6) and rows.accept (9) passing.
+Acceptance: accept/segments.accept.test.tsx (5) → src/components/rail/.
+'''
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 30
+depends_on = []
+files = [
+    "apps/portal/src/lib/planRows.ts",
+    "apps/portal/src/components/rail/PlanRow.tsx",
+    "apps/portal/src/components/stage/PlanView.tsx",
+    "apps/portal/src/components/rail/segments.accept.test.tsx",
+]
+
+[task.context]
+read_files = [
+    { path = "plans/portal-programme/08f-final-polish/accept/segments.accept.test.tsx", why = "the acceptance test the gate runs", lines = "1-" },
+    { path = "apps/portal/src/lib/planRows.ts", why = "PlanRowModel and buildPlanRows", lines = "1-205" },
+    { path = "apps/portal/src/components/rail/PlanRow.tsx", why = "the bar column", lines = "1-" },
+    { path = "apps/portal/src/components/stage/PlanView.tsx", why = "the progress computation and the header bar", lines = "260-430" },
+    { path = "apps/portal/src/lib/runState.ts", why = "PlanRun and TaskRun", lines = "25-92" },
+]
+anti_patterns = [
+    "Do not colour a bar by its fraction or by the plan's overall state alone.",
+    "Do not compute shares by subtracting floats; count tasks.",
+    "Do not edit the copied acceptance test; the gate overwrites it.",
+    "Do not edit a file outside this task's files; a gate failure in one usually means a concurrent task is mid-edit, so re-run the gate first.",
+]
+
+[[task.verify]]
+phase = "test"
+command = 'cd apps/portal && { [ -d node_modules/jsdom ] || npm ci --no-audit --no-fund --silent; } && cp ../../plans/portal-programme/08f-final-polish/accept/segments.accept.test.tsx src/components/rail/segments.accept.test.tsx && node scripts/vitest-min.mjs src/components/rail/segments.accept.test.tsx 5 && node scripts/vitest-min.mjs src/lib/planBars.accept.test.ts 3 && node scripts/vitest-min.mjs src/lib/planRows.test.ts 20'
+fail_msg = "the segments acceptance test (5) or a plan-row suite does not pass"
+timeout_ms = 600000
+
+[[task.verify]]
+phase = "test"
+command = 'cd apps/portal && { [ -d node_modules/jsdom ] || npm ci --no-audit --no-fund --silent; } && node scripts/vitest-min.mjs src/components/rail/rail.accept.test.tsx 11 && node scripts/vitest-min.mjs src/components/stage/PlanView.accept.test.tsx 15 && node scripts/vitest-min.mjs src/components/stage/planHeader.accept.test.tsx 6 && node scripts/vitest-min.mjs src/components/stage/rows.accept.test.tsx 9'
+fail_msg = "an existing rail, plan view, plan header or rows test broke"
+timeout_ms = 600000
+
+[[task.verify]]
+phase = "compile"
+command = 'cd apps/portal && { [ -d node_modules/jsdom ] || npm ci --no-audit --no-fund --silent; } && cp ../../plans/portal-programme/08f-final-polish/accept/segments.accept.test.tsx src/components/rail/segments.accept.test.tsx && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit --incremental false'
+fail_msg = "the portal does not type-check"
+timeout_ms = 600000
+
+[[task]]
+id = "T03"
+title = "Show why a check failed, and draw count badges in the badge classes"
+description = '''
+T05 makes the runner end a failed step's published output with how it ended:
+`$ <command>`, the tail of what it printed, then a closing line
+`✗ exit status 1` (or `✗ timed out after 600000 ms`, `✗ terminated by a
+signal`, `✗ spawn failed: …`). The checks view used to show only the command.
+
+1. apps/portal/src/lib/checks.ts: Digest gains `exit: string | null` — the text
+   after `✗ ` on the output's last non-blank line, when that line is not the
+   first (the `$` line); drop it (and blank lines after it) before parsing, so
+   it is never in `unparsed`. Every return path sets `exit` (null when absent).
+   Update the header comment with the format.
+2. apps/portal/src/components/stream/Checks.tsx: a failed step whose digest has
+   an exit, or printed nothing (no groups and only blank unparsed lines), shows
+   one `<div className="check-row-exit" data-exit="">` after the unparsed lines
+   and before the raw-output toggle, reading the exit, "no output", or both
+   joined by " · " (`exit status 1 · no output`), in monospace, colour
+   var(--text-strong). Passed and running steps are unchanged.
+3. apps/portal/src/components/stream/StreamPane.tsx: the transcript badge is
+   `<span className="stream-badge rd-badge" aria-label=…>` and the checks badge
+   `className="stream-badge rd-badge rd-badge--failed"`, with no inline style —
+   T01's classes draw a neutral bone count (black text, 11.9:1) and a red failed
+   count (black text, 6.9:1), where white on indigo was 2.8:1. Note the classes
+   in the header comment.
+Keep checks.test (20), 08b's stream.accept (7), 08c's liveTranscript.accept (6),
+08d's streamLegibility.accept (3) and 08e's streamTruth.accept (6) passing.
+Acceptance: accept/checkExit.accept.test.tsx (8) → src/components/stream/.
+'''
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 30
+depends_on = []
+files = [
+    "apps/portal/src/lib/checks.ts",
+    "apps/portal/src/components/stream/Checks.tsx",
+    "apps/portal/src/components/stream/StreamPane.tsx",
+    "apps/portal/src/components/stream/checkExit.accept.test.tsx",
+]
+
+[task.context]
+read_files = [
+    { path = "plans/portal-programme/08f-final-polish/accept/checkExit.accept.test.tsx", why = "the acceptance test the gate runs", lines = "1-" },
+    { path = "apps/portal/src/lib/checks.ts", why = "Digest and the start of the parser", lines = "1-125" },
+    { path = "apps/portal/src/components/stream/Checks.tsx", why = "the failed step's rendering", lines = "145-249" },
+    { path = "apps/portal/src/components/stream/StreamPane.tsx", why = "the tab badges", lines = "255-330" },
+]
+anti_patterns = [
+    "Do not treat a ✗ line in the middle of the output as the step's ending.",
+    "Do not colour a count badge inline; use the badge classes.",
+    "Do not edit the copied acceptance test; the gate overwrites it.",
+    "Do not edit a file outside this task's files; a gate failure in one usually means a concurrent task is mid-edit, so re-run the gate first.",
+]
+
+[[task.verify]]
+phase = "test"
+command = 'cd apps/portal && { [ -d node_modules/jsdom ] || npm ci --no-audit --no-fund --silent; } && cp ../../plans/portal-programme/08f-final-polish/accept/checkExit.accept.test.tsx src/components/stream/checkExit.accept.test.tsx && node scripts/vitest-min.mjs src/components/stream/checkExit.accept.test.tsx 8 && node scripts/vitest-min.mjs src/lib/checks.test.ts 20'
+fail_msg = "the check-exit acceptance test (8) or checks.test does not pass"
+timeout_ms = 600000
+
+[[task.verify]]
+phase = "test"
+command = 'cd apps/portal && { [ -d node_modules/jsdom ] || npm ci --no-audit --no-fund --silent; } && node scripts/vitest-min.mjs src/components/stream/stream.accept.test.tsx 7 && node scripts/vitest-min.mjs src/components/stream/liveTranscript.accept.test.tsx 6 && node scripts/vitest-min.mjs src/components/stream/streamLegibility.accept.test.tsx 3 && node scripts/vitest-min.mjs src/components/stream/streamTruth.accept.test.tsx 6'
+fail_msg = "an 08b-08e stream test broke"
+timeout_ms = 600000
+
+[[task.verify]]
+phase = "compile"
+command = 'cd apps/portal && { [ -d node_modules/jsdom ] || npm ci --no-audit --no-fund --silent; } && cp ../../plans/portal-programme/08f-final-polish/accept/checkExit.accept.test.tsx src/components/stream/checkExit.accept.test.tsx && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit --incremental false'
+fail_msg = "the portal does not type-check"
+timeout_ms = 600000
+
+[[task]]
+id = "T04"
+title = "Say what failed in the plan's words, and offer one Retry"
+description = '''
+After a failed run the alert read the server's "plan broken completed with
+task-level failures", and a failed task showed Retry twice (plan header and task
+row), both calling the header's action.
+
+1. apps/portal/src/lib/alerts.ts:
+   - AlertInput gains `planTitles?: Readonly<Record<string, string>>`; a plan's
+     title is planTitles[id], else run.plans[id].title, else the id.
+   - A failed-task alert reads `<title>: <task id> failed (<phase> check)` from
+     the task's first failed check (its phase, else its name), or `<title>: <task
+     id> failed` without one; its actions are `[{ kind: 'select-task', … }]` only
+     (Show) — the plan header's primary action is the one Retry. Keep the key.
+   - The newest run.errors entry, when it is the server's generic
+     `plan <id> completed with task-level failures`, yields to rank 2 if that
+     plan has a failed task in run.tasks, and otherwise reads `<title> failed`
+     (same key). Other run errors pass through unchanged. Update the rank
+     comment.
+   - Replace the helpers firstCheckOutputLine/failedTaskText accordingly.
+2. apps/portal/src/lib/alerts.test.ts: test 4 now expects `plan-1: task-compile
+   failed (compile check)` and only the select-task action; rename it.
+3. apps/portal/src/components/shell/Workspace.tsx: pass `planTitles` — a
+   useMemo map of id → title over the plan list — to pickAlert.
+4. apps/portal/src/components/stage/TaskList.tsx: `onRetry` becomes optional
+   (on TaskListProps, TaskRow and ExpandedDetail); a failed row's detail renders
+   its Retry button only when onRetry is given. Update the header comment.
+5. apps/portal/src/components/stage/PlanView.tsx: stop passing onRetry to
+   TaskList and delete handleRetry; say why in a comment.
+Keep alerts.test (12), 08b's shell.accept (11), Workspace.accept (4),
+TaskList.accept (4), PlanView.accept (15), 08d's rows.accept (9) and 08e's
+taskGrid.accept (5) passing (they pass onRetry, which stays accepted).
+Acceptance: accept/oneRetry.accept.test.tsx (7) → src/components/shell/.
+'''
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 25
+depends_on = ["T02", "T03"]
+files = [
+    "apps/portal/src/lib/alerts.ts",
+    "apps/portal/src/lib/alerts.test.ts",
+    "apps/portal/src/components/shell/Workspace.tsx",
+    "apps/portal/src/components/stage/TaskList.tsx",
+    "apps/portal/src/components/stage/PlanView.tsx",
+    "apps/portal/src/components/shell/oneRetry.accept.test.tsx",
+]
+
+[task.context]
+read_files = [
+    { path = "plans/portal-programme/08f-final-polish/accept/oneRetry.accept.test.tsx", why = "the acceptance test the gate runs", lines = "1-" },
+    { path = "apps/portal/src/lib/alerts.ts", why = "pickAlert and its helpers", lines = "1-" },
+    { path = "apps/portal/src/lib/alerts.test.ts", why = "test 4 pins the old text and actions", lines = "90-115" },
+    { path = "apps/portal/src/components/shell/Workspace.tsx", why = "the plan list and where pickAlert is called", lines = "70-155" },
+    { path = "apps/portal/src/components/stage/TaskList.tsx", why = "the failed row's Retry and the props", lines = "1-130" },
+    { path = "apps/portal/src/components/stage/PlanView.tsx", why = "handleRetry and the TaskList call" },
+]
+symbols = ["const alert = pickAlert(", "const handleRetry", "<TaskList"]
+anti_patterns = [
+    "Do not show the server's generic failure line to the operator.",
+    "Do not offer Retry anywhere but the plan header.",
+    "Do not edit the copied acceptance test; the gate overwrites it.",
+    "Do not edit a file outside this task's files; a gate failure in one usually means a concurrent task is mid-edit, so re-run the gate first.",
+]
+
+[[task.verify]]
+phase = "test"
+command = 'cd apps/portal && { [ -d node_modules/jsdom ] || npm ci --no-audit --no-fund --silent; } && cp ../../plans/portal-programme/08f-final-polish/accept/oneRetry.accept.test.tsx src/components/shell/oneRetry.accept.test.tsx && node scripts/vitest-min.mjs src/components/shell/oneRetry.accept.test.tsx 7 && node scripts/vitest-min.mjs src/lib/alerts.test.ts 12'
+fail_msg = "the one-Retry acceptance test (7) or alerts.test does not pass"
+timeout_ms = 600000
+
+[[task.verify]]
+phase = "test"
+command = 'cd apps/portal && { [ -d node_modules/jsdom ] || npm ci --no-audit --no-fund --silent; } && node scripts/vitest-min.mjs src/components/shell/shell.accept.test.tsx 11 && node scripts/vitest-min.mjs src/components/shell/Workspace.accept.test.tsx 4 && node scripts/vitest-min.mjs src/components/stage/TaskList.accept.test.tsx 4 && node scripts/vitest-min.mjs src/components/stage/PlanView.accept.test.tsx 15 && node scripts/vitest-min.mjs src/components/stage/rows.accept.test.tsx 9 && node scripts/vitest-min.mjs src/components/stage/taskGrid.accept.test.tsx 5'
+fail_msg = "an existing shell, workspace, task list, plan view, rows or task grid test broke"
+timeout_ms = 600000
+
+[[task.verify]]
+phase = "compile"
+command = 'cd apps/portal && { [ -d node_modules/jsdom ] || npm ci --no-audit --no-fund --silent; } && cp ../../plans/portal-programme/08f-final-polish/accept/oneRetry.accept.test.tsx src/components/shell/oneRetry.accept.test.tsx && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit --incremental false'
+fail_msg = "the portal does not type-check"
+timeout_ms = 600000
+
+[[task]]
+id = "T05"
+title = "Publish how a failed verify step ended, with its output tail"
+description = '''
+crates/roko-cli/src/graph_task_dispatch.rs. A failed verify step never said
+why: settle_task_verification publishes each gate result's output through
+`published_gate_output(command, verdict.detail)`, which for `test -f
+MISSING.md` (no output) is only `$ test -f MISSING.md`. ShellGate's verdict
+already knows how the step ended — `reason` is `exit code: 1`, `exit code:
+terminated by signal`, `timed out after <n> ms`, `spawn failed: …` or `wait
+failed: …` — and `detail` holds stdout, then `---stderr---` and stderr.
+
+1. Change the helper to `fn published_gate_output(command: &str, verdict:
+   &roko_core::Verdict) -> String`: `$ {command}`; then, when the verdict's
+   detail is non-empty after trim_end, a newline and its tail; then, when
+   `!verdict.passed`, `\n✗ ` and how it ended. Both publish sites (the step and
+   the post-auto-fix re-run) pass `&verdict` / `&retry_verdict`.
+2. The tail: `const GATE_OUTPUT_TAIL_LINES: usize = 60` and
+   `const GATE_OUTPUT_TAIL_BYTES: usize = 16 * 1024`. Keep the last 60 lines
+   (joined with \n); when lines were dropped, lead with `… {n} earlier lines not
+   shown`; when the kept tail is still over 16 KiB, keep its last 16 KiB (move
+   the cut forward to a char boundary) after `… earlier output not shown`
+   instead.
+3. How it ended: `exit code: <n>` → `exit status <n>`, `exit code: terminated by
+   signal` → `terminated by a signal`, an empty reason → `failed`, any other
+   reason as it is.
+4. Update the existing unit test published_gate_output_leads_with_the_command
+   to the new signature (a failed verdict with reason `exit code: 101` and
+   detail `error[E0425]\n` publishes `$ cargo check -p roko-cli\nerror[E0425]\n✗
+   exit status 101`; a pass with no detail publishes `$ true`).
+5. Declare the pinned acceptance module next to `mod sibling_settle;`:
+   `#[cfg(test)] mod gate_output_accept;` (the gate copies it to
+   crates/roko-cli/src/graph_task_dispatch/gate_output_accept.rs).
+T03 teaches the portal's checks view to show the closing line.
+Acceptance: accept/gate_output_accept.rs (7 tests).
+'''
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 40
+depends_on = []
+files = [
+    "crates/roko-cli/src/graph_task_dispatch.rs",
+    "crates/roko-cli/src/graph_task_dispatch/gate_output_accept.rs",
+]
+
+[task.context]
+read_files = [
+    { path = "plans/portal-programme/08f-final-polish/accept/gate_output_accept.rs", why = "the acceptance test the gate runs", lines = "1-" },
+    { path = "crates/roko-cli/src/graph_task_dispatch.rs", why = "the helper, both publish sites, the module list and the existing test" },
+    { path = "crates/roko-gate/src/shell.rs", why = "how ShellGate fills reason and detail", lines = "195-220" },
+    { path = "crates/roko-core/src/verdict.rs", why = "Verdict", lines = "45-150" },
+]
+symbols = ["mod sibling_settle;", "fn published_gate_output(", "tui.gate_result_with_output(", "fn published_gate_output_leads_with_the_command"]
+anti_patterns = [
+    "Do not publish a failed step's output without how it ended.",
+    "Do not cut the output tail inside a UTF-8 character.",
+    "Do not change what the retry prompt (failures, verify_failure_summary) receives.",
+    "Do not edit the copied acceptance test; the gate overwrites it.",
+]
+
+[[task.verify]]
+phase = "test"
+command = 'cp plans/portal-programme/08f-final-polish/accept/gate_output_accept.rs crates/roko-cli/src/graph_task_dispatch/gate_output_accept.rs && out="$(cargo test -p roko-cli --lib graph_task_dispatch::gate_output_accept 2>&1)"; rc=$?; printf "%s\n" "$out" | tail -25; [ "$rc" -eq 0 ] && grep -q "test result: ok. 7 passed; 0 failed" <<<"$out"'
+fail_msg = "the gate-output acceptance test does not pass all 7 tests"
+timeout_ms = 1800000
+
+[[task.verify]]
+phase = "test"
+command = 'cp plans/portal-programme/08f-final-polish/accept/gate_output_accept.rs crates/roko-cli/src/graph_task_dispatch/gate_output_accept.rs && cargo test -p roko-cli --lib graph_task_dispatch'
+fail_msg = "a graph_task_dispatch test fails"
+timeout_ms = 1800000
+
+[[task.verify]]
+phase = "compile"
+command = 'cargo clippy -p roko-cli --no-deps -- -D warnings'
+fail_msg = "clippy reports warnings in roko-cli"
+timeout_ms = 1800000
+
+[[task]]
+id = "T06"
+title = "Prove the final polish together and build once"
+description = '''
+Run the portal suite together and build the export once.
+
+The gates re-copy this plan's four portal acceptance tests from
+plans/portal-programme/08f-final-polish/accept/ (they must be unchanged; the
+semantics test replaces 08e's), then require: the full suite with at least 669
+passing tests (645 after 08e, plus 4 more semantics tests and this plan's 20
+new ones) and none failing; the orphan check; tsc; and the one production
+build, whose exported CSS must carry the segment and badge classes. T05's Rust
+change is proven by its own gates.
+
+Fix only what a gate reports, in the module the failing test exercises. Do not
+edit the acceptance copies.
+'''
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 20
+depends_on = ["T01", "T04", "T05"]
+files = ["apps/portal/src"]
+
+[task.context]
+read_files = [
+    { path = "plans/portal-programme/08f-final-polish/accept/oneRetry.accept.test.tsx", why = "the screen-level check the suite adds", lines = "1-" },
+    { path = "apps/portal/package.json", why = "test and build:export scripts" },
+]
+anti_patterns = [
+    "Do not weaken or skip a test to make the suite pass.",
+    "Do not leave apps/portal/out behind.",
+]
+
+[[task.verify]]
+phase = "test"
+command = 'cd apps/portal && { [ -d node_modules/jsdom ] || npm ci --no-audit --no-fund --silent; } && A=../../plans/portal-programme/08f-final-polish/accept && for p in styles/semantics.accept.test.ts components/rail/segments.accept.test.tsx components/stream/checkExit.accept.test.tsx components/shell/oneRetry.accept.test.tsx; do cp $A/${p##*/} src/$p || exit 1; done && node scripts/vitest-min.mjs src 669'
+fail_msg = "the full suite, with every acceptance test, lacks 669 passing tests or has a failure"
+timeout_ms = 900000
+
+[[task.verify]]
+phase = "structural"
+command = 'cd apps/portal && node scripts/orphans.mjs'
+fail_msg = "a source module is unreachable from src/app"
+timeout_ms = 60000
+
+[[task.verify]]
+phase = "integration"
+command = 'cd apps/portal && { [ -d node_modules/jsdom ] || npm ci --no-audit --no-fund --silent; } && rm -rf .next/types out && ./node_modules/.bin/tsc --noEmit --incremental false && NEXT_TELEMETRY_DISABLED=1 npm run build:export && test -f out/index.html && grep -q "rd-seg" out/_next/static/css/*.css && grep -q "rd-badge" out/_next/static/css/*.css && rm -rf out'
+fail_msg = "the portal does not type-check, the static export fails, or its CSS lacks the segment and badge classes"
+timeout_ms = 900000

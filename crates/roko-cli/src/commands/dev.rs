@@ -334,11 +334,15 @@ mod tests {
 
     #[test]
     fn probe_addr_succeeds_when_free() {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
-        let port = listener.local_addr().expect("local_addr").port();
-        drop(listener);
-
-        assert!(probe_addr_available("127.0.0.1", port).is_ok());
+        // A released ephemeral port can be claimed by a concurrently running
+        // test before the probe binds it, so try a few fresh ports.
+        let succeeded = (0..5).any(|_| {
+            let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+            let port = listener.local_addr().expect("local_addr").port();
+            drop(listener);
+            probe_addr_available("127.0.0.1", port).is_ok()
+        });
+        assert!(succeeded, "no released ephemeral port could be probed");
     }
 
     #[test]

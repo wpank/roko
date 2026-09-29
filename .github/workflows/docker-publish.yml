@@ -12,6 +12,10 @@ env:
 jobs:
   build-and-push:
     name: Build & Push Images
+    # Held off until bug-7eef96 (a Privy JWT grants admin on publicly bound servers) is fixed:
+    # otherwise the first push to main would ship that server. To re-enable after the fix,
+    # set the repository variable ALLOW_PUBLIC_DEPLOY=true.
+    if: ${{ vars.ALLOW_PUBLIC_DEPLOY == 'true' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read

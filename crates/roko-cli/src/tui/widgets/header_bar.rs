@@ -193,9 +193,16 @@ fn format_elapsed(secs: u64) -> String {
 
 /// Derive a short queue/plan label from the TUI state.
 fn queue_label(state: &TuiState) -> Option<String> {
-    // Prefer active plan names; fall back to first plan.
-    if let Some(active) = state.plans.iter().find(|p| p.active) {
-        return Some(truncate_label(&active.id, 24));
+    // Prefer active plan names, counting the others that run beside the
+    // first; fall back to the first plan.
+    let mut active = state.plans.iter().filter(|p| p.active);
+    if let Some(first) = active.next() {
+        let others = active.count();
+        return Some(if others == 0 {
+            truncate_label(&first.id, 24)
+        } else {
+            format!("{} +{others}", truncate_label(&first.id, 20))
+        });
     }
     if let Some(first) = state.plans.first() {
         return Some(truncate_label(&first.id, 24));
@@ -330,9 +337,16 @@ pub fn render_header_bar(frame: &mut Frame<'_>, area: Rect, state: &TuiState) {
     };
     let all_done = state.plans.iter().all(|p| !p.active);
     let has_failures = state.plans.iter().any(|p| p.tasks_failed > 0);
+    let accepted_with_failures: usize = state
+        .plans
+        .iter()
+        .map(|p| p.tasks_accepted_with_failures())
+        .sum();
 
     // Show "done/total tasks" fraction next to progress bar
-    let progress_text = if all_done && total > 0 && !has_failures {
+    let progress_text = if all_done && total > 0 && !has_failures && accepted_with_failures > 0 {
+        format!(" COMPLETE \u{26a0}{accepted_with_failures}")
+    } else if all_done && total > 0 && !has_failures {
         " COMPLETE".to_string()
     } else if has_failures {
         format!(" ERR:{done}/{total}")
@@ -346,6 +360,11 @@ pub fn render_header_bar(frame: &mut Frame<'_>, area: Rect, state: &TuiState) {
         Style::default()
             .fg(Theme::EMBER)
             .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+    } else if all_done && total > 0 && accepted_with_failures > 0 {
+        // Finished, but not clean: some tasks were accepted with failures.
+        Style::default()
+            .fg(Theme::WARNING)
+            .add_modifier(Modifier::BOLD)
     } else if all_done && total > 0 {
         Style::default()
             .fg(Theme::SAGE)
@@ -785,10 +804,7 @@ pub fn render_breadcrumb_bar(frame: &mut Frame<'_>, area: Rect, state: &TuiState
 
     // Tab name with dynamic badge count
     let tab = state.active_tab;
-    spans.push(Span::styled(
-        state.tab_label_with_badge(tab),
-        tab_style,
-    ));
+    spans.push(Span::styled(state.tab_label_with_badge(tab), tab_style));
 
     // Sub-view name (if the tab has multiple sub-views)
     let sub_views = super::super::views::SubView::for_tab(tab);
@@ -985,6 +1001,23 @@ mod tests {
             ..Default::default()
         });
         assert_eq!(queue_label(&state), Some("my-cool-plan".to_string()));
+    }
+
+    #[test]
+    fn queue_label_counts_plans_running_beside_the_first() {
+        let mut state = TuiState::from_dashboard_data(&DashboardData::default());
+        for (id, active) in [
+            ("01-backend", true),
+            ("02-idle", false),
+            ("05-portal", true),
+        ] {
+            state.plans.push(super::super::super::state::PlanEntry {
+                id: id.to_string(),
+                active,
+                ..Default::default()
+            });
+        }
+        assert_eq!(queue_label(&state), Some("01-backend +1".to_string()));
     }
 
     #[test]

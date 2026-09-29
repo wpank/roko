@@ -84,15 +84,19 @@ fn render_plan(
     )));
 
     // ── Status section ──────────────────────────────────────────────
-    let (status_badge, status_style) = if plan.status.is_done() {
-        ("COMPLETE", theme.success())
-    } else if plan.status.is_failed() {
-        ("FAILED", theme.danger())
-    } else if plan.status.is_active() || plan.active {
-        ("RUNNING", theme.warning())
-    } else {
-        ("PENDING", theme.muted())
-    };
+    let (status_badge, status_style) =
+        if plan.status.is_done() && plan.tasks_accepted_with_failures() > 0 {
+            // Accepted-with-failures tasks never let a plan read as clean.
+            ("COMPLETE \u{26a0}", theme.warning())
+        } else if plan.status.is_done() {
+            ("COMPLETE", theme.success())
+        } else if plan.status.is_failed() {
+            ("FAILED", theme.danger())
+        } else if plan.status.is_active() || plan.active {
+            ("RUNNING", theme.warning())
+        } else {
+            ("PENDING", theme.muted())
+        };
 
     lines.push(Line::from(vec![
         Span::styled("Status ", theme.muted()),
@@ -235,12 +239,14 @@ fn render_plan(
         for task in &plan.tasks {
             let icon = match task.status {
                 TaskStatus::Done => "\u{2713}",
+                TaskStatus::AcceptedWithFailures => "\u{26a0}",
                 TaskStatus::Failed | TaskStatus::Blocked => "\u{2717}",
                 TaskStatus::Active => "\u{25B6}",
                 TaskStatus::Pending => "\u{25CB}",
             };
             let status_style = match task.status {
                 TaskStatus::Done => theme.success(),
+                TaskStatus::AcceptedWithFailures => theme.warning(),
                 TaskStatus::Failed | TaskStatus::Blocked => theme.danger(),
                 TaskStatus::Active => theme.warning(),
                 TaskStatus::Pending => theme.muted(),

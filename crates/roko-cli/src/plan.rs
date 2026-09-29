@@ -7,6 +7,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use crate::orchestrator::plan_discovery::{PlanDir, find_plan_dirs};
 use crate::orchestrator::{DiscoveryError, PlanInfo, discover_plans};
 
 /// Resolve the plans directory, preferring the top-level layout and falling
@@ -65,6 +66,9 @@ pub struct PlanSummary {
     pub old_format: bool,
     /// Last error message from executor state, if any.
     pub last_error: Option<String>,
+    /// Plan set containing this plan, relative to the plans root and
+    /// `/`-separated (e.g. `"portal-programme"`). `None` for top-level plans.
+    pub group: Option<String>,
 }
 
 impl PlanSummary {
@@ -192,6 +196,7 @@ impl Plan {
             superseded_by: None,
             old_format: false,
             last_error: None,
+            group: None,
         }
     }
 
@@ -229,37 +234,41 @@ impl Plan {
     }
 }
 
-/// List plan files in the plans directory.
+/// List plan files in the plans directory (the paths of [`discover_plans`]).
 pub fn list_plan_files(workdir: &Path) -> std::io::Result<Vec<PathBuf>> {
     let dir = plans_dir(workdir);
     if !dir.is_dir() {
         return Ok(Vec::new());
     }
-    let mut plans = Vec::new();
-    for entry in fs::read_dir(&dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        if path.is_dir() {
-            let plan_md = path.join("plan.md");
-            if plan_md.is_file() {
-                plans.push(plan_md);
-                continue;
-            }
-            let tasks_toml = path.join("tasks.toml");
-            if tasks_toml.is_file() {
-                plans.push(tasks_toml);
-            }
-            continue;
-        }
-        if path
-            .extension()
-            .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
-        {
-            plans.push(path);
-        }
-    }
+    let mut plans: Vec<PathBuf> = discover_plans(&dir)
+        .map_err(std::io::Error::other)?
+        .into_iter()
+        .map(|plan_info| plan_info.path)
+        .collect();
     plans.sort();
     Ok(plans)
+}
+
+/// Plan directories under the workspace plans root, keyed by plan id.
+///
+/// Callers that hold plan state by id (the TUI, checkpoints) use this to find
+/// a plan's directory, which may sit inside a plan set rather than directly
+/// under `plans/`. Discovery failures (a missing root, duplicate plan ids)
+/// yield an empty map after a warning.
+#[must_use]
+pub fn plan_dirs_by_id(workdir: &Path) -> std::collections::BTreeMap<String, PlanDir> {
+    let root = plans_dir(workdir);
+    match find_plan_dirs(&root) {
+        Ok(plan_dirs) => plan_dirs
+            .into_iter()
+            .map(|plan_dir| (plan_dir.id.clone(), plan_dir))
+            .collect(),
+        Err(DiscoveryError::DirMissing(_)) => std::collections::BTreeMap::new(),
+        Err(error) => {
+            tracing::warn!(root = %root.display(), %error, "plan discovery failed");
+            std::collections::BTreeMap::new()
+        }
+    }
 }
 
 /// Build a display summary from a discovered plan entry.
@@ -333,6 +342,7 @@ pub fn summarize_plan_info(plan_info: &PlanInfo) -> PlanSummary {
         superseded_by,
         old_format,
         last_error: None,
+        group: plan_info.group.clone(),
     }
 }
 
@@ -610,6 +620,7 @@ mod tests {
             num: "P08".into(),
             path: PathBuf::from("/repo/plans/P08-example/tasks.toml"),
             frontmatter: None,
+            group: None,
         };
 
         assert_eq!(
@@ -636,6 +647,7 @@ mod tests {
             superseded_by: None,
             old_format: false,
             last_error: None,
+            group: None,
         }];
         let text = format_plan_list(&summaries);
         assert!(text.contains("p1"));
@@ -657,6 +669,7 @@ mod tests {
                 superseded_by: None,
                 old_format: false,
                 last_error: None,
+                group: None,
             },
             PlanSummary {
                 id: "b".into(),
@@ -669,6 +682,7 @@ mod tests {
                 superseded_by: None,
                 old_format: true,
                 last_error: None,
+                group: None,
             },
         ];
         let json = format_plan_list_json(&summaries);
@@ -757,6 +771,7 @@ mod tests {
             superseded_by: None,
             old_format: true,
             last_error: None,
+            group: None,
         };
         let text = summary.to_string();
         assert!(text.contains("p1"));
@@ -778,6 +793,7 @@ mod tests {
             superseded_by: None,
             old_format: false,
             last_error: None,
+            group: None,
         };
         let text = summary.to_string();
         assert!(text.contains("2/5"));
@@ -799,6 +815,7 @@ mod tests {
             superseded_by: None,
             old_format: false,
             last_error: None,
+            group: None,
         };
         let text = summary.to_string();
         assert!(text.contains("pending 0/3"));
@@ -817,6 +834,7 @@ mod tests {
             superseded_by: Some("new-plan".into()),
             old_format: false,
             last_error: None,
+            group: None,
         };
 
         assert_eq!(summary.status_label(), "superseded");
@@ -853,5 +871,42 @@ mod tests {
         assert_eq!(summary.id, "alpha");
         assert_eq!(summary.title, "Alpha Title");
         assert_eq!(summary.task_count, 1);
+    }
+
+    #[test]
+    fn nested_plan_sets_are_summarized_with_their_group() {
+        let tmp = tempfile::tempdir().unwrap();
+        let tasks = "[meta]\nplan = \"p\"\n\n[[task]]\nid = \"t1\"\ntitle = \"Task\"\n";
+        for dir in [
+            "plans/solo",
+            "plans/programme/01-backend",
+            "plans/archive/old",
+        ] {
+            let dir = tmp.path().join(dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("tasks.toml"), tasks).unwrap();
+        }
+
+        let summaries = summarize_discovered_plans(tmp.path()).unwrap();
+        let found: Vec<(&str, Option<&str>)> = summaries
+            .iter()
+            .map(|summary| (summary.id.as_str(), summary.group.as_deref()))
+            .collect();
+        assert_eq!(
+            found,
+            vec![("01-backend", Some("programme")), ("solo", None)]
+        );
+
+        let by_id = plan_dirs_by_id(tmp.path());
+        assert_eq!(
+            by_id.get("01-backend").map(|plan_dir| plan_dir.dir.clone()),
+            Some(tmp.path().join("plans/programme/01-backend"))
+        );
+        assert!(!by_id.contains_key("old"));
+        assert!(
+            discover_plan_by_id(tmp.path(), "01-backend")
+                .unwrap()
+                .is_some()
+        );
     }
 }

@@ -959,8 +959,7 @@ impl TelemetryObserve for RagPerformanceLens {
                 if let Some(evicted_zero) = state.was_zero.pop_front() {
                     state.total_queries = state.total_queries.saturating_sub(1);
                     if evicted_zero {
-                        state.zero_result_queries =
-                            state.zero_result_queries.saturating_sub(1);
+                        state.zero_result_queries = state.zero_result_queries.saturating_sub(1);
                     }
                 }
             }

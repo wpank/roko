@@ -50,8 +50,9 @@ pub use super::gate_adapter::{RunnerProductionGateAdapter, default_gate_adapter}
 // Import extracted helpers used within this module.
 use super::cargo_command::{
     canonical_verify_commands, cargo_command_fingerprint, cargo_command_with_profile,
-    cargo_profile_available, command_uses_cargo, deduplicate_verify_steps, focused_verify_steps,
-    scope_authored_verify_steps, targeted_cargo_check, with_targeted_compile_rung,
+    cargo_manifest_for_file, cargo_profile_available, command_uses_cargo, deduplicate_verify_steps,
+    focused_verify_steps, safe_cargo_name, scope_authored_verify_steps, targeted_cargo_check,
+    with_targeted_compile_rung,
 };
 use super::gate_input::{accepted_input_snapshot, fetch_git_diff, gate_input_snapshot};
 use super::gate_report::{
@@ -257,7 +258,7 @@ async fn compile_coordinator(workdir: &Path, permits: usize) -> Arc<Semaphore> {
     coordinator
 }
 
-pub(super) async fn acquire_compile_ownership(
+pub(crate) async fn acquire_compile_ownership(
     workdir: &Path,
     permits: usize,
     max_wait: Duration,
@@ -524,11 +525,101 @@ fn detect_workdir_build_system(workdir: &Path) -> Option<&'static str> {
     }
 }
 
+/// Scope and bounds for one [`attempt_auto_fix`] call.
+#[derive(Clone, Copy, Debug)]
+pub struct AutoFixBounds<'a> {
+    /// Files the task owns. Cargo fixes run only for the packages owning
+    /// them (`-p`). When none resolves to a Cargo package, the Cargo fix is
+    /// skipped instead of running workspace-wide.
+    pub task_files: &'a [String],
+    /// Wall-clock limit for each fix command and for acquiring compile
+    /// ownership.
+    pub timeout: Duration,
+    /// Per-repository compile ownership permits (`gates.compile_concurrency`).
+    pub compile_concurrency: usize,
+    /// Extra variables fix commands may inherit (`gates.env_passthrough`).
+    pub env_passthrough: &'a [String],
+}
+
+impl<'a> AutoFixBounds<'a> {
+    /// Bounds from workspace config: `timeouts.gate_compile_secs`,
+    /// `gates.compile_concurrency` and `gates.env_passthrough`.
+    #[must_use]
+    pub fn from_config(
+        config: &'a roko_core::config::schema::RokoConfig,
+        task_files: &'a [String],
+    ) -> Self {
+        Self {
+            task_files,
+            timeout: Duration::from_secs(config.timeouts.gate_compile_secs.max(1)),
+            compile_concurrency: config.gates.compile_concurrency,
+            env_passthrough: &config.gates.env_passthrough,
+        }
+    }
+}
+
+/// Cargo package names owning `files`, deduplicated in first-seen order.
+///
+/// Each file resolves to its nearest `Cargo.toml` inside `workdir` (the file
+/// itself need not exist yet). Files whose nearest manifest has no
+/// `[package]` table, such as a virtual workspace root, are skipped.
+fn owning_cargo_packages(workdir: &Path, files: &[String]) -> Vec<String> {
+    let mut packages: Vec<String> = Vec::new();
+    for file in files {
+        let Some((package_root, _)) = cargo_manifest_for_file(workdir, file) else {
+            continue;
+        };
+        let Some(manifest) = std::fs::read_to_string(package_root.join("Cargo.toml"))
+            .ok()
+            .and_then(|text| toml::from_str::<toml::Value>(&text).ok())
+        else {
+            continue;
+        };
+        let Some(name) = manifest
+            .get("package")
+            .and_then(toml::Value::as_table)
+            .and_then(|package| package.get("name"))
+            .and_then(toml::Value::as_str)
+        else {
+            continue;
+        };
+        if safe_cargo_name(name) && !packages.iter().any(|known| known == name) {
+            packages.push(name.to_string());
+        }
+    }
+    packages
+}
+
+/// Run one auto-fix command, killing it when `limit` elapses.
+///
+/// The command gets the gate environment (roko's allowlisted variables plus
+/// `env_passthrough`), not roko's own: `cargo fix` builds task code.
+///
+/// Returns `Ok(None)` on timeout and `Err` only when the program cannot be
+/// spawned.
+async fn run_fix_command(
+    mut command: Command,
+    limit: Duration,
+    env_passthrough: &[String],
+    program: &str,
+) -> Result<Option<std::process::Output>, String> {
+    roko_gate::inherit_gate_env(&mut command, env_passthrough);
+    command.kill_on_drop(true);
+    match timeout(limit, command.output()).await {
+        Ok(Ok(output)) => Ok(Some(output)),
+        Ok(Err(error)) => Err(format!("failed to spawn {program}: {error}")),
+        Err(_) => Ok(None),
+    }
+}
+
 /// Attempt to auto-fix gate failures using the build system's formatter / linter.
 ///
-/// For Rust (Cargo) projects:
+/// For Rust (Cargo) projects, scoped with `-p` to the packages owning
+/// `bounds.task_files` (skipped when there are none):
 /// - "compile" gates: runs `cargo fix --allow-dirty` then `cargo fmt`.
 /// - "clippy" gates: runs `cargo clippy --fix --allow-dirty`.
+///
+/// Every fix command is killed after `bounds.timeout`.
 ///
 /// For npm (TypeScript/JavaScript) projects:
 /// - "lint" / "compile" gates: runs `npx eslint --fix .`.
@@ -547,26 +638,45 @@ pub async fn attempt_auto_fix(
     workdir: &Path,
     gate_name: &str,
     error_output: &str,
+    bounds: AutoFixBounds<'_>,
 ) -> Result<AutoFixOutcome, String> {
     let raw = raw_gate_name(gate_name);
     let classification = roko_gate::classify_gate_failure(gate_name, error_output);
 
     // ── Cargo path ──────────────────────────────────────────────────────────
     if classification.cargo_fix_candidate {
-        let (program, args): (&str, &[&str]) = if raw.starts_with("compile") {
-            ("cargo", &["fix", "--allow-dirty"])
+        let fix_args: &[&str] = if raw.starts_with("compile") {
+            &["fix", "--allow-dirty"]
         } else if raw.starts_with("clippy") {
-            ("cargo", &["clippy", "--fix", "--allow-dirty"])
+            &["clippy", "--fix", "--allow-dirty"]
         } else {
             return Ok(AutoFixOutcome::not_candidate(gate_name));
         };
 
-        let command_str = format!("{program} {}", args.join(" "));
+        // Never fix workspace-wide: an unscoped `cargo fix` can rewrite
+        // crates this task never touched.
+        let packages = owning_cargo_packages(workdir, bounds.task_files);
+        if packages.is_empty() {
+            info!(
+                gate = %gate_name,
+                task_files = bounds.task_files.len(),
+                "no Cargo package owns the task files — skipping cargo auto-fix"
+            );
+            return Ok(AutoFixOutcome {
+                was_candidate: true,
+                ..AutoFixOutcome::not_candidate(gate_name)
+            });
+        }
+        let package_args: Vec<String> = packages
+            .iter()
+            .flat_map(|package| ["-p".to_string(), package.clone()])
+            .collect();
+        let command_str = format!("cargo {} {}", fix_args.join(" "), package_args.join(" "));
 
         let _compile_permit = acquire_compile_ownership(
             workdir,
-            1,
-            Duration::from_secs(300),
+            bounds.compile_concurrency,
+            bounds.timeout,
             "auto-fix",
             gate_name,
             &command_str,
@@ -576,21 +686,36 @@ pub async fn attempt_auto_fix(
         info!(
             gate = %gate_name,
             command = %command_str,
+            timeout_secs = bounds.timeout.as_secs(),
             "attempting cargo auto-fix before agent retry"
         );
 
-        let mut fix_cmd = tokio::process::Command::new(program);
+        let mut fix_cmd = Command::new("cargo");
         fix_cmd
-            .args(args)
+            .args(fix_args)
+            .args(&package_args)
             .current_dir(workdir)
             .env("CARGO_BUILD_JOBS", cargo_build_jobs());
         if sccache_available() {
             fix_cmd.env("RUSTC_WRAPPER", "sccache");
         }
-        let fix_status = fix_cmd
-            .output()
-            .await
-            .map_err(|e| format!("failed to spawn {program}: {e}"))?;
+        let Some(fix_status) =
+            run_fix_command(fix_cmd, bounds.timeout, bounds.env_passthrough, "cargo").await?
+        else {
+            warn!(
+                gate = %gate_name,
+                command = %command_str,
+                timeout_secs = bounds.timeout.as_secs(),
+                "cargo auto-fix timed out — falling through to agent"
+            );
+            return Ok(AutoFixOutcome {
+                gate_name: gate_name.to_string(),
+                was_candidate: true,
+                fix_applied: false,
+                gate_passed_after_fix: false,
+                command: Some(command_str),
+            });
+        };
 
         if !fix_status.status.success() {
             info!(
@@ -607,14 +732,16 @@ pub async fn attempt_auto_fix(
             });
         }
 
-        // For compile fixes, also run cargo fmt to keep formatting clean.
+        // For compile fixes, also run cargo fmt (same packages) to keep
+        // formatting clean.
         if raw.starts_with("compile") {
-            let _ = tokio::process::Command::new("cargo")
+            let mut fmt_cmd = Command::new("cargo");
+            fmt_cmd
                 .env("CARGO_BUILD_JOBS", cargo_build_jobs())
-                .args(["fmt"])
-                .current_dir(workdir)
-                .output()
-                .await;
+                .arg("fmt")
+                .args(&package_args)
+                .current_dir(workdir);
+            let _ = run_fix_command(fmt_cmd, bounds.timeout, bounds.env_passthrough, "cargo").await;
         }
 
         info!(gate = %gate_name, "cargo auto-fix applied — will retry gate");
@@ -647,19 +774,20 @@ pub async fn attempt_auto_fix(
                 command = %command_str,
                 "attempting npm/eslint auto-fix before agent retry"
             );
-            let fix_status = Command::new("npx")
-                .args(["eslint", "--fix", "."])
-                .current_dir(workdir)
-                .output()
-                .await
-                .map_err(|e| format!("failed to spawn npx: {e}"))?;
+            let mut fix_cmd = Command::new("npx");
+            fix_cmd.args(["eslint", "--fix", "."]).current_dir(workdir);
+            let fix_status =
+                run_fix_command(fix_cmd, bounds.timeout, bounds.env_passthrough, "npx").await?;
 
-            let fix_applied = fix_status.status.success();
+            let fix_applied = fix_status
+                .as_ref()
+                .is_some_and(|output| output.status.success());
             if !fix_applied {
                 info!(
                     gate = %gate_name,
-                    exit_code = ?fix_status.status.code(),
-                    "npx eslint --fix exited non-zero — falling through to agent"
+                    exit_code = ?fix_status.as_ref().and_then(|output| output.status.code()),
+                    timed_out = fix_status.is_none(),
+                    "npx eslint --fix did not apply — falling through to agent"
                 );
             } else {
                 info!(gate = %gate_name, "npx eslint auto-fix applied — will retry gate");
@@ -681,19 +809,20 @@ pub async fn attempt_auto_fix(
                 command = %command_str,
                 "attempting gofmt auto-fix before agent retry"
             );
-            let fix_status = Command::new("gofmt")
-                .args(["-w", "."])
-                .current_dir(workdir)
-                .output()
-                .await
-                .map_err(|e| format!("failed to spawn gofmt: {e}"))?;
+            let mut fix_cmd = Command::new("gofmt");
+            fix_cmd.args(["-w", "."]).current_dir(workdir);
+            let fix_status =
+                run_fix_command(fix_cmd, bounds.timeout, bounds.env_passthrough, "gofmt").await?;
 
-            let fix_applied = fix_status.status.success();
+            let fix_applied = fix_status
+                .as_ref()
+                .is_some_and(|output| output.status.success());
             if !fix_applied {
                 info!(
                     gate = %gate_name,
-                    exit_code = ?fix_status.status.code(),
-                    "gofmt exited non-zero — falling through to agent"
+                    exit_code = ?fix_status.as_ref().and_then(|output| output.status.code()),
+                    timed_out = fix_status.is_none(),
+                    "gofmt did not apply — falling through to agent"
                 );
             } else {
                 info!(gate = %gate_name, "gofmt auto-fix applied — will retry gate");
@@ -715,27 +844,26 @@ pub async fn attempt_auto_fix(
                 command = %command_str,
                 "attempting ruff auto-fix before agent retry"
             );
-            let ruff_status = Command::new("ruff")
-                .args(["--fix", "."])
-                .current_dir(workdir)
-                .output()
-                .await;
+            let mut ruff_cmd = Command::new("ruff");
+            ruff_cmd.args(["--fix", "."]).current_dir(workdir);
+            let ruff_status =
+                run_fix_command(ruff_cmd, bounds.timeout, bounds.env_passthrough, "ruff").await;
 
             let (fix_applied, used_command) = match ruff_status {
-                Ok(out) if out.status.success() => (true, command_str),
+                Ok(Some(out)) if out.status.success() => (true, command_str),
                 _ => {
-                    // ruff not available or failed — try black.
+                    // ruff not available, failed, or timed out — try black.
                     let black_cmd = "black .".to_string();
                     info!(
                         gate = %gate_name,
                         "ruff unavailable or failed, trying black"
                     );
-                    let black_status = Command::new("black")
-                        .arg(".")
-                        .current_dir(workdir)
-                        .output()
-                        .await;
-                    let applied = matches!(black_status, Ok(out) if out.status.success());
+                    let mut black = Command::new("black");
+                    black.arg(".").current_dir(workdir);
+                    let black_status =
+                        run_fix_command(black, bounds.timeout, bounds.env_passthrough, "black")
+                            .await;
+                    let applied = matches!(black_status, Ok(Some(out)) if out.status.success());
                     (applied, black_cmd)
                 }
             };
@@ -1207,7 +1335,13 @@ pub async fn run_gate_once(
                 .find(|v| !v.passed && !v.skipped)
                 .map(|v| v.gate.as_str())
                 .unwrap_or("compile");
-            match attempt_auto_fix(&workdir, failing_gate, &first_output).await {
+            let fix_bounds = AutoFixBounds {
+                task_files: planned_files,
+                timeout: limit,
+                compile_concurrency: gates_config.compile_concurrency,
+                env_passthrough: &gates_config.env_passthrough,
+            };
+            match attempt_auto_fix(&workdir, failing_gate, &first_output, fix_bounds).await {
                 Ok(mut outcome) if outcome.fix_applied => {
                     // Fix applied — rerun the pipeline with a fresh snapshot pair.
                     let before_retry = gate_input_snapshot(workdir.clone()).await?;
@@ -1791,7 +1925,9 @@ fn build_rung_execution_config(
     };
 
     let generated_test_artifacts: Option<Arc<dyn roko_gate::generated_test_gate::ArtifactStore>> = {
-        let store = FsGeneratedArtifactStore::new(workdir.to_path_buf());
+        // `.roko/generated-tests/`: where the Graph dispatcher writes eval
+        // artifacts when `gates.write_eval_artifacts` is enabled.
+        let store = FsGeneratedArtifactStore::new(workdir.join(".roko"));
         if store.matching_entries("generated-tests/gen_").is_empty() {
             None
         } else {
@@ -3284,13 +3420,113 @@ path = "src/shared.rs"
 
     // ── E45-T02: auto-fix path tests ─────────────────────────────────────────
 
+    fn test_fix_bounds(task_files: &[String]) -> AutoFixBounds<'_> {
+        AutoFixBounds {
+            task_files,
+            timeout: Duration::from_secs(5),
+            compile_concurrency: 1,
+            env_passthrough: &[],
+        }
+    }
+
+    /// A compiler message carrying a machine-applicable suggestion, which the
+    /// classifier marks as a `cargo fix` candidate.
+    const CARGO_FIX_CANDIDATE_OUTPUT: &str = r#"{"reason":"compiler-message","message":{"message":"unused import: `foo`","code":{"code":"E0432","explanation":null},"level":"error","spans":[],"children":[{"message":"consider importing this","level":"help"}]}}"#;
+
+    #[test]
+    fn owning_cargo_packages_resolves_package_names_not_directories() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(
+            root.join("Cargo.toml"),
+            "[workspace]\nmembers = [\"crates/*\"]\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(root.join("crates/alpha-dir/src")).unwrap();
+        std::fs::write(
+            root.join("crates/alpha-dir/Cargo.toml"),
+            "[package]\nname = \"alpha\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(root.join("crates/beta/src")).unwrap();
+        std::fs::write(
+            root.join("crates/beta/Cargo.toml"),
+            "[package]\nname = \"beta\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+
+        let files = [
+            "crates/alpha-dir/src/lib.rs",
+            // Not created yet: resolves through its existing parent crate.
+            "crates/alpha-dir/src/new_module.rs",
+            "crates/beta/Cargo.toml",
+            // Nearest manifest is the virtual workspace root: skipped.
+            "README.md",
+            // Escapes the workspace: skipped.
+            "../outside.rs",
+        ]
+        .map(String::from);
+        assert_eq!(owning_cargo_packages(root, &files), ["alpha", "beta"]);
+        assert!(owning_cargo_packages(root, &["docs/guide.md".to_string()]).is_empty());
+    }
+
+    #[tokio::test]
+    async fn cargo_auto_fix_is_skipped_without_an_owning_package() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("Cargo.toml"), "[workspace]\n").unwrap();
+        let task_files = vec!["docs/notes.md".to_string()];
+        let outcome = attempt_auto_fix(
+            dir.path(),
+            "compile",
+            CARGO_FIX_CANDIDATE_OUTPUT,
+            test_fix_bounds(&task_files),
+        )
+        .await
+        .expect("skipping must not error");
+
+        assert!(
+            outcome.was_candidate,
+            "the failure is still a fix candidate"
+        );
+        assert!(!outcome.fix_applied);
+        assert!(
+            outcome.command.is_none(),
+            "no workspace-wide cargo fix may run when no package owns the task files"
+        );
+    }
+
+    #[tokio::test]
+    async fn fix_command_is_killed_at_the_timeout() {
+        let mut command = Command::new("sleep");
+        command.arg("5");
+        let started = Instant::now();
+        let output = run_fix_command(command, Duration::from_millis(50), &[], "sleep")
+            .await
+            .expect("sleep spawns");
+        assert!(output.is_none(), "a timed-out fix reports no output");
+        assert!(started.elapsed() < Duration::from_secs(4));
+    }
+
+    #[test]
+    fn auto_fix_bounds_follow_config() {
+        let mut config = roko_core::config::schema::RokoConfig::default();
+        config.timeouts.gate_compile_secs = 42;
+        config.gates.compile_concurrency = 3;
+        let files = vec!["crates/a/src/lib.rs".to_string()];
+        let bounds = AutoFixBounds::from_config(&config, &files);
+        assert_eq!(bounds.timeout, Duration::from_secs(42));
+        assert_eq!(bounds.compile_concurrency, 3);
+        assert_eq!(bounds.task_files, files.as_slice());
+    }
+
     #[tokio::test]
     async fn auto_fix_skips_non_candidate_output() {
         let dir = tempfile::tempdir().unwrap();
         let non_compile_output = "test result: FAILED. 2 passed; 1 failed; 0 ignored";
-        let outcome = attempt_auto_fix(dir.path(), "test", non_compile_output)
-            .await
-            .expect("attempt_auto_fix must not return Err for non-candidates");
+        let outcome =
+            attempt_auto_fix(dir.path(), "test", non_compile_output, test_fix_bounds(&[]))
+                .await
+                .expect("attempt_auto_fix must not return Err for non-candidates");
 
         assert!(
             !outcome.was_candidate,
@@ -3306,7 +3542,7 @@ path = "src/shared.rs"
     async fn auto_fix_skips_unknown_gate_name() {
         let dir = tempfile::tempdir().unwrap();
         let output = "error[E0433]: failed to resolve: use of undeclared crate `foo`";
-        let outcome = attempt_auto_fix(dir.path(), "docs", output)
+        let outcome = attempt_auto_fix(dir.path(), "docs", output, test_fix_bounds(&[]))
             .await
             .expect("attempt_auto_fix must not error");
 
@@ -3318,7 +3554,7 @@ path = "src/shared.rs"
     async fn auto_fix_outcome_command_is_none_for_non_candidates() {
         let dir = tempfile::tempdir().unwrap();
         let output = "nothing interesting here";
-        let outcome = attempt_auto_fix(dir.path(), "compile", output)
+        let outcome = attempt_auto_fix(dir.path(), "compile", output, test_fix_bounds(&[]))
             .await
             .unwrap();
 

@@ -18,7 +18,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use roko_core::dashboard_snapshot::{
     AffectSnapshot, DiagnosisSeverity, DiagnosisSummary, ExperimentWinnerSummary, FailureEntry,
-    InboxCategory, InboxItemState, UrgencyLevel,
+    InboxCategory, InboxItemState, TaskGateOutput, UrgencyLevel,
 };
 
 use super::ViewState;
@@ -58,8 +58,9 @@ pub(crate) fn render(
     view_state: &ViewState,
     theme: &Theme,
 ) {
-    // Only show the left panel when plans are actively running.
-    let has_active_plans = tui_state.plans.iter().any(|p| p.active);
+    // Only show the left panel when plans are actively running, including the
+    // gaps between plans of an unfinished plan set.
+    let has_active_plans = tui_state.plan_set_running || tui_state.plans.iter().any(|p| p.active);
     if has_active_plans {
         let (sidebar, detail) =
             crate::tui::layout::responsive_panel_split(area, 38, 100, area.height / 3);
@@ -119,6 +120,11 @@ fn render_idle_summary_card(
     let total_done: usize = tui_state.plans.iter().map(|p| p.tasks_done).sum();
     let total_tasks: usize = tui_state.plans.iter().map(|p| p.tasks_total).sum();
     let total_failed: usize = tui_state.plans.iter().map(|p| p.tasks_failed).sum();
+    let total_accepted_with_failures: usize = tui_state
+        .plans
+        .iter()
+        .map(|p| p.tasks_accepted_with_failures())
+        .sum();
 
     if completed_plans > 0 || total_done > 0 {
         lines.push(Line::from(vec![
@@ -133,6 +139,12 @@ fn render_idle_summary_card(
             Span::styled(" tasks: ", theme.muted()),
             Span::styled(format!("{total_done}/{total_tasks}"), theme.info()),
         ];
+        if total_accepted_with_failures > 0 {
+            status_spans.push(Span::styled(
+                format!("  {total_accepted_with_failures} \u{26a0} accepted with failures"),
+                theme.warning(),
+            ));
+        }
         if total_failed > 0 {
             status_spans.push(Span::styled(
                 format!("  {total_failed} failed"),
@@ -312,6 +324,18 @@ fn render_progress_card(frame: &mut Frame<'_>, area: Rect, tui_state: &TuiState,
     );
 
     let mut progress_spans = vec![Span::styled(format!(" {bar}"), theme.info())];
+    // Accepted-with-failures tasks count as done but are called out apart.
+    let accepted_with_failures: usize = tui_state
+        .plans
+        .iter()
+        .map(|p| p.tasks_accepted_with_failures())
+        .sum();
+    if accepted_with_failures > 0 {
+        progress_spans.push(Span::styled(
+            format!(" \u{26a0}{accepted_with_failures}"),
+            theme.warning().add_modifier(Modifier::BOLD),
+        ));
+    }
 
     // ETA.
     if let Some(eta_min) = tui_state.critical_path_eta_minutes {
@@ -401,19 +425,31 @@ fn current_task_label(tui_state: &TuiState, max_width: usize) -> Option<String> 
         }
     }
 
-    // Fallback: find a running task in the checklist.
-    tui_state
+    // Fallback: find a running task in the checklist, and count the others
+    // running beside it (several plans may run at once).
+    let mut running = tui_state
         .current_task_checklist
         .iter()
-        .find(|t| t.status == crate::tui::state::TaskStatus::Active)
-        .map(|t| {
-            let label = if t.title.is_empty() {
-                t.id.clone()
-            } else {
-                format!("{}: {}", t.id, t.title)
-            };
-            truncate(&label, max_width.saturating_sub(4))
-        })
+        .filter(|t| t.status == crate::tui::state::TaskStatus::Active);
+    let first = running.next()?;
+    let others = running.count();
+    let label = if first.title.is_empty() {
+        first.id.clone()
+    } else {
+        format!("{}: {}", first.id, first.title)
+    };
+    Some(if others == 0 {
+        truncate(&label, max_width.saturating_sub(4))
+    } else {
+        let suffix = format!(" (+{others} running)");
+        format!(
+            "{}{suffix}",
+            truncate(
+                &label,
+                max_width.saturating_sub(4).saturating_sub(suffix.len())
+            )
+        )
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -1106,19 +1142,37 @@ fn render_sub_gate(
         tui_state.gate_recent_failures.iter().collect()
     };
 
+    let focus_task = verify_focus_task(tui_state);
+
     if rows.is_empty()
         && trend_rows.is_empty()
         && filtered_recent_failures.is_empty()
         && failures.is_empty()
+        && focus_task.is_none()
     {
         empty_state::render_pane_empty_compact(frame, inner, "Waiting for gate verdicts", theme);
         return;
     }
 
+    // The selected task's verify steps sit between the trend grid and the
+    // recent failures, taking what the grid can spare.
+    let failures_h = gate_failure_section_height(inner.height);
+    let task_verify_h = if focus_task.is_some() {
+        let spare = inner.height.saturating_sub(1 + 4 + failures_h);
+        let wanted = inner.height / 2;
+        if spare >= 4 {
+            spare.min(wanted.max(4))
+        } else {
+            0
+        }
+    } else {
+        0
+    };
     let sections = Layout::vertical([
         Constraint::Length(1),
         Constraint::Min(4),
-        Constraint::Length(gate_failure_section_height(inner.height)),
+        Constraint::Length(task_verify_h),
+        Constraint::Length(failures_h),
     ])
     .split(inner);
 
@@ -1136,17 +1190,226 @@ fn render_sub_gate(
         );
         render_gate_trend_grid(frame, sections[1], &trend_rows, focused, theme);
     }
-    let live_failures_owned: Vec<roko_core::FailureEntry> =
-        filtered_recent_failures.into_iter().cloned().collect();
+    if let Some((plan_id, task_id)) = focus_task.as_ref().filter(|_| task_verify_h > 0) {
+        render_task_verify(
+            frame,
+            sections[2],
+            tui_state,
+            plan_id,
+            task_id,
+            focused,
+            theme,
+        );
+    }
+    // A failure without its own summary borrows the task's retained output.
+    let live_failures_owned: Vec<roko_core::FailureEntry> = filtered_recent_failures
+        .into_iter()
+        .map(|failure| {
+            let mut failure = failure.clone();
+            if failure.summary.trim().is_empty() {
+                if let Some(output) =
+                    task_gate_output(tui_state, &failure.plan_id, &failure.task_id)
+                        .filter(|output| !output.passed && output.gate == failure.gate)
+                {
+                    failure.summary = gate_output_summary(output);
+                }
+            }
+            failure
+        })
+        .collect();
     let fallback_failures_owned: Vec<GateFailureRow> = failures.into_iter().cloned().collect();
     render_recent_gate_failures(
         frame,
-        sections[2],
+        sections[3],
         &live_failures_owned,
         &fallback_failures_owned,
+        focus_task.as_ref().map(|(_, task_id)| task_id.as_str()),
         focused,
         theme,
     );
+}
+
+// ---------------------------------------------------------------------------
+// Verify detail for one task
+// ---------------------------------------------------------------------------
+
+/// The task whose verify steps the Verify sub-view details, as
+/// `(plan id, task id)`.
+///
+/// The task under the task-list cursor once the operator is in that list;
+/// otherwise the selected plan's latest failing task with retained output,
+/// then its latest retained output.
+fn verify_focus_task(tui_state: &TuiState) -> Option<(String, String)> {
+    let plan_id = selected_plan_id(tui_state);
+    if matches!(tui_state.focus, FocusZone::TaskProgress) || tui_state.task_scroll > 0 {
+        if let Some((cursor_plan, task_id)) = widgets::task_progress::cursor_task(tui_state) {
+            let plan_id = cursor_plan.or_else(|| plan_id.map(str::to_string));
+            return Some((plan_id.unwrap_or_default(), task_id));
+        }
+    }
+    let in_plan = |output: &&TaskGateOutput| plan_id.is_none_or(|id| output.plan_id == id);
+    let latest_failing = tui_state
+        .task_gate_outputs
+        .iter()
+        .rev()
+        .filter(in_plan)
+        .find(|output| !output.passed);
+    latest_failing
+        .or_else(|| tui_state.task_gate_outputs.iter().rev().find(in_plan))
+        .map(|output| (output.plan_id.clone(), output.task_id.clone()))
+}
+
+/// Latest retained gate output for a task. An empty `plan_id` matches the
+/// task in any plan.
+fn task_gate_output<'a>(
+    tui_state: &'a TuiState,
+    plan_id: &str,
+    task_id: &str,
+) -> Option<&'a TaskGateOutput> {
+    tui_state.task_gate_outputs.iter().rev().find(|output| {
+        output.task_id == task_id && (plan_id.is_empty() || output.plan_id == plan_id)
+    })
+}
+
+/// One-line summary of retained output: the `$ command` line plus the last
+/// non-empty output line.
+fn gate_output_summary(output: &TaskGateOutput) -> String {
+    let command = output.lines.first().filter(|line| line.starts_with("$ "));
+    let last = output
+        .lines
+        .iter()
+        .skip(usize::from(command.is_some()))
+        .rev()
+        .map(|line| line.trim())
+        .find(|line| !line.is_empty());
+    command
+        .map(String::as_str)
+        .into_iter()
+        .chain(last)
+        .collect::<Vec<_>>()
+        .join(" | ")
+}
+
+/// Each verify step of one task (latest verdict per gate, in run order),
+/// with the command and output tail of the step whose output is retained.
+fn render_task_verify(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    tui_state: &TuiState,
+    plan_id: &str,
+    task_id: &str,
+    focused: bool,
+    theme: &Theme,
+) {
+    let title_style = if focused {
+        Theme::focused_title_style()
+    } else {
+        theme.muted()
+    };
+    let task_title = tui_state
+        .plans
+        .iter()
+        .filter(|plan| plan_id.is_empty() || plan.id == plan_id)
+        .flat_map(|plan| plan.tasks.iter())
+        .find(|task| task.id == task_id && task.name != task.id)
+        .map(|task| format!(" {}", truncate(&task.name, 36)))
+        .unwrap_or_default();
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(Span::styled(
+            format!(" Verify \u{00b7} {task_id}{task_title} "),
+            title_style,
+        ))
+        .border_style(theme.muted());
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    if inner.width < 12 || inner.height == 0 {
+        return;
+    }
+
+    let output = task_gate_output(tui_state, plan_id, task_id);
+    let mut steps: Vec<(&str, bool)> = Vec::new();
+    for gate in tui_state
+        .gate_results
+        .iter()
+        .filter(|gate| gate.task_id == task_id && (plan_id.is_empty() || gate.plan_id == plan_id))
+    {
+        match steps.iter_mut().find(|(name, _)| *name == gate.gate) {
+            Some(step) => step.1 = gate.passed,
+            None => steps.push((gate.gate.as_str(), gate.passed)),
+        }
+    }
+    if let Some(output) = output {
+        match steps.iter_mut().find(|(name, _)| *name == output.gate) {
+            Some(step) => step.1 = output.passed,
+            None => steps.push((output.gate.as_str(), output.passed)),
+        }
+    }
+    if steps.is_empty() {
+        frame.render_widget(
+            Paragraph::new(format!(" no verify steps recorded for {task_id} yet"))
+                .style(theme.muted()),
+            inner,
+        );
+        return;
+    }
+
+    let command = output
+        .and_then(|output| output.lines.first())
+        .filter(|line| line.starts_with("$ "));
+    let gate_width = steps
+        .iter()
+        .map(|(gate, _)| gate.chars().count())
+        .max()
+        .unwrap_or_default()
+        .clamp(4, 24);
+    let mut lines: Vec<Line<'_>> = steps
+        .iter()
+        .map(|&(gate, passed)| {
+            let (glyph, verdict, style) = if passed {
+                ("\u{2713}", "pass", theme.success())
+            } else {
+                (
+                    "\u{2717}",
+                    "FAIL",
+                    theme.danger().add_modifier(Modifier::BOLD),
+                )
+            };
+            let mut spans = vec![
+                Span::styled(format!(" {glyph} "), style),
+                Span::styled(
+                    format!("{:<gate_width$} ", truncate(gate, gate_width)),
+                    theme.text(),
+                ),
+                Span::styled(verdict, style),
+            ];
+            if let Some(command) = command.filter(|_| output.is_some_and(|o| o.gate == gate)) {
+                spans.push(Span::styled(format!("  {command}"), theme.accent()));
+            }
+            Line::from(spans)
+        })
+        .collect();
+
+    if let Some(output) = output {
+        let tail = &output.lines[usize::from(command.is_some())..];
+        let room = (inner.height as usize).saturating_sub(lines.len() + 1);
+        if room > 0 && !tail.is_empty() {
+            let shown = tail.len().min(room);
+            lines.push(Line::from(Span::styled(
+                format!(" \u{2500} {} output, last {shown} lines", output.gate),
+                theme.muted(),
+            )));
+            for line in &tail[tail.len() - shown..] {
+                let mut spans = vec![Span::raw("   ")];
+                spans.extend(crate::tui::ansi::parse_ansi_line(
+                    &line.replace('\t', "    "),
+                ));
+                lines.push(Line::from(spans));
+            }
+        }
+    }
+
+    frame.render_widget(Paragraph::new(lines), inner);
 }
 
 // ---------------------------------------------------------------------------
@@ -2463,6 +2726,7 @@ fn render_recent_gate_failures(
     area: Rect,
     live_failures: &[FailureEntry],
     fallback_failures: &[GateFailureRow],
+    focus_task: Option<&str>,
     focused: bool,
     theme: &Theme,
 ) {
@@ -2507,12 +2771,20 @@ fn render_recent_gate_failures(
                 } else {
                     failure.summary.clone()
                 };
+                // The Verify panel's task is marked so its failures stand out.
+                let task_style = if focus_task == Some(failure.task_id.as_str()) {
+                    theme
+                        .text()
+                        .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+                } else {
+                    theme.text()
+                };
                 Line::from(vec![
                     Span::styled(relative_age_datetime(failure.ts), theme.muted()),
                     Span::styled(" | ", theme.muted()),
                     Span::styled(truncate(&failure.gate, 12), theme.warning()),
                     Span::styled(" | ", theme.muted()),
-                    Span::styled(truncate(&failure.task_id, 16), theme.text()),
+                    Span::styled(truncate(&failure.task_id, 16), task_style),
                     Span::styled(" | ", theme.muted()),
                     Span::styled(
                         truncate(&detail, inner.width.saturating_sub(40) as usize),
@@ -3028,6 +3300,85 @@ mod tests {
         assert!(rendered.contains("n=142"));
         assert!(rendered.contains("95% CI"));
         assert!(rendered.contains("████"));
+    }
+
+    #[test]
+    fn verify_tab_details_the_failing_tasks_steps() {
+        use crate::tui::state::{GateResultEntry, PlanEntry, TaskEntry, TaskStatus};
+
+        let mut tui_state = TuiState::default();
+        tui_state.plans = vec![PlanEntry {
+            id: "p1".to_string(),
+            name: "p1".to_string(),
+            tasks: vec![TaskEntry {
+                id: "T03".to_string(),
+                name: "wire the verify panel".to_string(),
+                status: TaskStatus::Failed,
+                ..TaskEntry::default()
+            }],
+            ..PlanEntry::default()
+        }];
+        let verdict = |gate: &str, passed: bool| GateResultEntry {
+            gate: gate.to_string(),
+            plan_id: "p1".to_string(),
+            task_id: "T03".to_string(),
+            passed,
+            output: String::new(),
+        };
+        tui_state.gate_results = vec![verdict("compile", true), verdict("test", false)];
+        tui_state.task_gate_outputs = vec![TaskGateOutput {
+            plan_id: "p1".to_string(),
+            task_id: "T03".to_string(),
+            gate: "test".to_string(),
+            passed: false,
+            lines: vec![
+                "$ cargo test -p roko-cli verify_panel".to_string(),
+                "running 3 tests".to_string(),
+                "test verify_panel::renders ... FAILED".to_string(),
+                "test result: FAILED. 2 passed; 1 failed".to_string(),
+            ],
+        }];
+        tui_state.gate_recent_failures = vec![FailureEntry {
+            plan_id: "p1".to_string(),
+            task_id: "T03".to_string(),
+            gate: "test".to_string(),
+            ..FailureEntry::default()
+        }];
+
+        let mut terminal = Terminal::new(TestBackend::new(120, 36)).unwrap();
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                render_sub_gate(
+                    frame,
+                    area,
+                    &DashboardData::default(),
+                    &tui_state,
+                    true,
+                    &Theme::dark(),
+                );
+            })
+            .unwrap();
+        let rendered = rendered_text(&terminal);
+
+        assert!(
+            rendered.contains("Verify \u{00b7} T03 wire the verify panel"),
+            "{rendered}"
+        );
+        assert!(rendered.contains("compile"), "{rendered}");
+        assert!(
+            rendered.contains("FAIL  $ cargo test -p roko-cli verify_panel"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("test verify_panel::renders ... FAILED"),
+            "{rendered}"
+        );
+        // The recent failure had no summary; it borrows the retained output.
+        assert!(
+            rendered.contains("$ cargo test -p roko-cli verify_panel | test result: FAILED"),
+            "{rendered}"
+        );
     }
 
     #[test]

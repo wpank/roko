@@ -1577,10 +1577,18 @@ impl AgentDispatcherV2 {
         let latency_ms = started.elapsed().as_millis() as u64;
         fill_cost_from_profile(&mut result, &created.target);
 
-        // Record provider outcome for the circuit breaker (E48-T05).
+        // Record provider outcome for the circuit breaker (E48-T05). A run
+        // stopped at its turn cap is a task outcome, not a provider fault.
         if let Some(registry) = &self.health_registry {
             let provider_id = &created.target.provider_id;
-            if result.success {
+            let turn_cap_stop = result
+                .output
+                .body
+                .as_text()
+                .ok()
+                .and_then(roko_agent::provider::error_classify::detect_turn_cap)
+                .is_some();
+            if result.success || turn_cap_stop {
                 registry.record_provider_success(provider_id);
             } else {
                 let output_text = result
@@ -1689,7 +1697,7 @@ impl AgentDispatcherV2 {
                 session_id: None,
                 total_cost_usd: (result.usage.cost_usd > 0.0)
                     .then_some(f64::from(result.usage.cost_usd)),
-                num_turns: Some(1),
+                num_turns: reported_num_turns(&result),
                 is_error: !result.success,
             })
             .await;
@@ -1860,6 +1868,9 @@ impl AgentDispatcherV2 {
             // Thread the persistent file audit adapter so every tool call
             // records scrubbed admit/result lines to disk.
             tool_audit: self.tool_audit.clone(),
+            // Thread the live output channel so the immune boundary can
+            // forward tool steps and unscreened events before screening.
+            live_output: request.live_output.clone(),
             ..Default::default()
         }
     }
@@ -1973,7 +1984,7 @@ async fn record_agent_dispatch_feedback(
 }
 
 /// Request for provider-factory dispatch.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentDispatchRequest {
     /// Logical model key to resolve.
     pub model_key: String,
@@ -2020,6 +2031,14 @@ pub struct AgentDispatchRequest {
     /// `None` means use the provider default (Theta = 10 for Claude CLI).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_turns: Option<u32>,
+    /// Optional live output channel.
+    ///
+    /// When set, the immune boundary taps the provider event stream and
+    /// forwards qualifying events (tool steps, unscreened text/reasoning)
+    /// before the final result is screened. Skipped by serde because
+    /// `LiveOutput` is not serializable.
+    #[serde(skip)]
+    pub live_output: Option<roko_agent::live_output::LiveOutput>,
 }
 
 impl AgentDispatchRequest {
@@ -2145,13 +2164,25 @@ fn dispatch_events_from_result(
     events.push(DispatchEvent::TurnCompleted {
         session_id: None,
         total_cost_usd: (result.usage.cost_usd > 0.0).then_some(f64::from(result.usage.cost_usd)),
-        num_turns: Some(1),
+        num_turns: reported_num_turns(result),
         is_error: !result.success,
     });
     events.push(DispatchEvent::Exited {
         exit_code: Some(if result.success { 0 } else { 1 }),
     });
     events
+}
+
+/// Turns the provider reported (the Claude CLI tags its output with
+/// `num_turns`), or one when it did not say.
+fn reported_num_turns(result: &AgentResult) -> Option<u32> {
+    Some(
+        result
+            .output
+            .tag("num_turns")
+            .and_then(|turns| turns.parse().ok())
+            .unwrap_or(1),
+    )
 }
 
 /// Convert a [`roko_agent::tool_loop::StreamEvent`] into a local [`StreamChunk`].
@@ -2175,6 +2206,14 @@ fn stream_chunk_from_event(event: roko_agent::tool_loop::StreamEvent) -> StreamC
             name_delta: Some(name),
             args_delta: None,
         },
+        StreamEventKind::ToolResult { id, output } => {
+            // Map provider-surfaced tool results to ToolProgress so they flow
+            // through to AgentRuntimeEvent::ToolOutput via agent_event_from_chunk.
+            StreamChunk::ToolProgress {
+                tool: id,
+                status: output,
+            }
+        }
         StreamEventKind::Usage(usage) => StreamChunk::Usage(usage),
         StreamEventKind::Done { finish_reason } => StreamChunk::Done(finish_reason),
     }
@@ -2631,6 +2670,7 @@ mod tests {
                 bare_mode: false,
                 dangerously_skip_permissions: false,
                 max_turns: None,
+                live_output: None,
             };
             let error = request.validate().expect_err("invalid identity must fail");
             assert_eq!(error, DispatchV2Error::InvalidAgentId);
@@ -3096,6 +3136,7 @@ mod tests {
             bare_mode: false,
             dangerously_skip_permissions: false,
             max_turns: None,
+            live_output: None,
         };
         // All provider kinds are now in the contract support whitelist,
         // so OpenClaw with a contract should pass validation.
@@ -3162,6 +3203,7 @@ printf '%s\n' '{"type":"content_block_delta","delta":{"text":"dispatch-ok"}}'
             bare_mode: false,
             dangerously_skip_permissions: false,
             max_turns: None,
+            live_output: None,
         };
         let health_path = tmp.path().join(".roko/learn/provider-health.json");
         let registry = Arc::new(ProviderHealthRegistry::new());

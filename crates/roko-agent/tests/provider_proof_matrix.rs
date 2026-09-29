@@ -159,8 +159,7 @@ impl ProviderProofRow {
             provider: provider_label(kind).to_string(),
             transport: transport.to_string(),
             status: ProofStatus::Failed.as_label().to_string(),
-            latency_ms: latency
-                .map(|d| d.as_millis().min(u64::MAX as u128) as u64),
+            latency_ms: latency.map(|d| d.as_millis().min(u64::MAX as u128) as u64),
             model_slug: None,
             response_len: None,
             input_tokens: None,
@@ -463,7 +462,10 @@ async fn hermetic_anthropic_api_probe() {
         200,
         anthropic_hello_response(model_slug),
     )]);
-    let provider = http_provider_config(ProviderKind::AnthropicApi, format!("{}/v1", server.base_url()));
+    let provider = http_provider_config(
+        ProviderKind::AnthropicApi,
+        format!("{}/v1", server.base_url()),
+    );
     let model = anthropic_model(model_slug, false);
     let options = AgentOptions {
         name: "proof-anthropic-api".to_string(),
@@ -482,7 +484,13 @@ async fn hermetic_anthropic_api_probe() {
         "AnthropicApi probe failed: {}",
         result.output.body.as_text().unwrap_or("(no text)")
     );
-    let text = result.output.body.as_text().unwrap_or("").trim().to_string();
+    let text = result
+        .output
+        .body
+        .as_text()
+        .unwrap_or("")
+        .trim()
+        .to_string();
     assert!(!text.is_empty(), "AnthropicApi returned empty response");
     assert!(
         result.usage.input_tokens > 0 || result.usage.output_tokens > 0,
@@ -492,7 +500,11 @@ async fn hermetic_anthropic_api_probe() {
 
     // Validate the request headers were sent correctly.
     let requests = server.requests();
-    assert_eq!(requests.len(), 1, "expected exactly one request to Anthropic");
+    assert_eq!(
+        requests.len(),
+        1,
+        "expected exactly one request to Anthropic"
+    );
     let req = &requests[0];
     assert_eq!(req.path, "/v1/messages");
     assert!(
@@ -523,8 +535,8 @@ async fn hermetic_anthropic_api_probe() {
 /// Kimi, OpenRouter, and similar deployments.
 #[tokio::test]
 async fn hermetic_openai_compat_probe() {
-    use roko_agent::openai_agent::OpenAiAgent;
     use roko_agent::Agent;
+    use roko_agent::openai_agent::OpenAiAgent;
 
     let model_slug = "gpt-4o-mini";
     let server = spawn_scripted_server(vec![scripted_response(
@@ -532,8 +544,7 @@ async fn hermetic_openai_compat_probe() {
         openai_hello_response(model_slug),
     )]);
     let started = Instant::now();
-    let agent = OpenAiAgent::new("test-key", model_slug)
-        .with_base_url(&server.base_url);
+    let agent = OpenAiAgent::new("test-key", model_slug).with_base_url(&server.base_url);
     let result = agent.run(&probe_signal(), &Context::now()).await;
     let elapsed = started.elapsed();
 
@@ -542,7 +553,13 @@ async fn hermetic_openai_compat_probe() {
         "OpenAiCompat probe failed: {}",
         result.output.body.as_text().unwrap_or("(no text)")
     );
-    let text = result.output.body.as_text().unwrap_or("").trim().to_string();
+    let text = result
+        .output
+        .body
+        .as_text()
+        .unwrap_or("")
+        .trim()
+        .to_string();
     assert!(!text.is_empty(), "OpenAiCompat returned empty response");
 
     let requests = server.requests();
@@ -565,8 +582,8 @@ async fn hermetic_openai_compat_probe() {
 /// null). We verify it does not panic and that exactly one request was sent.
 #[tokio::test]
 async fn hermetic_openai_compat_tool_probe() {
-    use roko_agent::openai_agent::OpenAiAgent;
     use roko_agent::Agent;
+    use roko_agent::openai_agent::OpenAiAgent;
 
     let model_slug = "gpt-4o-mini";
     // Single scripted response: a tool_calls payload.  OpenAiAgent does not
@@ -575,8 +592,7 @@ async fn hermetic_openai_compat_tool_probe() {
         200,
         openai_tool_response(model_slug),
     )]);
-    let agent = OpenAiAgent::new("test-key", model_slug)
-        .with_base_url(&server.base_url);
+    let agent = OpenAiAgent::new("test-key", model_slug).with_base_url(&server.base_url);
 
     // The agent should not panic when it receives a tool_calls response.
     let result = agent.run(&probe_signal(), &Context::now()).await;
@@ -586,7 +602,10 @@ async fn hermetic_openai_compat_tool_probe() {
     // Capture snapshot before dropping the server so the background thread
     // exits naturally (it served its one scripted response and is done).
     let request_count = server.requests().len();
-    assert_eq!(request_count, 1, "OpenAiAgent must send exactly one request");
+    assert_eq!(
+        request_count, 1,
+        "OpenAiAgent must send exactly one request"
+    );
 
     eprintln!("[proof] openai_compat_tools probe: {request_count} requests");
     // Do not call server.join() — the server thread exits after serving its
@@ -624,7 +643,10 @@ async fn hermetic_anthropic_api_tool_probe() {
     });
 
     let server = spawn_scripted_server(vec![scripted_response(200, tool_response)]);
-    let provider = http_provider_config(ProviderKind::AnthropicApi, format!("{}/v1", server.base_url()));
+    let provider = http_provider_config(
+        ProviderKind::AnthropicApi,
+        format!("{}/v1", server.base_url()),
+    );
     let model = anthropic_model(model_slug, true);
     let options = AgentOptions {
         name: "proof-anthropic-api-tools".to_string(),
@@ -669,16 +691,15 @@ async fn hermetic_anthropic_api_tool_probe() {
 /// content normalisation) are applied.
 #[tokio::test]
 async fn hermetic_cerebras_api_probe() {
-    use roko_agent::openai_agent::OpenAiAgent;
     use roko_agent::Agent;
+    use roko_agent::openai_agent::OpenAiAgent;
 
     let model_slug = "llama3.1-8b";
     let server = spawn_scripted_server(vec![scripted_response(
         200,
         openai_hello_response(model_slug),
     )]);
-    let agent = OpenAiAgent::new("cerebras-test-key", model_slug)
-        .with_base_url(&server.base_url);
+    let agent = OpenAiAgent::new("cerebras-test-key", model_slug).with_base_url(&server.base_url);
     let started = Instant::now();
     let result = agent.run(&probe_signal(), &Context::now()).await;
     let elapsed = started.elapsed();
@@ -689,10 +710,7 @@ async fn hermetic_cerebras_api_probe() {
         result.output.body.as_text().unwrap_or("(no text)")
     );
 
-    eprintln!(
-        "[proof] cerebras_api ok: elapsed={:?}",
-        elapsed
-    );
+    eprintln!("[proof] cerebras_api ok: elapsed={:?}", elapsed);
     server.join();
 }
 
@@ -701,16 +719,15 @@ async fn hermetic_cerebras_api_probe() {
 /// definitions in standard calls.
 #[tokio::test]
 async fn hermetic_perplexity_api_probe() {
-    use roko_agent::openai_agent::OpenAiAgent;
     use roko_agent::Agent;
+    use roko_agent::openai_agent::OpenAiAgent;
 
     let model_slug = "sonar-pro";
     let server = spawn_scripted_server(vec![scripted_response(
         200,
         openai_hello_response(model_slug),
     )]);
-    let agent = OpenAiAgent::new("perplexity-test-key", model_slug)
-        .with_base_url(&server.base_url);
+    let agent = OpenAiAgent::new("perplexity-test-key", model_slug).with_base_url(&server.base_url);
     let started = Instant::now();
     let result = agent.run(&probe_signal(), &Context::now()).await;
     let elapsed = started.elapsed();
@@ -721,10 +738,7 @@ async fn hermetic_perplexity_api_probe() {
         result.output.body.as_text().unwrap_or("(no text)")
     );
 
-    eprintln!(
-        "[proof] perplexity_api ok: elapsed={:?}",
-        elapsed
-    );
+    eprintln!("[proof] perplexity_api ok: elapsed={:?}", elapsed);
     server.join();
 }
 
@@ -756,7 +770,13 @@ async fn hermetic_gemini_api_probe() {
 
     // The Gemini adapter may fail if the mock endpoint path doesn't match — we
     // accept either success or failure here, but the probe must not panic.
-    let text = result.output.body.as_text().unwrap_or("").trim().to_string();
+    let text = result
+        .output
+        .body
+        .as_text()
+        .unwrap_or("")
+        .trim()
+        .to_string();
 
     eprintln!(
         "[proof] gemini_api probe: success={} text_len={} elapsed={:?}",
@@ -825,7 +845,10 @@ fn http_providers_report_usage_in_baseline() {
         let row = &matrix.rows[label];
         let state = row.get(Capability::UsageReporting);
         assert!(
-            matches!(state, CapabilityState::Supported | CapabilityState::Degraded),
+            matches!(
+                state,
+                CapabilityState::Supported | CapabilityState::Degraded
+            ),
             "HTTP provider {label} must support usage reporting (got {state:?})"
         );
     }
@@ -883,8 +906,8 @@ fn capability_matrix_markdown_report_covers_all_kinds() {
 /// and always passes in CI.
 #[tokio::test]
 async fn hermetic_full_proof_matrix() {
-    use roko_agent::openai_agent::OpenAiAgent;
     use roko_agent::Agent;
+    use roko_agent::openai_agent::OpenAiAgent;
 
     let mut rows: Vec<ProviderProofRow> = Vec::new();
 
@@ -897,8 +920,7 @@ async fn hermetic_full_proof_matrix() {
             openai_hello_response(model_slug),
         )]);
         let started = Instant::now();
-        let agent = OpenAiAgent::new("test-key", model_slug)
-            .with_base_url(&server.base_url);
+        let agent = OpenAiAgent::new("test-key", model_slug).with_base_url(&server.base_url);
         let result = agent.run(&probe_signal(), &Context::now()).await;
         let elapsed = started.elapsed();
         if result.success {
@@ -984,8 +1006,7 @@ async fn hermetic_full_proof_matrix() {
             openai_hello_response(model_slug),
         )]);
         let started = Instant::now();
-        let agent = OpenAiAgent::new("cerebras-key", model_slug)
-            .with_base_url(&server.base_url);
+        let agent = OpenAiAgent::new("cerebras-key", model_slug).with_base_url(&server.base_url);
         let result = agent.run(&probe_signal(), &Context::now()).await;
         let elapsed = started.elapsed();
         if result.success {
@@ -1019,8 +1040,7 @@ async fn hermetic_full_proof_matrix() {
             openai_hello_response(model_slug),
         )]);
         let started = Instant::now();
-        let agent = OpenAiAgent::new("perplexity-key", model_slug)
-            .with_base_url(&server.base_url);
+        let agent = OpenAiAgent::new("perplexity-key", model_slug).with_base_url(&server.base_url);
         let result = agent.run(&probe_signal(), &Context::now()).await;
         let elapsed = started.elapsed();
         if result.success {
@@ -1254,12 +1274,11 @@ async fn live_cerebras_api_probe() {
         }
     };
 
-    use roko_agent::openai_agent::OpenAiAgent;
     use roko_agent::Agent;
+    use roko_agent::openai_agent::OpenAiAgent;
 
     let model_slug = "llama3.1-8b";
-    let agent = OpenAiAgent::new(api_key, model_slug)
-        .with_base_url("https://api.cerebras.ai/v1");
+    let agent = OpenAiAgent::new(api_key, model_slug).with_base_url("https://api.cerebras.ai/v1");
 
     let started = Instant::now();
     let result = agent.run(&probe_signal(), &Context::now()).await;
@@ -1275,12 +1294,19 @@ async fn live_cerebras_api_probe() {
         "live Cerebras probe failed: {}",
         result.output.body.as_text().unwrap_or("(no text)")
     );
-    let text = result.output.body.as_text().unwrap_or("").trim().to_string();
-    assert!(!text.is_empty(), "live Cerebras probe returned empty content");
-
-    println!(
-        "[proof] live cerebras_api ok: content=\"{text}\" elapsed={elapsed:?}"
+    let text = result
+        .output
+        .body
+        .as_text()
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    assert!(
+        !text.is_empty(),
+        "live Cerebras probe returned empty content"
     );
+
+    println!("[proof] live cerebras_api ok: content=\"{text}\" elapsed={elapsed:?}");
 }
 
 /// Live Gemini API probe.
@@ -1339,12 +1365,16 @@ async fn live_gemini_api_probe() {
         "live Gemini probe failed: {}",
         result.output.body.as_text().unwrap_or("(no text)")
     );
-    let text = result.output.body.as_text().unwrap_or("").trim().to_string();
+    let text = result
+        .output
+        .body
+        .as_text()
+        .unwrap_or("")
+        .trim()
+        .to_string();
     assert!(!text.is_empty(), "live Gemini probe returned empty content");
 
-    println!(
-        "[proof] live gemini_api ok: content=\"{text}\" elapsed={elapsed:?}"
-    );
+    println!("[proof] live gemini_api ok: content=\"{text}\" elapsed={elapsed:?}");
 }
 
 /// Live OpenAI-compatible probe using a generic OPENAI_API_KEY.
@@ -1361,12 +1391,11 @@ async fn live_openai_compat_probe() {
         }
     };
 
-    use roko_agent::openai_agent::OpenAiAgent;
     use roko_agent::Agent;
+    use roko_agent::openai_agent::OpenAiAgent;
 
     let model_slug = "gpt-4o-mini";
-    let agent = OpenAiAgent::new(api_key, model_slug)
-        .with_base_url("https://api.openai.com/v1");
+    let agent = OpenAiAgent::new(api_key, model_slug).with_base_url("https://api.openai.com/v1");
 
     let started = Instant::now();
     let result = agent.run(&probe_signal(), &Context::now()).await;
@@ -1382,12 +1411,16 @@ async fn live_openai_compat_probe() {
         "live OpenAI probe failed: {}",
         result.output.body.as_text().unwrap_or("(no text)")
     );
-    let text = result.output.body.as_text().unwrap_or("").trim().to_string();
+    let text = result
+        .output
+        .body
+        .as_text()
+        .unwrap_or("")
+        .trim()
+        .to_string();
     assert!(!text.is_empty(), "live OpenAI probe returned empty content");
 
-    println!(
-        "[proof] live openai_compat ok: content=\"{text}\" elapsed={elapsed:?}"
-    );
+    println!("[proof] live openai_compat ok: content=\"{text}\" elapsed={elapsed:?}");
 }
 
 /// Live Claude CLI probe.
@@ -1406,8 +1439,8 @@ async fn live_claude_cli_probe() {
         return;
     }
 
-    use roko_agent::claude_cli_agent::ClaudeCliAgent;
     use roko_agent::Agent;
+    use roko_agent::claude_cli_agent::ClaudeCliAgent;
 
     let workdir = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
     let agent = ClaudeCliAgent::new("claude", &workdir, "claude-haiku-4-5")
@@ -1427,12 +1460,19 @@ async fn live_claude_cli_probe() {
         "live ClaudeCli probe failed: {}",
         result.output.body.as_text().unwrap_or("(no text)")
     );
-    let text = result.output.body.as_text().unwrap_or("").trim().to_string();
-    assert!(!text.is_empty(), "live ClaudeCli probe returned empty content");
-
-    println!(
-        "[proof] live claude_cli ok: content=\"{text}\" elapsed={elapsed:?}"
+    let text = result
+        .output
+        .body
+        .as_text()
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    assert!(
+        !text.is_empty(),
+        "live ClaudeCli probe returned empty content"
     );
+
+    println!("[proof] live claude_cli ok: content=\"{text}\" elapsed={elapsed:?}");
 }
 
 /// Live full proof matrix across ALL configured providers in the workspace roko.toml.
@@ -1490,7 +1530,10 @@ async fn live_full_matrix_from_workspace_config() {
             rows.push(ProviderProofRow::skipped(
                 kind,
                 transport,
-                format!("missing {}", provider.api_key_env.as_deref().unwrap_or("key")),
+                format!(
+                    "missing {}",
+                    provider.api_key_env.as_deref().unwrap_or("key")
+                ),
             ));
             continue;
         }
@@ -1637,7 +1680,10 @@ async fn run_live_http_probe(
                 .base_url
                 .as_deref()
                 .unwrap_or("https://api.openai.com/v1");
-            let endpoint = format!("{}/chat/completions", base.trim_end_matches('/').trim_end_matches("/v1"));
+            let endpoint = format!(
+                "{}/chat/completions",
+                base.trim_end_matches('/').trim_end_matches("/v1")
+            );
             let endpoint = if endpoint.ends_with("/v1/chat/completions") {
                 endpoint
             } else {

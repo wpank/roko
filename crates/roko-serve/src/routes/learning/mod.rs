@@ -584,6 +584,10 @@ fn build_adaptive_thresholds_response(
 ) -> AdaptiveThresholdsResponse {
     let mut rungs: Vec<RungThresholdSummary> = thresholds
         .all_rungs()
+        // Only expose rungs that have at least one observation; pre-populated
+        // default rungs with zero observations are internal state and produce
+        // no actionable information for the caller.
+        .filter(|(_, stats)| stats.total_observations > 0)
         .map(|(rung, stats)| RungThresholdSummary {
             rung: *rung,
             ema_pass_rate: stats.ema_pass_rate,
@@ -851,48 +855,6 @@ mod tests {
     use crate::state::AppState;
     use roko_core::config::ServeAuthConfig;
     use roko_learn::aggregate::CFactorBucket;
-    use roko_learn::prompt_experiment::PromptExperiment;
-
-    fn make_experiment() -> PromptExperiment {
-        let variants = vec![
-            roko_learn::prompt_experiment::PromptVariant {
-                id: "baseline".into(),
-                name: "Baseline".into(),
-                section_name: "system_prompt".into(),
-                content: "v1".into(),
-                slug: None,
-                active: true,
-            },
-            roko_learn::prompt_experiment::PromptVariant {
-                id: "verbose".into(),
-                name: "Verbose".into(),
-                section_name: "system_prompt".into(),
-                content: "v2".into(),
-                slug: None,
-                active: true,
-            },
-        ];
-        let mut exp = PromptExperiment::new("exp-1", "system_prompt", variants);
-        exp.stats = HashMap::from([
-            (
-                "baseline".into(),
-                roko_learn::prompt_experiment::VariantStats {
-                    trials: 10,
-                    successes: 8,
-                },
-            ),
-            (
-                "verbose".into(),
-                roko_learn::prompt_experiment::VariantStats {
-                    trials: 10,
-                    successes: 5,
-                },
-            ),
-        ]);
-        exp.min_trials_per_variant = 5;
-        exp.min_effect_size = 0.1;
-        exp
-    }
 
     fn snapshot() -> router_state::CascadeSnapshotData {
         let mut confidence_stats = HashMap::new();

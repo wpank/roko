@@ -21,7 +21,6 @@ pub enum Severity {
 }
 
 impl Severity {
-    #[allow(dead_code)] // used in render_text, which is called from the binary
     fn label(self) -> &'static str {
         match self {
             Self::Error => "error",
@@ -64,7 +63,6 @@ pub struct ValidationReport {
 impl ValidationReport {
     /// Return an exit code: 0 if no errors (and no warnings in strict mode),
     /// 1 otherwise.
-    #[allow(dead_code)] // used from the binary (commands/plan.rs)
     pub fn exit_code(&self, strict: bool) -> i32 {
         if self.totals.errors > 0 {
             return 1;
@@ -77,7 +75,6 @@ impl ValidationReport {
 }
 
 /// Render the validation report as pretty-printed JSON.
-#[allow(dead_code)] // used from the binary (commands/plan.rs)
 pub fn render_json(report: &ValidationReport) -> anyhow::Result<String> {
     serde_json::to_string_pretty(report).map_err(|e| anyhow::anyhow!("json serialize: {e}"))
 }
@@ -109,7 +106,6 @@ impl TaskSnapshot {
     }
 }
 
-#[allow(dead_code)] // used from the binary (commands/plan.rs)
 pub fn validate_plans_dir(
     dir: &Path,
     models: Option<&IndexMap<String, ModelProfile>>,
@@ -222,7 +218,6 @@ fn validate_plans_dir_impl(
     Ok(ValidationReport { plans, totals })
 }
 
-#[allow(dead_code)] // used from the binary (commands/plan.rs)
 pub fn render_text(report: &ValidationReport) -> String {
     let mut out = String::new();
     let mut printed_plan = false;
@@ -372,6 +367,17 @@ fn validate_tasks_file(
                     plan_id: Some(plan_id.clone()),
                     task_id: None,
                     message: format!("schema validation failed: {schema_issue}"),
+                });
+            }
+            // A role whose safety contract denies write tools cannot produce
+            // the task's declared `files`; the task would fail at runtime.
+            for issue in tasks_file.write_capability_issues() {
+                diagnostics.push(Diagnostic {
+                    severity: Severity::Error,
+                    rule_id: "PLAN_036".to_string(),
+                    plan_id: Some(plan_id.clone()),
+                    task_id: Some(issue.task_id.clone()),
+                    message: issue.to_string(),
                 });
             }
         }
@@ -971,7 +977,8 @@ fn parse_task_role(role: &str) -> Option<AgentRole> {
         "architect" => AgentRole::Architect,
         "researcher" => AgentRole::Researcher,
         "auditor" => AgentRole::Auditor,
-        "quick-reviewer" | "quickreviewer" => AgentRole::QuickReviewer,
+        // `reviewer` is prompted with the read-only quick-reviewer template.
+        "quick-reviewer" | "quickreviewer" | "reviewer" => AgentRole::QuickReviewer,
         "scribe" => AgentRole::Scribe,
         "critic" => AgentRole::Critic,
         "auto-fixer" | "autofixer" => AgentRole::AutoFixer,

@@ -978,7 +978,8 @@ fn append_stream_value(
             }
             StreamEventKind::Done { .. }
             | StreamEventKind::ToolCallDelta { .. }
-            | StreamEventKind::ToolCallEnd { .. } => {}
+            | StreamEventKind::ToolCallEnd { .. }
+            | StreamEventKind::ToolResult { .. } => {}
         }
     }
 
@@ -1010,7 +1011,8 @@ fn normalize_events(events: &[StreamEvent]) -> Vec<ExpectedChunk> {
             }),
             StreamEventKind::Done { .. }
             | StreamEventKind::ToolCallDelta { .. }
-            | StreamEventKind::ToolCallEnd { .. } => {}
+            | StreamEventKind::ToolCallEnd { .. }
+            | StreamEventKind::ToolResult { .. } => {}
         }
     }
     out

@@ -1,0 +1,489 @@
+[meta]
+plan = "03-backend-live-events"
+total = 7
+done = 0
+status = "ready"
+max_parallel = 1
+skip_enrichment = true
+estimated_total_minutes = 165
+
+# One runner per workspace, and a running plan observable live on the hub its watchers
+# read.
+#
+# Prerequisite, landed by e2-planset on 2026-09-28: server-initiated runs publish into
+# the server's hub. `GraphPlanRunParams.state_hub` is passed by
+# `run_plan_on_local_runtime` (serve_runtime.rs); test
+# `graph_execution::plan_runner::tests::provided_state_hub_receives_the_runs_plan_events`.
+# Without it the live check in T06 sees no task events at all. e2 does not publish
+# RunCompleted; T05 does.
+#
+#   T01      server runs take the same runner lock as `roko plan run`, so two runners
+#            can never execute in one workspace (first: concurrent runners corrupt state)
+#   T02-T05  live task status, token and cost, a visible agent, run_completed
+#   T06      live acceptance check (plans/portal-programme/_harness/live-events-check.sh)
+#   T07      contract as built, work items
+#
+# Deliberately NOT here: streaming the agent transcript. Every provider agent is
+# wrapped by the immune boundary (crates/roko-agent/src/immune_boundary.rs), which
+# lets only the screened final body out. That is a safety decision, not a wiring gap.
+#
+# The rest of "the server owns the workspace" (cancel, run sets, CLI clients) is plan
+# 03b-backend-workspace-server. See tmp/portal-audit/03-CONTRACT.md sections 3 and 4.
+
+[[task]]
+id = "T01"
+title = "Hold the runner lock for server-initiated runs"
+description = """
+Two runners can execute in one workspace at once, sharing its checkpoints, git working
+tree and learning files.
+
+  - `roko plan run` takes `.roko/runtime/roko.runner.lock` through
+    `workspace_lock::acquire_runner_lock` (`PlanCmd::Run` in
+    `crates/roko-cli/src/commands/plan.rs`).
+  - The server's run path takes no lock at all.
+  - `roko serve` holds only the workspace lock, `roko.lock`, which `plan run` never
+    takes.
+
+Verified 2026-09-28: `roko plan run` completes inside a workspace while `roko serve`
+runs there. The dogfood log's N-1 diagnosis, that both take the exclusive workspace
+lock, is stale.
+
+In `run_plan_on_local_runtime` (`crates/roko-cli/src/serve_runtime.rs`), acquire
+`crate::workspace_lock::acquire_runner_lock(&workdir.join(".roko"))` before anything
+else touches the workspace, and hold the guard until the run returns. Server runs and
+CLI runs then exclude each other through the same lock file. If the lock is held,
+return its error unchanged; it names the owning PID. Do not retry or wait.
+"""
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+timeout_secs = 2700
+max_retries = 2
+estimated_minutes = 15
+depends_on = []
+files = ["crates/roko-cli/src/serve_runtime.rs"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/serve_runtime.rs", why = "run_plan_on_local_runtime, the server's plan run path" },
+    { path = "crates/roko-cli/src/workspace_lock.rs", why = "acquire_runner_lock and the guard it returns" },
+]
+anti_patterns = [
+    "Do not take the workspace lock roko.lock here: the server process already holds it exclusively.",
+    "Do not wait for or retry the lock; fail with the lock's own error.",
+]
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli"
+fail_msg = "roko-cli does not compile after adding the runner lock to server runs"
+timeout_ms = 1800000
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'acquire_runner_lock' crates/roko-cli/src/serve_runtime.rs"
+fail_msg = "the server run path does not take the runner lock"
+
+[[task]]
+id = "T02"
+title = "Emit live per-task status from the run loop"
+description = """
+The Graph run reports task status wrongly in both directions. Both sites are in
+`crates/roko-cli/src/graph_execution/plan_runner.rs`, in the per-plan loop.
+
+  - Before the flow starts, a pre-population loop calls
+    `graph_tui_bridge.node_started(..)` for every task. Every task therefore shows as
+    started at once.
+  - After `flow_handle.await_completion()`, `graph_tui_bridge::emit_plan_lifecycle`
+    publishes every completion in one batch, when the plan is already over.
+
+`GraphTuiBridge::poll_status_changes` (`crates/roko-cli/src/runner/graph_tui_bridge.rs`)
+already turns two status maps into TaskStarted/TaskCompleted deltas, ETA included. It
+has no production caller.
+
+Do this in the per-plan loop:
+
+  1. Delete the pre-population loop. A task that has not been dispatched is pending,
+     not started.
+  2. Build the title map once with `graph_tui_bridge::build_node_title_map(&tasks)`.
+  3. In the existing 100 ms command-polling loop (the one draining `exec_cmd_rx`),
+     read `flow_handle.status().node_statuses`. Keep only node ids present in the
+     title map; the rich topology adds helper nodes that are not tasks. Call
+     `graph_tui_bridge.poll_status_changes(&plan.id, &previous, &current, &titles)`,
+     then make `current` the new `previous`.
+  4. After `await_completion()` returns output, emit the remaining transitions with
+     one more `poll_status_changes` call. Build its `current` from
+     `output.node_results` (node id → status, filtered the same way). Then call
+     `graph_tui_bridge.plan_completed(&plan.id, execution_succeeded)`. Remove the
+     `emit_plan_lifecycle` call from this path, so no completion is published twice.
+     Leave the branch where the flow produced no output as it is.
+
+Each task then produces exactly one TaskStarted and one TaskCompleted, in execution
+order.
+"""
+status = "ready"
+role = "implementer"
+tier = "integrative"
+model_hint = "claude-sonnet-4-6"
+timeout_secs = 2700
+max_retries = 2
+estimated_minutes = 30
+depends_on = ["T01"]
+files = ["crates/roko-cli/src/graph_execution/plan_runner.rs"]
+closes = ["gap-d40bc0"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/graph_execution/plan_runner.rs", why = "the pre-population loop, the command-polling loop and the emit_plan_lifecycle call" },
+    { path = "crates/roko-cli/src/runner/graph_tui_bridge.rs", why = "poll_status_changes and build_node_title_map, written and tested but never called" },
+    { path = "crates/roko-graph/src/engine.rs", why = "FlowHandle::status returns FlowStatus.node_statuses, a HashMap<NodeId, NodeStatus>" },
+]
+anti_patterns = [
+    "Do not publish a started event for a task that has not been dispatched.",
+    "Do not write a second status-diffing implementation; poll_status_changes is correct and unused.",
+    "Do not publish a task's completion twice: once the final diff exists, emit_plan_lifecycle must not run on this path.",
+]
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-cli --lib graph_tui_bridge"
+fail_msg = "roko-cli does not compile, or the graph TUI bridge tests fail"
+timeout_ms = 2700000
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'poll_status_changes' crates/roko-cli/src/graph_execution/plan_runner.rs"
+fail_msg = "the run loop does not call poll_status_changes"
+
+[[task]]
+id = "T03"
+title = "Publish token usage and cost for every provider call"
+description = """
+Tokens and cost never reach the dashboard. Nothing calls `TuiBridge::token_usage`
+(`crates/roko-cli/src/runner/tui_bridge.rs`), and nothing publishes a `cost_usd`
+efficiency event. So the agent token fields and the `SnapshotStats` totals stay 0, and
+the portal shows "$0.00 · 0 tok" for an agent that clearly ran.
+
+The numbers are already in scope in `GraphTaskDispatcher::emit_feedback`
+(`crates/roko-cli/src/graph_task_dispatch.rs`). That is where the `CostRecord` for
+`.roko/learn/costs.jsonl` is built from `dispatch.result.usage`.
+
+Next to that `CostRecord` construction, publish through `self.tui_bridge` when it is
+set. Keep this outside the `if let Some(costs_path)` block, so it does not depend on
+the costs log being configured:
+
+  - `token_usage(plan_id, task_id, input, output, cache_read, cache_write)`, taken
+    from `dispatch.result.usage` (`input_tokens`, `output_tokens`,
+    `cache_read_tokens`, `cache_create_tokens`).
+  - `efficiency_event(plan_id, task_id, "cost_usd", cost)`, with the dispatch's
+    `cost_usd`.
+
+`plan_id` is `spec.plan_id` and `task_id` is `task.id`. The metric names must be the
+exact strings matched by the `EfficiencyEvent` arm of `DashboardSnapshot::apply`
+(`crates/roko-core/src/dashboard_snapshot.rs`). Read it and use them verbatim. That fold
+attributes the numbers to the agent that `forward_dispatch_events_to_tui` announced for
+the task, so publish after it.
+
+Do not change how the `CostRecord` is written.
+"""
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+timeout_secs = 2700
+max_retries = 2
+estimated_minutes = 20
+depends_on = ["T02"]
+files = ["crates/roko-cli/src/graph_task_dispatch.rs"]
+closes = ["gap-038eaa"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/graph_task_dispatch.rs", why = "emit_feedback, where the CostRecord is built with every usage field in scope" },
+    { path = "crates/roko-cli/src/runner/tui_bridge.rs", why = "token_usage and efficiency_event, neither called from the Graph path" },
+    { path = "crates/roko-core/src/dashboard_snapshot.rs", why = "the EfficiencyEvent fold and the exact metric names it matches" },
+]
+anti_patterns = [
+    "Do not invent metric names. Use the ones the snapshot fold matches.",
+    "Do not publish usage without the plan and task ids; per-agent attribution alone is not enough for the run view.",
+]
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli"
+fail_msg = "roko-cli does not compile after publishing usage events"
+timeout_ms = 1800000
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'token_usage(' crates/roko-cli/src/graph_task_dispatch.rs && grep -q 'efficiency_event(' crates/roko-cli/src/graph_task_dispatch.rs"
+fail_msg = "the dispatch path does not publish token usage and cost"
+
+[[task]]
+id = "T04"
+title = "Show a working agent while it works"
+description = """
+An agent is invisible for its whole turn. In `GraphTaskDispatcher::dispatch`
+(`crates/roko-cli/src/graph_task_dispatch.rs` — the path `TaskExecutorCell` calls, not
+`dispatch_streaming`), the dispatcher awaits
+`self.factory.run_shared_agent_bridge(request)`. Only afterwards does it call
+`forward_dispatch_events_to_tui`, which publishes `agent_spawned`, the transcript and
+`agent_completed` in one burst.
+
+The transcript cannot be streamed, and this task must not try. Every provider agent is
+wrapped by the immune boundary (`crates/roko-agent/src/immune_boundary.rs`), which lets
+only the screened final body cross — its `run_streaming` says "Provider events are not
+replayed". The Claude CLI adapter has no `run_streaming` override either. Streaming the
+transcript is a safety decision, and the last task of this plan records it as a gap.
+
+The agent's existence and elapsed time can and must be live:
+
+  1. Publish `agent_spawned` immediately before the dispatch starts. Use the same
+     agent id, role, model slug and provider that the forwarder uses today; all of
+     them are known from `dispatch_plan` before the call. Remove the call from
+     `forward_dispatch_events_to_tui`, so it is published exactly once.
+  2. While the dispatch future is pending, publish
+     `TuiBridge::agent_heartbeat(agent_id, plan_id, task_id, elapsed_ms)` every 5
+     seconds. Use a named constant `AGENT_HEARTBEAT_INTERVAL`, and drive it by
+     selecting the dispatch future against a `tokio::time::interval`. Nothing calls
+     `agent_heartbeat` today, so the agent's `elapsed_ms` stays 0.
+  3. After the dispatch returns, keep forwarding the screened transcript and
+     `agent_completed` exactly as now, for success and failure alike. If the dispatch
+     fails with an error, still publish `agent_completed` before returning the error,
+     so no agent is left "running" on the dashboard.
+  4. Fix a panic in `forward_dispatch_events_to_tui` while you are in it. Its
+     tool-output truncation slices `&output[output.len() - 1024..]` by byte, which
+     panics when that index falls inside a multi-byte character. Floor the index to a
+     char boundary, and keep the `[...truncated]\\n` prefix, which the portal's
+     transcript detects.
+"""
+status = "ready"
+role = "implementer"
+tier = "integrative"
+model_hint = "claude-sonnet-4-6"
+timeout_secs = 2700
+max_retries = 2
+estimated_minutes = 30
+depends_on = ["T03"]
+files = ["crates/roko-cli/src/graph_task_dispatch.rs"]
+closes = ["bug-45c355"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/graph_task_dispatch.rs", why = "dispatch, its run_shared_agent_bridge await, and forward_dispatch_events_to_tui" },
+    { path = "crates/roko-cli/src/runner/tui_bridge.rs", why = "agent_spawned, agent_heartbeat and agent_completed" },
+    { path = "crates/roko-agent/src/immune_boundary.rs", why = "why provider stream events never cross the boundary; do not change it" },
+]
+anti_patterns = [
+    "Do not bypass, weaken or reorder the immune boundary to stream output. It is the E34 safety contract.",
+    "Do not change dispatch_streaming; production uses dispatch.",
+    "Do not leave an agent without agent_completed on the error path.",
+]
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli"
+fail_msg = "roko-cli does not compile after adding agent heartbeats"
+timeout_ms = 1800000
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'AGENT_HEARTBEAT_INTERVAL' crates/roko-cli/src/graph_task_dispatch.rs && grep -q 'agent_heartbeat(' crates/roko-cli/src/graph_task_dispatch.rs"
+fail_msg = "the dispatch path does not publish agent heartbeats"
+
+[[task]]
+id = "T05"
+title = "Publish run_completed on every exit path"
+description = """
+`DashboardEvent::RunCompleted { outcome, duration_ms, cleanup_degraded,
+surviving_agent_ids, surviving_agent_pids }` (`crates/roko-core/src/dashboard_snapshot.rs`)
+is never published by a Graph run. So the snapshot's `run_duration_ms` and
+`run_outcome` stay null, and the portal has no elapsed time or terminal state for a
+run.
+
+In `crates/roko-cli/src/graph_execution/plan_runner.rs`, publish it exactly once per run,
+into the hub the run uses (the caller's hub when one was passed in), on every exit
+path.
+That includes the early `?` returns: plan load, config, provider preflight, extension
+start-up and checkpoint errors.
+
+  - Resolve the hub first and take an `Instant` there. Run the rest of the body as an
+    inner function, publish `RunCompleted` from the outer function based on the
+    inner result, then return that result.
+  - `outcome` is "succeeded" when the run returns `EXIT_SUCCESS`. It is "cancelled"
+    when the run was stopped on purpose:
+    - a TUI cancel (`was_cancelled_by_tui`);
+    - a stop request through `GraphPlanRunParams.interrupt`, where
+      `PlanRunInterruptHandle::requested()` is `Some` and the run returns
+      `PlanRunInterrupt::exit_code()` (130 or 143).
+    Thread that fact out of the body. Otherwise it is "failed", including every `Err`.
+  - Plans a stop leaves unstarted keep `phase: "pending"` and get no event of their
+    own; this `RunCompleted` is what tells a client the whole run is over.
+  - `duration_ms` is measured from that `Instant`. Set `cleanup_degraded` to false and
+    leave the surviving-agent lists empty; the Graph path tracks neither.
+
+Publish with `TuiBridge::publish_event` or the hub sender. Do not go through
+`TuiBridge::runner_event`, which also writes a legacy event-log entry.
+"""
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+timeout_secs = 2700
+max_retries = 2
+estimated_minutes = 25
+depends_on = ["T04"]
+files = ["crates/roko-cli/src/graph_execution/plan_runner.rs"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/graph_execution/plan_runner.rs", why = "every exit path of the run, including early returns and cancellation" },
+    { path = "crates/roko-core/src/dashboard_snapshot.rs", why = "the RunCompleted variant and the fields its fold sets" },
+    { path = "crates/roko-cli/src/runner/tui_bridge.rs", why = "publish_event; runner_event is the legacy path to avoid" },
+]
+anti_patterns = [
+    "Do not publish only on success. Failed, errored and cancelled runs need it too.",
+    "Do not publish it twice for one run.",
+]
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli"
+fail_msg = "roko-cli does not compile after publishing run_completed"
+timeout_ms = 1800000
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'RunCompleted' crates/roko-cli/src/graph_execution/plan_runner.rs"
+fail_msg = "the Graph run does not publish RunCompleted"
+
+[[task]]
+id = "T06"
+title = "Prove a server-initiated run is observable live"
+description = """
+Run the acceptance check and record the result in
+`plans/portal-programme/03-backend-live-events/REVIEW.md`.
+
+  1. `cargo build -p roko-cli`. The check runs `target/debug/roko`, which earlier tasks
+     changed.
+  2. `bash plans/portal-programme/_harness/live-events-check.sh`. The check:
+       - builds a scratch workspace under /tmp with its own `.roko`, so it never
+         touches this repository's locks or state;
+       - points the claude_cli provider at the deterministic fake agent
+         `plans/portal-programme/_harness/fake-claude`;
+       - starts `roko serve` there on a free port and executes the two-task fixture
+         plan through `POST /api/plans/live-a/execute`;
+       - captures `GET /api/events` and prints one PASS/FAIL line per assertion.
+     It costs nothing and takes about a minute.
+  3. When an assertion fails, find the cause in this plan's code (the files of
+     T01–T05), fix it, rebuild and rerun. If the harness itself is wrong — a bug in
+     `lib.sh`, `sse.py` or the fake, not an assertion you disagree with — fix it and
+     say exactly what and why in REVIEW.md. Never delete or weaken an assertion.
+  4. Write REVIEW.md with:
+       - the full PASS/FAIL output;
+       - an answer, with event evidence, to each of three questions: did task status
+         arrive as deltas, was the agent visible while it worked, did the token and
+         cost totals become non-zero? Rerun with `KEEP_WS=1` and quote lines from the
+         kept workspace's `events.sse`.
+       - what remains out of scope: transcript streaming (see T04);
+       - finally, the verdict line the check printed.
+"""
+status = "ready"
+role = "implementer"
+tier = "integrative"
+model_hint = "claude-sonnet-4-6"
+timeout_secs = 2700
+max_retries = 2
+estimated_minutes = 25
+depends_on = ["T05"]
+files = ["plans/portal-programme/03-backend-live-events/REVIEW.md"]
+closes = ["gap-431b43"]
+
+[task.context]
+read_files = [
+    { path = "plans/portal-programme/_harness/live-events-check.sh", why = "the assertions this plan must satisfy" },
+    { path = "plans/portal-programme/_harness/lib.sh", why = "how the scratch workspace and server are built and torn down" },
+    { path = "plans/portal-programme/_harness/fake-claude", why = "the deterministic agent: SLOW and ARTIFACT markers, fixed usage" },
+    { path = "tmp/portal-audit/03-CONTRACT.md", why = "the event contract the run view consumes" },
+]
+anti_patterns = [
+    "Do not start a server against this repository. The check brings its own workspace.",
+    "Do not edit or remove an assertion to make the check pass.",
+    "Do not report success unless the check printed LIVE-EVENTS-CHECK: PASS.",
+]
+
+[[task.verify]]
+phase = "test"
+command = "cargo build -p roko-cli && bash plans/portal-programme/_harness/live-events-check.sh"
+fail_msg = "the live events acceptance check does not pass"
+timeout_ms = 2700000
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'LIVE-EVENTS-CHECK: PASS' plans/portal-programme/03-backend-live-events/REVIEW.md"
+fail_msg = "REVIEW.md does not record a passing check"
+
+[[task]]
+id = "T07"
+title = "Record the event contract as built, and update the work graph"
+description = """
+Bring `tmp/portal-audit/03-CONTRACT.md` in line with what this plan delivered, and
+record the outcome in the work graph: `work/items/`, format in `work/README.md`.
+`.roko/GAPS.md` is frozen; do not write there.
+
+  1. Under a heading reading exactly `AS BUILT 03-backend-live-events`, restate the
+     section 3 event table with each event's observed status: live, once per turn,
+     or absent. Use `plans/portal-programme/03-backend-live-events/REVIEW.md` and
+     its captured events as the evidence, not the plan text. Correct any claim they
+     contradict.
+  2. Close the items this plan's tasks declare in `closes`: gap-d40bc0 (T02),
+     gap-038eaa (T03), bug-45c355 (T04) and gap-431b43 (T06).
+     Close each only if the live check's matching assertion passed.
+     - Set `status = "done"`, and set `updated` and `last_verified` to today.
+     - Fill `[closed]`: `at`; `by = "plan:portal-programme/03-backend-live-events#<task>"`;
+       `run_id` from `.roko/state/graph/03-backend-live-events/checkpoint.json`;
+       and `evidence` quoting the PASS line.
+     - For gap-431b43, the evidence is also that `roko plan run` takes
+       `roko.runner.lock`, not the workspace lock, and that the check starts a
+       server from inside a plan run.
+  3. Streaming the transcript is now a product decision (T04). Create a decision
+     item (`kind = "decision"`, id computed as `work/README.md` describes) titled
+     "Show agent output live before the immune boundary screens it?".
+     - Its body lists the options: keep per-turn output; stream to the local
+       operator under an explicit trust setting; stream tool-call names only.
+     - Its anchors are `crates/roko-agent/src/immune_boundary.rs` and
+       `crates/roko-cli/src/graph_task_dispatch.rs::GraphTaskDispatcher::dispatch`.
+     - Set gap-be0ac2 and bug-28f2b9 to `status = "blocked"`, with
+       `links.depends_on` naming the decision, and say in their bodies that
+       heartbeats now show liveness.
+  4. gap-8a1fb3 stays open. Note in its body that run completion and heartbeats are
+     now emitted, and that timestamps, DAG edges and gate rung/duration remain.
+     The engine's unused `GraphExecutionEvent` is already tracked by gap-8921a3 and
+     reg-cbfff6; add nothing for it.
+"""
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 20
+depends_on = ["T06"]
+files = ["tmp/portal-audit/03-CONTRACT.md", "work/items"]
+
+[task.context]
+read_files = [
+    { path = "tmp/portal-audit/03-CONTRACT.md", why = "the event table to restate as observed" },
+    { path = "work/README.md", why = "the item format, IDs and the closure rules" },
+    { path = "work/items/gap-d40bc0-plan-task-status-reaches-the-dashboard-in.md", why = "an item this plan closes, as a format example" },
+]
+anti_patterns = [
+    "Do not close an item whose assertion did not pass in the live check.",
+    "Do not write to .roko/GAPS.md; it is frozen.",
+    "Do not rewrite other plans' sections of the contract.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = '''grep -q 'AS BUILT 03-backend-live-events' tmp/portal-audit/03-CONTRACT.md && grep -q '^status = "done"' work/items/gap-d40bc0-*.md && grep -rlq 'Show agent output live' work/items/ && python3 -c 'import tomllib, glob; [tomllib.loads(open(f).read().split("+++")[1]) for f in glob.glob("work/items/*.md")]''''
+fail_msg = "the contract has no AS BUILT section, the closed items were not updated, the streaming decision is missing, or an item's front matter no longer parses"

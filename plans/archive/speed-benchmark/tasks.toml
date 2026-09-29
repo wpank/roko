@@ -1,0 +1,73 @@
+[meta]
+plan = "speed-benchmark"
+total = 3
+done = 0
+status = "ready"
+max_parallel = 3
+skip_enrichment = true
+estimated_total_minutes = 5
+
+[[task]]
+id = "SPEED-T01"
+title = "Create a trivial Rust function"
+description = """Create the file `demo/speed-test/src/lib.rs` with a single pure function:
+`pub fn add(a: i32, b: i32) -> i32 { a + b }`
+Also create `demo/speed-test/Cargo.toml` with:
+```toml
+[package]
+name = "speed-test"
+version = "0.1.0"
+edition = "2021"
+```
+Do NOT read any other files. Do NOT explore the codebase. Just write these two files and stop."""
+status = "ready"
+tier = "mechanical"
+max_loc = 10
+files = ["demo/speed-test/src/lib.rs", "demo/speed-test/Cargo.toml"]
+role = "implementer"
+depends_on = []
+
+[[task.verify]]
+phase = "structural"
+command = "test -f demo/speed-test/src/lib.rs && grep -q 'pub fn add' demo/speed-test/src/lib.rs"
+fail_msg = "demo/speed-test/src/lib.rs missing or wrong"
+
+[[task]]
+id = "SPEED-T02"
+title = "Create a simple test file"
+description = """Create the file `demo/speed-test/tests/basic.rs` containing:
+```rust
+use speed_test::add;
+#[test]
+fn test_add() { assert_eq!(add(2, 3), 5); }
+```
+Do NOT read any other files. Just create this one file and stop."""
+status = "ready"
+tier = "mechanical"
+max_loc = 5
+files = ["demo/speed-test/tests/basic.rs"]
+role = "implementer"
+depends_on = ["SPEED-T01"]
+
+[[task.verify]]
+phase = "structural"
+command = "test -f demo/speed-test/tests/basic.rs && grep -q 'test_add' demo/speed-test/tests/basic.rs"
+fail_msg = "demo/speed-test/tests/basic.rs missing or wrong"
+
+[[task]]
+id = "SPEED-T03"
+title = "Build and test the speed-test crate"
+description = """Run `cargo test -p speed-test` in the workspace root. If it passes, write the output
+to `demo/speed-test/RESULT.md` with the header `# Speed Test Passed` and the test output.
+Do NOT modify any other files."""
+status = "ready"
+tier = "mechanical"
+max_loc = 20
+files = ["demo/speed-test/RESULT.md"]
+role = "implementer"
+depends_on = ["SPEED-T02"]
+
+[[task.verify]]
+phase = "structural"
+command = "test -f demo/speed-test/RESULT.md && grep -q 'Speed Test Passed' demo/speed-test/RESULT.md"
+fail_msg = "demo/speed-test/RESULT.md missing or wrong"

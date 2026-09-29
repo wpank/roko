@@ -1184,7 +1184,7 @@ pub(crate) async fn cmd_provider_test_all(workdir: &Path, json: bool) -> Result<
 }
 
 pub(crate) fn cmd_model_list(workdir: &Path, names_only: bool) -> Result<()> {
-    use roko_core::config::model_registry::{builtin_pricing, ALIASES, BUILTIN_MODELS};
+    use roko_core::config::model_registry::{ALIASES, BUILTIN_MODELS, builtin_pricing};
     use std::collections::BTreeSet;
 
     let config = roko_core::config::loader::load_config_unified(workdir)
@@ -1230,7 +1230,11 @@ pub(crate) fn cmd_model_list(workdir: &Path, names_only: bool) -> Result<()> {
             if is_default {
                 row.model = format!("{model_name} *");
             }
-            row.key_status = if key_ok { "ok".to_string() } else { "missing".to_string() };
+            row.key_status = if key_ok {
+                "ok".to_string()
+            } else {
+                "missing".to_string()
+            };
             // Attach aliases for this slug.
             if let Some(aliases) = alias_index.get(profile.slug.as_str()) {
                 let mut sorted = aliases.clone();
@@ -2350,21 +2354,49 @@ pub(crate) fn format_model_rows(rows: &[ModelListRow]) -> String {
         let _ = writeln!(
             out,
             "{:<model_w$}  {:<prov_w$}  {:<slug_w$}  {:<ctx_w$}  {:<tools_w$}  {:<think_w$}  {:<vis_w$}  {:<cost_w$}  {:<key_w$}  {:<alias_w$}",
-            "Model", "Provider", "Slug", "Context", "Tools", "Think", "Vision",
-            "Cost (in/out)", "Key", "Aliases",
-            model_w = widths[0], prov_w = widths[1], slug_w = widths[2],
-            ctx_w = widths[3], tools_w = widths[4], think_w = widths[5],
-            vis_w = widths[6], cost_w = widths[7], key_w = widths[8], alias_w = widths[9],
+            "Model",
+            "Provider",
+            "Slug",
+            "Context",
+            "Tools",
+            "Think",
+            "Vision",
+            "Cost (in/out)",
+            "Key",
+            "Aliases",
+            model_w = widths[0],
+            prov_w = widths[1],
+            slug_w = widths[2],
+            ctx_w = widths[3],
+            tools_w = widths[4],
+            think_w = widths[5],
+            vis_w = widths[6],
+            cost_w = widths[7],
+            key_w = widths[8],
+            alias_w = widths[9],
         );
     } else {
         let _ = writeln!(
             out,
             "{:<model_w$}  {:<prov_w$}  {:<slug_w$}  {:<ctx_w$}  {:<tools_w$}  {:<think_w$}  {:<vis_w$}  {:<cost_w$}  {:<key_w$}",
-            "Model", "Provider", "Slug", "Context", "Tools", "Think", "Vision",
-            "Cost (in/out)", "Key",
-            model_w = widths[0], prov_w = widths[1], slug_w = widths[2],
-            ctx_w = widths[3], tools_w = widths[4], think_w = widths[5],
-            vis_w = widths[6], cost_w = widths[7], key_w = widths[8],
+            "Model",
+            "Provider",
+            "Slug",
+            "Context",
+            "Tools",
+            "Think",
+            "Vision",
+            "Cost (in/out)",
+            "Key",
+            model_w = widths[0],
+            prov_w = widths[1],
+            slug_w = widths[2],
+            ctx_w = widths[3],
+            tools_w = widths[4],
+            think_w = widths[5],
+            vis_w = widths[6],
+            cost_w = widths[7],
+            key_w = widths[8],
         );
     }
 
@@ -2373,21 +2405,49 @@ pub(crate) fn format_model_rows(rows: &[ModelListRow]) -> String {
             let _ = writeln!(
                 out,
                 "{:<model_w$}  {:<prov_w$}  {:<slug_w$}  {:<ctx_w$}  {:<tools_w$}  {:<think_w$}  {:<vis_w$}  {:<cost_w$}  {:<key_w$}  {:<alias_w$}",
-                row.model, row.provider, row.slug, row.context, row.tools, row.thinking,
-                row.vision, row.cost, row.key_status, row.aliases,
-                model_w = widths[0], prov_w = widths[1], slug_w = widths[2],
-                ctx_w = widths[3], tools_w = widths[4], think_w = widths[5],
-                vis_w = widths[6], cost_w = widths[7], key_w = widths[8], alias_w = widths[9],
+                row.model,
+                row.provider,
+                row.slug,
+                row.context,
+                row.tools,
+                row.thinking,
+                row.vision,
+                row.cost,
+                row.key_status,
+                row.aliases,
+                model_w = widths[0],
+                prov_w = widths[1],
+                slug_w = widths[2],
+                ctx_w = widths[3],
+                tools_w = widths[4],
+                think_w = widths[5],
+                vis_w = widths[6],
+                cost_w = widths[7],
+                key_w = widths[8],
+                alias_w = widths[9],
             );
         } else {
             let _ = writeln!(
                 out,
                 "{:<model_w$}  {:<prov_w$}  {:<slug_w$}  {:<ctx_w$}  {:<tools_w$}  {:<think_w$}  {:<vis_w$}  {:<cost_w$}  {:<key_w$}",
-                row.model, row.provider, row.slug, row.context, row.tools, row.thinking,
-                row.vision, row.cost, row.key_status,
-                model_w = widths[0], prov_w = widths[1], slug_w = widths[2],
-                ctx_w = widths[3], tools_w = widths[4], think_w = widths[5],
-                vis_w = widths[6], cost_w = widths[7], key_w = widths[8],
+                row.model,
+                row.provider,
+                row.slug,
+                row.context,
+                row.tools,
+                row.thinking,
+                row.vision,
+                row.cost,
+                row.key_status,
+                model_w = widths[0],
+                prov_w = widths[1],
+                slug_w = widths[2],
+                ctx_w = widths[3],
+                tools_w = widths[4],
+                think_w = widths[5],
+                vis_w = widths[6],
+                cost_w = widths[7],
+                key_w = widths[8],
             );
         }
     }

@@ -10,6 +10,8 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
+use roko_core::agent::ProviderKind;
+use roko_core::child_env::CredentialScrub;
 use roko_core::config::DEFAULT_LLM_CALL_SECS;
 use roko_core::{Context, Signal};
 
@@ -58,6 +60,8 @@ pub struct HermesOneShotConfig {
     pub resource_limits: Option<ResourceLimits>,
     /// Optional system prompt prepended to every prompt.
     pub system_prompt: Option<String>,
+    /// Which inherited provider credentials the subprocess loses.
+    pub credential_scrub: CredentialScrub,
 }
 
 impl Default for HermesOneShotConfig {
@@ -75,6 +79,7 @@ impl Default for HermesOneShotConfig {
             timeout: Duration::from_secs(DEFAULT_LLM_CALL_SECS),
             resource_limits: None,
             system_prompt: None,
+            credential_scrub: CredentialScrub::for_kind(ProviderKind::Hermes),
         }
     }
 }
@@ -183,7 +188,8 @@ impl HermesOneShotAgent {
         let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
         let mut runner = ChildProcessRunner::new(&config.binary, &cwd)
             .with_timeout(config.timeout)
-            .with_name("hermes-oneshot");
+            .with_name("hermes-oneshot")
+            .with_credential_scrub(config.credential_scrub.clone());
         if let Some(limits) = &config.resource_limits {
             runner = runner.with_resource_limits(limits.clone());
         }

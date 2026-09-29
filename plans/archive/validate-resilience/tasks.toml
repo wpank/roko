@@ -1,0 +1,64 @@
+[meta]
+plan = "validate-resilience"
+total = 3
+done = 0
+status = "ready"
+max_parallel = 3
+skip_enrichment = true
+
+[[task]]
+id = "RES-T01"
+title = "Verify disk-space guard exists in dispatch"
+description = """Search crates/roko-cli/src/graph_task_dispatch.rs for 'ENOSPC' or 'disk full' or 'min_free_disk_mb'.
+Write result to demo/resilience-check/disk-guard-ok.txt."""
+status = "ready"
+tier = "mechanical"
+max_loc = 2
+model_hint = "cerebras-gptoss"
+files = ["demo/resilience-check/disk-guard-ok.txt"]
+role = "implementer"
+depends_on = []
+max_turns = 5
+
+[[task.verify]]
+phase = "structural"
+command = "grep -qE 'disk|ENOSPC|min_free' demo/resilience-check/disk-guard-ok.txt"
+fail_msg = "Disk guard not found"
+
+[[task]]
+id = "RES-T02"
+title = "Verify evidence bundle is written after plan completion"
+description = """Search crates/roko-cli/src/commands/plan.rs for 'evidence' or 'bundle.json'.
+Write result to demo/resilience-check/evidence-ok.txt."""
+status = "ready"
+tier = "mechanical"
+max_loc = 2
+model_hint = "cerebras-gptoss"
+files = ["demo/resilience-check/evidence-ok.txt"]
+role = "implementer"
+depends_on = []
+max_turns = 5
+
+[[task.verify]]
+phase = "structural"
+command = "grep -qE 'evidence|bundle' demo/resilience-check/evidence-ok.txt"
+fail_msg = "Evidence bundle not found"
+
+[[task]]
+id = "RES-T03"
+title = "Verify focused-gates flag exists"
+description = """Search crates/roko-cli/src/commands/plan.rs for 'focused_gates' or '--focused-gates'.
+Write result to demo/resilience-check/focused-ok.txt."""
+status = "ready"
+tier = "mechanical"
+max_loc = 2
+model_hint = "cerebras-gptoss"
+files = ["demo/resilience-check/focused-ok.txt"]
+role = "implementer"
+depends_on = []
+max_turns = 5
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'focused' demo/resilience-check/focused-ok.txt"
+fail_msg = "Focused gates not found"

@@ -22,6 +22,7 @@ label_prefix = "automation/"
 
     Command::cargo_bin("roko")
         .expect("roko binary")
+        .current_dir(temp.path())
         .args(["github", "status", "--workdir"])
         .arg(temp.path())
         .env_remove("GITHUB_TOKEN")
@@ -45,6 +46,7 @@ fn github_status_json_without_token_is_structured_and_successful() {
 
     Command::cargo_bin("roko")
         .expect("roko binary")
+        .current_dir(temp.path())
         .args(["--json", "github", "status", "--workdir"])
         .arg(temp.path())
         .env_remove("GITHUB_TOKEN")

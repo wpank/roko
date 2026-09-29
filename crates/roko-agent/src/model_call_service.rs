@@ -151,6 +151,11 @@ pub struct ModelCallService {
     /// budgets at the provider I/O boundary.  When `None`, the
     /// `OpenAiCompatLlmBackend` falls back to its own process-global limiter.
     rate_limiter: Option<Arc<ProviderRateLimiter>>,
+    /// When `true`, agent subprocesses are launched with
+    /// `--dangerously-skip-permissions` so they can write files without
+    /// interactive permission prompts.  Mirrors
+    /// `runner.dangerously_skip_permissions` in `roko.toml`.
+    dangerously_skip_permissions: bool,
 }
 
 impl ModelCallService {
@@ -183,6 +188,7 @@ impl ModelCallService {
             run_id: "model-call-service".to_string(),
             request_seq: AtomicU64::new(1),
             rate_limiter: None,
+            dangerously_skip_permissions: false,
         }
     }
 
@@ -386,6 +392,18 @@ impl ModelCallService {
         self
     }
 
+    /// Enable `--dangerously-skip-permissions` for agent subprocesses.
+    ///
+    /// When set, provider adapters that construct a `ClaudeCliAgent` (or any
+    /// subprocess-backed agent) will launch the subprocess without interactive
+    /// file-write permission prompts.  Required for serve-side plan execution
+    /// where there is no user terminal to approve writes.
+    #[must_use]
+    pub fn with_dangerously_skip_permissions(mut self, enabled: bool) -> Self {
+        self.dangerously_skip_permissions = enabled;
+        self
+    }
+
     /// Resolve which model to use for a request.
     fn resolve_model(&self, req: &ModelCallRequest) -> String {
         if req.model.is_empty() {
@@ -489,6 +507,7 @@ impl ModelCallService {
             env: self.env.clone(),
             effort: Some(self.config.agent.default_effort.clone())
                 .filter(|effort| !effort.trim().is_empty()),
+            dangerously_skip_permissions: self.dangerously_skip_permissions,
             ..AgentOptions::default()
         };
         options.mcp_config = req
@@ -2097,6 +2116,11 @@ fn is_rate_limit_message(message: &str) -> bool {
 /// outer workflow handling can erase the provider identity.
 /// Classify provider-facing error text for circuit-breaker outcome recording.
 pub(crate) fn provider_error_kind(message: &str) -> &'static str {
+    // Usage-window refusals mention "limit"; classify them before billing and
+    // rate limits so the circuit breaker quarantines instead of retrying.
+    if crate::provider::error_classify::detect_provider_exhaustion(message).is_some() {
+        return "provider_exhausted";
+    }
     let lower = message.to_ascii_lowercase();
     // Billing/credit errors must be checked before the generic rate-limit
     // classifier so that messages containing "quota" + billing indicators

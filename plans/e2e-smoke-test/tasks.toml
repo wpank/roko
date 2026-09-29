@@ -1,0 +1,41 @@
+[meta]
+plan = "e2e-smoke-test"
+total = 2
+done = 0
+status = "ready"
+max_parallel = 1
+skip_enrichment = true
+estimated_total_minutes = 2
+
+[[task]]
+id = "T01"
+title = "Create greeting file"
+description = """Create the file `demo/e2e-test/greeting.txt` with exactly the following content:
+
+Hello from E2E test
+
+Do not modify any other file."""
+status = "ready"
+tier = "mechanical"
+max_loc = 5
+files = ["demo/e2e-test/greeting.txt"]
+role = "implementer"
+depends_on = []
+
+[[task.verify]]
+phase = "structural"
+command = "test -f demo/e2e-test/greeting.txt && grep -q 'Hello from E2E test' demo/e2e-test/greeting.txt"
+fail_msg = "demo/e2e-test/greeting.txt was not created with the expected content"
+
+[[task]]
+id = "T02"
+title = "Create README"
+description = """Create the file `demo/e2e-test/README.md` with a short description of what `greeting.txt` contains.
+The README must include a `## About` heading and reference `greeting.txt` by name.
+Do not modify any other file."""
+status = "ready"
+tier = "mechanical"
+max_loc = 10
+files = ["demo/e2e-test/README.md"]
+role = "scribe"
+depends_on = ["T01"]

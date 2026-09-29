@@ -1,0 +1,1189 @@
+[meta]
+plan = "03b-backend-workspace-server"
+total = 18
+done = 0
+status = "ready"
+max_parallel = 1
+skip_enrichment = true
+estimated_total_minutes = 485
+
+# While `roko serve` runs for a workspace, it owns the workspace, and CLI commands
+# become its clients: one runner, one hub, one place to watch.
+#
+# Verified live 2026-09-28 against a scratch workspace:
+#   - `roko plan run` completes while `roko serve` runs in the same workspace. They
+#     take different lock files (roko.runner.lock vs roko.lock), and the server's run
+#     path takes neither, so two runners can mutate one working tree at once.
+#   - the server never sees the CLI run; its hub stays empty.
+#   - `roko dashboard` and `plan list/show/validate/status` fail while the server
+#     runs, because their shared lock collides with serve's exclusive one.
+#   - POST /api/plans/{id}/cancel answers {"cancelled":true}, but the agent keeps
+#     running: the run is orphaned and invisible.
+#
+# The design (tmp/portal-audit/03-CONTRACT.md section 4), which also carries the
+# portal's run asks P-6, P-7 and P-9 (section 6):
+#   T01      one run per workspace: run bookkeeping by member id (the runner lock
+#            itself is 03-backend-live-events T01)
+#   T02-T05  run options: cancel through the run's own interrupt, resume, plan subsets,
+#            and single plans run in place so their checkpoints resume
+#   T17-T18  (run right after T05) POST /api/plans/{id}/resume and the other per-plan
+#            routes find directory plans the way execute does (work item bug-9116ff)
+#   T06-T08  the server advertises itself (.roko/runtime/serve.json), serves its hub
+#            (.roko/runtime/hub.sock), and reports its branch
+#   T09-T10  POST /api/plans/execute: run a set of plans or all of them, in plan-set
+#            order, independent plans up to max_parallel_plans at once (the engine's
+#            parallel plan-set change is separate work in this push), as one run
+#            order
+#   T11-T13  CLI clients: discovery, `roko plan run` through the server, read-only
+#            commands attach instead of locking
+#   T14-T16  IPC test, the live acceptance check, docs and gaps
+#
+# Runs after 03-backend-live-events and e2's hub threading: their live events and
+# run_completed are what a client watches. The acceptance check is
+# plans/portal-programme/_harness/workspace-server-check.sh.
+
+[[task]]
+id = "T01"
+title = "Admit one run per server and find it by any member plan"
+description = """
+Run bookkeeping in `crates/roko-serve/src/routes/plans.rs` is keyed by a single plan id.
+`execute_plan` refuses a second run only for the same id. Entries in
+`state.active_plans` leave only through pause/cancel or the 60-second
+`AppState::gc_completed_handles` sweep. So a finished run blocks re-running its plan
+for up to a minute, and two different plans can run concurrently in one working tree.
+The portal also needs to cancel or inspect a multi-plan run through any plan it
+contains (section 6, P-6 of `tmp/portal-audit/03-CONTRACT.md`).
+
+  1. Add `pub members: Vec<String>` to `PlanHandle` (`crates/roko-serve/src/state.rs`):
+     the plan ids the run executes, in order. `execute_plan` sets it to `[id]`.
+  2. In `routes/plans.rs`, add two helpers over `&HashMap<String, PlanHandle>`:
+     - `active_run_conflict(..) -> Option<String>`, the key of any entry whose `handle`
+       is not finished;
+     - `active_run_for(.., id) -> Option<String>`, the key of the unfinished entry
+       whose key is `id` or whose `members` contain it.
+     A finished entry is inactive.
+  3. `execute_plan` answers 409, naming the active run, whenever `active_run_conflict`
+     finds one. A finished entry under the same key is replaced, not a conflict. Keep
+     the check and the insert under one write lock.
+  4. `plan_status`, `pause_plan` and `cancel_plan` resolve their `{id}` through
+     `active_run_for`, so a run id and any member plan id both work.
+
+Running independent plans in parallel is out of scope; the last task records it as a
+gap.
+"""
+status = "ready"
+role = "implementer"
+tier = "integrative"
+model_hint = "claude-sonnet-4-6"
+timeout_secs = 2700
+max_retries = 2
+estimated_minutes = 25
+depends_on = []
+files = [
+    "crates/roko-serve/src/state.rs",
+    "crates/roko-serve/src/routes/plans.rs",
+]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-serve/src/routes/plans.rs", why = "execute_plan and the status, pause and cancel lookups" },
+    { path = "crates/roko-serve/src/state.rs", why = "PlanHandle, active_plans and gc_completed_handles" },
+    { path = "crates/roko-serve/tests/plan_execute.rs", why = "the existing 409 and cancel tests this must keep passing" },
+]
+anti_patterns = [
+    "Do not release the write lock between the conflict check and the insert.",
+    "Do not treat a finished handle as an active run.",
+]
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-serve"
+fail_msg = "roko-serve tests fail after the run bookkeeping change"
+timeout_ms = 2700000
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'fn active_run_conflict' crates/roko-serve/src/routes/plans.rs && grep -q 'fn active_run_for' crates/roko-serve/src/routes/plans.rs && grep -q 'pub members: Vec<String>' crates/roko-serve/src/state.rs"
+fail_msg = "the run bookkeeping helpers or PlanHandle.members are missing"
+
+[[task]]
+id = "T02"
+title = "Add run options and plan-set ordering to the runtime seam"
+description = """
+Cancel does not reach the run. Verified with the fake agent: after
+`POST /api/plans/{id}/cancel` answered `{"cancelled":true}`, the agent process was still
+running 8 seconds later, while status already reported no active execution. The
+handler's `tokio::select!` drops the future of `runtime.run_plan(..)`, but
+`RokoCliRuntime::run_plan` runs the Graph inside `spawn_blocking`, which dropping a
+handle cannot stop. Nothing inside the run observes the token.
+
+In `crates/roko-serve/src/runtime.rs`:
+
+  - Add `pub struct PlanRunOptions`, deriving `Clone` and `Default`, with:
+    - `pub cancel: Option<CancelToken>` (`roko_runtime::cancel::CancelToken`, which the
+      plan routes already use);
+    - `pub fresh: bool` and `pub force_resume: bool`, documented as meaning exactly
+      what the `roko plan run` flags of the same names mean;
+    - `pub only_plans: Option<Vec<String>>`, which restricts a plan-set directory to
+      these plan ids;
+    - `pub max_parallel_plans: Option<usize>`, how many independent plans of a set
+      may run at once. `None` means what `roko plan run` uses: the workspace's
+      `[conductor] max_parallel_plans`.
+  - Add `async fn run_plan_with_options(&self, workdir: &Path, plan_target: &Path,
+    options: PlanRunOptions) -> anyhow::Result<PlanExecutionResult>` to `CliRuntime`.
+    Its default body ignores the options and calls `run_plan`, so every existing
+    runtime keeps compiling, including the test runtimes under
+    `crates/roko-serve/tests`.
+  - Add `async fn plan_run_order(&self, workdir: &Path, plan_target: &Path,
+    only_plans: Option<Vec<String>>) -> anyhow::Result<Vec<String>>`: the plan ids a
+    run of that target would execute, in execution order. Its default body bails
+    like the other plan methods.
+"""
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+timeout_secs = 2700
+max_retries = 2
+estimated_minutes = 20
+depends_on = ["T01"]
+files = ["crates/roko-serve/src/runtime.rs"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-serve/src/runtime.rs", why = "the CliRuntime trait and its run_plan method" },
+    { path = "crates/roko-serve/src/routes/plans.rs", why = "how the handlers create and race the CancelToken today" },
+]
+anti_patterns = [
+    "Do not change run_plan's signature; add the new methods beside it with default bodies.",
+]
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-serve"
+fail_msg = "roko-serve does not build or its tests fail after widening the runtime seam"
+timeout_ms = 2700000
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'fn run_plan_with_options' crates/roko-serve/src/runtime.rs && grep -q 'fn plan_run_order' crates/roko-serve/src/runtime.rs && grep -q 'pub struct PlanRunOptions' crates/roko-serve/src/runtime.rs && grep -q 'pub max_parallel_plans: Option<usize>' crates/roko-serve/src/runtime.rs"
+fail_msg = "the runtime seam has no run options or plan ordering"
+
+[[task]]
+id = "T03"
+title = "Make server runs honour cancel, resume options and plan subsets"
+description = """
+Implement T02's methods for `RokoCliRuntime` (`crates/roko-cli/src/serve_runtime.rs`),
+and make `run_plan` delegate to `run_plan_with_options(.., PlanRunOptions::default())`.
+
+  - `fresh`/`force_resume`: thread them through `run_plan_on_local_runtime` into
+    `GraphPlanRunParams`, where both are hard-coded `false` today. Without
+    `force_resume`, a plan edited since its last run fails as soon as it starts:
+    "cannot resume Graph checkpoint … use --fresh or --force-resume".
+  - `only_plans`: add `pub only_plans: Option<Vec<String>>` to `GraphPlanRunParams`
+    (`crates/roko-cli/src/graph_execution/plan_runner.rs`); `None` everywhere else,
+    including `cmd_plan_run_engine`. After `load_plans`, keep only those ids and fail
+    naming any id that was not found. Then order the subset exactly as today.
+  - `max_parallel_plans`: pass it to the Graph run as a run parameter.
+    - The parallel plan-set change, a separate engine change in this push, adds a
+      per-run limit to `GraphPlanRunParams`. Use that field, with `None` when the
+      option is `None`.
+    - Never apply it by editing the config the plans are built from. Every node's
+      config, and so the checkpoint fingerprint, includes the full config, so such an
+      edit would make each later resume fail with "the converted plan graph has
+      changed".
+    - If the field does not exist yet, leave the option unused and say so in the
+      task output. Do not add plan scheduling here.
+  - `plan_run_order`: expose the ordering the run uses as a public function in
+    `plan_runner.rs`, taking the plans directory and the optional id filter and
+    returning the ids in execution order. Implement the trait method with it. Do not
+    duplicate the topological sort.
+  - cancel: use the stop input the Graph run already has; do not add a second
+    mechanism. Create a `PlanRunInterruptHandle` and pass it as
+    `GraphPlanRunParams.interrupt` (e2-planset, landed 2026-09-28; today
+    `run_plan_on_local_runtime` passes `interrupt: None`). Bridge the token by spawning
+    a task on the run's runtime that awaits `cancel.cancelled()` and then calls
+    `handle.request(PlanRunInterrupt::Interrupt)`. The run then:
+    - cancels the running graph;
+    - SIGTERMs the in-flight agent process trees, and SIGKILLs them after 3 s;
+    - finalizes that plan's checkpoint as `interrupted`;
+    - starts no further plan;
+    - returns `Ok(130)`.
+    Map that to an unsuccessful `PlanExecutionResult`. Install no signal handlers:
+    `run_graph_plan` installs none, and the server owns its own signals. The run
+    reports itself cancelled with `run_completed` outcome "cancelled"
+    (03-backend-live-events T05).
+"""
+status = "ready"
+role = "implementer"
+tier = "architectural"
+model_hint = "claude-sonnet-4-6"
+timeout_secs = 2700
+max_retries = 2
+estimated_minutes = 40
+depends_on = ["T02"]
+files = [
+    "crates/roko-cli/src/serve_runtime.rs",
+    "crates/roko-cli/src/graph_execution/plan_runner.rs",
+    "crates/roko-cli/src/commands/plan.rs",
+]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/serve_runtime.rs", why = "RokoCliRuntime::run_plan and run_plan_on_local_runtime" },
+    { path = "crates/roko-cli/src/graph_execution/plan_runner.rs", why = "GraphPlanRunParams, plan ordering and the run's interrupt mechanism" },
+    { path = "crates/roko-serve/src/runtime.rs", why = "PlanRunOptions, run_plan_with_options and plan_run_order from T02" },
+]
+anti_patterns = [
+    "Do not add a second cancellation path to the Graph run; reuse its interrupt mechanism.",
+    "Do not install SIGINT or SIGTERM handlers from the server's run path.",
+    "Do not abort the blocking worker thread; ask the run to stop and let it return.",
+    "Do not reimplement plan ordering for plan_run_order.",
+]
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli"
+fail_msg = "roko-cli does not compile after implementing run options"
+timeout_ms = 1800000
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'fn run_plan_with_options' crates/roko-cli/src/serve_runtime.rs && grep -q 'fn plan_run_order' crates/roko-cli/src/serve_runtime.rs && grep -q 'pub only_plans: Option<' crates/roko-cli/src/graph_execution/plan_runner.rs"
+fail_msg = "RokoCliRuntime does not implement run options, plan ordering or plan subsets"
+
+[[task]]
+id = "T04"
+title = "Run a single plan in place so its checkpoint survives between runs"
+description = """
+A server can run a plan only once. `prepare_plan_execution_root`
+(`crates/roko-cli/src/serve_runtime.rs`) copies a plan directory into
+`.roko/plan-runs/<plan>-<unique>/` before every run. `plan_to_graph`
+(`crates/roko-graph/src/convert.rs`) puts `plan_dir` into every node's config, so the
+copy gives the graph a new fingerprint every time. The plan's checkpoint
+(`.roko/state/graph/<plan_id>/`) then never matches again.
+
+Verified live on 2026-09-28: a second execute of the same plan fails with "cannot
+resume Graph checkpoint … the converted plan graph has changed". A CLI run and a
+server run of one plan can never share progress either, and `resume: true` (T05)
+could never skip anything.
+
+  - Run a directory that contains `tasks.toml` in place: return it unchanged, as a
+    plan-set directory already is.
+  - Keep the copy only for a target that is a single `tasks.toml` file.
+  - Add a unit test, `plan_directory_runs_in_place`, asserting that a plan directory
+    comes back unchanged.
+  - `prepare_plan_execution_root` has one caller today, `run_plan_on_local_runtime`.
+    Say in the task output whether anything relied on the copy.
+"""
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+timeout_secs = 2700
+max_retries = 2
+estimated_minutes = 20
+depends_on = ["T03"]
+files = ["crates/roko-cli/src/serve_runtime.rs"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/serve_runtime.rs", why = "prepare_plan_execution_root and its caller" },
+    { path = "crates/roko-graph/src/convert.rs", why = "plan_to_graph writes plan_dir into every node's config, so into the fingerprint" },
+    { path = "crates/roko-cli/src/graph_checkpoint.rs", why = "prepare_graph_checkpoint and the fingerprint check that fails" },
+]
+anti_patterns = [
+    "Do not drop plan_dir from the fingerprint; a checkpoint must not resume a different plan directory.",
+]
+
+[[task.verify]]
+phase = "test"
+command = "grep -q 'fn plan_directory_runs_in_place' crates/roko-cli/src/serve_runtime.rs && cargo test -p roko-cli --lib plan_directory_runs_in_place"
+fail_msg = "a plan directory is not run in place, or its test is missing"
+timeout_ms = 2700000
+
+[[task]]
+id = "T05"
+title = "Make execute cancellable and resumable on request"
+description = """
+In `crates/roko-serve/src/routes/plans.rs`, `execute_plan` creates a `CancelToken`, moves
+a clone into its spawned task, and races `runtime.run_plan(..)` against
+`task_cancel.cancelled()` in a `tokio::select!`.
+
+  1. Keep resolving the plan directory through the summary's `group`, which handles
+     plans nested in plan sets. The run now executes it in place (T04).
+  2. Replace the race: await `runtime.run_plan_with_options(&workdir, &plan_dir,
+     options)` with `cancel: Some(task_cancel)`. The run now stops itself and returns,
+     and the task then publishes its terminal events once.
+  3. Accept an optional JSON body `{ "resume": bool }` (section 6, P-7 of
+     `tmp/portal-audit/03-CONTRACT.md`).
+     - `resume: true` resumes completed tasks when the plan is unchanged and runs fresh
+       when it was edited: `force_resume: true`.
+     - No body, or `false`, means a fresh run: `fresh: true`.
+     - Answer 202 `{ "id": run_id, "resume": <bool> }`.
+     Whether tasks were actually skipped is not known at submit time; replayed tasks
+     complete immediately on the stream.
+  4. In `cancel_plan` and `pause_plan`, keep grace-then-abort as the last resort, but
+     publish `PlanCompleted` from the handler only when it actually had to abort the
+     task. Today a cancelled run publishes plan_completed twice.
+  5. Stop publishing `ServerEvent::PlanStarted` from the handler. Every execute now
+     emits two plan_started events:
+     - the run's own, with `tasks_total`, published into the server hub (e2);
+     - the handler's copy, which the bus-to-hub bridge (`server_event_to_dashboard`
+       in `crates/roko-serve/src/lib.rs`) turns into a bogus one with
+       `tasks_total: 0`.
+     The hub-to-bus bridge (`dashboard_event_to_server`) already forwards the run's
+     event to WebSocket clients. Leave both bridge mappings alone; other producers
+     use them.
+
+Add a unit test beside the handlers, `execute_leaves_plan_started_to_the_run`: after
+an execute with the module's `RecordingRuntime`, the event bus has carried no
+`ServerEvent::PlanStarted` for that plan.
+
+Leave `resume_plan` to T17, which makes it share this handler's path.
+"""
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+timeout_secs = 2700
+max_retries = 2
+estimated_minutes = 25
+depends_on = ["T04"]
+files = ["crates/roko-serve/src/routes/plans.rs"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-serve/src/routes/plans.rs", why = "execute_plan's select race, and the cancel and pause handlers" },
+    { path = "crates/roko-serve/src/lib.rs", why = "server_event_to_dashboard, which turns the handler's PlanStarted into a second plan_started", symbols = ["server_event_to_dashboard"] },
+    { path = "crates/roko-serve/src/runtime.rs", why = "run_plan_with_options and PlanRunOptions" },
+    { path = "crates/roko-serve/src/extract.rs", why = "how optional JSON bodies are extracted and validated" },
+]
+anti_patterns = [
+    "Do not keep racing the run against the token; the run observes the token itself now.",
+    "Do not publish plan_completed twice for one run.",
+    "Do not publish plan_started from the handler; the run publishes its own.",
+    "Do not make a body mandatory; the portal's run button sends none.",
+]
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-serve"
+fail_msg = "roko-serve tests fail after making execute cancellable and resumable"
+timeout_ms = 2700000
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'run_plan_with_options' crates/roko-serve/src/routes/plans.rs && grep -q 'force_resume' crates/roko-serve/src/routes/plans.rs && grep -q 'fn execute_leaves_plan_started_to_the_run' crates/roko-serve/src/routes/plans.rs"
+fail_msg = "the execute handler does not pass its cancel token and resume option to the run"
+
+[[task]]
+id = "T17"
+title = "Make POST /api/plans/{id}/resume run the plan like execute"
+description = """
+`resume_plan` in `crates/roko-serve/src/routes/plans.rs` fails for every directory
+plan, nested or not (work item bug-9116ff; reported again by e3 on 2026-09-28):
+
+  - It looks the plan up with the legacy flat-file `find_plan`, which probes only
+    `plans/<id>.json` and `plans/<id>.toml`, so it answers 404.
+  - Past that, it would send a hand-built prompt (`build_plan_resume_prompt`) through
+    `runtime.run_once` instead of running the plan.
+  - It records `plans_dir(..).join(&id)` as the handle's `plan_dir`, which is wrong
+    for a plan inside a plan set.
+
+Make resume the same operation as `POST /api/plans/{id}/execute` with
+`{ "resume": true }` (T05):
+
+  1. Move the body of `execute_plan` into one helper that both handlers call, taking
+     the plan id and the resume flag. The helper does what execute does after T05:
+     - resolve the plan with `runtime.load_plan_summary` (404 when absent);
+     - take its directory from the summary's `group`, exactly as `execute_plan` does
+       today: `plans_dir(..)`, joined with `group` when set, then with the id;
+     - answer 409 through `active_run_conflict`;
+     - run `runtime.run_plan_with_options` with the cancel token, and
+       `force_resume: true` for a resume.
+     Do not copy the body.
+  2. `resume_plan` removes the `.roko/state/<id>.paused.json` marker that
+     `pause_plan` writes, then calls the helper with resume set. Keep its 202 body
+     `{ "id": run_id, "resumed": true }`, and add `"resume": true`.
+  3. Delete `build_plan_resume_prompt` once nothing calls it.
+
+Add a unit test beside the handlers, `resume_plan_runs_the_plan_directory`. Extend
+the module's `RecordingRuntime` so it records the options it receives and a test can
+set the summary's `group`. Assert that resuming a plan whose summary has a group
+records one plan run, not a `run_once`, for `plans/<group>/<id>`, with
+`force_resume` set.
+"""
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+timeout_secs = 2700
+max_retries = 2
+estimated_minutes = 25
+depends_on = ["T05"]
+files = ["crates/roko-serve/src/routes/plans.rs"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-serve/src/routes/plans.rs", why = "execute_plan, pause_plan, resume_plan and the RecordingRuntime test stub" },
+    { path = "work/items/bug-9116ff-eight-plan-routes-still-resolve-plans-through.md", why = "the defect this task and T18 fix" },
+]
+anti_patterns = [
+    "Do not keep two copies of the run path; resume and execute must share one helper.",
+    "Do not send a plan to an agent as a prompt; run it.",
+]
+
+[[task.verify]]
+phase = "test"
+command = "grep -q 'fn resume_plan_runs_the_plan_directory' crates/roko-serve/src/routes/plans.rs && cargo test -p roko-serve"
+fail_msg = "the resume test is missing, or roko-serve tests fail"
+timeout_ms = 2700000
+
+[[task]]
+id = "T18"
+title = "Find directory plans in every other per-plan route"
+description = """
+Seven more handlers in `crates/roko-serve/src/routes/plans.rs` find their plan with
+the legacy flat-file `find_plan`, so each answers 404 for every directory plan (work
+item bug-9116ff):
+
+  - `plan_gates` (`GET …/gates`);
+  - `plan_costs` (`GET …/costs`, the portal's burn-panel fallback);
+  - `plan_estimate`, `plan_chat`, `list_reviews`, `submit_review` and `task_diff`.
+
+  1. Add `async fn resolve_plan(state: &AppState, id: &str) -> Result<Plan, ApiError>`.
+     It validates the id, then asks the runtime: `load_plan_summary` (404 when
+     absent), then `load_plan_tasks`. It maps the answer into the `Plan`/`PlanTask`
+     shape these handlers already use (`crates/roko-serve/src/plan_types.rs`):
+     - the title from the summary;
+     - per task, the id, description, tier, dependencies, files and completion;
+     - `model_hint` where the task DTO carries it.
+  2. Call it from each of the seven handlers, then delete `find_plan`, and
+     `load_plan_file` if nothing else uses it.
+  3. `plan_costs_reports_projection_and_budget_status` writes a flat
+     `.roko/plans/cost-demo.json` fixture. Give it a runtime stub that knows the plan
+     instead, and keep its assertions.
+
+Add a unit test, `per_plan_routes_find_directory_plans`: with a runtime that knows a
+directory plan and no plan file on disk, `GET /api/plans/{id}/costs` and
+`GET /api/plans/{id}/gates` answer 200, and an unknown id answers 404.
+"""
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+timeout_secs = 2700
+max_retries = 2
+estimated_minutes = 30
+depends_on = ["T17"]
+files = ["crates/roko-serve/src/routes/plans.rs"]
+closes = ["bug-9116ff"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-serve/src/routes/plans.rs", why = "find_plan, its seven remaining callers, and the costs test fixture" },
+    { path = "crates/roko-serve/src/plan_types.rs", why = "Plan, PlanTask and the task DTOs to map between" },
+]
+anti_patterns = [
+    "Do not keep a flat-file fallback; nothing creates flat-file plans any more.",
+    "Do not change what any of the seven routes returns for a plan it can find.",
+]
+
+[[task.verify]]
+phase = "test"
+command = '''grep -q 'fn per_plan_routes_find_directory_plans' crates/roko-serve/src/routes/plans.rs && test "$(grep -c 'find_plan(&state.workdir' crates/roko-serve/src/routes/plans.rs)" -eq 0 && cargo test -p roko-serve'''
+fail_msg = "a per-plan route still uses find_plan, the directory-plan test is missing, or roko-serve tests fail"
+timeout_ms = 2700000
+
+[[task]]
+id = "T06"
+title = "Let a server advertise itself in its workspace"
+description = """
+A CLI command cannot tell whether a server owns its workspace, or where that server
+listens. The port can come from `--port`, `[serve].port`, `[server].port` or `PORT`,
+and `.roko/state/server-state.json` is only an agent and template snapshot.
+
+Create `crates/roko-serve/src/endpoint.rs` and declare it in `lib.rs`. It provides:
+
+  - `pub struct ServeEndpoint { pub pid: u32, pub url: String, pub workdir: PathBuf,
+    pub started_at: String }` (serde).
+  - `pub fn endpoint_path(workdir: &Path) -> PathBuf`, which is
+    `.roko/runtime/serve.json`.
+  - `pub fn write_endpoint(workdir, &ServeEndpoint) -> Result<()>`, atomic: a temp file
+    then a rename.
+  - `pub fn read_endpoint(workdir) -> Option<ServeEndpoint>`.
+  - `pub fn remove_endpoint_if_owned(workdir, pid)`, which removes the file only when
+    it names `pid`.
+
+Add `ServerBuildConfig::with_advertised_endpoint()` as an opt-in flag, off by default,
+so tests and `roko run --serve` do not advertise. In `ServerBuilder::start_background`,
+when the flag is set:
+
+  - write the file right after `TcpListener::bind`, taking the real port from
+    `listener.local_addr()` and the scheme the server uses;
+  - write a URL local clients can use: when bound to an unspecified address
+    (`0.0.0.0` or `::`), use the loopback address;
+  - remove the file (`remove_endpoint_if_owned`) when the serve task exits.
+
+No secret goes in the file; clients resolve auth themselves.
+
+Unit tests in the module: a write→read round trip; `remove_endpoint_if_owned` leaves a
+file that names another pid.
+"""
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+timeout_secs = 2700
+max_retries = 2
+estimated_minutes = 30
+depends_on = ["T18"]
+files = [
+    "crates/roko-serve/src/endpoint.rs",
+    "crates/roko-serve/src/lib.rs",
+]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-serve/src/lib.rs", why = "ServerBuildConfig, ServerBuilder::start_background and where the listener binds" },
+]
+anti_patterns = [
+    "Do not write the API key or any credential into serve.json.",
+    "Do not advertise unless the caller opted in.",
+]
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-serve"
+fail_msg = "roko-serve tests fail after adding the endpoint file"
+timeout_ms = 2700000
+
+[[task.verify]]
+phase = "structural"
+command = "test -f crates/roko-serve/src/endpoint.rs && grep -q 'fn with_advertised_endpoint' crates/roko-serve/src/lib.rs"
+fail_msg = "the endpoint module or the opt-in builder flag is missing"
+
+[[task]]
+id = "T07"
+title = "Make roko serve advertise itself and serve its hub"
+description = """
+`crates/roko-cli/src/state_hub_ipc.rs` already serves a hub over
+`.roko/runtime/hub.sock` (`start_hub_ipc_server`: one snapshot frame, then event
+frames) and mirrors one (`try_connect_hub_ipc`). Nothing starts the server side.
+
+In `crates/roko-cli/src/commands/server.rs`, for both `cmd_serve` and `cmd_up`:
+
+  1. Call `.with_advertised_endpoint()` on the `ServerBuildConfig` (T06).
+  2. Start `roko_cli::state_hub_ipc::start_hub_ipc_server(state_hub.clone(),
+     &workdir, token)` on the server's own hub: the
+     `AppState::state_hub_for_workdir` value already shared with `RokoCliRuntime`.
+     Cancel `token` when the server stops. That includes the `server_builder.run()`
+     path, which needs the token created before and cancelled after. A failure to
+     bind the socket is a warning and must never stop the server; for example, a
+     workspace path too long for a unix socket. Gate the call with `#[cfg(unix)]`.
+
+In `state_hub_ipc.rs`, restrict the socket to its owner (mode 0600) right after
+binding. It serves the whole event stream, agent output included, and
+`[serve.auth]` does not cover it.
+"""
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+timeout_secs = 2700
+max_retries = 2
+estimated_minutes = 25
+depends_on = ["T06"]
+files = [
+    "crates/roko-cli/src/commands/server.rs",
+    "crates/roko-cli/src/state_hub_ipc.rs",
+]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/commands/server.rs", why = "cmd_serve and cmd_up, where the server hub and builder are created" },
+    { path = "crates/roko-cli/src/state_hub_ipc.rs", why = "start_hub_ipc_server and its socket handling" },
+]
+anti_patterns = [
+    "Do not let an IPC bind failure fail server start-up.",
+    "Do not serve a different hub than the one the server and runtime share.",
+]
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli"
+fail_msg = "roko-cli does not compile after serving the hub from roko serve"
+timeout_ms = 1800000
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'start_hub_ipc_server' crates/roko-cli/src/commands/server.rs && grep -q 'with_advertised_endpoint' crates/roko-cli/src/commands/server.rs"
+fail_msg = "roko serve neither serves its hub nor advertises itself"
+
+[[task]]
+id = "T08"
+title = "Report the workspace branch on GET /api/status"
+description = """
+The portal's header names the workspace and its branch (section 6, P-9 of
+`tmp/portal-audit/03-CONTRACT.md`). `session_status`
+(`crates/roko-serve/src/routes/status/dashboard.rs`) already returns `workdir`.
+
+Add `"git_branch"`: read `<workdir>/.git/HEAD`. When it reads
+`ref: refs/heads/<name>`, report `<name>`. For a detached HEAD, a missing `.git`, or a
+worktree whose `.git` is a file, report `null`. Read the file; do not spawn git.
+
+Add a unit test beside the handler, covering a normal HEAD, a detached HEAD and no
+repository.
+"""
+status = "ready"
+role = "implementer"
+tier = "mechanical"
+model_hint = "claude-sonnet-4-6"
+timeout_secs = 2700
+max_retries = 2
+estimated_minutes = 15
+depends_on = ["T07"]
+files = ["crates/roko-serve/src/routes/status/dashboard.rs"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-serve/src/routes/status/dashboard.rs", why = "session_status, the GET /api/status handler" },
+]
+anti_patterns = [
+    "Do not shell out to git from a request handler.",
+]
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-serve"
+fail_msg = "roko-serve tests fail after adding git_branch"
+timeout_ms = 2700000
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'git_branch' crates/roko-serve/src/routes/status/dashboard.rs"
+fail_msg = "GET /api/status does not report git_branch"
+
+[[task]]
+id = "T09"
+title = "Add POST /api/plans/execute to run a set of plans or all of them"
+description = """
+The portal needs "Run all" and a per-group run (section 6, P-6 of
+`tmp/portal-audit/03-CONTRACT.md`). The CLI client (T12) needs to submit exactly the
+directory the user named. `POST /api/plans/{id}/execute` takes one plan id.
+
+Register `POST /api/plans/execute` in `crates/roko-serve/src/routes/plans.rs`. It is a
+static segment, like `/plans/generate`, and stays under the `/api/plans` →
+`plan:write` scope. Body, all fields optional: `{ "plans": ["<plan id>", ...],
+"target": "<workspace-relative directory>", "resume": false, "max_parallel_plans": 2 }`.
+
+  1. `plans` and `target` are mutually exclusive: both given is 400.
+     - `plans`: run those ids from the workspace plans root (`plans_dir`), via
+       `PlanRunOptions.only_plans`.
+     - `target`: resolve it against `state.workdir` and canonicalize it. Reject with
+       400 anything that is not a directory inside the workspace: absolute paths,
+       `..` escapes, and symlinks that point out.
+     - Neither: run every plan under the plans root ("Run all").
+  2. Answer 409 while any run is active (`active_run_conflict`, T01).
+  3. Compute the order with `runtime.plan_run_order(..)` before spawning. An error
+     naming an unknown plan id is 404; any other ordering error is 422 with its
+     message.
+  4. `max_parallel_plans`, when given, must be at least 1; otherwise answer 422. Pass
+     it as `PlanRunOptions.max_parallel_plans`. The effective limit is the body's
+     value, else the loaded config's `[conductor] max_parallel_plans`.
+  5. Spawn `runtime.run_plan_with_options(..)` with a new cancel token and `resume`
+     mapped as in T05. Register a `PlanHandle` keyed by a new run id, with `members`
+     set to the order, so status and cancel work through the run id or any member
+     id. On `Err`, publish `ServerEvent::Error`. Publish no plan_started or
+     plan_completed for the run id: the run publishes its own per-plan events,
+     plan_set_loaded and run_completed.
+  6. Respond 202 with `{ "id": run_id, "order": [...], "max_parallel_plans": <the
+     effective limit> }`. `order` is the dependency order. With a limit above 1,
+     independent plans start together.
+
+However many of its plans run at once, a set run is one run:
+  - one `PlanHandle`;
+  - one runner lock;
+  - one 409 for any other execute;
+  - a cancel through the run id or any member plan id stops all of its plans.
+"""
+status = "ready"
+role = "implementer"
+tier = "integrative"
+model_hint = "claude-sonnet-4-6"
+timeout_secs = 2700
+max_retries = 2
+estimated_minutes = 30
+depends_on = ["T08"]
+files = ["crates/roko-serve/src/routes/plans.rs"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-serve/src/routes/plans.rs", why = "the route table, execute_plan's handle registration and plans_dir" },
+    { path = "crates/roko-serve/src/runtime.rs", why = "run_plan_with_options, plan_run_order and PlanRunOptions" },
+    { path = "crates/roko-serve/src/routes/middleware.rs", why = "the /api/plans scope entry the new route falls under" },
+]
+anti_patterns = [
+    "Do not accept a target outside the workspace.",
+    "Do not publish plan lifecycle events keyed by a run id; that creates phantom plans on the dashboard.",
+    "Do not reimplement plan discovery or ordering in the handler.",
+]
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-serve"
+fail_msg = "roko-serve tests fail after adding the plan-set run endpoint"
+timeout_ms = 2700000
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q '\"/plans/execute\"' crates/roko-serve/src/routes/plans.rs && grep -q 'max_parallel_plans' crates/roko-serve/src/routes/plans.rs"
+fail_msg = "POST /api/plans/execute is not registered"
+
+[[task]]
+id = "T10"
+title = "Test plan-set runs and run bookkeeping through the router"
+description = """
+Add `crates/roko-serve/tests/plan_run_set.rs`, modelled on
+`crates/roko-serve/tests/plan_execute.rs`: the router, a stub runtime and a temporary
+workspace. The stub:
+
+  - records the target and options `run_plan_with_options` received, then waits
+    until its cancel token fires or a short timeout passes;
+  - answers `plan_run_order` from a fixture, with an error for an unknown id.
+
+Assert:
+
+  1. `POST /api/plans/execute` with `{}` returns 202 with the stub's order, and the
+     stub received the plans root.
+  2. `{"plans":["b","a"]}` passes `only_plans` through. `{"target":"plans/x"}` passes
+     that directory. `{"target":"../"}`, an absolute path, and a body with both fields
+     each return 400. An unknown id returns 404.
+  3. While a set run is active, `POST /api/plans/execute` and
+     `POST /api/plans/{id}/execute` return 409.
+  4. `GET /api/plans/{member}/status` finds the run through a member plan id.
+     `POST /api/plans/{member}/cancel` returns 200, and the stub observed its token
+     cancelled.
+  5. Once a run has finished, executing the same plan again does not return 409.
+  6. `POST /api/plans/{id}/execute` with `{"resume":true}` passes `force_resume`, and
+     with no body passes `fresh`.
+  7. `{"max_parallel_plans":3}` reaches the stub as `max_parallel_plans` and is echoed
+     in the response. `{"max_parallel_plans":0}` returns 422. With no value, the
+     response echoes the config's `[conductor] max_parallel_plans`.
+"""
+status = "ready"
+role = "implementer"
+tier = "integrative"
+model_hint = "claude-sonnet-4-6"
+timeout_secs = 2700
+max_retries = 2
+estimated_minutes = 30
+depends_on = ["T09"]
+files = ["crates/roko-serve/tests/plan_run_set.rs"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-serve/tests/plan_execute.rs", why = "the router, stub runtime and workspace fixture pattern to follow" },
+    { path = "crates/roko-serve/src/routes/plans.rs", why = "the handlers under test" },
+    { path = "crates/roko-serve/src/runtime.rs", why = "the trait the stub implements" },
+]
+anti_patterns = [
+    "Do not dispatch real agents; stub the runtime.",
+    "Do not assert only on status codes where the stub can show what the handler passed through.",
+]
+
+[[task.verify]]
+phase = "test"
+command = "test -f crates/roko-serve/tests/plan_run_set.rs && cargo test -p roko-serve"
+fail_msg = "the plan-set run tests are missing or roko-serve tests fail"
+timeout_ms = 2700000
+
+[[task]]
+id = "T11"
+title = "Discover a live workspace server from the CLI"
+description = """
+Create `crates/roko-cli/src/serve_client.rs` and declare `pub mod serve_client;` in
+`crates/roko-cli/src/lib.rs`.
+
+`pub fn discover_workspace_server(workdir: &Path) -> Option<ServeEndpoint>` reads
+`roko_serve::endpoint::read_endpoint` (T06). It accepts the endpoint only when both
+hold:
+
+  - `.roko/runtime/roko.lock` names the same pid; the server wrote it there when it
+    took the workspace lock;
+  - `GET {url}/health` answers 200 within one second.
+
+Anything else — no file, a stale pid, a dead port — is `None`, logged at debug. A
+crashed server must never capture a CLI run.
+
+Also add a small reqwest client. Its auth headers come from
+`crate::auth::resolve_api_key(&config.serve.auth, None)`, which tries `ROKO_API_KEY`,
+then `[serve.auth].api_key`, then `roko login` credentials. It provides:
+
+  - `submit_plan_run(target, resume, max_parallel_plans) -> Result<SubmittedRun { id,
+    order }>` for
+    `POST /api/plans/execute`. Return a typed error for 409 ("a run is already
+    active in this workspace") and for 401/403 (say how to supply a key).
+  - `cancel_plan_run(run_id)`.
+  - `plan_run_finished(run_id)`, which is true when
+    `GET /api/plans/{run_id}/status` reports finished or 404.
+
+Unit tests: a missing file gives `None`; a pid mismatch gives `None`; an unreachable
+url gives `None`.
+"""
+status = "ready"
+role = "implementer"
+tier = "integrative"
+model_hint = "claude-sonnet-4-6"
+timeout_secs = 2700
+max_retries = 2
+estimated_minutes = 30
+depends_on = ["T10"]
+files = [
+    "crates/roko-cli/src/serve_client.rs",
+    "crates/roko-cli/src/lib.rs",
+]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/auth.rs", why = "resolve_api_key and the headers each credential needs" },
+    { path = "crates/roko-cli/src/workspace_lock.rs", why = "the lock file the exclusive owner writes its pid into" },
+    { path = "crates/roko-cli/src/lib.rs", why = "where library modules are declared" },
+]
+anti_patterns = [
+    "Do not trust serve.json alone; a crashed server leaves it behind.",
+    "Do not probe the configured default port; only the advertised endpoint counts.",
+]
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-cli --lib serve_client"
+fail_msg = "roko-cli does not compile or the serve_client tests fail"
+timeout_ms = 2700000
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'pub fn discover_workspace_server' crates/roko-cli/src/serve_client.rs"
+fail_msg = "server discovery is missing"
+
+[[task]]
+id = "T12"
+title = "Make roko plan run a client when a server owns the workspace"
+description = """
+In `PlanCmd::Run` (`crates/roko-cli/src/commands/plan.rs`), after validation and the
+dry-run branch but before `acquire_runner_lock`, call
+`roko_cli::serve_client::discover_workspace_server(&wd)`. When it finds a server, run
+through it and return its exit code. Otherwise run locally exactly as today.
+
+Put the client loop in `crates/roko-cli/src/serve_client.rs` as
+`pub async fn run_plan_via_server(..) -> anyhow::Result<i32>`, taking plain values,
+not `Cli`:
+
+  1. Refuse flags the server cannot honour: `--max-retries`, `--max-tasks`,
+     `--budget-override`, `--no-budget`, `--model`, `--dangerously-skip-permissions`,
+     `--log-file`, `--worktree-per-task`, `--rich-topology`, and an explicit
+     `--resume-plan` path. Use one error that names them and says the server (its PID
+     and URL) owns the workspace. Map the rest:
+     - `--fresh` → `resume: false`; otherwise `resume: true`, which resumes unchanged
+       plans and runs edited ones fresh;
+     - a plan-set parallelism flag, if `PlanCmd::Run` has one (the parallel plan-set
+       change may add it) → `max_parallel_plans`. Without one, send none, and the
+       server uses its workspace config.
+  2. Connect the hub mirror first (`state_hub_ipc::try_connect_hub_ipc`). If it cannot
+     connect, fail before submitting and name the socket path. Then submit the
+     workspace-relative target with `submit_plan_run`, and print exactly
+     `submitted to roko serve at <url> as run <id>`. Print this even with
+     `--no-tui`.
+  3. Follow the run.
+     - With a TTY and without `--no-tui`: run the TUI on the mirror:
+       `App::new_connected_with_page(&wd, None, &mirror).with_exit_on_plan_completion()`.
+     - Otherwise: print one line per plan_started, task_started, task_completed,
+       plan_completed and error event from the mirror.
+     Finish on the first run_completed that arrives after a plan_set_loaded or
+     plan_started for a plan in the submitted order. As a fallback, finish when
+     `plan_run_finished` is true, polling every 2 seconds. Exit 0 only for outcome
+     "succeeded". With `--json`, print one final object: run id, server url, order,
+     outcome.
+  4. On Ctrl-C or SIGTERM, call `cancel_plan_run` once, say the run was cancelled, and
+     exit non-zero within a few seconds.
+"""
+status = "ready"
+role = "implementer"
+tier = "architectural"
+model_hint = "claude-sonnet-4-6"
+timeout_secs = 2700
+max_retries = 2
+estimated_minutes = 45
+depends_on = ["T11"]
+files = [
+    "crates/roko-cli/src/serve_client.rs",
+    "crates/roko-cli/src/commands/plan.rs",
+]
+closes = ["gap-7f5eb6"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/commands/plan.rs", why = "PlanCmd::Run: validation, dry-run, then the runner lock" },
+    { path = "crates/roko-cli/src/state_hub_ipc.rs", why = "try_connect_hub_ipc, the hub mirror the client follows" },
+    { path = "crates/roko-core/src/dashboard_snapshot.rs", why = "the plan_set_loaded, plan_started and run_completed events the client waits on" },
+]
+anti_patterns = [
+    "Do not run the plan locally when a server owns the workspace; submit it.",
+    "Do not silently drop a flag the server cannot honour; refuse it by name.",
+    "Do not exit on a run_completed that belongs to an earlier run.",
+]
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli"
+fail_msg = "roko-cli does not compile after adding the plan run client"
+timeout_ms = 1800000
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'run_plan_via_server' crates/roko-cli/src/commands/plan.rs && grep -q 'submitted to roko serve' crates/roko-cli/src/serve_client.rs"
+fail_msg = "plan run does not route through the server client"
+
+[[task]]
+id = "T13"
+title = "Let read-only commands attach to a server-owned workspace instead of locking"
+description = """
+While `roko serve` holds the exclusive workspace lock, every command that takes the
+shared lock fails with "Another roko process holds an exclusive lock". That covers
+`roko dashboard` (`cmd_dashboard` in `crates/roko-cli/src/commands/dashboard.rs`) and
+`plan list`, `plan show`, `plan validate`, `plan index --check` and `plan status` in
+`crates/roko-cli/src/commands/plan.rs`. So an operator running the portal cannot watch
+or inspect their own workspace from a terminal.
+
+  1. In `serve_client.rs`, add `pub fn read_lock_unless_served(workdir: &Path) ->
+     anyhow::Result<Option<WorkspaceLockGuard>>`. It returns `Ok(None)` when
+     `discover_workspace_server` finds the owner; the server is then the only writer,
+     and it writes atomically. Otherwise it returns the shared lock, as today.
+  2. Use it at those five `plan` subcommands and in `cmd_dashboard`.
+  3. In `cmd_dashboard`, when no hub was passed in and a server owns the workspace,
+     run the interactive TUI on `state_hub_ipc::try_connect_hub_ipc(&workdir)` with
+     `App::new_connected_with_page`, so it shows the server's live runs. `--text` and
+     `--list-pages` render as today.
+"""
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+timeout_secs = 2700
+max_retries = 2
+estimated_minutes = 25
+depends_on = ["T12"]
+files = [
+    "crates/roko-cli/src/serve_client.rs",
+    "crates/roko-cli/src/commands/dashboard.rs",
+    "crates/roko-cli/src/commands/plan.rs",
+]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/commands/dashboard.rs", why = "cmd_dashboard and its shared lock" },
+    { path = "crates/roko-cli/src/commands/plan.rs", why = "the read-only plan subcommands that take the shared lock" },
+    { path = "crates/roko-cli/src/state_hub_ipc.rs", why = "try_connect_hub_ipc for the live dashboard" },
+]
+anti_patterns = [
+    "Do not drop the lock for commands that write; only read-only commands may attach.",
+    "Do not change behaviour when no server owns the workspace.",
+]
+
+[[task.verify]]
+phase = "compile"
+command = "cargo check -p roko-cli"
+fail_msg = "roko-cli does not compile after letting read-only commands attach"
+timeout_ms = 1800000
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'try_connect_hub_ipc' crates/roko-cli/src/commands/dashboard.rs && grep -q 'read_lock_unless_served' crates/roko-cli/src/commands/plan.rs"
+fail_msg = "the dashboard or the read-only plan commands do not attach to a server-owned workspace"
+
+[[task]]
+id = "T14"
+title = "Test the hub socket round trip"
+description = """
+`crates/roko-cli/src/state_hub_ipc.rs` has never had a test. Before 2026-09-26 it was
+not even compiled. Add `crates/roko-cli/tests/hub_ipc.rs`. It is unix-only; use a
+tempdir under `/tmp` so the socket path fits the unix-socket length limit.
+
+  1. Publish PlanStarted into a hub, start `start_hub_ipc_server`, and connect with
+     `try_connect_hub_ipc`: the mirror's snapshot already contains the plan.
+  2. Publish TaskStarted after connecting: the mirror receives it within 2 seconds.
+  3. The socket file has mode 0600 (T07).
+  4. Cancelling the token stops the server and removes the socket file.
+  5. `try_connect_hub_ipc` on a workspace without a socket returns `None`.
+"""
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+timeout_secs = 2700
+max_retries = 2
+estimated_minutes = 20
+depends_on = ["T13"]
+files = ["crates/roko-cli/tests/hub_ipc.rs"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/state_hub_ipc.rs", why = "the protocol under test" },
+    { path = "crates/roko-runtime/src/state_hub.rs", why = "publishing into a hub and subscribing to its events" },
+]
+anti_patterns = [
+    "Do not sleep-and-hope; wait on the mirror's event subscription with a timeout.",
+]
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p roko-cli --test hub_ipc"
+fail_msg = "the hub IPC round-trip test is missing or fails"
+timeout_ms = 2700000
+
+[[task]]
+id = "T15"
+title = "Prove the server owns the workspace"
+description = """
+Run the acceptance check and record the result in
+`plans/portal-programme/03b-backend-workspace-server/REVIEW.md`.
+
+  1. `cargo build -p roko-cli`.
+  2. `bash plans/portal-programme/_harness/workspace-server-check.sh`. It builds a
+     scratch workspace under /tmp with the deterministic fake agent, starts
+     `roko serve` there, and asserts:
+       - serve.json and hub.sock exist, and are removed on shutdown;
+       - dashboard, plan list and plan validate work beside the server;
+       - `roko plan run` submits to the server and its events reach the server's
+         stream;
+       - a resumed, unchanged plan dispatches no agent, and a plain execute of a
+         completed plan runs it fresh (agents dispatched), with exactly one
+         plan_started carrying the real `tasks_total`;
+       - one run at a time is enforced (409);
+       - cancel through a member plan id stops the agent process, and run_completed
+         reports "cancelled";
+       - a target outside the workspace is rejected, and an unknown plan id is a 404;
+       - "Run all" runs every plan under plans/, in order, with the config's
+         `max_parallel_plans` (1);
+       - a set run with `max_parallel_plans: 2` runs two independent plans at once,
+         and is still one run (409 for another execute while it runs);
+       - `POST /api/plans/{id}/resume` runs a plan inside a plan set without
+         dispatching agents for its completed tasks, and the costs and gates
+         routes find directory plans;
+       - Ctrl-C on a client cancels its server run;
+       - GET /api/status reports the branch.
+     It costs nothing and takes a few minutes.
+  3. When an assertion fails, fix the cause in this plan's code, rebuild and rerun. If
+     the harness itself is wrong, fix it and say exactly what and why in REVIEW.md.
+     Never delete or weaken an assertion.
+  4. Write REVIEW.md with:
+       - the full PASS/FAIL output;
+       - the design as built, in a few lines: what each process does when a server
+         owns the workspace;
+       - anything the check cannot see — the TUI attach needs a terminal; say how you
+         confirmed it, or that you could not;
+       - finally, the verdict line the check printed.
+"""
+status = "ready"
+role = "implementer"
+tier = "integrative"
+model_hint = "claude-sonnet-4-6"
+timeout_secs = 2700
+max_retries = 2
+estimated_minutes = 30
+depends_on = ["T14"]
+files = ["plans/portal-programme/03b-backend-workspace-server/REVIEW.md"]
+
+[task.context]
+read_files = [
+    { path = "plans/portal-programme/_harness/workspace-server-check.sh", why = "the assertions this plan must satisfy" },
+    { path = "plans/portal-programme/_harness/lib.sh", why = "how the scratch workspace and server are built and torn down" },
+    { path = "tmp/portal-audit/03-CONTRACT.md", why = "section 4, the design being proven" },
+]
+anti_patterns = [
+    "Do not start a server against this repository. The check brings its own workspace.",
+    "Do not edit or remove an assertion to make the check pass.",
+    "Do not report success unless the check printed WORKSPACE-SERVER-CHECK: PASS.",
+    "Do not implement parallel plan scheduling in the engine; that is a separate change. If a parallel set runs its plans one after another, report it in REVIEW.md.",
+]
+
+[[task.verify]]
+phase = "test"
+command = "cargo build -p roko-cli && bash plans/portal-programme/_harness/workspace-server-check.sh"
+fail_msg = "the workspace server acceptance check does not pass"
+timeout_ms = 2700000
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'WORKSPACE-SERVER-CHECK: PASS' plans/portal-programme/03b-backend-workspace-server/REVIEW.md"
+fail_msg = "REVIEW.md does not record a passing check"
+
+[[task]]
+id = "T16"
+title = "Record the workspace server as built, and update the work graph"
+description = """
+Bring section 4 of `tmp/portal-audit/03-CONTRACT.md` in line with what this plan
+delivered. Put it under a heading reading exactly `AS BUILT 03b-backend-workspace-server`,
+using `plans/portal-programme/03b-backend-workspace-server/REVIEW.md` as the evidence.
+Correct any claim the check contradicts.
+
+Then update the work graph: `work/items/`, format in `work/README.md`.
+`.roko/GAPS.md` is frozen; do not write there.
+
+  1. Close gap-7f5eb6 (T12) if the check's client assertions passed: set
+     `status = "done"`, set `updated` and `last_verified` to today, and fill
+     `[closed]` with `at`, `by`, `run_id` (from
+     `.roko/state/graph/03b-backend-workspace-server/checkpoint.json`) and
+     `evidence`. The evidence should say that a CLI run is visible whenever a
+     server owns the workspace, and that a standalone run stays private.
+  2. Close bug-9116ff (T17–T18) the same way if the check's resume and read-route
+     assertions passed.
+  3. Create an item for each residual below, after searching `work/items/` for one
+     that already covers it. Give each an anchor, and a `[[verify]]` command where
+     one can be written.
+     - (finding) The server admits one run per workspace. A second set is refused
+       (409) even when its plans are independent of the running set; submit them
+       together as one set, which runs independent plans in parallel.
+     - (gap) `POST /api/plans/{id}/execute {resume: true}` cannot report at submit
+       time whether tasks will be skipped; that needs the graph fingerprint before
+       the run.
+     - (gap) A client's TUI does not forward pause, cancel or retry keys to the
+       server.
+     - (gap) A standalone `roko plan run` does not serve its hub, so
+       `roko dashboard` beside it stays file-polled.
+     - (bug) `roko plan cancel/pause/resume/retry` write `.roko/state/control.json`,
+       which the Graph engine never reads.
+     - (finding) `.roko/runtime/hub.sock` is protected by file permissions only, not
+       by `[serve.auth]`.
+     - (finding) Cancelling a server run stops every agent PID the server process has
+       registered: the interrupt's stop helpers signal registered descendant agents.
+       So a cancel could also kill an in-flight generation, revision or chat agent.
+       Check whether those register, and say so in the item.
+"""
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 20
+depends_on = ["T15"]
+files = ["tmp/portal-audit/03-CONTRACT.md", "work/items"]
+
+[task.context]
+read_files = [
+    { path = "tmp/portal-audit/03-CONTRACT.md", why = "section 4, the design to restate as built" },
+    { path = "work/README.md", why = "the item format, IDs and the closure rules" },
+    { path = "work/items/gap-7f5eb6-cli-plan-runs-are-invisible-to-roko.md", why = "an item this plan closes" },
+    { path = "work/items/bug-9116ff-eight-plan-routes-still-resolve-plans-through.md", why = "an item this plan closes" },
+]
+anti_patterns = [
+    "Do not close an item whose assertion did not pass in the live check.",
+    "Do not write to .roko/GAPS.md; it is frozen.",
+    "Do not rewrite other plans' sections of the contract.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = '''grep -q 'AS BUILT 03b-backend-workspace-server' tmp/portal-audit/03-CONTRACT.md && grep -q '^status = "done"' work/items/gap-7f5eb6-*.md && grep -q '^status = "done"' work/items/bug-9116ff-*.md && grep -rlq 'control.json' work/items/ && python3 -c 'import tomllib, glob; [tomllib.loads(open(f).read().split("+++")[1]) for f in glob.glob("work/items/*.md")]''''
+fail_msg = "the contract has no AS BUILT section, gap-7f5eb6 or bug-9116ff was not closed, the residual items are missing, or an item's front matter no longer parses"

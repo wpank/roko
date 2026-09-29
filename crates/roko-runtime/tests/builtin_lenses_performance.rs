@@ -596,8 +596,14 @@ async fn rag_lens_precision_and_miss_rate_complement_to_one() {
     };
     assert_eq!(metrics.total_queries, 3);
     assert_eq!(metrics.queries_with_zero_results, 1);
-    assert!((metrics.miss_rate - 1.0 / 3.0).abs() < 1e-9, "miss_rate mismatch");
-    assert!((metrics.precision - 2.0 / 3.0).abs() < 1e-9, "precision mismatch");
+    assert!(
+        (metrics.miss_rate - 1.0 / 3.0).abs() < 1e-9,
+        "miss_rate mismatch"
+    );
+    assert!(
+        (metrics.precision - 2.0 / 3.0).abs() < 1e-9,
+        "precision mismatch"
+    );
     assert!(
         (metrics.miss_rate + metrics.precision - 1.0).abs() < 1e-9,
         "miss_rate + precision must equal 1.0"
@@ -642,7 +648,10 @@ async fn rag_lens_window_eviction_keeps_counts_correct() {
     };
     // Window: [q2(hit), q3(hit), q4(miss)].
     assert_eq!(metrics.total_queries, 3, "window size maintained at 3");
-    assert_eq!(metrics.queries_with_zero_results, 1, "exactly one miss in window");
+    assert_eq!(
+        metrics.queries_with_zero_results, 1,
+        "exactly one miss in window"
+    );
     assert!((metrics.miss_rate - 1.0 / 3.0).abs() < 1e-9);
 }
 
@@ -673,7 +682,9 @@ fn rag_lens_rejects_invalid_registration() {
     .err()
     .unwrap();
     assert!(
-        wrong_family.to_string().contains("unsupported event-family filter"),
+        wrong_family
+            .to_string()
+            .contains("unsupported event-family filter"),
         "got: {wrong_family}"
     );
 

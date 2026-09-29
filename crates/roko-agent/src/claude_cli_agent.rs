@@ -10,20 +10,28 @@
 use crate::agent::{Agent, AgentResult};
 use crate::mcp::find_mcp_config;
 use crate::process::{
-    GRACE_STDIN_CLOSE_MS, ResourceLimits, benign_stderr_warn_once, classify_benign_stderr,
-    confined_command, kill_tree, register_spawned_pid, set_process_group, unregister_pid,
+    GRACE_STDIN_CLOSE_MS, ResourceLimits, apply_credential_scrub, benign_stderr_warn_once,
+    classify_benign_stderr, config_file_env_names, confined_command, kill_tree,
+    register_spawned_pid, set_process_group, unregister_pid,
 };
-use crate::usage::Usage;
+use crate::provider::error_classify::{ATTEMPT_TIMEOUT_MARKER, detect_provider_exhaustion};
+use crate::tool_loop::{StreamEvent, StreamEventKind};
+use crate::usage::{Usage, UsageObservation, UsageSource};
 use async_trait::async_trait;
+use roko_core::agent::ProviderKind;
+use roko_core::child_env::CredentialScrub;
+use roko_core::config::model_registry::model_meta;
 use roko_core::defaults::DEFAULT_REQUEST_TIMEOUT_MS;
 use roko_core::{Body, Context, Kind, OperatingFrequency, Provenance, Signal};
 use serde_json::Value;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
+use tokio::sync::mpsc;
 use tokio::time::{Duration, timeout};
 
 /// Build the Claude CLI `--settings` JSON payload with safety hooks.
@@ -87,6 +95,7 @@ pub struct ClaudeCliAgent {
     settings_json: String,
     extra_args: Vec<String>,
     env: Vec<(String, String)>,
+    credential_scrub: CredentialScrub,
     mcp_config: Option<PathBuf>,
     resume: Option<String>,
     dangerously_skip_permissions: bool,
@@ -118,6 +127,7 @@ impl ClaudeCliAgent {
             settings_json: build_settings_json(),
             extra_args: Vec::new(),
             env: Vec::new(),
+            credential_scrub: CredentialScrub::for_kind(ProviderKind::ClaudeCli),
             mcp_config: None,
             resume: None,
             dangerously_skip_permissions: true,
@@ -231,6 +241,14 @@ impl ClaudeCliAgent {
         self
     }
 
+    /// Replace the policy for which inherited credentials the subprocess
+    /// loses (default: [`CredentialScrub::for_kind`] of `ClaudeCli`).
+    #[must_use]
+    pub fn with_credential_scrub(mut self, scrub: CredentialScrub) -> Self {
+        self.credential_scrub = scrub;
+        self
+    }
+
     /// Attach an explicit MCP config path.
     #[must_use]
     pub fn with_mcp_config(mut self, path: impl Into<PathBuf>) -> Self {
@@ -284,8 +302,35 @@ impl ClaudeCliAgent {
         {
             output = output.tag("model", model);
         }
+        if let Some(num_turns) = stream_usage.num_turns {
+            output = output.tag("num_turns", num_turns.to_string());
+        }
         let output = output.build();
-        AgentResult::fail(output).with_usage(Self::usage_from_stream(stream_usage, wall_ms))
+        AgentResult::fail(output).with_usage_obs(self.usage_observation(stream_usage, wall_ms))
+    }
+
+    /// The run stopped at `--max-turns`: the final stream-json `result` has
+    /// subtype `error_max_turns` (the CLI exits 1 with no text or stderr).
+    fn turn_cap_hit(
+        &self,
+        stdout: &str,
+        stderr: &str,
+    ) -> Option<crate::provider::error_classify::TurnCapHit> {
+        let result = [stdout, stderr].into_iter().find_map(|output| {
+            output
+                .lines()
+                .filter_map(Self::parse_stream_event)
+                .rfind(|event| event.get("type").and_then(Value::as_str) == Some("result"))
+        })?;
+        (result.get("subtype").and_then(Value::as_str) == Some("error_max_turns")).then(|| {
+            crate::provider::error_classify::TurnCapHit {
+                num_turns: result
+                    .get("num_turns")
+                    .and_then(Value::as_u64)
+                    .and_then(|turns| u32::try_from(turns).ok()),
+                cap: self.max_turns,
+            }
+        })
     }
 
     fn discovered_mcp_config(&self) -> Option<PathBuf> {
@@ -368,7 +413,8 @@ impl ClaudeCliAgent {
         {
             cmd.arg("--disallowed-tools").arg(tools);
         }
-        if let Some(mcp_config) = self.discovered_mcp_config() {
+        let mcp_config = self.discovered_mcp_config();
+        if let Some(mcp_config) = &mcp_config {
             cmd.arg("--mcp-config").arg(mcp_config);
             cmd.arg("--strict-mcp-config");
         }
@@ -383,6 +429,15 @@ impl ClaudeCliAgent {
             .kill_on_drop(true);
         set_process_group(&mut cmd);
 
+        // Other providers' keys and keys only roko loaded stay out of the
+        // agent; MCP servers still get the variables their config names.
+        let scrub = self.credential_scrub.clone().keep_all(
+            mcp_config
+                .as_deref()
+                .map(config_file_env_names)
+                .unwrap_or_default(),
+        );
+        apply_credential_scrub(&mut cmd, &scrub);
         for (key, value) in &self.env {
             cmd.env(key, value);
         }
@@ -411,9 +466,16 @@ impl ClaudeCliAgent {
         }
     }
 
-    fn parse_stream_usage(stdout: &str) -> StreamUsage {
+    /// Usage from stream-json output.
+    ///
+    /// The final `result` event carries the provider-reported totals. A run
+    /// killed before it (a timeout) has only its `assistant` events, whose
+    /// usage becomes an [`UsageSource::Estimated`] partial total (see
+    /// [`StreamedMessages`]); `fallback_model` prices messages naming no model.
+    fn parse_stream_usage(output: &str, fallback_model: &str) -> StreamUsage {
         let mut usage = StreamUsage::default();
-        for line in stdout
+        let mut streamed = StreamedMessages::default();
+        for line in output
             .lines()
             .map(str::trim)
             .filter(|line| !line.is_empty())
@@ -421,11 +483,19 @@ impl ClaudeCliAgent {
             let Some(event) = Self::parse_stream_event(line) else {
                 continue;
             };
-            if event.get("type").and_then(Value::as_str) != Some("result") {
+            let kind = event.get("type").and_then(Value::as_str);
+            if kind == Some("assistant") {
+                streamed.observe(&event);
+                continue;
+            }
+            if kind != Some("result") {
                 continue;
             }
 
             usage.source = UsageSource::ProviderReported;
+            if let Some(num_turns) = event.get("num_turns").and_then(Value::as_u64) {
+                usage.num_turns = Some(num_turns);
+            }
             if let Some(model) = event
                 .get("model")
                 .and_then(Value::as_str)
@@ -462,17 +532,28 @@ impl ClaudeCliAgent {
                 );
             }
         }
+        if usage.source == UsageSource::Unknown {
+            return streamed.into_stream_usage(fallback_model);
+        }
         usage
     }
 
-    fn usage_from_stream(stream_usage: &StreamUsage, wall_ms: u64) -> Usage {
-        Usage {
-            input_tokens: Self::saturating_u64_to_u32(stream_usage.input_tokens),
-            output_tokens: Self::saturating_u64_to_u32(stream_usage.output_tokens),
-            cache_read_tokens: Self::saturating_u64_to_u32(stream_usage.cache_read_tokens),
-            cache_create_tokens: Self::saturating_u64_to_u32(stream_usage.cache_creation_tokens),
-            reasoning_tokens: 0,
-            cost_usd: stream_usage.cost_usd.unwrap_or(0.0) as f32,
+    /// Canonical usage for a run, keeping the source of `stream_usage`:
+    /// provider-reported, estimated from what a killed run streamed, or
+    /// unknown.
+    fn usage_observation(&self, stream_usage: &StreamUsage, wall_ms: u64) -> UsageObservation {
+        UsageObservation {
+            input_tokens: stream_usage.input_tokens,
+            output_tokens: stream_usage.output_tokens,
+            cache_creation_tokens: stream_usage.cache_creation_tokens,
+            cache_read_tokens: stream_usage.cache_read_tokens,
+            reasoning_tokens: None,
+            cost_usd: stream_usage.cost_usd,
+            source: stream_usage.source.clone(),
+            model: stream_usage
+                .model
+                .clone()
+                .or_else(|| Some(self.model.clone())),
             wall_ms,
         }
     }
@@ -486,12 +567,6 @@ impl ClaudeCliAgent {
         if let Some(value) = value {
             *slot = Some(value);
         }
-    }
-
-    fn saturating_u64_to_u32(value: Option<u64>) -> u32 {
-        value
-            .and_then(|value| u32::try_from(value).ok())
-            .unwrap_or(0)
     }
 
     fn tool_summary(block: &Value) -> String {
@@ -568,6 +643,54 @@ impl ClaudeCliAgent {
             }
             _ => {}
         }
+    }
+
+    /// Human-readable reason for a non-zero exit.
+    ///
+    /// A usage-window refusal ("You've hit your session limit · resets 4pm")
+    /// arrives as the stream-json `result` on stdout with nothing on stderr,
+    /// so both are read; an exhaustion is rendered as
+    /// [`crate::provider::ProviderError::ProviderExhausted`] so callers can
+    /// quarantine the provider until its reset time.
+    fn failure_reason(stdout: &str, stderr: &str) -> String {
+        let human_stderr = stderr
+            .lines()
+            .filter(|line| Self::parse_stream_event(line).is_none())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let result_error =
+            Self::result_error_text(stdout).or_else(|| Self::result_error_text(stderr));
+        if let Some(exhaustion) = detect_provider_exhaustion(&human_stderr)
+            .or_else(|| result_error.as_deref().and_then(detect_provider_exhaustion))
+        {
+            return exhaustion.into_error().to_string();
+        }
+        Self::first_human_stderr_line(stderr)
+            .map(str::to_string)
+            .or(result_error)
+            .unwrap_or_else(|| "claude failed".to_string())
+    }
+
+    /// Text of the final stream-json `result` event when it reports an error.
+    fn result_error_text(output: &str) -> Option<String> {
+        output
+            .lines()
+            .filter_map(Self::parse_stream_event)
+            .rfind(|event| event.get("type").and_then(Value::as_str) == Some("result"))
+            .filter(|event| {
+                event
+                    .get("is_error")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(true)
+            })
+            .and_then(|event| {
+                event
+                    .get("result")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|text| !text.is_empty())
+                    .map(str::to_string)
+            })
     }
 
     fn first_human_stderr_line(stderr: &str) -> Option<&str> {
@@ -650,11 +773,123 @@ impl ClaudeCliAgent {
         }
         false
     }
-}
 
-#[async_trait]
-impl Agent for ClaudeCliAgent {
-    async fn run(&self, input: &Signal, _ctx: &Context) -> AgentResult {
+    /// Translate a parsed stream-json `Value` into zero or more
+    /// [`StreamEventKind`]s to forward to a streaming receiver.
+    ///
+    /// Handles:
+    /// - `assistant` content blocks: `text` → `TextDelta`, `thinking` →
+    ///   `ReasoningDelta`, `tool_use` → `ToolCallEnd`.
+    /// - `tool` events (subtype `result`) → `ToolResult`.
+    /// - `user` messages with `tool_result` blocks (older CLI format) →
+    ///   `ToolResult`, with content flattened to a single text string.
+    fn event_kinds_from_value(event: &Value) -> Vec<StreamEventKind> {
+        let mut events = Vec::new();
+        match event.get("type").and_then(Value::as_str) {
+            Some("assistant") => {
+                let Some(content) = event
+                    .get("message")
+                    .and_then(|m| m.get("content"))
+                    .and_then(Value::as_array)
+                else {
+                    return events;
+                };
+                for block in content {
+                    match block.get("type").and_then(Value::as_str) {
+                        Some("text") => {
+                            if let Some(text) = block.get("text").and_then(Value::as_str) {
+                                events.push(StreamEventKind::TextDelta(text.to_string()));
+                            }
+                        }
+                        Some("thinking") => {
+                            if let Some(thinking) = block.get("thinking").and_then(Value::as_str) {
+                                events.push(StreamEventKind::ReasoningDelta(thinking.to_string()));
+                            }
+                        }
+                        Some("tool_use") => {
+                            if let (Some(id), Some(name)) = (
+                                block.get("id").and_then(Value::as_str),
+                                block.get("name").and_then(Value::as_str),
+                            ) {
+                                let args = block.get("input").cloned().unwrap_or(Value::Null);
+                                events.push(StreamEventKind::ToolCallEnd {
+                                    id: id.to_string(),
+                                    name: name.to_string(),
+                                    args,
+                                });
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            Some("tool") => {
+                // `tool` event with subtype "result" carries the tool output.
+                let id = event
+                    .get("tool_use_id")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
+                let output = event
+                    .get("content")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
+                events.push(StreamEventKind::ToolResult { id, output });
+            }
+            Some("user") => {
+                // Older Claude CLI format: tool results arrive as a `user`
+                // message with `tool_result` content blocks.
+                let Some(content) = event
+                    .get("message")
+                    .and_then(|m| m.get("content"))
+                    .and_then(Value::as_array)
+                else {
+                    return events;
+                };
+                for block in content {
+                    if block.get("type").and_then(Value::as_str) != Some("tool_result") {
+                        continue;
+                    }
+                    let id = block
+                        .get("tool_use_id")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_string();
+                    let output = match block.get("content") {
+                        Some(Value::String(s)) => s.clone(),
+                        Some(Value::Array(arr)) => arr
+                            .iter()
+                            .filter_map(|item| {
+                                if item.get("type").and_then(Value::as_str) == Some("text") {
+                                    item.get("text").and_then(Value::as_str).map(str::to_string)
+                                } else {
+                                    None
+                                }
+                            })
+                            .collect::<Vec<_>>()
+                            .join("\n"),
+                        _ => String::new(),
+                    };
+                    events.push(StreamEventKind::ToolResult { id, output });
+                }
+            }
+            _ => {}
+        }
+        events
+    }
+
+    /// Core subprocess runner shared by [`run`](Self::run) and
+    /// [`run_streaming`](Self::run_streaming).
+    ///
+    /// When `stream_tx` is `Some`, stream-json events are forwarded as
+    /// [`StreamEvent`]s as each line arrives (live streaming). When `None`,
+    /// the behaviour is identical to the original `run`.
+    async fn run_impl(
+        &self,
+        input: &Signal,
+        stream_tx: Option<mpsc::Sender<StreamEvent>>,
+    ) -> AgentResult {
         let started = Instant::now();
 
         let prompt_text = match Self::prompt_text_from_input(input) {
@@ -711,10 +946,11 @@ impl Agent for ClaudeCliAgent {
         let has_activity = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let debug_enabled = Self::debug_enabled();
 
-        // Stream stdout in real time, parsing stream-json events for progress.
-        // Accumulate the raw output for final processing by output_text().
+        // Stream stdout in real time, parsing stream-json events for progress
+        // and forwarding StreamEventKind values when a sender is attached.
         let stdout_name = self.name.clone();
         let stdout_activity = has_activity.clone();
+        let stdout_stream_tx = stream_tx;
         let stdout_handle = tokio::spawn(async move {
             let Some(pipe) = stdout_pipe else {
                 return String::new();
@@ -737,9 +973,8 @@ impl Agent for ClaudeCliAgent {
                     tracing::debug!("{line}");
                 }
 
-                // Parse stream-json events for progress reporting.
-                // Non-JSON output (raw text from other agents) is fine — we
-                // just skip the progress parsing.
+                // Parse stream-json events for progress reporting and optional
+                // live-streaming to the upstream receiver.
                 if let Some(event) = Self::parse_stream_event(trimmed) {
                     Self::emit_stream_summary(
                         &stdout_name,
@@ -747,6 +982,12 @@ impl Agent for ClaudeCliAgent {
                         &mut text_bytes,
                         &mut tool_count,
                     );
+                    if let Some(tx) = &stdout_stream_tx {
+                        for kind in Self::event_kinds_from_value(&event) {
+                            // Ignore send errors: receiver may have dropped.
+                            let _ = tx.send(StreamEvent::now(kind)).await;
+                        }
+                    }
                 }
             }
             collected
@@ -812,30 +1053,36 @@ impl Agent for ClaudeCliAgent {
             }
         });
 
-        let status = match timeout(Duration::from_millis(self.timeout_ms), child.wait()).await {
-            Ok(Ok(status)) => status,
-            Ok(Err(e)) => {
-                heartbeat_handle.abort();
-                if track_pids()
-                    && let Some(pid) = pid
-                {
-                    unregister_pid(pid);
-                }
-                return self.failure(input, &format!("wait failed: {e}"), started);
-            }
-            Err(_) => {
-                heartbeat_handle.abort();
+        let waited = match timeout(Duration::from_millis(self.timeout_ms), child.wait()).await {
+            Ok(Ok(status)) => Ok(status),
+            Ok(Err(e)) => Err(format!("wait failed: {e}")),
+            Err(_) => Err(format!("{ATTEMPT_TIMEOUT_MARKER} {} ms", self.timeout_ms)),
+        };
+        heartbeat_handle.abort();
+        let status = match waited {
+            Ok(status) => status,
+            Err(reason) => {
                 let _ = kill_tree(&mut child, Duration::from_millis(GRACE_STDIN_CLOSE_MS)).await;
                 if track_pids()
                     && let Some(pid) = pid
                 {
                     unregister_pid(pid);
                 }
-                return self.failure(
-                    input,
-                    &format!("timed out after {} ms", self.timeout_ms),
-                    started,
+                // Killed before its final `result` event: keep the usage it
+                // streamed, so a long failed run is not recorded as free.
+                let (stdout, stderr) = tokio::join!(
+                    drain_killed_output(stdout_handle),
+                    drain_killed_output(stderr_handle)
                 );
+                let stream_usage = Self::parse_stream_usage(&stdout, &self.model)
+                    .merge(Self::parse_stream_usage(&stderr, &self.model));
+                tracing::warn!(
+                    agent = %self.name,
+                    elapsed_s = started.elapsed().as_secs(),
+                    streamed_cost_usd = stream_usage.cost_usd.unwrap_or_default(),
+                    "agent {reason}"
+                );
+                return self.failure_with_stream_usage(input, &reason, started, &stream_usage);
             }
         };
         if track_pids()
@@ -844,24 +1091,28 @@ impl Agent for ClaudeCliAgent {
             unregister_pid(pid);
         }
 
-        heartbeat_handle.abort();
         let elapsed_secs = started.elapsed().as_secs();
 
         let stdout = stdout_handle.await.unwrap_or_default();
         let stderr = stderr_handle.await.unwrap_or_default();
         let wall_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
-        let stream_usage =
-            Self::parse_stream_usage(&stdout).merge(Self::parse_stream_usage(&stderr));
+        let stream_usage = Self::parse_stream_usage(&stdout, &self.model)
+            .merge(Self::parse_stream_usage(&stderr, &self.model));
+
+        if let Some(hit) = self.turn_cap_hit(&stdout, &stderr) {
+            tracing::warn!(agent = %self.name, elapsed_s = elapsed_secs, "{hit}");
+            return self.failure_with_stream_usage(input, &hit.to_string(), started, &stream_usage);
+        }
 
         if !status.success() {
             let code = status
                 .code()
                 .map_or_else(|| "signal".to_string(), |c| c.to_string());
             tracing::warn!(agent = %self.name, exit_code = %code, elapsed_s = elapsed_secs, "agent failed");
-            let stderr_reason = Self::first_human_stderr_line(&stderr).unwrap_or("claude failed");
+            let reason = Self::failure_reason(&stdout, &stderr);
             return self.failure_with_stream_usage(
                 input,
-                &format!("exit {code}: {stderr_reason}"),
+                &format!("exit {code}: {reason}"),
                 started,
                 &stream_usage,
             );
@@ -896,19 +1147,30 @@ impl Agent for ClaudeCliAgent {
             "agent completed successfully"
         );
 
-        let output_signal = input
+        let mut output_signal = input
             .derive(Kind::AgentOutput, Body::text(text))
             .provenance(Provenance::agent(&self.name))
             .tag("agent", &self.name)
             .tag(
                 "model",
                 stream_usage.model.as_deref().unwrap_or(&self.model),
-            )
-            .build();
+            );
+        if let Some(num_turns) = stream_usage.num_turns {
+            output_signal = output_signal.tag("num_turns", num_turns.to_string());
+        }
+        let output_signal = output_signal.build();
 
         AgentResult::ok(output_signal)
             .with_trace(self.stderr_trace(&stderr))
-            .with_usage(Self::usage_from_stream(&stream_usage, wall_ms))
+            .with_usage_obs(self.usage_observation(&stream_usage, wall_ms))
+    }
+}
+
+#[async_trait]
+impl Agent for ClaudeCliAgent {
+    /// Run the agent without streaming. Delegates to [`run_impl`](Self::run_impl).
+    async fn run(&self, input: &Signal, _ctx: &Context) -> AgentResult {
+        self.run_impl(input, None).await
     }
 
     fn name(&self) -> &str {
@@ -920,19 +1182,25 @@ impl Agent for ClaudeCliAgent {
     }
 
     fn supports_streaming(&self) -> bool {
-        false
+        true
+    }
+
+    /// Run the agent with live streaming. Each parsed stream-json event is
+    /// forwarded as a [`StreamEvent`] via `event_tx` as it arrives; the final
+    /// [`AgentResult`] is identical to what [`run`](Self::run) returns.
+    async fn run_streaming(
+        &self,
+        input: &Signal,
+        _ctx: &Context,
+        event_tx: mpsc::Sender<StreamEvent>,
+    ) -> AgentResult {
+        self.run_impl(input, Some(event_tx)).await
     }
 }
 
-/// Whether usage was reported by the final Claude CLI result event.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-enum UsageSource {
-    ProviderReported,
-    #[default]
-    Unknown,
-}
-
-/// Parsed usage metadata from Claude CLI `result` events.
+/// Parsed usage metadata from Claude CLI stream-json output: the final
+/// `result` event ([`UsageSource::ProviderReported`]), or what a killed run
+/// streamed before it ([`UsageSource::Estimated`]).
 #[derive(Debug, Clone, PartialEq, Default)]
 struct StreamUsage {
     input_tokens: Option<u64>,
@@ -941,24 +1209,148 @@ struct StreamUsage {
     cache_read_tokens: Option<u64>,
     cost_usd: Option<f64>,
     model: Option<String>,
+    /// Agent turns the CLI reported in its final `result` event, or the
+    /// main-loop messages a killed run streamed.
+    num_turns: Option<u64>,
     source: UsageSource,
 }
 
 impl StreamUsage {
     fn merge(mut self, other: Self) -> Self {
-        if self.source == UsageSource::Unknown {
-            return other;
-        }
-        if other.source == UsageSource::ProviderReported {
-            self.input_tokens = self.input_tokens.or(other.input_tokens);
-            self.output_tokens = self.output_tokens.or(other.output_tokens);
-            self.cache_creation_tokens = self.cache_creation_tokens.or(other.cache_creation_tokens);
-            self.cache_read_tokens = self.cache_read_tokens.or(other.cache_read_tokens);
-            self.cost_usd = self.cost_usd.or(other.cost_usd);
-            self.model = self.model.or(other.model);
+        match (&self.source, &other.source) {
+            // A provider-reported total beats a partial estimate.
+            (UsageSource::Unknown, _) | (UsageSource::Estimated, UsageSource::ProviderReported) => {
+                return other;
+            }
+            (UsageSource::ProviderReported, UsageSource::ProviderReported) => {
+                self.input_tokens = self.input_tokens.or(other.input_tokens);
+                self.output_tokens = self.output_tokens.or(other.output_tokens);
+                self.cache_creation_tokens =
+                    self.cache_creation_tokens.or(other.cache_creation_tokens);
+                self.cache_read_tokens = self.cache_read_tokens.or(other.cache_read_tokens);
+                self.cost_usd = self.cost_usd.or(other.cost_usd);
+                self.model = self.model.or(other.model);
+                self.num_turns = self.num_turns.or(other.num_turns);
+            }
+            _ => {}
         }
         self
     }
+}
+
+/// Usage of the API messages a run streamed as stream-json `assistant`
+/// events. The CLI emits one event per content block, each repeating its
+/// message's usage, so a message id counts once (its largest values).
+#[derive(Debug, Default)]
+struct StreamedMessages {
+    messages: Vec<StreamedMessage>,
+    by_id: HashMap<String, usize>,
+}
+
+#[derive(Debug, Default)]
+struct StreamedMessage {
+    model: Option<String>,
+    /// Main-loop message; a sub-agent's messages set `parent_tool_use_id`.
+    top_level: bool,
+    usage: Usage,
+}
+
+impl StreamedMessages {
+    fn observe(&mut self, event: &Value) {
+        let Some(message) = event.get("message") else {
+            return;
+        };
+        let Some(usage) = message.get("usage").filter(|usage| usage.is_object()) else {
+            return;
+        };
+        let index = match message.get("id").and_then(Value::as_str) {
+            Some(id) => *self.by_id.entry(id.to_string()).or_insert_with(|| {
+                self.messages.push(StreamedMessage::default());
+                self.messages.len() - 1
+            }),
+            None => {
+                self.messages.push(StreamedMessage::default());
+                self.messages.len() - 1
+            }
+        };
+        let streamed = &mut self.messages[index];
+        if let Some(model) = message
+            .get("model")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|model| !model.is_empty())
+        {
+            streamed.model = Some(model.to_string());
+        }
+        streamed.top_level = event.get("parent_tool_use_id").is_none_or(Value::is_null);
+        let count = |keys: &[&str]| {
+            ClaudeCliAgent::stream_usage_u64(usage, keys)
+                .map_or(0, |count| u32::try_from(count).unwrap_or(u32::MAX))
+        };
+        let tokens = &mut streamed.usage;
+        tokens.input_tokens = tokens.input_tokens.max(count(&["input_tokens"]));
+        tokens.output_tokens = tokens.output_tokens.max(count(&["output_tokens"]));
+        tokens.cache_create_tokens = tokens.cache_create_tokens.max(count(&[
+            "cache_creation_input_tokens",
+            "cache_creation_tokens",
+        ]));
+        tokens.cache_read_tokens = tokens
+            .cache_read_tokens
+            .max(count(&["cache_read_input_tokens", "cache_read_tokens"]));
+    }
+
+    /// The streamed totals as [`UsageSource::Estimated`] usage, each message
+    /// priced from the model pricing table (`fallback_model` when it names
+    /// none). Unknown when nothing was streamed.
+    fn into_stream_usage(self, fallback_model: &str) -> StreamUsage {
+        if self.messages.is_empty() {
+            return StreamUsage::default();
+        }
+        let (mut input, mut output, mut cache_creation, mut cache_read) = (0_u64, 0, 0, 0);
+        let mut cost_usd = None;
+        for message in &self.messages {
+            let mut usage = message.usage;
+            input += u64::from(usage.input_tokens);
+            output += u64::from(usage.output_tokens);
+            cache_creation += u64::from(usage.cache_create_tokens);
+            cache_read += u64::from(usage.cache_read_tokens);
+            let model = message.model.as_deref().unwrap_or(fallback_model);
+            if let Some(pricing) = model_meta(model).pricing {
+                usage.fill_cost_from_pricing(
+                    Some(pricing.input_per_m),
+                    Some(pricing.output_per_m),
+                    Some(pricing.cache_read_per_m),
+                    Some(pricing.cache_write_per_m),
+                );
+                *cost_usd.get_or_insert(0.0) += f64::from(usage.cost_usd);
+            }
+        }
+        let top_level = || self.messages.iter().filter(|message| message.top_level);
+        StreamUsage {
+            input_tokens: Some(input),
+            output_tokens: Some(output),
+            cache_creation_tokens: Some(cache_creation),
+            cache_read_tokens: Some(cache_read),
+            cost_usd,
+            model: top_level().rev().find_map(|message| message.model.clone()),
+            num_turns: Some(top_level().count() as u64),
+            source: UsageSource::Estimated,
+        }
+    }
+}
+
+/// Longest wait for a killed run's output readers to reach end of file.
+const KILLED_OUTPUT_DRAIN_MS: u64 = 2_000;
+
+/// What `reader` collected from a killed run's pipe. A reader still blocked
+/// after [`KILLED_OUTPUT_DRAIN_MS`] (a surviving descendant holds the pipe
+/// open) is left behind, and its output is lost.
+async fn drain_killed_output(reader: tokio::task::JoinHandle<String>) -> String {
+    timeout(Duration::from_millis(KILLED_OUTPUT_DRAIN_MS), reader)
+        .await
+        .ok()
+        .and_then(Result::ok)
+        .unwrap_or_default()
 }
 
 async fn read_pipe_to_string<R>(pipe: &mut Option<R>) -> String
@@ -1062,6 +1454,7 @@ mod tests {
         let usage = ClaudeCliAgent::parse_stream_usage(
             r#"{"type":"assistant","subtype":"message","message":{"content":[{"type":"text","text":"hello"}],"usage":{"input_tokens":999,"output_tokens":888,"cache_creation_input_tokens":777,"cache_read_input_tokens":666}}}
 {"type":"result","session_id":"sess-1","model":"claude-sonnet-4-6","total_cost_usd":0.25,"usage":{"input_tokens":11,"output_tokens":22,"cache_creation_input_tokens":33,"cache_read_input_tokens":44}}"#,
+            "claude-test-model",
         );
         assert_eq!(usage.source, UsageSource::ProviderReported);
         assert_eq!(usage.input_tokens, Some(11));
@@ -1076,6 +1469,7 @@ mod tests {
     fn parse_stream_usage_leaves_missing_fields_none_and_keeps_zeroes() {
         let usage = ClaudeCliAgent::parse_stream_usage(
             r#"{"type":"result","session_id":"sess-2","model":"claude-sonnet-4-6","total_cost_usd":0,"usage":{"input_tokens":0,"cache_read_input_tokens":5}}"#,
+            "claude-test-model",
         );
         assert_eq!(usage.source, UsageSource::ProviderReported);
         assert_eq!(usage.input_tokens, Some(0));
@@ -1090,6 +1484,7 @@ mod tests {
     fn parse_stream_usage_accepts_cache_alias_fields() {
         let usage = ClaudeCliAgent::parse_stream_usage(
             r#"{"type":"result","session_id":"sess-3","model":"claude-sonnet-4-6","total_cost_usd":0.5,"usage":{"input_tokens":1,"output_tokens":2,"cache_creation_tokens":3,"cache_read_tokens":4}}"#,
+            "claude-test-model",
         );
         assert_eq!(usage.cache_creation_tokens, Some(3));
         assert_eq!(usage.cache_read_tokens, Some(4));
@@ -1097,12 +1492,56 @@ mod tests {
     }
 
     #[test]
-    fn parse_stream_usage_stays_unknown_without_result_event() {
+    fn parse_stream_usage_stays_unknown_without_reported_usage() {
         let usage = ClaudeCliAgent::parse_stream_usage(
-            r#"{"type":"assistant","subtype":"message","message":{"content":[{"type":"text","text":"hello"}],"usage":{"input_tokens":1,"output_tokens":2,"cache_creation_input_tokens":3,"cache_read_input_tokens":4}}}
+            r#"{"type":"assistant","subtype":"message","message":{"content":[{"type":"text","text":"hello"}],"usage":null}}
 {"type":"tool","subtype":"result","tool_name":"Bash","tool_use_id":"tu_1","content":"done"}"#,
+            "claude-sonnet-4-6",
         );
         assert_eq!(usage, StreamUsage::default());
+    }
+
+    #[test]
+    fn parse_stream_usage_estimates_streamed_usage_without_result_event() {
+        // One API message arrives as one `assistant` event per content block,
+        // each repeating its usage; a sub-agent's message sets
+        // `parent_tool_use_id`; msg_3 names no model.
+        let usage = ClaudeCliAgent::parse_stream_usage(
+            r#"{"type":"assistant","message":{"id":"msg_1","model":"claude-sonnet-4-6","content":[{"type":"text","text":"building"}],"usage":{"input_tokens":1000,"output_tokens":200,"cache_creation_input_tokens":3000,"cache_read_input_tokens":4000}},"parent_tool_use_id":null}
+{"type":"assistant","message":{"id":"msg_1","model":"claude-sonnet-4-6","content":[{"type":"tool_use","id":"tu_1","name":"Task","input":{}}],"usage":{"input_tokens":1000,"output_tokens":200,"cache_creation_input_tokens":3000,"cache_read_input_tokens":4000}},"parent_tool_use_id":null}
+{"type":"assistant","message":{"id":"msg_2","model":"claude-haiku-4-5","content":[{"type":"text","text":"sub-agent"}],"usage":{"input_tokens":500,"output_tokens":100}},"parent_tool_use_id":"tu_1"}
+{"type":"assistant","message":{"id":"msg_3","content":[{"type":"text","text":"still going"}],"usage":{"input_tokens":10,"output_tokens":50,"cache_read_input_tokens":7000}}}"#,
+            "claude-sonnet-4-6",
+        );
+        assert_eq!(usage.source, UsageSource::Estimated);
+        assert_eq!(usage.input_tokens, Some(1_510));
+        assert_eq!(usage.output_tokens, Some(350));
+        assert_eq!(usage.cache_creation_tokens, Some(3_000));
+        assert_eq!(usage.cache_read_tokens, Some(11_000));
+        // Per million: Sonnet $3 in, $15 out, $0.30 cache read, $3.75 cache
+        // write (msg_1, and msg_3 at the fallback model); Haiku $0.80 in,
+        // $4 out (msg_2).
+        let sonnet = 1_010.0 * 3.0 + 250.0 * 15.0 + 11_000.0 * 0.30 + 3_000.0 * 3.75;
+        let haiku = 500.0 * 0.80 + 100.0 * 4.0;
+        let cost = usage.cost_usd.expect("priced from the model table");
+        assert!((cost - (sonnet + haiku) / 1e6).abs() < 1e-6, "{usage:?}");
+        assert_eq!(usage.model.as_deref(), Some("claude-sonnet-4-6"));
+        assert_eq!(usage.num_turns, Some(2), "main-loop messages only");
+    }
+
+    #[test]
+    fn provider_reported_usage_beats_a_streamed_estimate() {
+        let estimated = ClaudeCliAgent::parse_stream_usage(
+            r#"{"type":"assistant","message":{"id":"msg_1","usage":{"input_tokens":1}}}"#,
+            "claude-sonnet-4-6",
+        );
+        let reported = ClaudeCliAgent::parse_stream_usage(
+            r#"{"type":"result","total_cost_usd":0.5,"usage":{"input_tokens":9}}"#,
+            "claude-sonnet-4-6",
+        );
+        assert_eq!(estimated.source, UsageSource::Estimated);
+        assert_eq!(estimated.clone().merge(reported.clone()), reported);
+        assert_eq!(reported.clone().merge(estimated), reported);
     }
 
     #[test]
@@ -1333,6 +1772,9 @@ printf '%s\n' '{"type":"result","session_id":"sess-1","model":"claude-sonnet-4-6
         assert_eq!(result.usage.cache_read_tokens, 44);
         assert_eq!(result.usage.cache_create_tokens, 33);
         assert!((result.usage.cost_usd - 0.25).abs() < 0.0001);
+        let observation = result.usage_obs.expect("usage observation");
+        assert_eq!(observation.source, UsageSource::ProviderReported);
+        assert_eq!(observation.model.as_deref(), Some("claude-sonnet-4-6"));
     }
 
     #[tokio::test]
@@ -1362,6 +1804,57 @@ exit 1
         assert_eq!(result.usage.cache_read_tokens, 6);
         assert_eq!(result.usage.cache_create_tokens, 7);
         assert!((result.usage.cost_usd - 0.5).abs() < 0.0001);
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn a_timed_out_attempt_reports_the_usage_it_streamed() {
+        let tmp = tempdir().unwrap();
+        let script = tmp.path().join("claude-fake.sh");
+        // Streams two API messages (the first as two content-block events),
+        // then works past the timeout without reaching its `result` event.
+        let script_body = r#"#!/bin/sh
+cat >/dev/null
+printf '%s\n' '{"type":"system","subtype":"init","session_id":"sess-t","model":"claude-sonnet-4-6"}'
+printf '%s\n' '{"type":"assistant","message":{"id":"msg_1","model":"claude-sonnet-4-6","content":[{"type":"text","text":"building"}],"usage":{"input_tokens":1000,"output_tokens":200,"cache_creation_input_tokens":3000,"cache_read_input_tokens":4000}},"parent_tool_use_id":null}'
+printf '%s\n' '{"type":"assistant","message":{"id":"msg_1","model":"claude-sonnet-4-6","content":[{"type":"tool_use","id":"tu_1","name":"Bash","input":{"command":"cargo build"}}],"usage":{"input_tokens":1000,"output_tokens":200,"cache_creation_input_tokens":3000,"cache_read_input_tokens":4000}},"parent_tool_use_id":null}'
+printf '%s\n' '{"type":"assistant","message":{"id":"msg_2","model":"claude-sonnet-4-6","content":[{"type":"text","text":"still building"}],"usage":{"input_tokens":10,"output_tokens":50,"cache_creation_input_tokens":0,"cache_read_input_tokens":7000}},"parent_tool_use_id":null}'
+sleep 30
+"#;
+        fs::write(&script, script_body).unwrap();
+        let mut perms = fs::metadata(&script).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&script, perms).unwrap();
+
+        let agent =
+            ClaudeCliAgent::new(&script, tmp.path(), "claude-sonnet-4-6").with_timeout_ms(1_000);
+        let result = agent.run(&prompt("build it"), &Context::now()).await;
+
+        assert!(!result.success);
+        let text = result.output.body.as_text().expect("failure text");
+        assert_eq!(text, "timed out after 1000 ms");
+        assert!(crate::provider::error_classify::detect_attempt_timeout(
+            text
+        ));
+        assert_eq!(result.output.tag("model"), Some("claude-sonnet-4-6"));
+        assert_eq!(result.output.tag("num_turns"), Some("2"));
+        assert_eq!(result.usage.input_tokens, 1_010);
+        assert_eq!(result.usage.output_tokens, 250);
+        assert_eq!(result.usage.cache_create_tokens, 3_000);
+        assert_eq!(result.usage.cache_read_tokens, 11_000);
+        // Sonnet per million: $3 in, $15 out, $0.30 cache read, $3.75 cache write.
+        let expected = (1_010.0 * 3.0 + 250.0 * 15.0 + 11_000.0 * 0.30 + 3_000.0 * 3.75) / 1e6;
+        assert!(
+            (f64::from(result.usage.cost_usd) - expected).abs() < 1e-6,
+            "{:?}",
+            result.usage
+        );
+        let observation = result.usage_obs.expect("usage observation");
+        assert_eq!(
+            observation.source,
+            UsageSource::Estimated,
+            "a killed run's usage is partial"
+        );
     }
 
     #[tokio::test]
@@ -1400,5 +1893,341 @@ printf '%s\n' '{"type":"content_block_delta","delta":{"text":"ok"}}'
         );
         assert_eq!(trace.len(), 1);
         assert_eq!(trace[0].body.as_text().unwrap(), "unexpected stderr line");
+    }
+
+    #[test]
+    fn failure_reason_surfaces_session_limit_from_stdout_result() {
+        let stdout = concat!(
+            "{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"s1\"}\n",
+            "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":true,",
+            "\"result\":\"You\u{2019}ve hit your session limit \u{b7} resets 4pm (Europe/Berlin)\"}\n",
+        );
+        let reason = ClaudeCliAgent::failure_reason(stdout, "");
+        assert!(
+            reason.starts_with("provider usage exhausted: "),
+            "unexpected reason: {reason}"
+        );
+        assert!(reason.contains("resets 4pm (Europe/Berlin)"), "{reason}");
+        let exhaustion = detect_provider_exhaustion(&reason).expect("re-detectable");
+        assert!(exhaustion.resets_at_ms.is_some());
+    }
+
+    #[test]
+    fn failure_reason_prefers_stderr_then_result_then_generic() {
+        assert_eq!(
+            ClaudeCliAgent::failure_reason("", "Error: bad flag\n"),
+            "Error: bad flag"
+        );
+        let stdout =
+            "{\"type\":\"result\",\"is_error\":true,\"result\":\"Credit balance is too low\"}\n";
+        assert_eq!(
+            ClaudeCliAgent::failure_reason(stdout, ""),
+            "Credit balance is too low"
+        );
+        assert_eq!(ClaudeCliAgent::failure_reason("", ""), "claude failed");
+    }
+
+    #[test]
+    fn output_text_separates_assistant_messages() {
+        // The shape of the 09 real-model run: three messages with tool calls
+        // between them, one stream-json event per content block.
+        let stdout = [
+            r#"{"type":"system","subtype":"init","session_id":"s1","model":"claude-sonnet-4-6"}"#,
+            r#"{"type":"assistant","message":{"id":"msg_1","content":[{"type":"text","text":"I'll start by reading the relevant files."}]}}"#,
+            r#"{"type":"assistant","message":{"id":"msg_1","content":[{"type":"tool_use","id":"toolu_1","name":"Read","input":{"file_path":"/ws/roko.toml"}}]}}"#,
+            r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"[agent]"}]}}"#,
+            r#"{"type":"assistant","message":{"id":"msg_2","content":[{"type":"text","text":"No `Cargo.toml` exists yet. I'll create both files now."}]}}"#,
+            r#"{"type":"assistant","message":{"id":"msg_2","content":[{"type":"tool_use","id":"toolu_2","name":"Write","input":{"file_path":"/ws/Cargo.toml","content":"[package]"}}]}}"#,
+            r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_2","content":"ok"}]}}"#,
+            r#"{"type":"assistant","message":{"id":"msg_3","content":[{"type":"text","text":"Both files are created."}]}}"#,
+            r#"{"type":"result","subtype":"success","is_error":false,"result":"Both files are created.","num_turns":3}"#,
+        ]
+        .join("\n");
+        assert_eq!(
+            ClaudeCliAgent::output_text(&stdout),
+            "I'll start by reading the relevant files.\n\n\
+             No `Cargo.toml` exists yet. I'll create both files now.\n\n\
+             Both files are created."
+        );
+    }
+
+    // ── event_kinds_from_value unit tests ─────────────────────────────
+
+    #[test]
+    fn event_kinds_text_block() {
+        let event = serde_json::json!({
+            "type": "assistant",
+            "message": { "content": [{ "type": "text", "text": "hello" }] }
+        });
+        let kinds = ClaudeCliAgent::event_kinds_from_value(&event);
+        assert_eq!(kinds.len(), 1);
+        assert!(matches!(&kinds[0], StreamEventKind::TextDelta(t) if t == "hello"));
+    }
+
+    #[test]
+    fn event_kinds_thinking_block() {
+        let event = serde_json::json!({
+            "type": "assistant",
+            "message": { "content": [{ "type": "thinking", "thinking": "reasoning here" }] }
+        });
+        let kinds = ClaudeCliAgent::event_kinds_from_value(&event);
+        assert_eq!(kinds.len(), 1);
+        assert!(matches!(&kinds[0], StreamEventKind::ReasoningDelta(t) if t == "reasoning here"));
+    }
+
+    #[test]
+    fn event_kinds_tool_use_block() {
+        let event = serde_json::json!({
+            "type": "assistant",
+            "message": { "content": [{ "type": "tool_use", "id": "tu_1", "name": "Read", "input": { "path": "foo" } }] }
+        });
+        let kinds = ClaudeCliAgent::event_kinds_from_value(&event);
+        assert_eq!(kinds.len(), 1);
+        assert!(
+            matches!(&kinds[0], StreamEventKind::ToolCallEnd { id, name, args }
+            if id == "tu_1" && name == "Read" && args.get("path").and_then(Value::as_str) == Some("foo"))
+        );
+    }
+
+    #[test]
+    fn event_kinds_tool_event() {
+        let event = serde_json::json!({
+            "type": "tool",
+            "subtype": "result",
+            "tool_use_id": "tu_2",
+            "tool_name": "Bash",
+            "content": "output"
+        });
+        let kinds = ClaudeCliAgent::event_kinds_from_value(&event);
+        assert_eq!(kinds.len(), 1);
+        assert!(
+            matches!(&kinds[0], StreamEventKind::ToolResult { id, output }
+            if id == "tu_2" && output == "output")
+        );
+    }
+
+    #[test]
+    fn event_kinds_user_tool_result_string_content() {
+        let event = serde_json::json!({
+            "type": "user",
+            "message": {
+                "content": [{
+                    "type": "tool_result",
+                    "tool_use_id": "tu_3",
+                    "content": "plain text result"
+                }]
+            }
+        });
+        let kinds = ClaudeCliAgent::event_kinds_from_value(&event);
+        assert_eq!(kinds.len(), 1);
+        assert!(
+            matches!(&kinds[0], StreamEventKind::ToolResult { id, output }
+            if id == "tu_3" && output == "plain text result")
+        );
+    }
+
+    #[test]
+    fn event_kinds_user_tool_result_array_content() {
+        let event = serde_json::json!({
+            "type": "user",
+            "message": {
+                "content": [{
+                    "type": "tool_result",
+                    "tool_use_id": "tu_4",
+                    "content": [
+                        { "type": "text", "text": "line one" },
+                        { "type": "text", "text": "line two" }
+                    ]
+                }]
+            }
+        });
+        let kinds = ClaudeCliAgent::event_kinds_from_value(&event);
+        assert_eq!(kinds.len(), 1);
+        assert!(
+            matches!(&kinds[0], StreamEventKind::ToolResult { id, output }
+            if id == "tu_4" && output == "line one\nline two")
+        );
+    }
+
+    // ── run_streaming integration tests ───────────────────────────────
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn run_streaming_emits_events_in_order() {
+        use tokio::sync::mpsc;
+        let tmp = tempdir().unwrap();
+        let script = tmp.path().join("claude-fake.sh");
+        let script_body = r#"#!/bin/sh
+cat >/dev/null
+printf '%s\n' '{"type":"assistant","subtype":"message","message":{"content":[{"type":"text","text":"hello"},{"type":"tool_use","id":"tu_1","name":"Read","input":{"path":"foo"}}]}}'
+printf '%s\n' '{"type":"tool","subtype":"result","tool_use_id":"tu_1","tool_name":"Read","content":"file contents"}'
+printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"hello"}'
+"#;
+        fs::write(&script, script_body).unwrap();
+        {
+            let mut perms = fs::metadata(&script).unwrap().permissions();
+            std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
+            fs::set_permissions(&script, perms).unwrap();
+        }
+
+        let agent = ClaudeCliAgent::new(&script, tmp.path(), "claude-test-model");
+        let (tx, mut rx) = mpsc::channel(32);
+        let result = agent
+            .run_streaming(&prompt("hi"), &Context::now(), tx)
+            .await;
+        assert!(
+            result.success,
+            "{}",
+            result.output.body.as_text().unwrap_or("unknown")
+        );
+
+        // Drain the channel.
+        let mut kinds = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            kinds.push(event.kind);
+        }
+
+        // Verify order: TextDelta, ToolCallEnd, ToolResult (≥ those three in sequence).
+        let text_pos = kinds
+            .iter()
+            .position(|k| matches!(k, StreamEventKind::TextDelta(t) if t == "hello"))
+            .expect("TextDelta(hello) not found");
+        let tool_end_pos = kinds
+            .iter()
+            .position(|k| {
+                matches!(k, StreamEventKind::ToolCallEnd { id, name, .. } if id == "tu_1" && name == "Read")
+            })
+            .expect("ToolCallEnd not found");
+        let tool_result_pos = kinds
+            .iter()
+            .position(|k| {
+                matches!(k, StreamEventKind::ToolResult { id, output } if id == "tu_1" && output == "file contents")
+            })
+            .expect("ToolResult not found");
+
+        assert!(
+            text_pos < tool_end_pos,
+            "TextDelta should precede ToolCallEnd"
+        );
+        assert!(
+            tool_end_pos < tool_result_pos,
+            "ToolCallEnd should precede ToolResult"
+        );
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn run_and_run_streaming_agree_on_result() {
+        use tokio::sync::mpsc;
+        let tmp = tempdir().unwrap();
+        let script = tmp.path().join("claude-fake.sh");
+        let script_body = r#"#!/bin/sh
+cat >/dev/null
+printf '%s\n' '{"type":"assistant","subtype":"message","message":{"content":[{"type":"text","text":"response text"}]}}'
+printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"response text","model":"claude-test-model","total_cost_usd":0.01,"usage":{"input_tokens":5,"output_tokens":3}}'
+"#;
+        fs::write(&script, script_body).unwrap();
+        {
+            let mut perms = fs::metadata(&script).unwrap().permissions();
+            std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
+            fs::set_permissions(&script, perms).unwrap();
+        }
+
+        let run_result = ClaudeCliAgent::new(&script, tmp.path(), "claude-test-model")
+            .run(&prompt("hi"), &Context::now())
+            .await;
+
+        let (tx, _rx) = mpsc::channel(32);
+        let streaming_result = ClaudeCliAgent::new(&script, tmp.path(), "claude-test-model")
+            .run_streaming(&prompt("hi"), &Context::now(), tx)
+            .await;
+
+        assert_eq!(run_result.success, streaming_result.success);
+        assert_eq!(
+            run_result.output.body.as_text().unwrap().trim(),
+            streaming_result.output.body.as_text().unwrap().trim()
+        );
+        assert_eq!(
+            run_result.usage.input_tokens,
+            streaming_result.usage.input_tokens
+        );
+        assert_eq!(
+            run_result.usage.output_tokens,
+            streaming_result.usage.output_tokens
+        );
+    }
+}
+
+#[cfg(all(test, unix))]
+mod turn_cap_tests {
+    use super::*;
+    use crate::provider::error_classify::{
+        TurnCapHit, detect_provider_exhaustion, detect_turn_cap,
+    };
+    use std::os::unix::fs::PermissionsExt;
+
+    fn fake_claude(dir: &std::path::Path, result_line: &str, exit_code: i32) -> PathBuf {
+        let script = dir.join("claude-fake.sh");
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' '{result_line}'\nexit {exit_code}\n"
+            ),
+        )
+        .expect("write fake claude");
+        let mut permissions = std::fs::metadata(&script).expect("metadata").permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&script, permissions).expect("make executable");
+        script
+    }
+
+    fn prompt() -> Signal {
+        Signal::builder(Kind::Prompt)
+            .body(Body::text("do it"))
+            .build()
+    }
+
+    #[tokio::test]
+    async fn error_max_turns_is_a_turn_cap_hit_not_a_generic_failure() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let script = fake_claude(
+            tmp.path(),
+            r#"{"type":"result","subtype":"error_max_turns","is_error":true,"num_turns":2,"total_cost_usd":0.01}"#,
+            1,
+        );
+        let agent = ClaudeCliAgent::new(&script, tmp.path(), "claude-test-model").with_max_turns(1);
+
+        let result = agent.run(&prompt(), &Context::now()).await;
+        assert!(!result.success);
+        let text = result.output.body.as_text().expect("failure text");
+        assert_eq!(
+            detect_turn_cap(text),
+            Some(TurnCapHit {
+                num_turns: Some(2),
+                cap: Some(1),
+            }),
+            "{text}"
+        );
+        assert!(detect_provider_exhaustion(text).is_none(), "{text}");
+        assert_eq!(result.output.tag("num_turns"), Some("2"));
+    }
+
+    #[tokio::test]
+    async fn successful_run_reports_the_cli_turn_count() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let script = fake_claude(
+            tmp.path(),
+            concat!(
+                r#"{"type":"content_block_delta","delta":{"text":"done"}}"#,
+                "\n",
+                r#"{"type":"result","subtype":"success","is_error":false,"num_turns":3,"result":"done"}"#,
+            ),
+            0,
+        );
+        let agent = ClaudeCliAgent::new(&script, tmp.path(), "claude-test-model");
+
+        let result = agent.run(&prompt(), &Context::now()).await;
+        assert!(result.success, "{:?}", result.output.body.as_text());
+        assert_eq!(result.output.tag("num_turns"), Some("3"));
     }
 }

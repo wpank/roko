@@ -1272,6 +1272,14 @@ pub fn format_dashboard_event(
             let icon = if *success { "+" } else { "x" };
             (format!("[{plan_id}]"), icon, format!("Plan {outcome}"))
         }
+        DashboardEvent::PlanSetLoaded { plans } => {
+            let tasks: usize = plans.iter().map(|plan| plan.tasks_total).sum();
+            (
+                String::from("[plans]"),
+                ">",
+                format!("Loaded {} plan(s), {tasks} task(s)", plans.len()),
+            )
+        }
         DashboardEvent::RunCompleted {
             outcome,
             duration_ms,

@@ -90,9 +90,19 @@ pub enum ErrorClass {
     /// adds credits or resolves the payment issue. The cooldown is long (24 h)
     /// so the cascade router routes around the provider for the rest of the run.
     Billing,
+    /// Subscription or usage window exhausted (e.g. Claude CLI "You've hit
+    /// your session limit"). The provider refuses work until its reported
+    /// reset time; [`ProviderHealthRegistry::record_exhaustion`] opens the
+    /// circuit until exactly then.
+    Exhausted,
     /// Fallback classification when the exact class is unknown.
     Unknown,
 }
+
+/// Cooldown for an [`ErrorClass::Exhausted`] failure whose reset time is
+/// unknown: long enough to stop hammering a refused subscription, short
+/// enough to notice an early reset.
+pub const DEFAULT_EXHAUSTION_COOLDOWN_MS: i64 = 30 * 60 * 1_000;
 
 /// Timestamped failure entry for the rolling failure window.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -189,9 +199,10 @@ impl ProviderHealth {
             self.recent_outcomes.pop_front();
         }
 
-        // Condition 0: billing/credit errors are definitive — trip immediately
-        // on the first occurrence so the cascade router skips this provider.
-        let should_trip_billing = error == ErrorClass::Billing;
+        // Condition 0: billing/credit and usage-window errors are definitive —
+        // trip immediately on the first occurrence so routing skips this
+        // provider.
+        let should_trip_billing = matches!(error, ErrorClass::Billing | ErrorClass::Exhausted);
 
         // Condition 1: trip to Open after 3 consecutive failures.
         let should_trip_consecutive = self.consecutive_failures >= 3;
@@ -213,6 +224,16 @@ impl ProviderHealth {
             self.state = CircuitState::Open;
             self.cooldown_until = Some(now_ms + self.cooldown_ms(error));
         }
+    }
+
+    /// Record a usage-window exhaustion and quarantine until `until_ms`.
+    ///
+    /// The circuit opens immediately and stays open until the provider's
+    /// reported reset rather than a class-default cooldown; after that the
+    /// next request is a half-open probe.
+    pub fn record_exhaustion(&mut self, now_ms: i64, until_ms: i64) {
+        self.record_failure(ErrorClass::Exhausted, now_ms);
+        self.cooldown_until = Some(until_ms.max(now_ms));
     }
 
     /// P3-09: Record a failure with associated cost attribution.
@@ -355,6 +376,7 @@ impl ProviderHealth {
             // cooldown so the provider is effectively excluded for the
             // remainder of any realistic plan execution.
             ErrorClass::Billing => 86_400_000,
+            ErrorClass::Exhausted => DEFAULT_EXHAUSTION_COOLDOWN_MS,
             _ => 5_000,
         }
     }
@@ -439,6 +461,30 @@ impl ProviderHealthRegistry {
             .entry(key.clone())
             .or_insert_with(|| new_provider_health(&key));
         health.record_failure(error, unix_ms_now());
+        drop(providers);
+        self.schedule_persist();
+    }
+
+    /// Quarantine `provider_id` after a usage-window exhaustion.
+    ///
+    /// The provider stays unavailable until `until_ms` (its reported reset
+    /// time, or now plus a cooldown when none was reported), then admits one
+    /// half-open probe. The state is persisted like any other outcome, so a
+    /// restarted run keeps routing around the provider.
+    pub fn record_exhaustion(&self, provider_id: &str, until_ms: i64) {
+        let key = normalize_provider_key(provider_id);
+        tracing::info!(
+            monotonic_counter.roko_provider_failures_total = 1_u64,
+            provider = %key,
+            error_class = ?ErrorClass::Exhausted,
+            until_ms,
+            "provider usage exhaustion recorded"
+        );
+        let mut providers = self.providers.lock();
+        let health = providers
+            .entry(key.clone())
+            .or_insert_with(|| new_provider_health(&key));
+        health.record_exhaustion(unix_ms_now(), until_ms);
         drop(providers);
         self.schedule_persist();
     }
@@ -1151,6 +1197,7 @@ impl roko_agent::model_call_service::ProviderOutcomeRecorder for ProviderHealthR
             "server_error" => ErrorClass::ServerError,
             "auth_failure" => ErrorClass::AuthFailure,
             "insufficient_credits" | "billing" => ErrorClass::Billing,
+            "provider_exhausted" => ErrorClass::Exhausted,
             "content_policy" => ErrorClass::ContentPolicy,
             "context_overflow" => ErrorClass::ContextOverflow,
             _ => ErrorClass::Unknown,
@@ -1734,6 +1781,51 @@ mod tests {
         assert_eq!(h.cooldown_until, Some(86_401_000));
         // Should be unavailable for the entire cooldown.
         assert!(!h.is_available(86_400_999));
+    }
+
+    /// A usage-window exhaustion opens the circuit until the reported reset,
+    /// then admits a half-open probe; without a reset time the default
+    /// exhaustion cooldown applies.
+    #[test]
+    fn exhaustion_quarantines_until_reported_reset() {
+        let mut h = new_provider_health("claude_cli");
+        h.record_exhaustion(1_000, 7_200_000);
+        assert_eq!(h.state, CircuitState::Open);
+        assert_eq!(h.cooldown_until, Some(7_200_000));
+        assert!(!h.is_available(7_199_999));
+        assert!(h.is_available(7_200_000));
+        assert_eq!(h.state, CircuitState::HalfOpen);
+
+        let mut h = new_provider_health("claude_cli");
+        h.record_failure(ErrorClass::Exhausted, 1_000);
+        assert_eq!(h.state, CircuitState::Open);
+        assert_eq!(
+            h.cooldown_until,
+            Some(1_000 + DEFAULT_EXHAUSTION_COOLDOWN_MS)
+        );
+    }
+
+    #[test]
+    fn registry_exhaustion_persists_quarantine() {
+        let dir = TempDir::new().expect("tempdir");
+        let path = dir.path().join("provider-health.json");
+        let until = unix_ms_now() + 3_600_000;
+        {
+            let registry = ProviderHealthRegistry::load_or_new(&path);
+            registry.record_exhaustion("claude-cli", until);
+            assert!(!registry.is_available("claude_cli"));
+        }
+        let reloaded = ProviderHealthRegistry::load_or_new(&path);
+        assert!(!reloaded.is_available("claude_cli"));
+        assert_eq!(reloaded.get("claude_cli").cooldown_until, Some(until));
+        assert_eq!(
+            reloaded
+                .get("claude_cli")
+                .failure_window
+                .back()
+                .map(|record| record.error_class),
+            Some(ErrorClass::Exhausted)
+        );
     }
 
     // ── Health status transitions ────────────────────────────────────────

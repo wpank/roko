@@ -7,12 +7,14 @@
 //!   entire tree can be signaled atomically.
 //! - **Kill escalation** ([`kill`]): stdin-close → SIGTERM → SIGKILL with
 //!   configurable grace periods.
-//! - **PID registry** ([`registry`]): global in-memory + disk-persisted set of
-//!   spawned PIDs for orphan cleanup across restarts.
+//! - **PID registry** ([`registry`]): per-process, workspace-keyed,
+//!   disk-persisted records of spawned PIDs for orphan cleanup across restarts.
+//! - **Process identity** ([`identity`]): kernel start fingerprints that tell a
+//!   live process apart from a recycled PID.
 //! - **MCP discovery** ([`mcp`]): walk-up config search for MCP server launch
 //!   specifications.
 //! - **Agent environment** ([`env`]): structured env-var configuration for
-//!   child processes.
+//!   child processes, and the provider-credential scrub for provider CLIs.
 //! - **Stderr suppression** ([`stderr`]): classify and deduplicate benign
 //!   agent stderr noise.
 //!
@@ -24,6 +26,7 @@
 
 pub mod env;
 pub mod group;
+pub mod identity;
 pub mod kill;
 pub mod limits;
 pub mod mcp;
@@ -31,16 +34,19 @@ pub mod registry;
 pub mod stderr;
 
 // Re-export the primary public API surface for convenience.
-pub use env::{AgentEnv, apply_agent_env};
+pub use env::{
+    AgentEnv, apply_agent_env, apply_credential_scrub, config_file_env_names, referenced_env_names,
+};
 pub use group::{
     collect_descendants, configure_no_descendant_process, kill_process_group, set_process_group,
     validate_no_descendant_context,
 };
+pub use identity::{ProcessIdentity, process_identity};
 pub use kill::{GRACE_SIGTERM_MS, GRACE_STDIN_CLOSE_MS, kill_tree};
 pub use limits::{ResourceLimits, apply_resource_limits, confined_command};
 pub use mcp::{McpLaunch, find_mcp_launch, normalize_mcp_launch};
 pub use registry::{
     cleanup_orphaned_agents, reap_orphaned_children, register_spawned_pid, registered_pids,
-    unregister_pid,
+    set_registry_root, unregister_pid,
 };
 pub use stderr::{BenignStderr, benign_stderr_warn_once, classify_benign_stderr};

@@ -134,6 +134,11 @@ pub mod chat_history;
 pub mod chat_inline;
 pub mod chat_session;
 pub mod clean;
+/// Subcommand implementations that live in the library; the `roko` binary's
+/// own `commands` module re-exports them.
+pub mod commands {
+    pub mod diagnose;
+}
 pub mod config;
 pub mod config_cmd;
 pub mod config_helpers;
@@ -182,9 +187,11 @@ pub mod orchestrator;
 pub mod output_format;
 pub mod pipe;
 pub mod plan;
+pub mod plan_authoring;
 pub mod plan_generate;
 pub mod plan_generator;
 pub mod plan_policy;
+pub mod plan_validate;
 pub mod prd;
 pub mod prd_prompt;
 pub mod projection;
@@ -218,7 +225,9 @@ pub mod worker;
 pub mod workspace_lock;
 pub mod workspace_paths;
 
+pub mod serve_client;
 pub mod serve_runtime;
+pub mod state_hub_ipc;
 
 /// Server modules re-exported from the `roko-serve` crate.
 pub use roko_serve as serve;

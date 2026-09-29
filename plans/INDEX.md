@@ -9,20 +9,13 @@
 
 | Plan | Tasks | Done | Ready | Status | Parallel |
 |------|-------|------|-------|--------|----------|
-| _(none)_ | | | | | |
+| `add-plan-queue` | 3 | 0 | 3 | 📋 ready | 1 |
+| `e2e-smoke-test` | 2 | 0 | 2 | 📋 ready | 1 |
+| `portal-plan-execution` | 3 | 0 | 3 | 📋 ready | 1 |
+| `qa-workflow-validation` | 4 | 0 | 4 | 📋 ready | 1 |
+| `wire-http-plan-execute` | 3 | 0 | 3 | 📋 ready | 1 |
+| `workspace-doctor-improvements` | 2 | 0 | 2 | 📋 ready | 1 |
 
-**Executable Total**: 0 plans, 0 tasks, 0 done (0%), 0 remaining
+**Executable Total**: 6 plans, 17 tasks, 0 done (0%), 17 remaining
 **Complete Plans**: 0
-**Ready/In-Progress Plans**: 0
-
-## Fixtures / Examples
-
-| Plan | Tasks | Status |
-|------|-------|--------|
-| `demo-hello` | 1 | 🧪 fixture |
-| `demo-incident-tabletop` | 4 | 🧪 fixture |
-| `demo-multistage` | 5 | 🧪 fixture |
-| `demo-parallel-integration` | 3 | 🧪 fixture |
-| `demo-resume-recovery` | 2 | 🧪 fixture |
-
-**Fixtures excluded from backlog**: 5 plans, 15 tasks
+**Ready/In-Progress Plans**: 6

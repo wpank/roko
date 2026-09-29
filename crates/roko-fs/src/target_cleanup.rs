@@ -1068,6 +1068,12 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
+    /// Reported paths are canonical (on macOS the temp dir lives behind the
+    /// `/var` -> `/private/var` symlink), so expectations must be too.
+    fn canonical_root(root: &TempDir) -> PathBuf {
+        std::fs::canonicalize(root.path()).unwrap()
+    }
+
     fn policy() -> CacheCleanupPolicy {
         CacheCleanupPolicy {
             target_budget_bytes: 0,
@@ -1085,7 +1091,7 @@ mod tests {
     async fn dry_run_never_removes_incremental_state() {
         let root = TempDir::new().unwrap();
         std::fs::create_dir(root.path().join(".git")).unwrap();
-        let incremental = root.path().join("target/debug/incremental/old-unit");
+        let incremental = canonical_root(&root).join("target/debug/incremental/old-unit");
         std::fs::create_dir_all(&incremental).unwrap();
         std::fs::write(incremental.join("artifact"), b"data").unwrap();
 
@@ -1167,8 +1173,8 @@ mod tests {
     async fn nonterminal_and_current_revision_evidence_are_preserved() {
         let root = TempDir::new().unwrap();
         std::fs::create_dir(root.path().join(".git")).unwrap();
-        let active = root.path().join(".roko/runs/active");
-        let current = root.path().join(".roko/runs/current");
+        let active = canonical_root(&root).join(".roko/runs/active");
+        let current = canonical_root(&root).join(".roko/runs/current");
         std::fs::create_dir_all(&active).unwrap();
         std::fs::create_dir_all(&current).unwrap();
         std::fs::write(active.join("status.jsonl"), b"started\n").unwrap();
@@ -1215,7 +1221,7 @@ mod tests {
             report
                 .protected
                 .iter()
-                .any(|entry| entry.path == root.path().join("target"))
+                .any(|entry| entry.path == canonical_root(&root).join("target"))
         );
     }
 

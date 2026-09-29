@@ -32,6 +32,8 @@
 
 use crate::process;
 use crate::process::ResourceLimits;
+use roko_core::agent::ProviderKind;
+use roko_core::child_env::CredentialScrub;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -297,6 +299,8 @@ pub struct AcpStdioClient {
     reader_handle: Option<JoinHandle<()>>,
     stderr_handle: Option<JoinHandle<()>>,
     resource_limits: Option<ResourceLimits>,
+    /// Which inherited provider credentials the subprocess loses.
+    credential_scrub: CredentialScrub,
 }
 
 impl AcpStdioClient {
@@ -321,6 +325,7 @@ impl AcpStdioClient {
             reader_handle: None,
             stderr_handle: None,
             resource_limits: None,
+            credential_scrub: CredentialScrub::default(),
         }
     }
 
@@ -328,6 +333,15 @@ impl AcpStdioClient {
     #[must_use]
     pub fn with_resource_limits(mut self, limits: ResourceLimits) -> Self {
         self.resource_limits = Some(limits);
+        self
+    }
+
+    /// Replace the policy for which inherited provider credentials the
+    /// subprocess loses. [`new`](Self::new) owns no provider credential; the
+    /// Cursor, Hermes and OpenClaw constructors own their provider's.
+    #[must_use]
+    pub fn with_credential_scrub(mut self, scrub: CredentialScrub) -> Self {
+        self.credential_scrub = scrub;
         self
     }
 
@@ -365,6 +379,7 @@ impl AcpStdioClient {
             protocol_version: "1".into(),
             timeout: Duration::from_secs(90),
         })
+        .with_credential_scrub(CredentialScrub::for_kind(ProviderKind::CursorCli))
     }
 
     /// Construct a client configured for the Hermes ACP server.
@@ -379,6 +394,7 @@ impl AcpStdioClient {
             protocol_version: "2024-11-05".into(),
             timeout: Duration::from_secs(30),
         })
+        .with_credential_scrub(CredentialScrub::for_kind(ProviderKind::Hermes))
     }
 
     /// Construct a client configured for the OpenClaw ACP bridge.
@@ -399,6 +415,7 @@ impl AcpStdioClient {
             protocol_version: "2024-11-05".into(),
             timeout: Duration::from_secs(30),
         })
+        .with_credential_scrub(CredentialScrub::for_kind(ProviderKind::OpenClaw))
     }
 
     // ---- Connection lifecycle ------------------------------------------------
@@ -436,6 +453,7 @@ impl AcpStdioClient {
         if let Some(ref cwd) = self.config.cwd {
             cmd.current_dir(cwd);
         }
+        process::apply_credential_scrub(&mut cmd, &self.credential_scrub);
         for (k, v) in &self.config.env {
             cmd.env(k, v);
         }
@@ -1147,6 +1165,7 @@ done
             reader_handle: None,
             stderr_handle: None,
             resource_limits: None,
+            credential_scrub: CredentialScrub::default(),
         };
 
         // Send responses out of order.
@@ -1182,6 +1201,7 @@ done
             reader_handle: None,
             stderr_handle: None,
             resource_limits: None,
+            credential_scrub: CredentialScrub::default(),
         };
 
         // Drop the sender to close the channel.
@@ -1211,6 +1231,7 @@ done
             reader_handle: None,
             stderr_handle: None,
             resource_limits: None,
+            credential_scrub: CredentialScrub::default(),
         };
 
         tx.send((1, serde_json::json!({"error": "auth failed"})))

@@ -20,13 +20,14 @@
 //! │ ModulationCell<P> │
 //! │ SafetyCell<P>     │
 //! │ ExperimentCell<P> │
+//! │ CodeIndexCell<P>  │
 //! │ AggregateCell     │
 //! └──────────────────┘
 //! ```
 
 use roko_compose::graph_cells::{
-    AggregateCell, EpisodesCell, ExperimentCell, KnowledgeCell, ModulationCell, PlaybookCell,
-    SafetyCell, TaskContextCell, cell_ids,
+    AggregateCell, CodeIndexCell, EpisodesCell, ExperimentCell, KnowledgeCell, ModulationCell,
+    PlaybookCell, SafetyCell, TaskContextCell, cell_ids,
 };
 use roko_graph::registry::{CellDescriptor, CellRegistry};
 
@@ -45,6 +46,7 @@ use roko_graph::registry::{CellDescriptor, CellRegistry};
 /// - `compose.modulation@1`
 /// - `compose.safety@1`
 /// - `compose.experiment@1`
+/// - `compose.code_index@1`
 /// - `compose.aggregate@1`
 pub fn register_compose_cells(registry: &mut CellRegistry) {
     let version = (1, 0, 0);
@@ -92,6 +94,12 @@ pub fn register_compose_cells(registry: &mut CellRegistry) {
     );
 
     registry.register_with_descriptor(
+        cell_ids::CODE_INDEX,
+        CellDescriptor::new(cell_ids::CODE_INDEX, version, None, None),
+        |_config| Box::new(CodeIndexCell::default()),
+    );
+
+    registry.register_with_descriptor(
         cell_ids::AGGREGATE,
         CellDescriptor::new(cell_ids::AGGREGATE, version, None, None),
         |_config| Box::new(AggregateCell),
@@ -101,14 +109,14 @@ pub fn register_compose_cells(registry: &mut CellRegistry) {
 /// Returns the count of compose cells registered by [`register_compose_cells`].
 ///
 /// Useful for assertions in integration tests.
-pub const COMPOSE_CELL_COUNT: usize = 8;
+pub const COMPOSE_CELL_COUNT: usize = 9;
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn register_compose_cells_registers_all_eight() {
+    fn register_compose_cells_registers_all_nine() {
         let mut registry = CellRegistry::new();
         register_compose_cells(&mut registry);
 

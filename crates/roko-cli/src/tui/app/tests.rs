@@ -126,25 +126,146 @@ fn shutdown_signal_stops_app() {
     assert!(!app.running);
 }
 
+fn publish_plan_set(hub: &crate::state_hub::SharedStateHub, plan_ids: &[&str]) {
+    hub.publish(roko_core::DashboardEvent::PlanSetLoaded {
+        plans: plan_ids
+            .iter()
+            .map(|plan_id| roko_core::dashboard_snapshot::PlanSetEntry {
+                plan_id: (*plan_id).to_string(),
+                title: (*plan_id).to_string(),
+                tasks_total: 2,
+                ..Default::default()
+            })
+            .collect(),
+    });
+}
+
+fn run_plan(hub: &crate::state_hub::SharedStateHub, plan_id: &str, success: bool) {
+    hub.publish(roko_core::DashboardEvent::PlanStarted {
+        plan_id: plan_id.to_string(),
+        tasks_total: 2,
+    });
+    hub.publish(roko_core::DashboardEvent::PlanCompleted {
+        plan_id: plan_id.to_string(),
+        success,
+    });
+}
+
 #[test]
-fn connected_app_exits_after_observed_plan_completion() {
+fn connected_app_exits_only_after_whole_plan_set_completes() {
     let dir = tempdir().unwrap();
     let hub = crate::state_hub::shared_state_hub();
     let mut app = App::new_connected(dir.path(), &hub).with_exit_on_plan_completion();
 
+    publish_plan_set(&hub, &["01-first", "02-second"]);
+    app.drain_snapshot_channel();
+    assert!(app.running);
+
+    // Between plans nothing is active; the set is not done, so stay open.
+    run_plan(&hub, "01-first", true);
+    app.drain_snapshot_channel();
+    assert!(app.running, "TUI exited in the gap between plans");
+
+    run_plan(&hub, "02-second", false);
+    app.drain_snapshot_channel();
+    assert!(!app.running);
+}
+
+#[test]
+fn connected_app_exits_when_blocked_plan_closes_the_set() {
+    let dir = tempdir().unwrap();
+    let hub = crate::state_hub::shared_state_hub();
+    let mut app = App::new_connected(dir.path(), &hub).with_exit_on_plan_completion();
+
+    publish_plan_set(&hub, &["01-first", "02-blocked"]);
+    run_plan(&hub, "01-first", false);
+    app.drain_snapshot_channel();
+    assert!(app.running);
+
+    // A plan blocked by a failed prerequisite never starts.
+    hub.publish(roko_core::DashboardEvent::PlanCompleted {
+        plan_id: "02-blocked".to_string(),
+        success: false,
+    });
+    app.drain_snapshot_channel();
+    assert!(!app.running);
+}
+
+#[test]
+fn connected_app_exits_when_run_reaches_terminal_outcome() {
+    let dir = tempdir().unwrap();
+    let hub = crate::state_hub::shared_state_hub();
+    let mut app = App::new_connected(dir.path(), &hub).with_exit_on_plan_completion();
+
+    publish_plan_set(&hub, &["01-first", "02-second"]);
     hub.publish(roko_core::DashboardEvent::PlanStarted {
-        plan_id: "live-plan".to_string(),
-        tasks_total: 0,
+        plan_id: "01-first".to_string(),
+        tasks_total: 2,
     });
     app.drain_snapshot_channel();
     assert!(app.running);
 
-    hub.publish(roko_core::DashboardEvent::PlanCompleted {
-        plan_id: "live-plan".to_string(),
-        success: true,
+    hub.publish(roko_core::DashboardEvent::RunCompleted {
+        outcome: "cancelled".to_string(),
+        duration_ms: 10,
+        cleanup_degraded: false,
+        surviving_agent_ids: Vec::new(),
+        surviving_agent_pids: Vec::new(),
     });
     app.drain_snapshot_channel();
     assert!(!app.running);
+}
+
+#[test]
+fn connected_app_does_not_treat_idle_plan_as_run_completion() {
+    let dir = tempdir().unwrap();
+    let hub = crate::state_hub::shared_state_hub();
+    let mut app = App::new_connected(dir.path(), &hub).with_exit_on_plan_completion();
+
+    // Without an announced plan set, one finished plan says nothing about
+    // whether more plans follow.
+    run_plan(&hub, "live-plan", true);
+    app.drain_snapshot_channel();
+    assert!(app.running);
+}
+
+#[test]
+fn connected_plan_set_keeps_run_clock_and_whole_set_totals_between_plans() {
+    let dir = tempdir().unwrap();
+    let hub = crate::state_hub::shared_state_hub();
+    let mut app = App::new_connected(dir.path(), &hub).with_exit_on_plan_completion();
+
+    publish_plan_set(&hub, &["02-second", "01-first", "03-third"]);
+    hub.publish(roko_core::DashboardEvent::PlanStarted {
+        plan_id: "02-second".to_string(),
+        tasks_total: 2,
+    });
+    app.drain_snapshot_channel();
+    let started = app.tui_state.run_started.expect("run clock started");
+
+    hub.publish(roko_core::DashboardEvent::PlanCompleted {
+        plan_id: "02-second".to_string(),
+        success: true,
+    });
+    app.drain_snapshot_channel();
+
+    assert!(app.tui_state.plan_set_running);
+    assert_eq!(app.tui_state.run_started, Some(started), "run clock reset");
+    let plans = app
+        .tui_state
+        .plans
+        .iter()
+        .map(|plan| (plan.id.as_str(), plan.status))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        plans,
+        vec![
+            ("02-second", crate::tui::state::PlanPhase::Done),
+            ("01-first", crate::tui::state::PlanPhase::Pending),
+            ("03-third", crate::tui::state::PlanPhase::Pending),
+        ]
+    );
+    assert_eq!(app.tui_state.task_counts(), (0, 6));
 }
 
 #[test]
@@ -661,6 +782,8 @@ fn dashboard_subtab_keybindings_include_learning_and_procs() {
 
     app.handle_key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE));
     assert_eq!(app.tui_state.plan_detail_tab, 3); // switched to Errors
+    // The dashboard's right panel follows the same keys (`e:Verify`).
+    assert_eq!(app.tui_state.dashboard_sub_tab, 3);
 
     app.handle_key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE));
     assert_eq!(app.tui_state.plan_detail_tab, 4); // switched to Git

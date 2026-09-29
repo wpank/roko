@@ -34,8 +34,10 @@ jobs:
   deploy:
     name: Deploy
     runs-on: ubuntu-latest
-    # Only deploy if the FLY_API_TOKEN secret is set.
-    if: ${{ github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' }}
+    # Held off until bug-7eef96 (a Privy JWT grants admin on publicly bound servers) is fixed:
+    # otherwise the first push to main would ship that server. To re-enable after the fix,
+    # set the repository variable ALLOW_PUBLIC_DEPLOY=true.
+    if: ${{ vars.ALLOW_PUBLIC_DEPLOY == 'true' && (github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main') }}
     steps:
       - uses: actions/checkout@v4
 

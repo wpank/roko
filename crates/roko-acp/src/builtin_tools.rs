@@ -518,15 +518,13 @@ pub fn command_tool_ceiling(command: &str) -> Option<ToolPermission> {
         "status" | "doctor" | "config" | "models" | "learn" | "knowledge" | "explain"
         | "replay" | "prd-list" | "prd-status" | "plan-list" | "plan-show" | "agents"
         | "learn-router" | "learn-episodes" | "knowledge-stats" | "index" | "analyze"
-        | "affect" | "dream-status" => {
-            Some(ToolPermission {
-                read: true,
-                write: false,
-                exec: false,
-                git: false,
-                network: false,
-            })
-        }
+        | "affect" | "dream-status" => Some(ToolPermission {
+            read: true,
+            write: false,
+            exec: false,
+            git: false,
+            network: false,
+        }),
         // Read + write: PRD/plan editing commands.
         "enhance-prd" | "prd-draft" | "prd-plan" | "prd-consolidate" | "plan-generate"
         | "plan-regenerate" => Some(ToolPermission {
@@ -1065,10 +1063,7 @@ async fn exec_web_fetch(args: &serde_json::Value) -> Result<String, String> {
 /// text block suitable for injection into an agent's context window.
 async fn exec_retrieve(args: &serde_json::Value, workdir: &Path) -> Result<String, String> {
     let query = require_str(args, "query")?;
-    let limit = args
-        .get("limit")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(10) as usize;
+    let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
     let source = opt_str(args, "source").unwrap_or_else(|| "all".to_string());
 
     let mut sections: Vec<String> = Vec::new();
@@ -1109,8 +1104,7 @@ async fn exec_retrieve(args: &serde_json::Value, workdir: &Path) -> Result<Strin
                 .take(limit)
                 .collect();
             if !matches.is_empty() {
-                let mut block =
-                    format!("## Episode History ({} match(es))\n\n", matches.len());
+                let mut block = format!("## Episode History ({} match(es))\n\n", matches.len());
                 for line in &matches {
                     // Show a trimmed version — full lines may be very long JSON.
                     let trimmed = if line.len() > 400 {

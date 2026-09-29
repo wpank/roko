@@ -307,6 +307,10 @@ impl EfficiencyTracker {
             .await
             .with_context(|| format!("open {}", self.path.display()))?;
         file.write_all(line.as_bytes()).await?;
+        // tokio::fs::File hands writes to the blocking pool; without an explicit
+        // flush the write can still be in flight when this returns and the file is
+        // dropped, so an immediate reader sees an empty file (the N-9 flake).
+        file.flush().await?;
         Ok(())
     }
 }
@@ -2026,6 +2030,7 @@ fn build_agent(
             working_dir: Some(working_dir.to_path_buf()),
             provider_semaphores: None,
             env: Vec::new(),
+            env_passthrough: Vec::new(),
             extra_args: Vec::new(),
             effort: None,
             bare_mode: roko_config.agent.bare_mode,
@@ -2042,6 +2047,7 @@ fn build_agent(
             cancel_token: None,
             tool_audit: None,
             max_turns: None,
+            live_output: None,
         },
     )
     .with_context(|| format!("create agent for template '{}'", template.name))
@@ -3502,7 +3508,7 @@ printf '%s\n' '{"type":"content_block_delta","delta":{"text":"template-ok"}}'
         let provider_health =
             std::fs::read_to_string(workdir.join(".roko/learn/provider-health.json"))
                 .expect("read provider health");
-        assert!(provider_health.contains("template-cli"));
+        assert!(provider_health.contains("template_cli"));
 
         let cascade_router =
             std::fs::read_to_string(workdir.join(".roko/learn/cascade-router.json"))

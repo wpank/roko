@@ -232,6 +232,7 @@ fn init_creates_workspace_artifacts() {
     let tmp = TempDir::new().expect("tempdir");
     Command::cargo_bin("roko")
         .unwrap()
+        .current_dir(tmp.path())
         .arg("init")
         .arg(tmp.path())
         .assert()
@@ -467,6 +468,7 @@ fn doctor_works_offline() {
     // empty key, so we accept both exit 0 (all ok) and exit 1 (warnings only).
     let assert = Command::cargo_bin("roko")
         .unwrap()
+        .current_dir(tmp.path())
         .args(["doctor", "--workdir"])
         .arg(tmp.path())
         .assert()

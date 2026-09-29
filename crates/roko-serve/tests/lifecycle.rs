@@ -22,6 +22,13 @@ struct LifecycleTestRuntime;
 
 #[async_trait::async_trait]
 impl CliRuntime for LifecycleTestRuntime {
+    async fn list_plans(
+        &self,
+        _workdir: &std::path::Path,
+    ) -> anyhow::Result<Vec<roko_serve::plan_types::PlanSummaryDto>> {
+        Ok(Vec::new())
+    }
+
     async fn run_once(
         &self,
         _workdir: &std::path::Path,

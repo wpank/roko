@@ -43,6 +43,7 @@ use crate::SafetyLayer;
 use crate::dispatcher::{HandlerResolver, ToolDispatcher};
 use crate::gemini::GeminiAdapter;
 use crate::immune_boundary::{safe_provider_agent_identity, wrap_provider_agent};
+use crate::live_output::LiveOutput;
 use crate::mcp::McpRuntime;
 use crate::mock::MockAgent;
 use crate::process::ResourceLimits;
@@ -51,6 +52,7 @@ use crate::safety::contract::AgentContract;
 use crate::{Agent, ExecAgent};
 use indexmap::IndexMap;
 use roko_core::agent::{ProviderKind, resolve_model};
+use roko_core::child_env::CredentialScrub;
 #[cfg(test)]
 use roko_core::config::DEFAULT_TTFT_TIMEOUT_MS;
 use roko_core::config::schema::RokoConfig;
@@ -218,6 +220,8 @@ pub fn create_agent_for_model(
             mock_agent,
             &requested_agent_id,
             options.effective_immune_root(),
+            options.working_dir.as_deref(),
+            options.live_output.clone(),
         ));
     }
     let safety_layer = options
@@ -282,12 +286,20 @@ pub fn create_agent_for_model(
                 "no provider found — falling back to ExecAgent (no tool support)"
             );
 
+            let env_passthrough = if options.env_passthrough.is_empty() {
+                &config.agent.env_passthrough
+            } else {
+                &options.env_passthrough
+            };
             let mut agent = ExecAgent::new(
                 legacy_command.unwrap_or("cat"),
                 options.extra_args.clone(),
                 safety_layer,
             )
-            .with_timeout_ms(options.effective_timeout_ms(None));
+            .with_timeout_ms(options.effective_timeout_ms(None))
+            .with_credential_scrub(
+                CredentialScrub::default().keep_all(env_passthrough.iter().cloned()),
+            );
             if !options.name.is_empty() {
                 agent = agent.with_name(options.name.clone());
             }
@@ -298,6 +310,8 @@ pub fn create_agent_for_model(
                 Box::new(agent) as Box<dyn Agent>,
                 &requested_agent_id,
                 options.effective_immune_root(),
+                options.working_dir.as_deref(),
+                options.live_output.clone(),
             ));
         }
     };
@@ -322,6 +336,8 @@ pub fn create_agent_for_model(
             mock_agent,
             &requested_agent_id,
             options.effective_immune_root(),
+            options.working_dir.as_deref(),
+            options.live_output.clone(),
         ));
     }
 
@@ -358,6 +374,9 @@ pub fn create_agent_for_model(
     {
         options.gemini_safety_settings = config.gemini.safety_settings.clone();
     }
+    if options.env_passthrough.is_empty() {
+        options.env_passthrough = config.agent.env_passthrough.clone();
+    }
     let agent = with_temperament(Some(effective_temperament), || {
         with_safety_layer(Some(safety_layer), || {
             adapter.create_agent(&provider_config, &profile, &options)
@@ -375,6 +394,8 @@ pub fn create_agent_for_model(
         agent,
         &effective_agent_id,
         options.effective_immune_root(),
+        options.working_dir.as_deref(),
+        options.live_output.clone(),
     ))
 }
 
@@ -692,6 +713,18 @@ pub(crate) fn configured_resource_limits(
     Ok(limits)
 }
 
+/// Which inherited credentials a CLI subprocess for `provider` loses: those
+/// of [`CredentialScrub::for_kind`], except the provider's own `api_key_env`
+/// and `options.env_passthrough`.
+pub(crate) fn provider_credential_scrub(
+    provider: &ProviderConfig,
+    options: &AgentOptions,
+) -> CredentialScrub {
+    CredentialScrub::for_kind(provider.kind)
+        .keep_all(provider.api_key_env.iter().cloned())
+        .keep_all(options.env_passthrough.iter().cloned())
+}
+
 /// Model-visible local tool definitions paired with executable handlers.
 ///
 /// This is the dependency-neutral handoff used by embedding surfaces such as
@@ -790,6 +823,10 @@ pub struct AgentOptions {
     pub working_dir: Option<PathBuf>,
     pub provider_semaphores: Option<Arc<ProviderSemaphores>>,
     pub env: Vec<(String, String)>,
+    /// Inherited variables a provider CLI subprocess keeps even though roko
+    /// would strip them: exact names or `PREFIX*` patterns. Filled from
+    /// `[agent] env_passthrough` by [`create_agent_for_model`] when empty.
+    pub env_passthrough: Vec<String>,
     pub extra_args: Vec<String>,
     pub effort: Option<String>,
     pub bare_mode: bool,
@@ -865,6 +902,14 @@ pub struct AgentOptions {
     /// When set, the tool dispatcher records scrubbed admit/result lines
     /// to `.roko/tool_audit.jsonl` for every executed tool call.
     pub tool_audit: Option<Arc<roko_fs::tool_audit::ScrubAuditAdapter>>,
+    /// Live output channel for forwarding provider events before screening.
+    ///
+    /// When set and the provider supports streaming, the immune boundary taps
+    /// the inner stream and emits [`LiveAgentEvent::ToolStep`] for every tool
+    /// call, with paths inside `working_dir` relative to it. Text, reasoning,
+    /// and result events are additionally forwarded as
+    /// [`LiveAgentEvent::Unscreened`] when `trusted` is set.
+    pub live_output: Option<LiveOutput>,
 }
 
 impl std::fmt::Debug for AgentOptions {
@@ -1011,6 +1056,12 @@ pub fn map_provider_error(
     let env_var = api_key_env.unwrap_or("(none)");
     let url = base_url.unwrap_or("(unknown)");
 
+    // Usage-window refusals keep the provider's own words (and reset time) so
+    // callers can still detect them and route around the provider.
+    if error_classify::detect_provider_exhaustion(&err_text).is_some() {
+        return format!("{err_text} (provider '{provider_name}')");
+    }
+
     if err_lower.contains("401")
         || err_lower.contains("authentication_error")
         || err_lower.contains("unauthorized")
@@ -1107,6 +1158,16 @@ pub enum ProviderError {
     /// retrying and the provider should be skipped for the remainder of the
     /// run.
     InsufficientCredits,
+    /// Subscription or usage window exhausted (Claude CLI "You've hit your
+    /// session limit", Codex "You've hit your usage limit", a 429 with an
+    /// hour-long `Retry-After`). Retrying this provider before the reset
+    /// cannot succeed; route to another provider instead.
+    ProviderExhausted {
+        /// When the provider says the window resets (unix ms), if known.
+        resets_at_ms: Option<i64>,
+        /// Tail of the provider's own message.
+        message: String,
+    },
     Timeout,
     ServerError(u16),
     ContentPolicy,
@@ -1125,6 +1186,11 @@ impl fmt::Display for ProviderError {
             Self::AuthFailure => f.write_str("authentication failed"),
             Self::InsufficientCredits => f.write_str(
                 "billing error: insufficient credits or quota exceeded — will not retry",
+            ),
+            Self::ProviderExhausted { message, .. } => write!(
+                f,
+                "{}: {message}",
+                error_classify::PROVIDER_EXHAUSTED_MARKER
             ),
             Self::Timeout => f.write_str("request timed out"),
             Self::ServerError(status) => write!(f, "server error {status}"),
@@ -1162,6 +1228,8 @@ pub fn should_retry(error: &ProviderError) -> RetryAction {
         // Billing errors (insufficient credits, quota exceeded, payment
         // required) are permanent for this run — retrying would waste time.
         ProviderError::InsufficientCredits => RetryAction::Skip,
+        // The same provider stays refused until its usage window resets.
+        ProviderError::ProviderExhausted { .. } => RetryAction::TryFallback,
         ProviderError::Timeout => RetryAction::TryFallback,
         ProviderError::ServerError(_) => RetryAction::TryFallback,
         ProviderError::ContentPolicy => RetryAction::Skip,

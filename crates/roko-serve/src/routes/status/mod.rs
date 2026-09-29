@@ -450,6 +450,7 @@ mod tests {
         let plan_handle = PlanHandle {
             id: "plan-1".into(),
             plan_dir: dir.path().join(".roko/plans/plan-1"),
+            members: vec!["plan-1".into()],
             status: OperationStatus::Running,
             handle: tokio::spawn(async {}),
             cancel: roko_runtime::cancel::CancelToken::new(),
@@ -650,7 +651,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn gate_history_returns_500_for_invalid_jsonl() {
+    async fn gate_history_returns_404_for_corrupt_signal_log() {
+        // RuntimeFeedbackProjection::load swallows signal-log parse errors
+        // (resilient-read design) and returns an empty projection. The
+        // gate_history handler therefore sees zero results and returns 404
+        // rather than 500.
         let (dir, state) = test_state();
         let signals = dir.path().join(".roko").join("signals.jsonl");
         tokio::fs::create_dir_all(signals.parent().expect("signals parent"))
@@ -662,9 +667,11 @@ mod tests {
 
         let err = gates::gate_history(State(state), Path("compile".into()))
             .await
-            .expect_err("corrupt signals should fail");
+            .expect_err("no gate history should return an error");
 
-        assert_eq!(err.status, axum::http::StatusCode::INTERNAL_SERVER_ERROR);
+        // Corrupt signals are silently skipped; the endpoint returns not_found
+        // because there are no gate results for the named gate.
+        assert_eq!(err.status, axum::http::StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]

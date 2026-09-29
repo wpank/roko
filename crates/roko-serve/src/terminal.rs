@@ -1218,6 +1218,11 @@ mod tests {
             "PTY output should contain command output, got {output:?}"
         );
 
+        // Give the background exit-event recorder a moment to register the
+        // Exited event after the PTY closes.  On macOS, the waitpid() polling
+        // thread may not run immediately after the reader gets EOF.
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
         manager.destroy_session_if_sess_generation(&id, sess_gen);
         let events = manager.command_events(&id);
 

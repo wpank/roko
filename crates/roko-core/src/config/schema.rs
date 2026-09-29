@@ -1257,11 +1257,12 @@ impl RokoConfig {
             c.gates.impact_max_reverse_dependents
         );
         let _ = writeln!(out, "impact_max_targets = {}", c.gates.impact_max_targets);
+        let _ = writeln!(out, "compile_concurrency = {}", c.gates.compile_concurrency);
         let _ = writeln!(
             out,
-            "compile_concurrency = {}\n",
-            c.gates.compile_concurrency
+            "# Gate commands inherit only allowlisted variables; add more (names or PREFIX*):"
         );
+        let _ = writeln!(out, "# env_passthrough = [\"DATABASE_URL\"]\n");
     }
     fn write_example_routing(out: &mut String, c: &Self) {
         let _ = writeln!(out, "# -- Model routing --");
@@ -1302,7 +1303,8 @@ impl RokoConfig {
             let _ = writeln!(out, "strategist = {}", band.strategist);
             let _ = writeln!(out, "reviewers = {}", band.reviewers);
             let _ = writeln!(out, "reviewer_mode = \"{}\"", band.reviewer_mode.label());
-            let _ = writeln!(out, "max_iterations = {}\n", band.max_iterations);
+            let _ = writeln!(out, "max_iterations = {}", band.max_iterations);
+            let _ = writeln!(out, "max_turns = {}\n", band.max_turns);
         }
     }
     fn write_example_budget(out: &mut String, c: &Self) {
@@ -1335,6 +1337,11 @@ impl RokoConfig {
             out,
             "max_parallel_plans = {}",
             c.conductor.max_parallel_plans
+        );
+        let _ = writeln!(
+            out,
+            "plan_failure_policy = \"{}\"",
+            c.conductor.plan_failure_policy.as_str()
         );
         let _ = writeln!(out, "parallel_enabled = {}", c.conductor.parallel_enabled);
         let _ = writeln!(out, "express_mode = {}", c.conductor.express_mode);
@@ -1682,14 +1689,48 @@ pub(crate) fn validate_references(config: &RokoConfig) -> Vec<ValidationWarning>
 
 // ---- Conductor (not extracted, stays in schema) --------------------------
 
+/// What a Graph plan run does when one of its tasks fails.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PlanFailurePolicy {
+    /// Skip only the failed task's dependants. Tasks that do not depend on it
+    /// still run, and the plan reports failure once every task has settled.
+    #[default]
+    SkipFailed,
+    /// Start no further task after the first failure; running tasks finish.
+    FailFast,
+}
+
+impl PlanFailurePolicy {
+    /// The `roko.toml` / `tasks.toml` spelling.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::SkipFailed => "skip_failed",
+            Self::FailFast => "fail_fast",
+        }
+    }
+}
+
 /// Conductor (meta-orchestrator) settings.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ConductorConfig {
+    /// Most plan tasks (each one agent) executing at once across a whole
+    /// Graph plan run, whatever each plan's own `max_parallel` allows.
     #[serde(default = "default_max_agents")]
     pub max_agents: usize,
+    /// Most plans of a selected plan set running at once (default 1, one
+    /// plan at a time). Plans whose footprints overlap never run together.
+    /// `roko plan run --max-parallel-plans` overrides it for one run.
     #[serde(default = "default_max_parallel_plans")]
     pub max_parallel_plans: usize,
+    /// What a Graph plan run does when one of its tasks fails. A plan's
+    /// `[meta] failure_policy` overrides it.
+    #[serde(default)]
+    pub plan_failure_policy: PlanFailurePolicy,
+    /// Not read by the Graph engine: `max_parallel_plans` alone sets how
+    /// many plans run at once.
     #[serde(default)]
     pub parallel_enabled: bool,
     #[serde(default)]
@@ -1789,6 +1830,7 @@ impl Default for ConductorConfig {
         Self {
             max_agents: default_max_agents(),
             max_parallel_plans: default_max_parallel_plans(),
+            plan_failure_policy: PlanFailurePolicy::default(),
             parallel_enabled: false,
             express_mode: false,
             max_auto_fix_attempts: default_max_auto_fix(),
@@ -2470,19 +2512,17 @@ pub struct CoreRunnerConfig {
     /// connection timeout). Defaults to 5.
     #[serde(default = "CoreRunnerConfig::default_dispatch_max_retries")]
     pub dispatch_max_retries: u32,
-    /// Maximum number of warm (pre-spawned) agent slots per role.
+    /// Capacity per role of the dispatcher's warm-pool container.
     ///
-    /// The warm pool keeps pre-spawned agent handles alive so the next
-    /// phase's agent can be promoted in <100 ms instead of a cold 5-15 s
-    /// subprocess spawn. Setting this to 0 disables warm-pool pre-spawning.
-    /// Defaults to 2 (one reviewer slot + one implementer slot).
+    /// No runtime effect today: no provider process is pre-spawned or reused,
+    /// and no dispatch path takes from the pool, so every agent dispatch is a
+    /// cold start. Defaults to 2.
     #[serde(default = "CoreRunnerConfig::default_warm_pool_size")]
     pub warm_pool_size: usize,
-    /// Maximum idle lifetime for a pre-spawned warm agent, in seconds.
+    /// Idle lifetime of a warm-pool entry, in seconds.
     ///
-    /// Agents that have been sitting in the pool longer than this are evicted
-    /// on the next housekeeping tick. Prevents stale processes from lingering
-    /// between long inter-task gaps. Defaults to 300 s (5 minutes).
+    /// No runtime effect today (see [`Self::warm_pool_size`]). Defaults to
+    /// 300 s (5 minutes).
     #[serde(default = "CoreRunnerConfig::default_warm_pool_idle_timeout_secs")]
     pub warm_pool_idle_timeout_secs: u64,
     /// When `true`, the runner writes the full assembled system prompt to

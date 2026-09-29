@@ -98,6 +98,87 @@ impl TaskExecutionSpec {
     }
 }
 
+/// Signal tag stamped on every live plan-task output with its verified gate
+/// outcome (see [`TaskGateVerdict`]).
+///
+/// The tag travels with the output into the Activity checkpoint, so resume,
+/// dashboards, and checkpoint extensions all read the same durable verdict.
+pub const TASK_GATE_VERDICT_TAG: &str = "roko.gate.verdict";
+
+/// Verified gate outcome of one plan task, carried on its output signals.
+///
+/// A task output is only a pass when its verdict says so: absent or
+/// non-replayable verdicts must never be laundered into success.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskGateVerdict {
+    /// Every authored `[[task.verify]]` step passed.
+    Passed,
+    /// The task declares no verify steps; only the provider result is known.
+    Unverified,
+    /// Verification failed but a non-deterministic judge/review cap accepted
+    /// the result anyway. Never a pass: resume re-runs it and dashboards show
+    /// it apart from passed tasks. Deterministic authored verify steps never
+    /// produce this verdict.
+    ForcedAccept,
+}
+
+impl TaskGateVerdict {
+    /// Stable tag value.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Passed => "passed",
+            Self::Unverified => "unverified",
+            Self::ForcedAccept => "forced_accept",
+        }
+    }
+
+    /// Parse a tag value; unknown values return `None`.
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "passed" => Some(Self::Passed),
+            "unverified" => Some(Self::Unverified),
+            "forced_accept" => Some(Self::ForcedAccept),
+            _ => None,
+        }
+    }
+
+    /// Whether a recorded output with this verdict may be replayed as a
+    /// completed node on resume.
+    #[must_use]
+    pub const fn is_replayable(self) -> bool {
+        !matches!(self, Self::ForcedAccept)
+    }
+
+    /// Read the verdict stamped on a node's outputs.
+    ///
+    /// The least trustworthy verdict wins when signals disagree, so a single
+    /// forced-accept output can never be hidden behind a passing sibling.
+    #[must_use]
+    pub fn from_signals(signals: &[Signal]) -> Option<Self> {
+        signals
+            .iter()
+            .filter_map(|signal| signal.tag(TASK_GATE_VERDICT_TAG).and_then(Self::parse))
+            .max_by_key(|verdict| match verdict {
+                Self::Passed => 0,
+                Self::Unverified => 1,
+                Self::ForcedAccept => 2,
+            })
+    }
+
+    /// Stamp this verdict on every signal and refresh their content ids.
+    pub fn stamp(self, signals: &mut [Signal]) {
+        for signal in signals {
+            signal
+                .tags
+                .insert(TASK_GATE_VERDICT_TAG.to_string(), self.as_str().to_string());
+            signal.id = signal.content_hash();
+        }
+    }
+}
+
 /// Runtime seam for executing a converted plan task.
 #[async_trait::async_trait]
 pub trait TaskDispatcher: Send + Sync {
@@ -579,7 +660,19 @@ impl Cell for TaskExecutorCell {
                 loop {
                     match dispatcher.dispatch(&self.spec, input.clone(), ctx).await {
                         Ok(output) => return Ok(output),
-                        Err(error) if retry < self.spec.max_retries => {
+                        // A non-retryable gateway error (e.g. every candidate
+                        // provider is out of usage) fails identically on an
+                        // immediate retry, so surface it at once.
+                        Err(error)
+                            if retry < self.spec.max_retries
+                                && !matches!(
+                                    error,
+                                    roko_core::error::RokoError::Gateway {
+                                        retryable: false,
+                                        ..
+                                    }
+                                ) =>
+                        {
                             retry = retry.saturating_add(1);
                             tracing::warn!(
                                 plan = %self.spec.plan_id,
@@ -731,6 +824,47 @@ task_def_json = "{}"
 
         assert_eq!(dispatcher.calls.load(Ordering::SeqCst), 2);
         assert_eq!(output[0].body.as_text().expect("text"), "retry-output");
+    }
+
+    #[derive(Default)]
+    struct ExhaustedDispatcher {
+        calls: AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl TaskDispatcher for ExhaustedDispatcher {
+        async fn dispatch(
+            &self,
+            _spec: &TaskExecutionSpec,
+            _input: Vec<Signal>,
+            _ctx: &CellContext,
+        ) -> Result<Vec<Signal>> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Err(roko_core::error::RokoError::Gateway {
+                category: "provider_exhausted",
+                retryable: false,
+                message: "every candidate provider is out of usage".to_string(),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn non_retryable_gateway_error_is_not_retried() {
+        let dispatcher = Arc::new(ExhaustedDispatcher::default());
+        let cell = TaskExecutorCell::live(config(), dispatcher.clone());
+        let error = cell
+            .execute(Vec::new(), &CellContext::new())
+            .await
+            .expect_err("exhausted providers fail the task");
+
+        assert_eq!(dispatcher.calls.load(Ordering::SeqCst), 1);
+        assert!(matches!(
+            error,
+            roko_core::error::RokoError::Gateway {
+                category: "provider_exhausted",
+                ..
+            }
+        ));
     }
 
     #[tokio::test]
@@ -930,5 +1064,58 @@ task_def_json = "{}"
         assert_eq!(truncate_utf8(s, 4), "caf");
         // Cutting at 5 keeps the whole string.
         assert_eq!(truncate_utf8(s, 5), s);
+    }
+
+    // ── Gate verdict tag ────────────────────────────────────────────────
+
+    #[test]
+    fn gate_verdict_stamp_round_trips_and_refreshes_ids() {
+        let mut signals = vec![
+            Signal::builder(Kind::AgentOutput)
+                .body(Body::text("done"))
+                .build(),
+        ];
+        let before = signals[0].id;
+        TaskGateVerdict::Passed.stamp(&mut signals);
+        assert_eq!(
+            signals[0].tag(TASK_GATE_VERDICT_TAG),
+            Some(TaskGateVerdict::Passed.as_str())
+        );
+        assert_ne!(signals[0].id, before);
+        assert_eq!(signals[0].id, signals[0].content_hash());
+        assert_eq!(
+            TaskGateVerdict::from_signals(&signals),
+            Some(TaskGateVerdict::Passed)
+        );
+    }
+
+    #[test]
+    fn gate_verdict_least_trustworthy_signal_wins() {
+        let mut passed = vec![Signal::builder(Kind::AgentOutput).build()];
+        TaskGateVerdict::Passed.stamp(&mut passed);
+        let mut forced = vec![
+            Signal::builder(Kind::AgentOutput)
+                .body(Body::text("accepted"))
+                .build(),
+        ];
+        TaskGateVerdict::ForcedAccept.stamp(&mut forced);
+        let mixed: Vec<Signal> = passed.into_iter().chain(forced).collect();
+        let verdict = TaskGateVerdict::from_signals(&mixed).expect("verdict");
+        assert_eq!(verdict, TaskGateVerdict::ForcedAccept);
+        assert!(!verdict.is_replayable());
+    }
+
+    #[test]
+    fn gate_verdict_absent_or_unknown_is_none() {
+        let untagged = vec![Signal::builder(Kind::AgentOutput).build()];
+        assert_eq!(TaskGateVerdict::from_signals(&untagged), None);
+        let unknown = vec![
+            Signal::builder(Kind::AgentOutput)
+                .tag(TASK_GATE_VERDICT_TAG, "maybe")
+                .build(),
+        ];
+        assert_eq!(TaskGateVerdict::from_signals(&unknown), None);
+        assert!(TaskGateVerdict::Passed.is_replayable());
+        assert!(TaskGateVerdict::Unverified.is_replayable());
     }
 }

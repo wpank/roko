@@ -31,6 +31,7 @@
 //! All non-matching lines (compiler messages, `group-complete`, etc.) are
 //! silently ignored.
 
+use crate::gate_env::inherit_gate_env;
 use async_trait::async_trait;
 use roko_core::{Context, Signal, Verdict, Verify};
 use serde::{Deserialize, Serialize};
@@ -428,6 +429,7 @@ async fn run_cargo_bench(
     cmd.arg("json");
 
     cmd.current_dir(working_dir);
+    inherit_gate_env(&mut cmd, &[]);
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
     cmd.kill_on_drop(true);

@@ -227,6 +227,9 @@ pub enum TaskStatus {
     Active,
     Done,
     Failed,
+    /// Completed although its verification failed (a forced accept). Its own
+    /// state: neither passed nor failed.
+    AcceptedWithFailures,
     Blocked,
 }
 
@@ -236,9 +239,17 @@ impl TaskStatus {
         matches!(self, Self::Active)
     }
 
+    /// Whether the task finished and was accepted: passed, or accepted with
+    /// failures (plan progress counts both, as the engine does). Use
+    /// [`Self::is_accepted_with_failures`] to tell them apart.
     #[must_use]
     pub const fn is_done(self) -> bool {
-        matches!(self, Self::Done)
+        matches!(self, Self::Done | Self::AcceptedWithFailures)
+    }
+
+    #[must_use]
+    pub const fn is_accepted_with_failures(self) -> bool {
+        matches!(self, Self::AcceptedWithFailures)
     }
 
     #[must_use]
@@ -253,6 +264,7 @@ impl TaskStatus {
             Self::Active => "active",
             Self::Done => "done",
             Self::Failed => "failed",
+            Self::AcceptedWithFailures => "accepted with failures",
             Self::Blocked => "blocked",
         }
     }
@@ -295,6 +307,9 @@ impl From<&str> for TaskStatus {
             | "merging"
             | "commit" => Self::Active,
             "failed" | "error" | "gate_rejected" | "gate-rejected" => Self::Failed,
+            roko_core::dashboard_snapshot::TASK_OUTCOME_ACCEPTED_WITH_FAILURES
+            | "accepted-with-failures"
+            | "accepted with failures" => Self::AcceptedWithFailures,
             "blocked" => Self::Blocked,
             _ => Self::Pending,
         }
@@ -506,6 +521,12 @@ pub struct AgentOutputHistory {
     next_seq: HashMap<String, u64>,
     /// Total records evicted across all agents.
     pub evicted: u64,
+    /// Per-agent set of sequence numbers for live-unscreened non-tool records.
+    ///
+    /// These records are pending replacement by the settled screened
+    /// transcript. They are removed (while preserving tool steps) when
+    /// [`settle_screened_transcript`] is called.
+    live_unscreened_seqs: HashMap<String, HashSet<u64>>,
 }
 
 impl AgentOutputHistory {
@@ -549,11 +570,10 @@ impl AgentOutputHistory {
             // following ToolResult with the same tool_id to keep pairs intact.
             if evicted_record.kind == OutputRecordKind::ToolCall {
                 if let Some(evicted_id) = evicted_record.tool_id.as_deref() {
-                    if deque
-                        .front()
-                        .is_some_and(|r| r.kind == OutputRecordKind::ToolResult
-                            && r.tool_id.as_deref() == Some(evicted_id))
-                    {
+                    if deque.front().is_some_and(|r| {
+                        r.kind == OutputRecordKind::ToolResult
+                            && r.tool_id.as_deref() == Some(evicted_id)
+                    }) {
                         if let Some(paired_result) = deque.pop_front() {
                             self.oldest_seq
                                 .insert(agent_id.to_string(), paired_result.seq + 1);
@@ -569,11 +589,10 @@ impl AgentOutputHistory {
             // it too so the viewer never sees a ToolCall without its result.
             if evicted_record.kind == OutputRecordKind::ToolResult {
                 if let Some(evicted_id) = evicted_record.tool_id.as_deref() {
-                    if deque
-                        .front()
-                        .is_some_and(|r| r.kind == OutputRecordKind::ToolCall
-                            && r.tool_id.as_deref() == Some(evicted_id))
-                    {
+                    if deque.front().is_some_and(|r| {
+                        r.kind == OutputRecordKind::ToolCall
+                            && r.tool_id.as_deref() == Some(evicted_id)
+                    }) {
                         // This means a ToolCall follows its result — abnormal
                         // ordering; evict the orphaned call.
                         if let Some(orphaned_call) = deque.pop_front() {
@@ -702,6 +721,10 @@ impl AgentOutputHistory {
     /// Convert raw output lines into records and populate the history for
     /// an agent. Used to backfill from legacy `AgentRow::output_lines` or
     /// `task_output_tails` during snapshot ingestion.
+    ///
+    /// Lines parsed as live-unscreened non-tool records are tracked in
+    /// `live_unscreened_seqs` so they can be dropped when the screened
+    /// transcript arrives via [`settle_screened_transcript`].
     pub fn ingest_lines(&mut self, agent_id: &str, lines: &[String], role: &str) {
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -709,11 +732,62 @@ impl AgentOutputHistory {
             .as_millis() as u64;
 
         for line in lines {
-            let (kind, tool_id, tool_name) = classify_output_line(line);
+            let (kind, tool_id, tool_name, is_live_unscreened) = classify_output_line(line);
+            // Assign the sequence number before push so we can track it.
+            let seq = *self.next_seq.entry(agent_id.to_string()).or_insert(1);
             self.push(
                 agent_id,
                 AgentOutputRecord {
-                    seq: 0, // assigned by push()
+                    seq: 0, // overwritten by push()
+                    timestamp_ms: now_ms,
+                    role: role.to_string(),
+                    kind,
+                    text: line.clone(),
+                    redacted: false,
+                    tool_id,
+                    tool_name,
+                },
+            );
+            if is_live_unscreened {
+                self.live_unscreened_seqs
+                    .entry(agent_id.to_string())
+                    .or_insert_with(HashSet::new)
+                    .insert(seq);
+            }
+        }
+    }
+
+    /// Replace live-unscreened non-tool records for `agent_id` with the
+    /// settled screened transcript.
+    ///
+    /// Called when the first non-`live` record arrives for an agent (or when
+    /// `agent_completed` is signalled). Drops all previously tracked
+    /// unscreened records from the deque while preserving every tool step.
+    /// The new `settled_lines` are then ingested as normal screened records.
+    pub fn settle_screened_transcript(
+        &mut self,
+        agent_id: &str,
+        settled_lines: &[String],
+        role: &str,
+    ) {
+        // Remove the unscreened non-tool records.
+        if let Some(unscreened) = self.live_unscreened_seqs.remove(agent_id) {
+            if let Some(deque) = self.records.get_mut(agent_id) {
+                deque.retain(|r| !unscreened.contains(&r.seq));
+            }
+        }
+
+        // Ingest the settled, screened lines.
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        for line in settled_lines {
+            let (kind, tool_id, tool_name, _) = classify_output_line(line);
+            self.push(
+                agent_id,
+                AgentOutputRecord {
+                    seq: 0,
                     timestamp_ms: now_ms,
                     role: role.to_string(),
                     kind,
@@ -729,17 +803,38 @@ impl AgentOutputHistory {
 
 /// Classify a raw output line into an `OutputRecordKind` with optional
 /// tool metadata, based on the `roko.stream.v1` protocol or text heuristics.
-fn classify_output_line(line: &str) -> (OutputRecordKind, Option<String>, Option<String>) {
+///
+/// Returns `(kind, tool_id, tool_name, is_live_unscreened)`.  The fourth
+/// element is `true` only when the record is a live-preview, non-tool record
+/// that has not yet been validated by the safety screener (`screened: false`).
+/// Callers use this to track which records should be replaced when the
+/// settled, screened transcript arrives.
+fn classify_output_line(line: &str) -> (OutputRecordKind, Option<String>, Option<String>, bool) {
     use super::widgets::stream_output::{StreamRecord, parse_stream_line};
 
     match parse_stream_line(line) {
-        StreamRecord::Text { .. } => (OutputRecordKind::Text, None, None),
-        StreamRecord::Reasoning { .. } => (OutputRecordKind::Reasoning, None, None),
-        StreamRecord::ToolStart { tool_id, tool_name } => {
-            (OutputRecordKind::ToolCall, Some(tool_id), Some(tool_name))
+        StreamRecord::Text { live, screened, .. } => {
+            let unscreened = live && !screened;
+            (OutputRecordKind::Text, None, None, unscreened)
+        }
+        StreamRecord::Reasoning { live, screened, .. } => {
+            let unscreened = live && !screened;
+            (OutputRecordKind::Reasoning, None, None, unscreened)
+        }
+        StreamRecord::ToolStart {
+            tool_id, tool_name, ..
+        } => {
+            // Tool steps are never treated as unscreened for drop purposes —
+            // they are kept even when the screened transcript replaces text.
+            (
+                OutputRecordKind::ToolCall,
+                Some(tool_id),
+                Some(tool_name),
+                false,
+            )
         }
         StreamRecord::ToolResult { tool_id, .. } => {
-            (OutputRecordKind::ToolResult, Some(tool_id), None)
+            (OutputRecordKind::ToolResult, Some(tool_id), None, false)
         }
         StreamRecord::Plain { ref content } => {
             // Legacy heuristic classification for untyped records.
@@ -748,11 +843,11 @@ fn classify_output_line(line: &str) -> (OutputRecordKind, Option<String>, Option
                 || trimmed.starts_with("error")
                 || trimmed.contains("FAILED")
             {
-                (OutputRecordKind::Error, None, None)
+                (OutputRecordKind::Error, None, None, false)
             } else if trimmed.starts_with("────") || trimmed.is_empty() {
-                (OutputRecordKind::System, None, None)
+                (OutputRecordKind::System, None, None, false)
             } else {
-                (OutputRecordKind::Text, None, None)
+                (OutputRecordKind::Text, None, None, false)
             }
         }
     }
@@ -1071,6 +1166,18 @@ pub struct PlanEntry {
     // -- per-plan elapsed timer (P5.5) --
     /// When this plan started executing (for live elapsed display).
     pub started_at: Option<Instant>,
+}
+
+impl PlanEntry {
+    /// Tasks accepted although their verification failed. They are part of
+    /// `tasks_done`, so a plan's passed count is `tasks_done` minus this.
+    #[must_use]
+    pub fn tasks_accepted_with_failures(&self) -> usize {
+        self.tasks
+            .iter()
+            .filter(|task| task.status.is_accepted_with_failures())
+            .count()
+    }
 }
 
 /// A task within a plan entry.
@@ -1581,6 +1688,8 @@ pub struct GateResultEntry {
     pub gate: String,
     /// Plan ID this gate ran against.
     pub plan_id: String,
+    /// Task the gate ran for; empty when unknown.
+    pub task_id: String,
     /// Whether the gate passed.
     pub passed: bool,
     /// Verify output text (stdout + stderr).
@@ -1592,6 +1701,7 @@ impl From<&GateResultSummary> for GateResultEntry {
         Self {
             gate: value.gate_name.clone(),
             plan_id: value.plan_id.clone(),
+            task_id: String::new(),
             passed: value.passed,
             output: value.summary.clone(),
         }
@@ -1754,6 +1864,13 @@ pub struct TuiState {
     pub gate_trends: HashMap<String, roko_core::TrendBuckets>,
     /// Recent failing verdicts surfaced beside the trend grid.
     pub gate_recent_failures: Vec<roko_core::FailureEntry>,
+    /// Latest gate output retained per task by the live snapshot: a leading
+    /// `$ command` line (when published) plus the output tail.
+    pub task_gate_outputs: Vec<roko_core::dashboard_snapshot::TaskGateOutput>,
+    /// Plan set of each plan id seen in the live snapshot, from disk
+    /// discovery (`None` for top-level or undiscovered plans). The snapshot
+    /// itself carries no plan set.
+    pub plan_groups: HashMap<String, Option<String>>,
 
     // -- gate output --
     /// Streaming gate output lines from rung executions (bounded).
@@ -1963,6 +2080,9 @@ pub struct TuiState {
     pub run_started: Option<Instant>,
     /// Immutable elapsed time published by a terminal runner snapshot.
     pub run_duration_secs: Option<f64>,
+    /// A connected runner announced a plan set that has not finished yet.
+    /// Stays `true` in the gaps between plans, when no plan is active.
+    pub plan_set_running: bool,
 
     // -- wave navigation --
     /// Selected wave index for wave prev/next navigation.
@@ -2224,6 +2344,8 @@ impl Default for TuiState {
             experiment_winners: Vec::new(),
             gate_trends: HashMap::new(),
             gate_recent_failures: Vec::new(),
+            task_gate_outputs: Vec::new(),
+            plan_groups: HashMap::new(),
 
             gate_output_lines: VecDeque::new(),
             current_gate_rung: None,
@@ -2325,6 +2447,7 @@ impl Default for TuiState {
 
             run_started: None,
             run_duration_secs: None,
+            plan_set_running: false,
 
             selected_wave_idx: 0,
 

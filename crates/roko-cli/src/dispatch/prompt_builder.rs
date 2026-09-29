@@ -914,9 +914,23 @@ pub struct GateFeedback {
     pub clippy_warnings: Vec<String>,
     /// The original gate output (truncated to ≤ 4 KB upstream).
     pub raw_output: String,
+    /// A cheap model's short diagnosis of the failure, rendered ahead of the
+    /// errors.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diagnosis: Option<String>,
 }
 
 impl GateFeedback {
+    /// Attach a diagnosis of the failure; an empty one is ignored.
+    #[must_use]
+    pub fn with_diagnosis(mut self, diagnosis: &str) -> Self {
+        let diagnosis = diagnosis.trim();
+        if !diagnosis.is_empty() {
+            self.diagnosis = Some(diagnosis.chars().take(MAX_DIAGNOSIS_CHARS).collect());
+        }
+        self
+    }
+
     /// Parse raw gate output into structured retry context.
     #[must_use]
     pub fn from_raw(raw_output: &str) -> Option<Self> {
@@ -953,9 +967,13 @@ impl GateFeedback {
                 .chars()
                 .take(roko_core::defaults::DEFAULT_TOOL_OUTPUT_TRUNCATE_AT)
                 .collect(),
+            diagnosis: None,
         })
     }
 }
+
+/// Longest diagnosis a retry prompt carries.
+const MAX_DIAGNOSIS_CHARS: usize = 1_200;
 
 // ─── Outputs ───────────────────────────────────────────────────────────
 
@@ -1209,6 +1227,12 @@ struct SectionEffectivenessSource {
 /// fails hard on a missing or malformed role.
 fn parse_role_label(role: &str) -> AgentRole {
     let normalized = role.trim().to_ascii_lowercase().replace(['_', ' '], "-");
+    // The `reviewer` plan role has no `AgentRole` of its own. Its contract
+    // denies every write tool, so it gets the read-only quick-reviewer prompt
+    // instead of falling through to the implementer's "write code" prompt.
+    if normalized == "reviewer" {
+        return AgentRole::QuickReviewer;
+    }
     // Try kebab-case serde repr first (e.g. "implementer", "quick-reviewer").
     if let Ok(parsed) = serde_json::from_str::<AgentRole>(&format!("\"{normalized}\"")) {
         return parsed;
@@ -2792,6 +2816,11 @@ fn render_gate_feedback(feedback: &GateFeedback) -> String {
         "# Previous attempt feedback\n\n\
          Your previous attempt FAILED verification. Fix these exact errors before doing anything else.\n\n",
     );
+    if let Some(diagnosis) = &feedback.diagnosis {
+        buf.push_str("## Diagnosis\n");
+        buf.push_str(diagnosis);
+        buf.push_str("\n\n");
+    }
     let has_structured = !feedback.compile_errors.is_empty()
         || !feedback.test_failures.is_empty()
         || !feedback.clippy_warnings.is_empty();
@@ -3359,6 +3388,7 @@ mod tests {
             test_failures: vec!["mod::test_foo: assertion failed".into()],
             clippy_warnings: vec![],
             raw_output: "...".into(),
+            diagnosis: Some("The import path moved to crate::dispatch.".into()),
         });
         let pctx = PromptContext::from_task(&task(), &c);
         let p = assembler.assemble(&task(), &pctx).unwrap();
@@ -3366,6 +3396,11 @@ mod tests {
         assert!(
             p.system_prompt.contains("# Previous attempt feedback"),
             "retry should contain gate feedback header"
+        );
+        assert!(
+            p.system_prompt
+                .contains("## Diagnosis\nThe import path moved to crate::dispatch."),
+            "retry should lead with the diagnosis even when errors are structured"
         );
         assert!(
             p.system_prompt.contains("E0432"),
@@ -3481,6 +3516,13 @@ mod tests {
     fn parse_role_label_falls_back_to_implementer_for_unknown() {
         assert_eq!(parse_role_label("unknown-role"), AgentRole::Implementer);
         assert_eq!(parse_role_label(""), AgentRole::Implementer);
+    }
+
+    #[test]
+    fn parse_role_label_prompts_reviewer_as_read_only_quick_reviewer() {
+        assert_eq!(parse_role_label("reviewer"), AgentRole::QuickReviewer);
+        assert_eq!(parse_role_label("Reviewer"), AgentRole::QuickReviewer);
+        assert_eq!(parse_role_label("quick-reviewer"), AgentRole::QuickReviewer);
     }
 
     #[test]

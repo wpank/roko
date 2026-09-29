@@ -33,6 +33,7 @@ fn plan_info(id: &str) -> PlanInfo {
         num: num.to_owned(),
         path: Path::new("plans").join(id).join("plan.md"),
         frontmatter: None,
+        group: None,
     }
 }
 

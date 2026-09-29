@@ -152,6 +152,8 @@ async fn dispatch_feeds_feedback_facade_and_projection() {
 
     facade
         .on_event(&FeedbackEvent::TaskCompleted {
+            turns: 0,
+            failure_reason: None,
             plan_id: "plan-e2e".into(),
             task_id: "wire-it-up".into(),
             outcome: outcome.clone(),
@@ -282,6 +284,7 @@ async fn retry_attempt_includes_gate_feedback_in_assembled_prompt() {
         test_failures: vec!["mod::test_foo failed".into()],
         clippy_warnings: vec![],
         raw_output: "...".into(),
+        diagnosis: None,
     });
 
     let plan = dispatcher.plan(&task, &dctx).expect("plan");

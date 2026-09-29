@@ -1,0 +1,20 @@
+config_version = 2
+
+# Shared by both plans of this set. With ROKO_CONFIG pointing at this file
+# (`roko plan run` does not read --config), a set run starts the two
+# independent plans at the same time; `--max-parallel-plans 2` does the same
+# under the workspace config.
+[conductor]
+max_parallel_plans = 2
+
+[timeouts]
+agent_silence_secs = 600
+
+# The authored rustc checks are the meaningful gates for these one-file demos.
+[gates]
+
+[[gates.rungs]]
+name = "demo-base"
+command = "true"
+timeout_secs = 30
+required = true

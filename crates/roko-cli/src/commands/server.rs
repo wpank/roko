@@ -44,18 +44,70 @@ pub(crate) async fn cmd_up(cli: &Cli, workdir: PathBuf) -> Result<i32> {
     let runtime = runtime.into_arc();
     let roko_config = roko_core::config::loader::load_config_unified(&workdir)
         .map_err(|e| anyhow::anyhow!("{e}"))?;
+    // Mint an ephemeral launch token when auth is enabled, the bind is
+    // loopback-only, and no API key is pre-configured.  The token is delivered
+    // via URL fragment — it never reaches a server log.
+    let launch_token: Option<String> = {
+        let auth = &roko_config.serve.auth;
+        if auth.enabled
+            && is_loopback_bind(&bind)
+            && auth.api_key.is_empty()
+            && auth.api_keys.is_empty()
+        {
+            Some(format!(
+                "{}{}",
+                uuid::Uuid::new_v4().as_simple(),
+                uuid::Uuid::new_v4().as_simple()
+            ))
+        } else {
+            None
+        }
+    };
+    #[cfg(unix)]
+    let ipc_hub = state_hub.clone();
     let server_config =
         roko_serve::ServerBuildConfig::new(workdir.clone(), runtime, roko_config, None, None)
             .with_state_hub(state_hub)
-            .with_metrics(metrics);
+            .with_metrics(metrics)
+            .with_advertised_endpoint();
+    let server_config = if let Some(ref tok) = launch_token {
+        server_config.with_launch_token(tok.clone())
+    } else {
+        server_config
+    };
     let (serve_state, serve_handle) = roko_serve::ServerBuilder::new(server_config)
         .start_background()
         .await?;
 
-    // `start_server_background` binds before returning; this short pause keeps
-    // the existing startup output order stable while background tasks settle.
+    // Start the StateHub IPC server so `roko dashboard` in another terminal
+    // can connect to the live event stream.  A bind failure (e.g. socket path
+    // too long on some systems) is non-fatal and must never prevent the HTTP
+    // server from starting.
+    #[cfg(unix)]
+    let ipc_token = {
+        let token = tokio_util::sync::CancellationToken::new();
+        if let Err(e) =
+            roko_cli::state_hub_ipc::start_hub_ipc_server(ipc_hub, &workdir, token.clone())
+        {
+            tracing::warn!(error = %e, "StateHub IPC server failed to bind; dashboard IPC unavailable");
+        }
+        token
+    };
+
+    // `start_background` binds before returning; this short pause keeps the
+    // existing startup output order stable while background tasks settle.
     tokio::time::sleep(Duration::from_millis(500)).await;
     println!("  roko-serve     http://{}:{}  \u{2713}", bind, port);
+    // Print the portal URL.  Use the advertised endpoint for the real port;
+    // fall back to the configured address when the file is absent.
+    let portal_base = roko_serve::endpoint::read_endpoint(&workdir)
+        .map(|ep| ep.url)
+        .unwrap_or_else(|| format!("http://{}:{}", bind, port));
+    if let Some(ref tok) = launch_token {
+        println!("  portal:        {}/#token={}", portal_base, tok);
+    } else {
+        println!("  portal:        {}", portal_base);
+    }
 
     // Create and start each configured agent.
     let mut started_agents: Vec<String> = Vec::new();
@@ -150,6 +202,8 @@ pub(crate) async fn cmd_up(cli: &Cli, workdir: PathBuf) -> Result<i32> {
         Ok(Err(e)) => tracing::warn!(%e, "roko-serve shutdown error"),
         Err(e) => tracing::error!(%e, "roko-serve task panicked"),
     }
+    #[cfg(unix)]
+    ipc_token.cancel();
 
     println!("All services stopped.");
     Ok(EXIT_SUCCESS)
@@ -201,14 +255,66 @@ pub(crate) async fn cmd_serve(
         roko_config.serve.terminal_enabled = true;
     }
 
+    // Capture bind/port before roko_config is moved into ServerBuildConfig.
+    let serve_bind = roko_config.server.bind.clone();
+    let serve_port = roko_config.server.port;
+    // Mint an ephemeral launch token when auth is enabled, the bind is
+    // loopback-only, and no API key is pre-configured.  The token is delivered
+    // via URL fragment — it never reaches a server log.
+    let launch_token: Option<String> = {
+        let auth = &roko_config.serve.auth;
+        if auth.enabled
+            && is_loopback_bind(&serve_bind)
+            && auth.api_key.is_empty()
+            && auth.api_keys.is_empty()
+        {
+            Some(format!(
+                "{}{}",
+                uuid::Uuid::new_v4().as_simple(),
+                uuid::Uuid::new_v4().as_simple()
+            ))
+        } else {
+            None
+        }
+    };
+    #[cfg(unix)]
+    let ipc_hub = state_hub.clone();
     let server_config =
         roko_serve::ServerBuildConfig::new(wd.clone(), runtime, roko_config, bind, port)
             .with_state_hub(state_hub)
-            .with_metrics(metrics);
+            .with_metrics(metrics)
+            .with_advertised_endpoint();
+    let server_config = if let Some(ref tok) = launch_token {
+        server_config.with_launch_token(tok.clone())
+    } else {
+        server_config
+    };
     let server_builder = roko_serve::ServerBuilder::new(server_config);
+
+    // Start the StateHub IPC server so `roko dashboard` in another terminal
+    // can connect to the live event stream.  A bind failure (e.g. socket path
+    // too long on some systems) is non-fatal and must never prevent the HTTP
+    // server from starting.
+    #[cfg(unix)]
+    let ipc_token = {
+        let token = tokio_util::sync::CancellationToken::new();
+        if let Err(e) = roko_cli::state_hub_ipc::start_hub_ipc_server(ipc_hub, &wd, token.clone()) {
+            tracing::warn!(error = %e, "StateHub IPC server failed to bind; dashboard IPC unavailable");
+        }
+        token
+    };
 
     if tui {
         let (state, server_handle) = server_builder.start_background().await?;
+        // Print portal URL after bind so the user can open the UI before the TUI takes over.
+        let portal_base = roko_serve::endpoint::read_endpoint(&wd)
+            .map(|ep| ep.url)
+            .unwrap_or_else(|| format!("http://{}:{}", serve_bind, serve_port));
+        if let Some(ref tok) = launch_token {
+            println!("portal: {}/#token={}", portal_base, tok);
+        } else {
+            println!("portal: {}", portal_base);
+        }
         let tui_result = super::dashboard::cmd_dashboard(
             cli,
             Some(wd),
@@ -224,9 +330,30 @@ pub(crate) async fn cmd_serve(
             Ok(Err(e)) => tracing::error!(%e, "server error on shutdown"),
             Err(e) => tracing::error!(%e, "server task panicked"),
         }
+        #[cfg(unix)]
+        ipc_token.cancel();
         tui_result
     } else {
-        server_builder.run().await?;
+        // Expand run() inline so the portal line is printed after bind.
+        let (state, handle) = server_builder.start_background().await?;
+        let portal_base = roko_serve::endpoint::read_endpoint(&wd)
+            .map(|ep| ep.url)
+            .unwrap_or_else(|| format!("http://{}:{}", serve_bind, serve_port));
+        if let Some(ref tok) = launch_token {
+            println!("portal: {}/#token={}", portal_base, tok);
+        } else {
+            println!("portal: {}", portal_base);
+        }
+        // Block until Ctrl-C, then shut down gracefully.
+        let _ = tokio::signal::ctrl_c().await;
+        state.shutdown().await;
+        match handle.await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => tracing::error!(%e, "server error on shutdown"),
+            Err(e) => tracing::error!(%e, "server task panicked"),
+        }
+        #[cfg(unix)]
+        ipc_token.cancel();
         Ok(EXIT_SUCCESS)
     }
 }
@@ -950,6 +1077,19 @@ fn railway_worker_env(
     );
     worker_env.insert("ROKO_DEPLOYMENT_ID".to_string(), callback_id);
     worker_env
+}
+
+/// Returns `true` when `bind` is a loopback address or hostname.
+///
+/// Accepts numeric IP addresses (`127.x.x.x`, `::1`) and the `localhost`
+/// hostname.  Conservative: unknown / parse-error → non-loopback.  A
+/// non-loopback bind must never receive an ephemeral launch token.
+fn is_loopback_bind(bind: &str) -> bool {
+    if let Ok(ip) = bind.parse::<std::net::IpAddr>() {
+        ip.is_loopback()
+    } else {
+        bind.eq_ignore_ascii_case("localhost")
+    }
 }
 
 #[cfg(test)]

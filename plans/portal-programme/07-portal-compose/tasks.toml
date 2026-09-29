@@ -1,0 +1,564 @@
+[meta]
+plan = "07-portal-compose"
+total = 10
+done = 0
+status = "ready"
+max_parallel = 3
+skip_enrichment = true
+estimated_total_minutes = 260
+
+# The stage: one plan view for authoring and for watching, plus plan generation.
+#
+# There are no Compose and Run modes. The same task list is the authoring view
+# before a run and the live view during and after one; rows gain status as events
+# arrive. Iteration is Revise (one sentence; the plan is regenerated in place, backend
+# plan 04b) or Edit (the plan's tasks.toml as text, validated by the server before it
+# is written). Generation is one field; with no plans yet, the stage is that field.
+#
+# Needs plans 05 and 06, whose files are named in descriptions rather than
+# read_files. The routes it calls are the reconciled contract
+# (tmp/portal-audit/03-CONTRACT.md section 6 in the main checkout); the backend track
+# adds some of them in parallel, so each view explains a 404 or 405 rather than
+# failing silently.
+#
+# Concurrency (max_parallel 3): tasks that write disjoint files share a wave. Their
+# gates are safe side by side — `tsc --noEmit --incremental false` and single-file
+# vitest runs. The only production build is in T10, the final assembly.
+# Same worktree and verify conventions as plan 05.
+
+[[task]]
+id = "T01"
+title = "Compute dependency waves from task edges"
+description = '''
+Create `apps/portal/src/lib/waves.ts` and `src/lib/waves.test.ts`.
+
+No event carries task edges; the only source is each task's `depends_on` from
+`GET /api/plans/{id}/tasks`, so the portal layers the DAG itself.
+
+  interface WaveDiagnostic { kind: 'cycle' | 'dangling'; taskIds: string[]; message: string }
+  interface WaveResult { waves: string[][]; diagnostics: WaveDiagnostic[] }
+  computeWaves(tasks: ReadonlyArray<{ id: string; depends_on: readonly string[] }>): WaveResult
+
+Kahn layering: the first wave holds tasks with no known dependencies; each next wave
+holds tasks whose dependencies all sit in earlier waves; within a wave keep input
+order, so the same input always yields the same waves. A dependency on an unknown id
+is ignored for layering and reported (`T03 depends on T09, which does not exist`).
+Tasks that never become ready are a cycle: report them once (`T04 → T05 → T04 form
+a cycle`) and append them as a final wave, so a broken plan still renders. A task
+depending on itself is a cycle. Never throw.
+
+At least 9 tests: empty, single, chain, diamond, parallel roots keep input order,
+dangling, cycle, self-cycle, and a cycle beside independent tasks.
+'''
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 20
+depends_on = []
+files = ["apps/portal/src/lib/waves.ts", "apps/portal/src/lib/waves.test.ts"]
+
+[task.context]
+anti_patterns = [
+    "Do not throw on a cycle; return it as a diagnostic.",
+    "Do not reorder tasks within a wave.",
+]
+
+[[task.verify]]
+phase = "test"
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && node scripts/vitest-min.mjs src/lib/waves.test.ts 9'
+fail_msg = "the wave computation lacks at least 9 passing tests"
+timeout_ms = 600000
+
+[[task]]
+id = "T02"
+title = "Wait for a generation or a revision to finish"
+description = '''
+Create `apps/portal/src/lib/operation.ts` and `src/lib/operation.test.ts`.
+
+`POST /api/plans/generate {prompt}` and `POST /api/plans/{id}/revise {feedback}`
+answer 202 with `WireAccepted` (`src/api/contracts.ts`): `{id, plan_id}` — the
+operation id and the plan's slug, known up front. `GET /api/operations/{id}` reports
+`{status: running|completed|failed, result?: {slug, task_count}, error?}` and is
+swept about 60s after the operation finishes, so polling every second sees the
+outcome. Waiting on exactly the named plan is not racy; diffing the plan list to
+guess what was created is, and the portal never does it.
+
+  interface OperationDeps {
+    planExists(id: string): Promise<boolean>;                   // GET /api/plans/{id} is 200
+    fetchOperation(id: string): Promise<WireOperation | null>;  // null on 404
+    sleep(ms: number): Promise<void>; now(): number }
+  waitForOperation(accepted: WireAccepted, deps: OperationDeps, opts: {
+    expect: 'new-plan' | 'revision'; intervalMs?: number; timeoutMs?: number;
+    onPoll?(elapsedMs: number): void }): Promise<{ slug: string }>
+
+Every intervalMs (default 1000):
+- a `failed` operation rejects with its `error` (or a generic message), whatever
+  `expect` is;
+- `new-plan`: resolve `{slug: plan_id}` once planExists(plan_id) is true, or once
+  the operation completes with `result.slug` (an older server that sends `{id}`
+  only); a null operation is ignored, because the plan appearing is the signal;
+- `revision`: the plan already exists, so resolve only when the operation
+  completes; three null operations in a row reject ("the revision cannot be
+  tracked"), since then nothing else can report the outcome.
+Status is compared case-insensitively on its leading word (an older server prints
+Rust Debug, `Completed { … }`). Past timeoutMs (default 600000) reject. Up to three
+consecutive fetch errors are tolerated; the fourth rejects with the last error.
+
+At least 10 tests with fake deps: new plan appears, appears late, operation fails
+first, Debug-formatted status, `{id}`-only with result.slug, revision completes,
+revision fails, revision untrackable, timeout, transient fetch errors recovered.
+'''
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 25
+depends_on = []
+files = ["apps/portal/src/lib/operation.ts", "apps/portal/src/lib/operation.test.ts"]
+
+[task.context]
+anti_patterns = [
+    "Do not call Date.now or setTimeout directly; use the injected deps.",
+    "Do not poll or diff the plan list.",
+]
+
+[[task.verify]]
+phase = "test"
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && node scripts/vitest-min.mjs src/lib/operation.test.ts 10'
+fail_msg = "the operation waiter lacks at least 10 passing tests"
+timeout_ms = 600000
+
+[[task]]
+id = "T03"
+title = "Derive task rows from plan tasks and live state"
+description = '''
+Create `apps/portal/src/lib/taskRows.ts` and `src/lib/taskRows.test.ts`. Read
+`src/lib/runState.ts`, `src/lib/glyphs.ts`, `src/lib/waves.ts` and
+`src/api/contracts.ts` first.
+
+  interface TaskRowModel { id; title; wave: number; state: GlyphState;
+    status: TaskStatus | 'pending'; role: string | null; model: string | null;
+    time: { kind: 'estimate' | 'elapsed' | 'actual' | 'none'; ms: number | null };
+    costUsd: number | null; attempts: number; checks: CheckRun[];
+    dependsOn: string[]; waitingOn: string[]; files: string[];
+    description: string | null; verify: { phase: string; command: string }[] }
+  buildTaskRows(tasks: readonly WirePlanTask[], run: RunState, planId: string,
+                nowMs: number): { rows: TaskRowModel[]; waves: WaveResult }
+  focusTaskId(rows: readonly TaskRowModel[], selected: string | null): string | null
+
+- Rows in wave order, input order within a wave; they never move during a run.
+- status: live `run.tasks[taskKey(planId, id)]` when present; else skipped when
+  the live plan failed or was cancelled and the task never started; else passed
+  when the wire task is completed; else pending. state via glyphStateForTask.
+- role and model: live, else the wire `role` and `model_hint`. costUsd: live or null.
+- time: active with startedAtMs → elapsed; finished with both times → actual;
+  pending with `estimated_minutes` → estimate; else none.
+- waitingOn: dependencies whose row is not passed, accepted_with_failures or skipped.
+- verify: the wire `verify` when the server sends it, else one entry per
+  `verify_phases` name with an empty command.
+- focusTaskId: `selected` when it is a row; else the first active; else the first
+  failed; else the last finished; else null. The stream follows this task.
+
+At least 11 tests: each status source, skipped after a failed plan, wave order,
+waitingOn, each time kind, and every focusTaskId branch.
+'''
+status = "ready"
+role = "implementer"
+tier = "integrative"
+model_hint = "claude-sonnet-4-6"
+timeout_secs = 1200
+max_retries = 2
+estimated_minutes = 30
+depends_on = ["T01"]
+files = ["apps/portal/src/lib/taskRows.ts", "apps/portal/src/lib/taskRows.test.ts"]
+
+[task.context]
+read_files = [
+    { path = "apps/portal/src/lib/waves.ts", why = "computeWaves, which orders the rows" },
+    { path = "crates/roko-serve/src/plan_types.rs", why = "PlanTaskDto: the fields each task arrives with" },
+]
+symbols = ["PlanTaskDto"]
+anti_patterns = [
+    "Do not sort rows by status; active rows must not jump around.",
+    "Do not define new state colours or glyphs; use glyphs.ts.",
+]
+
+[[task.verify]]
+phase = "test"
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && node scripts/vitest-min.mjs src/lib/taskRows.test.ts 11'
+fail_msg = "the task row derivation lacks at least 11 passing tests"
+timeout_ms = 600000
+
+[[task]]
+id = "T04"
+title = "Build the prompt panel for generating and revising"
+description = '''
+Create `apps/portal/src/components/stage/PromptPanel.tsx`, the one field that
+starts everything:
+
+  export function PromptPanel(props: { mode: 'generate' | 'revise'; planId?: string;
+    workspace: string; firstRun: boolean; onDone(slug: string): void;
+    onCancel?(): void })
+
+- A `<textarea data-prompt>`: placeholder `Describe what you want to build`
+  (generate) or `What should change?` (revise). With firstRun, a heading `No plans
+  in <workspace> yet. Describe what you want to build.`
+- Generate mode shows example chips that fill the field; the first is exactly
+  `a rust app that prints hello world` — the acceptance test for the programme.
+- ⌘↵ or Ctrl↵ submits, as does a button with `data-action="submit-prompt"`.
+- Submit: generate → `useGeneratePlan()`, revise → `useRevisePlan()` (both in
+  `@/api/queries`), then `waitForOperation(accepted, { planExists, fetchOperation,
+  sleep, now }, { expect: 'new-plan' | 'revision', onPoll })` from `@/lib/operation`,
+  the onPoll updating an elapsed counter (compactDuration). While waiting, the
+  sentence stays visible and the field is disabled; the counter and `Generating
+  plan…` / `Revising plan…` say what is happening.
+- Success → `onDone(slug)`. Failure → the error inline, the sentence kept for
+  editing. A 404 or 405 means the server lacks the route: say `This roko serve does
+  not support <generating|revising> plans yet.` rather than a raw status. A 409 on
+  revise means the plan is running or already being revised: say which.
+
+No project-type picker, no template gallery, no wizard.
+'''
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 25
+depends_on = ["T02"]
+files = ["apps/portal/src/components/stage/PromptPanel.tsx"]
+
+[task.context]
+read_files = [
+    { path = "apps/portal/src/lib/operation.ts", why = "waitForOperation and its deps" },
+    { path = "apps/portal/src/api/client.ts", why = "ApiError: status and body for the failure message" },
+]
+anti_patterns = [
+    "Do not discover the new plan by polling or diffing the plan list.",
+    "Do not discard the typed sentence on failure.",
+]
+
+[[task.verify]]
+phase = "compile"
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit --incremental false && cd src/components/stage && grep -q "export function PromptPanel" PromptPanel.tsx && grep -q "a rust app that prints hello world" PromptPanel.tsx && grep -q "data-prompt" PromptPanel.tsx && grep -q "waitForOperation" PromptPanel.tsx && grep -q "submit-prompt" PromptPanel.tsx'
+fail_msg = "PromptPanel is missing a required element or does not type check"
+timeout_ms = 600000
+
+[[task]]
+id = "T05"
+title = "Build the wave strip"
+description = '''
+Create `apps/portal/src/components/stage/WaveStrip.tsx`, the DAG in one row:
+
+  export function WaveStrip(props: { waves: WaveResult; rows: TaskRowModel[];
+    maxParallel: number | null; selectedTaskId: string | null;
+    onSelectTask(id: string): void })
+
+- Per wave, a label `W1`, `W2`, … then one chip per task: `StatusGlyph` for the
+  row's state plus the task id. Each wave is an element with `data-wave={index}`.
+  Clicking a chip selects the task; the selected chip gets the focus border.
+- Concurrency is the information a wave carries: when `maxParallel` is known and
+  below a wave's width, mark it (`4 tasks · parallel 2`) — a common, invisible
+  bottleneck.
+- Tasks named by a cycle or dangling diagnostic render in `var(--state-failed)`
+  with the message as their title; the messages are also listed under the strip.
+- The strip wraps. It is deliberately not a node-and-edge canvas: no pan, zoom or
+  layout engine.
+'''
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 20
+depends_on = ["T03"]
+files = ["apps/portal/src/components/stage/WaveStrip.tsx"]
+
+[task.context]
+read_files = [
+    { path = "apps/portal/src/lib/taskRows.ts", why = "TaskRowModel" },
+    { path = "apps/portal/src/lib/waves.ts", why = "WaveResult and its diagnostics" },
+]
+anti_patterns = [
+    "Do not build a node canvas.",
+    "Do not hide a parallelism limit that is below the wave width.",
+]
+
+[[task.verify]]
+phase = "compile"
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit --incremental false && grep -q "export function WaveStrip" src/components/stage/WaveStrip.tsx && grep -q "data-wave" src/components/stage/WaveStrip.tsx'
+fail_msg = "WaveStrip is missing or does not type check"
+timeout_ms = 600000
+
+[[task]]
+id = "T06"
+title = "Build the task list"
+description = '''
+Create `apps/portal/src/components/stage/TaskList.tsx`, the core of the plan view:
+
+  export function TaskList(props: { rows: TaskRowModel[]; selectedTaskId: string | null;
+    onSelectTask(id: string): void; onRetry(): void })
+
+- `<ol data-region="tasks">`; each row `<li data-task-row={row.id}
+  data-state={row.state}>` on a fixed grid: glyph · id · title · role·model (once
+  dispatched) · time (`~` estimate, elapsed, actual, `·`) · cost · `↻n` when
+  attempts > 1 · one chip per check (`StatusGlyph` for the check status + its
+  phase, e.g. `✓compile ✗test`).
+- The selected row expands: description (whitespace preserved), files, depends on
+  (waiting-on entries marked), verify commands (`phase  command`).
+- A failed row shows the first output line of its first failed check that does not
+  start with `$ `, and a `↻ Retry` button with `data-action="retry"` calling onRetry.
+- An accepted_with_failures row is amber and lists its failing checks: it passed
+  nothing, it was forced through.
+- Clicking a row calls onSelectTask. Reuse StatusGlyph and MetricCell.
+'''
+status = "ready"
+role = "implementer"
+tier = "integrative"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 30
+depends_on = ["T03"]
+files = ["apps/portal/src/components/stage/TaskList.tsx"]
+
+[task.context]
+read_files = [
+    { path = "apps/portal/src/lib/taskRows.ts", why = "TaskRowModel, the row data" },
+]
+anti_patterns = [
+    "Do not sort rows by status.",
+    "Do not render an accepted_with_failures task as done.",
+    "Do not define new state colours.",
+]
+
+[[task.verify]]
+phase = "compile"
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit --incremental false && cd src/components/stage && grep -q "export function TaskList" TaskList.tsx && grep -q "data-task-row" TaskList.tsx && grep -q "data-state" TaskList.tsx && grep -q "retry" TaskList.tsx'
+fail_msg = "TaskList is missing a required element or does not type check"
+timeout_ms = 600000
+
+[[task]]
+id = "T07"
+title = "Build the validation badge"
+description = '''
+Create `apps/portal/src/components/stage/ValidationBadge.tsx`:
+
+  export function ValidationBadge({ planId, onSelectTask }:
+    { planId: string; onSelectTask(id: string): void })
+
+`useValidation(planId)` from `@/api/queries` returns `{errors, warnings,
+diagnostics: [{severity, rule_id, task_id?, message}]}`. Render `valid ✓` (done
+token), `N warnings` (muted: an imperfect plan is a normal editing state, not an
+alarm), or `N errors` (failed token — the plan cannot run). Clicking opens a list of
+diagnostics as `rule_id · task · message`; clicking one with a task_id selects that
+task. Loading shows `·`. A 404 or 405 shows `validation unavailable` with a title
+explaining the server lacks the route; it never blocks Run.
+'''
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 15
+depends_on = []
+files = ["apps/portal/src/components/stage/ValidationBadge.tsx"]
+
+[task.context]
+read_files = [
+    { path = "apps/portal/src/api/client.ts", why = "ApiError, to tell a missing route from a failure" },
+]
+anti_patterns = [
+    "Do not colour warnings as failures.",
+    "Do not revalidate on a timer; the query refreshes when a save invalidates it.",
+]
+
+[[task.verify]]
+phase = "compile"
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit --incremental false && grep -q "export function ValidationBadge" src/components/stage/ValidationBadge.tsx && grep -q "rule_id" src/components/stage/ValidationBadge.tsx'
+fail_msg = "ValidationBadge is missing or does not type check"
+timeout_ms = 600000
+
+[[task]]
+id = "T08"
+title = "Build the plan source editor"
+description = '''
+Create `apps/portal/src/components/stage/SourceEditor.tsx`, which edits a plan as
+the text it is:
+
+  export function SourceEditor({ planId, running, onClose }:
+    { planId: string; running: boolean; onClose(): void })
+
+- `usePlanSource(planId, true)` loads `{toml}` into a monospace
+  `<textarea data-editor spellCheck={false}>` filling the stage. Dirty = text
+  differs from what loaded.
+- Save (`data-action="save-source"`) calls `useSavePlanSource()`. 200 → onClose (the
+  mutation invalidates tasks, source and validation). 422 → keep the text and list
+  the returned diagnostics (read `body.details.diagnostics`, else
+  `body.diagnostics`); a diagnostic with a task_id moves the caret to that
+  task's `id = "<task_id>"` line and scrolls it into view. 409 → `The plan is
+  running; edits would be ignored.` A 404 or 405 on load or save → `This roko serve
+  does not support editing plans yet.`
+- While `running` the editor is read-only and says why.
+- Cancel and Esc close; with unsaved text they ask `window.confirm('Discard unsaved
+  edits?')` first.
+
+Raw TOML rather than a form: the file is the plan, and a text round trip cannot drop
+fields a form never showed.
+'''
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 25
+depends_on = []
+files = ["apps/portal/src/components/stage/SourceEditor.tsx"]
+
+[task.context]
+read_files = [
+    { path = "apps/portal/src/api/client.ts", why = "ApiError status and body for 422, 409 and 404" },
+]
+anti_patterns = [
+    "Do not save on every keystroke.",
+    "Do not discard the text when a save is rejected.",
+    "Do not parse or rewrite TOML in the browser; the server validates and writes.",
+]
+
+[[task.verify]]
+phase = "compile"
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit --incremental false && cd src/components/stage && grep -q "export function SourceEditor" SourceEditor.tsx && grep -q "data-editor" SourceEditor.tsx && grep -q "save-source" SourceEditor.tsx'
+fail_msg = "SourceEditor is missing a required element or does not type check"
+timeout_ms = 600000
+
+[[task]]
+id = "T09"
+title = "Assemble the plan view and its primary action"
+description = '''
+Create `apps/portal/src/components/stage/PlanView.tsx` exporting two things:
+
+  export function usePrimaryAction(planId: string | null, opts?: { editing?: boolean }):
+    { kind: 'run' | 'cancel' | 'retry' | 'run-again' | 'none'; label: string;
+      disabled: boolean; reason: string | null; perform(): void }
+      from the live plan phase: running → cancel (`window.confirm` first, naming how
+      many running plans stop — cancelling stops the whole run — then
+      useCancelPlan); failed or cancelled → retry (useRunPlan with `{resume: true}`:
+      completed tasks are skipped, or the plan runs fresh if it was edited);
+      completed → run-again and otherwise run (useRunPlan with no body: a fresh run).
+      Disabled with a reason while a plan-set run is active and this plan is not
+      running in it (one run at a time; independent plans inside a run execute
+      concurrently), while validation reports errors (`Fix N validation errors
+      first`) or while editing (`Save or discard your edits first`). The `r` key
+      calls perform() for run, retry and run-again only (T10 wires it).
+  export function PlanView(props: { plan: WirePlanSummary; selectedTaskId: string | null;
+    onSelectTask(id: string | null): void; onRequestError(message: string): void })
+
+Top to bottom:
+1. Header: title, `group/id`, the primary button with `data-action={kind}`, then
+   `✦ Revise` (`data-action="revise"`, toggles a PromptPanel in revise mode) and
+   `✎ Edit` (`data-action="edit"`, toggles SourceEditor). Both are disabled, with the
+   reason, while the plan runs.
+2. Status line: before any run `N tasks · W waves · ~M min · parallel P ·` followed
+   by ValidationBadge (`·` for unknown numbers); once run, a progress bar coloured by
+   the rail's rule (green only when verified) and `done/total · elapsed · ~eta · $cost
+   · agents busy/max`.
+3. WaveStrip, then TaskList — or SourceEditor / PromptPanel(revise) in place of the
+   list while open.
+
+Data: usePlanTasks, the store's run, buildTaskRows. Mutation errors go to
+onRequestError. After a revision completes, invalidate the plan's tasks, source and
+validation, and close the prompt. Read the stage components from T04–T08 and
+src/lib/taskRows.ts first.
+'''
+status = "ready"
+role = "implementer"
+tier = "integrative"
+model_hint = "claude-sonnet-4-6"
+timeout_secs = 1800
+max_retries = 2
+estimated_minutes = 40
+depends_on = ["T04", "T05", "T06", "T07", "T08"]
+files = ["apps/portal/src/components/stage/PlanView.tsx"]
+
+[task.context]
+read_files = [
+    { path = "apps/portal/src/components/stage/TaskList.tsx", why = "the list being composed" },
+    { path = "apps/portal/src/components/stage/WaveStrip.tsx", why = "the strip being composed" },
+    { path = "apps/portal/src/components/stage/ValidationBadge.tsx", why = "the badge in the status line" },
+    { path = "apps/portal/src/components/stage/SourceEditor.tsx", why = "the editor Edit opens" },
+    { path = "apps/portal/src/components/stage/PromptPanel.tsx", why = "the revise prompt" },
+]
+anti_patterns = [
+    "Do not add a mode toggle; the plan view is one view.",
+    "Do not start a run while validation reports errors or the editor has unsaved text.",
+    "Do not cancel without confirmation.",
+]
+
+[[task.verify]]
+phase = "compile"
+command = "cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit --incremental false && cd src/components/stage && grep -q 'export function PlanView' PlanView.tsx && grep -q 'export function usePrimaryAction' PlanView.tsx && grep -q 'data-action=\"revise\"' PlanView.tsx && grep -q 'data-action=\"edit\"' PlanView.tsx && grep -q '<WaveStrip' PlanView.tsx && grep -q '<TaskList' PlanView.tsx"
+fail_msg = "PlanView is missing a required element or does not type check"
+timeout_ms = 600000
+
+[[task]]
+id = "T10"
+title = "Mount the stage and wire the run and new-plan keys"
+description = '''
+Create `apps/portal/src/components/stage/Stage.tsx` and replace the stage
+placeholder in `src/components/shell/Workspace.tsx` with it.
+
+  export function Stage(props: { plans: WirePlanSummary[] | undefined; loaded: boolean;
+    selection: Selection; promptOpen: boolean; workspace: string;
+    onSelect(patch: Partial<Selection>): void; onClosePrompt(): void;
+    onRequestError(message: string): void })
+
+- Root `<section data-region="stage">`.
+- Loaded and no plans → PromptPanel generate with firstRun: with no plans yet the
+  stage is the generate field, so building hello world takes two actions.
+- promptOpen → PromptPanel generate. onDone(slug): invalidate the plan list, select
+  `{plan: slug, task: null}`, close the prompt.
+- A selected plan → PlanView.
+- Otherwise the describeEmpty sentence.
+
+In Workspace: render Stage in the stage area; `n` opens the prompt; `r` calls
+`usePrimaryAction(selection.plan).perform()` when its kind is run, retry or
+run-again. Keep every other Workspace behaviour intact.
+'''
+status = "ready"
+role = "implementer"
+tier = "integrative"
+model_hint = "claude-sonnet-4-6"
+timeout_secs = 1800
+max_retries = 2
+estimated_minutes = 30
+depends_on = ["T09"]
+files = ["apps/portal/src/components/stage/Stage.tsx", "apps/portal/src/components/shell/Workspace.tsx"]
+
+[task.context]
+read_files = [
+    { path = "apps/portal/src/components/stage/PlanView.tsx", why = "PlanView and usePrimaryAction" },
+    { path = "apps/portal/src/components/stage/PromptPanel.tsx", why = "the generate field" },
+]
+anti_patterns = [
+    "Do not require a click before the generate field appears in a workspace with no plans.",
+    "Do not bind r to cancel.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = 'cd apps/portal/src/components && grep -q "export function Stage" stage/Stage.tsx && grep -q "PromptPanel" stage/Stage.tsx && grep -q "PlanView" stage/Stage.tsx && grep -q "<Stage" shell/Workspace.tsx && grep -q "usePrimaryAction" shell/Workspace.tsx'
+fail_msg = "Stage is missing, or Workspace does not render it and wire the run key"
+
+[[task.verify]]
+phase = "test"
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && npm test'
+fail_msg = "the unit suite fails"
+timeout_ms = 600000
+
+[[task.verify]]
+phase = "integration"
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && rm -rf .next/types out && ./node_modules/.bin/tsc --noEmit --incremental false && NEXT_TELEMETRY_DISABLED=1 npm run build:export && test -f out/index.html && rm -rf out'
+fail_msg = "the portal does not type check or the static export fails with the stage mounted"
+timeout_ms = 900000

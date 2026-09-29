@@ -1,26 +1,27 @@
-//! The universal loop: prompt → compose → agent → gate → persist → policy.
+//! Single-prompt execution: the body of `roko run <prompt>` and of the
+//! single-agent `roko do` routes.
 //!
-//! This is the body of `roko run <prompt>`. It reads [`Config`], opens a
-//! [`FileSubstrate`] under `.roko/`, seeds prompt sections, composes them
-//! into a single Prompt signal, invokes the configured agent backend, runs
-//! each configured gate on the working directory, and emits an Episode.
+//! [`run_prompt`] writes the prompt as a one-task plan under
+//! `.roko/runs/<run_id>/` and executes it through the Graph engine, so a
+//! prompt gets the same dispatch, failover, safety, budget, gates,
+//! checkpoints, and learning feedback as `roko plan run`.
 
 use crate::config::{Config, GateConfig};
 use crate::model_selection::{EffectiveModelSelection, SelectionSource, resolve_effective_model};
 use crate::output_format;
-use crate::state_hub::StateHub;
-use anyhow::{Context as _, Result, anyhow};
+use crate::state_hub::{SharedStateHub, StateHub};
+use crate::task_parser::{TaskDef, TaskMeta, TasksFile, VerifyStep};
+use anyhow::{Context as _, Result, anyhow, bail};
 use chrono::Utc;
 use roko_agent::provider::is_known_protocol_command;
+use roko_core::DashboardSnapshot;
 use roko_core::agent::resolve_model;
 use roko_core::config::schema::RokoConfig;
-use roko_core::foundation::ShellGateCommand as CoreShellGateCommand;
 use roko_learn::episode_logger::{Episode, EpisodeLogger};
 use roko_learn::playbook::Playbook;
-use roko_runtime::workflow_contract::WorkflowRunReport;
+use roko_runtime::workflow_contract::{GateOutcome, WorkflowRunReport};
 use roko_serve::bench::BenchStrategy;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 /// Summary of a single `run` invocation.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -326,85 +327,10 @@ fn ensure_workflow_agent_configured(
         && !has_model_override
     {
         return Err(anyhow!(
-            "WorkflowEngine refused to run with the default `cat` agent. Run `roko init`, configure a provider in roko.toml, or pass a model/provider override."
+            "roko run refused to run with the default `cat` agent. Run `roko init`, configure a provider in roko.toml, or pass a model/provider override."
         ));
     }
     Ok(())
-}
-
-// build_workflow_effect_services removed by #276 -- EffectServices is deleted.
-// Callers use RuntimeServicesBuilder via WorkflowServiceAdapter.
-
-// ---------------------------------------------------------------------------
-// #245: Non-plan service migration adapter (Lane A)
-// ---------------------------------------------------------------------------
-
-/// Profile-validated workflow bootstrap that constructs shared service
-/// bundles through [`RuntimeServicesBuilder`] (#243).
-///
-/// #276 retired `EffectServices` and `WorkflowEngine`. This adapter now
-/// returns only `RuntimeServices` for graph template execution.
-pub struct WorkflowServiceAdapter;
-
-impl WorkflowServiceAdapter {
-    /// Validate and build workflow services through RuntimeServicesBuilder.
-    ///
-    /// # Errors
-    ///
-    /// Returns `anyhow::Error` if the profile matrix validation fails or
-    /// `RuntimeServicesBuilder` fails.
-    pub fn build(
-        workdir: &std::path::Path,
-        config: &Config,
-        model_config: RokoConfig,
-        _selection: &EffectiveModelSelection,
-        overrides: &CliOverrides,
-    ) -> anyhow::Result<(
-        roko_execution::NonPlanServiceHandle,
-        roko_execution::RuntimeServices,
-    )> {
-        use roko_execution::profiles::RuntimeProfile;
-
-        let exec_overrides = roko_execution::overrides_for_workflow(
-            overrides.model.clone(),
-            overrides.role.clone(),
-            overrides.provider.clone(),
-            overrides.cascade_enabled,
-            config.agent.mcp_config.clone(),
-        );
-
-        let request = roko_execution::NonPlanServiceRequest::new(
-            RuntimeProfile::Workflow,
-            workdir.to_path_buf(),
-            exec_overrides,
-        );
-        let handle = roko_execution::validate_service_request(&request)
-            .map_err(|e| anyhow!("workflow service validation: {e}"))?;
-
-        let builder_overrides = roko_execution::overrides::ExecutionOverrides {
-            model: overrides.model.clone(),
-            role: overrides.role.clone(),
-            effort: overrides.effort.clone(),
-            ..Default::default()
-        };
-        let roko_config_arc = Arc::new(model_config);
-        let runtime_services = roko_execution::RuntimeServicesBuilder::from_config(
-            &roko_config_arc,
-            RuntimeProfile::Workflow,
-            builder_overrides,
-        )
-        .build(workdir)
-        .map_err(|e| anyhow!("RuntimeServicesBuilder: {e}"))?;
-
-        tracing::info!(
-            instance_id = %handle.instance_id(),
-            profile = %handle.profile(),
-            required = ?handle.required_bundles(),
-            "workflow services built via RuntimeServicesBuilder (graph path)"
-        );
-
-        Ok((handle, runtime_services))
-    }
 }
 
 pub fn workflow_enabled_gate_names(gates: &[GateConfig]) -> Vec<String> {
@@ -419,124 +345,400 @@ pub fn workflow_enabled_gate_names(gates: &[GateConfig]) -> Vec<String> {
         .collect()
 }
 
-pub fn workflow_shell_gate_commands(gates: &[GateConfig]) -> Vec<CoreShellGateCommand> {
-    gates
-        .iter()
-        .filter_map(|gate| match gate {
-            GateConfig::Shell {
-                program,
-                args,
-                timeout_ms,
-            } => Some(CoreShellGateCommand {
-                program: program.clone(),
-                args: args.clone(),
-                timeout_ms: *timeout_ms,
-            }),
-            _ => None,
+/// A prompt to execute through the Graph engine (see [`run_prompt`]).
+pub struct PromptRun<'a> {
+    /// The prompt; it becomes the task description verbatim.
+    pub prompt: &'a str,
+    /// Workspace root.
+    pub workdir: &'a Path,
+    /// Task tier: `mechanical`, `focused`, `integrative`, or `architectural`.
+    pub tier: &'a str,
+    /// `--model`, `--provider`, and `--role` overrides.
+    pub overrides: &'a CliOverrides,
+    /// Retries after a failed attempt; `None` keeps the plan default.
+    pub max_retries: Option<u32>,
+    /// Suppress the Graph engine's inline progress and summary line.
+    pub quiet: bool,
+    /// Hub that receives the run's dashboard events (`roko run --serve`
+    /// passes the server's); `None` uses a private hub.
+    pub state_hub: Option<SharedStateHub>,
+}
+
+/// Execute one prompt through the Graph engine.
+///
+/// The prompt becomes a one-task plan in `.roko/runs/<run_id>/` (never under
+/// `plans/`): an `implementer` task whose verify steps are the workspace
+/// gates (see [`prompt_verify_steps`]). [`run_graph_plan`] executes it with
+/// the provider dispatch, failover, safety contracts, budget, checkpoints,
+/// and per-task episodes, efficiency, and cost records of `roko plan run`.
+/// The run then settles one `workflow_complete` episode carrying the gate
+/// verdicts.
+///
+/// [`run_graph_plan`]: crate::graph_execution::run_graph_plan
+///
+/// # Errors
+///
+/// Fails before any provider call when no agent is configured, the role
+/// override is not a plan task role, or no gate can verify the change; and
+/// when the Graph engine cannot start the run.
+pub async fn run_prompt(run: PromptRun<'_>) -> Result<WorkflowRunReport> {
+    use crate::graph_execution::plan_runner::{
+        PlanRunInterruptHandle, install_plan_run_signal_handlers,
+    };
+    use crate::graph_execution::{GraphPlanRunParams, run_graph_plan};
+
+    let (_config, model_config, selection) =
+        resolve_workflow_model_selection(run.workdir, run.overrides)?;
+    if !run.quiet {
+        selection.print_stderr();
+    }
+    let role = match run.overrides.role.as_deref() {
+        None => "implementer",
+        Some(role) if crate::task_parser::PLAN_TASK_ROLES.contains(&role) => role,
+        Some(role) => bail!(
+            "unknown role `{role}` for roko run (valid: {})",
+            crate::task_parser::PLAN_TASK_ROLES.join(", ")
+        ),
+    };
+    let verify = prompt_verify_steps(run.workdir, &model_config.gates);
+    if verify.is_empty() {
+        bail!(
+            "no gate can verify this change: declare the project's build or test command \
+             in roko.toml as a `[[gates.rungs]]` entry (`name`, `command`)"
+        );
+    }
+
+    let layout = roko_fs::RokoLayout::for_project(run.workdir);
+    let run_id = format!("run-{}", Utc::now().format("%Y%m%d-%H%M%S-%3f"));
+    let run_dir = layout.run_dir(&run_id);
+    std::fs::create_dir_all(&run_dir)
+        .with_context(|| format!("create run directory {}", run_dir.display()))?;
+    prompt_tasks_file(&run_id, run.prompt, run.tier, role, verify, run.workdir)
+        .write(&run_dir.join("tasks.toml"))?;
+
+    // A model or provider override pins the task's model; otherwise the
+    // Graph engine routes by tier, as for authored plans.
+    let cli_model_override = run.overrides.model.clone().or_else(|| {
+        run.overrides
+            .provider
+            .as_ref()
+            .map(|_| selection.effective_model_key.clone())
+    });
+    let episodes_path = layout.root_episodes_path();
+    let episodes_offset = std::fs::metadata(&episodes_path).map_or(0, |meta| meta.len());
+    let hub = run
+        .state_hub
+        .unwrap_or_else(crate::state_hub::shared_state_hub);
+
+    // SIGINT/SIGTERM stop the run gracefully for as long as the guard lives.
+    let interrupt = PlanRunInterruptHandle::default();
+    let _signals = install_plan_run_signal_handlers(interrupt.clone())?;
+    let started = std::time::Instant::now();
+    let exit_code = run_graph_plan(GraphPlanRunParams {
+        plans_dir: run_dir.clone(),
+        workdir: run.workdir.to_path_buf(),
+        quiet: run.quiet,
+        json: false,
+        resume_plan: None,
+        fresh: false,
+        force_resume: false,
+        max_retries: run.max_retries,
+        max_tasks: 0,
+        budget_override: None,
+        no_budget: false,
+        cli_model_override,
+        dangerously_skip_permissions: false,
+        log_file: None,
+        worktree_per_task: false,
+        rich_topology: false,
+        no_tui: true,
+        state_hub: Some(hub.clone()),
+        interrupt: Some(interrupt),
+        max_parallel_plans: None,
+        fail_fast: false,
+        only_plans: None,
+        live_agent_output: crate::graph_task_dispatch::LiveAgentOutput::ToolSteps,
+    })
+    .await?;
+    let duration = started.elapsed();
+
+    let snapshot = hub.current_snapshot();
+    let episodes = task_episodes_since(&episodes_path, episodes_offset, &run_id);
+    let success = exit_code == crate::exit_codes::EXIT_SUCCESS;
+    let last = episodes.last();
+    let report = WorkflowRunReport {
+        run_id: run_id.clone(),
+        success,
+        model: last.map_or_else(
+            || selection.effective_model_key.clone(),
+            |e| e.model.clone(),
+        ),
+        provider: last
+            .map(|episode| episode.backend.clone())
+            .filter(|backend| !backend.is_empty())
+            .or(Some(selection.provider_key)),
+        prompt_summary: truncate(run.prompt, 120).to_string(),
+        output: task_output(&snapshot, &run_id),
+        agent_turns: u32::try_from(episodes.iter().map(|e| e.turns).sum::<u64>())
+            .unwrap_or(u32::MAX),
+        token_usage: episodes
+            .iter()
+            .map(|e| e.usage.input_tokens + e.usage.output_tokens)
+            .sum(),
+        input_tokens: episodes.iter().map(|e| e.usage.input_tokens).sum(),
+        output_tokens: episodes.iter().map(|e| e.usage.output_tokens).sum(),
+        cache_read_tokens: episodes.iter().map(|e| e.usage.cache_read_tokens).sum(),
+        cost: Some(episodes.iter().map(|e| e.usage.cost_usd).sum()),
+        duration_secs: duration.as_secs_f64(),
+        gates: gate_outcomes(&snapshot, &run_id),
+        events: Vec::new(),
+        checkpoint_path: None,
+    };
+    let outcome = if success {
+        "success".to_string()
+    } else {
+        episodes
+            .iter()
+            .rev()
+            .find_map(|episode| episode.failure_reason.clone())
+            .unwrap_or_else(|| format!("Graph engine exited with code {exit_code}"))
+    };
+    record_workflow_feedback(layout.root(), &report, outcome, duration).await;
+    Ok(report)
+}
+
+/// Verify steps for a prompt run: the workspace's declared gate rungs
+/// (`[[gates.rungs]]`, which legacy `[[gate]]` entries migrate into), else
+/// the compile check of a Cargo or Go workspace. Empty when neither exists.
+fn prompt_verify_steps(workdir: &Path, gates: &roko_core::config::GatesConfig) -> Vec<VerifyStep> {
+    if gates.has_custom_rungs() {
+        return gates
+            .effective_rungs()
+            .into_iter()
+            .filter(|rung| rung.required && !rung.command.trim().is_empty())
+            .map(|rung| VerifyStep {
+                phase: rung.name,
+                command: rung.command,
+                fail_msg: None,
+                timeout_ms: rung.timeout_secs.saturating_mul(1_000),
+            })
+            .collect();
+    }
+    let compile = if workdir.join("Cargo.toml").is_file() {
+        "cargo check --workspace"
+    } else if workdir.join("go.mod").is_file() {
+        "go build ./..."
+    } else {
+        return Vec::new();
+    };
+    vec![VerifyStep {
+        phase: "compile".to_string(),
+        command: compile.to_string(),
+        fail_msg: None,
+        timeout_ms: roko_core::config::TimeoutConfig::default()
+            .gate_test()
+            .as_secs()
+            .saturating_mul(1_000),
+    }]
+}
+
+/// The one-task plan that runs `prompt`.
+fn prompt_tasks_file(
+    run_id: &str,
+    prompt: &str,
+    tier: &str,
+    role: &str,
+    verify: Vec<VerifyStep>,
+    workdir: &Path,
+) -> TasksFile {
+    let title = prompt.lines().next().unwrap_or(prompt).trim();
+    TasksFile {
+        meta: TaskMeta {
+            plan: run_id.to_string(),
+            iteration: 1,
+            total: 1,
+            done: 0,
+            status: "ready".to_string(),
+            superseded_by: None,
+            max_parallel: 1,
+            estimated_total_minutes: 0,
+            // The prompt is the whole task definition.
+            skip_enrichment: true,
+            source_prd: None,
+            failure_policy: None,
+        },
+        tasks: vec![TaskDef {
+            id: "T1".to_string(),
+            title: truncate(title, 80).to_string(),
+            description: Some(prompt.to_string()),
+            role: Some(role.to_string()),
+            status: "ready".to_string(),
+            tier: tier.to_string(),
+            frequency: None,
+            model_hint: None,
+            replan_strategy: None,
+            max_loc: None,
+            files: workspace_scope(workdir),
+            allowed_tools: None,
+            denied_tools: None,
+            mcp_servers: None,
+            depends_on: Vec::new(),
+            depends_on_plan: Vec::new(),
+            split_into: None,
+            context: None,
+            verify,
+            timeout_secs: 0,
+            max_retries: crate::task_parser::default_max_retries(),
+            acceptance: Vec::new(),
+            acceptance_contract: None,
+            domain: None,
+            estimated_minutes: None,
+            crates_touched: None,
+            sequence: 0,
+        }],
+    }
+}
+
+/// A free-form prompt may touch any file, so its task's scope is the
+/// workspace's top-level entries (the plan contract requires a non-empty,
+/// glob-free list of repository-relative paths).
+fn workspace_scope(workdir: &Path) -> Vec<String> {
+    let mut entries: Vec<String> = std::fs::read_dir(workdir)
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
+        .filter(|name| {
+            !name.starts_with('.')
+                && !matches!(name.as_str(), "target" | "node_modules")
+                && !name.contains(['*', '?', '[', ']', '\\'])
+        })
+        .collect();
+    entries.sort();
+    entries.truncate(crate::plan_policy::PlanExecutionPolicy::for_environment().max_files_per_task);
+    if entries.is_empty() {
+        entries.push(".roko".to_string());
+    }
+    entries
+}
+
+/// Episodes for `plan_id`'s tasks appended to the log at `path` after byte
+/// `offset` (the whole log when it rotated meanwhile).
+fn task_episodes_since(path: &Path, offset: u64, plan_id: &str) -> Vec<Episode> {
+    use std::io::{Read as _, Seek as _, SeekFrom};
+
+    let mut appended = Vec::new();
+    if let Ok(mut file) = std::fs::File::open(path) {
+        let len = file.metadata().map_or(0, |meta| meta.len());
+        let start = if offset <= len { offset } else { 0 };
+        if file.seek(SeekFrom::Start(start)).is_ok() {
+            let _ = file.read_to_end(&mut appended);
+        }
+    }
+    String::from_utf8_lossy(&appended)
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Episode>(line).ok())
+        .filter(|episode| {
+            episode
+                .extra
+                .get("plan_id")
+                .and_then(serde_json::Value::as_str)
+                == Some(plan_id)
         })
         .collect()
 }
 
-/// Unified workflow execution entry point.
-///
-/// All production workflow callers route through this function.
-/// #276 retired `WorkflowEngine` — all execution now goes through graph
-/// templates via `WorkflowGraphController`.
-pub async fn run_workflow_report(
-    prompt: &str,
-    workdir: &std::path::Path,
-    workflow_template: &str,
-    enabled_gates: Vec<String>,
-    shell_gates: Vec<CoreShellGateCommand>,
-    external_hub: Option<&StateHub>,
-    overrides: &CliOverrides,
-) -> anyhow::Result<WorkflowRunReport> {
-    let (_config, model_config, selection) = resolve_workflow_model_selection(workdir, overrides)?;
-    selection.print_stderr();
-
-    let (_handle, _runtime_services) = WorkflowServiceAdapter::build(
-        workdir,
-        &_config,
-        model_config.clone(),
-        &selection,
-        overrides,
-    )?;
-
-    // Resolve the template via the roko-execution graph template infrastructure.
-    let descriptor = roko_execution::workflow::resolve_template(workflow_template)
-        .map_err(|e| anyhow!("resolve workflow template: {e}"))?;
-
-    let run_id = format!("cli_workflow_{}", Utc::now().timestamp_millis());
-    let mut controller = roko_execution::workflow::WorkflowGraphController::new(
-        run_id,
-        descriptor,
-        prompt.to_string(),
-    );
-
-    // Build a minimal report since the graph controller handles execution
-    // lifecycle. The actual graph execution is managed by the controller.
-    let started_at = std::time::Instant::now();
-
-    // For now, produce a report that indicates graph execution is the path.
-    // Full wiring of the graph controller run loop is product work beyond
-    // the #276 deletion scope.
-    controller.termination = Some(roko_execution::workflow::WorkflowTermination::Skipped {
-        reason: format!(
-            "graph template execution for '{workflow_template}' requires runtime wiring; \
-             use `roko plan run` for complete graph execution"
-        ),
-    });
-
-    let _ = (enabled_gates, shell_gates, external_hub);
-
-    Ok(roko_execution::workflow::build_report(
-        &controller,
-        started_at,
-        selection.effective_model_key,
-        Some(selection.provider_key),
-        String::new(),
-        0,
-        0,
-        None,
-        vec![],
-        vec![],
-        None,
-    ))
+/// Final verdict of each verify step of `plan_id`, in the order they ran.
+fn gate_outcomes(snapshot: &DashboardSnapshot, plan_id: &str) -> Vec<GateOutcome> {
+    let mut gates: Vec<GateOutcome> = Vec::new();
+    for verdict in snapshot.gates.iter().filter(|v| v.plan_id == plan_id) {
+        // A retried step reports again; its last verdict stands.
+        match gates.iter_mut().find(|gate| gate.name == verdict.gate) {
+            Some(gate) => gate.passed = verdict.passed,
+            None => gates.push(GateOutcome {
+                name: verdict.gate.clone(),
+                passed: verdict.passed,
+                output: None,
+                duration_ms: 0,
+            }),
+        }
+    }
+    gates
 }
 
-/// Like [`run_workflow_report`] but returns the raw report without printing.
-pub async fn run_workflow_engine_report_with_hub(
-    prompt: &str,
-    workdir: &std::path::Path,
-    workflow_template: &str,
-    enabled_gates: Vec<String>,
-    shell_gates: Vec<CoreShellGateCommand>,
-    external_hub: Option<&StateHub>,
-    overrides: &CliOverrides,
-) -> anyhow::Result<WorkflowRunReport> {
-    run_workflow_report(
-        prompt,
-        workdir,
-        workflow_template,
-        enabled_gates,
-        shell_gates,
-        external_hub,
-        overrides,
-    )
-    .await
+/// The agent text the dashboard retained for `plan_id`'s tasks (stream
+/// records other than text, such as tool calls, are left out).
+fn task_output(snapshot: &DashboardSnapshot, plan_id: &str) -> String {
+    let mut tasks: Vec<&str> = snapshot
+        .agents
+        .values()
+        .filter(|agent| agent.current_plan == plan_id)
+        .map(|agent| agent.current_task.as_str())
+        .collect();
+    tasks.sort_unstable();
+    tasks.dedup();
+    tasks
+        .iter()
+        .filter_map(|task| snapshot.task_outputs.get(*task))
+        .flatten()
+        .filter_map(|line| {
+            let Some(record) = line.strip_prefix(crate::runner::tui_bridge::STREAM_RECORD_PREFIX)
+            else {
+                return Some(line.clone());
+            };
+            let record = serde_json::from_str::<serde_json::Value>(record).ok()?;
+            (record["kind"] == "text")
+                .then(|| record["payload"]["text"].as_str().map(str::to_owned))
+                .flatten()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
-// run_workflow_engine_with_services and its pub wrapper removed by #276.
-// All workflow execution now uses graph templates via WorkflowGraphController.
-
-pub fn print_workflow_run_report(
-    prompt: &str,
-    workflow_template: &str,
+/// Record the run's gate verdicts and completion through the learning
+/// feedback service, which appends them to `learn/efficiency.jsonl` and one
+/// `workflow_complete` episode to the root episode log.
+async fn record_workflow_feedback(
+    roko_dir: &Path,
     report: &WorkflowRunReport,
+    outcome: String,
+    duration: std::time::Duration,
 ) {
+    use roko_core::foundation::{FeedbackEvent, FeedbackSink as _};
+
+    let feedback =
+        roko_learn::feedback_service::FeedbackService::from_roko_dir_with_episodes(roko_dir);
+    let gate_events = report.gates.iter().map(|gate| FeedbackEvent::GateResult {
+        run_id: report.run_id.clone(),
+        gate_name: gate.name.clone(),
+        passed: gate.passed,
+        duration_ms: gate.duration_ms,
+    });
+    let completion = FeedbackEvent::WorkflowComplete {
+        event_type: "workflow_completed".to_string(),
+        run_id: report.run_id.clone(),
+        model: Some(report.model.clone()),
+        success: report.success,
+        outcome,
+        total_cost_usd: report.cost.unwrap_or_default(),
+        total_tokens: report.token_usage,
+        duration_ms: u64::try_from(duration.as_millis()).unwrap_or(u64::MAX),
+    };
+    for event in gate_events.chain(std::iter::once(completion)) {
+        if let Err(error) = feedback.record(event).await {
+            tracing::warn!(%error, run_id = %report.run_id, "workflow feedback record failed");
+        }
+    }
+    if let Err(error) = feedback.flush_async().await {
+        tracing::warn!(%error, run_id = %report.run_id, "workflow feedback flush failed");
+    }
+}
+
+/// Print a [`run_prompt`] result: what ran, the outcome, cost, gate
+/// verdicts, and where the run's plan and records are.
+pub fn print_workflow_run_report(prompt: &str, tier: &str, report: &WorkflowRunReport) {
     output_format::intro("roko run");
     output_format::step("prompt", &output_format::dim(&truncate(prompt, 60)));
-    output_format::step("workflow", workflow_template);
+    output_format::step("engine", &format!("graph, one {tier} task"));
     output_format::step("model", &report.model);
     output_format::divider();
 
@@ -573,13 +775,21 @@ pub fn print_workflow_run_report(
         ));
     }
     if report.gates.is_empty() {
-        output_format::branch("gates      (none configured)");
+        output_format::branch("gates      (none ran)");
     } else {
         for gate in &report.gates {
             let marker = if gate.passed { "PASS" } else { "FAIL" };
             output_format::branch(&format!("gate       [{marker}] {}", gate.name));
         }
     }
+    output_format::branch(&format!(
+        "plan       {}",
+        output_format::dim(&format!(".roko/runs/{}/tasks.toml", report.run_id)),
+    ));
+    output_format::branch(&format!(
+        "episodes   {}",
+        output_format::dim(".roko/episodes.jsonl"),
+    ));
     output_format::end(&output_format::dim(&report.run_id));
 }
 
@@ -698,6 +908,74 @@ mod tests {
     use super::*;
     use roko_runtime::workflow_contract::WorkflowConfig;
     use tempfile::TempDir;
+
+    #[test]
+    fn prompt_verify_steps_prefer_declared_rungs_then_workspace_kind() {
+        let tmp = TempDir::new().unwrap();
+        let mut gates = roko_core::config::GatesConfig::default();
+        assert!(prompt_verify_steps(tmp.path(), &gates).is_empty());
+
+        std::fs::write(tmp.path().join("Cargo.toml"), "").unwrap();
+        let steps = prompt_verify_steps(tmp.path(), &gates);
+        assert_eq!(steps.len(), 1);
+        assert_eq!(steps[0].command, "cargo check --workspace");
+
+        let rung = |name: &str, command: &str, required| roko_core::config::GateRungConfig {
+            name: name.to_string(),
+            command: command.to_string(),
+            timeout_secs: 30,
+            required,
+            parallel_with: Vec::new(),
+        };
+        gates.custom_rungs = vec![
+            rung("check", "make check", true),
+            rung("lint", "make lint", false),
+        ];
+        let steps = prompt_verify_steps(tmp.path(), &gates);
+        assert_eq!(steps.len(), 1, "optional rungs do not gate the task");
+        assert_eq!(steps[0].phase, "check");
+        assert_eq!(steps[0].command, "make check");
+        assert_eq!(steps[0].timeout_ms, 30_000);
+    }
+
+    #[test]
+    fn prompt_plan_loads_as_one_verified_task_carrying_the_prompt() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::create_dir_all(tmp.path().join("src")).unwrap();
+        std::fs::write(tmp.path().join("roko.toml"), "").unwrap();
+        let run_dir = tmp.path().join(".roko").join("runs").join("run-1");
+        std::fs::create_dir_all(&run_dir).unwrap();
+        let prompt = "write a \"hello\" function\nwith a doc comment";
+        let verify = vec![VerifyStep {
+            phase: "check".to_string(),
+            command: "true".to_string(),
+            fail_msg: None,
+            timeout_ms: 5_000,
+        }];
+        prompt_tasks_file(
+            "run-1",
+            prompt,
+            "focused",
+            "implementer",
+            verify,
+            tmp.path(),
+        )
+        .write(&run_dir.join("tasks.toml"))
+        .unwrap();
+
+        let plan = crate::runner::plan_loader::load_plan(&run_dir).unwrap();
+        assert_eq!(plan.id, "run-1");
+        let [task] = plan.tasks.tasks.as_slice() else {
+            panic!("expected one task, got {:?}", plan.tasks.tasks);
+        };
+        assert_eq!(task.description.as_deref(), Some(prompt));
+        assert_eq!(task.title, "write a \"hello\" function");
+        assert_eq!(task.role.as_deref(), Some("implementer"));
+        assert_eq!(task.tier, "focused");
+        assert_eq!(task.files, ["roko.toml", "src"]);
+        assert_eq!(task.verify.len(), 1);
+        assert_eq!(task.verify[0].command, "true");
+    }
 
     #[test]
     fn run_report_overall_success_requires_all_gates() {
@@ -858,27 +1136,6 @@ mod tests {
             "secret leaked into shared transcript"
         );
         assert!(json.contains("[REDACTED]"), "no [REDACTED] marker found");
-    }
-
-    fn init_git_workdir(workdir: &std::path::Path) {
-        run_git(workdir, &["init"]);
-        run_git(workdir, &["config", "user.email", "test@example.com"]);
-        run_git(workdir, &["config", "user.name", "Roko Test"]);
-    }
-
-    fn run_git(workdir: &std::path::Path, args: &[&str]) {
-        let output = std::process::Command::new("git")
-            .args(args)
-            .current_dir(workdir)
-            .output()
-            .expect("run git command");
-
-        assert!(
-            output.status.success(),
-            "git {:?} failed: {}",
-            args,
-            String::from_utf8_lossy(&output.stderr)
-        );
     }
 
     // ── resolve_engine_flag tests (#300) ──────────────────────────────

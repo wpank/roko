@@ -240,11 +240,18 @@ fn item_04_plan_runner_reports_non_zero_agent_calls() {
         "CLAUDE.md item 04 invalidated: PlanRunner reported zero agent calls\n{report}"
     );
 
-    // Verify at least one plan was tracked.
-    let plans = report.get("plans").and_then(serde_json::Value::as_array);
+    // The Graph engine report tracks each plan through its `plan_budgets`
+    // entry; the sample plan must be among them.
+    let tracked_plans = report
+        .get("plan_budgets")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|budget| budget.get("plan_id").and_then(serde_json::Value::as_str))
+        .collect::<Vec<_>>();
     assert!(
-        plans.is_some_and(|ps| !ps.is_empty()),
-        "CLAUDE.md item 04 invalidated: no plans tracked in report\n{report}"
+        tracked_plans.contains(&SAMPLE_PLAN_ID),
+        "CLAUDE.md item 04 invalidated: sample plan not tracked in report\n{report}"
     );
 }
 
@@ -300,6 +307,7 @@ printf '%s\n' '{{"type":"content_block_delta","delta":{{"text":"mcp-ok"}}}}'
         working_dir: Some(tmp.path().to_path_buf()),
         provider_semaphores: None,
         env: Vec::new(),
+        env_passthrough: Vec::new(),
         extra_args: vec!["--extra-flag".to_string()],
         effort: Some("high".to_string()),
         bare_mode: false,
@@ -311,6 +319,7 @@ printf '%s\n' '{{"type":"content_block_delta","delta":{{"text":"mcp-ok"}}}}'
         local_tool_mcp_servers: None,
         rate_limiter: None,
         gemini_safety_settings: Vec::new(),
+        live_output: None,
         cancel_token: None,
         tool_audit: None,
         max_turns: None,
@@ -449,11 +458,18 @@ async fn item_09_roko_serve_serves_api_status() {
     init_workspace(tmp.path());
 
     let serve = spawn_roko_serve_on_random_port(tmp.path());
-    let response = wait_for_http_ok(
-        &format!("{}/api/status", serve.base_url),
-        Duration::from_secs(10),
-    )
-    .await;
+    // A fresh `roko init` workspace keeps serve auth on: the server writes a
+    // launch token (0600) that the portal link and the CLI use.
+    let token = common::wait_for_serve_token(tmp.path(), Duration::from_secs(10)).await;
+    let status_url = format!("{}/api/status", serve.base_url);
+    let unauthenticated = reqwest::get(&status_url).await.expect("status request");
+    assert_eq!(
+        unauthenticated.status(),
+        reqwest::StatusCode::UNAUTHORIZED,
+        "an unauthenticated /api/status must be refused"
+    );
+    let response =
+        common::wait_for_http_ok_with_bearer(&status_url, &token, Duration::from_secs(10)).await;
     let status: serde_json::Value = response.json().await.expect("status json");
 
     assert!(

@@ -1,0 +1,174 @@
+/**
+ * Portal design tokens — semantic aliases over ROSEDUST primitives.
+ *
+ * All values here reference ROSEDUST variables declared in rosedust.css.
+ * No new colour values are introduced in this file.
+ *
+ * Categories:
+ *   1. State colours   — task/run lifecycle states
+ *   2. Focus/blur      — card focus ring and title colours
+ *   3. Progress bands  — <30%, 30-70%, >70%
+ *   4. Role accents    — one accent colour per agent role
+ *   5. Layout          — fixed-dimension tokens
+ *   6. Utility classes — .tabular
+ */
+
+:root {
+  /* ------------------------------------------------------------------ */
+  /* 1. State colours                                                     */
+  /*                                                                      */
+  /* Browser-safe hues: rose and red are indistinguishable as errors, so */
+  /* each state uses a dedicated, perceptually-distinct primitive.        */
+  /* ------------------------------------------------------------------ */
+
+  /** Completed and verified — leaf green. */
+  --state-done:     var(--leaf);
+
+  /** Currently running / in-flight — indigo (calm, not rose/red). */
+  --state-active:   var(--indigo);
+
+  /** Accepted but with failures — amber, NOT green. */
+  --state-accepted: var(--amber);
+
+  /** Hard failure — signal red (clear red, not rose). */
+  --state-failed:   var(--signal-red);
+
+  /** Waiting in queue — de-emphasised faint. */
+  --state-queued:   var(--text-faint);
+
+  /** Not yet dispatched — de-emphasised faint. */
+  --state-pending:  var(--text-faint);
+
+  /** Deliberately skipped — de-emphasised faint (same as queued). */
+  --state-skipped:  var(--text-faint);
+
+  /* ------------------------------------------------------------------ */
+  /* 2. Focus / blur — card focus ring and title colours                 */
+  /* ------------------------------------------------------------------ */
+
+  /** Border colour when a card/panel is focused — neutral bone, not a brand hue. */
+  --focus-border: var(--bone);
+
+  /** Title colour when a card/panel is focused. */
+  --focus-title:  var(--bone);
+
+  /** Border colour when a card/panel is blurred — hairline. */
+  --blur-border:  var(--line);
+
+  /** Title colour when a card/panel is blurred. */
+  --blur-title:   var(--text-ghost);
+
+  /* ------------------------------------------------------------------ */
+  /* 3. Progress bands                                                    */
+  /*                                                                      */
+  /* All three bands use the running colour — a bar's hue signals state  */
+  /* (running/done/failed), not fraction. Finished bars use state tokens. */
+  /* ------------------------------------------------------------------ */
+
+  /** Progress < 30% — running colour (indigo). */
+  --progress-low:  var(--state-active);
+
+  /** Progress 30–70% — running colour (indigo). */
+  --progress-mid:  var(--state-active);
+
+  /** Progress > 70% — running colour (indigo). */
+  --progress-high: var(--state-active);
+
+  /* ------------------------------------------------------------------ */
+  /* 4. Role accents — one accent per agent role                         */
+  /*                                                                      */
+  /* A coloured role sits ≥ 60° and ΔE ≥ 35 from running (--state-active*/
+  /* / indigo) and ≥ 30° from every other state hue and from            */
+  /* --accent-cyan. The colour wheel has no room left for a fifth hue,   */
+  /* so rare roles read in bone.                                          */
+  /* ------------------------------------------------------------------ */
+
+  /** Implementer — blush (action, execution; pink, ≥ 60° and ΔE ≥ 35 from indigo). */
+  --role-implementer:    var(--blush);
+
+  /** Strategist — mint (planning; cool green, not leaf-green done). */
+  --role-strategist:     var(--mint);
+
+  /** Architect — bone-bright (structure; neutral, rare role). */
+  --role-architect:      var(--bone-bright);
+
+  /** Scribe — bone cream (documentation, neutral). */
+  --role-scribe:         var(--bone);
+
+  /** Quick-reviewer — lime (review; yellow-green, not leaf-green done). */
+  --role-quick-reviewer: var(--lime);
+
+  /** Other / uncategorised — muted text. */
+  --role-other:          var(--text-muted);
+
+  /* ------------------------------------------------------------------ */
+  /* 5. Layout — fixed-dimension tokens                                  */
+  /* ------------------------------------------------------------------ */
+
+  /** Left navigation rail width — 336px aligns the first band divider to the rail edge. */
+  --rail-width:     336px;
+
+  /** Run band fixed height — compact: one head line + two content lines at 60px. */
+  --band-height:    60px;
+
+  /** Standard data row height in the task grid. */
+  --row-height:     24px;
+
+  /** Portal header bar height. */
+  --header-height:  32px;
+
+  /* ------------------------------------------------------------------ */
+  /* 6. Type scale — semantic sizes for plan shell components            */
+  /* ------------------------------------------------------------------ */
+
+  /** Plan title — largest shell text. */
+  --type-title:   var(--text-lg);
+
+  /** Section label — uppercase category headers. */
+  --type-section: var(--text-sm);
+
+  /** Data row — primary row text. */
+  --type-row:     var(--text-sm);
+
+  /** Metadata — smallest annotated values. */
+  --type-meta:    var(--text-xs);
+
+  /* ------------------------------------------------------------------ */
+  /* 7. Button tokens                                                    */
+  /* ------------------------------------------------------------------ */
+
+  /** Primary button background — brand rose. */
+  --button-primary-bg:    var(--rose);
+
+  /** Primary button hover background — bright rose. */
+  --button-primary-hover: var(--rose-bright);
+
+  /** Primary button foreground — void black for contrast. */
+  --button-primary-fg:    var(--void);
+
+  /** Danger fill foreground — bright bone for contrast on deep red. */
+  --danger-fill-fg:       var(--bone-bright);
+
+  /* ------------------------------------------------------------------ */
+  /* 8. Role aliases — short names the engine reports                    */
+  /* ------------------------------------------------------------------ */
+
+  /** Short alias for the implementer role. */
+  --role-impl:     var(--role-implementer);
+
+  /** Short alias for the quick-reviewer role. */
+  --role-reviewer: var(--role-quick-reviewer);
+}
+
+/* -------------------------------------------------------------------- */
+/* 6. Utility classes                                                     */
+/* -------------------------------------------------------------------- */
+
+/**
+ * Tabular number rendering — prevents layout shift in live counters
+ * and aligned numeric columns.
+ */
+.tabular {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+}

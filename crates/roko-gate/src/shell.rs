@@ -4,11 +4,18 @@
 //! for bespoke checks (custom lints, site-specific invariants, pre-commit-style
 //! hooks). It never consults the input signal's body beyond reading a
 //! [`GatePayload`] if present (for `working_dir` and environment).
+//!
+//! The command does not inherit roko's whole environment, which holds the
+//! provider keys roko loads from its `.env` files: it gets the allowlisted
+//! variables described in [`crate::gate_env`] plus the payload's explicit
+//! ones.
 
 use crate::compile_errors::{render_failure_classification, structured_gate_failure};
+use crate::gate_env::{inherit_gate_env, inherit_gate_env_from};
 use crate::payload::GatePayload;
 use async_trait::async_trait;
 use roko_core::{Context, Signal, Verdict, Verify};
+use std::ffi::OsString;
 use std::process::Stdio;
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -29,6 +36,9 @@ pub struct ShellGate {
     /// Optional sender for live line-by-line output streaming.
     /// Each line from stdout/stderr is forwarded as it arrives.
     line_sink: Option<mpsc::UnboundedSender<String>>,
+    /// Variables inherited in place of roko's own environment, still
+    /// filtered by the gate policy. `None` uses roko's environment.
+    parent_env: Option<Vec<(String, OsString)>>,
 }
 
 impl ShellGate {
@@ -43,6 +53,7 @@ impl ShellGate {
             timeout_ms: 300_000, // 5 minutes
             name,
             line_sink: None,
+            parent_env: None,
         }
     }
 
@@ -67,6 +78,23 @@ impl ShellGate {
     #[must_use]
     pub fn with_line_sink(mut self, sink: mpsc::UnboundedSender<String>) -> Self {
         self.line_sink = Some(sink);
+        self
+    }
+
+    /// Inherit `vars` instead of roko's own environment. The gate policy
+    /// still filters them, exactly as it filters roko's environment.
+    #[must_use]
+    pub fn with_parent_env<I, K, V>(mut self, vars: I) -> Self
+    where
+        I: IntoIterator<Item = (K, V)>,
+        K: Into<String>,
+        V: Into<OsString>,
+    {
+        self.parent_env = Some(
+            vars.into_iter()
+                .map(|(key, value)| (key.into(), value.into()))
+                .collect(),
+        );
         self
     }
 }
@@ -96,6 +124,13 @@ impl Verify for ShellGate {
         cmd.stderr(Stdio::piped());
         configure_child_process_group(&mut cmd);
 
+        let passthrough = payload
+            .as_ref()
+            .map_or(&[][..], |p| p.env_passthrough.as_slice());
+        match &self.parent_env {
+            Some(vars) => inherit_gate_env_from(&mut cmd, vars.iter().cloned(), passthrough),
+            None => inherit_gate_env(&mut cmd, passthrough),
+        }
         if let Some(ref p) = payload {
             cmd.current_dir(&p.working_dir);
             if let Some(ref tgt) = p.target_dir {
@@ -349,6 +384,62 @@ mod tests {
         assert!(v.passed);
         // Duration should be non-zero but small.
         assert!(v.duration_ms < 5000);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn verify_command_cannot_see_provider_keys() {
+        let path = std::env::var_os("PATH")
+            .filter(|path| !path.is_empty())
+            .unwrap_or_else(|| "/usr/bin:/bin".into());
+        let payload = GatePayload::in_dir(std::env::temp_dir())
+            .with_env("ROKO_GATE_TASK_ID", "T01")
+            .with_env_passthrough(["DATABASE_URL"]);
+        let signal = Signal::builder(Kind::Task)
+            .body(Body::from_json(&payload).expect("payload serializes"))
+            .build();
+        let gate = ShellGate::new("bash", vec!["-c".into(), "env".into()]).with_parent_env([
+            ("PATH", path),
+            ("HOME", "/tmp/gate-home".into()),
+            ("CARGO_HOME", "/tmp/gate-cargo".into()),
+            ("ROKO_BIN", "/tmp/roko".into()),
+            ("DATABASE_URL", "postgres://gate-db".into()),
+            ("OPENAI_API_KEY", "sk-test-not-real".into()),
+            ("ANTHROPIC_API_KEY", "sk-ant-test-not-real".into()),
+            ("CARGO_REGISTRY_TOKEN", "cio-test-not-real".into()),
+            ("UNRELATED_SETTING", "not-inherited".into()),
+        ]);
+
+        let v = gate.verify(&signal, &Context::at(0)).await;
+
+        assert!(v.passed, "env should run: {}", v.reason);
+        let detail = v.detail.as_deref().expect("env output");
+        for leaked in [
+            "sk-test-not-real",
+            "sk-ant-test-not-real",
+            "cio-test-not-real",
+            "not-inherited",
+        ] {
+            assert!(!detail.contains(leaked), "{leaked} leaked:\n{detail}");
+        }
+        for kept in [
+            "HOME=/tmp/gate-home",
+            "CARGO_HOME=/tmp/gate-cargo",
+            "ROKO_BIN=/tmp/roko",
+            "DATABASE_URL=postgres://gate-db",
+            "ROKO_GATE_TASK_ID=T01",
+        ] {
+            assert!(detail.contains(kept), "{kept} missing:\n{detail}");
+        }
+        assert!(detail.lines().any(|line| line.starts_with("PATH=/")));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn verify_command_can_run_cargo_with_the_allowlisted_env() {
+        let gate = ShellGate::new("bash", vec!["-c".into(), "cargo --version".into()]);
+        let v = gate.verify(&empty_signal(), &Context::at(0)).await;
+        assert!(v.passed, "cargo should still be found: {}", v.reason);
     }
 
     #[tokio::test]

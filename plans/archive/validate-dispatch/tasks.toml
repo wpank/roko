@@ -1,0 +1,67 @@
+[meta]
+plan = "validate-dispatch"
+total = 3
+done = 0
+status = "ready"
+max_parallel = 2
+skip_enrichment = true
+
+[[task]]
+id = "DSP-T01"
+title = "Verify conductor is wired with periodic evaluation"
+description = """Search for 'conductor.evaluate_full' in crates/roko-cli/src/graph_task_dispatch.rs.
+Confirm it's called inside a tokio::select loop with interval.
+Write confirmation to demo/dispatch-check/conductor-loop-ok.txt."""
+status = "ready"
+tier = "mechanical"
+max_loc = 3
+model_hint = "cerebras-gptoss"
+files = ["demo/dispatch-check/conductor-loop-ok.txt"]
+role = "implementer"
+depends_on = []
+max_turns = 5
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'evaluate_full' demo/dispatch-check/conductor-loop-ok.txt"
+fail_msg = "Conductor loop not confirmed"
+
+[[task]]
+id = "DSP-T02"
+title = "Verify per-plan config overrides schema"
+description = """Search for 'PlanOverrideConfig' in crates/roko-core/src/config/schema.rs.
+Confirm the struct exists with model, effort, max_turns fields.
+Write confirmation to demo/dispatch-check/overrides-ok.txt."""
+status = "ready"
+tier = "mechanical"
+max_loc = 3
+model_hint = "cerebras-gptoss"
+files = ["demo/dispatch-check/overrides-ok.txt"]
+role = "implementer"
+depends_on = []
+max_turns = 5
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'PlanOverrideConfig' demo/dispatch-check/overrides-ok.txt"
+fail_msg = "Override config not confirmed"
+
+[[task]]
+id = "DSP-T03"
+title = "Verify resource budget is wired into dispatch"
+description = """Search for 'FullResourceBudget' in crates/roko-cli/src/graph_task_dispatch.rs.
+Confirm reserve/release calls exist.
+Write confirmation to demo/dispatch-check/budget-ok.txt."""
+status = "ready"
+tier = "mechanical"
+max_loc = 3
+model_hint = "cerebras-gptoss"
+files = ["demo/dispatch-check/budget-ok.txt"]
+role = "implementer"
+depends_on = ["DSP-T01"]
+max_turns = 5
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'FullResourceBudget' demo/dispatch-check/budget-ok.txt"
+fail_msg = "Resource budget not confirmed"

@@ -425,6 +425,7 @@ impl SectionOutcomeStore {
             .open(&self.path)
             .await?;
         file.write_all(payload.as_bytes()).await?;
+        file.flush().await?;
         if self.fsync {
             file.sync_data().await?;
         }

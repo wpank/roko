@@ -101,6 +101,23 @@ pub enum RokoError {
         message: String,
     },
 
+    /// An agent run stopped at its turn cap (Claude CLI `error_max_turns`).
+    ///
+    /// Its partial work stays in the workspace, so a retry should raise the
+    /// cap and resume rather than rerun the same cap from scratch.
+    #[error(
+        "agent turn cap reached ({backend}): stopped after {num_turns} turns at the \
+         {limit}-turn cap; partial work remains in the workspace"
+    )]
+    TurnLimitReached {
+        /// Backend identifier (e.g. "claude_cli").
+        backend: String,
+        /// Turn cap the attempt ran with.
+        limit: u32,
+        /// Turns the provider reported using.
+        num_turns: u32,
+    },
+
     /// Verify rejected with structured verdict detail (superset of existing `Rejected`).
     #[error("gate error ({gate}): {message}")]
     Verify {
@@ -307,7 +324,7 @@ impl RokoError {
             Self::Json(_) => ErrorKind::Json,
             Self::Invalid(_) => ErrorKind::Invalid,
             Self::Planning(_) => ErrorKind::Planning,
-            Self::Agent { .. } => ErrorKind::Agent,
+            Self::Agent { .. } | Self::TurnLimitReached { .. } => ErrorKind::Agent,
             Self::Verify { .. } => ErrorKind::Verify,
             Self::Tool { .. } => ErrorKind::Tool,
             Self::Chain(_) => ErrorKind::Chain,

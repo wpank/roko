@@ -119,8 +119,9 @@ pub struct MarketplaceJob {
     /// Freeform tags for categorisation.
     #[serde(default)]
     pub tags: Vec<String>,
-    /// Optional reward string.
-    #[serde(default)]
+    /// Optional reward string. roko-serve writes an empty reward as `null`
+    /// and accepts numeric rewards, so both are tolerated here.
+    #[serde(default, deserialize_with = "deserialize_lenient_string")]
     pub reward: String,
     /// Optional associated plan identifier.
     #[serde(default)]
@@ -135,6 +136,22 @@ pub struct MarketplaceJob {
     /// Defaults to `false`; callers set it explicitly when creating a job.
     #[serde(default)]
     pub auto_execute: bool,
+    /// Fields this type does not model (e.g. roko-serve's `metadata`,
+    /// `required_capabilities`, `committed_candidates`, `deadline`), kept so a
+    /// load/save round trip does not drop them.
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
+}
+
+/// Deserialize a string field that other writers may emit as `null` or a number.
+fn deserialize_lenient_string<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<String, D::Error> {
+    Ok(match serde_json::Value::deserialize(deserializer)? {
+        serde_json::Value::Null => String::new(),
+        serde_json::Value::String(s) => s,
+        other => other.to_string(),
+    })
 }
 
 impl MarketplaceJob {
@@ -411,7 +428,7 @@ impl JobFilter {
     #[must_use]
     pub fn matches(&self, job: &MarketplaceJob) -> bool {
         if let Some(ref status) = self.state
-            && JobStatus::parse(&job.status) != Some(*status)
+            && JobStatus::parse(job.effective_status()) != Some(*status)
         {
             return false;
         }
@@ -997,11 +1014,17 @@ impl FileJobStore {
     }
 
     /// Persist a job with atomic write (tmp + rename).
+    ///
+    /// The legacy `state` key is folded into `status` first, so the file never
+    /// carries two status keys that disagree (roko-serve reads either key).
     pub async fn save(&self, job: &MarketplaceJob) -> Result<(), JobError> {
         tokio::fs::create_dir_all(&self.root).await?;
         let path = self.job_path(&job.id);
         let tmp = path.with_extension("json.tmp");
-        let json = serde_json::to_string_pretty(job)?;
+        let mut job = job.clone();
+        job.status = job.effective_status().to_string();
+        job.state.clear();
+        let json = serde_json::to_string_pretty(&job)?;
         tokio::fs::write(&tmp, json).await?;
         tokio::fs::rename(&tmp, &path).await?;
         Ok(())
@@ -1216,12 +1239,9 @@ impl FileJobStore {
         let mut by_state: HashMap<String, usize> = HashMap::new();
         let mut by_type: HashMap<String, usize> = HashMap::new();
         for job in &all {
-            let status_key = if job.status.is_empty() {
-                "open".to_string()
-            } else {
-                job.status.clone()
-            };
-            *by_state.entry(status_key).or_default() += 1;
+            *by_state
+                .entry(job.effective_status().to_string())
+                .or_default() += 1;
             let type_key = if job.job_type.is_empty() {
                 "other".to_string()
             } else {
@@ -1499,5 +1519,75 @@ mod tests {
             id: "job-42".to_string(),
         };
         assert!(err.to_string().contains("active execution lease"));
+    }
+
+    /// Shape of a job file written by roko-serve's `POST /api/jobs`: legacy
+    /// `state` key, `null` reward, and fields `MarketplaceJob` does not model.
+    const SERVE_WRITTEN_JOB: &str = r#"{
+        "id": "serve-job",
+        "title": "Serve job",
+        "job_type": "other",
+        "state": "assigned",
+        "assigned_to": "agent-1",
+        "reward": null,
+        "metadata": {"source": "portal"},
+        "required_capabilities": ["rust"],
+        "committed_candidates": ["agent-1"]
+    }"#;
+
+    #[tokio::test]
+    async fn job_execution_cancel_round_trips_serve_written_job() {
+        let tmp = tempfile::tempdir().unwrap();
+        let jobs_root = tmp.path().join("jobs");
+        std::fs::create_dir_all(&jobs_root).unwrap();
+        std::fs::write(jobs_root.join("serve-job.json"), SERVE_WRITTEN_JOB).unwrap();
+
+        let svc = JobExecutionService::new(jobs_root.clone());
+        let receipt = svc
+            .cancel("serve-job", JobExecutionMode::Serve)
+            .await
+            .expect("cancel a serve-written job");
+        assert_eq!(receipt.prior_status, "assigned");
+        assert_eq!(receipt.new_status, "cancelled");
+
+        let disk: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(jobs_root.join("serve-job.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(disk["status"], "cancelled");
+        assert!(
+            disk.get("state").is_none(),
+            "stale legacy state must not be persisted next to status: {disk}"
+        );
+        assert_eq!(disk["metadata"]["source"], "portal");
+        assert_eq!(disk["required_capabilities"][0], "rust");
+        assert_eq!(disk["committed_candidates"][0], "agent-1");
+    }
+
+    #[tokio::test]
+    async fn file_job_store_filters_and_counts_by_legacy_state() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("serve-job.json"), SERVE_WRITTEN_JOB).unwrap();
+        let store = FileJobStore::new(tmp.path().to_path_buf());
+
+        let assigned = JobFilter {
+            state: Some(JobStatus::Assigned),
+            ..JobFilter::default()
+        };
+        let jobs = store.list(&assigned).await.unwrap();
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].reward, "");
+
+        let stats = store.stats().await.unwrap();
+        assert_eq!(stats.by_state.get("assigned"), Some(&1));
+    }
+
+    #[test]
+    fn marketplace_job_accepts_numeric_reward() {
+        let job: MarketplaceJob =
+            serde_json::from_str(r#"{"id": "j", "reward": 2500, "assignee": "a"}"#).unwrap();
+        assert_eq!(job.reward, "2500");
+        assert_eq!(job.assigned_to, "a");
+        assert!(job.extra.is_empty());
     }
 }

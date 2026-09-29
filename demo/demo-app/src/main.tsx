@@ -82,9 +82,14 @@ if (import.meta.hot) {
   import.meta.hot.dispose(cleanupTransport);
 }
 
+// Derive the router basename from Vite's BASE_URL.
+// In a production build (base: '/demo/') this resolves to '/demo'.
+// In the dev server (base: '/') this resolves to '/', keeping Playwright specs unchanged.
+const routerBasename = import.meta.env.BASE_URL.replace(/\/$/, '') || '/';
+
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <BrowserRouter>
+    <BrowserRouter basename={routerBasename}>
       <ErrorBoundary>
         <ToastProvider>
           <Suspense fallback={<RouteLoading />}>

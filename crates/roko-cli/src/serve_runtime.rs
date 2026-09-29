@@ -13,13 +13,19 @@ use roko_core::config::schema::RokoConfig;
 use roko_fs::RokoLayout;
 use roko_learn::playbook::PlaybookStore;
 use roko_neuro::KnowledgeStore;
+use roko_runtime::cancel::CancelToken;
 use roko_serve::bench::{BenchConfigOverrides, BenchStrategy};
+use roko_serve::plan_types::{
+    CreatePlanOutcome, PlanDiagnosticDto, PlanSourceDto, PlanSummaryDto, PlanTaskDto,
+    PlanTaskVerifyDto, PlanTasksDto, PlanValidationDto, RevisionDto,
+};
 use roko_serve::runtime::{
-    CliRuntime, DashboardInfo, PlanExecutionResult, PlanGenerationResult, RepoInfo, RunResult,
-    RunResultUsage, RuntimeGateResult, SessionStatusInfo, TriggerExecutionScope,
+    CliRuntime, DashboardInfo, PlanExecutionResult, PlanGenerationResult, PlanRunOptions, RepoInfo,
+    RunResult, RunResultUsage, RuntimeGateResult, SessionStatusInfo, TriggerExecutionScope,
 };
 
 use crate::config::{Config, RepoRegistry};
+use crate::graph_execution::plan_runner::{PlanRunInterrupt, PlanRunInterruptHandle};
 use crate::prd;
 use crate::runner::types::{GateCompletionKind, RunnerEvent};
 use crate::state_hub::SharedStateHub;
@@ -214,7 +220,7 @@ impl CliRuntime for RokoCliRuntime {
     ) -> anyhow::Result<PlanGenerationResult> {
         let plans_root = workspace_paths::plans_dir(workdir);
         let before = snapshot_plan_artifacts(&plans_root);
-        let generated_root = prd::generate_plan_from_prd(slug, prd_path, false).await?;
+        let generated_root = prd::generate_plan_from_prd_isolated(slug, prd_path).await?;
         let after = snapshot_plan_artifacts(&generated_root);
 
         let mut plan_targets = changed_plan_targets(&generated_root, &before, &after);
@@ -234,6 +240,16 @@ impl CliRuntime for RokoCliRuntime {
         workdir: &Path,
         plan_target: &Path,
     ) -> anyhow::Result<PlanExecutionResult> {
+        self.run_plan_with_options(workdir, plan_target, PlanRunOptions::default())
+            .await
+    }
+
+    async fn run_plan_with_options(
+        &self,
+        workdir: &Path,
+        plan_target: &Path,
+        options: PlanRunOptions,
+    ) -> anyhow::Result<PlanExecutionResult> {
         let workdir = workdir.to_path_buf();
         let plan_target = plan_target.to_path_buf();
         let config = self.config.clone();
@@ -241,6 +257,7 @@ impl CliRuntime for RokoCliRuntime {
         let state_hub = self.state_hub.clone();
         let metrics = self.metrics.clone();
         let extension_chain = self.extension_chain_for_workdir(&workdir)?;
+        let live_agent_output = config_live_output_to_dispatcher(options.live_agent_output);
         tokio::task::spawn_blocking(move || {
             run_plan_on_local_runtime(
                 workdir,
@@ -250,10 +267,45 @@ impl CliRuntime for RokoCliRuntime {
                 state_hub,
                 metrics,
                 extension_chain,
+                options.fresh,
+                options.force_resume,
+                options.only_plans,
+                options.max_parallel_plans,
+                options.cancel,
+                live_agent_output,
             )
         })
         .await
         .map_err(|err| anyhow::anyhow!("plan execution worker failed: {err}"))?
+    }
+
+    async fn plan_run_order(
+        &self,
+        workdir: &Path,
+        plan_target: &Path,
+        only_plans: Option<Vec<String>>,
+    ) -> anyhow::Result<Vec<String>> {
+        let workdir = workdir.to_path_buf();
+        let plan_target_abs = if plan_target.is_absolute() {
+            plan_target.to_path_buf()
+        } else {
+            workdir.join(plan_target)
+        };
+        // plan_target might be a single-plan directory (has tasks.toml) or a
+        // multi-plan set directory. Resolve the same way run_plan does.
+        let plans_dir = if plan_target_abs.is_dir() && !plan_target_abs.join("tasks.toml").is_file()
+        {
+            plan_target_abs
+        } else if plan_target_abs.is_dir() {
+            // Single-plan directory: the plans dir is its parent.
+            plan_target_abs
+                .parent()
+                .unwrap_or(&plan_target_abs)
+                .to_path_buf()
+        } else {
+            plan_target_abs
+        };
+        crate::graph_execution::compute_plan_run_order(&workdir, &plans_dir, only_plans.as_deref())
     }
 
     async fn run_trigger_graph(
@@ -349,6 +401,315 @@ impl CliRuntime for RokoCliRuntime {
             })
             .collect()
     }
+
+    async fn list_plans(&self, workdir: &std::path::Path) -> anyhow::Result<Vec<PlanSummaryDto>> {
+        // A workspace with no plans directory is empty, not broken: report an empty
+        // list rather than a 500. Every other discovery failure is a real error and
+        // must stay visible to the operator.
+        let mut summaries = match crate::plan::summarize_discovered_plans(workdir) {
+            Ok(summaries) => summaries,
+            Err(crate::orchestrator::DiscoveryError::DirMissing(_)) => Vec::new(),
+            Err(error) => {
+                return Err(anyhow::Error::new(error)
+                    .context(format!("failed to discover plans in {}", workdir.display())));
+            }
+        };
+        summaries.sort_by(|a, b| a.id.cmp(&b.id));
+        Ok(summaries.into_iter().map(plan_summary_to_dto).collect())
+    }
+
+    async fn load_plan_summary(
+        &self,
+        workdir: &std::path::Path,
+        plan_id: &str,
+    ) -> anyhow::Result<Option<PlanSummaryDto>> {
+        let Some(plan_info) =
+            crate::plan::discover_plan_by_id(workdir, plan_id).with_context(|| {
+                format!(
+                    "failed to discover plan '{}' in {}",
+                    plan_id,
+                    workdir.display()
+                )
+            })?
+        else {
+            return Ok(None);
+        };
+        let mut summary = crate::plan::summarize_plan_info(&plan_info);
+        crate::plan::overlay_graph_checkpoint_status(workdir, std::slice::from_mut(&mut summary));
+        let mut dto = plan_summary_to_dto(summary);
+
+        // Enrich estimated_minutes from tasks.toml when available.
+        if let Some(tasks_path) = crate::plan::tasks_path(&plan_info) {
+            if tasks_path.is_file() {
+                if let Ok(tasks_file) = crate::task_parser::TasksFile::parse(&tasks_path) {
+                    dto.estimated_minutes = plan_estimated_minutes(&tasks_file);
+                }
+            }
+        }
+
+        Ok(Some(dto))
+    }
+
+    async fn load_plan_tasks(
+        &self,
+        workdir: &std::path::Path,
+        plan_id: &str,
+    ) -> anyhow::Result<Option<PlanTasksDto>> {
+        let Some(plan_info) =
+            crate::plan::discover_plan_by_id(workdir, plan_id).with_context(|| {
+                format!(
+                    "failed to discover plan '{}' in {}",
+                    plan_id,
+                    workdir.display()
+                )
+            })?
+        else {
+            return Ok(None);
+        };
+
+        let Some(tasks_path) = crate::plan::tasks_path(&plan_info) else {
+            return Ok(None);
+        };
+
+        if !tasks_path.is_file() {
+            return Ok(None);
+        }
+
+        let tasks_file = crate::task_parser::TasksFile::parse(&tasks_path)
+            .with_context(|| format!("failed to parse tasks at {}", tasks_path.display()))?;
+
+        let task_count = tasks_file.tasks.len();
+        let tasks: Vec<PlanTaskDto> = tasks_file.tasks.iter().map(task_to_dto).collect();
+
+        // Plan title from [meta].plan; absent for old plans that leave it blank.
+        let title = {
+            let t = tasks_file.meta.plan.trim().to_string();
+            if t.is_empty() { None } else { Some(t) }
+        };
+
+        Ok(Some(PlanTasksDto {
+            plan_id: plan_id.to_string(),
+            task_count,
+            tasks,
+            title,
+            max_parallel: tasks_file.meta.max_parallel,
+        }))
+    }
+
+    async fn plan_source(
+        &self,
+        workdir: &Path,
+        plan_id: &str,
+    ) -> anyhow::Result<Option<PlanSourceDto>> {
+        let Some(plan_info) =
+            crate::plan::discover_plan_by_id(workdir, plan_id).with_context(|| {
+                format!(
+                    "failed to discover plan '{}' in {}",
+                    plan_id,
+                    workdir.display()
+                )
+            })?
+        else {
+            return Ok(None);
+        };
+
+        let Some(tasks_path) = crate::plan::tasks_path(&plan_info) else {
+            return Ok(None);
+        };
+
+        if !tasks_path.is_file() {
+            return Ok(None);
+        }
+
+        let toml = std::fs::read_to_string(&tasks_path)
+            .with_context(|| format!("failed to read tasks.toml at {}", tasks_path.display()))?;
+
+        let rel_path = tasks_path
+            .strip_prefix(workdir)
+            .unwrap_or(&tasks_path)
+            .to_string_lossy()
+            .into_owned();
+
+        Ok(Some(PlanSourceDto {
+            id: plan_id.to_string(),
+            path: rel_path,
+            toml,
+        }))
+    }
+
+    async fn validate_plan_source(
+        &self,
+        workdir: &Path,
+        plan_id: &str,
+        toml: Option<String>,
+    ) -> anyhow::Result<Option<PlanValidationDto>> {
+        let Some(plan_info) =
+            crate::plan::discover_plan_by_id(workdir, plan_id).with_context(|| {
+                format!(
+                    "failed to discover plan '{}' in {}",
+                    plan_id,
+                    workdir.display()
+                )
+            })?
+        else {
+            return Ok(None);
+        };
+
+        let source_text = match toml {
+            Some(text) => text,
+            None => {
+                let Some(tasks_path) = crate::plan::tasks_path(&plan_info) else {
+                    return Ok(None);
+                };
+                if !tasks_path.is_file() {
+                    return Ok(None);
+                }
+                std::fs::read_to_string(&tasks_path).with_context(|| {
+                    format!("failed to read tasks.toml at {}", tasks_path.display())
+                })?
+            }
+        };
+
+        let report = crate::plan_authoring::validate_plan_source(
+            workdir,
+            plan_id,
+            &source_text,
+            &self.config.models,
+        );
+        Ok(Some(plan_source_report_to_dto(report)))
+    }
+
+    async fn save_plan_source(
+        &self,
+        workdir: &Path,
+        plan_id: &str,
+        toml: String,
+    ) -> anyhow::Result<Option<PlanValidationDto>> {
+        let Some(plan_info) =
+            crate::plan::discover_plan_by_id(workdir, plan_id).with_context(|| {
+                format!(
+                    "failed to discover plan '{}' in {}",
+                    plan_id,
+                    workdir.display()
+                )
+            })?
+        else {
+            return Ok(None);
+        };
+
+        let Some(tasks_path) = crate::plan::tasks_path(&plan_info) else {
+            return Ok(None);
+        };
+
+        let report = crate::plan_authoring::save_plan_source(
+            workdir,
+            &tasks_path,
+            &toml,
+            &self.config.models,
+        )?;
+        Ok(Some(plan_source_report_to_dto(report)))
+    }
+
+    async fn create_plan(
+        &self,
+        workdir: &Path,
+        slug: &str,
+        title: &str,
+    ) -> anyhow::Result<CreatePlanOutcome> {
+        let plans_root = crate::plan::plans_dir(workdir);
+        let plan_dir = plans_root.join(slug);
+        let tasks_toml_path = plan_dir.join("tasks.toml");
+
+        // If a plan with this slug already exists, report it rather than overwrite.
+        if tasks_toml_path.is_file() {
+            return Ok(CreatePlanOutcome::AlreadyExists {
+                slug: slug.to_string(),
+            });
+        }
+
+        let default_model = self
+            .config
+            .agent
+            .model
+            .as_deref()
+            .unwrap_or("claude-opus-4-5")
+            .to_string();
+
+        let source = crate::plan_authoring::starter_plan_source(slug, title, &default_model);
+        let report = crate::plan_authoring::validate_plan_source(
+            workdir,
+            slug,
+            &source,
+            &self.config.models,
+        );
+        if !report.valid {
+            return Ok(CreatePlanOutcome::Rejected {
+                validation: plan_source_report_to_dto(report),
+            });
+        }
+
+        // Create plan directory and write files.
+        std::fs::create_dir_all(&plan_dir)
+            .with_context(|| format!("create plan directory {}", plan_dir.display()))?;
+        std::fs::write(&tasks_toml_path, &source)
+            .with_context(|| format!("write tasks.toml at {}", tasks_toml_path.display()))?;
+        let plan_md_path = plan_dir.join("plan.md");
+        std::fs::write(&plan_md_path, format!("# {title}\n"))
+            .with_context(|| format!("write plan.md at {}", plan_md_path.display()))?;
+
+        let rel_path = plan_dir
+            .strip_prefix(workdir)
+            .unwrap_or(&plan_dir)
+            .to_string_lossy()
+            .into_owned();
+
+        Ok(CreatePlanOutcome::Created {
+            slug: slug.to_string(),
+            path: rel_path,
+        })
+    }
+
+    async fn revise_plan(
+        &self,
+        workdir: &Path,
+        plan_id: &str,
+        feedback: &str,
+    ) -> anyhow::Result<Option<RevisionDto>> {
+        let Some(plan_info) =
+            crate::plan::discover_plan_by_id(workdir, plan_id).with_context(|| {
+                format!(
+                    "failed to discover plan '{}' in {}",
+                    plan_id,
+                    workdir.display()
+                )
+            })?
+        else {
+            return Ok(None);
+        };
+
+        let Some(tasks_path) = crate::plan::tasks_path(&plan_info) else {
+            return Ok(None);
+        };
+
+        if !tasks_path.is_file() {
+            return Ok(None);
+        }
+
+        let outcome = crate::plan_authoring::revise_plan_source(
+            workdir,
+            plan_id,
+            &tasks_path,
+            feedback,
+            &self.config.models,
+        )
+        .await?;
+
+        Ok(Some(RevisionDto {
+            revised: outcome.written,
+            task_count: outcome.task_count,
+            validation: plan_source_report_to_dto(outcome.report),
+        }))
+    }
 }
 
 impl RokoCliRuntime {
@@ -435,15 +796,43 @@ fn load_serve_extension_chain(
     Ok(chain)
 }
 
+/// Convert the config-side `LiveAgentOutput` (from `roko-core`) into the
+/// dispatcher-side variant (from `roko-cli`).  `None` becomes `ToolSteps`.
+fn config_live_output_to_dispatcher(
+    setting: Option<roko_core::config::serve::LiveAgentOutput>,
+) -> crate::graph_task_dispatch::LiveAgentOutput {
+    match setting.unwrap_or_default() {
+        roko_core::config::serve::LiveAgentOutput::Trusted => {
+            crate::graph_task_dispatch::LiveAgentOutput::Trusted
+        }
+        roko_core::config::serve::LiveAgentOutput::ToolSteps => {
+            crate::graph_task_dispatch::LiveAgentOutput::ToolSteps
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn run_plan_on_local_runtime(
     workdir: PathBuf,
     plan_target: PathBuf,
-    config: Config,
+    _config: Config,
     repo_registry: RepoRegistry,
     state_hub: SharedStateHub,
-    metrics: Option<Arc<roko_core::obs::metrics::MetricRegistry>>,
-    extension_chain: Arc<tokio::sync::Mutex<roko_core::extension::ExtensionChain>>,
+    _metrics: Option<Arc<roko_core::obs::metrics::MetricRegistry>>,
+    _extension_chain: Arc<tokio::sync::Mutex<roko_core::extension::ExtensionChain>>,
+    fresh: bool,
+    force_resume: bool,
+    only_plans: Option<Vec<String>>,
+    max_parallel_plans: Option<usize>,
+    cancel: Option<CancelToken>,
+    live_agent_output: crate::graph_task_dispatch::LiveAgentOutput,
 ) -> anyhow::Result<PlanExecutionResult> {
+    // Acquire the runner lock before touching the workspace.  Server-side runs
+    // and `roko plan run` both take this lock, so only one plan executor can be
+    // active at a time.  If the lock is already held the error message names the
+    // owning PID; return it immediately without retrying.
+    let _runner_lock = crate::workspace_lock::acquire_runner_lock(&workdir.join(".roko"))?;
+
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
@@ -452,34 +841,86 @@ fn run_plan_on_local_runtime(
         let execution_root = prepare_plan_execution_root(&workdir, &plan_target)?;
         ensure_git_repo_for_runner(&workdir);
 
+        // Load plans now to capture plan IDs for post-run gate evidence collection.
+        // run_graph_plan also loads plans internally from the same execution_root.
         let plans = crate::runner::plan_loader::load_plans(&execution_root)?;
         let plan_ids = plans
             .iter()
             .map(|plan| plan.id.clone())
             .collect::<BTreeSet<_>>();
-        let roko_config = load_effective_roko_config(&workdir, &repo_registry)?;
-        let run_config = build_runner_config(
-            &workdir,
-            &execution_root,
-            &config,
-            roko_config,
-            metrics,
-            extension_chain,
-        );
-        let events_offset = runner_events_offset(&workdir);
-        let cancel = tokio_util::sync::CancellationToken::new();
 
-        #[allow(deprecated)] // Runner-v2 removed; this call now returns an error
-        let report = crate::runner::run(plans, &run_config, &state_hub, cancel).await?;
+        let roko_config = load_effective_roko_config(&workdir, &repo_registry)?;
+        let dangerously_skip_permissions = roko_config.runner.dangerously_skip_permissions;
+
+        let events_offset = runner_events_offset(&workdir);
+
+        // Create the interrupt handle shared between the cancel bridge and the
+        // graph run. The first `cancel.cancelled()` fires `PlanRunInterrupt::Interrupt`,
+        // which cancels the in-flight graph, SIGTERMs/SIGKILLs agent processes,
+        // finalizes the checkpoint as `interrupted`, and returns exit code 130.
+        let interrupt_handle = PlanRunInterruptHandle::default();
+        if let Some(cancel_token) = cancel {
+            let handle_for_cancel = interrupt_handle.clone();
+            tokio::spawn(async move {
+                cancel_token.cancelled().await;
+                handle_for_cancel.request(PlanRunInterrupt::Interrupt);
+            });
+        }
+
+        let exit_code =
+            crate::graph_execution::run_graph_plan(crate::graph_execution::GraphPlanRunParams {
+                plans_dir: execution_root,
+                workdir: workdir.clone(),
+                // Suppress interactive output: this runs inside an HTTP handler.
+                quiet: true,
+                json: false,
+                resume_plan: None,
+                fresh,
+                force_resume,
+                max_retries: None,
+                // 0 → use each plan's meta.max_parallel default.
+                max_tasks: 0,
+                budget_override: None,
+                no_budget: false,
+                cli_model_override: None,
+                dangerously_skip_permissions,
+                log_file: None,
+                worktree_per_task: false,
+                rich_topology: false,
+                // Never launch an interactive TUI from an HTTP handler.
+                no_tui: true,
+                // Publish into the server's hub so API/SSE clients see the run.
+                state_hub: Some(state_hub),
+                // Bridge from the CancelToken: interrupt_handle.request() fires when
+                // the token is cancelled.
+                interrupt: Some(interrupt_handle),
+                // Per-run override for max parallel plans; None defers to config.
+                max_parallel_plans,
+                fail_fast: false,
+                only_plans,
+                live_agent_output,
+            })
+            .await?;
+
+        let success = exit_code == crate::exit_codes::EXIT_SUCCESS;
+
         let gate_results = collect_runner_gate_results(&workdir, events_offset, &plan_ids)
             .unwrap_or_else(|err| {
                 tracing::warn!(error = %err, "failed to collect runner gate evidence");
                 Vec::new()
             });
-        let output_text = Some(render_plan_execution_summary(&report, gate_results.len()));
+
+        let task_count: usize = plans.iter().map(|p| p.tasks.tasks.len()).sum();
+        let output_text = Some(format!(
+            "graph engine plan execution {}: {} plan(s), {} task(s), {} gate results",
+            if success { "succeeded" } else { "failed" },
+            plans.len(),
+            task_count,
+            gate_results.len(),
+        ));
 
         Ok(PlanExecutionResult {
-            success: report.all_succeeded(),
+            success,
             output_text,
             gate_results,
         })
@@ -582,10 +1023,19 @@ fn prepare_plan_execution_root(workdir: &Path, plan_target: &Path) -> anyhow::Re
         workdir.join(plan_target)
     };
 
-    if absolute_target.is_dir() && !absolute_target.join("tasks.toml").is_file() {
+    // Any directory target runs in place — both a plan-set directory (no
+    // tasks.toml at the top level) and a single-plan directory (contains
+    // tasks.toml). Running in place keeps `plan_dir` identical across every
+    // invocation, so the fingerprint that `plan_to_graph` embeds in each
+    // node's config never changes between runs and checkpoints under
+    // `.roko/state/graph/<plan_id>/` can always be resumed.
+    if absolute_target.is_dir() {
         return Ok(absolute_target);
     }
 
+    // The only case that still needs a copy: a bare tasks.toml file target.
+    // Resolve to its parent directory and copy it to a uniquely-named run
+    // root so the original is not mutated by the run.
     let copy_source = if absolute_target.is_file() {
         let parent = absolute_target.parent().ok_or_else(|| {
             anyhow::anyhow!(
@@ -600,8 +1050,6 @@ fn prepare_plan_execution_root(workdir: &Path, plan_target: &Path) -> anyhow::Re
             );
         }
         parent.to_path_buf()
-    } else if absolute_target.is_dir() {
-        absolute_target.clone()
     } else {
         anyhow::bail!("plan target does not exist: {}", absolute_target.display());
     };
@@ -682,141 +1130,6 @@ fn repo_roko_config_for_workdir_path(
         .iter()
         .find(|entry| canonical_workdir == entry.root || canonical_workdir.starts_with(&entry.root))
         .and_then(|entry| entry.roko_config_path.clone())
-}
-
-fn build_runner_config(
-    workdir: &Path,
-    plan_dir: &Path,
-    cli_config: &Config,
-    roko_config: RokoConfig,
-    metrics: Option<Arc<roko_core::obs::metrics::MetricRegistry>>,
-    extension_chain: Arc<tokio::sync::Mutex<roko_core::extension::ExtensionChain>>,
-) -> crate::runner::RunConfig {
-    let model = non_empty_string(&roko_config.agent.default_model)
-        .or_else(|| cli_config.agent.model.clone())
-        .unwrap_or_else(|| "claude-sonnet-4-6".to_string());
-    let claude_program = roko_config
-        .agent
-        .command
-        .as_deref()
-        .and_then(non_empty_string)
-        .or_else(|| non_empty_string(&cli_config.agent.command))
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("claude"));
-    let max_concurrent_tasks = roko_config
-        .runner
-        .max_concurrent_tasks
-        .or_else(|| {
-            (cli_config.executor.max_concurrent_tasks
-                != crate::orchestrator::ExecutorConfig::default().max_concurrent_tasks)
-                .then_some(cli_config.executor.max_concurrent_tasks)
-        })
-        .unwrap_or(4)
-        .max(1);
-
-    // Initialize Phase 0 subsystems.
-    let layout = RokoLayout::for_project(workdir);
-    let router_path = layout.cascade_router_path();
-    let model_slugs = vec![model.clone(), "claude-haiku-4-5".to_string()];
-    let cascade_router = Arc::new(roko_learn::cascade_router::CascadeRouter::load_or_new(
-        &router_path,
-        model_slugs,
-    ));
-    let connector_registry = Arc::new(std::sync::Mutex::new(roko_core::ConnectorRegistry::new()));
-    let feed_registry = Arc::new(std::sync::Mutex::new(roko_core::FeedRegistry::new()));
-    let run_uuid = uuid::Uuid::new_v4().to_string();
-    let projection = Arc::new(crate::runner::projection::Projection::new(run_uuid));
-    let episodes_path = layout.root_episodes_path();
-    let knowledge_path = layout
-        .learn_dir()
-        .join(roko_neuro::admission::DEFAULT_KNOWLEDGE_CANDIDATES_FILE);
-    let _ = std::fs::create_dir_all(layout.learn_dir());
-    // Build the conductor from [conductor.watchers.*] config before roko_config
-    // is moved into the Arc. The ring is shared between the ConductorRingSink
-    // (registered on the feedback facade below) and the conductor stored in
-    // RunConfig for periodic supervision ticks (E08-T04).
-    let conductor = roko_conductor::Conductor::from_config(&roko_config.conductor);
-    let conductor_ring = crate::runner::conductor_adapter::ConductorRing::new();
-
-    let feedback_facade = Arc::new(
-        crate::runtime_feedback::FeedbackFacade::new()
-            .with_sink(Arc::new(crate::runtime_feedback::EpisodeSink::at(
-                &episodes_path,
-            )))
-            .with_sink(Arc::new(
-                crate::runtime_feedback::RoutingObservationSink::new(cascade_router.clone()),
-            ))
-            .with_sink(Arc::new(
-                crate::runtime_feedback::KnowledgeIngestionSink::at(&knowledge_path).with_ingestor(
-                    Arc::new(crate::runtime_feedback::NeuroKnowledgeIngestor::new(
-                        KnowledgeStore::for_workdir(workdir),
-                    )),
-                ),
-            ))
-            // Register the conductor ring sink so watcher signals from the
-            // feedback vocabulary flow into the bounded ring buffer. The
-            // conductor (stored in RunConfig below) reads from this ring during
-            // periodic supervision ticks added in E08-T04.
-            .with_sink(Arc::new(
-                crate::runner::conductor_adapter::ConductorRingSink::new(conductor_ring.clone()),
-            )),
-    );
-
-    crate::runner::RunConfig {
-        layout,
-        workdir: workdir.to_path_buf(),
-        plan_dir: plan_dir.to_path_buf(),
-        model,
-        cli_model_override: None, // serve runtime has no CLI model override
-        timeout_secs: roko_config.timeouts.agent_dispatch_secs,
-        plan_timeout_secs: roko_config.timeouts.plan_total_secs,
-        max_retries: cli_config.executor.max_auto_fix_iterations,
-        dispatch_max_retries: roko_config.runner.dispatch_max_retries,
-        max_concurrent_tasks,
-        gate_concurrency: max_concurrent_tasks,
-        approval: false,
-        dangerously_skip_permissions: roko_config.runner.dangerously_skip_permissions,
-        force_resume: false,
-        force_disk_check: false,
-        mcp_config: cli_config.agent.mcp_config.clone(),
-        resume_session: None,
-        max_gate_rung: if roko_config.gates.skip_tests { 1 } else { 2 },
-        claude_program,
-        max_plan_usd: f64::from(roko_config.budget.max_plan_usd),
-        max_turn_usd: f64::from(roko_config.budget.max_turn_usd),
-        max_task_retry_usd: f64::from(roko_config.budget.max_task_retry_usd),
-        max_daily_usd: f64::from(roko_config.budget.max_daily_usd),
-        budget_override: false,
-        budget_ceiling_override: None,
-        no_budget: false,
-        clippy_enabled: roko_config.gates.clippy_enabled,
-        skip_tests: roko_config.gates.skip_tests,
-        safety_layer: roko_agent::SafetyLayer::from_config(&roko_config),
-        roko_config: Some(Arc::new(roko_config)),
-        extension_chain: Some(extension_chain),
-        cascade_router: Some(cascade_router),
-        daimon_state: Some(crate::runner::RunConfig::daimon_state_with_strategy(
-            workdir,
-            cli_config.daimon.strategy_space.clone(),
-        )),
-        connector_registry: Some(connector_registry),
-        feed_registry: Some(feed_registry),
-        feedback_facade: Some(feedback_facade),
-        projection: Some(projection),
-        http_event_sink: None,
-        output_sink: Arc::new(crate::runner::output_sink::NoopSink),
-        batch_size: None,
-        warm_cache: true,
-        screenshots: false,
-        screenshot_interval_secs: 60,
-        screenshot_dir: None,
-        metrics,
-        obs_sinks: None,
-        conductor: Some(Arc::new(conductor)),
-        conductor_ring: Some(conductor_ring),
-        github_ops: None,
-        structured_log: crate::runner::structured_log::StructuredLogger::noop(),
-    }
 }
 
 /// Produce a deterministic, realistic-looking simulated result for demo mode.
@@ -924,7 +1237,8 @@ pub(crate) async fn dispatch_bench_prompt(
         .with_feedback_sink(feedback_sink)
         .with_inference_observer(Arc::new(
             crate::inference_observer::RuntimeEventInferenceObserver::new(),
-        ));
+        ))
+        .with_dangerously_skip_permissions(config.runner.dangerously_skip_permissions);
     if let Some(ref mcp_path) = config.agent.mcp_config {
         service = service.with_mcp_config(mcp_path.clone());
     }
@@ -1258,41 +1572,155 @@ fn unique_suffix() -> String {
     let millis = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis())
-        .unwrap_or_default();
+        .unwrap_or(0);
     format!("{}-{millis}", std::process::id())
 }
 
-fn render_plan_execution_summary(report: &crate::runner::RunReport, gate_count: usize) -> String {
-    let mut lines = vec![format!(
-        "plan execution {}: {}/{} tasks, {} failed, {} agent calls, ${:.2}, {}s, {} gate results",
-        if report.all_succeeded() {
-            "succeeded"
-        } else {
-            "failed"
-        },
-        report.tasks_completed,
-        report.total_tasks,
-        report.tasks_failed,
-        report.total_agent_calls,
-        report.total_cost_usd,
-        report.duration.as_secs(),
-        gate_count
-    )];
-    for plan in &report.plans {
-        lines.push(format!(
-            "{}: {} ({}/{} tasks, {} failed)",
-            plan.plan_id,
-            if plan.completed {
-                "completed"
-            } else {
-                "incomplete"
-            },
-            plan.tasks_completed,
-            plan.tasks_total,
-            plan.tasks_failed
-        ));
+/// Map a [`crate::plan::PlanSummary`] to the wire-format [`PlanSummaryDto`].
+///
+/// `estimated_minutes` is left as `None` here; callers that have access to the
+/// tasks file should call [`plan_estimated_minutes`] and set it afterwards.
+fn plan_summary_to_dto(summary: crate::plan::PlanSummary) -> PlanSummaryDto {
+    PlanSummaryDto {
+        id: summary.id,
+        title: summary.title,
+        task_count: summary.task_count,
+        tasks_done: summary.tasks_done,
+        tasks_failed: summary.tasks_failed,
+        completed: summary.completed,
+        status: summary.status,
+        superseded_by: summary.superseded_by,
+        old_format: summary.old_format,
+        last_error: summary.last_error,
+        group: summary.group,
+        estimated_minutes: None,
     }
-    lines.join("\n")
+}
+
+/// Map a single [`crate::task_parser::TaskDef`] to the wire-format [`PlanTaskDto`].
+///
+/// A verify step with `timeout_ms == 0` is treated as "use default" and
+/// serialised as `None` on the wire.
+pub(crate) fn task_to_dto(task: &crate::task_parser::TaskDef) -> PlanTaskDto {
+    PlanTaskDto {
+        id: task.id.clone(),
+        title: task.title.clone(),
+        description: task.description.clone(),
+        role: task.role.clone(),
+        tier: task.tier.clone(),
+        status: task.status.clone(),
+        depends_on: task.depends_on.clone(),
+        files: task.files.clone(),
+        completed: task.status == "done",
+        verify_phases: task.verify.iter().map(|v| v.phase.clone()).collect(),
+        model_hint: task.model_hint.clone(),
+        estimated_minutes: task.estimated_minutes,
+        verify: task
+            .verify
+            .iter()
+            .map(|v| PlanTaskVerifyDto {
+                phase: v.phase.clone(),
+                command: v.command.clone(),
+                fail_msg: v.fail_msg.clone(),
+                timeout_ms: if v.timeout_ms == 0 {
+                    None
+                } else {
+                    Some(v.timeout_ms)
+                },
+            })
+            .collect(),
+    }
+}
+
+/// Compute the estimated minutes for a plan from its tasks file.
+///
+/// Prefers `[meta].estimated_total_minutes` when non-zero; falls back to the
+/// sum of per-task `estimated_minutes`.  Returns `None` when no estimate is
+/// available.
+fn plan_estimated_minutes(tasks_file: &crate::task_parser::TasksFile) -> Option<u32> {
+    if tasks_file.meta.estimated_total_minutes > 0 {
+        return Some(tasks_file.meta.estimated_total_minutes);
+    }
+    let sum: u32 = tasks_file
+        .tasks
+        .iter()
+        .filter_map(|t| t.estimated_minutes)
+        .sum();
+    if sum > 0 { Some(sum) } else { None }
+}
+
+/// Convert a [`crate::plan_authoring::PlanSourceReport`] to the wire-format
+/// [`PlanValidationDto`].
+fn plan_source_report_to_dto(report: crate::plan_authoring::PlanSourceReport) -> PlanValidationDto {
+    use crate::plan_validate::Severity;
+    PlanValidationDto::from_diagnostics(
+        report
+            .diagnostics
+            .into_iter()
+            .map(|d| PlanDiagnosticDto {
+                severity: match d.severity {
+                    Severity::Error => "error".to_string(),
+                    Severity::Warning => "warning".to_string(),
+                },
+                rule_id: d.rule_id,
+                task_id: d.task_id,
+                message: d.message,
+            })
+            .collect(),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A directory that contains `tasks.toml` is a single-plan directory.
+    /// It must be returned unchanged (not copied into `.roko/plan-runs/`) so
+    /// that `plan_to_graph` always records the same `plan_dir` in every node's
+    /// config.  A stable `plan_dir` produces a stable graph fingerprint, which
+    /// is required for checkpoints to survive between runs and across CLI vs
+    /// server invocations.
+    #[test]
+    fn plan_directory_runs_in_place() {
+        let tmp = tempfile::tempdir().unwrap();
+        let plan_dir = tmp.path().join("my-plan");
+        std::fs::create_dir_all(&plan_dir).unwrap();
+        std::fs::write(
+            plan_dir.join("tasks.toml"),
+            "[meta]\nid = \"my-plan\"\nmax_parallel = 1\n\n[tasks]\n",
+        )
+        .unwrap();
+
+        // prepare_plan_execution_root must return the directory itself, not a copy.
+        let result = prepare_plan_execution_root(tmp.path(), &plan_dir).unwrap();
+        assert_eq!(
+            result, plan_dir,
+            "a plan directory must run in place; got a different path"
+        );
+    }
+
+    /// A plan-set directory (no top-level tasks.toml) must also be returned
+    /// unchanged — this was already the case, but the test guards it explicitly
+    /// now that both branches share the same early-return path.
+    #[test]
+    fn plan_set_directory_runs_in_place() {
+        let tmp = tempfile::tempdir().unwrap();
+        // A plan-set directory contains child plan dirs, not a root tasks.toml.
+        let child = tmp.path().join("child-plan");
+        std::fs::create_dir_all(&child).unwrap();
+        std::fs::write(
+            child.join("tasks.toml"),
+            "[meta]\nid = \"child-plan\"\nmax_parallel = 1\n\n[tasks]\n",
+        )
+        .unwrap();
+
+        let result = prepare_plan_execution_root(tmp.path(), tmp.path()).unwrap();
+        assert_eq!(
+            result,
+            tmp.path(),
+            "a plan-set directory must run in place; got a different path"
+        );
+    }
 }
 
 #[cfg(test)]

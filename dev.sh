@@ -210,8 +210,8 @@ Usage:
   ./dev.sh fast [wrapper options] <plans-dir> [-- <native plan-run options>]
 
 Runs an existing target/debug/roko in opt-in FAST mode. It never invokes Cargo.
-The runner receives --no-tui, --skip-preflight, --max-retries 0, a structured
-event log, and these truthy environment variables:
+The runner receives --no-tui, --max-retries 0, --max-tasks 1, a structured
+event log (--log-file {bundle}/events.jsonl), and these environment variables:
 
   ROKO_FAST_MODE=1
   ROKO_FAST_PLAN_DEADLINE_SECS=<deadline minus settlement headroom>
@@ -221,6 +221,10 @@ event log, and these truthy environment variables:
   ROKO_TASK_VERIFY_ONLY=1
   ROKO_SKIP_PREFLIGHT=1
   SKIP_FRONTEND_BUILD=1
+
+On the Graph engine, ROKO_FAST_MODE bounds prompt context, enforces the
+one-verify plan contract, and stops the run at ROKO_FAST_PLAN_DEADLINE_SECS;
+the remaining variables are recorded in the evidence metadata.
 
 Wrapper options:
   --deadline <seconds>    Hard command deadline including settlement (default: 300)
@@ -235,6 +239,7 @@ Wrapper options:
   --text-snapshot NAME=CMD Capture command stdout as a text screenshot (repeatable)
   --png-hook NAME=CMD      Optional browser hook; CMD writes PNG to {output}
   --screenshots            Enable/import Roko event-driven text screenshots
+                           (the Graph engine does not produce them yet)
   --min-free-gib <gib>     Disk admission absolute floor (default: 5 GiB)
   --min-free-percent <pct> Disk admission percentage floor (default: 3%)
   --allow-low-disk         Explicitly override severe disk-pressure rejection
@@ -292,7 +297,7 @@ HELP
         --approval|--approval=*|--tui)
           die "$native_arg conflicts with FAST mode's required --no-tui automation"
           ;;
-        --log-file|--log-file=*|--screenshots|--engine|--engine=*|--max-retries|--max-retries=*|--max-tasks|--max-tasks=*|--skip-preflight)
+        --log-file|--log-file=*|--screenshots|--max-retries|--max-retries=*|--max-tasks|--max-tasks=*)
           die "$native_arg is owned by the FAST wrapper; pass the corresponding wrapper option before the plan directory"
           ;;
       esac
@@ -304,9 +309,7 @@ HELP
 
   local command_args=(
     "$roko_bin" plan run "$plans_dir"
-    --engine runner-v2
     --no-tui
-    --skip-preflight
     --max-retries "$max_retries"
     --log-file "{bundle}/events.jsonl"
   )
@@ -319,9 +322,8 @@ HELP
     command_args+=("${extra_args[@]}")
   fi
 
-  # The native flag and environment variable are both intentional: the flag
-  # works on current binaries, while the environment variable also reaches the
-  # runner internals and is recorded in the allowlisted evidence metadata.
+  # The environment reaches the runner internals and is recorded in the
+  # allowlisted evidence metadata.
   export ROKO_FAST_MODE=1
   export ROKO_FAST_PLAN_DEADLINE_SECS="$runner_deadline"
   export ROKO_GATE_MODE=focused
@@ -331,7 +333,7 @@ HELP
   export ROKO_SKIP_PREFLIGHT=1
   export SKIP_FRONTEND_BUILD=1
 
-  info "FAST mode is opt-in: prebuilt binary, patch-only agent, bounded run, evidence capture"
+  info "FAST mode is opt-in: prebuilt binary, bounded context, bounded run, evidence capture"
   info "Plan: $plans_dir (run budget=${runner_deadline}s + settlement headroom=${settlement_headroom}s, retries=$max_retries)"
   cmd_run_evidence \
     "${evidence_args[@]}" \

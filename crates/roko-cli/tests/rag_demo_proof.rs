@@ -34,11 +34,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use async_trait::async_trait;
 use parking_lot::Mutex;
+use roko_compose::context_provider::{ContextBidder, ContextProvider, ContextRequest, ContextTier};
 use roko_compose::graph_cells::knowledge::KnowledgeProvider;
 use roko_compose::graph_cells::signals::ComposeScope;
-use roko_compose::context_provider::{
-    ContextBidder, ContextProvider, ContextRequest, ContextTier,
-};
 use roko_compose::prompt::{
     AttentionBidder, CacheLayer, Placement, PromptSection, SectionPriority,
 };
@@ -135,9 +133,11 @@ impl TaskDispatcher for CountingDispatcher {
             spec.title,
             full_context.len()
         );
-        Ok(vec![Signal::builder(Kind::AgentOutput)
-            .body(Body::text(&output))
-            .build()])
+        Ok(vec![
+            Signal::builder(Kind::AgentOutput)
+                .body(Body::text(&output))
+                .build(),
+        ])
     }
 }
 
@@ -153,8 +153,7 @@ fn run_retrieval(task_ids: &[&str]) -> String {
         ..Default::default()
     };
 
-    let bidder = UnifiedRetrievalContextBidder::new(config)
-        .with_knowledge(FixedKnowledgeProvider);
+    let bidder = UnifiedRetrievalContextBidder::new(config).with_knowledge(FixedKnowledgeProvider);
 
     let mut combined = String::new();
     let provider = ContextProvider::new(std::path::PathBuf::new());
@@ -206,7 +205,9 @@ async fn rag_retrieval_enabled_improves_pass_rate() {
         let spec = TaskExecutionSpec {
             plan_id: "demo-plan".to_string(),
             title: (*task_id).to_string(),
-            task_def_json: format!("{{\"id\":\"{task_id}\",\"description\":\"task without retrieval\"}}"),
+            task_def_json: format!(
+                "{{\"id\":\"{task_id}\",\"description\":\"task without retrieval\"}}"
+            ),
             tier: "focused".to_string(),
             ..Default::default()
         };
@@ -285,8 +286,7 @@ fn retrieval_bidder_returns_candidates_for_each_task() {
         ..Default::default()
     };
 
-    let bidder = UnifiedRetrievalContextBidder::new(config)
-        .with_knowledge(FixedKnowledgeProvider);
+    let bidder = UnifiedRetrievalContextBidder::new(config).with_knowledge(FixedKnowledgeProvider);
 
     let provider = ContextProvider::new(std::path::PathBuf::new());
 
@@ -367,8 +367,7 @@ fn retrieval_context_is_task_scoped() {
         ..Default::default()
     };
 
-    let bidder = UnifiedRetrievalContextBidder::new(config)
-        .with_knowledge(FixedKnowledgeProvider);
+    let bidder = UnifiedRetrievalContextBidder::new(config).with_knowledge(FixedKnowledgeProvider);
 
     let provider = ContextProvider::new(std::path::PathBuf::new());
 

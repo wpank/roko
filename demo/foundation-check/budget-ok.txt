@@ -1,0 +1,1 @@
+max_plan_usd=200.0 max_turn_usd=2.0

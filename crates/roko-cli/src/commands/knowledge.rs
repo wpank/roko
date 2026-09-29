@@ -1578,7 +1578,6 @@ pub(crate) struct NeuroFileSet {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use roko_neuro::{
         KnowledgeEntry, KnowledgeKind, KnowledgeStore, KnowledgeTier, MeshLayout, load_peer_cursor,
         receive_sync, send_sync, validate_peer_name,

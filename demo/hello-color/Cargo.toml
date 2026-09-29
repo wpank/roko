@@ -1,0 +1,13 @@
+[package]
+name = "hello-color"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "hello-color"
+path = "src/main.rs"
+
+[dependencies]
+colored = "2"
+
+[workspace]

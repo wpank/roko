@@ -5,6 +5,14 @@
 //! safely: a schema version, a stable fingerprint of the converted graph, and
 //! the run ID that scopes every record.
 //!
+//! # Graph fingerprints
+//!
+//! Checkpoints record [`plan_graph_fingerprint`], computed from the plan's
+//! authored `tasks.toml`, so a roko upgrade that only adds task fields keeps
+//! in-flight checkpoints resumable. Releases before it recorded
+//! [`legacy_graph_execution_fingerprint`]; resume still accepts that value and
+//! rewrites the checkpoint with the authored fingerprint.
+//!
 //! # Schema versions
 //!
 //! - **v2**: original manifest with plan/graph/run identity, Activity log, and
@@ -14,13 +22,22 @@
 //!   extensions/receipts and its existing cost ledger preserved; v3 is written
 //!   on the next atomic checkpoint. Versions other than 2 or 3 fail closed.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
-use roko_graph::{ActivityRecorder, ActivityReplayer, Graph, graph_execution_fingerprint};
+use roko_graph::cells::task_executor::{TaskExecutionSpec, TaskGateVerdict};
+use roko_graph::convert::{PlanTaskInfo, plan_to_graph};
+use roko_graph::replay::{RecordEntry, retain_recorded_activities};
+use roko_graph::{
+    ActivityRecorder, ActivityReplayer, AuthoredPlan, Graph, legacy_graph_execution_fingerprint,
+    plan_graph_fingerprint,
+};
 use serde::{Deserialize, Serialize};
+
+use crate::runner::plan_loader::Plan;
+use crate::task_parser::TasksFile;
 
 /// Current host checkpoint schema version. V2 manifests are migrated in-memory
 /// to v3 with empty extensions and receipts; other versions fail closed.
@@ -30,7 +47,13 @@ const CHECKPOINT_SCHEMA_VERSION: u32 = 3;
 const MIN_SUPPORTED_SCHEMA_VERSION: u32 = 2;
 
 const COST_LEDGER_SCHEMA_VERSION: u32 = 1;
-const DEFAULT_RUNNER_RESUME_PATH: &str = ".roko/state/executor.json";
+/// Runner-v2 snapshot paths that a bare `--resume-plan` (or `roko resume`)
+/// may pass: the clap `default_missing_value` and the legacy executor file.
+/// Both mean "resume from the canonical Graph checkpoint root".
+const DEFAULT_RUNNER_RESUME_PATHS: [&str; 2] = [
+    ".roko/state/state-snapshot.json",
+    ".roko/state/executor.json",
+];
 
 /// Known extension namespace for workspace/attempt state (#249).
 pub const WORKSPACE_ATTEMPT_EXTENSION: &str = "roko.workspace.attempt@1";
@@ -40,6 +63,9 @@ pub const GATE_VERDICT_EXTENSION: &str = "roko.gate.verdict@1";
 
 /// Known extension namespace for completion delivery state (#254).
 pub const DELIVERY_EXTENSION: &str = roko_graph::delivery::DELIVERY_EXTENSION_KEY;
+
+/// Known extension namespace for the tasks the last run did not complete.
+pub const TASK_OUTCOME_EXTENSION: &str = "roko.task.outcome@1";
 
 /// Lifecycle state persisted beside a Graph Activity recording.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -51,6 +77,25 @@ pub enum GraphCheckpointStatus {
     Succeeded,
     /// At least one graph node failed.
     Failed,
+    /// An operator cancelled the plan before every node finished.
+    Cancelled,
+    /// A signal (SIGINT/SIGTERM) or a closed operator TUI stopped the run
+    /// before every node finished; recorded Activities remain resumable.
+    Interrupted,
+}
+
+impl GraphCheckpointStatus {
+    /// Serialized name, e.g. `interrupted`.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Running => "running",
+            Self::Succeeded => "succeeded",
+            Self::Failed => "failed",
+            Self::Cancelled => "cancelled",
+            Self::Interrupted => "interrupted",
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -137,6 +182,284 @@ pub struct ReceiptLedgerEntry {
 }
 
 // ---------------------------------------------------------------------------
+// Gate verdicts
+// ---------------------------------------------------------------------------
+
+/// Graph cell type that executes plan tasks.
+const TASK_EXECUTOR_CELL_TYPE: &str = "task-executor";
+
+/// A recorded Activity refused for replay on resume; its node re-runs.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InvalidatedActivity {
+    /// Graph node whose record was removed.
+    pub node_id: String,
+    /// Tick of the removed record.
+    pub tick: u64,
+    /// Why the record could not be trusted as a completed node.
+    pub reason: String,
+}
+
+/// Value stored under [`GATE_VERDICT_EXTENSION`].
+///
+/// The authoritative verdict travels on each recorded output signal (see
+/// [`TaskGateVerdict`]); this is the manifest-level summary, refreshed on
+/// resume and on every terminal checkpoint write.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GateVerdictSummary {
+    /// Verdict recorded for each task node, keyed by node id.
+    #[serde(default)]
+    pub verdicts: BTreeMap<String, TaskGateVerdict>,
+    /// Records removed by the last resume because they lacked a passing
+    /// verdict.
+    #[serde(default)]
+    pub invalidated_on_resume: Vec<InvalidatedActivity>,
+}
+
+/// Value stored under [`TASK_OUTCOME_EXTENSION`]: how the last run left the
+/// tasks it did not complete. A resume runs every one of them again.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskOutcomeSummary {
+    /// Tasks that failed.
+    #[serde(default)]
+    pub failed: BTreeSet<String>,
+    /// Tasks skipped because a task they depend on failed, each with the
+    /// failed task that blocked it.
+    #[serde(default)]
+    pub blocked_by: BTreeMap<String, String>,
+    /// Tasks that never started for another reason, such as a spent plan
+    /// budget or a fail-fast stop, each with that reason.
+    #[serde(default)]
+    pub not_started: BTreeMap<String, String>,
+}
+
+/// Task nodes whose recorded outputs must carry a passing gate verdict before
+/// they may be replayed: every task with authored verify steps. A task whose
+/// definition cannot be decoded is treated as verify-bearing (fail closed).
+fn verdict_required_nodes(graph: &Graph) -> std::collections::HashSet<String> {
+    graph
+        .inner
+        .node_weights()
+        .filter(|node| node.cell_type == TASK_EXECUTOR_CELL_TYPE)
+        .filter(|node| {
+            let spec = TaskExecutionSpec::from_config(&node.config);
+            !spec.task_def_json.is_empty()
+                && serde_json::from_str::<crate::task_parser::TaskDef>(&spec.task_def_json)
+                    .map_or(true, |task| !task.verify.is_empty())
+        })
+        .map(|node| node.id.clone())
+        .collect()
+}
+
+/// Why a recorded Activity output must not be replayed, or `None` when it may be.
+fn replay_refusal(signals: &[roko_core::Signal], verify_required: bool) -> Option<String> {
+    match TaskGateVerdict::from_signals(signals) {
+        Some(verdict) if !verdict.is_replayable() => {
+            Some(format!("recorded gate verdict is `{}`", verdict.as_str()))
+        }
+        Some(TaskGateVerdict::Passed) => None,
+        Some(verdict) if verify_required => Some(format!(
+            "verify steps are authored but the recorded gate verdict is `{}`",
+            verdict.as_str()
+        )),
+        None if verify_required => {
+            Some("verify steps are authored but no gate verdict was recorded".to_string())
+        }
+        _ => None,
+    }
+}
+
+/// Remove recorded Activities that must not be replayed: forced accepts and
+/// verify-bearing task outputs without a passing verdict (for example records
+/// written before verdicts existed, when a failed verify could be
+/// force-accepted). Their nodes re-execute instead of resuming as successes.
+fn invalidate_unverified_activities(
+    path: &Path,
+    graph: &Graph,
+) -> Result<Vec<InvalidatedActivity>> {
+    let required = verdict_required_nodes(graph);
+    let mut invalidated = Vec::new();
+    retain_recorded_activities(path, |entry| {
+        match replay_refusal(&entry.signals, required.contains(&entry.node_id)) {
+            Some(reason) => {
+                invalidated.push(InvalidatedActivity {
+                    node_id: entry.node_id.clone(),
+                    tick: entry.tick,
+                    reason,
+                });
+                false
+            }
+            None => true,
+        }
+    })
+    .with_context(|| format!("screen Graph Activity checkpoint {}", path.display()))?;
+    for activity in &invalidated {
+        tracing::warn!(
+            node_id = %activity.node_id,
+            tick = activity.tick,
+            reason = %activity.reason,
+            "resume: recorded task output is not verified; the node will re-run"
+        );
+    }
+    Ok(invalidated)
+}
+
+/// Read the latest recorded gate verdict for each node from an Activity log.
+fn recorded_gate_verdicts(path: &Path) -> BTreeMap<String, TaskGateVerdict> {
+    let Ok(content) = std::fs::read_to_string(path) else {
+        return BTreeMap::new();
+    };
+    content
+        .lines()
+        .filter_map(|line| serde_json::from_str::<RecordEntry>(line.trim()).ok())
+        .filter_map(|entry| {
+            TaskGateVerdict::from_signals(&entry.signals).map(|verdict| (entry.node_id, verdict))
+        })
+        .collect()
+}
+
+/// Build the [`GATE_VERDICT_EXTENSION`] entry for `summary`.
+fn gate_verdict_extension(summary: &GateVerdictSummary) -> Result<CheckpointExtension> {
+    let value = serde_json::to_value(summary).context("serialize gate verdict summary")?;
+    host_extension(GATE_VERDICT_EXTENSION, value)
+}
+
+/// Build the optional, host-owned extension entry for `key`
+/// (`<namespace>@<schema_version>`) holding `value`.
+fn host_extension(key: &str, value: serde_json::Value) -> Result<CheckpointExtension> {
+    let (namespace, version) = key
+        .split_once('@')
+        .with_context(|| format!("extension key `{key}` has no schema version"))?;
+    let bytes =
+        serde_json::to_vec(&value).with_context(|| format!("serialize extension `{key}`"))?;
+    Ok(CheckpointExtension {
+        namespace: namespace.to_string(),
+        schema_version: version
+            .parse()
+            .with_context(|| format!("extension `{key}` schema version"))?,
+        required: false,
+        fingerprint: blake3::hash(&bytes).to_hex().to_string(),
+        value,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Graph identity
+// ---------------------------------------------------------------------------
+
+/// How a checkpoint's recorded graph fingerprint relates to the plan being run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FingerprintMatch {
+    /// The checkpoint records the plan's current fingerprint.
+    New,
+    /// The checkpoint records the Graph fingerprint an older roko computed;
+    /// resuming it rewrites the checkpoint with the current one.
+    Legacy,
+    /// The checkpoint records neither: the plan changed after it was written.
+    #[serde(rename = "none")]
+    Mismatch,
+}
+
+impl FingerprintMatch {
+    /// Label shown by `plan run --dry-run`.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::New => "new",
+            Self::Legacy => "legacy",
+            Self::Mismatch => "none",
+        }
+    }
+}
+
+/// The fingerprints a checkpoint of one converted plan graph may record.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GraphIdentity {
+    /// Recorded by new and migrated checkpoints: the authored plan fingerprint
+    /// when the plan's `tasks.toml` still describes the graph, otherwise the
+    /// legacy Graph fingerprint.
+    current: String,
+    /// The Graph fingerprint recorded before authored plan fingerprints.
+    legacy: String,
+}
+
+impl GraphIdentity {
+    fn of(workdir: &Path, graph: &Graph) -> Result<Self> {
+        let legacy = legacy_graph_execution_fingerprint(graph).context("fingerprint Graph")?;
+        let current = match authored_plan(workdir, graph) {
+            Some(authored) => {
+                plan_graph_fingerprint(graph, &authored).context("fingerprint authored plan")?
+            }
+            None => legacy.clone(),
+        };
+        Ok(Self { current, legacy })
+    }
+
+    fn matching(&self, recorded: &str) -> FingerprintMatch {
+        if recorded == self.current {
+            FingerprintMatch::New
+        } else if recorded == self.legacy {
+            FingerprintMatch::Legacy
+        } else {
+            FingerprintMatch::Mismatch
+        }
+    }
+}
+
+/// The authored definition of the plan `graph` was converted from, read from
+/// the `tasks.toml` in its task nodes' plan directory.
+///
+/// `None` when the graph has no plan task nodes or the file cannot be read, and
+/// when the file no longer holds exactly the tasks the graph runs (it was
+/// edited after the plan was loaded), so the identity never describes tasks
+/// other than the ones executing.
+fn authored_plan(workdir: &Path, graph: &Graph) -> Option<AuthoredPlan> {
+    let specs: Vec<TaskExecutionSpec> = graph
+        .inner
+        .node_weights()
+        .filter(|node| node.cell_type == TASK_EXECUTOR_CELL_TYPE)
+        .map(|node| TaskExecutionSpec::from_config(&node.config))
+        .collect();
+    let plan_dir = Path::new(&specs.first()?.plan_dir);
+    if plan_dir.as_os_str().is_empty() {
+        return None;
+    }
+    let path = [plan_dir.to_path_buf(), workdir.join(plan_dir)]
+        .into_iter()
+        .map(|dir| dir.join("tasks.toml"))
+        .find(|path| path.is_file())?;
+    let content = std::fs::read_to_string(&path).ok()?;
+    let authored = authored_plan_running(&content, &specs);
+    if authored.is_none() {
+        tracing::warn!(
+            tasks_toml = %path.display(),
+            "tasks.toml no longer matches the tasks this run converted; \
+             its checkpoint keeps the legacy Graph fingerprint"
+        );
+    }
+    authored
+}
+
+/// The authored plan in `content`, when its tasks are exactly those `specs` run.
+fn authored_plan_running(content: &str, specs: &[TaskExecutionSpec]) -> Option<AuthoredPlan> {
+    let authored = AuthoredPlan::from_tasks_toml(content).ok()?;
+    let loaded = TasksFile::parse_str(content)
+        .ok()?
+        .tasks
+        .iter()
+        .map(|task| Some((task.id.clone(), serde_json::to_value(task).ok()?)))
+        .collect::<Option<BTreeMap<_, _>>>()?;
+    let running = specs
+        .iter()
+        .map(|spec| {
+            let task: serde_json::Value = serde_json::from_str(&spec.task_def_json).ok()?;
+            Some((task.get("id")?.as_str()?.to_string(), task))
+        })
+        .collect::<Option<BTreeMap<_, _>>>()?;
+    (running == loaded && authored.tasks.keys().eq(loaded.keys())).then_some(authored)
+}
+
+// ---------------------------------------------------------------------------
 // Manifest
 // ---------------------------------------------------------------------------
 
@@ -183,6 +506,25 @@ pub struct GraphCheckpointPaths {
     pub costs: PathBuf,
 }
 
+impl GraphCheckpointPaths {
+    /// Gate feedback pending for the plan's next task attempts, kept beside
+    /// the manifest: `retry-feedback.json` in a checkpoint directory,
+    /// `<stem>.retry-feedback.json` beside a checkpoint file.
+    #[must_use]
+    pub fn retry_feedback(&self) -> PathBuf {
+        let in_directory = self
+            .activities
+            .file_name()
+            .is_some_and(|name| name == "activities.jsonl");
+        let stem = self.manifest.file_stem().and_then(|stem| stem.to_str());
+        let file_name = match stem {
+            Some(stem) if !in_directory => format!("{stem}.retry-feedback.json"),
+            _ => "retry-feedback.json".to_string(),
+        };
+        self.manifest.with_file_name(file_name)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct GraphCostLedgerState {
     schema_version: u32,
@@ -218,17 +560,24 @@ impl GraphCostLedgerCheckpoint {
     fn load(
         path: PathBuf,
         manifest: &GraphCheckpointManifest,
+        graph: &GraphIdentity,
     ) -> Result<GraphCostLedgerCheckpoint> {
         let bytes = std::fs::read(&path)
             .with_context(|| format!("read Graph cost ledger {}", path.display()))?;
         let state: GraphCostLedgerState = serde_json::from_slice(&bytes)
             .with_context(|| format!("parse Graph cost ledger {}", path.display()))?;
-        validate_cost_ledger_state(&state, manifest)
+        validate_cost_ledger_state(&state, manifest, graph)
             .with_context(|| format!("validate Graph cost ledger {}", path.display()))?;
         Ok(Self {
             path,
             identity: state,
         })
+    }
+
+    /// Persist `graph_fingerprint` as the graph this ledger belongs to.
+    fn rebind(&mut self, graph_fingerprint: &str) -> Result<()> {
+        self.identity.graph_fingerprint = graph_fingerprint.to_string();
+        write_cost_ledger_atomic(&self.path, &self.identity)
     }
 }
 
@@ -240,6 +589,7 @@ pub struct PreparedGraphCheckpoint {
     replayer: Option<ActivityReplayer>,
     replayed_entries: usize,
     cost_ledger: Option<GraphCostLedgerCheckpoint>,
+    invalidated_on_resume: Vec<InvalidatedActivity>,
 }
 
 impl std::fmt::Debug for PreparedGraphCheckpoint {
@@ -291,13 +641,80 @@ impl PreparedGraphCheckpoint {
 
     /// Persist the terminal state after Graph execution.
     pub fn finish(&mut self, succeeded: bool) -> Result<()> {
-        self.manifest.status = if succeeded {
+        self.finish_with_status(if succeeded {
             GraphCheckpointStatus::Succeeded
         } else {
             GraphCheckpointStatus::Failed
-        };
+        })
+    }
+
+    /// Persist an explicit terminal state, e.g. `Interrupted` after a signal.
+    pub fn finish_with_status(&mut self, status: GraphCheckpointStatus) -> Result<()> {
+        self.manifest.status = status;
+        // Best-effort: a verdict summary failure must not block the terminal write.
+        if let Err(error) = self.refresh_gate_verdicts() {
+            tracing::warn!(%error, "gate verdict checkpoint summary refresh failed");
+        }
         self.manifest.updated_at_ms = unix_ms();
         write_manifest_atomic(&self.paths.manifest, &self.manifest)
+    }
+
+    /// Last persisted lifecycle state.
+    #[must_use]
+    pub const fn status(&self) -> GraphCheckpointStatus {
+        self.manifest.status
+    }
+
+    /// Records refused for replay by this resume; their nodes re-run.
+    #[must_use]
+    pub fn invalidated_activities(&self) -> &[InvalidatedActivity] {
+        &self.invalidated_on_resume
+    }
+
+    /// Record how this run left the tasks it did not complete, replacing the
+    /// previous run's record. The next terminal write persists it.
+    pub fn record_task_outcomes(&mut self, summary: &TaskOutcomeSummary) -> Result<()> {
+        if summary == &TaskOutcomeSummary::default() {
+            self.manifest.extensions.remove(TASK_OUTCOME_EXTENSION);
+            return Ok(());
+        }
+        let value = serde_json::to_value(summary).context("serialize task outcomes")?;
+        self.manifest.extensions.insert(
+            TASK_OUTCOME_EXTENSION.to_string(),
+            host_extension(TASK_OUTCOME_EXTENSION, value)?,
+        );
+        Ok(())
+    }
+
+    /// Decode the persisted [`GATE_VERDICT_EXTENSION`] summary, if any.
+    #[must_use]
+    pub fn gate_verdicts(&self) -> Option<GateVerdictSummary> {
+        self.manifest
+            .extensions
+            .get(GATE_VERDICT_EXTENSION)
+            .and_then(|extension| serde_json::from_value(extension.value.clone()).ok())
+    }
+
+    /// Rebuild the gate-verdict extension from the durable Activity log.
+    ///
+    /// The host-owned summary is replaced wholesale, so this bypasses the
+    /// write-once fingerprint guard of [`Self::register_extension`].
+    fn refresh_gate_verdicts(&mut self) -> Result<()> {
+        let summary = GateVerdictSummary {
+            verdicts: recorded_gate_verdicts(&self.paths.activities),
+            invalidated_on_resume: self.invalidated_on_resume.clone(),
+        };
+        if summary == GateVerdictSummary::default() {
+            // Nothing verified or invalidated: keep the manifest free of an
+            // empty summary (and drop a stale one).
+            self.manifest.extensions.remove(GATE_VERDICT_EXTENSION);
+            return Ok(());
+        }
+        let extension = gate_verdict_extension(&summary)?;
+        self.manifest
+            .extensions
+            .insert(GATE_VERDICT_EXTENSION.to_string(), extension);
+        Ok(())
     }
 
     // ---- Extension registration ----
@@ -518,83 +935,69 @@ pub fn prepare_graph_checkpoint(
     force_resume: bool,
 ) -> Result<PreparedGraphCheckpoint> {
     let paths = resolve_checkpoint_paths(workdir, requested_path, plan_id, plan_count)?;
-    let fingerprint = graph_execution_fingerprint(graph).context("fingerprint Graph")?;
+    let identity = GraphIdentity::of(workdir, graph)?;
 
     if fresh {
         archive_checkpoint_files(&paths)?;
     }
 
     if !fresh && paths.manifest.exists() {
-        let bytes = std::fs::read(&paths.manifest)
-            .with_context(|| format!("read Graph checkpoint {}", paths.manifest.display()))?;
-        let mut manifest: GraphCheckpointManifest = serde_json::from_slice(&bytes)
-            .with_context(|| format!("parse Graph checkpoint {}", paths.manifest.display()))?;
-
-        // In-memory v2 -> v3 migration: add empty extensions/receipts, bump
-        // version. The upgraded manifest is written on the next atomic commit.
-        if manifest.schema_version == 2 {
-            migrate_v2_to_v3(&mut manifest);
-        }
-
-        let mismatch = checkpoint_mismatch(&manifest, plan_id, &fingerprint, &paths);
-
-        if let Some(reason) = mismatch {
-            if !force_resume {
-                bail!(
-                    "cannot resume Graph checkpoint {}: {reason}; use --fresh to archive it or --force-resume to start a new run",
-                    paths.manifest.display()
-                );
-            }
-            archive_checkpoint_files(&paths)?;
-        } else {
-            if (!paths.activities.is_file() || !paths.costs.is_file()) && !force_resume {
-                bail!(
-                    "Graph checkpoint {} references missing Activity log or cost ledger ({}, {}); use --fresh or --force-resume",
-                    paths.manifest.display(),
-                    paths.activities.display(),
-                    paths.costs.display(),
-                );
-            }
-            if !paths.activities.is_file() || !paths.costs.is_file() {
-                archive_checkpoint_files(&paths)?;
-                return create_fresh_checkpoint(paths, plan_id, fingerprint);
-            }
-            let cost_ledger = match GraphCostLedgerCheckpoint::load(paths.costs.clone(), &manifest)
-            {
-                Ok(cost_ledger) => cost_ledger,
-                Err(_) if force_resume => {
-                    archive_checkpoint_files(&paths)?;
-                    return create_fresh_checkpoint(paths, plan_id, fingerprint);
+        let mut manifest = read_manifest(&paths.manifest)?;
+        match checkpoint_match(&manifest, plan_id, &identity, &paths) {
+            Err(reason) => {
+                if !force_resume {
+                    bail!(
+                        "cannot resume Graph checkpoint {}: {reason}; use --fresh to archive it or --force-resume to start a new run",
+                        paths.manifest.display()
+                    );
                 }
-                Err(error) => return Err(error),
-            };
-            let replayer =
-                ActivityReplayer::load_scoped(&paths.activities, plan_id, &manifest.run_id)
-                    .with_context(|| {
-                        format!(
-                            "load Graph Activity checkpoint {}",
-                            paths.activities.display()
-                        )
-                    })?;
-            let replayed_entries = replayer.entry_count();
-            let recorder = ActivityRecorder::create(&manifest.run_id, &paths.activities)
-                .with_context(|| {
-                    format!(
-                        "open Graph Activity checkpoint {}",
-                        paths.activities.display()
-                    )
-                })?;
-            manifest.status = GraphCheckpointStatus::Running;
-            manifest.updated_at_ms = unix_ms();
-            write_manifest_atomic(&paths.manifest, &manifest)?;
-            return Ok(PreparedGraphCheckpoint {
-                paths,
-                manifest,
-                recorder: Some(recorder),
-                replayer: Some(replayer),
-                replayed_entries,
-                cost_ledger: Some(cost_ledger),
-            });
+                archive_checkpoint_files(&paths)?;
+            }
+            Ok(matched) => {
+                if (!paths.activities.is_file() || !paths.costs.is_file()) && !force_resume {
+                    bail!(
+                        "Graph checkpoint {} references missing Activity log or cost ledger ({}, {}); use --fresh or --force-resume",
+                        paths.manifest.display(),
+                        paths.activities.display(),
+                        paths.costs.display(),
+                    );
+                }
+                if !paths.activities.is_file() || !paths.costs.is_file() {
+                    archive_checkpoint_files(&paths)?;
+                    return create_fresh_checkpoint(paths, plan_id, identity.current);
+                }
+                let mut cost_ledger = match GraphCostLedgerCheckpoint::load(
+                    paths.costs.clone(),
+                    &manifest,
+                    &identity,
+                ) {
+                    Ok(cost_ledger) => cost_ledger,
+                    Err(_) if force_resume => {
+                        archive_checkpoint_files(&paths)?;
+                        return create_fresh_checkpoint(paths, plan_id, identity.current);
+                    }
+                    Err(error) => return Err(error),
+                };
+                if matched == FingerprintMatch::Legacy {
+                    tracing::info!(
+                        plan_id,
+                        manifest = %paths.manifest.display(),
+                        "resuming a Graph checkpoint recorded with the legacy graph fingerprint; \
+                         recording the authored plan fingerprint"
+                    );
+                    // Ledger first: validation accepts either fingerprint, so
+                    // a crash before the manifest write stays resumable.
+                    cost_ledger.rebind(&identity.current)?;
+                    manifest.graph_fingerprint.clone_from(&identity.current);
+                } else {
+                    tracing::debug!(
+                        plan_id,
+                        fingerprint_match = matched.as_str(),
+                        "resuming Graph checkpoint"
+                    );
+                }
+                return resume_checkpoint(paths, manifest, cost_ledger, plan_id, graph);
+            }
         }
     } else if !fresh && (paths.activities.exists() || paths.costs.exists()) {
         if !force_resume {
@@ -607,7 +1010,49 @@ pub fn prepare_graph_checkpoint(
         archive_checkpoint_files(&paths)?;
     }
 
-    create_fresh_checkpoint(paths, plan_id, fingerprint)
+    create_fresh_checkpoint(paths, plan_id, identity.current)
+}
+
+/// Reopen a validated checkpoint for another run of the same plan graph.
+fn resume_checkpoint(
+    paths: GraphCheckpointPaths,
+    mut manifest: GraphCheckpointManifest,
+    cost_ledger: GraphCostLedgerCheckpoint,
+    plan_id: &str,
+    graph: &Graph,
+) -> Result<PreparedGraphCheckpoint> {
+    // Never resume a task whose recorded output was not verified: drop those
+    // records so the nodes re-run.
+    let invalidated_on_resume = invalidate_unverified_activities(&paths.activities, graph)?;
+    let replayer = ActivityReplayer::load_scoped(&paths.activities, plan_id, &manifest.run_id)
+        .with_context(|| {
+            format!(
+                "load Graph Activity checkpoint {}",
+                paths.activities.display()
+            )
+        })?;
+    let replayed_entries = replayer.entry_count();
+    let recorder =
+        ActivityRecorder::create(&manifest.run_id, &paths.activities).with_context(|| {
+            format!(
+                "open Graph Activity checkpoint {}",
+                paths.activities.display()
+            )
+        })?;
+    manifest.status = GraphCheckpointStatus::Running;
+    let mut prepared = PreparedGraphCheckpoint {
+        paths,
+        manifest,
+        recorder: Some(recorder),
+        replayer: Some(replayer),
+        replayed_entries,
+        cost_ledger: Some(cost_ledger),
+        invalidated_on_resume,
+    };
+    prepared.refresh_gate_verdicts()?;
+    prepared.manifest.updated_at_ms = unix_ms();
+    write_manifest_atomic(&prepared.paths.manifest, &prepared.manifest)?;
+    Ok(prepared)
 }
 
 fn create_fresh_checkpoint(
@@ -668,6 +1113,7 @@ fn create_fresh_checkpoint(
         replayer: None,
         replayed_entries: 0,
         cost_ledger: Some(cost_ledger),
+        invalidated_on_resume: Vec::new(),
     })
 }
 
@@ -685,10 +1131,14 @@ fn resolve_checkpoint_paths(
             workdir.join(path)
         }
     });
-    let runner_default = workdir.join(DEFAULT_RUNNER_RESUME_PATH);
+    let is_runner_default = |path: &Path| {
+        DEFAULT_RUNNER_RESUME_PATHS
+            .iter()
+            .any(|default| path == workdir.join(default))
+    };
     let base = match requested {
         None => canonical_graph_root,
-        Some(path) if path == runner_default => canonical_graph_root,
+        Some(path) if is_runner_default(&path) => canonical_graph_root,
         Some(path) => path,
     };
 
@@ -723,40 +1173,57 @@ fn resolve_checkpoint_paths(
     })
 }
 
-fn checkpoint_mismatch(
+/// Read a checkpoint manifest, migrating a v2 manifest to v3 in memory.
+fn read_manifest(path: &Path) -> Result<GraphCheckpointManifest> {
+    let bytes =
+        std::fs::read(path).with_context(|| format!("read Graph checkpoint {}", path.display()))?;
+    let mut manifest: GraphCheckpointManifest = serde_json::from_slice(&bytes)
+        .with_context(|| format!("parse Graph checkpoint {}", path.display()))?;
+    // In-memory v2 -> v3 migration: add empty extensions/receipts, bump
+    // version. The upgraded manifest is written on the next atomic commit.
+    if manifest.schema_version == 2 {
+        migrate_v2_to_v3(&mut manifest);
+    }
+    Ok(manifest)
+}
+
+/// Which of the graph's fingerprints `manifest` recorded, or why it cannot
+/// resume this plan.
+fn checkpoint_match(
     manifest: &GraphCheckpointManifest,
     plan_id: &str,
-    fingerprint: &str,
+    graph: &GraphIdentity,
     paths: &GraphCheckpointPaths,
-) -> Option<String> {
+) -> Result<FingerprintMatch, String> {
     // Accept v2 (will migrate in-memory to v3) and v3.
     if manifest.schema_version < MIN_SUPPORTED_SCHEMA_VERSION
         || manifest.schema_version > CHECKPOINT_SCHEMA_VERSION
     {
-        return Some(format!(
+        return Err(format!(
             "schema version {} is unsupported (expected {MIN_SUPPORTED_SCHEMA_VERSION}..={CHECKPOINT_SCHEMA_VERSION})",
             manifest.schema_version
         ));
     }
     if manifest.plan_id != plan_id {
-        return Some(format!(
+        return Err(format!(
             "manifest is for plan '{}' rather than '{plan_id}'",
             manifest.plan_id
         ));
     }
-    if manifest.graph_fingerprint != fingerprint {
-        return Some("the converted plan graph has changed".to_string());
+    let matched = graph.matching(&manifest.graph_fingerprint);
+    if matched == FingerprintMatch::Mismatch {
+        return Err("the converted plan graph has changed".to_string());
     }
     if paths.activities.file_name().and_then(|name| name.to_str())
         != Some(manifest.activity_log.as_str())
     {
-        return Some("manifest references a different Activity log".to_string());
+        return Err("manifest references a different Activity log".to_string());
     }
     if paths.costs.file_name().and_then(|name| name.to_str()) != Some(manifest.cost_ledger.as_str())
     {
-        return Some("manifest references a different cost ledger".to_string());
+        return Err("manifest references a different cost ledger".to_string());
     }
-    None
+    Ok(matched)
 }
 
 /// Migrate a v2 manifest to v3 in-memory by adding empty extension and receipt
@@ -772,6 +1239,7 @@ fn migrate_v2_to_v3(manifest: &mut GraphCheckpointManifest) {
 fn validate_cost_ledger_state(
     state: &GraphCostLedgerState,
     manifest: &GraphCheckpointManifest,
+    graph: &GraphIdentity,
 ) -> Result<()> {
     if state.schema_version != COST_LEDGER_SCHEMA_VERSION {
         bail!(
@@ -786,8 +1254,10 @@ fn validate_cost_ledger_state(
             manifest.plan_id
         );
     }
-    if state.graph_fingerprint != manifest.graph_fingerprint {
-        bail!("cost ledger graph fingerprint does not match the checkpoint manifest");
+    // A legacy-fingerprint resume rebinds the ledger before the manifest, so
+    // either of the graph's fingerprints identifies it.
+    if graph.matching(&state.graph_fingerprint) == FingerprintMatch::Mismatch {
+        bail!("cost ledger graph fingerprint does not match the plan graph");
     }
     if state.run_id != manifest.run_id {
         bail!("cost ledger run ID does not match the checkpoint manifest");
@@ -850,6 +1320,473 @@ fn write_manifest_atomic(path: &Path, manifest: &GraphCheckpointManifest) -> Res
         .with_context(|| format!("commit Graph checkpoint {}", path.display()))
 }
 
+/// Last status recorded in `plan_id`'s canonical checkpoint under
+/// `.roko/state/graph/`, or `None` when it has no readable checkpoint.
+#[must_use]
+pub fn canonical_checkpoint_status(workdir: &Path, plan_id: &str) -> Option<GraphCheckpointStatus> {
+    #[derive(Deserialize)]
+    struct StatusOnly {
+        status: GraphCheckpointStatus,
+    }
+
+    let manifest = workdir
+        .join(".roko/state/graph")
+        .join(safe_plan_component(plan_id))
+        .join("checkpoint.json");
+    let bytes = std::fs::read(manifest).ok()?;
+    serde_json::from_slice::<StatusOnly>(&bytes)
+        .ok()
+        .map(|manifest| manifest.status)
+}
+
+/// Task outcomes recorded by the last run in `plan_id`'s canonical
+/// checkpoint under `.roko/state/graph/`, or `None` when there are none.
+#[must_use]
+pub fn canonical_task_outcomes(workdir: &Path, plan_id: &str) -> Option<TaskOutcomeSummary> {
+    #[derive(Deserialize)]
+    struct ExtensionsOnly {
+        #[serde(default)]
+        extensions: BTreeMap<String, CheckpointExtension>,
+    }
+
+    let manifest = workdir
+        .join(".roko/state/graph")
+        .join(safe_plan_component(plan_id))
+        .join("checkpoint.json");
+    let bytes = std::fs::read(manifest).ok()?;
+    let manifest = serde_json::from_slice::<ExtensionsOnly>(&bytes).ok()?;
+    serde_json::from_value(
+        manifest
+            .extensions
+            .get(TASK_OUTCOME_EXTENSION)?
+            .value
+            .clone(),
+    )
+    .ok()
+}
+
+// ---------------------------------------------------------------------------
+// Inspection
+// ---------------------------------------------------------------------------
+
+/// A plan's canonical Graph checkpoint as last written, read without
+/// validating or changing it. `roko diagnose` reports from this.
+#[derive(Debug, Clone)]
+pub struct CheckpointInspection {
+    /// Files of the checkpoint.
+    pub paths: GraphCheckpointPaths,
+    /// The manifest; a v2 manifest is migrated in memory.
+    pub manifest: GraphCheckpointManifest,
+    /// Actual provider spend in the cost ledger, in millionths of one USD.
+    /// `None` when the ledger is missing or unreadable.
+    pub spent_micro_usd: Option<u64>,
+    /// Spend reserved for a provider call that never settled. Resume refuses
+    /// a ledger with an unresolved reservation.
+    pub reserved_micro_usd: Option<u64>,
+    /// Task nodes whose output this run recorded in its Activity log, each
+    /// with the gate verdict of its latest record.
+    pub recorded: BTreeMap<String, Option<TaskGateVerdict>>,
+    /// Records the last resume removed because they lacked a passing verdict.
+    pub invalidated_on_resume: Vec<InvalidatedActivity>,
+    /// When the newest checkpoint this one replaced was archived, as Unix
+    /// milliseconds: records older than this belong to earlier runs of the
+    /// plan. `None` when no earlier checkpoint was archived.
+    pub replaced_at_ms: Option<u128>,
+}
+
+/// Read `plan_id`'s canonical checkpoint under `.roko/state/graph/` for
+/// inspection, or `None` when it has no manifest.
+///
+/// # Errors
+///
+/// Returns an error when the manifest exists but cannot be read or parsed.
+pub fn inspect_canonical_checkpoint(
+    workdir: &Path,
+    plan_id: &str,
+) -> Result<Option<CheckpointInspection>> {
+    let paths = resolve_checkpoint_paths(workdir, None, plan_id, 1)?;
+    if !paths.manifest.is_file() {
+        return Ok(None);
+    }
+    let manifest = read_manifest(&paths.manifest)?;
+    let ledger = std::fs::read(&paths.costs)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<GraphCostLedgerState>(&bytes).ok());
+    let invalidated_on_resume = manifest
+        .extensions
+        .get(GATE_VERDICT_EXTENSION)
+        .and_then(|extension| {
+            serde_json::from_value::<GateVerdictSummary>(extension.value.clone()).ok()
+        })
+        .map(|summary| summary.invalidated_on_resume)
+        .unwrap_or_default();
+    Ok(Some(CheckpointInspection {
+        recorded: recorded_outputs(&paths.activities, &manifest.run_id),
+        replaced_at_ms: latest_archive_ms(&paths),
+        spent_micro_usd: ledger.as_ref().map(|ledger| ledger.spent_micro_usd),
+        reserved_micro_usd: ledger.as_ref().map(|ledger| ledger.reserved_micro_usd),
+        invalidated_on_resume,
+        manifest,
+        paths,
+    }))
+}
+
+/// Node ids recorded in an Activity log for `run_id`, each with the gate
+/// verdict of its latest record.
+fn recorded_outputs(path: &Path, run_id: &str) -> BTreeMap<String, Option<TaskGateVerdict>> {
+    let Ok(content) = std::fs::read_to_string(path) else {
+        return BTreeMap::new();
+    };
+    content
+        .lines()
+        .filter_map(|line| serde_json::from_str::<RecordEntry>(line.trim()).ok())
+        .filter(|entry| entry.run_id == run_id)
+        .map(|entry| {
+            let verdict = TaskGateVerdict::from_signals(&entry.signals);
+            (entry.node_id, verdict)
+        })
+        .collect()
+}
+
+/// Newest timestamp [`archive_checkpoint_files`] gave any of `paths`' files.
+fn latest_archive_ms(paths: &GraphCheckpointPaths) -> Option<u128> {
+    let prefixes: Vec<String> = [&paths.manifest, &paths.activities, &paths.costs]
+        .into_iter()
+        .filter_map(|path| {
+            path.file_name()?
+                .to_str()
+                .map(|name| format!("{name}.bak."))
+        })
+        .collect();
+    std::fs::read_dir(paths.manifest.parent()?)
+        .ok()?
+        .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
+        .filter_map(|name| {
+            prefixes
+                .iter()
+                .find_map(|prefix| name.strip_prefix(prefix.as_str())?.parse::<u128>().ok())
+        })
+        .max()
+}
+
+/// Start `plan`'s canonical checkpoint the way a default `plan run` does.
+#[cfg(test)]
+pub(crate) fn start_plan_checkpoint(
+    workdir: &Path,
+    plan: &Plan,
+) -> Result<PreparedGraphCheckpoint> {
+    let graph = convert_plan(plan, &ResumeOptions::default())?;
+    prepare_graph_checkpoint(workdir, None, &plan.id, 1, &graph, false, false)
+}
+
+// ---------------------------------------------------------------------------
+// Resume preview
+// ---------------------------------------------------------------------------
+
+/// `plan run` options that decide what happens to a plan's Graph checkpoint.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ResumeOptions<'a> {
+    /// `--resume-plan`: checkpoint root directory, or one plan's manifest.
+    pub resume_plan: Option<&'a Path>,
+    /// `--fresh`: archive existing checkpoints and run every task.
+    pub fresh: bool,
+    /// `--force-resume`: archive an unusable checkpoint instead of stopping.
+    pub force_resume: bool,
+    /// `--max-tasks`: concurrency override; 0 keeps `[meta] max_parallel`.
+    pub max_tasks: usize,
+    /// `--max-retries`: per-task retry override.
+    pub max_retries: Option<u32>,
+    /// `--rich-topology`: convert through the production topology.
+    pub rich_topology: bool,
+}
+
+/// What a plan run does with a plan's Graph checkpoint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ResumeAction {
+    /// No checkpoint exists: every task runs.
+    Start,
+    /// The checkpoint resumes: restored tasks replay their recorded outputs.
+    Resume,
+    /// The checkpoint is archived and every task runs.
+    Archive,
+    /// The checkpoint cannot be used and the run stops with an error.
+    Refuse,
+}
+
+/// What `plan run` would do with one plan's Graph checkpoint.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ResumePreview {
+    /// Checkpoint manifest the run would use.
+    pub manifest: PathBuf,
+    /// Status recorded in the manifest.
+    pub status: Option<GraphCheckpointStatus>,
+    /// How the recorded fingerprint relates to the plan.
+    pub fingerprint_match: Option<FingerprintMatch>,
+    /// What the run would do with the checkpoint.
+    pub action: ResumeAction,
+    /// Why the checkpoint would be migrated, archived, or refused.
+    pub reason: Option<String>,
+    /// Tasks whose recorded outputs would be replayed instead of run.
+    pub restored_tasks: Vec<String>,
+    /// Tasks that would run.
+    pub tasks_to_run: Vec<String>,
+}
+
+impl ResumePreview {
+    /// Lines describing the preview for `plan run --dry-run`.
+    #[must_use]
+    pub fn describe(&self, workdir: &Path) -> Vec<String> {
+        let manifest = self
+            .manifest
+            .strip_prefix(workdir)
+            .unwrap_or(&self.manifest)
+            .display();
+        let facts: Vec<String> = self
+            .fingerprint_match
+            .map(|matched| format!("fingerprint match: {}", matched.as_str()))
+            .into_iter()
+            .chain(
+                self.status
+                    .map(|status| format!("status: {}", status.as_str())),
+            )
+            .collect();
+        let facts = if facts.is_empty() {
+            String::new()
+        } else {
+            format!(" ({})", facts.join(", "))
+        };
+        let reason = self
+            .reason
+            .as_deref()
+            .map(|reason| format!(": {reason}"))
+            .unwrap_or_default();
+        let mut lines = vec![match self.action {
+            ResumeAction::Start => "checkpoint: none, every task runs".to_string(),
+            ResumeAction::Resume => format!("checkpoint: resumable{facts} {manifest}{reason}"),
+            ResumeAction::Archive => {
+                format!("checkpoint: archived{facts}, every task runs{reason}")
+            }
+            ResumeAction::Refuse => {
+                format!("checkpoint: not resumable{facts}, the run stops{reason}")
+            }
+        }];
+        if self.action == ResumeAction::Resume {
+            let list = |tasks: &[String]| {
+                if tasks.is_empty() {
+                    "-".to_string()
+                } else {
+                    tasks.join(", ")
+                }
+            };
+            lines.push(format!("  restored: {}", list(&self.restored_tasks)));
+            lines.push(format!("  run:      {}", list(&self.tasks_to_run)));
+        }
+        lines
+    }
+
+    /// The checkpoint cannot resume: `--force-resume` archives it, otherwise
+    /// the run stops.
+    fn unusable(mut self, force_resume: bool, reason: impl std::fmt::Display) -> Self {
+        (self.action, self.reason) = if force_resume {
+            (
+                ResumeAction::Archive,
+                Some(format!("--force-resume archives it, {reason}")),
+            )
+        } else {
+            (
+                ResumeAction::Refuse,
+                Some(format!("{reason}; use --fresh or --force-resume")),
+            )
+        };
+        self
+    }
+
+    /// The run stops even with `--force-resume`.
+    fn refused(mut self, reason: impl std::fmt::Display) -> Self {
+        self.action = ResumeAction::Refuse;
+        self.reason = Some(format!("{reason}; use --fresh"));
+        self
+    }
+}
+
+/// Report what `plan run` would do with `plan`'s Graph checkpoint, without
+/// changing any file.
+///
+/// # Errors
+///
+/// Returns an error when the plan cannot be converted to a Graph or its
+/// checkpoint location cannot be resolved.
+pub fn preview_plan_resume(
+    workdir: &Path,
+    plan: &Plan,
+    plan_count: usize,
+    options: &ResumeOptions<'_>,
+) -> Result<ResumePreview> {
+    if options.rich_topology {
+        bail!("the checkpoint preview does not support --rich-topology");
+    }
+    let graph = convert_plan(plan, options)?;
+    let mut preview = preview_graph_checkpoint(
+        workdir,
+        options.resume_plan,
+        &plan.id,
+        plan_count,
+        &graph,
+        options.fresh,
+        options.force_resume,
+    )?;
+    let position: BTreeMap<&str, usize> = plan
+        .tasks
+        .tasks
+        .iter()
+        .enumerate()
+        .map(|(index, task)| (task.id.as_str(), index))
+        .collect();
+    for tasks in [&mut preview.restored_tasks, &mut preview.tasks_to_run] {
+        tasks.sort_by_key(|task| position.get(task.as_str()).copied());
+    }
+    Ok(preview)
+}
+
+/// Convert `plan` as `graph_execution::plan_runner::run_one_plan` does with
+/// the default topology, so the preview fingerprints the graph a run executes.
+fn convert_plan(plan: &Plan, options: &ResumeOptions<'_>) -> Result<Graph> {
+    let tasks: Vec<(String, PlanTaskInfo)> = plan
+        .tasks
+        .tasks
+        .iter()
+        .map(|task| {
+            let info = PlanTaskInfo {
+                title: task.title.clone(),
+                description: task.description.clone(),
+                role: task.role.clone(),
+                tier: task.tier.clone(),
+                model_hint: task.model_hint.clone(),
+                files: task.files.clone(),
+                depends_on: task.depends_on.clone(),
+                depends_on_plan: task.depends_on_plan.clone(),
+                timeout_secs: task.timeout_secs,
+                max_retries: options.max_retries.unwrap_or(task.max_retries),
+                domain: task.domain.as_ref().map(|domain| format!("{domain:?}")),
+                sequence: task.sequence,
+                full_config_json: serde_json::to_value(task).unwrap_or_default(),
+            };
+            (task.id.clone(), info)
+        })
+        .collect();
+    let max_parallel = if options.max_tasks > 0 {
+        u32::try_from(options.max_tasks).unwrap_or(u32::MAX)
+    } else {
+        plan.tasks.meta.max_parallel
+    };
+    plan_to_graph(
+        &plan.id,
+        &plan.dir.display().to_string(),
+        &tasks,
+        max_parallel,
+    )
+    .with_context(|| format!("convert plan '{}' to a Graph", plan.id))
+}
+
+/// Read-only counterpart of [`prepare_graph_checkpoint`]: what it would do
+/// with `plan_id`'s checkpoint for `graph`.
+fn preview_graph_checkpoint(
+    workdir: &Path,
+    requested_path: Option<&Path>,
+    plan_id: &str,
+    plan_count: usize,
+    graph: &Graph,
+    fresh: bool,
+    force_resume: bool,
+) -> Result<ResumePreview> {
+    let paths = resolve_checkpoint_paths(workdir, requested_path, plan_id, plan_count)?;
+    let identity = GraphIdentity::of(workdir, graph)?;
+    let mut task_nodes: Vec<String> = graph
+        .inner
+        .node_weights()
+        .filter(|node| node.cell_type == TASK_EXECUTOR_CELL_TYPE)
+        .map(|node| node.id.clone())
+        .collect();
+    task_nodes.sort();
+    let mut preview = ResumePreview {
+        manifest: paths.manifest.clone(),
+        status: None,
+        fingerprint_match: None,
+        action: ResumeAction::Start,
+        reason: None,
+        restored_tasks: Vec::new(),
+        tasks_to_run: task_nodes.clone(),
+    };
+
+    let manifest = if paths.manifest.exists() {
+        match read_manifest(&paths.manifest) {
+            Ok(manifest) => {
+                preview.status = Some(manifest.status);
+                preview.fingerprint_match = Some(identity.matching(&manifest.graph_fingerprint));
+                Some(manifest)
+            }
+            Err(error) if !fresh => return Ok(preview.refused(format!("{error:#}"))),
+            Err(_) => None,
+        }
+    } else {
+        None
+    };
+    if fresh {
+        if paths.manifest.exists() || paths.activities.exists() || paths.costs.exists() {
+            preview.action = ResumeAction::Archive;
+            preview.reason = Some("--fresh archives it".to_string());
+        }
+        return Ok(preview);
+    }
+    let Some(manifest) = manifest else {
+        if paths.activities.exists() || paths.costs.exists() {
+            return Ok(preview.unusable(
+                force_resume,
+                "found an Activity log or cost ledger without its manifest",
+            ));
+        }
+        return Ok(preview);
+    };
+    let matched = match checkpoint_match(&manifest, plan_id, &identity, &paths) {
+        Ok(matched) => matched,
+        Err(reason) => return Ok(preview.unusable(force_resume, reason)),
+    };
+    if !paths.activities.is_file() || !paths.costs.is_file() {
+        return Ok(preview.unusable(
+            force_resume,
+            "the manifest references a missing Activity log or cost ledger",
+        ));
+    }
+    if let Err(error) = GraphCostLedgerCheckpoint::load(paths.costs.clone(), &manifest, &identity) {
+        return Ok(preview.unusable(force_resume, format!("{error:#}")));
+    }
+    let replayer = match ActivityReplayer::load_scoped(&paths.activities, plan_id, &manifest.run_id)
+    {
+        Ok(replayer) => replayer,
+        Err(error) => {
+            return Ok(preview.refused(format!(
+                "load Graph Activity checkpoint {}: {error}",
+                paths.activities.display()
+            )));
+        }
+    };
+    let required = verdict_required_nodes(graph);
+    let (restored, to_run) = task_nodes.into_iter().partition(|node| {
+        replayer
+            .lookup(node, 0)
+            .is_some_and(|signals| replay_refusal(signals, required.contains(node)).is_none())
+    });
+    preview.action = ResumeAction::Resume;
+    preview.restored_tasks = restored;
+    preview.tasks_to_run = to_run;
+    if matched == FingerprintMatch::Legacy {
+        preview.reason =
+            Some("resuming rewrites it with the authored plan fingerprint".to_string());
+    }
+    Ok(preview)
+}
+
 fn safe_plan_component(plan_id: &str) -> String {
     let safe: String = plan_id
         .chars()
@@ -902,12 +1839,405 @@ mod tests {
         graph
     }
 
+    /// A task node whose task definition declares one authored verify step.
+    fn verify_graph(name: &str) -> Graph {
+        let task_def = serde_json::json!({
+            "id": "task-1",
+            "title": "Implement the trait",
+            "verify": [{ "phase": "structural", "command": "grep -q Trait src/lib.rs" }],
+        });
+        let mut graph = Graph::new(GraphMetadata {
+            name: name.to_string(),
+            ..GraphMetadata::default()
+        });
+        graph
+            .add_node(Node {
+                id: "task-1".to_string(),
+                cell_type: "task-executor".to_string(),
+                config: toml::Value::Table(toml::map::Map::from_iter([(
+                    "task_def_json".to_string(),
+                    toml::Value::String(task_def.to_string()),
+                )])),
+                inputs: Vec::new(),
+                outputs: Vec::new(),
+                execution_class: roko_graph::ExecutionClass::Activity,
+            })
+            .expect("node");
+        graph
+    }
+
+    fn verdict_output(text: &str, verdict: Option<TaskGateVerdict>) -> Vec<roko_core::Signal> {
+        let mut signals = vec![
+            roko_core::Signal::builder(roko_core::Kind::AgentOutput)
+                .body(roko_core::Body::text(text))
+                .build(),
+        ];
+        if let Some(verdict) = verdict {
+            verdict.stamp(&mut signals);
+        }
+        signals
+    }
+
+    #[test]
+    fn only_verify_bearing_task_nodes_require_a_verdict() {
+        assert!(verdict_required_nodes(&verify_graph("p")).contains("task-1"));
+        assert!(verdict_required_nodes(&graph("p", 1)).is_empty());
+    }
+
+    #[test]
+    fn resume_reruns_unverified_or_forced_task_records() {
+        for verdict in [None, Some(TaskGateVerdict::ForcedAccept)] {
+            let dir = tempdir().expect("tempdir");
+            let graph = verify_graph("p");
+            let mut fresh =
+                prepare_graph_checkpoint(dir.path(), None, "p", 1, &graph, false, false)
+                    .expect("fresh checkpoint");
+            fresh
+                .take_recorder()
+                .record(
+                    "p",
+                    "task-1",
+                    0,
+                    verdict_output("BLOCK: not applied", verdict),
+                )
+                .expect("record");
+            fresh.finish(false).expect("finish");
+
+            let mut resumed =
+                prepare_graph_checkpoint(dir.path(), None, "p", 1, &graph, false, false)
+                    .expect("resume checkpoint");
+            assert_eq!(resumed.replayed_entries(), 0, "verdict {verdict:?}");
+            assert_eq!(resumed.invalidated_activities().len(), 1);
+            let replayer = resumed.take_replayer().expect("replayer");
+            assert!(replayer.lookup("task-1", 0).is_none());
+            let summary = resumed.gate_verdicts().expect("gate verdict extension");
+            assert_eq!(summary.invalidated_on_resume[0].node_id, "task-1");
+
+            // The re-run appends a verified record; the next resume replays it
+            // without tripping the duplicate-record guard.
+            resumed
+                .take_recorder()
+                .record(
+                    "p",
+                    "task-1",
+                    0,
+                    verdict_output("implemented", Some(TaskGateVerdict::Passed)),
+                )
+                .expect("record re-run");
+            resumed.finish(true).expect("finish");
+            let again = prepare_graph_checkpoint(dir.path(), None, "p", 1, &graph, false, false)
+                .expect("second resume");
+            assert_eq!(again.replayed_entries(), 1);
+            assert!(again.invalidated_activities().is_empty());
+        }
+    }
+
+    #[test]
+    fn finish_populates_gate_verdict_extension_from_recorded_outputs() {
+        let dir = tempdir().expect("tempdir");
+        let graph = verify_graph("p");
+        let mut fresh = prepare_graph_checkpoint(dir.path(), None, "p", 1, &graph, false, false)
+            .expect("fresh checkpoint");
+        fresh
+            .take_recorder()
+            .record(
+                "p",
+                "task-1",
+                0,
+                verdict_output("done", Some(TaskGateVerdict::Passed)),
+            )
+            .expect("record");
+        fresh.finish(true).expect("finish");
+
+        let summary = fresh.gate_verdicts().expect("gate verdict extension");
+        assert_eq!(
+            summary.verdicts.get("task-1"),
+            Some(&TaskGateVerdict::Passed)
+        );
+        let extension = fresh
+            .extension(GATE_VERDICT_EXTENSION)
+            .expect("registered under the canonical key");
+        assert_eq!(
+            format!("{}@{}", extension.namespace, extension.schema_version),
+            GATE_VERDICT_EXTENSION
+        );
+
+        let resumed = prepare_graph_checkpoint(dir.path(), None, "p", 1, &graph, false, false)
+            .expect("resume checkpoint");
+        assert_eq!(resumed.replayed_entries(), 1);
+    }
+
     #[test]
     fn fingerprint_changes_with_execution_config() {
+        let dir = tempdir().expect("tempdir");
+        let first = GraphIdentity::of(dir.path(), &graph("p", 1)).expect("identity");
+        // Without a plan file the identity is the legacy Graph fingerprint.
+        assert_eq!(first.current, first.legacy);
         assert_ne!(
-            graph_execution_fingerprint(&graph("p", 1)).expect("fingerprint"),
-            graph_execution_fingerprint(&graph("p", 2)).expect("fingerprint")
+            first,
+            GraphIdentity::of(dir.path(), &graph("p", 2)).expect("identity")
         );
+    }
+
+    const PLAN_TOML: &str = r#"
+[meta]
+plan = "p"
+
+[[task]]
+id = "T1"
+title = "First"
+
+[[task]]
+id = "T2"
+title = "Second"
+depends_on = ["T1"]
+"#;
+
+    /// Write `content` as plan `p`'s tasks.toml under `workdir` and load it.
+    fn write_plan(workdir: &Path, content: &str) -> Plan {
+        let dir = workdir.join("plans").join("p");
+        std::fs::create_dir_all(&dir).expect("plan dir");
+        std::fs::write(dir.join("tasks.toml"), content).expect("write tasks.toml");
+        Plan {
+            id: "p".to_string(),
+            dir,
+            tasks: TasksFile::parse_str(content).expect("parse tasks.toml"),
+            prd_excerpt: String::new(),
+        }
+    }
+
+    fn plan_graph(plan: &Plan, options: &ResumeOptions<'_>) -> Graph {
+        convert_plan(plan, options).expect("convert plan")
+    }
+
+    /// Start a run of plan `p`, record T1's output, and stop it as failed.
+    fn record_first_task(workdir: &Path, graph: &Graph) -> GraphCheckpointPaths {
+        let mut checkpoint = prepare_graph_checkpoint(workdir, None, "p", 1, graph, false, false)
+            .expect("fresh checkpoint");
+        checkpoint
+            .take_recorder()
+            .record("p", "T1", 0, Vec::new())
+            .expect("record");
+        checkpoint.finish(false).expect("finish");
+        checkpoint.paths().clone()
+    }
+
+    fn recorded_fingerprint(path: &Path) -> String {
+        let value: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(path).expect("read")).expect("parse");
+        value["graph_fingerprint"]
+            .as_str()
+            .expect("graph_fingerprint")
+            .to_string()
+    }
+
+    fn rewrite_fingerprint(path: &Path, fingerprint: &str) {
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(path).expect("read")).expect("parse");
+        value["graph_fingerprint"] = serde_json::Value::String(fingerprint.to_string());
+        std::fs::write(path, serde_json::to_vec_pretty(&value).expect("serialize")).expect("write");
+    }
+
+    #[test]
+    fn plan_checkpoint_records_the_authored_fingerprint() {
+        let dir = tempdir().expect("tempdir");
+        let plan = write_plan(dir.path(), PLAN_TOML);
+        let graph = plan_graph(&plan, &ResumeOptions::default());
+        let identity = GraphIdentity::of(dir.path(), &graph).expect("identity");
+        let authored = AuthoredPlan::from_tasks_toml(PLAN_TOML).expect("authored plan");
+        assert_eq!(
+            identity.current,
+            plan_graph_fingerprint(&graph, &authored).expect("fingerprint")
+        );
+        assert_ne!(identity.current, identity.legacy);
+
+        let paths = record_first_task(dir.path(), &graph);
+        assert_eq!(recorded_fingerprint(&paths.manifest), identity.current);
+        assert_eq!(recorded_fingerprint(&paths.costs), identity.current);
+    }
+
+    #[test]
+    fn node_config_changes_outside_the_plan_file_keep_the_checkpoint_resumable() {
+        // `--max-retries` rewrites every node config, and with it the legacy
+        // fingerprint, without changing what the plan's tasks are.
+        let dir = tempdir().expect("tempdir");
+        let plan = write_plan(dir.path(), PLAN_TOML);
+        let original = plan_graph(&plan, &ResumeOptions::default());
+        record_first_task(dir.path(), &original);
+        let overridden = plan_graph(
+            &plan,
+            &ResumeOptions {
+                max_retries: Some(7),
+                ..ResumeOptions::default()
+            },
+        );
+        assert_ne!(
+            legacy_graph_execution_fingerprint(&original).expect("fingerprint"),
+            legacy_graph_execution_fingerprint(&overridden).expect("fingerprint")
+        );
+
+        let resumed = prepare_graph_checkpoint(dir.path(), None, "p", 1, &overridden, false, false)
+            .expect("resume with overridden node configs");
+        assert_eq!(resumed.replayed_entries(), 1);
+    }
+
+    #[test]
+    fn legacy_fingerprint_checkpoint_resumes_and_is_rewritten() {
+        let dir = tempdir().expect("tempdir");
+        let plan = write_plan(dir.path(), PLAN_TOML);
+        let graph = plan_graph(&plan, &ResumeOptions::default());
+        let identity = GraphIdentity::of(dir.path(), &graph).expect("identity");
+        let paths = record_first_task(dir.path(), &graph);
+        // An older roko recorded the legacy Graph fingerprint.
+        rewrite_fingerprint(&paths.manifest, &identity.legacy);
+        rewrite_fingerprint(&paths.costs, &identity.legacy);
+        let preview = preview_graph_checkpoint(dir.path(), None, "p", 1, &graph, false, false)
+            .expect("preview");
+        assert_eq!(preview.fingerprint_match, Some(FingerprintMatch::Legacy));
+        assert_eq!(preview.action, ResumeAction::Resume);
+
+        let resumed = prepare_graph_checkpoint(dir.path(), None, "p", 1, &graph, false, false)
+            .expect("resume legacy checkpoint");
+        assert_eq!(resumed.replayed_entries(), 1);
+        assert_eq!(recorded_fingerprint(&paths.manifest), identity.current);
+        assert_eq!(recorded_fingerprint(&paths.costs), identity.current);
+        drop(resumed);
+        let preview = preview_graph_checkpoint(dir.path(), None, "p", 1, &graph, false, false)
+            .expect("preview");
+        assert_eq!(preview.fingerprint_match, Some(FingerprintMatch::New));
+    }
+
+    #[test]
+    fn migration_interrupted_between_ledger_and_manifest_stays_resumable() {
+        let dir = tempdir().expect("tempdir");
+        let plan = write_plan(dir.path(), PLAN_TOML);
+        let graph = plan_graph(&plan, &ResumeOptions::default());
+        let identity = GraphIdentity::of(dir.path(), &graph).expect("identity");
+        let paths = record_first_task(dir.path(), &graph);
+        // The ledger was rebound; the manifest still holds the legacy value.
+        rewrite_fingerprint(&paths.manifest, &identity.legacy);
+
+        let resumed = prepare_graph_checkpoint(dir.path(), None, "p", 1, &graph, false, false)
+            .expect("resume half-migrated checkpoint");
+        assert_eq!(resumed.replayed_entries(), 1);
+        assert_eq!(recorded_fingerprint(&paths.manifest), identity.current);
+    }
+
+    #[test]
+    fn tasks_toml_edited_after_loading_keeps_the_legacy_identity() {
+        let dir = tempdir().expect("tempdir");
+        let plan = write_plan(dir.path(), PLAN_TOML);
+        let graph = plan_graph(&plan, &ResumeOptions::default());
+        std::fs::write(
+            plan.dir.join("tasks.toml"),
+            PLAN_TOML.replace("Second", "Edited"),
+        )
+        .expect("edit tasks.toml");
+
+        let identity = GraphIdentity::of(dir.path(), &graph).expect("identity");
+        assert_eq!(identity.current, identity.legacy);
+    }
+
+    #[test]
+    fn inspection_reads_this_runs_records_and_the_newest_archive() {
+        let dir = tempdir().expect("tempdir");
+        assert!(
+            inspect_canonical_checkpoint(dir.path(), "p")
+                .expect("inspect")
+                .is_none()
+        );
+
+        let plan = write_plan(dir.path(), PLAN_TOML);
+        let paths = record_first_task(dir.path(), &plan_graph(&plan, &ResumeOptions::default()));
+        // A record another run left in the log, and two archived runs.
+        ActivityRecorder::create("graph-p-earlier", &paths.activities)
+            .expect("recorder")
+            .record("p", "T2", 0, Vec::new())
+            .expect("record");
+        let checkpoint_dir = paths.manifest.parent().expect("checkpoint dir");
+        std::fs::write(checkpoint_dir.join("checkpoint.json.bak.100"), "{}").expect("archive");
+        std::fs::write(checkpoint_dir.join("activities.jsonl.bak.200"), "").expect("archive");
+
+        let inspection = inspect_canonical_checkpoint(dir.path(), "p")
+            .expect("inspect")
+            .expect("checkpoint");
+        assert_eq!(inspection.manifest.status, GraphCheckpointStatus::Failed);
+        assert_eq!(inspection.recorded.keys().collect::<Vec<_>>(), ["T1"]);
+        assert_eq!(inspection.replaced_at_ms, Some(200));
+        assert_eq!(
+            (inspection.spent_micro_usd, inspection.reserved_micro_usd),
+            (Some(0), Some(0))
+        );
+    }
+
+    #[test]
+    fn preview_reports_restored_and_pending_tasks_without_changing_files() {
+        let dir = tempdir().expect("tempdir");
+        let plan = write_plan(dir.path(), PLAN_TOML);
+        let options = ResumeOptions::default();
+        let preview = preview_plan_resume(dir.path(), &plan, 1, &options).expect("preview");
+        assert_eq!(preview.action, ResumeAction::Start);
+        assert_eq!(preview.tasks_to_run, ["T1", "T2"]);
+
+        let paths = record_first_task(dir.path(), &plan_graph(&plan, &options));
+        let files = || {
+            [&paths.manifest, &paths.activities, &paths.costs]
+                .map(|path| std::fs::read(path).expect("read checkpoint file"))
+        };
+        let before = files();
+        let preview = preview_plan_resume(dir.path(), &plan, 1, &options).expect("preview");
+        assert_eq!(preview.action, ResumeAction::Resume);
+        assert_eq!(preview.fingerprint_match, Some(FingerprintMatch::New));
+        assert_eq!(preview.status, Some(GraphCheckpointStatus::Failed));
+        assert_eq!(preview.restored_tasks, ["T1"]);
+        assert_eq!(preview.tasks_to_run, ["T2"]);
+        assert_eq!(files(), before);
+
+        let fresh = ResumeOptions {
+            fresh: true,
+            ..options
+        };
+        let preview = preview_plan_resume(dir.path(), &plan, 1, &fresh).expect("preview");
+        assert_eq!(preview.action, ResumeAction::Archive);
+        assert_eq!(preview.tasks_to_run, ["T1", "T2"]);
+    }
+
+    #[test]
+    fn preview_refuses_an_edited_plan_unless_forced() {
+        let dir = tempdir().expect("tempdir");
+        let plan = write_plan(dir.path(), PLAN_TOML);
+        record_first_task(dir.path(), &plan_graph(&plan, &ResumeOptions::default()));
+        let edited = write_plan(dir.path(), &PLAN_TOML.replace("Second", "Edited"));
+
+        let preview = preview_plan_resume(dir.path(), &edited, 1, &ResumeOptions::default())
+            .expect("preview");
+        assert_eq!(preview.fingerprint_match, Some(FingerprintMatch::Mismatch));
+        assert_eq!(preview.action, ResumeAction::Refuse);
+        assert!(
+            preview
+                .reason
+                .as_deref()
+                .is_some_and(|reason| reason.contains("graph has changed"))
+        );
+        let forced = ResumeOptions {
+            force_resume: true,
+            ..ResumeOptions::default()
+        };
+        let preview = preview_plan_resume(dir.path(), &edited, 1, &forced).expect("preview");
+        assert_eq!(preview.action, ResumeAction::Archive);
+        assert_eq!(preview.tasks_to_run, ["T1", "T2"]);
+
+        let error = prepare_graph_checkpoint(
+            dir.path(),
+            None,
+            "p",
+            1,
+            &plan_graph(&edited, &ResumeOptions::default()),
+            false,
+            false,
+        )
+        .expect_err("an edited plan must not resume");
+        assert!(error.to_string().contains("graph has changed"));
     }
 
     #[test]
@@ -1046,6 +2376,51 @@ mod tests {
             resolve_checkpoint_paths(dir.path(), Some(Path::new("checkpoint.json")), "p", 2)
                 .expect_err("ambiguous file must fail");
         assert!(error.to_string().contains("only resume one plan"));
+    }
+
+    #[test]
+    fn bare_resume_plan_default_maps_to_canonical_root_for_multi_plan_runs() {
+        let dir = tempdir().expect("tempdir");
+        let canonical = dir.path().join(".roko/state/graph/p/checkpoint.json");
+        // The clap `default_missing_value`, relative and as `roko resume`
+        // passes it (absolute), plus the legacy executor path.
+        for requested in [
+            PathBuf::from(".roko/state/state-snapshot.json"),
+            dir.path().join(".roko/state/state-snapshot.json"),
+            PathBuf::from("./.roko/state/executor.json"),
+        ] {
+            for plan_count in [1, 8] {
+                let paths = resolve_checkpoint_paths(dir.path(), Some(&requested), "p", plan_count)
+                    .unwrap_or_else(|error| {
+                        panic!("{} with {plan_count} plans: {error}", requested.display())
+                    });
+                assert_eq!(paths.manifest, canonical, "{}", requested.display());
+            }
+        }
+    }
+
+    #[test]
+    fn checkpoint_records_interrupted_status() {
+        let dir = tempdir().expect("tempdir");
+        let graph = graph("p", 1);
+        let mut checkpoint =
+            prepare_graph_checkpoint(dir.path(), None, "p", 1, &graph, false, false)
+                .expect("fresh checkpoint");
+        assert_eq!(checkpoint.status(), GraphCheckpointStatus::Running);
+        checkpoint
+            .finish_with_status(GraphCheckpointStatus::Interrupted)
+            .expect("finish");
+        let manifest: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(&checkpoint.paths().manifest).expect("read manifest"),
+        )
+        .expect("parse manifest");
+        assert_eq!(manifest["status"], "interrupted");
+
+        // An interrupted checkpoint stays resumable.
+        let resumed = prepare_graph_checkpoint(dir.path(), None, "p", 1, &graph, false, false)
+            .expect("resume interrupted checkpoint");
+        assert_eq!(resumed.run_id(), checkpoint.run_id());
+        assert_eq!(resumed.status(), GraphCheckpointStatus::Running);
     }
 
     // ─── v3 extension and receipt tests ──────────────────────────────────

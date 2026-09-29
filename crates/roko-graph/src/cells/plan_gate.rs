@@ -88,8 +88,7 @@ impl PlanGateCell {
             plan_dir: self.plan_dir.clone(),
             worktree_path: worktree,
             changed_files: self.files.clone(),
-            context: std::iter::once(("plan_id".to_owned(), self.plan_id.clone()))
-                .collect(),
+            context: std::iter::once(("plan_id".to_owned(), self.plan_id.clone())).collect(),
         }
     }
 

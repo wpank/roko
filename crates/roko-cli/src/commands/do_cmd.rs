@@ -17,6 +17,7 @@
 //! | plan-generate intent          | `roko plan generate`                     |
 //! | unqualified TTY prompt        | preview + confirm before dispatch        |
 //! | unqualified non-TTY prompt    | reject; require `--complexity`/`--plan`  |
+//! | non-TTY `roko run` prompt     | auto-detected route (as on a TTY)        |
 //! | dry-run/ghost/compare         | print route; never execute               |
 //! | single word matching plan dir | instruct `roko plan run <path>`          |
 
@@ -129,6 +130,9 @@ pub struct DoRouteInput {
     pub compare: bool,
     /// Whether stdin is a TTY.
     pub is_tty: bool,
+    /// Whether the prompt came from `roko run`, an explicit single-prompt
+    /// invocation that scripts and CI use without a TTY.
+    pub explicit_run: bool,
 }
 
 /// Pure routing resolver: maps [`DoRouteInput`] to a [`DoRoute`].
@@ -161,7 +165,9 @@ pub fn resolve_do_route(input: &DoRouteInput) -> DoRoute {
     }
 
     // Non-TTY without explicit complexity: reject before side effects.
-    if !input.is_tty && !input.complexity_forced && !input.plan_flag {
+    // `roko run` is itself the explicit request, so it keeps the auto-detected
+    // route a TTY caller would get.
+    if !input.is_tty && !input.complexity_forced && !input.plan_flag && !input.explicit_run {
         return DoRoute::RejectNonTty;
     }
 
@@ -183,6 +189,7 @@ pub(crate) async fn cmd_do(
     no_cascade: bool,
     provider: Option<String>,
     context: Vec<PathBuf>,
+    explicit_run: bool,
 ) -> Result<i32> {
     let workdir = workdir.unwrap_or_else(|| resolve_workdir(cli));
     let prompt = prompt_args.join(" ").trim().to_string();
@@ -299,6 +306,7 @@ pub(crate) async fn cmd_do(
         dry_preview,
         compare,
         is_tty: roko_cli::stdin_is_tty(),
+        explicit_run,
     };
     let route = resolve_do_route(&route_input);
 
@@ -401,7 +409,7 @@ pub(crate) async fn cmd_do(
     }
 }
 
-// ─── Simple path: direct agent run via WorkflowEngine ───────────────
+// ─── Simple path: one-task plan through the Graph engine ────────────
 
 async fn run_simple_path(
     cli: &Cli,
@@ -411,9 +419,10 @@ async fn run_simple_path(
     no_cascade: bool,
     provider: Option<String>,
 ) -> Result<i32> {
-    let workflow_template = workflow_template_for_complexity(complexity);
+    let tier = workflow_template_for_complexity(complexity);
 
-    let out = roko_cli::cli_output::CliOutput::new(cli.quiet);
+    // `--json` keeps stdout to the one report document.
+    let out = roko_cli::cli_output::CliOutput::new(cli.quiet || cli.json);
     out.step(
         "Complexity",
         &format!("{} (auto-detected)", complexity_label(complexity)),
@@ -421,11 +430,7 @@ async fn run_simple_path(
     out.step("Running", "single agent...");
 
     prepare_runtime_hooks(workdir, cli.quiet);
-    let mut config = resolve_config_for_workdir(cli, workdir)?;
-    apply_resume_session_override(&mut config, cli.resume.clone());
 
-    let enabled_gates = roko_cli::run::workflow_enabled_gate_names(&config.gates);
-    let shell_gates = roko_cli::run::workflow_shell_gate_commands(&config.gates);
     let overrides = roko_cli::run::CliOverrides {
         model: cli.model.clone(),
         role: cli.role.clone(),
@@ -436,24 +441,24 @@ async fn run_simple_path(
 
     tracing::debug!(
         complexity = complexity_label(complexity),
-        workflow_template,
+        tier,
         cascade_enabled = !no_cascade,
         engine = "graph",
-        "dispatching roko do (simple) through graph templates"
+        "dispatching roko do (simple) as a one-task Graph plan"
     );
 
-    let result = roko_cli::run::run_workflow_report(
+    let result = roko_cli::run::run_prompt(roko_cli::run::PromptRun {
         prompt,
         workdir,
-        workflow_template,
-        enabled_gates,
-        shell_gates,
-        None,
-        &overrides,
-    )
+        tier,
+        overrides: &overrides,
+        max_retries: None,
+        quiet: cli.quiet || cli.json,
+        state_hub: None,
+    })
     .await;
 
-    handle_workflow_result(cli, prompt, workflow_template, result)
+    handle_workflow_result(cli, prompt, tier, result)
 }
 
 // ─── Standard path: generate plan from prompt, then execute ─────────
@@ -587,7 +592,7 @@ async fn run_standard_path(
         &format!("Executing plan ({total_tasks} tasks)..."),
     );
 
-    // Execute the plans through the WorkflowEngine / plan runner.
+    // Execute the plans through the Graph engine.
     run_plan_execution(cli, workdir, &plans_dir, no_cascade, provider).await
 }
 
@@ -775,7 +780,7 @@ async fn run_complex_path(
     run_plan_execution(cli, workdir, &plans_root, no_cascade, provider).await
 }
 
-// ─── Shared: execute a plan directory through the runner v2 ─────────
+// ─── Shared: execute a plan directory through the Graph engine ──────
 
 pub(crate) async fn run_plan_execution(
     cli: &Cli,
@@ -784,11 +789,9 @@ pub(crate) async fn run_plan_execution(
     _no_cascade: bool,
     _provider: Option<String>,
 ) -> Result<i32> {
-    // Load both the CLI Config (for daimon, executor settings) and the
-    // unified RokoConfig (for agent/provider/model settings).
-    let cli_config = load_resolved_config(workdir)
-        .map(|resolved| resolved.config)
-        .unwrap_or_default();
+    use roko_cli::graph_execution::plan_runner::{
+        PlanRunInterruptHandle, install_plan_run_signal_handlers, run_graph_plan,
+    };
 
     let out = roko_cli::cli_output::CliOutput::new(cli.quiet);
 
@@ -812,215 +815,39 @@ pub(crate) async fn run_plan_execution(
         );
     }
 
-    // Build run config from the workspace config.
-    let roko_config: RokoConfig =
-        roko_core::config::loader::load_config_unified(workdir).unwrap_or_default();
-
-    let layout = roko_fs::RokoLayout::for_project(workdir);
-    let state_hub = roko_cli::state_hub::shared_state_hub();
-
-    let max_concurrent_tasks = roko_config
-        .runner
-        .max_concurrent_tasks
-        .or_else(|| {
-            (cli_config.executor.max_concurrent_tasks
-                != roko_cli::orchestrator::ExecutorConfig::default().max_concurrent_tasks)
-                .then_some(cli_config.executor.max_concurrent_tasks)
-        })
-        .unwrap_or(4)
-        .max(1);
-
-    // Initialize cascade router.
-    let router_path = layout.cascade_router_path();
-    let mut model_slugs = roko_config
-        .effective_models()
-        .keys()
-        .cloned()
-        .collect::<Vec<_>>();
-    model_slugs.sort();
-    model_slugs.dedup();
-    if model_slugs.is_empty() && !roko_config.agent.default_model.trim().is_empty() {
-        model_slugs.push(roko_config.agent.default_model.clone());
-    }
-    let cascade_router = std::sync::Arc::new(
-        roko_learn::cascade_router::CascadeRouter::load_or_new(&router_path, model_slugs),
-    );
-
-    // Build the conductor before feedback_facade so roko_config.conductor is
-    // accessible before it's moved into the RunConfig Arc.
-    let conductor = roko_conductor::Conductor::from_config(&roko_config.conductor);
-    let conductor_ring = roko_cli::runner::conductor_adapter::ConductorRing::new();
-
-    // Feedback sinks.
-    let episodes_path = layout.root_episodes_path();
-    let knowledge_path = layout
-        .learn_dir()
-        .join(roko_neuro::admission::DEFAULT_KNOWLEDGE_CANDIDATES_FILE);
-    let _ = std::fs::create_dir_all(layout.learn_dir());
-    let feedback_facade = std::sync::Arc::new(
-        roko_cli::runtime_feedback::FeedbackFacade::new()
-            .with_sink(std::sync::Arc::new(
-                roko_cli::runtime_feedback::EpisodeSink::at(&episodes_path),
-            ))
-            .with_sink(std::sync::Arc::new(
-                roko_cli::runtime_feedback::RoutingObservationSink::new(cascade_router.clone()),
-            ))
-            .with_sink(std::sync::Arc::new(
-                roko_cli::runtime_feedback::KnowledgeIngestionSink::at(&knowledge_path)
-                    .with_ingestor(std::sync::Arc::new(
-                        roko_cli::runtime_feedback::NeuroKnowledgeIngestor::new(
-                            roko_neuro::KnowledgeStore::for_workdir(workdir),
-                        ),
-                    )),
-            ))
-            .with_sink(std::sync::Arc::new(
-                roko_cli::runner::conductor_adapter::ConductorRingSink::new(conductor_ring.clone()),
-            )),
-    );
-
-    let run_uuid = uuid::Uuid::new_v4().to_string();
-    let projection = std::sync::Arc::new(roko_cli::runner::projection::Projection::new(run_uuid));
-    let extension_chain = std::sync::Arc::new(tokio::sync::Mutex::new(
-        roko_core::extension::ExtensionChain::new(),
-    ));
-    let connector_registry =
-        std::sync::Arc::new(std::sync::Mutex::new(roko_core::ConnectorRegistry::new()));
-    let feed_registry = std::sync::Arc::new(std::sync::Mutex::new(roko_core::FeedRegistry::new()));
-
-    let run_config = roko_cli::runner::RunConfig {
-        layout: layout.clone(),
+    // SIGINT/SIGTERM stop the run gracefully (cancel, finalize checkpoints,
+    // exit 130/143) for as long as the guard lives. The Graph engine prints
+    // the run summary itself: one JSON document with --json, else a line.
+    let interrupt = PlanRunInterruptHandle::default();
+    let _signals = install_plan_run_signal_handlers(interrupt.clone())?;
+    run_graph_plan(roko_cli::graph_execution::GraphPlanRunParams {
+        plans_dir: plans_dir.to_path_buf(),
         workdir: workdir.to_path_buf(),
-        plan_dir: plans_dir.to_path_buf(),
-        model: roko_config.agent.default_model.clone(),
-        cli_model_override: cli.model.clone(), // global --model
-        timeout_secs: roko_config.timeouts.agent_dispatch_secs,
-        plan_timeout_secs: roko_config.timeouts.plan_total_secs,
-        max_retries: 2,
-        dispatch_max_retries: roko_config.runner.dispatch_max_retries,
-        max_concurrent_tasks,
-        gate_concurrency: max_concurrent_tasks,
-        approval: false,
-        dangerously_skip_permissions: roko_config.runner.dangerously_skip_permissions,
+        quiet: cli.quiet,
+        json: cli.json,
+        resume_plan: None,
+        fresh: false,
         force_resume: false,
-        force_disk_check: false,
-        mcp_config: {
-            // Resolve MCP config with auto-discovery of roko-mcp-github.
-            let mcp = crate::resolve_mcp_config_with_autodiscovery(workdir, layout.root());
-            if let Some(ref path) = mcp {
-                tracing::info!(path = ?path, "MCP config resolved for do run");
-            } else {
-                tracing::debug!("no MCP config found for do run");
-            }
-            mcp
-        },
-        resume_session: cli.resume.clone(),
-        max_gate_rung: if roko_config.gates.skip_tests {
-            u32::from(roko_config.gates.clippy_enabled)
-        } else {
-            2
-        },
-        claude_program: roko_config
-            .agent
-            .command
-            .clone()
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(|| std::path::PathBuf::from("claude")),
-        max_plan_usd: f64::from(roko_config.budget.max_plan_usd),
-        max_turn_usd: f64::from(roko_config.budget.max_turn_usd),
-        max_task_retry_usd: f64::from(roko_config.budget.max_task_retry_usd),
-        max_daily_usd: f64::from(roko_config.budget.max_daily_usd),
-        budget_override: false,
-        budget_ceiling_override: None,
+        max_retries: None,
+        // Each plan's own `max_parallel`, as `roko plan run` defaults to.
+        max_tasks: 0,
+        budget_override: None,
         no_budget: false,
-        clippy_enabled: roko_config.gates.clippy_enabled,
-        skip_tests: roko_config.gates.skip_tests,
-        safety_layer: roko_agent::SafetyLayer::from_config(&roko_config),
-        roko_config: Some(std::sync::Arc::new(roko_config.clone())),
-        extension_chain: Some(extension_chain),
-        cascade_router: Some(cascade_router),
-        daimon_state: Some(roko_cli::runner::RunConfig::daimon_state_with_strategy(
-            workdir,
-            cli_config.daimon.strategy_space.clone(),
-        )),
-        connector_registry: Some(connector_registry),
-        feed_registry: Some(feed_registry),
-        feedback_facade: Some(feedback_facade),
-        projection: Some(projection),
-        http_event_sink: None,
-        output_sink: {
-            let human_sink: std::sync::Arc<dyn roko_cli::runner::output_sink::RunOutputSink> =
-                if !cli.quiet && !cli.json {
-                    if roko_cli::inline::should_use_inline() {
-                        std::sync::Arc::new(roko_cli::runner::output_sink::StderrSink::new())
-                    } else {
-                        std::sync::Arc::new(
-                            roko_cli::runner::output_sink::FormattedStderrSink::new(
-                                cli.color.should_color(),
-                            ),
-                        )
-                    }
-                } else {
-                    std::sync::Arc::new(roko_cli::runner::output_sink::NoopSink)
-                };
-            roko_cli::runner::output_sink::with_acp_progress_sink(
-                human_sink,
-                roko_cli::runner::output_sink::is_acp_progress_enabled(
-                    std::env::var("ROKO_ACP_PROGRESS").ok().as_deref(),
-                ),
-            )
-        },
-        warm_cache: true,
-        batch_size: None,
-        screenshots: false,
-        screenshot_interval_secs: 60,
-        screenshot_dir: None,
-        metrics: {
-            let m = std::sync::Arc::new(roko_core::obs::metrics::MetricRegistry::new());
-            roko_core::obs::metrics::register_standard_metrics(&m);
-            Some(m)
-        },
-        obs_sinks: None,
-        conductor: Some(std::sync::Arc::new(conductor)),
-        conductor_ring: Some(conductor_ring),
-        github_ops: None,
-        structured_log: roko_cli::runner::structured_log::StructuredLogger::noop(),
-    };
-
-    let cancel = tokio_util::sync::CancellationToken::new();
-    let cancel_for_signal = cancel.clone();
-    tokio::spawn(async move {
-        let _ = tokio::signal::ctrl_c().await;
-        cancel_for_signal.cancel();
-    });
-
-    #[allow(deprecated)] // Runner-v2 removed; this call now returns an error
-    let v2_report = roko_cli::runner::run(plans, &run_config, &state_hub, cancel).await?;
-
-    // The run-complete summary (task counts, cost, per-plan status, failure
-    // details) was already printed by the output sink BEFORE post-plan
-    // cleanup (backlog #159). JSON mode still prints here since NoopSink is
-    // active when --json / --quiet are set.
-    if cli.json {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&serde_json::json!({
-                "succeeded": v2_report.all_succeeded(),
-                "total_tasks": v2_report.total_tasks,
-                "tasks_completed": v2_report.tasks_completed,
-                "tasks_failed": v2_report.tasks_failed,
-                "total_cost_usd": v2_report.total_cost_usd,
-                "total_agent_calls": v2_report.total_agent_calls,
-                "duration_secs": v2_report.duration.as_secs(),
-            }))
-            .unwrap_or_default()
-        );
-    }
-
-    Ok(if v2_report.all_succeeded() {
-        EXIT_SUCCESS
-    } else {
-        EXIT_AGENT_FAILURE
+        cli_model_override: cli.model.clone(),
+        dangerously_skip_permissions: false,
+        log_file: None,
+        worktree_per_task: false,
+        rich_topology: false,
+        // Inline progress on stderr; `roko dashboard` is the TUI.
+        no_tui: true,
+        state_hub: None,
+        interrupt: Some(interrupt),
+        max_parallel_plans: None,
+        fail_fast: false,
+        only_plans: None,
+        live_agent_output: roko_cli::graph_task_dispatch::LiveAgentOutput::ToolSteps,
     })
+    .await
 }
 
 /// Inner standard path used as fallback when the complex path's PRD step fails.
@@ -1184,7 +1011,7 @@ fn print_do_preview(
 fn handle_workflow_result(
     cli: &Cli,
     prompt: &str,
-    workflow_template: &str,
+    tier: &str,
     result: anyhow::Result<roko_runtime::workflow_contract::WorkflowRunReport>,
 ) -> Result<i32> {
     match result {
@@ -1192,7 +1019,7 @@ fn handle_workflow_result(
             if cli.json {
                 println!("{}", serde_json::to_string_pretty(&report)?);
             } else if !cli.quiet {
-                roko_cli::run::print_workflow_run_report(prompt, workflow_template, &report);
+                roko_cli::run::print_workflow_run_report(prompt, tier, &report);
             }
 
             if report.success {
@@ -1203,7 +1030,7 @@ fn handle_workflow_result(
         }
         Err(error) => {
             let out = roko_cli::cli_output::CliOutput::new(cli.quiet);
-            out.error(&format!("workflow engine error: {error:#}"));
+            out.error(&format!("roko run failed: {error:#}"));
             Ok(EXIT_AGENT_FAILURE)
         }
     }
@@ -1216,7 +1043,8 @@ fn promote_to_planned_complexity(complexity: PlanComplexity) -> PlanComplexity {
     }
 }
 
-fn workflow_template_for_complexity(complexity: PlanComplexity) -> &'static str {
+/// Task tier a single-agent route runs the prompt at.
+pub(crate) fn workflow_template_for_complexity(complexity: PlanComplexity) -> &'static str {
     match complexity {
         PlanComplexity::Trivial => "mechanical",
         PlanComplexity::Simple => "focused",
@@ -1407,6 +1235,7 @@ mod tests {
             dry_preview: dry,
             compare,
             is_tty: tty,
+            explicit_run: false,
         }
     }
 
@@ -1598,6 +1427,25 @@ mod tests {
             false,
         ));
         assert_eq!(r, DoRoute::RejectNonTty);
+    }
+
+    // Row 10a: non-TTY `roko run` without forced complexity -> auto-detected route
+    #[test]
+    fn do_route_non_tty_explicit_run_uses_detected_route() {
+        for (complexity, expected) in [
+            (PlanComplexity::Trivial, DoRoute::Mechanical),
+            (PlanComplexity::Simple, DoRoute::Focused),
+            (PlanComplexity::Standard, DoRoute::PromptPlan),
+            (PlanComplexity::Complex, DoRoute::PrdPlan),
+        ] {
+            let tty = resolve_do_route(&route_input(complexity, false, false, false, false, true));
+            let r = resolve_do_route(&DoRouteInput {
+                explicit_run: true,
+                ..route_input(complexity, false, false, false, false, false)
+            });
+            assert_eq!(r, expected);
+            assert_eq!(r, tty, "non-TTY `roko run` must match the TTY route");
+        }
     }
 
     // Row 10b: non-TTY WITH forced complexity -> dispatches normally

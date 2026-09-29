@@ -188,11 +188,14 @@ fn tools_for_role(role: AgentRole) -> HashSet<String> {
         }
 
         // Review roles: read-only + exec for running tests.
-        AgentRole::Architect
-        | AgentRole::Auditor
-        | AgentRole::QuickReviewer
-        | AgentRole::Critic => {
+        AgentRole::Auditor | AgentRole::QuickReviewer | AgentRole::Critic => {
             tools.extend(exec_tools());
+        }
+
+        // Design role: read-only. Its contract forbids edits and `bash`, so
+        // the menu must not offer them (see `menus_stay_within_contracts`).
+        AgentRole::Architect => {
+            // read_only_tools only
         }
 
         // Research role: read-only (no writes, no exec).
@@ -200,8 +203,12 @@ fn tools_for_role(role: AgentRole) -> HashSet<String> {
             // read_only_tools only
         }
 
-        // Documentation roles: read + write (for docs), limited exec.
-        AgentRole::Scribe | AgentRole::DocVerifier => {
+        // Documentation roles: read + write (for docs). The scribe contract
+        // forbids `bash`; the doc verifier keeps limited exec.
+        AgentRole::Scribe => {
+            tools.extend(write_tools());
+        }
+        AgentRole::DocVerifier => {
             tools.extend(write_tools());
             tools.extend(exec_tools());
         }
@@ -293,10 +300,43 @@ mod tests {
 
     #[test]
     fn reviewer_has_read_and_exec() {
-        let selector = ToolSelector::for_role(AgentRole::Architect);
+        let selector = ToolSelector::for_role(AgentRole::QuickReviewer);
         assert!(selector.is_allowed("read_file"));
         assert!(selector.is_allowed("bash"));
         assert!(!selector.is_allowed("write_file"));
+    }
+
+    #[test]
+    fn architect_is_read_only() {
+        let selector = ToolSelector::for_role(AgentRole::Architect);
+        assert!(selector.is_allowed("read_file"));
+        assert!(!selector.is_allowed("bash"));
+        assert!(!selector.is_allowed("write_file"));
+    }
+
+    /// The bundled safety contracts are the source of truth for role
+    /// capability: a role's menu must never offer a tool its contract denies.
+    #[test]
+    fn menus_stay_within_contracts() {
+        use crate::safety::contract::AgentContract;
+
+        let mut checked = 0;
+        for role in std::iter::once(AgentRole::Conductor).chain(AgentRole::ALL_AGENTS) {
+            let Ok(contract) = AgentContract::load_for_role(role.label()) else {
+                continue;
+            };
+            checked += 1;
+            for tool in tools_for_role(role) {
+                assert!(
+                    contract.permits_tool(&tool),
+                    "{role:?} is offered `{tool}` but its contract forbids it"
+                );
+            }
+        }
+        assert!(
+            checked >= 7,
+            "expected bundled contracts for the plan roles"
+        );
     }
 
     #[test]

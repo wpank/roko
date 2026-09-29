@@ -1,0 +1,542 @@
+[meta]
+plan = "08-portal-run"
+total = 10
+done = 0
+status = "ready"
+max_parallel = 3
+skip_enrichment = true
+estimated_total_minutes = 245
+
+# What a run looks like while it happens: the stream and the run band.
+#
+# The stream is a lens on the selected task, or with none selected on the active
+# task, else the failed one, else the last finished (focusTaskId). Two views:
+# the transcript (decoded agent records) and the checks (verify steps, with a
+# failure digested before its raw output). It opens when a run starts.
+#
+# The run band is mori's dashboard row, kept by decision (2026-09-28): one band,
+# three cells, shown while anything runs and zero height otherwise. AGENTS is the
+# roster across every running plan — a plan-set run executes independent plans
+# concurrently, so rows carry their plan; CHECKS is the verify ladder of the selected
+# (else active) task; BURN is tokens, tokens per minute and each role's share (cost
+# stays in the header). Each cell is a pure fold with counted unit tests.
+#
+# The last task removes every module nothing reaches and adds a reachability check,
+# so dead code cannot creep back. Live verification of the whole screen is plan
+# 09-acceptance. Same worktree and verify conventions as plan 05.
+#
+# Concurrency (max_parallel 3): tasks that write disjoint files share a wave; their
+# gates (`tsc --noEmit --incremental false`, single-file vitest) are safe side by
+# side. T09 is the only task that edits Workspace.tsx, and T10 holds the plan's one
+# production build.
+
+[[task]]
+id = "T01"
+title = "Digest check output into grouped, deduplicated diagnostics"
+description = '''
+Create `apps/portal/src/lib/checks.ts` and `src/lib/checks.test.ts`.
+
+A failing check prints the same few messages many times; the shape of the failure is
+what matters. Gate output published by the runner starts with a `$ <command>` line
+(`published_gate_output` in crates/roko-cli/src/graph_task_dispatch.rs), then the
+captured output.
+
+  interface DigestEntry { severity: 'error' | 'warning'; line: number | null;
+                          column: number | null; message: string; count: number }
+  interface DigestGroup { file: string; entries: DigestEntry[] }
+  interface Digest { command: string | null; groups: DigestGroup[]; unparsed: string[];
+                     errorCount: number; warningCount: number }
+  digestOutput(output: string): Digest
+
+Recognise:
+- the leading `$ command` line → `command`;
+- rustc and cargo: `error[E0425]: msg` or `warning: msg`, located by the next
+  `  --> path:line:col` line;
+- tsc: `path(line,col): error TS2322: msg`;
+- compact compiler form: `path:line:col: error: msg` / `path:line: warning: msg`;
+- Rust panics: `thread '…' panicked at path:line:col:` with the message on the next
+  line.
+Identical (file, line, column, severity, message) entries merge with a count.
+Groups holding errors come first, then by file name; within a group errors come
+before warnings, then by line. Lines that match nothing are kept, in order, in
+`unparsed` — a digest that drops the one line that explained the failure is worse
+than none. Never throw.
+
+At least 10 tests, one per format plus dedupe, ordering, unparsed retention, the
+command line, and empty input.
+'''
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 25
+depends_on = []
+files = ["apps/portal/src/lib/checks.ts", "apps/portal/src/lib/checks.test.ts"]
+
+[task.context]
+anti_patterns = [
+    "Do not discard lines that do not parse.",
+    "Do not throw on unexpected input.",
+]
+
+[[task.verify]]
+phase = "test"
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && node scripts/vitest-min.mjs src/lib/checks.test.ts 10'
+fail_msg = "the check digest lacks at least 10 passing tests"
+timeout_ms = 600000
+
+[[task]]
+id = "T02"
+title = "Build the transcript"
+description = '''
+Create `apps/portal/src/components/stream/Transcript.tsx`:
+
+  export function Transcript({ transcript, working }: {
+    transcript: Transcript | undefined; working: { sinceMs: number } | null })
+
+(`Transcript` the type comes from `@/lib/runState`; alias one of the two names.)
+
+Agent output arrives once per agent turn, not token by token: roko's immune
+boundary releases only the screened final body. So a long turn must not look like a
+hang: while `working` is set, the transcript ends in a live line `agent working ·
+<elapsed since sinceMs>` (compactDuration, ticking each second) — the liveness the
+server provides through agent_spawned and the 5-second agent_heartbeat.
+
+Render `toBlocks(transcript.entries)` from `@/lib/streamRecord` inside
+`<div data-region="transcript">`:
+- text: plain text, whitespace preserved; no markdown library, no string surgery.
+- reasoning: dim, `◦` gutter, collapsible.
+- tool: one collapsed `<details>` row — glyph (`✎` / `◇` / `⚙`), tool name, first
+  output line; expanded, the output in a monospace block, and when truncated a note
+  that the server kept only the tail.
+- raw: monospace, with a marker when malformed.
+- divider: `— attempt N —`.
+- `dropped > 0`: a first line `N earlier records not shown`.
+Auto-scroll while the view is at the bottom (within 24px); stop when the operator
+scrolls up and show a `↓ follow` button that resumes. No transcript and not
+working: a single line saying the agent has not produced output yet.
+
+Read src/lib/streamRecord.ts and src/lib/runState.ts first.
+'''
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 25
+depends_on = []
+files = ["apps/portal/src/components/stream/Transcript.tsx"]
+
+[task.context]
+anti_patterns = [
+    "Do not expand tool calls by default; they push the reasoning off screen.",
+    "Do not keep auto-scrolling after the operator scrolls up.",
+    "Do not drop records silently.",
+]
+
+[[task.verify]]
+phase = "compile"
+command = "cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit --incremental false && cd src/components/stream && grep -q 'export function Transcript' Transcript.tsx && grep -q 'toBlocks' Transcript.tsx && grep -q 'data-region=\"transcript\"' Transcript.tsx"
+fail_msg = "Transcript is missing a required element or does not type check"
+timeout_ms = 600000
+
+[[task]]
+id = "T03"
+title = "Build the checks view"
+description = '''
+Create `apps/portal/src/components/stream/Checks.tsx`:
+
+  export function Checks({ checks }: { checks: CheckRun[] })
+
+`<div data-region="checks">` listing the task's verify steps in order (CheckRun
+arrives sorted by index): StatusGlyph for passed / failed / running, the phase or
+name, then the `$ command` line. For a failed step, `digestOutput(check.output)` from
+`@/lib/checks` renders first — one group per file, entries `line:col  message  ×n`
+with a severity-coloured left rail, then the unparsed lines — and the raw output
+sits behind a `raw output` toggle. Passed steps keep their output collapsed; a
+running step shows its live output tail. No checks yet: a single line saying no
+verify step has run.
+
+Read src/lib/checks.ts and src/lib/runState.ts first.
+'''
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 20
+depends_on = ["T01"]
+files = ["apps/portal/src/components/stream/Checks.tsx"]
+
+[task.context]
+read_files = [
+    { path = "apps/portal/src/lib/checks.ts", why = "digestOutput and the digest shape" },
+]
+anti_patterns = [
+    "Do not show raw output first for a failed step; the digest leads.",
+]
+
+[[task.verify]]
+phase = "compile"
+command = "cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit --incremental false && cd src/components/stream && grep -q 'export function Checks' Checks.tsx && grep -q 'digestOutput' Checks.tsx && grep -q 'data-region=\"checks\"' Checks.tsx"
+fail_msg = "Checks is missing a required element or does not type check"
+timeout_ms = 600000
+
+[[task]]
+id = "T04"
+title = "Build the stream pane"
+description = '''
+Create `apps/portal/src/components/stream/StreamPane.tsx`. T09 mounts it in the
+workspace.
+
+  export function StreamPane({ planId, selectedTaskId, open, onToggle }:
+    { planId: string | null; selectedTaskId: string | null; open: boolean;
+      onToggle(): void })
+
+- It resolves its own task: `usePlanTasks(planId)`, `buildTaskRows`, then
+  `focusTaskId(rows, selectedTaskId)` from `@/lib/taskRows`. No per-agent tabs: the
+  task row is the tab.
+- A bar: `<task id> · transcript │ checks`, the inactive view carrying a count badge
+  (checks: failed steps; transcript: blocks added since last viewed) — the active
+  view never shows its own badge — and a collapse control with
+  `data-action="toggle-stream"` calling onToggle.
+- Body when open: Transcript for `run.transcripts[taskKey]` — with `working` set
+  while the task is active, `sinceMs` taken from its agent's spawnedAtMs, else the
+  task's startedAtMs — or Checks for `run.tasks[taskKey].checks`. It switches to
+  checks when the focused task gains a failed step, until the operator picks a view
+  again.
+- Nothing selected and nothing ran: the describeEmpty sentence, not dead tabs.
+'''
+status = "ready"
+role = "implementer"
+tier = "integrative"
+model_hint = "claude-sonnet-4-6"
+timeout_secs = 1800
+max_retries = 2
+estimated_minutes = 20
+depends_on = ["T02", "T03"]
+files = ["apps/portal/src/components/stream/StreamPane.tsx"]
+
+[task.context]
+read_files = [
+    { path = "apps/portal/src/components/stream/Transcript.tsx", why = "the transcript view" },
+    { path = "apps/portal/src/components/stream/Checks.tsx", why = "the checks view" },
+]
+anti_patterns = [
+    "Do not show a badge on the active view.",
+    "Do not render per-agent tabs.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "cd apps/portal/src/components && grep -q 'export function StreamPane' stream/StreamPane.tsx && grep -q 'focusTaskId' stream/StreamPane.tsx && grep -q 'toggle-stream' stream/StreamPane.tsx"
+fail_msg = "StreamPane is missing its focus task or its collapse control"
+
+[[task.verify]]
+phase = "compile"
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit --incremental false'
+fail_msg = "StreamPane does not type check"
+timeout_ms = 600000
+
+[[task]]
+id = "T05"
+title = "Fold the agent roster across running plans"
+description = '''
+Create `apps/portal/src/lib/agentRoster.ts` and `src/lib/agentRoster.test.ts`: the
+AGENTS cell of the run band. Read `src/lib/runState.ts` first.
+
+A plan-set run executes independent plans concurrently, so the roster spans every
+running plan and each row names its plan. Do not assume any limit on how many run.
+
+  interface RosterRow { agentId: string; planId: string | null; taskId: string | null;
+    role: string; model: string; elapsedMs: number | null; tokens: number }
+  interface Roster { rows: RosterRow[]; finished: number; idle: number | null }
+  buildRoster(run: RunState, opts: { nowMs: number; runningPlanIds: readonly string[];
+    maxParallelByPlan: Readonly<Record<string, number | undefined>> }): Roster
+
+- rows: the active agents of running plans, ordered by the plan's position in
+  runningPlanIds, then task id (numeric-aware), then agent id. elapsedMs is
+  nowMs − spawnedAtMs (null when unknown); tokens is input + output.
+- finished: agents of those plans that are no longer active — counted, not listed.
+- idle: open parallel slots, the sum over running plans whose max_parallel is known
+  of max(0, maxParallel − that plan's active agents); null when none is known.
+
+At least 8 tests: two plans' agents ordered by plan then task, finished agents
+counted and not listed, elapsed and tokens, idle across two plans, a plan with more
+active agents than its limit adds 0, unknown limits give null, and an idle run.
+'''
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 25
+depends_on = []
+files = ["apps/portal/src/lib/agentRoster.ts", "apps/portal/src/lib/agentRoster.test.ts"]
+
+[task.context]
+anti_patterns = [
+    "Do not assume a single running plan or any maximum number of them.",
+    "Do not read Date.now inside the fold; time comes in as nowMs.",
+]
+
+[[task.verify]]
+phase = "test"
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && node scripts/vitest-min.mjs src/lib/agentRoster.test.ts 8'
+fail_msg = "the agent roster fold lacks at least 8 passing tests"
+timeout_ms = 600000
+
+[[task]]
+id = "T06"
+title = "Fold a task's verify ladder into rungs"
+description = '''
+Create `apps/portal/src/lib/rungs.ts` and `src/lib/rungs.test.ts`: the CHECKS cell
+of the run band. Read `src/lib/runState.ts` (CheckRun, parseCheckName) first.
+
+A task's authored verify steps are its ladder; the event stream reports each step
+as it starts (`gate_rung_started`) and ends (`gate_result`), named `verify[i:phase]`.
+The ladder shows every step, reached or not, so the operator sees how far it got.
+
+  interface Rung { index: number | null; label: string;
+                   state: 'passed' | 'failed' | 'running' | 'pending' }
+  buildRungs(checks: readonly CheckRun[], declared: readonly { phase: string }[] | null): Rung[]
+      one rung per declared step i, labelled by its phase (else `verify[i]`), taking
+      the state of the check with index i, else pending; checks beyond the declared
+      list or without an index are appended in order; with no declared list, one rung
+      per check
+  checkFocusTask(run: RunState, selected: { planId: string | null; taskId: string | null },
+                 runningPlanIds: readonly string[]): { planId: string; taskId: string } | null
+      the selected task when run.tasks knows it; else the first active task of the
+      selected plan; else the first active task across running plans, in
+      runningPlanIds order then task id; else null
+
+At least 8 tests: a partly reached ladder, a failed step, a running step, extra
+unindexed checks, no declared list, and each focus branch.
+'''
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 20
+depends_on = []
+files = ["apps/portal/src/lib/rungs.ts", "apps/portal/src/lib/rungs.test.ts"]
+
+[task.context]
+anti_patterns = [
+    "Do not order rungs by arrival; use the step index.",
+    "Do not drop a check the declared list does not name.",
+]
+
+[[task.verify]]
+phase = "test"
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && node scripts/vitest-min.mjs src/lib/rungs.test.ts 8'
+fail_msg = "the rung fold lacks at least 8 passing tests"
+timeout_ms = 600000
+
+[[task]]
+id = "T07"
+title = "Fold token burn and each role's share"
+description = '''
+Create `apps/portal/src/lib/burn.ts` and `src/lib/burn.test.ts`: the BURN cell of
+the run band. Read `src/lib/runState.ts` (AgentRun, the `usage` ring) first. Cost
+is not here; it stays in the header.
+
+  interface Burn { tokens: number; tokensPerMin: number | null;
+                   byRole: { role: string; tokens: number; share: number }[] }
+  buildBurn(run: RunState, opts: { nowMs: number; windowMs?: number }): Burn
+
+- Scope: agents whose planId is in `run.planSet.planIds` when a set is loaded,
+  else agents of running plans. This works after a reload too: the snapshot carries
+  agents with their token counts.
+- tokens: the scope's input + output tokens.
+- byRole: the scope grouped by role, largest first, share = tokens / total (0 when
+  the total is 0); roles with no tokens are left out. The share is the point: it
+  says which role to look at, which an aggregate cannot.
+- tokensPerMin: the `usage` samples inside the last windowMs (default 60000),
+  scaled to a minute; null when there are none (for example right after a reload).
+
+At least 8 tests: set scope versus running-plan scope, role grouping and ordering,
+shares summing to 1, zero totals, the rate window, and null with no samples.
+'''
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 20
+depends_on = []
+files = ["apps/portal/src/lib/burn.ts", "apps/portal/src/lib/burn.test.ts"]
+
+[task.context]
+anti_patterns = [
+    "Do not show cost here; cost stays in the header.",
+    "Do not invent a rate when there are no samples; return null.",
+]
+
+[[task.verify]]
+phase = "test"
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && node scripts/vitest-min.mjs src/lib/burn.test.ts 8'
+fail_msg = "the burn fold lacks at least 8 passing tests"
+timeout_ms = 600000
+
+[[task]]
+id = "T08"
+title = "Build the run band"
+description = '''
+Create `apps/portal/src/components/run/RunBand.tsx`:
+
+  export function RunBand({ runningPlanIds, selection }:
+    { runningPlanIds: string[]; selection: Selection })
+
+Return null when `runningPlanIds` is empty, so the band costs zero height when
+nothing runs. Otherwise `<section data-region="run-band">` with three cells side by
+side, each `<div data-cell="agents" | "checks" | "burn">`:
+
+- AGENTS — `buildRoster` (T05). max_parallel for each running plan comes from
+  `GET /api/plans/{id}/tasks` through react-query's `useQueries` (cached, keyed as
+  `queryKeys.planTasks`). One row per agent: role in its accent
+  (`var(--role-<role>)`, else `var(--role-other)`), `plan · task`, model, `►` and
+  elapsed (compactDuration, ticking each second), tokens (formatTokens). Then
+  `+n finished` and `idle ×n` when greater than zero.
+- CHECKS — `checkFocusTask` then `buildRungs` (T06) with the focus task's declared
+  verify steps from the same tasks query: a title `<task> · <plan>`, then one chip
+  per rung — `StatusGlyph` (passed → done, running → active, failed → failed,
+  pending → pending) and its label, e.g. `✓compile ►test ·clippy`.
+- BURN — `buildBurn` (T07): `<tokens> tok · <rate>/min` (`·` for no rate), then one
+  bar per role, width = share, with its percentage.
+
+Read src/lib/agentRoster.ts, src/lib/rungs.ts, src/lib/burn.ts,
+src/components/primitives/StatusGlyph.tsx and src/api/queries.ts first.
+'''
+status = "ready"
+role = "implementer"
+tier = "integrative"
+model_hint = "claude-sonnet-4-6"
+timeout_secs = 1800
+max_retries = 2
+estimated_minutes = 35
+depends_on = ["T05", "T06", "T07"]
+files = ["apps/portal/src/components/run/RunBand.tsx"]
+
+[task.context]
+read_files = [
+    { path = "apps/portal/src/lib/agentRoster.ts", why = "the AGENTS fold" },
+    { path = "apps/portal/src/lib/rungs.ts", why = "the CHECKS fold" },
+    { path = "apps/portal/src/lib/burn.ts", why = "the BURN fold" },
+]
+anti_patterns = [
+    "Do not render the band when nothing runs; return null.",
+    "Do not show cost in the band.",
+    "Do not fetch per plan in a loop of hooks; use useQueries.",
+]
+
+[[task.verify]]
+phase = "compile"
+command = "cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit --incremental false && cd src/components/run && grep -q 'export function RunBand' RunBand.tsx && grep -q 'data-region=\"run-band\"' RunBand.tsx && grep -q 'data-cell=\"agents\"' RunBand.tsx && grep -q 'data-cell=\"checks\"' RunBand.tsx && grep -q 'data-cell=\"burn\"' RunBand.tsx && grep -q 'buildRoster' RunBand.tsx && grep -q 'buildRungs' RunBand.tsx && grep -q 'buildBurn' RunBand.tsx"
+fail_msg = "RunBand is missing a cell or a fold, or does not type check"
+timeout_ms = 600000
+
+[[task]]
+id = "T09"
+title = "Mount the stream pane and the run band in the workspace"
+description = '''
+The one task that edits `apps/portal/src/components/shell/Workspace.tsx` in this
+plan (read it first; plans 06 and 07 built it).
+
+1. Replace the stream placeholder with `StreamPane` (T04), keeping the
+   `data-region="stream"` wrapper: pass the selected plan and task, the open state
+   and its toggle. Open the stream when the number of running plans rises — a run
+   started; `o` still toggles it.
+2. Render `RunBand` (T08) as a full-width grid row between the alert row and the
+   rail/stage body, passing the rail rows' `runningPlanIds` and the selection. The
+   row is `auto` height, so it collapses to nothing when RunBand returns null. Wrap
+   it in its own ErrorBoundary.
+
+Keep every other Workspace behaviour intact. T10 runs the production build.
+'''
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+timeout_secs = 1800
+max_retries = 2
+estimated_minutes = 25
+depends_on = ["T04", "T08"]
+files = ["apps/portal/src/components/shell/Workspace.tsx"]
+
+[task.context]
+read_files = [
+    { path = "apps/portal/src/components/stream/StreamPane.tsx", why = "the stream pane being mounted" },
+    { path = "apps/portal/src/components/run/RunBand.tsx", why = "the band being mounted" },
+]
+anti_patterns = [
+    "Do not give the band a fixed height; it must collapse to nothing when idle.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "cd apps/portal/src/components/shell && grep -q '<StreamPane' Workspace.tsx && grep -q 'data-region=\"stream\"' Workspace.tsx && grep -q '<RunBand' Workspace.tsx && grep -q 'runningPlanIds' Workspace.tsx"
+fail_msg = "Workspace does not render the stream pane in the stream region and the run band with the running plans"
+
+[[task.verify]]
+phase = "compile"
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit --incremental false'
+fail_msg = "the workspace does not type check with the stream pane and the run band mounted"
+timeout_ms = 600000
+
+[[task]]
+id = "T10"
+title = "Remove what nothing reaches, and keep it that way"
+description = '''
+Everything on the screen has to earn its place; so does everything in `src/`.
+
+1. Create `apps/portal/scripts/orphans.mjs`: starting from every file under
+   `src/app/`, follow imports — `from '…'`, side-effect `import '…'`, dynamic
+   `import('…')`, and CSS `@import "…"` — resolving `@/x` to `src/x` and relative
+   specifiers against the importing file, trying the exact path, then `.ts`, `.tsx`,
+   `.css`, then `/index.ts` and `/index.tsx`. Package specifiers are ignored. Every
+   `.ts`, `.tsx` and `.css` file under `src/` that is not a `*.test.ts` and is not
+   reached is an orphan: print each one and exit 1; print `no orphans` and exit 0
+   otherwise. A module imported only by its own test is an orphan.
+2. Run it and delete the orphans it reports — expect unused atoms under
+   `src/components/atoms/` (and their barrel) and any helper nothing calls. Remove
+   the tests of deleted modules with them. Do not delete anything the script does
+   not report.
+3. Run it again until it reports none. The unit suite, the type check and the static
+   export must still pass, and `src/app` must still hold exactly one page.
+
+Report the deleted files and the final file and line counts of `src/` in the task
+output.
+'''
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+timeout_secs = 1800
+max_retries = 2
+estimated_minutes = 30
+depends_on = ["T09"]
+files = ["apps/portal/scripts/orphans.mjs", "apps/portal/src/components/atoms"]
+
+[task.context]
+read_files = [
+    { path = "apps/portal/src/app/layout.tsx", why = "an entry point of the import walk" },
+    { path = "apps/portal/src/styles/globals.css", why = "CSS @import edges the walk must follow" },
+]
+anti_patterns = [
+    "Do not delete a file the script does not report.",
+    "Do not add files to an allowlist to silence the script.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "cd apps/portal && node scripts/orphans.mjs && test \"$(find src/app -name page.tsx | wc -l | tr -d ' ')\" = 1"
+fail_msg = "orphaned modules remain, or the app no longer has exactly one page"
+
+[[task.verify]]
+phase = "integration"
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && rm -rf .next/types out && ./node_modules/.bin/tsc --noEmit --incremental false && npm test && NEXT_TELEMETRY_DISABLED=1 npm run build:export && test -f out/index.html && rm -rf out'
+fail_msg = "the portal no longer type checks, tests or exports after removing orphans"
+timeout_ms = 900000

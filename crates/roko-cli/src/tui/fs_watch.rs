@@ -297,10 +297,7 @@ pub fn watch_source_dirs_with_index_rebuild(workdir: &Path) -> FsWatchHandle {
                     }
                 }
             }
-            tracing::debug!(
-                crates_watched = watched,
-                "source-dir index watcher started"
-            );
+            tracing::debug!(crates_watched = watched, "source-dir index watcher started");
             FsWatchHandle {
                 rx,
                 _backend: FsWatchBackend::Notify(debouncer),

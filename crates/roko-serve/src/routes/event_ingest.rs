@@ -353,7 +353,7 @@ mod tests {
 
     #[tokio::test]
     async fn single_ingest_reaches_jsonl_logger() {
-        let (dir, _state, app) = build_test_state_and_router(RokoConfig::default());
+        let (dir, state, app) = build_test_state_and_router(RokoConfig::default());
 
         let req = Request::post("/api/events/ingest")
             .header("content-type", "application/json")
@@ -363,10 +363,16 @@ mod tests {
         let resp = app.oneshot(req).await.expect("oneshot");
         assert_eq!(resp.status(), StatusCode::ACCEPTED);
 
+        // Flush the logger: agent_output is a high-frequency delta event that
+        // is not auto-flushed at write time. Explicit flush ensures the content
+        // reaches disk before we read it below.
+        state
+            .runtime_event_logger
+            .flush()
+            .expect("flush event logger");
+
         // The JSONL logger writes to .roko/runtime-events.jsonl.
         let log_path = dir.path().join(".roko/runtime-events.jsonl");
-        // Give a tiny moment for buffered writes to flush.
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
         if log_path.exists() {
             let content = std::fs::read_to_string(&log_path).expect("read log");

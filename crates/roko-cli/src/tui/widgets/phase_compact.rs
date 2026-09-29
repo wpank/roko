@@ -329,6 +329,11 @@ fn phase_badge(phase_name: &str) -> Span<'static> {
         || lower.contains("verify")
     {
         Span::styled(" GATE ", theme.badge_pending())
+    } else if lower.contains(roko_core::dashboard_snapshot::TASK_OUTCOME_ACCEPTED_WITH_FAILURES) {
+        Span::styled(
+            " DONE\u{26a0} ",
+            theme.warning().add_modifier(Modifier::BOLD),
+        )
     } else if lower.contains("replan") || lower.contains("fail") {
         Span::styled(" REPLAN ", theme.badge_failed())
     } else if lower.contains("complete") || lower.contains("done") {

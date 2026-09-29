@@ -10,8 +10,9 @@ use roko_core::dashboard_snapshot::{
 };
 
 #[test]
-fn tab_all_has_ten_entries() {
-    assert_eq!(Tab::ALL.len(), 10);
+fn tab_all_has_eleven_entries() {
+    // F1-F10 plus the Providers tab added in 244f564e1.
+    assert_eq!(Tab::ALL.len(), 11);
 }
 
 #[test]
@@ -37,14 +38,14 @@ fn atelier_tab_basics() {
 }
 
 #[test]
-fn next_prev_cycle_ten_tabs() {
+fn next_prev_cycle_all_tabs() {
     let mut t = Tab::Dashboard;
-    for _ in 0..10 {
+    for _ in 0..Tab::ALL.len() {
         t = t.next();
     }
     assert_eq!(t, Tab::Dashboard);
 
-    for _ in 0..10 {
+    for _ in 0..Tab::ALL.len() {
         t = t.prev();
     }
     assert_eq!(t, Tab::Dashboard);

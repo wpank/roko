@@ -398,6 +398,10 @@ impl Theme {
             p if p.contains("compil") || p.contains("test") => Self::WARNING,
             p if p.contains("review") || p.contains("critic") => Self::BONE_DIM,
             p if p.contains("gate") || p.contains("verify") => Self::SAGE,
+            // Accepted with failures is its own amber state, not a failure.
+            p if p.contains(roko_core::dashboard_snapshot::TASK_OUTCOME_ACCEPTED_WITH_FAILURES) => {
+                Self::WARNING
+            }
             p if p.contains("fail") => Self::EMBER,
             p if p.contains("done") || p.contains("complete") => Self::SAGE,
             _ => Self::TEXT_DIM,

@@ -59,6 +59,17 @@ pub struct AgentConfig {
     /// Legacy subprocess environment variables.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub env: Option<Vec<(String, String)>>,
+    /// Inherited environment variables that provider CLI subprocesses
+    /// (Claude, Codex, Gemini, Cursor, Hermes, OpenClaw) keep even though
+    /// roko would strip them: exact names or `PREFIX*` patterns, e.g.
+    /// `["AWS_*", "CLAUDE_CODE_USE_BEDROCK"]`.
+    ///
+    /// Provider CLIs lose known LLM provider keys other than their own, every
+    /// variable roko loaded from `~/.roko/.env` or `.roko/.env`, and roko's
+    /// own `ROKO_*` credentials. A provider's `api_key_env` is always kept for
+    /// that provider. See `roko_core::child_env::CredentialScrub`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub env_passthrough: Vec<String>,
     /// Legacy per-tier model mapping used before `[models.*]` existed.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub tier_models: HashMap<String, String>,
@@ -171,6 +182,7 @@ impl Default for AgentConfig {
             args: None,
             timeout_ms: None,
             env: None,
+            env_passthrough: Vec::new(),
             tier_models: HashMap::new(),
             fallback_model: None,
             roles: HashMap::new(),

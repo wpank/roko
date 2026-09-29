@@ -23,9 +23,7 @@ use roko_core::config::RetrievalConfig;
 use roko_core::error::{Result, RokoError};
 use roko_core::{Body, Kind, ProtocolId, Signal};
 
-use crate::context_provider::{
-    ContextBidder, ContextProvider, ContextRequest, ContextTier,
-};
+use crate::context_provider::{ContextBidder, ContextProvider, ContextRequest, ContextTier};
 use crate::graph_cells::signals::{ComposeRequest, KnowledgeSections};
 use crate::prompt::{AttentionBidder, CacheLayer, Placement, SectionPriority};
 use crate::unified_retrieval_bidder::UnifiedRetrievalContextBidder;
@@ -197,9 +195,8 @@ impl roko_graph::Cell for RetrievalCell {
             .collect();
 
         let payload = KnowledgeSections::new(scope, sections);
-        let body = Body::from_json(&payload).map_err(|e| {
-            RokoError::Store(format!("retrieval cell serialization: {e}"))
-        })?;
+        let body = Body::from_json(&payload)
+            .map_err(|e| RokoError::Store(format!("retrieval cell serialization: {e}")))?;
         let signal = Signal::builder(Kind::ContextPack).body(body).build();
         Ok(vec![signal])
     }
@@ -215,8 +212,8 @@ impl roko_graph::Cell for RetrievalCell {
 /// [`RetrievalCell`] directly and register it with
 /// [`roko_graph::CellRegistry::register_with_descriptor`].
 pub fn register_retrieval_cell(registry: &mut roko_graph::CellRegistry) {
-    use roko_graph::registry::CellDescriptor;
     use roko_core::{Kind, TypeSchema};
+    use roko_graph::registry::CellDescriptor;
 
     let descriptor = CellDescriptor::new(
         RETRIEVAL_CELL_TYPE,
@@ -267,7 +264,11 @@ mod tests {
         let ctx = roko_graph::CellContext::new();
         let input = vec![make_request_signal("task-1")];
         let output = cell.execute(input, &ctx).await.expect("execute");
-        assert_eq!(output.len(), 1, "should produce one KnowledgeSections signal");
+        assert_eq!(
+            output.len(),
+            1,
+            "should produce one KnowledgeSections signal"
+        );
         assert_eq!(output[0].kind, Kind::ContextPack);
     }
 
@@ -278,7 +279,10 @@ mod tests {
         // Pass a non-matching signal.
         let signal = Signal::builder(Kind::AgentMessage).build();
         let result = cell.execute(vec![signal], &ctx).await;
-        assert!(result.is_err(), "should fail without a ComposeRequest signal");
+        assert!(
+            result.is_err(),
+            "should fail without a ComposeRequest signal"
+        );
     }
 
     #[test]

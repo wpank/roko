@@ -334,7 +334,8 @@ pub(crate) async fn cmd_init(
     }
 
     print_next_step_hint(
-        "Next: roko doctor (verify setup) · roko setup (configure providers) · roko develop \"your task\"",
+        "Next: roko doctor (verify setup) · roko setup (configure providers) · roko develop \"your task\"\n\
+         Tip:  roko serve  — prints a portal URL with a one-time token so you can open the UI instantly",
     );
 
     Ok(())
@@ -365,11 +366,6 @@ pub(crate) async fn cmd_run(
     let _lock = roko_cli::workspace_lock::acquire_workspace_lock(&workdir.join(".roko"))?;
     let mut config = resolve_config_for_workdir(cli, &workdir)?;
     apply_resume_session_override(&mut config, cli.resume.clone());
-
-    // Apply --max-retries to the learning config.
-    if let Some(retries) = max_retries {
-        config.learning.replan_max_per_plan = Some(retries);
-    }
 
     // P2-BUD-1: Budget admission check before dispatch.
     //
@@ -474,12 +470,14 @@ pub(crate) async fn cmd_run(
     }
 
     // Optionally start the HTTP control plane for external observability.
+    // The run publishes to the server's hub, so API/SSE clients watch it live.
+    let serve_hub =
+        (serve || share).then(|| roko_serve::state::AppState::state_hub_for_workdir(&workdir));
     let server_guard: Option<(
         std::sync::Arc<roko_serve::state::AppState>,
         tokio::task::JoinHandle<anyhow::Result<()>>,
-    )> = if serve || share {
+    )> = if let Some(state_hub) = serve_hub.clone() {
         let repo_registry = RepoRegistry::load(&config, &workdir).unwrap_or_default();
-        let state_hub = roko_serve::state::AppState::state_hub_for_workdir(&workdir);
         // Create a shared MetricRegistry so the runtime and the HTTP server
         // expose the same counters on /metrics (E09-T03).
         let metrics = std::sync::Arc::new(roko_core::obs::metrics::MetricRegistry::new());
@@ -508,25 +506,22 @@ pub(crate) async fn cmd_run(
         None
     };
 
-    // Hardcoded to "standard" until a [pipeline] config section is added to
-    // the Config struct (see roko.toml schema evolution).
-    let template = "standard";
-
-    // Build enabled gates list and typed shell commands from declared gate configs.
-    let enabled_gates = roko_cli::run::workflow_enabled_gate_names(&config.gates);
-    let shell_gates = roko_cli::run::workflow_shell_gate_commands(&config.gates);
+    // The prompt runs as one task at the tier its classified scope maps to.
+    let tier = crate::commands::do_cmd::workflow_template_for_complexity(
+        roko_cli::scope_resolver::ScopeResolver::classify_prompt_complexity(&prompt),
+    );
 
     // #258: --engine flag is accepted but graph is now the only engine.
     let _engine_label = roko_cli::run::resolve_engine_flag(engine.as_deref());
-    let result = roko_cli::run::run_workflow_report(
-        &prompt,
-        &workdir,
-        template,
-        enabled_gates,
-        shell_gates,
-        None,
-        &overrides,
-    )
+    let result = roko_cli::run::run_prompt(roko_cli::run::PromptRun {
+        prompt: &prompt,
+        workdir: &workdir,
+        tier,
+        overrides: &overrides,
+        max_retries,
+        quiet: cli.quiet || cli.json,
+        state_hub: serve_hub,
+    })
     .await;
 
     // Shut down the HTTP server if it was started.
@@ -540,7 +535,7 @@ pub(crate) async fn cmd_run(
             if cli.json {
                 println!("{}", serde_json::to_string_pretty(&report)?);
             } else if !cli.quiet {
-                roko_cli::run::print_workflow_run_report(&prompt, template, &report);
+                roko_cli::run::print_workflow_run_report(&prompt, tier, &report);
             }
 
             if !report.success {
@@ -585,7 +580,7 @@ pub(crate) async fn cmd_run(
         }
         Err(e) => {
             if !cli.quiet {
-                tracing::error!(error = %e, "workflow engine error");
+                tracing::error!(error = %e, "roko run failed");
             }
             Ok(EXIT_AGENT_FAILURE)
         }

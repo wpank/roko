@@ -1,0 +1,1 @@
+FullResourceBudget is wired into dispatch with reserve/release calls in crates/roko-cli/src/graph_task_dispatch.rs

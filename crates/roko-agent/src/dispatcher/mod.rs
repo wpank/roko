@@ -561,6 +561,17 @@ impl ToolDispatcher {
             .await;
         let result = self.finalize_result_with_limit(result, result_limit);
         self.emit_terminal_audit(ctx, &call, &result, timeout_ms);
+        if result.is_ok() {
+            // Per-run tool history: lets `RequireToolBeforeEdit` see that
+            // `read_file` succeeded earlier in this agent run.
+            ctx.record_external_action(roko_core::tool::ExternalAction {
+                service: crate::safety::contract::TOOL_HISTORY_SERVICE.to_string(),
+                action_type: call.name.clone(),
+                resource_id: String::new(),
+                metadata: serde_json::json!({ "tool": call.name }),
+                performed_at: chrono::Utc::now(),
+            });
+        }
         // Persistent file audit: record the terminal result after execution.
         if let Some(fa) = &self.file_audit
             && let Err(e) = fa.record_result(&call, &result).await

@@ -541,13 +541,13 @@ pub async fn append_index_entry(workdir: &Path, entry: &BenchRunIndexEntry) -> a
     let path = index_path(workdir);
     let mut line = serde_json::to_string(entry)?;
     line.push('\n');
-    tokio::fs::OpenOptions::new()
+    let mut file = tokio::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(&path)
-        .await?
-        .write_all(line.as_bytes())
         .await?;
+    file.write_all(line.as_bytes()).await?;
+    file.flush().await?;
     Ok(())
 }
 
@@ -1374,6 +1374,7 @@ pub async fn ensure_builtin_suites(workdir: &Path) {
         {
             Ok(mut file) => {
                 let _ = file.write_all(content.as_bytes()).await;
+                let _ = file.flush().await;
             }
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
             Err(_) => {}

@@ -100,6 +100,8 @@ pub mod cell_payloads;
 pub mod cfactor;
 /// Canonical provider-agnostic chat message types.
 pub mod chat_types;
+/// Environment policies for gate commands and provider CLI subprocesses.
+pub mod child_env;
 pub mod cognitive_registry;
 pub mod cognitive_workspace;
 pub mod conductor;
@@ -194,6 +196,10 @@ pub mod obs {
     pub use scrub::{LogScrubber, REDACTED};
     pub use telemetry_observe::{PeriodicObserver, TelemetryObservation, TelemetryObserve};
 }
+/// Canonical shared event taxonomy: [`CoreEvent`] type alias, producer/consumer
+/// map, and convenience factory functions for the most common cross-subsystem
+/// events.  See [`core_event`] for the full taxonomy table.
+pub mod core_event;
 pub mod operating_frequency;
 pub mod phase;
 /// Executor-neutral plan mutation contract (v1) — deterministic DAG mutation kernel.
@@ -217,10 +223,6 @@ pub mod recipe_store;
 pub mod retention;
 /// ULID-based plan-scoped run identifier.
 pub mod run_id;
-/// Canonical shared event taxonomy: [`CoreEvent`] type alias, producer/consumer
-/// map, and convenience factory functions for the most common cross-subsystem
-/// events.  See [`core_event`] for the full taxonomy table.
-pub mod core_event;
 pub use core_event::{CoreEvent, core_event_to_dashboard_events};
 pub mod runtime_event;
 pub mod score;

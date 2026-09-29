@@ -1,57 +1,220 @@
-//! Global PID registry with disk persistence.
+//! Per-process agent PID registry with disk persistence.
 //!
-//! Tracks every child PID spawned by Roko so that:
-//! - A restarting instance can kill zombies from a crash.
-//! - The reaper can detect orphans reparented to PID 1 (init/launchd).
+//! Tracks every child PID spawned by this Roko process so that:
+//! - A later Roko instance in the same workspace can kill agents orphaned by
+//!   a crash ([`cleanup_orphaned_agents`]).
+//! - The reaper can detect orphans reparented to PID 1 (init/launchd)
+//!   ([`reap_orphaned_children`]).
 //!
-//! The registry is backed by a static `OnceLock<Mutex<HashSet<u32>>>` and persists
-//! to `.roko/runtime/agent-pids.json` on every mutation.
+//! Every Roko process owns exactly one record file,
+//! `<workspace>/.roko/runtime/agent-pids/<owner_pid>-<owner_start>.json`, and
+//! never writes any other. It holds the owner's kernel start fingerprint and,
+//! per child, its PID, start fingerprint, spawn time, and command name (see
+//! [`ProcessIdentity`]). The file is rewritten atomically on every mutation,
+//! listing only children that still exist, and removed once none do. Naming it
+//! by start fingerprint as well as PID means a recycled owner PID never shares
+//! a predecessor's file.
+//!
+//! Cleanup only signals children listed by owners that are provably gone —
+//! no longer running, or their PID now names a different process — and only
+//! when the child still matches its recorded fingerprint. A concurrent Roko
+//! process's live agents and recycled PIDs are therefore never signaled. The
+//! single shared `agent-pids.json` written by earlier releases is migrated
+//! conservatively (see `legacy_orphans`) and then deleted.
+//!
+//! The CLI keys the registry to the resolved workspace with
+//! [`set_registry_root`]; until then it uses the current directory.
 
-#[allow(clippy::disallowed_types)]
-use std::sync::Mutex;
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
+use std::time::{SystemTime, UNIX_EPOCH};
 
-use std::collections::HashSet;
-use std::path::PathBuf;
-use std::sync::OnceLock;
+use parking_lot::Mutex;
+use serde::{Deserialize, Serialize};
 
-/// Access the global in-memory PID set.
-#[allow(clippy::disallowed_types)]
-fn spawned_pids() -> &'static Mutex<HashSet<u32>> {
-    static PIDS: OnceLock<Mutex<HashSet<u32>>> = OnceLock::new();
-    PIDS.get_or_init(|| Mutex::new(HashSet::new()))
+use super::identity::{ProcessIdentity, process_identity};
+
+/// Per-owner record directory, relative to the workspace root.
+const RECORDS_DIR: &str = ".roko/runtime/agent-pids";
+
+/// Shared registry file written by earlier releases, relative to the root.
+const LEGACY_FILE: &str = ".roko/runtime/agent-pids.json";
+
+/// Clock slack when a child has no recorded start fingerprint and is instead
+/// checked against its registration time.
+const SPAWN_CLOCK_SLACK_MS: u64 = 1_000;
+
+/// Grace period between SIGTERM and SIGKILL during startup cleanup.
+#[cfg(unix)]
+const CLEANUP_GRACE: std::time::Duration = std::time::Duration::from_millis(200);
+
+/// This process's registry. Each mutation persists only this owner's record.
+static REGISTRY: LazyLock<Mutex<Registry>> =
+    LazyLock::new(|| Mutex::new(Registry::new(Owner::current())));
+
+/// The Roko process that owns one record file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Owner {
+    pid: u32,
+    start: Option<u64>,
 }
 
-/// Path to the persistent PID file: `<cwd>/.roko/runtime/agent-pids.json`.
-fn agent_pids_path() -> Option<PathBuf> {
-    let cwd = std::env::current_dir().ok()?;
-    Some(cwd.join(".roko/runtime/agent-pids.json"))
+impl Owner {
+    fn current() -> Self {
+        let pid = std::process::id();
+        Self {
+            pid,
+            start: process_identity(pid).map(|identity| identity.start),
+        }
+    }
+
+    fn file_name(self) -> String {
+        match self.start {
+            Some(start) => format!("{}-{start}.json", self.pid),
+            None => format!("{}.json", self.pid),
+        }
+    }
 }
 
-/// Flush the in-memory PID set to disk.
-fn persist_pids() {
-    let Some(path) = agent_pids_path() else {
-        return;
-    };
-    let Ok(set) = spawned_pids().lock() else {
-        return;
-    };
-    let pids: Vec<u32> = set.iter().copied().collect();
-    if let Some(parent) = path.parent()
-        && let Err(e) = std::fs::create_dir_all(parent)
-    {
-        tracing::warn!(path = %parent.display(), error = %e, "failed to create PID registry directory");
+/// On-disk record of one Roko process and the children it spawned.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct OwnerRecord {
+    owner_pid: u32,
+    #[serde(default)]
+    owner_start: Option<u64>,
+    #[serde(default)]
+    children: Vec<ChildRecord>,
+}
+
+/// One registered child process.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct ChildRecord {
+    pid: u32,
+    /// Start fingerprint observed at registration.
+    #[serde(default)]
+    start: Option<u64>,
+    /// Wall-clock registration time in milliseconds since the Unix epoch.
+    #[serde(default)]
+    spawned_at_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    command: Option<String>,
+}
+
+impl ChildRecord {
+    /// Capture `pid`'s identity just after it was spawned.
+    fn observe(pid: u32) -> Self {
+        let identity = process_identity(pid);
+        Self {
+            pid,
+            start: identity.as_ref().map(|identity| identity.start),
+            spawned_at_ms: now_ms(),
+            command: identity.and_then(|identity| identity.command),
+        }
     }
-    if let Err(e) = std::fs::write(&path, serde_json::to_string(&pids).unwrap_or_default()) {
-        tracing::warn!(path = %path.display(), error = %e, "failed to persist PID registry to disk");
+
+    /// Whether `identity`, the process now holding this PID, is the process
+    /// that was registered. Without a start fingerprint, the process must have
+    /// started no later than its registration.
+    fn is_same_process(&self, identity: &ProcessIdentity) -> bool {
+        match self.start {
+            Some(start) => identity.start == start,
+            None => identity.started_at_ms.is_some_and(|started| {
+                started <= self.spawned_at_ms.saturating_add(SPAWN_CLOCK_SLACK_MS)
+            }),
+        }
     }
+}
+
+/// Registered children of one owner plus the workspace its record lives in.
+struct Registry {
+    owner: Owner,
+    /// Canonical workspace root; defaults to the current directory on first use.
+    root: Option<PathBuf>,
+    children: BTreeMap<u32, ChildRecord>,
+}
+
+impl Registry {
+    const fn new(owner: Owner) -> Self {
+        Self {
+            owner,
+            root: None,
+            children: BTreeMap::new(),
+        }
+    }
+
+    fn root(&mut self) -> Option<&Path> {
+        if self.root.is_none() {
+            self.root = std::env::current_dir().ok().map(|cwd| canonical_root(&cwd));
+        }
+        self.root.as_deref()
+    }
+
+    fn record_path(&mut self) -> Option<PathBuf> {
+        let name = self.owner.file_name();
+        self.root().map(|root| records_dir(root).join(name))
+    }
+
+    /// Re-key to `root`, moving this owner's record out of the old workspace.
+    fn set_root(&mut self, root: PathBuf) {
+        if self.root.as_ref() == Some(&root) {
+            return;
+        }
+        if let Some(old) = self.root.take() {
+            remove_record(&records_dir(&old).join(self.owner.file_name()));
+        }
+        self.root = Some(root);
+        if !self.children.is_empty() {
+            self.persist();
+        }
+    }
+
+    /// Rewrite this owner's record with the children that still exist, or
+    /// delete it once none do.
+    fn persist(&mut self) {
+        let Some(path) = self.record_path() else {
+            return;
+        };
+        let children: Vec<ChildRecord> = self
+            .children
+            .values()
+            .filter(|child| pid_exists(child.pid))
+            .cloned()
+            .collect();
+        if children.is_empty() {
+            remove_record(&path);
+            return;
+        }
+        let record = OwnerRecord {
+            owner_pid: self.owner.pid,
+            owner_start: self.owner.start,
+            children,
+        };
+        if let Err(error) = write_record(&path, &record) {
+            tracing::warn!(path = %path.display(), %error, "failed to persist agent PID record");
+        }
+    }
+}
+
+/// Key this process's PID registry to the workspace at `workdir`.
+///
+/// The CLI calls this at startup with the resolved workspace; until then the
+/// registry uses the current directory. Children already registered move with
+/// the record.
+pub fn set_registry_root(workdir: &Path) {
+    let root = canonical_root(workdir);
+    REGISTRY.lock().set_root(root);
 }
 
 /// Register a child PID in the global registry and persist to disk.
+///
+/// Call right after spawning: the child's start fingerprint is captured now so
+/// later cleanup can tell it apart from a process that recycles its PID.
 pub fn register_spawned_pid(pid: u32) {
-    if let Ok(mut set) = spawned_pids().lock() {
-        set.insert(pid);
-    }
-    persist_pids();
+    let child = ChildRecord::observe(pid);
+    let mut registry = REGISTRY.lock();
+    registry.children.insert(pid, child);
+    registry.persist();
 }
 
 /// Register multiple descendant PIDs discovered during a kill sweep.
@@ -59,100 +222,57 @@ pub fn register_spawned_descendants(pids: &[u32]) {
     if pids.is_empty() {
         return;
     }
-    if let Ok(mut set) = spawned_pids().lock() {
-        set.extend(pids);
+    let children: Vec<ChildRecord> = pids.iter().map(|pid| ChildRecord::observe(*pid)).collect();
+    let mut registry = REGISTRY.lock();
+    for child in children {
+        registry.children.insert(child.pid, child);
     }
-    // Do not persist here — the caller (kill_tree) already persists after the full sequence.
+    registry.persist();
 }
 
 /// Remove a PID from the registry (e.g. after confirmed exit).
 pub fn unregister_pid(pid: u32) {
-    if let Ok(mut set) = spawned_pids().lock() {
-        set.remove(&pid);
+    let mut registry = REGISTRY.lock();
+    if registry.children.remove(&pid).is_some() {
+        registry.persist();
     }
-    persist_pids();
 }
 
 /// Return a snapshot of all currently registered PIDs.
 pub fn registered_pids() -> Vec<u32> {
-    spawned_pids()
-        .lock()
-        .map(|set| set.iter().copied().collect())
-        .unwrap_or_default()
+    REGISTRY.lock().children.keys().copied().collect()
 }
 
-/// Kill any agent processes left over from a previous Roko instance.
+/// Kill agent processes orphaned by Roko processes that are gone.
 ///
-/// Reads `.roko/runtime/agent-pids.json`, sends SIGTERM to each surviving PID,
-/// waits 200 ms, then SIGKILL any that remain. Also kills descendants of
-/// registered PIDs.
+/// Scans the workspace's per-owner records and signals only children whose
+/// owner is no longer running (or whose owner PID now names a different
+/// process) and that still match their recorded start fingerprint, together
+/// with their descendants: SIGTERM, a short grace period, then SIGKILL. Live
+/// owners' records are never touched; spent records are deleted, as is the
+/// legacy shared `agent-pids.json` after its conservative migration. Exited
+/// PIDs are also pruned from this process's own registry.
 ///
 /// Called on startup before spawning new agents.
 #[cfg(unix)]
-#[allow(unsafe_code, clippy::cast_possible_wrap, clippy::disallowed_methods)]
 pub fn cleanup_orphaned_agents() {
-    use super::group::collect_descendants;
-
-    let Some(path) = agent_pids_path() else {
+    let root = {
+        let mut registry = REGISTRY.lock();
+        let before = registry.children.len();
+        registry.children.retain(|pid, _| pid_exists(*pid));
+        if registry.children.len() != before {
+            registry.persist();
+        }
+        registry.root().map(Path::to_path_buf)
+    };
+    let Some(root) = root else {
         return;
     };
-    let Ok(contents) = std::fs::read_to_string(&path) else {
-        return;
-    };
-    let Ok(pids) = serde_json::from_str::<Vec<u32>>(&contents) else {
-        let _ = std::fs::remove_file(&path);
-        return;
-    };
-
-    let our_pid = std::process::id();
-    let mut killed = 0;
-
-    for pid in &pids {
-        if *pid == our_pid {
-            continue;
-        }
-        // SAFETY: signal 0 is an existence check — no signal is delivered.
-        let alive = unsafe { libc::kill(*pid as i32, 0) } == 0;
-        if alive {
-            tracing::info!(pid, "killing orphaned agent process from previous run");
-            unsafe {
-                libc::kill(*pid as i32, libc::SIGTERM);
-            }
-            std::thread::sleep(std::time::Duration::from_millis(200));
-            let still_alive = unsafe { libc::kill(*pid as i32, 0) } == 0;
-            if still_alive {
-                unsafe {
-                    libc::kill(*pid as i32, libc::SIGKILL);
-                }
-            }
-            killed += 1;
-        }
-    }
-
-    // Also kill descendants of those PIDs.
-    for pid in &pids {
-        if *pid == our_pid {
-            continue;
-        }
-        for desc in collect_descendants(*pid) {
-            let alive = unsafe { libc::kill(desc as i32, 0) } == 0;
-            if alive {
-                unsafe {
-                    libc::kill(desc as i32, libc::SIGKILL);
-                }
-                killed += 1;
-            }
-        }
-    }
-
-    if let Ok(mut set) = spawned_pids().lock() {
-        set.retain(|pid| *pid == our_pid && pids.contains(pid));
-    }
-    persist_pids();
-    let _ = std::fs::remove_file(&path);
+    let killed = cleanup_workspace(&root);
     if killed > 0 {
         tracing::warn!(
             killed,
+            workspace = %root.display(),
             "Cleaned up {killed} orphaned agent process(es) from previous run"
         );
     }
@@ -164,74 +284,26 @@ pub fn cleanup_orphaned_agents() {}
 
 /// Reap orphaned child processes that survived normal cleanup.
 ///
-/// Checks every PID in the registry: if the process is still alive and its
-/// parent is PID 1 (reparented to init/launchd — i.e. orphaned), send SIGKILL.
-/// Also discovers and kills descendant processes.
+/// Checks every PID in this process's registry: if it still names the process
+/// that was registered and its parent is PID 1 (reparented to init/launchd —
+/// i.e. orphaned), send SIGKILL to it and its descendants. PIDs that exited or
+/// now name a different process are dropped from the registry unsignaled.
 ///
 /// Returns the number of processes killed.
 #[cfg(unix)]
-#[allow(unsafe_code, clippy::cast_possible_wrap)]
 pub fn reap_orphaned_children() -> usize {
-    use super::group::collect_descendants;
-
-    let pids: Vec<u32> = match spawned_pids().lock() {
-        Ok(set) => set.iter().copied().collect(),
-        Err(_) => return 0,
-    };
-
-    let mut killed = 0;
-    let mut dead_pids = Vec::new();
-
-    for pid in &pids {
-        // SAFETY: signal 0 is an existence check.
-        let alive = unsafe { libc::kill(*pid as i32, 0) } == 0;
-        if !alive {
-            dead_pids.push(*pid);
-            continue;
+    let children: Vec<ChildRecord> = REGISTRY.lock().children.values().cloned().collect();
+    let (killed, stale) = reap(&children);
+    if !stale.is_empty() {
+        let mut registry = REGISTRY.lock();
+        let before = registry.children.len();
+        for pid in &stale {
+            registry.children.remove(pid);
         }
-
-        // Check if parent is PID 1 (orphaned).
-        let ppid = std::process::Command::new("ps")
-            .args(["-o", "ppid=", "-p", &pid.to_string()])
-            .output()
-            .ok()
-            .and_then(|o| {
-                String::from_utf8_lossy(&o.stdout)
-                    .trim()
-                    .parse::<u32>()
-                    .ok()
-            });
-
-        if ppid == Some(1) {
-            let descendants = collect_descendants(*pid);
-            unsafe {
-                libc::kill(*pid as i32, libc::SIGKILL);
-            }
-            for dpid in &descendants {
-                unsafe {
-                    libc::kill(*dpid as i32, libc::SIGKILL);
-                }
-            }
-            tracing::warn!(
-                pid,
-                descendants = descendants.len(),
-                "Reaped orphaned process (parent=1)"
-            );
-            killed += 1 + descendants.len();
-            dead_pids.push(*pid);
-            dead_pids.extend(descendants);
+        if registry.children.len() != before {
+            registry.persist();
         }
     }
-
-    // Prune dead PIDs from the registry.
-    if !dead_pids.is_empty()
-        && let Ok(mut set) = spawned_pids().lock()
-    {
-        for pid in &dead_pids {
-            set.remove(pid);
-        }
-    }
-
     killed
 }
 
@@ -239,6 +311,272 @@ pub fn reap_orphaned_children() -> usize {
 #[cfg(not(unix))]
 pub fn reap_orphaned_children() -> usize {
     0
+}
+
+/// Kill verified orphans among `children`. Returns the number of processes
+/// killed and the PIDs to drop from the registry.
+#[cfg(unix)]
+fn reap(children: &[ChildRecord]) -> (usize, Vec<u32>) {
+    use super::group::collect_descendants;
+
+    let own_pid = std::process::id();
+    let mut killed = 0;
+    let mut stale = Vec::new();
+
+    for child in children {
+        let Some(identity) = process_identity(child.pid) else {
+            if !pid_exists(child.pid) {
+                stale.push(child.pid);
+            }
+            continue;
+        };
+        if !child.is_same_process(&identity) {
+            // The registered process exited and its PID was recycled.
+            stale.push(child.pid);
+            continue;
+        }
+        if identity.ppid != 1 || child.pid == own_pid {
+            continue;
+        }
+
+        let descendants = collect_descendants(child.pid);
+        signal(child.pid, libc::SIGKILL);
+        for pid in &descendants {
+            signal(*pid, libc::SIGKILL);
+        }
+        tracing::warn!(
+            pid = child.pid,
+            descendants = descendants.len(),
+            "Reaped orphaned process (parent=1)"
+        );
+        killed += 1 + descendants.len();
+        stale.push(child.pid);
+        stale.extend(descendants);
+    }
+
+    (killed, stale)
+}
+
+/// Clean up the orphans recorded under `root`. Returns the number of
+/// processes signaled.
+#[cfg(unix)]
+fn cleanup_workspace(root: &Path) -> usize {
+    let mut targets = Vec::new();
+    let mut spent = Vec::new();
+
+    if let Ok(entries) = std::fs::read_dir(records_dir(root)) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+                continue;
+            }
+            // Unreadable: removed concurrently by its owner or another cleanup.
+            let Ok(bytes) = std::fs::read(&path) else {
+                continue;
+            };
+            // A malformed record still names its owner.
+            let Some(record) = serde_json::from_slice::<OwnerRecord>(&bytes)
+                .ok()
+                .or_else(|| owner_from_file_name(&path))
+            else {
+                continue;
+            };
+            if owner_is_live(record.owner_pid, record.owner_start) {
+                continue;
+            }
+            targets.extend(record.children.iter().filter_map(|child| {
+                process_identity(child.pid)
+                    .filter(|identity| child.is_same_process(identity))
+                    .map(|identity| (child.pid, identity.start))
+            }));
+            spent.push(path);
+        }
+    }
+
+    let legacy = root.join(LEGACY_FILE);
+    if let Some(orphans) = legacy_orphans(&legacy) {
+        targets.extend(orphans);
+        spent.push(legacy);
+    }
+
+    let signaled = terminate_trees(&targets);
+    for path in &spent {
+        remove_record(path);
+    }
+    signaled
+}
+
+/// Whether the process that wrote a record is still running. An owner PID
+/// that now names a different process was recycled, so that owner is gone;
+/// anything unverifiable counts as live.
+#[cfg(unix)]
+fn owner_is_live(pid: u32, start: Option<u64>) -> bool {
+    if !pid_exists(pid) {
+        return false;
+    }
+    match (start, process_identity(pid)) {
+        (Some(start), Some(identity)) => identity.start == start,
+        _ => true,
+    }
+}
+
+/// Entries of the legacy shared registry that are safe to kill, with their
+/// start fingerprints, or `None` when there is no legacy file.
+///
+/// That file recorded neither owners nor spawn times, so an entry qualifies
+/// only when it is orphaned (parent PID 1: whichever Roko process spawned it
+/// is gone) and started no later than the file's last write (so its PID was
+/// not recycled afterwards).
+#[cfg(unix)]
+fn legacy_orphans(path: &Path) -> Option<Vec<(u32, u64)>> {
+    let bytes = std::fs::read(path).ok()?;
+    let written_ms = std::fs::metadata(path)
+        .and_then(|metadata| metadata.modified())
+        .ok()
+        .and_then(system_time_ms);
+    let pids: Vec<u32> = serde_json::from_slice(&bytes).unwrap_or_default();
+    Some(
+        pids.into_iter()
+            .filter_map(|pid| {
+                process_identity(pid)
+                    .filter(|identity| {
+                        identity.ppid == 1
+                            && identity
+                                .started_at_ms
+                                .zip(written_ms)
+                                .is_some_and(|(started, written)| started <= written)
+                    })
+                    .map(|identity| (pid, identity.start))
+            })
+            .collect(),
+    )
+}
+
+/// SIGTERM each verified `(pid, start fingerprint)` root and its descendants,
+/// wait briefly, then SIGKILL whatever survives. A process is signaled only
+/// while it still carries the fingerprint observed for it. Returns the number
+/// of processes signaled.
+#[cfg(unix)]
+fn terminate_trees(roots: &[(u32, u64)]) -> usize {
+    use super::group::collect_descendants;
+
+    let own_pid = std::process::id();
+    let running = |pid: u32, start: u64| {
+        process_identity(pid).is_some_and(|identity| identity.start == start)
+    };
+    // Snapshot each tree, with identities, while its root is still alive.
+    let mut targets: Vec<(u32, u64)> = Vec::new();
+    for &(root, root_start) in roots {
+        if !running(root, root_start) {
+            continue;
+        }
+        let tree = std::iter::once((root, Some(root_start))).chain(
+            collect_descendants(root)
+                .into_iter()
+                .map(|pid| (pid, process_identity(pid).map(|identity| identity.start))),
+        );
+        for (pid, start) in tree {
+            let Some(start) = start else {
+                continue;
+            };
+            if pid > 1 && pid != own_pid && !targets.iter().any(|(seen, _)| *seen == pid) {
+                targets.push((pid, start));
+            }
+        }
+    }
+
+    for &(pid, _) in &targets {
+        tracing::info!(pid, "terminating orphaned agent process");
+        signal(pid, libc::SIGTERM);
+    }
+    let deadline = std::time::Instant::now() + CLEANUP_GRACE;
+    while targets.iter().any(|&(pid, start)| running(pid, start))
+        && std::time::Instant::now() < deadline
+    {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    for &(pid, start) in &targets {
+        if running(pid, start) {
+            signal(pid, libc::SIGKILL);
+        }
+    }
+    targets.len()
+}
+
+/// Whether `pid` names an existing process. Only "no such process" counts as
+/// absent, so processes owned by other users and zombies are present.
+#[cfg(unix)]
+fn pid_exists(pid: u32) -> bool {
+    i32::try_from(pid).is_ok_and(|raw| raw > 0) && super::kill::pid_is_alive(pid).unwrap_or(true)
+}
+
+/// Without a liveness probe every registered PID is assumed to exist.
+#[cfg(not(unix))]
+fn pid_exists(_pid: u32) -> bool {
+    true
+}
+
+/// Send `sig` to one positive PID other than init.
+#[cfg(unix)]
+fn signal(pid: u32, sig: libc::c_int) {
+    if let Ok(raw) = i32::try_from(pid)
+        && raw > 1
+        && let Err(error) = super::kill::signal_pid(raw, sig)
+    {
+        tracing::debug!(pid, sig, %error, "failed to signal process");
+    }
+}
+
+fn records_dir(root: &Path) -> PathBuf {
+    root.join(RECORDS_DIR)
+}
+
+fn canonical_root(workdir: &Path) -> PathBuf {
+    std::fs::canonicalize(workdir)
+        .or_else(|_| std::path::absolute(workdir))
+        .unwrap_or_else(|_| workdir.to_path_buf())
+}
+
+fn write_record(path: &Path, record: &OwnerRecord) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let json = serde_json::to_vec_pretty(record).map_err(std::io::Error::other)?;
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, json)?;
+    std::fs::rename(&tmp, path)
+}
+
+fn remove_record(path: &Path) {
+    if let Err(error) = std::fs::remove_file(path)
+        && error.kind() != std::io::ErrorKind::NotFound
+    {
+        tracing::warn!(path = %path.display(), %error, "failed to remove agent PID record");
+    }
+}
+
+/// Owner identity encoded in a record's file name (`<pid>-<start>.json` or
+/// `<pid>.json`).
+fn owner_from_file_name(path: &Path) -> Option<OwnerRecord> {
+    let stem = path.file_stem()?.to_str()?;
+    let (pid, start) = match stem.split_once('-') {
+        Some((pid, start)) => (pid, Some(start.parse().ok()?)),
+        None => (stem, None),
+    };
+    Some(OwnerRecord {
+        owner_pid: pid.parse().ok()?,
+        owner_start: start,
+        children: Vec::new(),
+    })
+}
+
+fn now_ms() -> u64 {
+    system_time_ms(SystemTime::now()).unwrap_or(0)
+}
+
+fn system_time_ms(time: SystemTime) -> Option<u64> {
+    let elapsed = time.duration_since(UNIX_EPOCH).ok()?;
+    u64::try_from(elapsed.as_millis()).ok()
 }
 
 #[cfg(test)]
@@ -274,12 +612,6 @@ mod tests {
     }
 
     #[test]
-    fn cleanup_orphaned_agents_does_not_panic() {
-        // Should not panic even if the PID file does not exist.
-        cleanup_orphaned_agents();
-    }
-
-    #[test]
     fn reap_orphaned_children_returns_zero_when_empty() {
         let killed = reap_orphaned_children();
         // With no registered PIDs pointing to real orphans, expect 0.
@@ -287,10 +619,467 @@ mod tests {
     }
 
     #[test]
-    fn agent_pids_path_is_under_roko() {
-        if let Some(path) = agent_pids_path() {
-            let path_str = path.to_string_lossy();
-            assert!(path_str.contains(".roko/runtime/agent-pids.json"));
+    fn record_path_is_per_owner_under_workspace_runtime() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut registry = Registry::new(Owner {
+            pid: 4242,
+            start: Some(7),
+        });
+        registry.set_root(tmp.path().to_path_buf());
+        let path = registry.record_path().expect("record path");
+        assert_eq!(
+            path,
+            tmp.path().join(".roko/runtime/agent-pids/4242-7.json")
+        );
+    }
+
+    #[test]
+    fn owner_records_are_isolated() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut first = Registry::new(Owner {
+            pid: 4_000_001,
+            start: Some(11),
+        });
+        let mut second = Registry::new(Owner {
+            pid: 4_000_002,
+            start: Some(22),
+        });
+        first.set_root(tmp.path().to_path_buf());
+        second.set_root(tmp.path().to_path_buf());
+        // Records only keep children that exist, so both list this process.
+        let live = std::process::id();
+
+        first.children.insert(live, fake_child(live, Some(1)));
+        first.persist();
+        second.children.insert(live, fake_child(live, Some(2)));
+        second.persist();
+
+        let first_path = first.record_path().expect("first path");
+        let second_path = second.record_path().expect("second path");
+        let first_record = read_record(&first_path);
+        let second_record = read_record(&second_path);
+        assert_eq!(first_record.owner_pid, 4_000_001);
+        assert_eq!(first_record.owner_start, Some(11));
+        assert_eq!(first_record.children, vec![fake_child(live, Some(1))]);
+        assert_eq!(second_record.owner_pid, 4_000_002);
+        assert_eq!(second_record.children, vec![fake_child(live, Some(2))]);
+
+        // Emptying one owner deletes only that owner's record.
+        first.children.clear();
+        first.persist();
+        assert!(!first_path.exists());
+        assert_eq!(read_record(&second_path), second_record);
+    }
+
+    #[test]
+    fn set_root_moves_the_owner_record() {
+        let old = tempfile::tempdir().expect("tempdir");
+        let new = tempfile::tempdir().expect("tempdir");
+        let mut registry = Registry::new(Owner {
+            pid: 4_000_003,
+            start: Some(33),
+        });
+        registry.set_root(old.path().to_path_buf());
+        let live = std::process::id();
+        registry.children.insert(live, fake_child(live, Some(3)));
+        registry.persist();
+        let old_path = registry.record_path().expect("old path");
+        assert!(old_path.exists());
+
+        registry.set_root(new.path().to_path_buf());
+        assert!(!old_path.exists());
+        let new_path = registry.record_path().expect("new path");
+        assert_eq!(read_record(&new_path).children.len(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn records_list_only_children_that_still_exist() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut registry = Registry::new(Owner {
+            pid: 4_000_004,
+            start: Some(44),
+        });
+        registry.set_root(tmp.path().to_path_buf());
+        let live = std::process::id();
+        let exited = 99_999_999;
+        registry.children.insert(live, fake_child(live, Some(1)));
+        registry
+            .children
+            .insert(exited, fake_child(exited, Some(2)));
+        registry.persist();
+        let path = registry.record_path().expect("record path");
+        assert_eq!(read_record(&path).children, vec![fake_child(live, Some(1))]);
+        // The in-memory registry is unchanged until the PID is unregistered.
+        assert!(registry.children.contains_key(&exited));
+
+        registry.children.remove(&live);
+        registry.persist();
+        assert!(
+            !path.exists(),
+            "a record with no existing children is removed"
+        );
+    }
+
+    #[test]
+    fn owner_is_recovered_from_file_name() {
+        let with_start = owner_from_file_name(Path::new("/x/12-34.json")).expect("owner");
+        assert_eq!(
+            (with_start.owner_pid, with_start.owner_start),
+            (12, Some(34))
+        );
+        let without_start = owner_from_file_name(Path::new("/x/56.json")).expect("owner");
+        assert_eq!(
+            (without_start.owner_pid, without_start.owner_start),
+            (56, None)
+        );
+        assert!(owner_from_file_name(Path::new("/x/junk.json")).is_none());
+    }
+
+    fn fake_child(pid: u32, start: Option<u64>) -> ChildRecord {
+        ChildRecord {
+            pid,
+            start,
+            spawned_at_ms: 1,
+            command: None,
+        }
+    }
+
+    fn read_record(path: &Path) -> OwnerRecord {
+        serde_json::from_slice(&std::fs::read(path).expect("read record")).expect("parse record")
+    }
+
+    /// Cleanup scenarios against real `sleep` processes spawned by this test
+    /// process. Only processes the tests spawned are ever signaled.
+    #[cfg(all(unix, any(target_os = "macos", target_os = "linux")))]
+    mod cleanup {
+        use super::*;
+        use std::process::{Child, Command};
+        use std::time::{Duration, Instant};
+
+        /// Beyond `pid_max` on macOS and Linux, so never a live process.
+        const DEAD_PID: u32 = 99_999_999;
+
+        struct Sleeper(Child);
+
+        impl Sleeper {
+            fn spawn() -> Self {
+                Self(
+                    Command::new("sleep")
+                        .arg("30")
+                        .spawn()
+                        .expect("spawn sleep"),
+                )
+            }
+
+            fn pid(&self) -> u32 {
+                self.0.id()
+            }
+
+            fn identity(&self) -> ProcessIdentity {
+                process_identity(self.pid()).expect("identity of a live sleep")
+            }
+
+            fn record(&self) -> ChildRecord {
+                ChildRecord::observe(self.pid())
+            }
+
+            fn exits_within(&mut self, timeout: Duration) -> bool {
+                let deadline = Instant::now() + timeout;
+                loop {
+                    if self.0.try_wait().expect("poll sleep").is_some() {
+                        return true;
+                    }
+                    if Instant::now() >= deadline {
+                        return false;
+                    }
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+            }
+
+            fn is_running(&mut self) -> bool {
+                self.0.try_wait().expect("poll sleep").is_none()
+            }
+        }
+
+        impl Drop for Sleeper {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+
+        /// A `sleep` whose parent shell exits at once, so it is reparented
+        /// (to PID 1 unless a subreaper exists). Killed on drop if it is still
+        /// the same process.
+        struct Orphan {
+            pid: u32,
+            start: u64,
+        }
+
+        impl Orphan {
+            fn spawn() -> Self {
+                let output = Command::new("sh")
+                    .args(["-c", "sleep 30 >/dev/null 2>&1 & echo $!"])
+                    .output()
+                    .expect("spawn orphaned sleep");
+                let pid = String::from_utf8_lossy(&output.stdout)
+                    .trim()
+                    .parse()
+                    .expect("orphan pid");
+                let start = process_identity(pid).expect("orphan identity").start;
+                Self { pid, start }
+            }
+
+            fn is_running(&self) -> bool {
+                process_identity(self.pid).is_some_and(|identity| identity.start == self.start)
+            }
+
+            fn is_reparented_to_init(&self) -> bool {
+                process_identity(self.pid).is_some_and(|identity| identity.ppid == 1)
+            }
+
+            fn exits_within(&self, timeout: Duration) -> bool {
+                let deadline = Instant::now() + timeout;
+                while self.is_running() {
+                    if Instant::now() >= deadline {
+                        return false;
+                    }
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                true
+            }
+        }
+
+        impl Drop for Orphan {
+            fn drop(&mut self) {
+                if self.is_running() {
+                    signal(self.pid, libc::SIGKILL);
+                }
+            }
+        }
+
+        fn write_owner(root: &Path, owner: Owner, children: Vec<ChildRecord>) -> PathBuf {
+            let path = records_dir(root).join(owner.file_name());
+            let record = OwnerRecord {
+                owner_pid: owner.pid,
+                owner_start: owner.start,
+                children,
+            };
+            write_record(&path, &record).expect("write owner record");
+            path
+        }
+
+        const EXIT_TIMEOUT: Duration = Duration::from_secs(5);
+
+        #[test]
+        fn empty_workspace_signals_nothing() {
+            let tmp = tempfile::tempdir().expect("tempdir");
+            assert_eq!(cleanup_workspace(tmp.path()), 0);
+        }
+
+        #[test]
+        fn live_owner_children_are_left_alone() {
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let owner = Sleeper::spawn();
+            let mut child = Sleeper::spawn();
+            let record = write_owner(
+                tmp.path(),
+                Owner {
+                    pid: owner.pid(),
+                    start: Some(owner.identity().start),
+                },
+                vec![child.record()],
+            );
+
+            assert_eq!(cleanup_workspace(tmp.path()), 0);
+            assert!(child.is_running());
+            assert!(record.exists(), "a live owner's record must be kept");
+        }
+
+        #[test]
+        fn dead_owner_children_are_killed() {
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let mut child = Sleeper::spawn();
+            let record = write_owner(
+                tmp.path(),
+                Owner {
+                    pid: DEAD_PID,
+                    start: Some(1),
+                },
+                vec![child.record(), fake_child(DEAD_PID, Some(1))],
+            );
+
+            assert_eq!(cleanup_workspace(tmp.path()), 1);
+            assert!(child.exits_within(EXIT_TIMEOUT));
+            assert!(!record.exists(), "a dead owner's record must be removed");
+        }
+
+        #[test]
+        fn recycled_owner_pid_counts_as_dead() {
+            let tmp = tempfile::tempdir().expect("tempdir");
+            // The owner PID is alive but names a different process.
+            let mut impostor = Sleeper::spawn();
+            let mut child = Sleeper::spawn();
+            write_owner(
+                tmp.path(),
+                Owner {
+                    pid: impostor.pid(),
+                    start: Some(impostor.identity().start + 1),
+                },
+                vec![child.record()],
+            );
+
+            assert_eq!(cleanup_workspace(tmp.path()), 1);
+            assert!(child.exits_within(EXIT_TIMEOUT));
+            assert!(
+                impostor.is_running(),
+                "the recycled owner PID is never signaled"
+            );
+        }
+
+        #[test]
+        fn recycled_child_pids_are_never_signaled() {
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let mut fingerprinted = Sleeper::spawn();
+            let mut timestamped = Sleeper::spawn();
+            let started_ms = timestamped.identity().started_at_ms.expect("start time");
+            let record = write_owner(
+                tmp.path(),
+                Owner {
+                    pid: DEAD_PID,
+                    start: Some(1),
+                },
+                vec![
+                    // Start fingerprint differs: the PID was recycled.
+                    ChildRecord {
+                        start: Some(fingerprinted.identity().start + 1),
+                        ..fingerprinted.record()
+                    },
+                    // No fingerprint, and the process started after the spawn
+                    // was recorded.
+                    ChildRecord {
+                        pid: timestamped.pid(),
+                        start: None,
+                        spawned_at_ms: started_ms - 60_000,
+                        command: None,
+                    },
+                ],
+            );
+
+            assert_eq!(cleanup_workspace(tmp.path()), 0);
+            std::thread::sleep(Duration::from_millis(100));
+            assert!(fingerprinted.is_running());
+            assert!(timestamped.is_running());
+            assert!(!record.exists(), "a dead owner's record must be removed");
+        }
+
+        #[test]
+        fn malformed_records_are_removed_only_for_dead_owners() {
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let owner = Sleeper::spawn();
+            let dir = records_dir(tmp.path());
+            std::fs::create_dir_all(&dir).expect("records dir");
+            let live = dir.join(
+                Owner {
+                    pid: owner.pid(),
+                    start: Some(owner.identity().start),
+                }
+                .file_name(),
+            );
+            let dead = dir.join(format!("{DEAD_PID}-1.json"));
+            std::fs::write(&live, b"{ not json").expect("write live record");
+            std::fs::write(&dead, b"{ not json").expect("write dead record");
+
+            assert_eq!(cleanup_workspace(tmp.path()), 0);
+            assert!(live.exists());
+            assert!(!dead.exists());
+        }
+
+        #[test]
+        fn legacy_file_kills_only_orphans_older_than_the_file() {
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let mut attached = Sleeper::spawn();
+            let orphan = Orphan::spawn();
+            let legacy = tmp.path().join(LEGACY_FILE);
+            std::fs::create_dir_all(legacy.parent().expect("runtime dir")).expect("runtime dir");
+            std::fs::write(
+                &legacy,
+                serde_json::to_vec(&[DEAD_PID, attached.pid(), orphan.pid]).expect("json"),
+            )
+            .expect("write legacy file");
+            let orphaned = orphan.is_reparented_to_init();
+
+            cleanup_workspace(tmp.path());
+            assert!(
+                attached.is_running(),
+                "a process with a live parent is kept"
+            );
+            assert!(
+                !legacy.exists(),
+                "the legacy file is deleted after migration"
+            );
+            if orphaned {
+                assert!(orphan.exits_within(EXIT_TIMEOUT));
+            } else {
+                assert!(orphan.is_running(), "reparented to a subreaper, not init");
+            }
+        }
+
+        #[test]
+        fn legacy_entry_started_after_the_last_write_is_refused() {
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let orphan = Orphan::spawn();
+            let legacy = tmp.path().join(LEGACY_FILE);
+            std::fs::create_dir_all(legacy.parent().expect("runtime dir")).expect("runtime dir");
+            std::fs::write(&legacy, serde_json::to_vec(&[orphan.pid]).expect("json"))
+                .expect("write legacy file");
+            std::fs::File::options()
+                .write(true)
+                .open(&legacy)
+                .expect("open legacy file")
+                .set_modified(SystemTime::now() - Duration::from_secs(3_600))
+                .expect("backdate legacy file");
+
+            assert_eq!(cleanup_workspace(tmp.path()), 0);
+            assert!(orphan.is_running());
+            assert!(!legacy.exists());
+        }
+
+        #[test]
+        fn reaper_kills_verified_orphans_and_drops_recycled_pids() {
+            let verified = Orphan::spawn();
+            let recycled = Orphan::spawn();
+            let orphaned = verified.is_reparented_to_init();
+            let records = [
+                ChildRecord::observe(verified.pid),
+                ChildRecord {
+                    start: Some(recycled.start + 1),
+                    ..ChildRecord::observe(recycled.pid)
+                },
+                fake_child(DEAD_PID, Some(1)),
+            ];
+
+            let (killed, stale) = reap(&records);
+            assert!(recycled.is_running(), "a recycled PID is never signaled");
+            assert!(stale.contains(&recycled.pid));
+            assert!(stale.contains(&DEAD_PID));
+            if orphaned {
+                assert_eq!(killed, 1);
+                assert!(stale.contains(&verified.pid));
+                assert!(verified.exits_within(EXIT_TIMEOUT));
+            } else {
+                assert_eq!(killed, 0);
+            }
+        }
+
+        #[test]
+        fn reaper_leaves_attached_children_alone() {
+            let mut child = Sleeper::spawn();
+            let (killed, stale) = reap(&[child.record()]);
+            assert_eq!(killed, 0);
+            assert!(stale.is_empty());
+            assert!(child.is_running());
         }
     }
 }

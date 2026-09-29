@@ -38,6 +38,16 @@ pub enum UnifiedStreamEvent {
         /// Effective model name.
         model: String,
     },
+    /// The output of a completed tool call (correlates with a `ToolCallEnd`).
+    ///
+    /// Produced when a provider surfaces tool results on the stream.
+    /// Most providers do not emit this; the ToolLoop injects results directly.
+    ToolOutput {
+        /// Provider-assigned tool call identifier.
+        id: String,
+        /// The text output returned by the tool.
+        output: String,
+    },
 }
 
 impl UnifiedStreamEvent {
@@ -117,6 +127,7 @@ impl UnifiedStreamEvent {
                 name,
                 arguments: args.to_string(),
             }),
+            StreamEventKind::ToolResult { id, output } => Some(Self::ToolOutput { id, output }),
             StreamEventKind::Usage(usage) => Some(Self::Usage {
                 input_tokens: u64::from(usage.input_tokens),
                 output_tokens: u64::from(usage.output_tokens),
@@ -299,8 +310,8 @@ pub fn parse_sse_line(line: &str) -> Option<StreamEvent> {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_sse_line;
-    use crate::tool_loop::StreamEventKind;
+    use super::{UnifiedStreamEvent, parse_sse_line};
+    use crate::tool_loop::{StreamEvent, StreamEventKind};
 
     #[test]
     fn sse_parser_reads_reasoning_delta() {
@@ -388,6 +399,26 @@ mod tests {
     #[test]
     fn sse_parser_ignores_non_data_lines() {
         assert!(parse_sse_line("event: message").is_none());
+    }
+
+    #[test]
+    fn tool_result_stream_events_map_to_tool_output() {
+        // A ToolResult stream event should surface as UnifiedStreamEvent::ToolOutput,
+        // which is the UnifiedStreamEvent counterpart of AgentRuntimeEvent::ToolOutput.
+        let event = StreamEvent::now(StreamEventKind::ToolResult {
+            id: "call-1".to_string(),
+            output: "hello".to_string(),
+        });
+        let unified = UnifiedStreamEvent::from_stream_event(event)
+            .expect("ToolResult should produce a UnifiedStreamEvent");
+        assert!(
+            matches!(
+                unified,
+                UnifiedStreamEvent::ToolOutput { ref id, ref output }
+                if id == "call-1" && output == "hello"
+            ),
+            "expected ToolOutput(call-1, hello), got {unified:?}"
+        );
     }
 
     #[test]

@@ -8,13 +8,15 @@
 
 use crate::agent::{Agent, AgentResult, derived_output};
 use crate::process::{
-    GRACE_SIGTERM_MS, GRACE_STDIN_CLOSE_MS, ResourceLimits, benign_stderr_warn_once,
-    classify_benign_stderr, confined_command, kill_tree, register_spawned_pid, set_process_group,
-    unregister_pid,
+    GRACE_SIGTERM_MS, GRACE_STDIN_CLOSE_MS, ResourceLimits, apply_credential_scrub,
+    benign_stderr_warn_once, classify_benign_stderr, confined_command, kill_tree,
+    register_spawned_pid, set_process_group, unregister_pid,
 };
+use crate::provider::error_classify::{ProviderExhaustion, detect_provider_exhaustion};
 use crate::safety::SafetyLayer;
 use crate::usage::Usage;
 use async_trait::async_trait;
+use roko_core::child_env::CredentialScrub;
 use roko_core::defaults::DEFAULT_REQUEST_TIMEOUT_MS;
 use roko_core::tool::ToolResult;
 use roko_core::{Body, Context, Kind, Provenance, Signal};
@@ -191,8 +193,10 @@ impl CodexOperationPolicy {
     }
 }
 
-const ALL_CODEX_OPERATION_TYPES: &[CodexOperationType] =
-    &[CodexOperationType::CommandExecution, CodexOperationType::FileChange];
+const ALL_CODEX_OPERATION_TYPES: &[CodexOperationType] = &[
+    CodexOperationType::CommandExecution,
+    CodexOperationType::FileChange,
+];
 
 // ── JSONL operation broker ───────────────────────────────────────────────────
 
@@ -204,7 +208,10 @@ const ALL_CODEX_OPERATION_TYPES: &[CodexOperationType] =
 /// This is the post-execution enforcement boundary: it cannot prevent Codex
 /// from running the operation, but it will cause the overall agent turn to be
 /// rejected before roko persists or acts on the output.
-fn check_codex_output_against_policy(raw: &str, policy: &CodexOperationPolicy) -> Result<(), String> {
+fn check_codex_output_against_policy(
+    raw: &str,
+    policy: &CodexOperationPolicy,
+) -> Result<(), String> {
     if !policy.has_constraints() {
         return Ok(());
     }
@@ -277,6 +284,8 @@ pub struct ExecAgent {
     program: String,
     args: Vec<String>,
     env: Vec<(String, String)>,
+    /// Which inherited provider credentials the subprocess loses.
+    credential_scrub: CredentialScrub,
     current_dir: Option<PathBuf>,
     safety: SafetyLayer,
     timeout_ms: u64,
@@ -308,6 +317,7 @@ impl ExecAgent {
             program,
             args,
             env: Vec::new(),
+            credential_scrub: CredentialScrub::default(),
             current_dir: None,
             safety,
             timeout_ms: DEFAULT_REQUEST_TIMEOUT_MS,
@@ -359,6 +369,16 @@ impl ExecAgent {
         for (k, v) in vars {
             self.env.push((k.into(), v.into()));
         }
+        self
+    }
+
+    /// Replace the policy for which inherited credentials the subprocess
+    /// loses. The default owns no provider credential: every known provider
+    /// key, every name roko loaded from a `.env` file and roko's own
+    /// credentials are stripped.
+    #[must_use]
+    pub fn with_credential_scrub(mut self, scrub: CredentialScrub) -> Self {
+        self.credential_scrub = scrub;
         self
     }
 
@@ -489,6 +509,7 @@ impl Agent for ExecAgent {
             }
         };
         cmd.args(&self.args);
+        apply_credential_scrub(&mut cmd, &self.credential_scrub);
         for (k, v) in &self.env {
             cmd.env(k, v);
         }
@@ -690,11 +711,11 @@ impl Agent for ExecAgent {
                 .code()
                 .map_or_else(|| "signal".into(), |c| c.to_string());
             tracing::warn!(agent = %self.name, exit_code = %code, elapsed_s = elapsed_secs, "agent failed");
-            return self.failure_signal(
-                input,
-                &format!("exit {code}: {}", first_line(&stderr)),
-                started,
+            let reason = usage_exhaustion(&raw_stdout, &stderr).map_or_else(
+                || first_line(&stderr).to_string(),
+                |exhaustion| self.scrub_text(&exhaustion.into_error().to_string()),
             );
+            return self.failure_signal(input, &format!("exit {code}: {reason}"), started);
         }
 
         if let Err(err) = self
@@ -767,6 +788,31 @@ impl ExecAgent {
     }
 }
 
+/// Usage-window refusal behind a failed exec ("You've hit your usage limit …
+/// try again in 2 hours"): human stderr, or a Codex JSONL `error` /
+/// `turn.failed` event on stdout. Other stdout events are agent output and are
+/// never scanned, so quoted text cannot quarantine a provider.
+fn usage_exhaustion(raw_stdout: &str, stderr: &str) -> Option<ProviderExhaustion> {
+    detect_provider_exhaustion(stderr).or_else(|| {
+        raw_stdout
+            .lines()
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line.trim()).ok())
+            .filter(|event| {
+                matches!(
+                    event.get("type").and_then(serde_json::Value::as_str),
+                    Some("error" | "turn.failed")
+                )
+            })
+            .find_map(|event| {
+                event
+                    .pointer("/message")
+                    .or_else(|| event.pointer("/error/message"))
+                    .and_then(serde_json::Value::as_str)
+                    .and_then(detect_provider_exhaustion)
+            })
+    })
+}
+
 fn first_line(s: &str) -> &str {
     s.lines().next().unwrap_or(s)
 }
@@ -824,6 +870,45 @@ mod tests {
 
     fn exec_agent(program: impl Into<String>, args: Vec<String>) -> ExecAgent {
         ExecAgent::new(program, args, SafetyLayer::with_defaults())
+    }
+
+    #[test]
+    fn usage_exhaustion_reads_codex_error_events_but_not_agent_output() {
+        let failed = concat!(
+            "{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"ok\"}}\n",
+            "{\"type\":\"turn.failed\",\"error\":{\"message\":\"You've hit your usage limit. ",
+            "Upgrade to Pro or try again in 2 hours 5 minutes.\"}}\n",
+        );
+        let exhaustion = usage_exhaustion(failed, "").expect("codex usage limit");
+        assert!(
+            exhaustion
+                .message
+                .starts_with("You've hit your usage limit")
+        );
+        assert!(exhaustion.resets_at_ms.is_some());
+
+        let quoted = "{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\
+                      \"text\":\"You've hit your usage limit\"}}\n";
+        assert!(usage_exhaustion(quoted, "").is_none());
+        assert!(usage_exhaustion("", "error: connection reset").is_none());
+    }
+
+    #[tokio::test]
+    async fn failed_exec_reports_usage_exhaustion() {
+        let agent = exec_agent(
+            "sh",
+            vec![
+                "-c".into(),
+                "echo \"You've hit your usage limit. Try again in 3 hours.\" >&2; exit 1".into(),
+            ],
+        );
+        let result = agent.run(&prompt(""), &Context::now()).await;
+        assert!(!result.success);
+        let text = result.output.body.as_text().unwrap();
+        assert!(
+            text.starts_with("exit 1: provider usage exhausted: You've hit your usage limit"),
+            "{text}"
+        );
     }
 
     #[tokio::test]

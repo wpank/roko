@@ -10,7 +10,9 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
+use roko_core::dashboard_snapshot::TASK_OUTCOME_ACCEPTED_WITH_FAILURES;
 use roko_core::{LensScope, ObservableEvent, Signal, TelemetryEventSink};
+use roko_graph::cells::task_executor::TaskGateVerdict;
 use roko_graph::engine::{GraphOutput, NodeStatus};
 
 use crate::state_hub::StateHubSender;
@@ -26,6 +28,27 @@ struct EtaTracker {
     total: usize,
     /// Number of tasks completed so far (success + failure + skip).
     done: usize,
+}
+
+impl EtaTracker {
+    /// Proportional remaining minutes (at least 1), once at least one task
+    /// is done and at least one remains.
+    fn eta_minutes(&self) -> Option<u32> {
+        let remaining = self.total.saturating_sub(self.done);
+        if self.done == 0 || remaining == 0 {
+            return None;
+        }
+        let elapsed_secs = self.started_at.elapsed().as_secs_f64();
+        let per_task_secs = elapsed_secs / self.done as f64;
+        let eta_minutes = (per_task_secs * remaining as f64 / 60.0).ceil() as u32;
+        // Clamp to 1 minute minimum so the display is always useful.
+        Some(eta_minutes.max(1))
+    }
+}
+
+/// The run's remaining time: the longest estimate among running plans.
+fn largest_eta_minutes(trackers: &HashMap<String, EtaTracker>) -> Option<u32> {
+    trackers.values().filter_map(EtaTracker::eta_minutes).max()
 }
 
 /// Bridges passive observable telemetry into the runner's shared StateHub.
@@ -60,12 +83,13 @@ impl TelemetryEventSink for StateHubTelemetrySink {
 /// publications through the existing [`TuiBridge`].
 ///
 /// Callers construct an instance before starting a graph plan and call its
-/// methods at well-defined lifecycle points. ETA tracking is maintained via
-/// an internal `Arc<Mutex<EtaTracker>>` so the adapter remains `Sync`.
+/// methods at well-defined lifecycle points. ETA tracking is kept per plan
+/// behind an internal mutex, so the adapter stays `Sync` and several plans
+/// can run at once.
 pub struct GraphTuiBridge {
     tui: TuiBridge,
-    /// Shared mutable ETA tracking state.
-    eta: Arc<Mutex<Option<EtaTracker>>>,
+    /// ETA tracking per running plan.
+    eta: Arc<Mutex<HashMap<String, EtaTracker>>>,
 }
 
 impl GraphTuiBridge {
@@ -73,7 +97,7 @@ impl GraphTuiBridge {
     pub fn new(tui: TuiBridge) -> Self {
         Self {
             tui,
-            eta: Arc::new(Mutex::new(None)),
+            eta: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -87,23 +111,27 @@ impl GraphTuiBridge {
     pub fn plan_started(&self, plan_id: &str, task_count: usize) {
         self.tui.plan_started(plan_id, task_count);
         if let Ok(mut guard) = self.eta.lock() {
-            *guard = Some(EtaTracker {
-                started_at: Instant::now(),
-                total: task_count,
-                done: 0,
-            });
+            guard.insert(
+                plan_id.to_string(),
+                EtaTracker {
+                    started_at: Instant::now(),
+                    total: task_count,
+                    done: 0,
+                },
+            );
         }
     }
 
     /// Emit `PlanCompleted` after a graph plan finishes.
     pub fn plan_completed(&self, plan_id: &str, success: bool) {
         self.tui.plan_completed(plan_id, success);
-        // Clear the ETA tracker so stale estimates don't linger.
-        if let Ok(mut guard) = self.eta.lock() {
-            *guard = None;
-        }
-        // Clear the ETA from the TUI (no remaining time once done).
-        self.tui.critical_path_eta(plan_id, None);
+        // Drop the plan's tracker so stale estimates don't linger, and show
+        // what the plans still running need (none once the last finishes).
+        let remaining = self.eta.lock().ok().and_then(|mut guard| {
+            guard.remove(plan_id);
+            largest_eta_minutes(&guard)
+        });
+        self.tui.critical_path_eta(plan_id, remaining);
     }
 
     // ── Node-level events (pre-execution) ────────────────────────────
@@ -121,32 +149,34 @@ impl GraphTuiBridge {
     /// Also updates the ETA estimate and publishes a `CriticalPathEtaUpdated`
     /// event so the TUI progress card shows a live remaining-time estimate.
     pub fn node_completed(&self, plan_id: &str, node_id: &str, status: NodeStatus) {
-        let outcome = match status {
-            NodeStatus::Complete => "passed",
-            NodeStatus::Failed => "failed",
-            NodeStatus::Skipped => "skipped",
-            NodeStatus::ConditionSkipped => "condition-skipped",
-            NodeStatus::Pending | NodeStatus::Running => "unknown",
-        };
-        self.tui.task_completed(plan_id, node_id, outcome);
+        self.node_completed_with_verdict(plan_id, node_id, status, None);
+    }
+
+    /// Emit `TaskCompleted` with an outcome that honours the node's gate
+    /// verdict, so a forced accept is never reported as a clean pass.
+    pub fn node_completed_with_verdict(
+        &self,
+        plan_id: &str,
+        node_id: &str,
+        status: NodeStatus,
+        verdict: Option<TaskGateVerdict>,
+    ) {
+        self.tui
+            .task_completed(plan_id, node_id, node_outcome(status, verdict));
 
         // Update ETA tracking.  Only publish when there is a non-trivial
         // estimate: at least one task done and at least one remaining.  The
         // TUI progress card's proportional fallback handles the zero-done
         // case, so we skip publishing a None here to keep event volume low.
+        // With several plans running, the run's estimate is the longest one.
         if let Ok(mut guard) = self.eta.lock() {
-            if let Some(ref mut tracker) = *guard {
-                tracker.done = tracker.done.saturating_add(1);
-                let remaining = tracker.total.saturating_sub(tracker.done);
-                if tracker.done > 0 && remaining > 0 {
-                    let elapsed_secs = tracker.started_at.elapsed().as_secs_f64();
-                    let per_task_secs = elapsed_secs / tracker.done as f64;
-                    let eta_secs = per_task_secs * remaining as f64;
-                    let eta_minutes = (eta_secs / 60.0).ceil() as u32;
-                    // Clamp to 1 minute minimum so the display is always useful.
-                    let eta_minutes = eta_minutes.max(1);
-                    self.tui.critical_path_eta(plan_id, Some(eta_minutes));
-                }
+            let Some(tracker) = guard.get_mut(plan_id) else {
+                return;
+            };
+            tracker.done = tracker.done.saturating_add(1);
+            if tracker.eta_minutes().is_some() {
+                self.tui
+                    .critical_path_eta(plan_id, largest_eta_minutes(&guard));
             }
         }
     }
@@ -162,7 +192,12 @@ impl GraphTuiBridge {
     pub fn emit_graph_output(&self, plan_id: &str, output: &GraphOutput) {
         // Emit per-node results.
         for result in &output.node_results {
-            self.node_completed(plan_id, &result.node_id, result.status);
+            self.node_completed_with_verdict(
+                plan_id,
+                &result.node_id,
+                result.status,
+                output.gate_verdicts.get(&result.node_id).copied(),
+            );
         }
     }
 
@@ -172,6 +207,11 @@ impl GraphTuiBridge {
     /// has changed since the last poll.
     ///
     /// Returns the new status map for the next polling cycle.
+    ///
+    /// Completions are always published before starts so that, when a
+    /// predecessor completes and a successor starts in the same 100 ms tick,
+    /// `task_completed` always precedes `task_started` in the event stream.
+    /// This preserves the causal order visible to the portal's run view.
     pub fn poll_status_changes(
         &self,
         plan_id: &str,
@@ -179,29 +219,39 @@ impl GraphTuiBridge {
         current: &HashMap<String, NodeStatus>,
         node_titles: &HashMap<String, String>,
     ) -> Vec<(String, NodeStatus)> {
-        let mut changes = Vec::new();
+        // Collect transitions into two buckets so we can emit in the right
+        // order regardless of HashMap iteration order.
+        let mut completions: Vec<(&String, NodeStatus)> = Vec::new();
+        let mut starts: Vec<(&String, NodeStatus)> = Vec::new();
+
         for (node_id, &new_status) in current {
             let old_status = previous.get(node_id).copied();
-            let changed = old_status.map_or(true, |old| old != new_status);
-            if !changed {
+            if old_status.map_or(false, |old| old == new_status) {
                 continue;
             }
             match new_status {
-                NodeStatus::Running => {
-                    let title = node_titles
-                        .get(node_id)
-                        .map(String::as_str)
-                        .unwrap_or(node_id);
-                    self.node_started(plan_id, node_id, title);
-                }
+                NodeStatus::Running => starts.push((node_id, new_status)),
                 NodeStatus::Complete
                 | NodeStatus::Failed
                 | NodeStatus::Skipped
-                | NodeStatus::ConditionSkipped => {
-                    self.node_completed(plan_id, node_id, new_status);
-                }
+                | NodeStatus::ConditionSkipped => completions.push((node_id, new_status)),
                 NodeStatus::Pending => {}
             }
+        }
+
+        let mut changes = Vec::new();
+        // Emit completions first: in a serial DAG a node completing in this
+        // tick is always the cause of any successor starting in the same tick.
+        for (node_id, new_status) in completions {
+            self.node_completed(plan_id, node_id, new_status);
+            changes.push((node_id.clone(), new_status));
+        }
+        for (node_id, new_status) in starts {
+            let title = node_titles
+                .get(node_id)
+                .map(String::as_str)
+                .unwrap_or(node_id);
+            self.node_started(plan_id, node_id, title);
             changes.push((node_id.clone(), new_status));
         }
         changes
@@ -215,6 +265,23 @@ impl GraphTuiBridge {
     /// Emit an error event.
     pub fn error(&self, message: &str) {
         self.tui.error(message);
+    }
+}
+
+/// Dashboard outcome for a finished node.
+///
+/// A completed node whose gate verdict is a forced accept is reported as
+/// accepted-with-failures, never as `passed`.
+fn node_outcome(status: NodeStatus, verdict: Option<TaskGateVerdict>) -> &'static str {
+    match (status, verdict) {
+        (NodeStatus::Complete, Some(TaskGateVerdict::ForcedAccept)) => {
+            TASK_OUTCOME_ACCEPTED_WITH_FAILURES
+        }
+        (NodeStatus::Complete, _) => "passed",
+        (NodeStatus::Failed, _) => "failed",
+        (NodeStatus::Skipped, _) => "skipped",
+        (NodeStatus::ConditionSkipped, _) => "condition-skipped",
+        (NodeStatus::Pending | NodeStatus::Running, _) => "unknown",
     }
 }
 
@@ -310,7 +377,39 @@ mod tests {
             error: None,
             output_count: 1,
             is_stub: false,
+            blocked_by: None,
         }
+    }
+
+    #[test]
+    fn eta_follows_the_plans_still_running() {
+        let (hub, bridge) = make_bridge();
+        let mut sub = hub.subscribe_events_from(0);
+        let etas = |sub: &mut crate::state_hub::StateHubSubscription| {
+            let mut etas = Vec::new();
+            while let Ok(envelope) = sub.live.try_recv() {
+                if let roko_core::DashboardEvent::CriticalPathEtaUpdated {
+                    plan_id,
+                    eta_minutes,
+                } = envelope.payload
+                {
+                    etas.push((plan_id, eta_minutes));
+                }
+            }
+            etas
+        };
+
+        bridge.plan_started("plan-a", 2);
+        bridge.plan_started("plan-b", 3);
+        bridge.node_completed("plan-b", "T1", NodeStatus::Complete);
+        assert_eq!(etas(&mut sub), [("plan-b".to_string(), Some(1))]);
+
+        // plan-b still has work left, so finishing plan-a keeps an estimate.
+        bridge.plan_completed("plan-a", true);
+        assert_eq!(etas(&mut sub), [("plan-a".to_string(), Some(1))]);
+
+        bridge.plan_completed("plan-b", true);
+        assert_eq!(etas(&mut sub), [("plan-b".to_string(), None)]);
     }
 
     #[test]
@@ -329,6 +428,7 @@ mod tests {
                 make_node_result("T03", NodeStatus::Skipped, 0),
             ],
             total_duration: Duration::from_millis(300),
+            gate_verdicts: Default::default(),
         };
 
         emit_plan_lifecycle(&bridge, "test-plan", 3, &output, true);
@@ -346,6 +446,48 @@ mod tests {
     }
 
     #[test]
+    fn forced_accept_verdict_is_not_reported_as_passed() {
+        let (hub, bridge) = make_bridge();
+        let mut sub = hub.subscribe_events_from(0);
+        let output = GraphOutput {
+            graph_name: "test-plan".to_string(),
+            success: true,
+            node_results: vec![
+                make_node_result("T01", NodeStatus::Complete, 100),
+                make_node_result("T02", NodeStatus::Complete, 100),
+            ],
+            total_duration: Duration::from_millis(200),
+            gate_verdicts: [
+                ("T01".to_string(), TaskGateVerdict::Passed),
+                ("T02".to_string(), TaskGateVerdict::ForcedAccept),
+            ]
+            .into_iter()
+            .collect(),
+        };
+
+        bridge.emit_graph_output("test-plan", &output);
+
+        let mut outcomes = HashMap::new();
+        while let Ok(envelope) = sub.live.try_recv() {
+            if let roko_core::DashboardEvent::TaskCompleted {
+                task_id, outcome, ..
+            } = envelope.payload
+            {
+                outcomes.insert(task_id, outcome);
+            }
+        }
+        assert_eq!(outcomes.get("T01").map(String::as_str), Some("passed"));
+        assert_eq!(
+            outcomes.get("T02").map(String::as_str),
+            Some(TASK_OUTCOME_ACCEPTED_WITH_FAILURES)
+        );
+        assert_eq!(
+            node_outcome(NodeStatus::Complete, Some(TaskGateVerdict::Unverified)),
+            "passed"
+        );
+    }
+
+    #[test]
     fn status_summary_counts_correctly() {
         let output = GraphOutput {
             graph_name: "test".to_string(),
@@ -358,6 +500,7 @@ mod tests {
                 make_node_result("T05", NodeStatus::Complete, 200),
             ],
             total_duration: Duration::from_millis(350),
+            gate_verdicts: Default::default(),
         };
 
         let summary = status_summary(&output);

@@ -10,6 +10,10 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 use crate::bench::BenchConfigOverrides;
+use crate::plan_types::{
+    CreatePlanOutcome, PlanSourceDto, PlanSummaryDto, PlanTasksDto, PlanValidationDto, RevisionDto,
+};
+use roko_runtime::cancel::CancelToken;
 
 /// Token usage reported by an LLM provider.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -69,6 +73,50 @@ pub struct PlanExecutionResult {
     pub output_text: Option<String>,
     /// Structured gate results when the runtime can provide them.
     pub gate_results: Vec<RuntimeGateResult>,
+}
+
+/// Options forwarded to a plan execution initiated through the HTTP API.
+///
+/// All fields are optional; the default leaves every choice to the runtime,
+/// mirroring a plain `roko plan run` invocation with no flags.
+#[derive(Debug, Clone, Default)]
+pub struct PlanRunOptions {
+    /// Cancellation token observed by the executor.
+    ///
+    /// When `Some`, the runtime must poll or `select!` this token and abort
+    /// the run when it fires, so that `POST /api/plans/{id}/cancel` can reach
+    /// a run that executes inside `spawn_blocking` or a detached task.
+    pub cancel: Option<CancelToken>,
+
+    /// Start the plan from scratch, discarding any existing checkpoint.
+    ///
+    /// Mirrors the `--fresh` flag of `roko plan run`.
+    pub fresh: bool,
+
+    /// Resume from the last checkpoint even when a run is not currently
+    /// paused, overriding the default "run only pending tasks" logic.
+    ///
+    /// Mirrors the `--force-resume` flag of `roko plan run`.
+    pub force_resume: bool,
+
+    /// Restrict a plan-set directory to these plan ids; others are skipped.
+    ///
+    /// `None` means run all plans discovered under the target.
+    pub only_plans: Option<Vec<String>>,
+
+    /// Maximum number of independent plans in a plan-set that may execute
+    /// concurrently.
+    ///
+    /// `None` defers to the workspace `[conductor] max_parallel_plans` setting,
+    /// matching the default behaviour of `roko plan run`.
+    pub max_parallel_plans: Option<usize>,
+
+    /// Which live-output level the dispatcher should use for this run.
+    ///
+    /// `None` falls back to `ToolSteps` (the safe default).  Set from
+    /// `AppState::effective_live_agent_output()` by plan run handlers so that
+    /// the trust level configured at startup flows into every server-side run.
+    pub live_agent_output: Option<roko_core::config::serve::LiveAgentOutput>,
 }
 
 /// Summary info for a configured repository, used to give agents
@@ -219,6 +267,16 @@ impl CliRuntime for NoOpRuntime {
         })
     }
 
+    /// Returns `Ok(None)` for every id so that handlers that delegate to this
+    /// method produce a clean 404 rather than a 500 in unit tests.
+    async fn load_plan_summary(
+        &self,
+        _workdir: &std::path::Path,
+        _plan_id: &str,
+    ) -> anyhow::Result<Option<PlanSummaryDto>> {
+        Ok(None)
+    }
+
     fn session_status(&self, workdir: PathBuf) -> SessionStatusInfo {
         SessionStatusInfo {
             session_id: None,
@@ -300,6 +358,42 @@ pub trait CliRuntime: Send + Sync + 'static {
         })
     }
 
+    /// Execute a plan target with caller-supplied options.
+    ///
+    /// Implementations should honour `options.cancel` so that the HTTP
+    /// cancel handler can interrupt a run that lives inside `spawn_blocking`
+    /// or a detached task — dropping the future of `run_plan` is not enough
+    /// when the executor does not observe the token.
+    ///
+    /// The default ignores every option and delegates to `run_plan`, keeping
+    /// every existing runtime (including test stubs) compilable without changes.
+    async fn run_plan_with_options(
+        &self,
+        workdir: &std::path::Path,
+        plan_target: &std::path::Path,
+        _options: PlanRunOptions,
+    ) -> anyhow::Result<PlanExecutionResult> {
+        self.run_plan(workdir, plan_target).await
+    }
+
+    /// Return the ordered list of plan ids that would be executed for
+    /// `plan_target`, respecting `only_plans` when provided.
+    ///
+    /// Callers use this to populate `PlanHandle::members` before a run starts,
+    /// so that cancel / pause / status can resolve a plan-set member id to its
+    /// active run key.
+    ///
+    /// The default bails so that callers can detect unsupported runtimes and
+    /// fall back gracefully (e.g. treat the target itself as the only member).
+    async fn plan_run_order(
+        &self,
+        _workdir: &std::path::Path,
+        _plan_target: &std::path::Path,
+        _only_plans: Option<Vec<String>>,
+    ) -> anyhow::Result<Vec<String>> {
+        anyhow::bail!("runtime does not support plan run order")
+    }
+
     /// Execute the graph attached to a trigger firing.
     ///
     /// The default preserves compatibility with runtimes that only implement
@@ -364,6 +458,118 @@ pub trait CliRuntime: Send + Sync + 'static {
     /// cross-repo context into agent system prompts during dispatch.
     fn list_repos(&self) -> Vec<RepoInfo> {
         Vec::new()
+    }
+
+    /// List all plans available in the given working directory.
+    ///
+    /// Runtime implementations that know the real CLI internals should
+    /// override this. The default is explicit so callers can detect
+    /// unsupported runtimes without assuming plan discovery is available.
+    async fn list_plans(&self, workdir: &std::path::Path) -> anyhow::Result<Vec<PlanSummaryDto>> {
+        let _ = workdir;
+        anyhow::bail!("runtime does not support plan discovery")
+    }
+
+    /// Load a summary for a single plan identified by `plan_id`.
+    ///
+    /// Returns `Ok(None)` when the plan does not exist. The default returns
+    /// an explicit error so callers can detect unsupported runtimes.
+    async fn load_plan_summary(
+        &self,
+        workdir: &std::path::Path,
+        plan_id: &str,
+    ) -> anyhow::Result<Option<PlanSummaryDto>> {
+        let _ = (workdir, plan_id);
+        anyhow::bail!("runtime does not support plan discovery")
+    }
+
+    /// Load the task list for a single plan identified by `plan_id`.
+    ///
+    /// Returns `Ok(None)` when the plan does not exist. The default returns
+    /// an explicit error so callers can detect unsupported runtimes.
+    async fn load_plan_tasks(
+        &self,
+        workdir: &std::path::Path,
+        plan_id: &str,
+    ) -> anyhow::Result<Option<PlanTasksDto>> {
+        let _ = (workdir, plan_id);
+        anyhow::bail!("runtime does not support plan discovery")
+    }
+
+    /// Return the raw TOML source of a plan's `tasks.toml`.
+    ///
+    /// Returns `Ok(None)` when no plan with `plan_id` is found in `workdir`.
+    async fn plan_source(
+        &self,
+        workdir: &std::path::Path,
+        plan_id: &str,
+    ) -> anyhow::Result<Option<PlanSourceDto>> {
+        let _ = (workdir, plan_id);
+        anyhow::bail!("runtime does not support plan source access")
+    }
+
+    /// Validate a plan source text.
+    ///
+    /// - `toml = None` validates the plan file currently on disk.
+    /// - `toml = Some(text)` validates that text without writing anything.
+    ///
+    /// Returns `Ok(None)` when no plan with `plan_id` is found in `workdir`.
+    async fn validate_plan_source(
+        &self,
+        workdir: &std::path::Path,
+        plan_id: &str,
+        toml: Option<String>,
+    ) -> anyhow::Result<Option<PlanValidationDto>> {
+        let _ = (workdir, plan_id, toml);
+        anyhow::bail!("runtime does not support plan source validation")
+    }
+
+    /// Validate and save a plan source text.
+    ///
+    /// Saves only when validation succeeds; on failure the file on disk is
+    /// left completely untouched and the returned report contains the errors.
+    ///
+    /// Returns `Ok(None)` when no plan with `plan_id` is found in `workdir`.
+    async fn save_plan_source(
+        &self,
+        workdir: &std::path::Path,
+        plan_id: &str,
+        toml: String,
+    ) -> anyhow::Result<Option<PlanValidationDto>> {
+        let _ = (workdir, plan_id, toml);
+        anyhow::bail!("runtime does not support plan source saving")
+    }
+
+    /// Revise a plan's `tasks.toml` using an LLM and caller-supplied feedback.
+    ///
+    /// The runtime calls the plan-authoring agent with the current source and
+    /// `feedback`, validates the result, and writes it only when it passes.
+    ///
+    /// Returns `Ok(None)` when no plan with `plan_id` is found in `workdir`.
+    async fn revise_plan(
+        &self,
+        workdir: &std::path::Path,
+        plan_id: &str,
+        feedback: &str,
+    ) -> anyhow::Result<Option<RevisionDto>> {
+        let _ = (workdir, plan_id, feedback);
+        anyhow::bail!("runtime does not support plan revision")
+    }
+
+    /// Create a new plan with the given slug and title.
+    ///
+    /// Writes `<plans_dir>/<slug>/tasks.toml` from a generated starter source
+    /// and a sibling `plan.md` carrying the title.  The starter source is
+    /// validated before any file is written; a failed validation returns
+    /// [`CreatePlanOutcome::Rejected`] rather than an error.
+    async fn create_plan(
+        &self,
+        workdir: &std::path::Path,
+        slug: &str,
+        title: &str,
+    ) -> anyhow::Result<CreatePlanOutcome> {
+        let _ = (workdir, slug, title);
+        anyhow::bail!("runtime does not support plan creation")
     }
 
     /// Run a SWE-bench evaluation. Returns per-instance results.

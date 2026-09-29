@@ -51,6 +51,7 @@ pub fn render_task_detail_modal(
         TaskRowStatus::Done => ("\u{2713} done", theme.success()),
         TaskRowStatus::Active => ("\u{25b6} running", theme.info()),
         TaskRowStatus::Failed => ("\u{2717} failed", theme.danger()),
+        TaskRowStatus::AcceptedWithFailures => ("\u{26a0} accepted with failures", theme.warning()),
         TaskRowStatus::Blocked => ("\u{25a0} blocked", theme.warning()),
         TaskRowStatus::Pending => ("\u{25cb} pending", theme.muted()),
     };

@@ -208,7 +208,7 @@ fn braille_mask(seed: u64, x: u16, y: u16, elapsed: f64, phase: f64) -> u8 {
     bits
 }
 
-/// Write a braille glyph only if the target cell is still blank.
+/// Write a braille glyph into a cell [`NegativeSpace`] allows.
 fn write_blank_braille(cell: &mut Cell, bits: u8, fg: Color, bg: Color) {
     if !is_blank(cell) {
         return;
@@ -216,6 +216,91 @@ fn write_blank_braille(cell: &mut Cell, bits: u8, fg: Color, bg: Color) {
     cell.set_char(braille(bits));
     cell.set_fg(fg);
     cell.set_bg(bg);
+}
+
+/// Cells of an area where a decorative glyph may be drawn.
+///
+/// Widgets pad and separate their content with plain spaces, so a blank
+/// symbol does not make a cell empty: the space between two words, a table
+/// column gap and a padded task row all belong to a widget. A cell is
+/// negative space only when the blank run through it ends at panel-frame
+/// glyphs or the area edge (the line carries no content between two
+/// borders) and its 3x3 neighbourhood is blank too, so ambient glyphs never
+/// touch text, borders or highlighted rows.
+///
+/// Built from the buffer before an effect writes anything, so an effect's
+/// own output never changes which cells qualify.
+struct NegativeSpace {
+    area: Rect,
+    open: Vec<bool>,
+}
+
+impl NegativeSpace {
+    fn of(buf: &Buffer, area: Rect) -> Self {
+        let width = usize::from(area.width);
+        let ambient = |x: u16, y: u16| buf.cell((x, y)).is_some_and(accepts_ambient_background);
+        let frame = |x: u16, y: u16| buf.cell((x, y)).is_some_and(|cell| is_frame(cell.symbol()));
+
+        let mut runs = vec![false; width * usize::from(area.height)];
+        for (row, y) in (area.top()..area.bottom()).enumerate() {
+            let mut x = area.left();
+            while x < area.right() {
+                if !ambient(x, y) {
+                    x += 1;
+                    continue;
+                }
+                let start = x;
+                while x < area.right() && ambient(x, y) {
+                    x += 1;
+                }
+                let bounded_left = start == area.left() || frame(start - 1, y);
+                let bounded_right = x == area.right() || frame(x, y);
+                if bounded_left && bounded_right {
+                    let offset = row * width;
+                    runs[offset + usize::from(start - area.left())
+                        ..offset + usize::from(x - area.left())]
+                        .fill(true);
+                }
+            }
+        }
+
+        let open = runs
+            .iter()
+            .enumerate()
+            .map(|(index, &in_empty_run)| {
+                let x = area.left() + (index % width.max(1)) as u16;
+                let y = area.top() + (index / width.max(1)) as u16;
+                in_empty_run && is_deep_blank(buf, area, x, y)
+            })
+            .collect();
+        Self { area, open }
+    }
+
+    fn allows(&self, x: u16, y: u16) -> bool {
+        if x < self.area.left()
+            || x >= self.area.right()
+            || y < self.area.top()
+            || y >= self.area.bottom()
+        {
+            return false;
+        }
+        let index = usize::from(y - self.area.top()) * usize::from(self.area.width)
+            + usize::from(x - self.area.left());
+        self.open.get(index).copied().unwrap_or(false)
+    }
+}
+
+/// Whether `symbol` is a panel-frame glyph that can bound an empty line:
+/// box drawing, or the half/eighth blocks used by block-style borders.
+fn is_frame(symbol: &str) -> bool {
+    let mut chars = symbol.chars();
+    matches!(
+        (chars.next(), chars.next()),
+        (
+            Some('\u{2500}'..='\u{257f}' | '\u{258c}' | '\u{258f}' | '\u{2590}' | '\u{2595}'),
+            None
+        )
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -244,6 +329,7 @@ pub fn progress_field(area: Rect, buf: &mut Buffer, elapsed: f64, progress: f64)
     let start_y = area.bottom().saturating_sub(fill_rows);
     let pulse = (elapsed * 2.2).sin() * 0.5 + 0.5;
     let edge_line = start_y;
+    let space = NegativeSpace::of(buf, area);
 
     for y in start_y..area.bottom() {
         let depth = (area.bottom() - 1 - y) as f64 / fill_rows.max(1) as f64;
@@ -258,8 +344,9 @@ pub fn progress_field(area: Rect, buf: &mut Buffer, elapsed: f64, progress: f64)
                 cell.set_bg(bg);
 
                 // The leading edge gets a denser braille contour.
-                if y == edge_line || ((x as f64 * 0.37 + elapsed * 1.5 + depth * 5.0).sin() > 0.68)
-                {
+                let contour = y == edge_line
+                    || ((x as f64 * 0.37 + elapsed * 1.5 + depth * 5.0).sin() > 0.68);
+                if contour && space.allows(x, y) {
                     let bits = braille_mask(0xA17C_0F11, x, y, elapsed, progress);
                     let fg = pulse_tint(0.55 + 0.45 * pulse, pulse);
                     cell.set_char(braille(bits));
@@ -290,6 +377,7 @@ pub fn activity_ripples(area: Rect, buf: &mut Buffer, elapsed: f64, activity: f6
     let center_count = 1 + (activity * 2.0).round() as usize;
     let thickness = 0.45 + activity * 0.95;
     let pulse = (elapsed * (0.8 + activity * 1.8)).sin() * 0.5 + 0.5;
+    let space = NegativeSpace::of(buf, area);
 
     for i in 0..center_count {
         let seed = 0x51_49_5A_45_u64 ^ (i as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
@@ -316,15 +404,11 @@ pub fn activity_ripples(area: Rect, buf: &mut Buffer, elapsed: f64, activity: f6
                 let dy = y as f64 - cy as f64;
                 let dist = (dx * dx + dy * dy).sqrt();
                 let delta = (dist - radius).abs();
-                if delta > thickness {
+                if delta > thickness || !space.allows(x, y) {
                     continue;
                 }
 
                 if let Some(cell) = buf.cell_mut((x, y)) {
-                    if !is_blank(cell) {
-                        continue;
-                    }
-
                     let strength = 1.0 - (delta / thickness).clamp(0.0, 1.0);
                     let fg = pulse_tint(0.45 + 0.55 * strength, pulse * strength);
                     let bg = pulse_tint(0.10 + 0.25 * strength, pulse * 0.5);
@@ -355,6 +439,7 @@ pub fn data_rain(area: Rect, buf: &mut Buffer, elapsed: f64, throughput: f64) {
     let speed = 4.0 + throughput * 8.0;
     let trail = 2 + (throughput * 8.0).round() as u16;
     let pulse = (elapsed * (1.4 + throughput * 2.2)).sin() * 0.5 + 0.5;
+    let space = NegativeSpace::of(buf, area);
 
     for col in 0..cols {
         let x = area.x + col as u16;
@@ -371,7 +456,7 @@ pub fn data_rain(area: Rect, buf: &mut Buffer, elapsed: f64, throughput: f64) {
 
         for offset in 0..trail {
             let y = head_y.saturating_sub(offset);
-            if y < area.top() || y >= area.bottom() {
+            if !space.allows(x, y) {
                 continue;
             }
 
@@ -468,8 +553,8 @@ pub fn state_viz(area: Rect, buf: &mut Buffer, elapsed: f64, ctx: &VizContext) {
 
 /// Lightweight floating particle overlay for active-agent scenes.
 ///
-/// Particles are sparse, low-contrast, and require a 3x3 neighborhood of
-/// whitespace.  This keeps them in deep negative space rather than inside
+/// Particles are sparse, low-contrast, and only land in [`NegativeSpace`]:
+/// empty panel lines with a 3x3 neighborhood of whitespace, never inside
 /// tables, next to borders, or between words.
 pub fn particle_overlay(
     area: Rect,
@@ -495,6 +580,7 @@ pub fn particle_overlay(
     let rise_speed = 0.10 + density * 0.16;
     let drift_speed = 0.04 + density * 0.08;
     let brightness = brightness.clamp(24, 72);
+    let space = NegativeSpace::of(buf, area);
 
     for slot in 0..slot_count {
         let slot_seed = seed ^ (slot as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
@@ -523,7 +609,8 @@ pub fn particle_overlay(
             .clamp(area.top() as f64, area.bottom().saturating_sub(1) as f64)
             as u16;
 
-        if !is_deep_blank(buf, area, x, y) {
+        // A particle drawn earlier in this pass is not blank any more.
+        if !space.allows(x, y) || !buf.cell((x, y)).is_some_and(is_blank) {
             continue;
         }
 
@@ -1030,8 +1117,8 @@ pub fn scanlines(area: Rect, buf: &mut Buffer, spacing: u16, darken_amount: f64)
     }
 }
 
-/// Sparse noise floor -- random dim characters shimmer in blank cells.
-/// Creates a subtle "aliveness" texture in negative space.
+/// Sparse noise floor -- random dim characters shimmer in [`NegativeSpace`].
+/// Creates a subtle "aliveness" texture without touching widget rows.
 pub fn noise_floor(area: Rect, buf: &mut Buffer, density: f64, frame_seed: u64) {
     if area.width == 0 || area.height == 0 {
         return;
@@ -1042,19 +1129,16 @@ pub fn noise_floor(area: Rect, buf: &mut Buffer, density: f64, frame_seed: u64) 
     }
 
     const NOISE_CHARS: &[char] = &['\u{2591}', '\u{00b7}', '\u{2219}', '\u{2027}'];
+    let space = NegativeSpace::of(buf, area);
 
     for y in area.top()..area.bottom() {
         for x in area.left()..area.right() {
             let hash = splitmix64(frame_seed ^ ((x as u64) << 16) ^ ((y as u64) << 32));
-            if unit_from_hash(hash) > density {
+            if unit_from_hash(hash) > density || !space.allows(x, y) {
                 continue;
             }
 
             if let Some(cell) = buf.cell_mut((x, y)) {
-                if !is_blank(cell) {
-                    continue;
-                }
-
                 let ch = NOISE_CHARS[(hash >> 8) as usize % NOISE_CHARS.len()];
                 let brightness = 18 + (hash >> 16) as u8 % 16;
                 // Warm rose-tinted noise
@@ -1193,6 +1277,82 @@ mod tests {
             fg0, fg1,
             "scanline row should be dimmer than non-scanline row"
         );
+    }
+
+    /// A bordered panel shaped like the dogfood defect: words separated by
+    /// single spaces, a padded task row with wide column gaps, and empty
+    /// lines below.
+    fn panel_with_rows() -> (Rect, Buffer) {
+        use ratatui::style::Style;
+        use ratatui::widgets::{Block, Widget};
+
+        let area = Rect::new(0, 0, 64, 18);
+        let mut buf = Buffer::empty(area);
+        Block::bordered().render(area, &mut buf);
+        buf.set_string(
+            2,
+            2,
+            "Fold dashboard events into the snapshot",
+            Style::default(),
+        );
+        buf.set_string(
+            2,
+            4,
+            "T06   implement thing           \u{25cb} queued",
+            Style::default(),
+        );
+        (area, buf)
+    }
+
+    #[test]
+    fn negative_space_excludes_word_gaps_and_padded_rows() {
+        let (area, buf) = panel_with_rows();
+        let space = NegativeSpace::of(&buf, area);
+
+        // The space in "Fold dashboard" and the task row's column gap.
+        assert!(!space.allows(6, 2));
+        assert!((20..34).all(|x| !space.allows(x, 4)));
+        // Borders and the cells beside them.
+        assert!((0..18).all(|y| !space.allows(0, y) && !space.allows(1, y)));
+        // An empty line in the middle of the panel is open.
+        assert!(space.allows(30, 10));
+    }
+
+    #[test]
+    fn ambient_glyphs_never_overwrite_widget_rows() {
+        for seed in 0..128_u64 {
+            let (area, mut buf) = panel_with_rows();
+            let before = buf.clone();
+
+            noise_floor(area, &mut buf, 0.05, seed);
+            particle_overlay(area, &mut buf, seed as f64 * 0.37, 1.0, 72, seed);
+            activity_ripples(area, &mut buf, seed as f64 * 0.21, 1.0);
+            data_rain(area, &mut buf, seed as f64 * 0.13, 1.0);
+
+            for y in area.top()..area.bottom() {
+                for x in area.left()..area.right() {
+                    let widget_row = matches!(y, 0 | 2 | 4 | 17);
+                    let frame = matches!(x, 0 | 63);
+                    if widget_row || frame {
+                        assert_eq!(
+                            buf[(x, y)].symbol(),
+                            before[(x, y)].symbol(),
+                            "seed {seed} overwrote ({x}, {y})"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn ambient_glyphs_still_fill_empty_panel_lines() {
+        let drawn = (0..64_u64).any(|seed| {
+            let (area, mut buf) = panel_with_rows();
+            noise_floor(area, &mut buf, 0.05, seed);
+            (7..16).any(|y| (2..62).any(|x| !is_blank(&buf[(x, y)])))
+        });
+        assert!(drawn, "noise should still reach the panel's empty lines");
     }
 
     #[test]

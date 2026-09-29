@@ -26,7 +26,7 @@ use ratatui::widgets::{
 };
 use std::collections::{HashMap, HashSet};
 
-use super::super::state::{TaskRow, TaskRowStatus, TuiState};
+use super::super::state::{PlanEntry, TaskRow, TaskRowStatus, TuiState};
 use crate::tui::Theme;
 use crate::tui::util::truncate_middle;
 
@@ -194,34 +194,24 @@ pub fn render_task_progress(frame: &mut Frame<'_>, area: Rect, state: &TuiState,
 
     // Use the selected plan's tasks when a plan is selected, otherwise global checklist.
     let selected_plan = state.plans.get(state.selected_plan_idx);
-    let plan_task_rows: Vec<TaskRow> = if let Some(plan) = selected_plan {
-        plan.tasks
-            .iter()
-            .map(|te| TaskRow {
-                id: te.id.clone(),
-                title: te.name.clone(),
-                status: te.status,
-                elapsed_secs: 0.0,
-                depends_on: te.depends_on.clone(),
-                acceptance_text: te.acceptance_text.clone(),
-                verify_command: te.verify_command.clone(),
-                files: te.files.clone(),
-            })
-            .collect()
-    } else {
-        Vec::new()
-    };
+    let plan_task_rows: Vec<TaskRow> = selected_plan.map(plan_task_rows).unwrap_or_default();
     let tasks: &[TaskRow] = if selected_plan.is_some() && !plan_task_rows.is_empty() {
         &plan_task_rows
     } else {
         &state.current_task_checklist
     };
 
-    // Count by status
+    // Count by status. Accepted-with-failures tasks are finished (they fill
+    // the progress bar) but are counted apart from passed ones.
+    let accepted_with_failures = tasks
+        .iter()
+        .filter(|t| t.status == TaskRowStatus::AcceptedWithFailures)
+        .count();
     let done = tasks
         .iter()
         .filter(|t| t.status == TaskRowStatus::Done)
-        .count();
+        .count()
+        + accepted_with_failures;
     let active = tasks
         .iter()
         .filter(|t| t.status == TaskRowStatus::Active)
@@ -268,6 +258,9 @@ pub fn render_task_progress(frame: &mut Frame<'_>, area: Rect, state: &TuiState,
     let visible = area.height.saturating_sub(2 + header_rows) as usize;
     let max_scroll = tree_len.saturating_sub(visible);
     let scroll = state.task_scroll.min(max_scroll);
+    // `task_scroll` is also the task cursor (see [`cursor_task`]); it stays
+    // inside the window because the window never scrolls past it.
+    let cursor = state.task_scroll.min(tree_len.saturating_sub(1));
     let start = scroll;
     let end = (scroll + visible).min(tree_len);
 
@@ -334,7 +327,18 @@ pub fn render_task_progress(frame: &mut Frame<'_>, area: Rect, state: &TuiState,
     }
 
     // ── Summary line ─────────────────────────────────────────────────────
-    let summary = build_summary_line(done, total, active, pending, blocked, failed, inner_width);
+    let summary = build_summary_line(
+        TaskCounts {
+            done,
+            total,
+            active,
+            pending,
+            blocked,
+            failed,
+            accepted_with_failures,
+        },
+        inner_width,
+    );
     lines.push(summary);
 
     // ── Scroll-up indicator ──────────────────────────────────────────────
@@ -349,7 +353,7 @@ pub fn render_task_progress(frame: &mut Frame<'_>, area: Rect, state: &TuiState,
     for (i, row) in tree_rows[start..end].iter().enumerate() {
         let task = row.task;
         let global_idx = start + i;
-        let is_selected = global_idx == scroll && focused;
+        let is_selected = global_idx == cursor && focused;
         let is_active = task.status == TaskRowStatus::Active;
 
         // Status icons
@@ -381,6 +385,12 @@ pub fn render_task_progress(frame: &mut Frame<'_>, area: Rect, state: &TuiState,
                 "\u{2717}",
                 Style::default()
                     .fg(Theme::EMBER)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            TaskRowStatus::AcceptedWithFailures => (
+                "\u{26a0}",
+                Style::default()
+                    .fg(Theme::WARNING)
                     .add_modifier(Modifier::BOLD),
             ),
             TaskRowStatus::Pending => ("\u{25cb}", Style::default().fg(Theme::TEXT_DIM)),
@@ -565,17 +575,66 @@ fn semantic_bar(width: usize, pct: f64, heartbeat: Option<f64>) -> Vec<Span<'sta
     spans
 }
 
-/// Build the summary badge line: status tag + counts.
-fn build_summary_line(
+/// Task rows for one plan's entries.
+fn plan_task_rows(plan: &PlanEntry) -> Vec<TaskRow> {
+    plan.tasks
+        .iter()
+        .map(|te| TaskRow {
+            id: te.id.clone(),
+            title: te.name.clone(),
+            status: te.status,
+            elapsed_secs: 0.0,
+            depends_on: te.depends_on.clone(),
+            acceptance_text: te.acceptance_text.clone(),
+            verify_command: te.verify_command.clone(),
+            files: te.files.clone(),
+        })
+        .collect()
+}
+
+/// The task under the task-list cursor as `(plan id, task id)`, in the order
+/// the list renders: the selected plan's tasks, else the global checklist
+/// (whose rows carry no plan id).
+pub(crate) fn cursor_task(state: &TuiState) -> Option<(Option<String>, String)> {
+    let plan = state
+        .plans
+        .get(state.selected_plan_idx)
+        .filter(|plan| !plan.tasks.is_empty());
+    let rows = plan.map_or_else(|| state.current_task_checklist.clone(), plan_task_rows);
+    let tree = build_dep_tree(&rows);
+    let row = tree.get(state.task_scroll.min(tree.len().checked_sub(1)?))?;
+    Some((plan.map(|plan| plan.id.clone()), row.task.id.clone()))
+}
+
+/// Task counts for the summary line. `done` includes
+/// `accepted_with_failures`.
+#[derive(Debug, Clone, Copy, Default)]
+struct TaskCounts {
     done: usize,
     total: usize,
     active: usize,
     pending: usize,
     blocked: usize,
     failed: usize,
-    width: usize,
-) -> Line<'static> {
-    let (status_text, status_color) = if done == total && total > 0 {
+    accepted_with_failures: usize,
+}
+
+/// Build the summary badge line: status tag + counts.
+fn build_summary_line(counts: TaskCounts, width: usize) -> Line<'static> {
+    let TaskCounts {
+        done,
+        total,
+        active,
+        pending,
+        blocked,
+        failed,
+        accepted_with_failures,
+    } = counts;
+    let all_done = done == total && total > 0;
+    // A run with accepted-with-failures tasks is finished, never clean.
+    let (status_text, status_color) = if all_done && accepted_with_failures > 0 {
+        ("DONE", Theme::WARNING)
+    } else if all_done {
         ("DONE", Theme::SAGE)
     } else if failed > 0 {
         ("FAIL", Theme::EMBER)
@@ -586,7 +645,7 @@ fn build_summary_line(
     };
 
     let mut details = Vec::new();
-    if done == total && total > 0 {
+    if all_done && accepted_with_failures == 0 {
         details.push("all tasks clear".to_string());
     } else {
         if active > 0 {
@@ -597,6 +656,11 @@ fn build_summary_line(
         }
         if blocked > 0 {
             details.push(format!("{blocked} blocked"));
+        }
+        if accepted_with_failures > 0 {
+            details.push(format!(
+                "{accepted_with_failures} \u{26a0} accepted with failures"
+            ));
         }
         if failed > 0 {
             details.push(format!("{failed} failed"));
@@ -796,6 +860,37 @@ mod tests {
                 render_task_progress(frame, area, &state, false);
             })
             .unwrap();
+    }
+
+    #[test]
+    fn accepted_with_failures_keeps_the_summary_amber() {
+        let line = build_summary_line(
+            TaskCounts {
+                done: 3,
+                total: 3,
+                accepted_with_failures: 1,
+                ..TaskCounts::default()
+            },
+            80,
+        );
+        let text: String = line
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+        assert_eq!(line.spans[0].style.bg, Some(Theme::WARNING));
+        assert!(text.contains("1 \u{26a0} accepted with failures"), "{text}");
+        assert!(!text.contains("all tasks clear"), "{text}");
+
+        let clean = build_summary_line(
+            TaskCounts {
+                done: 3,
+                total: 3,
+                ..TaskCounts::default()
+            },
+            80,
+        );
+        assert_eq!(clean.spans[0].style.bg, Some(Theme::SAGE));
     }
 
     #[test]

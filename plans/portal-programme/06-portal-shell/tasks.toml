@@ -1,0 +1,570 @@
+[meta]
+plan = "06-portal-shell"
+total = 9
+done = 0
+status = "ready"
+max_parallel = 3
+skip_enrichment = true
+estimated_total_minutes = 220
+
+# Build the frame of the one screen: header, alert row, plan rail, and the grid that
+# holds the stage and the stream (placeholders here; plans 07 and 08 fill them).
+#
+# The selection principle, from mori: the rail selects a plan, the task list selects
+# a task, and every other region is a lens on the selection. Selection is URL state
+# (`?plan=&task=`), so a run in progress has an address that survives a reload.
+#
+# Needs plan 05 (the run-state fold, queries, glyphs, formatters, tokens, the test
+# runner). Those files did not exist when this plan was written, so they are named
+# in descriptions rather than in read_files. Same worktree and verify conventions as
+# plan 05: npm only, `node scripts/vitest-min.mjs` for logic, type check for
+# components.
+#
+# Concurrency (max_parallel 3): tasks that write disjoint files share a wave. Their
+# gates are safe side by side — `tsc --noEmit --incremental false` (no shared
+# .tsbuildinfo) and single-file vitest runs. The only production build is in T09,
+# the final assembly, which depends on every other task.
+
+[[task]]
+id = "T01"
+title = "Make the selection URL state"
+description = '''
+Create `apps/portal/src/lib/selection.ts` (pure), `src/lib/selection.test.ts` and
+`src/lib/useSelection.ts` (the hook). Read `src/lib/runState.ts` first.
+
+selection.ts exports:
+  interface Selection { plan: string | null; task: string | null }
+  parseSelection(search: string): Selection
+      `plan` and `task` query params; empty values are null
+  selectionSearch(search: string, patch: Partial<Selection>): string
+      returns the new query string ('' when empty, else '?…'); keeps unrelated
+      params; drops null values; changing `plan` clears `task` unless the patch sets it
+  resolveSelection(sel: Selection, known: { loaded: boolean; planIds: readonly string[];
+                   runningPlanIds: readonly string[] }): Selection
+      once loaded, an unknown plan clears the selection silently (no error); before
+      the list loads nothing is cleared; with no plan, the first running plan is
+      selected (several may run at once)
+
+useSelection.ts ('use client') exports `useSelection(): Selection & { select(patch:
+Partial<Selection>): void }`. It reads `useSearchParams()` and writes with
+`window.history.replaceState(null, '', location.pathname + selectionSearch(...))`:
+Next 15 keeps useSearchParams in sync with history.replaceState, there is no
+navigation, and replacing (not pushing) keeps the back button leaving the app.
+Components calling it must render under `<Suspense>` (required by the static export).
+
+At least 8 tests over the three pure functions.
+'''
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 20
+depends_on = []
+files = [
+    "apps/portal/src/lib/selection.ts",
+    "apps/portal/src/lib/selection.test.ts",
+    "apps/portal/src/lib/useSelection.ts",
+]
+
+[task.context]
+read_files = [
+    { path = "apps/portal/src/app/page.tsx", why = "the single route whose query string holds the selection" },
+]
+anti_patterns = [
+    "Do not push a history entry per selection change.",
+    "Do not render an error for an unknown plan id; clear the selection.",
+    "Do not keep a copy of the selection in component state or a store; the URL is the only copy.",
+]
+
+[[task.verify]]
+phase = "test"
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && node scripts/vitest-min.mjs src/lib/selection.test.ts 8'
+fail_msg = "the selection helpers lack at least 8 passing tests"
+timeout_ms = 600000
+
+[[task.verify]]
+phase = "compile"
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit --incremental false && grep -q "export function useSelection" src/lib/useSelection.ts && grep -q "replaceState" src/lib/useSelection.ts'
+fail_msg = "useSelection is missing, does not use replaceState, or does not type check"
+timeout_ms = 600000
+
+[[task]]
+id = "T02"
+title = "Derive the rail rows from the plan list and live state"
+description = '''
+Create `apps/portal/src/lib/planRows.ts` and `src/lib/planRows.test.ts`. Read
+`src/lib/runState.ts`, `src/lib/glyphs.ts` and `src/api/contracts.ts` first.
+
+  interface PlanRowModel { id; title; group: string | null; state: GlyphState;
+    done; total; fraction; barToken: string;
+    time: { kind: 'estimate' | 'elapsed' | 'actual' | 'none'; ms: number | null };
+    queuePosition: number | null; supersededBy: string | null; running: boolean }
+  interface PlanGroupModel { name: string | null; rows: PlanRowModel[]; done; total }
+  interface PlanRowsResult { groups: PlanGroupModel[]; order: string[];
+    runningPlanIds: string[]; count: number }
+  buildPlanRows(plans: readonly WirePlanSummary[], run: RunState,
+                opts: { filter: string; nowMs: number }): PlanRowsResult
+
+Rules:
+- Live state (`run.plans[id]`) wins over the disk summary. running → active;
+  pending → queued with queuePosition = 1-based index in run.planSet.planIds, but
+  only while the run is live (`run.run.durationMs` is null): an interrupted run
+  leaves unstarted members `pending` with no further event, and once the run is over
+  they fall back to their disk state. `run_completed` — published on every exit path
+  by backend plan 03, which this rule depends on — is what sets durationMs; against
+  an older server an interrupted run's unstarted plans keep their marks until the
+  next set loads. Completed → accepted when tasksAccepted > 0,
+  else done; failed → failed (this includes set members that could not start);
+  cancelled → skipped.
+- Disk only: status 'superseded' → skipped with supersededBy; completed → done;
+  tasks_failed > 0 → failed; otherwise pending.
+- done/total: live tasksDone/tasksTotal when live and tasksTotal > 0, else
+  tasks_done/task_count. fraction = done/total (0 when total is 0).
+- barToken: 'var(--progress-high)' only when state is done — green means verified;
+  otherwise 'var(--progress-low)' below 0.3 and 'var(--progress-mid)' from 0.3, so a
+  running plan at 90% reads amber.
+- time: running with startedAtMs → elapsed (nowMs − startedAtMs); finished with both
+  times → actual; not started with `estimated_minutes` → estimate (minutes × 60000);
+  else none.
+- Groups: top-level plans (group absent) first, then groups by name; rows by id
+  with numeric-aware ordering (`localeCompare(b, undefined, {numeric: true})`).
+  Group done counts rows in state done or accepted.
+- filter: case-insensitive substring of id or title; empty groups dropped; count is
+  the number of matching rows; order lists the ids in display order.
+- runningPlanIds: every running plan — a plan-set run executes independent plans
+  concurrently — in planSet order, then any others by id.
+
+At least 14 tests, including: live over disk, two plans running at once, queue
+positions, no queue after the run ends, accepted never done
+and never green, a running plan at 90% is amber, superseded, grouping and numeric
+order, filtering, each time kind.
+'''
+status = "ready"
+role = "implementer"
+tier = "integrative"
+model_hint = "claude-sonnet-4-6"
+timeout_secs = 1200
+max_retries = 2
+estimated_minutes = 35
+depends_on = []
+files = ["apps/portal/src/lib/planRows.ts", "apps/portal/src/lib/planRows.test.ts"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-serve/src/plan_types.rs", why = "PlanSummaryDto: the disk-derived fields, including group" },
+]
+symbols = ["PlanSummaryDto"]
+anti_patterns = [
+    "Do not colour a plan green unless every task passed its checks.",
+    "Do not let a refetched plan list overwrite live state for a running plan.",
+    "Do not group the rail by cross-plan wave; group by folder.",
+]
+
+[[task.verify]]
+phase = "test"
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && node scripts/vitest-min.mjs src/lib/planRows.test.ts 14'
+fail_msg = "the rail row derivation lacks at least 14 passing tests"
+timeout_ms = 600000
+
+[[task]]
+id = "T03"
+title = "Build the plan row"
+description = '''
+Create `apps/portal/src/components/rail/PlanRow.tsx`:
+
+  export function PlanRow({ row, selected, onSelect }:
+    { row: PlanRowModel; selected: boolean; onSelect(id: string): void })
+
+A `<button type="button" data-plan-row={row.id} data-state={row.state}
+aria-current={selected ? 'true' : undefined}>` laid out
+as a CSS grid with fixed tracks — `gridTemplateColumns: '1.25rem minmax(0, 1fr)
+3.5rem 3rem 3.75rem'` — for glyph · name · count · bar · time, with the `tabular`
+class so numbers scan straight down. A flex row with proportional digits does not.
+
+- glyph: `StatusGlyph` from `@/components/primitives/StatusGlyph`.
+- name: `middleEllipsis(row.title || row.id, 28)` from `@/lib/formatters`, full
+  name in `title`; a queued row appends `#n`; a superseded row is dimmed with
+  `→ <supersededBy>`.
+- count: `MetricCell` showing `done/total`.
+- bar: a track with a fill of width `fraction` coloured by `row.barToken`.
+- time: `~` + compactDuration for an estimate, compactDuration for elapsed or
+  actual, `·` for none.
+- selected: border `var(--focus-border)`, name `var(--focus-title)`; otherwise
+  `var(--blur-border)`.
+
+Read src/lib/planRows.ts, src/components/primitives/StatusGlyph.tsx,
+src/components/primitives/MetricCell.tsx and src/lib/formatters.ts first.
+'''
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 20
+depends_on = ["T02"]
+files = ["apps/portal/src/components/rail/PlanRow.tsx"]
+
+[task.context]
+read_files = [
+    { path = "apps/portal/src/lib/planRows.ts", why = "PlanRowModel, the props" },
+    { path = "apps/portal/src/styles/rosedust.css", why = "surface and text tokens" },
+]
+anti_patterns = [
+    "Do not use a flex row; fixed grid tracks keep the columns aligned.",
+    "Do not end-truncate the plan name.",
+    "Do not define glyphs or state colours here; use StatusGlyph and the row's tokens.",
+]
+
+[[task.verify]]
+phase = "compile"
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit --incremental false && cd src/components/rail && grep -q "export function PlanRow" PlanRow.tsx && grep -q "data-plan-row" PlanRow.tsx && grep -q "aria-current" PlanRow.tsx && grep -q "gridTemplateColumns" PlanRow.tsx && grep -q "middleEllipsis" PlanRow.tsx'
+fail_msg = "PlanRow is missing its grid, its data attributes or the middle ellipsis, or does not type check"
+timeout_ms = 600000
+
+[[task]]
+id = "T04"
+title = "Build the plan rail"
+description = '''
+Create `apps/portal/src/components/rail/PlanRail.tsx`, the only list in the product.
+It is presentational: Workspace (T09) owns the data, the filter and the selection.
+
+  export function PlanRail(props: {
+    result: PlanRowsResult; selectedPlanId: string | null;
+    filter: string; onFilterChange(value: string): void;
+    filterInputRef: React.RefObject<HTMLInputElement | null>;
+    onSelect(id: string): void; onNewPlan(): void;
+    onRunPlans(ids: string[] | null, label: string): void; emptySentence: string })
+
+- Root `<nav data-region="rail">`. Header: `PLANS {count}` and a `▶ Run all` button
+  with `data-action="run-all"` calling `onRunPlans(null, 'all N plans')`.
+- A filter input bound to `filter`, reachable through `filterInputRef` (the `/` key
+  focuses it); substring only — no chips, no sort menu.
+- Top-level rows first, then one header per group: collapse toggle, name,
+  `done/total`, and a `▶` with `data-action="run-group"` calling
+  `onRunPlans(<the group's plan ids>, 'the N plans in <name>')`. Collapsed groups persist in localStorage under
+  `roko.rail.collapsed` (wrap every storage call in try/catch).
+- Rows are `PlanRow`s.
+- Footer: `+ New plan` with `data-action="new-plan"` calling `onNewPlan`.
+- No rows: render `emptySentence`, not an empty box.
+
+Confirmation of Run all lives with the caller, which owns every destructive confirm.
+'''
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 25
+depends_on = ["T03"]
+files = ["apps/portal/src/components/rail/PlanRail.tsx"]
+
+[task.context]
+read_files = [
+    { path = "apps/portal/src/components/rail/PlanRow.tsx", why = "the row being listed" },
+    { path = "apps/portal/src/lib/planRows.ts", why = "PlanRowsResult: groups, order and count" },
+]
+anti_patterns = [
+    "Do not fetch data or read the store here; take everything through props.",
+    "Do not add sort menus or filter chips.",
+    "Do not render an empty box when there are no plans.",
+]
+
+[[task.verify]]
+phase = "compile"
+command = "cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit --incremental false && cd src/components/rail && grep -q 'export function PlanRail' PlanRail.tsx && grep -q 'data-region=\"rail\"' PlanRail.tsx && grep -q 'data-action=\"run-all\"' PlanRail.tsx && grep -q 'data-action=\"run-group\"' PlanRail.tsx && grep -q 'data-action=\"new-plan\"' PlanRail.tsx && grep -q '<PlanRow' PlanRail.tsx"
+fail_msg = "PlanRail is missing its region, its actions or its rows, or does not type check"
+timeout_ms = 600000
+
+[[task]]
+id = "T05"
+title = "Rank alert candidates into exactly one alert"
+description = '''
+Create `apps/portal/src/lib/alerts.ts` and `src/lib/alerts.test.ts`. Read
+`src/lib/runState.ts` and `src/lib/bootstrap.ts` first.
+
+  type AlertAction = { kind: 'select-task'; planId: string; taskId: string }
+                   | { kind: 'retry'; planId: string } | { kind: 'reconnect' }
+  interface Alert { key: string; severity: 'error' | 'warning'; text: string;
+                    actions: AlertAction[] }
+  interface AlertInput { run: RunState; connection: ConnectionStatus;
+    selectedPlanId: string | null; validationErrors: number;
+    requestError: string | null; dismissedKey: string | null }
+  pickAlert(input: AlertInput): Alert | null
+
+One channel, not three (mori stacked an alert band, a toast stack and a status
+bar). Candidates in rank order; return the first whose key is not dismissedKey:
+1. requestError (a portal action the server rejected), then the newest
+   `run.errors` entry — execution errors.
+2. A failed task, preferring the selected plan: text `<task> failed: <phase> —
+   <first output line of its first failed check that does not start with '$ '>`;
+   actions select-task and retry. Key includes the task's attempt count, so a
+   retried failure alerts again.
+3. validationErrors > 0 on the selected plan: warning `<n> validation errors`,
+   action select-task is not applicable, so none.
+4. connection disconnected or error: `Lost the server; reconnecting.`, action
+   reconnect.
+Every alert names what and where; none says only "error".
+
+At least 9 tests: each rank, precedence between ranks, dismissal falling through to
+the next candidate, the attempt-keyed re-alert, and null when all is well.
+'''
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 25
+depends_on = []
+files = ["apps/portal/src/lib/alerts.ts", "apps/portal/src/lib/alerts.test.ts"]
+
+[task.context]
+anti_patterns = [
+    "Do not return more than one alert.",
+    "Do not emit an alert without a location (plan, task or server).",
+]
+
+[[task.verify]]
+phase = "test"
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && node scripts/vitest-min.mjs src/lib/alerts.test.ts 9'
+fail_msg = "the alert ranking lacks at least 9 passing tests"
+timeout_ms = 600000
+
+[[task]]
+id = "T06"
+title = "Build the alert band"
+description = '''
+Create `apps/portal/src/components/shell/AlertBand.tsx`:
+
+  export function AlertBand({ alert, onAction, onDismiss }: { alert: Alert | null;
+    onAction(action: AlertAction): void; onDismiss(key: string): void })
+
+Renders nothing when `alert` is null, so the row costs zero height when all is
+well. Otherwise `<div data-region="alert" role="status">`: severity colour from the
+state tokens (error → `var(--state-failed)`, warning → `var(--state-accepted)`), the
+text, one button per action (Show, Retry, Reconnect) and a dismiss control. Esc is
+handled by the Workspace keyboard hook, not here. No toasts anywhere.
+
+Read src/lib/alerts.ts first.
+'''
+status = "ready"
+role = "implementer"
+tier = "mechanical"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 10
+depends_on = ["T05"]
+files = ["apps/portal/src/components/shell/AlertBand.tsx"]
+
+[task.context]
+read_files = [
+    { path = "apps/portal/src/lib/alerts.ts", why = "Alert and AlertAction, the props" },
+]
+anti_patterns = [
+    "Do not stack alerts or add a toast system.",
+]
+
+[[task.verify]]
+phase = "compile"
+command = "cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit --incremental false && grep -q 'export function AlertBand' src/components/shell/AlertBand.tsx && grep -q 'data-region=\"alert\"' src/components/shell/AlertBand.tsx"
+fail_msg = "AlertBand is missing or does not type check"
+timeout_ms = 600000
+
+[[task]]
+id = "T07"
+title = "Build the header row"
+description = '''
+Create `apps/portal/src/components/shell/Header.tsx`:
+
+  export function Header({ runningPlanIds, selectedPlanId, onSelectPlan, onCancelRun }:
+    { runningPlanIds: string[]; selectedPlanId: string | null;
+      onSelectPlan(id: string): void; onCancelRun(planId: string): void })
+
+One sparse row, `<header data-region="header">`:
+- Workspace: `useWorkspace()` from `@/api/queries` → name, then ` · branch` when
+  the server reports one. Set `document.title` to `roko · <name>` in an effect.
+- What is running, from `useDashboardStore` (`run`). A plan-set run executes
+  independent plans concurrently, so several may run at once: for a set, `N running
+  · done/total plans · done/total tasks` (done plans are completed or failed
+  members; tasks sum the set's plans); for a single plan outside a set, its
+  `id done/total`. Then elapsed (ticking once a second from `run.run.startedAtMs`,
+  via compactDuration), `~` + the largest etaMinutes among running plans, and
+  `formatCost(run.totals.costUsd)`. The running part is a button: it selects the
+  next running plan after `selectedPlanId` in `runningPlanIds`, cycling. A `■`
+  button with `data-action="cancel-run"` calls `onCancelRun` with a running plan's
+  id — cancelling stops the whole run, and the caller's confirm says how many plans
+  that is. Nothing is shown when nothing runs.
+- Connection: a dot with `data-connection={connection}` and a title naming the
+  state.
+
+Elapsed and estimate sit together: the operator's question is "am I behind". No
+system metrics (memory, disk, network): if a number does not change a decision it
+does not belong here.
+'''
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 25
+depends_on = []
+files = ["apps/portal/src/components/shell/Header.tsx"]
+
+[task.context]
+read_files = [
+    { path = "apps/portal/src/stores/dashboard.ts", why = "the store: run state and connection" },
+    { path = "apps/portal/src/lib/formatters.ts", why = "formatCost and compactDuration" },
+]
+anti_patterns = [
+    "Do not show elapsed time without the estimate beside it.",
+    "Do not add system metrics.",
+]
+
+[[task.verify]]
+phase = "compile"
+command = "cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit --incremental false && cd src/components/shell && grep -q 'export function Header' Header.tsx && grep -q 'data-region=\"header\"' Header.tsx && grep -q 'document.title' Header.tsx && grep -q 'data-connection' Header.tsx && grep -q 'data-action=\"cancel-run\"' Header.tsx"
+fail_msg = "Header is missing a required element or does not type check"
+timeout_ms = 600000
+
+[[task]]
+id = "T08"
+title = "Resolve the six key bindings"
+description = '''
+Create `apps/portal/src/lib/keymap.ts` (pure), `src/lib/keymap.test.ts` and
+`src/lib/useKeyboard.ts`.
+
+  type KeyAction = 'prev' | 'next' | 'run' | 'new' | 'filter' | 'stream' | 'escape'
+  interface KeyInput { key: string; metaKey: boolean; ctrlKey: boolean;
+                       altKey: boolean; editable: boolean }
+  resolveKey(input: KeyInput): KeyAction | null
+  isEditableTarget(target: EventTarget | null): boolean
+      input, textarea, select or contenteditable — duck-typed on `tagName` and
+      `isContentEditable`, never `instanceof HTMLElement`, so it runs in the node
+      test environment
+
+Bindings: ArrowUp → prev, ArrowDown → next, r → run, n → new, / → filter,
+o → stream, Escape → escape. Any meta, ctrl or alt modifier → null, so ⌘R still
+reloads. While an editable element has focus only Escape resolves. Tab → null: it
+belongs to the accessibility tree. Anything else → null.
+
+useKeyboard.ts ('use client'): `useKeyboard(handlers: Partial<Record<KeyAction, () =>
+void>>)` adds one window keydown listener; when resolveKey returns an action with a
+handler it calls preventDefault and the handler.
+
+At least 10 tests: every binding, modifiers ignored, editable targets ignored
+except Escape, Tab, and an unbound key.
+'''
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 20
+depends_on = []
+files = [
+    "apps/portal/src/lib/keymap.ts",
+    "apps/portal/src/lib/keymap.test.ts",
+    "apps/portal/src/lib/useKeyboard.ts",
+]
+
+[task.context]
+anti_patterns = [
+    "Do not bind Tab or any modified key.",
+    "Do not fire a binding other than Escape while a text field has focus.",
+    "Do not add bindings beyond the seven actions.",
+]
+
+[[task.verify]]
+phase = "test"
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && node scripts/vitest-min.mjs src/lib/keymap.test.ts 10'
+fail_msg = "the key map lacks at least 10 passing tests"
+timeout_ms = 600000
+
+[[task.verify]]
+phase = "compile"
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit --incremental false && grep -q "export function useKeyboard" src/lib/useKeyboard.ts'
+fail_msg = "useKeyboard is missing or does not type check"
+timeout_ms = 600000
+
+[[task]]
+id = "T09"
+title = "Assemble the workspace grid and mount it"
+description = '''
+Create `apps/portal/src/components/shell/Workspace.tsx` and make
+`src/app/page.tsx` render `<Suspense fallback={null}><Workspace /></Suspense>`
+(the static export requires Suspense around `useSearchParams`).
+
+`export function Workspace()` ('use client') owns the screen state and lays out:
+- A CSS grid filling `100dvh` with `overflow: hidden`: header (full width), alert
+  row (full width), then the rail track (`var(--rail-width)`) beside a main column.
+  The main column stacks the stage (flex 1) over the stream (collapsed to one bar,
+  about 40% of the height when open). Every region scrolls on its own
+  (`overflow: auto; min-height: 0`); the page never does. Each region is wrapped in
+  `ErrorBoundary` from `@/components/ErrorBoundary` with a name.
+- State: filter, streamOpen (false), promptOpen, dismissedAlertKey, requestError.
+- Data: `usePlans()`, the store's `run` and `connection`, `useSelection()`.
+  rows = `buildPlanRows(plans ?? [], run, { filter, nowMs: Date.now() })`; apply
+  `resolveSelection` (select the first running plan when none is chosen; clear an unknown
+  one once the list has loaded).
+- Children: `Header` (`runningPlanIds` from the rail rows and the selected plan;
+  onSelectPlan → select; onCancelRun → `window.confirm` naming how many running
+  plans stop, then `useCancelPlan`), `AlertBand` (`pickAlert`; select-task → select; retry →
+  `useRunPlan` with `{resume: true}`; reconnect → reload the page), `PlanRail`
+  (onRunPlans → `window.confirm('Run <label> in dependency order?')`, then
+  `useRunPlans` with `{}` for all or `{plans: ids}`; onNewPlan → promptOpen), and
+  two placeholders plans 07 and 08
+  replace: `<section data-region="stage">` showing `describeEmpty(...)` and
+  `<section data-region="stream">` showing a collapse bar.
+- `useKeyboard`: prev / next move the selection through `rows.order`; filter
+  focuses the rail input; escape clears, in order, the alert, the filter, the prompt;
+  stream toggles streamOpen; new sets promptOpen. `run` is wired in plan 07.
+- A rejected mutation sets requestError from the ApiError body, so the alert band
+  shows it; so does a failed plan list — discovery refuses to guess when two plan
+  folders share one id, and `GET /api/plans` returns that error naming both paths.
+  Any 401 shows `SIGN_IN_HINT` from `@/lib/bootstrap` instead of the raw error: the
+  session is missing or died with a server restart, and the fix is the printed link.
+
+Read every module this names before writing (all created by plan 05 or earlier in
+this plan).
+'''
+status = "ready"
+role = "implementer"
+tier = "integrative"
+model_hint = "claude-sonnet-4-6"
+timeout_secs = 1800
+max_retries = 2
+estimated_minutes = 40
+depends_on = ["T01", "T04", "T06", "T07", "T08"]
+files = ["apps/portal/src/components/shell/Workspace.tsx", "apps/portal/src/app/page.tsx"]
+
+[task.context]
+read_files = [
+    { path = "apps/portal/src/components/rail/PlanRail.tsx", why = "the rail's props" },
+    { path = "apps/portal/src/components/shell/Header.tsx", why = "the header's props" },
+    { path = "apps/portal/src/components/shell/AlertBand.tsx", why = "the alert band's props" },
+    { path = "apps/portal/src/lib/useKeyboard.ts", why = "the key handler contract" },
+    { path = "apps/portal/src/lib/useSelection.ts", why = "the selection hook" },
+    { path = "apps/portal/src/components/ErrorBoundary.tsx", why = "the per-region boundary" },
+]
+anti_patterns = [
+    "Do not let the page scroll as a whole.",
+    "Do not add navigation, routes or a sidebar.",
+    "Do not fix pixel widths other than the rail track.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "cd apps/portal/src && grep -q 'Workspace' app/page.tsx && grep -q 'Suspense' app/page.tsx && cd components/shell && grep -q 'export function Workspace' Workspace.tsx && grep -q 'data-region=\"stage\"' Workspace.tsx && grep -q 'data-region=\"stream\"' Workspace.tsx && grep -q 'ErrorBoundary' Workspace.tsx && grep -q 'useKeyboard' Workspace.tsx && grep -q 'buildPlanRows' Workspace.tsx"
+fail_msg = "the workspace is not mounted under Suspense or is missing a region, the boundaries, the keyboard or the rail rows"
+
+[[task.verify]]
+phase = "test"
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && npm test'
+fail_msg = "the unit suite fails"
+timeout_ms = 600000
+
+[[task.verify]]
+phase = "integration"
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && rm -rf .next/types out && ./node_modules/.bin/tsc --noEmit --incremental false && NEXT_TELEMETRY_DISABLED=1 npm run build:export && test -f out/index.html && rm -rf out'
+fail_msg = "the portal does not type check or the static export fails with the shell mounted"
+timeout_ms = 900000

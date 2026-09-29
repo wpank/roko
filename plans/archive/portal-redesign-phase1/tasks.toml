@@ -1,0 +1,308 @@
+[meta]
+plan = "portal-redesign-phase1"
+total = 6
+done = 0
+status = "ready"
+max_parallel = 1
+skip_enrichment = true
+estimated_total_minutes = 120
+
+# Phase 1: New Shell — delete old pages, create 3-panel workspace layout
+
+[[task]]
+id = "P1-T01"
+title = "Delete old route-based pages and unused components"
+description = """You MUST delete the following directories and files from apps/portal/src/:
+
+Directories to delete entirely:
+- src/app/work/
+- src/app/agents/
+- src/app/intelligence/
+- src/app/observe/
+- src/app/providers/
+- src/app/settings/
+- src/app/design/
+- src/components/atmosphere/
+- src/components/terminal/
+- src/components/command-palette/
+
+Individual files to delete:
+- src/components/layout/Sidebar.tsx
+- src/components/layout/SubNav.tsx
+- src/components/layout/Header.tsx
+- src/components/layout/DrawerOverlay.tsx
+- src/stores/agents.ts
+- src/stores/intelligence.ts
+- src/hooks/useWebSocket.ts
+- src/api/ws-client.ts
+- src/components/molecules/InboxItem.tsx
+- src/components/molecules/VitalCell.tsx
+- src/components/molecules/WaveformTrace.tsx
+- src/components/molecules/MetricBar.tsx
+- src/components/organisms/CostChart.tsx
+- src/components/organisms/EpisodeTable.tsx
+- src/components/organisms/PlanDAGViewer.tsx
+- src/components/organisms/ActivityFeed.tsx
+
+DO NOT delete:
+- src/api/ (keep all API files)
+- src/stores/dashboard.ts (keep SSE store)
+- src/components/atoms/ (keep all atoms)
+- src/components/molecules/TaskRow.tsx, GateResultRow.tsx, PlanCard.tsx, AgentCard.tsx (keep these)
+- src/components/organisms/AgentOutputStream.tsx (keep)
+- src/components/ErrorBoundary.tsx (keep)
+- src/styles/ (keep all)
+- src/lib/ (keep all)
+- src/app/layout.tsx (will be rewritten in P1-T06)
+- src/app/page.tsx (will be rewritten in P1-T06)
+- src/app/providers.tsx (keep — mounts QueryClient + SSE)
+
+After deleting, update barrel export files (index.ts) in molecules/ and organisms/ to remove exports of deleted files.
+
+Run: cd apps/portal && ./node_modules/.bin/tsc --noEmit
+Fix any import errors by removing dead imports from remaining files."""
+status = "ready"
+role = "implementer"
+tier = "mechanical"
+files = [
+    "apps/portal/src/components/molecules/index.ts",
+    "apps/portal/src/components/organisms/index.ts",
+    "apps/portal/src/components/layout/index.ts",
+]
+depends_on = []
+
+[[task.verify]]
+phase = "structural"
+command = "test ! -d apps/portal/src/app/work && test ! -d apps/portal/src/app/agents && test ! -d apps/portal/src/app/intelligence && test ! -d apps/portal/src/app/observe && test ! -d apps/portal/src/app/settings"
+fail_msg = "Old route directories must be deleted"
+
+[[task.verify]]
+phase = "compile"
+command = "cd apps/portal && ./node_modules/.bin/tsc --noEmit 2>&1 | head -5"
+fail_msg = "TypeScript must compile clean after deletions"
+
+[[task]]
+id = "P1-T02"
+title = "Create WorkspaceShell 3-panel layout"
+description = """You MUST create the file apps/portal/src/components/layout/WorkspaceShell.tsx
+
+This is the root layout component. It renders a CSS grid with 3 areas:
+- Left: sidebar (220px fixed width)
+- Center: main area (flex 1fr)
+- Bottom: output panel (collapsible, 0px when hidden, 200px when open)
+
+```tsx
+'use client';
+import { useState } from 'react';
+import { ErrorBoundary } from '@/components/ErrorBoundary';
+import { PlanSidebar } from './PlanSidebar';
+import { MainArea } from './MainArea';
+import { OutputPanel } from './OutputPanel';
+
+export function WorkspaceShell() {
+  const [selectedPlanId, setSelectedPlanId] = useState<string | null>(null);
+  const [outputOpen, setOutputOpen] = useState(false);
+
+  return (
+    <div style={{
+      display: 'grid',
+      gridTemplateColumns: '220px 1fr',
+      gridTemplateRows: outputOpen ? '1fr 200px' : '1fr 0px',
+      height: '100vh',
+      background: 'var(--void)',
+    }}>
+      <div style={{ gridRow: '1 / -1', borderRight: '1px solid var(--text-ghost)', overflow: 'hidden' }}>
+        <ErrorBoundary name="Sidebar">
+          <PlanSidebar selectedPlanId={selectedPlanId} onSelectPlan={setSelectedPlanId} />
+        </ErrorBoundary>
+      </div>
+      <div style={{ overflow: 'auto' }}>
+        <ErrorBoundary name="Main">
+          <MainArea
+            selectedPlanId={selectedPlanId}
+            onSelectPlan={setSelectedPlanId}
+            onOutputOpen={() => setOutputOpen(true)}
+          />
+        </ErrorBoundary>
+      </div>
+      {outputOpen && (
+        <div style={{ borderTop: '1px solid var(--text-ghost)', overflow: 'auto' }}>
+          <ErrorBoundary name="Output">
+            <OutputPanel onClose={() => setOutputOpen(false)} />
+          </ErrorBoundary>
+        </div>
+      )}
+    </div>
+  );
+}
+```
+
+Use ROSEDUST CSS variables. No border-radius. Monospace font throughout."""
+status = "ready"
+role = "implementer"
+tier = "focused"
+files = ["apps/portal/src/components/layout/WorkspaceShell.tsx"]
+depends_on = ["P1-T01"]
+
+[[task.verify]]
+phase = "structural"
+command = "test -f apps/portal/src/components/layout/WorkspaceShell.tsx && grep -q 'WorkspaceShell' apps/portal/src/components/layout/WorkspaceShell.tsx"
+fail_msg = "WorkspaceShell.tsx must exist"
+
+[[task]]
+id = "P1-T03"
+title = "Create PlanSidebar component"
+description = """You MUST create the file apps/portal/src/components/layout/PlanSidebar.tsx
+
+The sidebar shows:
+1. Top: "+ New" button (resets selection, shows prompt in main)
+2. Middle: scrollable plan list from useSafePlans() hook (from safe-hooks.ts)
+3. Each plan: PlanItem — name, status dot (● running, ✓ done, ✗ failed, ○ pending), task count
+4. Bottom: status strip — connection LED, cost total, provider count
+
+Props: selectedPlanId: string | null, onSelectPlan: (id: string | null) => void
+
+The plan list should merge SSE store plans with REST plans (SSE wins on conflict).
+Use useDashboardStore for SSE data, useSafePlans() for REST hydration.
+
+Keep it simple: each PlanItem is a button with name + dot + count. Selected plan gets rose left border.
+Status strip: 3 lines at the very bottom showing connection status, cost, and provider health."""
+status = "ready"
+role = "implementer"
+tier = "focused"
+files = ["apps/portal/src/components/layout/PlanSidebar.tsx"]
+depends_on = ["P1-T01"]
+
+[[task.verify]]
+phase = "structural"
+command = "test -f apps/portal/src/components/layout/PlanSidebar.tsx && grep -q 'PlanSidebar' apps/portal/src/components/layout/PlanSidebar.tsx"
+fail_msg = "PlanSidebar.tsx must exist"
+
+[[task]]
+id = "P1-T04"
+title = "Create MainArea state router"
+description = """You MUST create the file apps/portal/src/components/layout/MainArea.tsx
+
+This component renders one of 4 views based on the current state:
+
+1. IDLE (selectedPlanId is null): Show centered prompt input with textarea, "Generate" button, and recent plan links
+2. SELECTED (plan exists, not executing): Show plan name, task list using TaskRow molecule, Execute button
+3. EXECUTING (plan is running via SSE): Show progress bar, task list with live status updates, Cancel button
+4. DONE (plan completed): Show task list with green checks, per-task cost, total cost
+
+Props: selectedPlanId, onSelectPlan, onOutputOpen
+
+Data sources:
+- Plan data: useSafePlans() + useSafePlanTasks(selectedPlanId)
+- Live status: useDashboardStore(s => s.tasks) for executing state
+- Live plan status: useDashboardStore(s => s.plans)
+
+Determine state:
+- No selectedPlanId → IDLE
+- Plan status is 'running' or 'gating' (from SSE store) → EXECUTING
+- Plan status is 'completed' or 'failed' → DONE
+- Otherwise → SELECTED
+
+When transitioning to EXECUTING, call onOutputOpen() to open the output panel.
+
+Use existing atoms (Button, Badge, ProgressBar, Spinner) and TaskRow molecule.
+All data access through safe-api mappers (never crash on bad shape).
+Every array guarded with ?? [] before .map/.filter."""
+status = "ready"
+role = "implementer"
+tier = "integrative"
+files = ["apps/portal/src/components/layout/MainArea.tsx"]
+depends_on = ["P1-T02", "P1-T03"]
+
+[[task.verify]]
+phase = "structural"
+command = "test -f apps/portal/src/components/layout/MainArea.tsx && grep -q 'MainArea' apps/portal/src/components/layout/MainArea.tsx && grep -q 'IDLE\\|idle\\|selectedPlanId' apps/portal/src/components/layout/MainArea.tsx"
+fail_msg = "MainArea.tsx must exist with state routing"
+
+[[task]]
+id = "P1-T05"
+title = "Create OutputPanel component"
+description = """You MUST create the file apps/portal/src/components/layout/OutputPanel.tsx
+
+A collapsible bottom panel that shows agent output during execution.
+
+Props: onClose: () => void
+
+Content:
+- Header bar: "Output" label + close (X) button
+- Body: reuse AgentOutputStream organism from src/components/organisms/AgentOutputStream.tsx
+- Read agent output from useDashboardStore(s => s.agentOutput)
+- Find the active agent (the one with status 'active' in the agents store)
+- If no active agent, show "Waiting for agent..." message
+- Auto-scroll to bottom as new output arrives
+
+Keep it minimal. The panel's job is to show the raw agent text stream. Nothing else."""
+status = "ready"
+role = "implementer"
+tier = "focused"
+files = ["apps/portal/src/components/layout/OutputPanel.tsx"]
+depends_on = ["P1-T01"]
+
+[[task.verify]]
+phase = "structural"
+command = "test -f apps/portal/src/components/layout/OutputPanel.tsx && grep -q 'OutputPanel' apps/portal/src/components/layout/OutputPanel.tsx"
+fail_msg = "OutputPanel.tsx must exist"
+
+[[task]]
+id = "P1-T06"
+title = "Rewrite page.tsx and layout.tsx to mount WorkspaceShell"
+description = """You MUST rewrite these two files:
+
+1. apps/portal/src/app/layout.tsx — minimal root layout:
+```tsx
+import type { Metadata } from 'next';
+import '@/styles/globals.css';
+import { Providers } from './providers';
+
+export const metadata: Metadata = {
+  title: 'roko',
+  description: 'Agent workspace',
+};
+
+export default function RootLayout({ children }: { children: React.ReactNode }) {
+  return (
+    <html lang="en" className="dark">
+      <body>{children}</body>
+    </html>
+  );
+}
+```
+
+Note: Providers is in src/app/providers.tsx (already exists, mounts QueryClient + SSE).
+Wrap children with Providers inside layout if providers.tsx is a client component, or keep the existing pattern.
+
+2. apps/portal/src/app/page.tsx — just renders WorkspaceShell:
+```tsx
+import { WorkspaceShell } from '@/components/layout/WorkspaceShell';
+
+export default function Home() {
+  return <WorkspaceShell />;
+}
+```
+
+That's it. The entire portal is one component. No routes, no navigation.
+
+Verify: cd apps/portal && ./node_modules/.bin/tsc --noEmit && npm run build"""
+status = "ready"
+role = "implementer"
+tier = "focused"
+files = [
+    "apps/portal/src/app/layout.tsx",
+    "apps/portal/src/app/page.tsx",
+]
+depends_on = ["P1-T02", "P1-T03", "P1-T04", "P1-T05"]
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'WorkspaceShell' apps/portal/src/app/page.tsx"
+fail_msg = "page.tsx must render WorkspaceShell"
+
+[[task.verify]]
+phase = "compile"
+command = "cd apps/portal && ./node_modules/.bin/tsc --noEmit 2>&1 | head -5"
+fail_msg = "TypeScript must compile clean"

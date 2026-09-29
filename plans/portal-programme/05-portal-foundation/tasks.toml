@@ -1,0 +1,1083 @@
+[meta]
+plan = "05-portal-foundation"
+total = 14
+done = 0
+status = "ready"
+max_parallel = 1
+skip_enrichment = true
+estimated_total_minutes = 345
+
+# Strip the portal to its working core and build the logic the one screen runs on.
+#
+# Measured 2026-09-28: 111 files, 33,286 lines, 34 routes, three navigation systems,
+# no test runner, and a static export (`npm run build:export`) that has never built.
+# This plan adds a test runner, deletes everything the design (02-DESIGN.md in
+# tmp/portal-audit of the main checkout) does not use, and writes the pure core every later
+# plan renders: wire contracts, the stream-record decoder, the run-state fold, the
+# snapshot-then-stream bootstrap, the data hooks, tokens and primitives. No screens.
+#
+# Runs in its own git worktree beside the backend plans: every task touches only
+# apps/portal and needs npm, never cargo or a running server. Live checks are in
+# plan 09-acceptance. tmp/ is gitignored, so the audit documents do not exist in
+# the worktree: every task here is self-contained and reads none of them.
+#
+# Verify conventions used throughout plans 05-08:
+#   - `[ -d node_modules ] || npm ci` first: a fresh worktree has no node_modules.
+#   - `rm -rf .next/types` before `tsc`: stale generated route types reference
+#     deleted pages and fail the type check.
+#   - the static export is the build gate; each gate deletes `out/` after checking
+#     `out/index.html`, which keeps the worktree lean (`apps/portal/out/` is gitignored).
+#   - `node scripts/vitest-min.mjs <test file> <n>` passes only when that file has
+#     at least n passing tests and no failures (created by T01).
+
+[[task]]
+id = "T01"
+title = "Add a unit test runner and a minimum-count test gate"
+description = '''
+`apps/portal` has no test runner: no `test` script, no vitest or jest, no test
+files. Every pure-logic module later in plans 05-08 is gated on real unit tests,
+so install one first. Work in `apps/portal`.
+
+1. `npm install --save-dev --no-audit --no-fund vitest@5` (updates package.json
+   and package-lock.json). vitest 5 supports the installed Node 22.
+2. Add `"test": "vitest run"` to the `scripts` in package.json.
+3. Create `vitest.config.ts`: `defineConfig` from `vitest/config`; `resolve.alias`
+   maps `@` to `fileURLToPath(new URL('./src', import.meta.url))` (the tsconfig
+   path alias); `test.include: ['src/**/*.test.ts']`; `test.environment: 'node'`.
+   Tests are `.ts` only: logic lives in `.ts` modules, and components are
+   verified by the type check and the build.
+4. Create `scripts/vitest-min.mjs`, the gate helper later tasks use:
+   `node scripts/vitest-min.mjs <test-file> <min>` runs
+   `./node_modules/.bin/vitest run <test-file> --reporter=default --reporter=json
+   --outputFile.json=<a file under os.tmpdir()>` with inherited stdio, then exits
+   0 only if vitest exited 0 and the JSON report has `numFailedTests === 0` and
+   `numPassedTests >= min`. It exits 1 otherwise (a missing test file included)
+   and 2 on bad usage (missing file argument, or min not a positive integer).
+5. Create `src/lib/formatters.test.ts` with three tests, one each for the existing
+   `formatCost`, `formatTokens` and `formatDuration` in `src/lib/formatters.ts`,
+   asserting the examples in their doc comments.
+
+Run all three verify commands before finishing.
+'''
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+timeout_secs = 1200
+max_retries = 2
+estimated_minutes = 20
+depends_on = []
+files = [
+    "apps/portal/package.json",
+    "apps/portal/package-lock.json",
+    "apps/portal/vitest.config.ts",
+    "apps/portal/scripts/vitest-min.mjs",
+    "apps/portal/src/lib/formatters.test.ts",
+]
+
+[task.context]
+read_files = [
+    { path = "apps/portal/package.json", why = "scripts and dependencies being extended" },
+    { path = "apps/portal/tsconfig.json", why = "the @/* path alias the test config must mirror" },
+    { path = "apps/portal/src/lib/formatters.ts", why = "the functions the sanity tests exercise" },
+]
+symbols = ["formatCost", "formatTokens", "formatDuration"]
+anti_patterns = [
+    "Do not install jest, @testing-library/* or jsdom; the portal tests pure .ts modules only.",
+    "Do not set passWithNoTests: a gate over a missing test file must fail.",
+]
+
+[[task.verify]]
+phase = "test"
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && npm test'
+fail_msg = "npm test does not run vitest successfully"
+timeout_ms = 600000
+
+[[task.verify]]
+phase = "test"
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && node scripts/vitest-min.mjs src/lib/formatters.test.ts 3 && ! node scripts/vitest-min.mjs src/lib/formatters.test.ts 99 >/dev/null 2>&1 && ! node scripts/vitest-min.mjs src/lib/no-such-file.test.ts 1 >/dev/null 2>&1'
+fail_msg = "vitest-min.mjs does not pass at the real count, or does not fail on an unmet minimum or a missing file"
+timeout_ms = 600000
+
+[[task.verify]]
+phase = "compile"
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit'
+fail_msg = "the portal does not type check with the test runner files"
+timeout_ms = 600000
+
+[[task]]
+id = "T02"
+title = "Delete the modules no route can reach"
+description = '''
+Delete these files from `apps/portal/src`. Each has no importer outside the set
+(import graph checked 2026-09-28):
+
+  api/safe-api.ts           only importer is safe-hooks.ts
+  api/safe-hooks.ts         no importers; its header rule was never adopted
+  api/ws-client.ts          only importer is hooks/useWebSocket.ts
+  api/query-provider.tsx    no importers; app/providers.tsx builds its own QueryClient
+  hooks/useWebSocket.ts     no importers
+  components/organisms/     all six files; the barrel is imported by nothing
+  components/terminal/      all three files; a "coming soon" placeholder
+  components/atmosphere/    all six files; the postfx layer the design drops
+  lib/hooks.ts, lib/motion-tokens.ts, lib/constants.ts   no importers
+
+Keep api/contracts.ts, api/client.ts and api/sse-client.ts. After deleting, the type
+check must pass. A stale `.next/types` directory lists every route and fails `tsc`
+on its own; remove it before type checking, as the gate does.
+'''
+status = "ready"
+role = "implementer"
+tier = "mechanical"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 10
+depends_on = ["T01"]
+files = [
+    "apps/portal/src/api/safe-api.ts",
+    "apps/portal/src/api/safe-hooks.ts",
+    "apps/portal/src/api/ws-client.ts",
+    "apps/portal/src/api/query-provider.tsx",
+    "apps/portal/src/hooks/useWebSocket.ts",
+    "apps/portal/src/lib/hooks.ts",
+    "apps/portal/src/lib/motion-tokens.ts",
+    "apps/portal/src/lib/constants.ts",
+    "apps/portal/src/components/atmosphere",
+    "apps/portal/src/components/organisms",
+    "apps/portal/src/components/terminal",
+]
+
+[task.context]
+anti_patterns = [
+    "Do not delete contracts.ts, client.ts or sse-client.ts.",
+    "Do not edit surviving files to work around a failing type check; a failure means the import graph changed, so report it.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = 'cd apps/portal/src && test ! -e api/safe-api.ts && test ! -e api/safe-hooks.ts && test ! -e api/ws-client.ts && test ! -e api/query-provider.tsx && test ! -e hooks/useWebSocket.ts && test ! -e components/organisms && test ! -e components/terminal && test ! -e components/atmosphere && test ! -e lib/hooks.ts && test ! -e lib/motion-tokens.ts && test ! -e lib/constants.ts && test -f api/contracts.ts && test -f api/client.ts && test -f api/sse-client.ts'
+fail_msg = "an unreachable module survived, or a kept API module was deleted"
+
+[[task.verify]]
+phase = "compile"
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit'
+fail_msg = "the portal does not type check after deleting the unreachable modules"
+timeout_ms = 600000
+
+[[task]]
+id = "T03"
+title = "Delete the routes and the navigation, leaving one page"
+description = '''
+Reduce `apps/portal` from 34 routes to one. Delete:
+
+  src/app/work, agents, intelligence, observe, providers, settings, design
+      33 pages and 6 section layouts; eleven of them render invented data
+  src/app/api/git-info/route.ts
+      a route handler that runs git in the portal's own directory, so it described
+      the roko repo rather than the workspace; route handlers also cannot ship in
+      the static export roko-serve serves
+  src/components/layout/, src/components/command-palette/, src/components/molecules/
+      three navigation systems and the cards only the deleted pages used
+  src/stores/agents.ts, src/stores/intelligence.ts
+      UI state for deleted pages; the intelligence store is fed by nothing
+  src/api/hooks.ts
+      1,479 lines of hooks for deleted pages; T10 replaces it with one module for
+      the endpoints the design uses
+
+Then rewrite two files:
+
+  src/app/layout.tsx — `<html lang="en" className="dark"><body><Providers>
+  {children}</Providers></body></html>`, keeping the `@/styles/globals.css`
+  import and `Providers` from `./providers`. Export
+  `metadata = { title: 'roko', other: { 'roko-portal': 'workspace' } }`; the
+  resulting `<meta name="roko-portal">` lets acceptance scripts tell this app from
+  the demo app roko-serve also serves.
+  src/app/page.tsx — a placeholder `<main>` with no imports; plan 06 mounts the
+  shell here.
+
+Keep src/app/providers.tsx: it mounts the event stream. The type check must pass.
+'''
+status = "ready"
+role = "implementer"
+tier = "mechanical"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 20
+depends_on = ["T02"]
+files = [
+    "apps/portal/src/app/page.tsx",
+    "apps/portal/src/app/layout.tsx",
+    "apps/portal/src/api/hooks.ts",
+    "apps/portal/src/stores/agents.ts",
+    "apps/portal/src/stores/intelligence.ts",
+    "apps/portal/src/app/work",
+    "apps/portal/src/app/agents",
+    "apps/portal/src/app/intelligence",
+    "apps/portal/src/app/observe",
+    "apps/portal/src/app/providers",
+    "apps/portal/src/app/settings",
+    "apps/portal/src/app/design",
+    "apps/portal/src/app/api",
+    "apps/portal/src/components/layout",
+    "apps/portal/src/components/command-palette",
+    "apps/portal/src/components/molecules",
+]
+
+[task.context]
+read_files = [
+    { path = "apps/portal/src/app/layout.tsx", why = "the root layout, which must stop mounting AppShell" },
+    { path = "apps/portal/src/app/providers.tsx", why = "the provider tree that must survive: it mounts the event stream" },
+]
+anti_patterns = [
+    "Do not delete src/app/providers.tsx, src/components/atoms or src/components/ErrorBoundary.tsx.",
+    "Do not keep any route besides src/app/page.tsx.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "cd apps/portal/src && for d in work agents intelligence observe providers settings design api; do test ! -e app/$d || exit 1; done && test ! -e components/layout && test ! -e components/command-palette && test ! -e components/molecules && test ! -e stores/agents.ts && test ! -e stores/intelligence.ts && test ! -e api/hooks.ts && test -f app/providers.tsx && test \"$(find app -name page.tsx | wc -l | tr -d ' ')\" = 1 && grep -q 'roko-portal' app/layout.tsx"
+fail_msg = "a route or navigation module survived, the page count is not one, or the layout lacks the roko-portal meta marker"
+
+[[task.verify]]
+phase = "compile"
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit'
+fail_msg = "the portal does not type check after deleting the routes"
+timeout_ms = 600000
+
+[[task]]
+id = "T04"
+title = "Drop the decoration layer and unused dependencies; make the static export build"
+description = '''
+roko-serve serves the portal as a static export (`npm run build:export`, which sets
+BUILD_TARGET=embedded so next.config.ts uses `output: 'export'`). That export has
+never built; after T03 removed the route handler it can. Make it pass, and shed
+what nothing uses any more:
+
+1. Delete `apps/portal/src/styles/atmosphere.css` and remove its `@import` line
+   from `src/styles/globals.css` (and the comment line describing it). Nothing
+   renders the atmosphere layer after T02.
+2. `npm uninstall --no-audit --no-fund framer-motion recharts lucide-react cmdk
+   @tanstack/react-table`: after T02 and T03 nothing imports them (check with
+   grep before removing each; stop and report if one is still imported).
+3. Run `NEXT_TELEMETRY_DISABLED=1 npm run build:export` and confirm
+   `out/index.html` exists, then delete `out/` (it is gitignored; the gates rebuild it).
+
+Remaining runtime dependencies: next, react, react-dom, zustand,
+@tanstack/react-query, clsx.
+'''
+status = "ready"
+role = "implementer"
+tier = "mechanical"
+model_hint = "claude-sonnet-4-6"
+timeout_secs = 1500
+max_retries = 2
+estimated_minutes = 15
+depends_on = ["T03"]
+files = [
+    "apps/portal/src/styles/atmosphere.css",
+    "apps/portal/src/styles/globals.css",
+    "apps/portal/package.json",
+    "apps/portal/package-lock.json",
+]
+
+[task.context]
+read_files = [
+    { path = "apps/portal/src/styles/globals.css", why = "the import of atmosphere.css to remove" },
+    { path = "apps/portal/next.config.ts", why = "how BUILD_TARGET=embedded switches on the static export" },
+    { path = "apps/portal/package.json", why = "the dependencies being pruned" },
+]
+anti_patterns = [
+    "Do not edit any .gitignore; `apps/portal/out/` is already ignored.",
+    "Do not remove a dependency that a surviving file still imports.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "cd apps/portal && test ! -e src/styles/atmosphere.css && for dep in framer-motion recharts lucide-react cmdk @tanstack/react-table; do node -e 'const p=require(\"./package.json\"); process.exit(p.dependencies[process.argv[1]] ? 1 : 0)' \"$dep\" || exit 1; done"
+fail_msg = "atmosphere.css or an unused dependency is still present"
+
+[[task.verify]]
+phase = "integration"
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && rm -rf out && NEXT_TELEMETRY_DISABLED=1 npm run build:export && test -f out/index.html && rm -rf out'
+fail_msg = "the static export does not build"
+timeout_ms = 900000
+
+[[task]]
+id = "T05"
+title = "Rewrite the wire contracts to what the server sends today"
+description = '''
+`apps/portal/src/api/contracts.ts` has no importers and describes a server that is
+gone (junk-UUID plans, managed agents, dreams). Replace its whole content with the
+wire shapes this portal consumes: snake_case, exactly as serde writes them. The Rust
+sources are the authority; where they disagree with this list (engine work is
+changing them), follow the source and say so in the task output.
+
+From `crates/roko-core/src/dashboard_snapshot.rs` (grep `pub enum DashboardEvent`,
+`pub struct DashboardSnapshot`, `pub struct PlanSetEntry`, `TaskGateOutput`):
+
+- `WireDashboardEvent`, a union discriminated on `type`, with exactly these
+  variants: plan_set_loaded {plans: PlanSetEntry[]}, plan_started {plan_id,
+  tasks_total?}, plan_completed {plan_id, success}, run_completed {outcome,
+  duration_ms, cleanup_degraded?, surviving_agent_ids?}, task_started {plan_id,
+  task_id, title?, phase}, task_completed {plan_id, task_id, outcome},
+  task_phase_changed {plan_id, task_id, old_phase, new_phase}, agent_spawned
+  {agent_id, plan_id?, task_id?, attempt?, role, model?, provider?}, agent_output
+  {agent_id, plan_id?, task_id?, attempt?, content}, agent_completed {agent_id,
+  plan_id?, task_id?, attempt?}, agent_heartbeat {agent_id, plan_id, task_id,
+  elapsed_ms}, gate_rung_started {plan_id, task_id, rung_name}, gate_output_line
+  {plan_id, task_id, gate, line}, gate_result {plan_id, task_id, gate, passed,
+  output_text?: string | null}, efficiency_event {plan_id, task_id, metric, value},
+  critical_path_eta_updated {plan_id, eta_minutes: number | null},
+  snapshot_rebased {revision, source?}, error {message}.
+- `TASK_OUTCOME_ACCEPTED_WITH_FAILURES = 'accepted_with_failures'` (the Rust const).
+- `WireDashboardSnapshot`, only the fields the portal reads: plans (record of
+  {plan_id, phase, tasks_total, tasks_done, tasks_failed, active}), plan_set?
+  ({plans, tasks_total, loaded_at_ms} | null), tasks (record keyed
+  "plan/task" of {task_id, title?, plan_id, phase, outcome: string | null}), agents
+  (record of the AgentState fields: agent_id, role, active, model, provider,
+  input_tokens, output_tokens, cost_usd, current_task, current_plan, attempt,
+  spawned_at_ms, elapsed_ms), gates ({plan_id, task_id, gate, passed, ts_millis}[]),
+  task_gate_outputs? ({plan_id, task_id, gate, passed, lines}[]), task_outputs?
+  (record task_id → string[]), errors ({message, ts_millis}[]), stats (at least
+  cost_usd_total, total_input_tokens, total_output_tokens), run_duration_ms?,
+  run_outcome?, critical_path_eta_minutes?.
+- `WireStateHubSnapshotResponse` {cursor: string (hex, e.g. "0x1f"), state:
+  WireDashboardSnapshot, recovered?} — `GET /api/statehub/snapshot`
+  (`crates/roko-serve/src/projection_contract.rs`, `state_frame`).
+- `WireGapPayload` {missed_events, last_materialized_seq, snapshot} —
+  `crates/roko-serve/src/routes/sse.rs`.
+
+From `crates/roko-serve/src/plan_types.rs`, plus the fields the portal has asked
+roko-serve to add (optional, so the portal runs against today's server):
+
+- `WirePlanSummary` {id, title, task_count, tasks_done, tasks_failed, completed,
+  status, superseded_by?, old_format, last_error?, group?, estimated_minutes?}.
+- `WirePlanTask` {id, title, description?, role?, tier, status, depends_on, files,
+  completed, verify_phases, verify?: {phase, command, fail_msg?, timeout_ms?}[],
+  estimated_minutes?, model_hint?}; `WirePlanTasks` {plan_id, task_count, tasks,
+  title?, max_parallel?}.
+- `WirePlanSource` {id, path, toml}; `WireDiagnostic` {severity: 'error' |
+  'warning', rule_id, plan_id?, task_id?, message}; `WireValidation` {valid,
+  errors, warnings, diagnostics}; `WireSourceSaved` {saved, errors, warnings,
+  diagnostics} (200 from saving the source); `WireInvalidPlan` {code, message,
+  errors, warnings, diagnostics} (its 422 body).
+- `WireOperation` {id, kind?, status: string, result?: {slug?, task_count?} |
+  null, error?: string | null}; `WireAccepted` {id, plan_id?: string, order?:
+  string[], resume?: boolean, max_parallel_plans?: number} — generate answers with
+  the new plan's `plan_id`, a multi-plan run with its `order` and the effective
+  limit on plans running at once;
+  `WireStatus` {workdir: string, git_branch?: string | null}.
+
+Types only: no runtime code besides the one constant. Keep a short header comment
+naming the Rust sources.
+'''
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 25
+depends_on = ["T04"]
+files = ["apps/portal/src/api/contracts.ts"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-serve/src/plan_types.rs", why = "the plan DTOs the portal lists and reads" },
+]
+symbols = ["PlanSummaryDto", "PlanTaskDto", "PlanTasksDto"]
+anti_patterns = [
+    "Do not keep the old contracts; nothing imports them and they describe routes the design does not call.",
+    "Do not use camelCase field names; these are wire shapes.",
+    "Do not add fields the portal does not read.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = 'cd apps/portal/src/api && grep -q "plan_set_loaded" contracts.ts && grep -q "accepted_with_failures" contracts.ts && grep -q "WireStateHubSnapshotResponse" contracts.ts && grep -q "WirePlanSummary" contracts.ts && grep -q "WireOperation" contracts.ts && grep -q "task_gate_outputs" contracts.ts && grep -q "WireValidation" contracts.ts'
+fail_msg = "contracts.ts is missing one of the required wire types"
+
+[[task.verify]]
+phase = "compile"
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit'
+fail_msg = "the portal does not type check with the new contracts"
+timeout_ms = 600000
+
+[[task]]
+id = "T06"
+title = "Decode framed agent output into transcript blocks"
+description = '''
+Create `apps/portal/src/lib/streamRecord.ts` and `src/lib/streamRecord.test.ts`.
+
+`agent_output.content` is not raw text. `publish_stream_record` in
+`crates/roko-cli/src/runner/tui_bridge.rs` writes `STREAM_RECORD_PREFIX`
+("\u001eroko.stream.v1 ", a record-separator character then a space) followed by
+JSON `{kind, agent_id, plan_id, task_id, attempt, payload}` with payloads:
+text {text}, reasoning {text}, tool_start {tool_id, tool} (no arguments),
+tool_result {tool_id, output}. Oversized tool output keeps its tail behind a
+literal `[...truncated]\n` prefix (`forward_dispatch_events_to_tui` in
+`crates/roko-cli/src/graph_task_dispatch.rs`).
+
+Export exactly:
+
+  STREAM_RECORD_PREFIX, TRUNCATED_PREFIX = '[...truncated]\n'
+  type StreamRecord =
+      {kind:'text'; text} | {kind:'reasoning'; text}
+    | {kind:'tool_start'; toolId; tool}
+    | {kind:'tool_result'; toolId; output; truncated: boolean}
+    | {kind:'raw'; text; malformed: boolean}
+  interface AttemptDivider { kind: 'divider'; attempt: number }
+  type TranscriptEntry = StreamRecord | AttemptDivider
+  decodeStreamRecord(content: string): StreamRecord
+      unframed content → raw (malformed false); prefix with unparsable JSON or an
+      unknown kind → raw (malformed true, text = the original content); never throws
+  type TranscriptBlock =
+      {kind:'text'; text} | {kind:'reasoning'; text}
+    | {kind:'tool'; toolId; tool; glyph: ToolGlyph; output: string | null; truncated}
+    | {kind:'raw'; text; malformed} | AttemptDivider
+  toolGlyph(tool: string): ToolGlyph   ('✎' | '◇' | '⚙')
+      edit/write tools (Edit, Write, MultiEdit, NotebookEdit, edit_file, write_file,
+      multi_edit, apply_patch; case-insensitive) → ✎; read/search tools (Read, Grep,
+      Glob, LS, read_file, list_dir, search) → ◇; anything else → ⚙
+  toBlocks(entries: readonly TranscriptEntry[]): TranscriptBlock[]
+      consecutive text records merge into one text block (concatenated as sent;
+      deltas are fragments), consecutive reasoning likewise; a tool_result attaches
+      to the tool block opened by the tool_start with the same toolId; an orphan
+      tool_result becomes its own tool block with tool ''; a divider passes
+      through and ends any merge in progress.
+
+Tests (at least 12), one per behaviour above: each kind decodes; truncation is
+detected and the marker stripped; unframed and malformed input; text and reasoning
+merging; tool pairing and orphan results; dividers; the glyph families.
+'''
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 30
+depends_on = ["T05"]
+files = ["apps/portal/src/lib/streamRecord.ts", "apps/portal/src/lib/streamRecord.test.ts"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/runner/tui_bridge.rs", why = "STREAM_RECORD_PREFIX and the four record payloads" },
+]
+symbols = ["STREAM_RECORD_PREFIX", "publish_stream_record"]
+anti_patterns = [
+    "Do not throw on a malformed record; one bad line must not break a transcript.",
+    "Do not discard unframed content; it is legacy output and is shown as raw text.",
+    "Do not split text on newlines or rewrap prose; the record kind says what it is.",
+]
+
+[[task.verify]]
+phase = "test"
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && node scripts/vitest-min.mjs src/lib/streamRecord.test.ts 12'
+fail_msg = "the stream record decoder lacks at least 12 passing tests"
+timeout_ms = 600000
+
+[[task]]
+id = "T07"
+title = "Fold dashboard events into run state"
+description = '''
+Create `apps/portal/src/lib/runState.ts` and `src/lib/runState.test.ts`: the pure
+fold every live view reads. It mirrors `DashboardSnapshot::apply_with_ts` in
+`crates/roko-core/src/dashboard_snapshot.rs` (read the match arms for the events
+below) so that a snapshot and a replay of events agree. Types come from
+`@/api/contracts` and `@/lib/streamRecord`. Export exactly these names; plans 06-08
+consume them.
+
+  type TaskStatus = 'active' | 'passed' | 'failed' | 'accepted_with_failures'
+                  | 'skipped' | 'cancelled'
+  type PlanPhase  = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
+  interface CheckRun  { name; index: number | null; phase: string;
+                        status: 'running' | 'passed' | 'failed'; output: string }
+  interface TaskRun   { planId; taskId; title; status: TaskStatus; phase;
+                        attempts; startedAtMs: number | null; finishedAtMs: number | null;
+                        agentId: string | null; role: string | null; model: string | null;
+                        costUsd; inputTokens; outputTokens; checks: CheckRun[] }
+  interface PlanRun   { planId; title: string | null; phase: PlanPhase; tasksTotal;
+                        tasksDone; tasksFailed; tasksAccepted; startedAtMs: number | null;
+                        finishedAtMs: number | null; etaMinutes: number | null; costUsd }
+  interface AgentRun  { agentId; planId: string | null; taskId: string | null; role;
+                        model; active: boolean; spawnedAtMs: number | null; costUsd;
+                        inputTokens; outputTokens }
+  interface Transcript { entries: TranscriptEntry[]; dropped: number }
+  interface RunState  { planSet: {planIds: string[]; tasksTotal; loadedAtMs} | null;
+                        plans: Record<string, PlanRun>; tasks: Record<string, TaskRun>;
+                        agents: Record<string, AgentRun>; transcripts: Record<string, Transcript>;
+                        errors: {message; atMs}[];
+                        run: {startedAtMs: number | null; durationMs: number | null; outcome: string | null};
+                        totals: {costUsd; inputTokens; outputTokens};
+                        usage: {atMs: number; tokens: number}[] }
+  MAX_TRANSCRIPT_ENTRIES = 2000, MAX_ERRORS = 50, MAX_USAGE_SAMPLES = 600
+  taskKey(planId, taskId) → `${planId}/${taskId}`   (tasks and transcripts use it)
+  parseCheckName(name) → {index, phase}: "verify[3:compile]" → {3,'compile'},
+      "verify[2]" → {2,''}, anything else → {null, name}
+  initialRunState(): RunState
+  applyEvent(state, event: WireDashboardEvent, nowMs): RunState
+      pure: returns new objects and never mutates its input
+  fromSnapshot(snapshot: WireDashboardSnapshot, nowMs): RunState
+
+applyEvent, per event (nowMs stands in for the timestamp events do not carry):
+- plan_set_loaded: planSet in the given order with the summed total; each member
+  not already running → phase pending, its tasks_total, counters zero, title set;
+  run = {startedAtMs: nowMs, durationMs: null, outcome: null}.
+- plan_started: phase running, tasksTotal = max(known, event), startedAtMs nowMs;
+  when the plan is not in planSet, reset run as above.
+- plan_completed: phase completed | failed by success; finishedAtMs nowMs.
+- run_completed: durationMs/outcome set only when durationMs is null; running plans
+  → completed ('succeeded'), cancelled ('cancelled') or failed (else); tasks still
+  active → cancelled; every agent inactive.
+- task_started: a known task in a terminal status is a retry — attempts + 1, checks
+  cleared, a divider {kind:'divider', attempt} appended to its transcript; otherwise
+  attempts 1. Status active, phase, title when non-empty, startedAtMs nowMs;
+  plan tasksTotal = max(tasksTotal, known tasks of the plan).
+- task_completed: ignored for an unknown task or one already terminal (idempotent).
+  Status: exactly 'accepted_with_failures' → accepted_with_failures (tasksDone and
+  tasksAccepted + 1) — test this before the next rule, because the string contains
+  "fail" (`classify_task_outcome` does the same); contains 'fail' or 'error' →
+  failed (tasksFailed + 1); 'skipped', 'condition-skipped' or 'unknown' (a node that
+  never ran) → skipped (tasksDone + 1, as Rust counts it); else passed
+  (tasksDone + 1). finishedAtMs nowMs.
+- task_phase_changed: phase.
+- agent_spawned / agent_completed / agent_heartbeat: upsert the agent (role falls
+  back to model, then 'impl'); on spawn also set the task's agentId, role, model;
+  heartbeat fills spawnedAtMs = nowMs - elapsed_ms when unknown.
+- agent_output: decodeStreamRecord(content) appended to the transcript of the
+  event's plan/task (else the agent's current plan/task; else dropped); past
+  MAX_TRANSCRIPT_ENTRIES drop the oldest and count them in `dropped`.
+- gate_rung_started → check {name: rung_name, status running, output ''};
+  gate_output_line → append line + '\n' to that check (create it running);
+  gate_result → status passed | failed, output = output_text ?? existing.
+  Checks carry parseCheckName's index and phase and stay sorted by index (nulls last).
+- efficiency_event: input_tokens / output_tokens / cost_usd add to the task, to the
+  agent working that task, to the plan (cost) and to totals; each token metric also
+  appends `{atMs: nowMs, tokens: value}` to `usage`, keeping the last
+  MAX_USAGE_SAMPLES (the burn rate is computed from it); other metrics ignored.
+  Several plans may run at once (a plan-set run executes independent plans
+  concurrently): nothing here may assume a single running plan.
+- critical_path_eta_updated: plan etaMinutes. error: append, keep the last MAX_ERRORS.
+- snapshot_rebased and unknown types: return the state unchanged.
+
+fromSnapshot maps plans (active → running; phase pending/completed/complete/
+failed/cancelled mapped; anything else → running if active, pending if not),
+plan_set, tasks (outcome via the same classification; null outcome → active;
+attempts 1), agents (spawned_at_ms 0 → null; link each task's agentId from the
+agent whose current_plan/current_task match), checks from `gates` (latest per task
+and gate name) with output from task_gate_outputs lines joined by '\n',
+transcripts from task_outputs (decoded; keyed to the one plan owning that task id,
+skipped when ambiguous), errors, run (startedAtMs = plan_set.loaded_at_ms),
+totals from stats; the snapshot's critical_path_eta_minutes goes to the running
+plan when exactly one runs.
+
+At least 20 tests: every event rule above, idempotent task_completed, the retry
+path, transcript capping, the usage ring, two plans running at once with interleaved
+events, fromSnapshot over a fixture shaped like the Rust snapshot JSON (include
+plan_set and task_gate_outputs; `usage` starts empty), and an input-is-not-mutated
+test (compare a JSON copy before and after applyEvent).
+'''
+status = "ready"
+role = "implementer"
+tier = "integrative"
+model_hint = "claude-sonnet-4-6"
+timeout_secs = 1800
+max_retries = 2
+estimated_minutes = 50
+depends_on = ["T06"]
+files = ["apps/portal/src/lib/runState.ts", "apps/portal/src/lib/runState.test.ts"]
+
+[task.context]
+read_files = [
+    { path = "apps/portal/src/lib/streamRecord.ts", why = "decodeStreamRecord and the transcript entry types" },
+    { path = "apps/portal/src/api/contracts.ts", why = "the event and snapshot wire types being folded" },
+]
+anti_patterns = [
+    "Do not mutate the input state; return new objects.",
+    "Do not read Date.now() inside the fold; time comes in as nowMs.",
+    "Do not count a repeated task_completed twice.",
+    "Do not fold events the design does not show (affect, inbox, marketplace, chain, dreams).",
+]
+
+[[task.verify]]
+phase = "test"
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && node scripts/vitest-min.mjs src/lib/runState.test.ts 20'
+fail_msg = "the run-state fold lacks at least 20 passing tests"
+timeout_ms = 600000
+
+[[task.verify]]
+phase = "compile"
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit'
+fail_msg = "the run-state fold does not type check"
+timeout_ms = 600000
+
+[[task]]
+id = "T08"
+title = "Bootstrap: sign in, fetch the snapshot, then stream from its cursor"
+description = '''
+Create `apps/portal/src/lib/bootstrap.ts` and `src/lib/bootstrap.test.ts`: how the
+portal starts talking to its server, in three steps.
+
+Step 1, sign in. roko-serve keeps API auth on. On a loopback bind with no key
+configured, `roko serve` prints `portal: http://127.0.0.1:<port>/#token=<token>`
+(backend plan 03c); the browser trades that launch token for an HttpOnly session
+cookie with `POST /api/auth/session {"token": …}` (204), after which every
+same-origin fetch and the event stream authenticate by cookie. The token must leave
+the address bar whatever the outcome.
+
+Steps 2 and 3, the snapshot and the stream. The portal has always opened
+`/api/events` and folded whatever it replayed. The
+server only sends a snapshot conditionally (`replay_requires_snapshot` in
+`crates/roko-serve/src/routes/sse.rs`), so the correct start is: fetch
+`GET /api/statehub/snapshot` (`{cursor: "0x…", state}`), install it, then open the
+stream from that cursor. Two details make this easy to get wrong:
+
+- the snapshot cursor is the hex **next** sequence (`captured.next_seq`), while
+  `/api/events?lastEventId=` takes the **last seen** sequence in decimal and replays
+  from lastEventId + 1 (`replay_start`). So "0x1f" means lastEventId "30"; "0x0" (or
+  an unparsable cursor) means open with no lastEventId.
+- a `snapshot_rebased` event means cached state is stale: fetch a new snapshot and
+  reopen the stream from its cursor.
+
+Export:
+  parseLaunchToken(hash: string): string | null
+      the `token` parameter of a `#token=…` or `#a=b&token=…` fragment; null when
+      absent or empty
+  type SessionResult = 'none' | 'signed-in' | 'rejected' | 'unavailable'
+  SIGN_IN_HINT = 'Not signed in to this roko serve. Open the portal link it
+      printed (the one ending in #token=…).'
+  cursorToLastEventId(cursor: string | null | undefined): string | null
+  interface LiveDeps {
+    hash: string;
+    postSession(token: string): Promise<number>;   // the HTTP status
+    dropFragment(): void;
+    setSession(result: SessionResult): void;
+    fetchSnapshot(): Promise<WireStateHubSnapshotResponse>;
+    openStream(lastEventId: string | null, onEvent: (e: PortalStreamEvent) => void,
+               onStatus: (s: ConnectionStatus) => void): { close(): void };
+    replace(snapshot: WireDashboardSnapshot): void;
+    apply(event: WireDashboardEvent): void;
+    setStatus(s: ConnectionStatus): void;
+    sleep(ms: number): Promise<void>;
+  }
+  startLiveState(deps: LiveDeps): { stop(): void }
+      first the session: no token → setSession('none') with no request; otherwise
+      postSession → 204 'signed-in', 404 or 405 'unavailable' (a server from before
+      03c), 401, any other status or a thrown error 'rejected'; call dropFragment()
+      whenever a token was present, then setSession(result). Only then
+      fetch → replace → openStream(cursorToLastEventId(cursor)); stream events go to
+      apply, except a synthetic {type:'snapshot', snapshot} (the SSE client turns
+      `gap` frames into it) → replace, and snapshot_rebased → close, refetch,
+      reopen. A failed fetch sets status 'error' and retries with backoff
+      1s, 2s, 4s … capped at 16s. stop() closes the stream and ends retries.
+
+Define `ConnectionStatus` ('connecting' | 'connected' | 'disconnected' | 'error')
+and `PortalStreamEvent` (WireDashboardEvent | {type:'snapshot'; snapshot; cursor})
+here and export them; T09 makes the SSE client use them.
+
+At least 12 tests with fakes (no network): fragment parsing with and without other
+parameters, each session outcome, dropFragment exactly when a token was present,
+the session settling before the snapshot is fetched, cursor conversion (hex, zero,
+garbage, null), open-after-replace ordering, gap → replace, rebase → refetch and
+reopen, fetch failure → error status then success after a retry, stop() prevents
+reopening.
+'''
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 40
+depends_on = ["T07"]
+files = ["apps/portal/src/lib/bootstrap.ts", "apps/portal/src/lib/bootstrap.test.ts"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-serve/src/routes/sse.rs", why = "replay_start and replay_requires_snapshot: the cursor semantics" },
+    { path = "apps/portal/src/api/sse-client.ts", why = "the client whose gap frames become synthetic snapshot events" },
+    { path = "apps/portal/src/api/contracts.ts", why = "WireStateHubSnapshotResponse and the event union" },
+]
+symbols = ["replay_start", "replay_requires_snapshot"]
+anti_patterns = [
+    "Do not open the stream before the snapshot has been installed.",
+    "Do not pass the hex cursor to lastEventId unconverted.",
+    "Do not persist the cursor; every load starts from a fresh snapshot.",
+    "Do not store the launch token anywhere: no localStorage, no state, no logs.",
+]
+
+[[task.verify]]
+phase = "test"
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && node scripts/vitest-min.mjs src/lib/bootstrap.test.ts 12'
+fail_msg = "the bootstrap sequence lacks at least 12 passing tests"
+timeout_ms = 600000
+
+[[task]]
+id = "T09"
+title = "Put the store and the SSE client on the new core"
+description = '''
+Switch the live-state spine to the modules from T05-T08 and delete the
+aspirational camelCase types.
+
+1. `src/stores/dashboard.ts`: rewrite as a thin zustand store over
+   `@/lib/runState`:
+     { connection: ConnectionStatus; run: RunState;
+       session: SessionResult | 'pending';                  // 'pending' until step 1 settles
+       setSession(r: SessionResult): void;
+       replaceFromSnapshot(s: WireDashboardSnapshot): void;  // run = fromSnapshot(s, Date.now())
+       applyEvent(e: WireDashboardEvent): void;               // run = applyEvent(run, e, Date.now())
+       setConnection(s: ConnectionStatus): void }
+   exported as `useDashboardStore`. Everything else in the file goes (vitals,
+   affect, learning, inbox, providers, activity feed, camelCase snapshot handling).
+2. `src/api/sse-client.ts`: keep the backoff, keepalive watchdog and gap handling;
+   add a constructor option `{ lastEventId?: string | null }` that seeds the replay
+   cursor, and import `ConnectionStatus` / `PortalStreamEvent` from
+   `@/lib/bootstrap` and wire types from `@/api/contracts`.
+3. `src/hooks/useStateHubSSE.ts`: call `startLiveState` with real dependencies —
+   `window.location.hash`; a `fetch('/api/auth/session', { method: 'POST', headers:
+   { 'content-type': 'application/json' }, body })` returning its status;
+   `window.history.replaceState(null, '', location.pathname + location.search)`;
+   `api.get('/api/statehub/snapshot')`; a `SseClient` built with the lastEventId;
+   the store actions; a setTimeout-based sleep — and stop it on unmount.
+4. `src/app/providers.tsx`: keep mounting the SSE initializer unconditionally, but
+   render the children only once `session` is no longer 'pending', so no query races
+   the session cookie. Render nothing in between. Every request stays same-origin
+   and root-relative (`/api/…`): roko-serve serves the portal at `/`.
+5. Delete `src/api/types.ts`; nothing may import it afterwards.
+
+The whole unit suite, the type check and the static export must pass.
+'''
+status = "ready"
+role = "implementer"
+tier = "integrative"
+model_hint = "claude-sonnet-4-6"
+timeout_secs = 1800
+max_retries = 2
+estimated_minutes = 35
+depends_on = ["T08"]
+files = [
+    "apps/portal/src/stores/dashboard.ts",
+    "apps/portal/src/api/sse-client.ts",
+    "apps/portal/src/hooks/useStateHubSSE.ts",
+    "apps/portal/src/app/providers.tsx",
+    "apps/portal/src/api/types.ts",
+]
+
+[task.context]
+read_files = [
+    { path = "apps/portal/src/lib/bootstrap.ts", why = "startLiveState and the types the client now uses" },
+    { path = "apps/portal/src/lib/runState.ts", why = "fromSnapshot and applyEvent, which the store wraps" },
+    { path = "apps/portal/src/api/sse-client.ts", why = "the client gaining an initial lastEventId" },
+    { path = "apps/portal/src/hooks/useStateHubSSE.ts", why = "the single mount point for the live connection" },
+    { path = "apps/portal/src/api/client.ts", why = "the api.get used to fetch the snapshot" },
+    { path = "apps/portal/src/app/providers.tsx", why = "where the hook is mounted; it must keep working" },
+]
+anti_patterns = [
+    "Do not keep store slices the design does not show.",
+    "Do not duplicate the fold in the store; call applyEvent and fromSnapshot.",
+    "Do not remove the SSE client's backoff or keepalive watchdog.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = 'cd apps/portal/src && test ! -e api/types.ts && grep -q "startLiveState" hooks/useStateHubSSE.ts && grep -q "fromSnapshot" stores/dashboard.ts && grep -q "@/lib/bootstrap" api/sse-client.ts && grep -q "session" app/providers.tsx'
+fail_msg = "types.ts survived, or the store, hook or SSE client is not on the new core"
+
+[[task.verify]]
+phase = "test"
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && npm test'
+fail_msg = "the unit suite fails after rewiring the store"
+timeout_ms = 600000
+
+[[task.verify]]
+phase = "integration"
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && rm -rf .next/types out && ./node_modules/.bin/tsc --noEmit && NEXT_TELEMETRY_DISABLED=1 npm run build:export && test -f out/index.html && rm -rf out'
+fail_msg = "the portal does not type check or the static export fails after rewiring the store"
+timeout_ms = 900000
+
+[[task]]
+id = "T10"
+title = "One module for the endpoints the design calls"
+description = '''
+Create `apps/portal/src/api/queries.ts`, replacing the deleted 1,479-line hooks
+file with the endpoints the design uses (the reconciled contract; plans 01–04 and 03b
+add the routes this track runs ahead of, and the views that call them explain a 404
+or 405). React Query hooks over `api` from `@/api/client`, typed with `@/api/contracts`:
+
+  queryKeys: { plans, planTasks(id), planSource(id), validation(id), workspace }
+  usePlans()                   GET  /api/plans                   → WirePlanSummary[]
+  usePlanTasks(id)             GET  /api/plans/{id}/tasks        → WirePlanTasks (enabled when id)
+  usePlanSource(id, enabled)   GET  /api/plans/{id}/source → WirePlanSource
+  useValidation(id)            POST /api/plans/{id}/validate {}  → WireValidation (a query keyed by id)
+  useWorkspace()               GET  /api/status → { name: basename(workdir), path: workdir,
+                                                    branch: git_branch ?? null }
+  useSavePlanSource()          PUT  /api/plans/{id}/source {toml} → WireSourceSaved;
+                               a 422 carries WireInvalidPlan
+  useGeneratePlan()            POST /api/plans/generate {prompt} → WireAccepted (plan_id)
+  useRevisePlan()              POST /api/plans/{id}/revise {feedback} → WireAccepted
+                               (409 while the plan runs or is already being revised)
+  planExists(id)               GET  /api/plans/{id} → true on 200, false on 404 (plain
+                               function; how the portal sees a generated plan land)
+  fetchOperation(id)           GET  /api/operations/{id} → WireOperation, or null on 404
+                               (plain function; how it sees generation fail)
+  useRunPlan()                 POST /api/plans/{id}/execute — no body runs fresh (Run,
+                               Run again); {resume: true} for Retry
+  useRunPlans()                POST /api/plans/execute {plans?: string[]} — {} runs every
+                               plan (Run all), {plans} a group; one run per workspace (409)
+  useCancelPlan()              POST /api/plans/{id}/cancel — a plan id or a run id
+
+Encode ids with encodeURIComponent. Mutations that change a plan invalidate its
+tasks, source and validation and the plan list; run and cancel invalidate the plan
+list. Errors propagate as the client's `ApiError`, whose body the views show.
+Nothing else: no polling intervals, no optimistic updates.
+'''
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 25
+depends_on = ["T09"]
+files = ["apps/portal/src/api/queries.ts"]
+
+[task.context]
+read_files = [
+    { path = "apps/portal/src/api/client.ts", why = "the HTTP client and ApiError" },
+    { path = "apps/portal/src/api/contracts.ts", why = "the response types" },
+    { path = "apps/portal/src/app/providers.tsx", why = "the QueryClient defaults these hooks run under" },
+]
+anti_patterns = [
+    "Do not add a hook for an endpoint the design does not call.",
+    "Do not discover a generated plan by diffing the plan list; the accepted response names it.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = 'cd apps/portal/src/api && for h in usePlans usePlanTasks usePlanSource useValidation useWorkspace useSavePlanSource useGeneratePlan useRevisePlan planExists fetchOperation useRunPlan useRunPlans useCancelPlan; do grep -q "export function $h\|export async function $h\|export const $h" queries.ts || { echo "missing $h"; exit 1; }; done'
+fail_msg = "queries.ts does not export every required hook"
+
+[[task.verify]]
+phase = "compile"
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit'
+fail_msg = "the query module does not type check"
+timeout_ms = 600000
+
+[[task]]
+id = "T11"
+title = "Establish the design tokens"
+description = '''
+Create `apps/portal/src/styles/tokens.css` and import it in
+`src/styles/globals.css` right after `rosedust.css`. Alias the existing ROSEDUST
+variables; invent no colours. Define:
+
+- State: `--state-done: var(--sage)`,
+  `--state-active: var(--rose)`, `--state-accepted: var(--warning)`,
+  `--state-failed: var(--ember)`, `--state-queued: var(--text-faint)`,
+  `--state-pending: var(--text-ghost)`, `--state-skipped: var(--text-faint)`.
+  Accepted-with-failures is amber, never green: green means verified.
+- Focus: `--focus-border: var(--rose-bright)`, `--focus-title: var(--bone)`,
+  `--blur-border` (near-invisible), `--blur-title: var(--text-ghost)`.
+- Progress bands: `--progress-low: var(--ember)` (<30%), `--progress-mid:
+  var(--warning)` (30-70%), `--progress-high: var(--sage)` (>70%).
+- One accent per role: `--role-implementer`, `--role-strategist`,
+  `--role-architect`, `--role-scribe`, `--role-quick-reviewer`, `--role-other`.
+- Layout: `--rail-width: 260px`, `--row-height: 24px`, and a `.tabular` class
+  setting `font-variant-numeric: tabular-nums`.
+'''
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+timeout_secs = 1200
+max_retries = 2
+estimated_minutes = 15
+depends_on = ["T10"]
+files = ["apps/portal/src/styles/tokens.css", "apps/portal/src/styles/globals.css"]
+
+[task.context]
+read_files = [
+    { path = "apps/portal/src/styles/rosedust.css", why = "the palette being aliased" },
+    { path = "apps/portal/src/styles/globals.css", why = "where the tokens are imported" },
+]
+anti_patterns = [
+    "Do not define new colour values; alias ROSEDUST variables.",
+    "Do not use a green token for accepted-with-failures or for dispatched-but-unfinished work.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = 'cd apps/portal/src/styles && grep -q "tokens.css" globals.css && for t in --state-done --state-active --state-accepted --state-failed --state-queued --state-pending --state-skipped --focus-border --blur-border --progress-low --progress-mid --progress-high --role-implementer --rail-width; do grep -q -- "$t:" tokens.css || { echo "missing $t"; exit 1; }; done && grep -q "tabular-nums" tokens.css'
+fail_msg = "tokens.css is missing a required token or is not imported"
+
+[[task.verify]]
+phase = "integration"
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && rm -rf out && NEXT_TELEMETRY_DISABLED=1 npm run build:export && test -f out/index.html && rm -rf out'
+fail_msg = "the static export fails with the tokens imported"
+timeout_ms = 900000
+
+[[task]]
+id = "T12"
+title = "Add middle ellipsis and compact durations to the formatters"
+description = '''
+Extend `apps/portal/src/lib/formatters.ts` and its test file.
+
+- `middleEllipsis(text: string, max: number): string` — returns text unchanged when
+  it fits; otherwise keeps the head and the tail around a single "…" so the result
+  is exactly `max` characters (tail gets the extra character when odd). Plan names
+  differ in their tails (`portal-…-shell`), so they must never be end-truncated.
+  max < 3 returns the first max characters.
+- `compactDuration(ms: number | null | undefined): string` — mori's form: "45s",
+  "2m14s", "1h05m" (seconds dropped at an hour or more, minutes zero-padded after
+  hours); '·' for null, undefined, NaN or negative. The placeholder proves the cell
+  exists.
+
+Remove formatter functions nothing will use: `formatRelativeTime`,
+`formatPercentage`, `truncateHash`, `formatNumber` — unless something imports them
+(grep first). Add at least 6 tests; the file must reach at least 9 passing.
+'''
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 15
+depends_on = ["T11"]
+files = ["apps/portal/src/lib/formatters.ts", "apps/portal/src/lib/formatters.test.ts"]
+
+[task.context]
+read_files = [
+    { path = "apps/portal/src/lib/formatters.ts", why = "the helpers being extended" },
+    { path = "apps/portal/src/lib/formatters.test.ts", why = "the existing tests to extend" },
+]
+anti_patterns = [
+    "Do not end-truncate identifiers.",
+    "Do not return an empty string for a missing duration; return the placeholder.",
+]
+
+[[task.verify]]
+phase = "test"
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && node scripts/vitest-min.mjs src/lib/formatters.test.ts 9 && grep -q "export function middleEllipsis" src/lib/formatters.ts && grep -q "export function compactDuration" src/lib/formatters.ts'
+fail_msg = "middleEllipsis or compactDuration is missing, or the formatter tests are below 9"
+timeout_ms = 600000
+
+[[task]]
+id = "T13"
+title = "One glyph vocabulary and the metric cell"
+description = '''
+Create the state vocabulary once, so no view defines a second one (mori defined
+the same state twice, with different glyphs, in different widgets).
+
+1. `apps/portal/src/lib/glyphs.ts` + `src/lib/glyphs.test.ts`:
+     type GlyphState = 'done' | 'active' | 'accepted' | 'failed' | 'queued'
+                     | 'pending' | 'skipped'
+     GLYPHS: Record<GlyphState, { glyph: string; token: string; label: string }>
+       done ✓ var(--state-done) · active ► var(--state-active) · accepted ⚠
+       var(--state-accepted) · failed ✗ var(--state-failed) · queued ◌
+       var(--state-queued) · pending · var(--state-pending) · skipped ⊘
+       var(--state-skipped); labels are plain words for aria-label and tooltips
+     glyphStateForTask(status: TaskStatus | 'pending'): GlyphState
+       passed → done, accepted_with_failures → accepted, cancelled → skipped, …
+     progressToken(fraction: number): string   <0.3 low, 0.3–0.7 mid, >0.7 high
+   At least 5 tests: every state has a distinct glyph, the task mapping including
+   accepted_with_failures → accepted (never done), and the progress bands at their
+   boundaries.
+2. `src/components/primitives/StatusGlyph.tsx`: `export function StatusGlyph({ state,
+   title? }: { state: GlyphState; title?: string })` renders a span with the glyph,
+   `color` from the token, `aria-label` from the label.
+3. `src/components/primitives/MetricCell.tsx`: `export function MetricCell({ value,
+   width }: { value: string | number | null | undefined; width?: string })` renders a
+   right-aligned `tabular` span of fixed width that shows '·' for null or undefined.
+'''
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 25
+depends_on = ["T12"]
+files = [
+    "apps/portal/src/lib/glyphs.ts",
+    "apps/portal/src/lib/glyphs.test.ts",
+    "apps/portal/src/components/primitives/StatusGlyph.tsx",
+    "apps/portal/src/components/primitives/MetricCell.tsx",
+]
+
+[task.context]
+read_files = [
+    { path = "apps/portal/src/styles/tokens.css", why = "the state and progress tokens the glyphs point at" },
+    { path = "apps/portal/src/lib/runState.ts", why = "TaskStatus, which glyphStateForTask maps" },
+    { path = "apps/portal/src/components/atoms/Badge.tsx", why = "the component conventions to follow" },
+]
+anti_patterns = [
+    "Do not map accepted_with_failures to the done glyph or a green token.",
+    "Do not render an empty cell for a missing value.",
+]
+
+[[task.verify]]
+phase = "test"
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && node scripts/vitest-min.mjs src/lib/glyphs.test.ts 5'
+fail_msg = "the glyph vocabulary lacks at least 5 passing tests"
+timeout_ms = 600000
+
+[[task.verify]]
+phase = "compile"
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && rm -rf .next/types && ./node_modules/.bin/tsc --noEmit && grep -q "export function StatusGlyph" src/components/primitives/StatusGlyph.tsx && grep -q "export function MetricCell" src/components/primitives/MetricCell.tsx'
+fail_msg = "the primitives are missing or do not type check"
+timeout_ms = 600000
+
+[[task]]
+id = "T14"
+title = "Derive empty-state sentences from run state"
+description = '''
+Create `apps/portal/src/lib/emptyState.ts` and `src/lib/emptyState.test.ts`: a pure
+function that turns state into what the system is doing, never "no data" (mori,
+`widgets/agent_output.rs:327`).
+
+  interface EmptyStateInput {
+    workspace: string;                       // folder name
+    connection: ConnectionStatus;
+    planCount: number;
+    plan?: { id: string; phase: PlanPhase | 'never_run'; tasksTotal: number;
+             tasksDone: number; tasksActive: number; tasksAccepted: number;
+             waves?: number; failedTaskId?: string | null;
+             failedCheck?: string | null; durationMs?: number | null };
+  }
+  describeEmpty(input: EmptyStateInput): string
+
+Cases, in precedence order: disconnected or error ("Lost the server; reconnecting.");
+no plans ("No plans in <workspace> yet. Describe what you want to build."); plans
+but none selected ("Select a plan, or press n to describe a new one."); never run
+("Ready — 3 tasks in 3 waves."); running with nothing active and tasks queued
+("Scheduler has 3 queued tasks but no live agent yet."); running with every task
+dispatched ("Every task is dispatched; checks are running."); running otherwise;
+completed ("Finished in 4m12s — 3 of 3 verified.", via compactDuration); completed
+with accepted tasks ("Finished; 1 task was accepted despite failing checks.");
+failed ("Stopped at T03 — test failed. Retry resumes from T03."); cancelled.
+
+At least 11 tests: one per case, plus one asserting that no case returns an empty
+string or the phrase "no data".
+'''
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+max_retries = 2
+estimated_minutes = 20
+depends_on = ["T13"]
+files = ["apps/portal/src/lib/emptyState.ts", "apps/portal/src/lib/emptyState.test.ts"]
+
+[task.context]
+read_files = [
+    { path = "apps/portal/src/lib/runState.ts", why = "PlanPhase and the counters the input is built from" },
+    { path = "apps/portal/src/lib/bootstrap.ts", why = "ConnectionStatus" },
+    { path = "apps/portal/src/lib/formatters.ts", why = "compactDuration for the finished sentence" },
+]
+symbols = ["compactDuration"]
+anti_patterns = [
+    "Do not render anything from this module; it returns a sentence.",
+]
+
+[[task.verify]]
+phase = "test"
+command = 'cd apps/portal && { [ -d node_modules ] || npm ci --no-audit --no-fund --silent; } && node scripts/vitest-min.mjs src/lib/emptyState.test.ts 11 && npm test'
+fail_msg = "the empty-state helper lacks at least 11 passing tests, or the suite fails"
+timeout_ms = 600000
+

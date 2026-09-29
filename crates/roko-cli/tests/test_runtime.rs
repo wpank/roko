@@ -72,11 +72,7 @@ pub struct MockTaskDispatcher {
 }
 
 impl MockTaskDispatcher {
-    fn new(
-        turns: Vec<MockTurn>,
-        default_reply: impl Into<String>,
-        default_fail: bool,
-    ) -> Self {
+    fn new(turns: Vec<MockTurn>, default_reply: impl Into<String>, default_fail: bool) -> Self {
         Self {
             turns,
             calls: Mutex::new(Vec::new()),
@@ -137,9 +133,11 @@ impl TaskDispatcher for MockTaskDispatcher {
             });
         }
 
-        Ok(vec![Signal::builder(Kind::AgentOutput)
-            .body(Body::text(&reply))
-            .build()])
+        Ok(vec![
+            Signal::builder(Kind::AgentOutput)
+                .body(Body::text(&reply))
+                .build(),
+        ])
     }
 }
 
@@ -191,11 +189,7 @@ impl TestRuntime {
 
     /// Convenience: write a `tasks.toml` to the plan directory.
     pub fn write_tasks_toml(&self, content: &str) {
-        let dir = self
-            .workdir
-            .path()
-            .join("plans")
-            .join(&self.plan_id);
+        let dir = self.workdir.path().join("plans").join(&self.plan_id);
         fs::create_dir_all(&dir).expect("create plan dir");
         fs::write(dir.join("tasks.toml"), content).expect("write tasks.toml");
     }
@@ -213,10 +207,7 @@ impl TestRuntime {
     /// Assert that the dispatcher was called exactly `n` times.
     pub fn assert_dispatch_count(&self, n: usize) {
         let actual = self.dispatcher.total_calls();
-        assert_eq!(
-            actual, n,
-            "expected {n} task dispatches, got {actual}"
-        );
+        assert_eq!(actual, n, "expected {n} task dispatches, got {actual}");
     }
 
     /// Assert that a task with title/plan_id/task_def_json containing
@@ -301,23 +292,18 @@ impl TestRuntime {
         let content = fs::read_to_string(&path).expect("read episodes.jsonl");
         // Episodes contain "cost_usd":0.xxx — any non-zero value is fine.
         let has_cost = content.contains("\"cost_usd\":")
-            && content
-                .lines()
-                .any(|line| {
-                    // Extract cost_usd value and compare against min_usd.
-                    if let Some(after) = line.find("\"cost_usd\":") {
-                        let tail = &line[after + "\"cost_usd\":".len()..];
-                        let end = tail.find([',', '}', ' ']).unwrap_or(tail.len());
-                        if let Ok(v) = tail[..end].trim().parse::<f64>() {
-                            return v >= min_usd;
-                        }
+            && content.lines().any(|line| {
+                // Extract cost_usd value and compare against min_usd.
+                if let Some(after) = line.find("\"cost_usd\":") {
+                    let tail = &line[after + "\"cost_usd\":".len()..];
+                    let end = tail.find([',', '}', ' ']).unwrap_or(tail.len());
+                    if let Ok(v) = tail[..end].trim().parse::<f64>() {
+                        return v >= min_usd;
                     }
-                    false
-                });
-        assert!(
-            has_cost,
-            "no cost_usd >= {min_usd} found in episodes.jsonl"
-        );
+                }
+                false
+            });
+        assert!(has_cost, "no cost_usd >= {min_usd} found in episodes.jsonl");
     }
 }
 
@@ -350,7 +336,11 @@ impl TestRuntimeBuilder {
     }
 
     /// Configure a scripted reply for tasks whose spec contains `task_fragment`.
-    pub fn with_task_reply(mut self, task_fragment: impl Into<String>, reply: impl Into<String>) -> Self {
+    pub fn with_task_reply(
+        mut self,
+        task_fragment: impl Into<String>,
+        reply: impl Into<String>,
+    ) -> Self {
         self.turns.push(MockTurn {
             task_id_contains: task_fragment.into(),
             reply: reply.into(),
@@ -407,8 +397,7 @@ impl TestRuntimeBuilder {
         // Write a minimal roko.toml so config loading doesn't fail.
         let roko_toml = "[meta]\nversion = 1\n\n[agent]\nmodel = \"mock-model\"\nbackend = \"mock\"\n\
              [learning]\nreplan_on_gate_failure = false\n";
-        fs::write(workdir.path().join("roko.toml"), roko_toml)
-            .expect("write minimal roko.toml");
+        fs::write(workdir.path().join("roko.toml"), roko_toml).expect("write minimal roko.toml");
 
         let dispatcher = Arc::new(MockTaskDispatcher::new(
             self.turns,
@@ -604,9 +593,7 @@ async fn mock_dispatcher_default_reply_for_unmatched_task() {
 
 #[test]
 fn test_runtime_builder_creates_workspace_dirs() {
-    let rt = TestRuntime::builder()
-        .with_plan_id("smoke-test")
-        .build();
+    let rt = TestRuntime::builder().with_plan_id("smoke-test").build();
 
     assert!(rt.roko_dir().join("learn").is_dir());
     assert!(rt.roko_dir().join("state").is_dir());
@@ -629,9 +616,7 @@ fn test_runtime_builder_writes_tasks_toml() {
 
 #[test]
 fn test_runtime_write_tasks_toml_creates_plan_dir() {
-    let rt = TestRuntime::builder()
-        .with_plan_id("my-plan")
-        .build();
+    let rt = TestRuntime::builder().with_plan_id("my-plan").build();
 
     rt.write_tasks_toml(SIMPLE_TASKS_TOML);
     assert!(rt.tasks_toml_path().exists());
@@ -650,8 +635,8 @@ fn test_runtime_write_tasks_toml_creates_plan_dir() {
 /// 4. The episode file contains plan and task identity.
 #[tokio::test]
 async fn test_runtime_harness_smoke() {
-    use roko_cli::runtime_feedback::{EpisodeSink, FeedbackEvent, FeedbackFacade};
     use roko_cli::dispatch::{AgentOutcome, ModelChoiceSource};
+    use roko_cli::runtime_feedback::{EpisodeSink, FeedbackEvent, FeedbackFacade};
     use std::sync::Arc;
 
     let rt = TestRuntime::builder()
@@ -733,12 +718,13 @@ async fn test_runtime_harness_smoke() {
     // ── Step 3: Simulate episode recording via FeedbackFacade ─────────
 
     let episodes_path = rt.episodes_path();
-    let facade = FeedbackFacade::new()
-        .with_sink(Arc::new(EpisodeSink::at(&episodes_path)));
+    let facade = FeedbackFacade::new().with_sink(Arc::new(EpisodeSink::at(&episodes_path)));
 
     // Emit a task-completed event for T1.
     facade
         .on_event(&FeedbackEvent::TaskCompleted {
+            turns: 0,
+            failure_reason: None,
             plan_id: "test-plan".into(),
             task_id: "T1".into(),
             outcome: AgentOutcome {
@@ -769,6 +755,8 @@ async fn test_runtime_harness_smoke() {
     // Emit a task-completed event for T2.
     facade
         .on_event(&FeedbackEvent::TaskCompleted {
+            turns: 0,
+            failure_reason: None,
             plan_id: "test-plan".into(),
             task_id: "T2".into(),
             outcome: AgentOutcome {
@@ -845,8 +833,7 @@ fn test_runtime_diamond_tasks_toml_parses() {
         .with_tasks_toml(DIAMOND_TASKS_TOML)
         .build();
 
-    let parsed = TasksFile::parse(&rt.tasks_toml_path())
-        .expect("diamond TOML must parse");
+    let parsed = TasksFile::parse(&rt.tasks_toml_path()).expect("diamond TOML must parse");
     assert_eq!(parsed.tasks.len(), 3);
     let ids: Vec<&str> = parsed.tasks.iter().map(|t| t.id.as_str()).collect();
     assert!(ids.contains(&"A") && ids.contains(&"B") && ids.contains(&"C"));

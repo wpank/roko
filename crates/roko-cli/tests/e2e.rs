@@ -60,6 +60,7 @@ timeout_ms = 5000
 fn isolated_roko(workdir: &std::path::Path) -> Command {
     let mut cmd = Command::cargo_bin("roko").expect("roko binary");
     cmd.timeout(Duration::from_secs(90))
+        .current_dir(workdir)
         .env("HOME", workdir)
         .env("ROKO_DISPATCHER", MOCK_DISPATCHER)
         .env_remove("ANTHROPIC_API_KEY")
@@ -93,6 +94,7 @@ fn init_run_produces_expected_signals() {
     // `roko init <workdir>`
     Command::cargo_bin("roko")
         .unwrap()
+        .current_dir(workdir)
         .arg("init")
         .arg(workdir)
         .assert()
@@ -170,6 +172,7 @@ fn init_run_produces_expected_signals() {
     // though the WorkflowEngine no longer writes legacy engram episode signals.
     let status = Command::cargo_bin("roko")
         .unwrap()
+        .current_dir(workdir)
         .arg("status")
         .arg("--workdir")
         .arg(workdir)
@@ -197,6 +200,7 @@ fn status_cfactor_reports_trend_and_components() {
 
     Command::cargo_bin("roko")
         .unwrap()
+        .current_dir(workdir)
         .arg("init")
         .arg(workdir)
         .assert()
@@ -289,6 +293,7 @@ fn status_cfactor_reports_trend_and_components() {
 
     let status = Command::cargo_bin("roko")
         .unwrap()
+        .current_dir(workdir)
         .arg("status")
         .arg("--cfactor")
         .arg("--workdir")
@@ -323,6 +328,7 @@ fn run_fails_when_gate_fails() {
 
     Command::cargo_bin("roko")
         .unwrap()
+        .current_dir(workdir)
         .arg("init")
         .arg(workdir)
         .assert()
@@ -376,6 +382,7 @@ fn prompt_files_are_injected_as_sections() {
 
     Command::cargo_bin("roko")
         .unwrap()
+        .current_dir(workdir)
         .arg("init")
         .arg(workdir)
         .assert()

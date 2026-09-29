@@ -486,6 +486,31 @@ expires_at = "2027-04-20T00:00:00Z"  # optional
 | `extensions` | Vec\<String\> | `[]` | Default extension chain |
 | `domain` | Option\<String\> | None | Default domain profile |
 | `mode` | AgentMode | `Ephemeral` | `ephemeral` / `persistent` / `reactive` |
+| `env_passthrough` | Vec\<String\> | `[]` | Inherited variables provider CLI subprocesses keep although roko would strip them: exact names or `PREFIX*` patterns (see *Child process environments* below) |
+
+#### Child process environments
+
+roko loads `~/.roko/.env` and `<workdir>/.roko/.env` into its own environment at startup and
+records the loaded names (never values). Those files usually hold provider keys, so child
+processes do not inherit roko's environment wholesale (`roko_core::child_env`):
+
+- **Provider CLIs** (Claude, Codex, Gemini, Cursor, Hermes, OpenClaw, including `roko chat`)
+  keep their inherited environment minus known LLM provider keys other than their own, every
+  variable roko loaded from a `.env` file, and roko's own `ROKO_*` credentials. A CLI's own
+  credential (`ANTHROPIC_API_KEY` for `claude`, `OPENAI_API_KEY` for `codex`, ...) still
+  reaches it when it came from the shell roko started in, so subscription logins and exported
+  keys work as before. The provider's `api_key_env`, `[agent] env_passthrough`, and variables
+  an MCP config refers to as `${NAME}` are always kept.
+- **Gate commands** (task `verify` steps, build/test/lint gates, auto-fix commands) start from
+  an empty environment plus an allowlist: `PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `TERM`,
+  `TMPDIR`, `TZ`, `CI`, locale (`LANG`, `LC_*`), `XDG_*`, toolchain and native-build settings
+  (`CARGO_*`, `RUSTUP_*`, `RUSTC*`, `RUSTFLAGS`, `RUST_*`, `SCCACHE_*`, `NODE_*`, `NPM_*`,
+  `npm_config_*`, `NVM_*`, `PNPM_*`, `YARN_*`, `GO*`, `CGO_*`, `PYTHON*`, `VIRTUAL_ENV`,
+  `JAVA_HOME`, `SDKROOT`, `DEVELOPER_DIR`, `CC`, `CXX`, `AR`, `LD`, `CFLAGS`, `LDFLAGS`,
+  `PKG_CONFIG*`, `OPENSSL_*`, `SSL_CERT_*`, ...), proxies, and `ROKO_*`. Names that look like
+  credentials (a `KEY`, `TOKEN`, `SECRET`, `PASSWORD` or `CREDENTIAL` segment) and names
+  loaded from a `.env` file are dropped even when the allowlist matches. `[gates]
+  env_passthrough` adds names or `PREFIX*` patterns and wins over every exclusion.
 
 #### `[agent.roles.<name>]` -- per-role overrides
 
@@ -648,6 +673,7 @@ Per-complexity overrides: `[routing.weights.mechanical]`, `[routing.weights.focu
 | `cargo_fix_enabled` | bool | `true` | Attempt `cargo fix --allow-dirty` before agent retry |
 | `impact_timeout_ms` | u64 | `5000` | Timeout for changed-target analysis |
 | `compile_concurrency` | usize | `1` | Per-repository Cargo command ownership limit |
+| `env_passthrough` | Vec\<String\> | `[]` | Extra variables gate commands inherit beyond the allowlist, secret-looking or not: exact names or `PREFIX*` patterns, e.g. `["DATABASE_URL", "AWS_*"]` (see *Child process environments* under `[agent]`) |
 | `domain_gates` | HashMap | `{}` | Per-domain custom gate lists |
 | `rungs` | Vec\<GateRungConfig\> | `[]` | Custom gate rungs (alias: `custom_rungs`) |
 

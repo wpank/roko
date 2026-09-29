@@ -250,6 +250,18 @@ pub fn cmd_doctor(workdir: &Path) -> Result<()> {
         config.runner.dangerously_skip_permissions
     );
 
+    // Settings users commonly tune that `plan run` never reads.
+    let inert = crate::graph_task_dispatch::graph_engine_inert_settings(&config);
+    if !inert.is_empty() {
+        println!("---");
+        for setting in &inert {
+            println!(
+                "[warn] {}: set, but no effect on `plan run` ({})",
+                setting.key, setting.reason
+            );
+        }
+    }
+
     // Run the shared diagnostic checks for config doctor (#279).
     use roko_execution::diagnostics::{
         DiagnosticCheckId, DiagnosticRequest, DiagnosticService, DiagnosticSeverity,

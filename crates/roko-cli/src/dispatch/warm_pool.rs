@@ -41,12 +41,15 @@
 //!
 //! ## Current scope
 //!
-//! This implementation is a *typed*, fully tested LRU container — it
-//! does *not* yet pre-spawn real agents, since real spawn requires a
-//! provider runtime that the dispatcher doesn't own. Tests verify the
-//! container semantics exhaustively (TTL eviction, capacity, take/insert
-//! ordering). Spawning real agents is wired through the dispatcher
-//! facade once the provider bridge is online; see `.roko/GAPS.md`.
+//! This implementation is a *typed*, fully tested LRU container. It does
+//! *not* pre-spawn or hold real agents, because real spawn requires a
+//! provider runtime that the dispatcher doesn't own. No dispatch path
+//! inserts into or takes from it: the Graph dispatcher stopped doing so
+//! because a record-only "hit" reused nothing, and counting it made
+//! `was_warm_start` telemetry claim warm starts that never happened. Every
+//! dispatch is a cold start and reports `was_warm_start = false`. Tests
+//! verify the container semantics (TTL eviction, capacity, take/insert
+//! ordering). Real pre-spawning is tracked in `.roko/GAPS.md`.
 
 use std::collections::HashMap;
 use std::collections::VecDeque;

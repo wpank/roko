@@ -230,6 +230,7 @@ depends_on = ["plan-b:T1"]
             superseded_by: None,
             old_format: false,
             last_error: None,
+            group: None,
         },
         PlanSummary {
             id: "plan-b".into(),
@@ -242,6 +243,7 @@ depends_on = ["plan-b:T1"]
             superseded_by: None,
             old_format: false,
             last_error: None,
+            group: None,
         },
         PlanSummary {
             id: "plan-c".into(),
@@ -254,6 +256,7 @@ depends_on = ["plan-b:T1"]
             superseded_by: None,
             old_format: false,
             last_error: None,
+            group: None,
         },
     ];
 
@@ -710,6 +713,7 @@ fn plan_task_counts_uses_summary_progress_without_snapshot() {
         superseded_by: None,
         old_format: false,
         last_error: None,
+        group: None,
     };
 
     assert_eq!(plan_task_counts(&summary, None, 5), (2, 1));
@@ -728,6 +732,7 @@ fn plan_task_counts_prefers_snapshot_task_statuses() {
         superseded_by: None,
         old_format: false,
         last_error: None,
+        group: None,
     };
     let snapshot = PlanTaskListSnapshot {
         tasks_done: 0,
@@ -857,6 +862,7 @@ fn update_from_dashboard_snapshot_maps_connected_state_and_preserves_navigation(
         run_cleanup_degraded: false,
         critical_path_eta_minutes: None,
         surviving_agent_pids: Vec::new(),
+        plan_set: None,
         plans: [
             (
                 "plan-a".to_string(),
@@ -983,6 +989,7 @@ fn update_from_dashboard_snapshot_maps_connected_state_and_preserves_navigation(
         inbox_pending_count: 0,
         affect: None,
         gate_output_lines: Default::default(),
+        task_gate_outputs: Default::default(),
         active_gate_rung: None,
         token_event_ring: Default::default(),
         stats: Default::default(),
@@ -2034,7 +2041,10 @@ fn agent_output_history_eviction_preserves_tool_pairs() {
 
     // Fill remaining slots with Text records up to capacity.
     for i in 0..MAX_AGENT_OUTPUT_RECORDS - 2 {
-        history.push("a", make_record(&format!("filler-{i}"), OutputRecordKind::Text));
+        history.push(
+            "a",
+            make_record(&format!("filler-{i}"), OutputRecordKind::Text),
+        );
     }
     assert_eq!(history.len("a"), MAX_AGENT_OUTPUT_RECORDS);
 
@@ -2455,4 +2465,155 @@ fn reset_scrolls_includes_all_detail_fields() {
     assert_eq!(state.log_detail_scroll, 0);
     assert_eq!(state.marketplace_detail_scroll, 0);
     assert_eq!(state.atelier_detail_scroll, 0);
+}
+
+#[test]
+fn accepted_with_failures_is_its_own_task_state() {
+    use roko_core::DashboardEvent;
+    use roko_core::dashboard_snapshot::{DashboardSnapshot, TASK_OUTCOME_ACCEPTED_WITH_FAILURES};
+
+    let mut snap = DashboardSnapshot::default();
+    snap.apply(&DashboardEvent::PlanStarted {
+        plan_id: "p1".into(),
+        tasks_total: 3,
+    });
+    for task_id in ["t1", "t2", "t3"] {
+        snap.apply(&DashboardEvent::TaskStarted {
+            plan_id: "p1".into(),
+            task_id: task_id.into(),
+            title: task_id.into(),
+            phase: "verify".into(),
+        });
+    }
+    for (task_id, outcome) in [
+        ("t1", "passed"),
+        ("t2", TASK_OUTCOME_ACCEPTED_WITH_FAILURES),
+        ("t3", "failed"),
+    ] {
+        snap.apply(&DashboardEvent::TaskCompleted {
+            plan_id: "p1".into(),
+            task_id: task_id.into(),
+            outcome: outcome.into(),
+        });
+    }
+
+    let mut state = TuiState::default();
+    state.update_from_dashboard_snapshot(&snap);
+    let plan = state.plans.iter().find(|plan| plan.id == "p1").expect("p1");
+    let status = |id: &str| {
+        plan.tasks
+            .iter()
+            .find(|task| task.id == id)
+            .expect("task")
+            .status
+    };
+    assert_eq!(status("t1"), TaskStatus::Done);
+    assert_eq!(status("t2"), TaskStatus::AcceptedWithFailures);
+    assert_eq!(status("t3"), TaskStatus::Failed);
+    assert!(!status("t2").is_failed());
+    assert_eq!(plan.tasks_accepted_with_failures(), 1);
+    assert_eq!(plan.tasks_failed, 1);
+    assert_eq!(
+        TaskStatus::from(TASK_OUTCOME_ACCEPTED_WITH_FAILURES),
+        TaskStatus::AcceptedWithFailures
+    );
+}
+
+// =======================================================================
+// Live-unscreened tracking and settle tests (T19)
+// =======================================================================
+
+/// Ingesting a live+unscreened text record tracks its seq in
+/// `live_unscreened_seqs` so it can be dropped on settle.
+#[test]
+fn ingest_live_unscreened_text_is_tracked() {
+    let mut history = AgentOutputHistory::default();
+    let unscreened_line =
+        "\x1eroko.stream.v1 {\"kind\":\"text\",\"content\":\"draft\",\"live\":true,\"screened\":false}"
+            .to_string();
+    history.ingest_lines("agent-a", &[unscreened_line], "assistant");
+
+    // The record must be present.
+    assert_eq!(history.len("agent-a"), 1);
+    // The seq must be in the unscreened tracking set.
+    let seq = history.before("agent-a", None, 1)[0].seq;
+    assert!(
+        history
+            .live_unscreened_seqs
+            .get("agent-a")
+            .is_some_and(|s| s.contains(&seq)),
+        "live unscreened seq {seq} must be tracked"
+    );
+}
+
+/// `settle_screened_transcript` drops unscreened text records but keeps
+/// tool steps (ToolCall/ToolResult) intact.
+#[test]
+fn settle_screened_transcript_keeps_tool_steps() {
+    let mut history = AgentOutputHistory::default();
+
+    // Push a live unscreened text record.
+    let unscreened_text =
+        "\x1eroko.stream.v1 {\"kind\":\"text\",\"content\":\"draft\",\"live\":true,\"screened\":false}"
+            .to_string();
+    // Push a live tool start (should be KEPT after settle).
+    let tool_step = "\x1eroko.stream.v1 {\"kind\":\"tool_start\",\"tool_name\":\"Write\",\"tool_id\":\"t1\",\"live\":true}".to_string();
+    // Push another unscreened reasoning record.
+    let unscreened_reasoning = "\x1eroko.stream.v1 {\"kind\":\"reasoning\",\"content\":\"thinking\",\"live\":true,\"screened\":false}".to_string();
+
+    history.ingest_lines(
+        "a",
+        &[unscreened_text, tool_step, unscreened_reasoning],
+        "assistant",
+    );
+    assert_eq!(history.len("a"), 3);
+
+    // Settle: provide the screened transcript as two new lines.
+    let settled =
+        vec!["\x1eroko.stream.v1 {\"kind\":\"text\",\"content\":\"settled output\"}".to_string()];
+    history.settle_screened_transcript("a", &settled, "assistant");
+
+    // After settle: 1 tool step (kept) + 1 settled text line.
+    let records = history.before("a", None, 10);
+    let kinds: Vec<OutputRecordKind> = records.iter().map(|r| r.kind).collect();
+    assert!(
+        kinds.contains(&OutputRecordKind::ToolCall),
+        "tool call must be kept after settle: {kinds:?}"
+    );
+    let tool_count = kinds
+        .iter()
+        .filter(|&&k| k == OutputRecordKind::ToolCall)
+        .count();
+    assert_eq!(tool_count, 1, "exactly one tool call must remain");
+    let text_count = kinds
+        .iter()
+        .filter(|&&k| k == OutputRecordKind::Text)
+        .count();
+    assert_eq!(
+        text_count, 1,
+        "exactly one settled text record must be present"
+    );
+
+    // Unscreened seqs must be cleared after settle.
+    assert!(
+        history
+            .live_unscreened_seqs
+            .get("a")
+            .map_or(true, |s| s.is_empty()),
+        "live_unscreened_seqs must be cleared after settle"
+    );
+}
+
+/// Settling an agent with no unscreened records is a safe no-op.
+#[test]
+fn settle_screened_transcript_noop_when_no_unscreened() {
+    let mut history = AgentOutputHistory::default();
+    let lines = vec!["\x1eroko.stream.v1 {\"kind\":\"text\",\"content\":\"hello\"}".to_string()];
+    history.ingest_lines("a", &lines, "assistant");
+    assert_eq!(history.len("a"), 1);
+
+    // Settle with new content — should just append (no records dropped).
+    let settled = vec!["\x1eroko.stream.v1 {\"kind\":\"text\",\"content\":\"world\"}".to_string()];
+    history.settle_screened_transcript("a", &settled, "assistant");
+    assert_eq!(history.len("a"), 2);
 }

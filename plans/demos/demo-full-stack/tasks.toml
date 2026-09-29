@@ -1,0 +1,506 @@
+[meta]
+plan = "demo-full-stack"
+total = 6
+done = 0
+status = "fixture"
+max_parallel = 2
+skip_enrichment = true
+estimated_total_minutes = 18
+
+# Dependency DAG:
+#
+#   T01 (researcher)
+#    └── T02 (implementer) — axum skeleton
+#         └── T03 (implementer) — health + info endpoints
+#              ├── T04 (auditor)  ─── T06 (conductor)
+#              └── T05 (scribe)  ─/
+
+[[task]]
+id = "T01"
+title = "Research and recommend a Rust web framework"
+description = """Research which Rust HTTP framework to use for a minimal demo
+server and write your findings to `demo/hello-server/research.md`.
+
+You must create the file `demo/hello-server/research.md` by the end of this
+task. The file must contain these exact Markdown headings (in order):
+  ## Frameworks evaluated
+  ## Recommendation
+  ## Rationale
+  ## Trade-offs
+
+The file must name and briefly describe axum, actix-web, and warp under
+`## Frameworks evaluated`. Under `## Recommendation` the file must contain
+exactly the word `axum` as the chosen framework. Under `## Rationale` you
+must cite at least three specific technical reasons: Tower ecosystem
+compatibility, ergonomic handler typing, and minimal boilerplate for small
+servers. Under `## Trade-offs` you must acknowledge at least one limitation
+of the chosen framework.
+
+Do not create any source-code files in this task; this is a research and
+documentation task only. Do not modify any existing repository file."""
+status = "ready"
+tier = "focused"
+max_loc = 80
+files = ["demo/hello-server/research.md"]
+role = "scribe"
+depends_on = []
+
+[task.context]
+read_files = [
+    { path = "README.md", lines = "1-60", why = "Understand Roko's context so the recommendation is grounded in the project." },
+    { path = "Cargo.toml", lines = "1-40", why = "Check workspace conventions before recommending dependency additions." },
+]
+symbols = []
+anti_patterns = [
+    "Do not recommend actix-web or warp as the final choice.",
+    "Do not write Rust source code or create Cargo.toml in this task.",
+    "Do not leave any section heading empty or with placeholder text.",
+]
+
+[[task.verify]]
+phase = "structural"
+command = "test -f demo/hello-server/research.md"
+fail_msg = "demo/hello-server/research.md must be created by T01."
+
+[[task.verify]]
+phase = "headings"
+command = "rg -qxF '## Frameworks evaluated' demo/hello-server/research.md && rg -qxF '## Recommendation' demo/hello-server/research.md && rg -qxF '## Rationale' demo/hello-server/research.md && rg -qxF '## Trade-offs' demo/hello-server/research.md"
+fail_msg = "research.md must contain all four required section headings."
+
+[[task.verify]]
+phase = "recommendation"
+command = "python3 -c \"import re; text=open('demo/hello-server/research.md').read(); section=text.split('## Recommendation',1)[1].split('##',1)[0]; assert 'axum' in section.lower(), 'Recommendation section must contain axum'\""
+fail_msg = "The Recommendation section must name axum as the chosen framework."
+
+[[task.verify]]
+phase = "coverage"
+command = "python3 -c \"text=open('demo/hello-server/research.md').read().lower(); assert 'axum' in text and 'actix' in text and 'warp' in text, 'All three frameworks must appear in the research'\""
+fail_msg = "research.md must evaluate axum, actix-web, and warp."
+
+# ---------------------------------------------------------------------------
+
+[[task]]
+id = "T02"
+title = "Scaffold the axum hello-server skeleton"
+description = """Create the minimal Rust package `demo/hello-server/` that
+compiles to a runnable binary using axum and tokio. You must create both files:
+
+1. `demo/hello-server/Cargo.toml` — a standalone [package] (not a workspace
+   member) named `hello-server` with version `0.1.0` and edition `2021`. The
+   [dependencies] section must include:
+     axum = "0.7"
+     tokio = { version = "1", features = ["full"] }
+
+2. `demo/hello-server/src/main.rs` — a complete, compilable axum application
+   that:
+     - Imports axum::routing::get and axum::Router
+     - Defines an async handler function named `hello` that returns the static
+       &'static str value `"Hello from Roko!"`
+     - Builds a Router with `.route("/", get(hello))`
+     - Binds a TcpListener on `0.0.0.0:3333` using tokio::net::TcpListener
+     - Calls axum::serve(listener, app).await and propagates the error
+     - Has a #[tokio::main] async fn main() -> Result<(), Box<dyn std::error::Error>>
+
+Do not use .unwrap() anywhere in main.rs. Use `?` for all fallible operations.
+Do not create any files outside `demo/hello-server/`.
+Do not add `demo/hello-server` to the workspace Cargo.toml — leave the
+workspace members list unchanged."""
+status = "ready"
+tier = "focused"
+max_loc = 35
+files = [
+    "demo/hello-server/Cargo.toml",
+    "demo/hello-server/src/main.rs",
+]
+role = "implementer"
+depends_on = ["T01"]
+
+[task.context]
+read_files = [
+    { path = "demo/hello-server/research.md", why = "Confirm axum was recommended before writing the implementation." },
+    { path = "Cargo.toml", lines = "1-40", why = "Verify the workspace structure so the new package is kept standalone." },
+]
+symbols = [
+    "axum::routing::get",
+    "axum::Router",
+    "tokio::net::TcpListener",
+    "axum::serve",
+]
+anti_patterns = [
+    "Do not use .unwrap() — every fallible call must use ? operator.",
+    "Do not add demo/hello-server to the workspace Cargo.toml members list.",
+    "Do not import crates beyond axum and tokio.",
+    "Do not add a [workspace] table to demo/hello-server/Cargo.toml.",
+]
+
+[[task.verify]]
+phase = "files-exist"
+command = "test -f demo/hello-server/Cargo.toml && test -f demo/hello-server/src/main.rs"
+fail_msg = "Both demo/hello-server/Cargo.toml and demo/hello-server/src/main.rs must exist."
+
+[[task.verify]]
+phase = "cargo-toml-schema"
+command = "python3 -c \"import tomllib; d=tomllib.load(open('demo/hello-server/Cargo.toml','rb')); assert d['package']['name']=='hello-server'; assert d['package']['edition']=='2021'; deps=d.get('dependencies',{}); assert 'axum' in deps and 'tokio' in deps\""
+fail_msg = "Cargo.toml must declare package name hello-server, edition 2021, and axum + tokio dependencies."
+
+[[task.verify]]
+phase = "no-unwrap"
+command = "python3 -c \"src=open('demo/hello-server/src/main.rs').read(); assert '.unwrap()' not in src, 'main.rs must not contain .unwrap()'\""
+fail_msg = "main.rs must not use .unwrap() — use ? for all fallible operations."
+
+[[task.verify]]
+phase = "compiles"
+command = "cd demo/hello-server && cargo build --quiet 2>&1 | head -20"
+fail_msg = "The hello-server package must compile without errors."
+
+[[task.verify]]
+phase = "hello-route"
+command = "rg -q 'Hello from Roko' demo/hello-server/src/main.rs"
+fail_msg = "main.rs must contain the exact string 'Hello from Roko' in the hello handler."
+
+# ---------------------------------------------------------------------------
+
+[[task]]
+id = "T03"
+title = "Add /health and /info endpoints"
+description = """Extend `demo/hello-server/src/main.rs` to add two new JSON
+endpoints in addition to the existing GET / handler. You must modify only
+`demo/hello-server/src/main.rs`. Do not change Cargo.toml.
+
+Add the following to Cargo.toml dependencies (by editing it):
+  serde = { version = "1", features = ["derive"] }
+  serde_json = "1"
+
+Then update src/main.rs to:
+
+1. Add a GET /health handler named `health` that returns a JSON response body
+   `{"status":"ok","version":"0.1.0"}`. Use serde_json::json! macro or a
+   serializable struct — either approach is acceptable. The Content-Type must
+   be application/json. Use axum::Json or axum::response::Json for the return
+   type.
+
+2. Add a GET /info handler named `info` that returns a JSON response body
+   `{"built_by":"roko","plan":"demo-full-stack"}`. Same JSON response
+   requirements as /health.
+
+3. Update the Router to include:
+     .route("/health", get(health))
+     .route("/info", get(info))
+
+Do not use .unwrap() anywhere. Do not remove the existing GET / route.
+Do not create any new files — edit only demo/hello-server/Cargo.toml and
+demo/hello-server/src/main.rs."""
+status = "ready"
+tier = "focused"
+max_loc = 60
+files = [
+    "demo/hello-server/Cargo.toml",
+    "demo/hello-server/src/main.rs",
+]
+role = "implementer"
+depends_on = ["T02"]
+
+[task.context]
+read_files = [
+    { path = "demo/hello-server/Cargo.toml", why = "Read the current dependency list before adding serde and serde_json." },
+    { path = "demo/hello-server/src/main.rs", why = "Read the existing axum router structure before adding new routes." },
+]
+symbols = [
+    "serde_json::json!",
+    "axum::Json",
+    ".route(\"/health\", get(health))",
+    ".route(\"/info\", get(info))",
+]
+anti_patterns = [
+    "Do not remove the existing GET / hello route.",
+    "Do not use .unwrap() anywhere.",
+    "Do not create additional source files.",
+    "Do not hard-code a different built_by value.",
+]
+
+[[task.verify]]
+phase = "compiles"
+command = "cd demo/hello-server && cargo build --quiet 2>&1 | head -20"
+fail_msg = "The hello-server package must still compile after adding the new endpoints."
+
+[[task.verify]]
+phase = "routes-present"
+command = "rg -q '/health' demo/hello-server/src/main.rs && rg -q '/info' demo/hello-server/src/main.rs"
+fail_msg = "src/main.rs must define both /health and /info routes."
+
+[[task.verify]]
+phase = "json-content"
+command = "python3 -c \"src=open('demo/hello-server/src/main.rs').read(); assert 'ok' in src and '0.1.0' in src, '/health content must contain ok and 0.1.0'; assert 'roko' in src and 'demo-full-stack' in src, '/info content must reference roko and demo-full-stack'\""
+fail_msg = "Handler implementations must contain the expected JSON field values."
+
+[[task.verify]]
+phase = "no-unwrap"
+command = "python3 -c \"src=open('demo/hello-server/src/main.rs').read(); assert '.unwrap()' not in src, 'main.rs must not contain .unwrap()'\""
+fail_msg = "main.rs must not use .unwrap() after endpoint additions."
+
+[[task.verify]]
+phase = "original-route-preserved"
+command = "rg -q 'Hello from Roko' demo/hello-server/src/main.rs"
+fail_msg = "The original GET / route returning 'Hello from Roko' must be preserved."
+
+# ---------------------------------------------------------------------------
+
+[[task]]
+id = "T04"
+title = "Audit the server code for security issues"
+description = """Perform a security audit of the hello-server implementation
+and write a report to `demo/hello-server/AUDIT.md`. You must create the file
+`demo/hello-server/AUDIT.md`.
+
+The audit must cover and address all of the following:
+
+1. Panic paths — check that .unwrap() and .expect() are absent from
+   main.rs; report PASS or FAIL with evidence.
+2. Error handling — verify that all fallible operations propagate errors
+   using ? or explicit error types; report PASS or FAIL.
+3. Hardcoded secrets — confirm no API keys, tokens, passwords, or
+   credentials appear in the source; report PASS or FAIL.
+4. Input validation — note that GET / and /health accept no user input;
+   assess /info; report PASS or FAIL.
+5. Dependency surface — list the four direct dependencies (axum, tokio,
+   serde, serde_json) and note their security posture.
+
+The file must contain these exact Markdown headings (in order):
+  ## Audit summary
+  ## Panic paths
+  ## Error handling
+  ## Hardcoded secrets
+  ## Input validation
+  ## Dependency surface
+  ## Verdict
+
+Under `## Verdict` write exactly one of: `PASS` or `FAIL — <reason>`.
+Given that T02 and T03 prohibit .unwrap() and hardcoded secrets, the
+expected verdict is PASS.
+
+Do not modify any source file. This is a read-only audit task."""
+status = "ready"
+tier = "integrative"
+max_loc = 100
+files = ["demo/hello-server/AUDIT.md"]
+role = "scribe"
+depends_on = ["T03"]
+
+[task.context]
+read_files = [
+    { path = "demo/hello-server/src/main.rs", why = "Audit the implementation for every security category." },
+    { path = "demo/hello-server/Cargo.toml", why = "Audit the direct dependency surface." },
+]
+symbols = [
+    "PASS — expected verdict given no .unwrap() and no hardcoded secrets",
+    "axum, tokio, serde, serde_json — the four direct dependencies",
+]
+anti_patterns = [
+    "Do not modify main.rs or Cargo.toml during the audit.",
+    "Do not mark FAIL without citing evidence from the source files.",
+    "Do not omit any of the seven required section headings.",
+]
+
+[[task.verify]]
+phase = "file-exists"
+command = "test -f demo/hello-server/AUDIT.md"
+fail_msg = "demo/hello-server/AUDIT.md must be created by T04."
+
+[[task.verify]]
+phase = "headings"
+command = "rg -qxF '## Audit summary' demo/hello-server/AUDIT.md && rg -qxF '## Panic paths' demo/hello-server/AUDIT.md && rg -qxF '## Error handling' demo/hello-server/AUDIT.md && rg -qxF '## Hardcoded secrets' demo/hello-server/AUDIT.md && rg -qxF '## Input validation' demo/hello-server/AUDIT.md && rg -qxF '## Dependency surface' demo/hello-server/AUDIT.md && rg -qxF '## Verdict' demo/hello-server/AUDIT.md"
+fail_msg = "AUDIT.md must contain all seven required section headings."
+
+[[task.verify]]
+phase = "verdict-present"
+command = "python3 -c \"text=open('demo/hello-server/AUDIT.md').read(); verdict_section=text.split('## Verdict',1)[1].strip(); assert verdict_section.startswith('PASS') or verdict_section.startswith('FAIL'), 'Verdict section must start with PASS or FAIL'\""
+fail_msg = "The Verdict section must begin with PASS or FAIL."
+
+[[task.verify]]
+phase = "dependency-coverage"
+command = "python3 -c \"text=open('demo/hello-server/AUDIT.md').read().lower(); assert all(dep in text for dep in ('axum','tokio','serde','serde_json')), 'All four dependencies must be mentioned in the audit'\""
+fail_msg = "AUDIT.md must mention all four direct dependencies: axum, tokio, serde, serde_json."
+
+# ---------------------------------------------------------------------------
+
+[[task]]
+id = "T05"
+title = "Write the hello-server README"
+description = """Write comprehensive user-facing documentation for the
+hello-server and save it to `demo/hello-server/README.md`. You must create
+the file `demo/hello-server/README.md`.
+
+The README must contain these exact Markdown headings (in order):
+  # hello-server
+  ## Overview
+  ## Requirements
+  ## Building
+  ## Running
+  ## API reference
+  ## Architecture
+  ## Built by
+
+Under `## Building` include the exact command:
+  cargo build
+
+Under `## Running` include the exact command:
+  cargo run
+and note that the server listens on port 3333.
+
+Under `## API reference` document all three endpoints as a Markdown table
+with columns `Method`, `Path`, `Description`, `Response`. Include rows for:
+  GET  /        Returns the greeting text
+  GET  /health  Returns server health as JSON
+  GET  /info    Returns build metadata as JSON
+
+Under `## Architecture` describe the axum + tokio stack, mention Tower
+middleware compatibility, and note that handlers return typed responses.
+
+Under `## Built by` write exactly the sentence:
+  Built by roko (https://github.com/nunchi/roko) using the demo-full-stack plan.
+
+Do not modify any source files. Do not create files other than README.md."""
+status = "ready"
+tier = "focused"
+max_loc = 120
+files = ["demo/hello-server/README.md"]
+role = "scribe"
+depends_on = ["T03"]
+
+[task.context]
+read_files = [
+    { path = "demo/hello-server/src/main.rs", why = "Derive accurate API documentation from the actual implementation." },
+    { path = "demo/hello-server/Cargo.toml", why = "Derive accurate dependency and build information." },
+]
+symbols = [
+    "port 3333 — the server's listen address",
+    "GET / — hello, GET /health — health check, GET /info — build metadata",
+    "axum + tokio — the server stack",
+]
+anti_patterns = [
+    "Do not document endpoints that do not exist in main.rs.",
+    "Do not omit the exact cargo build and cargo run commands.",
+    "Do not modify source files while writing documentation.",
+]
+
+[[task.verify]]
+phase = "file-exists"
+command = "test -f demo/hello-server/README.md"
+fail_msg = "demo/hello-server/README.md must be created by T05."
+
+[[task.verify]]
+phase = "headings"
+command = "rg -qxF '# hello-server' demo/hello-server/README.md && rg -qxF '## Overview' demo/hello-server/README.md && rg -qxF '## Requirements' demo/hello-server/README.md && rg -qxF '## Building' demo/hello-server/README.md && rg -qxF '## Running' demo/hello-server/README.md && rg -qxF '## API reference' demo/hello-server/README.md && rg -qxF '## Architecture' demo/hello-server/README.md && rg -qxF '## Built by' demo/hello-server/README.md"
+fail_msg = "README.md must contain all eight required section headings."
+
+[[task.verify]]
+phase = "api-table"
+command = "python3 -c \"text=open('demo/hello-server/README.md').read(); assert '/health' in text and '/info' in text and 'GET' in text, 'API reference table must document all three endpoints'\""
+fail_msg = "README.md must document GET /, GET /health, and GET /info in the API reference."
+
+[[task.verify]]
+phase = "commands"
+command = "rg -q 'cargo build' demo/hello-server/README.md && rg -q 'cargo run' demo/hello-server/README.md"
+fail_msg = "README.md must include the exact cargo build and cargo run commands."
+
+[[task.verify]]
+phase = "port-and-attribution"
+command = "rg -q '3333' demo/hello-server/README.md && rg -q 'roko' demo/hello-server/README.md"
+fail_msg = "README.md must mention port 3333 and the roko attribution."
+
+# ---------------------------------------------------------------------------
+
+[[task]]
+id = "T06"
+title = "Conductor final review and completion report"
+description = """Perform the final conductor review of the complete hello-server
+deliverable and write a completion report to `demo/hello-server/COMPLETION.md`.
+You must create the file `demo/hello-server/COMPLETION.md`.
+
+As conductor you must:
+
+1. Verify that all five expected artifacts exist:
+     demo/hello-server/research.md
+     demo/hello-server/Cargo.toml
+     demo/hello-server/src/main.rs
+     demo/hello-server/AUDIT.md
+     demo/hello-server/README.md
+
+2. Verify the server compiles by running:
+     cd demo/hello-server && cargo build --quiet
+
+3. Verify the audit verdict is PASS by checking that the Verdict section
+   in AUDIT.md begins with the word PASS.
+
+4. Write `demo/hello-server/COMPLETION.md` with these exact headings (in order):
+     # Completion report
+     ## Artifacts
+     ## Compile verification
+     ## Audit verdict
+     ## Acceptance
+     ## Sign-off
+
+   Under `## Artifacts` list all five artifact paths with a checkmark (✓)
+   or cross (✗) status for each.
+
+   Under `## Compile verification` report the result of `cargo build`.
+
+   Under `## Audit verdict` reproduce the exact verdict line from AUDIT.md.
+
+   Under `## Acceptance` write a one-paragraph human-readable summary
+   confirming the plan produced a working Rust web server that demonstrates
+   the full researcher → implementer → auditor/scribe → conductor pipeline.
+
+   Under `## Sign-off` write exactly:
+     `demo-full-stack plan: COMPLETE`
+
+Do not modify any other file. If any artifact is missing or the build fails,
+still create COMPLETION.md but mark the affected sections as FAIL."""
+status = "ready"
+tier = "integrative"
+max_loc = 80
+files = ["demo/hello-server/COMPLETION.md"]
+role = "implementer"
+depends_on = ["T04", "T05"]
+
+[task.context]
+read_files = [
+    { path = "demo/hello-server/research.md", why = "Confirm the research artifact from T01 is present and complete." },
+    { path = "demo/hello-server/src/main.rs", why = "Confirm the implementation artifact from T02/T03 is present." },
+    { path = "demo/hello-server/AUDIT.md", why = "Reproduce the authoritative verdict from T04." },
+    { path = "demo/hello-server/README.md", why = "Confirm the documentation artifact from T05 is present." },
+]
+symbols = [
+    "demo-full-stack plan: COMPLETE — exact sign-off sentinel",
+    "five artifacts: research.md, Cargo.toml, src/main.rs, AUDIT.md, README.md",
+]
+anti_patterns = [
+    "Do not modify AUDIT.md, README.md, research.md, or any source file.",
+    "Do not issue a COMPLETE sign-off if the build failed or AUDIT.md verdict is FAIL.",
+    "Do not omit any of the six required section headings from COMPLETION.md.",
+]
+
+[[task.verify]]
+phase = "file-exists"
+command = "test -f demo/hello-server/COMPLETION.md"
+fail_msg = "demo/hello-server/COMPLETION.md must be created by T06."
+
+[[task.verify]]
+phase = "headings"
+command = "rg -qxF '# Completion report' demo/hello-server/COMPLETION.md && rg -qxF '## Artifacts' demo/hello-server/COMPLETION.md && rg -qxF '## Compile verification' demo/hello-server/COMPLETION.md && rg -qxF '## Audit verdict' demo/hello-server/COMPLETION.md && rg -qxF '## Acceptance' demo/hello-server/COMPLETION.md && rg -qxF '## Sign-off' demo/hello-server/COMPLETION.md"
+fail_msg = "COMPLETION.md must contain all six required section headings."
+
+[[task.verify]]
+phase = "all-artifacts-exist"
+command = "test -f demo/hello-server/research.md && test -f demo/hello-server/Cargo.toml && test -f demo/hello-server/src/main.rs && test -f demo/hello-server/AUDIT.md && test -f demo/hello-server/README.md"
+fail_msg = "All five upstream artifacts must be present at completion time."
+
+[[task.verify]]
+phase = "sign-off"
+command = "rg -qxF 'demo-full-stack plan: COMPLETE' demo/hello-server/COMPLETION.md"
+fail_msg = "COMPLETION.md must contain the exact sign-off sentinel: 'demo-full-stack plan: COMPLETE'."
+
+[[task.verify]]
+phase = "final-compile"
+command = "cd demo/hello-server && cargo build --quiet 2>&1 | head -20"
+fail_msg = "The complete hello-server must compile cleanly at final acceptance."

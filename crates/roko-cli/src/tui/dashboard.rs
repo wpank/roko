@@ -634,8 +634,7 @@ impl DashboardData {
 
         // Initialize incremental tailers and do the first tick so items are
         // populated to match the full-read data already loaded above.
-        let mut efficiency_tailer =
-            super::jsonl_tailer::IncrementalTailer::<AgentEfficiencyEvent>::new(&efficiency_path);
+        let mut efficiency_tailer = super::jsonl_tailer::efficiency_tailer(&efficiency_path);
         let _ = efficiency_tailer.tick();
         let mut cfactor_tailer =
             super::jsonl_tailer::IncrementalTailer::<CFactor>::new(&cfactor_path);
@@ -1389,21 +1388,19 @@ fn load_plan_summaries(root: &Path, state: &Value) -> Vec<PlanSummary> {
     } else {
         load_task_trackers(root)
     };
+    // The same recursive discovery as `roko plan list`: plans inside plan
+    // sets (e.g. `plans/portal-programme/01-*`) are found and keyed by id.
+    let plan_dirs = crate::plan::plan_dirs_by_id(root);
     if let Some(plan_states) = state.get("plan_states").and_then(Value::as_object) {
         ids.extend(plan_states.keys().cloned());
     }
     if ids.is_empty() {
-        let pdir = plans_dir(root);
-        if pdir.is_dir() {
-            if let Ok(entries) = std::fs::read_dir(&pdir) {
-                for entry in entries.flatten() {
-                    let p = entry.path();
-                    if p.is_dir() && p.join("tasks.toml").exists() {
-                        ids.insert(entry.file_name().to_string_lossy().into_owned());
-                    }
-                }
-            }
-        }
+        ids.extend(
+            plan_dirs
+                .values()
+                .filter(|plan_dir| plan_dir.has_tasks())
+                .map(|plan_dir| plan_dir.id.clone()),
+        );
     }
 
     let mut summaries = Vec::new();
@@ -1412,8 +1409,7 @@ fn load_plan_summaries(root: &Path, state: &Value) -> Vec<PlanSummary> {
         let mut task_count = 0usize;
         let mut tasks_done = 0usize;
         let mut tasks_failed = 0usize;
-        let plan_dir = plans_dir(root).join(&id);
-        let tasks_path = plan_dir.join("tasks.toml");
+        let tasks_path = plan_dir_for(root, &plan_dirs, &id).join("tasks.toml");
         if let Ok(tasks_file) = TasksFile::parse(&tasks_path) {
             if !tasks_file.meta.plan.trim().is_empty() {
                 title = tasks_file.meta.plan.clone();
@@ -1558,6 +1554,9 @@ fn load_plan_summaries(root: &Path, state: &Value) -> Vec<PlanSummary> {
             superseded_by: None,
             old_format: false,
             last_error,
+            group: plan_dirs
+                .get(&id)
+                .and_then(|plan_dir| plan_dir.group.clone()),
         });
     }
 
@@ -1568,6 +1567,19 @@ fn load_plan_summaries(root: &Path, state: &Value) -> Vec<PlanSummary> {
 
     summaries.sort_by(|a, b| a.id.cmp(&b.id));
     summaries
+}
+
+/// Directory of plan `plan_id`: where discovery found it (possibly inside a
+/// plan set), else `plans/<plan_id>` for plans known only from runner state.
+fn plan_dir_for(
+    root: &Path,
+    plan_dirs: &std::collections::BTreeMap<String, crate::orchestrator::plan_discovery::PlanDir>,
+    plan_id: &str,
+) -> PathBuf {
+    plan_dirs.get(plan_id).map_or_else(
+        || plans_dir(root).join(plan_id),
+        |plan_dir| plan_dir.dir.clone(),
+    )
 }
 
 pub(super) fn runner_task_outcomes_for_plan(
@@ -1665,6 +1677,7 @@ fn build_plan_task_snapshots(
     } else {
         load_task_trackers(root)
     };
+    let plan_dirs = crate::plan::plan_dirs_by_id(root);
     let plan_states = state.get("plan_states").and_then(Value::as_object);
     let active_by_key: HashMap<(String, String), &TaskSummary> = active_tasks
         .iter()
@@ -1701,7 +1714,7 @@ fn build_plan_task_snapshots(
             ..PlanTaskListSnapshot::default()
         };
 
-        let tasks_path = plans_dir(root).join(&plan.id).join("tasks.toml");
+        let tasks_path = plan_dir_for(root, &plan_dirs, &plan.id).join("tasks.toml");
         let parsed = match parse_plan_tasks_file(&tasks_path) {
             Ok(parsed) => parsed,
             Err(err) => {
@@ -2398,7 +2411,7 @@ fn load_current_plan_execution(
 
     let plan_state = plan_states.get(&plan_id)?;
     let plan_phase = current_phase_label(plan_state).unwrap_or_else(|| String::from("queued"));
-    let plan_dir = plans_dir(root).join(&plan_id);
+    let plan_dir = plan_dir_for(root, &crate::plan::plan_dirs_by_id(root), &plan_id);
     let tasks_file = TasksFile::parse(&plan_dir.join("tasks.toml")).ok()?;
     let tracker = trackers.get(&plan_id);
     let mut completed: HashSet<String> = tracker
@@ -3395,6 +3408,14 @@ mod tests {
 
     use tempfile::tempdir;
 
+    /// Scaffold over an empty temp workspace: `DashboardScaffold::new()` reads
+    /// the process cwd, which under `cargo test` is this crate's directory.
+    fn temp_scaffold() -> (tempfile::TempDir, DashboardScaffold) {
+        let root = tempdir().expect("tempdir");
+        let dashboard = DashboardScaffold::new_in(root.path());
+        (root, dashboard)
+    }
+
     fn write_runner_snapshot(root: &Path, executor: &Value) {
         let mut executor = executor.clone();
         if let Some(object) = executor.as_object_mut() {
@@ -3669,7 +3690,7 @@ mod tests {
 
     #[test]
     fn scaffold_has_expected_page_count() {
-        let dashboard = DashboardScaffold::new();
+        let (_root, dashboard) = temp_scaffold();
         let summary = dashboard.summary();
         assert_eq!(summary.page_count, 16);
         assert!(summary.widget_count >= 20);
@@ -3678,7 +3699,7 @@ mod tests {
 
     #[test]
     fn can_switch_active_page() {
-        let mut dashboard = DashboardScaffold::new();
+        let (_root, mut dashboard) = temp_scaffold();
         assert!(dashboard.set_active_page(PageId::PlanView));
         assert_eq!(dashboard.active_page(), PageId::PlanView);
     }
@@ -3705,7 +3726,7 @@ mod tests {
 
     #[test]
     fn overview_render_contains_active_page_and_counts() {
-        let dashboard = DashboardScaffold::new();
+        let (_root, dashboard) = temp_scaffold();
         let rendered = dashboard.render_overview_text();
         assert!(rendered.contains("dashboard scaffold: 16 pages"));
         assert!(rendered.contains("active=health"));
@@ -3715,7 +3736,7 @@ mod tests {
 
     #[test]
     fn page_render_includes_widgets() {
-        let dashboard = DashboardScaffold::new();
+        let (_root, dashboard) = temp_scaffold();
         let rendered = dashboard
             .render_page_text(PageId::PlanView)
             .expect("plan page should exist");
@@ -3786,7 +3807,7 @@ mod tests {
 
     #[test]
     fn page_index_render_contains_compact_summaries() {
-        let dashboard = DashboardScaffold::new();
+        let (_root, dashboard) = temp_scaffold();
         let rendered = dashboard.render_page_index_text();
         assert!(rendered.contains("* Health [health] efficiency | 3 widgets"));
         assert!(rendered.contains("Plan View [plan-view] operations | 2 widgets"));
@@ -3794,7 +3815,7 @@ mod tests {
 
     #[test]
     fn page_list_render_focuses_on_one_page_widget_list() {
-        let dashboard = DashboardScaffold::new();
+        let (_root, dashboard) = temp_scaffold();
         let rendered = dashboard
             .render_page_list_text(PageId::ConfigView)
             .expect("config page should exist");
@@ -4659,6 +4680,38 @@ mod tests {
             .unwrap();
         assert_eq!(queued.status, "ready");
         assert!(load_current_plan_execution(tmpdir.path(), &no_lifecycle, &[]).is_none());
+    }
+
+    #[test]
+    fn plan_summaries_include_nested_plan_sets_and_skip_archive() {
+        let tmpdir = tempdir().expect("tempdir");
+        let root = tmpdir.path();
+        let tasks = "[meta]\nplan = \"nested\"\n\n[[task]]\nid = \"T1\"\ntitle = \"Task\"\n";
+        for dir in [
+            "plans/solo",
+            "plans/programme/01-backend",
+            "plans/archive/old-plan",
+        ] {
+            std::fs::create_dir_all(root.join(dir)).unwrap();
+            std::fs::write(root.join(dir).join("tasks.toml"), tasks).unwrap();
+        }
+
+        let summaries = load_plan_summaries(root, &serde_json::json!({}));
+        let found: Vec<(&str, Option<&str>, usize)> = summaries
+            .iter()
+            .map(|plan| (plan.id.as_str(), plan.group.as_deref(), plan.task_count))
+            .collect();
+        assert_eq!(
+            found,
+            vec![("01-backend", Some("programme"), 1), ("solo", None, 1)]
+        );
+
+        // Runner state naming a nested plan still resolves its tasks.toml.
+        let state = serde_json::json!({ "plan_states": { "01-backend": {} } });
+        let summaries = load_plan_summaries(root, &state);
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].task_count, 1);
+        assert_eq!(summaries[0].group.as_deref(), Some("programme"));
     }
 
     #[test]

@@ -55,14 +55,21 @@ const fn default_compile_concurrency() -> usize {
     1
 }
 
+const fn default_sibling_settle_secs() -> u64 {
+    600
+}
+
 // ---- [gates.adaptive] defaults -------------------------------------------
 
 const fn default_ema_alpha() -> f64 {
     0.1
 }
 
+/// Matches a task's default `max_retries` (3): since adaptive thresholds bound
+/// the retry budget of tasks without an authored `max_retries`, a lower floor
+/// would cut retries for gates that usually pass.
 const fn default_min_retries() -> u32 {
-    1
+    3
 }
 
 const fn default_max_retries() -> u32 {
@@ -130,6 +137,13 @@ pub struct GatesConfig {
     /// and always hand failures directly to the agent.
     #[serde(default = "default_true")]
     pub cargo_fix_enabled: bool,
+    /// Write `EvalGenerator` test artifacts to `.roko/generated-tests/` before
+    /// each standard-tier Graph task dispatch.
+    ///
+    /// Defaults to `false`: `plan run` never executes these files. Only the
+    /// legacy Runner-v2 generated-test rung reads them.
+    #[serde(default)]
+    pub write_eval_artifacts: bool,
     /// Maximum time allowed for changed-target and Cargo metadata analysis.
     #[serde(default = "default_impact_timeout_ms")]
     pub impact_timeout_ms: u64,
@@ -142,6 +156,28 @@ pub struct GatesConfig {
     /// Per-repository Cargo command ownership limit.
     #[serde(default = "default_compile_concurrency")]
     pub compile_concurrency: usize,
+    /// Seconds a Graph verify step that failed while sibling tasks were
+    /// editing the same working tree waits for them to finish their current
+    /// attempt before re-running once; only the re-run counts. `0` disables
+    /// the wait, so every failure counts at once. Default: 600.
+    #[serde(default = "default_sibling_settle_secs")]
+    pub sibling_settle_secs: u64,
+    /// Extra roko environment variables that gate commands (task `verify`
+    /// steps, build and test gates) may inherit: exact names or `PREFIX*`
+    /// patterns, e.g. `["DATABASE_URL", "AWS_*"]`.
+    ///
+    /// Gate commands start from an empty environment and inherit only an
+    /// allowlist: system basics (`PATH`, `HOME`, `USER`, `SHELL`, `TERM`,
+    /// `TMPDIR`, `TZ`, `CI`), locale (`LANG`, `LC_*`), `XDG_*`, toolchain and
+    /// build settings (`CARGO_*`, `RUSTUP_*`, `RUSTC*`, `RUST_*`, `NODE_*`,
+    /// `NPM_*`, `GO*`, `PYTHON*`, `CC`, `PKG_CONFIG*`, `OPENSSL_*`, ...),
+    /// proxies, and `ROKO_*`. Names that look like credentials (`*_KEY`,
+    /// `*_TOKEN`, `*_SECRET`, `*_PASSWORD`, ...) and names roko loaded from
+    /// `~/.roko/.env` or `.roko/.env` are dropped even then. A name listed
+    /// here is always inherited, secret-looking or not. See
+    /// `roko_core::child_env`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub env_passthrough: Vec<String>,
     /// Per-domain gate overrides. Keys are domain labels (e.g. "research", "docs"),
     /// values are shell commands to run as gates (e.g. `["shell:true"]`).
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
@@ -164,7 +200,8 @@ pub struct GatesConfig {
     pub ema_alpha: f64,
 
     /// Floor for the adaptive retry suggestion — never suggest fewer than
-    /// this many retries for any rung. Default: 1.
+    /// this many retries for any rung. Default: 3 (a task's default
+    /// `max_retries`).
     #[serde(default = "default_min_retries")]
     pub adaptive_min_retries: u32,
 
@@ -185,9 +222,12 @@ pub struct GatesConfig {
     pub convergence_min_observations: u64,
 
     // ── Review cycle cap ──────────────────────────────────────────────
-    /// Maximum consecutive gate-failure review cycles before the task is
-    /// force-accepted. Prevents infinite REVISE loops that consume tokens
-    /// with diminishing returns. Default: 3.
+    /// Maximum consecutive REVISE cycles of a non-deterministic review/judge
+    /// verdict before it may be force-accepted. Never applies to authored
+    /// `[[task.verify]]` steps: those are deterministic, so a failure fails
+    /// the task once its retries are exhausted. The Graph plan dispatcher
+    /// gates on no review/judge verdicts today, so this has no effect on
+    /// `roko plan run`. Default: 3.
     #[serde(default = "default_max_review_cycles")]
     pub max_review_cycles: u32,
 }
@@ -208,10 +248,13 @@ impl Default for GatesConfig {
             skip_tests: false,
             max_iterations: default_max_iterations(),
             cargo_fix_enabled: true,
+            write_eval_artifacts: false,
             impact_timeout_ms: default_impact_timeout_ms(),
             impact_max_reverse_dependents: default_impact_max_reverse_dependents(),
             impact_max_targets: default_impact_max_targets(),
             compile_concurrency: default_compile_concurrency(),
+            sibling_settle_secs: default_sibling_settle_secs(),
+            env_passthrough: Vec::new(),
             domain_gates: HashMap::new(),
             custom_rungs: Vec::new(),
             max_rung: None,
@@ -309,10 +352,30 @@ pub struct PipelineBandConfig {
     /// Maximum implementation-review iterations before stopping.
     #[serde(default = "default_pipeline_band_iterations")]
     pub max_iterations: u32,
+    /// Runaway guard: agent turn cap for each Graph task dispatch in this
+    /// tier (`plan run`). Not a working budget; ordinary tasks should never
+    /// reach it.
+    ///
+    /// Forwarded as the provider turn limit (`--max-turns` for Claude CLI);
+    /// providers without a native turn limit ignore it. A run that hits it
+    /// fails as `TurnLimitReached`, and the retry raises the cap by half and
+    /// resumes the partial work. Values below 1 are raised to 1. Defaults:
+    /// mechanical 40, focused 60, integrative 90, architectural 120.
+    #[serde(default = "default_pipeline_band_max_turns")]
+    pub max_turns: u32,
 }
 
 const fn default_pipeline_band_iterations() -> u32 {
     1
+}
+
+const MECHANICAL_MAX_TURNS: u32 = 40;
+const FOCUSED_MAX_TURNS: u32 = 60;
+const INTEGRATIVE_MAX_TURNS: u32 = 90;
+const ARCHITECTURAL_MAX_TURNS: u32 = 120;
+
+const fn default_pipeline_band_max_turns() -> u32 {
+    FOCUSED_MAX_TURNS
 }
 
 impl PipelineBandConfig {
@@ -324,6 +387,7 @@ impl PipelineBandConfig {
             reviewers: false,
             reviewer_mode: PipelineReviewerMode::Quick,
             max_iterations: 1,
+            max_turns: MECHANICAL_MAX_TURNS,
         }
     }
 
@@ -335,6 +399,7 @@ impl PipelineBandConfig {
             reviewers: false,
             reviewer_mode: PipelineReviewerMode::Quick,
             max_iterations: 2,
+            max_turns: FOCUSED_MAX_TURNS,
         }
     }
 
@@ -346,6 +411,7 @@ impl PipelineBandConfig {
             reviewers: true,
             reviewer_mode: PipelineReviewerMode::Quick,
             max_iterations: 2,
+            max_turns: INTEGRATIVE_MAX_TURNS,
         }
     }
 
@@ -357,6 +423,7 @@ impl PipelineBandConfig {
             reviewers: true,
             reviewer_mode: PipelineReviewerMode::Full,
             max_iterations: 3,
+            max_turns: ARCHITECTURAL_MAX_TURNS,
         }
     }
 }
@@ -377,6 +444,8 @@ struct PipelineBandConfigOverride {
     reviewer_mode: Option<PipelineReviewerMode>,
     #[serde(default)]
     max_iterations: Option<u32>,
+    #[serde(default)]
+    max_turns: Option<u32>,
 }
 
 impl PipelineBandConfigOverride {
@@ -386,6 +455,7 @@ impl PipelineBandConfigOverride {
             reviewers: self.reviewers.unwrap_or(defaults.reviewers),
             reviewer_mode: self.reviewer_mode.unwrap_or(defaults.reviewer_mode),
             max_iterations: self.max_iterations.unwrap_or(defaults.max_iterations),
+            max_turns: self.max_turns.unwrap_or(defaults.max_turns),
         }
     }
 }
@@ -498,6 +568,15 @@ impl PipelineConfig {
             _ => self.focused,
         }
     }
+
+    /// Agent turn cap for a task tier (case-insensitive). Unknown tiers use
+    /// the `focused` band, so the cap is never unbounded.
+    #[must_use]
+    pub fn max_turns_for_tier(&self, tier: &str) -> u32 {
+        self.for_tier(tier.trim().to_ascii_lowercase().as_str())
+            .max_turns
+            .max(1)
+    }
 }
 
 impl Default for PipelineConfig {
@@ -542,5 +621,52 @@ required = true
         assert_eq!(cfg.gates.effective_rungs().len(), 2);
         assert_eq!(cfg.gates.effective_rungs()[0].name, "compile");
         assert_eq!(cfg.gates.effective_rungs()[1].timeout_secs, 300);
+    }
+
+    #[test]
+    fn pipeline_max_turns_defaults_are_bounded_per_tier() {
+        let pipeline = super::PipelineConfig::default();
+        assert_eq!(pipeline.max_turns_for_tier("mechanical"), 40);
+        assert_eq!(pipeline.max_turns_for_tier("focused"), 60);
+        assert_eq!(pipeline.max_turns_for_tier("integrative"), 90);
+        assert_eq!(pipeline.max_turns_for_tier("Architectural"), 120);
+        // Unknown and empty tiers fall back to the focused band, never unbounded.
+        assert_eq!(pipeline.max_turns_for_tier("trivial"), 60);
+        assert_eq!(pipeline.max_turns_for_tier(""), 60);
+    }
+
+    #[test]
+    fn pipeline_max_turns_override_keeps_other_band_defaults() {
+        let cfg = RokoConfig::from_toml(
+            r#"
+[pipeline.integrative]
+max_turns = 45
+
+[pipeline.focused]
+max_turns = 0
+"#,
+        )
+        .expect("config parses");
+
+        assert_eq!(cfg.pipeline.max_turns_for_tier("integrative"), 45);
+        assert!(
+            cfg.pipeline.integrative.strategist,
+            "unset keys keep defaults"
+        );
+        assert_eq!(cfg.pipeline.integrative.max_iterations, 2);
+        assert_eq!(
+            cfg.pipeline.max_turns_for_tier("focused"),
+            1,
+            "zero is raised to one turn"
+        );
+        assert_eq!(cfg.pipeline.max_turns_for_tier("architectural"), 120);
+    }
+
+    #[test]
+    fn eval_artifacts_are_opt_in() {
+        assert!(!super::GatesConfig::default().write_eval_artifacts);
+        let cfg =
+            RokoConfig::from_toml("[gates]\nwrite_eval_artifacts = true\n").expect("config parses");
+        assert!(cfg.gates.write_eval_artifacts);
     }
 }

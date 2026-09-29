@@ -68,8 +68,8 @@ At BASE (4315add32), the reported model is parsed into `UsageObservation.model` 
 ## Notes
 
 - gap-c4f364 records reported models for the benchmark's Claude Code arm. This item is Roko's own records.
-- Implemented on `work/bug-31438d` at `b0cf98b3d` (feedback.rs rows at `06bdb71be`); cargo verification deferred to the batch check. `records_carry_the_provider_reported_model` and the other tests it adds (targeted `cargo test` passed at the branch head). Changes:
-  - roko's tool loop keeps each response's `model` (`ToolLoopTurnTrace.model`, `BackendResponse::extract_model`), and `usage_obs.model` is the last one named, never the configured slug.
+- Implemented on `work/bug-31438d` at `b0cf98b3d` (feedback.rs rows at `06bdb71be`); cargo verification deferred to the batch check. `records_carry_the_provider_reported_model` and the other tests it adds (targeted `cargo test` passed at the branch head). Root cause: `roko-agent/src/tool_loop/agent_wrapper.rs::attach_model` overwrote `usage_obs.model` with the configured slug, and the tool loop never read the response's `model`, so even the verdict's `executed.model_reported` was the dispatched model. Changes:
+  - roko's tool loop reads each response's `model` (`ToolLoopTurnTrace.model`, `BackendResponse::extract_model`); `usage_obs.model` is the last one named, and the configured slug stays apart, on the output's `model` tag.
   - The verdict's `executed` gains `model_dispatched`, `models_reported` and `model_mismatch`.
   - Episodes (`extra.model_reported`, `extra.model_mismatch`) carry it, and so do cost and efficiency rows (`roko_learn::efficiency::ExecutedRow`).
   - A substitution is logged at WARN and priced by the model that served, unknown (0) when that model has no price. `served_model::same_model` treats dated snapshots and provider prefixes as the same model. Under `--model` a substitution fails the attempt with a non-retryable `model_substituted` error after it is recorded.

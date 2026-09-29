@@ -4,7 +4,7 @@
 
 What to work on next: the top checked, open items of each goal, highest-priority goal first. Reorder or change goals in `goals.toml`; pin an item higher with `rank = 1` (lower first).
 
-**Drift:** 59 anchor gone · 107 changed since checked. Re-check them before relying on this list: `DRIFT.md`.
+**Drift:** 58 anchor gone · 113 changed since checked · 1 mentioned in commits. Re-check them before relying on this list: `DRIFT.md`.
 
 ## 1. Public release: security, licence, CI, first run
 
@@ -12,15 +12,15 @@ What to work on next: the top checked, open items of each goal, highest-priority
 - **P1** [bug-0d9ac4](items/bug-0d9ac4-agent-tool-shells-bypass-child-env-run.md) Agent tool shells bypass child_env: run_tests and ACP's bash inherit provider keys, roko-std's bash keeps its own allowlist [bug] · size M · verified 2026-09-29
 - **P1** [bug-09690f](items/bug-09690f-readme-s-quick-start-fails-and-the.md) README's quick start fails, and the README claims 100% completion [bug] · size M · verified 2026-09-29
 
-_22 more open · 5 unchecked (`TRIAGE.md`) · `goal = "release"`_
+_20 more open · 5 unchecked (`TRIAGE.md`) · `goal = "release"`_
 
 ## 2. Whitepaper v1 and the research papers
 
 - **P1** [gap-cdd5f4](items/gap-cdd5f4-companion-report-re-derive-every-number-at.md) Companion report: re-derive every number at the audit/baseline-2026-09-28 tag · size M · verified 2026-09-29
 - **P1** [spec-f8d196](items/spec-f8d196-epic-research-paper-companion-report-and-tl.md) Epic: research paper, companion report and TL;DR upkeep [spec] · size L · verified 2026-09-29
-- **P1** [gap-b64fba](items/gap-b64fba-refresh-the-tl-dr-against-the-2026.md) Refresh the TL;DR against the 2026-09-29 merges and fix three known errors · size M · verified 2026-09-29
+- **P1** [gap-e08b4d](items/gap-e08b4d-research-paper-4-rebuild-4-1-around.md) Research paper §4: rebuild §4.1 around the control stack and the golden-path loop, and tag designed identifiers · size M · verified 2026-09-29
 
-_9 more open · 16 unchecked (`TRIAGE.md`) · `goal = "whitepaper"`_
+_7 more open · 16 unchecked (`TRIAGE.md`) · `goal = "whitepaper"`_
 
 ## 3. Roko tells the truth and is safe (P0)
 
@@ -38,7 +38,7 @@ _0 more open · 31 unchecked (`TRIAGE.md`) · `goal = "golden-path"`_
 
 - nothing checked and open
 
-_0 more open · 26 unchecked (`TRIAGE.md`) · `goal = "proof"`_
+_0 more open · 25 unchecked (`TRIAGE.md`) · `goal = "proof"`_
 
 ## 6. Learning from verified outcomes, M1-M4 (P2)
 
@@ -60,7 +60,7 @@ _78 more open · 1 unchecked (`TRIAGE.md`) · `goal = "core"`_
 - **P1** [gap-aabeff](items/gap-aabeff-tool-t003-tui-paths-still-consume-string.md) TUI paths still consume string/tail projections that lose semantics (TUI adoption unproven) · size L · verified 2026-09-29
 - **P1** [find-f489db](items/find-f489db-tool-dispatch-observability-gaps-td-003-td.md) Tool Dispatch Observability Gaps (TD-003, TD-004, TD-005) [finding] · size M · verified 2026-09-29
 
-_29 more open · `goal = "visibility"`_
+_26 more open · `goal = "visibility"`_
 
 ## 9. Learning loops on the Graph path
 

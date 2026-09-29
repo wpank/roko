@@ -2,7 +2,7 @@
 id = "gap-b64fba"
 kind = "gap"
 title = "Refresh the TL;DR against the 2026-09-29 merges and fix three known errors"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "whitepaper"
@@ -11,6 +11,7 @@ subsystem = ["tldr"]
 created = 2026-09-29
 updated = 2026-09-29
 last_verified = 2026-09-29
+last_verified_rev = "847384ae2"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e18"
 discovered_from = "tmp/cybernetic-harness/workstreams/assessment/W9-paper-workstream.md"
 anchors = ["tmp/cybernetic-harness/tldr/"]
@@ -20,6 +21,11 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -q 'Re-checked at' tmp/cybernetic-harness/tldr/05-GAPS-AND-PROPOSALS.md && ! grep -q 'bug-28becc' tmp/cybernetic-harness/tldr/04-FRONTIER-PLANS-CHEAP-EXECUTES.md"
+
+[closed]
+at = 2026-09-29
+by = "coordinator (session 7622b882)"
+evidence = "tmp/cybernetic-harness/tldr (untracked) re-checked at 9dc966af1: every scorecard row in 05 §1 and every status tag in 01-06 is now TAG@commit. Changed tags: env isolation BROKEN to PARTIAL, playbooks WIRED, knowledge WIRED, prompt experiments PARTIAL, adaptive thresholds WIRED (split out), hindsight PARTIAL; B5 loops 2/7/6/1 (was 0/8/7/1). Three errors fixed: tldr/04 no longer names bug-28becc as a prerequisite; B5's 13 ids are parked, not missing; 05 §5 counts 16 corrections. Verify passes."
 +++
 
 ## Problem

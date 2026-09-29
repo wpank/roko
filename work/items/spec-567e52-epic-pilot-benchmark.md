@@ -97,7 +97,7 @@ providers. This removes the checklist's circular `budget` gate (W10 rec 2).
 
 - [x] dec-b78874: Decide the benchmark's name and location (D4) and whether subscription terms allow scripted
       Claude Code runs (D42)
-- [ ] gap-0580f7: ViabilityBench tree, schemas and price snapshot (S08.T1)
+- [x] gap-0580f7: ViabilityBench tree, schemas and price snapshot (S08.T1)
 - [ ] gap-2790c5: ViabilityBench common library: pristine repos, knobs, seeding, AST checks and canaries (S08.T2)
 - [ ] gap-4723ff: ViabilityBench family F1: generator, truth suite and gaming detector (S08.T3)
 - [ ] gap-9e7079: ViabilityBench family F4: store-state truth suite and partial-failure injection (S08.T4)

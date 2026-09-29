@@ -143,9 +143,10 @@
 ### roko-cli/graph-task-dispatch (1)
 - **P2** [gap-4468bd](items/gap-4468bd-credit-or-demote-a-t0-reflex-rule.md) Credit or demote a T0 reflex rule only from the settled attempt record, after verify · size M
 
-### paper (3)
+### paper (4)
 - **P2** [dec-536bbd](items/dec-536bbd-decide-how-paperlint-strict-treats-numbers-in.md) Decide how paperlint --strict treats numbers in the claims-ledger rows [decision] · size S
 - **P2** [gap-6e9e14](items/gap-6e9e14-research-paper-appendices-a-and-b-re.md) Research paper appendices A and B: re-pin as-built tags to the merged benchmark and spec-quality code · size S
+- **P2** [gap-08d9b2](items/gap-08d9b2-whitepaper-final-matrix-re-pin-right-before.md) Whitepaper: final matrix re-pin right before the whitepaper-v1 tag · size S
 - **P3** [gap-85f86a](items/gap-85f86a-research-paper-re-run-the-prior-art.md) Research paper: re-run the prior-art listing sweep (Q13–Q15, Q17) in submission week and read the Li 2026 lead · size S · **on hold:** runs in submission week
 
 ### roko-cli/doctor (1)
@@ -197,9 +198,6 @@
 
 ### roko-serve/routes (1)
 - **P2** [gap-a6de8d](items/gap-a6de8d-split-roko-serve-routes-plans-rs-into.md) Split roko-serve routes/plans.rs into run-control, authoring, merge and read modules · size S
-
-### tldr (1)
-- **P2** [gap-00cc7f](items/gap-00cc7f-tl-dr-re-pin-tags-and-refresh.md) TL;DR: re-pin tags and refresh statements to the whitepaper matrix after the 2026-09-29 merges · size M
 
 ### roko-agent/claude_cli_guard (1)
 - **P2** [bug-ceab60](items/bug-ceab60-the-agent-command-guard-lets-deletes-through.md) The agent command guard lets deletes through find | xargs rm, fd -x rm, and command strings given to ssh or parallel [bug] · size S

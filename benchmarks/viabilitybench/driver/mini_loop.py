@@ -179,7 +179,11 @@ def run_task(ctx: harness.TaskContext) -> harness.TaskOutcome:
         conversation = _Conversation([{"role": "system", "content": system}, {"role": "user", "content": task}])
         transcript += [{"attempt": number, **message} for message in conversation.messages]
         try:
+            ctx.ledger.reserve(attempt.attempt_key, attempt.reserved_usd if ctx.billed else 0.0)
             status, reason = _run_attempt(ctx, governor, attempt, conversation, transcript)
+        except ledger.BudgetError as err:  # the budget line has no room for this attempt; it made no call
+            status, reason, attempt.ended_by = "aborted_cap", "budget", "budget"
+            transcript.append({"attempt": number, "event": "stop", "kind": status, "reason": str(err)})
         except Exception as err:  # a harness bug must still leave a record and a ledger row
             status, reason = "infra_error", f"{type(err).__name__}: {err}"
             attempt.ended_by = attempt.ended_by or "infra_error"
@@ -187,6 +191,8 @@ def run_task(ctx: harness.TaskContext) -> harness.TaskOutcome:
             if attempt.calls:
                 _settle(ctx, attempt)
                 attempts.append(attempt)
+            else:
+                ctx.ledger.release(attempt.attempt_key)
         if status is None and not attempt.calls:  # an attempt that could not make a single call
             status, reason = "aborted_cap", attempt.ended_by or "no_progress"
     return harness.TaskOutcome(status=status, reason=reason, attempts=attempts, transcript=transcript,

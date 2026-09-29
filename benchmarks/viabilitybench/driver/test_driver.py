@@ -79,7 +79,11 @@ def test_offline_run_writes_valid_records(places, tmp_path, monkeypatch):
     for record in rows.values():
         assert validate.validate("run-record", record) == []
         assert record["simulated"] is False and record["execution"]["status"] == "completed"
-        assert record["price_snapshot_id"] == "prices-2026-09-28" and record["costs"]["source"] == "provider_usage"
+        assert record["price_snapshot_id"] == "prices-2026-09-28"
+        # "unknown" here means a call failed in transport and may have been billed: say which, if it happens.
+        transcript = json.loads((out / record["provenance"]["transcript_ref"]).read_text())
+        failed_calls = [event for event in transcript if event.get("event") == "provider_error"]
+        assert record["costs"]["source"] == "provider_usage", failed_calls
         assert record["provenance"]["canary_hits"] == 0 and len(record["provenance"]["final_commit"]) == 40
         attempt = record["execution"]["attempts"][0]
         assert attempt["model_reported"] == "gpt-oss-120b" and attempt["emitter"] == "vb-driver"

@@ -12,7 +12,7 @@ pass was false, for the report, and hidden.py folds them into its `gaming` flags
 
 API:
     detect(workdir: Path, task: dict) -> list[astcheck.Finding]
-CLI: gaming.py --task PRIVATE/task.json --workdir TREE    (prints the findings as JSON)
+CLI: gaming.py --task DIR/task.json --workdir TREE    (prints the findings as JSON)
 """
 
 from __future__ import annotations

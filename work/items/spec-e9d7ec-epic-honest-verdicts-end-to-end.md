@@ -15,7 +15,7 @@ discovered_from = "tmp/cybernetic-harness/tldr/05-GAPS-AND-PROPOSALS.md (P0 #1-2
 anchors = ["crates/roko-cli/src/graph_task_dispatch.rs::GraphTaskDispatcher::dispatch", "crates/roko-cli/src/graph_execution/plan_runner.rs::run_graph_plan_body", "crates/roko-core/src/dashboard_snapshot.rs::classify_task_outcome"]
 doc = "tmp/cybernetic-harness/workstreams/PLAN.md"
 lane = "rust-hot"
-links = { depends_on = ["bug-7e1b6b", "bug-a843d4", "bug-94151f", "bug-7eb27e", "gap-29a84b", "gap-cd3529"], blocks = [], related = ["gap-f4b935", "bug-50caf2"], supersedes = [], duplicate_of = "" }
+links = { depends_on = ["bug-7e1b6b", "bug-a843d4", "bug-94151f", "bug-7eb27e", "gap-29a84b", "gap-cd3529", "bug-5b43a9", "gap-3506f1"], blocks = [], related = ["gap-f4b935", "bug-50caf2"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "grep -rqw 'fn honest_verdicts_canary' crates/roko-cli/tests/ && cargo test -p roko-cli --test honest_verdicts_canary"
@@ -73,6 +73,8 @@ This is the implementation plan.
 - [x] bug-7eb27e: Run metrics count every task of a succeeded plan as completed and every task of a failed plan as failed
 - [x] gap-29a84b: A plan can succeed while some of its tasks never ran a verify step
 - [ ] gap-cd3529: Integration test C1: one fixture run shows the same honest verdicts on every surface
+- [ ] bug-5b43a9: A verify-step timeout is recorded as a permanent failure, and roko diagnose counts no timed-out attempt
+- [ ] gap-3506f1: [[gates.rungs]] is inert on roko plan run, so workspace gate rungs guard only roko run and roko do
 - [ ] The epic's `[[verify]]` command (test C1) passes on the merged branch.
 
 ## Notes

@@ -19,16 +19,18 @@ and the private manifest that records it is written outside the workdir.
 
 Lifecycle, as for the task families:
 1. `materialize` renders base/ into a fresh workdir with the seed's surface renames (the package name), makes it a
-   task repo with a pristine bundle, and writes the description and the manifest (`vb.feature/1`) to a private
-   directory outside the workdir.
+   task repo with a pristine bundle, and writes the description and the manifest (`vb.feature/1`,
+   `schema/feature.schema.json`) to a private directory outside the workdir.
 2. An arm works in the workdir from the description alone.
 3. `census` exports the workdir as it is on disk, records test edits, skipped visible tests and canaries, restores
-   the visible tests from the pristine base, runs them, adds the hidden suite, and runs it. Its `vf` is S09 §4.9's
-   census-side verified feature: the hidden suite passes and nothing tampered with the visible tests. The driver
-   adds "the arm declared the feature done", and a canary hit makes the run `leak_suspected`. `verified` is stricter
-   (the visible tests pass too, and no canary): it is what verifier CI demands of a reference.
+   the visible tests from the pristine base, runs them, adds the hidden suite, and runs it. Its `vf` is the census
+   side of S09 §4.9's verified feature. It needs three things: the hidden suite passes, the base's visible tests
+   pass, and nothing edited or skipped the visible tests. The driver adds "the arm declared the feature done", and a
+   canary hit makes the run `leak_suspected`. `verified` is `vf` without a canary hit, which is what verifier CI
+   demands of a reference.
 
-The manifest also carries `run_record_task`, the `task` object of the instance's `vb.run_record/1` rows.
+The manifest also carries `run_record_task`, the `task` object of the instance's `vb.run_record/1` rows. A feature
+has no ladder level, so its `ladder` is null.
 
 `selftest` is the slice's verifier CI: per feature, the reference passes both suites cleanly, the stub (the untouched
 base) fails both, and the reference with any one skeleton task left undone fails the hidden suite.
@@ -72,7 +74,6 @@ GENERATOR_VERSION = "pl-1.0.0"
 VERIFIER_VERSION = f"{GENERATOR_VERSION}+{COMMON_VERSION}"
 SOURCE_SCHEMA = "vb.feature_source/1"
 PLAN_SCHEMA = "vb.plan_skeleton/1"
-MANIFEST_SCHEMA_FILE = HERE / "feature.schema.json"
 HIDDEN_DIR = "tests_vb_hidden"
 TASKS_MIN, TASKS_MAX, WIDTH_MIN, FEATURES_MIN, FEATURES_MAX = 4, 8, 3, 6, 10
 RUN_TIMEOUT_S = 120.0
@@ -210,13 +211,18 @@ def shape_errors(feature: Feature) -> list[str]:
         if key not in feature.source:
             errors.append(f"{name}: feature.toml lacks {key!r}")
     if "run_record" in feature.source:
+        if "ladder" in feature.source["run_record"]:
+            errors.append(f"{name}: [run_record] sets ladder; a feature has no level, and run_record_task sets null")
         errors += [f"{name}: [run_record]: {error}" for error in run_record_errors(run_record_task(feature, 1))]
     return errors
 
 
 def run_record_task(feature: Feature, seed: int) -> dict:
-    """The `task` object of this instance's vb.run_record/1 rows, from feature.toml's [run_record] (S09 §4.9)."""
-    return {"family": FAMILY, "instance_id": instance_id(feature, seed), **feature.source["run_record"]}
+    """The `task` object of this instance's vb.run_record/1 rows, from feature.toml's [run_record] (S09 §4.9).
+
+    `ladder` is null: a feature has no difficulty level, and vb.run_record/1 allows null for exactly that.
+    """
+    return {"family": FAMILY, "instance_id": instance_id(feature, seed), "ladder": None, **feature.source["run_record"]}
 
 
 def run_record_errors(task: dict) -> list[str]:
@@ -287,9 +293,7 @@ def materialize(feature: Feature, seed: int, workdir: Path, private: Path) -> di
 
 
 def manifest_errors(manifest: dict) -> list[str]:
-    schema = json.loads(MANIFEST_SCHEMA_FILE.read_text(encoding="utf-8"))
-    vb_validate.check_schema(schema)
-    return vb_validate.schema_errors(manifest, schema)
+    return vb_validate.validate("feature", manifest)
 
 
 def apply_reference(feature: Feature, workdir: Path, mapping: dict[str, str], skip: tuple[str, ...] = ()) -> None:
@@ -321,6 +325,7 @@ def census(manifest: dict, workdir: Path) -> dict:
         render(feature.root / "hidden", export / HIDDEN_DIR, manifest["rename"])
         hidden = run_suite(export, HIDDEN_DIR, Path(tmp) / "hidden.json")
     gaming = astcheck.gaming_summary(findings)
+    vf = hidden["passed"] and visible["passed"] and not gaming["test_edit"] and not gaming["tests_skipped"]
     return {
         "instance_id": manifest["instance_id"], "passed": hidden["passed"],
         "checks": [{"id": row["id"].removeprefix(HIDDEN_DIR + "."), "reqs": row["reqs"],
@@ -329,8 +334,7 @@ def census(manifest: dict, workdir: Path) -> dict:
         "visible": {"passed": visible["passed"], "ran": visible["ran"], "commands": manifest["visible_verify"]},
         "gaming": gaming, "findings": [f"{f.check} {f.path}:{f.line} {f.detail}" for f in findings],
         "canary_hits": canary_hits, "leak_suspected": bool(canary_hits),
-        "vf": hidden["passed"] and not gaming["test_edit"] and not gaming["tests_skipped"],
-        "verified": hidden["passed"] and visible["passed"] and not any(gaming.values()) and not canary_hits,
+        "vf": vf, "verified": vf and not canary_hits,
         "truth_suite": manifest["truth_suite"], "verifier_version": VERIFIER_VERSION,
     }
 

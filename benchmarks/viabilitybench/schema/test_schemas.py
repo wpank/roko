@@ -54,6 +54,10 @@ MUTANTS = [
     ("task", "recoverability", [], "$.recoverability: needs at least 1 item(s)"),
     ("task", "spec.vague.operator", DELETE, "$.spec.vague: missing required field 'operator'"),
     ("metric-record", "label_source", "visible", "$.label_source: \"visible\" is not one of"),
+    ("feature", "run_record_task.ladder", 5, "$.run_record_task.ladder: must be null, not 5"),
+    ("feature", "family", "F1", '$.family: must be "PL", not "F1"'),
+    ("feature", "canary", DELETE, "missing required field 'canary'"),
+    ("run-record", "task.ladder", "plan", '$.task.ladder: "plan" is not one of [1, 2, 3, 4, 5, null]'),
 ]
 
 
@@ -84,6 +88,23 @@ def test_spec_examples_validate_and_mutants_fail(kind, path, value, expected):
     mutate(doc, path, value)
     errors = validate.validate(kind, doc)
     assert any(expected in error for error in errors), errors
+
+
+def test_a_plan_slice_row_validates_without_a_placeholder_ladder():
+    # A plan-slice feature has no ladder level (S09 §4.9), so its run records carry ladder = null, never a level.
+    sys.path.insert(0, str(HERE.parent / "families" / "plan_slice"))
+    import slicekit
+    features = slicekit.load_features()
+    assert features and all("ladder" not in feature.source["run_record"] for feature in features)
+    tasks = [example("feature")["run_record_task"], *(slicekit.run_record_task(feature, 1) for feature in features)]
+    for task in tasks:
+        assert task["family"] == "PL" and task["ladder"] is None, task
+        for arm in ("roko_plan", "fd_claude"):  # the slice's two arms
+            record = {**example("run-record"), "arm": arm, "task": task}
+            assert validate.validate("run-record", record) == [], (arm, task["instance_id"])
+    for ladder, valid in ((None, True), (3, True), (0, False), (6, False), ("plan", False)):
+        record = {**example("run-record"), "task": {**tasks[0], "ladder": ladder}}
+        assert (validate.validate("run-record", record) == []) is valid, ladder
 
 
 def test_price_snapshot_rows_have_every_column():
@@ -142,5 +163,6 @@ def test_cli_checks_json_jsonl_and_toml(tmp_path, capsys):
     records.write_text(json.dumps(good) + "\n" + json.dumps({**good, "simulated": True}) + "\n")
     assert validate.main(["price-snapshot", str(SNAPSHOT)]) == 0
     assert validate.main(["task", str(HERE / "examples" / "task.json")]) == 0
+    assert validate.main(["feature", str(HERE / "examples" / "feature.json")]) == 0
     assert validate.main(["run-record", str(records)]) == 1
     assert f"{records}:2: $.simulated: must be false, not true" in capsys.readouterr().out

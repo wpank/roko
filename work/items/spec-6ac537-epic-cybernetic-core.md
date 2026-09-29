@@ -15,7 +15,7 @@ discovered_from = "tmp/cybernetic-harness/tldr/05-GAPS-AND-PROPOSALS.md (P2 #17â
 anchors = ["crates/roko-learn/src/cascade_router.rs::CascadeRouter::observe_multi_objective", "crates/roko-cli/src/runtime_feedback/routing.rs::RoutingObservationSink", "crates/roko-cli/src/graph_execution/feedback.rs::RoutingSink", "crates/roko-cli/src/graph_task_dispatch.rs::GraphTaskDispatcher::dispatch"]
 doc = "tmp/cybernetic-harness/workstreams/PLAN.md"
 lane = "rust-hot"
-links = { depends_on = ["bug-f68404", "bug-8da8ba", "bug-9c88ac", "bug-012303", "bug-605a8a", "find-0dc1d5", "reg-3f5969", "gap-fdd27f", "gap-644040"], blocks = [], related = ["spec-b7303f", "gap-96f7ed", "gap-8cb382", "gap-c8e1f1", "dec-e70592", "gap-25065c", "bug-cfe0be"], supersedes = [], duplicate_of = "" }
+links = { depends_on = ["bug-f68404", "bug-8da8ba", "bug-9c88ac", "bug-012303", "bug-605a8a", "find-0dc1d5", "reg-3f5969", "gap-fdd27f", "gap-644040", "bug-dfb28f", "bug-3ea1f5"], blocks = [], related = ["spec-b7303f", "gap-96f7ed", "gap-8cb382", "gap-c8e1f1", "dec-e70592", "gap-25065c", "bug-cfe0be"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "grep -rqw 'fn failed_override_lowers_success_rate' crates/roko-learn/ && grep -rqw 'fn gate_pass_increments_selected_playbook' crates/roko-cli/src/ && grep -rqw 'fn frozen_learning_run_writes_no_learned_state' crates/roko-cli/src/ && cargo test -p roko-learn failed_override_lowers_success_rate && cargo test -p roko-cli --lib gate_pass_increments_selected_playbook && cargo test -p roko-cli --lib frozen_learning_run_writes_no_learned_state"
@@ -118,6 +118,8 @@ verify commands that read E4's attempt record, set `triage = "verified"`, add th
 - [x] reg-3f5969: Graph dispatch drops selected playbook IDs; outcomes are recorded under synthetic task IDs (existing item)
 - [x] gap-fdd27f: Prompt experiments are never assigned on the Graph execution path (existing item)
 - [ ] gap-644040: No way to run with learning frozen: prompts and routing change from run to run (existing item)
+- [ ] bug-dfb28f: Graph runs save the cascade router only when the run ends, so a crash loses the run's routing learning
+- [ ] bug-3ea1f5: LearningRuntime rewards a failed attempt with up to 0.5 through cost and latency, unlike every other router path
 - [ ] The epic's `[[verify]]` command passes on the merged branch: one named test each for router labels, failure
       memory and frozen learning. Extend it with S02.P1-16's wiring census when the M1â€“M4 items join.
 

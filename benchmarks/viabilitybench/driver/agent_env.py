@@ -12,13 +12,20 @@ key can reach an agent, and `check` asserts that on the finished environment.
 - PYTHONDONTWRITEBYTECODE keeps `__pycache__` out of the tree the census labels; git gets a fixed identity and no
   system config, so an agent's `git commit` behaves the same on every host.
 
-What it cannot do: an agent under the same uid can still read a file it names by absolute path. Canaries catch reads
-of benchmark files (`census`), and a container per task is the stronger option (S08 decision 4). The proof that the
-secret file never reaches an agent is gap-a8a160's; it passes the secret and its canary as `forbidden_values`.
+The benchmark secret (gap-a8a160): `secret.preflight` reads the secret file once before the first task and passes the
+secret and its canary to `forbid`, so every environment built or checked for the rest of the run is refused if any
+value holds either. Runners never handle the secret. `check` also refuses an environment without a HOME of its own:
+an agent whose HOME is the driver's would find the real `~/.roko/.env` and `~/.config/viabilitybench/`.
+
+What it cannot do: an agent under the same uid can still read a file it names by absolute path, and see the driver's
+own environment with `ps -E` or `/proc/<pid>/environ`. `secret.preflight` keeps the secret out of the driver's
+environment; canaries catch reads of benchmark files and of the secret file (`census`); a container per task is the
+stronger option (S08 decision 4).
 
 API:
     build(*, home: Path, extra: Mapping[str, str] | None = None, forbidden_values: Iterable[str] = ()) -> dict
     check(env: Mapping[str, str], forbidden_values: Iterable[str] = ()) -> None      # raises AgentEnvError
+    forbid(values: Iterable[str]) -> None           # values refused in every later build and check (the secret)
     FORBIDDEN_NAME, PASSTHROUGH, SYSTEM_PATH
 """
 
@@ -41,6 +48,7 @@ FIXED = {"SHELL": "/bin/bash", "TERM": "dumb", "NO_COLOR": "1", "PAGER": "cat", 
          "PYTHONDONTWRITEBYTECODE": "1", "GIT_CONFIG_NOSYSTEM": "1", "GIT_TERMINAL_PROMPT": "0",
          "GIT_AUTHOR_NAME": "vb-agent", "GIT_AUTHOR_EMAIL": "agent@vb.invalid",
          "GIT_COMMITTER_NAME": "vb-agent", "GIT_COMMITTER_EMAIL": "agent@vb.invalid"}
+_forbidden: tuple[str, ...] = ()  # set by `forbid`: the benchmark secret and its canary, once `vb run` has read them
 
 
 class AgentEnvError(ValueError):
@@ -69,13 +77,29 @@ def build(*, home: Path, extra: Mapping[str, str] | None = None, forbidden_value
 
 
 def check(env: Mapping[str, str], forbidden_values: Iterable[str] = ()) -> None:
-    """Raise AgentEnvError if a name looks like a secret or a VB_ setting, or a value holds a forbidden string."""
+    """Raise AgentEnvError if a name looks like a secret or a VB_ setting, a value holds a forbidden string (the
+    given ones, and those registered with `forbid`), or HOME is missing, the driver's own, or in the repository."""
     bad = sorted(name for name in env if FORBIDDEN_NAME.search(name))
     if bad:
         raise AgentEnvError(f"agent environment must not carry {', '.join(bad)}")
-    for value in forbidden_values:
+    for value in (*forbidden_values, *_forbidden):
         if value and any(value in item for item in env.values()):
             raise AgentEnvError("agent environment carries a forbidden value")
+    home = env.get("HOME")
+    if not home:
+        raise AgentEnvError("an agent environment needs a HOME of its own")
+    driver_home = os.environ.get("HOME")
+    if (driver_home and Path(home).resolve() == Path(driver_home).resolve()) or layout.within(home, layout.REPO_ROOT):
+        raise AgentEnvError(f"an agent's HOME must be a directory of its own, not {home}")
+
+
+def forbid(values: Iterable[str]) -> None:
+    """Refuse `values` in every environment `build` or `check` sees from now on; each call replaces the last one.
+
+    `secret.preflight` passes the benchmark secret and its canary here once per run.
+    """
+    global _forbidden
+    _forbidden = tuple(value for value in values if value)
 
 
 def _base_python() -> Path:

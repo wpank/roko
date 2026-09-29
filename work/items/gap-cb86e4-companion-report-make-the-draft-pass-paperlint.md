@@ -2,14 +2,16 @@
 id = "gap-cb86e4"
 kind = "gap"
 title = "Companion report: make the draft pass paperlint --strict apart from the rater and author markers"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p2"
 goal = "whitepaper"
 size = "M"
 subsystem = ["companion"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-29
+last_verified_rev = "fce93aced"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (15:47, wk-companion-fin's report on gap-b409fa)"
 anchors = ["tmp/cybernetic-harness/companion-audit/E10-DRAFT.md"]
@@ -19,6 +21,11 @@ links = { depends_on = ["gap-a3031b"], blocks = [], related = ["gap-b409fa", "ga
 
 [[verify]]
 command = "test $(python3 tools/paperlint.py --strict tmp/cybernetic-harness/companion-audit/E10-DRAFT.md | grep -E ': \\[' | grep -vE 'leftover marker \\[\\[(E2|E3|E4|E6|E11|AUTHOR)' | wc -l) -eq 0"
+
+[closed]
+at = 2026-09-29
+by = "coordinator (session 7622b882)"
+evidence = "Companion strict pass (tmp, wk-companion-strict): 84 source footnotes (each naming the source file, the E1-REDERIVATION row and 91b4745f8 or gap-cdd5f4), claim-levels directive added (paperlint gap-274092), identifiers and header fixed; paperlint --strict now reports only the 16 E2/E3/E4/E6/E11/AUTHOR markers. Verify passes. The draft is 9,845 words (1.28x the header budget), noted for the next pass."
 +++
 
 ## Problem

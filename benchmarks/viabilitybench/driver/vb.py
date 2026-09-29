@@ -27,9 +27,10 @@ typical), and the flag would then no longer cap anything. `vb estimate` and the 
 worst case. A model without a price row cannot be bounded and is refused. `--provider-url` with a loopback URL (such
 as `stub_provider`'s) runs offline, with neither flag.
 
-The benchmark secret is read only by the census, as a file path handed to `hidden.py`: `--secret-file`, else
-`$VB_SECRET_FILE`, else `~/.config/viabilitybench/secret` (mode 0600). `vb run` checks the file's mode before the
-first task, without reading it. Keeping it away from agents is gap-a8a160's (`agent_env` is the seam).
+The benchmark secret reaches only `hidden.py`, in the census, as a file path: `--secret-file`, else
+`$VB_SECRET_FILE`, else `~/.config/viabilitybench/secret` (mode 0600; `driver/secret.py init` makes one). Before the
+first task, `vb run` refuses a secret file that breaks its rules and a secret that roko or an agent could inherit, and
+from then on every agent environment is checked against it (`secret.preflight`, `agent_env`).
 
 Exit status: 0 when every (task, seed) got a record, 1 when some did not (see `errors.jsonl`), 2 for a usage,
 configuration or admission error.
@@ -62,6 +63,7 @@ import ledger
 import materialize
 import provider
 import records
+import secret
 from common import hmac_seed, knobs, repo
 
 DRIVER_VERSION = "vb-driver-1.0.0"
@@ -139,6 +141,9 @@ class Plan:
 
 
 def main(argv: list[str] | None = None) -> int:
+    forwarded = sys.argv[1:] if argv is None else argv
+    if forwarded[:1] == ["report"]:
+        return run_report(forwarded[1:])
     args = _parser().parse_args(argv)
     args.argv = ["vb", *(sys.argv[1:] if argv is None else argv)]
     try:
@@ -146,6 +151,12 @@ def main(argv: list[str] | None = None) -> int:
     except (DriverError, caps.CapError, ledger.PriceError) as err:
         print(f"vb: {err}", file=sys.stderr)
         return 2
+
+
+def run_report(argv: list[str]) -> int:
+    """`vb report` (S08 §5.7) is `analysis/report.py`, which parses its own flags: argparse cannot pass them through."""
+    sys.path.insert(0, str(layout.VB_ROOT / "analysis"))
+    return importlib.import_module("report").main(argv)
 
 
 def admit(plan: Plan, *, allow_network: bool, max_cost_usd: float | None) -> None:
@@ -258,7 +269,8 @@ def cmd_run(args: argparse.Namespace) -> int:
     if args.max_cost_usd is not None and (plan.worst_case_usd or 0) > args.max_cost_usd:
         print(f"vb: the worst case of {plan.runs} runs is ${plan.worst_case_usd:.2f}; the run stops before any task "
               f"that could take spend past ${args.max_cost_usd:.2f}", file=sys.stderr)
-    if not plan.endpoint.offline and not os.environ.get(plan.endpoint.api_key_env or ""):
+    # A subscription arm's CLI signs in by itself; only a billed arm needs the driver's key.
+    if not plan.endpoint.offline and plan.arm["arm"]["billed"] and not os.environ.get(plan.endpoint.api_key_env or ""):
         raise DriverError(f"set {plan.endpoint.api_key_env} for {plan.endpoint.provider}")
     for family, directory in sorted(plan.stream.families.items()):
         if any(knobs.parse_instance_id(i)[0] == family for i in plan.instances) and not all(
@@ -270,6 +282,10 @@ def cmd_run(args: argparse.Namespace) -> int:
     work_root = _outside_repo(args.work or os.environ.get("VB_WORK") or DEFAULT_WORK, "--work")
     if layout.within(work_root, results_root) or layout.within(results_root, work_root):
         raise DriverError("--work and --results must not contain each other")
+    try:
+        secret.preflight(secret_file, work_root=work_root, results_root=results_root)
+    except secret.SecretError as err:
+        raise DriverError(str(err)) from None
     for value, flag in ((args.experiment, "--experiment"), (args.run_id or "x", "--run-id")):
         if not ID_RE.fullmatch(value):
             raise DriverError(f"{flag} must match {ID_RE.pattern}")
@@ -308,6 +324,10 @@ def cmd_run(args: argparse.Namespace) -> int:
             order = [instance for instance in plan.stream.order(seed) if instance in plan.instances]
             _write_json(run_dir / f"order-{seed}.json", {"stream": plan.stream.id, "seed": seed, "order": order})
             for position, instance_id in enumerate(order, 1):
+                refusal = book.refusal(plan.worst_task_usd if plan.arm["arm"]["billed"] else 0.0)
+                if refusal:  # S09 §4.6: the task could take billed spend past a budget cap (ledger.py)
+                    _log_error(run_dir, f"{instance_id}.s{seed}", "budget", f"stopped before the task: {refusal}")
+                    return 1
                 if args.max_cost_usd is not None and plan.worst_task_usd is not None and \
                         book.spent_bound_usd + plan.worst_task_usd > args.max_cost_usd:
                     _log_error(run_dir, f"{instance_id}.s{seed}", "budget",
@@ -338,7 +358,8 @@ def _run_one(run: Run, instance_id: str, seed: int, stream_position: dict) -> bo
         experiment_id=args.experiment, run_id=run.run_id, arm=plan.arm, model=plan.model, endpoint=plan.endpoint,
         provider=run.chat, snapshot=plan.snapshot, caps=plan.caps, ledger=run.book, billed=plan.arm["arm"]["billed"],
         instance_id=instance_id, seed=seed, key=key, workdir=workdir, spec_text=task.spec_text,
-        agent_env=agent_env.build(home=homes[0]))
+        agent_env=agent_env.build(home=homes[0]), visible_verify=tuple(task.manifest["visible_verify"]),
+        files_in_scope=tuple(task.manifest["files_in_scope"]))
     try:
         outcome = run.runner.run_task(ctx)
     except Exception as err:  # the runner owns its errors; this catches its bugs
@@ -510,6 +531,7 @@ def _parser() -> argparse.ArgumentParser:
     estimate = commands.add_parser("estimate", help="print the plan and its worst-case cost", allow_abbrev=False)
     planned(estimate)
     estimate.set_defaults(handler=cmd_estimate)
+    ledger.add_parser(commands, DEFAULT_RESULTS)  # vb ledger report|reconcile (S09 E2)
 
     mat = commands.add_parser("materialize", help="render one instance as the driver would", allow_abbrev=False)
     mat.add_argument("--stream", required=True)
@@ -517,6 +539,7 @@ def _parser() -> argparse.ArgumentParser:
     mat.add_argument("--out", required=True)
     mat.add_argument("--private", help="where the manifest and pristine bundle go (default: OUT.private)")
     mat.set_defaults(handler=cmd_materialize)
+    commands.add_parser("report", help="metrics.json and bundle checks (analysis/report.py; see vb report --help)")
     return parser
 
 

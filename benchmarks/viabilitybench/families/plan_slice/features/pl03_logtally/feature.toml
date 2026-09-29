@@ -16,10 +16,9 @@ cross_family_review = "pending"
 [rename]
 logtally = ["hitcount", "weblog", "trafficlog", "logsum"]
 
-# The vb.run_record/1 `task` values of this feature's rows (S09 §4.9). `ladder` is a placeholder: README, "Run records".
+# The `task` values of this feature's vb.run_record/1 rows (S09 §4.9); slicekit adds family PL, the instance id
+# and ladder = null.
 [run_record]
-family = "PL"
-ladder = 5
 latent_version = "v1"
 spec_variant = "precise"
 is_honeypot = false

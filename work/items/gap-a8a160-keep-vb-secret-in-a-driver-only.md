@@ -2,8 +2,10 @@
 id = "gap-a8a160"
 kind = "gap"
 title = "Keep VB_SECRET in a driver-only file and prove agents cannot read it"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
+last_verified = 2026-09-29
+last_verified_rev = "e420a141f"
 severity = "p1"
 goal = "proof"
 size = "S"
@@ -22,6 +24,12 @@ command = "grep -qw 'def test_secret_never_reaches_an_agent_env' benchmarks/viab
 
 [[verify]]
 command = "grep -qw 'def test_run_refused_when_secret_is_in_roko_dotenv' benchmarks/viabilitybench/driver/test_secret.py && benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/driver/test_secret.py -k test_run_refused_when_secret_is_in_roko_dotenv -q"
+
+[closed]
+at = 2026-09-29
+commit = "e420a141f"
+by = "wk-bench-secret"
+evidence = "driver/secret.py keeps the secret in a 0600 file in a 0700 dir with its own canary line (init/check); vb run's preflight fails closed when VB_SECRET or the secret is in the driver env or in a .roko/.env roko loads; agent_env.forbid makes every agent env refuse the secret and its canary and requires a HOME of its own; the census refuses a leaky census env, scans transcript/diff/tree for the secret and for commands naming its file, sweeps what agent code leaves during hidden.py and the visible re-run, and redacts what it reports. Both [[verify]] commands pass; benchmarks/viabilitybench: 217 passed, 1 skipped (opt-in F4 all-cells). One-off Roko-arm env dump under the built roko (target/debug/roko, fake Claude CLI, no model call): after = verify env 13 names and agent env 24 names, per-task HOME, no VB_ name, no secret, no canary; before (VB_SECRET in the operator's ~/.roko/.env) = neither env held the secret, but both ran with the operator's HOME and the verify step read the secret through ~/.roko/.env."
 +++
 
 ## Problem
@@ -73,8 +81,8 @@ Checked at `41c7ffbd6`:
 
 ## Done when
 
-- [ ] Both tests pass, and the closing evidence records the one-off Roko-arm environment dump.
-- [ ] Both `[[verify]]` commands pass.
+- [x] Both tests pass, and the closing evidence records the one-off Roko-arm environment dump.
+- [x] Both `[[verify]]` commands pass.
 
 ## Notes
 
@@ -83,3 +91,18 @@ Checked at `41c7ffbd6`:
   run `leak_suspected`.
 - **A stronger option.** A container per task (S08 decision 4) is stronger, and out of scope here.
 - **No hot files.**
+- **Done 2026-09-29 (wk-bench-secret).** `driver/secret.py` owns the file (`init`/`check`, 0600 in a 0700 directory,
+  its own canary line) and `vb run`'s fail-closed `preflight`; `agent_env.forbid` makes every agent environment refuse
+  the secret and its canary; the census refuses a leaky census environment, looks for the secret (and for commands
+  naming its file) in the transcript, diff and tree, sweeps what agent code could leave during the census, and redacts
+  what it reports. Adversarial fake agents (env, file search from the workdir, `ps -E` and `/proc` on the driver and on
+  `hidden.py`) are in `driver/test_secret.py`.
+- **One-off Roko-arm environment dump (2026-09-29)**, built `roko` from the main checkout (`target/debug/roko`), the
+  fake Claude CLI, no model call; a verify step ran `env | sort` and `cat ~/.roko/.env ~/.config/viabilitybench/secret`,
+  and a wrapper dumped the agent CLI's environment:
+  - before (S08 decision 8's layout, `VB_SECRET` in the operator's `~/.roko/.env`, roko started with that HOME):
+    neither environment held the secret (roko no longer passes dotenv values to children, bug-7d7200), but both ran
+    with the operator's HOME, and the verify step read the secret through `~/.roko/.env`;
+  - after (the secret only in its file, `secret.preflight`, roko started with `agent_env.build`): verify environment
+    13 names and agent environment 24 names, per-task HOME, no `VB_` name, no secret, no canary, nothing reachable
+    through HOME.

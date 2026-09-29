@@ -1,4 +1,4 @@
-"""The F4 instance plan: every choice that gen.py, hidden.py and solutions.py must agree on.
+"""The F4 instance plan: every choice that gen.py, hidden.py and reference/solutions.py must agree on.
 
 An instance is (level, seed), with id `F4-l<level>-<seed>`. Everything public about it is drawn from
 `surface_stream("F4", id)`: the knobs, the key namespaces, the exemplar scripts and the module names (`plan`). The

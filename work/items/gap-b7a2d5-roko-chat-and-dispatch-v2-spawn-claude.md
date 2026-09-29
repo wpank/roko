@@ -3,13 +3,14 @@ id = "gap-b7a2d5"
 kind = "gap"
 title = "roko chat and dispatch_v2 spawn claude without the Claude Code isolation flags"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p2"
 goal = "release"
 size = "S"
 subsystem = ["roko-cli/chat", "roko-cli/dispatch-v2"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-29
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (16:47, wk-cc-isolate's report on gap-8be530, branch work/gap-8be530)"
 anchors = ["crates/roko-cli/src/chat_session.rs::build_streaming_command", "crates/roko-cli/src/dispatch_v2.rs::build_claude_invocation", "crates/roko-agent/src/claude_cli_agent.rs::build_command"]
@@ -60,3 +61,16 @@ Checked on `work/gap-8be530` (`67e67766b`, not merged at BASE): only `claude_cli
 - Depends on gap-8be530, which is not merged at BASE.
 - `roko chat` changes the way `ClaudeCliAgent` runs did: the user's CLAUDE.md and allow rules stop applying. Say so in the chat docs.
 - bug-76dc76 (`roko chat` ignores `env_passthrough`) touches the same builder.
+- Implemented on `work/gap-b7a2d5` at `bab3d07a9`, extended at `5c3ee965c` (MCP config logged) and `13f6c9578`
+  (managed MCP); cargo verification deferred to the batch check.
+- The shared helper is `roko_agent::claude_cli_agent::ClaudeIsolation` (`args`, `env`, `tags`). `ClaudeCliAgent`,
+  `build_streaming_command` and `build_claude_invocation` all build from it. The dispatcher appends the flags after
+  `provider_args`, and a variable the request sets itself beats the isolation's.
+- The literal flags live in roko-agent. The two roko-cli files name them in comments, which is what the verify's grep
+  finds; `claude_spawns_carry_the_isolation_flags` (roko-cli, `chat_session.rs`) is the real check, comparing both
+  spawns' flag block with `ClaudeIsolation::args`.
+- Recording: `ClaudeCliAgent` outputs carry the tags; the chat and dispatch spawns log them (debug) with the MCP config
+  they pass. A Graph attempt keeps no durable record of them, because the invocation is not persisted.
+- Docs: the "Isolation" row of `docs/v3/05-AGENT.md` §3.2 covers `roko chat` too; there is no separate chat page.
+- The new test assumes the host has no managed `managed-mcp.json`, like the existing MCP tests in
+  `provider/claude_cli.rs` and roko-cli's `tests/smoke.rs`.

@@ -133,6 +133,73 @@ pub const ISOLATION_ENV: &[(&str, &str)] = &[
     ("CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD", "1"),
 ];
 
+/// The flags and environment that keep a Claude Code run apart from the
+/// invoking user's own configuration, as [`ISOLATED_SETTING_SOURCES`] and
+/// [`ISOLATION_ENV`] describe. Every Roko spawn of `claude` builds them here
+/// ([`ClaudeCliAgent`], `roko chat` and the CLI dispatcher), so the spawns
+/// cannot drift apart.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClaudeIsolation {
+    setting_sources: String,
+    workdir: PathBuf,
+}
+
+impl ClaudeIsolation {
+    /// Isolation for a run whose working directory is `workdir`.
+    #[must_use]
+    pub fn new(workdir: impl Into<PathBuf>) -> Self {
+        Self {
+            setting_sources: ISOLATED_SETTING_SOURCES.to_string(),
+            workdir: workdir.into(),
+        }
+    }
+
+    /// Load these setting sources instead; see
+    /// [`ClaudeCliAgent::with_setting_sources`].
+    #[must_use]
+    pub fn with_setting_sources(mut self, sources: impl Into<String>) -> Self {
+        self.setting_sources = sources.into();
+        self
+    }
+
+    /// The flags. Pass them after any caller-supplied arguments, because
+    /// Claude takes the last `--setting-sources` it is given. `--add-dir`
+    /// comes first since it takes every argument up to the next flag.
+    /// `--strict-mcp-config` keeps out every MCP server that Roko does not
+    /// pass with `--mcp-config`: none from `~/.claude.json`, `.mcp.json` or
+    /// claude.ai connectors, whether or not Roko passes a config.
+    #[must_use]
+    pub fn args(&self) -> Vec<String> {
+        vec![
+            "--add-dir".to_string(),
+            self.workdir.to_string_lossy().into_owned(),
+            "--setting-sources".to_string(),
+            self.setting_sources.clone(),
+            "--strict-mcp-config".to_string(),
+        ]
+    }
+
+    /// The environment. Set it before any caller-supplied variables, so an
+    /// explicit value wins. The config directory (`CLAUDE_CONFIG_DIR`) is
+    /// left alone: a subscription login is stored under it, and on macOS
+    /// the keychain entry's name depends on it.
+    #[must_use]
+    pub const fn env(&self) -> &'static [(&'static str, &'static str)] {
+        ISOLATION_ENV
+    }
+
+    /// The setting sources the run loads, as recorded with it: `none`, or
+    /// the `--setting-sources` list.
+    #[must_use]
+    pub fn setting_sources_tag(&self) -> &str {
+        if self.setting_sources.trim().is_empty() {
+            "none"
+        } else {
+            &self.setting_sources
+        }
+    }
+}
+
 /// Agent wrapper around the `claude` CLI.
 #[derive(Debug, Clone)]
 pub struct ClaudeCliAgent {
@@ -147,7 +214,7 @@ pub struct ClaudeCliAgent {
     disallowed_tools: Option<String>,
     max_turns: Option<u32>,
     settings_json: String,
-    setting_sources: String,
+    isolation: ClaudeIsolation,
     extra_args: Vec<String>,
     env: Vec<(String, String)>,
     credential_scrub: CredentialScrub,
@@ -168,9 +235,11 @@ impl ClaudeCliAgent {
         model: impl Into<String>,
     ) -> Self {
         let model = model.into();
+        let current_dir: PathBuf = current_dir.into();
         Self {
             program: program.into(),
-            current_dir: current_dir.into(),
+            isolation: ClaudeIsolation::new(current_dir.clone()),
+            current_dir,
             model: model.clone(),
             effort: "medium".to_string(),
             fallback_model: Some(roko_core::defaults::MODEL_FAST.to_string()),
@@ -180,7 +249,6 @@ impl ClaudeCliAgent {
             disallowed_tools: None,
             max_turns: Some(OperatingFrequency::Theta.turn_limit()),
             settings_json: build_settings_json(),
-            setting_sources: ISOLATED_SETTING_SOURCES.to_string(),
             extra_args: Vec::new(),
             env: Vec::new(),
             credential_scrub: CredentialScrub::for_kind(ProviderKind::ClaudeCli),
@@ -288,7 +356,7 @@ impl ClaudeCliAgent {
     /// [`with_extra_args`](Self::with_extra_args).
     #[must_use]
     pub fn with_setting_sources(mut self, sources: impl Into<String>) -> Self {
-        self.setting_sources = sources.into();
+        self.isolation = self.isolation.with_setting_sources(sources);
         self
     }
 
@@ -346,17 +414,6 @@ impl ClaudeCliAgent {
         self
     }
 
-    /// The output's `setting_sources` tag, which records the Claude Code
-    /// setting sources the run loaded: `none`, or the `--setting-sources`
-    /// list.
-    fn setting_sources_tag(&self) -> &str {
-        if self.setting_sources.trim().is_empty() {
-            "none"
-        } else {
-            &self.setting_sources
-        }
-    }
-
     fn failure(&self, input: &Signal, reason: &str, started: Instant) -> AgentResult {
         let stream_usage = StreamUsage::default();
         self.failure_with_stream_usage(input, reason, started, &stream_usage)
@@ -374,7 +431,7 @@ impl ClaudeCliAgent {
             .derive(Kind::AgentOutput, Body::text(reason))
             .provenance(Provenance::agent(&self.name))
             .tag("agent", &self.name)
-            .tag("setting_sources", self.setting_sources_tag())
+            .tag("setting_sources", self.isolation.setting_sources_tag())
             .tag("failed", "true");
         if let Some(model) = stream_usage
             .model
@@ -465,18 +522,10 @@ impl ClaudeCliAgent {
             .arg(&self.effort)
             .arg("--settings")
             .arg(&self.settings_json)
-            // Keep the invoking user's Claude Code configuration out of the
-            // run and the workdir's own CLAUDE.md files in: see
-            // `ISOLATED_SETTING_SOURCES` and `ISOLATION_ENV`. The workdir is
-            // the working directory, so `--add-dir` grants no file access.
-            // Keep out every MCP server Roko did not pass: none from
-            // `~/.claude.json`, `.mcp.json` or claude.ai connectors, whether
-            // or not Roko has an MCP config.
-            .arg("--setting-sources")
-            .arg(&self.setting_sources)
-            .arg("--add-dir")
-            .arg(&self.current_dir)
-            .arg("--strict-mcp-config");
+            // The invoking user's Claude Code configuration stays out of the
+            // run and the workdir's own CLAUDE.md files come in. The workdir
+            // is the working directory, so `--add-dir` grants no file access.
+            .args(self.isolation.args());
         if self.dangerously_skip_permissions {
             cmd.arg("--dangerously-skip-permissions");
         }
@@ -530,11 +579,8 @@ impl ClaudeCliAgent {
                 .unwrap_or_default(),
         );
         apply_credential_scrub(&mut cmd, &scrub);
-        // Before the caller's variables, so an explicit one wins. The config
-        // directory (`CLAUDE_CONFIG_DIR`) is left alone: a subscription
-        // login is stored under it, and on macOS the keychain entry's name
-        // depends on it.
-        for (key, value) in ISOLATION_ENV {
+        // Before the caller's variables, so an explicit one wins.
+        for (key, value) in self.isolation.env() {
             cmd.env(key, value);
         }
         for (key, value) in &self.env {
@@ -1250,7 +1296,7 @@ impl ClaudeCliAgent {
             .derive(Kind::AgentOutput, Body::text(text))
             .provenance(Provenance::agent(&self.name))
             .tag("agent", &self.name)
-            .tag("setting_sources", self.setting_sources_tag())
+            .tag("setting_sources", self.isolation.setting_sources_tag())
             .tag(
                 "model",
                 stream_usage.model.as_deref().unwrap_or(&self.model),
@@ -2199,6 +2245,12 @@ mod tests {
         assert_eq!(args[add_dir + 1], workdir.path().to_string_lossy());
         let workdir_claude_md = env_of(&command, "CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD");
         assert_eq!(workdir_claude_md.as_deref(), Some("1"));
+        // The block every Roko spawn of `claude` shares.
+        let isolation = ClaudeIsolation::new(workdir.path()).args();
+        assert_eq!(
+            args.get(add_dir..add_dir + isolation.len()),
+            Some(&isolation[..])
+        );
         // Only the MCP servers Roko passes, even with no MCP config.
         assert_eq!(
             args.iter()

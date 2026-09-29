@@ -15,7 +15,7 @@ discovered_from = "tmp/cybernetic-harness/tldr/05-GAPS-AND-PROPOSALS.md (P0 #3);
 anchors = ["crates/roko-agent/src/claude_cli_agent.rs::build_settings_json", "crates/roko-gate/src/shell.rs::ShellGate", "crates/roko-agent/src/safety/path.rs::canonicalize_with_policy", "crates/roko-cli/tests/secrets_and_git_guard_canary.rs"]
 doc = "tmp/cybernetic-harness/workstreams/PLAN.md"
 lane = "rust-cold"
-links = { depends_on = ["bug-7d7200", "gap-8be530", "gap-5f4852", "bug-7de5df", "bug-a66941", "gap-0e2c40", "gap-8f8544"], blocks = [], related = ["spec-ae5f94"], supersedes = [], duplicate_of = "" }
+links = { depends_on = ["bug-7d7200", "gap-8be530", "gap-5f4852", "bug-7de5df", "bug-a66941", "gap-0e2c40", "gap-8f8544", "bug-f4e133", "bug-66f5a1", "bug-63327d", "find-570af2"], blocks = [], related = ["spec-ae5f94"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "grep -rqw 'fn secrets_and_git_guard_canary' crates/roko-cli/tests/ && cargo test -p roko-cli --test secrets_and_git_guard_canary"
@@ -81,6 +81,10 @@ This is the implementation plan.
 - [x] bug-a66941: Agents can read the provider key files, such as ~/.roko/.env
 - [ ] gap-0e2c40: Integration test C2: no provider key reaches an agent, a gate or a log, and the git guard denies destructive commands
 - [ ] gap-8f8544: Sandbox levels are enforced only in-process: no OS sandbox confines agent processes
+- [ ] bug-f4e133: The agent command guard lets recursive rm through under sudo, -R, subshells and sh -c
+- [ ] bug-66f5a1: A git alias such as co = checkout bypasses the agent git guard
+- [ ] bug-63327d: roko-std's file tools don't check key files, so a dispatch without SafetyLayer can read .roko/.env
+- [ ] find-570af2: When HOME is the workdir, the key-file policy refuses agents the whole .roko directory
 - [ ] The epic's `[[verify]]` command (test C2) passes on the merged branch.
 
 ## Notes

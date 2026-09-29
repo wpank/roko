@@ -82,7 +82,7 @@ This is the implementation plan.
 
 ## Done when
 
-- [ ] gap-4d835d: Graph engine runs a plan wave by wave, so a ready task waits for its whole wave (existing item;
+- [x] gap-4d835d: Graph engine runs a plan wave by wave, so a ready task waits for its whole wave (existing item;
       looks done, close with `445a60d0d`)
 - [x] gap-96d348: FailureStrategy::SkipFailed unreachable; FailFast hardcoded (existing item; looks done, close with
       `3e7552acd`)

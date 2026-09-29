@@ -11,10 +11,10 @@
 //! 2. [`LaunchedTreatments::bind`] marks the treatments that survived
 //!    composition dispatched with the hash of the exact final prompt,
 //!    immediately before provider launch.
-//! 3. The attempt's feedback settles them with its outcome ([`settle`],
-//!    [`settlement`]). An attempt that ends before feedback abandons them
-//!    when its [`LaunchedTreatments`] drops, so no reservation stays open
-//!    and no trial is counted.
+//! 3. The attempt's feedback settles them with its learning label
+//!    ([`settle`], [`settlement`]). An attempt that ends before feedback
+//!    abandons them when its [`LaunchedTreatments`] drops, so no reservation
+//!    stays open and no trial is counted.
 
 use std::path::Path;
 
@@ -69,19 +69,15 @@ pub(super) fn dispatch_prompt_hash(system_prompt: &str, user_prompt: &str) -> St
     hasher.finalize().to_hex().to_string()
 }
 
-/// How an attempt's outcome settles its treatments: a passed attempt, and a
-/// verify failure or turn-cap stop, observe the prompt; any other failure
-/// (a provider error or exhausted usage) says nothing about it and abandons
-/// the treatments without counting a trial.
-pub(super) fn settlement(succeeded: bool, failure_reason: Option<&str>) -> AssignmentSettlement {
-    if succeeded {
-        AssignmentSettlement::Observed { success: true }
-    } else if failure_reason
-        .is_some_and(|reason| reason.starts_with("verify: ") || reason.starts_with("turn_cap: "))
-    {
-        AssignmentSettlement::Observed { success: false }
-    } else {
-        AssignmentSettlement::Abandoned
+/// How an attempt settles its treatments, from its learning label (S01
+/// §4.1): a pass, and a failure of the agent's work (a verify failure, a
+/// turn-cap stop, a timeout after output), observe the prompt. An attempt
+/// without a label (unverified, a provider or harness failure) says nothing
+/// about the prompt and abandons the treatments without counting a trial.
+pub(super) fn settlement(learning: Option<bool>) -> AssignmentSettlement {
+    match learning {
+        Some(success) => AssignmentSettlement::Observed { success },
+        None => AssignmentSettlement::Abandoned,
     }
 }
 
@@ -273,24 +269,29 @@ mod tests {
     }
 
     #[test]
-    fn only_prompt_attributable_outcomes_are_observed() {
-        assert_eq!(
-            settlement(true, None),
-            AssignmentSettlement::Observed { success: true }
-        );
-        for reason in [
-            "verify: 1/1 verify step(s) failed",
-            "turn_cap: agent turn cap",
-        ] {
+    fn experiments_skip_attempts_without_a_learning_label() {
+        use roko_learn::telemetry::{AttemptIdentity, AttemptOutcome, AttemptVerdictRecord};
+
+        let observed = |success| AssignmentSettlement::Observed { success };
+        let abandoned = AssignmentSettlement::Abandoned;
+        let cases = [
+            (AttemptOutcome::Passed, false, observed(true)),
+            (AttemptOutcome::GateFailed, false, observed(false)),
+            (AttemptOutcome::TurnCap, false, observed(false)),
+            (AttemptOutcome::Timeout, true, observed(false)),
+            (AttemptOutcome::Unverified, false, abandoned),
+            (AttemptOutcome::Timeout, false, abandoned),
+            (AttemptOutcome::ProviderError, true, abandoned),
+            (AttemptOutcome::ProviderExhausted, false, abandoned),
+            (AttemptOutcome::HarnessError, false, abandoned),
+        ];
+        for (outcome, first_token_seen, expected) in cases {
+            let identity = AttemptIdentity::new(&key("T1"));
+            let verdict = AttemptVerdictRecord::settle(identity, outcome, first_token_seen);
             assert_eq!(
-                settlement(false, Some(reason)),
-                AssignmentSettlement::Observed { success: false }
-            );
-        }
-        for reason in ["provider: exit 1", "provider_exhausted: usage"] {
-            assert_eq!(
-                settlement(false, Some(reason)),
-                AssignmentSettlement::Abandoned
+                settlement(verdict.learning_success()),
+                expected,
+                "{outcome:?}"
             );
         }
     }
@@ -343,7 +344,7 @@ mod tests {
             states(&path, &ctx.attempt_key),
             [PromptAssignmentState::Dispatched]
         );
-        settle(&path, ctx.attempt_key.clone(), settlement(true, None)).await;
+        settle(&path, ctx.attempt_key.clone(), settlement(Some(true))).await;
         drop(guard);
         tokio::task::yield_now().await;
 

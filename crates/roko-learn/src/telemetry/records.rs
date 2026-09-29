@@ -354,6 +354,10 @@ pub enum AttemptOutcome {
     WorkspaceError,
     /// The engine terminated the attempt's promise.
     PromiseTerminated,
+    /// The harness failed the attempt outside its provider call and verify
+    /// steps: prompt assembly, or recording its spend in the plan's cost
+    /// ledger.
+    HarnessError,
     /// An attempt-open line with no verdict. It is derived offline; dispatch
     /// never writes it.
     Abandoned,
@@ -374,6 +378,7 @@ impl AttemptOutcome {
             | Self::BudgetExhausted
             | Self::WorkspaceError
             | Self::PromiseTerminated
+            | Self::HarnessError
             | Self::Abandoned => Blame::Harness,
         }
     }
@@ -399,7 +404,8 @@ pub enum Blame {
     Agent,
     /// The provider or the network failed. It only affects provider health.
     Infra,
-    /// The harness stopped the attempt (cancel, budget, workspace).
+    /// The harness stopped the attempt (cancel, budget, workspace, or its
+    /// own error).
     Harness,
 }
 
@@ -738,6 +744,18 @@ impl AttemptVerdictRecord {
         let mut record = Self::settle(identity, verdict.into(), false);
         record.gate_verdict = Some(verdict);
         record
+    }
+
+    /// The learning label as learners apply it (S01 §4.1): `Some(true)` for
+    /// a pass, `Some(false)` when the agent's work failed, and `None` when
+    /// the attempt teaches nothing, so no learner updates.
+    #[must_use]
+    pub const fn learning_success(&self) -> Option<bool> {
+        match self.learning_label {
+            Some(1) => Some(true),
+            Some(0) => Some(false),
+            _ => None,
+        }
     }
 }
 
@@ -1194,6 +1212,7 @@ mod tests {
             (O::BudgetExhausted, true, Blame::Harness, None),
             (O::WorkspaceError, false, Blame::Harness, None),
             (O::PromiseTerminated, false, Blame::Harness, None),
+            (O::HarnessError, true, Blame::Harness, None),
             (O::Abandoned, false, Blame::Harness, None),
         ];
         for (outcome, first_token_seen, blame, label) in cases {
@@ -1201,6 +1220,8 @@ mod tests {
             let record = AttemptVerdictRecord::settle(id, outcome, first_token_seen);
             let got = (record.blame, record.learning_label);
             assert_eq!(got, (blame, label), "{outcome:?}");
+            let learned = label.map(|label| label == 1);
+            assert_eq!(record.learning_success(), learned, "{outcome:?}");
         }
 
         let verdict = GateVerdictTag::Unverified;

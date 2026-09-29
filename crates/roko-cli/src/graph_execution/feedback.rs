@@ -16,7 +16,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use roko_execution::FeedbackBundle;
-use roko_execution::feedback::receipt::{ChoiceSource, TaskAttemptReceiptV1};
+use roko_execution::feedback::receipt::{
+    AttemptTerminalStatus, ChoiceSource, TaskAttemptReceiptV1,
+};
 use roko_execution::feedback::settler::{FeedbackSettler, SINK_KEYS, SettlementSink, SinkError};
 
 // ---------------------------------------------------------------------------
@@ -347,16 +349,32 @@ struct EfficiencySummary {
 
 /// Updates the cascade router with the routing outcome.
 ///
+/// Only a gate's verdict is quality evidence (bug-c34782): a pass is a
+/// success and a gate failure a failure. An attempt that failed on its own
+/// (provider error, timeout, crash) or was cancelled says nothing about the
+/// model, as [`crate::runtime_feedback::RoutingObservationSink`] also holds;
+/// provider health tracks it.
+///
 /// For normal (router-selected) outcomes, successes and failures update the
 /// same learners, the confidence counters and `LinUCB` (a failure with reward
 /// 0), exactly as [`crate::runtime_feedback::RoutingObservationSink`] does.
 /// For manual overrides (`force_backend`), records via the dampened
 /// `record_override_outcome` path so the router learns from overrides without
 /// polluting the primary bandit signal.
-/// Skipped only when no router is available.
+/// Skipped when no router is available or no gate judged the attempt.
 #[derive(Debug)]
 struct RoutingSink {
     cascade_router: Option<Arc<roko_learn::cascade_router::CascadeRouter>>,
+}
+
+/// The gate's verdict on a receipt's attempt: `Some(true)` for a pass,
+/// `Some(false)` for a gate failure, and `None` when no gate judged it.
+fn gate_verdict(receipt: &TaskAttemptReceiptV1) -> Option<bool> {
+    match receipt.terminal_status {
+        AttemptTerminalStatus::Succeeded => Some(true),
+        AttemptTerminalStatus::GateFailed => Some(false),
+        AttemptTerminalStatus::AttemptFailed | AttemptTerminalStatus::Cancelled => None,
+    }
 }
 
 #[async_trait]
@@ -365,8 +383,8 @@ impl SettlementSink for RoutingSink {
         "routing"
     }
 
-    fn applicable(&self, _receipt: &TaskAttemptReceiptV1) -> bool {
-        self.cascade_router.is_some()
+    fn applicable(&self, receipt: &TaskAttemptReceiptV1) -> bool {
+        self.cascade_router.is_some() && gate_verdict(receipt).is_some()
     }
 
     async fn settle(&self, receipt: &TaskAttemptReceiptV1) -> Result<(), SinkError> {
@@ -374,6 +392,9 @@ impl SettlementSink for RoutingSink {
             sink_key: self.sink_key().to_string(),
             message: "no cascade router".to_string(),
         })?;
+        let Some(succeeded) = gate_verdict(receipt) else {
+            return Ok(());
+        };
         if receipt.choice_source == ChoiceSource::ManualOverride {
             // Manual override: use the dampened path so the learned policy is
             // not dominated by operator preferences. The override is still
@@ -383,14 +404,12 @@ impl SettlementSink for RoutingSink {
             ForceBackendOverrideRecorder::record_override_outcome(
                 router.as_ref(),
                 &receipt.resolved_model,
-                receipt.succeeded(),
+                succeeded,
             );
         } else {
             // Router-selected or experiment: successes and failures feed the
             // same learners (bug-8da8ba). The receipt carries no dispatch-time
             // routing context, so LinUCB sees the fallback context.
-            // bug-c34782 plugs in here: `succeeded()` still counts provider
-            // failures and cancellations (`terminal_status`) as model failures.
             let ctx = crate::runtime_feedback::routing::build_fallback_routing_context(
                 &receipt.resolved_model,
             );
@@ -398,7 +417,7 @@ impl SettlementSink for RoutingSink {
                 router,
                 &receipt.resolved_model,
                 &ctx,
-                receipt.succeeded(),
+                succeeded,
                 receipt.cost_usd(),
                 receipt.duration_ms(),
             );
@@ -766,7 +785,6 @@ impl CompletionSinkResult {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use roko_execution::feedback::receipt::AttemptTerminalStatus;
     use roko_execution::feedback::settler::{SettlementOutcome, SinkSettlementState};
     use tempfile::TempDir;
 
@@ -948,6 +966,40 @@ mod tests {
         let _ = settler.settle(&test_receipt(), None).await;
         assert_eq!(cascade.confidence_snapshot()["claude-sonnet-4-6"], (2, 1));
         assert_eq!(cascade.total_observations(), 2);
+    }
+
+    #[tokio::test]
+    async fn routing_skips_attempts_no_gate_judged() {
+        // bug-c34782: a provider failure or a cancellation says nothing about
+        // the model, so the routing row skips it and the router stays put.
+        let tmp = TempDir::new().unwrap();
+        let learn_dir = tmp.path().join("learn");
+        std::fs::create_dir_all(&learn_dir).unwrap();
+
+        let cascade = Arc::new(roko_learn::cascade_router::CascadeRouter::new(vec![
+            "claude-sonnet-4-6".into(),
+        ]));
+        let bundle = FeedbackBundle {
+            learn_dir: learn_dir.clone(),
+            health_registry: Arc::new(roko_learn::provider_health::ProviderHealthRegistry::new()),
+            cascade_router: Some(cascade.clone()),
+        };
+        let settler = build_settler(&bundle);
+        for status in [
+            AttemptTerminalStatus::AttemptFailed,
+            AttemptTerminalStatus::Cancelled,
+        ] {
+            let mut receipt = test_receipt();
+            receipt.terminal_status = status;
+            let (_, ledger) = settler.settle(&receipt, None).await;
+            assert_eq!(
+                ledger.entries["routing"].state,
+                SinkSettlementState::Skipped,
+                "{status:?}"
+            );
+        }
+        assert!(cascade.confidence_snapshot().is_empty());
+        assert_eq!(cascade.total_observations(), 0);
     }
 
     #[tokio::test]

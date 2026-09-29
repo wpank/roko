@@ -2,7 +2,7 @@
 id = "gap-cdf3fc"
 kind = "gap"
 title = "Correct the 16 docs claims that the code or the literature contradicts"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "tooling"
@@ -11,6 +11,7 @@ subsystem = ["docs/v3"]
 created = 2026-09-29
 updated = 2026-09-29
 last_verified = 2026-09-29
+last_verified_rev = "1f0f73e1f"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e15"
 discovered_from = "tmp/cybernetic-harness/tldr/05-GAPS-AND-PROPOSALS.md (P0 #7; §5 doc corrections)"
 anchors = ["docs/v3/00-INDEX.md", "docs/v3/04-EXECUTION.md", "docs/v3/07-GATES.md", "docs/v3/08-LEARNING.md", "docs/v3/11-AFFECT.md", "docs/v3/12-SAFETY.md", "docs/v3/16-COORDINATION.md", "docs/v3/19-TOOLS-PLUGINS.md", "docs/v3/20-GATEWAY.md", "docs/v3/30-CONDUCTOR.md", "docs/v3/31-SELF-HOSTING.md", "CLAUDE.md"]
@@ -20,6 +21,12 @@ links = { depends_on = [], blocks = [], related = ["bug-09690f", "gap-b23ebd", "
 
 [[verify]]
 command = "! grep -q 'This is law' docs/v3/30-CONDUCTOR.md && ! grep -q 'All eight loops are wired' docs/v3/08-LEARNING.md && ! grep -q 'at least 45%' docs/v3/08-LEARNING.md && ! grep -q 'is 10/10 complete' docs/v3/11-AFFECT.md && ! grep -q 'Graph of Graphs is just a Graph' docs/v3/00-INDEX.md && ! grep -q 'via plonky2' docs/v3/12-SAFETY.md && ! grep -q '2607.25891' docs/v3/07-GATES.md && ! grep -q 'inside isolated git worktrees' docs/v3/04-EXECUTION.md && ! grep -q '124/124' docs/v3/00-INDEX.md && ! grep -q 'uses graph templates via' CLAUDE.md"
+
+[closed]
+at = 2026-09-29
+commit = "1f0f73e1f"
+by = "wk-docs"
+evidence = "1f0f73e1f corrects all 16 rows at their listed locations, each checked against the code at 7c556bc0a: 07-GATES header and section 5 (plan tasks run only authored verify commands via ShellGate; run_gate_once is test-only), 04-EXECUTION header and sections 10-11 (shared working tree; --worktree-per-task opt-in, never merged back; merge queue ORPHANED), 31-SELF-HOSTING status, section 3 and 6.2 (ReplanController BUILT-UNWIRED; portal build as the evidence), 30-CONDUCTOR status and section 3 (BUILT-UNWIRED; 'This is law' gone), 08-LEARNING section 11 (2 of 8 loops close; per-loop status lines), section 6 (no recovery rate) and section 10 (hypothesis, with arXiv:2607.14004, 2608.18066, 2607.12227 from docs/whitepaper/references.bib), 11-AFFECT status (PARTIAL; modulate_dispatch has no caller), 00-INDEX (no impl Cell for Graph; 48/48 and the task count withdrawn; code-first, PARTIAL), 16-COORDINATION section 11, 12-SAFETY 13.12 (DOCS-ONLY), 20-GATEWAY scope note (roko serve only), 19-TOOLS-PLUGINS status and section 7 (WASM hooks never run), 07-GATES 9.5 (citation withdrawn), CLAUDE.md:75-76 (roko run writes a one-task plan and calls run_graph_plan). The 00-INDEX crate, section 13 and chapter tables and 17 depth pages carry the same corrections. Left for other items: the README copy (bug-09690f); the wrong Messier title in REFERENCES.md:1282,:1862, 39-ROADMAP.md:93 and depth/39-references/17-process-reward-models.md:51, 24-additions-2025-2026.md:347 (gap-b23ebd); '19-gate pipeline' as the verifier in 26-HTTP-API.md:12, 35-ARCHITECTURE.md:205,:675, 31-SELF-HOSTING.md:286, depth/07-gates/evaluation-lifecycle.md:260-271 and depth/35-architecture/*; 'E23 10/10 complete' in 05-AGENT.md:10,:977, 29-HEARTBEAT.md:16, 39-ROADMAP.md:379 and depth/05-agent/*cognitive-autonomy-e23.md:3; WASM hooks 'live' in 39-ROADMAP.md:388 and 35-ARCHITECTURE.md:722; '48 epics accepted' in 35-ARCHITECTURE.md:6,:1048; CLAUDE.md:138 ('Single prompt through graph templates'), not changed because the item lists only CLAUDE.md:75. Check: the item's [[verify]] passes."
 +++
 
 ## Problem
@@ -68,8 +75,8 @@ belongs to bug-09690f.
 
 ## Done when
 
-- [ ] All 16 rows are corrected, or a row is explicitly left for a named item.
-- [ ] The `[[verify]]` command passes.
+- [x] All 16 rows are corrected, or a row is explicitly left for a named item.
+- [x] The `[[verify]]` command passes.
 
 ## Notes
 

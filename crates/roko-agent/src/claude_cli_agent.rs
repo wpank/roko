@@ -1749,6 +1749,7 @@ mod tests {
             "Read(//**/.roko/.env)",
             "Read(//**/.roko/secrets.toml)",
             "Read(//**/.roko/credentials.json)",
+            "Read(//**/.roko/config.toml)",
             "Edit(//**/.roko/.env)",
         ] {
             assert!(deny.contains(&rule), "missing {rule} in {deny:?}");
@@ -1782,6 +1783,7 @@ mod tests {
 
         for tool_input in [
             serde_json::json!({ "file_path": "~/.roko/.env" }),
+            serde_json::json!({ "file_path": "~/.roko/config.toml" }),
             serde_json::json!({ "file_path": ".roko/.env" }),
             serde_json::json!({ "file_path": "../other/.roko/secrets.toml" }),
             serde_json::json!({ "path": "~/.roko" }),
@@ -1797,7 +1799,7 @@ mod tests {
         for tool_input in [
             serde_json::json!({ "file_path": "src/lib.rs" }),
             serde_json::json!({ "file_path": ".roko/state/graph/p/checkpoint.json" }),
-            serde_json::json!({ "file_path": "~/.roko/config.toml" }),
+            serde_json::json!({ "file_path": "~/.roko/logs/daemon.log" }),
             serde_json::json!({ "path": "src", "pattern": "fn main" }),
             serde_json::json!({ "pattern": "**/*.rs" }),
         ] {
@@ -1811,10 +1813,14 @@ mod tests {
 
         for denied in [
             "cat ~/.roko/.env",
+            "cat ~/.roko/config.toml",
             "cat .roko/secrets.toml",
             "cd .roko && cat .env",
             "grep KEY \"$HOME/.roko/credentials.json\"",
             "cat ~/.roko/*",
+            "cd ~/.roko && cat *",
+            "cat .ro\"\"ko/.e''nv",
+            "sh -c 'cat .ro\"\"ko/.env'",
         ] {
             let output = run_hook(&bash_hook, &bash_payload(denied), &env);
             assert_eq!(
@@ -1823,7 +1829,7 @@ mod tests {
                 "`{denied}` should be blocked"
             );
         }
-        for allowed in ["cat README.md", "ls .roko/state"] {
+        for allowed in ["cat README.md", "ls .roko/state", "cp .env.example .env"] {
             let output = run_hook(&bash_hook, &bash_payload(allowed), &env);
             assert_eq!(
                 output.status.code(),

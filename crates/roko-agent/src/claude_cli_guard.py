@@ -5,8 +5,19 @@
 # tool call and passes the hook input as JSON on stdin. The first argument
 # names the check.
 #
-# `bash` (Bash calls) denies commands that name a provider key file (see
-# below) and commands that discard the operator's work or move branches:
+# `bash` (Bash calls) denies commands that name a provider key file and
+# commands that discard the operator's work or move branches. A command
+# names a key file when, in its text or its words with quotes removed
+# (those of sh -c '...' strings too):
+#
+# - a path to one appears (.roko/.env, ~/.roko/config.toml), or a glob
+#   directly in a .roko directory (.roko/*);
+# - a word names a .roko directory itself (cd ~/.roko) and another ends in
+#   a key file's name (.env) or is a bare glob (*);
+# - a word, resolved against the working directory with symlinks followed,
+#   is a key file.
+#
+# The destructive commands are:
 #
 # - git checkout, switch, restore and push;
 # - git branch -m, -M and -D (renames and force deletes);
@@ -29,10 +40,10 @@
 #
 # `file` (Read, Edit, Write, Grep, Glob and the like) denies a file_path,
 # notebook_path or path argument that is a provider key file: .env,
-# secrets.toml or credentials.json in any .roko directory, ~/.roko
-# included. A Grep or Glob rooted at a .roko directory is denied as well.
-# The rest of .roko stays readable: when HOME is the workdir, ~/.roko is
-# the workdir's .roko, with its plans, state and plan worktrees.
+# secrets.toml, credentials.json or config.toml in any .roko directory,
+# ~/.roko included. A Grep or Glob rooted at a .roko directory is denied as
+# well. The rest of .roko stays readable: when HOME is the workdir, ~/.roko
+# is the workdir's .roko, with its plans, state and plan worktrees.
 #
 # Exit 0 lets the call run. Exit 2 blocks it, and Claude Code shows stderr
 # to the model. Claude Code treats any other exit code as a non-blocking
@@ -315,23 +326,52 @@ def git_failure(result):
 
 
 # Files in a .roko directory, ~/.roko or a checkout's, that hold provider
-# keys or roko credentials (roko_core::child_env::KEY_FILE_NAMES).
-KEY_FILE_NAMES = (".env", "secrets.toml", "credentials.json")
+# keys or roko credentials (roko_core::child_env::KEY_FILE_NAMES), the
+# global config.toml included.
+KEY_FILE_NAMES = (".env", "secrets.toml", "credentials.json", "config.toml")
 KEY_FILE_REASON = (
-    "provider key files are off limits to agents"
-    " (.env, secrets.toml and credentials.json in any .roko directory, ~/.roko included)"
+    "provider key files are off limits to agents (.env, secrets.toml, credentials.json"
+    " and config.toml in any .roko directory, ~/.roko included)"
 )
-ROKO_DIR_TEXT = re.compile(r"(?<![\w.-])\.roko(?![\w.-])")
-KEY_FILE_TEXT = re.compile(r"\.env(?![\w-])|secrets\.toml|credentials\.json")
-# A glob directly in a .roko directory (.roko/*), which can match a key file.
-ROKO_GLOB_TEXT = re.compile(r"(?<![\w.-])\.roko/[^/\s;&|<>()]*[*?\[{]")
+# A key file's name, ending there (.env, not .envrc).
+KEY_NAME = r"(?:\.env|secrets\.toml|credentials\.json|config\.toml)(?![\w-])"
+# In a command's text: a path to a key file, or a glob directly in a .roko
+# directory (.roko/*).
+KEY_PATH_TEXT = re.compile(r"(?<![\w.-])\.roko/(?:" + KEY_NAME + r"|[^/\s;&|<>()]*[*?\[{])")
+# A word naming a .roko directory itself (cd ~/.roko, D=.roko), and one that
+# ends in a key file's name (.env, $D/secrets.toml) or is a bare glob (*).
+ROKO_DIR_WORD = re.compile(r"(?<![\w.-])\.roko$")
+KEY_NAME_WORD = re.compile(r"(?<![\w.-])" + KEY_NAME + r"$|^[^/]*[*?\[{][^/]*$")
 
 
-def names_key_file(command):
-    """Whether `command` names a .roko directory and a key file, or globs in one."""
-    if ROKO_GLOB_TEXT.search(command):
+def command_words(text, depth=0):
+    """The words of `text` with quotes removed, and the words of each word
+    that is itself a command line (sh -c '...')."""
+    words = []
+    for token in tokens(text.replace("\\\n", " ")):
+        if set(token) <= OPERATOR_CHARS:
+            continue
+        words.append(token)
+        if depth < MAX_DEPTH and re.search(r"[\s'\"\\]", token):
+            words += command_words(token, depth + 1)
+    return words
+
+
+def names_key_file(command, cwd):
+    """Whether a Bash command names a provider key file (see the top)."""
+    words = command_words(command)
+    if any(KEY_PATH_TEXT.search(text) for text in [command] + words):
         return True
-    return bool(ROKO_DIR_TEXT.search(command) and KEY_FILE_TEXT.search(command))
+    if any(ROKO_DIR_WORD.search(os.path.normpath(word)) for word in words) and any(
+        KEY_NAME_WORD.search(word) for word in words
+    ):
+        return True
+    for word in words:
+        # The word, and an option's or assignment's value (--env-file=x).
+        for value in {word, word.split("=", 1)[-1]}:
+            if value and not re.search(r"[$`*?\[{]", value) and is_key_path(value, cwd, False):
+                return True
+    return False
 
 
 def is_key_path(path, cwd, search_root):
@@ -358,9 +398,10 @@ def check_bash(tool_input, data):
     command = tool_input.get("command", data.get("command"))
     if not isinstance(command, str):
         block("the Bash command is not a string")
-    if names_key_file(command):
+    cwd = hook_cwd(data)
+    if names_key_file(command, cwd):
         block(KEY_FILE_REASON)
-    BASH_CALL.update(cwd=hook_cwd(data), command=command)
+    BASH_CALL.update(cwd=cwd, command=command)
     check_command(command)
 
 

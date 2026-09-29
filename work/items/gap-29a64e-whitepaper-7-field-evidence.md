@@ -3,13 +3,15 @@ id = "gap-29a64e"
 kind = "gap"
 title = "Whitepaper §7 Field evidence"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p1"
 goal = "whitepaper"
 size = "M"
 subsystem = ["docs/whitepaper"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-29
+last_verified_rev = "1f4481133"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e1"
 discovered_from = "tmp/cybernetic-harness/evidence/field/CASES.md (CASE-001 to CASE-008)"
 anchors = ["docs/whitepaper/07-field-evidence.md", "docs/whitepaper/evidence"]
@@ -71,7 +73,7 @@ Checked at `41c7ffbd6`, and in gitignored `tmp/cybernetic-harness/evidence/field
 
 ## Done when
 
-- [ ] Every number traces to the frozen rollup, a snapshot or a commit, and its scope is stated.
+- [x] Every number traces to the frozen rollup, a snapshot or a commit, and its scope is stated.
 - [ ] The `[[verify]]` command passes.
 
 ## Notes
@@ -80,3 +82,8 @@ Checked at `41c7ffbd6`, and in gitignored `tmp/cybernetic-harness/evidence/field
 - **Needs `tools/paperlint.py`** (gap-af0b57) to close.
 - **Nothing copied out of `tmp/` may contain keys or transcripts** (field README, rule 2; bug-7d7200).
 - Lane `paper`; no hot files.
+- 2026-09-29 (wk-wp-s7): §7 drafted on `work/gap-29a64e` from rollup 2026-09-29T14:37:51 (autonomy index 2/41,
+  after bug-7b37c4), B7, CASES and W12's F2 table, all frozen in `docs/whitepaper/evidence/` with `SHA256SUMS`.
+  The verify's static part passes; `paperlint --strict` from the gap-af0b57 worktree passes (767 words, 1.10×).
+  Closing waits for `tools/paperlint.py` to merge. E13's harvest (gap-263de5, gap-ccb87e) had not landed, so the
+  operator-loop cost is W12's estimate.

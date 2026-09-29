@@ -14,7 +14,8 @@ use crate::perplexity::types::SearchOptions;
 use crate::provider::openai_compat::tool_registry_for_options;
 use crate::provider::{
     AgentCreationError, AgentOptions, PERPLEXITY_SEARCH_OPTIONS_ARG_PREFIX, ProviderAdapter,
-    ProviderError, build_tool_dispatcher_with_audit, tool_loop_max_iterations_for_profile,
+    ProviderError, TurnCapEnforcement, build_tool_dispatcher_with_audit,
+    tool_loop_max_iterations_for_options,
 };
 use crate::tool_loop::ToolLoop;
 use crate::translate::{OpenAiTranslator, Translator};
@@ -181,7 +182,7 @@ fn perplexity_tool_loop_agent(
     ));
 
     let tool_loop = ToolLoop::new(translator, dispatcher, backend.clone())
-        .with_max_iterations(tool_loop_max_iterations_for_profile(Some(model)))
+        .with_max_iterations(tool_loop_max_iterations_for_options(model, options))
         .with_context_token_limit(usize::try_from(model.context_window).unwrap_or(usize::MAX))
         .with_model_profile(model.clone());
 
@@ -202,6 +203,9 @@ fn perplexity_tool_loop_agent(
     // runner-level task cancellation rather than running to completion.
     if let Some(ref token) = options.cancel_token {
         agent = agent.with_cancel_token(Arc::clone(token));
+    }
+    if let Some(max_turns) = options.max_turns {
+        agent = agent.with_turn_cap(max_turns);
     }
 
     Ok(Box::new(agent))
@@ -271,6 +275,10 @@ impl ProviderAdapter for PerplexityAdapter {
 
     fn supports_local_tool_runtime(&self) -> bool {
         true
+    }
+
+    fn turn_cap_enforcement(&self, _provider: &ProviderConfig) -> TurnCapEnforcement {
+        TurnCapEnforcement::ToolLoop
     }
 
     fn classify_error(&self, status: u16, body: &Value) -> ProviderError {

@@ -9,6 +9,7 @@
 //! 4. Send `session/prompt` for the turn
 //! 5. Read `session/update` notifications for streaming output
 //! 6. Receive `session/prompt` response with `stopReason` when turn completes
+//!    (or stop early once the run starts more tool calls than its `max_turns`)
 //! 7. Kill the subprocess
 
 use crate::agent::{Agent, AgentResult};
@@ -16,6 +17,7 @@ use crate::process::{
     GRACE_STDIN_CLOSE_MS, ResourceLimits, apply_credential_scrub, confined_command, kill_tree,
     register_spawned_pid, set_process_group, unregister_pid,
 };
+use crate::provider::error_classify::TurnCapHit;
 use crate::usage::Usage;
 use async_trait::async_trait;
 use roko_core::agent::ProviderKind;
@@ -593,6 +595,8 @@ pub struct CursorCliAgent {
     env: Vec<(String, String)>,
     /// Which inherited provider credentials the subprocess loses.
     credential_scrub: CredentialScrub,
+    /// Tool calls the run may start before it is stopped at its turn cap.
+    max_turns: Option<u32>,
 }
 
 impl CursorCliAgent {
@@ -610,6 +614,7 @@ impl CursorCliAgent {
             system_prompt: None,
             env: Vec::new(),
             credential_scrub: CredentialScrub::for_kind(ProviderKind::CursorCli),
+            max_turns: None,
         }
     }
 
@@ -667,6 +672,17 @@ impl CursorCliAgent {
     #[must_use]
     pub fn with_credential_scrub(mut self, scrub: CredentialScrub) -> Self {
         self.credential_scrub = scrub;
+        self
+    }
+
+    /// Stop the run once Cursor starts more than `max_turns` tool calls.
+    ///
+    /// Cursor's ACP stream reports tool calls, not model turns, so each tool
+    /// call counts as one turn. The stopped run fails with [`TurnCapHit`]
+    /// text, and its partial edits stay in the working tree.
+    #[must_use]
+    pub const fn with_max_turns(mut self, max_turns: u32) -> Self {
+        self.max_turns = Some(max_turns);
         self
     }
 
@@ -753,6 +769,7 @@ impl Agent for CursorCliAgent {
         // Collect events until turn completes or timeout.
         let mut output_text = String::new();
         let mut tool_calls = Vec::new();
+        let mut turn_cap_hit = false;
         let timeout_dur = Duration::from_millis(self.timeout_ms);
 
         let result = timeout(timeout_dur, async {
@@ -765,6 +782,13 @@ impl Agent for CursorCliAgent {
                             }
                             Some(CursorEvent::ToolCall(name)) => {
                                 tool_calls.push(name);
+                                if self
+                                    .max_turns
+                                    .is_some_and(|cap| tool_calls.len() > cap as usize)
+                                {
+                                    turn_cap_hit = true;
+                                    break;
+                                }
                             }
                             Some(CursorEvent::CommandOutput(text)) => {
                                 output_text.push_str(&text);
@@ -807,6 +831,23 @@ impl Agent for CursorCliAgent {
                     .body(Body::text(msg))
                     .build(),
             );
+        }
+
+        if turn_cap_hit {
+            let hit = TurnCapHit {
+                num_turns: Some(u32::try_from(tool_calls.len()).unwrap_or(u32::MAX)),
+                cap: self.max_turns,
+            };
+            tracing::warn!(agent = %self.name, "{hit}");
+            return AgentResult::fail(
+                Signal::builder(Kind::AgentOutput)
+                    .body(Body::text(hit.to_string()))
+                    .build(),
+            )
+            .with_usage(Usage {
+                wall_ms: elapsed.as_millis() as u64,
+                ..Usage::zero()
+            });
         }
 
         let output = Signal::builder(Kind::AgentOutput)
@@ -1023,6 +1064,84 @@ done
         assert_eq!(
             result.output.body.as_text().unwrap_or(""),
             "hello from cursor"
+        );
+    }
+
+    /// Mock Cursor ACP server whose prompt turn starts `tool_calls` tool
+    /// calls and then either ends the turn or hangs until it is killed.
+    fn mock_tool_calling_script(tool_calls: usize, end_turn: bool) -> String {
+        r#"#!/usr/bin/env python3
+import json
+import sys
+import time
+
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    msg = json.loads(line)
+    method = msg.get("method", "")
+    msg_id = msg.get("id", 0)
+    if method == "initialize":
+        print(json.dumps({"jsonrpc": "2.0", "id": msg_id, "result": {"protocolVersion": 1}}), flush=True)
+    elif method == "session/new":
+        print(json.dumps({"jsonrpc": "2.0", "id": msg_id, "result": {"sessionId": "cap-sess"}}), flush=True)
+    elif method == "session/prompt":
+        for n in range(__TOOL_CALLS__):
+            update = {"sessionUpdate": "tool_call", "toolCallId": f"call-{n}", "title": f"step {n}"}
+            print(json.dumps({"jsonrpc": "2.0", "method": "session/update", "params": {"update": update}}), flush=True)
+        if __END_TURN__:
+            print(json.dumps({"jsonrpc": "2.0", "id": msg_id, "result": {"stopReason": "end_turn"}}), flush=True)
+        else:
+            time.sleep(60)
+"#
+        .replace("__TOOL_CALLS__", &tool_calls.to_string())
+        .replace("__END_TURN__", if end_turn { "True" } else { "False" })
+    }
+
+    #[tokio::test]
+    async fn a_run_past_its_turn_cap_stops_with_a_turn_cap_hit() {
+        let tmp = tempdir().expect("tempdir");
+        let script_path = tmp.path().join("mock-agent.py");
+        write_script(&script_path, &mock_tool_calling_script(5, false));
+        let agent = CursorCliAgent::new(script_path.display().to_string(), tmp.path())
+            .with_timeout_ms(30_000)
+            .with_max_turns(2);
+
+        let started = Instant::now();
+        let result = agent.run(&prompt("keep going"), &Context::now()).await;
+
+        assert!(!result.success);
+        let text = result.output.body.as_text().expect("failure text");
+        assert_eq!(
+            crate::provider::error_classify::detect_turn_cap(text),
+            Some(TurnCapHit {
+                num_turns: Some(3),
+                cap: Some(2),
+            }),
+            "{text}"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(30),
+            "the cap, not the timeout, must end the run"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_run_within_its_turn_cap_finishes_normally() {
+        let tmp = tempdir().expect("tempdir");
+        let script_path = tmp.path().join("mock-agent.py");
+        write_script(&script_path, &mock_tool_calling_script(2, true));
+        let agent = CursorCliAgent::new(script_path.display().to_string(), tmp.path())
+            .with_timeout_ms(30_000)
+            .with_max_turns(2);
+
+        let result = agent.run(&prompt("two steps"), &Context::now()).await;
+
+        assert!(
+            result.success,
+            "{}",
+            result.output.body.as_text().unwrap_or("?")
         );
     }
 }

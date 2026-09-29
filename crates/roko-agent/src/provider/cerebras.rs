@@ -16,9 +16,9 @@ use std::sync::Arc;
 use crate::Agent;
 use crate::http::ReqwestPoster;
 use crate::provider::{
-    AgentCreationError, AgentOptions, ProviderAdapter, ProviderError,
+    AgentCreationError, AgentOptions, ProviderAdapter, ProviderError, TurnCapEnforcement,
     build_tool_dispatcher_with_audit, openai_compat::tool_registry_for_options,
-    tool_loop_max_iterations_for_profile,
+    tool_loop_max_iterations_for_options,
 };
 use crate::tool_loop::ToolLoop;
 use crate::tool_loop::agent_wrapper::ToolLoopAgent;
@@ -68,7 +68,7 @@ impl ProviderAdapter for CerebrasAdapter {
             let backend = create_openai_compat_backend(&tool_loop_provider, model, poster)?;
 
             let tool_loop = ToolLoop::new(translator, dispatcher, backend)
-                .with_max_iterations(tool_loop_max_iterations_for_profile(Some(model)))
+                .with_max_iterations(tool_loop_max_iterations_for_options(model, options))
                 .with_context_token_limit(
                     usize::try_from(model.context_window).unwrap_or(usize::MAX),
                 )
@@ -99,6 +99,9 @@ Call one tool at a time. After each tool result, decide your next action.\n\n";
             if let Some(ref token) = options.cancel_token {
                 agent = agent.with_cancel_token(Arc::clone(token));
             }
+            if let Some(max_turns) = options.max_turns {
+                agent = agent.with_turn_cap(max_turns);
+            }
 
             return Ok(Box::new(agent));
         }
@@ -110,6 +113,10 @@ Call one tool at a time. After each tool result, decide your next action.\n\n";
 
     fn supports_local_tool_runtime(&self) -> bool {
         true
+    }
+
+    fn turn_cap_enforcement(&self, _provider: &ProviderConfig) -> TurnCapEnforcement {
+        TurnCapEnforcement::ToolLoop
     }
 
     fn classify_error(&self, status: u16, body: &Value) -> ProviderError {

@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::agent::{Agent, AgentResult, derived_output};
 use crate::http::{HttpPoster, ReqwestPoster};
+use crate::tool_loop::max_iter::exhausted_message;
 use crate::tool_loop::{LlmBackend, LlmError, StopReason, ToolLoop};
 use crate::translate::{BackendResponse, RenderedTools, SessionState};
 use async_trait::async_trait;
@@ -149,6 +150,8 @@ pub struct PerplexityToolLoopAgent {
     model_slug: String,
     worktree_path: PathBuf,
     immune_root_path: Option<PathBuf>,
+    /// Caller's turn cap: a stop at it reads as a turn-cap hit.
+    turn_cap: Option<u32>,
     /// Run-scoped cancellation token (T027). Wired from `AgentOptions::cancel_token`
     /// so that a runner-level task cancellation stops tool execution promptly.
     cancel_token: Arc<dyn CancelToken>,
@@ -170,6 +173,7 @@ impl PerplexityToolLoopAgent {
             model_slug: model_slug.into(),
             worktree_path: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             immune_root_path: None,
+            turn_cap: None,
             cancel_token: Arc::new(NeverCancel),
         }
     }
@@ -181,6 +185,14 @@ impl PerplexityToolLoopAgent {
     #[must_use]
     pub fn with_cancel_token(mut self, token: Arc<dyn CancelToken>) -> Self {
         self.cancel_token = token;
+        self
+    }
+
+    /// Record the caller's turn cap, which the loop's iteration cap
+    /// enforces; a run that stops at it fails with turn-cap-hit text.
+    #[must_use]
+    pub const fn with_turn_cap(mut self, max_turns: u32) -> Self {
+        self.turn_cap = Some(max_turns);
         self
     }
 
@@ -289,7 +301,7 @@ impl Agent for PerplexityToolLoopAgent {
             .with_usage(output.total_usage),
             StopReason::MaxIterations => AgentResult::fail(self.output_signal(
                 input,
-                &format!("Max iterations ({}) reached", output.iterations),
+                &exhausted_message(output.iterations, self.turn_cap),
                 "max_iterations",
                 output.iterations,
                 metadata,

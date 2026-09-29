@@ -1,8 +1,8 @@
 use crate::Agent;
 use crate::cursor_cli_agent::CursorCliAgent;
 use crate::provider::{
-    AgentCreationError, AgentOptions, ProviderAdapter, ProviderError, configured_resource_limits,
-    provider_credential_scrub,
+    AgentCreationError, AgentOptions, ProviderAdapter, ProviderError, TurnCapEnforcement,
+    configured_resource_limits, provider_credential_scrub,
 };
 use roko_core::agent::ProviderKind;
 use roko_core::config::schema::{ModelProfile, ProviderConfig};
@@ -65,12 +65,21 @@ impl ProviderAdapter for CursorCliAdapter {
         for (key, value) in &options.env {
             agent = agent.with_env_var(key.clone(), value.clone());
         }
+        if let Some(max_turns) = options.max_turns {
+            agent = agent.with_max_turns(max_turns);
+        }
 
         Ok(Box::new(agent))
     }
 
     fn supports_per_call_local_mcp(&self, _provider: &ProviderConfig) -> bool {
         true
+    }
+
+    /// Cursor has no turn flag, but its ACP stream reports each tool call,
+    /// and [`CursorCliAgent::with_max_turns`] stops the run past the cap.
+    fn turn_cap_enforcement(&self, _provider: &ProviderConfig) -> TurnCapEnforcement {
+        TurnCapEnforcement::ToolCalls
     }
 
     fn classify_error(&self, status: u16, body: &Value) -> ProviderError {

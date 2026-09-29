@@ -343,6 +343,20 @@ pub fn create_agent_for_model(
 
     let adapter = adapter_for_kind(provider_config.kind);
 
+    // Every Graph task carries its tier's turn cap. Say so when this
+    // provider cannot bound its own loop, instead of dropping the cap.
+    if let Some(max_turns) = options.max_turns
+        && !adapter.turn_cap_enforcement(&provider_config).is_binding()
+    {
+        tracing::warn!(
+            agent = %options.name,
+            model_key = model_key,
+            provider = %provider_config.kind,
+            max_turns,
+            "provider cannot enforce the turn cap: it is advisory, and only the attempt timeout bounds this run"
+        );
+    }
+
     if options
         .pre_discovered_local_tools
         .as_ref()
@@ -593,6 +607,27 @@ pub(crate) fn tool_loop_max_iterations_for_profile(profile: Option<&ModelProfile
     apply_temperament_to_iteration_cap(base)
 }
 
+/// Iteration cap of a provider tool loop built for `options`.
+///
+/// A caller's turn cap ([`AgentOptions::max_turns`], such as a Graph task's
+/// `[pipeline.<tier>] max_turns`) replaces the temperament-adjusted default,
+/// the way `--max-turns` replaces the Claude CLI's own default. A model's
+/// configured `max_tool_iterations` stays a ceiling. Without a turn cap
+/// this is [`tool_loop_max_iterations_for_profile`].
+#[must_use]
+pub(crate) fn tool_loop_max_iterations_for_options(
+    model: &ModelProfile,
+    options: &AgentOptions,
+) -> usize {
+    let Some(max_turns) = options.max_turns else {
+        return tool_loop_max_iterations_for_profile(Some(model));
+    };
+    let cap = model
+        .max_tool_iterations
+        .map_or(max_turns, |model_cap| model_cap.min(max_turns));
+    (cap as usize).max(1)
+}
+
 #[must_use]
 pub fn is_known_protocol_command(command: &str) -> bool {
     provider_kind_for_known_protocol_command(command).is_some()
@@ -699,6 +734,39 @@ pub trait ProviderAdapter: Send + Sync {
     fn supports_per_call_local_mcp(&self, _provider: &ProviderConfig) -> bool {
         false
     }
+
+    /// How agents from this adapter enforce [`AgentOptions::max_turns`].
+    ///
+    /// Defaults to [`TurnCapEnforcement::Advisory`] so that a newly added
+    /// adapter reports an unenforced cap instead of claiming one it ignores.
+    fn turn_cap_enforcement(&self, _provider: &ProviderConfig) -> TurnCapEnforcement {
+        TurnCapEnforcement::Advisory
+    }
+}
+
+/// How a provider adapter bounds a run to [`AgentOptions::max_turns`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TurnCapEnforcement {
+    /// The provider's own flag stops the run at the cap (`--max-turns`).
+    Native,
+    /// Roko's tool loop runs the turns and stops at the cap.
+    ToolLoop,
+    /// The provider runs its own loop but reports each tool call; roko stops
+    /// the run once the calls exceed the cap, so each call counts as a turn.
+    ToolCalls,
+    /// A run is a single model call, so any cap of at least one holds.
+    SingleTurn,
+    /// Nothing bounds the provider's own loop: the cap is advisory, and only
+    /// the attempt timeout ends a long run.
+    Advisory,
+}
+
+impl TurnCapEnforcement {
+    /// Whether a requested cap actually bounds the run.
+    #[must_use]
+    pub const fn is_binding(self) -> bool {
+        !matches!(self, Self::Advisory)
+    }
 }
 
 pub(crate) fn configured_resource_limits(
@@ -798,8 +866,11 @@ pub struct AgentOptions {
     pub command: Option<String>,
     pub timeout_ms: Option<u64>,
     /// Maximum number of agent turns. When `Some`, overrides the provider's
-    /// built-in default. Currently wired for Claude CLI (`--max-turns`).
-    /// `None` means use the provider default (Theta = 10).
+    /// built-in default: the Claude and Hermes CLIs get `--max-turns`, roko's
+    /// tool loops stop at it, and the Cursor CLI stops after that many tool
+    /// calls. [`ProviderAdapter::turn_cap_enforcement`] says how each adapter
+    /// enforces it, and [`create_agent_for_model`] warns when it is only
+    /// advisory. `None` means use the provider default (Theta = 10).
     pub max_turns: Option<u32>,
     pub system_prompt: Option<String>,
     /// Validated provider-neutral structured messages for a multimodal turn.
@@ -1610,6 +1681,128 @@ mod tests {
             tool_loop_max_iterations_for_profile(Some(&profile_none)),
             DEFAULT_MAX_TOOL_ITERATIONS
         );
+    }
+
+    #[test]
+    fn a_turn_cap_sets_the_tool_loop_iteration_cap() {
+        let capped = |max_turns| AgentOptions {
+            max_turns,
+            ..AgentOptions::default()
+        };
+        let default_model = ModelProfile {
+            max_tool_iterations: None,
+            ..Default::default()
+        };
+        let limited_model = ModelProfile {
+            max_tool_iterations: Some(20),
+            ..Default::default()
+        };
+
+        // Without a turn cap the per-model cap applies, as before.
+        assert_eq!(
+            tool_loop_max_iterations_for_options(&default_model, &capped(None)),
+            DEFAULT_MAX_TOOL_ITERATIONS
+        );
+        // The turn cap replaces the default, above or below it, and
+        // temperament does not move it.
+        assert_eq!(
+            tool_loop_max_iterations_for_options(&default_model, &capped(Some(7))),
+            7
+        );
+        assert_eq!(
+            with_temperament(Some(Temperament::Exploratory), || {
+                tool_loop_max_iterations_for_options(&default_model, &capped(Some(90)))
+            }),
+            90
+        );
+        // A configured per-model cap stays a ceiling.
+        assert_eq!(
+            tool_loop_max_iterations_for_options(&limited_model, &capped(Some(90))),
+            20
+        );
+        assert_eq!(
+            tool_loop_max_iterations_for_options(&limited_model, &capped(Some(5))),
+            5
+        );
+        // A zero cap still allows one model call.
+        assert_eq!(
+            tool_loop_max_iterations_for_options(&default_model, &capped(Some(0))),
+            1
+        );
+    }
+
+    #[test]
+    fn every_adapter_says_how_it_enforces_the_turn_cap() {
+        let provider = |kind| ProviderConfig {
+            kind,
+            base_url: None,
+            api_key_env: None,
+            command: None,
+            args: None,
+            timeout_ms: None,
+            ttft_timeout_ms: None,
+            connect_timeout_ms: None,
+            extra_headers: None,
+            max_concurrent: None,
+            limits: None,
+            require_confirmation: false,
+        };
+        let enforcement =
+            |config: &ProviderConfig| adapter_for_kind(config.kind).turn_cap_enforcement(config);
+
+        for (kind, expected) in [
+            (ProviderKind::ClaudeCli, TurnCapEnforcement::Native),
+            (ProviderKind::OpenAiCompat, TurnCapEnforcement::ToolLoop),
+            (ProviderKind::AnthropicApi, TurnCapEnforcement::ToolLoop),
+            (ProviderKind::GeminiApi, TurnCapEnforcement::ToolLoop),
+            (ProviderKind::CerebrasApi, TurnCapEnforcement::ToolLoop),
+            (ProviderKind::PerplexityApi, TurnCapEnforcement::ToolLoop),
+            (ProviderKind::CursorCli, TurnCapEnforcement::ToolCalls),
+            (ProviderKind::CodexCli, TurnCapEnforcement::Advisory),
+            (ProviderKind::CursorAcp, TurnCapEnforcement::Advisory),
+            (ProviderKind::GeminiCli, TurnCapEnforcement::Advisory),
+        ] {
+            assert_eq!(enforcement(&provider(kind)), expected, "{kind:?}");
+        }
+
+        // Hermes and OpenClaw enforce the cap on some transports only.
+        let with_command = |kind, args: &[&str]| ProviderConfig {
+            command: Some("harness".to_string()),
+            args: Some(args.iter().map(ToString::to_string).collect()),
+            ..provider(kind)
+        };
+        let http = |kind| ProviderConfig {
+            base_url: Some("http://127.0.0.1:8642".to_string()),
+            ..provider(kind)
+        };
+        assert_eq!(
+            enforcement(&with_command(ProviderKind::Hermes, &[])),
+            TurnCapEnforcement::Native
+        );
+        assert_eq!(
+            enforcement(&provider(ProviderKind::Hermes)),
+            TurnCapEnforcement::Native
+        );
+        assert_eq!(
+            enforcement(&with_command(ProviderKind::Hermes, &["acp"])),
+            TurnCapEnforcement::Advisory
+        );
+        assert_eq!(
+            enforcement(&http(ProviderKind::Hermes)),
+            TurnCapEnforcement::Advisory
+        );
+        assert_eq!(
+            enforcement(&with_command(ProviderKind::OpenClaw, &[])),
+            TurnCapEnforcement::SingleTurn
+        );
+        assert_eq!(
+            enforcement(&with_command(ProviderKind::OpenClaw, &["acp"])),
+            TurnCapEnforcement::Advisory
+        );
+
+        assert!(TurnCapEnforcement::Native.is_binding());
+        assert!(TurnCapEnforcement::ToolCalls.is_binding());
+        assert!(!TurnCapEnforcement::Advisory.is_binding());
     }
 
     #[test]

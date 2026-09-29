@@ -54,6 +54,8 @@ pub struct HermesOneShotConfig {
     pub source_tag: String,
     /// Optional model override (passed as `--model <model>`).
     pub model_override: Option<String>,
+    /// Optional turn cap (passed as `--max-turns <n>`; ChatQuiet only).
+    pub max_turns: Option<u32>,
     /// Timeout for the subprocess.
     pub timeout: Duration,
     /// Optional OS-enforced limits for the one-shot subprocess.
@@ -76,6 +78,7 @@ impl Default for HermesOneShotConfig {
             ],
             source_tag: "roko".to_string(),
             model_override: None,
+            max_turns: None,
             timeout: Duration::from_secs(DEFAULT_LLM_CALL_SECS),
             resource_limits: None,
             system_prompt: None,
@@ -227,6 +230,12 @@ impl HermesOneShotAgent {
                 if let Some(ref model) = self.config.model_override {
                     argv.push("--model".to_string());
                     argv.push(model.clone());
+                }
+
+                // Hermes stops its own agent loop at the turn cap.
+                if let Some(max_turns) = self.config.max_turns {
+                    argv.push("--max-turns".to_string());
+                    argv.push(max_turns.to_string());
                 }
 
                 argv
@@ -457,6 +466,30 @@ mod tests {
                 "--ignore-user-config",
                 "--model",
                 "claude-sonnet-4-20250514",
+            ]
+        );
+    }
+
+    #[test]
+    fn build_argv_chat_quiet_with_turn_cap() {
+        let config = HermesOneShotConfig {
+            max_turns: Some(60),
+            ..Default::default()
+        };
+        let agent = HermesOneShotAgent::new(config);
+        let argv = agent.build_argv("test prompt");
+        assert_eq!(
+            argv,
+            vec![
+                "chat",
+                "-q",
+                "test prompt",
+                "-Q",
+                "--source",
+                "roko",
+                "--ignore-user-config",
+                "--max-turns",
+                "60",
             ]
         );
     }

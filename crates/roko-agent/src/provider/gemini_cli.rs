@@ -26,8 +26,8 @@ use crate::Agent;
 use crate::exec::ExecAgent;
 use crate::provider::pre_flight::binary_on_path;
 use crate::provider::{
-    AgentCreationError, AgentOptions, ProviderAdapter, ProviderError, configured_resource_limits,
-    provider_credential_scrub,
+    AgentCreationError, AgentOptions, ProviderAdapter, ProviderError, TurnCapEnforcement,
+    configured_resource_limits, provider_credential_scrub,
 };
 use roko_core::agent::ProviderKind;
 use roko_core::config::schema::{ModelProfile, ProviderConfig};
@@ -123,6 +123,13 @@ impl ProviderAdapter for GeminiCliAdapter {
 
     fn classify_error(&self, status: u16, body: &Value) -> ProviderError {
         super::error_classify::classify_cli_error(status, body, "gemini CLI")
+    }
+
+    /// The Gemini CLI has no turn flag; its cap is the `model.maxSessionTurns`
+    /// setting, which this one-shot path does not write, so the cap is
+    /// advisory here.
+    fn turn_cap_enforcement(&self, _provider: &ProviderConfig) -> TurnCapEnforcement {
+        TurnCapEnforcement::Advisory
     }
 }
 

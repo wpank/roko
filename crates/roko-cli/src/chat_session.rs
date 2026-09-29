@@ -1315,6 +1315,19 @@ async fn send_turn_streaming_with_program(
 
     let started = Instant::now();
     let timeout_duration = session.timeout.unwrap_or(Duration::from_secs(300));
+    // A managed MCP config makes Claude Code refuse the session's own; say
+    // so instead of failing at start.
+    if session.mcp_config.is_some()
+        && let Some(reason) = ClaudeIsolation::new(&session.workdir).mcp_config_refusal()
+    {
+        let _ = tx
+            .send(AgentRuntimeEvent::Error {
+                message: reason.clone(),
+            })
+            .await;
+        drop(tx);
+        return Err(anyhow::anyhow!(reason).into());
+    }
     let mut cmd = build_streaming_command(session, program);
 
     let mut child = match cmd.spawn() {

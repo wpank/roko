@@ -558,6 +558,13 @@ impl CliProviderConfig {
             args.push(effort.clone());
         }
         if request.mcp_config.is_some() || request.plugin_mcp.is_some() {
+            if let Some(reason) = isolation.mcp_config_refusal() {
+                tracing::warn!(provider_id = %self.descriptor.provider_id, "{reason}");
+                return Err(DispatchV2Error::McpConfigUnsupported {
+                    provider_id: self.descriptor.provider_id.clone(),
+                    protocol: self.descriptor.protocol,
+                });
+            }
             args.push("--mcp-config".to_string());
             if let Some(mcp_config) = &request.mcp_config {
                 args.push(mcp_config.to_string_lossy().to_string());

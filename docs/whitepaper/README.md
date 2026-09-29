@@ -177,8 +177,9 @@ creates the directory; other sections add files in small commits of their own.
 ### Figures
 
 - SVG files in `figures/`: `fig1-architecture.svg` (§3), `fig2-golden-path.svg` (§4) and `fig3-status-matrix.svg`
-  (§9), drawn by gap-d1d92c. `tools/status_matrix.py` renders Figure 3 from `data/mechanisms.toml`, and `--check`
-  fails if it is out of date. `figures/README.md` says how each is made.
+  (§9), drawn by gap-d1d92c. `tools/status_matrix.py` renders Figure 3 from `data/mechanisms.toml`; its `--check`
+  fails if Figure 3 is out of date, or if a status mark in Figure 1 or 2 disagrees with the matrix.
+  `figures/README.md` says how each figure is made.
 - Include a figure as an image with short alt text, followed by its caption, which names the matrix's commit. Local
   links and figure paths must resolve.
 

@@ -2,7 +2,7 @@
 id = "gap-8f6206"
 kind = "gap"
 title = "Learning consumers read the settled verdict's learning label instead of succeeded (S01.P0-3)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "truth"
@@ -11,6 +11,7 @@ subsystem = ["learn", "dispatch"]
 created = 2026-09-29
 updated = 2026-09-29
 last_verified = 2026-09-29
+last_verified_rev = "89f4b09ea"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (20:00, wk-attempt-ctx's report on gap-96f7ed)"
 anchors = ["crates/roko-cli/src/runtime_feedback/routing.rs::RoutingObservationSink", "crates/roko-cli/src/runtime_feedback/mod.rs::FeedbackEvent", "crates/roko-cli/src/graph_task_dispatch/feedback.rs::GraphTaskDispatcher::emit_feedback"]
@@ -20,6 +21,11 @@ links = { depends_on = ["gap-96f7ed"], blocks = [], related = ["gap-96f7ed", "bu
 
 [[verify]]
 command = "grep -rqw 'fn learning_sinks_skip_attempts_without_a_learning_label' crates/roko-cli/src/ && cargo test -p roko-cli --lib learning_sinks_skip_attempts_without_a_learning_label"
+
+[closed]
+at = 2026-09-29
+by = "coordinator (session 7622b882)"
+evidence = "Every learner reads only the verdict's learning_label through FeedbackEvent::learning_success, and an unlabelled attempt or an event without a settled record updates nothing: routing sink (overrides included), playbooks, daimon, prompt experiments, durable knowledge, knowledge candidates, hindsight trigger; episodes add extra.outcome/blame/learning_label and costs.jsonl rows add outcome/learning_label; new AttemptOutcome::HarnessError settles prompt-assembly and cost-ledger failures after the open line (04c1da262; merged). Batch 9 gate (dedicated target dir, batch tree = MAIN crates after the merges): cargo check --workspace --tests clean; nightly rustfmt clean; clippy -p roko-cli -p roko-learn -p roko-agent -p roko-std -p roko-core -p roko-daimon -p roko-neuro --no-deps -D warnings clean; lib tests roko-cli 3098, roko-agent 2254, roko-core 1925, roko-learn 1181, roko-neuro 239, roko-std 222, roko-daimon 100, 0 failed."
 +++
 
 ## Problem

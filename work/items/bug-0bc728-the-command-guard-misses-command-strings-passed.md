@@ -2,7 +2,7 @@
 id = "bug-0bc728"
 kind = "bug"
 title = "The command guard misses command strings passed to wrappers, find -exec and -delete, and busybox rm"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "release"
@@ -11,6 +11,7 @@ subsystem = ["safety"]
 created = 2026-09-29
 updated = 2026-09-29
 last_verified = 2026-09-29
+last_verified_rev = "89f4b09ea"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (20:55, wk-guard2's report on bug-f4e133, bug-66f5a1, bug-63327d and find-570af2)"
 anchors = ["crates/roko-agent/src/claude_cli_guard.py"]
@@ -20,6 +21,11 @@ links = { depends_on = [], blocks = [], related = ["bug-f4e133", "bug-7de5df"], 
 
 [[verify]]
 command = "grep -rqw 'fn settings_hook_denies_destructive_commands_behind_wrappers' crates/roko-agent/src/ && cargo test -p roko-agent --lib settings_hook_denies_destructive_commands_behind_wrappers"
+
+[closed]
+at = 2026-09-29
+by = "coordinator (session 7622b882)"
+evidence = "The guard checks watch/sg arguments and -c/--command/-S values as commands, denies find -delete and rm under find -exec, reads busybox/toybox as the applet, and skips -u/-g values (the sudo -u git false positive) (d0111b562; merged). Batch 9 gate (dedicated target dir, batch tree = MAIN crates after the merges): cargo check --workspace --tests clean; nightly rustfmt clean; clippy -p roko-cli -p roko-learn -p roko-agent -p roko-std -p roko-core -p roko-daimon -p roko-neuro --no-deps -D warnings clean; lib tests roko-cli 3098, roko-agent 2254, roko-core 1925, roko-learn 1181, roko-neuro 239, roko-std 222, roko-daimon 100, 0 failed."
 +++
 
 ## Problem

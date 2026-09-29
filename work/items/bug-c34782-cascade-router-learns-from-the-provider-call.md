@@ -2,7 +2,7 @@
 id = "bug-c34782"
 kind = "bug"
 title = "Cascade router learns from the provider call's success flag before gates run"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 size = "M"
@@ -11,7 +11,7 @@ subsystem = ["roko-cli/graph-dispatch", "roko-learn/cascade-router"]
 created = 2026-09-28
 updated = 2026-09-29
 last_verified = 2026-09-29
-last_verified_rev = "a17d9d766"
+last_verified_rev = "89f4b09ea"
 source = "local-audit-2026-09-26"
 discovered_from = "audit:local-defect-review-2026-09-26 (untracked design notes)"
 anchors = ["crates/roko-cli/src/graph_task_dispatch/feedback.rs::GraphTaskDispatcher::emit_feedback", "crates/roko-cli/src/graph_task_dispatch/turn_policy.rs::provider_failure_reason", "crates/roko-cli/src/runtime_feedback/mod.rs::FeedbackEvent", "crates/roko-cli/src/runtime_feedback/routing.rs::RoutingObservationSink", "crates/roko-graph/src/cells/task_executor.rs::TaskGateVerdict"]
@@ -19,6 +19,11 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqw 'fn routing_learns_only_from_gate_verdicts' crates/roko-cli/src/ && cargo test -p roko-cli --lib routing_learns_only_from_gate_verdicts && cargo test -p roko-cli --lib verified_outcome_drives_output_verdict_and_feedback"
+
+[closed]
+at = 2026-09-29
+by = "coordinator (session 7622b882)"
+evidence = "RoutingObservationSink learns from settled.learning_label, not the provider call's success flag (folded into gap-8f6206, 04c1da262; merged). The provider-bridge path is bug-07bc75. Batch 9 gate (dedicated target dir, batch tree = MAIN crates after the merges): cargo check --workspace --tests clean; nightly rustfmt clean; clippy -p roko-cli -p roko-learn -p roko-agent -p roko-std -p roko-core -p roko-daimon -p roko-neuro --no-deps -D warnings clean; lib tests roko-cli 3098, roko-agent 2254, roko-core 1925, roko-learn 1181, roko-neuro 239, roko-std 222, roko-daimon 100, 0 failed."
 +++
 
 ## Problem

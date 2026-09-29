@@ -90,8 +90,8 @@ This is the implementation plan.
 - [ ] gap-a3fc5b: Claude Code isolation doesn't cover shell snapshots, and a managed-mcp.json makes Claude refuse --strict-mcp-config
 - [ ] gap-585bd2: Every implementer is offered the 17 chain tools, transfer and swap included, whatever the task domain
 - [ ] bug-3f3990: The Linux firejail plugin sandbox ignores sandbox.allowed_paths and filesystem_write, which macOS Seatbelt enforces
-- [ ] bug-62e7e6: roko-std's bash tool and SafetyLayer's bash policy never check commands for key files
-- [ ] bug-0bc728: The command guard misses command strings passed to wrappers, find -exec and -delete, and busybox rm
+- [x] bug-62e7e6: roko-std's bash tool and SafetyLayer's bash policy never check commands for key files
+- [x] bug-0bc728: The command guard misses command strings passed to wrappers, find -exec and -delete, and busybox rm
 - [ ] The epic's `[[verify]]` command (test C2) passes on the merged branch.
 
 ## Notes

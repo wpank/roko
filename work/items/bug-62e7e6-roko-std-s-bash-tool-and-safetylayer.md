@@ -2,7 +2,7 @@
 id = "bug-62e7e6"
 kind = "bug"
 title = "roko-std's bash tool and SafetyLayer's bash policy never check commands for key files"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "release"
@@ -11,6 +11,7 @@ subsystem = ["safety"]
 created = 2026-09-29
 updated = 2026-09-29
 last_verified = 2026-09-29
+last_verified_rev = "89f4b09ea"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (20:55, wk-guard2's report on bug-f4e133, bug-66f5a1, bug-63327d and find-570af2)"
 anchors = ["crates/roko-std/src/tool/builtin/bash.rs", "crates/roko-agent/src/safety/mod.rs", "crates/roko-core/src/child_env.rs::is_key_file"]
@@ -20,6 +21,11 @@ links = { depends_on = [], blocks = [], related = ["bug-63327d", "bug-a66941", "
 
 [[verify]]
 command = "grep -rqw 'fn bash_commands_naming_key_files_are_refused' crates/roko-std/src/ crates/roko-agent/src/ && cargo test -p roko-agent --lib bash_commands_naming_key_files_are_refused"
+
+[closed]
+at = 2026-09-29
+by = "coordinator (session 7622b882)"
+evidence = "roko_std sandbox::refuse_key_file_in_command (the guard's key-file rules on dequoted words and nested sh -c, words resolved with symlinks) runs in roko-std's bash handler and in SafetyLayer before the bash policy; ~/.roko/config.toml counts as a key file (9a9a2ba5e; merged). Batch 9 gate (dedicated target dir, batch tree = MAIN crates after the merges): cargo check --workspace --tests clean; nightly rustfmt clean; clippy -p roko-cli -p roko-learn -p roko-agent -p roko-std -p roko-core -p roko-daimon -p roko-neuro --no-deps -D warnings clean; lib tests roko-cli 3098, roko-agent 2254, roko-core 1925, roko-learn 1181, roko-neuro 239, roko-std 222, roko-daimon 100, 0 failed."
 +++
 
 ## Problem

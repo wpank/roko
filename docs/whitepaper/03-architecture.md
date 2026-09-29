@@ -70,7 +70,7 @@ This paper does not repeat two headline claims of `docs/v3/00-INDEX.md`: "a Grap
 (nothing implements `Cell` for `Graph`; gap-cdf3fc) and "every Cell is a learner" (the plan-task Cell keeps the
 default `predict`, which returns nothing).
 
-![Figure 1: The architecture and the control stack, each mechanism marked with its status tag](figures/fig1-architecture.svg)
+![Figure 1: architecture diagram](figures/fig1-architecture.svg)
 
 **Figure 1:** The architecture and the control stack. The marks follow the status matrix at `a17d4dadd`; §3.2 names
 each row.

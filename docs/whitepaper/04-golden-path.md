@@ -6,7 +6,7 @@ The golden path is the thesis in motion: eleven steps from a request to verified
 next plan. Step N is §4.N. Each gives the design, tagged as in the status matrix (the appendix, at `a17d4dadd`), and
 the principle from §2 behind it; §4.12 names the epics that would close the gaps.
 
-![Figure 2: The golden path in eleven steps, each marked with its status tag](figures/fig2-golden-path.svg)
+![Figure 2: golden-path diagram](figures/fig2-golden-path.svg)
 
 **Figure 2:** The golden path. Failures loop back from step 8, and outcomes feed the next plan; tags are at
 `a17d4dadd`.

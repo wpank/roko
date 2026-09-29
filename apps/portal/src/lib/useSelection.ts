@@ -8,11 +8,15 @@
  * rather than stepping through every panel interaction. Next 15 keeps
  * `useSearchParams()` in sync with `replaceState`.
  *
+ * Every change of plan passes through `select`, so leaving the plan whose
+ * editor holds unsaved text asks first (design §4a).
+ *
  * Components using this hook must render under a <Suspense> boundary (required
  * for Next.js static export compatibility).
  */
 
 import { useSearchParams } from 'next/navigation';
+import { confirmDiscard, useDashboardStore } from '@/stores/dashboard';
 import { parseSelection, selectionSearch } from './selection';
 import type { Selection } from './selection';
 
@@ -28,6 +32,9 @@ export function useSelection(): UseSelectionResult {
   const sel = parseSelection(searchParams.toString());
 
   function select(patch: Partial<Selection>): void {
+    const { unsavedPlan } = useDashboardStore.getState();
+    const leavesEdits = unsavedPlan !== null && 'plan' in patch && patch.plan !== unsavedPlan;
+    if (!confirmDiscard(leavesEdits)) return;
     const next = selectionSearch(searchParams.toString(), patch);
     // replaceState (not pushState) keeps the back button leaving the app.
     window.history.replaceState(null, '', location.pathname + next);

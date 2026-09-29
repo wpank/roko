@@ -28,6 +28,7 @@ import { Spinner } from '@/components/atoms/Spinner';
 import { Notice } from '@/components/primitives/Notice';
 import { describeRequestError, isMissingRoute, unsupportedMessage } from '@/lib/apiErrors';
 import { cn } from '@/lib/cn';
+import { confirmDiscard } from '@/stores/dashboard';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -125,10 +126,7 @@ export function SourceEditor({ planId, running, onClose, onDirtyChange }: Source
   // ------------------------------------------------------------------
 
   const confirmClose = useCallback(() => {
-    if (dirty) {
-      if (!window.confirm('Discard unsaved edits?')) return;
-    }
-    onClose();
+    if (confirmDiscard(dirty)) onClose();
   }, [dirty, onClose]);
 
   // Esc closes (with discard prompt when dirty).

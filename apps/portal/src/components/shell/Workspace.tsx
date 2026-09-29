@@ -16,7 +16,7 @@ import {
   useCancelPlan,
   useWorkspace,
 } from '@/api/queries';
-import { useDashboardStore } from '@/stores/dashboard';
+import { confirmDiscard, useDashboardStore } from '@/stores/dashboard';
 import { useSelection } from '@/lib/useSelection';
 import { useKeyboard } from '@/lib/useKeyboard';
 import { buildPlanRows } from '@/lib/planRows';
@@ -75,6 +75,7 @@ export function Workspace() {
   const { data: workspace } = useWorkspace();
   const run = useDashboardStore((s) => s.run);
   const connection = useDashboardStore((s) => s.connection);
+  const unsavedPlan = useDashboardStore((s) => s.unsavedPlan);
   const { plan: selectedPlanId, task: selectedTaskId, select } = useSelection();
 
   // ── Build rows ───────────────────────────────────────────────────────────────
@@ -172,6 +173,11 @@ export function Workspace() {
 
   // ── Action handlers ────────────────────────────────────────────────────────────
 
+  // The generate field replaces the plan view, and with it any unsaved editor text.
+  const openPrompt = () => {
+    if (confirmDiscard(unsavedPlan !== null)) setPromptOpen(true);
+  };
+
   const handleSelectPlan = useCallback(
     (id: string) => {
       select({ plan: id });
@@ -254,7 +260,7 @@ export function Workspace() {
       }
     },
     stream: () => setStreamOpen((v) => !v),
-    new: () => setPromptOpen(true),
+    new: openPrompt,
     // `r` runs / retries / re-runs the selected plan; never cancels.
     run: () => {
       const k = primaryAction.kind;
@@ -322,10 +328,14 @@ export function Workspace() {
             onFilterChange={setFilter}
             filterInputRef={filterInputRef}
             onSelect={handleSelectPlan}
-            onNewPlan={() => setPromptOpen(true)}
+            onNewPlan={openPrompt}
             onRunPlans={handleRunPlans}
             emptySentence={railEmpty}
-            runDisabledReason={planSetActive(run) ? 'A run is already in progress' : null}
+            runDisabledReason={
+              planSetActive(run) ? 'A run is already in progress' :
+              unsavedPlan !== null ? 'Save or discard your edits first' :
+              null
+            }
           />
         </ErrorBoundary>
       </div>

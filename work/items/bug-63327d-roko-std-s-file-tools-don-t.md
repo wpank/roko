@@ -3,13 +3,14 @@ id = "bug-63327d"
 kind = "bug"
 title = "roko-std's file tools don't check key files, so a dispatch without SafetyLayer can read .roko/.env"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p2"
 goal = "release"
 size = "S"
 subsystem = ["safety"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-29
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (15:47, wk-guard's report on bug-a66941)"
 anchors = ["crates/roko-std/src/tool/builtin/read_file.rs", "crates/roko-core/src/child_env.rs::is_key_file"]
@@ -47,3 +48,10 @@ Only `SafetyLayer` checks for key files.
 
 - [ ] The builtin file tools refuse key files without `SafetyLayer`.
 - [ ] The `[[verify]]` command passes.
+
+## Notes
+
+- Premise confirmed at `407ce30d5` by reading the code: roko-std's `sandbox::require_within_worktree` was purely lexical and never called `is_key_file`, so `read_file` on `.roko/.env` returned it.
+- Fixed in `crates/roko-std/src/tool/builtin/sandbox.rs` (`refuse_key_file`, called by `require_within_worktree`, which every path-taking builtin uses) and in grep's walk, which skips key files and symlinks to them. `read_file.rs` itself is unchanged.
+- New problem (report): roko's own `bash` builtin and SafetyLayer's bash policy do not check commands for key files, so an API-provider agent can still `cat .roko/.env` through the bash tool.
+- Implemented on `work/bug-f4e133` at `c37492fd8`; cargo verification deferred to the batch check.

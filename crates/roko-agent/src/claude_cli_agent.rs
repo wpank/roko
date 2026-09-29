@@ -59,15 +59,14 @@ fn guard_hook_command(check: &str) -> String {
 
 /// Permission rules that keep Claude's file tools, and the file commands it
 /// recognizes in Bash (`cat`, `head`, redirections), away from provider key
-/// files. Deny rules hold in every permission mode, including
-/// `--dangerously-skip-permissions`; the guard hooks check the same files
-/// in case a Claude Code version does not apply a rule.
+/// files: each of [`KEY_FILE_NAMES`] in any `.roko` directory, `~/.roko`
+/// included. The rest of `.roko` stays readable, as
+/// [`roko_core::child_env::is_key_file`] explains. Deny rules hold in every
+/// permission mode, including `--dangerously-skip-permissions`; the guard
+/// hooks check the same files in case a Claude Code version does not apply
+/// a rule.
 fn key_file_deny_rules() -> Vec<String> {
-    let mut rules = vec![
-        "Read(~/.roko)".to_string(),
-        "Read(~/.roko/**)".to_string(),
-        "Edit(~/.roko/**)".to_string(),
-    ];
+    let mut rules = Vec::new();
     for name in KEY_FILE_NAMES {
         rules.push(format!("Read(//**/.roko/{name})"));
         rules.push(format!("Edit(//**/.roko/{name})"));
@@ -1579,6 +1578,133 @@ mod tests {
     }
 
     #[test]
+    fn settings_hook_denies_recursive_rm_in_any_form() {
+        let command = bash_hook_command();
+
+        for denied in [
+            "rm -rf target",
+            "rm -R x",
+            "rm --recursive x",
+            "rm --rec x",
+            "rm -f -r x",
+            "rm x -r",
+            "sudo rm -rf x",
+            "sudo -u git rm -rf x",
+            "/bin/rm -rf x",
+            "(rm -rf x)",
+            "{ rm -rf x; }",
+            "bash -c \"rm -rf x\"",
+            "sh -c 'rm -R x'",
+            "eval \"rm -rf x\"",
+            "echo $(rm -rf x)",
+            "echo `rm -r x`",
+            "FOO=1 rm -rf x",
+            "env FOO=1 rm -rf x",
+            "timeout 5 rm -r x",
+            "find . -name '*.o' | xargs rm -r",
+            "echo ok\nrm -rf x",
+            "if true; then rm -rf x; fi",
+            "rm -$FLAGS x",
+            "f() { rm -f \"$@\"; }; f -r x",
+        ] {
+            assert_eq!(
+                run_hook_command(&command, denied).code(),
+                Some(2),
+                "`{denied}` should be denied"
+            );
+        }
+        for allowed in [
+            "rm x",
+            "rm -f x",
+            "rm -d emptydir",
+            "rm -- -r",
+            "rm -f \"$tmpfile\"",
+            "git rm -r --cached x",
+            "grep -rn 'rm -rf' src",
+            "echo \"rm -rf x\"",
+            "git commit -m \"fix; rm -rf build\"",
+            "cp -r a b",
+        ] {
+            assert_eq!(
+                run_hook_command(&command, allowed).code(),
+                Some(0),
+                "`{allowed}` should be allowed"
+            );
+        }
+    }
+
+    #[test]
+    fn settings_hook_denies_git_aliases_to_denied_commands() {
+        let command = bash_hook_command();
+        // A repository with its own aliases, and no user or system git
+        // config, so the invoking user's aliases play no part.
+        let home = tempdir().unwrap();
+        let repo = tempdir().unwrap();
+        let global_config = home.path().join("gitconfig");
+        let isolated = [
+            ("HOME", home.path()),
+            ("XDG_CONFIG_HOME", home.path()),
+            ("GIT_CONFIG_GLOBAL", global_config.as_path()),
+            ("GIT_CONFIG_NOSYSTEM", std::path::Path::new("1")),
+        ];
+        let setup: [&[&str]; 7] = [
+            &["init", "-q"],
+            &["config", "alias.co", "checkout"],
+            &["config", "alias.back", "co"],
+            &["config", "alias.save", "stash push"],
+            &["config", "alias.nuke", "!git clean -fdx"],
+            &["config", "alias.wipe", "!rm"],
+            &["config", "alias.st", "status --short"],
+        ];
+        for args in setup {
+            let status = StdCommand::new("git")
+                .args(args)
+                .current_dir(repo.path())
+                .envs(isolated)
+                .status()
+                .expect("run git");
+            assert!(status.success(), "git {args:?}");
+        }
+        let run = |bash_command: &str| {
+            let payload = serde_json::json!({
+                "cwd": repo.path(),
+                "tool_input": { "command": bash_command },
+            });
+            run_hook(&command, &payload.to_string(), &isolated)
+                .status
+                .code()
+        };
+
+        for denied in [
+            "git co main",
+            "git CO main",
+            "git back main",
+            "git save",
+            "git nuke",
+            "git wipe -rf target",
+            "sudo git co main",
+            "bash -c 'git co main'",
+            "git -c alias.sw=switch sw main",
+            // Defined by the command itself, so unknown when the guard runs.
+            "git config alias.drop-all 'reset --hard' && git drop-all",
+            "git frobnicate",
+            // Another directory's config may give the alias another meaning.
+            "cd sub && git st",
+        ] {
+            assert_eq!(run(denied), Some(2), "`{denied}` should be denied");
+        }
+        for allowed in [
+            "git st",
+            "git -c alias.lg='log --oneline' lg -5",
+            "git config alias.co",
+            "git count-objects -v",
+            "timeout 30 grep -rn git src",
+        ] {
+            assert_eq!(run(allowed), Some(0), "`{allowed}` should be allowed");
+        }
+    }
+
+    #[test]
     fn settings_hook_fails_closed_without_python3() {
         let command = bash_hook_command();
         let no_python = tempdir().unwrap();
@@ -1620,13 +1746,19 @@ mod tests {
             .filter_map(Value::as_str)
             .collect();
         for rule in [
-            "Read(~/.roko/**)",
             "Read(//**/.roko/.env)",
             "Read(//**/.roko/secrets.toml)",
             "Read(//**/.roko/credentials.json)",
+            "Edit(//**/.roko/.env)",
         ] {
             assert!(deny.contains(&rule), "missing {rule} in {deny:?}");
         }
+        // Only the key files: when HOME is the workdir, ~/.roko holds the
+        // plan worktrees agents work in.
+        assert!(
+            deny.iter().all(|rule| !rule.contains("~/.roko")),
+            "{deny:?}"
+        );
 
         // The hooks deny the same files, in case a rule does not apply. HOME
         // points at an empty directory so no real key file is involved.
@@ -1665,6 +1797,7 @@ mod tests {
         for tool_input in [
             serde_json::json!({ "file_path": "src/lib.rs" }),
             serde_json::json!({ "file_path": ".roko/state/graph/p/checkpoint.json" }),
+            serde_json::json!({ "file_path": "~/.roko/config.toml" }),
             serde_json::json!({ "path": "src", "pattern": "fn main" }),
             serde_json::json!({ "pattern": "**/*.rs" }),
         ] {
@@ -1681,6 +1814,7 @@ mod tests {
             "cat .roko/secrets.toml",
             "cd .roko && cat .env",
             "grep KEY \"$HOME/.roko/credentials.json\"",
+            "cat ~/.roko/*",
         ] {
             let output = run_hook(&bash_hook, &bash_payload(denied), &env);
             assert_eq!(
@@ -1696,6 +1830,59 @@ mod tests {
                 Some(0),
                 "`{allowed}` should be allowed"
             );
+        }
+    }
+
+    #[test]
+    fn settings_hooks_key_file_policy_when_home_is_workdir() {
+        // With HOME set to the project, as in many containers, ~/.roko is
+        // the workdir's .roko, and plan worktrees live under it.
+        let workdir = tempdir().unwrap();
+        let worktree = workdir.path().join(".roko/worktrees/p-t1");
+        fs::create_dir_all(worktree.join("src")).unwrap();
+        let env = [("HOME", workdir.path())];
+        let value: Value = serde_json::from_str(&build_settings_json()).unwrap();
+        let file_hook = value
+            .pointer("/hooks/PreToolUse/1/hooks/0/command")
+            .and_then(Value::as_str)
+            .expect("file hook command");
+        let bash_hook = bash_hook_command();
+        let file_code = |tool_input: Value| {
+            let payload = serde_json::json!({ "cwd": worktree, "tool_input": tool_input });
+            run_hook(file_hook, &payload.to_string(), &env)
+                .status
+                .code()
+        };
+        let bash_code = |command: &str| {
+            let payload =
+                serde_json::json!({ "cwd": worktree, "tool_input": { "command": command } });
+            run_hook(&bash_hook, &payload.to_string(), &env)
+                .status
+                .code()
+        };
+
+        for tool_input in [
+            serde_json::json!({ "file_path": "src/lib.rs" }),
+            serde_json::json!({ "file_path": worktree.join("src/lib.rs") }),
+            serde_json::json!({ "file_path": "~/.roko/state/graph/p/checkpoint.json" }),
+            serde_json::json!({ "path": "src", "pattern": "fn main" }),
+        ] {
+            let shown = tool_input.to_string();
+            assert_eq!(file_code(tool_input), Some(0), "{shown} should be allowed");
+        }
+        for tool_input in [
+            serde_json::json!({ "file_path": "~/.roko/.env" }),
+            serde_json::json!({ "file_path": workdir.path().join(".roko/secrets.toml") }),
+        ] {
+            let shown = tool_input.to_string();
+            assert_eq!(file_code(tool_input), Some(2), "{shown} should be denied");
+        }
+        let cd_worktree = format!("cd {} && cargo test", worktree.display());
+        for allowed in [cd_worktree.as_str(), "ls ~/.roko/state"] {
+            assert_eq!(bash_code(allowed), Some(0), "`{allowed}` should be allowed");
+        }
+        for denied in ["cat ~/.roko/.env", "cat ~/.roko/*"] {
+            assert_eq!(bash_code(denied), Some(2), "`{denied}` should be denied");
         }
     }
 
@@ -1998,7 +2185,7 @@ mod tests {
             .iter()
             .filter_map(Value::as_str)
             .collect();
-        for rule in ["Read(~/.roko/**)", "Read(//**/.roko/.env)"] {
+        for rule in ["Read(//**/.roko/.env)", "Edit(//**/.roko/credentials.json)"] {
             assert!(deny.contains(&rule), "missing {rule} in {deny:?}");
         }
     }

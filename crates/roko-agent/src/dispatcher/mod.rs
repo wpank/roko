@@ -1294,6 +1294,7 @@ const fn tool_error_kind(err: &ToolError) -> &'static str {
         ToolError::HandlerPanic(_) => "handler_panic",
         ToolError::Timeout { .. } => "timeout",
         ToolError::PathOutsideWorktree(_) => "path_outside_worktree",
+        ToolError::KeyFileBlocked(_) => "key_file_blocked",
         ToolError::CommandNotAllowed(_) => "command_not_allowed",
         ToolError::NetworkBlocked(_) => "network_blocked",
         ToolError::Cancelled => "cancelled",
@@ -1474,6 +1475,9 @@ fn scrub_untrusted_error(safety: &SafetyLayer, error: ToolError) -> ToolError {
         ToolError::HandlerPanic(message) => ToolError::HandlerPanic(scrub(message)),
         ToolError::PathOutsideWorktree(path) => {
             ToolError::PathOutsideWorktree(scrub(path.to_string_lossy().into_owned()).into())
+        }
+        ToolError::KeyFileBlocked(path) => {
+            ToolError::KeyFileBlocked(scrub(path.to_string_lossy().into_owned()).into())
         }
         ToolError::CommandNotAllowed(message) => ToolError::CommandNotAllowed(scrub(message)),
         ToolError::NetworkBlocked(message) => ToolError::NetworkBlocked(scrub(message)),

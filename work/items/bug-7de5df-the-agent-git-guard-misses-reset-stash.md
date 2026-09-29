@@ -3,13 +3,14 @@ id = "bug-7de5df"
 kind = "bug"
 title = "The agent git guard misses reset, stash and clean, and commands after the first in a chain"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p1"
 goal = "release"
 size = "S"
 subsystem = ["roko-agent/claude_cli_agent"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-29
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e3"
 discovered_from = "tmp/cybernetic-harness/workstreams/assessment/W8-roko-as-executor.md (main-checkout hazards, gate G2); tldr/research/B4-gates-qa-safety.md"
 anchors = ["crates/roko-agent/src/claude_cli_agent.rs::build_settings_json"]
@@ -77,3 +78,4 @@ chains and strips prefixes.
 - bug-a66941 edits the same function, so do it after this item. bug-7d7200's uncommitted work in `../roko-wt-env`
   edits this file but not this function.
 - Codex, Cursor and Gemini CLI agents get no hook at all. That is out of scope here.
+- Implemented on `work/bug-7de5df` at `22cd8c88b`; cargo verification deferred to the batch check.

@@ -18,8 +18,13 @@
 //! Both accept passthrough patterns from config (`[gates] env_passthrough`,
 //! `[agent] env_passthrough`): an exact name (`DATABASE_URL`) or a prefix
 //! ending in `*` (`AWS_*`). A passthrough match wins over every exclusion.
+//!
+//! Keeping keys out of a child's environment is moot while the child can read
+//! the files they come from, so this module also lists those files: see
+//! [`key_file_paths`] and [`is_key_file`].
 
 use std::collections::BTreeSet;
+use std::path::{Component, Path, PathBuf};
 use std::sync::OnceLock;
 
 use crate::agent::ProviderKind;
@@ -418,6 +423,45 @@ impl CredentialScrub {
     }
 }
 
+// ---- Key files -------------------------------------------------------------
+
+/// Files in a `.roko` directory that hold provider keys or roko credentials:
+/// `.env` (`~/.roko/.env` and `<workdir>/.roko/.env`, loaded at startup),
+/// `secrets.toml` (`roko config secrets`) and `credentials.json`
+/// (`roko login`).
+pub const KEY_FILE_NAMES: &[&str] = &[".env", "secrets.toml", "credentials.json"];
+
+/// The files that hold provider keys and roko credentials for home directory
+/// `home` and workdir `workdir`: each of [`KEY_FILE_NAMES`] in `~/.roko` and
+/// in `<workdir>/.roko`. Agents must read none of them; [`is_key_file`] is
+/// the check, and it covers the rest of `~/.roko` as well.
+#[must_use]
+pub fn key_file_paths(home: Option<&Path>, workdir: &Path) -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    for dir in home.into_iter().chain([workdir]) {
+        let roko = dir.join(".roko");
+        paths.extend(KEY_FILE_NAMES.iter().map(|name| roko.join(name)));
+    }
+    paths
+}
+
+/// Whether agents must be kept away from `path`: it lies in `home`'s `.roko`
+/// directory, or it is one of [`KEY_FILE_NAMES`] in any other `.roko`
+/// directory, such as another checkout's. Pass `path` and `home` in the same
+/// form, both canonical or both lexical.
+#[must_use]
+pub fn is_key_file(path: &Path, home: Option<&Path>) -> bool {
+    if home.is_some_and(|home| path.starts_with(home.join(".roko"))) {
+        return true;
+    }
+    let mut components = path.components().rev();
+    matches!(
+        (components.next(), components.next()),
+        (Some(Component::Normal(name)), Some(Component::Normal(dir)))
+            if dir == ".roko" && name.to_str().is_some_and(|file| KEY_FILE_NAMES.contains(&file))
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -657,6 +701,42 @@ mod tests {
         assert!(scrub.strips("ANTHROPIC_API_KEY", &DotenvNames::new()));
         assert!(scrub.strips("OPENAI_API_KEY", &DotenvNames::new()));
         assert!(!scrub.strips("PATH", &DotenvNames::new()));
+    }
+
+    #[test]
+    fn key_files_cover_both_roko_dirs_and_all_of_home_roko() {
+        let home = Path::new("/home/dev");
+        let workdir = Path::new("/work/repo");
+        let paths = key_file_paths(Some(home), workdir);
+        for expected in [
+            "/home/dev/.roko/.env",
+            "/home/dev/.roko/credentials.json",
+            "/work/repo/.roko/.env",
+            "/work/repo/.roko/secrets.toml",
+        ] {
+            assert!(
+                paths.contains(&PathBuf::from(expected)),
+                "{expected} missing from {paths:?}"
+            );
+        }
+        for path in &paths {
+            assert!(is_key_file(path, Some(home)), "{}", path.display());
+        }
+        assert_eq!(key_file_paths(None, workdir).len(), KEY_FILE_NAMES.len());
+
+        // All of ~/.roko, and the key files in any other checkout's .roko.
+        for path in ["/home/dev/.roko/config.toml", "/elsewhere/repo/.roko/.env"] {
+            assert!(is_key_file(Path::new(path), Some(home)), "{path}");
+        }
+        // The rest of a workdir's .roko, and look-alikes.
+        for path in [
+            "/work/repo/.roko/state/graph/p/checkpoint.json",
+            "/work/repo/.env",
+            "/work/repo/.roko-old/.env",
+            "/home/dev/.rokorc",
+        ] {
+            assert!(!is_key_file(Path::new(path), Some(home)), "{path}");
+        }
     }
 
     #[test]

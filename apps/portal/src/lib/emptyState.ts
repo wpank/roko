@@ -17,25 +17,6 @@ import { queuePosition, waitReason } from '@/lib/planSet';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
-export interface PlanState {
-  id: string;
-  phase: PlanPhase | 'never_run';
-  tasksTotal: number;
-  tasksDone: number;
-  tasksActive: number;
-  tasksAccepted: number;
-  /** Number of execution waves (optional — only set when the plan has wave metadata). */
-  waves?: number;
-  /** Task ID of the first failed task (for the failed-phase message). */
-  failedTaskId?: string | null;
-  /** Name of the failing check gate (for the failed-phase message). */
-  failedCheck?: string | null;
-  /** Elapsed wall-clock duration in milliseconds (for the completed message). */
-  durationMs?: number | null;
-  /** Human-readable reason why the plan is waiting in the queue (for the pending message). */
-  waitReason?: string | null;
-}
-
 export interface EmptyStateInput {
   /** Folder name of the workspace (shown in the "no plans" message). */
   workspace: string;
@@ -44,8 +25,28 @@ export interface EmptyStateInput {
   /** Total number of plans in the workspace (read only when no plan is selected). */
   planCount: number;
   /** The currently selected plan, if any. */
-  plan?: PlanState;
+  plan?: {
+    id: string;
+    phase: PlanPhase | 'never_run';
+    tasksTotal: number;
+    tasksDone: number;
+    tasksActive: number;
+    tasksAccepted: number;
+    /** Number of execution waves (optional — only set when the plan has wave metadata). */
+    waves?: number;
+    /** Task ID of the first failed task (for the failed-phase message). */
+    failedTaskId?: string | null;
+    /** Name of the failing check gate (for the failed-phase message). */
+    failedCheck?: string | null;
+    /** Elapsed wall-clock duration in milliseconds (for the completed message). */
+    durationMs?: number | null;
+    /** Human-readable reason why the plan is waiting in the queue (for the pending message). */
+    waitReason?: string | null;
+  };
 }
+
+/** One plan's state, as `describePlan` reads it and `planState` builds it. */
+export type PlanState = NonNullable<EmptyStateInput['plan']>;
 
 // ── describeEmpty ──────────────────────────────────────────────────────────────
 
@@ -54,32 +55,9 @@ export interface EmptyStateInput {
  *
  * Cases are evaluated in strict precedence order:
  * 1. Connection is lost → reconnecting message.
- * 2. No plan selected → prompt to describe work (no plans) or to select one.
- * 3. Otherwise → the selected plan's sentence (`describePlan`).
- */
-export function describeEmpty(input: EmptyStateInput): string {
-  const { connection, workspace, planCount, plan } = input;
-
-  // ── 1. Connection problems ──────────────────────────────────────────────────
-  if (connection === 'disconnected' || connection === 'error') {
-    return 'Lost the server; reconnecting.';
-  }
-
-  // ── 2. No plan selected ─────────────────────────────────────────────────────
-  if (!plan) {
-    return planCount === 0
-      ? `No plans in ${workspace} yet. Describe what you want to build.`
-      : 'Select a plan, or press n to describe a new one.';
-  }
-
-  return describePlan(plan);
-}
-
-// ── describePlan ───────────────────────────────────────────────────────────────
-
-/**
- * Return the sentence for one plan's run state (design §7), continuing
- * describeEmpty's cases:
+ * 2. No plan selected and none in the workspace → prompt to describe work.
+ * 3. Plans exist but none selected → prompt to select.
+ * Cases 4–10 are the selected plan's sentence, `describePlan`:
  * 4. Plan is never-run → show task / wave count.
  * 5. Plan is running:
  *    a. Nothing active, tasks queued → scheduler waiting message.
@@ -91,6 +69,30 @@ export function describeEmpty(input: EmptyStateInput): string {
  * 9. Plan failed → stopped-at message with retry hint.
  * 10. Plan cancelled → cancelled message.
  */
+export function describeEmpty(input: EmptyStateInput): string {
+  const { connection, workspace, planCount, plan } = input;
+
+  // ── 1. Connection problems ──────────────────────────────────────────────────
+  if (connection === 'disconnected' || connection === 'error') {
+    return 'Lost the server; reconnecting.';
+  }
+
+  // ── 2. No plans in workspace ────────────────────────────────────────────────
+  if (!plan && planCount === 0) {
+    return `No plans in ${workspace} yet. Describe what you want to build.`;
+  }
+
+  // ── 3. Plans exist but none selected ───────────────────────────────────────
+  if (!plan) {
+    return 'Select a plan, or press n to describe a new one.';
+  }
+
+  return describePlan(plan);
+}
+
+// ── describePlan ───────────────────────────────────────────────────────────────
+
+/** Cases 4–10 above: one plan's sentence, which the stage also shows as its run summary. */
 export function describePlan(plan: PlanState): string {
   const { phase, tasksTotal, tasksDone, tasksActive, tasksAccepted } = plan;
 

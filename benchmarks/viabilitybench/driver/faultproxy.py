@@ -33,8 +33,10 @@ request's bytes plus `PREAMBLE_TOKENS`, since a token is never shorter than a by
 its own before the first message (as `mini_loop` bounds its calls). When the request extends one the task sent
 before, with the same settings and that request's messages first, the bound is that request's reported input plus
 the bytes of the messages it adds, so a long conversation's bound stays close to its real size. A call whose usage is
-missing counts its bound. The bound holds for text: an image a request only links to can cost more tokens than its
-URL has bytes.
+missing counts its bound. The bound holds for text only: an image, audio or a file costs tokens that are no function
+of its bytes (an image a request only links to can cost more tokens than its URL has bytes). So while a cap is set,
+a request with a part that is not text is refused with a 403 (`vb_unbounded_input`) before it is forwarded
+(bug-d34a29): the pilot's arms send text only, and a cap that such a request could cross would be no cap.
 
 **Faults.** One profile is active at a time (`Profile`; the names and parameters are S08 §4.11's):
 - `clean`: no faults;
@@ -69,7 +71,9 @@ end within one second: bug-09fac4), `task`, `ordinal`, `profile`, `fault_injecte
 fired, else null), `fault` (the fault's detail), `upstream`, `path`, `model_requested`, `model_reported`, `stream`,
 `status` (what the client got; null when it got none), `forwarded`, `usage_source`, `usage` (the classes; null when
 none came back), `api_equiv_usd`, `without_cache_usd`, `cost_source` (`provider_usage`, `unknown` or `not_billed`),
-`price_snapshot_id`, `refused`, `input_bound` (the most input the call could have been billed for) and `elapsed_ms`.
+`price_snapshot_id`, `refused` (`input_token_cap` or `unbounded_input` when the proxy refused the call, else null),
+`input_bound` (the most input the call could have been billed for; null for one that is not text only) and
+`elapsed_ms`.
 
 API:
     Upstream(name, base_url, api_key_env=None, stream_usage=True); Upstream.from_endpoint(endpoint) -> Upstream
@@ -126,6 +130,10 @@ NOT_RELAYED = frozenset({"connection", "keep-alive", "proxy-authenticate", "prox
                          "transfer-encoding", "upgrade", "content-length", "date", "server"})
 EVENT_END = re.compile(rb"\r\n\r\n|\n\n|\r\r")
 PREAMBLE_TOKENS = 256  # what a provider may put before the first message (a harmony system header), as in mini_loop
+TEXT_PARTS = frozenset({"text", "refusal", "input_text", "output_text"})  # content parts whose tokens bytes bound
+# Keys that carry an image, audio or a file in any request shape (chat content parts, the Responses API's input).
+MEDIA_KEYS = frozenset({"image_url", "input_image", "input_audio", "file", "input_file", "file_data", "file_id",
+                        "file_url", "video_url"})
 # Request fields that set how a model samples, not what its prompt holds: a change to one keeps a conversation's prefix.
 NOT_PROMPT = frozenset({"stream", "stream_options", "max_tokens", "max_completion_tokens", "temperature", "top_p",
                         "seed", "n", "stop", "user", "metadata", "logprobs", "top_logprobs", "presence_penalty",
@@ -289,7 +297,8 @@ class _Meter:
     requests: int = 0
     forwarded: int = 0
     faults: int = 0
-    refused: int = 0
+    refused: int = 0  # calls refused at the task's input cap
+    unbounded: int = 0  # calls refused because the proxy cannot bound their input
     usage_missing: int = 0
     cost_unknown: int = 0
     input_tokens: int = 0  # every input class, plus the input bound of each call whose usage is missing
@@ -392,25 +401,31 @@ class FaultProxy:
         started = time.monotonic()
         request = _json_object(body)
         digests, sizes = _prompt_digests(request)
+        media = _unbounded_part(request)
         with self._lock:
             task, profile, cap = self._task, self._profile, self._cap
             meter = self._meters.setdefault(task, _Meter())
             meter.requests += 1
             ordinal = meter.requests
-            bound = self._input_bound(task, digests, sizes, len(body))
+            bound = self._input_bound(task, digests, sizes, len(body))  # a text bound: none holds for media
             counted = meter.input_tokens + meter.reserved
-            refused = cap is not None and counted + bound > cap
-            if not refused:
+            refusal = None if cap is None else "unbounded_input" if media else \
+                "input_token_cap" if counted + bound > cap else None
+            if refusal is None:
                 meter.reserved += bound
-        call = _Call(self, handler, meter, bound, None if refused else digests[-1], started, {
+        call = _Call(self, handler, meter, bound, None if refusal else digests[-1], started, {
             "ts": _now(), "task": task, "ordinal": ordinal, "profile": profile.as_json(),
             "fault_injected": None, "fault": None, "upstream": upstream.name, "path": path,
             "model_requested": _text(request.get("model")), "model_reported": None,
             "stream": request.get("stream") is True, "status": None, "forwarded": False, "usage_source": "none",
-            "usage": None, "refused": None, "input_bound": bound})
+            "usage": None, "refused": refusal, "input_bound": None if media else bound})
         try:
-            if refused:
-                call.entry["refused"] = "input_token_cap"
+            if refusal == "unbounded_input":
+                call.answer(403, _error("vb_unbounded_input", f"task {task!r} has an input-token cap, and the proxy "
+                                        f"cannot bound this request's input: it holds a {media!r} part",
+                                        "unbounded_input"))
+                return
+            if refusal:
                 call.answer(403, _error("vb_cap_exceeded", f"task {task!r} could pass its input-token cap of {cap}: "
                                         f"{counted} counted, and this call may add up to {bound}", "input_token_cap"))
                 return
@@ -583,7 +598,8 @@ class FaultProxy:
                     self._prompts.setdefault(entry["task"], {})[call.digest] = counted
             meter.forwarded += entry["forwarded"]
             meter.faults += entry["fault_injected"] is not None
-            meter.refused += entry["refused"] is not None
+            meter.refused += entry["refused"] == "input_token_cap"
+            meter.unbounded += entry["refused"] == "unbounded_input"
             meter.usage_missing += source == "missing"
             meter.cost_unknown += api_equiv is None
             meter.input_tokens += counted
@@ -837,6 +853,30 @@ def _prompt_digests(request: dict) -> tuple[list[str], list[int]]:
         digests.append(digest.hexdigest())
         sizes.append(len(data))
     return digests, sizes
+
+
+def _unbounded_part(request: dict) -> str | None:
+    """What makes a request's input unboundable by its bytes: the type of a message's first content part that is not
+    text, or a key that carries media anywhere in the messages or a Responses API `input` (`MEDIA_KEYS`; tool schemas
+    are not searched, where `file` can name a parameter); None for a text-only request."""
+    messages = request.get("messages")
+    for message in messages if isinstance(messages, list) else []:
+        content = message.get("content") if isinstance(message, dict) else None
+        for part in content if isinstance(content, list) else []:
+            kind = part.get("type") if isinstance(part, dict) else None
+            if kind not in TEXT_PARTS:
+                return str(kind)
+    pending: list[object] = [messages, request.get("input")]
+    while pending:
+        value = pending.pop()
+        if isinstance(value, dict):
+            found = next((key for key in value if key in MEDIA_KEYS), None)
+            if found:
+                return found
+            pending.extend(value.values())
+        elif isinstance(value, list):
+            pending.extend(value)
+    return None
 
 
 def _now() -> str:

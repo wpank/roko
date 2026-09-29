@@ -2067,6 +2067,10 @@ impl CascadeRouter {
             outcome_success: None,
             outcome_cost_usd: None,
             outcome_latency_ms: None,
+            attempt_key: None,
+            source: None,
+            default_model: None,
+            propensity: None,
         };
         log.append(&record)?;
         Ok(record)

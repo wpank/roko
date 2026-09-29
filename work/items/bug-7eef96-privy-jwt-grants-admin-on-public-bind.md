@@ -33,3 +33,5 @@ otherwise read scope, with a startup warning naming the settings. Check deployed
 instances (Railway) before shipping, since they may rely on today's behaviour.
 
 Deferred by Will on 2026-09-28 ("file it for later"); not changed in the portal push.
+
+2026-09-28: `wpank/roko` is public (checked with `gh repo view`), so this code is already public. `deploy-fly.yml` and `docker-publish.yml` are guarded by the repository variable `ALLOW_PUBLIC_DEPLOY` (b02812036) until this is fixed.

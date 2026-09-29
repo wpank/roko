@@ -8,9 +8,9 @@ What to work on next: the top checked, open items of each goal, highest-priority
 
 - **P0** [bug-7eef96](items/bug-7eef96-privy-jwt-grants-admin-on-public-bind.md) Privy JWT grants admin to any Nunchi Privy user on a publicly bound roko serve [bug] · verified 2026-09-28
 - **P1** [bug-da5b41](items/bug-da5b41-a-running-roko-serve-erases-api-keys.md) A running roko serve erases API keys created by the CLI [bug] · verified 2026-09-28
-- **P1** [gap-ae2f55](items/gap-ae2f55-repository-has-no-license-file-although-crates.md) Repository has no LICENSE file although crates declare MIT OR Apache-2.0 · verified 2026-09-28
+- **P1** [bug-7d7200](items/bug-7d7200-agents-and-verify-commands-inherit-roko-s.md) Agents and verify commands inherit roko's whole environment, including provider API keys [bug] · verified 2026-09-28
 
-_11 more open · 1 unchecked (`TRIAGE.md`) · `goal = "release"`_
+_18 more open · 1 unchecked (`TRIAGE.md`) · `goal = "release"`_
 
 ## 2. Plan runs work reliably
 
@@ -18,7 +18,7 @@ _11 more open · 1 unchecked (`TRIAGE.md`) · `goal = "release"`_
 - **P0** [gap-4ec59f](items/gap-4ec59f-worktree-isolation-flip-default-and-add-startup.md) Worktree Isolation: Flip Default and Add Startup Repair · verified 2026-09-28
 - **P1** [bug-7c8a57](items/bug-7c8a57-plan-audit-t0-06-100-line-cap.md) 100-line cap on read_files context injection [bug] · verified 2026-09-28
 
-_38 more open · in progress: bug-4efb2a · 2 unchecked (`TRIAGE.md`) · `goal = "core"`_
+_44 more open · in progress: bug-4efb2a · 1 unchecked (`TRIAGE.md`) · `goal = "core"`_
 
 ## 3. Hermes and ACP integration
 
@@ -30,11 +30,11 @@ _12 more open · `goal = "hermes"`_
 
 ## 4. Live visibility: serve, dashboard, portal
 
-- **P1** [bug-28f2b9](items/bug-28f2b9-df-0925-p1-8-agent-output-replayed.md) Agent output replayed in one burst after the agent finishes [bug] · verified 2026-09-28
-- **P1** [gap-7f5eb6](items/gap-7f5eb6-cli-plan-runs-are-invisible-to-roko.md) CLI plan runs are invisible to roko serve: in-process StateHub and an unused IPC bridge · verified 2026-09-28
-- **P1** [bug-45c355](items/bug-45c355-fix-agent-spawned-event-timing-post-dispatch.md) Fix Agent Spawned Event Timing (Post-Dispatch) [bug] · verified 2026-09-28
+- **P1** [bug-230de6](items/bug-230de6-graph-default-engine-does-not-produce-events.md) Graph (default) engine does not produce events.jsonl in mock plan runs [bug] · verified 2026-09-28
+- **P1** [gap-aabeff](items/gap-aabeff-tool-t003-tui-paths-still-consume-string.md) TUI paths still consume string/tail projections that lose semantics (TUI adoption unproven) · verified 2026-09-28
+- **P1** [find-f489db](items/find-f489db-tool-dispatch-observability-gaps-td-003-td.md) Tool Dispatch Observability Gaps (TD-003, TD-004, TD-005) [finding] · verified 2026-09-28
 
-_22 more open · in progress: bug-6dc672 · `goal = "visibility"`_
+_15 more open · in progress: bug-6dc672 · `goal = "visibility"`_
 
 ## 5. Learning loops on the Graph path
 
@@ -42,7 +42,7 @@ _22 more open · in progress: bug-6dc672 · `goal = "visibility"`_
 - **P1** [find-4b4344](items/find-4b4344-cybernetic-re-verify-gates-9-gate-threshold.md) 9 gate/threshold closures wired into deleted Runner-v2 [finding] · verified 2026-09-28
 - **P1** [gap-5fb9a7](items/gap-5fb9a7-provider-f035-hindsight-relabeling-module-is-completely.md) Hindsight relabeling module is completely unwired · verified 2026-09-28
 
-_20 more open · 1 unchecked (`TRIAGE.md`) · `goal = "learning"`_
+_22 more open · 1 unchecked (`TRIAGE.md`) · `goal = "learning"`_
 
 ## 6. Tooling, CLI polish and code hygiene
 
@@ -50,7 +50,7 @@ _20 more open · 1 unchecked (`TRIAGE.md`) · `goal = "learning"`_
 - **P1** [gap-09e478](items/gap-09e478-dogfood-session-evidence-bundle.md) Dogfood Session Evidence Bundle · verified 2026-09-28
 - **P2** [bug-97c2dc](items/bug-97c2dc-async-runtime-anti-patterns-drop-spawn-unbounded.md) Async Runtime Anti-Patterns (Drop+Spawn, Unbounded Channels, Mutex Across Await) [bug] · verified 2026-09-28
 
-_20 more open · 1 unchecked (`TRIAGE.md`) · `goal = "tooling"`_
+_21 more open · 1 unchecked (`TRIAGE.md`) · `goal = "tooling"`_
 
 ## 7. Feature ideas
 
@@ -60,4 +60,4 @@ _20 more open · 1 unchecked (`TRIAGE.md`) · `goal = "tooling"`_
 
 _18 more open · `goal = "features"`_
 
-11 open items have no goal (later); they are listed in `STATUS.md`.
+69 open items have no goal (later); they are listed in `STATUS.md`.

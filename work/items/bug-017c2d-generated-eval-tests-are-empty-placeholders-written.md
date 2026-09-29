@@ -26,3 +26,5 @@ With `feedback.eval_generation_enabled`, Graph dispatch runs `EvalGenerator::gen
 The built-in `compile-check`, `clippy-clean` and `test-pass` templates (`eval_generator.rs:417`) render empty-bodied `#[test]` functions (e.g. `fn gen_clippy_clean() { // Clippy cleanliness verified by ClippyGate. }`), so these "generated test" gates prove nothing.
 87 such untracked files currently sit in the repo root.
 Fix: generate only tests with real bodies into a gitignored staging location, make a zero-assertion test fail its gate, and remove the placeholders.
+
+Checked 2026-09-28: 42 of the 87 files under `generated-tests/` are tracked in git, so "untracked" is wrong for those. Removing them needs a `git rm`.

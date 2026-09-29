@@ -79,8 +79,8 @@ Principle: *merge, then verify*.
 ## 4.10 Review
 
 An optional hold lets a person approve each task's diff before it merges: MISSING@a17d4dadd. `--approval` only opens
-the TUI, and the per-task diff route looks for `agent/*/<task>` branches that Graph runs never create. No epic covers
-this step yet.
+the TUI, and the per-task diff route looks for `agent/*/<task>` branches that Graph runs never create. gap-0d64d5,
+under E6 integration, covers this step.
 
 ## 4.11 Learn
 
@@ -105,7 +105,7 @@ Each step's tag, its appendix rows, and the epics that would change it:
 | 7 Verify | PARTIAL@a17d4dadd | QA1, QA2, QA3, QA4, QA5 | E2 verdicts (spec-e9d7ec); E9 diff check (spec-9230a9); E17 audits |
 | 8 Recover | PARTIAL@a17d4dadd | EX6, EX7, EX8, EX9, QA7 | E5 tier ladder; E10 watchdog (spec-edda86) |
 | 9 Integrate | ORPHANED@a17d4dadd, MISSING@a17d4dadd | IS2, IS3 | E6 integration |
-| 10 Review | MISSING@a17d4dadd | SS6 | None yet |
+| 10 Review | MISSING@a17d4dadd | SS6 | E6 integration (gap-0d64d5) |
 | 11 Learn | PARTIAL@a17d4dadd | V8, LM3, RC2 | E17 cybernetic core (spec-6ac537) |
 | Whole path: cheaper at equal quality | UNPROVEN@a17d4dadd | V7 | E11 acceptance tests (spec-f09094); E12 pilot (spec-567e52) |
 

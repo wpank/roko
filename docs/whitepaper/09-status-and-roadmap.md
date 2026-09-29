@@ -62,8 +62,9 @@ Epic numbers match §4.12.
 4. **Cybernetic core** (E17, spec-6ac537): routing that learns from verified failures and a frozen-learning mode,
    then the audits, self-model and controller of §5. Exit: tests for router labels, playbook credit and frozen runs.
 
-Four matrix rows call for work that has no item yet: split or replan on failure (EX8), an OS sandbox after v1 (IS6),
-calibrating output screening (SS3), and choosing gates by task domain (DM2).
+Two matrix rows have only parked items: split or replan on failure (EX8, gap-3b170b) and calibrating output
+screening (SS3, gap-f75dc8). Gates chosen by task domain (DM2) are gap-7a3527; an OS sandbox (IS6) is gap-8f8544,
+filed after the matrix's commit and on hold for v1.
 
 ## 9.4 Proposed parking
 

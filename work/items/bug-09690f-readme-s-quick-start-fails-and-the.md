@@ -2,7 +2,7 @@
 id = "bug-09690f"
 kind = "bug"
 title = "README's quick start fails, and the README claims 100% completion"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 size = "M"
@@ -11,7 +11,7 @@ subsystem = ["docs/readme"]
 created = 2026-09-28
 updated = 2026-09-29
 last_verified = 2026-09-29
-last_verified_rev = "a17d9d766"
+last_verified_rev = "822070666"
 source = "tmp/cybernetic-harness/assessment-2026-09-28/publication-readiness.md"
 discovered_from = "audit:tmp/cybernetic-harness/assessment-2026-09-28/publication-readiness.md"
 anchors = ["README.md:7", "README.md:9", "README.md:12", "README.md:68", "README.md:108", "README.md:111", "README.md:596", "README.md:606", ".github/workflows/docs-lint.yml:77"]
@@ -19,6 +19,12 @@ links = { depends_on = [], blocks = [], related = ["bug-f279ea", "gap-ae2f55"], 
 
 [[verify]]
 command = "! grep -q -- \"--engine runner-v2\" README.md && ! grep -q \"48 epics\" README.md && ! grep -q \"124/124\" README.md && ! grep -q \"tmp/status-quo\" README.md"
+
+[closed]
+at = 2026-09-29
+commit = "822070666"
+by = "wk-readme"
+evidence = "README.md rewritten: no --engine runner-v2, 48 epics, 124/124, tmp/status-quo, tmp/ links or GAPS.md source-of-truth; counts match CLAUDE.md (36 members, ~1M lines, 10,300+ tests); status points at work/NOW.md and work/STATUS.md. Quick start (roko init, config providers list, run, plan run of demo-hello-world, serve) run in scratch dirs with target/debug/roko at 33e107da1 and the fake agent: plan reached succeeded, serve /health and /ready 200 (details in Notes). docs-lint.yml bare_plan rule dropped. Checks: item verify passes; check_markdown_links finds 0 README findings; docs-lint stale and executor.json rules pass; test_check_markdown_links passes."
 +++
 
 ## Problem

@@ -220,6 +220,7 @@ pub fn create_agent_for_model(
             mock_agent,
             &requested_agent_id,
             options.effective_immune_root(),
+            options.working_dir.as_deref(),
             options.live_output.clone(),
         ));
     }
@@ -309,6 +310,7 @@ pub fn create_agent_for_model(
                 Box::new(agent) as Box<dyn Agent>,
                 &requested_agent_id,
                 options.effective_immune_root(),
+                options.working_dir.as_deref(),
                 options.live_output.clone(),
             ));
         }
@@ -334,6 +336,7 @@ pub fn create_agent_for_model(
             mock_agent,
             &requested_agent_id,
             options.effective_immune_root(),
+            options.working_dir.as_deref(),
             options.live_output.clone(),
         ));
     }
@@ -391,6 +394,7 @@ pub fn create_agent_for_model(
         agent,
         &effective_agent_id,
         options.effective_immune_root(),
+        options.working_dir.as_deref(),
         options.live_output.clone(),
     ))
 }
@@ -902,7 +906,8 @@ pub struct AgentOptions {
     ///
     /// When set and the provider supports streaming, the immune boundary taps
     /// the inner stream and emits [`LiveAgentEvent::ToolStep`] for every tool
-    /// call. Text, reasoning, and result events are additionally forwarded as
+    /// call, with paths inside `working_dir` relative to it. Text, reasoning,
+    /// and result events are additionally forwarded as
     /// [`LiveAgentEvent::Unscreened`] when `trusted` is set.
     pub live_output: Option<LiveOutput>,
 }

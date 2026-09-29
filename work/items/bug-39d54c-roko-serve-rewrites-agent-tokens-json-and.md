@@ -3,13 +3,15 @@ id = "bug-39d54c"
 kind = "bug"
 title = "roko serve rewrites agent-tokens.json and relay-tokens.json whole from memory, losing other processes' tokens and revocations"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p2"
 goal = "release"
 size = "S"
 subsystem = ["roko-serve/auth"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-29
+last_verified_rev = "407ce30d5"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (16:47, wk-serve-keys's report on bug-da5b41, branch work/bug-da5b41)"
 anchors = ["crates/roko-serve/src/routes/auth.rs::insert_agent_token", "crates/roko-serve/src/routes/auth.rs::revoke_agent_token", "crates/roko-serve/src/routes/auth.rs::persist_registry_file"]
@@ -58,3 +60,10 @@ Only roko-serve writes these files; unlike `api-keys.json`, no CLI command does.
 ## Notes
 
 - Fail closed, as bug-da5b41 does: if the file can't be read or parsed during a merge, return an error and don't write.
+- 2026-09-29: premise confirmed at `407ce30d5`, where bug-da5b41 is merged. Implemented on `work/bug-39d54c` at `e6dd57a6f`;
+  cargo verification deferred to the batch check. Plan steps 1-4 are done: both token files go through the shared
+  `apply_registry_change` / `run_registry_change` (the API-key path now uses them too), relay issuance validates its
+  parent chain against the relay file as it is on disk, and `persist_registry_file` is removed. Tests: the
+  verify-named test plus `a_relay_revoked_by_another_process_stays_revoked`,
+  `concurrent_token_writers_on_one_workspace_keep_every_token` and `unreadable_token_files_fail_closed_while_running`.
+  GET /api/agent-tokens now returns 500 on an unreadable file instead of a stale list.

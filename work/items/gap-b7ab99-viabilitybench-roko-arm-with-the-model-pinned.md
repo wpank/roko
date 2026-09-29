@@ -2,9 +2,10 @@
 id = "gap-b7ab99"
 kind = "gap"
 title = "ViabilityBench Roko arm with the model pinned and checked on every attempt (S08.T11)"
-status = "open"
+status = "done"
 triage = "verified"
 last_verified = 2026-09-29
+last_verified_rev = "2b19cff6d"
 severity = "p1"
 goal = "proof"
 size = "M"
@@ -23,6 +24,12 @@ command = "grep -qw 'def test_model_mismatch_marks_attempt_infra_error' benchmar
 
 [[verify]]
 command = "grep -qw 'def test_emitted_plan_has_explicit_rungs_and_no_hidden_checks' benchmarks/viabilitybench/driver/test_run_roko.py && benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/driver/test_run_roko.py -k test_emitted_plan_has_explicit_rungs_and_no_hidden_checks -q"
+
+[closed]
+at = 2026-09-29
+commit = "2b19cff6d"
+by = "wk-bench-rokoarm"
+evidence = "Added driver/planemit.py, driver/run_roko.py, driver/test_run_roko.py and arms/roko_fixed.toml, plus a shared hook (TaskContext.visible_verify and files_in_scope, in harness.py and vb.py). Both [[verify]] commands pass: test_model_mismatch_marks_attempt_infra_error (a fixture episode on glm-4.7 marks attempt 2 model_mismatch; end to end through vb run with a fake roko, the record is infra_error with VS=0 although the tree passes the hidden suite) and test_emitted_plan_has_explicit_rungs_and_no_hidden_checks. The emitted plan passes plan validate --strict --dag by hand on the prebuilt roko (git 33e107da1) with 0 diagnostics, for the toy task and for F4-l3-0001. A real plan run against a loopback tool-calling fake completes with VS=1 (test_real_roko_run_against_a_fake_provider). The viabilitybench suite passes (217 passed, 3 skipped). $0 spent."
 +++
 
 ## Problem

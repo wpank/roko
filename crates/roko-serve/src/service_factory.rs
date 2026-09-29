@@ -18,6 +18,7 @@ use roko_daimon::policy::DaimonPolicy;
 use roko_gate::gate_service::GateService;
 use roko_learn::cascade_router::CascadeRouter;
 use roko_learn::feedback_service::FeedbackService;
+use roko_learn::model_call_feedback::{JournaledOverrideRecorder, ModelCallJournal};
 use roko_learn::model_router::RoutingContext;
 use roko_learn::playbook::PlaybookStore;
 use roko_learn::provider_health::ProviderHealthRegistry;
@@ -206,6 +207,15 @@ pub struct ServiceBundle {
     pub gate_runner: Arc<dyn GateRunner>,
     /// Optional affect policy shared with the effect driver.
     pub affect_policy: Option<Arc<tokio::sync::Mutex<dyn AffectPolicy>>>,
+    /// Cascade router the model-call service routes with, and that its
+    /// feedback and override outcomes are observed into; `None` when cascade
+    /// routing is off. Hand it to every other surface that routes or
+    /// observes, so they share one router (bug-012303).
+    pub cascade_router: Option<Arc<CascadeRouter>>,
+    /// Journal for `.roko/learn/cascade-router.json`. Save `cascade_router`
+    /// through it, so the observations the services journaled are folded
+    /// (find-0dc1d5).
+    pub cascade_journal: Arc<ModelCallJournal>,
 }
 
 impl ServiceBundle {
@@ -240,12 +250,16 @@ impl ServiceFactory {
         workspace_config.agent.default_model = model.clone();
         let prompt_token_budget = workspace_config.budget.prompt_token_budget;
         let tool_instructions = tool_instructions_for_config(&workspace_config.tools);
+        // Model-call feedback and override outcomes are journaled before they
+        // reach the router, so a crash before the next save loses none.
+        let cascade_journal =
+            Arc::new(ModelCallJournal::for_learn_dir(&config.roko_dir.join("learn")));
         let cascade_router = if config.cascade_enabled {
             let cascade_model_slugs = model_slugs_for_config(&workspace_config, &model);
-            Some(Arc::new(CascadeRouter::load_or_new(
-                &config.roko_dir.join("learn").join("cascade-router.json"),
-                cascade_model_slugs,
-            )))
+            Some(Arc::new(
+                CascadeRouter::load_or_new(cascade_journal.snapshot_path(), cascade_model_slugs)
+                    .with_model_tiers(&workspace_config.effective_models()),
+            ))
         } else {
             None
         };
@@ -254,7 +268,11 @@ impl ServiceFactory {
         let feedback_sink: Arc<dyn FeedbackSink> = if config.feedback_enabled {
             let feedback_service = FeedbackService::from_roko_dir_with_episodes(&config.roko_dir);
             match &cascade_router {
-                Some(router) => Arc::new(feedback_service.with_cascade_router(Arc::clone(router))),
+                Some(router) => Arc::new(
+                    feedback_service
+                        .with_cascade_router(Arc::clone(router))
+                        .with_cascade_journal(Arc::clone(&cascade_journal)),
+                ),
                 None => Arc::new(feedback_service),
             }
         } else {
@@ -295,10 +313,14 @@ impl ServiceFactory {
             .with_provider_outcome_recorder(Arc::clone(&provider_health_registry))
             .with_rate_limiter(rate_limiter)
             .with_run_id(config.run_id.unwrap_or_else(default_run_id));
-        if let Some(cascade_router) = cascade_router {
-            let model_router = Some(Arc::clone(&cascade_router));
+        if let Some(cascade_router) = &cascade_router {
+            let model_router = Some(Arc::clone(cascade_router));
+            let override_recorder = Arc::new(JournaledOverrideRecorder::new(
+                Arc::clone(cascade_router),
+                Arc::clone(&cascade_journal),
+            ));
             model_call_service = model_call_service
-                .with_cascade_router(cascade_router)
+                .with_cascade_router(override_recorder)
                 .with_model_router(move |role| {
                     routed_model_for_role(
                         &routing_config,
@@ -389,6 +411,8 @@ impl ServiceFactory {
             feedback_sink,
             gate_runner,
             affect_policy,
+            cascade_router,
+            cascade_journal,
         })
     }
 
@@ -475,10 +499,10 @@ impl ServiceFactory {
             .with_provider_outcome_recorder(Arc::clone(&provider_health_registry))
             .with_rate_limiter(rate_limiter)
             .with_run_id(config.run_id.unwrap_or_else(default_run_id));
-        if let Some(cascade_router) = cascade_router {
-            let model_router = Some(Arc::clone(&cascade_router));
+        if let Some(cascade_router) = &cascade_router {
+            let model_router = Some(Arc::clone(cascade_router));
             model_call_service = model_call_service
-                .with_cascade_router(cascade_router)
+                .with_cascade_router(Arc::clone(cascade_router))
                 .with_model_router(move |role| {
                     routed_model_for_role(
                         &routing_config,
@@ -565,6 +589,12 @@ impl ServiceFactory {
             feedback_sink,
             gate_runner,
             affect_policy,
+            // These services journal nothing: whoever owns the RuntimeServices
+            // router saves it.
+            cascade_router,
+            cascade_journal: Arc::new(ModelCallJournal::for_learn_dir(
+                &config.roko_dir.join("learn"),
+            )),
         })
     }
 }

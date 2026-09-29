@@ -77,6 +77,7 @@ use crate::latency::LatencyTracker;
 use crate::model_experiment::ModelExperimentStore;
 use crate::model_router::{
     CONTEXT_DIM, CandidateArmScore, LinUCBRouter, RoutingContext, compute_routing_reward_v2,
+    compute_routing_reward_with_weights,
 };
 use crate::pareto::{ModelObservation, compute_pareto_frontier};
 use crate::provider_health::ProviderHealthRegistry;
@@ -187,27 +188,21 @@ impl Default for RoutingContext {
 
 impl roko_agent::model_call_service::ForceBackendOverrideRecorder for CascadeRouter {
     fn record_override_outcome(&self, model_slug: &str, success: bool) -> bool {
-        // P0-03: Build a routing context that reflects the model tier instead
-        // of a bare default. The trait boundary prevents passing a real
-        // RoutingContext from roko-agent, so we infer complexity from the
-        // model slug so the LinUCB bandit gets a more representative feature
-        // vector. The routing.rs FeedbackSink path already uses the real
-        // dispatch-time RoutingContext; this only covers the ModelCallService
-        // force_backend path.
-        let tier = crate::cascade::helpers::slug_to_tier_heuristic(model_slug);
-        let complexity = match tier {
-            roko_core::agent::ModelTier::Fast => roko_core::task::TaskComplexityBand::Fast,
-            roko_core::agent::ModelTier::Premium => roko_core::task::TaskComplexityBand::Complex,
-            _ => roko_core::task::TaskComplexityBand::Standard,
-        };
-        let ctx = RoutingContext {
-            complexity,
-            has_prior_failure: !success,
-            previous_model: Some(model_slug.to_string()),
-            ..RoutingContext::default()
-        };
+        let ctx = Self::forced_override_context(model_slug, success);
         CascadeRouter::record_override_outcome(self, model_slug, &ctx, success, None)
     }
+}
+
+/// A manual model override outcome as a cascade observation (UX34): what
+/// [`CascadeRouter::record_override_outcome`] applies, and what
+/// [`crate::model_call_feedback::ModelCallJournal`] journals for one.
+pub(crate) struct OverrideObservation {
+    /// Features of the routing context the override ran under.
+    pub(crate) context_features: Vec<f64>,
+    /// The dampened quality signal as a `LinUCB` reward.
+    pub(crate) reward: f64,
+    /// Whether the confidence counters count a success.
+    pub(crate) success: bool,
 }
 
 impl CascadeRouter {
@@ -1546,11 +1541,11 @@ impl CascadeRouter {
     /// Record a manual model override outcome for learning (UX34).
     ///
     /// Called when the operator used `--model` / `--force-model` /
-    /// `--force-backend` to bypass the cascade router. Uses the full
-    /// multi-objective observation path so that LinUCB context is updated
-    /// alongside confidence stats.  The `dampening` factor (0.0--1.0)
-    /// scales the quality signal to prevent a single user override from
-    /// dominating the bandit policy.  Pass `None` to use the built-in
+    /// `--force-backend` to bypass the cascade router. The outcome updates
+    /// the confidence stats and the `LinUCB` arm for `ctx`, with the
+    /// multi-objective reward of the quality signal. The `dampening` factor
+    /// (0.0--1.0) scales the quality signal to prevent a single user override
+    /// from dominating the bandit policy.  Pass `None` to use the built-in
     /// default (`OVERRIDE_LEARNING_RATE`, currently 0.5).
     pub fn record_override_outcome(
         &self,
@@ -1562,21 +1557,63 @@ impl CascadeRouter {
         let Some(model_idx) = self.model_index_for_slug(model_slug) else {
             return false;
         };
-        let damp = dampening.unwrap_or(OVERRIDE_LEARNING_RATE).clamp(0.0, 1.0);
-        let raw_quality = if success { 1.0 } else { 0.0 };
-        let dampened_quality = raw_quality * damp;
-        // For overrides we have no cost/latency telemetry, so use neutral
-        // values (0.0) and let only the dampened quality signal drive learning.
-        let weights = RewardWeights::default();
-        self.observe_multi_objective(
-            ctx.to_features(),
+        let observation = Self::override_observation(ctx, success, dampening);
+        self.observe_outcome(
+            observation.context_features,
             model_idx,
-            dampened_quality,
-            0.0,
-            0.0,
-            &weights,
+            observation.reward,
+            observation.success,
         );
         true
+    }
+
+    /// The observation [`Self::record_override_outcome`] makes, so a journal
+    /// can record exactly what the router applies.
+    pub(crate) fn override_observation(
+        ctx: &RoutingContext,
+        success: bool,
+        dampening: Option<f64>,
+    ) -> OverrideObservation {
+        let damp = dampening.unwrap_or(OVERRIDE_LEARNING_RATE).clamp(0.0, 1.0);
+        let raw_quality = if success { 1.0 } else { 0.0 };
+        // For overrides we have no cost/latency telemetry, so use neutral
+        // values (0.0) and let only the dampened quality signal drive learning.
+        let reward = compute_routing_reward_with_weights(
+            raw_quality * damp,
+            0.0,
+            0.0,
+            &RewardWeights::default(),
+        );
+        OverrideObservation {
+            context_features: ctx.to_features(),
+            reward,
+            // Every override counts as a confidence success, whatever its
+            // outcome, until bug-f68404 honours `success` here.
+            success: true,
+        }
+    }
+
+    /// The routing context of a forced-model override recorded without one.
+    ///
+    /// P0-03: The context reflects the model tier instead of a bare default.
+    /// The trait boundary prevents passing a real RoutingContext from
+    /// roko-agent, so we infer complexity from the model slug so the LinUCB
+    /// bandit gets a more representative feature vector. The routing.rs
+    /// FeedbackSink path already uses the real dispatch-time RoutingContext;
+    /// this only covers the ModelCallService force_backend path.
+    pub(crate) fn forced_override_context(model_slug: &str, success: bool) -> RoutingContext {
+        let tier = crate::cascade::helpers::slug_to_tier_heuristic(model_slug);
+        let complexity = match tier {
+            roko_core::agent::ModelTier::Fast => roko_core::task::TaskComplexityBand::Fast,
+            roko_core::agent::ModelTier::Premium => roko_core::task::TaskComplexityBand::Complex,
+            _ => roko_core::task::TaskComplexityBand::Standard,
+        };
+        RoutingContext {
+            complexity,
+            has_prior_failure: !success,
+            previous_model: Some(model_slug.to_string()),
+            ..RoutingContext::default()
+        }
     }
 
     /// Record a per-category observation for the given model (audit #84).

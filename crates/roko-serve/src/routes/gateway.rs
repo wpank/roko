@@ -1033,7 +1033,7 @@ async fn select_model_via_router(state: &AppState, hints: &RoutingHints) -> Stri
             if guard.is_none() {
                 let cascade_path = state.workdir.join(".roko/learn/cascade-router.json");
                 let router = CascadeRouter::load_or_new(&cascade_path, all_model_slugs.clone());
-                *guard = Some(router);
+                *guard = Some(Arc::new(router));
             }
             let router = guard.as_ref().unwrap_or_else(|| unreachable!());
             router

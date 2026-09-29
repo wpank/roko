@@ -34,6 +34,7 @@ use roko_core::{
 use roko_daimon::{DaimonState, StrategySpaceDefinition};
 use roko_learn::cascade_router::CascadeRouter;
 use roko_learn::latency::LatencyRegistry;
+use roko_learn::model_call_feedback::ModelCallJournal;
 use roko_learn::provider_health::{ProviderHealthRegistry, ProviderHealthTracker};
 use roko_runtime::cancel::CancelToken;
 use roko_runtime::process::{ProcessId, ProcessSupervisor};
@@ -632,7 +633,16 @@ pub struct AppState {
 
     // -- Gateway audit fixes (D1, B1, B3) --
     /// Cached [`CascadeRouter`] so model routing avoids per-request disk I/O.
-    pub cascade_router: RwLock<Option<CascadeRouter>>,
+    ///
+    /// It is the one router every serve surface shares (bug-012303): the
+    /// model-call service routes with it and records its feedback and
+    /// override outcomes into it, the inference gateway routes with it and
+    /// observes into it, and template dispatch observes into it. Save it with
+    /// [`AppState::save_cascade_router`].
+    pub cascade_router: RwLock<Option<Arc<CascadeRouter>>>,
+    /// Journal of the observations recorded into `cascade_router`
+    /// (find-0dc1d5); every save of that router goes through it.
+    pub cascade_journal: Arc<ModelCallJournal>,
     /// Per-model token + cost counters accumulated across inference requests.
     pub gateway_model_counters: RwLock<HashMap<String, Arc<GatewayModelCounters>>>,
     /// Per-batch progress counters keyed by batch id.
@@ -1030,19 +1040,27 @@ impl AppState {
             .map_err(|e| anyhow::anyhow!("build shared service bundle: {e}"))?;
         let model_call_service = service_bundle.model_call_service;
         let provider_health_registry = service_bundle.provider_health_registry;
+        let cascade_journal = service_bundle.cascade_journal;
         let effective_models = roko_config.effective_models();
-        let mut gateway_models = effective_models
-            .values()
-            .map(|model| model.slug.clone())
-            .collect::<Vec<_>>();
-        if gateway_models.is_empty() {
-            gateway_models.push("configured".to_string());
-        }
-        let gateway_router =
-            Arc::new(CascadeRouter::new(gateway_models).with_model_tiers(&effective_models));
+        // One cascade router for every surface (bug-012303), saved by
+        // `save_cascade_router`. With cascade learning off, the gateway still
+        // routes with the persisted snapshot.
+        let cascade_router = service_bundle.cascade_router.unwrap_or_else(|| {
+            let mut gateway_models = effective_models
+                .values()
+                .map(|model| model.slug.clone())
+                .collect::<Vec<_>>();
+            if gateway_models.is_empty() {
+                gateway_models.push("configured".to_string());
+            }
+            Arc::new(
+                CascadeRouter::load_or_new(cascade_journal.snapshot_path(), gateway_models)
+                    .with_model_tiers(&effective_models),
+            )
+        });
         let gateway_caller: Arc<dyn roko_core::ModelCaller> = model_call_service.clone();
         let gateway_config = roko_gateway::GatewayConfig::from_model_caller(
-            gateway_router,
+            Arc::clone(&cascade_router),
             gateway_caller,
             roko_learn::cost_table::CostTable::from_config(&effective_models).with_defaults(),
         )
@@ -1236,7 +1254,8 @@ impl AppState {
             connectors,
             connector_runtime,
             feeds: RwLock::new(roko_core::FeedRegistry::new()),
-            cascade_router: RwLock::new(None),
+            cascade_router: RwLock::new(Some(cascade_router)),
+            cascade_journal,
             gateway_model_counters: RwLock::new(HashMap::new()),
             batch_progress: RwLock::new(HashMap::new()),
             terminal_sessions,
@@ -1394,13 +1413,13 @@ impl AppState {
     pub async fn shutdown(&self) {
         tracing::info!("server shutdown initiated");
         self.connector_runtime.shutdown().await;
-        let router_path = self.layout.cascade_router_path();
-        if let Some(ref router) = *self.cascade_router.read().await {
-            if let Err(err) = router.save(&router_path) {
-                tracing::warn!(error = %err, "failed to save CascadeRouter on shutdown");
-            } else {
-                tracing::info!(path = %router_path.display(), "CascadeRouter saved on shutdown");
-            }
+        match self.save_cascade_router().await {
+            Ok(true) => tracing::info!(
+                path = %self.layout.cascade_router_path().display(),
+                "CascadeRouter saved on shutdown"
+            ),
+            Ok(false) => {}
+            Err(err) => tracing::warn!(error = %err, "failed to save CascadeRouter on shutdown"),
         }
         if let Err(err) = self.save_snapshot().await {
             tracing::warn!(error = %err, "failed to save server state on shutdown");
@@ -1415,6 +1434,19 @@ impl AppState {
             .join(".roko")
             .join("state")
             .join("server-state.json")
+    }
+
+    /// Save the shared cascade router through its journal: a merge into
+    /// `cascade-router.json` that keeps what other processes saved
+    /// (bug-9c88ac) and folds the journaled observations it now holds.
+    ///
+    /// Returns `false` when no router is loaded.
+    pub async fn save_cascade_router(&self) -> Result<bool, roko_learn::LearnError> {
+        let Some(router) = self.cascade_router.read().await.clone() else {
+            return Ok(false);
+        };
+        self.cascade_journal.save(&router)?;
+        Ok(true)
     }
 
     /// Persist discovered agents and template run records to disk (atomic write).

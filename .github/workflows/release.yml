@@ -63,12 +63,22 @@ jobs:
         if: matrix.target == 'x86_64-unknown-linux-musl'
         run: sudo apt-get update && sudo apt-get install -y musl-tools
 
-      - name: Install Node for the embedded dashboard
+      - name: Install Node for the embedded portal and dashboard
         uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: demo/demo-app/package-lock.json
+          cache-dependency-path: |
+            apps/portal/package-lock.json
+            demo/demo-app/package-lock.json
+
+      # roko-serve embeds apps/portal/out and serves it at `/`; without it the
+      # binary serves the "portal UI has not been built" page.
+      - name: Build embedded portal export
+        working-directory: apps/portal
+        env:
+          NEXT_TELEMETRY_DISABLED: "1"
+        run: npm ci && npm run build:export
 
       - name: Build embedded dashboard once
         working-directory: demo/demo-app
@@ -84,12 +94,18 @@ jobs:
           key: ${{ matrix.target }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Build release binary
+        env:
+          # Fail instead of embedding the fallback page (crates/roko-serve/build.rs).
+          ROKO_REQUIRE_EMBEDDED_UI: "1"
         run: |
           cargo build --release --target ${{ matrix.target }} \
             -p roko-cli -p roko-mcp-code --features roko-cli/alloy-backend,roko-cli/acp
 
       - name: Package artifacts
         run: |
+          # The portal's <meta name="roko-portal"> tag is only in the real export.
+          grep -q 'name="roko-portal"' target/${{ matrix.target }}/release/roko \
+            || { echo "::error::roko does not embed the portal export"; exit 1; }
           mkdir -p dist
           cp target/${{ matrix.target }}/release/roko dist/roko-${{ matrix.target }}
           cp target/${{ matrix.target }}/release/roko-mcp-code dist/roko-mcp-code-${{ matrix.target }}

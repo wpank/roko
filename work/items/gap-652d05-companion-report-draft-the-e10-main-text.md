@@ -2,7 +2,7 @@
 id = "gap-652d05"
 kind = "gap"
 title = "Companion report: draft the E10 main text with E1 number markers"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "whitepaper"
@@ -11,6 +11,7 @@ subsystem = ["companion"]
 created = 2026-09-29
 updated = 2026-09-29
 last_verified = 2026-09-29
+last_verified_rev = "847384ae2"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e18"
 discovered_from = "tmp/cybernetic-harness/workstreams/assessment/W9-paper-workstream.md"
 anchors = ["tmp/cybernetic-harness/companion-audit/"]
@@ -20,6 +21,11 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "ls tmp/cybernetic-harness/companion-audit/E10-*.md >/dev/null 2>&1 && grep -q '\\[\\[E1:' tmp/cybernetic-harness/companion-audit/E10-*.md"
+
+[closed]
+at = 2026-09-29
+by = "coordinator (session 7622b882)"
+evidence = "tmp/cybernetic-harness/companion-audit/E10-DRAFT.md (untracked) drafts the companion report's main text: all ten outline sections, Tables 1-6 and the after-the-audit box, with every number as an [[E1: …]] marker (362) and E2/E3 rater results as placeholders. Review fixes applied (headline 0 of 65 mechanisms, windows named for every false-green figure). About 9,600 words; §4 and §6 run over, left for the E12 review. Verify passes."
 +++
 
 ## Problem

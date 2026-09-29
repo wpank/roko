@@ -27,6 +27,7 @@ use roko_serve::runtime::{
 use crate::config::{Config, RepoRegistry};
 use crate::graph_execution::plan_runner::{PlanRunInterrupt, PlanRunInterruptHandle};
 use crate::prd;
+use crate::runner::tui_bridge::TuiBridge;
 use crate::runner::types::{GateCompletionKind, RunnerEvent};
 use crate::state_hub::SharedStateHub;
 use crate::status::collect_session_status;
@@ -220,7 +221,8 @@ impl CliRuntime for RokoCliRuntime {
     ) -> anyhow::Result<PlanGenerationResult> {
         let plans_root = workspace_paths::plans_dir(workdir);
         let before = snapshot_plan_artifacts(&plans_root);
-        let generated_root = prd::generate_plan_from_prd_isolated(slug, prd_path).await?;
+        let generated_root =
+            prd::generate_plan_from_prd_isolated(slug, prd_path, Some(self.spend_bridge())).await?;
         let after = snapshot_plan_artifacts(&generated_root);
 
         let mut plan_targets = changed_plan_targets(&generated_root, &before, &after);
@@ -701,6 +703,7 @@ impl CliRuntime for RokoCliRuntime {
             &tasks_path,
             feedback,
             &self.config.models,
+            Some(self.spend_bridge()),
         )
         .await?;
 
@@ -713,6 +716,13 @@ impl CliRuntime for RokoCliRuntime {
 }
 
 impl RokoCliRuntime {
+    /// Where plan generation and revision publish their agent calls' spend:
+    /// the hub the server streams, so `stats.cost_usd_total` and the event
+    /// stream count it as they count task spend.
+    fn spend_bridge(&self) -> TuiBridge {
+        TuiBridge::new(self.state_hub.sender())
+    }
+
     fn extension_chain_for_workdir(
         &self,
         workdir: &Path,
@@ -1721,6 +1731,70 @@ mod tests {
             "a plan-set directory must run in place; got a different path"
         );
     }
+
+    async fn listed_plan_ids(runtime: &RokoCliRuntime, workdir: &Path) -> Vec<String> {
+        runtime
+            .list_plans(workdir)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|plan| plan.id)
+            .collect()
+    }
+
+    /// `POST /api/plans` and `GET /api/plans` through the runtime: a new
+    /// workspace (only the empty `.roko/plans/` that `roko init` leaves) gets
+    /// its first plan in `plans/`; a workspace that keeps its plans in
+    /// `.roko/plans/` gets new ones there, listed beside the old ones.
+    #[tokio::test]
+    async fn created_plans_land_in_the_workspace_plans_dir_and_are_listed() {
+        let runtime = RokoCliRuntime::new(Config::default(), RepoRegistry::default());
+
+        let fresh = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(fresh.path().join(".roko/plans")).unwrap();
+        assert!(listed_plan_ids(&runtime, fresh.path()).await.is_empty());
+        let outcome = runtime
+            .create_plan(fresh.path(), "first-plan", "First plan")
+            .await
+            .unwrap();
+        assert!(
+            matches!(&outcome, CreatePlanOutcome::Created { path, .. } if path == "plans/first-plan"),
+            "{outcome:?}"
+        );
+        assert_eq!(
+            listed_plan_ids(&runtime, fresh.path()).await,
+            vec!["first-plan"]
+        );
+
+        let legacy = tempfile::tempdir().unwrap();
+        let old_plan = legacy.path().join(".roko/plans/old-plan");
+        std::fs::create_dir_all(&old_plan).unwrap();
+        std::fs::write(
+            old_plan.join("tasks.toml"),
+            "[meta]\nplan = \"old-plan\"\n\n[[task]]\nid = \"T1\"\ntitle = \"Old\"\n",
+        )
+        .unwrap();
+        let outcome = runtime
+            .create_plan(legacy.path(), "new-plan", "New plan")
+            .await
+            .unwrap();
+        assert!(
+            matches!(&outcome, CreatePlanOutcome::Created { path, .. } if path == ".roko/plans/new-plan"),
+            "{outcome:?}"
+        );
+        assert!(!legacy.path().join("plans").exists());
+        assert_eq!(
+            listed_plan_ids(&runtime, legacy.path()).await,
+            vec!["new-plan", "old-plan"]
+        );
+        assert!(
+            runtime
+                .load_plan_summary(legacy.path(), "old-plan")
+                .await
+                .unwrap()
+                .is_some()
+        );
+    }
 }
 
 #[cfg(test)]
@@ -1830,5 +1904,220 @@ hooks = ["on_init"]
             .unwrap_err();
         assert!(error.to_string().contains("init-fail"));
         assert!(error.to_string().contains("fixture init failure"));
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests_authoring_spend {
+    use std::os::unix::fs::PermissionsExt;
+
+    use roko_core::dashboard_snapshot::DashboardEvent;
+
+    use super::*;
+
+    /// What the fake provider charges per call. A power of two, so it survives
+    /// the provider usage's `f32` exactly.
+    const CALL_COST_USD: f64 = 0.0625;
+
+    const DEMO_PLAN: &str = r#"[meta]
+plan = "demo"
+total = 1
+done = 0
+status = "ready"
+max_parallel = 1
+
+[[task]]
+id = "T01"
+title = "Write the hello world program"
+description = "Create hello/main.rs, a Rust program that prints hello world."
+status = "ready"
+role = "implementer"
+tier = "focused"
+files = ["hello/main.rs"]
+depends_on = []
+
+[[task.verify]]
+phase = "structural"
+command = "test -f hello/main.rs"
+fail_msg = "hello/main.rs was not written"
+"#;
+
+    /// A workspace whose only model runs a fake Claude CLI: it answers every
+    /// prompt with [`DEMO_PLAN`] in a fenced toml block, reports
+    /// [`CALL_COST_USD`], and appends a line to `fake-claude.calls`.
+    fn fake_provider_workspace() -> tempfile::TempDir {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let text = format!("```toml\n{DEMO_PLAN}```\n");
+        let assistant = serde_json::json!({
+            "type": "assistant",
+            "message": {"content": [{"type": "text", "text": text}]},
+        });
+        let result = serde_json::json!({
+            "type": "result",
+            "subtype": "success",
+            "is_error": false,
+            "result": text,
+            "model": "claude-sonnet-4-6",
+            "total_cost_usd": CALL_COST_USD,
+            "usage": {"input_tokens": 1200, "output_tokens": 340},
+        });
+        let script = workspace.path().join("fake-claude");
+        let calls = workspace.path().join("fake-claude.calls");
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\ncat >/dev/null\necho call >> '{}'\ncat <<'JSON'\n{assistant}\n{result}\nJSON\n",
+                calls.display()
+            ),
+        )
+        .expect("write fake provider");
+        let mut permissions = std::fs::metadata(&script)
+            .expect("fake provider metadata")
+            .permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&script, permissions).expect("make fake provider executable");
+        std::fs::write(
+            workspace.path().join("roko.toml"),
+            format!(
+                r#"[agent]
+default_model = "fake-model"
+
+[providers.fake-cli]
+kind = "claude_cli"
+command = {script:?}
+
+[models.fake-model]
+provider = "fake-cli"
+slug = "claude-sonnet-4-6"
+context_window = 200000
+"#,
+                script = script.display().to_string()
+            ),
+        )
+        .expect("write roko.toml");
+        workspace
+    }
+
+    fn provider_calls(workspace: &Path) -> usize {
+        std::fs::read_to_string(workspace.join("fake-claude.calls"))
+            .unwrap_or_default()
+            .lines()
+            .count()
+    }
+
+    /// The `cost_usd` efficiency events on the hub, as `(plan_id, task_id, value)`.
+    fn live_costs(hub: &SharedStateHub) -> Vec<(String, String, f64)> {
+        hub.replay_from(0)
+            .into_iter()
+            .filter_map(|envelope| match envelope.payload {
+                DashboardEvent::EfficiencyEvent {
+                    plan_id,
+                    task_id,
+                    metric,
+                    value,
+                } if metric == "cost_usd" => Some((plan_id, task_id, value)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Rows of `.roko/learn/<file>` that name the plan and the pseudo task.
+    fn logged_costs(workspace: &Path, file: &str, task_id: &str) -> Vec<f64> {
+        let path = workspace.join(".roko").join("learn").join(file);
+        std::fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("read {}: {error}", path.display()))
+            .lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("JSONL row"))
+            .filter(|row| row["plan_id"] == "demo" && row["task_id"] == task_id)
+            .map(|row| row["cost_usd"].as_f64().expect("cost_usd"))
+            .collect()
+    }
+
+    fn runtime_on(hub: &SharedStateHub) -> RokoCliRuntime {
+        RokoCliRuntime::new_with_state_hub(Config::default(), RepoRegistry::default(), hub.clone())
+    }
+
+    /// gap-a6e2c3: `POST /api/plans/generate` runs generation through this
+    /// runtime. Its provider spend must reach the hub the server streams (so
+    /// `stats.cost_usd_total` counts it) and the cost logs, attributed to the
+    /// plan.
+    #[tokio::test]
+    async fn generation_spend_reaches_the_server_hub_and_cost_logs() {
+        let workspace = fake_provider_workspace();
+        let prd_dir = workspace.path().join(".roko").join("prd").join("published");
+        std::fs::create_dir_all(&prd_dir).expect("create PRD dir");
+        let prd_path = prd_dir.join("demo.md");
+        std::fs::write(
+            &prd_path,
+            "---\nid: demo\ntitle: Demo\nstatus: published\n---\n\n# Demo\n\nPrint hello world.\n",
+        )
+        .expect("write PRD");
+        let hub = SharedStateHub::new_in_process();
+
+        let generated = runtime_on(&hub)
+            .generate_plan_from_prd(workspace.path(), "demo", &prd_path)
+            .await
+            .expect("generate plan");
+
+        assert!(
+            generated
+                .plan_targets
+                .iter()
+                .any(|target| target.join("tasks.toml").is_file()),
+            "no generated plan in {:?}",
+            generated.plan_targets
+        );
+        // Persisting the generation episode also starts a background
+        // distillation call on the same provider, so the fake may have run
+        // twice; that call is not recorded as plan spend.
+        assert!(provider_calls(workspace.path()) >= 1);
+        assert_eq!(
+            live_costs(&hub),
+            vec![("demo".to_string(), "generate".to_string(), CALL_COST_USD)]
+        );
+        let stats = hub.current_snapshot().stats;
+        assert_eq!(stats.cost_usd_total, CALL_COST_USD);
+        assert_eq!(stats.total_input_tokens, 1200);
+        assert_eq!(stats.total_output_tokens, 340);
+        for file in ["costs.jsonl", "efficiency.jsonl"] {
+            assert_eq!(
+                logged_costs(workspace.path(), file, "generate"),
+                vec![CALL_COST_USD],
+                "{file}"
+            );
+        }
+    }
+
+    /// gap-a6e2c3: `POST /api/plans/{id}/revise` runs the revision through this
+    /// runtime; its spend is counted the same way, under the `revise` task.
+    #[tokio::test]
+    async fn revision_spend_reaches_the_server_hub_and_cost_logs() {
+        let workspace = fake_provider_workspace();
+        let plan_dir = workspace.path().join("plans").join("demo");
+        std::fs::create_dir_all(&plan_dir).expect("create plan dir");
+        std::fs::write(plan_dir.join("tasks.toml"), DEMO_PLAN).expect("write tasks.toml");
+        std::fs::write(plan_dir.join("plan.md"), "# demo\n").expect("write plan.md");
+        let hub = SharedStateHub::new_in_process();
+
+        let revision = runtime_on(&hub)
+            .revise_plan(workspace.path(), "demo", "Keep the plan as it is.")
+            .await
+            .expect("revise plan")
+            .expect("plan exists");
+
+        assert!(revision.revised, "{:?}", revision.validation);
+        assert_eq!(provider_calls(workspace.path()), 1);
+        assert_eq!(
+            live_costs(&hub),
+            vec![("demo".to_string(), "revise".to_string(), CALL_COST_USD)]
+        );
+        assert_eq!(hub.current_snapshot().stats.cost_usd_total, CALL_COST_USD);
+        for file in ["costs.jsonl", "efficiency.jsonl"] {
+            assert_eq!(
+                logged_costs(workspace.path(), file, "revise"),
+                vec![CALL_COST_USD],
+                "{file}"
+            );
+        }
     }
 }

@@ -2,14 +2,16 @@
 id = "bug-7b37c4"
 kind = "bug"
 title = "The field rollup counts tasks with operator interventions as automatic recoveries"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p1"
 goal = "proof"
 size = "S"
 subsystem = ["cybernetic-harness/field-tools"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-29
+last_verified_rev = "1f4481133"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e13"
 discovered_from = "tmp/cybernetic-harness/workstreams/assessment/W12-evidence-from-dev-process.md (F3, A8)"
 anchors = ["tmp/cybernetic-harness/tools/field_rollup.py::load_summaries", "tmp/cybernetic-harness/tools/field_rollup.py::main", "tmp/cybernetic-harness/tools/field_note.py::cmd_add", "tmp/cybernetic-harness/tools/test_field_rollup.py"]
@@ -22,6 +24,11 @@ command = "grep -qw 'def test_operator_noted_task_is_not_an_auto_recovery' tmp/c
 
 [[verify]]
 command = "grep -q 'add_argument(\"--item\"' tmp/cybernetic-harness/tools/field_note.py"
+
+[closed]
+at = 2026-09-29
+by = "coordinator (session 7622b882)"
+evidence = "field_rollup.py (tmp/cybernetic-harness/tools, untracked) no longer counts a retried pass as an auto recovery when an intervention note on that task joins the same run; notes join one run at most; days sorted; --help writes nothing; field_note.py gains --item and --executor. test_field_rollup.py: 7 tests pass, all 7 fail on the old code. ROLLUP.md regenerated 14:37: autonomy index 2/41 (was 3/41). sha256: field_rollup.py 7643e80963c6, field_note.py 8a3572eb84d4, test_field_rollup.py e61a8d622d54. Watcher restarted to load it."
 +++
 
 ## Problem

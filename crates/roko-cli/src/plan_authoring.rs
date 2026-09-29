@@ -12,16 +12,21 @@
 //! - [`build_revision_prompt`] — build a prompt for revising an existing plan.
 //! - [`apply_revision_output`] — extract, repair, validate, and write the revised plan.
 //! - [`revise_plan_source`] — run the planning agent and apply the revision.
+//! - [`AuthoringSpend`] — record what the agent calls of a generation or revision cost.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use anyhow::{Context as _, Result};
 use indexmap::IndexMap;
 use roko_core::config::schema::ModelProfile;
+use roko_learn::costs_db::CostRecord;
+use roko_learn::efficiency::AgentEfficiencyEvent;
 
-use crate::agent_exec::{AgentExecOpts, run_agent_capture_silent};
+use crate::agent_exec::{AgentCapture, AgentExecOpts, run_agent_capture_silent_with_usage};
 use crate::plan_policy::{PlanExecutionPolicy, validate_plan_context};
 use crate::plan_validate::{Severity, validate_plans_dir_with_workdir};
+use crate::runner::tui_bridge::TuiBridge;
 use crate::task_parser::{TasksFile, repair_toml};
 
 // ─── Public types ─────────────────────────────────────────────────────────────
@@ -351,12 +356,16 @@ pub fn apply_revision_output(
 /// revision prompt, then calls [`apply_revision_output`].  On a validation
 /// rejection the agent is retried once with the diagnostics appended to the
 /// feedback before the final outcome is returned.
+///
+/// Every agent call's spend is recorded against the plan through
+/// [`AuthoringSpend::revision`], and published on `live` when given.
 pub async fn revise_plan_source(
     workdir: &Path,
     plan_id: &str,
     tasks_path: &Path,
     feedback: &str,
     models: &IndexMap<String, ModelProfile>,
+    live: Option<TuiBridge>,
 ) -> Result<RevisionOutcome> {
     // Read current text.
     let current_toml = std::fs::read_to_string(tasks_path)
@@ -364,14 +373,16 @@ pub async fn revise_plan_source(
 
     let resolved = crate::load_resolved_config(workdir)?;
     let system_prompt = crate::plan_generate::build_generator_system_prompt(workdir);
+    let spend = AuthoringSpend::revision(workdir, plan_id, live);
 
     let run_agent = |prompt: String| {
         let env_vars = resolved.config.agent.env.clone();
         let model = resolved.config.agent.model.clone();
         let effort = resolved.config.agent.effort.clone();
         let system = system_prompt.clone();
+        let spend = &spend;
         async move {
-            run_agent_capture_silent(AgentExecOpts {
+            let call = run_agent_capture_silent_with_usage(AgentExecOpts {
                 prompt: &prompt,
                 workdir,
                 model: model.as_deref(),
@@ -382,13 +393,15 @@ pub async fn revise_plan_source(
                 role: Some("strategist"),
                 allowed_tools: Some("Read,Grep,Glob"),
             })
-            .await
+            .await?;
+            spend.record(&call).await;
+            Ok::<_, anyhow::Error>(call.output)
         }
     };
 
     // First attempt.
     let first_prompt = build_revision_prompt(plan_id, &current_toml, feedback);
-    let (_exit_code, output) = run_agent(first_prompt).await?;
+    let output = run_agent(first_prompt).await?;
 
     let outcome = apply_revision_output(workdir, plan_id, tasks_path, &output, models)?;
     if outcome.written {
@@ -408,9 +421,175 @@ pub async fn revise_plan_source(
          Please fix these issues in the revised plan."
     );
     let retry_prompt = build_revision_prompt(plan_id, &current_toml, &retry_feedback);
-    let (_exit_code2, output2) = run_agent(retry_prompt).await?;
+    let output2 = run_agent(retry_prompt).await?;
 
     apply_revision_output(workdir, plan_id, tasks_path, &output2, models)
+}
+
+// ─── Spend accounting ─────────────────────────────────────────────────────────
+
+/// Pseudo task id that plan generation spend is attributed to.
+pub const GENERATION_SPEND_TASK_ID: &str = "generate";
+
+/// Pseudo task id that plan revision spend is attributed to.
+pub const REVISION_SPEND_TASK_ID: &str = "revise";
+
+/// Role that plan generation and revision run their agents as.
+const AUTHORING_ROLE: &str = "strategist";
+
+/// Records the provider spend of one plan generation or revision, one agent
+/// call at a time.
+///
+/// A task dispatch records its spend three ways: a cost record in
+/// `.roko/learn/costs.jsonl`, an efficiency row in
+/// `.roko/learn/efficiency.jsonl` (the dashboard snapshot seeds
+/// `stats.cost_usd_total` from it), and live `efficiency_event`s on the
+/// StateHub (the snapshot adds them to that total). Generation and revision
+/// run their agents outside the Graph engine, so they record through this
+/// instead: the same three records, attributed to the plan under a pseudo task
+/// id ([`GENERATION_SPEND_TASK_ID`] or [`REVISION_SPEND_TASK_ID`]). Each call
+/// is recorded as it returns, so a retry or a failed operation is counted too.
+pub struct AuthoringSpend {
+    learn_dir: PathBuf,
+    plan_id: String,
+    task_id: &'static str,
+    live: Option<TuiBridge>,
+    calls: AtomicU32,
+}
+
+impl AuthoringSpend {
+    /// Spend of generating the plan `plan_id` in `workdir`.
+    #[must_use]
+    pub fn generation(workdir: &Path, plan_id: &str, live: Option<TuiBridge>) -> Self {
+        Self::new(workdir, plan_id, GENERATION_SPEND_TASK_ID, live)
+    }
+
+    /// Spend of revising the plan `plan_id` in `workdir`.
+    #[must_use]
+    pub fn revision(workdir: &Path, plan_id: &str, live: Option<TuiBridge>) -> Self {
+        Self::new(workdir, plan_id, REVISION_SPEND_TASK_ID, live)
+    }
+
+    fn new(workdir: &Path, plan_id: &str, task_id: &'static str, live: Option<TuiBridge>) -> Self {
+        Self {
+            learn_dir: roko_fs::RokoLayout::for_project(workdir).learn_dir(),
+            plan_id: plan_id.to_string(),
+            task_id,
+            live,
+            calls: AtomicU32::new(0),
+        }
+    }
+
+    /// Record one agent call. Best-effort: a failed write is logged and never
+    /// fails the operation.
+    pub async fn record(&self, call: &AgentCapture) {
+        let attempt = self.calls.fetch_add(1, Ordering::Relaxed) + 1;
+        let usage = call.usage;
+        let cost_usd = f64::from(usage.cost_usd);
+        let input_tokens = u64::from(usage.input_tokens);
+        let output_tokens = u64::from(usage.output_tokens);
+        let cache_read_tokens = u64::from(usage.cache_read_tokens);
+        let cache_write_tokens = u64::from(usage.cache_create_tokens);
+        let succeeded = call.exit_code == 0;
+        let timestamp = chrono::Utc::now().to_rfc3339();
+
+        let cost_record = CostRecord {
+            timestamp: timestamp.clone(),
+            model: call.model.clone(),
+            provider: call.provider.clone(),
+            role: AUTHORING_ROLE.to_string(),
+            plan_id: self.plan_id.clone(),
+            task_id: self.task_id.to_string(),
+            complexity_band: "standard".to_string(),
+            input_tokens,
+            output_tokens,
+            cached_tokens: cache_read_tokens,
+            cost_usd,
+            duration_ms: call.duration_ms,
+            success: succeeded,
+            session_id: String::new(),
+        };
+        self.append("costs.jsonl", &cost_record).await;
+
+        let efficiency_event = AgentEfficiencyEvent {
+            agent_id: format!("{}/{}", self.plan_id, self.task_id),
+            role: AUTHORING_ROLE.to_string(),
+            backend: call.provider.clone(),
+            model: call.model.clone(),
+            plan_id: self.plan_id.clone(),
+            task_id: self.task_id.to_string(),
+            attempt_id: format!("{}/{}/a{attempt}", self.plan_id, self.task_id),
+            input_tokens,
+            output_tokens,
+            reasoning_tokens: u64::from(usage.reasoning_tokens),
+            cache_read_tokens,
+            cache_write_tokens,
+            cost_usd,
+            cost_usd_without_cache: cost_usd,
+            prompt_sections: Vec::new(),
+            total_prompt_tokens: input_tokens,
+            system_prompt_tokens: 0,
+            tools_available: 0,
+            tools_used: 0,
+            tool_calls: Vec::new(),
+            wall_time_ms: call.duration_ms,
+            duration_ms: call.duration_ms,
+            time_to_first_token_ms: 0,
+            was_warm_start: false,
+            iteration: attempt,
+            turn_number: 0,
+            is_final_turn: true,
+            gate_passed: None,
+            outcome: if succeeded { "success" } else { "failure" }.to_string(),
+            gate_errors: Vec::new(),
+            model_used: call.model.clone(),
+            frequency: roko_core::OperatingFrequency::Theta,
+            strategy_attempted: String::new(),
+            timestamp,
+        };
+        self.append("efficiency.jsonl", &efficiency_event).await;
+
+        if let Some(live) = &self.live {
+            live.token_usage(
+                &self.plan_id,
+                self.task_id,
+                input_tokens,
+                output_tokens,
+                cache_read_tokens,
+                cache_write_tokens,
+            );
+            live.efficiency_event(&self.plan_id, self.task_id, "cost_usd", cost_usd);
+        }
+    }
+
+    async fn append(&self, file_name: &str, record: &impl serde::Serialize) {
+        let path = self.learn_dir.join(file_name);
+        let line = match serde_json::to_string(record) {
+            Ok(line) => line,
+            Err(error) => {
+                tracing::warn!(path = %path.display(), %error, "authoring spend serialization failed");
+                return;
+            }
+        };
+        let max_mb = roko_core::config::ResourcesConfig::default().log_rotation_max_mb;
+        let written = tokio::task::spawn_blocking({
+            let path = path.clone();
+            move || roko_fs::log_rotation::append_jsonl_line_sync(&path, line.as_bytes(), max_mb)
+        })
+        .await;
+        if let Err(error) = written
+            .map_err(std::io::Error::other)
+            .and_then(|result| result.map(|_| ()))
+        {
+            tracing::warn!(
+                path = %path.display(),
+                plan_id = %self.plan_id,
+                task_id = self.task_id,
+                %error,
+                "authoring spend write failed (best-effort)"
+            );
+        }
+    }
 }
 
 // ─── Unit tests ───────────────────────────────────────────────────────────────
@@ -788,5 +967,130 @@ command = "echo ok"
         // File must be unchanged.
         let content = std::fs::read_to_string(&tasks_path).unwrap();
         assert_eq!(content, "# original\n");
+    }
+
+    fn read_jsonl(path: &Path) -> Vec<serde_json::Value> {
+        std::fs::read_to_string(path)
+            .unwrap_or_else(|error| panic!("read {}: {error}", path.display()))
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("JSONL row"))
+            .collect()
+    }
+
+    /// Each agent call of a generation lands where a task dispatch's spend
+    /// does: a cost record, an efficiency row, and live efficiency events that
+    /// the dashboard snapshot adds to its cost total. A failed call counts too.
+    #[tokio::test]
+    async fn authoring_spend_records_every_call_against_the_plan() {
+        use roko_core::dashboard_snapshot::DashboardEvent;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let hub = crate::state_hub::SharedStateHub::new_in_process();
+        let spend =
+            AuthoringSpend::generation(tmp.path(), "demo", Some(TuiBridge::new(hub.sender())));
+        let call = |exit_code: i32, cost_usd: f32| AgentCapture {
+            exit_code,
+            output: String::new(),
+            usage: roko_core::Usage {
+                input_tokens: 1_200,
+                output_tokens: 340,
+                cache_read_tokens: 50,
+                cache_create_tokens: 10,
+                reasoning_tokens: 0,
+                cost_usd,
+                wall_ms: 0,
+            },
+            model: "claude-sonnet-4-6".to_string(),
+            provider: "claude_cli".to_string(),
+            duration_ms: 20_500,
+        };
+
+        spend.record(&call(1, 0.25)).await;
+        spend.record(&call(0, 0.5)).await;
+
+        let snapshot = hub.current_snapshot();
+        assert_eq!(snapshot.stats.cost_usd_total, 0.75);
+        assert_eq!(snapshot.stats.total_input_tokens, 2_400);
+        assert_eq!(snapshot.stats.total_output_tokens, 680);
+        let live_costs: Vec<(String, String, f64)> = hub
+            .replay_from(0)
+            .into_iter()
+            .filter_map(|envelope| match envelope.payload {
+                DashboardEvent::EfficiencyEvent {
+                    plan_id,
+                    task_id,
+                    metric,
+                    value,
+                } if metric == "cost_usd" => Some((plan_id, task_id, value)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            live_costs,
+            vec![
+                ("demo".to_string(), "generate".to_string(), 0.25),
+                ("demo".to_string(), "generate".to_string(), 0.5),
+            ]
+        );
+
+        let learn_dir = tmp.path().join(".roko").join("learn");
+        let costs = read_jsonl(&learn_dir.join("costs.jsonl"));
+        assert_eq!(costs.len(), 2);
+        for (record, (cost, success)) in costs.iter().zip([(0.25, false), (0.5, true)]) {
+            assert_eq!(record["plan_id"], "demo");
+            assert_eq!(record["task_id"], "generate");
+            assert_eq!(record["role"], "strategist");
+            assert_eq!(record["model"], "claude-sonnet-4-6");
+            assert_eq!(record["provider"], "claude_cli");
+            assert_eq!(record["input_tokens"], 1_200);
+            assert_eq!(record["output_tokens"], 340);
+            assert_eq!(record["cached_tokens"], 50);
+            assert_eq!(record["cost_usd"], cost);
+            assert_eq!(record["duration_ms"], 20_500);
+            assert_eq!(record["success"], success);
+        }
+
+        let efficiency = read_jsonl(&learn_dir.join("efficiency.jsonl"));
+        assert_eq!(efficiency.len(), 2);
+        for (row, (cost, attempt_id)) in efficiency
+            .iter()
+            .zip([(0.25, "demo/generate/a1"), (0.5, "demo/generate/a2")])
+        {
+            assert_eq!(row["plan_id"], "demo");
+            assert_eq!(row["task_id"], "generate");
+            assert_eq!(row["attempt_id"], attempt_id);
+            assert_eq!(row["cost_usd"], cost);
+            assert_eq!(row["cache_write_tokens"], 10);
+        }
+    }
+
+    /// Revision spend is attributed to the plan under its own pseudo task, and
+    /// without a live hub it still reaches the cost logs.
+    #[tokio::test]
+    async fn revision_spend_without_a_hub_reaches_the_cost_logs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let spend = AuthoringSpend::revision(tmp.path(), "demo", None);
+        spend
+            .record(&AgentCapture {
+                exit_code: 0,
+                output: String::new(),
+                usage: roko_core::Usage {
+                    cost_usd: 0.125,
+                    ..roko_core::Usage::zero()
+                },
+                model: "claude-sonnet-4-6".to_string(),
+                provider: "claude_cli".to_string(),
+                duration_ms: 1,
+            })
+            .await;
+
+        let learn_dir = tmp.path().join(".roko").join("learn");
+        for file in ["costs.jsonl", "efficiency.jsonl"] {
+            let rows = read_jsonl(&learn_dir.join(file));
+            assert_eq!(rows.len(), 1, "{file}");
+            assert_eq!(rows[0]["plan_id"], "demo", "{file}");
+            assert_eq!(rows[0]["task_id"], REVISION_SPEND_TASK_ID, "{file}");
+            assert_eq!(rows[0]["cost_usd"], 0.125, "{file}");
+        }
     }
 }

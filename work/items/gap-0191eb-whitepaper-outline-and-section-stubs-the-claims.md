@@ -2,14 +2,16 @@
 id = "gap-0191eb"
 kind = "gap"
 title = "Whitepaper outline and section stubs: the claims each section makes and their sources"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p1"
 goal = "whitepaper"
 size = "S"
 subsystem = ["docs/whitepaper"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-29
+last_verified_rev = "5eac79f0d"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e1"
 discovered_from = "tmp/cybernetic-harness/workstreams/PLAN.md (§3 E1, proposed outline)"
 anchors = ["docs/whitepaper/README.md", "docs/whitepaper"]
@@ -19,6 +21,11 @@ links = { depends_on = [], blocks = [], related = ["dec-2cd76a", "gap-af0b57"], 
 
 [[verify]]
 command = "test -f docs/whitepaper/README.md && grep -q '^## Outline' docs/whitepaper/README.md && grep -q '^## Conventions' docs/whitepaper/README.md && test -f docs/whitepaper/references.bib && test -f docs/whitepaper/appendix-status-matrix.md && test $(ls docs/whitepaper/[01][0-9]-*.md | wc -l) -ge 11"
+
+[closed]
+at = 2026-09-29
+by = "coordinator (session 7622b882)"
+evidence = "docs/whitepaper/README.md: the title block from dec-2cd76a, the outline with budgets (6,500 words), owners and dependencies, 96 claims across 11 section tables with sources, 13 canonical numbers with their windows, conventions in the forms paperlint parses, and references.bib (the ten tldr/04 keys, refcheck-verified). Eleven section stubs, 00 to 10. Merged in 1f4481133. The appendix it checks for arrived with gap-35a614 (5eac79f0d), and its verify passes at HEAD."
 +++
 
 ## Problem
@@ -68,9 +75,9 @@ Checked at `41c7ffbd6`: `docs/whitepaper/` does not exist.
 
 ## Done when
 
-- [ ] README has the outline and the conventions.
+- [x] README has the outline and the conventions.
 - [ ] The 11 stubs and the appendix stub exist, each listing its claims and sources.
-- [ ] `references.bib` holds the ten keys.
+- [x] `references.bib` holds the ten keys.
 - [ ] The `[[verify]]` command passes.
 
 ## Notes
@@ -81,3 +88,8 @@ Checked at `41c7ffbd6`: `docs/whitepaper/` does not exist.
 - **The verify checks structure only,** so it stays true after the sections are written.
 - Lane `paper`; no hot files.
 - **Decided 2026-09-29 (Will):** the title, audience, length and citation rule are in dec-2cd76a's closing evidence. Put them in `docs/whitepaper/README.md`.
+- **Done on `work/gap-0191eb` (2026-09-29):** the README, the 11 section stubs and the seeded `references.bib`.
+  - The appendix stub is left to gap-35a614, which owns the file (the coordinator's instruction). Until gap-35a614
+    lands, the verify fails on `test -f docs/whitepaper/appendix-status-matrix.md` alone.
+  - The budgets in the plan above add up to 6,600, not 6,450. The README sets §1 to 550 and §3 to 700, so the total
+    is dec-2cd76a's 6,500.

@@ -1,0 +1,37 @@
+{
+  "schema_version": "vb.metric_record/1",
+  "metric": "vs_rate",
+  "value": 0.0,
+  "ci": [
+    0.0,
+    0.7935
+  ],
+  "ci_method": "wilson",
+  "n": 1,
+  "estimator": "mean of vs.label; an unknown label counts as 0",
+  "experiment_id": "LOG1",
+  "arms": [
+    "cheap_direct"
+  ],
+  "run_ids": [
+    "vb-20261012-a41"
+  ],
+  "seeds": [
+    2
+  ],
+  "commits": [
+    "725f21e05"
+  ],
+  "config_hashes": [
+    "b3:…"
+  ],
+  "analysis_commit": "…",
+  "computed_at": "…",
+  "preregistered": true,
+  "prereg_id": "s09-v1-3fa9c2d1",
+  "blinded": false,
+  "label_source": "vs_census",
+  "cost_basis": null,
+  "price_snapshot_id": "prices-2026-09-28",
+  "ladder": 3
+}

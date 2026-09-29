@@ -4,11 +4,15 @@ use std::env;
 use std::path::Path;
 use std::process::Command;
 
+const DEMO_NOT_BUILT: &str = "demo/demo-app/dist/index.html is missing, so `/demo` serves the \
+                              fallback page; run `npm ci && npm run build` in demo/demo-app first";
+
 fn main() {
     println!("cargo:rustc-check-cfg=cfg(roko_frontend_fallback)");
     println!("cargo:rustc-check-cfg=cfg(roko_portal_fallback)");
     println!("cargo:rerun-if-env-changed=SKIP_FRONTEND_BUILD");
     println!("cargo:rerun-if-env-changed=ROKO_BUILD_FRONTEND");
+    println!("cargo:rerun-if-env-changed=ROKO_REQUIRE_EMBEDDED_UI");
     println!("cargo:rerun-if-changed=../../demo/demo-app/src");
     println!("cargo:rerun-if-changed=../../demo/demo-app/index.html");
     println!("cargo:rerun-if-changed=../../demo/demo-app/package.json");
@@ -19,8 +23,14 @@ fn main() {
     println!("cargo:rerun-if-changed=assets/frontend-fallback/index.html");
 
     let Ok(manifest_dir) = env::var("CARGO_MANIFEST_DIR") else {
-        println!("cargo:rustc-cfg=roko_frontend_fallback");
-        println!("cargo:rustc-cfg=roko_portal_fallback");
+        embed_fallback(
+            "roko_portal_fallback",
+            "CARGO_MANIFEST_DIR is not set, so `/` serves the fallback page",
+        );
+        embed_fallback(
+            "roko_frontend_fallback",
+            "CARGO_MANIFEST_DIR is not set, so `/demo` serves the fallback page",
+        );
         return;
     };
 
@@ -29,7 +39,11 @@ fn main() {
     // `npm run build:export` in `apps/portal` outside of Cargo.
     let portal_out = Path::new(&manifest_dir).join("../../apps/portal/out");
     if !portal_out.join("index.html").is_file() {
-        println!("cargo:rustc-cfg=roko_portal_fallback");
+        embed_fallback(
+            "roko_portal_fallback",
+            "apps/portal/out/index.html is missing, so `/` serves the fallback page; \
+             run `npm ci && npm run build:export` in apps/portal first",
+        );
     }
 
     // ── Demo app embed ────────────────────────────────────────────────────────
@@ -38,7 +52,10 @@ fn main() {
     // The real dist/ is intentionally ignored. Use a tracked placeholder when
     // the frontend source is unavailable so rust-embed still has a directory.
     if !demo_app.join("package.json").exists() {
-        println!("cargo:rustc-cfg=roko_frontend_fallback");
+        embed_fallback(
+            "roko_frontend_fallback",
+            "demo/demo-app/package.json is missing, so `/demo` serves the fallback page",
+        );
         return;
     }
 
@@ -53,15 +70,10 @@ fn main() {
     // frontend toolchain. Production release builds retain the embedded SPA,
     // and developers can explicitly request the same work with
     // ROKO_BUILD_FRONTEND=1.
-    let force_build = env::var("ROKO_BUILD_FRONTEND").ok().is_some_and(|value| {
-        matches!(
-            value.trim().to_ascii_lowercase().as_str(),
-            "1" | "true" | "yes" | "on"
-        )
-    });
+    let force_build = env_flag("ROKO_BUILD_FRONTEND");
     let release_build = env::var("PROFILE").is_ok_and(|profile| profile == "release");
     if env::var("SKIP_FRONTEND_BUILD").is_ok() || (!release_build && !force_build) {
-        println!("cargo:rustc-cfg=roko_frontend_fallback");
+        embed_fallback("roko_frontend_fallback", DEMO_NOT_BUILT);
         return;
     }
 
@@ -75,18 +87,16 @@ fn main() {
         let installed = match status {
             Ok(status) if status.success() => true,
             Ok(status) => {
-                println!("cargo:warning=npm install exited with {status}; embedding fallback UI");
+                println!("cargo:warning=npm install exited with {status}");
                 false
             }
             Err(error) => {
-                println!(
-                    "cargo:warning=npm install failed (is Node.js installed?): {error}; embedding fallback UI"
-                );
+                println!("cargo:warning=npm install failed (is Node.js installed?): {error}");
                 false
             }
         };
         if !installed {
-            println!("cargo:rustc-cfg=roko_frontend_fallback");
+            embed_fallback("roko_frontend_fallback", DEMO_NOT_BUILT);
             return;
         }
     }
@@ -101,11 +111,37 @@ fn main() {
         Ok(s) if s.success() => {}
         Ok(s) => {
             println!("cargo:warning=npm run build exited with {s}");
-            println!("cargo:rustc-cfg=roko_frontend_fallback");
+            embed_fallback("roko_frontend_fallback", DEMO_NOT_BUILT);
         }
         Err(e) => {
             println!("cargo:warning=npm run build failed: {e}");
-            println!("cargo:rustc-cfg=roko_frontend_fallback");
+            embed_fallback("roko_frontend_fallback", DEMO_NOT_BUILT);
         }
     }
+}
+
+/// Embed `assets/frontend-fallback/` in place of a UI that was not built.
+///
+/// Release builds warn. With `ROKO_REQUIRE_EMBEDDED_UI=1`, which the release
+/// workflow and the Dockerfiles set, the build fails instead, so a packaged
+/// binary never serves the fallback page.
+fn embed_fallback(cfg: &str, why: &str) {
+    assert!(
+        !env_flag("ROKO_REQUIRE_EMBEDDED_UI"),
+        "ROKO_REQUIRE_EMBEDDED_UI is set but {why}"
+    );
+    if env::var("PROFILE").is_ok_and(|profile| profile == "release") {
+        println!("cargo:warning={why}");
+    }
+    println!("cargo:rustc-cfg={cfg}");
+}
+
+/// True when the variable is set to 1, true, yes or on (any case).
+fn env_flag(name: &str) -> bool {
+    env::var(name).is_ok_and(|value| {
+        matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        )
+    })
 }

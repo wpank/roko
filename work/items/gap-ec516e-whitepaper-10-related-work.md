@@ -2,14 +2,16 @@
 id = "gap-ec516e"
 kind = "gap"
 title = "Whitepaper §10 Related work"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p2"
 goal = "whitepaper"
 size = "S"
 subsystem = ["docs/whitepaper"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-29
+last_verified_rev = "dc371b1ae"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e1"
 discovered_from = "tmp/cybernetic-harness/paper/sections/03a-related-work.md and 03b-related-work.md (§3.1-3.7)"
 anchors = ["docs/whitepaper/10-related-work.md"]
@@ -19,6 +21,11 @@ links = { depends_on = ["gap-0191eb", "gap-af0b57"], blocks = [], related = ["ga
 
 [[verify]]
 command = "test -f docs/whitepaper/10-related-work.md && test $(grep -oF '[@' docs/whitepaper/10-related-work.md | wc -l) -ge 10 && test -f tools/paperlint.py && python3 tools/paperlint.py --strict docs/whitepaper/10-related-work.md"
+
+[closed]
+at = 2026-09-29
+by = "coordinator (session 7622b882)"
+evidence = "Whitepaper §10 related work merged in 360becba3 (27 citations; bib deduped and repaired in 86e7f6ea1, 260a54f40, 3796db34e; pandoc citeproc clean); verify passes."
 +++
 
 ## Problem
@@ -72,3 +79,13 @@ Checked on 2026-09-29.
 - **`references.bib` is shared with §2** (gap-370d3c). Add keys in a separate small commit.
 - **Vendor claims from C3** carry their fetch date and cite the vendor pages.
 - Lane `paper`; no hot files.
+- **Written on `work/gap-ec516e` (2026-09-29):** the section in `e3df0fb42`, its keys in `543b2fc2b`.
+  - 550 words against the budget of 500 (1.10×), with 27 `[@` citations over 32 keys; 29 keys are new in
+    `references.bib`.
+  - The static part of the verify passes. `tools/paperlint.py` has not merged (gap-af0b57), so the full verify can't
+    run on this branch; the in-progress copy in gap-af0b57's worktree reports the file clean under `--strict`. Close
+    the item once paperlint merges and the verify passes.
+  - §1, §2 and §5 may add some of the same keys: `chen2024frugalgpt` and `ong2025routellm` (IN2), `wang2026agent` and
+    `ashby1960design` (DP9), `wang2026compound` and `wang2026rethinking` (CM9). Keep one copy of each on merge.
+  - The four vendor pages were fetched on 2026-09-29. refcheck can't check web pages, so each entry's comment quotes
+    the page instead.

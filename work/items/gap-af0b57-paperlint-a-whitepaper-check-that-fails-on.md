@@ -2,14 +2,16 @@
 id = "gap-af0b57"
 kind = "gap"
 title = "paperlint: a whitepaper check that fails on unsupported claims"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p1"
 goal = "whitepaper"
 size = "M"
 subsystem = ["tools/paperlint"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-29
+last_verified_rev = "764bb5f2c"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e1"
 discovered_from = "tmp/cybernetic-harness/workstreams/assessment/W9-paper-workstream.md (F3; PW01)"
 anchors = ["tools/paperlint.py", "tools/test_paperlint.py"]
@@ -22,6 +24,12 @@ command = "grep -qw 'def test_strict_fails_on_each_rule' tools/test_paperlint.py
 
 [[verify]]
 command = "grep -qw 'def test_strict_passes_clean_section' tools/test_paperlint.py && python3 tools/test_paperlint.py -k test_strict_passes_clean_section"
+
+[closed]
+at = 2026-09-29
+commit = "764bb5f2c"
+by = "wk-paperlint"
+evidence = "764bb5f2c: tools/paperlint.py implements [--strict] [--budget F] [--check-identifiers] [--require-status S] [--report] PATH... with the item's eight --strict rules (header and budget, markers with TOML [[task.*]] skipped, citations, identifiers and paths at HEAD, status-tag commits, sourced numbers, banned words, links via check_markdown_links.py). tools/test_paperlint.py (21 tests on a throwaway repo with a crates/ tree) fails each rule on its own fixture (24 subtests; disabling any rule fails its cases) and passes a clean section. Both [[verify]] commands pass. Also run: the gap-0191eb stubs at e11da1455 fail --strict and --report exits 0; the six research-paper --budget 1.2 --check-identifiers verifies and spec-f8d196's --report run in about 1.4 s."
 +++
 
 ## Problem
@@ -72,9 +80,9 @@ fixture repository, not the real tree.
 
 ## Done when
 
-- [ ] Each rule has a fixture that fails `--strict`, and the clean fixture passes.
-- [ ] A stub from gap-0191eb fails `--strict`, and `--report` exits 0.
-- [ ] Both `[[verify]]` commands pass.
+- [x] Each rule has a fixture that fails `--strict`, and the clean fixture passes.
+- [x] A stub from gap-0191eb fails `--strict`, and `--report` exits 0.
+- [x] Both `[[verify]]` commands pass.
 
 ## Notes
 
@@ -83,3 +91,8 @@ fixture repository, not the real tree.
   then be refreshed.
 - The research draft can adopt the tool later. W9 PW01's claims aggregator is out of scope.
 - **Decided 2026-09-29:** the tests use the standard library's `unittest`, and `tools/test_paperlint.py` ends with `unittest.main()`. pytest is not installed for the system `python3`.
+- **Decided 2026-09-29 (coordinator), where the draft differed from `docs/whitepaper/README.md`, the README won:** the
+  word count leaves out the status line, code blocks, footnote definitions, HTML comments and every section under a
+  "Claims ledger" heading; a use is covered by `[[AS-BUILT: …]]`, or by "(designed)" or a `MISSING@<sha>` tag in its
+  sentence or table row. A footnote naming an existing `evidence/` file is a source, and a code span of 7–11 or 40 hex
+  digits is a commit that must be in HEAD's history.

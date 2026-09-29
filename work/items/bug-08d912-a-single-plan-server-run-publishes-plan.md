@@ -2,7 +2,7 @@
 id = "bug-08d912"
 kind = "bug"
 title = "A single-plan server run publishes plan_completed twice, the second after run_completed"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "visibility"
@@ -11,7 +11,7 @@ subsystem = ["roko-serve/plans"]
 created = 2026-09-29
 updated = 2026-09-29
 last_verified = 2026-09-29
-last_verified_rev = "f99e45dba"
+last_verified_rev = "353ad7768"
 source = "plan:portal-programme/09-acceptance#T04"
 discovered_from = "plan:portal-programme/09-acceptance#T04"
 anchors = ["crates/roko-serve/src/routes/plans.rs:552"]
@@ -19,6 +19,11 @@ links = { depends_on = [], blocks = [], related = ["gap-8a1fb3"], supersedes = [
 
 [[verify]]
 command = "cargo build -p roko-cli && bash -c 'source plans/portal-programme/_harness/lib.sh && require_binary && make_workspace && start_server && start_capture && [ \"$(api POST /api/plans/live-b/execute)\" = 202 ] && wait_idle live-b 120 && sleep 3 && stop_capture && sse count plan_completed plan_id=live-b --eq 1'"
+
+[closed]
+at = 2026-09-29
+commit = "353ad7768"
+evidence = "routes/plans.rs start_plan_run notes the hub sequence before spawning the run and publishes PlanCompleted after it only when the hub carries none for the plan since then. The [[verify]] (fake-agent harness: execute live-b, sse count plan_completed plan_id=live-b --eq 1) passes with target/debug/roko built at 353ad7768's code; the same check against a pre-fix binary reports 2 matches. Unit tests single_plan_run_publishes_plan_completed_once and run_failing_before_the_plan_starts_completes_it_once (roko-serve lib, 932/932 pass)."
 +++
 
 ## Problem

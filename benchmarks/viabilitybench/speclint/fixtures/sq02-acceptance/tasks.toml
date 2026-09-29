@@ -1,0 +1,78 @@
+# speclint golden fixture: SQ02. T2 and T4 each have one criterion with no comparator, value or observable verb; T5's contract gate is machine-checked.
+[meta]
+plan = "sq02-acceptance"
+total = 5
+
+[[task]]
+id = "T1"
+title = "Retry limit"
+description = """Add the retry limit to `parse_config`."""
+role = "implementer"
+files = ["src/config.rs"]
+max_loc = 40
+acceptance = ["AC1: `parse_config` returns 3 when `retry_limit` is missing", "AC2: a negative value raises `ConfigError::InvalidRetryLimit`"]
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p fixture --lib config"
+
+[[task]]
+id = "T2"
+title = "Retry limit"
+description = """Add the retry limit to `parse_config`."""
+role = "implementer"
+files = ["src/config.rs"]
+max_loc = 40
+acceptance = ["`parse_config` returns 3 when the key is missing", "The parser works as intended"]
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p fixture --lib config"
+
+[[task]]
+id = "T3"
+title = "Retry limit"
+description = """Add the retry limit to `parse_config`."""
+role = "implementer"
+files = ["src/config.rs"]
+max_loc = 40
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p fixture --lib config"
+
+[[task]]
+id = "T4"
+title = "Retry limit"
+description = """Add the retry limit to `parse_config`.
+
+Acceptance:
+- a missing key gives the default of 3
+- the parser stays readable
+"""
+role = "implementer"
+files = ["src/config.rs"]
+max_loc = 40
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p fixture --lib config"
+
+[[task]]
+id = "T5"
+title = "Retry limit"
+description = """Add the retry limit to `parse_config`."""
+role = "implementer"
+files = ["src/config.rs"]
+max_loc = 40
+[task.acceptance_contract]
+version = 1
+
+[[task.acceptance_contract.gates]]
+id = "unit"
+kind = "test"
+command = "cargo test -p fixture --lib config"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p fixture --lib config"

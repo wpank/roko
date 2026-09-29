@@ -2,7 +2,7 @@
 id = "gap-04b0ff"
 kind = "gap"
 title = "Research paper §8 and §9: the operator loop, field-evidence threats, and trims"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "whitepaper"
@@ -11,6 +11,7 @@ subsystem = ["paper"]
 created = 2026-09-29
 updated = 2026-09-29
 last_verified = 2026-09-29
+last_verified_rev = "dc371b1ae"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e18"
 discovered_from = "tmp/cybernetic-harness/workstreams/assessment/W9-paper-workstream.md"
 anchors = ["tmp/cybernetic-harness/paper/sections/08-discussion.md", "tmp/cybernetic-harness/paper/sections/09-limitations.md"]
@@ -23,6 +24,11 @@ command = "test -f tools/paperlint.py && python3 tools/paperlint.py --budget 1.2
 
 [[verify]]
 command = "grep -qi 'operator' tmp/cybernetic-harness/paper/sections/08-discussion.md"
+
+[closed]
+at = 2026-09-29
+by = "coordinator (session 7622b882)"
+evidence = "Research paper §8 (operator loop, observational, autonomy index 2/41) and §9 (field-evidence and scope threats), within budget; field claims retyped observational; both verifies pass."
 +++
 
 ## Problem

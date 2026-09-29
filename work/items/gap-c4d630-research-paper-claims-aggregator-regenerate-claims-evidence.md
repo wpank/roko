@@ -2,7 +2,7 @@
 id = "gap-c4d630"
 kind = "gap"
 title = "Research paper claims aggregator: regenerate CLAIMS-EVIDENCE.md from the section ledgers"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "whitepaper"
@@ -11,6 +11,7 @@ subsystem = ["paper"]
 created = 2026-09-29
 updated = 2026-09-29
 last_verified = 2026-09-29
+last_verified_rev = "dc371b1ae"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e18"
 discovered_from = "tmp/cybernetic-harness/workstreams/assessment/W9-paper-workstream.md"
 anchors = ["tmp/cybernetic-harness/paper/tools/claims.py", "tmp/cybernetic-harness/paper/CLAIMS-EVIDENCE.md"]
@@ -20,6 +21,11 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "test -f tmp/cybernetic-harness/paper/tools/claims.py && python3 tmp/cybernetic-harness/paper/tools/claims.py --check"
+
+[closed]
+at = 2026-09-29
+by = "coordinator (session 7622b882)"
+evidence = "tmp/cybernetic-harness/paper/tools/claims.py (21 tests) regenerates CLAIMS-EVIDENCE.md: 398 claims (279 supported, 113 pending, 6 needs-cite; 14 observational) with maturity@commit and blocks_on; the observational type was added; --check passes after the bib rebuild."
 +++
 
 ## Problem

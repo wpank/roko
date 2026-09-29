@@ -18,7 +18,7 @@ use crate::learning_helpers::{
 use anyhow::{Context as _, Result};
 use roko_core::agent::ProviderKind;
 use roko_core::agent::resolve_model;
-use roko_core::{Body, Context, Kind, Signal};
+use roko_core::{Body, Context, Kind, Signal, Usage};
 use roko_learn::runtime_feedback::{CompletedRunInput, LearningRuntime};
 
 /// Options for agent execution.
@@ -54,6 +54,25 @@ pub struct AgentExecEpisode<'a> {
     pub task_id: &'a str,
 }
 
+/// What one direct agent run returned, with the usage the provider reported.
+#[derive(Debug, Clone)]
+pub struct AgentCapture {
+    /// `0` when the agent succeeded, `1` otherwise.
+    pub exit_code: i32,
+    /// The agent's rendered output text.
+    pub output: String,
+    /// Tokens and cost of the run. The cost is back-filled from model pricing
+    /// when the provider reported tokens but no dollar amount.
+    pub usage: Usage,
+    /// API slug of the model that ran.
+    pub model: String,
+    /// Configured provider id of the model, or its provider kind's label when
+    /// no configured provider names it.
+    pub provider: String,
+    /// Wall-clock milliseconds the run took.
+    pub duration_ms: u64,
+}
+
 /// Run the configured direct agent path and return just the exit code.
 ///
 /// Convenience wrapper around [`run_agent_capture`] for callers that
@@ -74,7 +93,9 @@ pub async fn run_agent_logged(
 
 /// Run the configured direct agent path and return `(exit_code, output_text)`.
 pub async fn run_agent_capture(opts: AgentExecOpts<'_>) -> Result<(i32, String)> {
-    run_agent_capture_impl(opts, true, None).await
+    run_agent_capture_impl(opts, true, None)
+        .await
+        .map(|capture| (capture.exit_code, capture.output))
 }
 
 /// Run the configured direct agent path, echo the output, and persist an episode.
@@ -82,12 +103,22 @@ pub async fn run_agent_capture_logged(
     opts: AgentExecOpts<'_>,
     episode: AgentExecEpisode<'_>,
 ) -> Result<(i32, String)> {
-    run_agent_capture_impl(opts, true, Some(episode)).await
+    run_agent_capture_impl(opts, true, Some(episode))
+        .await
+        .map(|capture| (capture.exit_code, capture.output))
 }
 
 /// Run the configured direct agent path and return `(exit_code, output_text)`
 /// without echoing the agent's rendered output to stdout.
 pub async fn run_agent_capture_silent(opts: AgentExecOpts<'_>) -> Result<(i32, String)> {
+    run_agent_capture_silent_with_usage(opts)
+        .await
+        .map(|capture| (capture.exit_code, capture.output))
+}
+
+/// Like [`run_agent_capture_silent`], but also return the usage the provider
+/// reported, so the caller can account for what the run cost.
+pub async fn run_agent_capture_silent_with_usage(opts: AgentExecOpts<'_>) -> Result<AgentCapture> {
     run_agent_capture_impl(opts, false, None).await
 }
 
@@ -95,7 +126,7 @@ async fn run_agent_capture_impl(
     opts: AgentExecOpts<'_>,
     echo_output: bool,
     episode: Option<AgentExecEpisode<'_>>,
-) -> Result<(i32, String)> {
+) -> Result<AgentCapture> {
     let started = Instant::now();
     let routing_config = roko_core::config::loader::load_config_unified(opts.workdir)
         .with_context(|| format!("load routing config from {}", opts.workdir.display()))?;
@@ -234,6 +265,7 @@ async fn run_agent_capture_impl(
     }
 
     let exit_code = i32::from(!result.success);
+    let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
     if let Some(episode) = episode {
         persist_capture_episode(
             opts.workdir,
@@ -244,13 +276,27 @@ async fn run_agent_capture_impl(
             opts.prompt,
             &rendered,
             exit_code == 0,
-            u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+            duration_ms,
             opts.resume_session,
         )
         .await?;
     }
 
-    Ok((exit_code, rendered))
+    let mut usage = result.usage;
+    crate::dispatch_v2::fill_usage_cost_from_pricing(
+        &mut usage,
+        resolved.profile.as_ref(),
+        &resolved.slug,
+    );
+    Ok(AgentCapture {
+        exit_code,
+        output: rendered,
+        usage,
+        provider: provider_id_for_model(&routing_config, &model)
+            .unwrap_or_else(|| resolved.provider_kind.label().to_string()),
+        model: resolved.slug,
+        duration_ms,
+    })
 }
 
 /// Persist a lightweight learning episode for a direct agent-exec CLI path.

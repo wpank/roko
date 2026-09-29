@@ -1711,6 +1711,7 @@ mod tests {
                 tasks_done: 0,
                 tasks_failed: 0,
                 active: true,
+                ..Default::default()
             },
         );
         assert!(!hub.apply_recovered_snapshot_if_unchanged(

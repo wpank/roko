@@ -503,6 +503,10 @@ async fn start_plan_run(
     let cancel = CancelToken::new();
     let task_cancel = cancel.clone();
 
+    // Every hub event of this run is sequenced at or after this point.
+    let hub = state.state_hub.clone();
+    let first_run_seq = hub.total_published();
+
     let handle = tokio::spawn({
         let plan_id = plan_id.clone();
         let plan_dir = plan_dir.clone();
@@ -514,8 +518,7 @@ async fn start_plan_run(
             //
             // Pass the cancel token to the runtime so it can stop itself when
             // the handler calls cancel.cancel(). The run observes the token
-            // internally; there is no select! race here, so PlanCompleted is
-            // always published exactly once — by this task, after run returns.
+            // internally; there is no select! race here.
             let options = PlanRunOptions {
                 cancel: Some(task_cancel),
                 fresh: !resume,
@@ -549,7 +552,13 @@ async fn start_plan_run(
                     false
                 }
             };
-            bus.publish(ServerEvent::PlanCompleted { plan_id, success });
+            // The Graph run settles the plan itself. Publish PlanCompleted
+            // only for a run that did not: one that failed before the plan
+            // started, or a runtime that publishes no plan lifecycle. Clients
+            // then see exactly one.
+            if !hub_published_plan_completed(&hub, first_run_seq, &plan_id) {
+                bus.publish(ServerEvent::PlanCompleted { plan_id, success });
+            }
         }
     });
 
@@ -568,6 +577,22 @@ async fn start_plan_run(
     drop(active);
 
     Ok(run_id)
+}
+
+/// Whether the hub carries a `PlanCompleted` for `plan_id` sequenced at or
+/// after `from_seq`. A run's completion is among its last events, so the
+/// retained ring still holds it when the run returns.
+fn hub_published_plan_completed(
+    hub: &roko_runtime::SharedStateHub,
+    from_seq: u64,
+    plan_id: &str,
+) -> bool {
+    hub.replay_from(from_seq).iter().any(|envelope| {
+        matches!(
+            &envelope.payload,
+            roko_core::DashboardEvent::PlanCompleted { plan_id: completed, .. } if completed == plan_id
+        )
+    })
 }
 
 /// `POST /api/plans/:id/execute` — spawn a background plan execution task.
@@ -2494,21 +2519,18 @@ async fn write_prompt_prd(
     Ok(prd_path)
 }
 
-/// Resolve the plans directory for the given workspace root.
+/// Resolve the plans directory for the given workspace root: `plans/`, unless
+/// the workspace keeps its plans in the legacy `.roko/plans/` (see
+/// [`roko_fs::workspace_plans::workspace_plans_dir`]).
 ///
-/// Prefers the top-level `plans/` directory when it already exists as a
-/// directory, and falls back to the legacy `.roko/plans` location otherwise.
-/// This mirrors the identical helper in `roko-cli` so that `create_plan`
-/// writes to the same location that `list_plans` / `get_plan` read from.
+/// roko-cli's `plan::plans_dir` calls the same resolver, so the runtime writes
+/// new plans (`create_plan`, `generate_plan_from_prd`) where `list_plans` /
+/// `get_plan` read them and where these handlers run them.
 ///
-/// Note: this function only *probes* whether the top-level directory exists —
-/// it never creates it as a side effect.
+/// Note: this function only *probes* the filesystem — it never creates the
+/// directory. In a new workspace `plans/` appears with the first plan.
 fn plans_dir(workdir: &std::path::Path) -> std::path::PathBuf {
-    let top = workdir.join("plans");
-    if top.is_dir() {
-        return top;
-    }
-    workdir.join(".roko").join("plans")
+    roko_fs::workspace_plans::workspace_plans_dir(workdir)
 }
 
 /// Load a plan by id using the runtime's plan-discovery methods.
@@ -3530,21 +3552,40 @@ mod tests {
         assert_eq!(result, top, "should return top-level plans/ directory");
     }
 
-    /// When `<workdir>/plans/` does not exist, `plans_dir` should fall back
-    /// to the legacy `.roko/plans` path (without creating any directory).
+    /// In a new workspace — no `plans/`, and at most the empty `.roko/plans`
+    /// that `roko init` creates — the first plan goes to `plans/`, which
+    /// `plans_dir` returns without creating.
     #[test]
-    fn plans_dir_falls_back_to_dotted_roko_when_top_level_absent() {
+    fn plans_dir_is_top_level_in_a_new_workspace() {
         let dir = tempdir().expect("tempdir");
-        // Do NOT create `plans/` — only the dotted path should be returned.
-        let expected = dir.path().join(".roko").join("plans");
+        let expected = dir.path().join("plans");
 
-        let result = plans_dir(dir.path());
-        assert_eq!(result, expected, "should fall back to .roko/plans");
+        assert_eq!(plans_dir(dir.path()), expected);
+
+        std::fs::create_dir_all(dir.path().join(".roko").join("plans"))
+            .expect("create empty .roko/plans");
+        assert_eq!(
+            plans_dir(dir.path()),
+            expected,
+            "an empty .roko/plans must not make the workspace legacy"
+        );
         // Confirm the helper did not create the directory as a side effect.
         assert!(
-            !dir.path().join("plans").exists(),
+            !expected.exists(),
             "plans_dir must not create the top-level directory"
         );
+    }
+
+    /// A workspace that already keeps its plans in `.roko/plans` (and has no
+    /// `plans/`) goes on using it, for reads and for new plans.
+    #[test]
+    fn plans_dir_keeps_a_legacy_workspace_in_dotted_roko() {
+        let dir = tempdir().expect("tempdir");
+        let legacy = dir.path().join(".roko").join("plans");
+        std::fs::create_dir_all(legacy.join("old-plan")).expect("create legacy plan");
+        std::fs::write(legacy.join("old-plan").join("tasks.toml"), "").expect("write tasks");
+
+        assert_eq!(plans_dir(dir.path()), legacy);
     }
 
     /// After `execute_plan` returns, the event bus must carry **no**
@@ -3602,6 +3643,184 @@ mod tests {
             !plan_started_seen,
             "execute_plan must not publish PlanStarted; the run publishes its own"
         );
+    }
+
+    /// Runs plans the way the Graph engine reports them: the plan's lifecycle
+    /// goes straight into the server's hub. With `fail_before_start` the run
+    /// fails before announcing anything, as one with an invalid config does.
+    struct HubLifecycleRuntime {
+        hub: roko_runtime::SharedStateHub,
+        fail_before_start: bool,
+    }
+
+    #[async_trait::async_trait]
+    impl CliRuntime for HubLifecycleRuntime {
+        async fn run_once(
+            &self,
+            _workdir: &std::path::Path,
+            _prompt: &str,
+        ) -> anyhow::Result<RunResult> {
+            anyhow::bail!("HubLifecycleRuntime only runs plans")
+        }
+
+        async fn load_plan_summary(
+            &self,
+            _workdir: &std::path::Path,
+            plan_id: &str,
+        ) -> anyhow::Result<Option<crate::plan_types::PlanSummaryDto>> {
+            Ok(Some(crate::plan_types::PlanSummaryDto {
+                id: plan_id.to_string(),
+                title: "Hub plan".to_string(),
+                task_count: 1,
+                tasks_done: 0,
+                tasks_failed: 0,
+                completed: false,
+                status: "ready".to_string(),
+                superseded_by: None,
+                old_format: false,
+                last_error: None,
+                group: None,
+                estimated_minutes: None,
+            }))
+        }
+
+        async fn run_plan_with_options(
+            &self,
+            _workdir: &std::path::Path,
+            plan_target: &std::path::Path,
+            _options: PlanRunOptions,
+        ) -> anyhow::Result<PlanExecutionResult> {
+            if self.fail_before_start {
+                anyhow::bail!("load Graph runtime config: invalid model");
+            }
+            let plan_id = plan_target
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or_default()
+                .to_string();
+            let hub = self.hub.sender();
+            hub.publish(roko_core::DashboardEvent::PlanStarted {
+                plan_id: plan_id.clone(),
+                tasks_total: 1,
+            });
+            hub.publish(roko_core::DashboardEvent::PlanCompleted {
+                plan_id,
+                success: true,
+            });
+            hub.publish(roko_core::DashboardEvent::RunCompleted {
+                outcome: "succeeded".to_string(),
+                duration_ms: 5,
+                cleanup_degraded: false,
+                surviving_agent_ids: Vec::new(),
+                surviving_agent_pids: Vec::new(),
+            });
+            Ok(PlanExecutionResult {
+                success: true,
+                output_text: None,
+                gate_results: Vec::new(),
+            })
+        }
+
+        fn session_status(&self, workdir: PathBuf) -> SessionStatusInfo {
+            SessionStatusInfo {
+                session_id: None,
+                workdir,
+                daemon_running: false,
+                signal_count: None,
+                episode_count: None,
+                last_episode_passed: None,
+            }
+        }
+
+        fn dashboard_scaffold(&self, _workdir: &std::path::Path) -> DashboardInfo {
+            DashboardInfo {
+                rendered: String::new(),
+            }
+        }
+    }
+
+    /// Execute plan `hello` on a [`HubLifecycleRuntime`] and return the
+    /// `success` of every PlanCompleted published for it: by the run into
+    /// the hub, or by the route onto the event bus.
+    async fn plan_completions_of_single_plan_run(fail_before_start: bool) -> Vec<bool> {
+        let hub = roko_runtime::SharedStateHub::new_in_process();
+        let runtime = Arc::new(HubLifecycleRuntime {
+            hub: hub.clone(),
+            fail_before_start,
+        });
+        let dir = tempdir().expect("tempdir");
+        let deploy_backend =
+            Arc::from(create_backend("manual", None, None, None).expect("manual backend"));
+        let state = Arc::new(
+            AppState::new_with_state_hub(
+                dir.path().to_path_buf(),
+                runtime,
+                roko_core::config::schema::RokoConfig::default(),
+                deploy_backend,
+                hub.clone(),
+            )
+            .expect("AppState::new_with_state_hub"),
+        );
+        let mut bus = state.event_bus.subscribe();
+
+        execute_plan(
+            State(Arc::clone(&state)),
+            Path("hello".into()),
+            axum::body::Bytes::new(),
+        )
+        .await
+        .expect("execute plan");
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let finished = state
+                    .active_plans
+                    .read()
+                    .await
+                    .get("hello")
+                    .is_none_or(|run| run.handle.is_finished());
+                if finished {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the run task should finish");
+
+        let mut completions = hub
+            .replay_from(0)
+            .into_iter()
+            .filter_map(|envelope| match envelope.payload {
+                roko_core::DashboardEvent::PlanCompleted { plan_id, success }
+                    if plan_id == "hello" =>
+                {
+                    Some(success)
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        while let Ok(envelope) = bus.try_recv() {
+            if let ServerEvent::PlanCompleted { plan_id, success } = envelope.payload
+                && plan_id == "hello"
+            {
+                completions.push(success);
+            }
+        }
+        completions
+    }
+
+    /// bug-08d912: the Graph run publishes the plan's PlanCompleted, so the
+    /// route must not publish a second one after the run returns.
+    #[tokio::test]
+    async fn single_plan_run_publishes_plan_completed_once() {
+        assert_eq!(plan_completions_of_single_plan_run(false).await, vec![true]);
+    }
+
+    /// A run that fails before its plan starts publishes no PlanCompleted, so
+    /// the route settles the plan, once and as failed.
+    #[tokio::test]
+    async fn run_failing_before_the_plan_starts_completes_it_once() {
+        assert_eq!(plan_completions_of_single_plan_run(true).await, vec![false]);
     }
 
     #[tokio::test]
@@ -3675,10 +3894,9 @@ mod tests {
         );
 
         // The plan directory must be plans/<group>/<id>, not plans/<id>.
-        // workdir has no top-level `plans/` dir, so plans_dir returns .roko/plans.
+        // The workdir holds no plans on disk, so plans_dir returns plans/.
         let expected_dir = state
             .workdir
-            .join(".roko")
             .join("plans")
             .join("portal-programme")
             .join("my-plan");

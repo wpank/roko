@@ -1464,6 +1464,18 @@ fn build_time() -> Vec<EnvVarSpec> {
             stability: Stability::BuildTime,
             replacement: None,
         },
+        EnvVarSpec {
+            name: "ROKO_REQUIRE_EMBEDDED_UI",
+            owner: "Build",
+            purpose: "Fail the roko-serve build rather than embed a UI fallback page",
+            value_type: ValueType::Bool,
+            default: "false",
+            precedence: "env only (build.rs)",
+            scope: Scope::Build,
+            sensitivity: Sensitivity::Public,
+            stability: Stability::BuildTime,
+            replacement: None,
+        },
     ]
 }
 

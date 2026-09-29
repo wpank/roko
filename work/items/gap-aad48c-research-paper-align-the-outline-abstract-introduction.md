@@ -2,7 +2,7 @@
 id = "gap-aad48c"
 kind = "gap"
 title = "Research paper: align the outline, abstract, introduction and conclusion with the golden-path thesis"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "whitepaper"
@@ -11,6 +11,7 @@ subsystem = ["paper"]
 created = 2026-09-29
 updated = 2026-09-29
 last_verified = 2026-09-29
+last_verified_rev = "dc371b1ae"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e18"
 discovered_from = "tmp/cybernetic-harness/workstreams/assessment/W9-paper-workstream.md"
 anchors = ["tmp/cybernetic-harness/paper/OUTLINE.md", "tmp/cybernetic-harness/paper/sections/00-abstract.md", "tmp/cybernetic-harness/paper/sections/01-introduction.md", "tmp/cybernetic-harness/paper/sections/10-conclusion.md"]
@@ -23,6 +24,11 @@ command = "test -f tools/paperlint.py && python3 tools/paperlint.py --budget 1.2
 
 [[verify]]
 command = "grep -qi 'golden path' tmp/cybernetic-harness/paper/OUTLINE.md && grep -qi 'golden path' tmp/cybernetic-harness/paper/sections/01-introduction.md"
+
+[closed]
+at = 2026-09-29
+by = "coordinator (session 7622b882)"
+evidence = "Research paper outline, abstract, introduction and conclusion rewritten around the golden-path thesis (untracked tmp/cybernetic-harness/paper); within 1.2x budget; both verifies pass with the merged paperlint."
 +++
 
 ## Problem

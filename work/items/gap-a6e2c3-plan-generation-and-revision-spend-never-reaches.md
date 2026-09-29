@@ -2,7 +2,7 @@
 id = "gap-a6e2c3"
 kind = "gap"
 title = "Plan generation and revision spend never reaches the event stream, so the portal and stats.cost_usd_total leave it out"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "visibility"
@@ -11,7 +11,7 @@ subsystem = ["roko-serve/plans", "roko-cli/prd"]
 created = 2026-09-29
 updated = 2026-09-29
 last_verified = 2026-09-29
-last_verified_rev = "f99e45dba"
+last_verified_rev = "9a7e8a1cb"
 source = "plan:portal-programme/09-acceptance#T04"
 discovered_from = "plan:portal-programme/09-acceptance#T04"
 anchors = ["crates/roko-serve/src/routes/plans.rs:1818", "crates/roko-serve/src/routes/plans.rs:2029", "crates/roko-cli/src/prd.rs::generate_plan_from_prd"]
@@ -19,6 +19,12 @@ links = { depends_on = [], blocks = [], related = ["find-6a5b62", "bug-690dc6"],
 
 [[verify]]
 command = "cargo build -p roko-cli && bash -c 'source plans/portal-programme/_harness/lib.sh && require_binary && make_workspace && start_server && start_capture && [ \"$(api POST /api/plans/generate \"{\\\"prompt\\\": \\\"a rust app that prints hello world\\\"}\")\" = 202 ] && wait_operation \"$(jget \"$WS/last.json\" \"d[\\\"id\\\"]\")\" 120 && sleep 2 && stop_capture && sse between efficiency_event metric=cost_usd -- event_log_entry event_type=plan_generate.started -- event_log_entry event_type=plan_generate.completed'"
+
+[closed]
+at = 2026-09-29
+commit = "9a7e8a1cb"
+by = "commit trailer"
+evidence = "9a7e8a1cb: plan_authoring::AuthoringSpend records every generation and revision agent call as task dispatch records its spend (CostRecord in costs.jsonl, an efficiency.jsonl row, token and cost efficiency_events on the server's StateHub via RokoCliRuntime), attributed to the plan under task generate or revise; retries and failed calls count too. The [[verify]] passes: efficiency_event metric=cost_usd (fake-claude's 0.0012) lies between plan_generate.started and plan_generate.completed. On the same harness, /api/statehub/snapshot stats.cost_usd_total reads 0.0012 after a generate, 0.0024 after a revise, and 0.0024 after a server restart. Tests: plan_authoring::tests::authoring_spend_* and serve_runtime::tests_authoring_spend (fake Claude CLI with a known cost); authoring-check.sh and revision-check.sh pass. Decision: the portal shows generation cost when each turn returns (providers report usage at the end); no portal change."
 +++
 
 ## Problem

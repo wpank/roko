@@ -70,12 +70,12 @@ after the P0/P1 fixes (W12 Phase B).
 
 ## Done when
 
-- [ ] bug-7b37c4: The field rollup counts tasks with operator interventions as automatic recoveries
+- [x] bug-7b37c4: The field rollup counts tasks with operator interventions as automatic recoveries
 - [ ] gap-d0643c: work.py event log: one append-only events file per session under work/telemetry/events/
 - [ ] gap-0b9056: work.py claim and close record the executor, pick-up route, size and claim time; release records a reason
 - [ ] gap-92033c: The work skills add Work-Item, Executor and Conflicts trailers to merge commits
-- [ ] gap-263de5: Transcript harvester: tokens, model and time per backlog item from Claude Code transcripts
-- [ ] gap-7984a5: DEFINITIONS.md: the development record's metrics, fixed in advance
+- [x] gap-263de5: Transcript harvester: tokens, model and time per backlog item from Claude Code transcripts
+- [x] gap-7984a5: DEFINITIONS.md: the development record's metrics, fixed in advance
 - [ ] gap-ccb87e: Daily rollup of the development record with a committed manifest
 - [ ] gap-dc6775: Backfill executors for already-closed items from [closed].by and the reflog
 - [ ] gap-09e478: Dogfood session evidence bundle (existing item)

@@ -2,14 +2,16 @@
 id = "gap-7984a5"
 kind = "gap"
 title = "DEFINITIONS.md: the development record's metrics, fixed in advance"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p1"
 goal = "proof"
 size = "S"
 subsystem = ["work/telemetry"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-29
+last_verified_rev = "d6c7b1a1d"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e13"
 discovered_from = "tmp/cybernetic-harness/workstreams/assessment/W12-evidence-from-dev-process.md (A6, B1)"
 anchors = ["work/telemetry/DEFINITIONS.md"]
@@ -19,6 +21,12 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "test -f work/telemetry/DEFINITIONS.md && grep -q '^### First-try merge' work/telemetry/DEFINITIONS.md && grep -q '^### Unassisted merge share' work/telemetry/DEFINITIONS.md && grep -q '^### Cost per merged item' work/telemetry/DEFINITIONS.md && grep -q '^### The switch' work/telemetry/DEFINITIONS.md"
+
+[closed]
+at = 2026-09-29
+commit = "d6c7b1a1d"
+by = "wk-harvest (claude-agent)"
+evidence = "d6c7b1a1d: work/telemetry/DEFINITIONS.md, Version 1 · 2026-09-29, committed on its own with Definitions-SHA256: ee0525db5ff09afe9f0b1509cb0d22162b795f2beae153cf859a98b999f86720. It has one section per metric (merged item, attempts, first-try merge, claim-to-merge hours, conflict rate, post-merge verify failure, escape, intervention, unassisted merge share, cost per merged item, coverage, the switch), each with its formula, the fields it reads and its exclusions, plus a change log. The [[verify]] passes."
 +++
 
 ## Problem
@@ -63,9 +71,9 @@ entries.
 
 ## Done when
 
-- [ ] Every metric above has its own section.
-- [ ] The file is committed on its own, with `Definitions-SHA256: <hex>` in the commit message.
-- [ ] The `[[verify]]` command passes.
+- [x] Every metric above has its own section.
+- [x] The file is committed on its own, with `Definitions-SHA256: <hex>` in the commit message.
+- [x] The `[[verify]]` command passes.
 
 ## Notes
 

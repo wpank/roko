@@ -2,14 +2,16 @@
 id = "gap-353d57"
 kind = "gap"
 title = "Whitepaper §1 Introduction"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p1"
 goal = "whitepaper"
 size = "M"
 subsystem = ["docs/whitepaper"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-29
+last_verified_rev = "dc371b1ae"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e1"
 discovered_from = "tmp/cybernetic-harness/tldr/01-WHAT-AND-WHY.md (the idea; where it stands)"
 anchors = ["docs/whitepaper/01-introduction.md", "docs/whitepaper/00-abstract.md"]
@@ -19,6 +21,11 @@ links = { depends_on = ["gap-0191eb", "gap-af0b57"], blocks = [], related = ["ga
 
 [[verify]]
 command = "test -f docs/whitepaper/00-abstract.md && test -f docs/whitepaper/01-introduction.md && test -f tools/paperlint.py && python3 tools/paperlint.py --strict docs/whitepaper/00-abstract.md docs/whitepaper/01-introduction.md"
+
+[closed]
+at = 2026-09-29
+by = "coordinator (session 7622b882)"
+evidence = "Whitepaper abstract and §1 merged in d6f962ac1; paperlint --strict passes on both files at HEAD."
 +++
 
 ## Problem
@@ -69,3 +76,8 @@ Checked at `41c7ffbd6`. No text exists yet. The sources:
 - **Keep the numbers in step with §7** (gap-29a64e). B7 gives $174.87 and 173 tasks for the portal; the rollup gives
   $192.92 over 42 runs, non-portal runs included.
 - Lane `paper`; no hot files.
+- **Written on `work/gap-353d57` at `531628f38`,** with the three new bib keys in `a74b0305d`. The draft paperlint
+  from gap-af0b57 passes both files under `--strict` (186 and 691 words, footnotes included). Close this item once
+  `tools/paperlint.py` is on the branch that merges it.
+- **Footnotes point at §7 (gap-29a64e) for the frozen portal figures,** because `evidence/` doesn't exist yet.
+  Repoint them to the `evidence/` files and their sha256 when §7 lands.

@@ -2,7 +2,7 @@
 id = "gap-2abf34"
 kind = "gap"
 title = "Research paper appendices E and F: reproducibility formats and the cost of the supervising sessions"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "whitepaper"
@@ -11,6 +11,7 @@ subsystem = ["paper"]
 created = 2026-09-29
 updated = 2026-09-29
 last_verified = 2026-09-29
+last_verified_rev = "dc371b1ae"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e18"
 discovered_from = "tmp/cybernetic-harness/workstreams/assessment/W9-paper-workstream.md"
 anchors = ["tmp/cybernetic-harness/paper/sections/E-reproducibility.md", "tmp/cybernetic-harness/paper/sections/F-ai-assistance-ethics.md"]
@@ -20,6 +21,11 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -qi 'supervising' tmp/cybernetic-harness/paper/sections/F-ai-assistance-ethics.md && test -f tools/paperlint.py && python3 tools/paperlint.py --budget 1.2 --check-identifiers tmp/cybernetic-harness/paper/sections/F-ai-assistance-ethics.md"
+
+[closed]
+at = 2026-09-29
+by = "coordinator (session 7622b882)"
+evidence = "Research paper App. F names the supervising sessions' estimated cost; App. E fills the formats that exist with AS-BUILT tags on the rest; verify passes."
 +++
 
 ## Problem

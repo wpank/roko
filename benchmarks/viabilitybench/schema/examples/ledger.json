@@ -1,0 +1,20 @@
+{
+  "ts": "2026-10-12T14:03:11Z",
+  "line": "BL1",
+  "experiment_id": "LOG1",
+  "run_id": "vb-20261012-a41",
+  "attempt_key": "…",
+  "provider": "cerebras",
+  "model_reported": "gpt-oss-120b",
+  "usage": {
+    "tokens_in": 61234,
+    "tokens_out": 2210,
+    "tokens_cache_read": 0,
+    "tokens_reasoning": 640
+  },
+  "api_equiv_usd": 0.0231,
+  "billed_usd": 0.0231,
+  "reserved_usd": 0.13,
+  "price_snapshot_id": "prices-2026-09-28",
+  "source": "provider_usage"
+}

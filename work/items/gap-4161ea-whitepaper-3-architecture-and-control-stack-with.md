@@ -2,14 +2,16 @@
 id = "gap-4161ea"
 kind = "gap"
 title = "Whitepaper §3 Architecture and control stack, with Figure 1"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p1"
 goal = "whitepaper"
 size = "M"
 subsystem = ["docs/whitepaper"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-29
+last_verified_rev = "dc371b1ae"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e1"
 discovered_from = "tmp/cybernetic-harness/tldr/02-HOW-IT-WORKS.md (the flow; the control stack)"
 anchors = ["docs/whitepaper/03-architecture.md"]
@@ -19,6 +21,11 @@ links = { depends_on = ["gap-0191eb", "gap-af0b57"], blocks = [], related = ["ga
 
 [[verify]]
 command = "test -f docs/whitepaper/03-architecture.md && grep -q 'Figure 1' docs/whitepaper/03-architecture.md && test -f tools/paperlint.py && python3 tools/paperlint.py --strict docs/whitepaper/03-architecture.md"
+
+[closed]
+at = 2026-09-29
+by = "coordinator (session 7622b882)"
+evidence = "Whitepaper §3 architecture and control stack merged in 972ceef2f and dc371b1ae (tags from the status matrix, Figure 1); paperlint --strict passes."
 +++
 
 ## Problem
@@ -66,7 +73,7 @@ stack plus the loop.
 
 ## Done when
 
-- [ ] Every crate path and identifier exists at HEAD, or is tagged as designed.
+- [x] Every crate path and identifier exists at HEAD, or is tagged as designed.
 - [ ] The `[[verify]]` command passes.
 
 ## Notes
@@ -74,3 +81,7 @@ stack plus the loop.
 - **Needs `tools/paperlint.py`** (gap-af0b57) to close.
 - **Tags must agree with the status matrix** (gap-35a614). The review (gap-8d2c79) checks this.
 - Lane `paper`; no hot files.
+- **Drafted** on `work/gap-4161ea` at `9b739b611`, then aligned with the merged status matrix at `77d69b6a9` and `4bb68a8a6`: every
+  tag is a matrix row's tag at `a17d4dadd` and names its row. The claims AR2 and AR4–AR9 are recorded in the README
+  (`b3f1f6d6e`, `4e0abe7e1`). `tools/paperlint.py` is not at BASE, so the `[[verify]]` can't run yet; gap-af0b57's
+  uncommitted draft passes `--strict` on the file (802 words, 1.15× the budget). Close once paperlint merges.

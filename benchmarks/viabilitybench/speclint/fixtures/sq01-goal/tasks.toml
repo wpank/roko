@@ -1,0 +1,53 @@
+# speclint golden fixture: SQ01. T1 48 words, T2 22, T3 6; T4 counts its TSS goal (20) plus description (22).
+[meta]
+plan = "sq01-goal"
+total = 4
+
+[[task]]
+id = "T1"
+title = "Parse the retry limit"
+description = """Read the `retry_limit` key from `config.toml` in `parse_config` and return it as a `u32`. When the key is missing, return the default of 3. When the value is not a positive integer, return a `ConfigError::InvalidRetryLimit` that names the key and the bad value. Keep the existing keys working."""
+role = "implementer"
+files = ["src/config.rs"]
+max_loc = 40
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p fixture --lib config"
+
+[[task]]
+id = "T2"
+title = "Parse the retry limit"
+description = """Read the `retry_limit` key in `parse_config` and return it as a `u32`, with a default of 3 when the key is missing."""
+role = "implementer"
+files = ["src/config.rs"]
+max_loc = 40
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p fixture --lib config"
+
+[[task]]
+id = "T3"
+title = "Parse the retry limit"
+description = """Add the retry limit to `parse_config`."""
+role = "implementer"
+files = ["src/config.rs"]
+max_loc = 40
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p fixture --lib config"
+
+[[task]]
+id = "T4"
+title = "Parse the retry limit"
+description = """Read the key where `parse_config` reads the other limits, keep the parsing in one function, and add one unit test per case."""
+role = "implementer"
+files = ["src/config.rs"]
+max_loc = 40
+goal = "After this change `parse_config` returns the `retry_limit` value from `config.toml` as a `u32`, and 3 when the key is absent."
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p fixture --lib config"

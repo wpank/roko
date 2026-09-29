@@ -2,14 +2,16 @@
 id = "gap-ac4646"
 kind = "gap"
 title = "Whitepaper §4 The golden path step by step, with Figure 2"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p1"
 goal = "whitepaper"
 size = "M"
 subsystem = ["docs/whitepaper"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-29
+last_verified_rev = "dc371b1ae"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e1"
 discovered_from = "tmp/cybernetic-harness/tldr/04-FRONTIER-PLANS-CHEAP-EXECUTES.md (the loop, steps 1-11)"
 anchors = ["docs/whitepaper/04-golden-path.md"]
@@ -19,6 +21,11 @@ links = { depends_on = ["gap-0191eb", "gap-35a614", "gap-af0b57"], blocks = [], 
 
 [[verify]]
 command = "test -f docs/whitepaper/04-golden-path.md && grep -q 'Figure 2' docs/whitepaper/04-golden-path.md && test $(grep -cE '(WIRED|PARTIAL|ORPHANED|BUILT-UNWIRED|DOCS-ONLY|MISSING|REMOVED|BROKEN|UNPROVEN)@[0-9a-f]{7}' docs/whitepaper/04-golden-path.md) -ge 11 && test -f tools/paperlint.py && python3 tools/paperlint.py --strict docs/whitepaper/04-golden-path.md"
+
+[closed]
+at = 2026-09-29
+by = "coordinator (session 7622b882)"
+evidence = "Whitepaper §4 golden path merged in d1fcc21f7 and 596625d8a (11 steps tagged against the matrix, §4.12 table, Figure 2); verify passes."
 +++
 
 ## Problem
@@ -72,3 +79,7 @@ Since then:
 - **Recompute tldr/04's figures** (for example, the share of sequential plans) from tracked data such as `plans/`, or
   from a frozen snapshot, and give each a footnote.
 - Lane `paper`; no hot files.
+- **Written on `work/gap-ac4646` at `4bc903cea`** (2026-09-29; rows added in `3da2a1418`). Every tag is at
+  `a17d4dadd`, the pin of the status matrix merged in `5eac79f0d`, and agrees with the rows §4.12 cites; each was also
+  re-checked with greps at `1f4481133`. The verify's static part passes (29 tag lines), and `paperlint --strict` from
+  the gap-af0b57 draft is clean (1,028 words, 1.08×). Close once gap-af0b57 merges `tools/paperlint.py`.

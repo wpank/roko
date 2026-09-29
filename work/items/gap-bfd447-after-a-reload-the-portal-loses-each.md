@@ -2,7 +2,7 @@
 id = "gap-bfd447"
 kind = "gap"
 title = "After a reload the portal loses each plan's times, cost and accepted count because the snapshot's plan state lacks them"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "visibility"
@@ -11,7 +11,7 @@ subsystem = ["roko-core/dashboard", "apps/portal"]
 created = 2026-09-29
 updated = 2026-09-29
 last_verified = 2026-09-29
-last_verified_rev = "f99e45dba"
+last_verified_rev = "3fb11e23e"
 source = "plan:portal-programme/09-acceptance#T04"
 discovered_from = "plan:portal-programme/09-acceptance#T04"
 anchors = ["crates/roko-core/src/dashboard_snapshot.rs::PlanDisplayState", "apps/portal/src/lib/runState.ts:1060"]
@@ -22,6 +22,11 @@ command = "grep -rqw 'fn plan_display_state_carries_times_cost_and_accepted' cra
 
 [[verify]]
 command = "grep -rqF --include='*.test.ts' 'keeps plan times, cost and accepted counts' apps/portal/src && (cd apps/portal && npx vitest run src/lib/runState)"
+
+[closed]
+at = 2026-09-29
+commit = "3fb11e23e"
+evidence = "roko-core PlanDisplayState now carries started_at_ms, finished_at_ms, cost_usd and tasks_accepted_with_failures, and portal fromSnapshot maps them. Both [[verify]] commands pass at 3fb11e23e: cargo test -p roko-core plan_display_state_carries_times_cost_and_accepted, and npx vitest run src/lib/runState (runState.reload.test.ts: rail shows actual/elapsed time and amber, status line keeps the cost). roko-serve statehub_snapshot_carries_each_plans_times_cost_and_accepted_count checks GET /api/statehub/snapshot, and a fake-agent server run of live-b served started/finished/cost_usd in the snapshot. Left: a plan that ran before a server restart has no snapshot record, so PlanView still offers Run (gap-082a14, bug-9f340c)."
 +++
 
 ## Problem

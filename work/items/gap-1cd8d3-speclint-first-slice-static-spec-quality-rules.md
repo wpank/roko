@@ -2,14 +2,16 @@
 id = "gap-1cd8d3"
 kind = "gap"
 title = "speclint first slice: static spec-quality rules SQ01–SQ12 with hard fails (S07.1)"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p2"
 goal = "golden-path"
 size = "M"
 subsystem = ["benchmarks/viabilitybench"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-29
+last_verified_rev = "248431af0"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e8"
 discovered_from = "tmp/cybernetic-harness/execution/checklist.json (S07.1); specs/S07-spec-quality.md §4.2"
 anchors = ["benchmarks/viabilitybench/speclint/speclint.py", "benchmarks/viabilitybench/speclint/tests/test_speclint.py"]
@@ -22,6 +24,12 @@ command = "grep -qw 'def test_golden_fixture_per_rule' benchmarks/viabilitybench
 
 [[verify]]
 command = "grep -qw 'def test_e2e_smoke_t02_is_band_d' benchmarks/viabilitybench/speclint/tests/test_speclint.py && benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/speclint/tests/test_speclint.py -k test_e2e_smoke_t02_is_band_d -q"
+
+[closed]
+at = 2026-09-29
+commit = "248431af0"
+by = "commit trailer"
+evidence = "248431af0: speclint.py scores all 551 tasks of plans/**/tasks.toml at a17d4dadd (0 parse errors; two runs identical apart from ts) with SQ01-SQ12 and HF1/HF2/HF4/HF5. 16 hand-computed golden fixtures (one per rule and static hard fail) pass; e2e-smoke-test T02 scores 27.0, band D, SQ04 = 0. On the prototype corpus (git archive 725f21e05 plans, 484 tasks) the S07 section 3.3 rates are 82.0/15.7/27.5/24.8% against 81.6/16.7/27.7/24.8%, and all 33 cargo test --no-run steps are compile. Both [[verify]] commands pass."
 +++
 
 ## Problem
@@ -73,3 +81,9 @@ Checked at `41c7ffbd6`: `benchmarks/` holds only `dev-audit/`. No speclint or vi
 - Python standard library only, no model calls, $0.
 - Waits for D4. If D4 moves the tree outside this repo, re-anchor this item and gap-b3fa0a, and vendor the fixtures
   for gap-46ab3f's parity test.
+- 2026-09-29 (wk-speclint): built. On the prototype's own corpus (`git archive 725f21e05 plans`: 484 tasks, 323
+  archived) the §3.3 rates are no acceptance criteria 82.0% (81.6), structural-only strongest verify 15.7% (16.7),
+  test-runner verify 27.5% (27.7), no `read_files` 24.8% (24.8), hidden hook 0; all 33 `cargo test --no-run` steps
+  are compile. The acceptance-phrasing test is lexical, as the prototype's was: counting only the `acceptance` and
+  `acceptance_contract` fields gives 86.2%. At BASE `a17d4dadd` (551 tasks) the mean is 48.2 and no task reaches
+  band A: SQ03, SQ06 and SQ12 (25 points) are 0 until the TSS fields and the dynamic checker land.

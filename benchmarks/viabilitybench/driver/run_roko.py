@@ -69,6 +69,18 @@ exists, its rows for this task are the meter. The driver must set the proxy's ac
 - `timeout`: the wall-clock cap.
 - `infra_error`: a failed validation, a failed check above, or a run Roko did not finish.
 
+**Process measures** (S09 §4.9, gap-04e8e2). Each attempt records its plan task (`T01`), its cost class and its busy
+time, and `records.py` sums them into the record:
+- the class: `execute` for the first attempt, then `retry`, or `escalate` for one that dispatched another model. A
+  one-task plan has no planner call (the driver writes the plan) and no integration step, so `plan` and
+  `integrate` cost $0;
+- the busy time: S01's verdict timing from the attempt's start to its settlement when Roko writes it, else the
+  episode's dispatch window, which ends at `completed_at` and lasts `duration_secs`;
+- the queue wait: a one-task plan never waits for a dispatch slot, so it is the time the task waited after a rate
+  limit (a 429 in the proxy's log) until its next request. It is known only when the proxy metered the run, and
+  null otherwise. Roko records neither when a task became ready nor when it was dispatched, so a multi-task plan's
+  slot waits need the Graph engine to record them.
+
 API:
     run_task(ctx: harness.TaskContext) -> harness.TaskOutcome
     read_evidence(workspace: Path, slug: str, *, proxy_rows: list[dict] | None = None) -> Evidence
@@ -122,11 +134,18 @@ class RokoAttempt(harness.Attempt):
     roko_build: str | None = None
     checks: list[str] = field(default_factory=list)  # failed check kinds
     calls_known: bool = False  # only the proxy counts every call
+    task_id: str | None = None  # the plan task, from the episode
+    cost_class: str | None = None  # S09 §4.9: execute, then retry, or escalate on another model
+    started_at: str | None = None  # the attempt's busy time (module docstring, "Process measures")
+    finished_at: str | None = None
+    queue_wait_s: float | None = None  # rate-limit waits in its proxy window; None without the proxy
 
     def as_record(self) -> dict:
         record = super().as_record()
         record.update(model_dispatched=self.model_dispatched, gate_verdict=self.gate_verdict,
-                      roko_usage=self.roko_usage, roko_build=self.roko_build, checks=list(self.checks))
+                      roko_usage=self.roko_usage, roko_build=self.roko_build, checks=list(self.checks),
+                      task_id=self.task_id, cost_class=self.cost_class, started_at=self.started_at,
+                      finished_at=self.finished_at, queue_wait_s=self.queue_wait_s)
         if not self.calls_known:
             record["calls"] = None
         return record
@@ -234,8 +253,10 @@ def run_task(ctx: harness.TaskContext) -> harness.TaskOutcome:
                               reserved_usd=attempt.reserved_usd)
         for key in reserved:  # the attempts Roko did not make; a key whose row was just written is already free
             ctx.ledger.release(key)
+    saved = (ctx.ledger.path.parent / "s01" / ctx.key).is_dir()  # Roko's records, copied by _save_evidence
     return harness.TaskOutcome(status=status, reason=reason, attempts=list(attempts), transcript=transcript,
-                               started_at=started, finished_at=harness.utc_now())
+                               started_at=started, finished_at=harness.utc_now(),
+                               s01_run_dir=f"s01/{ctx.key}" if saved else None)
 
 
 def binary_path(arm: dict) -> Path:
@@ -286,12 +307,16 @@ def settle(evidence: Evidence, *, chain_key: str, model: str, provider: str, sna
     attempts = []
     for number, episode in enumerate(evidence.episodes, 1):
         passed = episode.get("success") is True
+        dispatched, before = episode.get("model") or None, attempts[-1].model_dispatched if attempts else None
         attempts.append(RokoAttempt(
             number=number, attempt_key=f"{chain_key}:{number}", model_requested=model,
             provider=str(episode.get("backend") or provider), reserved_usd=reserved_usd,
             turns=episode.get("turns") if isinstance(episode.get("turns"), int) else None, usage_unknown=True,
-            ended_by="gate_passed" if passed else "gate_failed", model_dispatched=episode.get("model") or None,
-            gate_verdict="passed" if passed else None, roko_usage=_roko_usage(episode), roko_build=roko_build))
+            ended_by="gate_passed" if passed else "gate_failed", model_dispatched=dispatched,
+            gate_verdict="passed" if passed else None, roko_usage=_roko_usage(episode), roko_build=roko_build,
+            task_id=str(episode.get("task_id") or planemit.TASK_ID),
+            cost_class="execute" if number == 1 else "escalate" if dispatched and before and dispatched != before
+            else "retry", **_episode_span(episode)))
     problems: list[str] = []
 
     def flag(kind: str, detail: str, number: int | None = None) -> None:
@@ -344,7 +369,12 @@ def settle(evidence: Evidence, *, chain_key: str, model: str, provider: str, sna
 
 
 def _meter_from_verdict(attempt: RokoAttempt, verdict: dict) -> None:
-    """S01's verdict meters the attempt when it reports the served model and every usage class."""
+    """S01's verdict meters the attempt when it reports the served model and every usage class, and times the whole
+    attempt, its gate included, when it has the attempt's start and settlement."""
+    timing = verdict.get("timing") or {}
+    start, end = (_from_unix_ms(timing.get(key)) for key in ("attempt_started_at", "settled_at"))
+    if start is not None and end is not None and start <= end:
+        attempt.started_at, attempt.finished_at = _iso(start), _iso(end)
     reported = (verdict.get("executed") or {}).get("model_reported")
     usage = verdict.get("usage") or {}
     classes = ("tokens_in", "tokens_out", "tokens_cache_read")
@@ -383,7 +413,10 @@ def _meter_from_proxy(attempts: list[RokoAttempt], evidence: Evidence, model: st
             if not rows or position == 0 or ends[position] is None or ends[position] != ends[position - 1]:
                 flag("no_proxy_traffic", f"attempt {attempt.number}: the metering proxy saw no request",
                      attempt.number)
+            else:
+                attempt.queue_wait_s = 0.0  # its requests, and their waits, count toward the attempt before
             continue
+        attempt.queue_wait_s = _rate_limit_waits(window, rows)
         billed = [row for row in window if row.get("usage_source") != "none"]  # none: a fault, refusal or error
         served = {row.get("model_reported") for row in billed}
         usages = [_proxy_usage(row.get("usage")) for row in billed]
@@ -407,6 +440,30 @@ def _proxy_usage(raw: object) -> dict | None:
     usage.update({name: raw[name] for name in ("tokens_cache_write_5m", "tokens_cache_write_1h")
                   if isinstance(raw.get(name), int)})
     return usage
+
+
+def _rate_limit_waits(window: list[dict], rows: list[dict]) -> float:
+    """The seconds the task waited after each rate-limited request of `window` (HTTP 429) until its next request,
+    at the proxy's whole-second resolution less the 429's own time; `rows` are all the task's requests in order."""
+    following = {id(row): after for row, after in zip(rows, rows[1:])}
+    waits = []
+    for row in window:
+        after = following.get(id(row))
+        start, end = _second(row.get("ts")), _second(after.get("ts")) if after else None
+        if row.get("status") == 429 and start is not None and end is not None:
+            elapsed = row.get("elapsed_ms") if isinstance(row.get("elapsed_ms"), (int, float)) else 0
+            waits.append(max(0.0, end - start - elapsed / 1000))
+    return round(sum(waits), 3)
+
+
+def _episode_span(episode: dict) -> dict[str, str | None]:
+    """The attempt's dispatch window from its episode: it ended at `completed_at` and lasted `duration_secs`. (The
+    Graph path's own `started_at` is only when the episode was written.)"""
+    end = _instant(episode.get("completed_at") or episode.get("timestamp"))
+    seconds = episode.get("duration_secs")
+    known = isinstance(seconds, (int, float)) and not isinstance(seconds, bool) and seconds >= 0
+    return {"started_at": _iso(end - dt.timedelta(seconds=seconds)) if end and known else None,
+            "finished_at": _iso(end) if end else None}
 
 
 def _status(ran: Ran, evidence: Evidence, problems: list[str]) -> tuple[str, str]:
@@ -541,6 +598,27 @@ def _second(value: object) -> int | None:
         return int(dt.datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp())
     except ValueError:
         return None
+
+
+def _instant(value: object) -> dt.datetime | None:
+    """An ISO 8601 time as an aware datetime (UTC when it names no zone); None when missing or unreadable."""
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        moment = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return moment if moment.tzinfo else moment.replace(tzinfo=dt.UTC)
+
+
+def _from_unix_ms(value: object) -> dt.datetime | None:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        return None
+    return dt.datetime.fromtimestamp(value / 1000, dt.UTC)
+
+
+def _iso(moment: dt.datetime) -> str:
+    return moment.astimezone(dt.UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
 def _left(ctx: harness.TaskContext, clock: float) -> float:

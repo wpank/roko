@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import sys
 import time
 from pathlib import Path
 
@@ -364,7 +365,8 @@ def test_vb_run_with_a_fake_claude_labels_and_prices_the_run(places):
     assert attempt["model_reported"] == MODEL and attempt["provider"] == "anthropic" and attempt["turns"] == 7
     assert record["costs"] == {"api_equiv_usd": pytest.approx(U_PRIME), "billed_usd": 0.0,
                                "without_cache_usd": pytest.approx(0.985725), "vendor_usd": R,
-                               "source": "cli_usage", "meter_cross_check_usd": None}
+                               "source": "cli_usage", "meter_cross_check_usd": None, "by_class": None}
+    assert record["provenance"]["s01_run_dir"] is None  # only the Roko arm has S01 records of its own
     cli = attempt["cli"]
     assert cli["cost_basis"] == "model_usage" and cli["u_prime_usd"] == pytest.approx(U_PRIME)
     assert cli["r_usd"] == R and cli["u_r_gap"] == pytest.approx(abs(U_PRIME - R) / R)
@@ -428,12 +430,35 @@ def test_live_spend_past_the_cap_kills_the_session(places):
     assert record["vs"]["label"] == 0
     per_message = (150_000 * 4.00 + 5_000 * 20.00) / 1e6
     spent = record["costs"]["api_equiv_usd"]
-    assert 5.0 < spent < 5.0 + 4 * per_message and record["costs"]["source"] == "cli_usage"
+    assert 5.0 < spent < 5.0 + 4 * per_message and record["costs"]["source"] == "estimated"  # a partial total
     assert record["costs"]["vendor_usd"] is None  # killed before its result event: no R
     cli = record["execution"]["attempts"][0]["cli"]
     assert cli["cost_basis"] == "stream" and cli["killed"] == "usd"
     [row] = read_jsonl(run_dir(places) / "ledger.jsonl")
     assert validate.validate("ledger", row) == [] and row["api_equiv_usd"] == pytest.approx(spent)
+
+
+def test_a_killed_subscription_session_gets_an_honest_cost_label(places):
+    """bug-f62293: a session killed before its result event is priced from the usage its streamed messages carried,
+    a total that misses background calls. Its record says `estimated`, not the CLI's own `cli_usage`, and the schema
+    accepts it with $0 billed because the session ran on the subscription; a billed API run may still never bill $0."""
+    program, _ = fake_claude(places, "spend")
+    assert run_vb(places, arm_file(places, program)) == 0
+    [record] = read_jsonl(run_dir(places) / "records.jsonl")
+    assert validate.validate("run-record", record) == []
+    costs, [attempt] = record["costs"], record["execution"]["attempts"]
+    assert (costs["source"], costs["billed_usd"], costs["vendor_usd"]) == ("estimated", 0.0, None)
+    assert costs["api_equiv_usd"] > 5.0 and attempt["cli"]["cost_basis"] == "stream" and attempt["usage"]
+    # The subscription's mark is the CLI runner's `cli` block: without it, an estimated $0 bill is refused.
+    billed_api = json.loads(json.dumps(record))
+    del billed_api["execution"]["attempts"][0]["cli"]
+    assert any("$.costs.billed_usd: $0 billed for" in error for error in validate.validate("run-record", billed_api))
+    # The report counts the run as an estimated cost, apart from the measured ones.
+    sys.path.insert(0, str(layout.VB_ROOT / "analysis"))
+    import metrics
+    [estimated] = [m for m in metrics.arm_metrics([record], "TEST-CLI", "fd_claude")
+                   if m.metric == "estimated_cost_runs" and m.cell == "all"]
+    assert (estimated.value, estimated.n) == (1, 1)
 
 
 def test_the_wallclock_limit_kills_a_hung_session(places):

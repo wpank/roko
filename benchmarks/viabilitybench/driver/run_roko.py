@@ -6,10 +6,14 @@ For each (task, seed), `run_task`:
 1. emits a one-task plan and the workspace roko.toml into the task's workdir, which is Roko's workspace
    (`planemit`);
 2. runs `roko --repo <ws> --model <m> plan validate --strict --dag <ws>/plans`; a plan that fails is `infra_error`;
-3. runs `roko --repo <ws> --model <m> plan run <plan> --no-tui` (never `roko run`), in its own session, killed at
-   the task's wall-clock cap (status `timeout`);
+3. reserves every attempt Roko may make on the run's budget line (`Ledger.reserve`: `max_retries` + 1 attempts, each
+   an equal share of the task's worst case, $0 when unbilled), because Roko retries without the driver. A refusal
+   ends the task `aborted_cap` (reason `budget`) before any model call. Then it runs
+   `roko --repo <ws> --model <m> plan run <plan> --no-tui` (never `roko run`), in its own session, killed at the
+   task's wall-clock cap (status `timeout`);
 4. reads Roko's records (`read_evidence`), makes one attempt per dispatch and checks each (`settle`);
-5. appends one ledger row per attempt, copies Roko's records to `<run_dir>/s01/<key>/`, and removes `roko.toml`,
+5. appends one ledger row per attempt, which releases its reservation, and releases the reservations of the attempts
+   Roko did not make. It copies Roko's records to `<run_dir>/s01/<key>/`, and removes `roko.toml`,
    `plans/` and `.roko/` from the workdir, so c_i holds only the agent's tree.
 
 **Environment.** Roko gets the task's agent environment (`agent_env`), plus `ROKO_CONFIG` naming the emitted
@@ -163,6 +167,7 @@ def run_task(ctx: harness.TaskContext) -> harness.TaskOutcome:
     attempts: list[RokoAttempt] = []
     emitted = build = None
     status, reason, dispatched = "infra_error", "", False
+    reserved: list[str] = []
     try:
         binary = binary_path(ctx.arm)
         api_key_env = ctx.endpoint.api_key_env or ctx.arm.get("providers", {}).get(
@@ -188,6 +193,9 @@ def run_task(ctx: harness.TaskContext) -> harness.TaskOutcome:
         if checked.returncode != 0:
             raise RunnerError(f"the emitted plan failed `plan validate --strict --dag` (exit {checked.returncode}): "
                               f"{(checked.stdout + checked.stderr).strip()[-300:]}")
+        keys = [f"{ctx.chain_key}:{number}" for number in range(1, max_retries + 2)]
+        _reserve(ctx.ledger, keys, task_bound / (max_retries + 1) if ctx.billed else 0.0)
+        reserved = keys
         dispatched = True
         ran = _roko([*head, "plan", "run", str(emitted.plan_dir), "--no-tui"], ctx.workdir, env, _left(ctx, clock))
         transcript.append(ran.event("run"))
@@ -199,6 +207,9 @@ def run_task(ctx: harness.TaskContext) -> harness.TaskOutcome:
         transcript += [_attempt_event(attempt, episode) for attempt, episode in zip(attempts, evidence.episodes)]
         transcript.append({"event": "check", "problems": problems})
         status, reason = _status(ran, evidence, problems)
+    except ledger.BudgetError as err:  # no room on the budget line: `plan run` never started
+        status, reason = "aborted_cap", "budget"
+        transcript.append({"event": "stop", "kind": status, "reason": str(err)})
     except (RunnerError, planemit.PlanEmitError, OSError, subprocess.SubprocessError) as err:
         reason = f"{type(err).__name__}: {err}"[:500]
         transcript.append({"event": "error", "error": reason})
@@ -221,6 +232,8 @@ def run_task(ctx: harness.TaskContext) -> harness.TaskOutcome:
                               model_reported=attempt.model_reported, usage=attempt.reported_usage(),
                               cost=attempt.cost or ledger.Cost(None, None, "unknown"), billed=ctx.billed,
                               reserved_usd=attempt.reserved_usd)
+        for key in reserved:  # the attempts Roko did not make; a key whose row was just written is already free
+            ctx.ledger.release(key)
     return harness.TaskOutcome(status=status, reason=reason, attempts=list(attempts), transcript=transcript,
                                started_at=started, finished_at=harness.utc_now())
 
@@ -535,6 +548,19 @@ def _left(ctx: harness.TaskContext, clock: float) -> float:
     if left <= 0:
         raise RunnerError("no wall-clock time left for the task")
     return left
+
+
+def _reserve(book: ledger.Ledger, keys: list[str], usd: float) -> None:
+    """Reserve `usd` for each attempt key, all or none: raises BudgetError, holding nothing, if one does not fit."""
+    held: list[str] = []
+    try:
+        for key in keys:
+            book.reserve(key, usd)
+            held.append(key)
+    except ledger.BudgetError:
+        for key in held:
+            book.release(key)
+        raise
 
 
 def _clip(text: str) -> str:

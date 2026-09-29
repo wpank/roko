@@ -2,7 +2,7 @@
 id = "gap-65ed57"
 kind = "gap"
 title = "Whitepaper §10: name the closest partial matches from the D13 prior-art search"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "whitepaper"
@@ -11,6 +11,7 @@ subsystem = ["paper"]
 created = 2026-09-29
 updated = 2026-09-29
 last_verified = 2026-09-29
+last_verified_rev = "ebffa7842"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (16:40, wk-prior-art's report on gap-bb619d, edit E16)"
 anchors = ["docs/whitepaper/10-related-work.md", "docs/whitepaper/references.bib"]
@@ -20,6 +21,11 @@ links = { depends_on = [], blocks = [], related = ["gap-bb619d", "gap-ec516e"], 
 
 [[verify]]
 command = "grep -q 'gao2026pinsieve' docs/whitepaper/10-related-work.md && grep -q '{gao2026pinsieve,' docs/whitepaper/references.bib && python3 tools/paperlint.py --strict --require-status reviewed docs/whitepaper/*.md"
+
+[closed]
+at = 2026-09-29
+commit = "ebffa7842"
+evidence = "10-related-work.md names the four closest partial matches (gao2026pinsieve, bhardwaj2026bounded, li2026rsirouter, xu2026replaylens), each added to references.bib after refcheck and an arxiv.org abstract read; §10 stays at 533 words (1.07x); paperlint --strict --require-status reviewed docs/whitepaper/*.md passes (14 files clean) and pandoc citeproc renders §10 without warnings"
 +++
 
 ## Problem

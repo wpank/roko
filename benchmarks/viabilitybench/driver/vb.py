@@ -308,6 +308,10 @@ def cmd_run(args: argparse.Namespace) -> int:
             order = [instance for instance in plan.stream.order(seed) if instance in plan.instances]
             _write_json(run_dir / f"order-{seed}.json", {"stream": plan.stream.id, "seed": seed, "order": order})
             for position, instance_id in enumerate(order, 1):
+                refusal = book.refusal(plan.worst_task_usd if plan.arm["arm"]["billed"] else 0.0)
+                if refusal:  # S09 §4.6: the task could take billed spend past a budget cap (ledger.py)
+                    _log_error(run_dir, f"{instance_id}.s{seed}", "budget", f"stopped before the task: {refusal}")
+                    return 1
                 if args.max_cost_usd is not None and plan.worst_task_usd is not None and \
                         book.spent_bound_usd + plan.worst_task_usd > args.max_cost_usd:
                     _log_error(run_dir, f"{instance_id}.s{seed}", "budget",
@@ -510,6 +514,7 @@ def _parser() -> argparse.ArgumentParser:
     estimate = commands.add_parser("estimate", help="print the plan and its worst-case cost", allow_abbrev=False)
     planned(estimate)
     estimate.set_defaults(handler=cmd_estimate)
+    ledger.add_parser(commands, DEFAULT_RESULTS)  # vb ledger report|reconcile (S09 E2)
 
     mat = commands.add_parser("materialize", help="render one instance as the driver would", allow_abbrev=False)
     mat.add_argument("--stream", required=True)

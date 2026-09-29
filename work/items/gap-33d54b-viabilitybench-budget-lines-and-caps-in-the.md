@@ -3,13 +3,14 @@ id = "gap-33d54b"
 kind = "gap"
 title = "ViabilityBench budget lines and caps in the run ledger (S09.E2)"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p1"
 goal = "proof"
 size = "S"
 subsystem = ["benchmarks/viabilitybench/driver", "benchmarks/viabilitybench/experiments"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-29
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e12"
 discovered_from = "tmp/cybernetic-harness/specs/S09-experiments.md (§4.6, §6 E2; checklist S09.E2); workstreams/assessment/W10-benchmarks-proof.md (circular budget gate, recs 2 and 7)"
 anchors = ["benchmarks/viabilitybench/experiments/budget.toml", "benchmarks/viabilitybench/driver/ledger.py", "benchmarks/viabilitybench/driver/test_ledger.py"]
@@ -68,9 +69,9 @@ Checked at `41c7ffbd6`: nothing exists, and no money has been spent.
 
 ## Done when
 
-- [ ] A dispatch that would exceed a line cap or the experiment cap is refused before any provider call.
-- [ ] Reconciliation flags a synthetic export that differs by more than 5%.
-- [ ] Both `[[verify]]` commands pass.
+- [x] A dispatch that would exceed a line cap or the experiment cap is refused before any provider call.
+- [x] Reconciliation flags a synthetic export that differs by more than 5%.
+- [x] Both `[[verify]]` commands pass.
 
 ## Notes
 

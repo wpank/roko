@@ -8,11 +8,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { MockInstance } from 'vitest';
 import { act, cleanup, fireEvent, screen, waitFor } from '@testing-library/react';
-import type { WirePlanSummary, WirePlanTasks, WireValidation } from '@/api/contracts';
+import type { WireDashboardEvent, WirePlanSummary, WirePlanTasks, WireValidation } from '@/api/contracts';
 import { queryKeys } from '@/api/queries';
 import { Workspace } from '@/components/shell/Workspace';
 import { initialRunState } from '@/lib/runState';
-import { renderWithClient, setStore, stubFetch, textOf } from '@/test/dom';
+import { foldEvents, renderWithClient, setStore, stubFetch, textOf } from '@/test/dom';
 
 // As in Next 15, replaceState re-renders every reader of the search params.
 vi.mock('next/navigation', async () => {
@@ -87,7 +87,7 @@ const settle = () => act(() => new Promise<void>((resolve) => setTimeout(resolve
 
 /** Render the workspace on plan hello and open its editor, with the saved text loaded. */
 async function openEditor() {
-  renderWithClient(<Workspace />, {
+  const { client } = renderWithClient(<Workspace />, {
     seed: [
       [queryKeys.plans, PLANS],
       [queryKeys.workspace, { name: 'ws', path: '/tmp/ws', branch: 'main' }],
@@ -100,12 +100,14 @@ async function openEditor() {
   fireEvent.click(action('edit')!);
   const el = (await screen.findByLabelText('Plan source TOML')) as HTMLTextAreaElement;
   await waitFor(() => expect(el.value).toBe(toml('hello')));
-  return el;
+  return { el, client };
 }
 
 /** Open the editor and type text that is not saved. */
 async function editUnsaved() {
-  fireEvent.change(await openEditor(), { target: { value: EDITED } });
+  const { el, client } = await openEditor();
+  fireEvent.change(el, { target: { value: EDITED } });
+  return client;
 }
 
 describe('protects unsaved edits', () => {
@@ -186,6 +188,30 @@ describe('protects unsaved edits', () => {
 
     confirm.mockReturnValue(true);
     fireEvent.click(action('edit')!);
+    expect(action('run-all')!.disabled).toBe(false);
+  });
+
+  it('asks nothing when the selection stays on the plan, as a Show for its failed task', async () => {
+    const failed: WireDashboardEvent[] = [
+      { type: 'plan_set_loaded', plans: [{ plan_id: 'hello', title: 'Hello world', tasks_total: 1 }] },
+      { type: 'plan_started', plan_id: 'hello', tasks_total: 1 },
+      { type: 'task_started', plan_id: 'hello', task_id: 'T01', phase: 'implement' },
+      { type: 'task_completed', plan_id: 'hello', task_id: 'T01', outcome: 'failed' },
+      { type: 'plan_completed', plan_id: 'hello', success: false },
+    ];
+    setStore(foldEvents(failed));
+    await editUnsaved();
+    fireEvent.click(screen.getByRole('button', { name: 'Show' }));
+    expect(confirm).not.toHaveBeenCalled();
+    expect(new URLSearchParams(window.location.search).get('task')).toBe('T01');
+    expect(editor()!.value).toBe(EDITED);
+  });
+
+  it('asks nothing when its plan leaves the list, which takes the editor with it', async () => {
+    const client = await editUnsaved();
+    client.setQueryData(queryKeys.plans, PLANS.filter((p) => p.id !== 'hello'));
+    await waitFor(() => expect(editor()).toBeNull());
+    expect(confirm).not.toHaveBeenCalled();
     expect(action('run-all')!.disabled).toBe(false);
   });
 

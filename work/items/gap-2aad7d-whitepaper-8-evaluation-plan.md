@@ -3,13 +3,14 @@ id = "gap-2aad7d"
 kind = "gap"
 title = "Whitepaper §8 Evaluation plan"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p1"
 goal = "whitepaper"
 size = "S"
 subsystem = ["docs/whitepaper"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-29
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e1"
 discovered_from = "tmp/cybernetic-harness/tldr/04-FRONTIER-PLANS-CHEAP-EXECUTES.md (How to prove it)"
 anchors = ["docs/whitepaper/08-evaluation-plan.md"]
@@ -67,7 +68,7 @@ None of them measures planning or integration (W9 F2).
 
 ## Done when
 
-- [ ] The arms, metrics and falsifiers are stated, with the scope of each arm.
+- [x] The arms, metrics and falsifiers are stated, with the scope of each arm.
 - [ ] The `[[verify]]` command passes.
 
 ## Notes
@@ -76,3 +77,12 @@ None of them measures planning or integration (W9 F2).
 - **The author must decide** whether the evaluation covers planning and integration (W9 PW05). Until then, say that
   the pilot measures single tasks.
 - Lane `paper`; no hot files.
+- **Decided 2026-09-29 (Will):** the evaluation covers single tasks plus a small exploratory plan-level slice
+  (gap-89f393, gap-1cd676); ViabilityBench lives at `benchmarks/viabilitybench/`; the Claude Code arm runs on the
+  subscription (dec-b78874); the tier ladder is on by default (spec-98f76d). §8 follows all four.
+- **Drafted on `work/gap-2aad7d` at `b12d512f2`** (2026-09-29). The static checks pass. `tools/paperlint.py` is not
+  at BASE `1f4481133`, so the full verify can't run yet; the in-progress copy in gap-af0b57's worktree reports the
+  file clean under `--strict` at 671 words (1.22× of 550). Close once gap-af0b57 merges and the verify passes.
+- **Sources outside the tracker:** the tags come from the status matrix draft (gap-35a614, pinned at `a17d4dadd`):
+  V7, RC4, QA2, EX7 and IS3. The full comparison's arms and H1 bar (0.90 and 0.30) come from S09 v1.1, which no
+  tracked item carries yet; the text cites spec-567e52, gap-c4f364 and gap-d9e9fe for them.

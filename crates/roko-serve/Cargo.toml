@@ -70,7 +70,6 @@ hyper-util = { version = "0.1", features = ["server", "http1", "http2", "tokio"]
 indexmap = { workspace = true }
 regex = { workspace = true }
 rustls = "0.23"
-rustls-pemfile = "2"
 jsonwebtoken = { workspace = true }
 reqwest = { workspace = true }
 rand = { workspace = true }

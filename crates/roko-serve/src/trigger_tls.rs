@@ -1,7 +1,6 @@
 //! TLS transport for webhook bindings that require mutual authentication.
 
 use std::fmt::Write as _;
-use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -16,6 +15,8 @@ use hyper_util::rt::{TokioExecutor, TokioIo};
 use hyper_util::server::conn::auto::Builder;
 use roko_core::trigger::{TriggerAuth, TriggerBinding};
 use rustls::RootCertStore;
+use rustls::pki_types::pem::{self, PemObject};
+use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use rustls::server::WebPkiClientVerifier;
 use sha2::{Digest, Sha256};
 use tokio::net::TcpListener;
@@ -82,8 +83,7 @@ fn build_config(
     key_pem: &[u8],
     client_ca_pem: &[u8],
 ) -> Result<TriggerTlsConfig> {
-    let mut certificate_reader = Cursor::new(certificate_pem);
-    let certificates = rustls_pemfile::certs(&mut certificate_reader)
+    let certificates = CertificateDer::pem_slice_iter(certificate_pem)
         .collect::<std::result::Result<Vec<_>, _>>()
         .context("parse mTLS server certificate chain")?;
     anyhow::ensure!(
@@ -91,13 +91,15 @@ fn build_config(
         "mTLS server cert contains no certificates"
     );
 
-    let mut key_reader = Cursor::new(key_pem);
-    let key = rustls_pemfile::private_key(&mut key_reader)
-        .context("parse mTLS server private key")?
-        .context("mTLS server key contains no private key")?;
+    let key = match PrivateKeyDer::from_pem_slice(key_pem) {
+        Ok(key) => key,
+        Err(pem::Error::NoItemsFound) => {
+            anyhow::bail!("mTLS server key contains no private key")
+        }
+        Err(error) => return Err(error).context("parse mTLS server private key"),
+    };
 
-    let mut client_ca_reader = Cursor::new(client_ca_pem);
-    let client_cas = rustls_pemfile::certs(&mut client_ca_reader)
+    let client_cas = CertificateDer::pem_slice_iter(client_ca_pem)
         .collect::<std::result::Result<Vec<_>, _>>()
         .context("parse mTLS client CA certificates")?;
     anyhow::ensure!(

@@ -3,13 +3,14 @@ id = "gap-370d3c"
 kind = "gap"
 title = "Whitepaper §2 Design principles"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p1"
 goal = "whitepaper"
 size = "S"
 subsystem = ["docs/whitepaper"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-29
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e1"
 discovered_from = "tmp/cybernetic-harness/tldr/04-FRONTIER-PLANS-CHEAP-EXECUTES.md (design rules 1-8)"
 anchors = ["docs/whitepaper/02-design-principles.md"]
@@ -68,7 +69,7 @@ gap-0191eb seeds all ten. No merge today touches these sources.
 
 ## Done when
 
-- [ ] Each of the eight rules cites at least one verified source.
+- [x] Each of the eight rules cites at least one verified source.
 - [ ] The `[[verify]]` command passes.
 
 ## Notes
@@ -77,3 +78,9 @@ gap-0191eb seeds all ten. No merge today touches these sources.
 - **`references.bib` is shared with §10** (gap-ec516e). Add new keys in a separate small commit, after checking them
   with `tmp/cybernetic-harness/tools/refcheck.py`.
 - Lane `paper`; no hot files.
+- **Written on `work/gap-370d3c` (2026-09-29)** at `d7f854a84`, with the two new bib keys (`wang2026agent`,
+  `ashby1960design`) in `c9ee7cf1b`. 666 words (1.21× the budget, inside `--strict`'s 0.5–1.3×) and 14 citations,
+  each with the setting it was measured in.
+  - The verify's static part passes. Its paperlint part waits for gap-af0b57: `tools/paperlint.py` isn't at BASE
+    `1f4481133`. The unmerged copy in gap-af0b57's worktree gives `--strict --check-identifiers` clean.
+  - The section has no status tags; each rule points to its step in §4, which takes its tags from the status matrix.

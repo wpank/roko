@@ -13,7 +13,7 @@ last_verified = 2026-09-29
 last_verified_rev = "d9e79e9d8"
 source = "tmp/dogfood/2026-09-25-portal-programme-run.md#P2-6. Minor per-task waste"
 discovered_from = "audit:tmp/dogfood/2026-09-25-portal-programme-run.md#P2-6. Minor per-task waste"
-anchors = ["crates/roko-cli/src/graph_task_dispatch.rs::emit_feedback", "crates/roko-cli/src/graph_task_dispatch.rs::settle_task_verification", "crates/roko-cli/src/graph_task_dispatch.rs::assign_retrieval_strategy_arm"]
+anchors = ["crates/roko-cli/src/graph_task_dispatch/feedback.rs::emit_feedback", "crates/roko-cli/src/graph_task_dispatch/verification.rs::settle_task_verification", "crates/roko-cli/src/graph_task_dispatch/routing_context.rs::assign_retrieval_strategy_arm"]
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
 
 [[verify]]

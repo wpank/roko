@@ -14,7 +14,7 @@ last_verified = 2026-09-29
 last_verified_rev = "a17d9d766"
 source = "tmp/backlog/archive/403-taskdef-routing-metadata-wiring.md#403 — TaskDef Routing Metadata Wiring (24-field gap)"
 discovered_from = "audit:tmp/backlog/archive/403-taskdef-routing-metadata-wiring.md#403 — TaskDef Routing Metadata Wiring (24-field gap)"
-anchors = ["crates/roko-cli/src/task_parser.rs::TaskDefSerde", "crates/roko-cli/src/task_parser.rs::TaskDef", "crates/roko-cli/src/task_parser.rs::TaskDef::build_prompt", "crates/roko-core/src/task.rs::Task", "crates/roko-cli/src/graph_task_dispatch.rs::build_routing_context", "crates/roko-cli/src/dispatch/model_routing.rs::RoutingInputs::from_task", "crates/roko-compose/src/templates/mod.rs::format_enhancements"]
+anchors = ["crates/roko-cli/src/task_parser.rs::TaskDefSerde", "crates/roko-cli/src/task_parser.rs::TaskDef", "crates/roko-cli/src/task_parser.rs::TaskDef::build_prompt", "crates/roko-core/src/task.rs::Task", "crates/roko-cli/src/graph_task_dispatch/routing_context.rs::build_routing_context", "crates/roko-cli/src/dispatch/model_routing.rs::RoutingInputs::from_task", "crates/roko-compose/src/templates/mod.rs::format_enhancements"]
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
 
 [[verify]]

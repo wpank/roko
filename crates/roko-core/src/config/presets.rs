@@ -112,6 +112,7 @@ fn minimal() -> RokoConfig {
             dreams: Default::default(),
             use_lookahead_router: false,
             lookahead_threshold: 0.7,
+            t0_reflexes: false,
             override_learning_dampening: None,
             gate_threshold_flush_interval:
                 crate::config::learning::DEFAULT_GATE_THRESHOLD_FLUSH_INTERVAL,
@@ -183,6 +184,7 @@ fn thorough() -> RokoConfig {
             dreams: Default::default(),
             use_lookahead_router: true,
             lookahead_threshold: 0.7,
+            t0_reflexes: false,
             override_learning_dampening: None,
             gate_threshold_flush_interval:
                 crate::config::learning::DEFAULT_GATE_THRESHOLD_FLUSH_INTERVAL,

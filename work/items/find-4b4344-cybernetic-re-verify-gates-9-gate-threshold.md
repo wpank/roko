@@ -14,7 +14,7 @@ last_verified = 2026-09-29
 last_verified_rev = "33e107da1"
 source = "tmp/archive/cybernetic-audit/30-master-checklist.md#P1 -- Wire Existing Code"
 discovered_from = "audit:tmp/archive/cybernetic-audit/30-master-checklist.md#P1 -- Wire Existing Code"
-anchors = ["crates/roko-cli/src/runner/persist.rs::GateThresholds", "crates/roko-gate/src/ratchet.rs::GateRatchet", "crates/roko-gate/src/adaptive_threshold.rs::ThresholdProfile", "crates/roko-cli/src/graph_task_dispatch.rs::GraphFeedbackContext", "crates/roko-cli/src/graph_execution/plan_runner.rs", "crates/roko-learn/src/oracles/coding.rs::CodingOracle::predict_test_pass_rate"]
+anchors = ["crates/roko-cli/src/runner/persist.rs::GateThresholds", "crates/roko-gate/src/ratchet.rs::GateRatchet", "crates/roko-gate/src/adaptive_threshold.rs::ThresholdProfile", "crates/roko-cli/src/graph_task_dispatch/feedback.rs::GraphFeedbackContext", "crates/roko-cli/src/graph_execution/plan_runner.rs", "crates/roko-learn/src/oracles/coding.rs::CodingOracle::predict_test_pass_rate"]
 links = { depends_on = [], blocks = [], related = ["reg-c7ecf6", "find-34a4b5"], supersedes = [], duplicate_of = "" }
 
 [[verify]]

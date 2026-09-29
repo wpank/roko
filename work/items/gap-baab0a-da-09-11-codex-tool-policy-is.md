@@ -14,7 +14,7 @@ last_verified = 2026-09-29
 last_verified_rev = "a17d9d766"
 source = "tmp/dev-audit/09-additional-live-run-findings.md#Codex tool policy was advisory, not binding"
 discovered_from = "audit:tmp/dev-audit/09-additional-live-run-findings.md#Codex tool policy was advisory, not binding"
-anchors = ["crates/roko-agent/src/provider/claude_cli.rs::CodexCliAdapter", "crates/roko-agent/src/exec.rs::CodexOperationPolicy", "crates/roko-agent/src/exec.rs::check_codex_output_against_policy", "crates/roko-cli/src/graph_task_dispatch.rs::effective_agent_contract", "crates/roko-cli/src/dispatch_v2.rs::build_codex_invocation"]
+anchors = ["crates/roko-agent/src/provider/claude_cli.rs::CodexCliAdapter", "crates/roko-agent/src/exec.rs::CodexOperationPolicy", "crates/roko-agent/src/exec.rs::check_codex_output_against_policy", "crates/roko-cli/src/graph_task_dispatch/routing_context.rs::effective_agent_contract", "crates/roko-cli/src/dispatch_v2.rs::build_codex_invocation"]
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
 
 [[verify]]

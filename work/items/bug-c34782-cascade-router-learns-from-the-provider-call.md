@@ -14,7 +14,7 @@ last_verified = 2026-09-29
 last_verified_rev = "a17d9d766"
 source = "local-audit-2026-09-26"
 discovered_from = "audit:local-defect-review-2026-09-26 (untracked design notes)"
-anchors = ["crates/roko-cli/src/graph_task_dispatch.rs::GraphTaskDispatcher::emit_feedback", "crates/roko-cli/src/graph_task_dispatch.rs::provider_failure_reason", "crates/roko-cli/src/runtime_feedback/mod.rs::FeedbackEvent", "crates/roko-cli/src/runtime_feedback/routing.rs::RoutingObservationSink", "crates/roko-graph/src/cells/task_executor.rs::TaskGateVerdict"]
+anchors = ["crates/roko-cli/src/graph_task_dispatch/feedback.rs::GraphTaskDispatcher::emit_feedback", "crates/roko-cli/src/graph_task_dispatch/turn_policy.rs::provider_failure_reason", "crates/roko-cli/src/runtime_feedback/mod.rs::FeedbackEvent", "crates/roko-cli/src/runtime_feedback/routing.rs::RoutingObservationSink", "crates/roko-graph/src/cells/task_executor.rs::TaskGateVerdict"]
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
 
 [[verify]]

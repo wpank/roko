@@ -14,7 +14,7 @@ last_verified = 2026-09-29
 last_verified_rev = "33e107da1"
 source = "session:roko-b6 2026-09-29 direct-implementation batch"
 discovered_from = "merge:fix/graph-ready-queue 3e7552acd"
-anchors = ["crates/roko-cli/src/graph_task_dispatch.rs::dispatch_beside_editing_sibling", "crates/roko-cli/src/graph_task_dispatch.rs::a_verify_failure_left_in_a_sibling_file_blames_the_sibling", "crates/roko-cli/src/graph_task_dispatch/sibling_settle.rs::begin_settle"]
+anchors = ["crates/roko-cli/src/graph_task_dispatch/verification.rs::dispatch_beside_editing_sibling", "crates/roko-cli/src/graph_task_dispatch/verification.rs::a_verify_failure_left_in_a_sibling_file_blames_the_sibling", "crates/roko-cli/src/graph_task_dispatch/sibling_settle.rs::begin_settle"]
 links = { depends_on = [], blocks = [], related = ["gap-439794", "bug-730243"], supersedes = [], duplicate_of = "" }
 
 [[verify]]

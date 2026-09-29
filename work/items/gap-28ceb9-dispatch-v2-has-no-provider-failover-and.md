@@ -13,7 +13,7 @@ last_verified = 2026-09-29
 last_verified_rev = "d9e79e9d8"
 source = "dogfood:tmp/dogfood/2026-09-28-portal-programme-continuation.md"
 discovered_from = "agent:e5-failover"
-anchors = ["crates/roko-cli/src/dispatch_v2.rs::classify_provider_error", "crates/roko-cli/src/graph_task_dispatch.rs::run_bridge_with_failover"]
+anchors = ["crates/roko-cli/src/dispatch_v2.rs::classify_provider_error", "crates/roko-cli/src/graph_task_dispatch/failover.rs::run_bridge_with_failover"]
 links = { depends_on = [], blocks = [], related = ["bug-35379d", "find-229e9c"], supersedes = [], duplicate_of = "" }
 
 [[verify]]

@@ -14,7 +14,7 @@ last_verified = 2026-09-29
 last_verified_rev = "a17d9d766"
 source = "tmp/archive/git-audit/06-FINDINGS-REGISTER.md#register"
 discovered_from = "audit:tmp/archive/git-audit/06-FINDINGS-REGISTER.md#register"
-anchors = ["crates/roko-cli/src/graph_task_dispatch.rs:3392", "crates/roko-cli/src/graph_execution/workspaces.rs::acquire", "crates/roko-cli/src/orchestrator/worktree/cleanup.rs::clear_stale_locks_unlocked", "crates/roko-cli/src/orchestrator/worktree/mod.rs::create_locked", "crates/roko-cli/src/orchestrator/worktree/git_ops.rs::is_stale_lock"]
+anchors = ["crates/roko-cli/src/graph_task_dispatch.rs::GraphTaskDispatcher::dispatch", "crates/roko-cli/src/graph_execution/workspaces.rs::acquire", "crates/roko-cli/src/orchestrator/worktree/cleanup.rs::clear_stale_locks_unlocked", "crates/roko-cli/src/orchestrator/worktree/mod.rs::create_locked", "crates/roko-cli/src/orchestrator/worktree/git_ops.rs::is_stale_lock"]
 links = { depends_on = [], blocks = [], related = ["gap-7ed79a", "gap-4ec59f", "q-1faa0c"], supersedes = [], duplicate_of = "" }
 
 [[verify]]

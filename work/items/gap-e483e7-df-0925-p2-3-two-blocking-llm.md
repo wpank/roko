@@ -13,7 +13,7 @@ last_verified = 2026-09-29
 last_verified_rev = "d9e79e9d8"
 source = "tmp/dogfood/2026-09-25-portal-programme-run.md#P2-3. Two blocking LLM calls on every gate failure"
 discovered_from = "audit:tmp/dogfood/2026-09-25-portal-programme-run.md#P2-3. Two blocking LLM calls on every gate failure"
-anchors = ["crates/roko-cli/src/graph_task_dispatch.rs::settle_task_verification", "crates/roko-cli/src/graph_task_dispatch.rs::cheap_agent"]
+anchors = ["crates/roko-cli/src/graph_task_dispatch/verification.rs::settle_task_verification", "crates/roko-cli/src/graph_task_dispatch.rs::cheap_agent"]
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
 
 [[verify]]

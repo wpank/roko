@@ -1385,7 +1385,10 @@ mod tests {
         let mut config = crate::config::load_resolved_config(tmp.path())
             .expect("load the fresh workspace config")
             .config;
-        assert_eq!(config.budget.max_turn_usd, 0.0, "roko init sets no turn cap");
+        assert_eq!(
+            config.budget.max_turn_usd, 0.0,
+            "roko init sets no turn cap"
+        );
 
         check_budget_admission(tmp.path(), &config)
             .await

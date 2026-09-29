@@ -5,7 +5,8 @@
  *
  * Each row shows: glyph · id · title · role·model · time · cost · retry count · check chips.
  * The selected row expands to show description, files, dependencies, and verify commands.
- * Failed rows show the first meaningful check output line and a Retry button.
+ * Failed rows show the first meaningful check output line; the Retry button appears only
+ * when onRetry is provided (the plan header is the one Retry — see PlanView.tsx).
  * accepted_with_failures rows are amber and list their failing checks.
  */
 
@@ -24,7 +25,8 @@ export interface TaskListProps {
   rows: TaskRowModel[];
   selectedTaskId: string | null;
   onSelectTask(id: string): void;
-  onRetry(): void;
+  /** When provided, a Retry button appears in the expanded detail of failed rows. */
+  onRetry?(): void;
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
@@ -78,7 +80,7 @@ function ExpandedDetail({
   onRetry,
 }: {
   row: TaskRowModel;
-  onRetry(): void;
+  onRetry?(): void;
 }) {
   const failedChecks = row.checks.filter((c) => c.status === 'failed');
   const firstOutputLine = firstFailedCheckLine(row.checks);
@@ -92,7 +94,7 @@ function ExpandedDetail({
         </pre>
       )}
 
-      {/* ── Failed: first output line + Retry button ───────────────────────── */}
+      {/* ── Failed: first output line + optional Retry button ─────────────── */}
       {row.status === 'failed' && (
         <div className="flex flex-col gap-2">
           {firstOutputLine && (
@@ -103,24 +105,26 @@ function ExpandedDetail({
               {firstOutputLine}
             </p>
           )}
-          <div>
-            <button
-              type="button"
-              data-action="retry"
-              onClick={(e) => {
-                e.stopPropagation();
-                onRetry();
-              }}
-              className={cn(
-                'inline-flex items-center gap-1 rounded px-2 py-1',
-                'text-xs font-mono border border-border-default',
-                'text-text-muted hover:text-text-strong hover:border-border-hover',
-                'transition-[border-color,color] duration-[80ms]',
-              )}
-            >
-              <span aria-hidden>↻</span> Retry
-            </button>
-          </div>
+          {onRetry && (
+            <div>
+              <button
+                type="button"
+                data-action="retry"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onRetry();
+                }}
+                className={cn(
+                  'inline-flex items-center gap-1 rounded px-2 py-1',
+                  'text-xs font-mono border border-border-default',
+                  'text-text-muted hover:text-text-strong hover:border-border-hover',
+                  'transition-[border-color,color] duration-[80ms]',
+                )}
+              >
+                <span aria-hidden>↻</span> Retry
+              </button>
+            </div>
+          )}
         </div>
       )}
 
@@ -221,7 +225,7 @@ function TaskRow({
   row: TaskRowModel;
   selected: boolean;
   onSelect(): void;
-  onRetry(): void;
+  onRetry?(): void;
 }) {
   const timeStr = formatSpan(row.time);
   const costStr = row.costUsd != null ? formatCost(row.costUsd) : null;

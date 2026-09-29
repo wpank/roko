@@ -88,8 +88,8 @@ describe('pickAlert', () => {
     expect(alert!.key).toBe('run-error:1000');
   });
 
-  // 4. Rank 2 — failed task with check output
-  it('rank 2: emits a failed-task alert with task/phase/check detail', () => {
+  // 4. Rank 2 — failed task alert names plan, task and failed check
+  it('rank 2: names the plan, task and failed check in the alert', () => {
     const run = withFailedTask(
       initialRunState(),
       'plan-1',
@@ -102,13 +102,10 @@ describe('pickAlert', () => {
     const alert = pickAlert(baseInput({ run }));
     expect(alert).not.toBeNull();
     expect(alert!.severity).toBe('error');
-    expect(alert!.text).toBe(
-      'Build binary failed: compile — error[E0432]: unresolved import `foo`',
-    );
+    expect(alert!.text).toBe('plan-1: task-compile failed (compile check)');
     expect(alert!.key).toBe('task-failed:plan-1:task-compile:1');
     expect(alert!.actions).toEqual([
       { kind: 'select-task', planId: 'plan-1', taskId: 'task-compile' },
-      { kind: 'retry', planId: 'plan-1' },
     ]);
   });
 

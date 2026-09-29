@@ -5,8 +5,11 @@
  * candidate whose key is not `dismissedKey` is returned.
  *
  * Rank order:
- * 1. requestError (portal action rejected by the server)
- *    → newest run.errors entry (execution error)
+ * 1a. requestError (portal action rejected by the server)
+ * 1b. requestNotice (server cannot do this — informational)
+ * 1c. newest run.errors entry (execution error); the server's generic
+ *     "plan <id> completed with task-level failures" yields to rank 2 when
+ *     the plan has a known failed task, and otherwise reads "<title> failed".
  * 2. Failed task, preferring the selected plan
  * 3. validationErrors > 0 on the selected plan
  * 4. Connection disconnected or error
@@ -38,38 +41,52 @@ export interface AlertInput {
   /** A server notice about an unsupported operation — shown as an info alert. */
   requestNotice?: string | null;
   dismissedKey: string | null;
+  /**
+   * Map of plan id → display title from the plan list (GET /api/plans).
+   * Provides the most up-to-date title; falls back to the run's plan record,
+   * then to the bare plan id.
+   */
+  planTitles?: Readonly<Record<string, string>>;
 }
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
 /**
- * Return the first non-empty line from `output` that does not start with
- * '$ ' (i.e. is not a shell-echo line).  Returns null when no such line exists.
+ * Resolve a plan's display title: planTitles[id] → run.plans[id].title → id.
  */
-function firstCheckOutputLine(output: string): string | null {
-  for (const raw of output.split('\n')) {
-    const line = raw.trim();
-    if (line.length > 0 && !raw.startsWith('$ ')) {
-      return line;
-    }
-  }
-  return null;
+function resolvePlanTitle(
+  planId: string,
+  planTitles: Readonly<Record<string, string>> | undefined,
+  run: RunState,
+): string {
+  return planTitles?.[planId] ?? run.plans[planId]?.title ?? planId;
+}
+
+/**
+ * Return the label for the first failed check: its phase if set, else its name.
+ * Returns null when the task has no failed check.
+ */
+function failedCheckLabel(task: TaskRun): string | null {
+  const check = task.checks.find((c) => c.status === 'failed');
+  if (!check) return null;
+  return check.phase || check.name;
 }
 
 /**
  * Build the human-readable text for a failed task alert.
  *
- * Format: "<title> failed: <phase> — <first useful output line>"
- * The trailing " — <detail>" part is omitted when no useful line is found.
+ * Format: "<plan title>: <task id> failed (<check label> check)"
+ * The trailing " (<check label> check)" is omitted when no failed check exists.
  */
-function failedTaskText(task: TaskRun): string {
-  const title = task.title.length > 0 ? task.title : task.taskId;
-  const base = `${title} failed: ${task.phase}`;
-
-  const failedCheck = task.checks.find((c) => c.status === 'failed');
-  const detail = failedCheck ? firstCheckOutputLine(failedCheck.output) : null;
-
-  return detail ? `${base} — ${detail}` : base;
+function failedTaskText(
+  task: TaskRun,
+  planTitles: Readonly<Record<string, string>> | undefined,
+  run: RunState,
+): string {
+  const title = resolvePlanTitle(task.planId, planTitles, run);
+  const checkLabel = failedCheckLabel(task);
+  const base = `${title}: ${task.taskId} failed`;
+  return checkLabel ? `${base} (${checkLabel} check)` : base;
 }
 
 // ── pickAlert ─────────────────────────────────────────────────────────────────
@@ -79,7 +96,7 @@ function failedTaskText(task: TaskRun): string {
  * when no alert conditions are present.
  */
 export function pickAlert(input: AlertInput): Alert | null {
-  const { run, connection, selectedPlanId, validationErrors, requestError, requestNotice, dismissedKey } = input;
+  const { run, connection, selectedPlanId, validationErrors, requestError, requestNotice, dismissedKey, planTitles } = input;
 
   /** Return `alert` if it is not the dismissed candidate, otherwise null. */
   function tryAlert(alert: Alert): Alert | null {
@@ -102,11 +119,31 @@ export function pickAlert(input: AlertInput): Alert | null {
   }
 
   // ── Rank 1c: newest run.errors entry ────────────────────────────────────
+  // The server emits "plan <id> completed with task-level failures" as a
+  // catch-all; hide it when rank 2 already has a specific task to show.
+  // Without a known failed task, reword it to "<title> failed" (same key).
+  // Any other run error passes through unchanged.
   if (run.errors.length > 0) {
     const newest = run.errors[run.errors.length - 1]!;
     const key = `run-error:${newest.atMs}`;
-    const alert = tryAlert({ key, severity: 'error', text: newest.message, actions: [] });
-    if (alert) return alert;
+
+    const genericMatch = newest.message.match(/^plan (\S+) completed with task-level failures$/);
+    if (genericMatch) {
+      const planId = genericMatch[1]!;
+      const hasFailed = Object.values(run.tasks).some(
+        (t) => t.planId === planId && t.status === 'failed',
+      );
+      if (!hasFailed) {
+        // No specific failed task — reword to a human-readable summary.
+        const title = resolvePlanTitle(planId, planTitles, run);
+        const alert = tryAlert({ key, severity: 'error', text: `${title} failed`, actions: [] });
+        if (alert) return alert;
+      }
+      // else: yield to rank 2 — the specific task failure says it better.
+    } else {
+      const alert = tryAlert({ key, severity: 'error', text: newest.message, actions: [] });
+      if (alert) return alert;
+    }
   }
 
   // ── Rank 2: failed tasks ─────────────────────────────────────────────────
@@ -126,10 +163,10 @@ export function pickAlert(input: AlertInput): Alert | null {
       const alert = tryAlert({
         key,
         severity: 'error',
-        text: failedTaskText(task),
+        text: failedTaskText(task, planTitles, run),
+        // Only Show (select-task) — the plan header's primary action is the one Retry.
         actions: [
           { kind: 'select-task', planId: task.planId, taskId: task.taskId },
-          { kind: 'retry', planId: task.planId },
         ],
       });
       if (alert) return alert;

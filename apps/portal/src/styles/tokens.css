@@ -77,17 +77,20 @@
   /* ------------------------------------------------------------------ */
   /* 4. Role accents — one accent per agent role                         */
   /*                                                                      */
-  /* Every role hue is ≥ 30° from every state hue and from --accent-cyan */
+  /* A coloured role sits ≥ 60° and ΔE ≥ 35 from running (--state-active*/
+  /* / indigo) and ≥ 30° from every other state hue and from            */
+  /* --accent-cyan. The colour wheel has no room left for a fifth hue,   */
+  /* so rare roles read in bone.                                          */
   /* ------------------------------------------------------------------ */
 
-  /** Implementer — orchid (action, execution; ≥ 30° from every state). */
-  --role-implementer:    var(--orchid);
+  /** Implementer — blush (action, execution; pink, ≥ 60° and ΔE ≥ 35 from indigo). */
+  --role-implementer:    var(--blush);
 
   /** Strategist — mint (planning; cool green, not leaf-green done). */
   --role-strategist:     var(--mint);
 
-  /** Architect — blush (structure; pink, not rose/red). */
-  --role-architect:      var(--blush);
+  /** Architect — bone-bright (structure; neutral, rare role). */
+  --role-architect:      var(--bone-bright);
 
   /** Scribe — bone cream (documentation, neutral). */
   --role-scribe:         var(--bone);

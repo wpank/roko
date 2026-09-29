@@ -197,6 +197,26 @@ function CheckRow({ check }: { check: CheckRun }) {
               {digest.unparsed.join('\n')}
             </pre>
           )}
+          {(() => {
+            // Show the exit line when: the digest captured one, or the step
+            // printed nothing (no groups and only blank unparsed lines).
+            const noOutput =
+              digest.groups.length === 0 &&
+              digest.unparsed.every((l) => l.trim() === '');
+            if (!digest.exit && !noOutput) return null;
+            const parts: string[] = [];
+            if (digest.exit) parts.push(digest.exit);
+            if (noOutput) parts.push('no output');
+            return (
+              <div
+                className="check-row-exit"
+                data-exit=""
+                style={{ fontFamily: 'monospace', color: 'var(--text-strong)' }}
+              >
+                {parts.join(' · ')}
+              </div>
+            );
+          })()}
           {check.output && <RawOutputToggle output={check.output} />}
         </div>
       )}

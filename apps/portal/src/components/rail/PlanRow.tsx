@@ -39,8 +39,6 @@ export function PlanRow({
   // discoverable even when the wait line is clipped.
   const buttonTitle = row.waitReason ? `${baseName} — ${row.waitReason}` : baseName;
 
-  const pct = Math.round(row.fraction * 100);
-
   return (
     <button
       type="button"
@@ -78,7 +76,14 @@ export function PlanRow({
 
       {/* Bar column */}
       <span className="rd-plan-row__bar" aria-hidden="true">
-        <span style={{ width: `${pct}%`, background: row.barToken }} />
+        {row.segments.map((seg) => (
+          <span
+            key={seg.state}
+            className="rd-seg"
+            data-segment={seg.state}
+            style={{ width: `${(seg.share * 100).toFixed(1)}%` }}
+          />
+        ))}
       </span>
 
       {/* Time column */}

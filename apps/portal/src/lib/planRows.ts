@@ -22,6 +22,11 @@ import { queuePosition as getPlanQueuePosition, waitReason as getPlanWaitReason 
 
 // ── Public interfaces ──────────────────────────────────────────────────────────
 
+export interface BarSegment {
+  state: 'done' | 'accepted' | 'failed' | 'active';
+  share: number;
+}
+
 export interface PlanRowModel {
   id: string;
   title: string;
@@ -31,6 +36,7 @@ export interface PlanRowModel {
   total: number;
   fraction: number;
   barToken: string;
+  segments: BarSegment[];
   time: { kind: 'estimate' | 'elapsed' | 'actual' | 'none'; ms: number | null };
   queuePosition: number | null;
   waitReason: string | null;
@@ -53,6 +59,38 @@ export interface PlanRowsResult {
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
+
+/**
+ * Break a progress count into coloured segments.
+ *
+ * Walks the four states in fixed order (done → accepted → failed → active),
+ * taking n = min(max(0, count), tasksLeft) for each, so shares are exact
+ * integer fractions and never sum past 1.
+ */
+export function progressSegments(
+  counts: { done: number; accepted: number; failed: number; active: number },
+  total: number,
+): BarSegment[] {
+  if (total <= 0) return [];
+
+  const segments: BarSegment[] = [];
+  let left = total;
+
+  const order: Array<'done' | 'accepted' | 'failed' | 'active'> = [
+    'done',
+    'accepted',
+    'failed',
+    'active',
+  ];
+  for (const state of order) {
+    const n = Math.min(Math.max(0, counts[state]), left);
+    if (n === 0) continue;
+    segments.push({ state, share: n / total });
+    left -= n;
+  }
+
+  return segments;
+}
 
 /**
  * Return the progress-bar CSS token for a plan's state.
@@ -170,6 +208,20 @@ export function buildPlanRows(
     // ── barToken ───────────────────────────────────────────────────────────
     const barToken = planBarToken(state);
 
+    // ── segments ───────────────────────────────────────────────────────────
+    const segAccepted = live?.tasksAccepted ?? 0;
+    const segFailed = live ? live.tasksFailed : (disk.tasks_failed ?? 0);
+    const segActive = running
+      ? Object.values(run.tasks).filter(
+          (t) => t.planId === disk.id && t.status === 'active',
+        ).length
+      : 0;
+    const segDone = Math.max(0, done - segAccepted);
+    const segments = progressSegments(
+      { done: segDone, accepted: segAccepted, failed: segFailed, active: segActive },
+      total,
+    );
+
     // ── time ───────────────────────────────────────────────────────────────
     let time: PlanRowModel['time'];
 
@@ -195,6 +247,7 @@ export function buildPlanRows(
       total,
       fraction,
       barToken,
+      segments,
       time,
       queuePosition,
       waitReason,

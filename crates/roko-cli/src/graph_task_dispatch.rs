@@ -52,6 +52,9 @@ use crate::task_parser::TaskDef;
 
 mod sibling_settle;
 
+#[cfg(test)]
+mod gate_output_accept;
+
 const MICRO_USD_PER_USD: f64 = 1_000_000.0;
 
 /// How often to publish a [`TuiBridge::agent_heartbeat`] while waiting for a
@@ -1953,10 +1956,7 @@ impl GraphTaskDispatcher {
                         &task.id,
                         &step_label,
                         verdict.passed,
-                        Some(&published_gate_output(
-                            &step.command,
-                            verdict.detail.as_deref(),
-                        )),
+                        Some(&published_gate_output(&step.command, &verdict)),
                     );
                 }
 
@@ -2132,10 +2132,7 @@ impl GraphTaskDispatcher {
                                     &task.id,
                                     &step_label,
                                     retry_verdict.passed,
-                                    Some(&published_gate_output(
-                                        &step.command,
-                                        retry_verdict.detail.as_deref(),
-                                    )),
+                                    Some(&published_gate_output(&step.command, &retry_verdict)),
                                 );
                             }
                             if !retry_verdict.passed {
@@ -4006,15 +4003,88 @@ fn verify_step_label(index: usize, phase: &str) -> String {
     }
 }
 
-/// Gate output published to the dashboard: the command that ran, then its
-/// captured output, so failure summaries can name the failing command.
-fn published_gate_output(command: &str, detail: Option<&str>) -> String {
-    match detail
-        .map(str::trim_end)
-        .filter(|detail| !detail.is_empty())
-    {
-        Some(detail) => format!("$ {command}\n{detail}"),
-        None => format!("$ {command}"),
+/// Maximum number of output lines kept from a gate's detail for dashboard
+/// display.  Lines beyond this are replaced by a "… N earlier lines not shown"
+/// leader.
+const GATE_OUTPUT_TAIL_LINES: usize = 60;
+
+/// Maximum byte size of the kept tail before a hard byte truncation kicks in.
+/// When the 60-line tail still exceeds this, the last 16 KiB is kept (aligned
+/// to a UTF-8 char boundary) and prefixed with "… earlier output not shown".
+const GATE_OUTPUT_TAIL_BYTES: usize = 16 * 1024;
+
+/// Gate output published to the dashboard: `$ {command}`, then (when
+/// non-empty after trimming) the last 60 lines / 16 KiB of the gate's detail,
+/// and finally — when the verdict failed — `✗ ` and how it ended.
+fn published_gate_output(command: &str, verdict: &roko_core::Verdict) -> String {
+    let mut result = format!("$ {command}");
+
+    let trimmed = verdict.detail.as_deref().unwrap_or("").trim_end();
+    if !trimmed.is_empty() {
+        result.push('\n');
+        result.push_str(&gate_output_tail(trimmed));
+    }
+
+    if !verdict.passed {
+        result.push_str("\n✗ ");
+        result.push_str(&gate_how_ended(&verdict.reason));
+    }
+
+    result
+}
+
+/// Keep the last [`GATE_OUTPUT_TAIL_LINES`] lines of `detail`; prepend a
+/// "… N earlier lines not shown" message when lines are dropped.  If the
+/// resulting tail still exceeds [`GATE_OUTPUT_TAIL_BYTES`], truncate to the
+/// last 16 KiB (aligned to a UTF-8 char boundary) and prepend
+/// "… earlier output not shown".
+fn gate_output_tail(detail: &str) -> String {
+    let all_lines: Vec<&str> = detail.lines().collect();
+    let total = all_lines.len();
+
+    let (tail_lines, dropped) = if total > GATE_OUTPUT_TAIL_LINES {
+        let dropped = total - GATE_OUTPUT_TAIL_LINES;
+        (&all_lines[dropped..], dropped)
+    } else {
+        (&all_lines[..], 0)
+    };
+
+    let mut tail = tail_lines.join("\n");
+
+    if tail.len() > GATE_OUTPUT_TAIL_BYTES {
+        // Move the cut forward to a UTF-8 char boundary so we keep at most
+        // GATE_OUTPUT_TAIL_BYTES bytes.
+        let ideal = tail.len() - GATE_OUTPUT_TAIL_BYTES;
+        let mut byte_pos = ideal;
+        while !tail.is_char_boundary(byte_pos) {
+            byte_pos += 1;
+        }
+        let kept = tail[byte_pos..].to_string();
+        tail = format!("… earlier output not shown\n{kept}");
+    } else if dropped > 0 {
+        tail = format!("… {dropped} earlier lines not shown\n{tail}");
+    }
+
+    tail
+}
+
+/// Translate the verdict's `reason` field into a human-readable closing line.
+///
+/// - `"exit code: <n>"` → `"exit status <n>"`
+/// - `"exit code: terminated by signal"` → `"terminated by a signal"`
+/// - `""` (empty) → `"failed"`
+/// - anything else → unchanged
+fn gate_how_ended(reason: &str) -> String {
+    if reason.is_empty() {
+        "failed".to_string()
+    } else if let Some(code) = reason.strip_prefix("exit code: ") {
+        if code == "terminated by signal" {
+            "terminated by a signal".to_string()
+        } else {
+            format!("exit status {code}")
+        }
+    } else {
+        reason.to_string()
     }
 }
 
@@ -5663,10 +5733,17 @@ printf '%s\n' '{"type":"result","session_id":"sess-v1","model":"claude-sonnet-4-
     #[test]
     fn published_gate_output_leads_with_the_command() {
         assert_eq!(
-            published_gate_output("cargo check -p roko-cli", Some("error[E0425]\n")),
-            "$ cargo check -p roko-cli\nerror[E0425]"
+            published_gate_output(
+                "cargo check -p roko-cli",
+                &roko_core::Verdict::fail("verify[0]", "exit code: 101")
+                    .with_detail("error[E0425]\n"),
+            ),
+            "$ cargo check -p roko-cli\nerror[E0425]\n✗ exit status 101"
         );
-        assert_eq!(published_gate_output("true", None), "$ true");
+        assert_eq!(
+            published_gate_output("true", &roko_core::Verdict::pass("verify[0]")),
+            "$ true"
+        );
         assert_eq!(verify_step_label(2, ""), "verify[2]");
         assert_eq!(verify_step_label(0, "compile"), "verify[0:compile]");
     }
@@ -6133,6 +6210,34 @@ printf '%s\n' '{{"type":"result","session_id":"s","total_cost_usd":0,"usage":{{"
                 ..ModelProfile::default()
             },
         );
+        // An API key in the environment synthesizes a usable standard provider
+        // (`OPENAI_API_KEY` would send `gpt-4o` to the real OpenAI API), and
+        // gate commands inherit the keys roko loads from `~/.roko/.env`. Shadow
+        // each one with a provider whose key is never set.
+        for (id, kind) in [
+            ("anthropic", ProviderKind::AnthropicApi),
+            ("openai", ProviderKind::OpenAiCompat),
+            ("gemini", ProviderKind::GeminiApi),
+            ("perplexity", ProviderKind::PerplexityApi),
+        ] {
+            config.providers.insert(
+                id.to_string(),
+                ProviderConfig {
+                    kind,
+                    base_url: None,
+                    api_key_env: Some("ROKO_TEST_FAILOVER_KEY_NEVER_SET".to_string()),
+                    command: None,
+                    args: None,
+                    timeout_ms: Some(15_000),
+                    ttft_timeout_ms: Some(15_000),
+                    connect_timeout_ms: Some(5_000),
+                    extra_headers: None,
+                    max_concurrent: None,
+                    limits: None,
+                    require_confirmation: false,
+                },
+            );
+        }
         let config = Arc::new(config);
         let factory =
             Arc::new(SharedAgentFactory::new(Arc::clone(&config), None, None, None).await);

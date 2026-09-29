@@ -20,7 +20,7 @@ import {
 import { useDashboardStore } from '@/stores/dashboard';
 import { buildTaskRows } from '@/lib/taskRows';
 import { computeWaves } from '@/lib/waves';
-import { progressToken } from '@/lib/glyphs';
+import { progressSegments } from '@/lib/planRows';
 import { cn } from '@/lib/cn';
 import { describeRequestError } from '@/lib/apiErrors';
 import { planSetActive, queuePosition, waitReason } from '@/lib/planSet';
@@ -275,19 +275,19 @@ export function PlanView({
   const tasksTotal = livePlan?.tasksTotal ?? plan.task_count;
   const fraction = tasksTotal > 0 ? tasksDone / tasksTotal : 0;
 
-  // Progress bar color: green only when every task passed verification
-  const allVerified =
-    livePlan?.phase === 'completed' &&
-    livePlan.tasksFailed === 0 &&
-    livePlan.tasksAccepted === 0;
-
-  const barColor = allVerified
-    ? 'var(--state-done)'
-    : livePlan?.phase === 'failed'
-      ? 'var(--state-failed)'
-      : livePlan?.phase === 'completed'
-        ? 'var(--state-accepted)'
-        : progressToken(fraction);
+  // Progress bar segments
+  const barAccepted = livePlan?.tasksAccepted ?? 0;
+  const barFailed = livePlan?.tasksFailed ?? 0;
+  const barActive = isRunning
+    ? Object.values(run.tasks).filter(
+        (t) => t.planId === plan.id && t.status === 'active',
+      ).length
+    : 0;
+  const barDone = Math.max(0, tasksDone - barAccepted);
+  const barSegments = progressSegments(
+    { done: barDone, accepted: barAccepted, failed: barFailed, active: barActive },
+    tasksTotal,
+  );
 
   // Elapsed time (nowMs comes from useNow above — no read-time clock calls)
   const elapsedMs =
@@ -313,10 +313,6 @@ export function PlanView({
     (id: string) => onSelectTask(id),
     [onSelectTask],
   );
-
-  const handleRetry = useCallback(() => {
-    primaryAction.perform();
-  }, [primaryAction]);
 
   const handleRevisionDone = useCallback(() => {
     // useRevisePlan already invalidates tasks/source/validation in onSuccess.
@@ -410,19 +406,20 @@ export function PlanView({
       {hasRun && (
         <div
           role="progressbar"
-          className="rd-progress h-1 w-full rounded-full overflow-hidden bg-bg-highlight"
+          className="rd-progress rounded-full"
           aria-valuenow={Math.round(fraction * 100)}
           aria-valuemin={0}
           aria-valuemax={100}
           aria-label={`${tasksDone} of ${tasksTotal} tasks complete`}
         >
-          <span
-            className="block h-full transition-[width,background-color] duration-300"
-            style={{
-              width: `${Math.round(fraction * 100)}%`,
-              backgroundColor: barColor,
-            }}
-          />
+          {barSegments.map((seg) => (
+            <span
+              key={seg.state}
+              className="rd-seg"
+              data-segment={seg.state}
+              style={{ width: `${(seg.share * 100).toFixed(1)}%` }}
+            />
+          ))}
         </div>
       )}
 
@@ -495,11 +492,14 @@ export function PlanView({
               onSelectTask={handleSelectTask}
             />
           )}
+          {/* onRetry is intentionally omitted: the plan header's primary
+              action button is the one Retry for this plan. A second Retry
+              in every failed task row would duplicate the action and confuse
+              which button to use. */}
           <TaskList
             rows={rows}
             selectedTaskId={selectedTaskId}
             onSelectTask={handleSelectTask}
-            onRetry={handleRetry}
           />
         </>
       )}

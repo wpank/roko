@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useRef, useEffect, useCallback } from 'react';
+import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
 import { Header } from '@/components/shell/Header';
 import { AlertBand } from '@/components/shell/AlertBand';
@@ -139,6 +139,12 @@ export function Workspace() {
     onError: setRequestError,
   });
 
+  // ── planTitles — id → title map for human-readable alert text ──────────────
+  const planTitles = useMemo<Readonly<Record<string, string>>>(
+    () => Object.fromEntries((plans ?? []).map((p) => [p.id, p.title])),
+    [plans],
+  );
+
   // ── Alert ─────────────────────────────────────────────────────────────────────
   const alert = pickAlert({
     run,
@@ -147,6 +153,7 @@ export function Workspace() {
     validationErrors: 0,
     requestError,
     requestNotice,
+    planTitles,
     dismissedKey: dismissedAlertKey,
   });
 

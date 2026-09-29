@@ -32,6 +32,9 @@ import { Checks } from './Checks';
  *   — inactive view carries a count badge (checks = failed steps;
  *     transcript = entries added since last viewed).
  *   — active view never shows its own badge.
+ *   — transcript badge: stream-badge rd-badge (neutral bone, 11.9:1 contrast).
+ *   — checks badge:     stream-badge rd-badge rd-badge--failed (red, 6.9:1).
+ *   — no inline colour on either badge.
  *
  * Body (open only): Transcript or Checks, or describeEmpty when nothing ran.
  */
@@ -271,17 +274,8 @@ export function StreamPane({
           transcript
           {transcriptBadge > 0 && (
             <span
-              className="stream-badge"
+              className="stream-badge rd-badge"
               aria-label={`${transcriptBadge} new`}
-              style={{
-                marginLeft: '0.25em',
-                fontSize: 'var(--type-meta)',
-                background: 'var(--state-active)',
-                color: '#fff',
-                borderRadius: '3px',
-                padding: '0 3px',
-                lineHeight: '1.4',
-              }}
             >
               {transcriptBadge}
             </span>
@@ -311,17 +305,8 @@ export function StreamPane({
           checks
           {checksBadge > 0 && (
             <span
-              className="stream-badge"
+              className="stream-badge rd-badge rd-badge--failed"
               aria-label={`${checksBadge} failed`}
-              style={{
-                marginLeft: '0.25em',
-                fontSize: 'var(--type-meta)',
-                background: 'var(--state-failed)',
-                color: '#fff',
-                borderRadius: '3px',
-                padding: '0 3px',
-                lineHeight: '1.4',
-              }}
             >
               {checksBadge}
             </span>

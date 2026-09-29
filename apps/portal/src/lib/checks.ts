@@ -1,9 +1,21 @@
 /**
  * checks.ts — digest compiler/linter output into grouped, deduplicated diagnostics.
  *
- * Gate output from the runner starts with a `$ <command>` line, then the captured
- * stdout/stderr. digestOutput() parses that into a structured Digest without ever
- * throwing, and without dropping any line that didn't fit a known format.
+ * Gate output from the runner follows the format:
+ *   $ <command>
+ *   <stdout/stderr lines…>
+ *   ✗ exit status 1          ← closing line added by the runner on failure
+ *
+ * The closing `✗ …` line (last non-blank line of the output, when it is not
+ * also the first line) is extracted into `Digest.exit` and stripped before
+ * parsing so it never appears in `unparsed`. Recognised endings include:
+ *   ✗ exit status <N>
+ *   ✗ timed out after <N> ms
+ *   ✗ terminated by a signal
+ *   ✗ spawn failed: <reason>
+ *
+ * digestOutput() parses the remaining lines into a structured Digest without
+ * ever throwing, and without dropping any line that didn't fit a known format.
  */
 
 export interface DigestEntry {
@@ -26,6 +38,11 @@ export interface Digest {
   groups: DigestGroup[];
   /** Lines that matched no recognised format, in original order. */
   unparsed: string[];
+  /**
+   * The text after `✗ ` on the output's last non-blank line, when that line is
+   * not the first line (the `$ …` line). null when absent.
+   */
+  exit: string | null;
   errorCount: number;
   warningCount: number;
 }
@@ -34,6 +51,9 @@ export interface Digest {
 
 /** Leading shell command: `$ cargo build` */
 const RE_CMD = /^\$ (.+)$/;
+
+/** Closing runner line: `✗ exit status 1`, `✗ timed out after …`, etc. */
+const RE_EXIT = /^✗ (.+)$/;
 
 /** rustc / cargo: `error[E0425]: msg` or `warning[xxx]: msg` or bare `error: msg` */
 const RE_RUSTC = /^(error|warning)(?:\[[\w:]+\])?: (.+)$/;
@@ -85,7 +105,7 @@ export function digestOutput(output: string): Digest {
   } catch {
     // Fulfil the "never throw" contract unconditionally.
     const unparsed = output ? output.split('\n') : [];
-    return { command: null, groups: [], unparsed, errorCount: 0, warningCount: 0 };
+    return { command: null, groups: [], unparsed, exit: null, errorCount: 0, warningCount: 0 };
   }
 }
 
@@ -108,7 +128,7 @@ interface PendingPanic {
 
 function _digest(output: string): Digest {
   if (!output) {
-    return { command: null, groups: [], unparsed: [], errorCount: 0, warningCount: 0 };
+    return { command: null, groups: [], unparsed: [], exit: null, errorCount: 0, warningCount: 0 };
   }
 
   const lines = output.split('\n');
@@ -120,6 +140,25 @@ function _digest(output: string): Digest {
   if (cmdMatch) {
     command = cmdMatch[1];
     start = 1;
+  }
+
+  // ── Exit line extraction ──────────────────────────────────────────────────
+  // Find the last non-blank line. If it matches `✗ <text>` and is not the
+  // first line (the `$ …` line, index 0), extract it as the exit reason and
+  // exclude it (plus any trailing blank lines) from parsing.
+  let exit: string | null = null;
+  let end = lines.length; // exclusive upper bound for the main parse loop
+
+  let lastNonBlank = lines.length - 1;
+  while (lastNonBlank >= 0 && lines[lastNonBlank].trim() === '') {
+    lastNonBlank--;
+  }
+  if (lastNonBlank > 0) {
+    const exitMatch = lines[lastNonBlank].match(RE_EXIT);
+    if (exitMatch) {
+      exit = exitMatch[1];
+      end = lastNonBlank; // exclude the ✗ line and any blank lines after it
+    }
   }
 
   // file → (dedupe-key → entry)
@@ -154,7 +193,7 @@ function _digest(output: string): Digest {
     }
   };
 
-  for (let i = start; i < lines.length; i++) {
+  for (let i = start; i < end; i++) {
     const raw = lines[i];
 
     // ── Pending panic: consume the very next line as the message ──────────────
@@ -307,5 +346,5 @@ function _digest(output: string): Digest {
     }
   }
 
-  return { command, groups, unparsed, errorCount, warningCount };
+  return { command, groups, unparsed, exit, errorCount, warningCount };
 }

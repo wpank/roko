@@ -117,14 +117,11 @@
   /** Leaf green — done / verified. */
   --leaf: #6cbf6c;
 
-  /** Orchid — implementer role accent. */
-  --orchid: #c886ea;
+  /** Blush — implementer role accent. Pink; ≥ 60° and ΔE ≥ 35 from indigo. */
+  --blush: #e28dc9;
 
   /** Mint — strategist role accent. */
   --mint: #8fd6be;
-
-  /** Blush — architect role accent. */
-  --blush: #e28dc9;
 
   /** Lime — quick-reviewer role accent. */
   --lime: #c4d78e;

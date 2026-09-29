@@ -1,15 +1,18 @@
 /**
- * Acceptance: state colours say what they mean in a browser.
+ * Acceptance: state colours say what they mean in a browser (08e), and nothing
+ * else borrows them (08f).
  *
  * Running is a calm hue (never the rose of the Run button or a red), failed a
- * clear red, accepted-with-failures a distinct amber, done green — the four
- * pairwise distinguishable by hue and by CIE76 ΔE. Role accents keep out of
- * every state hue and the info hue; the selection outline is neutral; bars take
- * their state's colour. The shell classes behind the rest of 08e are checked
- * here too: the pulse, the compact band, the task grid, the stream body and the
- * notice's close.
+ * clear red, accepted-with-failures a distinct amber, done green — pairwise
+ * distinguishable by hue and by CIE76 ΔE. A coloured role keeps well clear of
+ * running (≥ 60° and ΔE ≥ 35: orchid was ΔE 24 from indigo and read as
+ * running) and ≥ 30° from the other states and info; rare roles are neutral. A
+ * count badge is a neutral at AA contrast, never the running hue; the failed
+ * count is red at AA. Bars draw one segment per state. The selection outline
+ * is neutral. The shell classes behind 08e are checked here too.
  *
- * Copied verbatim from plans/portal-programme/08e-portal-refine/accept/.
+ * Replaces 08e's semantics.accept.test.ts (same path).
+ * Copied verbatim from plans/portal-programme/08f-final-polish/accept/.
  */
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
@@ -77,10 +80,29 @@ const deltaE = (a: string, b: string) => {
   return Math.hypot(l1 - l2, a1 - a2, b1 - b2);
 };
 
+/** WCAG 2 contrast ratio between two colour tokens. */
+function contrast(a: string, b: string): number {
+  const lum = (t: string) => {
+    const [r, g, b] = rgb(t).map((c) => {
+      const s = c / 255;
+      return s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4;
+    }) as [number, number, number];
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  };
+  const [hi, lo] = [lum(a), lum(b)].sort((x, y) => y - x) as [number, number];
+  return (hi + 0.05) / (lo + 0.05);
+}
+
 const STATES = ['--state-done', '--state-active', '--state-accepted', '--state-failed'];
+const RUNNING = '--state-active';
 const INFO = '--accent-cyan';
-const chromatic = (t: string) => hueSat(t).sat >= 0.3;
-const ROLES = [...vars.keys()].filter((k) => k.startsWith('--role-') && chromatic(k));
+/** Lab chroma: how coloured a token looks (bone and the text greys are below 11). */
+const chroma = (t: string) => {
+  const [, a, b] = lab(t);
+  return Math.hypot(a, b);
+};
+const coloured = (t: string) => chroma(t) >= 18;
+const ROLES = [...vars.keys()].filter((k) => k.startsWith('--role-') && coloured(k));
 
 const inRange = (hue: number, from: number, to: number) => (from <= to ? hue >= from && hue <= to : hue >= from || hue <= to);
 
@@ -118,15 +140,27 @@ describe('state colours', () => {
 });
 
 describe('role and selection colours', () => {
-  it('keeps every coloured role at least 30° from each state hue and from info', () => {
-    expect(ROLES.length).toBeGreaterThanOrEqual(4);
+  it('keeps every coloured role well clear of running: at least 60° and ΔE 35', () => {
+    const close = ROLES.filter((r) => hueGap(r, RUNNING) < 60 || deltaE(r, RUNNING) < 35).map(
+      (r) => `${r}: ${hueGap(r, RUNNING).toFixed(0)}°, ΔE ${deltaE(r, RUNNING).toFixed(1)}`,
+    );
+    expect(close).toEqual([]);
+  });
+
+  it('keeps every coloured role at least 30° from the other states and from info', () => {
     const clashes: string[] = [];
     for (const role of ROLES) {
-      for (const other of [...STATES, INFO]) {
+      for (const other of [...STATES.filter((s) => s !== RUNNING), INFO]) {
         if (hueGap(role, other) < 30) clashes.push(`${role} ~ ${other}: ${hueGap(role, other).toFixed(0)}°`);
       }
     }
     expect(clashes).toEqual([]);
+  });
+
+  it('colours the implementer, the role on almost every row, and two more roles', () => {
+    expect(coloured('--role-implementer')).toBe(true);
+    const distinct = new Set(ROLES.map((r) => resolve(r)));
+    expect(distinct.size).toBeGreaterThanOrEqual(3);
   });
 
   it('draws the selection outline in a neutral, not a state or brand hue', () => {
@@ -175,6 +209,28 @@ describe('shell classes', () => {
     expect(block('.rd-stream-body')).toMatch(/font-size:\s*var\(--type-row\)/);
     expect(block('.rd-stream-body')).toMatch(/line-height:\s*var\(--leading-relaxed\)/);
     expect(block('.rd-stream-body pre')).toMatch(/font-size:\s*inherit/);
+  });
+
+  it('draws a count badge in a neutral at AA contrast, never the running hue', () => {
+    const tokenOf = (block: string, prop: string) =>
+      new RegExp(`(?:^|[;\\s])${prop}:\\s*var\\((--[a-z0-9-]+)\\)`).exec(block)?.[1] ?? '';
+    const bg = tokenOf(block('.rd-badge'), 'background');
+    const fg = tokenOf(block('.rd-badge'), 'color');
+    expect(bg).not.toBe('');
+    expect(fg).not.toBe('');
+    expect(coloured(bg)).toBe(false);
+    expect(contrast(bg, fg)).toBeGreaterThanOrEqual(4.5);
+    const failedBg = tokenOf(block('.rd-badge--failed'), 'background');
+    expect(resolve(failedBg)).toBe(resolve('--state-failed'));
+    expect(contrast(failedBg, fg)).toBeGreaterThanOrEqual(4.5);
+  });
+
+  it('draws each bar segment in its state colour, the bars as rows of segments', () => {
+    for (const state of ['done', 'accepted', 'failed', 'active']) {
+      expect(block(`.rd-seg[data-segment="${state}"]`)).toMatch(new RegExp(`background:\\s*var\\(--state-${state}\\)`));
+    }
+    expect(block('.rd-plan-row__bar')).toMatch(/display:\s*flex/);
+    expect(block('.rd-progress')).toMatch(/display:\s*flex/);
   });
 
   it('gives the notice a compact close and an error variant', () => {

@@ -89,11 +89,11 @@ This is the implementation plan.
 - [ ] find-8cc7ac: Some GitHub workflows fail on main and required checks are undefined (existing item)
 - [x] bug-470de8: Every plan run pays for a dream consolidation nobody reads: dream_on_completion defaults to true
 - [x] dec-e70592: Decide whether to park the 18 items the TL;DR says to drop
-- [ ] gap-c8e1f1: Split graph_task_dispatch.rs into modules without changing behaviour
+- [x] gap-c8e1f1: Split graph_task_dispatch.rs into modules without changing behaviour
 - [ ] gap-0d0e81: Split main.rs: move the clap command enums into their command modules
 - [ ] gap-a6de8d: Split roko-serve routes/plans.rs into run-control, authoring, merge and read modules
 - [ ] gap-cdf3fc: Correct the 13 docs claims that the code or the literature contradicts
-- [ ] bug-b16d55: ACP starts a paid dream consolidation every 10 episodes, and no config flag turns it off
+- [x] bug-b16d55: ACP starts a paid dream consolidation every 10 episodes, and no config flag turns it off
 - [ ] bug-b17805: The docs/v3 [learning] config table gives wrong defaults for eight fields
 - [ ] Both of the epic's `[[verify]]` commands pass.
 

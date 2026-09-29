@@ -24,13 +24,13 @@ _0 more open · on hold: gap-bb619d · 10 unchecked (`TRIAGE.md`) · `goal = "wh
 
 - nothing checked and open
 
-_0 more open · 11 unchecked (`TRIAGE.md`) · `goal = "truth"`_
+_0 more open · 10 unchecked (`TRIAGE.md`) · `goal = "truth"`_
 
 ## 4. Frontier plans, cheap models execute, the result integrates (P1)
 
 - nothing checked and open
 
-_0 more open · 31 unchecked (`TRIAGE.md`) · `goal = "golden-path"`_
+_0 more open · 30 unchecked (`TRIAGE.md`) · `goal = "golden-path"`_
 
 ## 5. Proof: the pilot benchmark and a record of the work
 
@@ -50,7 +50,7 @@ _0 more open · 1 unchecked (`TRIAGE.md`) · `goal = "cybernetic"`_
 - **P0** [gap-4ec59f](items/gap-4ec59f-worktree-isolation-flip-default-and-add-startup.md) Worktree Isolation: Flip Default and Add Startup Repair · size L · verified 2026-09-29
 - **P1** [bug-7c8a57](items/bug-7c8a57-plan-audit-t0-06-100-line-cap.md) 100-line cap on read_files context injection [bug] · size S · verified 2026-09-29
 
-_79 more open · 1 unchecked (`TRIAGE.md`) · `goal = "core"`_
+_77 more open · `goal = "core"`_
 
 ## 8. Live visibility: serve, dashboard, portal
 
@@ -74,7 +74,7 @@ _22 more open · on hold: bug-429315, bug-8c5d32, bug-b9be1d, bug-dd5dca, bug-de
 - **P1** [gap-09e478](items/gap-09e478-dogfood-session-evidence-bundle.md) Dogfood Session Evidence Bundle · size M · verified 2026-09-29
 - **P2** [bug-97c2dc](items/bug-97c2dc-async-runtime-anti-patterns-drop-spawn-unbounded.md) Async Runtime Anti-Patterns (Drop+Spawn, Unbounded Channels, Mutex Across Await) [bug] · size M · verified 2026-09-29
 
-_39 more open · 14 unchecked (`TRIAGE.md`) · `goal = "tooling"`_
+_39 more open · 13 unchecked (`TRIAGE.md`) · `goal = "tooling"`_
 
 ## 11. Feature ideas
 

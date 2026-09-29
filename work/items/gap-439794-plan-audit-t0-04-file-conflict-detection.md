@@ -2,7 +2,7 @@
 id = "gap-439794"
 kind = "gap"
 title = "File-conflict detection before same-wave task dispatch"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 size = "M"
@@ -11,7 +11,7 @@ subsystem = ["roko-graph/engine"]
 created = 2026-09-21
 updated = 2026-09-29
 last_verified = 2026-09-29
-last_verified_rev = "7c556bc0a"
+last_verified_rev = "584abd414"
 source = "tmp/archive/plan-audit-2026-09-23/03-ACTIONABLE-TASKS.md#T0-04: Add file-conflict detection in wave dispatch"
 discovered_from = "audit:tmp/archive/plan-audit-2026-09-23/03-ACTIONABLE-TASKS.md#T0-04: Add file-conflict detection in wave dispatch"
 anchors = ["crates/roko-graph/src/engine.rs::execute_with_status_tracking_parallel", "crates/roko-graph/src/engine.rs::execute_parallel_at_tick_validated", "crates/roko-graph/src/convert.rs", "crates/roko-graph/src/types.rs::Node", "crates/roko-graph/src/fingerprint.rs::plan_graph_fingerprint", "crates/roko-cli/src/graph_task_dispatch/sibling_settle.rs::InFlightTasks", "crates/roko-cli/src/graph_execution/plan_runner.rs::run_one_plan"]
@@ -19,6 +19,11 @@ links = { depends_on = [], blocks = [], related = ["gap-4835e7"], supersedes = [
 
 [[verify]]
 command = "grep -rq 'fn same_wave_tasks_with_overlapping_files_are_serialized' crates/roko-graph/src && cargo test -p roko-graph --lib same_wave_tasks_with_overlapping_files_are_serialized"
+
+[closed]
+at = 2026-09-29
+by = "coordinator (session 7622b882)"
+evidence = "Write-set exclusion: Node.exclusive filled from each task's files; execute_ready_queue passes over a queued node whose paths overlap a running node's (crates/roko-graph/src/exclusion.rs), logging each wait; fingerprints unchanged; 9 tests incl. same_wave_tasks_with_overlapping_files_are_serialized (c5466b5cb + clippy/rustfmt 903d95ac1, merged 1697fea53). Exclusion under --worktree-per-task and read-set races filed by wk-filer2. Batch 2 gate (work/rust-batch-2; crates tree identical to MAIN after the merges): cargo check --workspace --tests clean; nightly rustfmt clean; clippy -p roko-cli -p roko-graph -p roko-execution -p roko-core -p roko-acp -p roko-learn --no-deps -D warnings clean; lib tests roko-cli 3060 passed (8 threads; two timing tests flaked only under full parallel load and pass alone), roko-graph 460, roko-execution 252, roko-core 1913, roko-acp 196, roko-learn 1166."
 +++
 
 ## Problem

@@ -99,7 +99,7 @@ Order: 1 and 2 now. Then 3 → 4 → 5 → 6 → 7, one at a time, because they 
 ## Done when
 
 - [ ] gap-3b5361: Successful plan attempts are never accepted: accept_attempt has no production caller (existing item)
-- [ ] bug-a3760a: The Graph engine's merge step runs git checkout in the user's working tree (existing item)
+- [x] bug-a3760a: The Graph engine's merge step runs git checkout in the user's working tree (existing item)
 - [ ] spec-f830c4: #404 — Batch Branch Integration (existing item)
 - [ ] gap-60233f: [meta] verify: a whole-plan gate that runs on the integrated result
 - [ ] bug-50caf2: PlanGateCell gates the process working directory as attempt 0 (existing item)

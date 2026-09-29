@@ -2,7 +2,7 @@
 id = "bug-94151f"
 kind = "bug"
 title = "The reflex path credits its rule with a gate pass before any gate runs"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "truth"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/graph_task_dispatch", "roko-learn/reflex_store"]
 created = 2026-09-29
 updated = 2026-09-29
 last_verified = 2026-09-29
+last_verified_rev = "584abd414"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e2"
 discovered_from = "tmp/cybernetic-harness/tldr/05-GAPS-AND-PROPOSALS.md (P0 #2; §4 Remove)"
 anchors = ["crates/roko-cli/src/graph_task_dispatch.rs::GraphTaskDispatcher::dispatch", "crates/roko-learn/src/reflex_store.rs::ReflexStore::record_gate_pass_for"]
@@ -20,6 +21,11 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqw 'fn reflex_match_records_no_gate_pass_before_verify' crates/roko-cli/src/ && cargo test -p roko-cli --lib reflex_match_records_no_gate_pass_before_verify"
+
+[closed]
+at = 2026-09-29
+by = "coordinator (session 7622b882)"
+evidence = "Reflex path no longer credits a gate pass before any gate runs: the early record_gate_pass_for is removed and the T0 reflex path runs only with the new [learning] t0_reflexes flag (default false); test reflex_match_records_no_gate_pass_before_verify (9a4d8db5c, merged 328123077). Crediting after verify waits for gap-96f7ed (filed by wk-filer2). Batch 2 gate (work/rust-batch-2; crates tree identical to MAIN after the merges): cargo check --workspace --tests clean; nightly rustfmt clean; clippy -p roko-cli -p roko-graph -p roko-execution -p roko-core -p roko-acp -p roko-learn --no-deps -D warnings clean; lib tests roko-cli 3060 passed (8 threads; two timing tests flaked only under full parallel load and pass alone), roko-graph 460, roko-execution 252, roko-core 1913, roko-acp 196, roko-learn 1166."
 +++
 
 ## Problem

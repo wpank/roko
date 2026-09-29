@@ -2,7 +2,7 @@
 id = "bug-a3760a"
 kind = "bug"
 title = "The Graph engine's merge step runs git checkout in the user's working tree"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 size = "M"
@@ -11,7 +11,7 @@ subsystem = ["roko-cli/graph-execution"]
 created = 2026-09-28
 updated = 2026-09-29
 last_verified = 2026-09-29
-last_verified_rev = "a17d9d766"
+last_verified_rev = "584abd414"
 source = "tmp/cybernetic-harness/assessment-2026-09-28/process-capacity.md"
 discovered_from = "audit:tmp/cybernetic-harness/assessment-2026-09-28/process-capacity.md"
 anchors = ["crates/roko-cli/src/graph_execution/delivery.rs::GitDeliveryBackend::git_merge", "crates/roko-cli/src/graph_execution/delivery.rs::GitDeliveryBackend", "crates/roko-cli/src/graph_execution/delivery.rs::CliCompletionDeliveryService", "crates/roko-cli/src/runner/merge.rs::GitMergeBackend"]
@@ -19,6 +19,11 @@ links = { depends_on = [], blocks = [], related = ["gap-a85a1f", "gap-3b5361"], 
 
 [[verify]]
 command = "grep -rqw 'fn merge_leaves_the_user_checkout_alone' crates/roko-cli/src/graph_execution/ && cargo test -p roko-cli --lib merge_leaves_the_user_checkout_alone && ! grep -qE '\"(checkout|switch)\", *&?target' crates/roko-cli/src/graph_execution/delivery.rs"
+
+[closed]
+at = 2026-09-29
+by = "coordinator (session 7622b882)"
+evidence = "GitDeliveryBackend merges with plumbing only (merge-base, merge-tree --write-tree, commit-tree, update-ref with the expected old value): a target checked out in any worktree fails closed and the result is parked at refs/roko/delivered/<plan>; conflicts change no refs; regression runs in a temporary detached worktree (809ae920d + rustfmt 18f21c698, merged 9cfef9505). Batch 2 gate (work/rust-batch-2; crates tree identical to MAIN after the merges): cargo check --workspace --tests clean; nightly rustfmt clean; clippy -p roko-cli -p roko-graph -p roko-execution -p roko-core -p roko-acp -p roko-learn --no-deps -D warnings clean; lib tests roko-cli 3060 passed (8 threads; two timing tests flaked only under full parallel load and pass alone), roko-graph 460, roko-execution 252, roko-core 1913, roko-acp 196, roko-learn 1166."
 +++
 
 ## Problem

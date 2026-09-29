@@ -16,7 +16,7 @@ discovered_from = "tmp/cybernetic-harness/workstreams/assessment/W9-paper-workst
 anchors = ["tmp/cybernetic-harness/paper/", "tmp/cybernetic-harness/companion-audit/", "tmp/cybernetic-harness/tldr/"]
 doc = "tmp/cybernetic-harness/workstreams/PLAN.md"
 lane = "paper"
-links = { depends_on = ["gap-aad48c", "gap-e08b4d", "gap-ac4ce8", "gap-56a1b4", "gap-04b0ff", "gap-2abf34", "gap-c4d630", "gap-cdd5f4", "gap-652d05", "gap-b64fba", "gap-b409fa", "gap-420202", "gap-0ef29d", "gap-856053", "gap-987510", "gap-4d516a", "gap-b605cf", "gap-184da5", "gap-a3031b", "gap-3986d0", "gap-bb619d", "dec-536bbd", "gap-f3be74", "gap-cb86e4", "gap-9899b0"], blocks = [], related = [], supersedes = [], duplicate_of = "" }
+links = { depends_on = ["gap-aad48c", "gap-e08b4d", "gap-ac4ce8", "gap-56a1b4", "gap-04b0ff", "gap-2abf34", "gap-c4d630", "gap-cdd5f4", "gap-652d05", "gap-b64fba", "gap-b409fa", "gap-420202", "gap-0ef29d", "gap-856053", "gap-987510", "gap-4d516a", "gap-b605cf", "gap-184da5", "gap-a3031b", "gap-3986d0", "gap-bb619d", "dec-536bbd", "gap-f3be74", "gap-cb86e4", "gap-9899b0", "gap-e2d092"], blocks = [], related = [], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "test -f tools/paperlint.py && python3 tools/paperlint.py --report tmp/cybernetic-harness/paper/sections/*.md"
@@ -84,6 +84,7 @@ This is the implementation plan.
 - [x] gap-f3be74: TL;DR: fix the stale statements found by the second refresh pass
 - [ ] gap-cb86e4: Companion report: make the draft pass paperlint --strict apart from the rater and author markers
 - [x] gap-9899b0: Research paper: cite the frozen evidence copies in §1.2, §4.1, §7 and Appendix F
+- [ ] gap-e2d092: Research paper: pick up S09 v1.2 and S01 v1.2 in §5, Appendices A, D and E, and fix S01 §4.5
 - [ ] The `[[verify]]` command passes (paperlint reports on every section).
 
 ## Notes

@@ -2,14 +2,16 @@
 id = "gap-3c430e"
 kind = "gap"
 title = "Specs S01, S05, S06 and S08 disagree on token classes, the audit hash, a decision-point name and a budget-line name"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p2"
 goal = "truth"
 size = "S"
 subsystem = ["cybernetic-harness/specs"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-29
+last_verified_rev = "7fa3bdf57"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (14:46 wk-bench-tree; 14:50 wk-rp-appx findings 1-2; 15:04)"
 anchors = ["tmp/cybernetic-harness/specs/S01-instrumentation.md", "tmp/cybernetic-harness/specs/S05-deep-audits.md", "tmp/cybernetic-harness/specs/S06-ultrastable-controller.md", "tmp/cybernetic-harness/specs/S08-benchmark-suite.md", "benchmarks/viabilitybench/schema/run-record.schema.json"]
@@ -19,6 +21,11 @@ links = { depends_on = [], blocks = [], related = ["gap-528762", "gap-b605cf", "
 
 [[verify]]
 command = '''grep -qi 'disjoint' tmp/cybernetic-harness/specs/S01-instrumentation.md && grep -q 'harness_policy' tmp/cybernetic-harness/specs/S01-instrumentation.md && ! grep -q '"record_hash":"b3:' tmp/cybernetic-harness/specs/S01-instrumentation.md && test -f tmp/cybernetic-harness/specs/S08-benchmark-suite.md && ! grep -q -e '--line B1\]' tmp/cybernetic-harness/specs/S08-benchmark-suite.md'''
+
+[closed]
+at = 2026-09-29
+by = "coordinator (session 7622b882)"
+evidence = "Specs reconciled (wk-specs): S01 v1.2 makes token classes disjoint (tokens_in = uncached input; provider mapping table; cache-write fields in the §5.5 example), §5.7 audit digests are sha256:, params renamed harness_policy; S08 v1.2 uses --line BL1; S05/S06 needed no edits. Tracked part: run-record.schema.json descriptions (6523039d7, merged 7fa3bdf57); 40 schema tests pass. Verify passes in MAIN. Leftover S01 §4.5 decision-point assignment moved to gap-e2d092."
 +++
 
 ## Problem

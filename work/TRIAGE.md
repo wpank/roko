@@ -146,14 +146,13 @@
 - **P2** [gap-a3031b](items/gap-a3031b-companion-report-e12-internal-review-and-bibliography.md) Companion report E12: internal review and bibliography QA · size M
 - **P2** [gap-cb86e4](items/gap-cb86e4-companion-report-make-the-draft-pass-paperlint.md) Companion report: make the draft pass paperlint --strict apart from the rater and author markers · size M
 
-### cybernetic-harness/specs (3)
+### cybernetic-harness/specs (1)
 - **P2** [dec-39c781](items/dec-39c781-confirm-decisions-d28-d36-before-the-pre.md) Confirm decisions D28–D36 before the pre-registration lock [decision] · size S
-- **P2** [gap-419298](items/gap-419298-s09-v1-2-register-the-plan-level.md) S09 v1.2: register the plan-level slice as an exploratory experiment · size S
-- **P2** [gap-3c430e](items/gap-3c430e-specs-s01-s05-s06-and-s08-disagree.md) Specs S01, S05, S06 and S08 disagree on token classes, the audit hash, a decision-point name and a budget-line name · size S
 
-### paper (5)
+### paper (6)
 - **P2** [dec-536bbd](items/dec-536bbd-decide-how-paperlint-strict-treats-numbers-in.md) Decide how paperlint --strict treats numbers in the claims-ledger rows [decision] · size S
 - **P2** [gap-b605cf](items/gap-b605cf-research-paper-notation-table-figure-and-table.md) Research paper: notation table, figure and table map, budget-line names and bibliography venues · size M
+- **P2** [gap-e2d092](items/gap-e2d092-research-paper-pick-up-s09-v1-2.md) Research paper: pick up S09 v1.2 and S01 v1.2 in §5, Appendices A, D and E, and fix S01 §4.5 · size S
 - **P2** [gap-bb619d](items/gap-bb619d-research-paper-the-final-prior-art-kill.md) Research paper: the final prior-art kill-search (Track D13) before submission · size M · **on hold:** Runs in submission week (paper/OUTLINE.md, Track D13)
 - **P2** [gap-fcea53](items/gap-fcea53-whitepaper-re-pin-the-status-matrix-at.md) Whitepaper: re-pin the status matrix at a post-merge commit before the whitepaper-v1 tag · size M
 - **P3** [gap-9cb0b9](items/gap-9cb0b9-paperlint-count-a-footnote-that-cites-a.md) paperlint: count a footnote that cites a frozen evidence file by sha256 as a source · size S
@@ -174,6 +173,9 @@
 ### .claude/skills (2)
 - **P2** [gap-d6fd3c](items/gap-d6fd3c-install-the-work-skills-at-user-level.md) Install the work skills at user level so sessions in worktrees get them · size S
 - **P2** [gap-92033c](items/gap-92033c-the-work-skills-add-work-item-executor.md) The work skills add Work-Item, Executor and Conflicts trailers to merge commits · size S
+
+### agent (1)
+- **P2** [bug-b72a37](items/bug-b72a37-openai-compatible-providers-price-cached-input-tokens.md) OpenAI-compatible providers price cached input tokens twice [bug] · size S
 
 ### roko-cli/plan_policy (2)
 - **P2** [gap-a8d786](items/gap-a8d786-plan-lint-tasks-that-can-run-at.md) Plan lint: tasks that can run at the same time must not share files · size S

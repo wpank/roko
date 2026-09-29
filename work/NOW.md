@@ -18,7 +18,7 @@ _20 more open · on hold: gap-8f8544 · 12 unchecked (`TRIAGE.md`) · `goal = "r
 
 - **P1** [spec-f8d196](items/spec-f8d196-epic-research-paper-companion-report-and-tl.md) Epic: research paper, companion report and TL;DR upkeep [spec] · size L · verified 2026-09-29
 
-_0 more open · on hold: gap-bb619d · 9 unchecked (`TRIAGE.md`) · `goal = "whitepaper"`_
+_0 more open · on hold: gap-bb619d · 10 unchecked (`TRIAGE.md`) · `goal = "whitepaper"`_
 
 ## 3. Roko tells the truth and is safe (P0)
 
@@ -36,7 +36,7 @@ _0 more open · 31 unchecked (`TRIAGE.md`) · `goal = "golden-path"`_
 
 - nothing checked and open
 
-_0 more open · 27 unchecked (`TRIAGE.md`) · `goal = "proof"`_
+_0 more open · 26 unchecked (`TRIAGE.md`) · `goal = "proof"`_
 
 ## 6. Learning from verified outcomes, M1-M4 (P2)
 

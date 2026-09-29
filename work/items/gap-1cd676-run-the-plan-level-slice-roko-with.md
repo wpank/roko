@@ -65,3 +65,4 @@ golden-path acceptance test (gap-f30b8e).
 ## Notes
 
 - This run is exploratory and not pre-registered as confirmatory. Say so wherever it is cited.
+- **From gap-3c430e (2026-09-29):** `vb.run_record/1` requires `task.ladder` and `spec_variant`, and plan-slice features have neither. Either fill them for whole-feature runs (for example `ladder = "plan"`, `spec_variant = "plan-slice"`) or relax the schema for the `exploratory.PL` family (S09 v1.2 §4.9).

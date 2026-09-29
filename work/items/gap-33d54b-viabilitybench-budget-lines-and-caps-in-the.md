@@ -79,3 +79,4 @@ Checked at `41c7ffbd6`: nothing exists, and no money has been spent.
   amendment.
 - **Order:** this item extends gap-28ebea's `ledger.py`, so it runs after it. No hot files.
 - **From wk-filer (2026-09-29):** reconcile should also cover zai and Moonshot exports; the price snapshot infers `reasoning_in_output` only for glm-4.7 and kimi-k2.6 (`config/prices/2026-09-28.toml:18-19`).
+- **From gap-419298 (2026-09-29):** S09 v1.2 adds budget line BL13 for the plan-level slice ($5 planned, $6 cap). To keep the caps at $390, it lowers BL1 to 160, BL6 to 44 and BL7 to 26, and BL12 stays reserved for D43. The ledger and its caps must use the v1.2 list. The author confirms the rebalance at the lock.

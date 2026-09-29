@@ -117,7 +117,7 @@ providers. This removes the checklist's circular `budget` gate (W10 rec 2).
 - [ ] gap-89f393: Plan-level slice: fixture features that need whole multi-task plans (added 2026-09-29)
 - [ ] gap-1cd676: Run the plan-level slice: Roko with the ladder against Claude Code (added 2026-09-29)
 - [ ] q-ab27d3: Should the fd_claude_lite arm run Claude Sonnet 5.5, which is priced the same as Sonnet 5?
-- [ ] gap-419298: S09 v1.2: register the plan-level slice as an exploratory experiment
+- [x] gap-419298: S09 v1.2: register the plan-level slice as an exploratory experiment
 - [ ] dec-39c781: Confirm decisions D28–D36 before the pre-registration lock
 - [ ] The epic's `[[verify]]` command passes: the pilot page is committed, and `report.py --check` accepts its
       bundle.

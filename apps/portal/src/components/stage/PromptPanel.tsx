@@ -108,6 +108,17 @@ export function PromptPanel({
     textareaRef.current?.focus();
   }, []);
 
+  // Esc closes the prompt, as it closes the editor — but not while a request
+  // is in flight, when Cancel is disabled too.
+  useEffect(() => {
+    if (!onCancel || waiting) return;
+    const handler = (e: globalThis.KeyboardEvent) => {
+      if (e.key === 'Escape') onCancel();
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [onCancel, waiting]);
+
   const handleSubmit = useCallback(async () => {
     const text = prompt.trim();
     if (!text || waiting) return;

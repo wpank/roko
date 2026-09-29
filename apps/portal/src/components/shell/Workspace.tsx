@@ -11,6 +11,7 @@ import { StreamPane } from '@/components/stream/StreamPane';
 import { RunBand } from '@/components/run/RunBand';
 import {
   usePlans,
+  usePlanTasks,
   useRunPlan,
   useRunPlans,
   useCancelPlan,
@@ -84,16 +85,31 @@ export function Workspace() {
   const rows = buildPlanRows(plans ?? [], run, { filter, nowMs });
 
   // ── Resolve selection ────────────────────────────────────────────────────────
-  // resolveSelection clears an unknown plan once the list has loaded, and
-  // auto-selects the first running plan when nothing is chosen.
+  // An unknown plan or task clears silently, whatever the filter shows. With no
+  // plan on load (plan list and run snapshot both in), the first running plan
+  // is selected; the selection never jumps on its own afterwards.
+  const loaded = !plansLoading && plans !== undefined;
+  const planIds = (plans ?? []).map((p) => p.id);
+  const { data: selectedTasks } = usePlanTasks(
+    selectedPlanId !== null && planIds.includes(selectedPlanId) ? selectedPlanId : undefined,
+  );
+  const ready = loaded && connection === 'connected';
+  const [settled, setSettled] = useState(false);
   const resolved = resolveSelection(
     { plan: selectedPlanId, task: selectedTaskId },
     {
-      loaded: !plansLoading && plans !== undefined,
-      planIds: rows.order,
+      loaded,
+      planIds,
       runningPlanIds: rows.runningPlanIds,
+      taskIds: selectedTasks?.tasks.map((t) => t.id),
+      firstLoad: ready && !settled,
     },
   );
+  // Load is over once the URL holds the resolved plan (Next applies
+  // replaceState in a transition, so this can be a render later).
+  useEffect(() => {
+    if (ready && resolved.plan === selectedPlanId) setSettled(true);
+  }, [ready, resolved.plan, selectedPlanId]);
 
   // Sync resolved selection back to the URL when it diverges.
   useEffect(() => {
@@ -244,13 +260,12 @@ export function Workspace() {
     filter: () => {
       filterInputRef.current?.focus();
     },
+    // The generate and revise prompts and the editor close on Esc themselves.
     escape: () => {
       if (alert !== null) {
         setDismissedAlertKey(alert.key);
       } else if (filter !== '') {
         setFilter('');
-      } else if (promptOpen) {
-        setPromptOpen(false);
       }
     },
     stream: () => setStreamOpen((v) => !v),
@@ -342,7 +357,7 @@ export function Workspace() {
         <ErrorBoundary name="stage">
           <Stage
             plans={plans}
-            loaded={!plansLoading && plans !== undefined}
+            loaded={loaded}
             selection={resolved}
             promptOpen={promptOpen}
             workspace={workspaceName}

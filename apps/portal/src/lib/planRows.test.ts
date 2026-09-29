@@ -22,6 +22,7 @@
  * 18. group done count includes accepted rows
  * 19. empty filter shows all plans
  * 20. empty groups dropped after filtering
+ * 21. the filter narrows the rows shown, not counts, group ids or running plans
  */
 
 import { describe, it, expect } from 'vitest';
@@ -227,7 +228,6 @@ describe('buildPlanRows', () => {
       mkDisk({ id: 'plan-2', title: 'Agent System' }),
     ];
     const result = buildPlanRows(disks, initialRunState(), { filter: 'PORTAL', nowMs: NOW });
-    expect(result.count).toBe(1);
     expect(result.order).toEqual(['plan-1']);
   });
 
@@ -238,7 +238,6 @@ describe('buildPlanRows', () => {
       mkDisk({ id: 'xyz-plan', title: 'Other Plan' }),
     ];
     const result = buildPlanRows(disks, initialRunState(), { filter: 'abc', nowMs: NOW });
-    expect(result.count).toBe(1);
     expect(result.order).toEqual(['abc-plan']);
   });
 
@@ -349,6 +348,32 @@ describe('buildPlanRows', () => {
     const result = buildPlanRows(disks, initialRunState(), { filter: 'match', nowMs: NOW });
     expect(result.groups).toHaveLength(1);
     expect(result.groups[0]!.name).toBe('grp-a');
-    expect(result.count).toBe(1);
+    expect(result.order).toEqual(['plan-1']);
+  });
+
+  // 21. The filter is a view
+  it('the filter does not change the counts, a group’s ids or the running plans', () => {
+    const disks = [
+      mkDisk({ id: 'hello', title: 'Hello world' }),
+      mkDisk({ id: 'pp-01', title: 'Backend plans', group: 'pp', completed: true }),
+      mkDisk({ id: 'pp-02', title: 'Frontend plans', group: 'pp' }),
+      mkDisk({ id: 'pp-03', title: 'Acceptance', group: 'pp' }),
+    ];
+    const run = withLive(initialRunState(), 'hello', { phase: 'running' });
+    const all = buildPlanRows(disks, run, { filter: '', nowMs: NOW });
+    const filtered = buildPlanRows(disks, run, { filter: 'front', nowMs: NOW });
+
+    // Only the matching row is shown…
+    expect(filtered.order).toEqual(['pp-02']);
+    expect(filtered.groups.map((g) => g.rows.map((r) => r.id))).toEqual([['pp-02']]);
+    // …but the group still runs and counts all three of its plans, the running
+    // plan the filter hides is still running, and the count is every plan.
+    const group = filtered.groups[0]!;
+    expect(group.ids).toEqual(['pp-01', 'pp-02', 'pp-03']);
+    expect([group.done, group.total]).toEqual([1, 3]);
+    expect(filtered.runningPlanIds).toEqual(['hello']);
+    expect(filtered.count).toBe(4);
+    expect(filtered.runningPlanIds).toEqual(all.runningPlanIds);
+    expect(filtered.count).toBe(all.count);
   });
 });

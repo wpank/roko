@@ -114,15 +114,25 @@ pub fn build_settings_json() -> String {
 /// loads by default: none. Only managed policy and Roko's `--settings` then
 /// apply, so the invoking user's own configuration stays out of the run:
 /// hooks, plugins, permission rules and `env` from settings files; skills,
-/// agents and commands from `.claude` directories; and every CLAUDE.md,
-/// whether the user's, the workdir's or one in a directory above it.
+/// agents and commands from `.claude` directories; and discovered CLAUDE.md
+/// files. `project` is no substitute: besides the workdir's CLAUDE.md it
+/// loads those of every directory above it, and for a workdir under the
+/// home directory that includes `~/.claude/CLAUDE.md` and `~/.claude/rules`.
+/// The workdir's own instructions come back through `--add-dir` instead
+/// (see [`ISOLATION_ENV`]).
 pub const ISOLATED_SETTING_SOURCES: &str = "";
 
 /// Environment an agent gets on top of [`ISOLATED_SETTING_SOURCES`].
-/// Whatever the setting sources, auto-memory loads what the user's own
-/// sessions saved for the project (`~/.claude/projects/<project>/memory/`),
-/// so it is switched off here.
-pub const ISOLATION_ENV: &[(&str, &str)] = &[("CLAUDE_CODE_DISABLE_AUTO_MEMORY", "1")];
+/// Auto-memory loads what the user's own sessions saved for the project
+/// (`~/.claude/projects/<project>/memory/`) whatever the setting sources, so
+/// it is switched off. The second variable makes Claude load the CLAUDE.md,
+/// `.claude/CLAUDE.md` and `.claude/rules` of each `--add-dir` directory,
+/// and nothing above it; Roko passes the workdir, so the repository's own
+/// instructions reach the agent.
+pub const ISOLATION_ENV: &[(&str, &str)] = &[
+    ("CLAUDE_CODE_DISABLE_AUTO_MEMORY", "1"),
+    ("CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD", "1"),
+];
 
 /// Agent wrapper around the `claude` CLI.
 #[derive(Debug, Clone)]
@@ -272,7 +282,9 @@ impl ClaudeCliAgent {
 
     /// Override the setting sources passed via `--setting-sources`, a
     /// comma-separated list of `user`, `project` and `local` (default:
-    /// [`ISOLATED_SETTING_SOURCES`], none). Claude takes the last
+    /// [`ISOLATED_SETTING_SOURCES`], none). `project` also brings in the
+    /// CLAUDE.md files above the workdir, `~/.claude/CLAUDE.md` among them
+    /// when the workdir is under the home directory. Claude takes the last
     /// `--setting-sources` it is given, so this flag beats one in
     /// [`with_extra_args`](Self::with_extra_args).
     #[must_use]
@@ -455,11 +467,16 @@ impl ClaudeCliAgent {
             .arg("--settings")
             .arg(&self.settings_json)
             // Keep the invoking user's Claude Code configuration out of the
-            // run (see `ISOLATED_SETTING_SOURCES`), and every MCP server that
-            // Roko did not pass: none from `~/.claude.json`, `.mcp.json` or
-            // claude.ai connectors, whether or not Roko has an MCP config.
+            // run and the workdir's own CLAUDE.md files in: see
+            // `ISOLATED_SETTING_SOURCES` and `ISOLATION_ENV`. The workdir is
+            // the working directory, so `--add-dir` grants no file access.
+            // Keep out every MCP server Roko did not pass: none from
+            // `~/.claude.json`, `.mcp.json` or claude.ai connectors, whether
+            // or not Roko has an MCP config.
             .arg("--setting-sources")
             .arg(&self.setting_sources)
+            .arg("--add-dir")
+            .arg(&self.current_dir)
             .arg("--strict-mcp-config");
         if self.dangerously_skip_permissions {
             cmd.arg("--dangerously-skip-permissions");
@@ -1926,6 +1943,14 @@ mod tests {
             .position(|arg| arg == "--setting-sources")
             .expect("setting sources flag");
         assert_eq!(args[sources + 1], "");
+        // The workdir's own CLAUDE.md files still load, and only those.
+        let add_dir = args
+            .iter()
+            .position(|arg| arg == "--add-dir")
+            .expect("add-dir flag");
+        assert_eq!(args[add_dir + 1], workdir.path().to_string_lossy());
+        let workdir_claude_md = env_of(&command, "CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD");
+        assert_eq!(workdir_claude_md.as_deref(), Some("1"));
         // Only the MCP servers Roko passes, even with no MCP config.
         assert_eq!(
             args.iter()
@@ -1987,6 +2012,7 @@ mod tests {
             .with_setting_sources("project")
             .with_mcp_config(mcp_config.clone())
             .with_env_var("CLAUDE_CODE_DISABLE_AUTO_MEMORY", "0")
+            .with_env_var("CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD", "0")
             .build_command()
             .expect("build command");
         let args = args_of(&command);
@@ -2014,8 +2040,12 @@ mod tests {
                 .count(),
             1
         );
+        // Explicit variables beat the isolation's: "0" here turns off the
+        // workdir's CLAUDE.md too, for a run that must see no instructions.
         let auto_memory = env_of(&command, "CLAUDE_CODE_DISABLE_AUTO_MEMORY");
         assert_eq!(auto_memory.as_deref(), Some("0"));
+        let workdir_claude_md = env_of(&command, "CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD");
+        assert_eq!(workdir_claude_md.as_deref(), Some("0"));
     }
 
     #[tokio::test]
@@ -2029,6 +2059,7 @@ mod tests {
 set -eu
 cat >/dev/null
 printf '%s\n' "${{CLAUDE_CODE_DISABLE_AUTO_MEMORY:-unset}}" > "{env_file}"
+printf '%s\n' "${{CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD:-unset}}" >> "{env_file}"
 printf '%s\n' '{{"type":"content_block_delta","delta":{{"text":"ok"}}}}'
 "#,
             env_file = capture_env.display(),
@@ -2046,7 +2077,8 @@ printf '%s\n' '{{"type":"content_block_delta","delta":{{"text":"ok"}}}}'
             "{}",
             result.output.body.as_text().unwrap_or("unknown")
         );
-        assert_eq!(fs::read_to_string(&capture_env).unwrap().trim(), "1");
+        // Auto-memory off, the workdir's CLAUDE.md files on.
+        assert_eq!(fs::read_to_string(&capture_env).unwrap(), "1\n1\n");
         assert_eq!(result.output.tag("setting_sources"), Some("none"));
 
         // A failed run records them too.
@@ -2111,6 +2143,8 @@ printf '%s\n' '{{"type":"content_block_delta","delta":{{"text":"hello"}}}}'
         assert!(args_text.contains("system guidance"));
         assert!(args_text.contains("--settings"));
         assert!(args_text.contains("--setting-sources\n\n"));
+        let add_dir = format!("--add-dir\n{}\n", tmp.path().display());
+        assert!(args_text.contains(&add_dir));
         assert!(args_text.contains("--strict-mcp-config"));
         assert!(args_text.contains("--dangerously-skip-permissions"));
         assert!(args_text.contains("--tools"));

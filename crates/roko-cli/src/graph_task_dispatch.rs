@@ -165,11 +165,11 @@ pub struct GraphTaskDispatcher {
     /// cloned into every `DispatchContext` to avoid repeated blocking I/O
     /// (filesystem reads + `git` subprocess spawns) on the Tokio reactor.
     static_prompt_cache: std::sync::OnceLock<(String, String, String)>,
-    /// T0 reflex store. When set, each dispatch checks for a matching
-    /// reflex rule before invoking the LLM. A match bypasses the agent call
-    /// entirely and returns the rule's cached output (zero-cost repeated
-    /// decisions). Gate feedback records are posted to the store so rules
-    /// accumulate confidence or are demoted over time.
+    /// T0 reflex store. When set and `[learning] t0_reflexes` is on, each
+    /// dispatch of a task without verify steps checks for a matching reflex
+    /// rule before invoking the LLM. A match bypasses the agent call entirely
+    /// and returns the rule's cached output (zero-cost repeated decisions),
+    /// stamped unverified. No gate runs, so the rule earns no gate pass.
     reflex_store: Option<ReflexStore>,
     /// Per-task spend across attempts, enforcing `budget.max_task_usd` and
     /// `budget.max_task_retry_usd`.
@@ -310,11 +310,12 @@ impl GraphTaskDispatcher {
 
     /// Attach the T0 reflex store for pre-dispatch reflex checks.
     ///
-    /// When set, each `dispatch` call opens the reflex store and checks
-    /// whether any rule matches the task's role, file extensions, and
-    /// title before invoking the LLM. A match bypasses the agent call
-    /// and returns the rule's cached output (`action.args`). Gate feedback
-    /// is posted back so rules accumulate confidence or are demoted.
+    /// With `[learning] t0_reflexes` on (off by default), each `dispatch` of
+    /// a task without verify steps checks whether any rule matches the task's
+    /// role, file extensions, and title before invoking the LLM. A match
+    /// bypasses the agent call and returns the rule's cached output
+    /// (`action.args`), stamped unverified. No gate runs, so the rule is not
+    /// credited with a gate pass.
     #[must_use]
     pub fn with_reflex_store(mut self, store: ReflexStore) -> Self {
         self.reflex_store = Some(store);
@@ -585,17 +586,18 @@ impl TaskDispatcher for GraphTaskDispatcher {
 
         // ── T0 reflex check ─────────────────────────────────────────────
         //
-        // Before invoking the LLM, check the reflex store for a matching
-        // deterministic rule. A rule fires when every populated field of its
-        // `ReflexCondition` matches the task's observable attributes.  The
-        // observation is built from the task's role (→ `message_type`), title
-        // (→ `context`), and the unique file extensions present in `task.files`
-        // (→ `file_exts`).  When a rule matches:
+        // With `[learning] t0_reflexes` on (off by default), check the reflex
+        // store for a matching deterministic rule before invoking the LLM. A
+        // rule fires when every populated field of its `ReflexCondition`
+        // matches the task's observable attributes.  The observation is built
+        // from the task's role (→ `message_type`), title (→ `context`), and the
+        // unique file extensions present in `task.files` (→ `file_exts`).
+        // When a rule matches:
         //
         //   1. The agent call is skipped entirely.
         //   2. The rule's `action.args` field is used as the cached output text.
-        //   3. Gate feedback (`pass` / `fail`) is posted to the same rule_id
-        //      so the store accumulates confidence or demotes the rule.
+        //   3. The output is stamped `Unverified`. No gate has run, so the rule
+        //      earns no gate pass.
         //
         // This implements the "zero-cost repeated decisions" pattern: tasks
         // that succeed repeatedly with the same structural signature can be
@@ -607,7 +609,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
         if let Some(reflex_store) = self
             .reflex_store
             .as_ref()
-            .filter(|_| task.verify.is_empty())
+            .filter(|_| self.config.learning.t0_reflexes && task.verify.is_empty())
         {
             let file_exts: Vec<String> = task
                 .files
@@ -644,12 +646,6 @@ impl TaskDispatcher for GraphTaskDispatcher {
                 let output_signal = Signal::builder(Kind::AgentOutput)
                     .body(Body::text(cached_output))
                     .build();
-                // Post gate feedback after we run the verify steps. For now
-                // we immediately record a gate pass since the reflex is only
-                // wired here on the success path. Gate failure from verify
-                // steps will trigger the graph engine retry, which will avoid
-                // the reflex (attempt_number > 0) or rely on demotion logic.
-                reflex_store.record_gate_pass_for(rule_id);
                 let mut outputs = vec![output_signal];
                 TaskGateVerdict::Unverified.stamp(&mut outputs);
                 return Ok(outputs);
@@ -1847,6 +1843,76 @@ printf '%s\n' '{{"type":"result","session_id":"sess-b","model":"claude-sonnet-4-
         unflagged.plan_id = "unflagged".to_string();
         unflagged.plan_dir = temp.path().join("plans/missing").display().to_string();
         assert!(!dispatcher.plan_skips_enrichment(&unflagged));
+    }
+
+    /// A T0 reflex rule that matches a task is never credited with a gate pass
+    /// when it fires: no gate has run. With `[learning] t0_reflexes` off (the
+    /// default) no rule is consulted. With it on, a task whose verify step
+    /// fails is still dispatched and gated, and a task without verify steps
+    /// gets the rule's output, stamped unverified.
+    #[tokio::test]
+    async fn reflex_match_records_no_gate_pass_before_verify() {
+        use roko_learn::reflex_store::{PromotionCandidate, ReflexAction, ReflexCondition};
+
+        assert!(!RokoConfig::default().learning.t0_reflexes);
+        let store_dir = tempdir().expect("tempdir");
+        let reflexes = ReflexStore::open(store_dir.path().join("reflexes.jsonl"));
+        // A wildcard rule matches every task; promotion credits it with three
+        // gate passes out of three hits.
+        let promoted = reflexes.try_promote(
+            &PromotionCandidate {
+                episode_id: "episode-reflex".to_string(),
+                condition: ReflexCondition::default(),
+                action: ReflexAction {
+                    tool: "respond".to_string(),
+                    args: "cached reflex output".to_string(),
+                },
+            },
+            3,
+        );
+        assert!(promoted);
+        let counts = || {
+            let rule = reflexes.snapshot().pop().expect("the promoted rule");
+            (rule.hit_count, rule.success_count)
+        };
+
+        for t0_reflexes in [false, true] {
+            let temp = tempdir().expect("tempdir");
+            let (dispatcher, mut task) = make_batch_dispatcher(&temp, 0.01, |config| {
+                no_auto_fix(config);
+                config.learning.t0_reflexes = t0_reflexes;
+            })
+            .await;
+            let dispatcher = dispatcher.with_reflex_store(reflexes.clone());
+
+            // A matching rule whose task then fails its verify step.
+            task.verify = vec![verify_step("structural", "exit 1")];
+            let error = dispatcher
+                .dispatch(&make_spec(&task), Vec::new(), &batch_ctx())
+                .await
+                .expect_err("the failing verify step fails the attempt");
+            assert!(matches!(error, RokoError::Verify { .. }), "{error}");
+            assert_eq!(counts(), (3, 3), "t0_reflexes = {t0_reflexes}");
+
+            // The same task without verify steps.
+            task.verify.clear();
+            let outputs = dispatcher
+                .dispatch(&make_spec(&task), Vec::new(), &batch_ctx())
+                .await
+                .expect("dispatch without verify steps");
+            assert_eq!(
+                TaskGateVerdict::from_signals(&outputs),
+                Some(TaskGateVerdict::Unverified)
+            );
+            let text = outputs[0].body.as_text().expect("output text");
+            if t0_reflexes {
+                assert_eq!(text, "cached reflex output");
+                assert_eq!(counts(), (4, 3), "the rule fired but earned no gate pass");
+            } else {
+                assert_eq!(text, "batch-output");
+                assert_eq!(counts(), (3, 3), "no rule is consulted by default");
+            }
+        }
     }
 
     /// A fake Claude CLI that streams one API message, then works past its

@@ -2,14 +2,16 @@
 id = "gap-455aef"
 kind = "gap"
 title = "S09 §4.9 says the plan-slice arms share no visible checks, but both get the same base repo and its tests"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p2"
 goal = "proof"
 size = "S"
 subsystem = ["cybernetic-harness/specs"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-29
+last_verified_rev = "cf66f3dfd"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (16:47, wk-bench-slice's report on gap-89f393)"
 anchors = ["tmp/cybernetic-harness/specs/S09-experiments.md", "benchmarks/viabilitybench/families/plan_slice/README.md"]
@@ -19,6 +21,11 @@ links = { depends_on = [], blocks = [], related = ["gap-419298", "gap-89f393", "
 
 [[verify]]
 command = "! grep -q 'since the arms share no visible checks' tmp/cybernetic-harness/specs/S09-experiments.md && grep -q 'v1.3' tmp/cybernetic-harness/specs/S09-experiments.md"
+
+[closed]
+at = 2026-09-29
+by = "coordinator (session 7622b882)"
+evidence = "S09 v1.3 (tmp, wk-bench-slice): §4.9's VF also requires the base's visible tests, restored from pristine, to pass at the final commit, with the reason and census fields; changelog and status line updated. The tracked part (census vf includes the visible tests; verified = vf with no canary hit; new test for a base regression) merged with gap-204848 (248a925d6). Verify passes. Paper follow-up filed as gap for D.12 and §5.4."
 +++
 
 ## Problem

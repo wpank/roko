@@ -24,6 +24,7 @@ use roko_learn::telemetry::{
 };
 use sha2::Digest;
 
+use super::failover::FailoverChain;
 use super::served_model::{ServedModel, is_cli_backend};
 use super::*;
 
@@ -172,6 +173,7 @@ impl AttemptBook {
                 attempt_started_at: Some(started_at),
                 ..AttemptTiming::default()
             },
+            failover: FailoverChain::default(),
             run,
         }
     }
@@ -185,6 +187,8 @@ pub(super) struct AttemptContext {
     identity: AttemptIdentity,
     task_spec_hash: String,
     timing: AttemptTiming,
+    /// The models provider failover passed over.
+    failover: FailoverChain,
     run: Arc<RunAttempts>,
 }
 
@@ -202,6 +206,12 @@ impl AttemptContext {
     /// The provider call returned.
     pub(super) fn dispatch_ended(&mut self) {
         self.timing.dispatch_ended_at = Some(now_ms());
+    }
+
+    /// Provider failover passed over `failover`'s models before the one
+    /// that ran (bug-35379d).
+    pub(super) fn record_failover(&mut self, failover: FailoverChain) {
+        self.failover = failover;
     }
 
     /// Settle the attempt: build its verdict record, queue it for the run's
@@ -229,7 +239,7 @@ impl AttemptContext {
         // Neither path sees the first token's time yet (S01 P0-5).
         verdict.timing.ttft_source = Some("unavailable".to_string());
         verdict.timing.settled_at = Some(now_ms());
-        verdict.executed = executed_model(model_requested, dispatch);
+        verdict.executed = executed_model(model_requested, dispatch, self.failover);
         verdict.cost.source = cost_source(dispatch);
         verdict.output_sha256 = dispatch
             .and_then(|dispatch| dispatch.result.output.body.as_text().ok())
@@ -386,13 +396,17 @@ fn failure_class(
 
 /// The model that ran: the one the bridge launched, which after failover
 /// is not the requested one, and the one the provider reported serving,
-/// which is `None` when it named none (bug-31438d).
+/// which is `None` when it named none (bug-31438d). `failover` lists the
+/// models passed over first (bug-35379d).
 fn executed_model(
     model_requested: &str,
     dispatch: Option<&crate::dispatch_v2::AgentResultDispatch>,
+    failover: FailoverChain,
 ) -> ExecutedModel {
     let mut executed = ExecutedModel {
         model_requested: Some(model_requested.to_string()),
+        failover_chain: failover.models,
+        failover_reason: failover.reason,
         ..ExecutedModel::default()
     };
     if let Some(dispatch) = dispatch {

@@ -1156,8 +1156,8 @@ impl TaskDispatcher for GraphTaskDispatcher {
             }
         };
         attempt.dispatch_ended();
-        let mut dispatch = match dispatch_result {
-            Ok(dispatch) => dispatch,
+        let (mut dispatch, failover) = match dispatch_result {
+            Ok(dispatched) => dispatched,
             Err(error) => {
                 // Best-effort release on dispatch failure when worktree isolation is active.
                 if let Some((provider, lease)) =
@@ -1187,6 +1187,9 @@ impl TaskDispatcher for GraphTaskDispatcher {
                 return Err(error);
             }
         };
+        // The attempt's records name the planned model beside the one that
+        // ran (bug-35379d).
+        attempt.record_failover(failover);
         let wall_duration = started_at.elapsed();
         // The model the provider reported serving (bug-31438d). A
         // substitution is priced by the model that served, and fails a

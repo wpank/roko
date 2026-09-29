@@ -505,9 +505,10 @@ pub struct AttemptTiming {
 pub struct ExecutedModel {
     /// Provider that served the final turn.
     pub provider: Option<String>,
-    /// Model the dispatcher asked for.
+    /// Model the dispatcher asked for: routing's plan, before any failover.
     pub model_requested: Option<String>,
-    /// Model the provider bridge launched. Legacy rows name it `model`.
+    /// Model the provider bridge launched: the requested one, or the
+    /// failover candidate that replaced it. Legacy rows name it `model`.
     pub model_dispatched: Option<String>,
     /// Model the provider reported serving; `None` when its responses named
     /// none, never the configured slug.
@@ -520,6 +521,8 @@ pub struct ExecutedModel {
     pub model_mismatch: bool,
     /// Models tried before the one that ran, in order.
     pub failover_chain: Vec<String>,
+    /// Why the first model of `failover_chain`, the planned one, did not run.
+    pub failover_reason: Option<String>,
     /// Agent turns taken.
     pub turns: Option<u32>,
 }

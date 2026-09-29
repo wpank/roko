@@ -196,7 +196,8 @@ impl FeedbackSink for EpisodeSink {
 }
 
 /// What the attempt's verdict records that the event's legacy fields cannot
-/// say: the model the provider reported serving (bug-31438d).
+/// say: the model the provider reported serving (bug-31438d), the failover
+/// that replaced the planned model (bug-35379d).
 fn attach_settled_attempt(episode: &mut Episode, settled: &AttemptVerdictRecord) {
     let executed = &settled.executed;
     episode.extra.insert(
@@ -215,6 +216,22 @@ fn attach_settled_attempt(episode: &mut Episode, settled: &AttemptVerdictRecord)
             "models_reported".into(),
             serde_json::json!(executed.models_reported),
         );
+    }
+    if let Some(planned) = executed.failover_chain.first() {
+        episode.extra.insert(
+            "substituted_from".into(),
+            serde_json::Value::String(planned.clone()),
+        );
+        episode.extra.insert(
+            "failover_chain".into(),
+            serde_json::json!(executed.failover_chain),
+        );
+        if let Some(reason) = &executed.failover_reason {
+            episode.extra.insert(
+                "failover_reason".into(),
+                serde_json::Value::String(reason.clone()),
+            );
+        }
     }
 }
 
@@ -358,8 +375,8 @@ mod tests {
         assert!(!episode.extra.contains_key(BLAMED_TASKS_KEY));
     }
 
-    /// The settled verdict says what the event's legacy field cannot: the
-    /// model the provider reported serving.
+    /// The settled verdict says what the event's legacy fields cannot: the
+    /// model the provider reported and the failover.
     #[tokio::test]
     async fn settled_attempt_records_served_model() {
         use roko_learn::telemetry::{AttemptIdentity, AttemptKey, AttemptOutcome};
@@ -375,6 +392,9 @@ mod tests {
         );
         verdict.executed.model_reported = Some("glm-4.7".into());
         verdict.executed.model_mismatch = true;
+        verdict.executed.failover_chain = vec!["claude-sonnet".into()];
+        verdict.executed.failover_reason =
+            Some("`claude-sonnet` on `claude_cli`: out of usage".into());
         sink.on_event(&FeedbackEvent::TaskCompleted {
             turns: 1,
             failure_reason: None,
@@ -398,6 +418,11 @@ mod tests {
         assert_eq!(episode.model, "claude-sonnet-4-6");
         assert_eq!(episode.extra["model_reported"], "glm-4.7");
         assert_eq!(episode.extra["model_mismatch"], true);
+        assert_eq!(episode.extra["substituted_from"], "claude-sonnet");
+        assert_eq!(
+            episode.extra["failover_reason"],
+            "`claude-sonnet` on `claude_cli`: out of usage"
+        );
     }
 
     #[tokio::test]

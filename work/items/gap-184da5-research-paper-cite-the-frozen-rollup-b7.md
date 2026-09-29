@@ -2,14 +2,16 @@
 id = "gap-184da5"
 kind = "gap"
 title = "Research paper: cite the frozen rollup, B7, W12 and the field cases from docs/whitepaper/evidence/"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p2"
 goal = "whitepaper"
 size = "S"
 subsystem = ["paper"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-29
+last_verified_rev = "80fa2171b"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (14:51, wk-rp-s89's report on gap-04b0ff)"
 anchors = ["tmp/cybernetic-harness/paper/sections/08-discussion.md", "tmp/cybernetic-harness/paper/sections/09-limitations.md", "tmp/cybernetic-harness/paper/sections/E-reproducibility.md"]
@@ -19,6 +21,11 @@ links = { depends_on = ["gap-29a64e"], blocks = [], related = ["gap-04b0ff", "ga
 
 [[verify]]
 command = "test -f tmp/cybernetic-harness/paper/sections/08-discussion.md && ! grep -q 'TODO: cite the frozen rollup' tmp/cybernetic-harness/paper/sections/08-discussion.md && grep -q 'docs/whitepaper/evidence/2026-09-29-field-rollup' tmp/cybernetic-harness/paper/sections/E-reproducibility.md && grep -q 'docs/whitepaper/evidence/' tmp/cybernetic-harness/paper/sections/09-limitations.md"
+
+[closed]
+at = 2026-09-29
+by = "coordinator (session 7622b882)"
+evidence = "Research paper §8.4, §9.3 and App E (tmp, wk-rp-cite) cite the frozen copies in docs/whitepaper/evidence/ via footnotes with sha256 prefixes; ledger rows C8.28-C8.32, C9.29-C9.31, CE.20-CE.22 re-pointed and CE.25 added; new Table E.7 lists the 7 frozen files with full digests (shasum -c passes; all 38 hash citations checked against SHA256SUMS). Verify passes; paperlint --budget 1.2 --check-identifiers clean (§9 1.13x); CLAIMS-EVIDENCE regenerated (418 claims, --check up to date). Remaining live-path citations filed as a follow-up."
 +++
 
 ## Problem

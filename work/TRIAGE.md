@@ -147,7 +147,7 @@
 
 ### paper (5)
 - **P2** [dec-536bbd](items/dec-536bbd-decide-how-paperlint-strict-treats-numbers-in.md) Decide how paperlint --strict treats numbers in the claims-ledger rows [decision] · size S
-- **P2** [gap-184da5](items/gap-184da5-research-paper-cite-the-frozen-rollup-b7.md) Research paper: cite the frozen rollup, B7, W12 and the field cases from docs/whitepaper/evidence/ · size S
+- **P2** [gap-9899b0](items/gap-9899b0-research-paper-cite-the-frozen-evidence-copies.md) Research paper: cite the frozen evidence copies in §1.2, §4.1, §7 and Appendix F · size S
 - **P2** [gap-b605cf](items/gap-b605cf-research-paper-notation-table-figure-and-table.md) Research paper: notation table, figure and table map, budget-line names and bibliography venues · size M
 - **P2** [gap-bb619d](items/gap-bb619d-research-paper-the-final-prior-art-kill.md) Research paper: the final prior-art kill-search (Track D13) before submission · size M · **on hold:** Runs in submission week (paper/OUTLINE.md, Track D13)
 - **P3** [gap-9cb0b9](items/gap-9cb0b9-paperlint-count-a-footnote-that-cites-a.md) paperlint: count a footnote that cites a frozen evidence file by sha256 as a source · size S

@@ -16,7 +16,7 @@ discovered_from = "tmp/cybernetic-harness/workstreams/assessment/W9-paper-workst
 anchors = ["tmp/cybernetic-harness/paper/", "tmp/cybernetic-harness/companion-audit/", "tmp/cybernetic-harness/tldr/"]
 doc = "tmp/cybernetic-harness/workstreams/PLAN.md"
 lane = "paper"
-links = { depends_on = ["gap-aad48c", "gap-e08b4d", "gap-ac4ce8", "gap-56a1b4", "gap-04b0ff", "gap-2abf34", "gap-c4d630", "gap-cdd5f4", "gap-652d05", "gap-b64fba", "gap-b409fa", "gap-420202", "gap-0ef29d", "gap-856053", "gap-987510", "gap-4d516a", "gap-b605cf", "gap-184da5", "gap-a3031b", "gap-3986d0", "gap-bb619d", "dec-536bbd", "gap-f3be74", "gap-cb86e4"], blocks = [], related = [], supersedes = [], duplicate_of = "" }
+links = { depends_on = ["gap-aad48c", "gap-e08b4d", "gap-ac4ce8", "gap-56a1b4", "gap-04b0ff", "gap-2abf34", "gap-c4d630", "gap-cdd5f4", "gap-652d05", "gap-b64fba", "gap-b409fa", "gap-420202", "gap-0ef29d", "gap-856053", "gap-987510", "gap-4d516a", "gap-b605cf", "gap-184da5", "gap-a3031b", "gap-3986d0", "gap-bb619d", "dec-536bbd", "gap-f3be74", "gap-cb86e4", "gap-9899b0"], blocks = [], related = [], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "test -f tools/paperlint.py && python3 tools/paperlint.py --report tmp/cybernetic-harness/paper/sections/*.md"
@@ -76,13 +76,14 @@ This is the implementation plan.
 - [x] gap-987510: Research paper appendices C and D: align the audit protocol and metrics with S05, S09 and the ViabilityBench analysis
 - [x] gap-4d516a: TL;DR: fix four statements left stale after the 2026-09-29 refresh
 - [ ] gap-b605cf: Research paper: notation table, figure and table map, budget-line names and bibliography venues
-- [ ] gap-184da5: Research paper: cite the frozen rollup, B7, W12 and the field cases from docs/whitepaper/evidence/
+- [x] gap-184da5: Research paper: cite the frozen rollup, B7, W12 and the field cases from docs/whitepaper/evidence/
 - [ ] gap-a3031b: Companion report E12: internal review and bibliography QA
 - [ ] gap-3986d0: Freeze a tarball of .roko state with each audit tag
 - [ ] gap-bb619d: Research paper: the final prior-art kill-search (Track D13) before submission
 - [ ] dec-536bbd: Decide how paperlint --strict treats numbers in the claims-ledger rows
 - [ ] gap-f3be74: TL;DR: fix the stale statements found by the second refresh pass
 - [ ] gap-cb86e4: Companion report: make the draft pass paperlint --strict apart from the rater and author markers
+- [ ] gap-9899b0: Research paper: cite the frozen evidence copies in §1.2, §4.1, §7 and Appendix F
 - [ ] The `[[verify]]` command passes (paperlint reports on every section).
 
 ## Notes

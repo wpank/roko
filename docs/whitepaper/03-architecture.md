@@ -68,26 +68,7 @@ This paper does not repeat two headline claims of `docs/v3/00-INDEX.md`: "a Grap
 (nothing implements `Cell` for `Graph`; gap-cdf3fc) and "every Cell is a learner" (the plan-task Cell keeps the
 default `predict`, which returns nothing).
 
-```text
-EXECUTION PATH
-  tasks.toml ─► validate ─► plan_to_graph ─► Graph engine: a task starts once its dependencies settle
-                                                 │ each task
-     ┌───────────────────────────────────────────┘
-     ▼
-  context pack ─► model ─► agent ─► verify ──pass──► records under .roko/
-       ▲                              │ fail
-       └──── retry with gate output ◄─┘
-  surfaces: CLI · TUI · HTTP API + SSE · portal · ACP
-
-CONTROL STACK (reads the records, acts on the path)     ● wired  ◐ partial  ○ not working
-  6 second-order audits   ○ random audits  ○ loop audit  ○ guarded commit
-  5 slow regulators       ● health  ● budgets  ● retry budgets  ● playbooks
-                          ◐ router  ◐ experiments  ○ knowledge  ○ failure memory  ○ controller
-  4 fast regulators       ● retry  ○ escalation  ○ split or replan
-  3 comparators           ● visible verify  ○ tamper diff  ○ hidden tests
-  2 sensors               ● telemetry  ◐ attempt records  ◐ costs
-  1 feedforward           ● plan lints  ○ spec-quality gate
-```
+![Figure 1: architecture diagram](figures/fig1-architecture.svg)
 
 **Figure 1:** The architecture and the control stack. The marks follow the status matrix at `a17d4dadd`; §3.2 names
 each row.

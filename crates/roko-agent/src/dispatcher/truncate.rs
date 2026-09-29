@@ -93,6 +93,10 @@ fn truncate_error(error: ToolError, max_bytes: usize) -> ToolError {
         ToolError::PathOutsideWorktree(path) => ToolError::PathOutsideWorktree(PathBuf::from(
             take_text(path.to_string_lossy().into_owned(), max_bytes),
         )),
+        ToolError::KeyFileBlocked(path) => ToolError::KeyFileBlocked(PathBuf::from(take_text(
+            path.to_string_lossy().into_owned(),
+            max_bytes,
+        ))),
         ToolError::CommandNotAllowed(message) => {
             ToolError::CommandNotAllowed(take_text(message, max_bytes))
         }

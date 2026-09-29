@@ -3,18 +3,24 @@
 
 The data file holds one row per mechanism: its group, name, status tag and verdict, code anchors (`path::symbol`),
 evidence (commits, tests or work items) and the work item that would change its tag. This tool checks every row
-against the pinned commit and renders `docs/whitepaper/appendix-status-matrix.md` from it. The matrix is a dated
-snapshot; the work graph in work/items stays the live status.
+against the pinned commit and renders `docs/whitepaper/appendix-status-matrix.md` and the whitepaper's Figure 3
+(`docs/whitepaper/figures/fig3-status-matrix.svg`) from it. The matrix is a dated snapshot; the work graph in
+work/items stays the live status.
 
 Usage:
-  status_matrix.py                # check the rows at the pinned commit and write the appendix
-  status_matrix.py --check        # check the rows, regenerate the appendix in memory, fail on any difference
+  status_matrix.py                # check the rows at the pinned commit, write the appendix and Figure 3
+  status_matrix.py --check        # check the rows, regenerate both in memory, fail on any difference
   status_matrix.py --probe-head   # list rows whose anchors no longer exist at HEAD (exit 1 if any)
 
 Options (paths are relative to --repo):
   --repo DIR      repository to read (default: the checkout this script is in)
   --data PATH     default docs/whitepaper/data/mechanisms.toml
   --out PATH      default docs/whitepaper/appendix-status-matrix.md
+  --svg PATH      Figure 3; default docs/whitepaper/figures/fig3-status-matrix.svg
+
+The other figures in Figure 3's directory are drawn by hand. Each status mark in them carries `data-row` and
+`data-tag` attributes, and the root element `data-pin`. `--check` fails when a mark's tag differs from its row, or a
+figure's pin from the matrix's; writing only warns.
 
 Row rules:
   - tag is one of TAGS, verdict one of VERDICTS, and every anchor exists at the pinned commit
@@ -29,11 +35,14 @@ A row that is not WIRED, has an actionable verdict and names no item is reported
 from __future__ import annotations
 
 import argparse, difflib, re, subprocess, sys, tomllib
+import xml.etree.ElementTree as ET
 from pathlib import Path
+from xml.sax.saxutils import escape
 
 REPO = Path(__file__).resolve().parents[1]
 DATA = Path("docs/whitepaper/data/mechanisms.toml")
 OUT = Path("docs/whitepaper/appendix-status-matrix.md")
+SVG = Path("docs/whitepaper/figures/fig3-status-matrix.svg")
 
 # The tldr/00 status vocabulary, in the order the matrix lists it.
 TAGS = {
@@ -59,6 +68,42 @@ VERDICTS = {
 }
 ANCHORLESS_TAGS = {"MISSING", "DOCS-ONLY", "REMOVED"}
 ACTIONABLE = {"wire", "fix", "build", "redesign"}
+ON_PATH = ("WIRED", "PARTIAL", "BROKEN")  # the tags of mechanisms that run on the production path
+
+# How the figures draw a tag, so they read in greyscale as well as colour: a fill or pattern on the `.key` shape (a
+# Figure 3 square, a legend key, a chip's swatch in the hand-drawn figures, which copy these rules), and the tag's
+# name beside it. A class per tag: WIRED is `.wired`, BUILT-UNWIRED `.built-unwired`.
+SVG_STYLE = """\
+  <defs>
+    <pattern id="fill-partial" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+      <rect width="6" height="6" fill="#fde9b8"/>
+      <rect width="3" height="6" fill="#c98500"/>
+    </pattern>
+    <pattern id="fill-broken" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+      <rect width="6" height="6" fill="#f7dada"/>
+      <rect width="1.6" height="6" fill="#d03b3b"/>
+      <rect width="6" height="1.6" fill="#d03b3b"/>
+    </pattern>
+    <pattern id="fill-built-unwired" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(-45)">
+      <rect width="6" height="6" fill="#efeee9"/>
+      <rect width="1.4" height="6" fill="#8f8d86"/>
+    </pattern>
+  </defs>
+  <style>
+    text { font-family: 'Helvetica Neue', Helvetica, Arial, 'Liberation Sans', Arimo, sans-serif; fill: #0b0b0b; }
+    .note { fill: #52514e; }
+    .wired .key { fill: #0ca30c; }
+    .partial .key { fill: url(#fill-partial); }
+    .broken .key { fill: url(#fill-broken); }
+    .orphaned .key { fill: #cfcdc6; }
+    .built-unwired .key { fill: url(#fill-built-unwired); }
+    .docs-only .key, .missing .key, .removed .key, .unproven .key { fill: #ffffff; stroke: #898781; }
+    .missing .key { stroke-dasharray: 3 2; }
+    .docs-only .key, .removed .key, .unproven .key { stroke-dasharray: 1 2; }
+    .partial .id, .broken .id, .built-unwired .id { paint-order: stroke; stroke: #ffffff; stroke-width: 3px; stroke-linejoin: round; }
+    .docs-only .id, .missing .id, .removed .id, .unproven .id { fill: #52514e; }
+    .removed .id { text-decoration: line-through; }
+  </style>"""
 STATUSES = ("stub", "draft", "reviewed")
 ITEM_DIRS = ("work/items", "work/parked")
 
@@ -349,6 +394,82 @@ def render(data: dict, git: Git, pin: str) -> str:
     return "\n".join(lines) + "\n"
 
 
+def render_svg(data: dict, pin: str) -> str:
+    """Figure 3: one square per row, labelled with its id. Each group's squares are sorted by tag, so a group reads as
+    a bar of how much of it runs; the legend counts the rows per tag."""
+    rows, groups = data["row"], data["group"]
+    used = [t for t in TAGS if any(r["tag"] == t for r in rows)]
+    legend = [(label, tags) for label, tags in (("On the production path", [t for t in used if t in ON_PATH]),
+                                                 ("Not on the path", [t for t in used if t not in ON_PATH])) if tags]
+    width, cell, pitch, line = 880, (46, 26), 50, 34
+    left = 62 + round(max(len(g["name"]) for g in groups) * 13 * 0.52)  # past the longest group name
+    per_line = max(1, (width - 16 - left + pitch - cell[0]) // pitch)
+    members = {g["id"]: sorted((r for r in rows if r["group"] == g["id"]),
+                               key=lambda r: (list(TAGS).index(r["tag"]), int(re.sub(r"\D", "", r["id"]) or 0)))
+               for g in groups}
+    count = {t: sum(r["tag"] == t for r in rows) for t in used}
+    keys, y = [], 16  # legend keys (label, tag, x, y); each label starts a line, and a full line wraps
+    for label, tags in legend:
+        x = left
+        for t in tags:
+            w = 30 + len(f"{t} {count[t]}") * 8.2  # 12px capitals
+            if x > left and x + w > width - 16:
+                x, y = left, y + 24
+            keys.append((label, t, x, y))
+            label, x = None, round(x + w + 20, 1)
+        y += 24
+    top = y + 14
+    lines = [max(1, -(-len(members[g["id"]]) // per_line)) for g in groups]
+    height = top + line * sum(lines) + 22
+    out = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}" '
+           f'role="img" aria-labelledby="title desc" data-pin="{pin}">',
+           f'  <title id="title">Status matrix at {pin}</title>',
+           f'  <desc id="desc">{len(rows)} mechanisms in {len(groups)} groups, one square per row of the appendix, '
+           f'sorted by tag: {", ".join(f"{t} {count[t]}" for t in used)}.</desc>',
+           SVG_STYLE,
+           f'  <rect width="{width}" height="{height}" rx="8" fill="#ffffff"/>']
+    for label, t, x, ky in keys:
+        if label:
+            out.append(f'  <text class="note" x="16" y="{ky + 12}" font-size="12">{label}</text>')
+        out.append(f'  <g class="{t.lower()}"><rect class="key" x="{x + 0.5:g}" y="{ky + 0.5}" width="22" height="14" '
+                   f'rx="2"/><text x="{x + 30:g}" y="{ky + 12}" font-size="12">{t} {count[t]}</text></g>')
+    y = top
+    for g, n in zip(groups, lines):
+        out.append(f'  <text x="16" y="{y + 18}" font-size="13" font-weight="bold">{escape(g["id"])}</text>'
+                   f'<text x="50" y="{y + 18}" font-size="13">{escape(g["name"])}</text>')
+        for k, r in enumerate(members[g["id"]]):
+            x, cy = left + pitch * (k % per_line), y + line * (k // per_line)
+            out.append(f'  <g class="{r["tag"].lower()}" data-row="{r["id"]}" data-tag="{r["tag"]}">'
+                       f'<title>{r["id"]} {escape(r["name"])}: {r["tag"]}</title>'
+                       f'<rect class="key" x="{x + 0.5}" y="{cy + 0.5}" width="{cell[0] - 1}" height="{cell[1] - 1}" '
+                       f'rx="3"/><text class="id" x="{x + cell[0] // 2}" y="{cy + 17}" font-size="11.5" '
+                       f'text-anchor="middle">{r["id"]}</text></g>')
+        y += line * n
+    out.append(f'  <text class="note" x="16" y="{y + 10}" font-size="11">Status tags at {pin}. One square per row '
+               f'of the appendix, sorted by tag within each group.</text>')
+    return "\n".join(out) + "\n</svg>\n"
+
+
+def mark_problems(path: Path, rows: dict[str, str], pin: str) -> list[str]:
+    """A hand-drawn figure's status marks against the matrix: its `data-pin` and each `data-row` mark's `data-tag`."""
+    try:
+        root = ET.parse(path).getroot()
+    except (OSError, ET.ParseError) as e:
+        return [f"{path.name}: cannot read it as SVG: {e}"]
+    errs = []
+    if root.get("data-pin") not in (None, pin):
+        errs.append(f"{path.name}: drawn at {root.get('data-pin')}, but the matrix is pinned at {pin}")
+    for el in root.iter():
+        rid, tag = el.get("data-row"), el.get("data-tag")
+        if rid is None:
+            continue
+        if rid not in rows:
+            errs.append(f"{path.name}: mark {rid} names no row of the matrix")
+        elif tag != rows[rid]:
+            errs.append(f"{path.name}: mark {rid} says {tag}, but the matrix says {rows[rid]}")
+    return errs
+
+
 def probe_head(git: Git, data: dict) -> list[tuple[str, str, str]]:
     """Rows whose anchors no longer exist at HEAD → [(row id, anchor, problem)]."""
     head = git.commit("HEAD")
@@ -363,11 +484,13 @@ def probe_head(git: Git, data: dict) -> list[tuple[str, str, str]]:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     mode = ap.add_mutually_exclusive_group()
-    mode.add_argument("--check", action="store_true", help="fail if a row is bad or the appendix is out of date")
+    mode.add_argument("--check", action="store_true",
+                      help="fail if a row is bad, the appendix or Figure 3 is out of date, or a figure's mark is wrong")
     mode.add_argument("--probe-head", action="store_true", help="list rows whose anchors are gone at HEAD")
     ap.add_argument("--repo", type=Path, default=REPO)
     ap.add_argument("--data", type=Path, default=DATA)
     ap.add_argument("--out", type=Path, default=OUT)
+    ap.add_argument("--svg", type=Path, default=SVG, help="Figure 3, drawn from the matrix")
     args = ap.parse_args(argv)
     repo = args.repo.resolve()
     git = Git(repo)
@@ -393,22 +516,36 @@ def main(argv: list[str] | None = None) -> int:
         print(f"status_matrix: {e}", file=sys.stderr)
     if errs:
         return 1
-    text = render(data, git, data["matrix"]["pinned"])
+    pin, svg_path = data["matrix"]["pinned"], repo / args.svg
+    outputs = [(args.out, out_path, render(data, git, pin)), (args.svg, svg_path, render_svg(data, pin))]
+    tags = {r["id"]: r["tag"] for r in data["row"]}
+    marks = [m for f in sorted(svg_path.parent.glob("*.svg")) if f != svg_path for m in mark_problems(f, tags, pin)]
     if args.check:
-        try:
-            current = out_path.read_text()
-        except OSError:
-            current = ""
-        if current != text:
-            diff = difflib.unified_diff(current.splitlines(), text.splitlines(), str(args.out), "regenerated", lineterm="")
-            print("\n".join(list(diff)[:40]), file=sys.stderr)
-            print(f"status_matrix: {args.out} is out of date; run python3 tools/status_matrix.py", file=sys.stderr)
+        stale = []
+        for rel, path, text in outputs:
+            try:
+                current = path.read_text()
+            except OSError:
+                current = ""
+            if current != text:
+                diff = difflib.unified_diff(current.splitlines(), text.splitlines(), str(rel), "regenerated", lineterm="")
+                print("\n".join(list(diff)[:40]), file=sys.stderr)
+                stale.append(str(rel))
+        if stale:
+            print(f"status_matrix: {' and '.join(stale)} {'is' if len(stale) == 1 else 'are'} out of date; run "
+                  "python3 tools/status_matrix.py", file=sys.stderr)
+        for m in marks:
+            print(f"status_matrix: {m}; redraw the figure's marks by hand", file=sys.stderr)
+        if stale or marks:
             return 1
-        print(f"status_matrix: {len(data['row'])} rows ok at {data['matrix']['pinned']}; {args.out} is current")
+        print(f"status_matrix: {len(data['row'])} rows ok at {pin}; {args.out} and {args.svg} are current")
         return 0
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(text)
-    print(f"status_matrix: wrote {args.out} ({len(data['row'])} rows at {data['matrix']['pinned']})")
+    for m in marks:
+        print(f"status_matrix: warning: {m}", file=sys.stderr)
+    for _, path, text in outputs:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+    print(f"status_matrix: wrote {args.out} and {args.svg} ({len(data['row'])} rows at {pin})")
     return 0
 
 

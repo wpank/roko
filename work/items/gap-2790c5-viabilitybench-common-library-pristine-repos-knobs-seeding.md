@@ -2,14 +2,16 @@
 id = "gap-2790c5"
 kind = "gap"
 title = "ViabilityBench common library: pristine repos, knobs, seeding, AST checks and canaries (S08.T2)"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p1"
 goal = "proof"
 size = "M"
 subsystem = ["benchmarks/viabilitybench/families"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-29
+last_verified_rev = "ff5a7a1dc"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e12"
 discovered_from = "tmp/cybernetic-harness/specs/S08-benchmark-suite.md (§4.2, §4.4, §6 T2; checklist S08.T2)"
 anchors = ["benchmarks/viabilitybench/families/common/"]
@@ -22,6 +24,12 @@ command = "grep -qw 'def test_pristine_restore_gives_same_tree_hash' benchmarks/
 
 [[verify]]
 command = "grep -qw 'def test_hidden_cases_depend_on_secret_file' benchmarks/viabilitybench/families/common/test_common.py && benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/families/common/test_common.py -k test_hidden_cases_depend_on_secret_file -q"
+
+[closed]
+at = 2026-09-29
+commit = "ff5a7a1dc"
+by = "commit trailer"
+evidence = "ff5a7a1dc adds benchmarks/viabilitybench/families/common/ (S08 T2): repo.py (a deterministic pristine commit saved to a bundle outside the workdir; plumbing-only exports of the disk or of a commit; restores that replace planted symlinks; git's tree hash in Python), knobs.py (ladder.toml, S08 §4.4 types and bands, seeded range draws, instance ids), hmac_seed.py (HMAC-SHA256 streams, public for the visible instance and secret-keyed for hidden cases; the secret only from a 0600 --secret-file, and --secret VALUE is refused), astcheck.py (literal returns, skipped or ignored tests, visible-test edits, raises outside the required base class), canary.py (release canary, marker lines, strip on render, search in text, diffs and trees) and mutate.py (seeded whole-identifier renames). Both [[verify]] commands pass in the pinned venv, and all 35 tests in test_common.py pass under Python 3.11 and 3.12, with a planted example for each AST check and canary."
 +++
 
 ## Problem

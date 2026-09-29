@@ -464,7 +464,8 @@ printf '%s\n' '{{"type":"content_block_delta","delta":{{"text":"adapter-ok"}}}}'
         assert!(args_text.contains("--mcp-config"));
         assert!(args_text.contains(mcp_config.to_str().expect("mcp path")));
         assert!(args_text.contains("--strict-mcp-config"));
-        assert!(!args_text.contains("--bare"));
+        // Match whole arguments: the guard script inside --settings names git's `--bare` option.
+        assert!(!args_text.lines().any(|arg| arg == "--bare"));
         assert!(!args_text.contains("--dangerously-skip-permissions"));
 
         let provider_pos = args_text.find("--provider-flag").expect("provider args");

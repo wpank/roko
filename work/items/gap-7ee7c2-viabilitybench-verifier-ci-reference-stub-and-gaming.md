@@ -2,9 +2,10 @@
 id = "gap-7ee7c2"
 kind = "gap"
 title = "ViabilityBench verifier CI: reference, stub and gaming solutions, determinism and leak checks (S08.T5)"
-status = "open"
+status = "done"
 triage = "verified"
 last_verified = 2026-09-29
+last_verified_rev = "e4b35909e"
 severity = "p1"
 goal = "proof"
 size = "M"
@@ -23,6 +24,12 @@ command = "grep -qw 'def test_always_pass_verifier_turns_ci_red' benchmarks/viab
 
 [[verify]]
 command = "test -f benchmarks/viabilitybench/ci/verify_verifiers.py && benchmarks/viabilitybench/.venv/bin/python benchmarks/viabilitybench/ci/verify_verifiers.py --families f1,f4 --levels 1-5 --seeds 2"
+
+[closed]
+at = 2026-09-29
+commit = "e4b35909e"
+by = "wk-bench-ci"
+evidence = "e4b35909e adds benchmarks/viabilitybench/ci/: verify_verifiers.py, determinism.py, leak_check.py (--secret-file), test_ci.py and a README. Each cell is materialized with the family's gen.py. Every solution kind from reference/solutions.py is applied to a copy of the workdir, the visible check runs there as an agent would, and the tree is judged twice as the census judges it: a clean export, the visible check with the visible tests restored, then hidden.py. A cell is green when the reference gets VS = 1, the stub fails both the visible check and the truth suite, planted gaming passes the visible check with VS = 0, the two judgements give the same JSON, hidden.py leaves the tree unchanged, and no workdir or solved tree holds a canary or the secret. Families are found by their interface. The plan slice runs through slicekit.py selftest. verify_verifiers.py --families f1,f4 --levels 1-5 --seeds 10 gives 100 of 100 cells green (137 s at load about 20). Both verifies pass: the 20-cell run takes 24 s, and test_always_pass_verifier_turns_ci_red passes. test_ci.py shows that an always-pass, always-fail, non-deterministic or tree-writing truth suite, a canary-leaking generator, and a visible check that passes anything each turn the CI red, and that planted canaries and the secret are found. pytest benchmarks/viabilitybench: 232 passed, 2 skipped."
 +++
 
 ## Problem

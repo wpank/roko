@@ -24,12 +24,15 @@
 # - git reset --hard;
 # - git stash, except stash list and stash show;
 # - git clean, except dry runs (-n);
-# - recursive rm (-r, -R or --recursive, anywhere before --).
+# - recursive rm (-r, -R or --recursive, anywhere before --);
+# - find -delete, and any rm that find -exec runs.
 #
 # Every command in a chain is checked (;, &&, ||, |, & and newlines), after
 # assignments, shell keywords and wrappers such as sudo, env and xargs, and
 # past git's global options (-C, -c, --git-dir, --work-tree). Commands run by
-# subshells, sh -c, eval, $(...) and backquotes are checked too.
+# subshells, sh -c, eval, $(...), backquotes, find -exec, busybox applets
+# and command strings handed to wrappers (watch '...', flock -c '...') are
+# checked too.
 #
 # A git subcommand that is not one of git's own commands is looked up as an
 # alias, where the Bash call runs and with the command's -C and -c options,
@@ -73,11 +76,22 @@ SHELL_KEYWORDS = {"if", "then", "else", "elif", "do", "while", "until", "!", "{"
 WRAPPERS = {
     "sudo", "doas", "env", "command", "builtin", "exec", "nohup", "nice", "ionice", "time",
     "timeout", "gtimeout", "xargs", "stdbuf", "unbuffer", "chronic", "caffeinate", "watch", "flock",
+    "su", "runuser", "script", "sg",
 }
+# Wrappers that hand every argument to sh -c as one command (watch 'rm -rf x').
+STRING_WRAPPERS = {"watch", "sg"}
+# Wrapper options whose value is a shell command (flock -c, su -c, env -S).
+COMMAND_OPTIONS = {"-c", "--command", "-S", "--split-string"}
+# Wrapper options whose value is a user or group, never the program (sudo -u git).
+USER_OPTIONS = {"-u", "-g", "-U", "--user", "--group", "--other-user"}
+# Multi-call binaries whose first argument names the program (busybox rm).
+MULTICALL = {"busybox", "toybox"}
+# find actions that run a command, up to ; or +.
+FIND_EXEC = {"-exec", "-execdir", "-ok", "-okdir"}
 # Programs that run their arguments as shell commands.
 SHELLS = {"sh", "bash", "zsh", "dash", "ksh", "fish"}
 # Programs whose arguments this guard checks.
-CHECKED_PROGRAMS = {"git", "rm", "eval"} | SHELLS
+CHECKED_PROGRAMS = {"git", "rm", "eval", "find"} | SHELLS | MULTICALL
 # git global options whose value is the next argument.
 GIT_VALUE_OPTIONS = {
     "-C", "-c", "--git-dir", "--work-tree", "--namespace", "--super-prefix", "--config-env",
@@ -114,8 +128,9 @@ FALLBACK_TOKEN = re.compile(r"[;&|()<>\n]+|[^\s;&|()<>]+")
 MAX_DEPTH = 8
 
 # The Bash call being checked (check_bash sets it): the directory git
-# aliases are looked up in, and the whole command.
-BASH_CALL = {"cwd": None, "command": ""}
+# aliases are looked up in, and the whole command. under_find is set while
+# the command a find -exec runs is checked.
+BASH_CALL = {"cwd": None, "command": "", "under_find": False}
 
 
 def tokens(text):
@@ -171,31 +186,66 @@ def check_words(words, depth, maybe_argument=False):
     if not words:
         return
     program = program_name(words[0])
-    if program in WRAPPERS:
-        # The wrapper's own options come first, and an option's value can
-        # name a program too (sudo -u git rm -rf x), so every later word that
-        # names a program this guard checks starts a command to check. After
-        # a word that is not an option, an assignment, a number (timeout's
-        # duration) or another wrapper, it may be an argument instead
-        # (timeout 5 grep git src).
-        for index in range(1, len(words)):
-            if program_name(words[index]) in CHECKED_PROGRAMS:
-                after_argument = not all(
-                    word.startswith("-") or ASSIGNMENT.match(word) or DURATION.match(word)
-                    or program_name(word) in WRAPPERS
-                    for word in words[1:index]
-                )
-                check_words(words[index:], depth, after_argument)
+    if program in MULTICALL:
+        check_words(words[1:], depth, maybe_argument)
+    elif program in WRAPPERS:
+        check_wrapped(program, words, depth)
     elif program == "git":
         check_git(words[1:], depth, maybe_argument)
     elif program == "rm":
         check_rm(words[1:])
+    elif program == "find":
+        check_find(words[1:], depth)
     elif program in SHELLS:
         for argument in words[1:]:
             if not argument.startswith("-"):
                 check_command(argument, depth + 1)
     elif program == "eval":
         check_command(" ".join(words[1:]), depth + 1)
+
+
+def check_wrapped(program, words, depth):
+    """Check the commands a wrapper (`words[0]`, named `program`) runs.
+
+    Its own options come first, and an option's value can name a program too
+    (xargs -a git rm -rf x), so every later word that names a program this
+    guard checks starts a command to check. A user or group is skipped
+    (sudo -u git whoami). After a word that is not an option, an assignment,
+    a number (timeout's duration), a user or another wrapper, the word may
+    be an argument instead (timeout 5 grep git src). A command handed over
+    as one string (watch 'rm -rf x', flock l -c '...') is checked as a
+    command line."""
+    after_argument = False
+    for index in range(1, len(words)):
+        word, previous = words[index], words[index - 1]
+        is_user = previous in USER_OPTIONS
+        if program_name(word) in CHECKED_PROGRAMS and not is_user:
+            check_words(words[index:], depth, after_argument)
+        option, _, value = word.partition("=")
+        if program in STRING_WRAPPERS or previous in COMMAND_OPTIONS:
+            check_command(word, depth + 1)
+        elif option in COMMAND_OPTIONS and value:
+            check_command(value, depth + 1)
+        if not (
+            word.startswith("-") or ASSIGNMENT.match(word) or DURATION.match(word) or is_user
+            or program_name(word) in WRAPPERS
+        ):
+            after_argument = True
+
+
+def check_find(arguments, depth):
+    if "-delete" in arguments:
+        block("find -delete forbidden: it deletes whole directory trees")
+    for index, argument in enumerate(arguments):
+        if argument in FIND_EXEC:
+            command = []
+            for word in arguments[index + 1:]:
+                if word in (";", "+"):
+                    break
+                command.append(word)
+            under_find, BASH_CALL["under_find"] = BASH_CALL["under_find"], True
+            check_words(command, depth)
+            BASH_CALL["under_find"] = under_find
 
 
 def short_flags(arguments):
@@ -210,6 +260,8 @@ def short_flags(arguments):
 
 
 def check_rm(arguments):
+    if BASH_CALL["under_find"]:
+        block("find -exec rm forbidden: it deletes files across the whole tree find walks")
     # GNU rm reads options anywhere before --, and accepts a long option
     # shortened to any unambiguous prefix (--rec).
     options = arguments[:arguments.index("--")] if "--" in arguments else arguments

@@ -36,7 +36,7 @@ use roko_core::agent::AgentRole;
 use roko_core::config::RewardWeights;
 use roko_core::task::{TaskCategory, TaskComplexityBand};
 use roko_core::{BehavioralState, DaimonPolicy};
-use roko_learn::cascade_router::CascadeRouter;
+use roko_learn::cascade_router::{CascadeRouter, normalized_cost_and_latency};
 use roko_learn::model_router::RoutingContext;
 
 use super::{FeedbackEvent, FeedbackSink};
@@ -107,8 +107,14 @@ impl FeedbackSink for RoutingObservationSink {
         // Route them through the dampened `record_override_outcome` path
         // instead of the full router-outcome path.
         if *model_source == ModelChoiceSource::Override {
-            self.router
-                .record_override_outcome(&outcome.model, &ctx, succeeded, None);
+            self.router.record_override_outcome(
+                &outcome.model,
+                &ctx,
+                succeeded,
+                outcome.cost_usd,
+                outcome.duration_ms,
+                None,
+            );
             return Ok(());
         }
 
@@ -145,11 +151,7 @@ pub(crate) fn observe_router_outcome(
     };
 
     // P0-05: Feed real cost from the agent outcome into the bandit.
-    // Normalize against a $1.00 per-task ceiling and latency against a
-    // 5-minute ceiling so both signals stay in [0, 1] for the LinUCB
-    // reward computation.
-    let normalized_cost = (cost_usd / 1.0).clamp(0.0, 1.0);
-    let normalized_latency = (duration_ms as f64 / 300_000.0).clamp(0.0, 1.0);
+    let (normalized_cost, normalized_latency) = normalized_cost_and_latency(cost_usd, duration_ms);
     let weights = RewardWeights::default();
     router.observe_multi_objective_outcome(
         ctx.to_features(),
@@ -453,10 +455,9 @@ mod tests {
             initial_model: String::new(),
         };
         sink.on_event(&event).await.unwrap();
-        // record_override_outcome uses observe_multi_objective with
-        // dampened quality (0.5), so LinUCB observations advance but
-        // the confidence_stats snapshot should NOT be touched by the
-        // override path (it only goes through the LinUCB bandit).
+        // record_override_outcome counts the override as a confidence trial
+        // and gives LinUCB a dampened (half-weight) update, so the bandit's
+        // observation count still advances (bug-f68404).
         assert!(
             r.total_observations() >= 1,
             "override must still advance LinUCB observations via dampened path",

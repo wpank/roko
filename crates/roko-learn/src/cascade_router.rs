@@ -187,21 +187,43 @@ impl Default for RoutingContext {
 }
 
 impl roko_agent::model_call_service::ForceBackendOverrideRecorder for CascadeRouter {
-    fn record_override_outcome(&self, model_slug: &str, success: bool) -> bool {
+    fn record_override_outcome(
+        &self,
+        model_slug: &str,
+        success: bool,
+        cost_usd: f64,
+        latency_ms: u64,
+    ) -> bool {
         let ctx = Self::forced_override_context(model_slug, success);
-        CascadeRouter::record_override_outcome(self, model_slug, &ctx, success, None)
+        CascadeRouter::record_override_outcome(
+            self, model_slug, &ctx, success, cost_usd, latency_ms, None,
+        )
     }
 }
 
-/// A manual model override outcome as a cascade observation (UX34): what
-/// [`CascadeRouter::record_override_outcome`] applies.
-struct OverrideObservation {
-    /// Features of the routing context the override ran under.
-    context_features: Vec<f64>,
-    /// The dampened quality signal as a `LinUCB` reward.
-    reward: f64,
-    /// Whether the confidence counters count a success.
-    success: bool,
+/// Cost at which an outcome's normalized cost reaches 1 (P0-05).
+const OUTCOME_COST_CEILING_USD: f64 = 1.0;
+/// Latency at which an outcome's normalized latency reaches 1 (P0-05).
+const OUTCOME_LATENCY_CEILING_MS: f64 = 300_000.0;
+
+/// The `LinUCB` reward an outcome earns: `success_reward` for a success, and
+/// 0 for a failure, whose cost and latency bought nothing (bug-8da8ba).
+///
+/// Every router observation applies it, so no entry point can reward a
+/// failure for being cheap or fast (bug-3ea1f5).
+#[must_use]
+pub fn outcome_reward(success: bool, success_reward: f64) -> f64 {
+    if success { success_reward } else { 0.0 }
+}
+
+/// An outcome's cost and latency on the `[0, 1]` scale of the routing
+/// reward: $1.00 per task and 5 minutes reach 1 (P0-05).
+#[must_use]
+pub fn normalized_cost_and_latency(cost_usd: f64, duration_ms: u64) -> (f64, f64) {
+    (
+        (cost_usd / OUTCOME_COST_CEILING_USD).clamp(0.0, 1.0),
+        (duration_ms as f64 / OUTCOME_LATENCY_CEILING_MS).clamp(0.0, 1.0),
+    )
 }
 
 impl CascadeRouter {
@@ -1346,7 +1368,15 @@ impl CascadeRouter {
         // apply the per-category pass-rate delta even when the caller doesn't
         // invoke record_category_outcome separately.
         self.record_category_outcome(model_slug, ctx.task_category, success);
-        self.observe_internal(&ctx.to_features(), model_idx, reward, success, None, None);
+        self.observe_internal(
+            &ctx.to_features(),
+            model_idx,
+            reward,
+            success,
+            None,
+            None,
+            1.0,
+        );
     }
 
     /// Apply a WAL-replayed observation. Does NOT write a WAL entry.
@@ -1383,7 +1413,15 @@ impl CascadeRouter {
                 "[wal] replay: model index changed -- using current index"
             );
         }
-        self.observe_internal(context_features, effective_idx, reward, success, None, None);
+        self.observe_internal(
+            context_features,
+            effective_idx,
+            reward,
+            success,
+            None,
+            None,
+            1.0,
+        );
     }
 
     /// Record an observation enriched with Perplexity search metadata.
@@ -1418,6 +1456,7 @@ impl CascadeRouter {
             success,
             Some(perplexity),
             None,
+            1.0,
         );
         true
     }
@@ -1453,6 +1492,7 @@ impl CascadeRouter {
             success,
             None,
             Some(gemini),
+            1.0,
         );
         true
     }
@@ -1537,58 +1577,44 @@ impl CascadeRouter {
         );
     }
 
-    /// Record a manual model override outcome for learning (UX34).
+    /// Record the outcome of a manual model override (UX34).
     ///
     /// Called when the operator used `--model` / `--force-model` /
-    /// `--force-backend` to bypass the cascade router. The outcome updates
-    /// the confidence stats and the `LinUCB` arm for `ctx`, with the
-    /// multi-objective reward of the quality signal. The `dampening` factor
-    /// (0.0--1.0) scales the quality signal to prevent a single user override
-    /// from dominating the bandit policy.  Pass `None` to use the built-in
-    /// default (`OVERRIDE_LEARNING_RATE`, currently 0.5).
+    /// `--force-backend` to bypass the cascade router. The outcome counts in
+    /// the confidence stats like any other: a trial, and a success only when
+    /// `success`. Its `LinUCB` update earns the multi-objective reward of a
+    /// success at its cost and latency, or 0 for a failure, whose cost and
+    /// latency bought nothing (bug-8da8ba). The update carries only
+    /// `dampening` (0.0--1.0) of an observation's weight, so an operator's
+    /// choices cannot dominate the bandit policy (bug-f68404). Pass `None` to
+    /// use the built-in default (`OVERRIDE_LEARNING_RATE`, currently 0.5).
     pub fn record_override_outcome(
         &self,
         model_slug: &str,
         ctx: &RoutingContext,
         success: bool,
+        cost_usd: f64,
+        duration_ms: u64,
         dampening: Option<f64>,
     ) -> bool {
         let Some(model_idx) = self.model_index_for_slug(model_slug) else {
             return false;
         };
-        let observation = Self::override_observation(ctx, success, dampening);
-        self.observe_outcome(
-            observation.context_features,
+        let (cost, latency) = normalized_cost_and_latency(cost_usd, duration_ms);
+        let success_reward =
+            compute_routing_reward_with_weights(1.0, cost, latency, &RewardWeights::default());
+        let reward = outcome_reward(success, success_reward);
+        let weight = dampening.unwrap_or(OVERRIDE_LEARNING_RATE).clamp(0.0, 1.0);
+        self.observe_internal(
+            &ctx.to_features(),
             model_idx,
-            observation.reward,
-            observation.success,
+            reward,
+            success,
+            None,
+            None,
+            weight,
         );
         true
-    }
-
-    /// The observation [`Self::record_override_outcome`] makes.
-    fn override_observation(
-        ctx: &RoutingContext,
-        success: bool,
-        dampening: Option<f64>,
-    ) -> OverrideObservation {
-        let damp = dampening.unwrap_or(OVERRIDE_LEARNING_RATE).clamp(0.0, 1.0);
-        let raw_quality = if success { 1.0 } else { 0.0 };
-        // For overrides we have no cost/latency telemetry, so use neutral
-        // values (0.0) and let only the dampened quality signal drive learning.
-        let reward = compute_routing_reward_with_weights(
-            raw_quality * damp,
-            0.0,
-            0.0,
-            &RewardWeights::default(),
-        );
-        OverrideObservation {
-            context_features: ctx.to_features(),
-            reward,
-            // Every override counts as a confidence success, whatever its
-            // outcome, until bug-f68404 honours `success` here.
-            success: true,
-        }
     }
 
     /// The routing context of a forced-model override recorded without one.
@@ -1741,6 +1767,7 @@ impl CascadeRouter {
             passed,
             None,
             None,
+            1.0,
         );
     }
 
@@ -1761,7 +1788,7 @@ impl CascadeRouter {
         reward: f64,
         success: bool,
     ) {
-        self.observe_internal(&context_vec, model_idx, reward, success, None, None);
+        self.observe_internal(&context_vec, model_idx, reward, success, None, None, 1.0);
     }
 
     /// Record a successful multi-objective observation from a raw context vector.
@@ -1829,6 +1856,10 @@ impl CascadeRouter {
         }
     }
 
+    /// Apply one observation: a confidence trial (a success only when
+    /// `success`) and a `LinUCB` update carrying `weight` (0.0 to 1.0) of a
+    /// full observation. A failure's reward is 0 whatever the caller passed
+    /// ([`outcome_reward`]), including a WAL entry journaled before that rule.
     fn observe_internal(
         &self,
         context_vec: &[f64],
@@ -1837,6 +1868,7 @@ impl CascadeRouter {
         success: bool,
         perplexity: Option<PerplexityObservationTotals>,
         gemini: Option<GeminiObservationTotals>,
+        weight: f64,
     ) {
         let Some(slug) = self.model_slugs.get(model_idx) else {
             return;
@@ -1875,7 +1907,9 @@ impl CascadeRouter {
         } // stats lock dropped
 
         // Phase 2: Update LinUCB (internal lock, not nested with ours).
-        self.linucb.update_features(context_vec, model_idx, reward);
+        let reward = outcome_reward(success, reward);
+        self.linucb
+            .update_features_weighted(context_vec, model_idx, reward, weight);
 
         // Refresh Pareto frontier if the observation count crossed a bucket boundary.
         self.refresh_pareto_frontier_if_needed();
@@ -3116,6 +3150,7 @@ impl CascadeRouter {
             actual_success,
             None,
             None,
+            1.0,
         );
 
         self.check_stage_transition();

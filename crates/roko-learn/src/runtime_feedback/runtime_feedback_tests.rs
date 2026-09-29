@@ -832,6 +832,42 @@ async fn open_under_loads_persisted_cascade_router_state() {
 }
 
 #[tokio::test]
+async fn a_failed_episode_earns_zero_router_reward() {
+    // bug-3ea1f5: Path A rewards a failure with 0, as every other path does,
+    // however cheap and fast the failed attempt was.
+    let tmp = TempDir::new().unwrap();
+    let runtime = LearningRuntime::open_under(tmp.path().join("learn"))
+        .await
+        .unwrap();
+    let mut episode = sample_episode(false);
+    episode
+        .extra
+        .insert("model".to_string(), serde_json::json!("claude-sonnet-4-5"));
+    episode.usage.cost_usd = 0.001;
+    episode.usage.wall_ms = 500;
+
+    let update = runtime
+        .record_completed_run(CompletedRunInput::from_episode(episode))
+        .await
+        .unwrap();
+    assert!(update.router_updated);
+
+    let router = runtime.cascade_router();
+    assert_eq!(router.confidence_snapshot()["claude-sonnet-4-5"], (1, 0));
+    let arm = router
+        .linucb()
+        .arm_stats()
+        .into_iter()
+        .find(|arm| arm.slug == "claude-sonnet-4-5")
+        .expect("arm for the episode's model");
+    assert_eq!(arm.observations, 1, "the failure reached LinUCB");
+    assert!(
+        arm.b_vector.iter().all(|b| *b == 0.0),
+        "a failure earns no reward, however cheap and fast"
+    );
+}
+
+#[tokio::test]
 async fn record_completed_run_persists_cascade_router_immediately() {
     let tmp = TempDir::new().unwrap();
     let learn_root = tmp.path().join(".roko").join("learn");

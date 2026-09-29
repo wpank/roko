@@ -1769,6 +1769,10 @@ impl RequestPayload for GenerateRequest {
 /// before the background work starts so the portal's generate hook can use it
 /// immediately.
 ///
+/// The operation ends `Completed { result: {"slug", "task_count"} }` when the
+/// runtime wrote a plan, and `Failed { error }` when generation failed or
+/// finished without writing one.
+///
 /// The operation handle is registered in `state.operations` before the spawned
 /// task can finish (a oneshot start signal gates the task exactly as
 /// `spawn_background_run` in `routes/run.rs` does), so polling
@@ -1830,9 +1834,21 @@ async fn generate_plan(
                 .generate_plan_from_prd(&workdir, &slug_for_task, &prd_path)
                 .await
             {
-                Ok(gen_result) => {
-                    let success = !gen_result.plan_targets.is_empty();
-
+                // Finishing without a plan is a failure: a `completed`
+                // operation tells the portal to open the plan it names.
+                Ok(gen_result) if gen_result.plan_targets.is_empty() => {
+                    fail_generate_operation(
+                        &state_for_task,
+                        op_id,
+                        &slug_for_task,
+                        format!(
+                            "plan generation for {slug_for_task} finished without writing a plan"
+                        ),
+                        "no_plan_written",
+                    )
+                    .await;
+                }
+                Ok(_) => {
                     // Count tasks via the runtime so the result carries live data.
                     let task_count = state_for_task
                         .runtime
@@ -1855,17 +1871,12 @@ async fn generate_plan(
                         };
                     }
 
-                    let event_type = if success {
-                        "plan_generate.completed"
-                    } else {
-                        "plan_generate.failed"
-                    };
                     {
                         use roko_core::DashboardEvent;
                         state_for_task.state_hub.publish_batch(vec![
                             DashboardEvent::EventLogEntry {
                                 timestamp_ms: generate_now_millis(),
-                                event_type: event_type.into(),
+                                event_type: "plan_generate.completed".into(),
                                 plan_id: slug_for_task.clone(),
                                 task_id: String::new(),
                                 message: format!("op={op_id} tasks={task_count}"),
@@ -1875,39 +1886,18 @@ async fn generate_plan(
                     bus.publish(ServerEvent::OperationCompleted {
                         op_id,
                         kind: "plan_generate".into(),
-                        success,
+                        success: true,
                     });
                 }
                 Err(err) => {
-                    let error_msg = format!("plan generation failed for {slug_for_task}: {err}");
-                    bus.publish(ServerEvent::Error {
-                        message: error_msg.clone(),
-                    });
-
-                    // Update the handle to Failed.
-                    if let Some(h) = state_for_task.operations.write().await.get_mut(&op_id) {
-                        h.status = crate::state::OperationStatus::Failed {
-                            error: error_msg.clone(),
-                        };
-                    }
-
-                    {
-                        use roko_core::DashboardEvent;
-                        state_for_task.state_hub.publish_batch(vec![
-                            DashboardEvent::EventLogEntry {
-                                timestamp_ms: generate_now_millis(),
-                                event_type: "plan_generate.failed".into(),
-                                plan_id: slug_for_task.clone(),
-                                task_id: String::new(),
-                                message: format!("op={op_id} error={err}"),
-                            },
-                        ]);
-                    }
-                    bus.publish(ServerEvent::OperationCompleted {
+                    fail_generate_operation(
+                        &state_for_task,
                         op_id,
-                        kind: "plan_generate".into(),
-                        success: false,
-                    });
+                        &slug_for_task,
+                        format!("plan generation failed for {slug_for_task}: {err}"),
+                        err,
+                    )
+                    .await;
                 }
             }
         }
@@ -1928,6 +1918,38 @@ async fn generate_plan(
         axum::http::StatusCode::ACCEPTED,
         Json(json!({ "id": op_id, "plan_id": slug })),
     ))
+}
+
+/// Finish a generate operation as failed: its handle carries `error`, and the
+/// event bus and the dashboard stream (`plan_generate.failed`, with `detail`)
+/// announce it.
+async fn fail_generate_operation(
+    state: &AppState,
+    op_id: String,
+    plan_id: &str,
+    error: String,
+    detail: impl std::fmt::Display,
+) {
+    state.event_bus.publish(ServerEvent::Error {
+        message: error.clone(),
+    });
+    if let Some(h) = state.operations.write().await.get_mut(&op_id) {
+        h.status = OperationStatus::Failed { error };
+    }
+    state
+        .state_hub
+        .publish_batch(vec![roko_core::DashboardEvent::EventLogEntry {
+            timestamp_ms: generate_now_millis(),
+            event_type: "plan_generate.failed".into(),
+            plan_id: plan_id.to_string(),
+            task_id: String::new(),
+            message: format!("op={op_id} error={detail}"),
+        }]);
+    state.event_bus.publish(ServerEvent::OperationCompleted {
+        op_id,
+        kind: "plan_generate".into(),
+        success: false,
+    });
 }
 
 /// Request body for `POST /api/plans/{id}/revise`.
@@ -3415,6 +3437,108 @@ mod tests {
             "PRD draft must exist on disk: {}",
             calls[0].arg
         );
+    }
+
+    /// A runtime whose plan generation returns without writing a plan.
+    struct NoPlanRuntime;
+
+    #[async_trait::async_trait]
+    impl CliRuntime for NoPlanRuntime {
+        async fn run_once(
+            &self,
+            _workdir: &std::path::Path,
+            _prompt: &str,
+        ) -> anyhow::Result<RunResult> {
+            anyhow::bail!("NoPlanRuntime only generates")
+        }
+
+        fn session_status(&self, workdir: PathBuf) -> SessionStatusInfo {
+            SessionStatusInfo {
+                session_id: None,
+                workdir,
+                daemon_running: false,
+                signal_count: None,
+                episode_count: None,
+                last_episode_passed: None,
+            }
+        }
+
+        fn dashboard_scaffold(&self, _workdir: &std::path::Path) -> DashboardInfo {
+            DashboardInfo {
+                rendered: String::new(),
+            }
+        }
+
+        async fn generate_plan_from_prd(
+            &self,
+            workdir: &std::path::Path,
+            _slug: &str,
+            _prd_path: &std::path::Path,
+        ) -> anyhow::Result<crate::runtime::PlanGenerationResult> {
+            Ok(crate::runtime::PlanGenerationResult {
+                plans_root: workdir.join("plans"),
+                plan_targets: Vec::new(),
+                artifacts: Vec::new(),
+            })
+        }
+    }
+
+    /// A generation that writes no plan fails its operation, with the error,
+    /// just as the stream reports `plan_generate.failed`: a `completed`
+    /// operation sends the portal to a plan that does not exist.
+    #[tokio::test]
+    async fn generate_plan_that_writes_no_plan_fails_its_operation() {
+        let (_dir, state) = test_state_with_runtime(Arc::new(NoPlanRuntime));
+
+        let response = generate_plan(
+            State(Arc::clone(&state)),
+            ValidJson(GenerateRequest {
+                slug: None,
+                prompt: Some("a rust app that prints hello world".into()),
+            }),
+        )
+        .await
+        .expect("generate plan");
+        let body_bytes = to_bytes(response.into_response().into_body(), usize::MAX)
+            .await
+            .expect("read body");
+        let body: Value = serde_json::from_slice(&body_bytes).expect("parse body");
+        let op_id = body["id"].as_str().expect("operation id").to_string();
+
+        let status = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if let Some(op) = state.operations.read().await.get(&op_id)
+                    && !matches!(op.status, OperationStatus::Running)
+                {
+                    return op.status.clone();
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the operation finishes");
+        match status {
+            OperationStatus::Failed { error } => assert!(
+                error.contains("finished without writing a plan"),
+                "unexpected error: {error}"
+            ),
+            other => panic!("a generation that wrote no plan must fail, got {other:?}"),
+        }
+
+        let lifecycle: Vec<String> = state
+            .state_hub
+            .replay_from(0)
+            .into_iter()
+            .filter_map(|envelope| match envelope.payload {
+                roko_core::DashboardEvent::EventLogEntry { event_type, .. }
+                    if event_type.starts_with("plan_generate.") =>
+                {
+                    Some(event_type)
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(lifecycle, ["plan_generate.started", "plan_generate.failed"]);
     }
 
     #[tokio::test]

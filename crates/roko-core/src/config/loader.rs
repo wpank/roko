@@ -1503,7 +1503,10 @@ fn build_schema_tree() -> toml::Value {
     let sentinel_provider = ProviderConfig {
         // `extra_headers` maps header names to values (a dynamic map
         // section): one entry gives the type of its values.
-        extra_headers: Some(HashMap::from([("_schema_sentinel".to_string(), String::new())])),
+        extra_headers: Some(HashMap::from([(
+            "_schema_sentinel".to_string(),
+            String::new(),
+        )])),
         max_concurrent: Some(1),
         limits: Some(ProviderLimits {
             max_cpu_seconds: Some(0),
@@ -1911,9 +1914,7 @@ fn walk_config_paths(
                     }
                 }
                 // Empty schema arrays (no template element) accept all entries.
-            } else if is_likely_enum_table(schema_val, val)
-                && !is_dynamic_section(&child_path)
-            {
+            } else if is_likely_enum_table(schema_val, val) && !is_dynamic_section(&child_path) {
                 // Serde-tagged enums serialize as single-key tables (e.g.
                 // `{ "Prefix": "..." }`). When the schema has one variant
                 // and the input has a different variant, accept it rather

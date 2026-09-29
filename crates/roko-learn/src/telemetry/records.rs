@@ -528,6 +528,28 @@ pub struct ExecutedModel {
     pub turns: Option<u32>,
 }
 
+/// Helper model calls one attempt made outside its agent run: after a failed
+/// gate, a quality judgement, an error diagnosis and a gate reflection on the
+/// cheap helper model (`helpers`, bug-62e3f4). [`AttemptUsage`] and
+/// [`AttemptCost`] cover the agent run alone.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct HelperCallsUsage {
+    /// Completed helper calls.
+    pub calls: u32,
+    /// Input tokens, as the provider reported them.
+    pub tokens_in: u64,
+    /// Output tokens.
+    pub tokens_out: u64,
+    /// Input read from the prompt cache.
+    pub tokens_cache_read: u64,
+    /// Priced cost of the calls, in USD.
+    pub cost_usd: f64,
+    /// Calls that used tokens but have no price, so `cost_usd` leaves them
+    /// out.
+    pub unpriced_calls: u32,
+}
+
 /// Token usage of one attempt in five disjoint classes (S01 §4.4): no token
 /// is in two of them. A class is `None` when the backend did not report it.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -699,6 +721,10 @@ pub struct AttemptVerdictRecord {
     /// Cost, with its source.
     #[serde(default)]
     pub cost: AttemptCost,
+    /// Helper model calls the attempt made outside its agent run; `None`
+    /// when it made none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub helpers: Option<HelperCallsUsage>,
     /// `sha256` of the provider request.
     #[serde(default)]
     pub request_sha256: Option<String>,
@@ -738,6 +764,7 @@ impl AttemptVerdictRecord {
             executed: ExecutedModel::default(),
             usage: AttemptUsage::default(),
             cost: AttemptCost::default(),
+            helpers: None,
             request_sha256: None,
             output_sha256: None,
             diff_sha256: None,

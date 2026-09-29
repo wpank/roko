@@ -197,8 +197,9 @@ impl FeedbackSink for EpisodeSink {
 
 /// What the attempt's verdict records that the event's legacy fields cannot
 /// say: the model the provider reported serving (bug-31438d), the failover
-/// that replaced the planned model (bug-35379d), and a turn count the agent
-/// never reported (bug-55fd84).
+/// that replaced the planned model (bug-35379d), a turn count the agent
+/// never reported (bug-55fd84), and the helper model calls made for the
+/// attempt (bug-62e3f4), which stay out of `usage`: that is the agent run's.
 fn attach_settled_attempt(episode: &mut Episode, settled: &AttemptVerdictRecord) {
     let executed = &settled.executed;
     episode.extra.insert(
@@ -242,6 +243,29 @@ fn attach_settled_attempt(episode: &mut Episode, settled: &AttemptVerdictRecord)
             episode
                 .extra
                 .insert("turns_unknown".into(), serde_json::Value::Bool(true));
+        }
+    }
+    if let Some(helpers) = &settled.helpers {
+        episode
+            .extra
+            .insert("helper_calls".into(), serde_json::json!(helpers.calls));
+        episode.extra.insert(
+            "helper_cost_usd".into(),
+            serde_json::json!(helpers.cost_usd),
+        );
+        episode.extra.insert(
+            "helper_tokens_in".into(),
+            serde_json::json!(helpers.tokens_in),
+        );
+        episode.extra.insert(
+            "helper_tokens_out".into(),
+            serde_json::json!(helpers.tokens_out),
+        );
+        if helpers.unpriced_calls > 0 {
+            episode.extra.insert(
+                "helper_unpriced_calls".into(),
+                serde_json::json!(helpers.unpriced_calls),
+            );
         }
     }
 }
@@ -387,12 +411,14 @@ mod tests {
     }
 
     /// The settled verdict says what the event's legacy fields cannot: the
-    /// model the provider reported, the failover, and a turn count the
-    /// agent never reported, which is unknown rather than the event's
-    /// fallback of one.
+    /// model the provider reported, the failover, the helper calls, and a
+    /// turn count the agent never reported, which is unknown rather than
+    /// the event's fallback of one.
     #[tokio::test]
-    async fn settled_attempt_records_served_model_and_turns() {
-        use roko_learn::telemetry::{AttemptIdentity, AttemptKey, AttemptOutcome};
+    async fn settled_attempt_records_served_model_turns_and_helpers() {
+        use roko_learn::telemetry::{
+            AttemptIdentity, AttemptKey, AttemptOutcome, HelperCallsUsage,
+        };
 
         let dir = tempdir().unwrap();
         let path = dir.path().join("episodes.jsonl");
@@ -408,6 +434,13 @@ mod tests {
         verdict.executed.failover_chain = vec!["claude-sonnet".into()];
         verdict.executed.failover_reason =
             Some("`claude-sonnet` on `claude_cli`: out of usage".into());
+        verdict.helpers = Some(HelperCallsUsage {
+            calls: 2,
+            tokens_in: 40,
+            tokens_out: 8,
+            cost_usd: 0.25,
+            ..HelperCallsUsage::default()
+        });
         sink.on_event(&FeedbackEvent::TaskCompleted {
             turns: 1,
             failure_reason: None,
@@ -437,6 +470,12 @@ mod tests {
         assert_eq!(
             episode.extra["failover_reason"],
             "`claude-sonnet` on `claude_cli`: out of usage"
+        );
+        assert_eq!(episode.extra["helper_calls"], 2);
+        assert_eq!(episode.extra["helper_cost_usd"], 0.25);
+        assert!(
+            (episode.usage.cost_usd - 0.003).abs() < 1e-9,
+            "helper cost stays out of the agent run's usage"
         );
     }
 

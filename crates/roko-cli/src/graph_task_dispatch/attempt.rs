@@ -19,8 +19,8 @@
 use roko_learn::telemetry::records::b3_digest;
 use roko_learn::telemetry::{
     AttemptFailureClass, AttemptIdentity, AttemptKey, AttemptOpenRecord, AttemptOrdinals,
-    AttemptTiming, AttemptVerdictRecord, CostSource, ExecutedModel, GateVerdictTag, TelemetryEvent,
-    TelemetryWriter, TelemetryWriterConfig,
+    AttemptTiming, AttemptVerdictRecord, CostSource, ExecutedModel, GateVerdictTag,
+    HelperCallsUsage, TelemetryEvent, TelemetryWriter, TelemetryWriterConfig,
 };
 use sha2::Digest;
 
@@ -174,6 +174,7 @@ impl AttemptBook {
                 ..AttemptTiming::default()
             },
             failover: FailoverChain::default(),
+            helpers: None,
             run,
         }
     }
@@ -189,6 +190,8 @@ pub(super) struct AttemptContext {
     timing: AttemptTiming,
     /// The models provider failover passed over.
     failover: FailoverChain,
+    /// The attempt's helper model calls, once they settled.
+    helpers: Option<HelperCallsUsage>,
     run: Arc<RunAttempts>,
 }
 
@@ -212,6 +215,11 @@ impl AttemptContext {
     /// that ran (bug-35379d).
     pub(super) fn record_failover(&mut self, failover: FailoverChain) {
         self.failover = failover;
+    }
+
+    /// The attempt's helper model calls settled with `usage` (bug-62e3f4).
+    pub(super) fn record_helper_calls(&mut self, usage: HelperCallsUsage) {
+        self.helpers = (usage.calls > 0).then_some(usage);
     }
 
     /// Settle the attempt: build its verdict record, queue it for the run's
@@ -241,6 +249,7 @@ impl AttemptContext {
         verdict.timing.settled_at = Some(now_ms());
         verdict.executed = executed_model(model_requested, dispatch, self.failover);
         verdict.cost.source = cost_source(dispatch);
+        verdict.helpers = self.helpers;
         verdict.output_sha256 = dispatch
             .and_then(|dispatch| dispatch.result.output.body.as_text().ok())
             .map(sha256_hex);

@@ -324,24 +324,30 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
                 //
                 // Same verdict logic as the batch path; gates run in the lease
                 // path and progress streams through the event channel.
+                let helper_calls = HelperCalls::default();
                 let verification = if dispatch.result.success {
                     let attempt_number = self.next_retry_attempt(&spec.plan_id, &task.id).attempt;
                     Some(
-                        self.settle_task_verification(
-                            spec,
-                            &task,
-                            &dispatch,
-                            &lease.path,
-                            &retry_key,
-                            attempt_number,
-                            &attempt_key,
-                            Some(&event_tx),
-                        )
-                        .await,
+                        helper_calls
+                            .scope(self.settle_task_verification(
+                                spec,
+                                &task,
+                                &dispatch,
+                                &lease.path,
+                                &retry_key,
+                                attempt_number,
+                                &attempt_key,
+                                Some(&event_tx),
+                            ))
+                            .await,
                     )
                 } else {
                     None
                 };
+                attempt.record_helper_calls(
+                    self.settle_helper_calls(spec, &task, &attempt_key, &helper_calls)
+                        .await,
+                );
                 let verified = matches!(verification, Some(Ok(_)));
 
                 // ── Learning/feedback pipeline (streaming) ───────────────

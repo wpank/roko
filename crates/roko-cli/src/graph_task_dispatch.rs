@@ -55,6 +55,7 @@ mod attempt;
 mod budget;
 mod failover;
 mod feedback;
+mod helper_calls;
 mod inert_settings;
 mod prompt_experiment;
 mod retry_budget;
@@ -77,6 +78,7 @@ use attempt::{AttemptBook, SettledAttempt, Settlement, first_token_seen};
 use budget::{
     GraphPlanBudgetLedger, GraphTaskSpendLedger, effective_routing_budget, task_budget_ceiling_usd,
 };
+use helper_calls::{HelperAgent, HelperCalls};
 use inert_settings::warn_inert_graph_settings_once;
 use routing_context::{
     CheapFactoryAgent, arbitrate_cross_cut_routing_bias, assign_retrieval_strategy_arm,
@@ -433,12 +435,16 @@ impl GraphTaskDispatcher {
         )
     }
 
-    /// Return a `CheapFactoryAgent` wired to the model chosen by
+    /// Return a helper agent wired to the model chosen by
     /// [`select_cheap_model_key`], or `None` when no model is dispatchable.
-    /// Used for best-effort error enrichment and quality judgment calls.
-    fn cheap_agent(&self) -> Option<CheapFactoryAgent> {
+    /// Used for best-effort error enrichment, quality judgment and gate
+    /// reflection calls, which count toward the attempt being verified
+    /// ([`HelperAgent`]).
+    fn cheap_agent(&self) -> Option<HelperAgent> {
         let model_key = select_cheap_model_key(&self.config)?;
-        Some(CheapFactoryAgent {
+        let target = crate::dispatch_v2::ProviderDispatchResolver::new(Arc::clone(&self.config))
+            .resolve(&model_key);
+        let agent = CheapFactoryAgent {
             factory: Arc::clone(&self.factory),
             model_key,
             workdir: self.workdir.clone(),
@@ -448,7 +454,8 @@ impl GraphTaskDispatcher {
                 .llm_call_secs
                 .max(1)
                 .saturating_mul(1_000),
-        })
+        };
+        Some(HelperAgent::new(agent, target))
     }
 
     /// Whether the plan's `[meta] skip_enrichment` is set, read once per plan
@@ -1317,8 +1324,9 @@ impl TaskDispatcher for GraphTaskDispatcher {
         // workdir (worktree if isolated). A failure fails this attempt so the
         // Graph engine can retry or abort; it is never force-accepted.
         let attempt_key = attempt.key.attempt_key();
-        let verification = self
-            .settle_task_verification(
+        let helper_calls = HelperCalls::default();
+        let verification = helper_calls
+            .scope(self.settle_task_verification(
                 spec,
                 &task,
                 &dispatch,
@@ -1327,8 +1335,14 @@ impl TaskDispatcher for GraphTaskDispatcher {
                 attempt_number,
                 &attempt_key,
                 None,
-            )
+            ))
             .await;
+        // The helper model calls verification made count toward this
+        // attempt, the background ones included (bug-62e3f4).
+        attempt.record_helper_calls(
+            self.settle_helper_calls(spec, &task, &attempt_key, &helper_calls)
+                .await,
+        );
 
         // ── Learning/feedback pipeline ───────────────────────────────────
         //

@@ -2489,12 +2489,16 @@ command = "claude"
 
         let report = semantic_validate_config(&config, &client).await;
 
-        assert!(report.schema_warnings.contains(
-            &"agent.default_model references missing model 'no-default'".to_string()
-        ));
-        assert!(report.schema_warnings.contains(
-            &"agent.fallback_model references missing model 'no-fallback'".to_string()
-        ));
+        assert!(
+            report
+                .schema_warnings
+                .contains(&"agent.default_model references missing model 'no-default'".to_string())
+        );
+        assert!(
+            report.schema_warnings.contains(
+                &"agent.fallback_model references missing model 'no-fallback'".to_string()
+            )
+        );
         assert!(report.schema_warnings.contains(
             &"agent.tier_models.mechanical references missing model 'no-tier-model'".to_string()
         ));

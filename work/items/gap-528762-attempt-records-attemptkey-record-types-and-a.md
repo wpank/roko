@@ -3,13 +3,14 @@ id = "gap-528762"
 kind = "gap"
 title = "Attempt records: AttemptKey, record types and a telemetry writer (S01.P0-0)"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p1"
 goal = "truth"
 size = "M"
 subsystem = ["roko-learn/telemetry", "roko-learn/routing_log"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-29
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e4"
 discovered_from = "tmp/cybernetic-harness/specs/S01-instrumentation.md (P0-0, §4.2, §4.7, §5); workstreams/assessment/W3a-crosswalk-core.md (reuse risk 8)"
 anchors = ["crates/roko-learn/src/telemetry/mod.rs", "crates/roko-learn/src/routing_log.rs::RoutingDecisionLog"]
@@ -84,3 +85,4 @@ W3a: extend one of them; do not add a third.
 - There are no call sites here; gap-96f7ed threads the key through dispatch.
 - roko-learn does not depend on roko-execution, so convert to the receipt key through the string layout.
 - The only shared line is `pub mod telemetry;` in roko-learn's `lib.rs`.
+- Implemented on `work/gap-528762` at `d8d6fa9d3`; cargo verification deferred to the batch check.

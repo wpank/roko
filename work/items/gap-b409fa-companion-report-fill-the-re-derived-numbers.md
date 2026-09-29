@@ -2,7 +2,7 @@
 id = "gap-b409fa"
 kind = "gap"
 title = "Companion report: fill the re-derived numbers into the E10 draft and fix the flagged source errors"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "whitepaper"
@@ -11,6 +11,7 @@ subsystem = ["companion"]
 created = 2026-09-29
 updated = 2026-09-29
 last_verified = 2026-09-29
+last_verified_rev = "48d35a67f"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e18"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wave-1 reports)"
 anchors = ["tmp/cybernetic-harness/companion-audit/E10-DRAFT.md", "tmp/cybernetic-harness/companion-audit/00-README.md"]
@@ -20,6 +21,11 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "! grep -q '\\[\\[E1:' tmp/cybernetic-harness/companion-audit/E10-DRAFT.md && grep -q '91b4745f8' tmp/cybernetic-harness/companion-audit/E10-DRAFT.md"
+
+[closed]
+at = 2026-09-29
+by = "coordinator (session 7622b882)"
+evidence = "Companion E10-DRAFT (tmp, wk-companion-fin): all 364 E1 markers filled from E1-REDERIVATION at 91b4745f8, exceptions listed; source errors fixed: README S1 row moved from the round-1 figure (195 adjudicated) to the current estimator on 469 rows, '2 of 13 core-path', FALSE-GREENS lag 0.06-0.38 s, V1-V3 anchors @91b4745f8 (V2 main.rs:4365), 131 FS anchors to CLAUDE.md@91b4745f8 (15 stamped @393a72002); 10 scripts copied to companion-audit/telemetry/scripts. Verify passes in MAIN; E2/E3 placeholders left for raters."
 +++
 
 ## Problem

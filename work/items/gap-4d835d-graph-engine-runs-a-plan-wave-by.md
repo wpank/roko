@@ -2,7 +2,7 @@
 id = "gap-4d835d"
 kind = "gap"
 title = "Graph engine runs a plan wave by wave, so a ready task waits for its whole wave"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "core"
@@ -10,7 +10,7 @@ subsystem = ["roko-graph/engine"]
 created = 2026-09-29
 updated = 2026-09-29
 last_verified = 2026-09-29
-last_verified_rev = "d9e79e9d8"
+last_verified_rev = "a36180342"
 source = "dogfood:tmp/dogfood/2026-09-28-portal-programme-continuation.md#10-05"
 discovered_from = "plan:portal-programme/08f-final-polish#T04"
 anchors = ["crates/roko-graph/src/engine.rs::topological_waves", "crates/roko-graph/src/engine.rs:983", "crates/roko-graph/src/engine.rs:2152"]
@@ -21,6 +21,12 @@ command = "! grep -q 'for wave in &waves' crates/roko-graph/src/engine.rs"
 
 [[verify]]
 command = "grep -q 'fn a_ready_node_does_not_wait_for_its_wave' crates/roko-graph/src/engine.rs && cargo test -p roko-graph --lib a_ready_node_does_not_wait_for_its_wave"
+
+[closed]
+at = 2026-09-29
+commit = "445a60d0d"
+by = "roko-b6"
+evidence = "execute_ready_queue replaced both wave-barrier loops (445a60d0d, merged bbf6517fc); plan runs skip only a failed task's dependants with a fail_fast opt-out and budget stop (3e7552acd, 80a77f26f, 9ef6f4aad; merged abc1f4b27). a_ready_node_does_not_wait_for_its_wave passed in the full cargo test --workspace run of 2026-09-29 12:59-13:15; repro no longer matches. In main via #79."
 +++
 
 The engine computes `topological_waves` and runs them in order (`for wave in &waves` at

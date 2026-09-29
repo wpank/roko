@@ -86,3 +86,4 @@ both `--allow-network` and an explicit `--max-cost-usd`; reuse that admission ra
   checklist's circular `budget` gate (W10 rec 2).
 - **No wait for F1 or F4:** the tests use the toy family. mini-swe-agent (S08 decision 3) is out of scope.
 - **If it runs long** (S08 sizes it M–L), split the archive and census into their own item. No hot files.
+- **From gap-2790c5 (2026-09-29):** commit each attempt's result c_i with `families/common/repo.export_tree`, never `git add`/`git commit` in the agent's repo: hooks the agent planted would run in the driver. Keep the task manifest (with `canary`) outside the agent's workdir.

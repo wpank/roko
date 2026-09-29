@@ -2,7 +2,7 @@
 id = "gap-528762"
 kind = "gap"
 title = "Attempt records: AttemptKey, record types and a telemetry writer (S01.P0-0)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "truth"
@@ -11,6 +11,7 @@ subsystem = ["roko-learn/telemetry", "roko-learn/routing_log"]
 created = 2026-09-29
 updated = 2026-09-29
 last_verified = 2026-09-29
+last_verified_rev = "48d35a67f"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e4"
 discovered_from = "tmp/cybernetic-harness/specs/S01-instrumentation.md (P0-0, §4.2, §4.7, §5); workstreams/assessment/W3a-crosswalk-core.md (reuse risk 8)"
 anchors = ["crates/roko-learn/src/telemetry/mod.rs", "crates/roko-learn/src/routing_log.rs::RoutingDecisionLog"]
@@ -20,6 +21,11 @@ links = { depends_on = [], blocks = [], related = ["gap-96f7ed", "gap-8cb382"], 
 
 [[verify]]
 command = "grep -rqw 'fn attempt_key_matches_receipt_idempotency_layout' crates/roko-learn/src/ && cargo test -p roko-learn --lib telemetry::"
+
+[closed]
+at = 2026-09-29
+by = "coordinator (session 7622b882)"
+evidence = "roko-learn telemetry module: AttemptKey (1-based), durable attempt ordinals, AttemptVerdictRecord, RunProvenanceManifest, keyed-BLAKE3 assign, TelemetryWriter; RoutingDecisionLog gains attempt_key/source/default_model/propensity; types renamed so none clashes with another workspace type (12dfe185a, merged 1c5371f9a). batch check 1 (work/rust-batch-1 @ a507ce39f = 7c556bc0a + bug-470de8 + gap-528762 + bug-7de5df): cargo check --workspace --tests clean, 0 warnings; cargo test -p roko-core -p roko-learn -p roko-agent --lib: 1912, 1166 and 2237 passed, 0 failed, including telemetry:: and attempt_key_matches_receipt_idempotency_layout."
 +++
 
 ## Problem
@@ -28,7 +34,7 @@ There is no attempt identity and no attempt record:
 
 - `GraphTaskDispatcher::next_attempt_id` builds `"{plan}/{task}/a{n}"` from an in-memory counter that restarts with
   the process, so a resumed run reuses keys.
-- `RunMetricsRecord` mints its own `graph-run-<ms>` id (`plan_runner.rs:1595`).
+- `RunMetricsRecord` mints its own `graph-run-<ms>` id (`plan_runner.rs::run_graph_plan_body`, line 1609 at `48d35a67f`).
 - Episodes, efficiency rows and cost rows cannot be joined per attempt.
 - No typed verdict record exists, and no writer.
 

@@ -78,3 +78,4 @@ Checked at `41c7ffbd6`: nothing exists, and no money has been spent.
   limit, and at least $100 stays unallocated (S09 SC3). S09 §7.3's "Σ caps = $390" then needs a one-line
   amendment.
 - **Order:** this item extends gap-28ebea's `ledger.py`, so it runs after it. No hot files.
+- **From wk-filer (2026-09-29):** reconcile should also cover zai and Moonshot exports; the price snapshot infers `reasoning_in_output` only for glm-4.7 and kimi-k2.6 (`config/prices/2026-09-28.toml:18-19`).

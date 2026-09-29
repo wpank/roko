@@ -15,7 +15,7 @@ discovered_from = "tmp/cybernetic-harness/workstreams/PLAN.md (§1, the author's
 anchors = ["docs/whitepaper/README.md", "tools/paperlint.py"]
 doc = "tmp/cybernetic-harness/workstreams/PLAN.md"
 lane = "paper"
-links = { depends_on = ["dec-2cd76a", "gap-0191eb", "gap-af0b57", "gap-35a614", "gap-353d57", "gap-370d3c", "gap-4161ea", "gap-ac4646", "gap-e8cb4d", "gap-424bf8", "gap-29a64e", "gap-2aad7d", "gap-c19902", "gap-ec516e", "gap-d1d92c", "gap-8d2c79", "gap-8117a8"], blocks = [], related = ["spec-567e52", "spec-f2463d", "spec-ae5f94", "gap-cdf3fc"], supersedes = [], duplicate_of = "" }
+links = { depends_on = ["dec-2cd76a", "gap-0191eb", "gap-af0b57", "gap-35a614", "gap-353d57", "gap-370d3c", "gap-4161ea", "gap-ac4646", "gap-e8cb4d", "gap-424bf8", "gap-29a64e", "gap-2aad7d", "gap-c19902", "gap-ec516e", "gap-d1d92c", "gap-8d2c79", "gap-8117a8", "bug-7a6da3", "gap-9cb0b9"], blocks = [], related = ["spec-567e52", "spec-f2463d", "spec-ae5f94", "gap-cdf3fc"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "test -f tools/paperlint.py && python3 tools/paperlint.py --strict --require-status reviewed docs/whitepaper && grep -q '^Verdict: accept' docs/whitepaper/REVIEW.md"
@@ -100,9 +100,11 @@ This is the implementation plan, in order.
 - [x] gap-2aad7d: Whitepaper §8 Evaluation plan
 - [x] gap-c19902: Whitepaper §9 Status, limitations and roadmap
 - [x] gap-ec516e: Whitepaper §10 Related work
-- [ ] gap-d1d92c: Whitepaper figures: architecture, golden-path loop and status matrix
+- [x] gap-d1d92c: Whitepaper figures: architecture, golden-path loop and status matrix
 - [ ] gap-8d2c79: Whitepaper review: an independent read and a strict paperlint pass
 - [ ] gap-8117a8: Publish the whitepaper: PDF build, release tag and venue
+- [ ] bug-7a6da3: The markdown link checker reads footnote definitions as reference links
+- [ ] gap-9cb0b9: paperlint: count a footnote that cites a frozen evidence file by sha256 as a source
 - [ ] The epic's `[[verify]]` command passes: strict paperlint over `docs/whitepaper/` with every section reviewed,
       and a review verdict of "accept".
 

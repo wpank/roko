@@ -202,6 +202,7 @@ const fn checkpoint_label(status: GraphCheckpointStatus) -> &'static str {
     match status {
         GraphCheckpointStatus::Running => "running",
         GraphCheckpointStatus::Succeeded => "succeeded",
+        GraphCheckpointStatus::Unverified => "unverified",
         GraphCheckpointStatus::Failed => "failed",
         GraphCheckpointStatus::Cancelled => "cancelled",
         GraphCheckpointStatus::Interrupted => "interrupted",
@@ -779,8 +780,13 @@ fn is_workspace_build_input(path: &Path) -> bool {
 /// How a plan of the set ended, or why it never ran.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlanOutcome {
-    /// Every task succeeded.
+    /// Every task passed its verify steps.
     Succeeded,
+    /// Every task ran and none failed, but some ran no verify step, so
+    /// nothing shows their work is right. Not a success: the plans that
+    /// depend on it are blocked. Not a failure: `fail_fast` still starts
+    /// the plans that do not.
+    Unverified,
     /// The plan ran and failed.
     Failed,
     /// Never started: a prerequisite did not succeed, or `fail_fast`.
@@ -803,6 +809,7 @@ impl PlanOutcome {
     pub const fn label(self) -> &'static str {
         match self {
             Self::Succeeded => "succeeded",
+            Self::Unverified => "unverified",
             Self::Failed => "failed",
             Self::Blocked => "blocked",
             Self::Cancelled => "cancelled",
@@ -1636,6 +1643,30 @@ mod tests {
         );
         scheduler.finish("b", PlanOutcome::Succeeded);
         assert!(scheduler.is_settled());
+    }
+
+    /// gap-29a84b: an unverified plan is no prerequisite, but it does not
+    /// stop a fail-fast run either.
+    #[test]
+    fn an_unverified_plan_blocks_its_dependants_but_is_no_failure() {
+        let plans = [
+            plan("a", &[], &["a"], &[]),
+            plan("b", &["a"], &["b"], &[]),
+            plan("c", &[], &["c"], &[]),
+        ];
+        let mut scheduler = PlanSetScheduler::new(&order(&plans), PlanConflicts::new(), 1, true);
+
+        assert_eq!(scheduler.admit().start, ["a"]);
+        scheduler.finish("a", PlanOutcome::Unverified);
+        let admission = scheduler.admit();
+        assert_eq!(
+            admission.blocked,
+            [(
+                "b".to_string(),
+                BlockReason::Prerequisites(vec!["a".to_string()])
+            )]
+        );
+        assert_eq!(admission.start, ["c"]);
     }
 
     #[test]

@@ -394,7 +394,8 @@ pub fn cmd_check_secrets(workdir: &Path) -> Result<()> {
     Err(anyhow!(message))
 }
 
-/// Validate the active `roko.toml` in three phases: syntax, schema, semantics.
+/// Validate the active `roko.toml` in phases: syntax, config paths, schema,
+/// the core loader's invariants, and semantics.
 pub async fn cmd_validate(workdir: &Path) -> Result<()> {
     let paths = resolve_paths(workdir);
     let config_path = validate_config_path(&paths, workdir)?;
@@ -448,6 +449,22 @@ pub async fn cmd_validate(workdir: &Path) -> Result<()> {
     };
     print_phase_status("Phase 2: Schema validation", true);
 
+    // Phase 2b: the core loader, which every command loads roko.toml
+    // through. It merges the global config and env overrides and then
+    // enforces the cross-section invariants (budget ceilings, model ->
+    // provider references), so a file it rejects must fail here too.
+    let effective = match load_like_commands(&config_path, config.clone()) {
+        Ok(effective) => effective,
+        Err(err) => {
+            print_phase_status("Phase 2b: Loader invariants", false);
+            println!("  ✗ {err}");
+            println!();
+            println!("Result: 0 warnings, 1 error");
+            return Err(anyhow!("config validation failed"));
+        }
+    };
+    print_phase_status("Phase 2b: Loader invariants", true);
+
     let client = reqwest::Client::builder()
         .user_agent("roko-cli/0.1")
         .timeout(Duration::from_secs(VALIDATION_REACHABILITY_TIMEOUT_SECS))
@@ -457,6 +474,7 @@ pub async fn cmd_validate(workdir: &Path) -> Result<()> {
     if let Some(warning) = legacy_layout_warning(&config) {
         report.schema_warnings.push(warning);
     }
+    report.schema_warnings.extend(loader_warnings(&effective));
 
     println!("Phase 3: Semantic validation:");
     print_warning_section("Schema warnings", &report.schema_warnings);
@@ -1276,6 +1294,15 @@ fn load_like_commands(path: &Path, config: RokoConfig) -> Result<RokoConfig> {
     .map_err(|err| anyhow!("{err}"))
 }
 
+/// The invariant warnings the loader logs for a resolved config.
+fn loader_warnings(config: &RokoConfig) -> Vec<String> {
+    roko_core::config::validate_invariants(config)
+        .into_iter()
+        .filter(|result| result.severity == roko_core::config::InvariantSeverity::Warning)
+        .map(|result| format!("{} (invariant {})", result.message, result.invariant_id))
+        .collect()
+}
+
 /// The errors of the semantic phase of `roko config validate`.
 ///
 /// They need no network access; the reachability probes only ever warn.
@@ -1804,6 +1831,42 @@ scheduled_cron = "invalid cron"
         let err = cmd_validate(dir.path()).await.unwrap_err();
 
         assert_eq!(err.to_string(), "config validation failed");
+    }
+
+    /// bug-8465a2: `config validate` passed budget tables the core loader
+    /// rejected, and the loader rejected an uncapped turn beneath a finite
+    /// plan cap. Validation now runs the loader, and 0 means no cap in both.
+    #[tokio::test]
+    async fn config_validate_matches_the_core_loader_on_budgets() {
+        let loader_options = roko_core::config::loader::LoadOptions {
+            merge_global: false,
+            apply_env_overrides: false,
+            apply_hierarchical_env: false,
+            strict_validation: false,
+        };
+        for (budget, valid) in [
+            // The old README example: plan and task caps, no turn cap.
+            ("[budget]\nmax_plan_usd = 10\nmax_task_usd = 1\n", true),
+            (
+                "[budget]\nmax_plan_usd = 10.0\nmax_task_usd = 1.0\nmax_turn_usd = 0.5\n",
+                true,
+            ),
+            // A turn cap above the plan cap contradicts it.
+            ("[budget]\nmax_plan_usd = 1.0\nmax_turn_usd = 2.0\n", false),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("roko.toml");
+            fs::write(&path, budget).unwrap();
+
+            let loaded = roko_core::config::loader::load_config_file(&path, &loader_options);
+            assert_eq!(loaded.is_ok(), valid, "loader on {budget:?}: {loaded:?}");
+            let validated = cmd_validate(dir.path()).await;
+            assert_eq!(
+                validated.is_ok(),
+                valid,
+                "config validate on {budget:?}: {validated:?}"
+            );
+        }
     }
 
     #[test]

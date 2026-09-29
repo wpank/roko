@@ -8,6 +8,7 @@ Run: python3 tools/test_paperlint.py [-k NAME]
 """
 
 import contextlib
+import hashlib
 import io
 import os
 import subprocess
@@ -585,6 +586,44 @@ class TestCommandLine(FixtureRepo):
                                  f"Roko built 16 plans for $174.87.[^1-p]\n\n[^1-p]: {note}\n")
                 code, out = run("--strict", p)
                 self.assertEqual(out.count("[number]"), want, out)
+
+    def evidence(self, d: Path) -> str:
+        """A frozen file and its SHA256SUMS line, as docs/whitepaper/evidence/ keeps them; returns its digest."""
+        (d / "evidence").mkdir()
+        frozen = b"# B7\n\n173 tasks, 168 gate-verified, for $174.87.\n"
+        (d / "evidence" / "2026-09-29-b7.md").write_bytes(frozen)
+        (d / "evidence" / "2026-09-29-unlisted.md").write_text("Not in SHA256SUMS.\n")
+        digest = hashlib.sha256(frozen).hexdigest()
+        (d / "evidence" / "SHA256SUMS").write_text(f"{digest}  2026-09-29-b7.md\n")
+        return digest
+
+    def footnoted(self, d: Path, note: str) -> Path:
+        return self.section(d, "01-introduction.md", "Status: draft · owner gap-aaaaaa\n\n# T\n\n"
+                            f"Roko built 16 plans for $174.87.[^1-p]\n\n[^1-p]: {note}\n")
+
+    def test_sha256_footnote_counts_as_source(self):
+        """The README's form: the frozen file and the first 12 hex digits of its sha256, with no item or commit."""
+        d = self.paper()
+        digest = self.evidence(d)
+        cases = {
+            "first 12 hex digits": f"Note B7, frozen as `evidence/2026-09-29-b7.md` (sha256 `{digest[:12]}`).",
+            "digest on the next line": f"Note B7, frozen as `evidence/2026-09-29-b7.md` (sha256\n    `{digest[:12]}`).",
+            "the whole digest": f"Note B7, frozen as `evidence/2026-09-29-b7.md` (sha256 `{digest}`).",
+            "a file SHA256SUMS doesn't list": "Frozen as `evidence/2026-09-29-unlisted.md` (sha256 `3f2a9c1b7e44`).",
+        }
+        for name, note in cases.items():
+            with self.subTest(name):
+                code, out = run("--strict", self.footnoted(d, note))
+                self.assertEqual(out.count("[number]"), 0, out)
+
+    def test_sha256_footnote_must_match_sha256sums(self):
+        d = self.paper()
+        digest = self.evidence(d)
+        wrong = "0" * 12
+        code, out = run("--strict", self.footnoted(d, f"Frozen as `evidence/2026-09-29-b7.md` (sha256 `{wrong}`)."))
+        self.assertEqual(out.count("[number]"), 1, out)
+        self.assertIn(f"[number] [^1-p]: sha256 `{wrong}` does not match `evidence/2026-09-29-b7.md` (SHA256SUMS:"
+                      f" `{digest[:12]}…`)", out)
 
     def test_commit_spans(self):
         cases = {

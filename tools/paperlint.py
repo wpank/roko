@@ -20,7 +20,8 @@ Python 3 and git, and never writes. Code identifiers, paths and commits are look
                    "<!-- paperlint: claim-levels WIRED PARTIAL -->" line declares as the file's own claim level
       number       a $ amount, percentage, N× ratio, "N of M" or N/M count in a paragraph, list item or table with
                    neither an inline [@key] nor a footnote naming a commit, work item, [@key], snapshot or rollup,
-                   or an existing evidence/ file ("95% CI" and "step 3 of 11" are not counts)
+                   or an existing evidence/ file ("95% CI" and "step 3 of 11" are not counts); a sha256 that a
+                   footnote gives with an evidence/ file must start the file's line in the SHA256SUMS beside it
       banned       a word the README's conventions ban (a bullet that says "banned", or `No "…"` under Conventions)
       link         a broken local link or figure path (tools/docs_integrity/check_markdown_links.py)
   --budget F           budget: the word count is more than F times the budget
@@ -111,6 +112,7 @@ ORDINAL = re.compile(r"(?:step|stage|phase|part|section|chapter|level|rung|wave|
                      re.I)  # "step 3 of 11" is a position, not a count
 SOURCE_WORD = re.compile(r"\b(?:snapshot|rollup)\b", re.I)
 EVIDENCE_FILE = re.compile(r"(?<![\w/.-])((?:[\w.-]+/)*evidence/[\w./-]*[\w-])")
+DIGEST = re.compile(r"\W{0,4}sha-?\s?256\W{0,24}?\b([0-9a-f]{7,64})\b", re.I)  # after a path: "(sha256 `…`)"
 SOURCE_ID = re.compile(r"`[^`\n]+`|\d{4}-\d{2}-\d{2}")
 
 TOKEN = re.compile(r"\w+")
@@ -799,12 +801,39 @@ def names_source(text: str, repo: Repo | None, here: Path) -> bool:
     return any(repo.in_history(h) for h in HEX.findall(text)) or any(repo.work_item(w) for w in WORK_ID.findall(text))
 
 
+def sha256sums(d: Path) -> dict[str, str]:
+    """File name -> digest, from the `shasum -a 256` lines of d/SHA256SUMS."""
+    f = d / "SHA256SUMS"
+    out = {}
+    for line in f.read_text(encoding="utf-8").splitlines() if f.is_file() else []:
+        digest, _, name = line.strip().partition(" ")
+        if name.strip():
+            out[name.strip().lstrip("*")] = digest.lower()
+    return out
+
+
+def wrong_digests(text: str, roots: list[Path]) -> list[tuple[int, str]]:
+    """A sha256 written right after a frozen file's path must start that file's line in the SHA256SUMS beside it."""
+    out = []
+    for m in EVIDENCE_FILE.finditer(text):
+        d = DIGEST.match(text, m.end())
+        f = next((r / m.group(1) for r in roots if (r / m.group(1)).is_file()), None)
+        listed = sha256sums(f.parent).get(f.name) if d and f else None
+        if listed and not listed.startswith(d.group(1).lower()):
+            out.append((d.start(1), f"sha256 `{d.group(1)}` does not match `{m.group(1)}`"
+                                    f" (SHA256SUMS: `{listed[:12]}…`)"))
+    return out
+
+
 def check_numbers(doc: Doc, repo: Repo | None) -> list[tuple[int, str]]:
     notes = {b.label: doc.code[b.start:b.end] for b in doc.blocks if b.kind == "footnote"}
     sourced = {label: names_source(text, repo, doc.path.parent) for label, text in notes.items()}
+    roots = [doc.path.parent] + ([repo.root] if repo else [])
     out = []
     for b in doc.blocks:
         if b.kind == "footnote":
+            out += [(b.start + off, f"[^{b.label}]: {msg}")
+                    for off, msg in wrong_digests(doc.code[b.start:b.end], roots)]
             continue
         text = LINK_TARGET.sub(lambda m: blank(m.group(0)), doc.bare[b.start:b.end])
         hits = sorted((m.start(), what, m.group(0)) for what, rx in NUMBER_CLAIMS for m in rx.finditer(text)

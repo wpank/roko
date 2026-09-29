@@ -3,13 +3,14 @@ id = "bug-f4e133"
 kind = "bug"
 title = "The agent command guard lets recursive rm through under sudo, -R, subshells and sh -c"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p2"
 goal = "release"
 size = "S"
 subsystem = ["safety"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-29
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (15:47, wk-guard's report on bug-7de5df)"
 anchors = ["crates/roko-agent/src/claude_cli_guard.py", "crates/roko-agent/src/claude_cli_agent.rs::build_settings_json"]
@@ -55,3 +56,10 @@ The git rules use the new parser, but the rm rules still match raw text.
 - [ ] Every form listed above is denied.
 - [ ] Commands the rules allowed before are still allowed.
 - [ ] The `[[verify]]` command passes.
+
+## Notes
+
+- Premise confirmed at `407ce30d5` through the exact hook command: `sudo rm -rf x`, `rm -R x`, `(rm -rf x)`, `bash -c "rm -rf x"`, `rm --recursive x`, `rm -f -r x`, `/bin/rm -rf x` and `rm -rf x` on a second line all exited 0.
+- `check_rm` now runs on the parsed commands, like the git rules: `-r`, `-R` or `--recursive` (or a prefix such as `--rec`) anywhere before `--` denies, and so does an rm option built from a variable or the positional parameters. A wrapper now checks every later word that names a checked program, so `sudo -u git rm -rf x` is denied. `rm -rf` inside a quoted string, such as a commit message, is no longer a false positive.
+- Not covered (report): a command string handed to a wrapper (`watch 'rm -rf x'`, `flock l -c 'rm -rf x'`), `find -exec rm -rf {} +`, `find -delete` and `busybox rm`.
+- Implemented on `work/bug-f4e133` at `976496b27`; cargo verification deferred to the batch check.

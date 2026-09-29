@@ -80,3 +80,8 @@ Checked at `41c7ffbd6`:
 ## Notes
 
 These are hot files. Start only after the env and learn-a branches merge and the dispatch split (gap-c8e1f1) lands.
+
+- **From gap-528762 (2026-09-29):** `TaskAttemptReceiptV1.attempt` is documented as 0-based (`receipt.rs:80`), but
+  `AttemptKey` is 1-based with the same string layout. Pick one base here and convert the other.
+- Prompt-experiment keys use a per-process `graph-<uuid>` run id and 0-based ordinals, so they won't join to
+  `AttemptKey` until this item switches them to the attempt context.

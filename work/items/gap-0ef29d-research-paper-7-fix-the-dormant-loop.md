@@ -2,7 +2,7 @@
 id = "gap-0ef29d"
 kind = "gap"
 title = "Research paper §7: fix the dormant-loop claim in §7.3, align with the thesis, and trim"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "whitepaper"
@@ -11,6 +11,7 @@ subsystem = ["paper"]
 created = 2026-09-29
 updated = 2026-09-29
 last_verified = 2026-09-29
+last_verified_rev = "b2c14cd4a"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e18"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wave-1 reports)"
 anchors = ["tmp/cybernetic-harness/paper/sections/07-results-regulation.md"]
@@ -20,6 +21,11 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "test -f tools/paperlint.py && python3 tools/paperlint.py --budget 1.2 --check-identifiers tmp/cybernetic-harness/paper/sections/07-results-regulation.md"
+
+[closed]
+at = 2026-09-29
+by = "coordinator (session 7622b882)"
+evidence = "Research paper §7 (tmp, edited in place by wk-rp-s7): §7.3 corrected to 17 inert loops (15 dormant, 2 masked) at the companion's tag, with 6 of the 10 S03 census targets companion-dormant; claim C7.18 names the unit of each loop count (17 inert, 16 Runner-v2 ids, 10 census targets); aligned with the golden-path thesis. Verify: paperlint --budget 1.2 --check-identifiers clean at 15:29; CLAIMS-EVIDENCE regenerated (417 claims, --check up to date)."
 +++
 
 ## Problem

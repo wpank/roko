@@ -652,7 +652,10 @@ async fn prds_coverage(State(state): State<Arc<AppState>>) -> Result<Json<Value>
     let prd_dir = state.workdir.join(".roko").join("prd");
     let drafts = count_md_files(&prd_dir.join("drafts")).await;
     let published = count_md_files(&prd_dir.join("published")).await;
-    let plans = count_entries(&state.workdir.join(".roko").join("plans")).await;
+    let plans = count_entries(&roko_fs::workspace_plans::workspace_plans_dir(
+        &state.workdir,
+    ))
+    .await;
 
     Ok(Json(json!({
         "drafts": drafts,
@@ -809,7 +812,7 @@ fn build_plan_generation_prompt(
     prd_path: &std::path::Path,
     prd_content: &str,
 ) -> String {
-    let plans_root = workdir.join(".roko").join("plans");
+    let plans_root = roko_fs::workspace_plans::workspace_plans_dir(workdir);
     format!(
         "Read the published PRD at {prd_path} and generate implementation plan directories under {plans_root}.\n\
          Each requirement should become one or more tasks.\n\

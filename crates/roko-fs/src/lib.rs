@@ -47,6 +47,8 @@ pub mod target_cleanup;
 pub mod tool_audit;
 pub mod tool_metrics_sink;
 pub mod trace_sink;
+/// Where a workspace keeps its plans: `plans/`, or the legacy `.roko/plans/`.
+pub mod workspace_plans;
 
 pub use archive::{ArchiveEntry, ArchiveKind, ArchiveStats, Archiver};
 pub use atomic::{

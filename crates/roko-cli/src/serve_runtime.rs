@@ -1731,6 +1731,70 @@ mod tests {
             "a plan-set directory must run in place; got a different path"
         );
     }
+
+    async fn listed_plan_ids(runtime: &RokoCliRuntime, workdir: &Path) -> Vec<String> {
+        runtime
+            .list_plans(workdir)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|plan| plan.id)
+            .collect()
+    }
+
+    /// `POST /api/plans` and `GET /api/plans` through the runtime: a new
+    /// workspace (only the empty `.roko/plans/` that `roko init` leaves) gets
+    /// its first plan in `plans/`; a workspace that keeps its plans in
+    /// `.roko/plans/` gets new ones there, listed beside the old ones.
+    #[tokio::test]
+    async fn created_plans_land_in_the_workspace_plans_dir_and_are_listed() {
+        let runtime = RokoCliRuntime::new(Config::default(), RepoRegistry::default());
+
+        let fresh = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(fresh.path().join(".roko/plans")).unwrap();
+        assert!(listed_plan_ids(&runtime, fresh.path()).await.is_empty());
+        let outcome = runtime
+            .create_plan(fresh.path(), "first-plan", "First plan")
+            .await
+            .unwrap();
+        assert!(
+            matches!(&outcome, CreatePlanOutcome::Created { path, .. } if path == "plans/first-plan"),
+            "{outcome:?}"
+        );
+        assert_eq!(
+            listed_plan_ids(&runtime, fresh.path()).await,
+            vec!["first-plan"]
+        );
+
+        let legacy = tempfile::tempdir().unwrap();
+        let old_plan = legacy.path().join(".roko/plans/old-plan");
+        std::fs::create_dir_all(&old_plan).unwrap();
+        std::fs::write(
+            old_plan.join("tasks.toml"),
+            "[meta]\nplan = \"old-plan\"\n\n[[task]]\nid = \"T1\"\ntitle = \"Old\"\n",
+        )
+        .unwrap();
+        let outcome = runtime
+            .create_plan(legacy.path(), "new-plan", "New plan")
+            .await
+            .unwrap();
+        assert!(
+            matches!(&outcome, CreatePlanOutcome::Created { path, .. } if path == ".roko/plans/new-plan"),
+            "{outcome:?}"
+        );
+        assert!(!legacy.path().join("plans").exists());
+        assert_eq!(
+            listed_plan_ids(&runtime, legacy.path()).await,
+            vec!["new-plan", "old-plan"]
+        );
+        assert!(
+            runtime
+                .load_plan_summary(legacy.path(), "old-plan")
+                .await
+                .unwrap()
+                .is_some()
+        );
+    }
 }
 
 #[cfg(test)]

@@ -4143,30 +4143,23 @@ pub(crate) fn global_cli_flags(cli: &Cli) -> GlobalCliFlags<'_> {
     }
 }
 
-/// Resolve the plans directory, preferring top-level `./plans/` and falling back to `.roko/plans/`.
-///
-/// Explicit paths always win. When falling back to `.roko/plans/`, a note is printed to stderr.
+/// Resolve the plans directory: an explicit path wins, otherwise the workspace
+/// plans directory ([`roko_cli::plan::plans_dir`]): `./plans/`, or `.roko/plans/`
+/// in a workspace that keeps its plans there, noted on stderr.
 fn resolve_plans_dir(workdir: &Path, explicit: Option<&Path>) -> PathBuf {
     if let Some(path) = explicit {
         return path.to_path_buf();
     }
 
-    let canonical = workdir.join("plans");
-    if canonical.exists() {
-        return canonical;
-    }
-
-    let fallback = workdir.join(".roko").join("plans");
-    if fallback.exists() {
+    let resolved = roko_cli::plan::plans_dir(workdir);
+    if resolved == roko_fs::workspace_plans::legacy_plans_dir(workdir) {
         eprintln!(
             "note: using {} (not found in {})",
-            fallback.display(),
-            canonical.display()
+            resolved.display(),
+            workdir.join("plans").display()
         );
-        return fallback;
     }
-
-    canonical
+    resolved
 }
 
 /// Apply environment variable fallbacks to CLI flags.
@@ -5656,13 +5649,23 @@ mod tests {
     }
 
     #[test]
-    fn resolve_plans_dir_falls_back_to_dot_roko_plans() {
+    fn resolve_plans_dir_falls_back_to_dot_roko_plans_that_hold_plans() {
         let tmp = tempdir().unwrap();
         let workdir = tmp.path();
         let fallback = workdir.join(".roko").join("plans");
-        std::fs::create_dir_all(&fallback).unwrap();
+        std::fs::create_dir_all(fallback.join("old-plan")).unwrap();
+        std::fs::write(fallback.join("old-plan").join("tasks.toml"), "").unwrap();
 
         assert_eq!(resolve_plans_dir(workdir, None), fallback);
+    }
+
+    #[test]
+    fn resolve_plans_dir_ignores_an_empty_dot_roko_plans() {
+        let tmp = tempdir().unwrap();
+        let workdir = tmp.path();
+        std::fs::create_dir_all(workdir.join(".roko").join("plans")).unwrap();
+
+        assert_eq!(resolve_plans_dir(workdir, None), workdir.join("plans"));
     }
 
     #[test]

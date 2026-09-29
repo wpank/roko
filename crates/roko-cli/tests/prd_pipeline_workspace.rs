@@ -84,7 +84,8 @@ fn explicit_repo_prd_pipeline_artifacts_stay_in_selected_workspace() {
 
     run_roko_from(decoy_root, selected_root, FIXTURE, &["prd", "plan", SLUG]).success();
 
-    let selected_plan_dir = selected_root.join(".roko/plans").join(SLUG);
+    // A new workspace gets its first plan under the top-level `plans/`.
+    let selected_plan_dir = selected_root.join("plans").join(SLUG);
     let selected_tasks = selected_plan_dir.join("tasks.toml");
     let selected_plan_md = selected_plan_dir.join("plan.md");
     assert!(
@@ -98,7 +99,12 @@ fn explicit_repo_prd_pipeline_artifacts_stay_in_selected_workspace() {
         selected_plan_md.display()
     );
     assert!(
-        !decoy_root.join(".roko/plans").join(SLUG).exists(),
+        !selected_root.join(".roko/plans").join(SLUG).exists(),
+        "plan was written to the legacy .roko/plans"
+    );
+    assert!(
+        !decoy_root.join("plans").join(SLUG).exists()
+            && !decoy_root.join(".roko/plans").join(SLUG).exists(),
         "plan was written to decoy workspace"
     );
 
@@ -112,7 +118,7 @@ fn explicit_repo_prd_pipeline_artifacts_stay_in_selected_workspace() {
         decoy_root,
         selected_root,
         FIXTURE,
-        &["plan", "validate", ".roko/plans"],
+        &["plan", "validate", "plans"],
     )
     .success();
 }

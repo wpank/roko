@@ -10,16 +10,14 @@ use std::path::{Path, PathBuf};
 use crate::orchestrator::plan_discovery::{PlanDir, find_plan_dirs};
 use crate::orchestrator::{DiscoveryError, PlanInfo, discover_plans};
 
-/// Resolve the plans directory, preferring the top-level layout and falling
-/// back to the legacy `.roko` location.
+/// Resolve the workspace plans directory: `plans/`, unless the workspace keeps
+/// its plans in the legacy `.roko/plans/` (see
+/// [`roko_fs::workspace_plans::workspace_plans_dir`], which roko-serve uses
+/// too). In a new workspace `plans/` does not exist until the first plan is
+/// written; the code that writes it creates the directory.
 #[must_use]
 pub fn plans_dir(workdir: &Path) -> PathBuf {
-    let top = workdir.join("plans");
-    if top.is_dir() {
-        return top;
-    }
-
-    workdir.join(".roko").join("plans")
+    roko_fs::workspace_plans::workspace_plans_dir(workdir)
 }
 
 /// Return the stable orchestration id for a discovered plan.
@@ -346,13 +344,23 @@ pub fn summarize_plan_info(plan_info: &PlanInfo) -> PlanSummary {
     }
 }
 
-/// Discover plans from the canonical plans directory and summarize them.
+/// [`discover_plans`] in the workspace plans directory. A workspace without
+/// one, such as a new workspace before its first plan, has no plans.
+fn discover_workspace_plans(workdir: &Path) -> Result<Vec<PlanInfo>, DiscoveryError> {
+    match discover_plans(&plans_dir(workdir)) {
+        Err(DiscoveryError::DirMissing(_)) => Ok(Vec::new()),
+        discovered => discovered,
+    }
+}
+
+/// Discover plans from the workspace plans directory and summarize them.
 ///
 /// # Errors
 ///
-/// Returns any discovery error reported by [`discover_plans`].
+/// Returns any discovery error reported by [`discover_plans`] other than a
+/// missing plans directory, which yields no plans.
 pub fn summarize_discovered_plans(workdir: &Path) -> Result<Vec<PlanSummary>, DiscoveryError> {
-    let plans = discover_plans(&plans_dir(workdir))?;
+    let plans = discover_workspace_plans(workdir)?;
     let mut summaries: Vec<PlanSummary> = plans.iter().map(summarize_plan_info).collect();
     overlay_graph_checkpoint_status(workdir, &mut summaries);
     Ok(summaries)
@@ -448,12 +456,13 @@ pub fn overlay_graph_checkpoint_status(workdir: &Path, summaries: &mut [PlanSumm
 ///
 /// # Errors
 ///
-/// Returns any discovery error reported by [`discover_plans`].
+/// Returns any discovery error reported by [`discover_plans`] other than a
+/// missing plans directory, which yields `None`.
 pub fn discover_plan_by_id(
     workdir: &Path,
     plan_id: &str,
 ) -> Result<Option<PlanInfo>, DiscoveryError> {
-    let plans = discover_plans(&plans_dir(workdir))?;
+    let plans = discover_workspace_plans(workdir)?;
     Ok(plans
         .into_iter()
         .find(|plan_info| stable_plan_id(plan_info) == plan_id || plan_info.base == plan_id))
@@ -693,19 +702,112 @@ mod tests {
         assert!(json.contains(r#""old_format":true"#));
     }
 
+    const MINIMAL_TASKS: &str = "[meta]\nplan = \"p\"\n\n[[task]]\nid = \"t1\"\ntitle = \"Task\"\n";
+
+    fn write_tasks(plan_dir: &Path) {
+        std::fs::create_dir_all(plan_dir).unwrap();
+        std::fs::write(plan_dir.join("tasks.toml"), MINIMAL_TASKS).unwrap();
+    }
+
+    fn listed_ids(workdir: &Path) -> Vec<String> {
+        let mut ids: Vec<String> = summarize_discovered_plans(workdir)
+            .unwrap()
+            .into_iter()
+            .map(|summary| summary.id)
+            .collect();
+        ids.sort();
+        ids
+    }
+
     #[test]
-    fn uses_legacy_location_when_top_level_is_missing() {
+    fn uses_legacy_location_when_it_holds_the_plans() {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path().join(".roko").join("plans");
-        std::fs::create_dir_all(&dir).unwrap();
+        write_tasks(&dir.join("old-plan"));
 
         assert_eq!(plans_dir(tmp.path()), dir);
     }
 
     #[test]
-    fn falls_back_to_legacy_location() {
+    fn new_workspace_uses_top_level_location() {
         let dir = plans_dir(Path::new("/project"));
-        assert_eq!(dir, PathBuf::from("/project/.roko/plans"));
+        assert_eq!(dir, PathBuf::from("/project/plans"));
+
+        // `roko init` leaves an empty `.roko/plans/`; it holds no plans.
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".roko").join("plans")).unwrap();
+        assert_eq!(plans_dir(tmp.path()), tmp.path().join("plans"));
+    }
+
+    #[test]
+    fn new_workspace_lists_no_plans_until_the_first_is_written_to_plans() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".roko").join("plans")).unwrap();
+
+        assert!(listed_ids(tmp.path()).is_empty());
+        assert!(discover_plan_by_id(tmp.path(), "first").unwrap().is_none());
+
+        write_tasks(&plans_dir(tmp.path()).join("first"));
+
+        assert!(tmp.path().join("plans/first/tasks.toml").is_file());
+        assert_eq!(listed_ids(tmp.path()), vec!["first"]);
+        assert!(discover_plan_by_id(tmp.path(), "first").unwrap().is_some());
+    }
+
+    #[test]
+    fn legacy_workspace_lists_its_plans_and_new_plans_join_them() {
+        let tmp = tempfile::tempdir().unwrap();
+        let legacy = tmp.path().join(".roko").join("plans");
+        write_tasks(&legacy.join("old-plan"));
+
+        assert_eq!(listed_ids(tmp.path()), vec!["old-plan"]);
+
+        write_tasks(&plans_dir(tmp.path()).join("new-plan"));
+
+        assert!(legacy.join("new-plan/tasks.toml").is_file());
+        assert!(!tmp.path().join("plans").exists());
+        assert_eq!(listed_ids(tmp.path()), vec!["new-plan", "old-plan"]);
+    }
+
+    /// `roko_fs::workspace_plans::holds_plans` restates plan discovery's
+    /// definition of a plan (roko-fs cannot depend on roko-cli); keep the two
+    /// in step.
+    #[test]
+    fn holds_plans_agrees_with_plan_discovery() {
+        let layouts: &[&[&str]] = &[
+            &[],
+            &["INDEX.md", "README.md", "notes.txt"],
+            &["enriched-plan/context.json"],
+            &[
+                "archive/old/tasks.toml",
+                "_meta/x/tasks.toml",
+                ".hidden/y/plan.md",
+            ],
+            &["a/b/c/too-deep/tasks.toml"],
+            &["plan-a/tasks.toml"],
+            &["plan-b/plan.md"],
+            &["programme/01-first/tasks.toml"],
+            &["a/b/at-depth-3/tasks.toml"],
+            &["02-flat-legacy.md"],
+            &["tasks.toml"],
+        ];
+        for layout in layouts {
+            let tmp = tempfile::tempdir().unwrap();
+            let root = tmp.path().join("plans-root");
+            std::fs::create_dir_all(&root).unwrap();
+            for file in *layout {
+                let path = root.join(file);
+                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                std::fs::write(&path, "").unwrap();
+            }
+
+            let discovered = !discover_plans(&root).unwrap().is_empty();
+            assert_eq!(
+                roko_fs::workspace_plans::holds_plans(&root),
+                discovered,
+                "{layout:?}"
+            );
+        }
     }
 
     #[test]

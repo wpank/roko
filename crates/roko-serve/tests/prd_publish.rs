@@ -32,8 +32,10 @@ impl CliRuntime for RecordingRuntime {
     async fn run_once(&self, workdir: &Path, prompt: &str) -> anyhow::Result<RunResult> {
         self.call_count.fetch_add(1, Ordering::SeqCst);
 
-        if prompt.contains(".roko/plans") {
-            let plan_dir = workdir.join(".roko").join("plans").join("demo");
+        // Like an agent, write the plan under the directory the prompt names.
+        let plans_root = workdir.join("plans");
+        if prompt.contains(&format!("directories under {}.", plans_root.display())) {
+            let plan_dir = plans_root.join("demo");
             tokio::fs::create_dir_all(&plan_dir).await?;
             tokio::fs::write(plan_dir.join("plan.md"), "# Demo plan\n").await?;
             tokio::fs::write(
@@ -156,12 +158,8 @@ async fn audit_publish_triggers_plan_generation() {
         .await
         .expect("publish audit should trigger plan generation");
 
-    let tasks_path = state
-        .workdir
-        .join(".roko")
-        .join("plans")
-        .join("demo")
-        .join("tasks.toml");
+    // A new workspace gets its first plan under the top-level `plans/`.
+    let tasks_path = state.workdir.join("plans").join("demo").join("tasks.toml");
     tokio::time::timeout(std::time::Duration::from_secs(5), async {
         loop {
             if tasks_path.is_file() {

@@ -681,11 +681,12 @@ Examples:
     #[command(after_help = "\
 Examples:
   roko diagnose my-plan             Show failure report for a plan
-  roko diagnose my-plan --verbose   Include full error details")]
+  roko diagnose my-plan --verbose   Also list the attempts of tasks that completed")]
     Diagnose {
         /// Plan ID to diagnose.
         plan_id: String,
-        /// Show full error details (not just summary).
+        /// Also list attempts, verify failures and episodes of tasks that
+        /// completed (they are always listed for tasks that did not).
         #[arg(long)]
         verbose: bool,
         /// Working directory (default: cwd / --repo).

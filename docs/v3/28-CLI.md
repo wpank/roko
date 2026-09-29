@@ -403,10 +403,18 @@ Diagnose why a plan failed. Outputs structured JSON.
 roko diagnose <plan-id> [--verbose] [--workdir <path>]
 ```
 
+The report is built from the plan's Graph checkpoint under `.roko/state/graph/<plan-id>/`
+(status, completed tasks, spend), the plan's `tasks.toml`, and the run's rows in
+`.roko/learn/costs.jsonl` (attempts), `.roko/learn/gate-failures.jsonl` (failed verify steps)
+and `.roko/episodes.jsonl` (failure reasons). It lists every task as `completed`, `failed`,
+`incomplete` or `never_ran` (with the failed dependencies that blocked it), and previews what
+`roko plan run <plan dir>` would resume. The Runner-v2 `.roko/state/state-snapshot.json` is
+read only for a plan without a Graph checkpoint.
+
 | Arg/Flag | Description |
 |---|---|
 | `<plan-id>` | Plan ID to diagnose. |
-| `--verbose` | Include full error details (not just summary). |
+| `--verbose` | Also list attempts, verify failures and episodes of tasks that completed. |
 
 ---
 

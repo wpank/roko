@@ -56,7 +56,8 @@ the task ends `aborted_cap` (reason `budget`) and claude never starts.
   unknown;
 - R, `total_cost_usd`, the CLI's own figure, kept as `vendor_usd`. The attempt records both and |U′ − R|/R.
 A session killed before its `result` event is priced from the usage its assistant messages carried
-(`cli.cost_basis = "stream"`): still the CLI's report, but a partial total that misses background calls.
+(`cli.cost_basis = "stream"`), a partial total that misses background calls, so its source is `estimated` in the
+ledger row and the run record alike (bug-f62293, bug-a49003).
 
 **Model.** `model_reported` is the model that served the main thread's messages (the `init` event's when none did). If
 any other model served it, the attempt reports that model, and `records.final_status` makes the run an `infra_error`
@@ -228,11 +229,12 @@ class Meter:
         return sum(cost.api_equiv_usd for cost in self._costs() if cost.api_equiv_usd is not None)
 
     def cost(self) -> ledger.Cost:
+        """The streamed messages' cost, `estimated`: a lower bound, not the CLI's own report (bug-a49003)."""
         costs = self._costs()
         if not costs or any(cost.source == "unknown" for cost in costs):
             return ledger.Cost(None, None, "unknown")
         return ledger.Cost(sum(cost.api_equiv_usd for cost in costs), sum(cost.without_cache_usd for cost in costs),
-                           "cli_usage")
+                           "estimated")
 
     def usage(self) -> dict | None:
         usages = [usage for _, usage in self.messages.values()]

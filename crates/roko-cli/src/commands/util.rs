@@ -276,11 +276,12 @@ pub(crate) async fn cmd_init(
             Err(_) => None,
         }
     } else {
-        let default = Config::default_toml_template(cloud)?;
-        tokio::fs::write(&config_path, &default)
-            .await
-            .with_context(|| format!("write {}", config_path.display()))?;
+        // The template is checked like `roko config validate` before it is
+        // written, so a new workspace never starts with a config that fails.
+        let provider = roko_cli::init::InitProvider::detect();
+        let default = roko_cli::init::write_init_config(&target, cloud, provider)?;
         println!("wrote {}", config_path.display());
+        println!("{}", provider.summary());
         RokoConfig::from_toml(&default).ok()
     };
 
@@ -289,10 +290,6 @@ pub(crate) async fn cmd_init(
     println!(
         "suggested gates: {}",
         crate::commands::prd::domain_gate_hint(domain)
-    );
-    println!(
-        "default provider command set to \"claude\". \
-         Edit roko.toml [providers.claude_cli] to use a different command."
     );
 
     if demo {

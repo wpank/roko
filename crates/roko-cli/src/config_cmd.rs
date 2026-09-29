@@ -485,6 +485,49 @@ pub async fn cmd_validate(workdir: &Path) -> Result<()> {
     }
 }
 
+/// Check prospective `roko.toml` text before a command writes it to `path`.
+///
+/// Runs every offline check of [`cmd_validate`]: TOML syntax, known config
+/// paths, the schema, the core loader (global config merge, env overrides
+/// and its cross-section invariants) and the provider/model semantic errors.
+/// Only the network probes, which can only warn, are left out. Text that
+/// passes loads in every command and passes `roko config validate`.
+pub fn check_config_text(path: &Path, text: &str) -> Result<()> {
+    let value = toml::from_str::<toml::Value>(text).context("invalid TOML")?;
+    let unknown_paths = roko_core::config::loader::validate_known_config_paths(&value);
+    if !unknown_paths.is_empty() {
+        let messages = unknown_paths
+            .iter()
+            .map(|diag| diag.message.as_str())
+            .collect::<Vec<_>>();
+        return Err(anyhow!("unknown config paths: {}", messages.join("; ")));
+    }
+    let config = toml::from_str::<RokoConfig>(text)
+        .context("config does not match the schema")?;
+    let errors = semantic_errors(&config);
+    load_like_commands(path, config)?;
+    if !errors.is_empty() {
+        return Err(anyhow!(errors.join("; ")));
+    }
+    Ok(())
+}
+
+/// Write config `text` to `path` if it passes [`check_config_text`].
+///
+/// Commands that write `roko.toml` go through this, so none of them leaves a
+/// config that `roko config validate` or the loader rejects: a rejected text
+/// is not written and the file keeps its previous contents.
+pub fn write_checked_config(path: &Path, text: &str) -> Result<()> {
+    check_config_text(path, text).with_context(|| {
+        format!(
+            "refusing to write {}: `roko config validate` would reject it",
+            path.display()
+        )
+    })?;
+    roko_fs::atomic_write_bytes(path, text.as_bytes())
+        .with_context(|| format!("write {}", path.display()))
+}
+
 /// Migrate a legacy project-local `roko.toml` into explicit provider/model tables.
 pub fn cmd_migrate(workdir: &Path, dry_run: bool, yes: bool) -> Result<()> {
     let paths = resolve_paths(workdir);
@@ -1221,6 +1264,43 @@ fn legacy_layout_warning(config: &RokoConfig) -> Option<String> {
     None
 }
 
+/// Resolve a parsed `roko.toml` the way every command loads it: global config
+/// merge, env overrides, interpolation, file secrets and the loader's
+/// cross-section invariants.
+fn load_like_commands(path: &Path, config: RokoConfig) -> Result<RokoConfig> {
+    roko_core::config::loader::resolve_config_source(
+        config,
+        path,
+        &roko_core::config::loader::LoadOptions::default(),
+    )
+    .map_err(|err| anyhow!("{err}"))
+}
+
+/// The errors of the semantic phase of `roko config validate`.
+///
+/// They need no network access; the reachability probes only ever warn.
+fn semantic_errors(config: &RokoConfig) -> Vec<String> {
+    let mut providers = config.providers.iter().collect::<Vec<_>>();
+    providers.sort_by(|a, b| a.0.cmp(b.0));
+    let mut errors = providers
+        .into_iter()
+        .filter(|(_, provider)| {
+            provider
+                .api_key_env
+                .as_deref()
+                .is_some_and(|env_name| env_name.trim().is_empty())
+        })
+        .map(|(name, _)| format!("Provider '{name}' has an empty api_key_env value"))
+        .collect::<Vec<_>>();
+    errors.extend(
+        roko_core::config::validate_provider_semantics(config)
+            .into_iter()
+            .filter(|finding| finding.severity == roko_core::config::InvariantSeverity::Error)
+            .map(|finding| format!("[{}] {}", finding.code, finding.message)),
+    );
+    errors
+}
+
 async fn semantic_validate_config(
     config: &RokoConfig,
     client: &reqwest::Client,
@@ -1314,10 +1394,6 @@ async fn semantic_validate_config(
                      (provider will be unavailable at runtime)"
                 ));
             }
-        } else if provider.api_key_env.is_some() {
-            report.api_key_errors.push(format!(
-                "Provider '{provider_name}' has an empty api_key_env value"
-            ));
         }
 
         if let Some(base_url) = provider
@@ -1415,18 +1491,16 @@ async fn semantic_validate_config(
     }
 
     // Run roko-core provider/model semantic validation and merge findings.
+    // Its errors come from `semantic_errors`, which config writers share.
     let semantic_findings = roko_core::config::validate_provider_semantics(config);
     for finding in semantic_findings {
-        let msg = format!("[{}] {}", finding.code, finding.message);
-        match finding.severity {
-            roko_core::config::InvariantSeverity::Error => {
-                report.api_key_errors.push(msg);
-            }
-            roko_core::config::InvariantSeverity::Warning => {
-                report.field_warnings.push(msg);
-            }
+        if finding.severity == roko_core::config::InvariantSeverity::Warning {
+            report
+                .field_warnings
+                .push(format!("[{}] {}", finding.code, finding.message));
         }
     }
+    report.api_key_errors = semantic_errors(config);
 
     report
 }

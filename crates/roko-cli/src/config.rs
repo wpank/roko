@@ -2603,6 +2603,7 @@ pub fn command_on_path(cmd: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::init::{InitProvider, render_init_template_for, write_init_config};
 
     /// Derive the set of known top-level TOML keys from serializing a default
     /// `RokoConfig`.  This stays in sync automatically as fields are added.
@@ -3055,7 +3056,7 @@ command = "x${ROKO_TEST_MISSING_DEF456:-}y"
 
     #[test]
     fn default_toml_template_includes_required_env_section() {
-        let rendered = Config::default_toml_template(false).unwrap();
+        let rendered = render_init_template_for(false, InitProvider::ClaudeCli).unwrap();
         assert!(rendered.contains("# REQUIRED_ENV"));
         assert!(rendered.contains("GITHUB_TOKEN"));
         assert!(rendered.contains("GITHUB_WEBHOOK_SECRET"));
@@ -3087,7 +3088,7 @@ command = "x${ROKO_TEST_MISSING_DEF456:-}y"
 
     #[test]
     fn init_template_model_overrides_same_slug_from_global_config() {
-        let rendered = Config::default_toml_template(false).unwrap();
+        let rendered = render_init_template_for(false, InitProvider::ClaudeCli).unwrap();
         let mut project = RokoConfig::from_toml(&rendered).expect("parse init template");
         let rendered_value: toml::Value = toml::from_str(&rendered).expect("parse template TOML");
         let unknown_keys = rendered_value
@@ -3127,6 +3128,49 @@ default_model = "claude-sonnet"
             !project.models.contains_key("claude-sonnet"),
             "global alias with the init template's slug should be shadowed"
         );
+    }
+
+    /// bug-e1327f: without `claude` on PATH, `roko init` used to leave the
+    /// default model pointing at the commented-out `claude_cli` provider, so
+    /// every command failed with config invariant 3.
+    #[test]
+    fn init_without_claude_cli_writes_a_loadable_config() {
+        // With ANTHROPIC_API_KEY set the model uses the Anthropic API;
+        // without it, the model block is commented out with its provider.
+        for (provider, model_provider) in [
+            (InitProvider::AnthropicApi, Some("anthropic")),
+            (InitProvider::Unconfigured, None),
+        ] {
+            let dir = tempfile::tempdir().expect("tempdir");
+            write_init_config(dir.path(), false, provider)
+                .unwrap_or_else(|err| panic!("{provider:?}: init refused its template: {err:#}"));
+
+            let loaded = roko_core::config::loader::load_config_file(
+                &dir.path().join("roko.toml"),
+                &roko_core::config::loader::LoadOptions {
+                    merge_global: false,
+                    apply_env_overrides: false,
+                    apply_hierarchical_env: false,
+                    strict_validation: false,
+                },
+            )
+            .unwrap_or_else(|err| panic!("{provider:?}: the loader rejected init's config: {err}"));
+            assert_eq!(
+                loaded
+                    .models
+                    .get("claude-sonnet-4-6")
+                    .map(|model| model.provider.as_str()),
+                model_provider,
+                "{provider:?}"
+            );
+            for model in loaded.models.values() {
+                assert!(
+                    loaded.providers.contains_key(&model.provider),
+                    "{provider:?}: model provider '{}' is not configured",
+                    model.provider
+                );
+            }
+        }
     }
 
     #[test]

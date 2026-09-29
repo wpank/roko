@@ -30,10 +30,32 @@ pub struct DreamsConfig {
     /// Defaults to `1`.
     #[serde(default = "default_max_concurrent")]
     pub max_concurrent: usize,
+    /// Let ACP sessions trigger dream consolidation once
+    /// [`Self::acp_episode_threshold`] episodes accumulate since the last
+    /// dream report.
+    ///
+    /// Defaults to `false`: each automatic dream costs a model call, so ACP
+    /// sessions start none unless this is `true`. It is independent of
+    /// [`Self::trigger_on_plan_complete`] and
+    /// [`LearningConfig::dream_on_completion`].
+    #[serde(default)]
+    pub trigger_on_acp_episodes: bool,
+    /// Episodes recorded since the last dream report before an ACP session
+    /// triggers a dream, when [`Self::trigger_on_acp_episodes`] is `true`.
+    ///
+    /// Defaults to `10`. Zero is normalized to one at the runtime boundary
+    /// (see [`Self::effective_acp_episode_threshold`]), so a dream always
+    /// needs at least one new episode.
+    #[serde(default = "default_acp_episode_threshold")]
+    pub acp_episode_threshold: usize,
 }
 
 fn default_max_concurrent() -> usize {
     1
+}
+
+const fn default_acp_episode_threshold() -> usize {
+    10
 }
 
 impl Default for DreamsConfig {
@@ -41,6 +63,20 @@ impl Default for DreamsConfig {
         Self {
             trigger_on_plan_complete: true,
             max_concurrent: default_max_concurrent(),
+            trigger_on_acp_episodes: false,
+            acp_episode_threshold: default_acp_episode_threshold(),
+        }
+    }
+}
+
+impl DreamsConfig {
+    /// Return the runtime-safe ACP episode threshold.
+    #[must_use]
+    pub const fn effective_acp_episode_threshold(&self) -> usize {
+        if self.acp_episode_threshold == 0 {
+            1
+        } else {
+            self.acp_episode_threshold
         }
     }
 }
@@ -275,5 +311,25 @@ mod tests {
         let opted_in: LearningConfig =
             toml::from_str("dream_on_completion = true").expect("parse explicit opt-in");
         assert!(opted_in.dream_on_completion);
+    }
+
+    #[test]
+    fn acp_dream_trigger_defaults_to_off() {
+        let defaults = DreamsConfig::default();
+        assert!(!defaults.trigger_on_acp_episodes);
+        assert_eq!(defaults.acp_episode_threshold, 10);
+
+        let omitted: LearningConfig = toml::from_str("").expect("parse empty learning config");
+        assert_eq!(omitted.dreams, defaults);
+
+        let opted_in: LearningConfig =
+            toml::from_str("[dreams]\ntrigger_on_acp_episodes = true\nacp_episode_threshold = 4")
+                .expect("parse ACP dream opt-in");
+        assert!(opted_in.dreams.trigger_on_acp_episodes);
+        assert_eq!(opted_in.dreams.effective_acp_episode_threshold(), 4);
+
+        let zero: LearningConfig = toml::from_str("[dreams]\nacp_episode_threshold = 0")
+            .expect("parse zero ACP threshold");
+        assert_eq!(zero.dreams.effective_acp_episode_threshold(), 1);
     }
 }

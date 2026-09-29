@@ -236,22 +236,27 @@ pub(crate) async fn append_acp_episode(
     );
     roko_neuro::spawn_episode_distillation(distill_workdir, episode, Some(distill_caller));
 
-    // Auto-dream consolidation: after enough episodes accumulate, spawn a
-    // background dream cycle so patterns are extracted into `.roko/dreams/`.
+    // Auto-dream consolidation (opt-in): after enough episodes accumulate,
+    // spawn a background dream cycle so patterns are extracted into
+    // `.roko/dreams/`.
     maybe_spawn_dream_consolidation(workdir, roko_config);
 }
 
-/// Default number of episodes that must accumulate since the last dream report
-/// before a background dream consolidation is triggered.
-const DREAM_EPISODE_THRESHOLD: usize = 10;
+/// Return the number of episodes recorded since the last dream report when an
+/// ACP turn should start a dream consolidation, or `None` when it should not.
+///
+/// ACP dreams are opt-in. With `learning.dreams.trigger_on_acp_episodes` off
+/// (the default) this returns `None` without reading the episode log. With it
+/// on, a dream is due once `learning.dreams.acp_episode_threshold` episodes
+/// have accumulated since the last dream report.
+pub(crate) fn acp_dream_due(workdir: &Path, config: &RokoConfig) -> Option<usize> {
+    let dreams = &config.learning.dreams;
+    if !dreams.trigger_on_acp_episodes {
+        return None;
+    }
 
-/// If the number of episodes since the last dream report exceeds
-/// [`DREAM_EPISODE_THRESHOLD`], spawn a background dream consolidation.
-/// This is fire-and-forget: failures are logged but never block the caller.
-pub(crate) fn maybe_spawn_dream_consolidation(workdir: &Path, config: &RokoConfig) {
     let episodes_path = workdir.join(".roko").join("episodes.jsonl");
     let dream_dir = workdir.join(".roko").join("dreams");
-    let workdir = workdir.to_path_buf();
 
     // Count episodes since the last dream report.  Both helpers are
     // cheap (file I/O only, no LLM calls) so running them on the
@@ -263,10 +268,10 @@ pub(crate) fn maybe_spawn_dream_consolidation(workdir: &Path, config: &RokoConfi
 
     let text = match std::fs::read_to_string(&episodes_path) {
         Ok(t) => t,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return None,
         Err(err) => {
             debug!(?err, "skipping dream check: could not read episode log");
-            return;
+            return None;
         }
     };
 
@@ -279,13 +284,22 @@ pub(crate) fn maybe_spawn_dream_consolidation(workdir: &Path, config: &RokoConfi
         None => text.lines().filter(|line| !line.trim().is_empty()).count(),
     };
 
-    if episodes_since_dream < DREAM_EPISODE_THRESHOLD {
+    (episodes_since_dream >= dreams.effective_acp_episode_threshold())
+        .then_some(episodes_since_dream)
+}
+
+/// Spawn a background dream consolidation when [`acp_dream_due`] reports one
+/// is due. This is fire-and-forget: failures are logged but never block the
+/// caller.
+pub(crate) fn maybe_spawn_dream_consolidation(workdir: &Path, config: &RokoConfig) {
+    let Some(episodes_since_dream) = acp_dream_due(workdir, config) else {
         return;
-    }
+    };
+    let workdir = workdir.to_path_buf();
 
     info!(
         episodes_since_dream,
-        threshold = DREAM_EPISODE_THRESHOLD,
+        threshold = config.learning.dreams.effective_acp_episode_threshold(),
         "triggering background dream consolidation"
     );
 

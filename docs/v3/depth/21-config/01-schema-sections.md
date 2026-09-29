@@ -197,6 +197,15 @@ semantics and built-in profiles.
 | `use_lookahead_router` | bool | false | Enable lookahead routing |
 | `gate_threshold_flush_interval` | u64 | 300 | Adaptive threshold flush cadence (seconds) |
 
+### `[learning.dreams]` -- DreamsConfig
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `trigger_on_plan_complete` | bool | true | Plan-completion dream trigger; fires only when `learning.dream_on_completion` is also true |
+| `max_concurrent` | usize | 1 | Intended cap on concurrent dream runs; no code reads it yet (the plan-completion trigger runs one dream at a time, the ACP trigger has no cap) |
+| `trigger_on_acp_episodes` | bool | false | Opt in to a dream consolidation from ACP sessions once `acp_episode_threshold` episodes accumulate since the last dream report; independent of the plan-completion switches |
+| `acp_episode_threshold` | usize | 10 | Episodes since the last dream report before an ACP session starts a dream (0 is treated as 1) |
+
 ---
 
 ## `[pipeline]` -- PipelineConfig

@@ -1615,6 +1615,39 @@ async fn append_acp_episode_records_pipeline_kind() {
 }
 
 #[test]
+fn acp_episodes_start_no_dream_when_dreams_are_off() {
+    let tmp = tempfile::tempdir().expect("create tmpdir");
+    let workdir = tmp.path();
+    let roko_dir = workdir.join(".roko");
+    std::fs::create_dir_all(&roko_dir).expect("create .roko");
+    let episode_log: String = (0..12)
+        .map(|i| {
+            let episode = Episode::new("code", format!("acp-session-{i}"));
+            serde_json::to_string(&episode).expect("serialize episode") + "\n"
+        })
+        .collect();
+    std::fs::write(roko_dir.join("episodes.jsonl"), episode_log).expect("write episode log");
+    assert!(!roko_dir.join("dreams").exists(), "no dream report yet");
+
+    // Default config: 12 episodes and no dream report start no dream.
+    let config = RokoConfig::default();
+    assert!(!config.learning.dreams.trigger_on_acp_episodes);
+    assert_eq!(acp_dream_due(workdir, &config), None);
+    // No Tokio runtime runs this test, so spawning a dream would panic.
+    maybe_spawn_dream_consolidation(workdir, &config);
+    assert!(!roko_dir.join("dreams").exists());
+
+    // The opt-in key starts one, with the threshold read from config.
+    let mut opted_in = RokoConfig::default();
+    opted_in.learning.dreams.trigger_on_acp_episodes = true;
+    opted_in.learning.dreams.acp_episode_threshold = 10;
+    assert_eq!(acp_dream_due(workdir, &opted_in), Some(12));
+
+    opted_in.learning.dreams.acp_episode_threshold = 13;
+    assert_eq!(acp_dream_due(workdir, &opted_in), None);
+}
+
+#[test]
 fn acp_routing_context_maps_modes_to_roles() {
     let tmp = tempfile::tempdir().expect("create tmpdir");
     let workdir = tmp.path();

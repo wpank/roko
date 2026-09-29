@@ -878,7 +878,10 @@ fn v2_config_key(key: &str) -> String {
     roko_core::config::loader::V1_RENAMED_KEYS
         .iter()
         .find(|(table, old, _)| key.split_once('.') == Some((*table, *old)))
-        .map_or_else(|| key.to_string(), |(table, _, new)| format!("{table}.{new}"))
+        .map_or_else(
+            || key.to_string(),
+            |(table, _, new)| format!("{table}.{new}"),
+        )
 }
 
 /// Which file `config edit` / `config set` should target.

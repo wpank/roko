@@ -24,8 +24,10 @@ use std::time::Instant;
 use crate::agent_config::command_from_config;
 use crate::agent_exec::{
     AgentCrashClass, AgentExecEpisode, AgentExecOpts, classify_agent_crash,
-    persist_capture_episode, run_agent_capture_silent, run_agent_logged,
+    persist_capture_episode, run_agent_capture_silent_with_usage, run_agent_logged,
 };
+use crate::plan_authoring::AuthoringSpend;
+use crate::runner::tui_bridge::TuiBridge;
 use crate::task_parser::TasksFile;
 use crate::workspace_paths::{
     drafts_dir, ideas_path, plans_dir as workspace_plans_dir, prd_dir, published_dir,
@@ -1085,7 +1087,7 @@ async fn maybe_generate_plan_after_promote(
         prd_path.to_path_buf(),
         auto_execute,
         |slug, path, dry_run| async move {
-            generate_plan_from_prd_with_outcome(&slug, &path, dry_run, None, None, true).await
+            generate_plan_from_prd_with_outcome(&slug, &path, dry_run, None, None, true, None).await
         },
     )
     .await
@@ -1207,7 +1209,8 @@ fn auto_plan_enabled(workdir: &Path) -> Result<bool> {
 /// Generate implementation plans from a published PRD file.
 pub async fn generate_plan_from_prd(slug: &str, prd_path: &Path, dry_run: bool) -> Result<PathBuf> {
     let (plans_root, _) =
-        generate_plan_from_prd_with_outcome(slug, prd_path, dry_run, None, None, true).await?;
+        generate_plan_from_prd_with_outcome(slug, prd_path, dry_run, None, None, true, None)
+            .await?;
     Ok(plans_root)
 }
 
@@ -1215,10 +1218,15 @@ pub async fn generate_plan_from_prd(slug: &str, prd_path: &Path, dry_run: bool) 
 /// old-format plan regeneration across all existing plans.
 ///
 /// Use this from the API so that a single "Generate" request does not start one
-/// LLM agent per old-format plan in the repository.
-pub async fn generate_plan_from_prd_isolated(slug: &str, prd_path: &Path) -> Result<PathBuf> {
+/// LLM agent per old-format plan in the repository. Each agent call's spend is
+/// published on `live` when given (see [`crate::plan_authoring::AuthoringSpend`]).
+pub async fn generate_plan_from_prd_isolated(
+    slug: &str,
+    prd_path: &Path,
+    live: Option<TuiBridge>,
+) -> Result<PathBuf> {
     let (plans_root, _) =
-        generate_plan_from_prd_with_outcome(slug, prd_path, false, None, None, false).await?;
+        generate_plan_from_prd_with_outcome(slug, prd_path, false, None, None, false, live).await?;
     Ok(plans_root)
 }
 
@@ -1231,7 +1239,8 @@ pub async fn generate_plan_from_prd_with_model(
     model: Option<&str>,
 ) -> Result<PathBuf> {
     let (plans_root, _) =
-        generate_plan_from_prd_with_outcome(slug, prd_path, dry_run, None, model, true).await?;
+        generate_plan_from_prd_with_outcome(slug, prd_path, dry_run, None, model, true, None)
+            .await?;
     Ok(plans_root)
 }
 
@@ -1244,9 +1253,16 @@ pub async fn generate_plan_from_prd_with_failure_context(
     failure_context: Option<&str>,
     model: Option<&str>,
 ) -> Result<PathBuf> {
-    let (plans_root, _) =
-        generate_plan_from_prd_with_outcome(slug, prd_path, dry_run, failure_context, model, true)
-            .await?;
+    let (plans_root, _) = generate_plan_from_prd_with_outcome(
+        slug,
+        prd_path,
+        dry_run,
+        failure_context,
+        model,
+        true,
+        None,
+    )
+    .await?;
     Ok(plans_root)
 }
 
@@ -1312,6 +1328,7 @@ async fn generate_plan_from_prd_with_outcome(
     failure_context: Option<&str>,
     model: Option<&str>,
     regenerate_old_plans: bool,
+    live: Option<TuiBridge>,
 ) -> Result<(PathBuf, GenerationOutcome)> {
     let workdir = prd_workdir(prd_path)?;
     let result = async {
@@ -1333,6 +1350,9 @@ async fn generate_plan_from_prd_with_outcome(
         let workdir_ref = dry_run_workdir
             .as_ref()
             .map_or(workdir.as_path(), |temp| temp.path());
+        // Every agent call below is recorded against the plan as it returns,
+        // the same way task dispatch records its spend.
+        let spend = AuthoringSpend::generation(workdir_ref, slug, live);
 
         let resolved = crate::load_resolved_config(workdir_ref)?;
         let system = augment_generator_system_prompt(
@@ -1445,7 +1465,7 @@ async fn generate_plan_from_prd_with_outcome(
             command_from_config(workdir_ref).unwrap_or_else(|| "claude".to_string());
         let plan_started = Instant::now();
         eprintln!("  Generating plan from PRD: {slug}");
-        let (exit_code, output) = run_agent_capture_silent(AgentExecOpts {
+        let call = run_agent_capture_silent_with_usage(AgentExecOpts {
             prompt: &task_prompt,
             workdir: workdir_ref,
             model: effective_model,
@@ -1457,6 +1477,8 @@ async fn generate_plan_from_prd_with_outcome(
             allowed_tools: Some("Read,Grep,Glob"),
         })
         .await?;
+        spend.record(&call).await;
+        let (exit_code, output) = (call.exit_code, call.output);
         let agent_ms = t_phase.elapsed().as_millis();
         let t_phase = Instant::now();
         if exit_code == 0 {
@@ -1530,7 +1552,7 @@ async fn generate_plan_from_prd_with_outcome(
                     max_crash_retries + 1,
                 );
                 tokio::time::sleep(std::time::Duration::from_secs(backoff_secs)).await;
-                let retry_result = run_agent_capture_silent(AgentExecOpts {
+                let retry = run_agent_capture_silent_with_usage(AgentExecOpts {
                     prompt: &task_prompt,
                     workdir: workdir_ref,
                     model: effective_model,
@@ -1542,8 +1564,9 @@ async fn generate_plan_from_prd_with_outcome(
                     allowed_tools: Some("Read,Grep,Glob"),
                 })
                 .await?;
-                last_exit_code = retry_result.0;
-                last_output = retry_result.1;
+                spend.record(&retry).await;
+                last_exit_code = retry.exit_code;
+                last_output = retry.output;
                 if last_exit_code == 0 {
                     eprintln!("  \u{2713} Retry {attempt} succeeded");
                     break;
@@ -1822,7 +1845,7 @@ async fn generate_plan_from_prd_with_outcome(
                      Do NOT include Rust code, markdown prose, or explanations outside the TOML block.\n\
                      Note: the meta field is `plan`, not `name`."
                 );
-                let retry_result = run_agent_capture_silent(AgentExecOpts {
+                let retry_result = run_agent_capture_silent_with_usage(AgentExecOpts {
                     prompt: &retry_prompt,
                     workdir: workdir_ref,
                     model: retry_model,
@@ -1834,8 +1857,11 @@ async fn generate_plan_from_prd_with_outcome(
                     allowed_tools: Some("Read,Grep,Glob"),
                 })
                 .await;
+                if let Ok(retry) = &retry_result {
+                    spend.record(retry).await;
+                }
 
-                match retry_result {
+                match retry_result.map(|retry| (retry.exit_code, retry.output)) {
                     Ok((0, retry_output)) if !retry_output.trim().is_empty() => {
                         last_output = retry_output.clone();
                         validated_toml = try_extract_and_validate(&retry_output);

@@ -2082,6 +2082,15 @@ pub struct AgentResultDispatch {
 /// Provider-neutral events emitted by dispatch v2.
 pub type DispatchEvent = AgentRuntimeEvent;
 
+/// [`fill_usage_cost_from_pricing`] for a dispatch result and its target.
+fn fill_cost_from_profile(result: &mut AgentResult, target: &ProviderDispatchSpec) {
+    fill_usage_cost_from_pricing(
+        &mut result.usage,
+        target.model_profile.as_ref(),
+        &target.model_slug,
+    );
+}
+
 /// Back-fill `usage.cost_usd` from the model profile's per-million token
 /// pricing when the provider did not report a dollar amount natively.
 ///
@@ -2090,20 +2099,23 @@ pub type DispatchEvent = AgentRuntimeEvent;
 /// gpt-5.x, codex, …) so token-bearing usage is not silently recorded as
 /// $0.00. Truly unknown models stay at 0.0, which
 /// `Usage::has_known_cost` reports as "unknown" rather than "free".
-fn fill_cost_from_profile(result: &mut AgentResult, target: &ProviderDispatchSpec) {
-    if let Some(profile) = target.model_profile.as_ref() {
-        result.usage.fill_cost_from_pricing(
+pub(crate) fn fill_usage_cost_from_pricing(
+    usage: &mut roko_core::Usage,
+    profile: Option<&ModelProfile>,
+    model_slug: &str,
+) {
+    if let Some(profile) = profile {
+        usage.fill_cost_from_pricing(
             profile.cost_input_per_m,
             profile.cost_output_per_m,
             profile.cost_cache_read_per_m,
             profile.cost_cache_write_per_m,
         );
     }
-    if result.usage.cost_usd.abs() <= f32::EPSILON
-        && let Some(pricing) =
-            roko_core::config::model_registry::builtin_pricing(&target.model_slug)
+    if usage.cost_usd.abs() <= f32::EPSILON
+        && let Some(pricing) = roko_core::config::model_registry::builtin_pricing(model_slug)
     {
-        result.usage.fill_cost_from_pricing(
+        usage.fill_cost_from_pricing(
             Some(pricing.input_per_m),
             Some(pricing.output_per_m),
             Some(pricing.cache_read_per_m),

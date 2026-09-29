@@ -11,6 +11,11 @@
 //!   cut off or does not parse. The provider adapters already fail a
 //!   non-zero exit, a turn cap hit and, for the Claude CLI, an empty
 //!   response;
+//! - the task's changes tamper with what checks it
+//!   ([`roko_gate::attempt_diff`], S05 check A1): a weakened, deleted or
+//!   skipped test, an edited verify script, `tasks.toml`, pinned acceptance
+//!   test or gate config. Changes outside the task's `files` are logged,
+//!   and rejected only under `[gates] diff_scope = "enforce"`;
 //! - it is an implementer attempt at a task that names `files`, and the task
 //!   has changed nothing, or added only stub lines
 //!   ([`roko_gate::analyze_diff`]): "no changes". Other roles, refactors
@@ -21,6 +26,13 @@
 //! verdict's `failure_class.rung` names the check (`pre_verify:<check>`), and
 //! its message is the next attempt's feedback.
 
+use std::path::Component;
+
+use roko_core::config::gates::DiffScope;
+use roko_gate::attempt_diff::{
+    AttemptChange, AttemptDiffPolicy, ChangeKind, DiffFinding, PinnedTest, check_attempt_diff,
+    scripts_run_by,
+};
 use roko_gate::{DiffPayload, analyze_diff};
 
 use super::diff_snapshot::AttemptDiff;
@@ -33,6 +45,9 @@ pub(super) const PRE_VERIFY_GATE_PREFIX: &str = "pre_verify:";
 
 /// Most `files` entries a "no changes" message names.
 const NAMED_FILES: usize = 5;
+
+/// Most attempt diff findings a message lists.
+const LISTED_FINDINGS: usize = 10;
 
 /// Why the screen rejected an attempt.
 #[derive(Debug)]
@@ -64,7 +79,13 @@ impl GraphTaskDispatcher {
         if rejection.is_none()
             && let Some(diff) = self.attempt_diff(spec, task, attempt_key, workdir).await
         {
-            rejection = no_changes_red_flag(task, role, &diff, attempt_number).await;
+            rejection = match self
+                .attempt_diff_red_flag(spec, task, workdir, attempt_number, &diff)
+                .await
+            {
+                Some(rejection) => Some(rejection),
+                None => no_changes_red_flag(task, role, &diff, attempt_number).await,
+            };
         }
         let Some(Rejection { check, message }) = rejection else {
             return Ok(());
@@ -101,6 +122,168 @@ impl GraphTaskDispatcher {
         }
         Err(RokoError::Verify { gate, message })
     }
+
+    /// The attempt diff check (S05 check A1) over the task's changes: a
+    /// tamper finding rejects the attempt; scope findings are logged, and
+    /// reject it only under `[gates] diff_scope = "enforce"`.
+    async fn attempt_diff_red_flag(
+        &self,
+        spec: &TaskExecutionSpec,
+        task: &TaskDef,
+        workdir: &Path,
+        attempt_number: u32,
+        diff: &AttemptDiff,
+    ) -> Option<Rejection> {
+        let policy = self.attempt_diff_policy(spec, task, workdir);
+        let mut changes = Vec::with_capacity(diff.changes.len());
+        for changed in &diff.changes {
+            let kind = match changed.status {
+                'A' | 'C' => ChangeKind::Added,
+                'D' => ChangeKind::Deleted,
+                'R' => ChangeKind::Renamed,
+                _ => ChangeKind::Modified,
+            };
+            let mut change = AttemptChange::new(kind, changed.path.clone());
+            change.old_path.clone_from(&changed.old_path);
+            if policy.needs_text(&change.path) || policy.needs_text(change.old_path()) {
+                if let Some(blob) = &changed.old_blob {
+                    change.before = diff.blob_text(blob).await;
+                }
+                if let Some(blob) = &changed.new_blob {
+                    change.after = diff.blob_text(blob).await;
+                }
+            }
+            changes.push(change);
+        }
+        let (tamper, scope): (Vec<DiffFinding>, Vec<DiffFinding>) =
+            check_attempt_diff(&changes, &policy)
+                .into_iter()
+                .partition(|finding| finding.kind.is_tamper());
+        if !scope.is_empty() {
+            tracing::warn!(
+                plan_id = %spec.plan_id,
+                task_id = %task.id,
+                attempt = attempt_number,
+                findings = %finding_list(&scope),
+                "attempt changed paths outside its task's files"
+            );
+        }
+        if !tamper.is_empty() {
+            return Some(Rejection {
+                check: "tamper",
+                message: format!(
+                    "Tampering: the task's changes weaken or edit what checks it:\n{}\nRestore \
+                     them. Tests, verify scripts, pinned acceptance tests and gate \
+                     configuration are not the task's to weaken; add new tests instead.",
+                    finding_list(&tamper)
+                ),
+            });
+        }
+        (!scope.is_empty() && self.config.gates.diff_scope == DiffScope::Enforce).then(|| {
+            Rejection {
+                check: "scope",
+                message: format!(
+                    "Out of scope: the task changed paths its files do not name \
+                     ([gates] diff_scope = \"enforce\"):\n{}\nChange only {}, and undo the rest.",
+                    finding_list(&scope),
+                    named_files(&task.files)
+                ),
+            }
+        })
+    }
+
+    /// What the task may change: its `files`, the scripts its verify steps
+    /// run, and its pinned acceptance tests, with the plan's `accept/`
+    /// directory, as paths in `workdir`.
+    fn attempt_diff_policy(
+        &self,
+        spec: &TaskExecutionSpec,
+        task: &TaskDef,
+        workdir: &Path,
+    ) -> AttemptDiffPolicy {
+        let plan_dir = Path::new(spec.plan_dir.trim());
+        let plan_dir_on_disk = if plan_dir.is_absolute() {
+            plan_dir.to_path_buf()
+        } else {
+            self.workdir.join(plan_dir)
+        };
+        // The plan directory as a path in the working tree, when inside it.
+        let plan_dir_in_tree = if plan_dir.as_os_str().is_empty() {
+            None
+        } else if plan_dir.is_relative() {
+            Some(plan_dir.to_path_buf())
+        } else {
+            [self.workdir.as_path(), workdir]
+                .into_iter()
+                .find_map(|root| relative_to(plan_dir, root))
+        };
+        let pinned_tests = task
+            .accept
+            .iter()
+            .flat_map(|accept| &accept.files)
+            .map(|entry| PinnedTest {
+                src: plan_dir_in_tree
+                    .as_ref()
+                    .map(|dir| tree_path(&dir.join(&entry.src))),
+                dest: tree_path(Path::new(&entry.dest)),
+                text: std::fs::read_to_string(plan_dir_on_disk.join(&entry.src)).ok(),
+            })
+            .collect();
+        AttemptDiffPolicy {
+            task_files: task.files.clone(),
+            verify_scripts: task
+                .verify
+                .iter()
+                .filter(|step| !crate::task_accept::is_pinned_step(step))
+                .flat_map(|step| scripts_run_by(&step.command))
+                .collect(),
+            pinned_tests,
+            accept_dirs: plan_dir_in_tree
+                .iter()
+                .map(|dir| tree_path(&dir.join("accept")))
+                .collect(),
+        }
+    }
+}
+
+/// Findings, one per line, at most [`LISTED_FINDINGS`] of them.
+fn finding_list(findings: &[DiffFinding]) -> String {
+    let mut lines: Vec<String> = findings
+        .iter()
+        .take(LISTED_FINDINGS)
+        .map(|finding| format!("- {finding}"))
+        .collect();
+    if findings.len() > LISTED_FINDINGS {
+        lines.push(format!("- and {} more", findings.len() - LISTED_FINDINGS));
+    }
+    lines.join("\n")
+}
+
+/// `path` relative to `root` when it lies inside it, comparing canonical
+/// paths as well.
+fn relative_to(path: &Path, root: &Path) -> Option<PathBuf> {
+    if let Ok(relative) = path.strip_prefix(root) {
+        return Some(relative.to_path_buf());
+    }
+    let path = path.canonicalize().ok()?;
+    let root = root.canonicalize().ok()?;
+    path.strip_prefix(root).ok().map(Path::to_path_buf)
+}
+
+/// `path` as the working tree names it: `/`-separated, with `.` and `..`
+/// resolved lexically.
+fn tree_path(path: &Path) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    for component in path.components() {
+        match component {
+            Component::Normal(part) => parts.push(part.to_string_lossy().into_owned()),
+            Component::ParentDir => {
+                parts.pop();
+            }
+            Component::CurDir | Component::RootDir | Component::Prefix(_) => {}
+        }
+    }
+    parts.join("/")
 }
 
 /// A red flag on the attempt's output: past its role's output-token cap, or
@@ -402,6 +585,118 @@ printf '%s\n' '{{"type":"result","session_id":"s","model":"claude-sonnet-4-6","t
             .await
             .expect("the change is real now");
         assert!(marker.exists());
+    }
+
+    #[tokio::test]
+    async fn tampering_attempt_fails_before_verify() {
+        let temp = tempdir().expect("tempdir");
+        commit_repo(
+            temp.path(),
+            &[
+                ("src/lib.rs", "pub fn one() -> u8 {\n    1\n}\n"),
+                (
+                    "tests/math.rs",
+                    "#[test]\nfn one_is_one() {\n    assert_eq!(c5::one(), 1);\n}\n",
+                ),
+                ("plans/p/accept/one.sh", "echo 'ok 1'\necho '# pass 1'\n"),
+            ],
+        );
+        // A real change to its own file, beside a skipped test and a
+        // weakened pinned acceptance test.
+        let tamper = provider(
+            "printf 'pub fn two() -> u8 {\\n    one() + one()\\n}\\n' >> src/lib.rs\n\
+             printf '#[test]\\n#[ignore]\\nfn later() {\\n    assert!(true);\\n}\\n' >> tests/math.rs\n\
+             printf 'exit 0\\n' >> plans/p/accept/one.sh",
+            "done",
+            10,
+        );
+        let (dispatcher, mut task) =
+            make_test_dispatcher(&temp, &tamper, no_auto_fix, GraphFeedbackContext::default())
+                .await;
+        let marker = temp.path().join("verify-ran");
+        task.files = vec!["src/lib.rs".to_string()];
+        task.accept = Some(crate::task_accept::TaskAccept {
+            files: vec![crate::task_accept::AcceptFile {
+                src: "accept/one.sh".to_string(),
+                dest: "tests/accept/one.sh".to_string(),
+                runner: "sh {dest}".to_string(),
+                count: 1,
+                timeout_ms: None,
+            }],
+        });
+        task.verify = vec![verify_step(
+            "structural",
+            &format!("touch {}", marker.display()),
+        )];
+        let mut spec = make_spec(&task);
+        spec.plan_dir = "plans/p".to_string();
+
+        let error = dispatcher
+            .dispatch(&spec, Vec::new(), &CellContext::new())
+            .await
+            .expect_err("tampering fails the attempt");
+        let RokoError::Verify { gate, message } = error else {
+            panic!("expected a verify failure, got {error}");
+        };
+        assert!(!marker.exists(), "the verify steps must not run");
+        assert_eq!(gate, "pre_verify:tamper");
+        assert!(message.contains("skip_added `tests/math.rs`"), "{message}");
+        assert!(
+            message.contains("accept_edited `plans/p/accept/one.sh`"),
+            "{message}"
+        );
+        assert!(
+            !message.contains("src/lib.rs"),
+            "the task's own change is not a finding: {message}"
+        );
+    }
+
+    #[tokio::test]
+    async fn scope_findings_fail_the_attempt_only_when_enforced() {
+        for diff_scope in [DiffScope::Record, DiffScope::Enforce] {
+            let temp = tempdir().expect("tempdir");
+            commit_repo(
+                temp.path(),
+                &[
+                    ("src/lib.rs", "pub fn one() -> u8 {\n    1\n}\n"),
+                    ("README.md", "# c5\n"),
+                ],
+            );
+            let wanders = provider(
+                "printf 'pub fn two() -> u8 {\\n    one() + one()\\n}\\n' >> src/lib.rs\n\
+                 printf 'Also this.\\n' >> README.md",
+                "done",
+                10,
+            );
+            let (dispatcher, mut task) = make_test_dispatcher(
+                &temp,
+                &wanders,
+                |config| {
+                    no_auto_fix(config);
+                    config.gates.diff_scope = diff_scope;
+                },
+                GraphFeedbackContext::default(),
+            )
+            .await;
+            let marker = temp.path().join("verify-ran");
+            task.files = vec!["src/lib.rs".to_string()];
+            task.verify = vec![verify_step(
+                "structural",
+                &format!("touch {}", marker.display()),
+            )];
+
+            if diff_scope == DiffScope::Record {
+                dispatcher
+                    .dispatch(&make_spec(&task), Vec::new(), &CellContext::new())
+                    .await
+                    .expect("a scope finding is only recorded");
+                assert!(marker.exists());
+            } else {
+                let (gate, message) = rejected(&dispatcher, &task, &marker).await;
+                assert_eq!(gate, "pre_verify:scope");
+                assert!(message.contains("outside_scope `README.md`"), "{message}");
+            }
+        }
     }
 
     #[tokio::test]

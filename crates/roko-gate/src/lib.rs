@@ -79,6 +79,9 @@ pub mod chaos;
 
 pub mod acceptance_contract;
 pub mod artifact_store;
+/// Attempt diff check: tampering with tests, verify scripts, pinned acceptance tests or gate
+/// config, and edits outside a task's files (S05 check A1).
+pub mod attempt_diff;
 /// Criterion benchmark regression detection: parse JSON output, compare against baselines.
 pub mod benchmark_gate;
 mod cancel_safe_command;

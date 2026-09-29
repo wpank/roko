@@ -31,6 +31,9 @@ const RAW_LIMIT: usize = 16 * 1024 * 1024;
 /// Most bytes of patch text the stub check reads.
 const PATCH_LIMIT: usize = 4 * 1024 * 1024;
 
+/// Most bytes of one file's text read.
+const BLOB_LIMIT: usize = 2 * 1024 * 1024;
+
 /// Most changed paths the patch for the stub check names.
 const PATCH_PATHS: usize = 500;
 
@@ -253,6 +256,16 @@ impl AttemptDiff {
         let args: Vec<&str> = args.iter().map(String::as_str).collect();
         let (patch, _) = git_bytes(&self.workdir, &args, None, PATCH_LIMIT).await?;
         Some(String::from_utf8_lossy(&patch).into_owned())
+    }
+
+    /// Text of `blob`, or `None` when it is binary, too large, or unreadable.
+    pub(super) async fn blob_text(&self, blob: &str) -> Option<String> {
+        let (bytes, truncated) =
+            git_bytes(&self.workdir, &["cat-file", "blob", blob], None, BLOB_LIMIT).await?;
+        if truncated || bytes.contains(&0) {
+            return None;
+        }
+        String::from_utf8(bytes).ok()
     }
 }
 

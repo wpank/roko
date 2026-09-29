@@ -63,6 +63,18 @@ const fn default_sibling_settle_secs() -> u64 {
 /// does not list: about five times the largest attempt recorded so far.
 pub const DEFAULT_MAX_OUTPUT_TOKENS: u64 = 200_000;
 
+/// What a Graph attempt's edits to paths outside its task's `files` do
+/// (`[gates] diff_scope`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DiffScope {
+    /// Log them; the attempt goes on to its verify steps.
+    #[default]
+    Record,
+    /// Fail the attempt before its verify steps.
+    Enforce,
+}
+
 // ---- [gates.adaptive] defaults -------------------------------------------
 
 const fn default_ema_alpha() -> f64 {
@@ -173,6 +185,12 @@ pub struct GatesConfig {
     /// cap off. Roles neither lists get [`DEFAULT_MAX_OUTPUT_TOKENS`].
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub max_output_tokens: HashMap<String, u64>,
+    /// What a Graph attempt's edits to paths outside its task's `files` do:
+    /// `record` (the default) logs them, `enforce` fails the attempt before
+    /// its verify steps. Edits that weaken tests or touch verify scripts,
+    /// pinned acceptance tests or gate config fail it either way.
+    #[serde(default)]
+    pub diff_scope: DiffScope,
     /// Extra roko environment variables that gate commands (task `verify`
     /// steps, build and test gates) may inherit: exact names or `PREFIX*`
     /// patterns, e.g. `["DATABASE_URL", "AWS_*"]`.
@@ -266,6 +284,7 @@ impl Default for GatesConfig {
             compile_concurrency: default_compile_concurrency(),
             sibling_settle_secs: default_sibling_settle_secs(),
             max_output_tokens: HashMap::new(),
+            diff_scope: DiffScope::Record,
             env_passthrough: Vec::new(),
             domain_gates: HashMap::new(),
             custom_rungs: Vec::new(),
@@ -710,5 +729,16 @@ max_turns = 0
         assert_eq!(cfg.gates.max_output_tokens_for("reviewer"), Some(800));
         assert_eq!(cfg.gates.max_output_tokens_for("implementer"), Some(5000));
         assert_eq!(cfg.gates.max_output_tokens_for("scribe"), None, "0 is off");
+    }
+
+    #[test]
+    fn diff_scope_records_by_default_and_parses_enforce() {
+        assert_eq!(
+            super::GatesConfig::default().diff_scope,
+            super::DiffScope::Record
+        );
+        let cfg = RokoConfig::from_toml("[gates]\ndiff_scope = \"enforce\"\n").expect("parses");
+        assert_eq!(cfg.gates.diff_scope, super::DiffScope::Enforce);
+        assert!(RokoConfig::from_toml("[gates]\ndiff_scope = \"strict\"\n").is_err());
     }
 }

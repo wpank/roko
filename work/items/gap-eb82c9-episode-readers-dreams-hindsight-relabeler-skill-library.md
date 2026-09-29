@@ -46,3 +46,7 @@ The readers use `success`.
 
 - [ ] No episode reader learns from an unverified success.
 - [ ] The `[[verify]]` command passes.
+
+## Notes
+
+- 2026-09-29 (wk-model-truth, from bug-31438d): `work/bug-31438d` (not merged at 7fa54b873) adds more episode fields that these readers should honour: `extra.turns_unknown` (the turn count is unknown, not 1) and `extra.model_reported`, `extra.model_mismatch` and `extra.substituted_from` (the served model differs from the dispatched one). Dreams, the hindsight relabeler, the skill library and the curriculum should skip or down-weight mismatched episodes, and treat unknown turns as unknown.

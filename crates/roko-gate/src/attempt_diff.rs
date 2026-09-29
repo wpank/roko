@@ -49,9 +49,10 @@ pub struct AttemptChange {
     pub path: String,
     /// The path before a rename.
     pub old_path: Option<String>,
-    /// Its text before the change: `None` when it did not exist, or its text
-    /// was not read (binary, too large, or not needed, see
-    /// [`AttemptDiffPolicy::needs_text`]).
+    /// Its text before the change, when read.
+    ///
+    /// `None` when the path did not exist, or its text was not read: binary,
+    /// too large, or not needed (see [`AttemptDiffPolicy::needs_text`]).
     pub before: Option<String>,
     /// Its text after the change, likewise.
     pub after: Option<String>,
@@ -107,13 +108,14 @@ pub struct AttemptDiffPolicy {
 }
 
 impl AttemptDiffPolicy {
-    /// Whether the check reads the text of `path` before and after: test
-    /// code, Rust files (which hold inline tests), `roko.toml` and pinned
-    /// test destinations. Callers may leave the text of other paths out.
+    /// Whether the check reads the text of `path` before and after.
+    ///
+    /// It reads test code, Rust files (which hold inline tests), `roko.toml`
+    /// and pinned test destinations; callers may leave out the rest.
     #[must_use]
     pub fn needs_text(&self, path: &str) -> bool {
         is_test_path(path)
-            || path.ends_with(".rs")
+            || has_extension(path, "rs")
             || file_name(path) == "roko.toml"
             || self.pinned_tests.iter().any(|pinned| pinned.dest == path)
     }
@@ -384,10 +386,12 @@ pub fn check_attempt_diff(
     findings
 }
 
-/// Files a verify command runs as scripts: the first word of each command
-/// when it is a relative path (`./check.sh`, `scripts/verify`), and the first
-/// argument of an interpreter (`bash`, `sh`, `python3`, `node`, …). Paths
-/// come back without a leading `./`.
+/// Files a verify command runs as scripts.
+///
+/// They are the first word of each command when it is a relative path
+/// (`./check.sh`, `scripts/verify`), and the first argument of an
+/// interpreter (`bash`, `sh`, `python3`, `node`, …). Paths come back without
+/// a leading `./`.
 #[must_use]
 pub fn scripts_run_by(command: &str) -> Vec<String> {
     const INTERPRETERS: &[&str] = &[
@@ -422,10 +426,11 @@ pub fn scripts_run_by(command: &str) -> Vec<String> {
     scripts
 }
 
-/// Whether `path` is test code by the usual layouts: under a `tests`,
-/// `test`, `__tests__`, `spec` or `specs` directory, or named `*_test.*`,
-/// `*_tests.*`, `test_*.py`, `*.test.*`, `*.spec.*`, `tests.rs` or
-/// `conftest.py`.
+/// Whether `path` is test code by the usual layouts.
+///
+/// That is a path under a `tests`, `test`, `__tests__`, `spec` or `specs`
+/// directory, or a file named `*_test.*`, `*_tests.*`, `test_*.py`,
+/// `*.test.*`, `*.spec.*`, `tests.rs` or `conftest.py`.
 #[must_use]
 pub fn is_test_path(path: &str) -> bool {
     let mut components: Vec<&str> = path.split('/').collect();
@@ -437,7 +442,7 @@ pub fn is_test_path(path: &str) -> bool {
         return true;
     }
     let stem = name.split('.').next().unwrap_or(name);
-    (name.starts_with("test_") && name.ends_with(".py"))
+    (name.starts_with("test_") && has_extension(name, "py"))
         || stem.ends_with("_test")
         || stem.ends_with("_tests")
         || name.contains(".test.")
@@ -464,7 +469,7 @@ fn gate_config_edit(change: &AttemptChange) -> Option<String> {
     if ci {
         return Some("CI configuration was edited".to_string());
     }
-    let snapshot = name.ends_with(".snap")
+    let snapshot = has_extension(name, "snap")
         || path.starts_with("__snapshots__/")
         || path.contains("/__snapshots__/");
     if snapshot && change.kind != ChangeKind::Added {
@@ -580,7 +585,7 @@ impl Tally {
         };
         let region = if is_test_path(path) {
             text
-        } else if path.ends_with(".rs") {
+        } else if has_extension(path, "rs") {
             text.find("#[cfg(test)]").map_or("", |start| &text[start..])
         } else {
             ""
@@ -619,7 +624,7 @@ fn is_substantive(line: &str) -> bool {
 
 /// Whether `path` is output a build or test run leaves behind.
 fn is_generated(path: &str) -> bool {
-    path.ends_with(".pyc")
+    has_extension(path, "pyc")
         || path.split('/').any(|dir| {
             matches!(
                 dir,
@@ -635,6 +640,13 @@ fn is_env_assignment(word: &str) -> bool {
             && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
             && !name.starts_with(|c: char| c.is_ascii_digit())
     })
+}
+
+/// Whether `path` ends in `.<extension>`, in any case.
+fn has_extension(path: &str, extension: &str) -> bool {
+    std::path::Path::new(path)
+        .extension()
+        .is_some_and(|found| found.eq_ignore_ascii_case(extension))
 }
 
 /// The last component of `path`.

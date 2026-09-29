@@ -2,7 +2,7 @@
 id = "gap-e003ec"
 kind = "gap"
 title = "ViabilityBench metering and fault proxy (S08.T13)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "proof"
@@ -11,6 +11,7 @@ subsystem = ["benchmarks/viabilitybench/driver"]
 created = 2026-09-29
 updated = 2026-09-29
 last_verified = 2026-09-29
+last_verified_rev = "73f5b55f4"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e12"
 discovered_from = "tmp/cybernetic-harness/specs/S08-benchmark-suite.md (§4.6 provider_fault, §4.11, §6 T13; checklist S08.T13)"
 anchors = ["benchmarks/viabilitybench/driver/faultproxy.py", "benchmarks/viabilitybench/driver/test_faultproxy.py"]
@@ -23,6 +24,12 @@ command = "grep -qw 'def test_fault_rates_within_two_points' benchmarks/viabilit
 
 [[verify]]
 command = "grep -qw 'def test_meter_equals_upstream_usage' benchmarks/viabilitybench/driver/test_faultproxy.py && benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/driver/test_faultproxy.py -k test_meter_equals_upstream_usage -q"
+
+[closed]
+at = 2026-09-29
+commit = "73f5b55f4"
+by = "wk-bench-proxy"
+evidence = "Adds driver/faultproxy.py, the S08 T13 metering and fault proxy. It meters usage in S01 v1.2's disjoint classes, priced from prices-2026-09-28, with stream include_usage handling and a per-task input-token cap. It injects six seeded fault profiles, balanced per 20 requests, has a token-protected /_vb/control, and logs every call to proxy.jsonl. driver/test_faultproxy.py holds 11 offline tests against local stub upstreams. test_fault_rates_within_two_points puts all six profiles within 2 points over 1,000 requests each, with every fault seen by the client at the logged request. test_meter_equals_upstream_usage shows meter usage and cost equal the stub's reported usage, including under drop_usage and truncate. Both [[verify]] commands pass; the viabilitybench suite has 223 passed."
 +++
 
 ## Problem

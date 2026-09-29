@@ -4,14 +4,15 @@
 `respond(body)` gets the parsed request and returns the assistant's reply text. The server wraps the reply in a
 chat-completions response whose `model` is the requested one (or `model_reported`) and whose usage is a fixed
 function of the text (about four characters per token, `usage_for`), so costs are reproducible. `requests` keeps
-every request body, in order. Nothing here touches the network: `vb run --provider-url <server.url>` is offline.
+every request body, in order, and `headers` each request's headers (names in lower case). Nothing here touches the
+network: `vb run --provider-url <server.url>` is offline.
 
 `scripted(scripts)` builds a `respond` that plays one script per task. It finds the task by a key that occurs in the
 request's first user message, and returns step k of that script on the k-th call of an attempt (k = the number of
 assistant messages in the request). A script that runs out repeats its last step.
 
 API:
-    StubServer(respond, *, model_reported=None)     # a context manager; .url, .requests
+    StubServer(respond, *, model_reported=None)     # a context manager; .url, .requests, .headers
     scripted(scripts: Mapping[str, Sequence[str]]) -> Callable[[dict], str]
     bash(command: str, thought: str = "Next step.") -> str      # a reply holding one bash block
     usage_for(messages: Sequence[dict], reply: str) -> dict
@@ -62,6 +63,7 @@ class StubServer:
         self.respond = respond
         self.model_reported = model_reported
         self.requests: list[dict] = []
+        self.headers: list[dict[str, str]] = []
         self._lock = threading.Lock()
         self._server = ThreadingHTTPServer(("127.0.0.1", 0), self._handler())
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
@@ -89,6 +91,7 @@ class StubServer:
                 body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))))
                 with stub._lock:
                     stub.requests.append(body)
+                    stub.headers.append({name.lower(): value for name, value in self.headers.items()})
                     try:
                         reply = stub.respond(body)
                     except Exception as err:  # a broken script is a server error, never a hang

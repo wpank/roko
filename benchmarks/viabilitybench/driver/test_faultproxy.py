@@ -20,6 +20,7 @@ import pytest
 import faultproxy
 import layout
 import ledger
+import secret
 import vb
 from common import hmac_seed
 from stub_provider import StubServer, bash
@@ -464,16 +465,19 @@ def test_upstreams_are_allowlisted_and_get_the_proxys_key(tmp_path, monkeypatch,
     for base_url in ("https://example.com/v1", "http://api.openai.com/v1", "ftp://127.0.0.1/v1"):
         with pytest.raises(faultproxy.ProxyError):
             faultproxy.FaultProxy([faultproxy.Upstream("x", base_url)], log_path=tmp_path / "refused.jsonl")
-    monkeypatch.delenv("VB_TEST_UNSET_KEY", raising=False)
-    with pytest.raises(faultproxy.ProxyError):
+    # The keys come from the key file (bug-979a06), never from the environment, even when a variable of that name is
+    # set there.
+    keys = secret.load_keys(secret.create_keys(tmp_path / "private-config" / "keys",
+                                               {"VB_TEST_UPSTREAM_KEY": "sk-upstream-test-7c1d"}))
+    monkeypatch.setenv("VB_TEST_UNSET_KEY", "sk-from-the-environment-4a2b")
+    with pytest.raises(faultproxy.ProxyError, match="VB_TEST_UNSET_KEY"):
         faultproxy.FaultProxy([faultproxy.Upstream("openai", "https://api.openai.com/v1", "VB_TEST_UNSET_KEY")],
-                              log_path=tmp_path / "refused.jsonl")
-    monkeypatch.setenv("VB_TEST_UPSTREAM_KEY", "sk-upstream-test-7c1d")
+                              log_path=tmp_path / "refused.jsonl", keys=keys)
     faultproxy.FaultProxy([faultproxy.Upstream("openai", "https://api.openai.com/v1", "VB_TEST_UPSTREAM_KEY")],
-                          log_path=tmp_path / "allowed.jsonl").close()  # an arm's host is allowed; nothing is sent
+                          log_path=tmp_path / "allowed.jsonl", keys=keys).close()  # an arm's host; nothing is sent
     with StubUpstream(redirect_to="http://127.0.0.1:9/elsewhere") as redirecting, faultproxy.FaultProxy(
             [faultproxy.Upstream("stub", upstream.url, "VB_TEST_UPSTREAM_KEY"), faultproxy.Upstream(
-                "moved", redirecting.url)], log_path=tmp_path / "proxy.jsonl") as proxy:
+                "moved", redirecting.url)], log_path=tmp_path / "proxy.jsonl", keys=keys) as proxy:
         assert post(completions(proxy), REQUEST, headers={"Authorization": "Bearer client-secret"}).status == 200
         moved = post(completions(proxy, "moved"), REQUEST)
     assert upstream.requests[0][0]["authorization"] == "Bearer sk-upstream-test-7c1d"

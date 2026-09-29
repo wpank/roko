@@ -43,6 +43,14 @@ The benchmark secret reaches only `hidden.py`, in the census, as a file path: `-
 first task, `vb run` refuses a secret file that breaks its rules and a secret that roko or an agent could inherit, and
 from then on every agent environment is checked against it (`secret.preflight`, `agent_env`).
 
+**Provider keys** (bug-979a06) live in a driver-only key file: `--key-file`, else `$VB_KEY_FILE`, else
+`~/.config/viabilitybench/keys` (`driver/secret.py keys` checks it). They never live in the driver's environment,
+which every agent can read (`ps -E`, `/proc/<pid>/environ`). A proxied run reads the key its endpoint names into the
+driver's memory for the proxy, the only sender of a key; a loopback `--provider-url` and a CLI that signs in by itself
+need none. `vb run` refuses to start while its environment holds any arm's `api_key_env` or a loaded key. While the
+tasks run, the secret file and the key file sit at mode 000, and the census reports any change to them as
+`leak_suspected` (the tripwire, gap-308373, `secret.tripwire`).
+
 Exit status: 0 when every (task, seed) got a record, 1 when some did not (see `errors.jsonl`), 2 for a usage,
 configuration or admission error.
 """
@@ -287,16 +295,13 @@ def cmd_run(args: argparse.Namespace) -> int:
     if args.max_cost_usd is not None and (plan.worst_case_usd or 0) > args.max_cost_usd:
         print(f"vb: the worst case of {plan.runs} runs is ${plan.worst_case_usd:.2f}; the run stops before any task "
               f"that could take spend past ${args.max_cost_usd:.2f}", file=sys.stderr)
-    # A subscription arm's CLI signs in by itself; only a billed arm needs the driver's key.
-    if not plan.endpoint.offline and plan.arm["arm"]["billed"] and not os.environ.get(plan.endpoint.api_key_env or ""):
-        raise DriverError(f"set {plan.endpoint.api_key_env} for {plan.endpoint.provider}")
-    # A billed network run always meters through the proxy, which alone sends the provider's key (module docstring).
+    # A billed network run always meters through the proxy, which alone sends the provider's key (module docstring),
+    # read from the driver-only key file (bug-979a06).
     proxied = args.proxy or (plan.arm["arm"]["billed"] and not plan.endpoint.offline)
-    keys = {name: os.environ[name] for name in [plan.endpoint.api_key_env] if name and os.environ.get(name)}
-    if proxied and not plan.endpoint.offline and not keys:
-        raise DriverError(f"the metering proxy sends {plan.endpoint.provider}'s key: " + (
-            f"set {plan.endpoint.api_key_env}" if plan.endpoint.api_key_env else
-            "the arm names no api_key_env, since its client signs in by itself"))
+    keys = _provider_keys(args.key_file, plan.endpoint) if proxied else None
+    if proxied and not plan.endpoint.offline and keys is None:
+        raise DriverError(f"the metering proxy sends {plan.endpoint.provider}'s key, but the arm names no api_key_env, "
+                          "since its client signs in by itself")
     for family, directory in sorted(plan.stream.families.items()):
         if any(knobs.parse_instance_id(i)[0] == family for i in plan.instances) and not all(
                 (directory / name).is_file() for name in ("gen.py", "hidden.py")):
@@ -308,7 +313,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     if layout.within(work_root, results_root) or layout.within(results_root, work_root):
         raise DriverError("--work and --results must not contain each other")
     try:
-        secret.preflight(secret_file, work_root=work_root, results_root=results_root)
+        loaded = secret.preflight(secret_file, work_root=work_root, results_root=results_root, keys=keys)
     except secret.SecretError as err:
         raise DriverError(str(err)) from None
     for value, flag in ((args.experiment, "--experiment"), (args.run_id or "x", "--run-id")):
@@ -348,21 +353,24 @@ def cmd_run(args: argparse.Namespace) -> int:
               config_hash=config_hash, head=head, suite=suite, proxy=proxy)
     written = 0
     try:
-        for seed in plan.seeds:
-            order = [instance for instance in plan.stream.order(seed) if instance in plan.instances]
-            _write_json(run_dir / f"order-{seed}.json", {"stream": plan.stream.id, "seed": seed, "order": order})
-            for position, instance_id in enumerate(order, 1):
-                refusal = book.refusal(plan.worst_task_usd if plan.arm["arm"]["billed"] else 0.0)
-                if refusal:  # S09 §4.6: the task could take billed spend past a budget cap (ledger.py)
-                    _log_error(run_dir, f"{instance_id}.s{seed}", "budget", f"stopped before the task: {refusal}")
-                    return 1
-                if args.max_cost_usd is not None and plan.worst_task_usd is not None and \
-                        book.spent_bound_usd + plan.worst_task_usd > args.max_cost_usd:
-                    _log_error(run_dir, f"{instance_id}.s{seed}", "budget",
-                               f"stopped: ${book.spent_bound_usd:.4f} spent; the next task could pass --max-cost-usd")
-                    return 1
-                written += _run_one(run, instance_id, seed, {"id": plan.stream.id, "position": position,
-                                                             "length": len(order), "perturbations_active": []})
+        with secret.tripwire(loaded, keys):  # the secret file and the key file at mode 000 while the tasks run
+            for seed in plan.seeds:
+                order = [instance for instance in plan.stream.order(seed) if instance in plan.instances]
+                _write_json(run_dir / f"order-{seed}.json", {"stream": plan.stream.id, "seed": seed, "order": order})
+                for position, instance_id in enumerate(order, 1):
+                    refusal = book.refusal(plan.worst_task_usd if plan.arm["arm"]["billed"] else 0.0)
+                    if refusal:  # S09 §4.6: the task could take billed spend past a budget cap (ledger.py)
+                        _log_error(run_dir, f"{instance_id}.s{seed}", "budget", f"stopped before the task: {refusal}")
+                        return 1
+                    if args.max_cost_usd is not None and plan.worst_task_usd is not None and \
+                            book.spent_bound_usd + plan.worst_task_usd > args.max_cost_usd:
+                        _log_error(run_dir, f"{instance_id}.s{seed}", "budget", f"stopped: ${book.spent_bound_usd:.4f} "
+                                   "spent; the next task could pass --max-cost-usd")
+                        return 1
+                    written += _run_one(run, instance_id, seed, {"id": plan.stream.id, "position": position,
+                                                                 "length": len(order), "perturbations_active": []})
+    except secret.SecretError as err:  # the tripwire could not be armed, so no task ran
+        raise DriverError(str(err)) from None
     finally:
         if proxy:
             proxy.close()
@@ -459,17 +467,27 @@ def _endpoint(arm: dict, row: dict | None, provider_url: str | None) -> provider
     return provider.Endpoint(provider=name, base_url=provider_url or table["base_url"], **fields)
 
 
-def _start_proxy(plan: Plan, run_dir: Path, *, keys: Mapping[str, str]) -> faultproxy.FaultProxy:
+def _start_proxy(plan: Plan, run_dir: Path, *, keys: Mapping[str, str] | None) -> faultproxy.FaultProxy:
     """The metering proxy in front of the plan's endpoint, logging to `<run_dir>/proxy.jsonl` (module docstring).
-    `keys` maps the upstream's `api_key_env` to its key: the proxy sends it, and the runners' endpoint names none."""
-    upstream = faultproxy.Upstream.from_endpoint(plan.endpoint)
+    `keys` (`_provider_keys`) maps the upstream's `api_key_env` to its key: the proxy sends it, and the runners'
+    endpoint names none."""
     try:
-        if upstream.api_key_env and not keys.get(upstream.api_key_env):
-            raise faultproxy.ProxyError(f"no key for {upstream.name}'s {upstream.api_key_env}")
-        return faultproxy.FaultProxy([upstream], log_path=run_dir / PROXY_LOG, snapshot=plan.snapshot).start()
+        return faultproxy.FaultProxy([faultproxy.Upstream.from_endpoint(plan.endpoint)], log_path=run_dir / PROXY_LOG,
+                                     snapshot=plan.snapshot, keys=keys).start()
     except (faultproxy.ProxyError, OSError) as err:
         archive.remove_tree(run_dir)  # made by this run a moment ago; nothing has run
         raise DriverError(f"the metering proxy cannot start: {err}") from None
+
+
+def _provider_keys(value: Path | None, endpoint: provider.Endpoint) -> secret.ProviderKeys | None:
+    """The key file's keys when `endpoint` names one (bug-979a06), read into the driver's memory for the proxy; None
+    when it names none: an override URL never gets a key, and a CLI signs in by itself."""
+    if not endpoint.api_key_env:
+        return None
+    try:
+        return secret.load_keys(secret.resolve_keys(value), need=[endpoint.api_key_env])
+    except secret.SecretError as err:  # also say where a key sits that belongs in the file
+        raise DriverError("; ".join([str(err), *secret.key_exposures()])) from None
 
 
 def _secret_file(value: Path | None) -> Path:
@@ -570,6 +588,8 @@ def _parser() -> argparse.ArgumentParser:
                      help="route an offline or unbilled run through the metering proxy (faultproxy.py), as every "
                           "billed network run is; its log is proxy.jsonl")
     run.add_argument("--secret-file", type=Path, help="default: $VB_SECRET_FILE, then " + str(DEFAULT_SECRET_FILE))
+    run.add_argument("--key-file", type=Path, help=f"provider keys, NAME=value; default: ${secret.KEYS_FILE_ENV}, then "
+                     f"{secret.KEYS_DEFAULT_PATH}")
     run.add_argument("--results", type=Path, help="default: $VB_RESULTS, then " + str(DEFAULT_RESULTS))
     run.add_argument("--work", type=Path, help="default: $VB_WORK, then " + str(DEFAULT_WORK))
     run.add_argument("--transcripts", action="store_true", help="keep transcripts in the run directory")

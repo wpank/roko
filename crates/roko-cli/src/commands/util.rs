@@ -276,11 +276,12 @@ pub(crate) async fn cmd_init(
             Err(_) => None,
         }
     } else {
-        let default = Config::default_toml_template(cloud)?;
-        tokio::fs::write(&config_path, &default)
-            .await
-            .with_context(|| format!("write {}", config_path.display()))?;
+        // The template is checked like `roko config validate` before it is
+        // written, so a new workspace never starts with a config that fails.
+        let provider = roko_cli::init::InitProvider::detect();
+        let default = roko_cli::init::write_init_config(&target, cloud, provider)?;
         println!("wrote {}", config_path.display());
+        println!("{}", provider.summary());
         RokoConfig::from_toml(&default).ok()
     };
 
@@ -289,10 +290,6 @@ pub(crate) async fn cmd_init(
     println!(
         "suggested gates: {}",
         crate::commands::prd::domain_gate_hint(domain)
-    );
-    println!(
-        "default provider command set to \"claude\". \
-         Edit roko.toml [providers.claude_cli] to use a different command."
     );
 
     if demo {
@@ -367,107 +364,9 @@ pub(crate) async fn cmd_run(
     let mut config = resolve_config_for_workdir(cli, &workdir)?;
     apply_resume_session_override(&mut config, cli.resume.clone());
 
-    // P2-BUD-1: Budget admission check before dispatch.
-    //
-    // Two guards mirror the plan-runner behaviour so `roko run` respects the
-    // same spend ceilings that `roko plan run` enforces:
-    //
-    // 1. Plan ceiling as a daily guard (`max_plan_usd`): read today's total
-    //    from the costs JSONL log; reject the dispatch if today's accumulated
-    //    spend already meets or exceeds the plan ceiling.
-    //
-    // 2. Turn ceiling (`max_turn_usd`): load the learned BudgetPredictor and
-    //    compare the predicted token cost against the per-turn USD cap.  The
-    //    predictor provides a best-effort estimate; if no history is available
-    //    the fallback token count is used.  A conservative average price of
-    //    $15 / million tokens is applied (sonnet-class output side).
-    //
-    // Both checks are soft-fail on I/O errors (best-effort).
-    {
-        let learn_dir = workdir.join(".roko").join("learn");
-        let budget = &config.budget;
-
-        // Guard 1: plan ceiling as a daily spend guard.
-        let max_plan = budget.max_plan_usd;
-        if max_plan > 0.0 {
-            let costs_path = learn_dir.join("costs.jsonl");
-            let costs_log = CostsLog::at(&costs_path);
-            match costs_log.cost_today().await {
-                Ok(today_usd) if today_usd >= max_plan => {
-                    return Err(anyhow::anyhow!(
-                        "daily budget exhausted: spent ${today_usd:.4} of ${max_plan:.2} today \
-                         (max_plan_usd = {max_plan}). \
-                         Increase [budget].max_plan_usd in roko.toml or wait until tomorrow."
-                    ));
-                }
-                Ok(today_usd) => {
-                    tracing::debug!(
-                        today_usd,
-                        max_plan_usd = max_plan,
-                        "daily budget admission: ok"
-                    );
-                }
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                    tracing::debug!("costs log not found; skipping daily budget check");
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        error = %e,
-                        "could not read costs log for daily budget check; proceeding"
-                    );
-                }
-            }
-        }
-
-        // Guard 2: per-turn ceiling via BudgetPredictor.
-        let max_turn = budget.max_turn_usd;
-        if max_turn > 0.0 {
-            // Load the predictor. When no budget-predictor.json exists yet,
-            // calibrate from efficiency.jsonl so historical cost data is used
-            // even on a fresh workspace (P2-LRN-2).
-            let predictor = match roko_compose::budget_predictor::load_or_calibrate(&learn_dir) {
-                Ok(p) => p,
-                Err(e) => {
-                    tracing::warn!(
-                        error = %e,
-                        "could not load or calibrate budget predictor; using defaults"
-                    );
-                    roko_compose::BudgetPredictor::new()
-                }
-            };
-
-            // Derive task features from config: role, complexity, domain.
-            let role = if config.prompt.role.trim().is_empty() {
-                "workflow".to_string()
-            } else {
-                config.prompt.role.trim().to_string()
-            };
-            let features = roko_compose::TaskFeatures::new(role, "standard", "code");
-            let predicted_tokens = predictor.predict(&features);
-
-            // Conservative price: $15 / million tokens (sonnet output tier).
-            // This errs on the side of caution so the cap is enforced before
-            // committing to a potentially over-budget dispatch.
-            const USD_PER_TOKEN: f64 = 15.0 / 1_000_000.0;
-            #[allow(clippy::cast_precision_loss)]
-            let predicted_usd = predicted_tokens as f64 * USD_PER_TOKEN;
-
-            if predicted_usd > max_turn {
-                return Err(anyhow::anyhow!(
-                    "predicted turn cost ${predicted_usd:.4} exceeds max_turn_usd ${max_turn:.4} \
-                     (estimated {predicted_tokens} tokens at $15/MTok). \
-                     Increase [budget].max_turn_usd in roko.toml or use a simpler prompt."
-                ));
-            }
-
-            tracing::debug!(
-                predicted_tokens,
-                predicted_usd,
-                max_turn_usd = max_turn,
-                "turn budget admission: ok"
-            );
-        }
-    }
+    // P2-BUD-1: Budget admission check before dispatch (daily plan ceiling
+    // and predicted turn cost; a cap of 0 means no cap).
+    roko_cli::run::check_budget_admission(&workdir, &config).await?;
 
     // Optionally start the HTTP control plane for external observability.
     // The run publishes to the server's hub, so API/SSE clients watch it live.

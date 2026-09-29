@@ -765,7 +765,9 @@ mod tests {
             assert!(!is_key_file(Path::new(path)), "{path}");
         }
         // A plan worktree's own .roko is still covered.
-        assert!(is_key_file(Path::new("/app/.roko/worktrees/p-t1/.roko/.env")));
+        assert!(is_key_file(Path::new(
+            "/app/.roko/worktrees/p-t1/.roko/.env"
+        )));
     }
 
     #[test]

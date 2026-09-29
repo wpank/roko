@@ -1849,11 +1849,16 @@ mod tests {
         let bash_hook = bash_hook_command();
         let file_code = |tool_input: Value| {
             let payload = serde_json::json!({ "cwd": worktree, "tool_input": tool_input });
-            run_hook(file_hook, &payload.to_string(), &env).status.code()
+            run_hook(file_hook, &payload.to_string(), &env)
+                .status
+                .code()
         };
         let bash_code = |command: &str| {
-            let payload = serde_json::json!({ "cwd": worktree, "tool_input": { "command": command } });
-            run_hook(&bash_hook, &payload.to_string(), &env).status.code()
+            let payload =
+                serde_json::json!({ "cwd": worktree, "tool_input": { "command": command } });
+            run_hook(&bash_hook, &payload.to_string(), &env)
+                .status
+                .code()
         };
 
         for tool_input in [

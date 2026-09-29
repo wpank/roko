@@ -269,7 +269,8 @@ def cmd_run(args: argparse.Namespace) -> int:
     if args.max_cost_usd is not None and (plan.worst_case_usd or 0) > args.max_cost_usd:
         print(f"vb: the worst case of {plan.runs} runs is ${plan.worst_case_usd:.2f}; the run stops before any task "
               f"that could take spend past ${args.max_cost_usd:.2f}", file=sys.stderr)
-    if not plan.endpoint.offline and not os.environ.get(plan.endpoint.api_key_env or ""):
+    # A subscription arm's CLI signs in by itself; only a billed arm needs the driver's key.
+    if not plan.endpoint.offline and plan.arm["arm"]["billed"] and not os.environ.get(plan.endpoint.api_key_env or ""):
         raise DriverError(f"set {plan.endpoint.api_key_env} for {plan.endpoint.provider}")
     for family, directory in sorted(plan.stream.families.items()):
         if any(knobs.parse_instance_id(i)[0] == family for i in plan.instances) and not all(

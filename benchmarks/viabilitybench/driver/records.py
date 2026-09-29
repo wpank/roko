@@ -135,7 +135,8 @@ def append(path: Path, record: dict) -> None:
 def _costs(attempts: list[harness.Attempt], billed: bool) -> dict:
     """S01 §4.4's cost fields summed over the attempts; null as soon as one attempt's cost is unknown.
 
-    `billed_usd` is the API-equivalent cost for a billed API arm and $0 for a subscription arm.
+    `billed_usd` is the API-equivalent cost for a billed API arm and $0 for a subscription arm. A CLI runner's attempts
+    (`run_cli.CliAttempt`) carry their source, `cli_usage`, and the CLI's own figure as `vendor_usd`.
     """
     costs = [attempt.cost or ledger.Cost(None, None, "unknown") for attempt in attempts]
     if any(cost.source == "unknown" for cost in costs):
@@ -143,5 +144,8 @@ def _costs(attempts: list[harness.Attempt], billed: bool) -> dict:
                 "source": "unknown", "meter_cross_check_usd": None}
     api_equiv = sum(cost.api_equiv_usd for cost in costs)
     without_cache = sum(cost.without_cache_usd for cost in costs)
+    sources = {cost.source for cost in costs}
+    vendor = [getattr(attempt, "vendor_usd", None) for attempt in attempts]
     return {"api_equiv_usd": api_equiv, "billed_usd": api_equiv if billed else 0.0, "without_cache_usd": without_cache,
-            "vendor_usd": None, "source": "provider_usage", "meter_cross_check_usd": None}
+            "vendor_usd": sum(vendor) if vendor and None not in vendor else None,
+            "source": sources.pop() if len(sources) == 1 else "provider_usage", "meter_cross_check_usd": None}

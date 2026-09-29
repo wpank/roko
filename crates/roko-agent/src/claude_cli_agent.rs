@@ -1928,9 +1928,7 @@ mod tests {
                 "tool_name": tool_name,
                 "tool_input": tool_input,
             });
-            run_hook(file_hook, &payload.to_string(), &[])
-                .status
-                .code()
+            run_hook(file_hook, &payload.to_string(), &[]).status.code()
         };
         let bash_code = |command: &str| {
             let payload = serde_json::json!({

@@ -98,6 +98,7 @@ pub mod fact_check;
 pub mod feedback;
 /// Forensic causal chain reconstruction from content-addressed artifacts (GATE-07).
 pub mod forensic;
+pub mod gate_env;
 pub mod gate_pipeline;
 pub mod gate_service;
 pub mod generated;
@@ -173,6 +174,7 @@ pub use feedback::{FeedbackItem, GateFeedback, Severity, feedback_for_agent};
 pub use forensic::{
     ArtifactMetadata, CausalChain, ForensicError, ForensicReplayBuilder, TurnRecord,
 };
+pub use gate_env::{inherit_gate_env, inherit_gate_env_from};
 pub use gate_pipeline::{ComposedGatePipeline, GateComposition, GatePipeline};
 pub use gate_service::GateService;
 pub use generated::{GateGenerator, GeneratedCheck};

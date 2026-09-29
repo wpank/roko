@@ -27,6 +27,7 @@ use crate::exec::ExecAgent;
 use crate::provider::pre_flight::binary_on_path;
 use crate::provider::{
     AgentCreationError, AgentOptions, ProviderAdapter, ProviderError, configured_resource_limits,
+    provider_credential_scrub,
 };
 use roko_core::agent::ProviderKind;
 use roko_core::config::schema::{ModelProfile, ProviderConfig};
@@ -103,7 +104,8 @@ impl ProviderAdapter for GeminiCliAdapter {
         )
         .with_timeout_ms(timeout_ms)
         .with_name(name)
-        .with_current_dir(working_dir);
+        .with_current_dir(working_dir)
+        .with_credential_scrub(provider_credential_scrub(provider, options));
 
         if let Some(limits) = configured_resource_limits(provider)? {
             agent = agent.with_resource_limits(limits);

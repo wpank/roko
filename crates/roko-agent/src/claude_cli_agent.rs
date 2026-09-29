@@ -10,13 +10,16 @@
 use crate::agent::{Agent, AgentResult};
 use crate::mcp::find_mcp_config;
 use crate::process::{
-    GRACE_STDIN_CLOSE_MS, ResourceLimits, benign_stderr_warn_once, classify_benign_stderr,
-    confined_command, kill_tree, register_spawned_pid, set_process_group, unregister_pid,
+    GRACE_STDIN_CLOSE_MS, ResourceLimits, apply_credential_scrub, benign_stderr_warn_once,
+    classify_benign_stderr, config_file_env_names, confined_command, kill_tree,
+    register_spawned_pid, set_process_group, unregister_pid,
 };
 use crate::provider::error_classify::{ATTEMPT_TIMEOUT_MARKER, detect_provider_exhaustion};
 use crate::tool_loop::{StreamEvent, StreamEventKind};
 use crate::usage::{Usage, UsageObservation, UsageSource};
 use async_trait::async_trait;
+use roko_core::agent::ProviderKind;
+use roko_core::child_env::CredentialScrub;
 use roko_core::config::model_registry::model_meta;
 use roko_core::defaults::DEFAULT_REQUEST_TIMEOUT_MS;
 use roko_core::{Body, Context, Kind, OperatingFrequency, Provenance, Signal};
@@ -92,6 +95,7 @@ pub struct ClaudeCliAgent {
     settings_json: String,
     extra_args: Vec<String>,
     env: Vec<(String, String)>,
+    credential_scrub: CredentialScrub,
     mcp_config: Option<PathBuf>,
     resume: Option<String>,
     dangerously_skip_permissions: bool,
@@ -123,6 +127,7 @@ impl ClaudeCliAgent {
             settings_json: build_settings_json(),
             extra_args: Vec::new(),
             env: Vec::new(),
+            credential_scrub: CredentialScrub::for_kind(ProviderKind::ClaudeCli),
             mcp_config: None,
             resume: None,
             dangerously_skip_permissions: true,
@@ -233,6 +238,14 @@ impl ClaudeCliAgent {
     #[must_use]
     pub fn with_env_var(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         self.env.push((key.into(), value.into()));
+        self
+    }
+
+    /// Replace the policy for which inherited credentials the subprocess
+    /// loses (default: [`CredentialScrub::for_kind`] of `ClaudeCli`).
+    #[must_use]
+    pub fn with_credential_scrub(mut self, scrub: CredentialScrub) -> Self {
+        self.credential_scrub = scrub;
         self
     }
 
@@ -400,7 +413,8 @@ impl ClaudeCliAgent {
         {
             cmd.arg("--disallowed-tools").arg(tools);
         }
-        if let Some(mcp_config) = self.discovered_mcp_config() {
+        let mcp_config = self.discovered_mcp_config();
+        if let Some(mcp_config) = &mcp_config {
             cmd.arg("--mcp-config").arg(mcp_config);
             cmd.arg("--strict-mcp-config");
         }
@@ -415,6 +429,15 @@ impl ClaudeCliAgent {
             .kill_on_drop(true);
         set_process_group(&mut cmd);
 
+        // Other providers' keys and keys only roko loaded stay out of the
+        // agent; MCP servers still get the variables their config names.
+        let scrub = self.credential_scrub.clone().keep_all(
+            mcp_config
+                .as_deref()
+                .map(config_file_env_names)
+                .unwrap_or_default(),
+        );
+        apply_credential_scrub(&mut cmd, &scrub);
         for (key, value) in &self.env {
             cmd.env(key, value);
         }

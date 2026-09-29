@@ -1914,7 +1914,8 @@ impl GraphTaskDispatcher {
         let retry_key = retry_key.to_string();
         if !task.verify.is_empty() {
             let payload = GatePayload::in_dir(&effective_workdir)
-                .with_label(format!("{}/{}", spec.plan_id, task.id));
+                .with_label(format!("{}/{}", spec.plan_id, task.id))
+                .with_env_passthrough(self.config.gates.env_passthrough.iter().cloned());
             let gate_signal = Signal::builder(Kind::Task)
                 .body(
                     Body::from_json(&payload)

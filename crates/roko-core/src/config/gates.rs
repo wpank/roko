@@ -162,6 +162,22 @@ pub struct GatesConfig {
     /// the wait, so every failure counts at once. Default: 600.
     #[serde(default = "default_sibling_settle_secs")]
     pub sibling_settle_secs: u64,
+    /// Extra roko environment variables that gate commands (task `verify`
+    /// steps, build and test gates) may inherit: exact names or `PREFIX*`
+    /// patterns, e.g. `["DATABASE_URL", "AWS_*"]`.
+    ///
+    /// Gate commands start from an empty environment and inherit only an
+    /// allowlist: system basics (`PATH`, `HOME`, `USER`, `SHELL`, `TERM`,
+    /// `TMPDIR`, `TZ`, `CI`), locale (`LANG`, `LC_*`), `XDG_*`, toolchain and
+    /// build settings (`CARGO_*`, `RUSTUP_*`, `RUSTC*`, `RUST_*`, `NODE_*`,
+    /// `NPM_*`, `GO*`, `PYTHON*`, `CC`, `PKG_CONFIG*`, `OPENSSL_*`, ...),
+    /// proxies, and `ROKO_*`. Names that look like credentials (`*_KEY`,
+    /// `*_TOKEN`, `*_SECRET`, `*_PASSWORD`, ...) and names roko loaded from
+    /// `~/.roko/.env` or `.roko/.env` are dropped even then. A name listed
+    /// here is always inherited, secret-looking or not. See
+    /// `roko_core::child_env`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub env_passthrough: Vec<String>,
     /// Per-domain gate overrides. Keys are domain labels (e.g. "research", "docs"),
     /// values are shell commands to run as gates (e.g. `["shell:true"]`).
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
@@ -238,6 +254,7 @@ impl Default for GatesConfig {
             impact_max_targets: default_impact_max_targets(),
             compile_concurrency: default_compile_concurrency(),
             sibling_settle_secs: default_sibling_settle_secs(),
+            env_passthrough: Vec::new(),
             domain_gates: HashMap::new(),
             custom_rungs: Vec::new(),
             max_rung: None,

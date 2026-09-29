@@ -1503,15 +1503,18 @@ fn build_schema_tree() -> toml::Value {
     config.agent.args = Some(Vec::new());
     config.agent.timeout_ms = Some(0);
     config.agent.env = Some(Vec::new());
+    config.agent.env_passthrough = vec![String::new()];
     config.agent.data_llm = Some(Default::default());
     config.agent.extensions = vec![String::new()];
     config.agent.mcp_config = Some(std::path::PathBuf::new());
     config.agent.default_agent_id = Some(String::new());
     config.agent.disabled_providers = vec![String::new()];
-    // Routing lists skip serialization when empty; without these sentinels
-    // `strip_unknown_fields` would silently drop them from every roko.toml.
+    // Routing and gate lists skip serialization when empty; without these
+    // sentinels `strip_unknown_fields` would silently drop them from every
+    // roko.toml.
     config.routing.disabled_providers = vec![String::new()];
     config.routing.fallback_models = vec![String::new()];
+    config.gates.env_passthrough = vec![String::new()];
     // Populate Optional/skip_serializing_if GitHubConfig fields so they
     // appear in the serialized schema tree and are not stripped.
     config.github.owner = Some(String::new());
@@ -3541,6 +3544,22 @@ exhaustion_cooldown_secs = 600
         assert_eq!(config.routing.disabled_providers, ["openai"]);
         assert_eq!(config.routing.fallback_models, ["kimi-k2-5", "glm51"]);
         assert_eq!(config.routing.exhaustion_cooldown_secs, 600);
+    }
+
+    #[test]
+    fn env_passthrough_lists_survive_unknown_field_stripping() {
+        let text = r#"
+[agent]
+env_passthrough = ["AWS_*"]
+
+[gates]
+env_passthrough = ["DATABASE_URL", "PGHOST"]
+"#;
+        let value: toml::Value = text.parse().expect("parse passthrough toml");
+        assert!(validate_known_config_paths(&value).is_empty());
+        let config = deserialize_migrated_toml(text).expect("load passthrough config");
+        assert_eq!(config.agent.env_passthrough, ["AWS_*"]);
+        assert_eq!(config.gates.env_passthrough, ["DATABASE_URL", "PGHOST"]);
     }
 
     #[test]

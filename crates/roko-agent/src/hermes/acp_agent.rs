@@ -8,6 +8,8 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
+use roko_core::agent::ProviderKind;
+use roko_core::child_env::CredentialScrub;
 use roko_core::config::DEFAULT_LLM_CALL_SECS;
 use tokio::sync::mpsc;
 
@@ -47,6 +49,8 @@ pub struct HermesAcpConfig {
     pub resource_limits: Option<ResourceLimits>,
     /// Optional system prompt prepended to every prompt.
     pub system_prompt: Option<String>,
+    /// Which inherited provider credentials the subprocess loses.
+    pub credential_scrub: CredentialScrub,
 }
 
 impl Default for HermesAcpConfig {
@@ -60,6 +64,7 @@ impl Default for HermesAcpConfig {
             mcp_servers: None,
             resource_limits: None,
             system_prompt: None,
+            credential_scrub: CredentialScrub::for_kind(ProviderKind::Hermes),
         }
     }
 }
@@ -87,7 +92,8 @@ impl HermesAcpAgent {
     /// Create a new Hermes ACP agent from config.
     #[must_use]
     pub fn new(config: HermesAcpConfig) -> Self {
-        let mut client = AcpStdioClient::hermes(&config.binary, config.cwd.clone());
+        let mut client = AcpStdioClient::hermes(&config.binary, config.cwd.clone())
+            .with_credential_scrub(config.credential_scrub.clone());
         if let Some(limits) = &config.resource_limits {
             client = client.with_resource_limits(limits.clone());
         }

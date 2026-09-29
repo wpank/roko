@@ -176,12 +176,7 @@ impl Verify for TestGate {
         }
         cmd.current_dir(&payload.working_dir);
         cmd.kill_on_drop(true);
-        if let Some(ref tgt) = payload.target_dir {
-            cmd.env("CARGO_TARGET_DIR", tgt);
-        }
-        for (k, v) in &payload.extra_env {
-            cmd.env(k, v);
-        }
+        payload.apply_env(&mut cmd);
 
         let output = match timeout(Duration::from_millis(self.timeout_ms), cmd.output()).await {
             Ok(Ok(out)) => out,

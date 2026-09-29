@@ -4496,14 +4496,22 @@ fn dashboard_page_slugs() -> Vec<&'static str> {
     .collect()
 }
 
+/// Load `~/.roko/.env` and `./.roko/.env` into the process environment.
+///
+/// Returns the loaded entries for log redaction, and records the loaded
+/// names (never values) in [`roko_core::child_env`] so gate commands and
+/// provider CLIs treat them as secrets instead of inheriting them.
 fn load_startup_env_files() -> Result<Vec<(String, String)>> {
     let mut redactions = Vec::new();
+    let mut dotenv_names = roko_core::child_env::DotenvNames::new();
 
     // 1. Global: ~/.roko/.env — lower priority, does NOT override existing env vars.
     if let Some(home) = env::var_os("HOME") {
         let global_env = PathBuf::from(home).join(".roko").join(".env");
         if global_env.is_file() {
-            redactions.extend(load_env_file(&global_env)?);
+            let entries = load_env_file(&global_env)?;
+            record_dotenv_entries(&mut dotenv_names, &entries, false, |name| env::var_os(name));
+            redactions.extend(entries);
             dotenvy::from_path(&global_env)
                 .with_context(|| format!("load {}", global_env.display()))?;
         }
@@ -4513,12 +4521,34 @@ fn load_startup_env_files() -> Result<Vec<(String, String)>> {
     //    At this point the CLI hasn't parsed yet, so workdir == cwd.
     let local_env = PathBuf::from(".roko").join(".env");
     if local_env.is_file() {
-        redactions.extend(load_env_file(&local_env)?);
+        let entries = load_env_file(&local_env)?;
+        record_dotenv_entries(&mut dotenv_names, &entries, true, |name| env::var_os(name));
+        redactions.extend(entries);
         dotenvy::from_path_override(&local_env)
             .with_context(|| format!("load {}", local_env.display()))?;
     }
 
+    roko_core::child_env::record_startup_dotenv(dotenv_names);
     Ok(redactions)
+}
+
+/// Record the names in one `.env` file's `entries`. `current` reads a
+/// variable as it is before the file loads; `overrides` is true for a file
+/// whose values replace existing ones. The file supplies a value when the
+/// variable was unset, or when it overrides a different value.
+fn record_dotenv_entries(
+    names: &mut roko_core::child_env::DotenvNames,
+    entries: &[(String, String)],
+    overrides: bool,
+    current: impl Fn(&str) -> Option<std::ffi::OsString>,
+) {
+    for (name, value) in entries {
+        let supplied = match current(name) {
+            None => true,
+            Some(existing) => overrides && existing != value.as_str(),
+        };
+        names.insert(name.clone(), supplied);
+    }
 }
 
 fn load_env_file(path: &Path) -> Result<Vec<(String, String)>> {
@@ -7458,6 +7488,41 @@ mod tests {
             output.contains("connecting with key"),
             "context text should survive, got: {output}"
         );
+    }
+
+    #[test]
+    fn dotenv_entries_record_which_values_the_files_supplied() {
+        let shell = |name: &str| {
+            matches!(name, "SHELL_KEY" | "SAME_KEY").then(|| std::ffi::OsString::from("shell"))
+        };
+        let entries = |pairs: &[(&str, &str)]| {
+            pairs
+                .iter()
+                .map(|(name, value)| ((*name).to_string(), (*value).to_string()))
+                .collect::<Vec<_>>()
+        };
+        let mut names = roko_core::child_env::DotenvNames::new();
+        // ~/.roko/.env never overrides: a variable already set keeps its value.
+        record_dotenv_entries(
+            &mut names,
+            &entries(&[("NEW_KEY", "file"), ("SHELL_KEY", "file")]),
+            false,
+            shell,
+        );
+        // ./.roko/.env overrides, but an identical value changes nothing.
+        record_dotenv_entries(
+            &mut names,
+            &entries(&[("SAME_KEY", "shell"), ("OTHER_KEY", "file")]),
+            true,
+            shell,
+        );
+        for name in ["NEW_KEY", "SHELL_KEY", "SAME_KEY", "OTHER_KEY"] {
+            assert!(names.is_listed(name), "{name} is listed");
+        }
+        assert!(names.supplied_value("NEW_KEY"));
+        assert!(!names.supplied_value("SHELL_KEY"));
+        assert!(!names.supplied_value("SAME_KEY"));
+        assert!(names.supplied_value("OTHER_KEY"));
     }
 
     #[test]

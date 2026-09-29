@@ -14,7 +14,7 @@
 //! - **MCP discovery** ([`mcp`]): walk-up config search for MCP server launch
 //!   specifications.
 //! - **Agent environment** ([`env`]): structured env-var configuration for
-//!   child processes.
+//!   child processes, and the provider-credential scrub for provider CLIs.
 //! - **Stderr suppression** ([`stderr`]): classify and deduplicate benign
 //!   agent stderr noise.
 //!
@@ -34,7 +34,9 @@ pub mod registry;
 pub mod stderr;
 
 // Re-export the primary public API surface for convenience.
-pub use env::{AgentEnv, apply_agent_env};
+pub use env::{
+    AgentEnv, apply_agent_env, apply_credential_scrub, config_file_env_names, referenced_env_names,
+};
 pub use group::{
     collect_descendants, configure_no_descendant_process, kill_process_group, set_process_group,
     validate_no_descendant_context,

@@ -41,6 +41,7 @@
 //! 5. **Custom scenarios own their cleanup** — the closure is
 //!    responsible for tearing down whatever it spawned.
 
+use crate::gate_env::inherit_gate_env;
 use crate::payload::{BuildSystem, GatePayload};
 use async_trait::async_trait;
 use roko_core::defaults::DEFAULT_REQUEST_TIMEOUT_MS;
@@ -349,12 +350,9 @@ async fn run_build_test(
 
     if let Some(ref p) = payload {
         cmd.current_dir(&p.working_dir);
-        if let Some(ref tgt) = p.target_dir {
-            cmd.env("CARGO_TARGET_DIR", tgt);
-        }
-        for (k, v) in &p.extra_env {
-            cmd.env(k, v);
-        }
+        p.apply_env(&mut cmd);
+    } else {
+        inherit_gate_env(&mut cmd, &[]);
     }
     cmd.kill_on_drop(true);
 
@@ -413,9 +411,9 @@ async fn run_script(
     cmd.arg(path);
     if let Some(ref p) = payload {
         cmd.current_dir(&p.working_dir);
-        for (k, v) in &p.extra_env {
-            cmd.env(k, v);
-        }
+        p.apply_env(&mut cmd);
+    } else {
+        inherit_gate_env(&mut cmd, &[]);
     }
     cmd.kill_on_drop(true);
 

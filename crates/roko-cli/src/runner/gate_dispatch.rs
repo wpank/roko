@@ -537,20 +537,23 @@ pub struct AutoFixBounds<'a> {
     pub timeout: Duration,
     /// Per-repository compile ownership permits (`gates.compile_concurrency`).
     pub compile_concurrency: usize,
+    /// Extra variables fix commands may inherit (`gates.env_passthrough`).
+    pub env_passthrough: &'a [String],
 }
 
 impl<'a> AutoFixBounds<'a> {
-    /// Bounds from workspace config: `timeouts.gate_compile_secs` and
-    /// `gates.compile_concurrency`.
+    /// Bounds from workspace config: `timeouts.gate_compile_secs`,
+    /// `gates.compile_concurrency` and `gates.env_passthrough`.
     #[must_use]
     pub fn from_config(
-        config: &roko_core::config::schema::RokoConfig,
+        config: &'a roko_core::config::schema::RokoConfig,
         task_files: &'a [String],
     ) -> Self {
         Self {
             task_files,
             timeout: Duration::from_secs(config.timeouts.gate_compile_secs.max(1)),
             compile_concurrency: config.gates.compile_concurrency,
+            env_passthrough: &config.gates.env_passthrough,
         }
     }
 }
@@ -589,13 +592,18 @@ fn owning_cargo_packages(workdir: &Path, files: &[String]) -> Vec<String> {
 
 /// Run one auto-fix command, killing it when `limit` elapses.
 ///
+/// The command gets the gate environment (roko's allowlisted variables plus
+/// `env_passthrough`), not roko's own: `cargo fix` builds task code.
+///
 /// Returns `Ok(None)` on timeout and `Err` only when the program cannot be
 /// spawned.
 async fn run_fix_command(
     mut command: Command,
     limit: Duration,
+    env_passthrough: &[String],
     program: &str,
 ) -> Result<Option<std::process::Output>, String> {
+    roko_gate::inherit_gate_env(&mut command, env_passthrough);
     command.kill_on_drop(true);
     match timeout(limit, command.output()).await {
         Ok(Ok(output)) => Ok(Some(output)),
@@ -691,7 +699,9 @@ pub async fn attempt_auto_fix(
         if sccache_available() {
             fix_cmd.env("RUSTC_WRAPPER", "sccache");
         }
-        let Some(fix_status) = run_fix_command(fix_cmd, bounds.timeout, "cargo").await? else {
+        let Some(fix_status) =
+            run_fix_command(fix_cmd, bounds.timeout, bounds.env_passthrough, "cargo").await?
+        else {
             warn!(
                 gate = %gate_name,
                 command = %command_str,
@@ -731,7 +741,7 @@ pub async fn attempt_auto_fix(
                 .arg("fmt")
                 .args(&package_args)
                 .current_dir(workdir);
-            let _ = run_fix_command(fmt_cmd, bounds.timeout, "cargo").await;
+            let _ = run_fix_command(fmt_cmd, bounds.timeout, bounds.env_passthrough, "cargo").await;
         }
 
         info!(gate = %gate_name, "cargo auto-fix applied — will retry gate");
@@ -766,7 +776,8 @@ pub async fn attempt_auto_fix(
             );
             let mut fix_cmd = Command::new("npx");
             fix_cmd.args(["eslint", "--fix", "."]).current_dir(workdir);
-            let fix_status = run_fix_command(fix_cmd, bounds.timeout, "npx").await?;
+            let fix_status =
+                run_fix_command(fix_cmd, bounds.timeout, bounds.env_passthrough, "npx").await?;
 
             let fix_applied = fix_status
                 .as_ref()
@@ -800,7 +811,8 @@ pub async fn attempt_auto_fix(
             );
             let mut fix_cmd = Command::new("gofmt");
             fix_cmd.args(["-w", "."]).current_dir(workdir);
-            let fix_status = run_fix_command(fix_cmd, bounds.timeout, "gofmt").await?;
+            let fix_status =
+                run_fix_command(fix_cmd, bounds.timeout, bounds.env_passthrough, "gofmt").await?;
 
             let fix_applied = fix_status
                 .as_ref()
@@ -834,7 +846,8 @@ pub async fn attempt_auto_fix(
             );
             let mut ruff_cmd = Command::new("ruff");
             ruff_cmd.args(["--fix", "."]).current_dir(workdir);
-            let ruff_status = run_fix_command(ruff_cmd, bounds.timeout, "ruff").await;
+            let ruff_status =
+                run_fix_command(ruff_cmd, bounds.timeout, bounds.env_passthrough, "ruff").await;
 
             let (fix_applied, used_command) = match ruff_status {
                 Ok(Some(out)) if out.status.success() => (true, command_str),
@@ -847,7 +860,9 @@ pub async fn attempt_auto_fix(
                     );
                     let mut black = Command::new("black");
                     black.arg(".").current_dir(workdir);
-                    let black_status = run_fix_command(black, bounds.timeout, "black").await;
+                    let black_status =
+                        run_fix_command(black, bounds.timeout, bounds.env_passthrough, "black")
+                            .await;
                     let applied = matches!(black_status, Ok(Some(out)) if out.status.success());
                     (applied, black_cmd)
                 }
@@ -1324,6 +1339,7 @@ pub async fn run_gate_once(
                 task_files: planned_files,
                 timeout: limit,
                 compile_concurrency: gates_config.compile_concurrency,
+                env_passthrough: &gates_config.env_passthrough,
             };
             match attempt_auto_fix(&workdir, failing_gate, &first_output, fix_bounds).await {
                 Ok(mut outcome) if outcome.fix_applied => {
@@ -3409,6 +3425,7 @@ path = "src/shared.rs"
             task_files,
             timeout: Duration::from_secs(5),
             compile_concurrency: 1,
+            env_passthrough: &[],
         }
     }
 
@@ -3483,7 +3500,7 @@ path = "src/shared.rs"
         let mut command = Command::new("sleep");
         command.arg("5");
         let started = Instant::now();
-        let output = run_fix_command(command, Duration::from_millis(50), "sleep")
+        let output = run_fix_command(command, Duration::from_millis(50), &[], "sleep")
             .await
             .expect("sleep spawns");
         assert!(output.is_none(), "a timed-out fix reports no output");

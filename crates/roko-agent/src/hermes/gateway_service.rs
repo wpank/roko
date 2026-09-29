@@ -14,6 +14,8 @@ use std::time::Duration;
 
 use crate::harness::{HarnessError, HarnessService, ServiceStatus};
 use async_trait::async_trait;
+use roko_core::agent::ProviderKind;
+use roko_core::child_env::CredentialScrub;
 
 use super::config::HermesConfig;
 
@@ -122,6 +124,12 @@ impl HarnessService for HermesGatewayService {
         )
         .map_err(HarnessError::Io)?;
         cmd.arg("gateway").arg("run");
+        // The gateway keeps its own API key, not keys only roko loaded.
+        crate::process::apply_credential_scrub(
+            &mut cmd,
+            &CredentialScrub::for_kind(ProviderKind::Hermes)
+                .keep_all(self.config.api_key_env.iter().cloned()),
+        );
 
         // Detach stdin so the gateway doesn't block on terminal input.
         cmd.stdin(std::process::Stdio::null());

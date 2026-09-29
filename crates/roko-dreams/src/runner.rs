@@ -192,6 +192,7 @@ impl DreamAgentConfig {
             working_dir: Some(workdir.to_path_buf()),
             provider_semaphores: None,
             env: self.env.clone(),
+            env_passthrough: Vec::new(),
             extra_args,
             effort: Some(self.effort.clone()),
             bare_mode: self.bare_mode,

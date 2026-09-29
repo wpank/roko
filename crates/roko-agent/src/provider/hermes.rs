@@ -3,6 +3,7 @@ use crate::hermes::{HermesAcpAgent, HermesAcpConfig, HermesConfig, HermesHttpAge
 use crate::hermes::{HermesFlavor, HermesOneShotAgent, HermesOneShotConfig};
 use crate::provider::{
     AgentCreationError, AgentOptions, ProviderAdapter, ProviderError, configured_resource_limits,
+    provider_credential_scrub,
 };
 use roko_core::agent::ProviderKind;
 use roko_core::config::schema::{ModelProfile, ProviderConfig, ProviderTransport};
@@ -78,6 +79,7 @@ impl ProviderAdapter for HermesProviderAdapter {
                     }),
                     resource_limits,
                     system_prompt: options.system_prompt.clone(),
+                    credential_scrub: provider_credential_scrub(provider, options),
                 };
                 let agent = HermesAcpAgent::new(config);
                 Ok(Box::new(agent))
@@ -106,6 +108,7 @@ impl ProviderAdapter for HermesProviderAdapter {
                     timeout,
                     resource_limits,
                     system_prompt: options.system_prompt.clone(),
+                    credential_scrub: provider_credential_scrub(provider, options),
                     ..Default::default()
                 };
                 let agent = HermesOneShotAgent::new(config);

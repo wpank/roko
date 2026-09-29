@@ -141,7 +141,7 @@
 
 ### paper (3)
 - **P2** [dec-536bbd](items/dec-536bbd-decide-how-paperlint-strict-treats-numbers-in.md) Decide how paperlint --strict treats numbers in the claims-ledger rows [decision] · size S
-- **P2** [gap-fcea53](items/gap-fcea53-whitepaper-re-pin-the-status-matrix-at.md) Whitepaper: re-pin the status matrix at a post-merge commit before the whitepaper-v1 tag · size M
+- **P2** [gap-4471d1](items/gap-4471d1-re-check-the-16-learning-loops-at.md) Re-check the 16 learning loops at a post-merge commit and refreeze B5 for whitepaper §5.2 · size M
 - **P3** [gap-85f86a](items/gap-85f86a-research-paper-re-run-the-prior-art.md) Research paper: re-run the prior-art listing sweep (Q13–Q15, Q17) in submission week and read the Li 2026 lead · size S · **on hold:** runs in submission week
 
 ### roko-cli/doctor (1)

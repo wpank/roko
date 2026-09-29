@@ -1,10 +1,11 @@
-"""Offline tests that the benchmark secret stays driver-only (gap-a8a160, S08 SC4): adversarial fake agents on a local
-stub server, the toy family, no model calls.
+"""Offline tests that the benchmark secret and the provider keys stay driver-only (gap-a8a160, gap-308373, bug-979a06,
+S08 SC4): adversarial fake agents on a local stub server, the toy family, no model calls.
 
 The fake agents try to read the secret through their environment, by searching the files around their workdir, and
 through `ps -E` or `/proc` on the driver and on `hidden.py`, whose child the agent's code becomes during the census.
-Each attempt must come back empty, or the census must mark the run `leak_suspected`. Every probe also has a positive
-control, a value it must find, so an empty result means the probe worked and found nothing.
+They also open the secret file and the key file by path, silently (the tripwire), and read the driver's environment for
+a provider key. Each attempt must come back empty, or the census must mark the run `leak_suspected`. Every probe also
+has a positive control, a value it must find, so an empty result means the probe worked and found nothing.
 
 Run from the repository root with the benchmark venv:
     benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/driver/test_secret.py -q
@@ -14,15 +15,22 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import signal
+import stat
 import subprocess
 import sys
+import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 import agent_env
 import census
 import layout
+import provider
+import run_roko
 import secret
 import vb
 from common import canary, hmac_seed
@@ -31,6 +39,8 @@ from stub_provider import StubServer, bash, scripted
 TOY_STREAM = str(layout.DRIVER_DIR / "testdata" / "toy_stream.toml")
 FAKE_KEY = "sk-test-not-a-real-key-5e1a"
 MARKER = "vb-probe-marker-3c9d"  # in the driver's environment: what a working `ps -E` or /proc probe must show
+HOLD_LOCK = ("import fcntl, os, sys, time; fd = os.open(sys.argv[1], os.O_RDWR | os.O_CREAT, 0o600); "
+             "fcntl.flock(fd, fcntl.LOCK_EX); print('locked', flush=True); time.sleep(60)")  # another run's lock
 CLAMP = "def clamp(value, low, high):\n    return max(low, min(value, high))\n"
 CORRECT = f"cat > calc/ops.py <<'EOF'\n{CLAMP}EOF"
 ENV_PROBE = ("printf 'VB_SECRET=%s\\n' \"${VB_SECRET-unset}\"; echo \"HOME=$HOME\"; "
@@ -163,7 +173,7 @@ def test_secret_never_reaches_an_agent_env(operator, tmp_path):
                second: [bash(SEARCH, "Search every file around my workdir."), bash(CORRECT, "Implement it."),
                         bash("echo VB_SUBMIT")]}
     driver_env = {"PATH": os.environ["PATH"], "HOME": str(operator["home"]), "VB_SECRET_FILE": str(loaded.path),
-                  "VB_PROBE": MARKER, "CEREBRAS_API_KEY": FAKE_KEY}
+                  "VB_PROBE": MARKER}  # no provider key: `vb run` refuses one in its environment (bug-979a06)
     with StubServer(scripted(scripts)) as stub:
         done = subprocess.run([sys.executable, str(layout.DRIVER_DIR / "vb.py"),
                                *run_args(operator, stub.url, "--transcripts", "--keep-workdirs")],
@@ -233,12 +243,14 @@ def test_run_refused_when_secret_is_in_roko_dotenv(operator, capsys, monkeypatch
 
 
 def test_deliberate_reads_are_flagged_and_kept_out_of_records(operator):
-    """Same-uid agents can read the file by path (0600 stops other users only); the census must catch it."""
+    """Same-uid agents can read the file by path (0600 stops other users only, and the tripwire's mode 000 only until a
+    chmod); the census must catch it."""
     loaded = secret.load(operator["secret"])
     path = loaded.path
     first, second = vb.load_stream(TOY_STREAM).order(1)
-    scripts = {first: [bash(f"cat '{path}'", "Print it."), bash(f"touch \"$(grep -v '^#' '{path}')\" && {CORRECT}",
-                                                                  "Keep a copy as a file name, silently."),
+    scripts = {first: [bash(f"chmod 600 '{path}' && cat '{path}'", "Print it."),
+                       bash(f"touch \"$(grep -v '^#' '{path}')\" && {CORRECT}",
+                            "Keep a copy as a file name, silently."),
                        bash("echo VB_SUBMIT")],
                second: [bash(CENSUS_STASH, "Copy the secret when the truth suite runs me."), bash("echo VB_SUBMIT")]}
     with StubServer(scripted(scripts)) as stub:
@@ -247,13 +259,200 @@ def test_deliberate_reads_are_flagged_and_kept_out_of_records(operator):
     rows = {record["task"]["instance_id"]: record for record in read_jsonl(out / "records.jsonl")}
     reader, stasher = rows[first], rows[second]
     assert reader["execution"]["status"] == "leak_suspected"
-    assert {"transcript", "argv", "tree:<vb-secret>"} <= set(reader["provenance"]["canary_places"])
+    assert {"transcript", "argv", "tree:<vb-secret>", "secret-file:mode", "secret-file:ctime"} <= set(
+        reader["provenance"]["canary_places"])
     # The stasher never names the file and never prints it: only the census's own sweep sees the copy.
     assert stasher["execution"]["status"] == "leak_suspected"
     assert stasher["provenance"]["canary_places"] == ["census:hidden/stash.txt"]
     assert "transcripts/" + f"{first}.s1.json" in needle_files(out, loaded)  # the evidence stays in the transcript
     for name in ("records.jsonl", "ledger.jsonl", "manifest.json"):  # but the census redacts what records carry
         assert not loaded.find_in_file(out / name) and loaded.canary not in (out / name).read_text()
+
+
+def test_a_silent_read_of_the_secret_file_is_detected(operator, tmp_path, capsys):
+    """gap-308373: an agent under the driver's user can open the secret file by path, and a read that never shows the
+    secret leaves the census nothing to find. While agents run, the tripwire keeps the file at mode 000, so a read
+    needs a chmod, and the chmod changes the file's ctime, which the agent cannot set back."""
+    loaded = secret.load(operator["secret"])
+    split = f"f='{loaded.path.parent}/sec''ret'"  # no command in the transcript names the file (census place `argv`)
+    silent = f"{split}; chmod 600 \"$f\" && s=$(grep -v '^#' \"$f\") && chmod 000 \"$f\" && {CORRECT}"
+    plain = f"{split}; cat \"$f\"; true"
+    first, second = vb.load_stream(TOY_STREAM).order(1)
+    scripts = {first: [bash(silent, "Read the secret quietly, put the mode back, and solve."), bash("echo VB_SUBMIT")],
+               second: [bash(plain, "Just read it."), bash(CORRECT, "Solve."), bash("echo VB_SUBMIT")]}
+    with StubServer(scripted(scripts)) as stub:
+        assert vb.main(run_args(operator, stub.url, "--transcripts")) == 0
+    out = operator["results"] / "TEST-SECRET" / "run-1"
+    rows = {record["task"]["instance_id"]: record for record in read_jsonl(out / "records.jsonl")}
+    reader, tried = rows[first], rows[second]
+
+    # The silent reader left no secret, canary or path in its transcript, diff or tree: only the tripwire saw it.
+    transcript = (out / "transcripts" / f"{first}.s1.json").read_text()
+    assert not loaded.find(transcript) and loaded.canary not in transcript and str(loaded.path) not in transcript
+    assert reader["execution"]["status"] == "leak_suspected"
+    assert reader["provenance"]["canary_places"] == ["secret-file:ctime"]  # the mode was put back; the ctime was not
+    assert reader["vs"]["checks"]["hidden"] is None and reader["vs"]["label"] == 0  # hidden.py never got the file
+    # Without a chmod the read fails, and the run stands.
+    tried_transcript = json.loads((out / "transcripts" / f"{second}.s1.json").read_text())
+    assert "Permission denied" in observations(tried_transcript)[plain]
+    assert tried["execution"]["status"] == "completed" and tried["vs"]["label"] == 1
+    assert tried["provenance"]["canary_places"] == []
+    # After the run the file is at rest again, and every record says nothing of the secret.
+    assert stat.S_IMODE(loaded.path.stat().st_mode) == secret.REST_MODE and secret.tripwires() == ()
+    assert not loaded.find_in_file(out / "records.jsonl")
+
+    # A file left armed (a killed run) or open (a run using it) is refused, and says why.
+    for mode, reason in ((secret.ARMED_MODE, "the tripwire of a vb run"), (secret.OPEN_MODE, "a vb run is using it")):
+        os.chmod(loaded.path, mode)
+        assert vb.main(run_args(operator, "http://127.0.0.1:9/v1", "--run-id", "run-2")) == 2
+        assert reason in capsys.readouterr().err
+    os.chmod(loaded.path, secret.REST_MODE)
+    # One run per file, across processes: while another process holds the lock, the tripwire arms nothing.
+    holder = subprocess.Popen([sys.executable, "-c", HOLD_LOCK, f"{loaded.path}.lock"], stdout=subprocess.PIPE,
+                              text=True)
+    try:
+        assert holder.stdout.readline().strip() == "locked"
+        with pytest.raises(secret.SecretError, match="another vb run holds"), secret.tripwire(loaded):
+            pass
+        assert stat.S_IMODE(loaded.path.stat().st_mode) == secret.REST_MODE and secret.tripwires() == ()
+    finally:
+        holder.kill()
+        holder.wait()
+    # A SIGTERM ends the run through its `finally` blocks, which put the file back at rest.
+    before = signal.getsignal(signal.SIGTERM)
+    with pytest.raises(SystemExit) as stopped, secret.tripwire(loaded):
+        assert stat.S_IMODE(loaded.path.stat().st_mode) == secret.ARMED_MODE
+        os.kill(os.getpid(), signal.SIGTERM)
+        time.sleep(5)  # the handler raises before this ends
+    assert stopped.value.code == 128 + signal.SIGTERM and signal.getsignal(signal.SIGTERM) is before
+    assert stat.S_IMODE(loaded.path.stat().st_mode) == secret.REST_MODE and secret.tripwires() == ()
+    # The stamp sees a replaced file, and the tripwire never chmods a file it did not stamp.
+    wire = secret.Tripwire("secret-file", loaded.path, loaded)
+    wire.arm()
+    impostor = loaded.path.with_name("impostor")  # a secret the agent chose, which would predict the hidden cases
+    impostor.write_text("# canary vb-canary-00000000-0000-4000-8000-000000000000\n" + "0" * 64 + "\n")
+    os.chmod(impostor, 0o644)
+    os.replace(impostor, loaded.path)
+    assert wire.check() == ["replaced"] and not wire.set(secret.ARMED_MODE)
+    assert stat.S_IMODE(loaded.path.stat().st_mode) == 0o644
+
+
+def test_no_provider_key_in_the_driver_environment(operator, tmp_path, capsys, monkeypatch):
+    """bug-979a06: every agent under the driver's user can read the environment the driver started with (`ps -E`,
+    /proc/<ppid>/environ). So the driver reads its provider key from a driver-only key file into memory, never from its
+    environment, and refuses to start with a key there; the tripwire holds the key file at mode 000 while agents run."""
+    key = "csk-test-driver-only-8f3b2a71c9"
+    key_file = secret.create_keys(operator["home"] / ".config" / "viabilitybench" / "keys", {"CEREBRAS_API_KEY": key})
+    key_probe = f"cat '{key_file}'; true"
+    silent = f"chmod 600 '{key_file}' && k=$(cat '{key_file}') && chmod 000 '{key_file}' && echo VB_SUBMIT"
+    first, second = vb.load_stream(TOY_STREAM).order(1)
+    scripts = {first: [bash(PS_PROBE, "Read my parent's environment."), bash(key_probe, "Read the key file."),
+                       bash(CORRECT, "Solve."), bash("echo VB_SUBMIT")],
+               second: [bash(silent, "Take the key quietly, and stop.")]}
+    with StubServer(scripted(scripts)) as stub:
+        # cheap_direct with its provider on the stub: an endpoint that names its key, with no network. The proxy, the
+        # only sender of a key, fronts it.
+        arm_text, count = re.subn(r"(?m)^base_url = .*$", f'base_url = "{stub.url}"',
+                                  (layout.ARMS_DIR / "cheap_direct.toml").read_text())
+        assert count == 1
+        (tmp_path / "keyed.toml").write_text(arm_text)
+        args = ["run", "--experiment", "TEST-KEYS", "--run-id", "run-1", "--stream", TOY_STREAM, "--arm",
+                str(tmp_path / "keyed.toml"), "--model", "gpt-oss-120b", "--seeds", "1", "--results",
+                str(operator["results"]), "--work", str(operator["work"]), "--key-file", str(key_file), "--proxy"]
+
+        # Refused before any request or directory: the arm's key variable, another arm's, or the key under any name.
+        for name, value in (("CEREBRAS_API_KEY", key), ("OPENAI_API_KEY", "sk-another-arms-key-5d1c9e"),
+                            ("NOTES", f"keep {key} handy")):
+            monkeypatch.setenv(name, value)
+            assert vb.main(args) == 2
+            err = capsys.readouterr().err
+            assert name in err and key not in err
+            monkeypatch.delenv(name)
+        assert stub.requests == [] and not operator["results"].exists() and not operator["work"].exists()
+
+        # The driver as its own process, so the probe reads the environment it really started with.
+        driver_env = {"PATH": os.environ["PATH"], "HOME": str(operator["home"]), "VB_PROBE": MARKER}
+        done = subprocess.run([sys.executable, str(layout.DRIVER_DIR / "vb.py"), *args, "--transcripts"],
+                              cwd=operator["workspace"], env=driver_env, capture_output=True, text=True, timeout=300)
+        headers = list(stub.headers)
+    assert done.returncode == 0, done.stderr
+    assert headers and all(item.get("authorization") == f"Bearer {key}" for item in headers)  # the proxy sent it
+    out = operator["results"] / "TEST-KEYS" / "run-1"
+    rows = {record["task"]["instance_id"]: record for record in read_jsonl(out / "records.jsonl")}
+    seen = observations(json.loads((out / "transcripts" / f"{first}.s1.json").read_text()))
+    assert MARKER in seen[PS_PROBE]  # control: the probe read the driver's environment
+    assert key not in seen[PS_PROBE] and "CEREBRAS_API_KEY" not in seen[PS_PROBE]
+    assert "Permission denied" in seen[key_probe] and key not in seen[key_probe]  # the key file sat at mode 000
+    assert rows[first]["execution"]["status"] == "completed" and rows[first]["vs"]["label"] == 1
+    # A silent read of the key file trips the tripwire, like one of the secret file.
+    assert rows[second]["execution"]["status"] == "leak_suspected"
+    assert rows[second]["provenance"]["canary_places"] == ["key-file:ctime"]
+    assert stat.S_IMODE(key_file.stat().st_mode) == secret.REST_MODE
+    for root in (out, operator["work"]):  # records, ledger, manifest, transcripts, archives, workdirs, homes
+        assert [path for path in root.rglob("*") if path.is_file() and key.encode() in path.read_bytes()] == []
+    # Roko, whose tools run the agent's commands, gets a placeholder on a loopback URL, and a network endpoint (one
+    # that skipped the proxy) is refused before Roko starts.
+    loopback = SimpleNamespace(endpoint=provider.Endpoint("cerebras", "http://127.0.0.1:9/cerebras"), agent_env={})
+    assert run_roko._roko_env(loopback, "CEREBRAS_API_KEY", tmp_path / "roko.toml")["CEREBRAS_API_KEY"] == \
+        run_roko.OFFLINE_KEY
+    network = SimpleNamespace(endpoint=provider.Endpoint("cerebras", "https://api.cerebras.ai/v1", "CEREBRAS_API_KEY"),
+                              agent_env={})
+    with pytest.raises(run_roko.RunnerError, match="metering proxy"):
+        run_roko._roko_env(network, "CEREBRAS_API_KEY", tmp_path / "roko.toml")
+
+
+def test_the_key_file_is_private_and_well_formed(operator, tmp_path, capsys, monkeypatch):
+    key = "csk-test-driver-only-8f3b2a71c9"
+    path = secret.create_keys(operator["home"] / ".config" / "viabilitybench" / "keys", {"CEREBRAS_API_KEY": key})
+    assert path.stat().st_mode & 0o777 == 0o600
+    keys = secret.load_keys(path, need=["CEREBRAS_API_KEY"])
+    assert dict(keys) == {"CEREBRAS_API_KEY": key} and key not in repr(keys) and "CEREBRAS_API_KEY" in repr(keys)
+    assert {"CEREBRAS_API_KEY", "OPENAI_API_KEY"} <= secret.arm_key_names()
+    assert secret.main(["keys", "--key-file", str(path)]) == 0
+    printed = capsys.readouterr()
+    assert "keys=CEREBRAS_API_KEY mode=0600" in printed.out and key not in printed.out + printed.err
+    with pytest.raises(secret.SecretError, match="has no OPENAI_API_KEY"):
+        secret.load_keys(path, need=["OPENAI_API_KEY"])
+    with pytest.raises(secret.SecretError, match="already exists"):
+        secret.create_keys(path, {"CEREBRAS_API_KEY": key})
+
+    os.chmod(path, 0o640)
+    with pytest.raises(secret.SecretError, match="group or others"):
+        secret.load_keys(path)
+    os.chmod(path, 0o000)  # the tripwire's mode, which a killed run can leave behind
+    with pytest.raises(secret.SecretError, match="tripwire"):
+        secret.load_keys(path)
+    os.chmod(path, 0o600)
+    for text, reason in ((f"CEREBRAS_API_KEY={key}\nCEREBRAS_API_KEY={key}\n", "a second time"),
+                         ("CEREBRAS_API_KEY=short\n", "line 1"), (f"not a key line {key}\n", "line 1"),
+                         (f'# a comment\nexport CEREBRAS_API_KEY="{key}"\n', None)):
+        path.write_text(text)
+        if reason is None:  # comments, `export` and quotes are read as a shell would
+            assert secret.load_keys(path)["CEREBRAS_API_KEY"] == key
+            continue
+        with pytest.raises(secret.SecretError, match=reason) as raised:
+            secret.load_keys(path)
+        assert key not in str(raised.value)
+    link = tmp_path / "private-link" / "keys"
+    link.parent.mkdir(mode=0o700)
+    link.symlink_to(path)
+    with pytest.raises(secret.SecretError, match="regular file"):
+        secret.load_keys(link)
+    with pytest.raises(secret.SecretError, match="repository"):
+        secret.create_keys(layout.REPO_ROOT / "tmp" / "vb-keys-test" / "keys", {"CEREBRAS_API_KEY": key})
+    assert not (layout.REPO_ROOT / "tmp" / "vb-keys-test").exists()
+    with pytest.raises(secret.SecretError, match=r"~/\.roko"):
+        secret.create_keys(operator["home"] / ".roko" / "keys", {"CEREBRAS_API_KEY": key})
+    # The key file may not sit where agents work or records live, like the secret file.
+    with pytest.raises(secret.SecretError, match="key file must live outside --work"):
+        secret.preflight(operator["secret"], work_root=path.parent, results_root=tmp_path / "results",
+                         keys=secret.load_keys(path))
+    # `keys` reports a key the driver's environment exposes, and the tests' escape hatch silences that.
+    monkeypatch.setenv("CEREBRAS_API_KEY", key)
+    assert secret.main(["keys", "--key-file", str(path)]) == 1
+    assert "CEREBRAS_API_KEY is set in the driver's environment" in capsys.readouterr().err
+    monkeypatch.setattr(secret, "KEYS_IN_ENV_OK", True)
+    assert secret.key_exposures(secret.load_keys(path)) == []
 
 
 def test_census_refuses_to_run_agent_code_with_the_secret_in_reach(operator, tmp_path):

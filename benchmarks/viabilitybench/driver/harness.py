@@ -15,7 +15,7 @@ A runner:
 API:
     TaskContext(...)                  # frozen; see the fields
     Attempt(...); Attempt.as_record() -> dict          # one vb.run_record/1 execution.attempts[] entry
-    TaskOutcome(status, reason, attempts, transcript, started_at, finished_at)
+    TaskOutcome(status, reason, attempts, transcript, started_at, finished_at, s01_run_dir=None)
     RUNNER_STATUSES; utc_now() -> str
 """
 
@@ -104,3 +104,4 @@ class TaskOutcome:
     transcript: list[dict]
     started_at: str
     finished_at: str
+    s01_run_dir: str | None = None  # where the runner copied the harness's own S01 records, relative to the run dir

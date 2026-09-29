@@ -103,7 +103,10 @@ def by_instance(path: Path) -> dict[str, dict]:
 
 
 def test_offline_run_writes_valid_records(places, tmp_path, monkeypatch):
-    monkeypatch.setenv("CEREBRAS_API_KEY", FAKE_KEY)  # the driver may hold keys; agents never see them
+    # A real run refuses a key in the driver's environment (bug-979a06); with the tests' escape hatch it shows that an
+    # agent's environment never carries one anyway.
+    monkeypatch.setattr(vb.secret, "KEYS_IN_ENV_OK", True)
+    monkeypatch.setenv("CEREBRAS_API_KEY", FAKE_KEY)
     monkeypatch.setenv("VB_PROBE", PROBE)
     marker = tmp_path / "hook-ran"
     plant_hooks = (f"printf '#!/bin/sh\\ntouch {marker}\\n' > .git/hooks/post-commit && chmod +x .git/hooks/post-commit"
@@ -316,9 +319,10 @@ def test_a_loopback_proxy_url_still_needs_network_admission(places, monkeypatch)
     assert attempts == [] and not places["results"].exists() and not places["work"].exists()
 
     # Admitted, a billed network run goes through the proxy even without --proxy. Only the proxy calls the provider,
-    # and nothing else leaves the machine: the test refuses that one connection.
-    monkeypatch.setenv("CEREBRAS_API_KEY", FAKE_KEY)
-    assert vb.main([*base, "--allow-network", "--max-cost-usd", "5"]) == 0
+    # and nothing else leaves the machine: the test refuses that one connection. Its key comes from the driver-only key
+    # file, never from the environment (bug-979a06).
+    key_file = vb.secret.create_keys(places["secret"].parent / "keys", {"CEREBRAS_API_KEY": FAKE_KEY})
+    assert vb.main([*base, "--allow-network", "--max-cost-usd", "5", "--key-file", str(key_file)]) == 0
     out = places["results"] / "TEST-NET" / "run-1"
     manifest = json.loads((out / "manifest.json").read_text())
     assert manifest["network"] is True and manifest["proxy"]["log"] == "proxy.jsonl"

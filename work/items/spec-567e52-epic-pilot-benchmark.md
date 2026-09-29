@@ -137,8 +137,8 @@ providers. This removes the checklist's circular `budget` gate (W10 rec 2).
 - [ ] dec-1089ec: Raise ViabilityBench budget line BL0's cap from $10 to $14 for Pilot B's seeds 2–3
 - [x] bug-b70d40: The ViabilityBench provider client ignores a top-level cached_tokens and prices that input at the full rate
 - [x] gap-60654d: ViabilityBench: enforce token caps through the proxy, fill the meter cross-check, and bundle proxy.jsonl
-- [ ] bug-a49003: A killed subscription session's ledger row still says cli_usage; it needs an estimated cost and a subscription marker
-- [ ] gap-4667a4: S08 still describes VB_SECRET as an environment variable at lines 106 and 302
+- [x] bug-a49003: A killed subscription session's ledger row still says cli_usage; it needs an estimated cost and a subscription marker
+- [x] gap-4667a4: S08 still describes VB_SECRET as an environment variable at lines 106 and 302
 - [ ] gap-0bd49a: Agent shells in every ViabilityBench arm can reach the network, so an agent can fetch the public repo's hidden suites
 - [ ] bug-32eb77: Operator credentials that aren't arm keys, such as ANTHROPIC_API_KEY or GITHUB_TOKEN, stay readable by agents through the driver's environment
 - [ ] gap-bc0640: Only one vb run can use a secret file at a time, and S09's run schedule doesn't account for it

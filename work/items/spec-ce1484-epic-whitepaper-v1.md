@@ -109,7 +109,7 @@ This is the implementation plan, in order.
 - [x] gap-65ed57: Whitepaper §10: name the closest partial matches from the D13 prior-art search
 - [x] gap-274092: paperlint: scope the status-tag rule and the claims-ledger skip so the companion lints correctly
 - [ ] gap-daa246: Whitepaper figures README still says pandoc converts the SVGs, which build.sh now does
-- [ ] gap-4471d1: Re-check the 16 learning loops at a post-merge commit and refreeze B5 for whitepaper §5.2
+- [x] gap-4471d1: Re-check the 16 learning loops at a post-merge commit and refreeze B5 for whitepaper §5.2
 - [ ] The epic's `[[verify]]` command passes: strict paperlint over `docs/whitepaper/` with every section reviewed,
       and a review verdict of "accept".
 

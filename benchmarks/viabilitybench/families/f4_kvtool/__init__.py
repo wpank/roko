@@ -6,5 +6,6 @@ POSIX sh migration, `scripts/migrate_prefix.sh`, that renames every key under on
 must then be resumed with the token it prints on stderr. The visible check only asserts that the script exits 0;
 the truth suite checks the store. README.md has the layout and the interfaces.
 
-Modules: `instance` (the deterministic plan every other module shares), `gen`, `hidden`, `gaming`, `solutions`.
+Modules: `instance` (the deterministic plan every other module shares), `gen`, `hidden`, `gaming` and
+`reference.solutions`.
 """

@@ -59,3 +59,4 @@ At 7fa54b873 agent processes have an allowlisted environment and no network rest
 ## Notes
 
 - Decide with gap-8c3752. One sandbox should serve both the agent run and the census.
+- 2026-09-29 (wk-bench-fix2): the same isolation decision covers the environment. Any process of the same user exposes the environment it started with (`ps -E -ax` on macOS lists every such process's), so an agent can read the credentials of the driver, the proxy or any other process of that user, however well the driver scrubs its own. Only a separate uid or a container per task closes this. Decide it together with the network sandbox (and gap-8c3752's census sandbox).

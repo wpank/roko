@@ -64,6 +64,7 @@ impl StubRuntime {
             old_format: false,
             last_error: None,
             group: None,
+            estimated_minutes: None,
         }
     }
 }
@@ -114,6 +115,8 @@ impl CliRuntime for StubRuntime {
                 plan_id: plan_id.to_string(),
                 task_count: 0,
                 tasks: Vec::new(),
+                title: None,
+                max_parallel: 1,
             }))
         } else {
             Ok(None)

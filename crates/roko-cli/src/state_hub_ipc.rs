@@ -137,11 +137,8 @@ mod unix {
         // output that [serve.auth] does not cover.
         {
             use std::os::unix::fs::PermissionsExt as _;
-            std::fs::set_permissions(
-                &socket_path,
-                std::fs::Permissions::from_mode(0o600),
-            )
-            .with_context(|| format!("chmod 0600 hub socket {}", socket_path.display()))?;
+            std::fs::set_permissions(&socket_path, std::fs::Permissions::from_mode(0o600))
+                .with_context(|| format!("chmod 0600 hub socket {}", socket_path.display()))?;
         }
 
         tracing::debug!(path = %socket_path.display(), "StateHub IPC server bound");

@@ -13,9 +13,12 @@ use roko_core::config::schema::RokoConfig;
 use roko_fs::RokoLayout;
 use roko_learn::playbook::PlaybookStore;
 use roko_neuro::KnowledgeStore;
-use roko_serve::bench::{BenchConfigOverrides, BenchStrategy};
-use roko_serve::plan_types::{PlanSummaryDto, PlanTaskDto, PlanTasksDto};
 use roko_runtime::cancel::CancelToken;
+use roko_serve::bench::{BenchConfigOverrides, BenchStrategy};
+use roko_serve::plan_types::{
+    CreatePlanOutcome, PlanDiagnosticDto, PlanSourceDto, PlanSummaryDto, PlanTaskDto,
+    PlanTaskVerifyDto, PlanTasksDto, PlanValidationDto, RevisionDto,
+};
 use roko_serve::runtime::{
     CliRuntime, DashboardInfo, PlanExecutionResult, PlanGenerationResult, PlanRunOptions, RepoInfo,
     RunResult, RunResultUsage, RuntimeGateResult, SessionStatusInfo, TriggerExecutionScope,
@@ -217,7 +220,7 @@ impl CliRuntime for RokoCliRuntime {
     ) -> anyhow::Result<PlanGenerationResult> {
         let plans_root = workspace_paths::plans_dir(workdir);
         let before = snapshot_plan_artifacts(&plans_root);
-        let generated_root = prd::generate_plan_from_prd(slug, prd_path, false).await?;
+        let generated_root = prd::generate_plan_from_prd_isolated(slug, prd_path).await?;
         let after = snapshot_plan_artifacts(&generated_root);
 
         let mut plan_targets = changed_plan_targets(&generated_root, &before, &after);
@@ -288,8 +291,7 @@ impl CliRuntime for RokoCliRuntime {
         };
         // plan_target might be a single-plan directory (has tasks.toml) or a
         // multi-plan set directory. Resolve the same way run_plan does.
-        let plans_dir = if plan_target_abs.is_dir()
-            && !plan_target_abs.join("tasks.toml").is_file()
+        let plans_dir = if plan_target_abs.is_dir() && !plan_target_abs.join("tasks.toml").is_file()
         {
             plan_target_abs
         } else if plan_target_abs.is_dir() {
@@ -301,11 +303,7 @@ impl CliRuntime for RokoCliRuntime {
         } else {
             plan_target_abs
         };
-        crate::graph_execution::compute_plan_run_order(
-            &workdir,
-            &plans_dir,
-            only_plans.as_deref(),
-        )
+        crate::graph_execution::compute_plan_run_order(&workdir, &plans_dir, only_plans.as_deref())
     }
 
     async fn run_trigger_graph(
@@ -436,7 +434,18 @@ impl CliRuntime for RokoCliRuntime {
         };
         let mut summary = crate::plan::summarize_plan_info(&plan_info);
         crate::plan::overlay_graph_checkpoint_status(workdir, std::slice::from_mut(&mut summary));
-        Ok(Some(plan_summary_to_dto(summary)))
+        let mut dto = plan_summary_to_dto(summary);
+
+        // Enrich estimated_minutes from tasks.toml when available.
+        if let Some(tasks_path) = crate::plan::tasks_path(&plan_info) {
+            if tasks_path.is_file() {
+                if let Ok(tasks_file) = crate::task_parser::TasksFile::parse(&tasks_path) {
+                    dto.estimated_minutes = plan_estimated_minutes(&tasks_file);
+                }
+            }
+        }
+
+        Ok(Some(dto))
     }
 
     async fn load_plan_tasks(
@@ -468,27 +477,235 @@ impl CliRuntime for RokoCliRuntime {
             .with_context(|| format!("failed to parse tasks at {}", tasks_path.display()))?;
 
         let task_count = tasks_file.tasks.len();
-        let tasks = tasks_file
-            .tasks
-            .iter()
-            .map(|task| PlanTaskDto {
-                id: task.id.clone(),
-                title: task.title.clone(),
-                description: task.description.clone(),
-                role: task.role.clone(),
-                tier: task.tier.clone(),
-                status: task.status.clone(),
-                depends_on: task.depends_on.clone(),
-                files: task.files.clone(),
-                completed: task.status == "done",
-                verify_phases: task.verify.iter().map(|v| v.phase.clone()).collect(),
-            })
-            .collect();
+        let tasks: Vec<PlanTaskDto> = tasks_file.tasks.iter().map(task_to_dto).collect();
+
+        // Plan title from [meta].plan; absent for old plans that leave it blank.
+        let title = {
+            let t = tasks_file.meta.plan.trim().to_string();
+            if t.is_empty() { None } else { Some(t) }
+        };
 
         Ok(Some(PlanTasksDto {
             plan_id: plan_id.to_string(),
             task_count,
             tasks,
+            title,
+            max_parallel: tasks_file.meta.max_parallel,
+        }))
+    }
+
+    async fn plan_source(
+        &self,
+        workdir: &Path,
+        plan_id: &str,
+    ) -> anyhow::Result<Option<PlanSourceDto>> {
+        let Some(plan_info) =
+            crate::plan::discover_plan_by_id(workdir, plan_id).with_context(|| {
+                format!(
+                    "failed to discover plan '{}' in {}",
+                    plan_id,
+                    workdir.display()
+                )
+            })?
+        else {
+            return Ok(None);
+        };
+
+        let Some(tasks_path) = crate::plan::tasks_path(&plan_info) else {
+            return Ok(None);
+        };
+
+        if !tasks_path.is_file() {
+            return Ok(None);
+        }
+
+        let toml = std::fs::read_to_string(&tasks_path)
+            .with_context(|| format!("failed to read tasks.toml at {}", tasks_path.display()))?;
+
+        let rel_path = tasks_path
+            .strip_prefix(workdir)
+            .unwrap_or(&tasks_path)
+            .to_string_lossy()
+            .into_owned();
+
+        Ok(Some(PlanSourceDto {
+            id: plan_id.to_string(),
+            path: rel_path,
+            toml,
+        }))
+    }
+
+    async fn validate_plan_source(
+        &self,
+        workdir: &Path,
+        plan_id: &str,
+        toml: Option<String>,
+    ) -> anyhow::Result<Option<PlanValidationDto>> {
+        let Some(plan_info) =
+            crate::plan::discover_plan_by_id(workdir, plan_id).with_context(|| {
+                format!(
+                    "failed to discover plan '{}' in {}",
+                    plan_id,
+                    workdir.display()
+                )
+            })?
+        else {
+            return Ok(None);
+        };
+
+        let source_text = match toml {
+            Some(text) => text,
+            None => {
+                let Some(tasks_path) = crate::plan::tasks_path(&plan_info) else {
+                    return Ok(None);
+                };
+                if !tasks_path.is_file() {
+                    return Ok(None);
+                }
+                std::fs::read_to_string(&tasks_path).with_context(|| {
+                    format!("failed to read tasks.toml at {}", tasks_path.display())
+                })?
+            }
+        };
+
+        let report = crate::plan_authoring::validate_plan_source(
+            workdir,
+            plan_id,
+            &source_text,
+            &self.config.models,
+        );
+        Ok(Some(plan_source_report_to_dto(report)))
+    }
+
+    async fn save_plan_source(
+        &self,
+        workdir: &Path,
+        plan_id: &str,
+        toml: String,
+    ) -> anyhow::Result<Option<PlanValidationDto>> {
+        let Some(plan_info) =
+            crate::plan::discover_plan_by_id(workdir, plan_id).with_context(|| {
+                format!(
+                    "failed to discover plan '{}' in {}",
+                    plan_id,
+                    workdir.display()
+                )
+            })?
+        else {
+            return Ok(None);
+        };
+
+        let Some(tasks_path) = crate::plan::tasks_path(&plan_info) else {
+            return Ok(None);
+        };
+
+        let report = crate::plan_authoring::save_plan_source(
+            workdir,
+            &tasks_path,
+            &toml,
+            &self.config.models,
+        )?;
+        Ok(Some(plan_source_report_to_dto(report)))
+    }
+
+    async fn create_plan(
+        &self,
+        workdir: &Path,
+        slug: &str,
+        title: &str,
+    ) -> anyhow::Result<CreatePlanOutcome> {
+        let plans_root = crate::plan::plans_dir(workdir);
+        let plan_dir = plans_root.join(slug);
+        let tasks_toml_path = plan_dir.join("tasks.toml");
+
+        // If a plan with this slug already exists, report it rather than overwrite.
+        if tasks_toml_path.is_file() {
+            return Ok(CreatePlanOutcome::AlreadyExists {
+                slug: slug.to_string(),
+            });
+        }
+
+        let default_model = self
+            .config
+            .agent
+            .model
+            .as_deref()
+            .unwrap_or("claude-opus-4-5")
+            .to_string();
+
+        let source = crate::plan_authoring::starter_plan_source(slug, title, &default_model);
+        let report = crate::plan_authoring::validate_plan_source(
+            workdir,
+            slug,
+            &source,
+            &self.config.models,
+        );
+        if !report.valid {
+            return Ok(CreatePlanOutcome::Rejected {
+                validation: plan_source_report_to_dto(report),
+            });
+        }
+
+        // Create plan directory and write files.
+        std::fs::create_dir_all(&plan_dir)
+            .with_context(|| format!("create plan directory {}", plan_dir.display()))?;
+        std::fs::write(&tasks_toml_path, &source)
+            .with_context(|| format!("write tasks.toml at {}", tasks_toml_path.display()))?;
+        let plan_md_path = plan_dir.join("plan.md");
+        std::fs::write(&plan_md_path, format!("# {title}\n"))
+            .with_context(|| format!("write plan.md at {}", plan_md_path.display()))?;
+
+        let rel_path = plan_dir
+            .strip_prefix(workdir)
+            .unwrap_or(&plan_dir)
+            .to_string_lossy()
+            .into_owned();
+
+        Ok(CreatePlanOutcome::Created {
+            slug: slug.to_string(),
+            path: rel_path,
+        })
+    }
+
+    async fn revise_plan(
+        &self,
+        workdir: &Path,
+        plan_id: &str,
+        feedback: &str,
+    ) -> anyhow::Result<Option<RevisionDto>> {
+        let Some(plan_info) =
+            crate::plan::discover_plan_by_id(workdir, plan_id).with_context(|| {
+                format!(
+                    "failed to discover plan '{}' in {}",
+                    plan_id,
+                    workdir.display()
+                )
+            })?
+        else {
+            return Ok(None);
+        };
+
+        let Some(tasks_path) = crate::plan::tasks_path(&plan_info) else {
+            return Ok(None);
+        };
+
+        if !tasks_path.is_file() {
+            return Ok(None);
+        }
+
+        let outcome = crate::plan_authoring::revise_plan_source(
+            workdir,
+            plan_id,
+            &tasks_path,
+            feedback,
+            &self.config.models,
+        )
+        .await?;
+
+        Ok(Some(RevisionDto {
+            revised: outcome.written,
+            task_count: outcome.task_count,
+            validation: plan_source_report_to_dto(outcome.report),
         }))
     }
 }
@@ -1341,6 +1558,9 @@ fn unique_suffix() -> String {
 }
 
 /// Map a [`crate::plan::PlanSummary`] to the wire-format [`PlanSummaryDto`].
+///
+/// `estimated_minutes` is left as `None` here; callers that have access to the
+/// tasks file should call [`plan_estimated_minutes`] and set it afterwards.
 fn plan_summary_to_dto(summary: crate::plan::PlanSummary) -> PlanSummaryDto {
     PlanSummaryDto {
         id: summary.id,
@@ -1354,6 +1574,83 @@ fn plan_summary_to_dto(summary: crate::plan::PlanSummary) -> PlanSummaryDto {
         old_format: summary.old_format,
         last_error: summary.last_error,
         group: summary.group,
+        estimated_minutes: None,
+    }
+}
+
+/// Map a single [`crate::task_parser::TaskDef`] to the wire-format [`PlanTaskDto`].
+///
+/// A verify step with `timeout_ms == 0` is treated as "use default" and
+/// serialised as `None` on the wire.
+pub(crate) fn task_to_dto(task: &crate::task_parser::TaskDef) -> PlanTaskDto {
+    PlanTaskDto {
+        id: task.id.clone(),
+        title: task.title.clone(),
+        description: task.description.clone(),
+        role: task.role.clone(),
+        tier: task.tier.clone(),
+        status: task.status.clone(),
+        depends_on: task.depends_on.clone(),
+        files: task.files.clone(),
+        completed: task.status == "done",
+        verify_phases: task.verify.iter().map(|v| v.phase.clone()).collect(),
+        model_hint: task.model_hint.clone(),
+        estimated_minutes: task.estimated_minutes,
+        verify: task
+            .verify
+            .iter()
+            .map(|v| PlanTaskVerifyDto {
+                phase: v.phase.clone(),
+                command: v.command.clone(),
+                fail_msg: v.fail_msg.clone(),
+                timeout_ms: if v.timeout_ms == 0 {
+                    None
+                } else {
+                    Some(v.timeout_ms)
+                },
+            })
+            .collect(),
+    }
+}
+
+/// Compute the estimated minutes for a plan from its tasks file.
+///
+/// Prefers `[meta].estimated_total_minutes` when non-zero; falls back to the
+/// sum of per-task `estimated_minutes`.  Returns `None` when no estimate is
+/// available.
+fn plan_estimated_minutes(tasks_file: &crate::task_parser::TasksFile) -> Option<u32> {
+    if tasks_file.meta.estimated_total_minutes > 0 {
+        return Some(tasks_file.meta.estimated_total_minutes);
+    }
+    let sum: u32 = tasks_file
+        .tasks
+        .iter()
+        .filter_map(|t| t.estimated_minutes)
+        .sum();
+    if sum > 0 { Some(sum) } else { None }
+}
+
+/// Convert a [`crate::plan_authoring::PlanSourceReport`] to the wire-format
+/// [`PlanValidationDto`].
+fn plan_source_report_to_dto(report: crate::plan_authoring::PlanSourceReport) -> PlanValidationDto {
+    use crate::plan_validate::Severity;
+    PlanValidationDto {
+        valid: report.valid,
+        errors: report.errors,
+        warnings: report.warnings,
+        diagnostics: report
+            .diagnostics
+            .into_iter()
+            .map(|d| PlanDiagnosticDto {
+                severity: match d.severity {
+                    Severity::Error => "error".to_string(),
+                    Severity::Warning => "warning".to_string(),
+                },
+                rule_id: d.rule_id,
+                task_id: d.task_id,
+                message: d.message,
+            })
+            .collect(),
     }
 }
 

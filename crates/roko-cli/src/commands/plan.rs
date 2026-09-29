@@ -4,6 +4,7 @@ use std::io::IsTerminal as _;
 
 use crate::*;
 use anyhow::Context as _;
+use roko_cli::plan_validate;
 use roko_fs::RokoLayout;
 
 fn join_approval_tui_thread(handle: Option<std::thread::JoinHandle<anyhow::Result<()>>>) {
@@ -565,9 +566,7 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
             // When a live `roko-serve` process owns this workspace, forward
             // the run to the server rather than executing locally.  The
             // server already holds the runner lock so we must not acquire it.
-            if let Some(endpoint) =
-                roko_cli::serve_client::discover_workspace_server(&wd)
-            {
+            if let Some(endpoint) = roko_cli::serve_client::discover_workspace_server(&wd) {
                 return roko_cli::serve_client::run_plan_via_server(
                     &wd,
                     &resolved_plans_dir,
@@ -575,8 +574,7 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
                     fresh,
                     no_tui,
                     cli.json,
-                    max_parallel_plans
-                        .map(|limit| usize::try_from(limit).unwrap_or(usize::MAX)),
+                    max_parallel_plans.map(|limit| usize::try_from(limit).unwrap_or(usize::MAX)),
                     // server-incompatible flags
                     max_retries,
                     max_tasks,
@@ -2303,7 +2301,7 @@ fn format_pre_validation_context(
     validate_fn: &dyn Fn(
         &std::path::Path,
         Option<&indexmap::IndexMap<String, roko_core::config::ModelProfile>>,
-    ) -> anyhow::Result<crate::plan_validate::ValidationReport>,
+    ) -> anyhow::Result<roko_cli::plan_validate::ValidationReport>,
 ) -> String {
     let parent = tasks_path.parent().unwrap_or(tasks_path);
     match validate_fn(parent, None) {

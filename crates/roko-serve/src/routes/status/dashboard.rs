@@ -99,11 +99,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let git_dir = dir.path().join(".git");
         fs::create_dir_all(&git_dir).unwrap();
-        fs::write(
-            git_dir.join("HEAD"),
-            "ref: refs/heads/wip/portal-backend\n",
-        )
-        .unwrap();
+        fs::write(git_dir.join("HEAD"), "ref: refs/heads/wip/portal-backend\n").unwrap();
 
         assert_eq!(
             git_branch(dir.path()),
@@ -148,21 +144,48 @@ mod tests {
 }
 
 /// `GET /api/operations/:id` — look up a background operation by ID.
+///
+/// Returns `{ "id", "kind", "status": "running"|"completed"|"failed",
+/// "result"?, "error"? }` (section 6, P-2 of the portal contract).
+/// `result` is parsed from the stored JSON string back into an object so
+/// the portal can read its fields without a second parse step.
 pub async fn operation_status(
     State(state): State<Arc<AppState>>,
     AxumPath(id): AxumPath<String>,
 ) -> Result<Json<Value>, ApiError> {
+    use crate::state::OperationStatus;
+
     let ops = state.operations.read().await;
     let handle = ops
         .get(&id)
         .ok_or_else(|| ApiError::not_found("operation not found"))?;
-    let result = Json(json!({
+
+    let (status_str, result_val, error_val) = match &handle.status {
+        OperationStatus::Running => ("running", Value::Null, Value::Null),
+        OperationStatus::Completed { result } => {
+            // Parse the stored JSON string back into an object when possible.
+            let parsed = result
+                .as_deref()
+                .and_then(|s| serde_json::from_str::<Value>(s).ok())
+                .unwrap_or(Value::Null);
+            ("completed", parsed, Value::Null)
+        }
+        OperationStatus::Failed { error } => ("failed", Value::Null, Value::String(error.clone())),
+    };
+
+    let mut response = json!({
         "id": id,
         "kind": handle.kind,
-        "status": format!("{:?}", handle.status),
-    }));
+        "status": status_str,
+    });
+    if !result_val.is_null() {
+        response["result"] = result_val;
+    }
+    if !error_val.is_null() {
+        response["error"] = error_val;
+    }
     drop(ops);
-    Ok(result)
+    Ok(Json(response))
 }
 
 /// `GET /api/truth_map` — return the entity truth-source registry.

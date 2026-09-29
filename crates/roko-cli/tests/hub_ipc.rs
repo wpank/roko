@@ -40,18 +40,14 @@ async fn snapshot_preloaded_and_live_event_delivered() {
         tasks_total: 3,
     });
 
-    let _server =
-        start_hub_ipc_server(hub.clone(), workdir.path(), shutdown.clone())
-            .expect("bind IPC server");
+    let _server = start_hub_ipc_server(hub.clone(), workdir.path(), shutdown.clone())
+        .expect("bind IPC server");
 
     // Connect — the mirror must see the pre-existing plan in its snapshot.
-    let mirror = timeout(
-        Duration::from_secs(5),
-        try_connect_hub_ipc(workdir.path()),
-    )
-    .await
-    .expect("connect did not time out")
-    .expect("mirror hub must be Some");
+    let mirror = timeout(Duration::from_secs(5), try_connect_hub_ipc(workdir.path()))
+        .await
+        .expect("connect did not time out")
+        .expect("mirror hub must be Some");
 
     // ── T1: snapshot already contains the plan ───────────────────────────────
     // Give the background reader task a moment to process the snapshot frame.
@@ -100,8 +96,7 @@ async fn socket_file_has_mode_0600() {
     let hub = SharedStateHub::new_in_process();
     let shutdown = CancellationToken::new();
 
-    let _server =
-        start_hub_ipc_server(hub, workdir.path(), shutdown).expect("bind IPC server");
+    let _server = start_hub_ipc_server(hub, workdir.path(), shutdown).expect("bind IPC server");
 
     let sock = hub_socket_path(workdir.path());
     let mode = std::fs::metadata(&sock)

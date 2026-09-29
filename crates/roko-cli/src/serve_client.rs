@@ -24,8 +24,8 @@
 use std::path::Path;
 use std::time::Duration;
 
-use reqwest::{Client, Response};
 use reqwest::header::HeaderMap;
+use reqwest::{Client, Response};
 use serde_json::Value;
 use tracing::debug;
 
@@ -132,26 +132,24 @@ pub fn discover_workspace_server(workdir: &Path) -> Option<ServeEndpoint> {
         .next()
         .unwrap_or("");
     match addr_str.parse::<std::net::SocketAddr>() {
-        Ok(addr) => {
-            match std::net::TcpStream::connect_timeout(&addr, Duration::from_secs(1)) {
-                Ok(_) => {
-                    debug!(
-                        url = %health_url,
-                        pid = endpoint.pid,
-                        "workspace server discovered and healthy (TCP probe)"
-                    );
-                    Some(endpoint)
-                }
-                Err(err) => {
-                    debug!(
-                        url = %health_url,
-                        error = %err,
-                        "workspace server TCP probe failed; rejecting endpoint"
-                    );
-                    None
-                }
+        Ok(addr) => match std::net::TcpStream::connect_timeout(&addr, Duration::from_secs(1)) {
+            Ok(_) => {
+                debug!(
+                    url = %health_url,
+                    pid = endpoint.pid,
+                    "workspace server discovered and healthy (TCP probe)"
+                );
+                Some(endpoint)
             }
-        }
+            Err(err) => {
+                debug!(
+                    url = %health_url,
+                    error = %err,
+                    "workspace server TCP probe failed; rejecting endpoint"
+                );
+                None
+            }
+        },
         Err(err) => {
             debug!(
                 url = %health_url,
@@ -203,10 +201,7 @@ impl WorkspaceServerClient {
     /// credentials.  Missing auth is not an error at construction time; the
     /// server will reject individual requests with 401/403.
     #[must_use]
-    pub fn new(
-        endpoint: &ServeEndpoint,
-        auth_config: &roko_core::config::ServeAuthConfig,
-    ) -> Self {
+    pub fn new(endpoint: &ServeEndpoint, auth_config: &roko_core::config::ServeAuthConfig) -> Self {
         let headers = match crate::auth::resolve_api_key(auth_config, None) {
             Some(resolved) => resolved.headers(),
             None => HeaderMap::new(),
@@ -283,9 +278,7 @@ impl WorkspaceServerClient {
 
         let id = json["id"]
             .as_str()
-            .ok_or_else(|| {
-                ServeClientError::Other(anyhow::anyhow!("response missing 'id' field"))
-            })?
+            .ok_or_else(|| ServeClientError::Other(anyhow::anyhow!("response missing 'id' field")))?
             .to_string();
 
         let order = json["order"]
@@ -297,9 +290,7 @@ impl WorkspaceServerClient {
             })
             .unwrap_or_default();
 
-        let max_parallel_plans = json["max_parallel_plans"]
-            .as_u64()
-            .unwrap_or(1) as usize;
+        let max_parallel_plans = json["max_parallel_plans"].as_u64().unwrap_or(1) as usize;
 
         Ok(SubmittedRun {
             id,
@@ -400,10 +391,7 @@ impl WorkspaceServerClient {
     ///
     /// The response is consumed only on error; on success it is returned
     /// unchanged.
-    fn handle_auth_error(
-        &self,
-        resp: &Response,
-    ) -> std::result::Result<(), ServeClientError> {
+    fn handle_auth_error(&self, resp: &Response) -> std::result::Result<(), ServeClientError> {
         let status = resp.status().as_u16();
         if status == 401 || status == 403 {
             return Err(ServeClientError::Unauthorized {
@@ -440,8 +428,7 @@ pub fn read_lock_unless_served(
         // Server owns the workspace — skip locking entirely.
         return Ok(None);
     }
-    let guard =
-        crate::workspace_lock::acquire_workspace_lock_shared(&workdir.join(".roko"))?;
+    let guard = crate::workspace_lock::acquire_workspace_lock_shared(&workdir.join(".roko"))?;
     Ok(Some(guard))
 }
 
@@ -586,23 +573,9 @@ pub async fn run_plan_via_server(
 
     // ── 4. Follow the run ─────────────────────────────────────────────────
     let final_outcome = if !no_tui && std::io::stdout().is_terminal() {
-        follow_run_tui(
-            wd,
-            &mirror,
-            &run_id,
-            &order_set,
-            &serve_client,
-        )
-        .await?
+        follow_run_tui(wd, &mirror, &run_id, &order_set, &serve_client).await?
     } else {
-        follow_run_text(
-            json,
-            &mirror,
-            &run_id,
-            &order_set,
-            &serve_client,
-        )
-        .await?
+        follow_run_text(json, &mirror, &run_id, &order_set, &serve_client).await?
     };
 
     // ── JSON summary ──────────────────────────────────────────────────────
@@ -649,10 +622,7 @@ async fn follow_run_tui(
             match sub.live.recv().await {
                 Ok(envelope) => match &envelope.payload {
                     roko_core::DashboardEvent::PlanSetLoaded { plans } => {
-                        if plans
-                            .iter()
-                            .any(|p| order_set_bg.contains(&p.plan_id))
-                        {
+                        if plans.iter().any(|p| order_set_bg.contains(&p.plan_id)) {
                             run_started = true;
                         }
                     }
@@ -708,7 +678,9 @@ async fn follow_run_tui(
         return Ok("cancelled".to_string());
     }
 
-    let outcome = outcome_cell.lock().map_or_else(|_| "unknown".to_string(), |g| g.clone());
+    let outcome = outcome_cell
+        .lock()
+        .map_or_else(|_| "unknown".to_string(), |g| g.clone());
     Ok(outcome)
 }
 
@@ -934,6 +906,9 @@ mod tests {
             detail: "missing key".to_string(),
         };
         let msg = err.to_string();
-        assert!(msg.contains("ROKO_API_KEY") || msg.contains("roko login"), "unhelpful: {msg}");
+        assert!(
+            msg.contains("ROKO_API_KEY") || msg.contains("roko login"),
+            "unhelpful: {msg}"
+        );
     }
 }

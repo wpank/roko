@@ -62,11 +62,9 @@ pub(crate) async fn cmd_up(cli: &Cli, workdir: PathBuf) -> Result<i32> {
     #[cfg(unix)]
     let ipc_token = {
         let token = tokio_util::sync::CancellationToken::new();
-        if let Err(e) = roko_cli::state_hub_ipc::start_hub_ipc_server(
-            ipc_hub,
-            &workdir,
-            token.clone(),
-        ) {
+        if let Err(e) =
+            roko_cli::state_hub_ipc::start_hub_ipc_server(ipc_hub, &workdir, token.clone())
+        {
             tracing::warn!(error = %e, "StateHub IPC server failed to bind; dashboard IPC unavailable");
         }
         token
@@ -239,11 +237,7 @@ pub(crate) async fn cmd_serve(
     #[cfg(unix)]
     let ipc_token = {
         let token = tokio_util::sync::CancellationToken::new();
-        if let Err(e) = roko_cli::state_hub_ipc::start_hub_ipc_server(
-            ipc_hub,
-            &wd,
-            token.clone(),
-        ) {
+        if let Err(e) = roko_cli::state_hub_ipc::start_hub_ipc_server(ipc_hub, &wd, token.clone()) {
             tracing::warn!(error = %e, "StateHub IPC server failed to bind; dashboard IPC unavailable");
         }
         token

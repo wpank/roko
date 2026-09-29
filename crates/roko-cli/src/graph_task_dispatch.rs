@@ -3531,11 +3531,10 @@ impl TaskDispatcher for GraphTaskDispatcher {
         if let Some(tui) = &self.tui_bridge {
             // Derive a provider label from the planned backend so the dashboard
             // can display it before the actual dispatch resolves a provider.
-            let planned_provider: String = roko_core::ProviderKind::from(
-                dispatch_plan.model.backend,
-            )
-            .label()
-            .to_string();
+            let planned_provider: String =
+                roko_core::ProviderKind::from(dispatch_plan.model.backend)
+                    .label()
+                    .to_string();
             tui.agent_spawned(
                 &pre_dispatch_agent_id,
                 &spec.plan_id,
@@ -3581,9 +3580,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
         };
         let dispatch = dispatch_result.map_err(|error| {
             // Best-effort release on dispatch failure when worktree isolation is active.
-            if let Some((provider, lease)) =
-                self.workspace_provider.as_ref().zip(lease.as_ref())
-            {
+            if let Some((provider, lease)) = self.workspace_provider.as_ref().zip(lease.as_ref()) {
                 let provider = Arc::clone(provider);
                 let lease = lease.clone();
                 tokio::spawn(async move {
@@ -3598,12 +3595,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
             // T04: Publish agent_completed on the error path so the dashboard
             // never leaves an agent stuck in the "running" state.
             if let Some(tui) = &self.tui_bridge {
-                tui.agent_completed(
-                    &pre_dispatch_agent_id,
-                    &spec.plan_id,
-                    &task.id,
-                    0,
-                );
+                tui.agent_completed(&pre_dispatch_agent_id, &spec.plan_id, &task.id, 0);
             }
             error
         })?;

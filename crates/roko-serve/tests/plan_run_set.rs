@@ -118,6 +118,7 @@ impl StubSetRuntime {
             old_format: false,
             last_error: None,
             group: None,
+            estimated_minutes: None,
         }
     }
 }
@@ -228,6 +229,8 @@ impl CliRuntime for StubSetRuntime {
                 plan_id: plan_id.to_string(),
                 task_count: 0,
                 tasks: Vec::new(),
+                title: None,
+                max_parallel: 1,
             }))
         } else {
             Ok(None)
@@ -235,7 +238,11 @@ impl CliRuntime for StubSetRuntime {
     }
 
     async fn list_plans(&self, _workdir: &Path) -> anyhow::Result<Vec<PlanSummaryDto>> {
-        Ok(self.known_ids.iter().map(|id| Self::make_summary(id)).collect())
+        Ok(self
+            .known_ids
+            .iter()
+            .map(|id| Self::make_summary(id))
+            .collect())
     }
 
     fn session_status(&self, workdir: PathBuf) -> SessionStatusInfo {
@@ -357,8 +364,15 @@ async fn execute_plans_all_returns_202_with_fixture_order() {
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
     let calls = recorded.lock().expect("lock calls");
-    assert_eq!(calls.len(), 1, "run_plan_with_options must be called exactly once");
-    assert_eq!(calls[0].workdir, state.workdir, "stub must receive the workspace workdir");
+    assert_eq!(
+        calls.len(),
+        1,
+        "run_plan_with_options must be called exactly once"
+    );
+    assert_eq!(
+        calls[0].workdir, state.workdir,
+        "stub must receive the workspace workdir"
+    );
     assert_eq!(
         calls[0].plan_target, plans_root,
         "stub must receive the plans root (no target or plans filter)"
@@ -405,7 +419,12 @@ async fn execute_plans_target_passes_directory() {
     let runtime = Arc::new(StubSetRuntime::new_fast());
     let recorded = Arc::clone(&runtime.recorded_calls);
     let (_dir, state) = make_state(runtime).await;
-    let expected_target = state.workdir.join("plans").join("x").canonicalize().unwrap();
+    let expected_target = state
+        .workdir
+        .join("plans")
+        .join("x")
+        .canonicalize()
+        .unwrap();
 
     let app = build_app(Arc::clone(&state));
     let resp = app
@@ -441,7 +460,10 @@ async fn execute_plans_bad_inputs_return_400() {
     for (label, body) in [
         ("dotdot target", r#"{"target":"../"}"#),
         ("absolute target", r#"{"target":"/tmp/foo"}"#),
-        ("plans and target together", r#"{"plans":["a"],"target":"plans/x"}"#),
+        (
+            "plans and target together",
+            r#"{"plans":["a"],"target":"plans/x"}"#,
+        ),
     ] {
         let app = build_app(Arc::clone(&state));
         let resp = app
@@ -483,7 +505,11 @@ async fn execute_plans_unknown_id_returns_404() {
         .await
         .expect("send request");
 
-    assert_eq!(resp.status(), StatusCode::NOT_FOUND, "unknown plan id must return 404");
+    assert_eq!(
+        resp.status(),
+        StatusCode::NOT_FOUND,
+        "unknown plan id must return 404"
+    );
 }
 
 /// 3. While a set run is active, both `POST /api/plans/execute` and
@@ -506,7 +532,11 @@ async fn execute_plans_409_while_set_run_active() {
         )
         .await
         .expect("send first execute");
-    assert_eq!(r1.status(), StatusCode::ACCEPTED, "first execute must return 202");
+    assert_eq!(
+        r1.status(),
+        StatusCode::ACCEPTED,
+        "first execute must return 202"
+    );
 
     // Second `POST /api/plans/execute` while first is still active → 409.
     let app2 = build_app(Arc::clone(&state));
@@ -568,7 +598,11 @@ async fn execute_plans_status_and_cancel_via_member_id() {
         )
         .await
         .expect("send execute");
-    assert_eq!(exec_resp.status(), StatusCode::ACCEPTED, "execute must return 202");
+    assert_eq!(
+        exec_resp.status(),
+        StatusCode::ACCEPTED,
+        "execute must return 202"
+    );
 
     // Status via member id "a" must return 200.
     let app_status = build_app(Arc::clone(&state));
@@ -582,7 +616,11 @@ async fn execute_plans_status_and_cancel_via_member_id() {
         )
         .await
         .expect("send status");
-    assert_eq!(status_resp.status(), StatusCode::OK, "member status must return 200");
+    assert_eq!(
+        status_resp.status(),
+        StatusCode::OK,
+        "member status must return 200"
+    );
 
     // Cancel via member id "b" must return 200 with `{cancelled: true}`.
     let app_cancel = build_app(Arc::clone(&state));
@@ -596,7 +634,11 @@ async fn execute_plans_status_and_cancel_via_member_id() {
         )
         .await
         .expect("send cancel");
-    assert_eq!(cancel_resp.status(), StatusCode::OK, "cancel must return 200");
+    assert_eq!(
+        cancel_resp.status(),
+        StatusCode::OK,
+        "cancel must return 200"
+    );
     let cancel_payload = body_json(cancel_resp).await;
     assert_eq!(
         cancel_payload["cancelled"], true,
@@ -650,7 +692,11 @@ async fn execute_plans_no_conflict_after_run_finishes() {
         )
         .await
         .expect("first execute");
-    assert_eq!(r1.status(), StatusCode::ACCEPTED, "first execute must return 202");
+    assert_eq!(
+        r1.status(),
+        StatusCode::ACCEPTED,
+        "first execute must return 202"
+    );
 
     // Wait for the background task to complete (stub returns after 5 ms).
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -685,7 +731,9 @@ async fn execute_plan_resume_and_fresh_options() {
 
     // Create the plan directory so the handler can derive plan_dir (group=None → plans/<id>).
     let plan_dir = state.workdir.join("plans").join("my-plan");
-    tokio::fs::create_dir_all(&plan_dir).await.expect("create plan dir");
+    tokio::fs::create_dir_all(&plan_dir)
+        .await
+        .expect("create plan dir");
 
     // No body → fresh=true, force_resume=false.
     let app1 = build_app(Arc::clone(&state));
@@ -699,7 +747,11 @@ async fn execute_plan_resume_and_fresh_options() {
         )
         .await
         .expect("send no-body execute");
-    assert_eq!(r1.status(), StatusCode::ACCEPTED, "no-body execute must return 202");
+    assert_eq!(
+        r1.status(),
+        StatusCode::ACCEPTED,
+        "no-body execute must return 202"
+    );
 
     // Wait for the run to complete.
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -732,7 +784,11 @@ async fn execute_plan_resume_and_fresh_options() {
         )
         .await
         .expect("send resume execute");
-    assert_eq!(r2.status(), StatusCode::ACCEPTED, "resume execute must return 202");
+    assert_eq!(
+        r2.status(),
+        StatusCode::ACCEPTED,
+        "resume execute must return 202"
+    );
 
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 

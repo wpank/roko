@@ -603,7 +603,11 @@ fn filter_only_plans(
             anyhow!(
                 "plan '{id}' not found in {}; available: {}",
                 plans_dir.display(),
-                plans.iter().map(|p| p.id.as_str()).collect::<Vec<_>>().join(", ")
+                plans
+                    .iter()
+                    .map(|p| p.id.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
             )
         })?;
         filtered.push(plans.remove(pos));
@@ -2123,11 +2127,18 @@ async fn run_one_plan(
         // Emit incremental TaskStarted/TaskCompleted events for any node whose
         // status changed since the last tick. Filter to real tasks only (the
         // rich topology adds helper nodes absent from `node_titles`).
-        let current_statuses: HashMap<String, roko_graph::engine::NodeStatus> =
-            flow_handle.status().node_statuses.into_iter()
-                .filter(|(id, _)| node_titles.contains_key(id))
-                .collect();
-        graph_tui_bridge.poll_status_changes(&plan.id, &previous_statuses, &current_statuses, &node_titles);
+        let current_statuses: HashMap<String, roko_graph::engine::NodeStatus> = flow_handle
+            .status()
+            .node_statuses
+            .into_iter()
+            .filter(|(id, _)| node_titles.contains_key(id))
+            .collect();
+        graph_tui_bridge.poll_status_changes(
+            &plan.id,
+            &previous_statuses,
+            &current_statuses,
+            &node_titles,
+        );
         previous_statuses = current_statuses;
     }
 
@@ -2182,7 +2193,12 @@ async fn run_one_plan(
         .filter(|r| node_titles.contains_key(&r.node_id))
         .map(|r| (r.node_id.clone(), r.status))
         .collect();
-    graph_tui_bridge.poll_status_changes(&plan.id, &previous_statuses, &final_statuses, &node_titles);
+    graph_tui_bridge.poll_status_changes(
+        &plan.id,
+        &previous_statuses,
+        &final_statuses,
+        &node_titles,
+    );
     graph_tui_bridge.plan_completed(&plan.id, execution_succeeded);
 
     if !ctx.quiet && !ctx.json {

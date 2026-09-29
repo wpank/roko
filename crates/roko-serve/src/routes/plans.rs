@@ -13,7 +13,7 @@ use validator::Validate;
 use crate::error::{ApiError, validate_path_segment};
 use crate::events::ServerEvent;
 use crate::extract::{RequestPayload, ValidJson, validate_with_validator};
-use crate::plan_types::{Plan, PlanTask};
+use crate::plan_types::{CreatePlanOutcome, Plan, PlanSourceDto, PlanTask, PlanValidationDto};
 use crate::runtime::{PlanExecutionResult, PlanRunOptions, RunResult};
 use crate::state::{AppState, OperationHandle, OperationStatus, PlanHandle};
 use roko_core::agent::resolve_model;
@@ -37,6 +37,12 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/plans/{id}/tasks/{task_id}/diff", get(task_diff))
         .route("/plans/{id}/chat", post(plan_chat))
         .route("/plans/{id}/estimate", post(plan_estimate))
+        .route(
+            "/plans/{id}/source",
+            get(get_plan_source).put(put_plan_source),
+        )
+        .route("/plans/{id}/validate", post(validate_plan))
+        .route("/plans/{id}/revise", post(revise_plan))
         .route("/plans/generate", post(generate_plan))
         .route("/plans/execute", post(execute_plans))
 }
@@ -59,15 +65,12 @@ async fn list_plans(State(state): State<Arc<AppState>>) -> Result<Json<Value>, A
     let summaries: Vec<Value> = plans
         .into_iter()
         .map(|dto| {
-            json!({
-                "id": dto.id,
-                "title": dto.title,
-                "task_count": dto.task_count,
-                "completed": dto.completed,
-                "completed_task_count": dto.tasks_done,
-                "tasks_failed": dto.tasks_failed,
-                "status": dto.status,
-            })
+            let mut v = serde_json::to_value(&dto).unwrap_or(Value::Null);
+            // Keep `completed_task_count` as an alias of `tasks_done` for older clients.
+            if let Some(tasks_done) = v.get("tasks_done").and_then(Value::as_u64) {
+                v["completed_task_count"] = tasks_done.into();
+            }
+            v
         })
         .collect();
 
@@ -93,19 +96,13 @@ async fn get_plan(
         .map_err(|e| ApiError::internal(format!("load plan '{id}': {e}")))?
         .ok_or_else(|| ApiError::not_found(format!("plan '{id}' not found")))?;
 
-    Ok(Json(json!({
-        "id": dto.id,
-        "title": dto.title,
-        "task_count": dto.task_count,
-        "completed": dto.completed,
-        "completed_task_count": dto.tasks_done,
-        "tasks_done": dto.tasks_done,
-        "tasks_failed": dto.tasks_failed,
-        "status": dto.status,
-        "superseded_by": dto.superseded_by,
-        "old_format": dto.old_format,
-        "last_error": dto.last_error,
-    })))
+    let mut v = serde_json::to_value(&dto)
+        .map_err(|e| ApiError::internal(format!("serialize plan summary: {e}")))?;
+    // Keep `completed_task_count` as an alias of `tasks_done` for older clients.
+    if let Some(tasks_done) = v.get("tasks_done").and_then(Value::as_u64) {
+        v["completed_task_count"] = tasks_done.into();
+    }
+    Ok(Json(v))
 }
 
 /// `GET /api/plans/:id/tasks` — return the task list for a specific plan.
@@ -134,44 +131,31 @@ async fn plan_tasks(
     let tasks: Vec<Value> = dto
         .tasks
         .iter()
-        .map(|t| {
-            json!({
-                "id": t.id,
-                "title": t.title,
-                "description": t.description,
-                "role": t.role,
-                "tier": t.tier,
-                "depends_on": t.depends_on,
-                "files": t.files,
-                "completed": t.completed,
-                "status": t.status,
-                "verify_phases": t.verify_phases,
-            })
-        })
+        .map(|t| serde_json::to_value(t).unwrap_or(Value::Null))
         .collect();
 
     Ok(Json(json!({
         "plan_id": dto.plan_id,
         "task_count": dto.task_count,
+        "title": dto.title,
+        "max_parallel": dto.max_parallel,
         "tasks": tasks,
     })))
 }
 
 #[derive(Deserialize, Validate)]
 struct CreatePlanRequest {
+    /// Human-readable plan title (required).
     #[validate(
         length(min = 1),
         custom(function = "crate::extract::validate_non_blank")
     )]
     title: String,
-    #[validate(
-        length(min = 1),
-        custom(function = "crate::extract::validate_non_blank")
-    )]
-    description: String,
+    /// Optional slug.  When absent the slug is derived from the title:
+    /// lowercase ASCII, runs of non-alphanumeric characters collapsed to
+    /// `-`, truncated to 48 characters.
     #[serde(default)]
-    #[validate(nested)]
-    tasks: Vec<CreateTaskEntry>,
+    slug: Option<String>,
 }
 
 impl RequestPayload for CreatePlanRequest {
@@ -180,68 +164,43 @@ impl RequestPayload for CreatePlanRequest {
     }
 }
 
-#[derive(Deserialize, Validate)]
-struct CreateTaskEntry {
-    #[validate(
-        length(min = 1),
-        custom(function = "crate::extract::validate_non_blank")
-    )]
-    id: String,
-    #[serde(default)]
-    description: String,
-    #[serde(default = "default_task_tier")]
-    tier: String,
-    #[serde(default)]
-    model_hint: Option<String>,
-    #[serde(default)]
-    #[validate(custom(function = "crate::extract::validate_string_items_non_blank"))]
-    depends_on: Vec<String>,
-    #[serde(default)]
-    #[validate(custom(function = "crate::extract::validate_string_items_non_blank"))]
-    files: Vec<String>,
-}
-
-/// `POST /api/plans` — create a new plan from a JSON body.
+/// `POST /api/plans` — create a new directory-layout plan.
+///
+/// Accepts `{ "title": "...", "slug"?: "..." }`.  Extra fields are ignored.
+/// When `slug` is absent it is derived from the title (see [`slug_from_title`]).
+///
+/// Returns:
+/// - 201 `{ "id": slug, "path": "plans/<slug>" }` on success.
+/// - 409 when a plan with that slug already exists.
+/// - 400 for a blank title or a path-traversal slug.
 async fn create_plan(
     State(state): State<Arc<AppState>>,
     ValidJson(body): ValidJson<CreatePlanRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let plan_id = uuid::Uuid::new_v4().to_string();
-    let mut plan = Plan::new(plan_id.clone(), body.title, body.description);
+    let slug = match body.slug {
+        Some(s) => s,
+        None => slug_from_title(&body.title),
+    };
+    validate_path_segment(&slug, "plan slug")?;
 
-    for t in body.tasks {
-        plan.add_task(PlanTask {
-            id: t.id,
-            description: t.description,
-            tier: t.tier,
-            model_hint: t.model_hint,
-            depends_on: t.depends_on,
-            files: t.files,
-            completed: false,
-        });
-    }
-
-    if let Err(errors) = plan.validate() {
-        return Err(ApiError::bad_request(errors.join("; ")));
-    }
-
-    let plans_dir = plans_dir(&state.workdir);
-    tokio::fs::create_dir_all(&plans_dir)
+    match state
+        .runtime
+        .create_plan(&state.workdir, &slug, &body.title)
         .await
-        .map_err(|e| ApiError::internal(format!("create plans dir: {e}")))?;
-
-    let plan_json = plan_to_json(&plan);
-    let path = plans_dir.join(format!("{plan_id}.json"));
-    let content = serde_json::to_string_pretty(&plan_json)
-        .map_err(|e| ApiError::internal(format!("serialize plan: {e}")))?;
-    tokio::fs::write(&path, content)
-        .await
-        .map_err(|e| ApiError::internal(format!("write plan: {e}")))?;
-
-    Ok((
-        axum::http::StatusCode::CREATED,
-        Json(json!({ "id": plan_id })),
-    ))
+        .map_err(|e| ApiError::internal(format!("create plan '{slug}': {e}")))?
+    {
+        CreatePlanOutcome::Created { slug, path } => Ok((
+            axum::http::StatusCode::CREATED,
+            Json(json!({ "id": slug, "path": path })),
+        )),
+        CreatePlanOutcome::AlreadyExists { slug } => {
+            Err(ApiError::conflict(format!("plan '{slug}' already exists")))
+        }
+        CreatePlanOutcome::Rejected { validation } => Err(ApiError::bad_request(format!(
+            "starter source validation failed: {} error(s)",
+            validation.errors
+        ))),
+    }
 }
 
 // ── Active-run bookkeeping helpers ────────────────────────────────────
@@ -251,9 +210,7 @@ async fn create_plan(
 ///
 /// A finished entry does **not** constitute a conflict: `execute_plan`
 /// replaces a stale finished entry rather than blocking on it.
-fn active_run_conflict(
-    active: &std::collections::HashMap<String, PlanHandle>,
-) -> Option<String> {
+fn active_run_conflict(active: &std::collections::HashMap<String, PlanHandle>) -> Option<String> {
     active
         .iter()
         .find(|(_, h)| !h.handle.is_finished())
@@ -576,9 +533,7 @@ async fn start_plan_run(
                     // field; the portal cannot recover it separately.
                     if !success {
                         bus.publish(ServerEvent::Error {
-                            message: format!(
-                                "plan {plan_id} completed with task-level failures"
-                            ),
+                            message: format!("plan {plan_id} completed with task-level failures"),
                         });
                     }
                     success
@@ -649,7 +604,9 @@ async fn plan_status(
     let active = state.active_plans.read().await;
     let key = active_run_for(&active, &id)
         .ok_or_else(|| ApiError::not_found("no active execution for this plan"))?;
-    let h = active.get(&key).expect("key from active_run_for must exist in map");
+    let h = active
+        .get(&key)
+        .expect("key from active_run_for must exist in map");
     Ok(Json(json!({
         "id": h.id,
         "plan_dir": h.plan_dir,
@@ -675,7 +632,9 @@ async fn pause_plan(
     // Resolve by key or by member plan id.
     let key = active_run_for(&active, &id)
         .ok_or_else(|| ApiError::not_found("no active execution for this plan"))?;
-    let handle = active.get(&key).expect("key from active_run_for must exist in map");
+    let handle = active
+        .get(&key)
+        .expect("key from active_run_for must exist in map");
 
     if handle.handle.is_finished() {
         return Err(ApiError::conflict("plan execution already finished"));
@@ -806,7 +765,9 @@ async fn cancel_plan(
     // Resolve by key or by member plan id.
     let key = active_run_for(&active, &id)
         .ok_or_else(|| ApiError::not_found("no active execution for this plan"))?;
-    let handle = active.get(&key).expect("key from active_run_for must exist in map");
+    let handle = active
+        .get(&key)
+        .expect("key from active_run_for must exist in map");
 
     if handle.handle.is_finished() {
         return Err(ApiError::not_found("no active execution for this plan"));
@@ -1313,7 +1274,6 @@ fn estimate_task_from_history(history: &[HistoricalEfficiency]) -> (u64, u64, f6
     (avg_input, avg_output, avg_cost, avg_duration)
 }
 
-
 // ── Review workflow ──────────────────────────────────────────────────
 
 /// `GET /api/plans/:id/reviews` — list tasks pending review.
@@ -1748,53 +1708,204 @@ async fn record_review(
     }
 }
 
+/// Request body for `POST /api/plans/generate`.
+///
+/// Exactly one of `slug` or `prompt` must be supplied:
+/// - `slug` — generate from an existing PRD identified by its slug.
+/// - `prompt` — generate directly from a free-text prompt (used by the portal
+///   "Generate…" field, which never has a pre-existing PRD slug to hand).
+///
+/// Supplying both or neither is a 422 (Unprocessable Entity).  This two-field
+/// design exists because the portal sends `prompt` while the CLI sends `slug`;
+/// T09 will route between the two strategies in the handler body.
 #[derive(Deserialize, Validate)]
 struct GenerateRequest {
-    #[validate(
-        length(min = 1),
-        custom(function = "crate::extract::validate_non_blank")
-    )]
-    slug: String,
+    /// An existing PRD slug.  Non-blank when present.
+    #[serde(default)]
+    slug: Option<String>,
+    /// A free-text prompt used to generate the plan directly.  Non-blank when present.
+    #[serde(default)]
+    prompt: Option<String>,
 }
 
 impl RequestPayload for GenerateRequest {
     fn validate_payload(&self) -> Result<(), ApiError> {
-        validate_with_validator(self)
+        match (&self.slug, &self.prompt) {
+            (None, None) => Err(ApiError::unprocessable_entity(
+                "exactly one of 'slug' or 'prompt' must be supplied",
+            )),
+            (Some(_), Some(_)) => Err(ApiError::unprocessable_entity(
+                "supply either 'slug' or 'prompt', not both",
+            )),
+            (Some(s), None) => {
+                if s.trim().is_empty() {
+                    Err(ApiError::unprocessable_entity("'slug' must not be blank"))
+                } else {
+                    Ok(())
+                }
+            }
+            (None, Some(p)) => {
+                if p.trim().is_empty() {
+                    Err(ApiError::unprocessable_entity("'prompt' must not be blank"))
+                } else {
+                    Ok(())
+                }
+            }
+        }
     }
 }
 
-/// `POST /api/plans/generate` — spawn background plan generation from a PRD slug.
+/// `POST /api/plans/generate` — spawn background plan generation from a PRD slug or prompt.
+///
+/// Two paths:
+/// - `slug`: find an existing PRD, then call `runtime.generate_plan_from_prd`.
+/// - `prompt`: derive a slug, write a PRD draft, then call `runtime.generate_plan_from_prd`.
+///
+/// Responds 202 with `{ "id": op_id, "plan_id": slug }`.  The slug is known
+/// before the background work starts so the portal's generate hook can use it
+/// immediately.
+///
+/// The operation handle is registered in `state.operations` before the spawned
+/// task can finish (a oneshot start signal gates the task exactly as
+/// `spawn_background_run` in `routes/run.rs` does), so polling
+/// `GET /api/operations/{id}` is race-free from the moment this handler returns.
 async fn generate_plan(
     State(state): State<Arc<AppState>>,
     ValidJson(body): ValidJson<GenerateRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let (prd_path, prd_content) = find_prd(&state.workdir, &body.slug).await?;
+    // `validate_payload` guarantees exactly one of `slug`/`prompt` is Some.
+    let (slug, prd_path) = if let Some(ref s) = body.slug {
+        // Slug path: resolve the PRD that already exists on disk.
+        let (path, _content) = find_prd(&state.workdir, s).await?;
+        (s.clone(), path)
+    } else {
+        // Prompt path: derive a unique slug, write a PRD draft, use its path.
+        let prompt_text = body.prompt.clone().unwrap_or_default();
+        let slug = derive_unique_slug(&state.workdir, &prompt_text).await;
+        let path = write_prompt_prd(&state.workdir, &slug, &prompt_text).await?;
+        (slug, path)
+    };
+
     let op_id = uuid::Uuid::new_v4().to_string();
     let bus = state.event_bus.clone();
     let runtime = state.runtime.clone();
     let workdir = state.workdir.clone();
-    let prompt = build_plan_generation_prompt(&prd_path, &prd_content);
-    let slug = body.slug.clone();
     let kind = format!("plan_generate:{slug}");
     let slug_for_task = slug.clone();
+    let state_for_task = Arc::clone(&state);
+
+    // Gate the task on a start signal so the handle is always registered before
+    // the task can write back its result (mirrors `spawn_background_run`).
+    let (start_tx, start_rx) = tokio::sync::oneshot::channel::<()>();
 
     let handle = tokio::spawn({
         let op_id = op_id.clone();
         async move {
-            let success = match runtime.run_once(&workdir, &prompt).await {
-                Ok(RunResult { success, .. }) => success,
-                Err(err) => {
-                    bus.publish(ServerEvent::Error {
-                        message: format!("plan generation failed for {slug_for_task}: {err}"),
-                    });
-                    false
-                }
-            };
-            bus.publish(ServerEvent::OperationCompleted {
-                op_id,
+            // Wait until the caller has inserted the OperationHandle.
+            let _ = start_rx.await;
+
+            // Announce the start on the dashboard stream.
+            {
+                use roko_core::DashboardEvent;
+                state_for_task
+                    .state_hub
+                    .publish_batch(vec![DashboardEvent::EventLogEntry {
+                        timestamp_ms: generate_now_millis(),
+                        event_type: "plan_generate.started".into(),
+                        plan_id: slug_for_task.clone(),
+                        task_id: String::new(),
+                        message: format!("▶ generate op={op_id}"),
+                    }]);
+            }
+            bus.publish(ServerEvent::OperationStarted {
+                op_id: op_id.clone(),
                 kind: "plan_generate".into(),
-                success,
             });
+
+            match runtime
+                .generate_plan_from_prd(&workdir, &slug_for_task, &prd_path)
+                .await
+            {
+                Ok(gen_result) => {
+                    let success = !gen_result.plan_targets.is_empty();
+
+                    // Count tasks via the runtime so the result carries live data.
+                    let task_count = state_for_task
+                        .runtime
+                        .load_plan_summary(&workdir, &slug_for_task)
+                        .await
+                        .ok()
+                        .flatten()
+                        .map(|dto| dto.task_count)
+                        .unwrap_or(0);
+
+                    let result_json = serde_json::to_string(
+                        &json!({ "slug": slug_for_task, "task_count": task_count }),
+                    )
+                    .unwrap_or_default();
+
+                    // Update the handle to Completed.
+                    if let Some(h) = state_for_task.operations.write().await.get_mut(&op_id) {
+                        h.status = crate::state::OperationStatus::Completed {
+                            result: Some(result_json),
+                        };
+                    }
+
+                    let event_type = if success {
+                        "plan_generate.completed"
+                    } else {
+                        "plan_generate.failed"
+                    };
+                    {
+                        use roko_core::DashboardEvent;
+                        state_for_task.state_hub.publish_batch(vec![
+                            DashboardEvent::EventLogEntry {
+                                timestamp_ms: generate_now_millis(),
+                                event_type: event_type.into(),
+                                plan_id: slug_for_task.clone(),
+                                task_id: String::new(),
+                                message: format!("op={op_id} tasks={task_count}"),
+                            },
+                        ]);
+                    }
+                    bus.publish(ServerEvent::OperationCompleted {
+                        op_id,
+                        kind: "plan_generate".into(),
+                        success,
+                    });
+                }
+                Err(err) => {
+                    let error_msg = format!("plan generation failed for {slug_for_task}: {err}");
+                    bus.publish(ServerEvent::Error {
+                        message: error_msg.clone(),
+                    });
+
+                    // Update the handle to Failed.
+                    if let Some(h) = state_for_task.operations.write().await.get_mut(&op_id) {
+                        h.status = crate::state::OperationStatus::Failed {
+                            error: error_msg.clone(),
+                        };
+                    }
+
+                    {
+                        use roko_core::DashboardEvent;
+                        state_for_task.state_hub.publish_batch(vec![
+                            DashboardEvent::EventLogEntry {
+                                timestamp_ms: generate_now_millis(),
+                                event_type: "plan_generate.failed".into(),
+                                plan_id: slug_for_task.clone(),
+                                task_id: String::new(),
+                                message: format!("op={op_id} error={err}"),
+                            },
+                        ]);
+                    }
+                    bus.publish(ServerEvent::OperationCompleted {
+                        op_id,
+                        kind: "plan_generate".into(),
+                        success: false,
+                    });
+                }
+            }
         }
     });
 
@@ -1806,11 +1917,402 @@ async fn generate_plan(
     };
 
     state.operations.write().await.insert(op_id.clone(), op);
+    // Unblock the task now that the handle is registered.
+    let _ = start_tx.send(());
 
     Ok((
         axum::http::StatusCode::ACCEPTED,
-        Json(json!({ "id": op_id })),
+        Json(json!({ "id": op_id, "plan_id": slug })),
     ))
+}
+
+/// Request body for `POST /api/plans/{id}/revise`.
+#[derive(Deserialize)]
+struct ReviseRequest {
+    feedback: String,
+}
+
+/// `POST /api/plans/{id}/revise` — revise a plan's source based on textual feedback.
+///
+/// - 422 when `feedback` is blank.
+/// - 404 when the plan does not exist.
+/// - 409 when an active plan run includes this plan, or when another revision
+///   operation for the same plan is already in progress.
+/// - 202 `{ "id": op_id, "plan_id": id }` when the revision task was spawned.
+///
+/// The background task calls `runtime.revise_plan`, then finalises the
+/// operation exactly as `generate_plan` does:
+/// - `Completed { result: {"slug", "task_count"} }` when the source was written.
+/// - `Failed { error }` when the plan was rejected (validation errors) or the
+///   agent failed.
+///
+/// Publishes `event_log_entry` events for `plan_revise.started`,
+/// `plan_revise.completed`, and `plan_revise.failed`.
+async fn revise_plan(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    body: axum::body::Bytes,
+) -> Result<impl IntoResponse, ApiError> {
+    validate_path_segment(&id, "plan id")?;
+
+    // Parse and validate the request body — blank feedback is 422.
+    let req: ReviseRequest = serde_json::from_slice(&body).map_err(ApiError::parse)?;
+    if req.feedback.trim().is_empty() {
+        return Err(ApiError::unprocessable_entity(
+            "'feedback' must not be blank",
+        ));
+    }
+
+    // 404 — plan must exist before we queue work.
+    let _ = state
+        .runtime
+        .load_plan_summary(&state.workdir, &id)
+        .await
+        .map_err(|e| ApiError::internal(format!("load plan '{id}': {e}")))?
+        .ok_or_else(|| ApiError::not_found(format!("plan '{id}' not found")))?;
+
+    // 409 — active plan run includes this plan.
+    {
+        let active = state.active_plans.read().await;
+        if let Some(conflict_key) = active_run_for(&active, &id) {
+            return Err(ApiError::conflict(format!(
+                "plan '{id}' is part of an active run (run key: {conflict_key}); \
+                 finish or cancel the run before revising the plan"
+            )));
+        }
+    }
+
+    // 409 — another revision for the same plan is already in progress.
+    {
+        let ops = state.operations.read().await;
+        let revision_kind = format!("plan_revise:{id}");
+        let already_running = ops
+            .values()
+            .any(|op| op.kind == revision_kind && matches!(op.status, OperationStatus::Running));
+        if already_running {
+            return Err(ApiError::conflict(format!(
+                "a revision of plan '{id}' is already in progress"
+            )));
+        }
+    }
+
+    let op_id = uuid::Uuid::new_v4().to_string();
+    let bus = state.event_bus.clone();
+    let runtime = state.runtime.clone();
+    let workdir = state.workdir.clone();
+    let kind = format!("plan_revise:{id}");
+    let plan_id_for_task = id.clone();
+    let feedback = req.feedback.clone();
+    let state_for_task = Arc::clone(&state);
+
+    // Gate the task on a start signal so the handle is always registered before
+    // the task can write back its result (mirrors `generate_plan`).
+    let (start_tx, start_rx) = tokio::sync::oneshot::channel::<()>();
+
+    let handle = tokio::spawn({
+        let op_id = op_id.clone();
+        async move {
+            // Wait until the caller has inserted the OperationHandle.
+            let _ = start_rx.await;
+
+            // Announce start.
+            {
+                use roko_core::DashboardEvent;
+                state_for_task
+                    .state_hub
+                    .publish_batch(vec![DashboardEvent::EventLogEntry {
+                        timestamp_ms: generate_now_millis(),
+                        event_type: "plan_revise.started".into(),
+                        plan_id: plan_id_for_task.clone(),
+                        task_id: String::new(),
+                        message: format!("▶ revise op={op_id}"),
+                    }]);
+            }
+            bus.publish(ServerEvent::OperationStarted {
+                op_id: op_id.clone(),
+                kind: "plan_revise".into(),
+            });
+
+            match runtime
+                .revise_plan(&workdir, &plan_id_for_task, &feedback)
+                .await
+            {
+                Ok(Some(dto)) => {
+                    let (event_type, success) = if dto.revised {
+                        // Written successfully.
+                        let result_json = serde_json::to_string(
+                            &json!({ "slug": plan_id_for_task, "task_count": dto.task_count }),
+                        )
+                        .unwrap_or_default();
+                        if let Some(h) = state_for_task.operations.write().await.get_mut(&op_id) {
+                            h.status = crate::state::OperationStatus::Completed {
+                                result: Some(result_json),
+                            };
+                        }
+                        ("plan_revise.completed", true)
+                    } else {
+                        // Rejected by validation.
+                        let error_msg =
+                            format!("plan revision rejected: {} error(s)", dto.validation.errors);
+                        if let Some(h) = state_for_task.operations.write().await.get_mut(&op_id) {
+                            h.status = crate::state::OperationStatus::Failed {
+                                error: error_msg.clone(),
+                            };
+                        }
+                        bus.publish(ServerEvent::Error { message: error_msg });
+                        ("plan_revise.failed", false)
+                    };
+
+                    {
+                        use roko_core::DashboardEvent;
+                        state_for_task.state_hub.publish_batch(vec![
+                            DashboardEvent::EventLogEntry {
+                                timestamp_ms: generate_now_millis(),
+                                event_type: event_type.into(),
+                                plan_id: plan_id_for_task.clone(),
+                                task_id: String::new(),
+                                message: format!("op={op_id} tasks={}", dto.task_count),
+                            },
+                        ]);
+                    }
+                    bus.publish(ServerEvent::OperationCompleted {
+                        op_id,
+                        kind: "plan_revise".into(),
+                        success,
+                    });
+                }
+                Ok(None) => {
+                    // Plan disappeared between the pre-check and now.
+                    let error_msg = format!("plan '{plan_id_for_task}' not found during revision");
+                    if let Some(h) = state_for_task.operations.write().await.get_mut(&op_id) {
+                        h.status = crate::state::OperationStatus::Failed {
+                            error: error_msg.clone(),
+                        };
+                    }
+                    {
+                        use roko_core::DashboardEvent;
+                        state_for_task.state_hub.publish_batch(vec![
+                            DashboardEvent::EventLogEntry {
+                                timestamp_ms: generate_now_millis(),
+                                event_type: "plan_revise.failed".into(),
+                                plan_id: plan_id_for_task.clone(),
+                                task_id: String::new(),
+                                message: format!("op={op_id} error=not_found"),
+                            },
+                        ]);
+                    }
+                    bus.publish(ServerEvent::Error { message: error_msg });
+                    bus.publish(ServerEvent::OperationCompleted {
+                        op_id,
+                        kind: "plan_revise".into(),
+                        success: false,
+                    });
+                }
+                Err(err) => {
+                    let error_msg = format!("plan revision failed for {plan_id_for_task}: {err}");
+                    bus.publish(ServerEvent::Error {
+                        message: error_msg.clone(),
+                    });
+                    if let Some(h) = state_for_task.operations.write().await.get_mut(&op_id) {
+                        h.status = crate::state::OperationStatus::Failed {
+                            error: error_msg.clone(),
+                        };
+                    }
+                    {
+                        use roko_core::DashboardEvent;
+                        state_for_task.state_hub.publish_batch(vec![
+                            DashboardEvent::EventLogEntry {
+                                timestamp_ms: generate_now_millis(),
+                                event_type: "plan_revise.failed".into(),
+                                plan_id: plan_id_for_task.clone(),
+                                task_id: String::new(),
+                                message: format!("op={op_id} error={err}"),
+                            },
+                        ]);
+                    }
+                    bus.publish(ServerEvent::OperationCompleted {
+                        op_id,
+                        kind: "plan_revise".into(),
+                        success: false,
+                    });
+                }
+            }
+        }
+    });
+
+    let op = OperationHandle {
+        id: op_id.clone(),
+        kind,
+        status: OperationStatus::Running,
+        handle,
+    };
+
+    state.operations.write().await.insert(op_id.clone(), op);
+    // Unblock the task now that the handle is registered.
+    let _ = start_tx.send(());
+
+    Ok((
+        axum::http::StatusCode::ACCEPTED,
+        Json(json!({ "id": op_id, "plan_id": id })),
+    ))
+}
+
+/// Return the current time as milliseconds since the Unix epoch.
+#[allow(clippy::cast_possible_truncation)]
+fn generate_now_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as u64)
+}
+
+// ── Plan source (TOML authoring) ─────────────────────────────────────
+
+/// `GET /api/plans/{id}/source` — read the raw `tasks.toml` for a plan.
+///
+/// Returns `{ "id", "path", "toml" }` (200), or 404 for an unknown plan.
+async fn get_plan_source(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    validate_path_segment(&id, "plan id")?;
+
+    let dto: PlanSourceDto = state
+        .runtime
+        .plan_source(&state.workdir, &id)
+        .await
+        .map_err(|e| ApiError::internal(format!("read source for plan '{id}': {e}")))?
+        .ok_or_else(|| ApiError::not_found(format!("plan '{id}' not found")))?;
+
+    Ok(Json(json!({
+        "id": dto.id,
+        "path": dto.path,
+        "toml": dto.toml,
+    })))
+}
+
+/// Request body for `PUT /api/plans/{id}/source`.
+#[derive(Deserialize)]
+struct PutPlanSourceRequest {
+    toml: String,
+}
+
+/// `PUT /api/plans/{id}/source` — overwrite the raw `tasks.toml` for a plan.
+///
+/// - 200 `{ "saved": true, "errors", "warnings", "diagnostics" }` on success.
+/// - 422 `{ "code": "invalid_plan", "message", "errors", "warnings", "diagnostics" }`
+///   when validation rejects the content (file on disk untouched).
+/// - 404 for an unknown plan.
+/// - 409 when an active run already includes the plan (it reads the source
+///   mid-flight; changing it would corrupt the run).
+async fn put_plan_source(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    body: axum::body::Bytes,
+) -> Result<impl IntoResponse, ApiError> {
+    validate_path_segment(&id, "plan id")?;
+
+    // 409 when a live run includes this plan (source is read mid-flight).
+    let active = state.active_plans.read().await;
+    if let Some(conflict_key) = active_run_for(&active, &id) {
+        return Err(ApiError::conflict(format!(
+            "plan '{id}' is part of an active run (run key: {conflict_key}); \
+             finish or cancel the run before editing its source"
+        )));
+    }
+    drop(active);
+
+    // Parse the request body.
+    let req: PutPlanSourceRequest = serde_json::from_slice(&body).map_err(ApiError::parse)?;
+
+    // Delegate to the runtime: validates, then writes only when valid.
+    let dto: PlanValidationDto = state
+        .runtime
+        .save_plan_source(&state.workdir, &id, req.toml)
+        .await
+        .map_err(|e| ApiError::internal(format!("save source for plan '{id}': {e}")))?
+        .ok_or_else(|| ApiError::not_found(format!("plan '{id}' not found")))?;
+
+    if dto.valid {
+        // 200 — saved successfully.
+        Ok((
+            axum::http::StatusCode::OK,
+            Json(json!({
+                "saved": true,
+                "errors": dto.errors,
+                "warnings": dto.warnings,
+                "diagnostics": dto.diagnostics,
+            })),
+        )
+            .into_response())
+    } else {
+        // 422 — rejected; file untouched.  Keep `code`/`message` so the
+        // portal's typed API error parser can decode it.
+        let body = json!({
+            "code": "invalid_plan",
+            "message": dto.diagnostics.iter()
+                .find(|d| d.severity == "error")
+                .map(|d| d.message.clone())
+                .unwrap_or_else(|| "plan source is invalid".to_string()),
+            "errors": dto.errors,
+            "warnings": dto.warnings,
+            "diagnostics": dto.diagnostics,
+        });
+        Ok((axum::http::StatusCode::UNPROCESSABLE_ENTITY, Json(body)).into_response())
+    }
+}
+
+/// Request body for `POST /api/plans/{id}/validate`.
+///
+/// The entire body is optional: omit it to validate the file on disk.
+#[derive(Deserialize)]
+struct ValidatePlanRequest {
+    toml: String,
+}
+
+/// `POST /api/plans/{id}/validate` — validate a plan source without saving.
+///
+/// - With no body: validates the plan file currently on disk.
+/// - With `{ "toml": "..." }`: validates that text exactly as a save would,
+///   without writing anything.
+///
+/// Always returns 200 with `{ "valid", "errors", "warnings", "diagnostics" }`
+/// regardless of whether the plan is valid — an invalid plan is a normal
+/// editing state; the portal renders its badge from the counts and anchors
+/// each diagnostic to the task it names via `task_id`.
+///
+/// - 404 when the plan does not exist.
+/// - 400 for a malformed request body.
+async fn validate_plan(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    body: axum::body::Bytes,
+) -> Result<Json<Value>, ApiError> {
+    validate_path_segment(&id, "plan id")?;
+
+    // Parse optional body: empty body → validate the on-disk file;
+    // body with `{ "toml": "..." }` → validate that text without writing.
+    let toml: Option<String> = if body.is_empty() {
+        None
+    } else {
+        let req: ValidatePlanRequest = serde_json::from_slice(&body).map_err(ApiError::parse)?;
+        Some(req.toml)
+    };
+
+    let dto: PlanValidationDto = state
+        .runtime
+        .validate_plan_source(&state.workdir, &id, toml)
+        .await
+        .map_err(|e| ApiError::internal(format!("validate source for plan '{id}': {e}")))?
+        .ok_or_else(|| ApiError::not_found(format!("plan '{id}' not found")))?;
+
+    // Always 200 — an invalid plan is a normal editing state; the portal
+    // decides how to display it based on `valid` and the diagnostic list.
+    Ok(Json(json!({
+        "valid": dto.valid,
+        "errors": dto.errors,
+        "warnings": dto.warnings,
+        "diagnostics": dto.diagnostics,
+    })))
 }
 
 // ── helpers ──────────────────────────────────────────────────────────
@@ -1843,8 +2345,45 @@ fn plan_to_json(plan: &Plan) -> Value {
     })
 }
 
-fn default_task_tier() -> String {
-    "focused".to_string()
+/// Derive a URL-safe slug from a human title.
+///
+/// Conversion rules (stable; T09 reuses this function):
+/// 1. Lowercase the entire string (ASCII only — non-ASCII is treated as a
+///    separator so multi-lingual titles get a deterministic safe slug).
+/// 2. Collapse every run of characters that is not an ASCII alphanumeric or
+///    `-` into a single `-`.
+/// 3. Strip leading and trailing `-` characters.
+/// 4. Truncate to at most 48 characters, then strip any newly trailing `-`.
+///
+/// Empty titles produce the empty string; callers should validate the result
+/// with [`validate_path_segment`] before using it as a file-system component.
+pub(crate) fn slug_from_title(title: &str) -> String {
+    let lower = title.to_ascii_lowercase();
+    let mut slug = String::with_capacity(lower.len());
+    let mut in_sep = true; // true → skip leading dashes
+    for ch in lower.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '-' {
+            if ch == '-' {
+                if !in_sep {
+                    slug.push('-');
+                    in_sep = true;
+                }
+            } else {
+                slug.push(ch);
+                in_sep = false;
+            }
+        } else if !in_sep {
+            slug.push('-');
+            in_sep = true;
+        }
+    }
+    // Trim trailing separator and enforce the 48-character limit.
+    let slug = slug.trim_end_matches('-');
+    // Truncate at 48 chars (all chars are ASCII, so char == byte boundary).
+    let slug = if slug.len() > 48 { &slug[..48] } else { slug };
+    // A clean truncation boundary may leave a trailing dash (e.g. "foo-bar-"
+    // after snipping at a separator position).
+    slug.trim_end_matches('-').to_string()
 }
 
 async fn find_prd(
@@ -1867,16 +2406,82 @@ async fn find_prd(
     Err(ApiError::not_found(format!("PRD '{slug}' not found")))
 }
 
-fn build_plan_generation_prompt(prd_path: &std::path::Path, prd_content: &str) -> String {
-    format!(
-        "Read the PRD at {path} and generate implementation plan directories under .roko/plans.\n\
-         Search the codebase first to understand what already exists.\n\
-         Create or update plan.md and tasks.toml files directly, including per-task mcp_servers when a task needs a specific MCP server.\n\
-         Each requirement and acceptance criterion should become one or more small, executable tasks.\n\n\
-         PRD content:\n{content}\n",
-        path = prd_path.display(),
-        content = prd_content,
-    )
+/// Derive a unique plan slug for a free-text prompt.
+///
+/// Takes the first line of the prompt (up to 80 chars) as the title, converts
+/// it to a kebab-case slug via [`slug_from_title`], then checks whether any
+/// plan directory or PRD file (published or draft) already uses that name.
+/// If there is a collision it appends `-2`, `-3`, and so on until a free
+/// name is found.
+async fn derive_unique_slug(workdir: &std::path::Path, prompt: &str) -> String {
+    let first_line = prompt.lines().next().unwrap_or("").trim();
+    let title = if first_line.len() > 80 {
+        &first_line[..80]
+    } else {
+        first_line
+    };
+    let base = slug_from_title(title);
+    let base = if base.is_empty() {
+        "plan".to_string()
+    } else {
+        base
+    };
+
+    let plans_root = plans_dir(workdir);
+    let prd_root = workdir.join(".roko").join("prd");
+
+    let is_used = |slug: &str| -> bool {
+        plans_root.join(slug).exists()
+            || prd_root
+                .join("published")
+                .join(format!("{slug}.md"))
+                .exists()
+            || prd_root.join("drafts").join(format!("{slug}.md")).exists()
+    };
+
+    if !is_used(&base) {
+        return base;
+    }
+    for n in 2u32.. {
+        let candidate = format!("{base}-{n}");
+        if !is_used(&candidate) {
+            return candidate;
+        }
+    }
+    base // unreachable in practice
+}
+
+/// Write a free-text prompt as a PRD draft at `.roko/prd/drafts/<slug>.md`.
+///
+/// The file has YAML front-matter with `title` (first line, ≤80 chars, no
+/// quotes) and `source: api`, followed by `# <title>` and then the full
+/// prompt verbatim.  `runtime.generate_plan_from_prd` derives the workspace
+/// from the file path, so the file must live exactly at that location.
+async fn write_prompt_prd(
+    workdir: &std::path::Path,
+    slug: &str,
+    prompt: &str,
+) -> Result<std::path::PathBuf, ApiError> {
+    let first_line = prompt.lines().next().unwrap_or("").trim();
+    let title = if first_line.len() > 80 {
+        &first_line[..80]
+    } else {
+        first_line
+    };
+
+    let content = format!("---\ntitle: {title}\nsource: api\n---\n# {title}\n\n{prompt}\n");
+
+    let drafts_dir = workdir.join(".roko").join("prd").join("drafts");
+    tokio::fs::create_dir_all(&drafts_dir)
+        .await
+        .map_err(|e| ApiError::internal(format!("create prd drafts dir: {e}")))?;
+
+    let prd_path = drafts_dir.join(format!("{slug}.md"));
+    tokio::fs::write(&prd_path, content)
+        .await
+        .map_err(|e| ApiError::internal(format!("write prd draft for '{slug}': {e}")))?;
+
+    Ok(prd_path)
 }
 
 /// Resolve the plans directory for the given workspace root.
@@ -1925,7 +2530,7 @@ async fn resolve_plan(state: &Arc<AppState>, id: &str) -> Result<Plan, ApiError>
             id: t.id,
             description: t.description.unwrap_or_else(|| t.title.clone()),
             tier: t.tier,
-            model_hint: None,
+            model_hint: t.model_hint,
             depends_on: t.depends_on,
             files: t.files,
             completed: t.completed,
@@ -1987,6 +2592,8 @@ mod tests {
         /// Tasks returned by `load_plan_tasks`.  When empty, a single default
         /// task (id="T1", tier="focused", completed=false) is synthesised.
         plan_tasks: Vec<crate::plan_types::PlanTaskDto>,
+        /// Optional `estimated_minutes` returned from `load_plan_summary`.
+        summary_estimated_minutes: Option<u32>,
     }
 
     #[async_trait::async_trait]
@@ -2046,7 +2653,11 @@ mod tests {
                     return Ok(None);
                 }
             }
-            let task_count = if self.plan_tasks.is_empty() { 1 } else { self.plan_tasks.len() };
+            let task_count = if self.plan_tasks.is_empty() {
+                1
+            } else {
+                self.plan_tasks.len()
+            };
             Ok(Some(crate::plan_types::PlanSummaryDto {
                 id: plan_id.to_string(),
                 title: "Test Plan".to_string(),
@@ -2059,6 +2670,7 @@ mod tests {
                 old_format: false,
                 last_error: None,
                 group: self.group.clone(),
+                estimated_minutes: self.summary_estimated_minutes,
             }))
         }
 
@@ -2091,6 +2703,9 @@ mod tests {
                     files: vec![],
                     completed: false,
                     verify_phases: vec![],
+                    model_hint: None,
+                    estimated_minutes: None,
+                    verify: vec![],
                 }]
             } else {
                 self.plan_tasks.clone()
@@ -2100,6 +2715,8 @@ mod tests {
                 plan_id: plan_id.to_string(),
                 task_count,
                 tasks,
+                title: None,
+                max_parallel: 1,
             }))
         }
 
@@ -2154,6 +2771,117 @@ mod tests {
                 rendered: String::new(),
             }
         }
+
+        /// Return a synthetic plan source DTO.
+        ///
+        /// Returns `Ok(None)` when `known_plan_id` is set and does not match.
+        async fn plan_source(
+            &self,
+            _workdir: &std::path::Path,
+            plan_id: &str,
+        ) -> anyhow::Result<Option<crate::plan_types::PlanSourceDto>> {
+            if let Some(ref known) = self.known_plan_id {
+                if plan_id != known {
+                    return Ok(None);
+                }
+            }
+            Ok(Some(crate::plan_types::PlanSourceDto {
+                id: plan_id.to_string(),
+                path: format!("plans/{plan_id}/tasks.toml"),
+                toml: "[meta]\ntitle = \"Test Plan\"\n".to_string(),
+            }))
+        }
+
+        /// Validate and save a plan source text.
+        ///
+        /// Returns `Ok(None)` when `known_plan_id` is set and does not match.
+        /// Always returns `valid: true` otherwise (test stub).
+        async fn save_plan_source(
+            &self,
+            _workdir: &std::path::Path,
+            plan_id: &str,
+            _toml: String,
+        ) -> anyhow::Result<Option<crate::plan_types::PlanValidationDto>> {
+            if let Some(ref known) = self.known_plan_id {
+                if plan_id != known {
+                    return Ok(None);
+                }
+            }
+            Ok(Some(crate::plan_types::PlanValidationDto {
+                valid: true,
+                errors: 0,
+                warnings: 0,
+                diagnostics: vec![],
+            }))
+        }
+
+        /// Validate a plan source text without saving.
+        ///
+        /// Returns `Ok(None)` when `known_plan_id` is set and does not match.
+        /// Always returns `valid: true` otherwise (test stub).
+        async fn validate_plan_source(
+            &self,
+            _workdir: &std::path::Path,
+            plan_id: &str,
+            _toml: Option<String>,
+        ) -> anyhow::Result<Option<crate::plan_types::PlanValidationDto>> {
+            if let Some(ref known) = self.known_plan_id {
+                if plan_id != known {
+                    return Ok(None);
+                }
+            }
+            Ok(Some(crate::plan_types::PlanValidationDto {
+                valid: true,
+                errors: 0,
+                warnings: 0,
+                diagnostics: vec![],
+            }))
+        }
+
+        /// Create a new plan.
+        ///
+        /// Returns `AlreadyExists` when `known_plan_id` matches the slug
+        /// (simulating a plan that is already on disk).  Otherwise returns
+        /// `Created` so callers can test the happy path.
+        async fn create_plan(
+            &self,
+            _workdir: &std::path::Path,
+            slug: &str,
+            _title: &str,
+        ) -> anyhow::Result<crate::plan_types::CreatePlanOutcome> {
+            if self.known_plan_id.as_deref() == Some(slug) {
+                return Ok(crate::plan_types::CreatePlanOutcome::AlreadyExists {
+                    slug: slug.to_string(),
+                });
+            }
+            Ok(crate::plan_types::CreatePlanOutcome::Created {
+                slug: slug.to_string(),
+                path: format!("plans/{slug}"),
+            })
+        }
+
+        /// Generate a plan from a PRD; records the call and returns a
+        /// synthetic result with one plan target.
+        async fn generate_plan_from_prd(
+            &self,
+            workdir: &std::path::Path,
+            slug: &str,
+            prd_path: &std::path::Path,
+        ) -> anyhow::Result<crate::runtime::PlanGenerationResult> {
+            self.calls.lock().expect("lock calls").push(RecordedCall {
+                kind: "prd_plan",
+                workdir: workdir.to_path_buf(),
+                arg: prd_path.to_string_lossy().into_owned(),
+            });
+            self.call_count.fetch_add(1, Ordering::SeqCst);
+            self.notify.notify_waiters();
+            let plan_dir = workdir.join("plans").join(slug);
+            Ok(crate::runtime::PlanGenerationResult {
+                plans_root: workdir.join("plans"),
+                plan_targets: vec![plan_dir],
+                artifacts: vec![],
+            })
+        }
     }
 
     fn test_state() -> (tempfile::TempDir, Arc<AppState>) {
@@ -2205,7 +2933,13 @@ mod tests {
     async fn execute_plan_returns_404_for_missing_plan() {
         let (_dir, state) = test_state();
 
-        let err = match execute_plan(State(state), Path("missing-plan".into()), axum::body::Bytes::new()).await {
+        let err = match execute_plan(
+            State(state),
+            Path("missing-plan".into()),
+            axum::body::Bytes::new(),
+        )
+        .await
+        {
             Ok(_) => panic!("missing plan should error"),
             Err(err) => err,
         };
@@ -2225,21 +2959,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn create_plan_rejects_empty_fields() {
+    async fn create_plan_rejects_blank_title() {
         let request = CreatePlanRequest {
             title: "   ".into(),
-            description: "desc".into(),
-            tasks: vec![CreateTaskEntry {
-                id: " ".into(),
-                description: "task".into(),
-                depends_on: vec![],
-                files: vec![],
-                tier: "standard".into(),
-                model_hint: None,
-            }],
+            slug: None,
         };
-
-        assert!(request.validate().is_err());
+        assert!(
+            request.validate().is_err(),
+            "blank title must fail validation"
+        );
     }
 
     #[tokio::test]
@@ -2275,9 +3003,217 @@ mod tests {
         assert!(payload.get("error").is_none());
     }
 
+    // ── slug_from_title unit tests ────────────────────────────────────────
+
+    #[test]
+    fn slug_from_title_basic() {
+        assert_eq!(slug_from_title("Hello World"), "hello-world");
+    }
+
+    #[test]
+    fn slug_from_title_collapses_runs() {
+        assert_eq!(slug_from_title("foo  --  bar"), "foo-bar");
+    }
+
+    #[test]
+    fn slug_from_title_truncates_at_48() {
+        let long = "a".repeat(60);
+        let s = slug_from_title(&long);
+        assert!(s.len() <= 48);
+    }
+
+    #[test]
+    fn slug_from_title_strips_leading_trailing_separators() {
+        assert_eq!(slug_from_title("  hello  "), "hello");
+    }
+
+    // ── create_plan handler tests ─────────────────────────────────────────
+
+    #[tokio::test]
+    async fn create_plan_201_via_router() {
+        let runtime = recording_runtime_for_plan("other-plan");
+        let (_dir, state) = test_state_with_runtime(runtime);
+        let app = build_router(
+            Arc::clone(&state),
+            &[],
+            ServeAuthConfig {
+                enabled: false,
+                ..ServeAuthConfig::default()
+            },
+        );
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/plans")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"title":"My New Plan"}"#))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+
+        assert_eq!(response.status(), axum::http::StatusCode::CREATED);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let payload: Value = serde_json::from_slice(&body).expect("parse response body");
+        // id must be the slug derived from the title
+        assert_eq!(payload["id"], "my-new-plan");
+        assert_eq!(payload["path"], "plans/my-new-plan");
+    }
+
+    #[tokio::test]
+    async fn create_plan_409_when_slug_already_exists() {
+        // known_plan_id == slug → runtime returns AlreadyExists → 409.
+        let runtime = recording_runtime_for_plan("existing-plan");
+        let (_dir, state) = test_state_with_runtime(runtime);
+        let app = build_router(
+            Arc::clone(&state),
+            &[],
+            ServeAuthConfig {
+                enabled: false,
+                ..ServeAuthConfig::default()
+            },
+        );
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/plans")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"title":"Existing Plan","slug":"existing-plan"}"#,
+                    ))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+
+        assert_eq!(response.status(), axum::http::StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn create_plan_uses_explicit_slug_over_derived() {
+        let runtime = recording_runtime_for_plan("other");
+        let (_dir, state) = test_state_with_runtime(runtime);
+        let app = build_router(
+            Arc::clone(&state),
+            &[],
+            ServeAuthConfig {
+                enabled: false,
+                ..ServeAuthConfig::default()
+            },
+        );
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/plans")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"title":"Something Else","slug":"my-slug"}"#))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+
+        assert_eq!(response.status(), axum::http::StatusCode::CREATED);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let payload: Value = serde_json::from_slice(&body).expect("parse response body");
+        assert_eq!(payload["id"], "my-slug");
+        assert_eq!(payload["path"], "plans/my-slug");
+    }
+
+    #[tokio::test]
+    async fn create_plan_rejects_path_traversal_slug() {
+        let runtime = recording_runtime_for_plan("x");
+        let (_dir, state) = test_state_with_runtime(runtime);
+        let app = build_router(
+            Arc::clone(&state),
+            &[],
+            ServeAuthConfig {
+                enabled: false,
+                ..ServeAuthConfig::default()
+            },
+        );
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/plans")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"title":"x","slug":"../etc/passwd"}"#))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+
+        assert_eq!(response.status(), axum::http::StatusCode::BAD_REQUEST);
+    }
+
     #[tokio::test]
     async fn generate_plan_rejects_empty_slug() {
-        assert!(GenerateRequest { slug: "  ".into() }.validate().is_err());
+        // Blank slug → 422 from validate_payload.
+        let req = GenerateRequest {
+            slug: Some("  ".into()),
+            prompt: None,
+        };
+        assert!(req.validate_payload().is_err());
+    }
+
+    #[tokio::test]
+    async fn generate_plan_rejects_neither_field() {
+        let req = GenerateRequest {
+            slug: None,
+            prompt: None,
+        };
+        let err = req.validate_payload().unwrap_err();
+        // Must be a 422.
+        assert_eq!(err.status.as_u16(), 422);
+    }
+
+    #[tokio::test]
+    async fn generate_plan_rejects_both_fields() {
+        let req = GenerateRequest {
+            slug: Some("demo".into()),
+            prompt: Some("build something".into()),
+        };
+        let err = req.validate_payload().unwrap_err();
+        assert_eq!(err.status.as_u16(), 422);
+    }
+
+    #[tokio::test]
+    async fn generate_plan_rejects_blank_prompt() {
+        let req = GenerateRequest {
+            slug: None,
+            prompt: Some("   ".into()),
+        };
+        let err = req.validate_payload().unwrap_err();
+        assert_eq!(err.status.as_u16(), 422);
+    }
+
+    #[tokio::test]
+    async fn generate_plan_accepts_slug_only() {
+        let req = GenerateRequest {
+            slug: Some("my-plan".into()),
+            prompt: None,
+        };
+        assert!(req.validate_payload().is_ok());
+    }
+
+    #[tokio::test]
+    async fn generate_plan_accepts_prompt_only() {
+        let req = GenerateRequest {
+            slug: None,
+            prompt: Some("build a widget".into()),
+        };
+        assert!(req.validate_payload().is_ok());
     }
 
     #[tokio::test]
@@ -2291,6 +3227,7 @@ mod tests {
             last_options: Arc::new(Mutex::new(None)),
             known_plan_id: None,
             plan_tasks: vec![],
+            summary_estimated_minutes: None,
         });
         let notify = Arc::clone(&runtime.as_ref().notify);
         let calls = Arc::clone(&runtime.as_ref().calls);
@@ -2311,9 +3248,13 @@ mod tests {
         .await
         .expect("write tasks.toml");
 
-        let response = execute_plan(State(Arc::clone(&state)), Path("demo".into()), axum::body::Bytes::new())
-            .await
-            .expect("execute plan");
+        let response = execute_plan(
+            State(Arc::clone(&state)),
+            Path("demo".into()),
+            axum::body::Bytes::new(),
+        )
+        .await
+        .expect("execute plan");
 
         assert_eq!(
             response.into_response().status(),
@@ -2348,6 +3289,7 @@ mod tests {
             last_options: Arc::new(Mutex::new(None)),
             known_plan_id: None,
             plan_tasks: vec![],
+            summary_estimated_minutes: None,
         });
         let notify = Arc::clone(&runtime.as_ref().notify);
         let calls = Arc::clone(&runtime.as_ref().calls);
@@ -2367,15 +3309,25 @@ mod tests {
         let response = generate_plan(
             State(Arc::clone(&state)),
             ValidJson(GenerateRequest {
-                slug: "demo".into(),
+                slug: Some("demo".into()),
+                prompt: None,
             }),
         )
         .await
         .expect("generate plan");
 
+        let http_response = response.into_response();
+        assert_eq!(http_response.status(), axum::http::StatusCode::ACCEPTED);
+
+        // Verify the body contains plan_id so the portal generate hook can use it.
+        let body_bytes = to_bytes(http_response.into_body(), usize::MAX)
+            .await
+            .expect("read body");
+        let body: Value = serde_json::from_slice(&body_bytes).expect("parse body");
         assert_eq!(
-            response.into_response().status(),
-            axum::http::StatusCode::ACCEPTED
+            body.get("plan_id").and_then(Value::as_str),
+            Some("demo"),
+            "response body must include plan_id"
         );
 
         tokio::time::timeout(std::time::Duration::from_secs(1), notify.notified())
@@ -2384,15 +3336,79 @@ mod tests {
 
         let calls = calls.lock().expect("lock calls");
         assert_eq!(calls.len(), 1);
+        assert_eq!(
+            calls[0].kind, "prd_plan",
+            "must call generate_plan_from_prd, not run_once"
+        );
         assert_eq!(calls[0].workdir, state.workdir);
         assert!(
             calls[0].arg.contains(".roko/prd/published/demo.md"),
-            "run_once arg must contain PRD path: {}",
+            "generate_plan_from_prd prd_path must be the published PRD: {}",
             calls[0].arg
         );
+    }
+
+    #[tokio::test]
+    async fn generate_plan_from_prompt_writes_prd_draft_and_calls_runtime() {
+        let runtime = Arc::new(RecordingRuntime {
+            calls: Arc::new(Mutex::new(Vec::new())),
+            notify: Arc::new(Notify::new()),
+            success: true,
+            call_count: Arc::new(AtomicUsize::new(0)),
+            group: None,
+            last_options: Arc::new(Mutex::new(None)),
+            known_plan_id: None,
+            plan_tasks: vec![],
+            summary_estimated_minutes: None,
+        });
+        let notify = Arc::clone(&runtime.as_ref().notify);
+        let calls = Arc::clone(&runtime.as_ref().calls);
+        let (_dir, state) = test_state_with_runtime(runtime);
+
+        let response = generate_plan(
+            State(Arc::clone(&state)),
+            ValidJson(GenerateRequest {
+                slug: None,
+                prompt: Some("Build a widget library".into()),
+            }),
+        )
+        .await
+        .expect("generate plan from prompt");
+
+        let http_response = response.into_response();
+        assert_eq!(http_response.status(), axum::http::StatusCode::ACCEPTED);
+
+        let body_bytes = to_bytes(http_response.into_body(), usize::MAX)
+            .await
+            .expect("read body");
+        let body: Value = serde_json::from_slice(&body_bytes).expect("parse body");
+        let plan_id = body
+            .get("plan_id")
+            .and_then(Value::as_str)
+            .expect("plan_id in response");
+        assert!(!plan_id.is_empty(), "plan_id must not be empty");
+
+        tokio::time::timeout(std::time::Duration::from_secs(1), notify.notified())
+            .await
+            .expect("runtime should be called");
+
+        let calls = calls.lock().expect("lock calls");
+        assert_eq!(calls.len(), 1);
+        assert_eq!(
+            calls[0].kind, "prd_plan",
+            "must call generate_plan_from_prd for prompt path"
+        );
+        // The prd_path must be the draft we wrote.
         assert!(
-            calls[0].arg.contains("Build the widget."),
-            "run_once arg must contain PRD content: {}",
+            calls[0].arg.contains(".roko/prd/drafts/"),
+            "prd_path must be inside drafts/: {}",
+            calls[0].arg
+        );
+        // The draft file must exist on disk.
+        let draft_path = std::path::PathBuf::from(&calls[0].arg);
+        assert!(
+            draft_path.is_file(),
+            "PRD draft must exist on disk: {}",
             calls[0].arg
         );
     }
@@ -2422,6 +3438,9 @@ mod tests {
                     files: vec![],
                     completed: true,
                     verify_phases: vec![],
+                    model_hint: None,
+                    estimated_minutes: None,
+                    verify: vec![],
                 },
                 crate::plan_types::PlanTaskDto {
                     id: "T2".to_string(),
@@ -2434,8 +3453,12 @@ mod tests {
                     files: vec![],
                     completed: false,
                     verify_phases: vec![],
+                    model_hint: None,
+                    estimated_minutes: None,
+                    verify: vec![],
                 },
             ],
+            summary_estimated_minutes: None,
         });
         let (_dir, state) = test_state_with_runtime(runtime);
         let mut config = (*state.load_roko_config()).clone();
@@ -2535,6 +3558,7 @@ mod tests {
             last_options: Arc::new(Mutex::new(None)),
             known_plan_id: None,
             plan_tasks: vec![],
+            summary_estimated_minutes: None,
         });
         let notify = Arc::clone(&runtime.as_ref().notify);
         let (_dir, state) = test_state_with_runtime(runtime);
@@ -2612,6 +3636,7 @@ mod tests {
             last_options: Arc::new(Mutex::new(None)),
             known_plan_id: None,
             plan_tasks: vec![],
+            summary_estimated_minutes: None,
         });
         let notify = Arc::clone(&runtime.as_ref().notify);
         let calls = Arc::clone(&runtime.as_ref().calls);
@@ -2635,7 +3660,11 @@ mod tests {
 
         // Verify exactly one plan run was recorded (not a run_once call).
         let calls = calls.lock().expect("lock calls");
-        assert_eq!(calls.len(), 1, "exactly one call — resume must not fall through to run_once");
+        assert_eq!(
+            calls.len(),
+            1,
+            "exactly one call — resume must not fall through to run_once"
+        );
         assert_eq!(
             calls[0].kind, "plan",
             "resume_plan must call run_plan_with_options, not run_once"
@@ -2682,6 +3711,7 @@ mod tests {
             // Only "dir-plan" is known; "unknown-id" must 404.
             known_plan_id: Some("dir-plan".to_string()),
             plan_tasks: vec![],
+            summary_estimated_minutes: None,
         });
         let (_dir, state) = test_state_with_runtime(runtime);
 
@@ -2766,15 +3796,14 @@ mod tests {
             last_options: Arc::new(Mutex::new(None)),
             known_plan_id: None,
             plan_tasks: vec![],
+            summary_estimated_minutes: None,
         });
         let notify = Arc::clone(&runtime.as_ref().notify);
         let (_dir, state) = test_state_with_runtime(runtime);
 
         let response = match execute_plans(
             State(Arc::clone(&state)),
-            axum::body::Bytes::from(
-                r#"{"plans":["plan-a","plan-b"],"max_parallel_plans":2}"#,
-            ),
+            axum::body::Bytes::from(r#"{"plans":["plan-a","plan-b"],"max_parallel_plans":2}"#),
         )
         .await
         {
@@ -2886,15 +3915,16 @@ mod tests {
             last_options: Arc::new(Mutex::new(None)),
             known_plan_id: None,
             plan_tasks: vec![],
+            summary_estimated_minutes: None,
         });
         let notify = Arc::clone(&runtime.as_ref().notify);
         let (_dir, state) = test_state_with_runtime(runtime);
 
-        let response = match execute_plans(State(Arc::clone(&state)), axum::body::Bytes::new()).await
-        {
-            Ok(r) => r.into_response(),
-            Err(e) => panic!("execute_plans empty body should succeed, got error: {e:?}"),
-        };
+        let response =
+            match execute_plans(State(Arc::clone(&state)), axum::body::Bytes::new()).await {
+                Ok(r) => r.into_response(),
+                Err(e) => panic!("execute_plans empty body should succeed, got error: {e:?}"),
+            };
 
         assert_eq!(response.status(), axum::http::StatusCode::ACCEPTED);
 
@@ -2915,6 +3945,7 @@ mod tests {
             last_options: Arc::new(Mutex::new(None)),
             known_plan_id: None,
             plan_tasks: vec![],
+            summary_estimated_minutes: None,
         });
         let (_dir, state) = test_state_with_runtime(runtime);
 
@@ -2934,5 +3965,423 @@ mod tests {
             axum::http::StatusCode::CONFLICT,
             "concurrent execute_plans must return 409"
         );
+    }
+
+    #[tokio::test]
+    async fn get_plan_source_rejects_path_traversal() {
+        let runtime = recording_runtime_for_plan("x");
+        let (_dir, state) = test_state_with_runtime(runtime);
+
+        let err = get_plan_source(State(state), Path("../etc/passwd".into()))
+            .await
+            .expect_err("path traversal should be rejected");
+
+        assert_eq!(err.status, axum::http::StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn get_plan_source_returns_200_with_toml() {
+        let runtime = recording_runtime_for_plan("my-plan");
+        let (_dir, state) = test_state_with_runtime(runtime);
+
+        let Json(payload) = get_plan_source(State(state), Path("my-plan".into()))
+            .await
+            .expect("get plan source should succeed");
+
+        assert_eq!(payload["id"], "my-plan");
+        assert!(
+            payload["toml"].as_str().is_some(),
+            "toml field must be present"
+        );
+        assert!(
+            payload["path"].as_str().is_some(),
+            "path field must be present"
+        );
+    }
+
+    #[tokio::test]
+    async fn get_plan_source_returns_404_for_missing_plan() {
+        let runtime = recording_runtime_for_plan("known-plan");
+        let (_dir, state) = test_state_with_runtime(runtime);
+
+        let err = get_plan_source(State(state), Path("unknown-plan".into()))
+            .await
+            .expect_err("missing plan should return 404");
+
+        assert_eq!(err.status, axum::http::StatusCode::NOT_FOUND);
+    }
+
+    /// `GET /api/plans` and `GET /api/plans/{id}` must carry every field in
+    /// `PlanSummaryDto` without dropping `group`, `tasks_done`, `old_format`,
+    /// `superseded_by`, `last_error`, or `estimated_minutes`.
+    #[tokio::test]
+    async fn plan_list_and_detail_carry_the_summary_fields() {
+        use roko_core::config::ServeAuthConfig;
+
+        // A minimal runtime that returns a single richly-populated summary.
+        #[derive(Clone)]
+        struct RichSummaryRuntime;
+
+        fn rich_summary() -> crate::plan_types::PlanSummaryDto {
+            crate::plan_types::PlanSummaryDto {
+                id: "p1".to_string(),
+                title: "Rich Plan".to_string(),
+                task_count: 3,
+                tasks_done: 2,
+                tasks_failed: 1,
+                completed: false,
+                status: "in-progress".to_string(),
+                superseded_by: Some("p2".to_string()),
+                old_format: true,
+                last_error: Some("some error".to_string()),
+                group: Some("test-group".to_string()),
+                estimated_minutes: Some(45),
+            }
+        }
+
+        #[async_trait::async_trait]
+        impl CliRuntime for RichSummaryRuntime {
+            async fn run_once(
+                &self,
+                _workdir: &std::path::Path,
+                _prompt: &str,
+            ) -> anyhow::Result<crate::runtime::RunResult> {
+                Ok(crate::runtime::RunResult {
+                    success: true,
+                    output_text: None,
+                    usage: None,
+                    gate_results: Vec::new(),
+                })
+            }
+
+            async fn list_plans(
+                &self,
+                _workdir: &std::path::Path,
+            ) -> anyhow::Result<Vec<crate::plan_types::PlanSummaryDto>> {
+                Ok(vec![rich_summary()])
+            }
+
+            async fn load_plan_summary(
+                &self,
+                _workdir: &std::path::Path,
+                plan_id: &str,
+            ) -> anyhow::Result<Option<crate::plan_types::PlanSummaryDto>> {
+                if plan_id == "p1" {
+                    Ok(Some(rich_summary()))
+                } else {
+                    Ok(None)
+                }
+            }
+
+            async fn load_plan_tasks(
+                &self,
+                _workdir: &std::path::Path,
+                plan_id: &str,
+            ) -> anyhow::Result<Option<crate::plan_types::PlanTasksDto>> {
+                if plan_id == "p1" {
+                    Ok(Some(crate::plan_types::PlanTasksDto {
+                        plan_id: "p1".to_string(),
+                        task_count: 0,
+                        tasks: vec![],
+                        title: None,
+                        max_parallel: 1,
+                    }))
+                } else {
+                    Ok(None)
+                }
+            }
+
+            fn session_status(&self, workdir: PathBuf) -> crate::runtime::SessionStatusInfo {
+                crate::runtime::SessionStatusInfo {
+                    session_id: None,
+                    workdir,
+                    daemon_running: false,
+                    signal_count: None,
+                    episode_count: None,
+                    last_episode_passed: None,
+                }
+            }
+
+            fn dashboard_scaffold(
+                &self,
+                _workdir: &std::path::Path,
+            ) -> crate::runtime::DashboardInfo {
+                crate::runtime::DashboardInfo {
+                    rendered: String::new(),
+                }
+            }
+        }
+
+        let (_dir, state) = test_state_with_runtime(Arc::new(RichSummaryRuntime));
+        let app = build_router(
+            Arc::clone(&state),
+            &[],
+            ServeAuthConfig {
+                enabled: false,
+                ..ServeAuthConfig::default()
+            },
+        );
+
+        // ── GET /api/plans ──────────────────────────────────────────────
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/api/plans")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(resp.status(), axum::http::StatusCode::OK);
+        let body = to_bytes(resp.into_body(), usize::MAX).await.expect("body");
+        let list: Value = serde_json::from_slice(&body).expect("parse list response");
+        let first = &list[0];
+        assert_eq!(first["id"], "p1", "list must carry id");
+        assert_eq!(first["group"], "test-group", "list must carry group");
+        assert_eq!(first["tasks_done"], 2, "list must carry tasks_done");
+        assert_eq!(
+            first["completed_task_count"], 2,
+            "list must carry completed_task_count alias"
+        );
+        assert_eq!(first["old_format"], true, "list must carry old_format");
+        assert_eq!(
+            first["superseded_by"], "p2",
+            "list must carry superseded_by"
+        );
+        assert_eq!(
+            first["last_error"], "some error",
+            "list must carry last_error"
+        );
+        assert_eq!(
+            first["estimated_minutes"], 45,
+            "list must carry estimated_minutes"
+        );
+
+        // ── GET /api/plans/p1 ──────────────────────────────────────────
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/api/plans/p1")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(resp.status(), axum::http::StatusCode::OK);
+        let body = to_bytes(resp.into_body(), usize::MAX).await.expect("body");
+        let detail: Value = serde_json::from_slice(&body).expect("parse detail response");
+        assert_eq!(detail["id"], "p1", "detail must carry id");
+        assert_eq!(detail["group"], "test-group", "detail must carry group");
+        assert_eq!(detail["tasks_done"], 2, "detail must carry tasks_done");
+        assert_eq!(
+            detail["completed_task_count"], 2,
+            "detail must carry completed_task_count alias"
+        );
+        assert_eq!(detail["old_format"], true, "detail must carry old_format");
+        assert_eq!(
+            detail["superseded_by"], "p2",
+            "detail must carry superseded_by"
+        );
+        assert_eq!(
+            detail["last_error"], "some error",
+            "detail must carry last_error"
+        );
+        assert_eq!(
+            detail["estimated_minutes"], 45,
+            "detail must carry estimated_minutes"
+        );
+    }
+
+    #[tokio::test]
+    async fn put_plan_source_rejects_path_traversal() {
+        let runtime = recording_runtime_for_plan("x");
+        let (_dir, state) = test_state_with_runtime(runtime);
+
+        let body = axum::body::Bytes::from(r#"{"toml":"x"}"#);
+        let result = put_plan_source(State(state), Path("../evil".into()), body).await;
+        let err = match result {
+            Err(e) => e,
+            Ok(_) => panic!("path traversal should be rejected but returned Ok"),
+        };
+
+        assert_eq!(err.status, axum::http::StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn put_plan_source_returns_200_on_valid_toml() {
+        let runtime = recording_runtime_for_plan("my-plan");
+        let (_dir, state) = test_state_with_runtime(runtime);
+
+        let body = axum::body::Bytes::from(r#"{"toml":"[meta]\ntitle=\"My Plan\"\n"}"#);
+        let resp = put_plan_source(State(Arc::clone(&state)), Path("my-plan".into()), body)
+            .await
+            .expect("valid toml should succeed");
+
+        assert_eq!(resp.into_response().status(), axum::http::StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn put_plan_source_returns_404_for_missing_plan() {
+        let runtime = recording_runtime_for_plan("known-plan");
+        let (_dir, state) = test_state_with_runtime(runtime);
+
+        let body = axum::body::Bytes::from(r#"{"toml":"[meta]\ntitle=\"x\"\n"}"#);
+        let result = put_plan_source(State(state), Path("unknown-plan".into()), body).await;
+        let err = match result {
+            Err(e) => e,
+            Ok(_) => panic!("missing plan should return 404 but returned Ok"),
+        };
+
+        assert_eq!(err.status, axum::http::StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn put_plan_source_returns_409_when_run_is_active() {
+        use crate::state::PlanHandle;
+        use roko_runtime::cancel::CancelToken;
+
+        let runtime = recording_runtime_for_plan("active-plan");
+        let (_dir, state) = test_state_with_runtime(runtime);
+
+        // Inject a fake active run for "active-plan".
+        let cancel = CancelToken::new();
+        let handle = tokio::spawn(async {
+            // Stay alive long enough for the test assertion.
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+        });
+        let plan_handle = PlanHandle {
+            id: "run-1".to_string(),
+            plan_dir: state.workdir.join("plans").join("active-plan"),
+            members: vec!["active-plan".to_string()],
+            status: crate::state::OperationStatus::Running,
+            handle,
+            cancel,
+        };
+        state
+            .active_plans
+            .write()
+            .await
+            .insert("active-plan".to_string(), plan_handle);
+
+        let body = axum::body::Bytes::from(r#"{"toml":"[meta]\ntitle=\"x\"\n"}"#);
+        let result = put_plan_source(State(state), Path("active-plan".into()), body).await;
+        let err = match result {
+            Err(e) => e,
+            Ok(_) => panic!("active run should cause 409 but returned Ok"),
+        };
+
+        assert_eq!(err.status, axum::http::StatusCode::CONFLICT);
+        assert_eq!(err.code, "conflict");
+    }
+
+    fn recording_runtime_for_plan(plan_id: &str) -> Arc<RecordingRuntime> {
+        Arc::new(RecordingRuntime {
+            calls: Arc::new(Mutex::new(Vec::new())),
+            notify: Arc::new(Notify::new()),
+            success: true,
+            call_count: Arc::new(AtomicUsize::new(0)),
+            group: None,
+            last_options: Arc::new(Mutex::new(None)),
+            known_plan_id: Some(plan_id.to_string()),
+            plan_tasks: vec![],
+            summary_estimated_minutes: None,
+        })
+    }
+
+    #[tokio::test]
+    async fn validate_plan_rejects_path_traversal() {
+        let runtime = recording_runtime_for_plan("x");
+        let (_dir, state) = test_state_with_runtime(runtime);
+
+        let err = validate_plan(
+            State(state),
+            Path("../etc/passwd".into()),
+            axum::body::Bytes::new(),
+        )
+        .await
+        .expect_err("path traversal should be rejected");
+
+        assert_eq!(err.status, axum::http::StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn validate_plan_returns_200_for_disk_source() {
+        let runtime = recording_runtime_for_plan("my-plan");
+        let (_dir, state) = test_state_with_runtime(runtime);
+
+        let Json(payload) = validate_plan(
+            State(state),
+            Path("my-plan".into()),
+            axum::body::Bytes::new(),
+        )
+        .await
+        .expect("disk validation should return 200");
+
+        assert!(payload.get("valid").is_some(), "response must have 'valid'");
+        assert!(
+            payload.get("errors").is_some(),
+            "response must have 'errors'"
+        );
+        assert!(
+            payload.get("warnings").is_some(),
+            "response must have 'warnings'"
+        );
+        assert!(
+            payload.get("diagnostics").is_some(),
+            "response must have 'diagnostics'"
+        );
+    }
+
+    #[tokio::test]
+    async fn validate_plan_returns_200_for_toml_body() {
+        let runtime = recording_runtime_for_plan("my-plan");
+        let (_dir, state) = test_state_with_runtime(runtime);
+
+        let body = axum::body::Bytes::from(r#"{"toml":"[meta]\ntitle=\"Test\"\n"}"#);
+        let Json(payload) = validate_plan(State(state), Path("my-plan".into()), body)
+            .await
+            .expect("toml body validation should return 200");
+
+        assert!(
+            payload["valid"].as_bool().is_some(),
+            "valid field must be a boolean"
+        );
+        assert!(
+            payload.get("diagnostics").is_some(),
+            "diagnostics field must be present"
+        );
+    }
+
+    #[tokio::test]
+    async fn validate_plan_returns_400_for_malformed_body() {
+        let runtime = recording_runtime_for_plan("my-plan");
+        let (_dir, state) = test_state_with_runtime(runtime);
+
+        // Body is non-empty but not valid JSON.
+        let body = axum::body::Bytes::from(&b"not-valid-json"[..]);
+        let err = validate_plan(State(state), Path("my-plan".into()), body)
+            .await
+            .expect_err("malformed body should return 400");
+
+        assert_eq!(err.status, axum::http::StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn validate_plan_returns_404_for_missing_plan() {
+        let runtime = recording_runtime_for_plan("known-plan");
+        let (_dir, state) = test_state_with_runtime(runtime);
+
+        let err = validate_plan(
+            State(state),
+            Path("unknown-plan".into()),
+            axum::body::Bytes::new(),
+        )
+        .await
+        .expect_err("missing plan should return 404");
+
+        assert_eq!(err.status, axum::http::StatusCode::NOT_FOUND);
     }
 }

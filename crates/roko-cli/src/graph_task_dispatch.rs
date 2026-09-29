@@ -40,6 +40,7 @@ use roko_learn::costs_db::CostRecord;
 use roko_learn::oracles::coding::{BuildRecord, CodingOracle, TestRecord};
 use roko_learn::reflex_store::{ReflexObservation, ReflexStore};
 use roko_learn::shadow::ShadowRunner;
+use roko_learn::telemetry::{AttemptKeyed, AttemptOutcome};
 
 use crate::dispatch::{
     AgentDispatchRequest, DispatchContext, GateFeedback, ModelChoiceSource, SharedAgentFactory,
@@ -50,6 +51,7 @@ use crate::runner::tui_bridge::TuiBridge;
 use crate::runtime_feedback::{FeedbackEvent, FeedbackFacade};
 use crate::task_parser::TaskDef;
 
+mod attempt;
 mod budget;
 mod failover;
 mod feedback;
@@ -70,6 +72,7 @@ pub use inert_settings::{InertGraphSetting, graph_engine_inert_settings};
 pub(crate) use retry_budget::TaskRetryBudgets;
 pub use streaming::streaming_event_channel_capacity;
 
+use attempt::{AttemptBook, SettledAttempt, Settlement, first_token_seen};
 use budget::{
     GraphPlanBudgetLedger, GraphTaskSpendLedger, effective_routing_budget, task_budget_ceiling_usd,
 };
@@ -81,9 +84,9 @@ use routing_context::{
 };
 use tui_forward::forward_live_event_to_tui;
 use turn_policy::{
-    TurnCapRetry, base_attempt_timeout_ms, is_express_task, provider_failure_reason,
-    raised_attempt_timeout_ms, raised_turn_cap, task_turn_limit, timeout_resume_note,
-    turn_cap_resume_note, verify_failure_reason,
+    TurnCapRetry, base_attempt_timeout_ms, is_express_task, provider_failure_outcome,
+    provider_failure_reason, raised_attempt_timeout_ms, raised_turn_cap, task_turn_limit,
+    timeout_resume_note, turn_cap_resume_note, verify_failure_reason,
 };
 
 #[cfg(test)]
@@ -184,9 +187,13 @@ pub struct GraphTaskDispatcher {
     /// with that attempt's timeout in ms; the next attempt gets more time
     /// and resumes the partial work.
     timeout_retries: parking_lot::Mutex<HashMap<String, u64>>,
-    /// Dispatch attempts started per task (`"{plan_id}/{task_id}"`) in this
-    /// run; numbers each attempt's efficiency records.
+    /// Dispatch attempts this process started per task
+    /// (`"{plan_id}/{task_id}"`); [`Self::attempt_in_run`] counts the Graph
+    /// engine's retries from it.
     task_attempts: parking_lot::Mutex<HashMap<String, u32>>,
+    /// Durable attempt identity per run: ordinals, and the run's
+    /// `attempts.jsonl` writer (see [`Self::open_attempt`]).
+    attempts: AttemptBook,
 
     /// RAG-10/11: Per-task retrieval context retained from prompt assembly until
     /// gate settlement.
@@ -234,6 +241,7 @@ impl GraphTaskDispatcher {
             turn_cap_retries: parking_lot::Mutex::new(HashMap::new()),
             timeout_retries: parking_lot::Mutex::new(HashMap::new()),
             task_attempts: parking_lot::Mutex::new(HashMap::new()),
+            attempts: AttemptBook::default(),
             in_flight: sibling_settle::InFlightTasks::default(),
         }
     }
@@ -377,9 +385,9 @@ impl GraphTaskDispatcher {
         )
     }
 
-    /// This run's index of the attempt of `task_key` that
-    /// [`Self::next_attempt_id`] numbered last: attempt `k` is the Graph
-    /// engine's retry `k`.
+    /// This process's index of the attempt of `task_key` that
+    /// [`Self::open_attempt`] opened last: attempt `k` is the Graph engine's
+    /// retry `k`.
     fn attempt_in_run(&self, task_key: &str) -> u32 {
         self.task_attempts
             .lock()
@@ -388,7 +396,7 @@ impl GraphTaskDispatcher {
     }
 
     /// Attempt number and pending gate feedback of the dispatch of `task_id`
-    /// that [`Self::next_attempt_id`] just numbered.
+    /// that [`Self::open_attempt`] just opened.
     fn next_retry_attempt(&self, plan_id: &str, task_id: &str) -> retry_feedback::NextAttempt {
         let attempt_in_run = self.attempt_in_run(&format!("{plan_id}/{task_id}"));
         self.gate_retry_context
@@ -506,17 +514,11 @@ impl GraphTaskDispatcher {
         Err(error)
     }
 
-    /// Allocate the identity of a new dispatch attempt of `task_key`
-    /// (`"{plan_id}/{task_id}"`): `"{task_key}/a{n}"`, where `n` counts this
-    /// run's attempts of the task from zero. The attempt's gate records append
-    /// a suffix, so every efficiency record stays unique yet joins its
-    /// dispatch record by prefix.
-    fn next_attempt_id(&self, task_key: &str) -> String {
-        let mut attempts = self.task_attempts.lock();
-        let attempt = attempts.entry(task_key.to_string()).or_default();
-        let attempt_id = format!("{task_key}/a{attempt}");
-        *attempt = attempt.saturating_add(1);
-        attempt_id
+    /// The Graph checkpoint run of `plan_id`, once its retry feedback is
+    /// attached ([`Self::attach_retry_feedback`]). Its attempt keys carry it.
+    #[must_use]
+    pub fn plan_run_id(&self, plan_id: &str) -> Option<String> {
+        self.gate_retry_context.run_id(plan_id)
     }
 
     /// Plan a dispatch. When prompt assembly fails with experiment
@@ -846,7 +848,10 @@ impl TaskDispatcher for GraphTaskDispatcher {
         // compile/test/clippy errors so the agent can fix them. The attempt
         // number counts every earlier dispatch, as the engine's retries do.
         let retry_key = format!("{}/{}", spec.plan_id, task.id);
-        let efficiency_attempt_id = self.next_attempt_id(&retry_key);
+        // The attempt opens before prompt assembly (S01 §4.2): if the process
+        // dies from here on, the attempt keeps its key and counts as
+        // abandoned.
+        let mut attempt = self.open_attempt(spec, &task, ctx);
         let retry_feedback::NextAttempt {
             attempt: attempt_number,
             feedback: prior_gate_feedback,
@@ -893,9 +898,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
             .feedback
             .experiment_store_path
             .as_deref()
-            .and_then(|store| {
-                prompt_experiment::context(store, &spec.plan_id, &task.id, &efficiency_attempt_id)
-            });
+            .and_then(|store| prompt_experiment::context(store, &attempt.key));
         let mut dispatch_ctx = DispatchContext {
             plan_id: spec.plan_id.clone(),
             role: role.to_string(),
@@ -925,6 +928,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
         let prompt_assembly_started = std::time::Instant::now();
         let dispatch_plan = self.plan_dispatch(spec, &task, &mut dispatch_ctx)?;
         let prompt_assembly_latency_ms = prompt_assembly_started.elapsed().as_millis() as u64;
+        attempt.prompt_assembled();
 
         // ── RAG-10/11: Retrieval outcome telemetry (pre-gate) ────────────
         //
@@ -1117,6 +1121,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
             });
         }
 
+        attempt.dispatch_started();
         let started_at = Instant::now();
         // The planned model is a preference: an unusable or out-of-usage
         // provider fails over; `dispatch.target` names the model that ran.
@@ -1149,27 +1154,38 @@ impl TaskDispatcher for GraphTaskDispatcher {
                 }
             }
         };
-        let dispatch = dispatch_result.map_err(|error| {
-            // Best-effort release on dispatch failure when worktree isolation is active.
-            if let Some((provider, lease)) = self.workspace_provider.as_ref().zip(lease.as_ref()) {
-                let provider = Arc::clone(provider);
-                let lease = lease.clone();
-                tokio::spawn(async move {
-                    let _ = provider
-                        .release(
-                            &lease,
-                            roko_graph::workspace::WorkspaceReleasePolicy::RetainForFailure,
-                        )
-                        .await;
-                });
+        attempt.dispatch_ended();
+        let dispatch = match dispatch_result {
+            Ok(dispatch) => dispatch,
+            Err(error) => {
+                // Best-effort release on dispatch failure when worktree isolation is active.
+                if let Some((provider, lease)) =
+                    self.workspace_provider.as_ref().zip(lease.as_ref())
+                {
+                    let provider = Arc::clone(provider);
+                    let lease = lease.clone();
+                    tokio::spawn(async move {
+                        let _ = provider
+                            .release(
+                                &lease,
+                                roko_graph::workspace::WorkspaceReleasePolicy::RetainForFailure,
+                            )
+                            .await;
+                    });
+                }
+                // T04: Publish agent_completed on the error path so the dashboard
+                // never leaves an agent stuck in the "running" state.
+                if let Some(tui) = &self.tui_bridge {
+                    tui.agent_completed(&pre_dispatch_agent_id, &spec.plan_id, &task.id, 0);
+                }
+                // No provider result reached the sinks that predate S01, so
+                // they still see nothing; the attempt's verdict is recorded.
+                let settlement = Settlement::provider_failure(&error.to_string(), false);
+                let settled = attempt.settle(settlement, &dispatch_plan.model.slug, None);
+                self.publish_settlement(spec, &task, &settled).await;
+                return Err(error);
             }
-            // T04: Publish agent_completed on the error path so the dashboard
-            // never leaves an agent stuck in the "running" state.
-            if let Some(tui) = &self.tui_bridge {
-                tui.agent_completed(&pre_dispatch_agent_id, &spec.plan_id, &task.id, 0);
-            }
-            error
-        })?;
+        };
         let wall_duration = started_at.elapsed();
 
         // Account for every completed provider call, including unsuccessful
@@ -1196,16 +1212,16 @@ impl TaskDispatcher for GraphTaskDispatcher {
             // A failed provider call is settled now; a successful one is
             // settled after its verify steps so learning sees the verified
             // outcome.
+            let settlement = Settlement::provider_failure(&message, first_token_seen(&dispatch));
+            let settled = attempt.settle(settlement, &dispatch_plan.model.slug, Some(&dispatch));
             self.emit_feedback(
                 spec,
                 &task,
-                &efficiency_attempt_id,
+                &settled,
                 &dispatch,
-                false,
                 wall_duration,
                 &dispatch_plan,
                 Some(routing_ctx_for_feedback),
-                Some(provider_failure_reason(&message)),
             )
             .await;
             // Release worktree with RetainForFailure policy for post-mortem.
@@ -1267,6 +1283,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
         // Authored [[task.verify]] steps gate the task in the effective
         // workdir (worktree if isolated). A failure fails this attempt so the
         // Graph engine can retry or abort; it is never force-accepted.
+        let attempt_key = attempt.key.attempt_key();
         let verification = self
             .settle_task_verification(
                 spec,
@@ -1275,7 +1292,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
                 &effective_workdir,
                 &retry_key,
                 attempt_number,
-                &efficiency_attempt_id,
+                &attempt_key,
                 None,
             )
             .await;
@@ -1285,16 +1302,16 @@ impl TaskDispatcher for GraphTaskDispatcher {
         // Settled after the gate so episodes, routing, playbooks, affect, and
         // experiments learn from the verified outcome rather than from the
         // provider dispatch result.
+        let settlement = Settlement::verified(&verification);
+        let settled = attempt.settle(settlement, &dispatch_plan.model.slug, Some(&dispatch));
         self.emit_feedback(
             spec,
             &task,
-            &efficiency_attempt_id,
+            &settled,
             &dispatch,
-            verification.is_ok(),
             wall_duration,
             &dispatch_plan,
             Some(routing_ctx_for_feedback),
-            verification.as_ref().err().map(verify_failure_reason),
         )
         .await;
 

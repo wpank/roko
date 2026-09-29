@@ -62,6 +62,14 @@ pub struct GraphFeedbackContext {
     /// a second settled record once all verify steps complete so the gate-pass
     /// correlation is durably captured.
     pub retrieval_outcomes_path: Option<PathBuf>,
+
+    /// S01: `.roko/runs/`, where each run's `<run_id>/attempts.jsonl` records
+    /// every attempt's open line and settled verdict.
+    ///
+    /// Attempt ordinals continue from that file, so a resumed run never
+    /// reuses an attempt key. When unset, ordinals live in memory and no
+    /// attempt is recorded.
+    pub runs_dir: Option<PathBuf>,
 }
 
 impl std::fmt::Debug for GraphFeedbackContext {
@@ -83,6 +91,7 @@ impl std::fmt::Debug for GraphFeedbackContext {
             .field("eval_generation_enabled", &self.eval_generation_enabled)
             .field("gate_thresholds_path", &self.gate_thresholds_path)
             .field("retrieval_outcomes_path", &self.retrieval_outcomes_path)
+            .field("runs_dir", &self.runs_dir)
             .finish()
     }
 }
@@ -106,6 +115,7 @@ impl Default for GraphFeedbackContext {
             eval_generation_enabled: false,
             gate_thresholds_path: None,
             retrieval_outcomes_path: None,
+            runs_dir: None,
         }
     }
 }
@@ -117,24 +127,29 @@ impl GraphTaskDispatcher {
     /// feedback pipeline. Each subsystem is best-effort: failures are logged
     /// but do not block the task result.
     ///
-    /// `attempt_id` comes from [`Self::next_attempt_id`]. `failure_reason` is
-    /// the attempt's bounded class-prefixed reason when `succeeded` is false
-    /// (see [`attempt_failure_reason`]); it lands on the episode together with
-    /// the provider-reported turn count. A success of a task with authored
+    /// `settled` is the attempt's settlement ([`AttemptContext::settle`]).
+    /// The sinks that predate S01 read its success flag and its bounded
+    /// class-prefixed failure reason, which lands on the episode together
+    /// with the provider-reported turn count; the episode, efficiency and
+    /// cost rows carry its attempt key. A success of a task with authored
     /// verify steps also emits [`FeedbackEvent::TaskVerified`], which grows
-    /// durable knowledge.
+    /// durable knowledge. The settlement itself goes out as
+    /// [`FeedbackEvent::AttemptSettled`].
+    ///
+    /// [`AttemptContext::settle`]: super::attempt::AttemptContext::settle
     pub(super) async fn emit_feedback(
         &self,
         spec: &TaskExecutionSpec,
         task: &TaskDef,
-        attempt_id: &str,
+        settled: &SettledAttempt,
         dispatch: &crate::dispatch_v2::AgentResultDispatch,
-        succeeded: bool,
         wall_duration: std::time::Duration,
         dispatch_plan: &crate::dispatch::RunnerDispatchPlan,
         routing_context: Option<roko_learn::model_router::RoutingContext>,
-        failure_reason: Option<String>,
     ) {
+        let succeeded = settled.succeeded();
+        let failure_reason = settled.failure_reason.clone();
+        let attempt_key = settled.attempt_key();
         let role = task.role.as_deref().unwrap_or("implementer");
         // P3-02: Agent turns as reported by the provider (the Claude CLI's
         // `num_turns`), so episodes and efficiency records carry real counts.
@@ -211,6 +226,7 @@ impl GraphTaskDispatcher {
                 initial_model: model_slug.clone(),
                 turns: u64::from(agent_num_turns),
                 failure_reason,
+                settled: Some(Arc::clone(&settled.verdict)),
             };
             if let Err(error) = facade.on_event(&event).await {
                 tracing::warn!(
@@ -229,7 +245,7 @@ impl GraphTaskDispatcher {
                 let verified = crate::runtime_feedback::VerifiedAttempt {
                     plan_id: spec.plan_id.clone(),
                     task_id: task.id.clone(),
-                    attempt_id: format!("{}:{attempt_id}", prompt_experiment::run_id()),
+                    attempt_id: attempt_key.to_string(),
                     title: task.title.clone(),
                     task_type: task.tier.clone(),
                     role: role.to_string(),
@@ -265,6 +281,7 @@ impl GraphTaskDispatcher {
                 }
             }
         }
+        self.publish_settlement(spec, task, settled).await;
 
         // ── W05: Efficiency event ────────────────────────────────────────
         if let Some(eff_path) = &self.feedback.efficiency_path {
@@ -310,7 +327,7 @@ impl GraphTaskDispatcher {
                 model: model_slug.clone(),
                 plan_id: spec.plan_id.clone(),
                 task_id: task.id.clone(),
-                attempt_id: attempt_id.to_string(),
+                attempt_id: attempt_key.to_string(),
                 input_tokens: tokens_in,
                 output_tokens: tokens_out,
                 reasoning_tokens: 0,
@@ -345,7 +362,11 @@ impl GraphTaskDispatcher {
                 strategy_attempted: String::new(),
                 timestamp: chrono::Utc::now().to_rfc3339(),
             };
-            match serde_json::to_string(&event) {
+            let row = AttemptKeyed {
+                attempt_key: attempt_key.to_string(),
+                row: &event,
+            };
+            match serde_json::to_string(&row) {
                 Ok(line) => {
                     let path = eff_path.clone();
                     let plan_id = spec.plan_id.clone();
@@ -396,7 +417,11 @@ impl GraphTaskDispatcher {
                 success: succeeded,
                 session_id: String::new(),
             };
-            match serde_json::to_string(&cost_record) {
+            let row = AttemptKeyed {
+                attempt_key: attempt_key.to_string(),
+                row: &cost_record,
+            };
+            match serde_json::to_string(&row) {
                 Ok(line) => {
                     let path = costs_path.clone();
                     let plan_id = spec.plan_id.clone();
@@ -481,10 +506,33 @@ impl GraphTaskDispatcher {
         if let Some(store_path) = &self.feedback.experiment_store_path {
             prompt_experiment::settle(
                 store_path,
-                prompt_experiment::attempt_key(&spec.plan_id, &task.id, attempt_id),
+                settled.key().to_prompt_attempt_key(),
                 experiment_settlement,
             )
             .await;
+        }
+    }
+
+    /// Publish an attempt's settlement through the feedback facade as
+    /// [`FeedbackEvent::AttemptSettled`]. The facade delivers one settlement
+    /// per attempt.
+    pub(super) async fn publish_settlement(
+        &self,
+        spec: &TaskExecutionSpec,
+        task: &TaskDef,
+        settled: &SettledAttempt,
+    ) {
+        let Some(facade) = &self.feedback.feedback_facade else {
+            return;
+        };
+        let event = FeedbackEvent::AttemptSettled(Arc::clone(&settled.verdict));
+        if let Err(error) = facade.on_event(&event).await {
+            tracing::warn!(
+                plan_id = %spec.plan_id,
+                task_id = %task.id,
+                %error,
+                "graph attempt settlement feedback error (best-effort)"
+            );
         }
     }
 }

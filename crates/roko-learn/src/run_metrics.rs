@@ -7,7 +7,9 @@ use std::path::Path;
 /// A structured record of a completed plan run.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunMetricsRecord {
-    /// Unique identifier for this run.
+    /// Unique identifier for this run. For a single plan it is the plan's
+    /// Graph checkpoint run, which its attempt keys carry; a run of several
+    /// plans names each plan's run in [`PlanMetrics::run_id`].
     pub run_id: String,
     /// ISO 8601 timestamp of when the record was captured.
     pub timestamp: String,
@@ -44,6 +46,9 @@ pub struct PlanMetrics {
     pub tasks_completed: usize,
     /// Number of tasks that failed in this plan.
     pub tasks_failed: usize,
+    /// The plan's Graph checkpoint run, which its attempt keys carry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
 }
 
 /// Append a single JSON line to the given path (creates file if not exists).
@@ -83,6 +88,7 @@ mod tests {
                 completed: true,
                 tasks_completed: 4,
                 tasks_failed: 1,
+                run_id: Some("graph-plan-1-run".into()),
             }],
         };
 
@@ -97,6 +103,7 @@ mod tests {
         assert_eq!(deser.total_cost_usd, 0.35);
         assert_eq!(deser.plans.len(), 1);
         assert!(deser.plans[0].completed);
+        assert_eq!(deser.plans[0].run_id.as_deref(), Some("graph-plan-1-run"));
     }
 
     #[test]

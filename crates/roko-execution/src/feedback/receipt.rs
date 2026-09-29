@@ -77,7 +77,8 @@ pub struct TaskAttemptReceiptV1 {
     pub task_id: String,
     /// Graph node identifier (may differ from task_id in graph execution).
     pub node_id: String,
-    /// Zero-based attempt number.
+    /// Attempt number, 1-based like `roko_learn::telemetry::AttemptKey`
+    /// (S01 §4.2), so `idempotency_key` is the attempt's key.
     pub attempt: u32,
 
     // ── Request fingerprint ──────────────────────────────────────────

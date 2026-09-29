@@ -26,6 +26,7 @@
 //! event distribution. Errors surface through tracing and a per-sink
 //! counter so observability can flag stuck subsystems.
 
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -48,6 +49,7 @@ pub use routing::RoutingObservationSink;
 pub use verified_knowledge::{VerifiedAttempt, VerifiedKnowledgeSink};
 
 use roko_learn::model_router::RoutingContext;
+use roko_learn::telemetry::AttemptVerdictRecord;
 
 use crate::dispatch::{AgentOutcome, ModelChoiceSource};
 
@@ -98,7 +100,18 @@ pub enum FeedbackEvent {
         /// `"provider: …"`, `"verify: …"`), bounded but keeping every line of
         /// a short reason.
         failure_reason: Option<String>,
+        /// The attempt's settled record (S01 §5.5), when the producer keys
+        /// its attempts as Graph dispatch does. Episodes carry its attempt
+        /// key. Sinks still learn from `succeeded`, which counts an
+        /// unverified attempt as a success; bug-c34782, bug-35379d and
+        /// gap-ad0d39 each move one sink to this record.
+        settled: Option<Arc<AttemptVerdictRecord>>,
     },
+    /// One task attempt settled (S01 §4.3): its typed verdict record,
+    /// published once per attempt, including attempts whose provider call
+    /// errored before any [`Self::TaskCompleted`]. The facade drops and
+    /// counts a second publication of the same `settlement_id`.
+    AttemptSettled(Arc<AttemptVerdictRecord>),
     /// Every authored verify step of a task attempt passed.
     ///
     /// Emitted after [`Self::TaskCompleted`] and only for gate-backed passes:
@@ -141,6 +154,7 @@ impl FeedbackEvent {
         match self {
             Self::TurnCompleted { .. } => "turn_completed",
             Self::TaskCompleted { .. } => "task_completed",
+            Self::AttemptSettled(_) => "attempt_settled",
             Self::TaskVerified(_) => "task_verified",
             Self::GateOutcome { .. } => "gate_outcome",
             Self::RetryDecision { .. } => "retry_decision",
@@ -188,6 +202,11 @@ struct SinkStats {
 #[derive(Debug)]
 pub struct FeedbackFacade {
     sinks: Vec<(Arc<dyn FeedbackSink>, Arc<SinkStats>)>,
+    /// `settlement_id`s of the attempts already published: an attempt
+    /// settles once (S01 §4.7).
+    settlements: parking_lot::Mutex<HashSet<String>>,
+    /// Publications of an already settled attempt, dropped.
+    duplicate_settlements: AtomicU64,
 }
 
 /// Snapshot of per-sink delivery counters.
@@ -213,16 +232,17 @@ impl Default for FeedbackFacade {
 
 impl Clone for FeedbackFacade {
     /// Clone the facade, carrying over the same sink instances but
-    /// resetting per-sink delivery counters.  Used by [`super::runner::event_loop`]
-    /// when augmenting a pre-built facade with additional sinks (e.g. the
-    /// conductor ring sink) without mutating a shared `Arc<FeedbackFacade>`.
+    /// resetting per-sink delivery counters and the settled attempts.  Used by
+    /// [`super::runner::event_loop`] when augmenting a pre-built facade with
+    /// additional sinks (e.g. the conductor ring sink) without mutating a
+    /// shared `Arc<FeedbackFacade>`.
     fn clone(&self) -> Self {
         let sinks = self
             .sinks
             .iter()
             .map(|(sink, _stats)| (Arc::clone(sink), Arc::new(SinkStats::default())))
             .collect();
-        Self { sinks }
+        Self::with_sinks(sinks)
     }
 }
 
@@ -230,7 +250,15 @@ impl FeedbackFacade {
     /// Empty facade — sinks added via `with_sink`.
     #[must_use]
     pub fn new() -> Self {
-        Self { sinks: Vec::new() }
+        Self::with_sinks(Vec::new())
+    }
+
+    fn with_sinks(sinks: Vec<(Arc<dyn FeedbackSink>, Arc<SinkStats>)>) -> Self {
+        Self {
+            sinks,
+            settlements: parking_lot::Mutex::new(HashSet::new()),
+            duplicate_settlements: AtomicU64::new(0),
+        }
     }
 
     /// Builder-style sink registration.
@@ -251,7 +279,23 @@ impl FeedbackFacade {
     /// Errors are caught per-sink and counted. The function returns
     /// `Ok(())` unless every sink failed; in that case the first error
     /// is surfaced so the operator sees something rather than silence.
+    /// A second [`FeedbackEvent::AttemptSettled`] for the same attempt
+    /// reaches no sink; [`Self::duplicate_settlements`] counts it.
     pub async fn on_event(&self, event: &FeedbackEvent) -> Result<(), anyhow::Error> {
+        if let FeedbackEvent::AttemptSettled(verdict) = event {
+            let first = self
+                .settlements
+                .lock()
+                .insert(verdict.settlement_id.clone());
+            if !first {
+                self.duplicate_settlements.fetch_add(1, Ordering::Relaxed);
+                tracing::debug!(
+                    settlement_id = %verdict.settlement_id,
+                    "attempt already settled; second settlement dropped"
+                );
+                return Ok(());
+            }
+        }
         let mut last_err: Option<anyhow::Error> = None;
         let mut delivered = 0_u64;
         for (sink, stats) in &self.sinks {
@@ -282,6 +326,12 @@ impl FeedbackFacade {
             }
         }
         Ok(())
+    }
+
+    /// Settlements dropped because their attempt had already settled.
+    #[must_use]
+    pub fn duplicate_settlements(&self) -> u64 {
+        self.duplicate_settlements.load(Ordering::Relaxed)
     }
 
     /// Snapshot per-sink counters.
@@ -447,5 +497,32 @@ mod tests {
         let stats = facade.stats();
         assert_eq!(stats.per_sink[0].skipped, 1);
         assert_eq!(stats.per_sink[0].delivered, 0);
+    }
+
+    fn settled(task_id: &str, attempt: u32) -> FeedbackEvent {
+        use roko_learn::telemetry::{AttemptIdentity, AttemptKey, AttemptOutcome};
+        let key = AttemptKey::new("run-1", "p", task_id, attempt);
+        let verdict =
+            AttemptVerdictRecord::settle(AttemptIdentity::new(&key), AttemptOutcome::Passed, false);
+        FeedbackEvent::AttemptSettled(Arc::new(verdict))
+    }
+
+    #[tokio::test]
+    async fn a_second_settlement_of_an_attempt_is_a_counted_no_op() {
+        let sink = Arc::new(CountingSink {
+            name: "settlements",
+            seen: AtomicU32::new(0),
+            only: Some("attempt_settled"),
+            fail_on: None,
+        });
+        let facade = FeedbackFacade::new().with_sink(sink.clone());
+
+        facade.on_event(&settled("t", 1)).await.unwrap();
+        facade.on_event(&settled("t", 1)).await.unwrap();
+        facade.on_event(&settled("t", 2)).await.unwrap();
+
+        assert_eq!(sink.seen.load(Ordering::Relaxed), 2, "one per attempt");
+        assert_eq!(facade.duplicate_settlements(), 1);
+        assert_eq!(facade.clone().duplicate_settlements(), 0);
     }
 }

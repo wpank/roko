@@ -117,6 +117,7 @@ async fn run_config_facades_receive_runner_events() {
     let fb_task = FeedbackEvent::TaskCompleted {
         turns: 0,
         failure_reason: None,
+        settled: None,
         plan_id: "p-e2e".into(),
         task_id: "t-e2e".into(),
         outcome: roko_cli::dispatch::AgentOutcome {

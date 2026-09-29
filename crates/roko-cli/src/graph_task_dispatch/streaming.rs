@@ -132,14 +132,14 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
             None
         };
         let retry_key = format!("{}/{}", spec.plan_id, task.id);
-        let efficiency_attempt_id = self.next_attempt_id(&retry_key);
+        // The attempt opens before prompt assembly (S01 §4.2).
+        let mut attempt = self.open_attempt(spec, &task, ctx);
+        let attempt_key = attempt.key.attempt_key();
         let prompt_experiment = self
             .feedback
             .experiment_store_path
             .as_deref()
-            .and_then(|store| {
-                prompt_experiment::context(store, &spec.plan_id, &task.id, &efficiency_attempt_id)
-            });
+            .and_then(|store| prompt_experiment::context(store, &attempt.key));
         let mut dispatch_ctx = DispatchContext {
             plan_id: spec.plan_id.clone(),
             role: role.to_string(),
@@ -165,6 +165,7 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
             cached_cfactor_context: cached_cfactor_context.clone(),
         };
         let dispatch_plan = self.plan_dispatch(spec, &task, &mut dispatch_ctx)?;
+        attempt.prompt_assembled();
         let contract = effective_agent_contract(role, &task);
         let timeout_ms = base_attempt_timeout_ms(&self.config, spec);
         let request = AgentDispatchRequest {
@@ -234,7 +235,9 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
         };
 
         // ── Provider invocation ──────────────────────────────────────────
+        attempt.dispatch_started();
         let dispatch_result = self.factory.run_shared_agent_bridge(request).await;
+        attempt.dispatch_ended();
 
         let wall_duration = started_at.elapsed();
 
@@ -325,7 +328,7 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
                             &lease.path,
                             &retry_key,
                             attempt_number,
-                            &efficiency_attempt_id,
+                            &attempt_key,
                             Some(&event_tx),
                         )
                         .await,
@@ -338,23 +341,23 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
                 // ── Learning/feedback pipeline (streaming) ───────────────
                 //
                 // Settled after the gate so learning sees the verified outcome.
-                let failure_reason = match &verification {
-                    Some(Ok(_)) => None,
-                    Some(Err(error)) => Some(verify_failure_reason(error)),
-                    None => Some(provider_failure_reason(
+                let settlement = match &verification {
+                    Some(verification) => Settlement::verified(verification),
+                    None => Settlement::provider_failure(
                         dispatch.result.output.body.as_text().unwrap_or_default(),
-                    )),
+                        first_token_seen(&dispatch),
+                    ),
                 };
+                let settled =
+                    attempt.settle(settlement, &dispatch_plan.model.slug, Some(&dispatch));
                 self.emit_feedback(
                     spec,
                     &task,
-                    &efficiency_attempt_id,
+                    &settled,
                     &dispatch,
-                    verified,
                     wall_duration,
                     &dispatch_plan,
                     Some(routing_ctx_for_feedback),
-                    failure_reason,
                 )
                 .await;
 
@@ -398,6 +401,12 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
                 (dispatch_outcome, output_signals, verification)
             }
             Err(error) => {
+                // No provider result reached the sinks that predate S01; the
+                // attempt's verdict is recorded.
+                let settlement = Settlement::provider_failure(&error.to_string(), false);
+                let settled = attempt.settle(settlement, &dispatch_plan.model.slug, None);
+                self.publish_settlement(spec, &task, &settled).await;
+
                 let dispatch_outcome = TaskDispatchOutcome {
                     attempt_id: attempt_id.clone(),
                     outcome: TaskDispatchOutcomeKind::Failed,

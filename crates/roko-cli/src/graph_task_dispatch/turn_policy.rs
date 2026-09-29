@@ -176,20 +176,31 @@ pub(super) fn verify_failure_reason(error: &RokoError) -> String {
     }
 }
 
-/// [`attempt_failure_reason`] for an unsuccessful provider result.
-pub(super) fn provider_failure_reason(message: &str) -> String {
+/// How an unsuccessful provider result, or a provider call that errored,
+/// ended (S01 §4.3), read from its message.
+pub(super) fn provider_failure_outcome(message: &str) -> AttemptOutcome {
     use roko_agent::provider::error_classify::{
         detect_attempt_timeout, detect_provider_exhaustion, detect_turn_cap,
     };
 
-    let class = if detect_turn_cap(message).is_some() {
-        "turn_cap"
+    if detect_turn_cap(message).is_some() {
+        AttemptOutcome::TurnCap
     } else if detect_provider_exhaustion(message).is_some() {
-        "provider_exhausted"
+        AttemptOutcome::ProviderExhausted
     } else if detect_attempt_timeout(message) {
-        "timeout"
+        AttemptOutcome::Timeout
     } else {
-        "provider"
+        AttemptOutcome::ProviderError
+    }
+}
+
+/// [`attempt_failure_reason`] for an unsuccessful provider result.
+pub(super) fn provider_failure_reason(message: &str) -> String {
+    let class = match provider_failure_outcome(message) {
+        AttemptOutcome::TurnCap => "turn_cap",
+        AttemptOutcome::ProviderExhausted => "provider_exhausted",
+        AttemptOutcome::Timeout => "timeout",
+        _ => "provider",
     };
     attempt_failure_reason(class, message)
 }

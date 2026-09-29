@@ -199,6 +199,7 @@ mod tests {
             initial_model: String::new(),
             turns: 1,
             failure_reason: failure_reason.map(str::to_string),
+            settled: None,
         }
     }
 

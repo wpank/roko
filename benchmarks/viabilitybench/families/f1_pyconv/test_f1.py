@@ -191,6 +191,9 @@ def test_generation_is_deterministic_and_seeds_vary_the_surface(tmp_path: Path) 
     assert len(names) > 3
     with pytest.raises(gen.GenError):
         gen.generate(4, 11, tmp_path / "a")
+    for out, workdir in ((tmp_path / "w" / "private", tmp_path / "w"), (tmp_path / "same", tmp_path / "same")):
+        with pytest.raises(gen.GenError, match="where the agent would read the manifest"):
+            gen.generate(1, 1, out, workdir=workdir)
     assert gen.main(["--level", "1", "--seed", "1", "--out", str(tmp_path / "d"), "--latent", "v1"]) == 0
     with pytest.raises(SystemExit):
         gen.main(["--level", "1", "--seed", "1", "--out", str(tmp_path / "e"), "--latent", "v2"])

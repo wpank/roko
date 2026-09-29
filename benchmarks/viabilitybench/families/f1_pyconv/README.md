@@ -49,7 +49,8 @@ DIR/repo/              the agent's workdir, or the path given with --workdir
 The paths under `spec` in the manifest are relative to DIR. Every other path in it (`files_in_scope`,
 `visible_test_hashes`, the `recoverability[]` evidence) is relative to the workdir. The one exception is evidence
 of the form `spec.precise.md#ACn`, which points at an acceptance criterion of the spec. The driver should render
-DIR somewhere private and give the agent only the workdir: `--workdir` places it anywhere.
+DIR somewhere private and give the agent only the workdir: `--workdir` places it anywhere except DIR itself or a
+directory that contains DIR, which `gen.py` refuses. F4 (`f4_kvtool`) uses the same layout and flags.
 
 ## The ladder
 

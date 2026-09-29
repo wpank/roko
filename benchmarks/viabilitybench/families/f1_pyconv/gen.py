@@ -509,6 +509,8 @@ def generate(level: int, seed: int, out: Path, *, workdir: Path | None = None, l
     plan = plan_instance(level, seed, latent)
     out = Path(out).absolute()
     workdir = (out / REPO_DIR) if workdir is None else Path(workdir).absolute()
+    if out.resolve() == workdir.resolve() or workdir.resolve() in out.resolve().parents:
+        raise GenError(f"{out} is the workdir or sits inside it, where the agent would read the manifest")
     if out.exists() and any(out.iterdir()):
         raise GenError(f"{out} exists and is not empty")
     if workdir.exists():
@@ -584,7 +586,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         task_path = generate(args.level, args.seed, args.out, workdir=args.workdir, latent=args.latent)
-    except (GenError, knobs.LadderError, repo.RepoError, ValueError) as err:
+    except (GenError, knobs.LadderError, repo.RepoError, ValueError, OSError) as err:
         print(f"gen.py: {err}", file=sys.stderr)
         return 2
     print(task_path)

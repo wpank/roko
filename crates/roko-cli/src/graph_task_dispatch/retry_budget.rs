@@ -275,8 +275,9 @@ command = "true"
             timeout_ms: 1_000,
         }];
 
+        // The default floor is a task's default max_retries (3).
         let budget = budgets(dir.path(), &GatesConfig::default()).for_task(&only_compile);
-        assert_eq!(budget.max_retries, 1);
+        assert_eq!(budget.max_retries, 3);
 
         let gates = GatesConfig {
             adaptive_min_retries: 2,
@@ -295,8 +296,9 @@ command = "true"
         std::fs::write(&tasks_toml, TASKS_TOML).expect("write plan");
         let missing = dir.path().join("gate-thresholds.json");
 
+        // Midpoint of the default range 3..=5.
         let cold = TaskRetryBudgets::load(Some(&missing), &GatesConfig::default(), &tasks_toml);
-        assert_eq!(cold.for_task(&task("TEST")).max_retries, 3);
+        assert_eq!(cold.for_task(&task("TEST")).max_retries, 4);
 
         let gates = GatesConfig {
             adaptive_min_retries: 2,

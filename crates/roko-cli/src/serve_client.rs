@@ -194,22 +194,61 @@ pub struct WorkspaceServerClient {
     headers: HeaderMap,
 }
 
+/// Read the launch token written by `roko serve` at startup.
+///
+/// The file lives at `workdir/.roko/runtime/serve.token` and is written as
+/// 0600 by the server process.  Returns `None` when the file is absent,
+/// unreadable, or empty.
+fn read_launch_token(workdir: &Path) -> Option<String> {
+    let token_path = workdir.join(".roko").join("runtime").join("serve.token");
+    match std::fs::read_to_string(&token_path) {
+        Ok(content) => {
+            let trimmed = content.trim().to_string();
+            if trimmed.is_empty() { None } else { Some(trimmed) }
+        }
+        Err(_) => None,
+    }
+}
+
 impl WorkspaceServerClient {
     /// Create a new client for `endpoint`, resolving auth credentials from
-    /// `auth_config`.
+    /// `auth_config`, with `workdir` used as a fallback for the launch token.
     ///
-    /// Auth is resolved with [`crate::auth::resolve_api_key`], trying
-    /// `ROKO_API_KEY`, then `[serve.auth].api_key`, then stored `roko login`
-    /// credentials.  Missing auth is not an error at construction time; the
-    /// server will reject individual requests with 401/403.
+    /// Auth is resolved in this order:
+    /// 1. [`crate::auth::resolve_api_key`] — tries `ROKO_API_KEY`, then
+    ///    `[serve.auth].api_key`, then stored `roko login` credentials.
+    /// 2. `.roko/runtime/serve.token` in `workdir` — the launch token written
+    ///    by `roko serve` at startup (0600, same trust boundary as `hub.sock`).
+    ///    Sent as `Authorization: Bearer <token>`.
+    ///
+    /// Missing auth is not an error at construction time; the server will
+    /// reject individual requests with 401/403.
     #[must_use]
     pub fn new(
         endpoint: &ServeEndpoint,
         auth_config: &roko_core::config::ServeAuthConfig,
+        workdir: &Path,
     ) -> Self {
-        let headers = match crate::auth::resolve_api_key(auth_config, None) {
-            Some(resolved) => resolved.headers(),
-            None => HeaderMap::new(),
+        let resolved = crate::auth::resolve_api_key(auth_config, None);
+        Self::new_with_resolved(endpoint, resolved, workdir)
+    }
+
+    /// Internal constructor that accepts a pre-resolved key so tests can
+    /// exercise the launch-token fallback without touching the environment.
+    pub(crate) fn new_with_resolved(
+        endpoint: &ServeEndpoint,
+        resolved: Option<crate::auth::ResolvedApiKey>,
+        workdir: &Path,
+    ) -> Self {
+        let headers = match resolved {
+            Some(key) => key.headers(),
+            None => match read_launch_token(workdir) {
+                Some(token) => crate::auth::auth_headers_with_method(
+                    &token,
+                    crate::auth::AuthMethod::Bearer,
+                ),
+                None => HeaderMap::new(),
+            },
         };
 
         let client = Client::builder()
@@ -559,8 +598,20 @@ pub async fn run_plan_via_server(
     };
 
     // ── Build HTTP client ─────────────────────────────────────────────────
-    let auth_config = roko_core::config::ServeAuthConfig::default();
-    let serve_client = WorkspaceServerClient::new(endpoint, &auth_config);
+    // For workspace-local server connections we skip globally-stored `roko login`
+    // credentials: they may belong to a different (remote) server and would
+    // silently shadow the workspace's own launch token.
+    // Precedence: ROKO_API_KEY env var → .roko/runtime/serve.token (launch token).
+    let resolved_for_local: Option<crate::auth::ResolvedApiKey> =
+        std::env::var(crate::auth::ROKO_API_KEY_ENV)
+            .ok()
+            .filter(|k| !k.trim().is_empty())
+            .map(|k| crate::auth::ResolvedApiKey {
+                key: k.trim().to_string(),
+                source: crate::auth::ApiKeySource::EnvVar,
+                method: crate::auth::AuthMethod::ApiKey,
+            });
+    let serve_client = WorkspaceServerClient::new_with_resolved(endpoint, resolved_for_local, wd);
 
     // ── 3. Submit the plan run ────────────────────────────────────────────
     let target = plans_dir
@@ -833,12 +884,26 @@ async fn follow_run_text(
 }
 
 // ---------------------------------------------------------------------------
+// Test helpers
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+impl WorkspaceServerClient {
+    /// Expose the resolved request headers for unit-test assertions.
+    pub(crate) fn headers_for_test(&self) -> &HeaderMap {
+        &self.headers
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Unit tests
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
     use std::fs;
+
+    use reqwest::header::AUTHORIZATION;
 
     use super::*;
 
@@ -935,5 +1000,96 @@ mod tests {
         };
         let msg = err.to_string();
         assert!(msg.contains("ROKO_API_KEY") || msg.contains("roko login"), "unhelpful: {msg}");
+    }
+
+    // ---- read_launch_token ---------------------------------------------------
+
+    /// Absent token file → None.
+    #[test]
+    fn missing_token_file_returns_none() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(read_launch_token(dir.path()).is_none());
+    }
+
+    /// Empty token file → None.
+    #[test]
+    fn empty_token_file_returns_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = dir.path().join(".roko").join("runtime");
+        fs::create_dir_all(&runtime).unwrap();
+        fs::write(runtime.join("serve.token"), "   \n").unwrap();
+        assert!(read_launch_token(dir.path()).is_none());
+    }
+
+    /// Token file with content → trimmed string.
+    #[test]
+    fn present_token_file_returns_trimmed_token() {
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = dir.path().join(".roko").join("runtime");
+        fs::create_dir_all(&runtime).unwrap();
+        fs::write(runtime.join("serve.token"), "abc123\n").unwrap();
+        assert_eq!(read_launch_token(dir.path()).unwrap(), "abc123");
+    }
+
+    // ---- WorkspaceServerClient auth fallback --------------------------------
+
+    /// With a token file present and `resolve_api_key` returning `None`
+    /// (simulated by passing `None` directly), the client sends
+    /// `Authorization: Bearer <token>`.
+    #[test]
+    fn launch_token_used_as_bearer_when_no_key_resolvable() {
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = dir.path().join(".roko").join("runtime");
+        fs::create_dir_all(&runtime).unwrap();
+        fs::write(runtime.join("serve.token"), "launch-tok-xyz").unwrap();
+
+        let endpoint = make_endpoint(42, "http://127.0.0.1:19999");
+        // Pass None directly to bypass resolve_api_key entirely — this is the
+        // "no key resolvable" scenario the task requires.
+        let client = WorkspaceServerClient::new_with_resolved(&endpoint, None, dir.path());
+        let headers = client.headers_for_test();
+
+        let auth_value = headers
+            .get(AUTHORIZATION)
+            .expect("Authorization header should be set when serve.token exists");
+        assert_eq!(
+            auth_value.to_str().unwrap(),
+            "Bearer launch-tok-xyz",
+            "expected Bearer header from serve.token"
+        );
+        assert!(
+            !headers.contains_key("X-Api-Key"),
+            "X-Api-Key should not be set when using launch token"
+        );
+    }
+
+    /// When a resolved key is supplied, the launch token is NOT used.
+    #[test]
+    fn resolved_key_takes_precedence_over_launch_token() {
+        use crate::auth::{ApiKeySource, AuthMethod, ResolvedApiKey};
+
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = dir.path().join(".roko").join("runtime");
+        fs::create_dir_all(&runtime).unwrap();
+        fs::write(runtime.join("serve.token"), "launch-tok-xyz").unwrap();
+
+        let endpoint = make_endpoint(42, "http://127.0.0.1:19999");
+        let resolved = Some(ResolvedApiKey {
+            key: "configured-key".to_string(),
+            source: ApiKeySource::Config,
+            method: AuthMethod::ApiKey,
+        });
+        let client = WorkspaceServerClient::new_with_resolved(&endpoint, resolved, dir.path());
+        let headers = client.headers_for_test();
+
+        // Configured key wins → X-Api-Key header is set.
+        let api_key = headers
+            .get("X-Api-Key")
+            .expect("X-Api-Key should be set when a resolved key is supplied");
+        assert_eq!(api_key.to_str().unwrap(), "configured-key");
+        assert!(
+            !headers.contains_key(AUTHORIZATION),
+            "Authorization (Bearer) should not be set when X-Api-Key is used"
+        );
     }
 }

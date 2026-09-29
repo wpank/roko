@@ -680,6 +680,12 @@ pub struct GraphPlanRunParams {
     /// discovered set. Any id listed here that is not present in `plans_dir`
     /// causes an immediate error.
     pub only_plans: Option<Vec<String>>,
+    /// Which live events the dispatcher forwards to the TUI while an agent
+    /// runs.  `ToolSteps` (safe default) forwards only the tool name and
+    /// target; `Trusted` additionally forwards unscreened text and tool
+    /// results and should only be used on loopback-bound servers or in
+    /// standalone CLI runs where there is no remote attack surface.
+    pub live_agent_output: crate::graph_task_dispatch::LiveAgentOutput,
 }
 
 /// Execute plans via the Graph Engine path.
@@ -785,6 +791,7 @@ async fn run_graph_plan_body(params: GraphPlanRunParams) -> anyhow::Result<i32> 
         max_parallel_plans,
         fail_fast,
         only_plans,
+        live_agent_output,
     } = params;
     let interrupt = interrupt.unwrap_or_default();
     // FAST lane (`./dev.sh fast`): stop the run when its deadline elapses.
@@ -1137,7 +1144,8 @@ async fn run_graph_plan_body(params: GraphPlanRunParams) -> anyhow::Result<i32> 
     .with_dangerously_skip_permissions(dangerously_skip_permissions)
     .with_feedback(graph_feedback)
     .with_reflex_store(reflex_store)
-    .with_tui_bridge(dispatcher_tui_bridge);
+    .with_tui_bridge(dispatcher_tui_bridge)
+    .with_live_agent_output(live_agent_output);
 
     // ── Per-task worktree isolation (opt-in via --worktree-per-task) ──
     if worktree_per_task {
@@ -2371,6 +2379,7 @@ files = ["README.md"]
             max_parallel_plans: None,
             fail_fast: false,
             only_plans: None,
+            live_agent_output: crate::graph_task_dispatch::LiveAgentOutput::ToolSteps,
         })
         .await
         .expect("run plan set");
@@ -2465,6 +2474,7 @@ depends_on_plan = [{depends_on_plan}]
             max_parallel_plans,
             fail_fast: false,
             only_plans: None,
+            live_agent_output: crate::graph_task_dispatch::LiveAgentOutput::ToolSteps,
         })
         .await
         .expect("run plan set");

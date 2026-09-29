@@ -278,6 +278,11 @@ pub async fn create_share(
 }
 
 /// `GET /runs/{id}` — Self-contained HTML page.
+///
+/// When the run transcript is found it is rendered as a stand-alone HTML page.
+/// When the ID does not correspond to a known share token the request is
+/// handed off to the portal SPA so the client-side router can handle it
+/// (e.g. the portal's live run-detail view at `/runs/<run-id>`).
 pub async fn get_run_html(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
     match load_transcript(&state, &id) {
         TranscriptLookup::Found(loaded) => {
@@ -285,7 +290,11 @@ pub async fn get_run_html(State(state): State<Arc<AppState>>, Path(id): Path<Str
             Html(html).into_response()
         }
         TranscriptLookup::Expired { expires_at } => expired_share_response(expires_at),
-        TranscriptLookup::Missing => StatusCode::NOT_FOUND.into_response(),
+        TranscriptLookup::Missing => {
+            // Unknown share ID — fall back to the portal SPA so the browser's
+            // client-side router can handle `/runs/<id>` live-run paths.
+            crate::embedded::serve_portal_index().await
+        }
     }
 }
 

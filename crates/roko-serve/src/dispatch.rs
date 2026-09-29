@@ -2046,6 +2046,7 @@ fn build_agent(
             cancel_token: None,
             tool_audit: None,
             max_turns: None,
+            live_output: None,
         },
     )
     .with_context(|| format!("create agent for template '{}'", template.name))

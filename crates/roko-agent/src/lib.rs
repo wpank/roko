@@ -83,6 +83,8 @@ pub mod immune_boundary;
 mod immune_evidence;
 pub mod introspection;
 pub mod lifecycle;
+/// Live agent event types and the tool-step target projection (§03c T15).
+pub mod live_output;
 pub mod mcp;
 pub mod metamorphosis;
 pub mod mock;

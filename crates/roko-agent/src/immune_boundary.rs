@@ -33,6 +33,7 @@ use crate::immune_evidence::{
 };
 use crate::tool_immune::update_vault;
 use crate::tool_loop::{StreamEvent, StreamEventKind};
+use crate::live_output::{LiveAgentEvent, LiveOutput, tool_step_target};
 
 /// Relative workspace directory containing the quarantine Store.
 pub const QUARANTINE_STORE_RELATIVE_PATH: &str = ".roko/immune/quarantine";
@@ -243,6 +244,7 @@ pub struct ImmuneScreenedAgent {
     agent_id_valid: bool,
     store: BoundaryStore,
     pipeline: ImmunePipelineGraph,
+    live_output: Option<LiveOutput>,
 }
 
 /// Validate a provider agent identity without reflecting its contents.
@@ -290,6 +292,7 @@ impl ImmuneScreenedAgent {
             agent_id_valid,
             store: BoundaryStore::durable(workspace_root),
             pipeline: ImmunePipelineGraph::default(),
+            live_output: None,
         }
     }
 
@@ -309,6 +312,7 @@ impl ImmuneScreenedAgent {
             agent_id_valid,
             store: BoundaryStore::Injected(store),
             pipeline: ImmunePipelineGraph::default(),
+            live_output: None,
         }
     }
 
@@ -356,6 +360,65 @@ impl ImmuneScreenedAgent {
                 success: false,
             },
         }
+    }
+
+    /// Attach a live output channel to this boundary. When set and the inner
+    /// agent supports streaming, `run` and `run_streaming` tap the provider
+    /// event stream and forward qualifying events before the final result is
+    /// screened.
+    #[must_use]
+    pub fn with_live_output(mut self, live_output: LiveOutput) -> Self {
+        self.live_output = Some(live_output);
+        self
+    }
+
+    /// Shared inner loop: buffers provider stream events, counts against the
+    /// limits, and forwards to the live output channel when one is present.
+    ///
+    /// Returns `(AgentResult, stream_limit_exceeded)`.
+    async fn drive_streaming_inner(&self, input: &Signal, ctx: &Context) -> (AgentResult, bool) {
+        let (buffer_tx, mut buffer_rx) = mpsc::channel(1);
+        let live_sink = self.live_output.as_ref().map(|lo| (lo.sink.clone(), lo.trusted));
+        let collect = async move {
+            let mut chunk_count = 0_usize;
+            let mut byte_count = 0_usize;
+            let mut exceeded = false;
+            while let Some(event) = buffer_rx.recv().await {
+                chunk_count = chunk_count.saturating_add(1);
+                byte_count = byte_count.saturating_add(stream_event_bytes(&event));
+                exceeded |= chunk_count > MAX_PROVIDER_STREAM_CHUNKS
+                    || byte_count > MAX_PROVIDER_STREAM_BYTES;
+                if let Some((ref sink, trusted)) = live_sink {
+                    match &event.kind {
+                        StreamEventKind::ToolCallEnd { id, name, args } => {
+                            let target = tool_step_target(name, args);
+                            let _ = sink.try_send(LiveAgentEvent::ToolStep {
+                                id: id.clone(),
+                                name: name.clone(),
+                                target,
+                            });
+                            if trusted {
+                                let _ =
+                                    sink.try_send(LiveAgentEvent::Unscreened(event.kind.clone()));
+                            }
+                        }
+                        StreamEventKind::TextDelta(_)
+                        | StreamEventKind::ReasoningDelta(_)
+                        | StreamEventKind::ToolResult { .. } => {
+                            if trusted {
+                                let _ =
+                                    sink.try_send(LiveAgentEvent::Unscreened(event.kind.clone()));
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            exceeded
+        };
+        let (result, exceeded) =
+            tokio::join!(self.inner.run_streaming(input, ctx, buffer_tx), collect);
+        (result, exceeded)
     }
 
     async fn preflight(&self, input: &Signal) -> Option<AgentResult> {
@@ -680,6 +743,18 @@ impl Agent for ImmuneScreenedAgent {
         if let Some(denied) = self.preflight(input).await {
             return denied;
         }
+        if self.live_output.is_some() && self.inner.supports_streaming() {
+            let (result, exceeded) = self.drive_streaming_inner(input, ctx).await;
+            if exceeded {
+                return self.denied_result(
+                    input,
+                    Some(&result),
+                    "provider_stream_limit_exceeded",
+                    None,
+                );
+            }
+            return self.screen_result(input, result).await;
+        }
         let result = self.inner.run(input, ctx).await;
         self.screen_result(input, result).await
     }
@@ -715,23 +790,10 @@ impl Agent for ImmuneScreenedAgent {
             return denied;
         }
 
-        // Buffer provider events until the final result has passed screening;
-        // otherwise streamed content would escape before containment.
-        let (buffer_tx, mut buffer_rx) = mpsc::channel(1);
-        let collect = async move {
-            let mut chunk_count = 0_usize;
-            let mut byte_count = 0_usize;
-            let mut exceeded = false;
-            while let Some(event) = buffer_rx.recv().await {
-                chunk_count = chunk_count.saturating_add(1);
-                byte_count = byte_count.saturating_add(stream_event_bytes(&event));
-                exceeded |= chunk_count > MAX_PROVIDER_STREAM_CHUNKS
-                    || byte_count > MAX_PROVIDER_STREAM_BYTES;
-            }
-            exceeded
-        };
-        let (result, stream_limit_exceeded) =
-            tokio::join!(self.inner.run_streaming(input, ctx, buffer_tx), collect);
+        // Drive the inner stream through the shared counting+forwarding loop.
+        // Provider events are buffered, limits are enforced, and qualifying
+        // events reach the live output channel (when set) before screening.
+        let (result, stream_limit_exceeded) = self.drive_streaming_inner(input, ctx).await;
         if stream_limit_exceeded {
             let denied =
                 self.denied_result(input, Some(&result), "provider_stream_limit_exceeded", None);
@@ -778,6 +840,7 @@ fn stream_event_bytes(event: &StreamEvent) -> usize {
         StreamEventKind::ToolCallEnd { id, name, args } => {
             id.len() + name.len() + args.to_string().len()
         }
+        StreamEventKind::ToolResult { id, output } => id.len() + output.len(),
         StreamEventKind::Usage(_) | StreamEventKind::Done { .. } => 0,
     }
 }
@@ -788,16 +851,17 @@ pub(crate) fn wrap_provider_agent(
     agent: Box<dyn Agent>,
     requested_agent_id: &str,
     immune_root: Option<&Path>,
+    live_output: Option<LiveOutput>,
 ) -> Box<dyn Agent> {
     let workspace_root = immune_root
         .map(Path::to_path_buf)
         .or_else(|| std::env::current_dir().ok())
         .unwrap_or_else(|| PathBuf::from("."));
-    Box::new(ImmuneScreenedAgent::durable(
-        agent,
-        requested_agent_id,
-        workspace_root,
-    ))
+    let mut boundary = ImmuneScreenedAgent::durable(agent, requested_agent_id, workspace_root);
+    if let Some(live) = live_output {
+        boundary = boundary.with_live_output(live);
+    }
+    Box::new(boundary)
 }
 
 #[cfg(test)]
@@ -1583,5 +1647,246 @@ mod tests {
 
         assert!(!crate::immune_evidence::immune_evidence_path(workspace.path()).exists());
         assert!(!crate::immune_evidence::agent_controls_path(workspace.path()).exists());
+    }
+
+    // ─── T16: live output tests ──────────────────────────────────────────────────
+
+    /// An inner agent that emits one ToolCallEnd event, then waits for a
+    /// release signal before returning its result. Used to prove the live
+    /// event arrives *before* the run completes.
+    struct PausingToolAgent {
+        /// Fired by the agent after emitting the tool event.
+        paused_notify: Arc<tokio::sync::Notify>,
+        /// Fired by the test to let the agent finish.
+        resume_notify: Arc<tokio::sync::Notify>,
+        /// When true, return a blank body so the boundary will deny the result.
+        deny: bool,
+    }
+
+    #[async_trait::async_trait]
+    impl Agent for PausingToolAgent {
+        async fn run(&self, input: &Signal, _ctx: &Context) -> AgentResult {
+            let body = if self.deny {
+                Body::text("   ")
+            } else {
+                Body::text("clean output")
+            };
+            AgentResult::ok(input.derive(Kind::AgentOutput, body).build())
+        }
+
+        fn name(&self) -> &str {
+            "pausing-tool-agent"
+        }
+
+        fn supports_streaming(&self) -> bool {
+            true
+        }
+
+        async fn run_streaming(
+            &self,
+            input: &Signal,
+            _ctx: &Context,
+            event_tx: mpsc::Sender<StreamEvent>,
+        ) -> AgentResult {
+            // Emit a ToolCallEnd.
+            let _ = event_tx
+                .send(StreamEvent::now(StreamEventKind::ToolCallEnd {
+                    id: "call-1".to_string(),
+                    name: "Write".to_string(),
+                    args: serde_json::json!({ "file_path": "src/main.rs" }),
+                }))
+                .await;
+            // Notify the test we are paused and wait for release.
+            self.paused_notify.notify_one();
+            self.resume_notify.notified().await;
+            let body = if self.deny {
+                Body::text("   ")
+            } else {
+                Body::text("clean output")
+            };
+            AgentResult::ok(input.derive(Kind::AgentOutput, body).build())
+        }
+    }
+
+    #[tokio::test]
+    async fn live_tool_step_arrives_before_inner_agent_finishes() {
+        let paused = Arc::new(tokio::sync::Notify::new());
+        let resume = Arc::new(tokio::sync::Notify::new());
+        let store = Arc::new(roko_std::MemorySubstrate::new());
+        let _boundary = ImmuneScreenedAgent::with_store(
+            Box::new(PausingToolAgent {
+                paused_notify: Arc::clone(&paused),
+                resume_notify: Arc::clone(&resume),
+                deny: false,
+            }),
+            "live-tool-step-agent",
+            store,
+        )
+        .with_live_output(LiveOutput {
+            sink: {
+                let (tx, _rx) = mpsc::channel(16);
+                // We'll keep our own reference below.
+                tx
+            },
+            trusted: false,
+        });
+
+        // Rebuild with a channel we can inspect.
+        let (live_tx, mut live_rx) = mpsc::channel::<LiveAgentEvent>(16);
+        let paused2 = Arc::clone(&paused);
+        let resume2 = Arc::clone(&resume);
+        let store2 = Arc::new(roko_std::MemorySubstrate::new());
+        let boundary = ImmuneScreenedAgent::with_store(
+            Box::new(PausingToolAgent {
+                paused_notify: Arc::clone(&paused2),
+                resume_notify: Arc::clone(&resume2),
+                deny: false,
+            }),
+            "live-tool-step-agent",
+            store2,
+        )
+        .with_live_output(LiveOutput { sink: live_tx, trusted: false });
+
+        let run_handle = tokio::spawn(async move {
+            let (tx, _rx) = mpsc::channel(16);
+            boundary.run_streaming(&prompt(), &Context::now(), tx).await
+        });
+
+        // Wait for the agent to pause after its tool call.
+        paused2.notified().await;
+
+        // Tool step must already be in the live channel.
+        let event = live_rx.try_recv().expect("ToolStep must arrive before agent finishes");
+        assert!(
+            matches!(event, LiveAgentEvent::ToolStep { ref name, ref target, .. }
+                if name == "Write" && target == "src/main.rs"),
+            "unexpected event: {event:?}"
+        );
+
+        // Release the agent and wait for the run to complete.
+        resume2.notify_one();
+        let result = run_handle.await.expect("run task");
+        assert!(result.success, "clean output must be accepted");
+    }
+
+    #[tokio::test]
+    async fn no_unscreened_event_without_trusted_flag() {
+        let paused = Arc::new(tokio::sync::Notify::new());
+        let resume = Arc::new(tokio::sync::Notify::new());
+        let (live_tx, mut live_rx) = mpsc::channel::<LiveAgentEvent>(16);
+        let store = Arc::new(roko_std::MemorySubstrate::new());
+        let boundary = ImmuneScreenedAgent::with_store(
+            Box::new(PausingToolAgent {
+                paused_notify: Arc::clone(&paused),
+                resume_notify: Arc::clone(&resume),
+                deny: false,
+            }),
+            "untrusted-live-agent",
+            store,
+        )
+        .with_live_output(LiveOutput {
+            sink: live_tx,
+            trusted: false,
+        });
+
+        let paused2 = Arc::clone(&paused);
+        let resume2 = Arc::clone(&resume);
+        let run_handle = tokio::spawn(async move {
+            let (tx, _rx) = mpsc::channel(16);
+            boundary.run_streaming(&prompt(), &Context::now(), tx).await
+        });
+
+        paused2.notified().await;
+        resume2.notify_one();
+        let _ = run_handle.await.expect("run task");
+
+        // Collect all live events.
+        let mut events = Vec::new();
+        while let Ok(e) = live_rx.try_recv() {
+            events.push(e);
+        }
+        // ToolStep must appear (always).
+        assert!(
+            events.iter().any(|e| matches!(e, LiveAgentEvent::ToolStep { .. })),
+            "ToolStep must appear even without trusted"
+        );
+        // Unscreened must NOT appear.
+        assert!(
+            !events.iter().any(|e| matches!(e, LiveAgentEvent::Unscreened(_))),
+            "Unscreened must not appear when trusted=false; got: {events:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn screened_result_identical_with_and_without_live_output() {
+        let store_a = Arc::new(roko_std::MemorySubstrate::new());
+        let store_b = Arc::new(roko_std::MemorySubstrate::new());
+
+        let make_agent = |store: Arc<roko_std::MemorySubstrate>| {
+            ImmuneScreenedAgent::with_store(
+                Box::new(PausingToolAgent {
+                    paused_notify: Arc::new(tokio::sync::Notify::new()),
+                    resume_notify: {
+                        let n = Arc::new(tokio::sync::Notify::new());
+                        n.notify_one(); // pre-release so it never blocks
+                        n
+                    },
+                    deny: false,
+                }),
+                "screened-result-agent",
+                store,
+            )
+        };
+
+        let without_live = make_agent(store_a);
+        let (live_tx, _live_rx) = mpsc::channel(16);
+        let with_live = make_agent(store_b).with_live_output(LiveOutput {
+            sink: live_tx,
+            trusted: true,
+        });
+
+        let input = prompt();
+        let result_a = without_live.run(&input, &Context::now()).await;
+        let result_b = with_live.run(&input, &Context::now()).await;
+
+        assert_eq!(result_a.success, result_b.success);
+        assert_eq!(result_a.output.body, result_b.output.body);
+    }
+
+    #[tokio::test]
+    async fn denied_result_is_denied_regardless_of_live_output() {
+        let (live_tx, mut live_rx) = mpsc::channel::<LiveAgentEvent>(16);
+        let store = Arc::new(roko_std::MemorySubstrate::new());
+        let boundary = ImmuneScreenedAgent::with_store(
+            Box::new(PausingToolAgent {
+                paused_notify: Arc::new(tokio::sync::Notify::new()),
+                resume_notify: {
+                    let n = Arc::new(tokio::sync::Notify::new());
+                    n.notify_one();
+                    n
+                },
+                deny: true, // blank body → boundary denies
+            }),
+            "denied-with-live-agent",
+            store,
+        )
+        .with_live_output(LiveOutput {
+            sink: live_tx,
+            trusted: true,
+        });
+
+        let result = boundary.run(&prompt(), &Context::now()).await;
+        assert!(!result.success, "blank output must still be denied");
+        assert_eq!(result.output.tag("immune_denied"), Some("true"));
+
+        // The live channel may have received a ToolStep, but the screened result is still denied.
+        let mut live_events = Vec::new();
+        while let Ok(e) = live_rx.try_recv() {
+            live_events.push(e);
+        }
+        assert!(
+            live_events.iter().any(|e| matches!(e, LiveAgentEvent::ToolStep { .. })),
+            "ToolStep must have been sent even for a denied run"
+        );
     }
 }

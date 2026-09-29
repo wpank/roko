@@ -36,6 +36,49 @@ fn default_projection_history_retention() -> String {
 
 // ---- [serve] -------------------------------------------------------------
 
+/// How much agent output streams live before the immune boundary screens it.
+///
+/// Configurable via `serve.live_agent_output` in `roko.toml`.
+///
+/// **`"tool_steps"` (default):** each tool invocation streams as it happens —
+/// its name and target only (for example `Write apps/x.ts` or
+/// `` Bash `cargo test` ``).  No arguments beyond the target, and no tool
+/// results.  This is always safe to emit regardless of bind address.
+///
+/// **`"trusted"`:** in addition to tool steps, the full text, reasoning, tool
+/// calls, and tool results stream before the immune boundary screens them.
+/// This setting takes effect **only** when the server is loopback-only.  A
+/// non-loopback bind ignores `"trusted"` and behaves as `"tool_steps"`,
+/// logging a warning at startup.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LiveAgentOutput {
+    /// Stream tool-call names and targets only (always safe to emit).
+    #[default]
+    ToolSteps,
+    /// Stream full text, reasoning, and tool results before immune-boundary
+    /// screening.  Requires a loopback-only bind; silently reverts to
+    /// `ToolSteps` on a non-loopback host.
+    Trusted,
+}
+
+impl LiveAgentOutput {
+    /// Resolve the configured mode against the current bind address.
+    ///
+    /// Returns [`LiveAgentOutput::Trusted`] only when `self` is `Trusted`
+    /// **and** `loopback_only` is `true`.  All other combinations return
+    /// [`LiveAgentOutput::ToolSteps`] — trusted output must never be enabled
+    /// on a publicly-reachable host.
+    #[must_use]
+    pub fn effective(self, loopback_only: bool) -> LiveAgentOutput {
+        if self == LiveAgentOutput::Trusted && loopback_only {
+            LiveAgentOutput::Trusted
+        } else {
+            LiveAgentOutput::ToolSteps
+        }
+    }
+}
+
 /// API serving options.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -79,6 +122,16 @@ pub struct ServeConfig {
     /// `serve.auth.enabled = true` instead of this allowlist.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub event_ingest_allowlist: Vec<String>,
+    /// How much agent output streams live before the immune boundary screens it.
+    ///
+    /// - `"tool_steps"` (default): each tool invocation streams its name and
+    ///   target as it happens.  No arguments beyond the target, no tool results.
+    /// - `"trusted"`: full text, reasoning, tool calls, and tool results stream
+    ///   before immune-boundary screening.  Takes effect **only** when the server
+    ///   is loopback-only; a non-loopback bind silently reverts to `"tool_steps"`
+    ///   and logs a warning at startup.
+    #[serde(default)]
+    pub live_agent_output: LiveAgentOutput,
     /// Optional OTLP tracing export. Disabled when `otlp_endpoint` is absent.
     #[serde(default)]
     pub tracing: TracingConfig,
@@ -96,6 +149,7 @@ impl Default for ServeConfig {
             auto_start: false,
             acknowledge_public_risk: false,
             event_ingest_allowlist: Vec::new(),
+            live_agent_output: LiveAgentOutput::default(),
             tracing: TracingConfig::default(),
         }
     }
@@ -191,9 +245,11 @@ pub struct ServeAuthConfig {
 impl Default for ServeAuthConfig {
     fn default() -> Self {
         Self {
-            // Secure-by-default: `/api/*` requires an `X-Api-Key`. Local users
-            // can opt back out via `serve.auth.enabled = false` in `roko.toml`,
-            // which is what `roko init` writes for new workspaces.
+            // Secure-by-default: `/api/*` requires an `X-Api-Key`. `roko init`
+            // writes `enabled = true` with an empty key; `roko serve` mints a
+            // one-time launch token so new workspaces work without manual key
+            // configuration. Local users can opt out via
+            // `serve.auth.enabled = false` in `roko.toml`.
             enabled: true,
             api_key: String::new(),
             api_keys: Vec::new(),
@@ -451,6 +507,70 @@ otlp_endpoint = "http://otel:4317"
         let cfg: ServeConfig = toml::from_str(toml_text).expect("parse serve config");
         assert!((cfg.tracing.sample_rate - 1.0).abs() < f64::EPSILON);
         assert_eq!(cfg.tracing.service_name, "roko-serve");
+    }
+
+    // ---- LiveAgentOutput tests -------------------------------------------
+
+    #[test]
+    fn live_agent_output_default_is_tool_steps() {
+        assert_eq!(
+            ServeConfig::default().live_agent_output,
+            LiveAgentOutput::ToolSteps
+        );
+    }
+
+    #[test]
+    fn live_agent_output_tool_steps_round_trips_through_toml() {
+        let cfg: ServeConfig =
+            toml::from_str(r#"live_agent_output = "tool_steps""#).expect("parse tool_steps");
+        assert_eq!(cfg.live_agent_output, LiveAgentOutput::ToolSteps);
+
+        let serialized = toml::to_string(&cfg).expect("serialize");
+        assert!(
+            serialized.contains("tool_steps"),
+            "serialized form must contain 'tool_steps', got: {serialized}"
+        );
+        let rt: ServeConfig = toml::from_str(&serialized).expect("re-parse");
+        assert_eq!(rt.live_agent_output, LiveAgentOutput::ToolSteps);
+    }
+
+    #[test]
+    fn live_agent_output_trusted_round_trips_through_toml() {
+        let cfg: ServeConfig =
+            toml::from_str(r#"live_agent_output = "trusted""#).expect("parse trusted");
+        assert_eq!(cfg.live_agent_output, LiveAgentOutput::Trusted);
+
+        let serialized = toml::to_string(&cfg).expect("serialize");
+        assert!(
+            serialized.contains("trusted"),
+            "serialized form must contain 'trusted', got: {serialized}"
+        );
+        let rt: ServeConfig = toml::from_str(&serialized).expect("re-parse");
+        assert_eq!(rt.live_agent_output, LiveAgentOutput::Trusted);
+    }
+
+    #[test]
+    fn live_agent_output_effective_all_four_combinations() {
+        // ToolSteps + loopback-only  → ToolSteps (tool steps never escalate)
+        assert_eq!(
+            LiveAgentOutput::ToolSteps.effective(true),
+            LiveAgentOutput::ToolSteps
+        );
+        // ToolSteps + non-loopback   → ToolSteps
+        assert_eq!(
+            LiveAgentOutput::ToolSteps.effective(false),
+            LiveAgentOutput::ToolSteps
+        );
+        // Trusted   + loopback-only  → Trusted (the only case that succeeds)
+        assert_eq!(
+            LiveAgentOutput::Trusted.effective(true),
+            LiveAgentOutput::Trusted
+        );
+        // Trusted   + non-loopback   → ToolSteps (safety downgrade)
+        assert_eq!(
+            LiveAgentOutput::Trusted.effective(false),
+            LiveAgentOutput::ToolSteps
+        );
     }
 }
 

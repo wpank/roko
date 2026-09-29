@@ -206,6 +206,7 @@ impl DreamAgentConfig {
             cancel_token: None,
             tool_audit: None,
             max_turns: None,
+            live_output: None,
         }
     }
 }

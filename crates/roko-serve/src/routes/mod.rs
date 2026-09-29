@@ -62,6 +62,7 @@ mod workflows;
 mod workspaces;
 mod ws;
 
+mod auth_session;
 mod cache;
 mod doctor;
 mod history;
@@ -482,6 +483,9 @@ pub fn build_router(
         // Public share-receipt reader: no auth required so recipients can
         // open share links without a roko API key.
         .merge(shared_runs::public_routes())
+        // Session minting: outside require_api_key (it IS how you get a
+        // credential) but still covered by the global rate limiter.
+        .merge(auth_session::routes())
         // PTY terminal sessions for web UI — gated by config and bind policy.
         .merge(terminal)
         .nest("/api", api)

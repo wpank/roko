@@ -44,11 +44,34 @@ const TOOL_RESULT_UNFOLDED_LINES: usize = 50;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StreamRecord {
     /// Free-form text output from the agent.
-    Text { content: String },
+    Text {
+        content: String,
+        /// Whether this record was emitted before the agent turn completed
+        /// (i.e. it is a live preview rather than a settled transcript).
+        live: bool,
+        /// Whether the safety screener has validated this record.
+        /// Defaults to `true` when the field is absent from the payload.
+        screened: bool,
+    },
     /// Internal reasoning / chain-of-thought.
-    Reasoning { content: String },
+    Reasoning {
+        content: String,
+        /// Whether this record is a live preview.
+        live: bool,
+        /// Whether the safety screener has validated this record.
+        screened: bool,
+    },
     /// The start of a tool invocation.
-    ToolStart { tool_name: String, tool_id: String },
+    ToolStart {
+        tool_name: String,
+        tool_id: String,
+        /// Whether this record is a live preview.
+        live: bool,
+        /// Whether the safety screener has validated this record.
+        screened: bool,
+        /// Optional target of the tool invocation (e.g. a file path for Write).
+        target: Option<String>,
+    },
     /// The result returned by a tool.
     ToolResult {
         tool_id: String,
@@ -110,6 +133,15 @@ pub fn parse_stream_line(line: &str) -> StreamRecord {
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_owned(),
+            live: value
+                .get("live")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
+            // `screened` is absent on pre-protocol records; default to true.
+            screened: value
+                .get("screened")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true),
         },
         "reasoning" => StreamRecord::Reasoning {
             content: value
@@ -117,6 +149,14 @@ pub fn parse_stream_line(line: &str) -> StreamRecord {
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_owned(),
+            live: value
+                .get("live")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
+            screened: value
+                .get("screened")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true),
         },
         "tool_start" => StreamRecord::ToolStart {
             tool_name: value
@@ -129,6 +169,19 @@ pub fn parse_stream_line(line: &str) -> StreamRecord {
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_owned(),
+            live: value
+                .get("live")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
+            screened: value
+                .get("screened")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true),
+            target: value
+                .get("target")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_owned()),
         },
         "tool_result" => {
             let output = value
@@ -225,14 +278,33 @@ pub fn render_output_lines_styled<'a>(
         prev_kind = Some(cur_kind);
 
         match record {
-            StreamRecord::ToolStart { tool_name, .. } => {
-                // ▶ tool_name  (DREAM, bold)
-                styled.push(Line::from(Span::styled(
-                    format!("\u{25b6} {tool_name}"),
-                    Style::default()
-                        .fg(Theme::DREAM)
-                        .add_modifier(Modifier::BOLD),
-                )));
+            StreamRecord::ToolStart {
+                tool_name,
+                target,
+                live,
+                ..
+            } => {
+                if live {
+                    // ▸ tool_name [target]  (DREAM, bold) — single live-step line
+                    let label = match target.as_deref() {
+                        Some(tgt) => format!("\u{25b8} {tool_name} {tgt}"),
+                        None => format!("\u{25b8} {tool_name}"),
+                    };
+                    styled.push(Line::from(Span::styled(
+                        label,
+                        Style::default()
+                            .fg(Theme::DREAM)
+                            .add_modifier(Modifier::BOLD),
+                    )));
+                } else {
+                    // ▶ tool_name  (DREAM, bold)
+                    styled.push(Line::from(Span::styled(
+                        format!("\u{25b6} {tool_name}"),
+                        Style::default()
+                            .fg(Theme::DREAM)
+                            .add_modifier(Modifier::BOLD),
+                    )));
+                }
             }
             StreamRecord::ToolResult {
                 tool_id,
@@ -241,15 +313,37 @@ pub fn render_output_lines_styled<'a>(
             } => {
                 render_tool_result(&mut styled, &tool_id, &output, is_error, opts, theme);
             }
-            StreamRecord::Reasoning { content, .. } => {
-                let text = format!("\u{25d0} {content}");
-                let base_style = Style::default()
-                    .fg(Theme::TEXT_DIM)
-                    .add_modifier(Modifier::ITALIC);
+            StreamRecord::Reasoning {
+                content, screened, ..
+            } => {
+                let text = if screened {
+                    format!("\u{25d0} {content}")
+                } else {
+                    format!("\u{25d0} [unscreened] {content}")
+                };
+                let base_style = if screened {
+                    Style::default()
+                        .fg(Theme::TEXT_DIM)
+                        .add_modifier(Modifier::ITALIC)
+                } else {
+                    Style::default()
+                        .fg(Theme::TEXT_GHOST)
+                        .add_modifier(Modifier::DIM)
+                        .add_modifier(Modifier::ITALIC)
+                };
                 styled.push(highlight_line(&text, base_style, opts));
             }
-            StreamRecord::Text { content } => {
-                styled.push(highlight_line(&content, theme.text(), opts));
+            StreamRecord::Text { content, screened, .. } => {
+                if screened {
+                    styled.push(highlight_line(&content, theme.text(), opts));
+                } else {
+                    // Unscreened live text: dimmed and labelled.
+                    let text = format!("[unscreened] {content}");
+                    let base_style = Style::default()
+                        .fg(Theme::TEXT_GHOST)
+                        .add_modifier(Modifier::DIM);
+                    styled.push(highlight_line(&text, base_style, opts));
+                }
             }
             StreamRecord::Plain { content } => {
                 styled.push(highlight_line(&content, Style::default(), opts));
@@ -459,14 +553,37 @@ pub fn render_output_records_styled<'a>(
 
         match record.kind {
             OutputRecordKind::ToolCall => {
-                // ▶ tool_name  (DREAM, bold)
+                // Re-parse the raw record text to check for live step + target.
+                // `record.text` holds the original encoded line when ingested from
+                // a stream; for records created from structured events it may just
+                // be human-readable text, in which case parsing returns Plain and
+                // the live/target path is skipped safely.
+                let live_step = if record.text.starts_with('\u{001e}') {
+                    match parse_stream_line(&record.text) {
+                        StreamRecord::ToolStart {
+                            live: true, target, ..
+                        } => Some(target),
+                        _ => None,
+                    }
+                } else {
+                    None
+                };
+
                 let name = record
                     .tool_name
                     .as_deref()
                     .filter(|n| !n.is_empty())
                     .unwrap_or("tool");
+
+                let label = match live_step {
+                    // ▸ tool_name [target]  (DREAM, bold) — live step
+                    Some(Some(ref tgt)) => format!("\u{25b8} {name} {tgt}"),
+                    Some(None) => format!("\u{25b8} {name}"),
+                    // ▶ tool_name  (DREAM, bold) — settled call
+                    None => format!("\u{25b6} {name}"),
+                };
                 styled.push(Line::from(Span::styled(
-                    format!("\u{25b6} {name}"),
+                    label,
                     Style::default()
                         .fg(Theme::DREAM)
                         .add_modifier(Modifier::BOLD),
@@ -480,15 +597,34 @@ pub fn render_output_records_styled<'a>(
                 render_tool_result(&mut styled, &tool_id, &record.text, is_error, opts, theme);
             }
             OutputRecordKind::Reasoning => {
+                // Check for unscreened live reasoning by re-parsing raw text.
+                let unscreened = if record.text.starts_with('\u{001e}') {
+                    matches!(
+                        parse_stream_line(&record.text),
+                        StreamRecord::Reasoning { live: true, screened: false, .. }
+                    )
+                } else {
+                    false
+                };
+
                 // ◐ reasoning text  (TEXT_DIM, italic)
                 let text = if record.text.is_empty() {
                     "\u{25d0}".to_owned()
+                } else if unscreened {
+                    format!("\u{25d0} [unscreened] {}", record.text)
                 } else {
                     format!("\u{25d0} {}", record.text)
                 };
-                let base_style = Style::default()
-                    .fg(Theme::TEXT_DIM)
-                    .add_modifier(Modifier::ITALIC);
+                let base_style = if unscreened {
+                    Style::default()
+                        .fg(Theme::TEXT_GHOST)
+                        .add_modifier(Modifier::DIM)
+                        .add_modifier(Modifier::ITALIC)
+                } else {
+                    Style::default()
+                        .fg(Theme::TEXT_DIM)
+                        .add_modifier(Modifier::ITALIC)
+                };
                 styled.push(highlight_line(&text, base_style, opts));
             }
             OutputRecordKind::Error => {
@@ -521,7 +657,25 @@ pub fn render_output_records_styled<'a>(
                 }
             }
             OutputRecordKind::Text => {
-                styled.push(highlight_line(&record.text, theme.text(), opts));
+                // Check for unscreened live text by re-parsing raw text.
+                let unscreened = if record.text.starts_with('\u{001e}') {
+                    matches!(
+                        parse_stream_line(&record.text),
+                        StreamRecord::Text { live: true, screened: false, .. }
+                    )
+                } else {
+                    false
+                };
+
+                if unscreened {
+                    let text = format!("[unscreened] {}", record.text);
+                    let base_style = Style::default()
+                        .fg(Theme::TEXT_GHOST)
+                        .add_modifier(Modifier::DIM);
+                    styled.push(highlight_line(&text, base_style, opts));
+                } else {
+                    styled.push(highlight_line(&record.text, theme.text(), opts));
+                }
             }
         }
     }
@@ -738,7 +892,9 @@ mod tests {
         assert_eq!(
             rec,
             StreamRecord::Text {
-                content: "hello".to_owned()
+                content: "hello".to_owned(),
+                live: false,
+                screened: true,
             }
         );
     }
@@ -750,7 +906,9 @@ mod tests {
         assert_eq!(
             rec,
             StreamRecord::Reasoning {
-                content: "thinking...".to_owned()
+                content: "thinking...".to_owned(),
+                live: false,
+                screened: true,
             }
         );
     }
@@ -764,6 +922,9 @@ mod tests {
             StreamRecord::ToolStart {
                 tool_name: "read_file".to_owned(),
                 tool_id: "t1".to_owned(),
+                live: false,
+                screened: true,
+                target: None,
             }
         );
     }
@@ -943,7 +1104,9 @@ mod tests {
         assert_eq!(
             rec,
             StreamRecord::Text {
-                content: String::new()
+                content: String::new(),
+                live: false,
+                screened: true,
             }
         );
     }
@@ -1242,6 +1405,135 @@ mod tests {
             rendered.len() >= 6,
             "expected at least 6 output lines, got {}",
             rendered.len()
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Live tool steps and unscreened record tests (T19)
+    // -----------------------------------------------------------------------
+
+    /// Verify that a `tool_start` record with `"live":true` and a `"target"`
+    /// renders as a single `▸ tool_name target` line.
+    #[test]
+    fn renders_live_tool_steps() {
+        let theme = Theme::dark();
+        // Build a raw stream line with live=true and a target path.
+        let line = "\x1eroko.stream.v1 {\"kind\":\"tool_start\",\"tool_name\":\"Write\",\"tool_id\":\"t99\",\"live\":true,\"screened\":true,\"target\":\"apps/x.ts\"}";
+        let rendered = render_output_lines(&[line.to_owned()], &theme);
+        assert_eq!(rendered.len(), 1, "live step must be a single line");
+        let text: String = rendered[0].spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(
+            text.contains('\u{25b8}'),
+            "live step must start with ▸, got: {text}"
+        );
+        assert!(text.contains("Write"), "tool name must appear in live step");
+        assert!(
+            text.contains("apps/x.ts"),
+            "target must appear in live step: {text}"
+        );
+    }
+
+    #[test]
+    fn parse_live_tool_start_with_target() {
+        let line = "\x1eroko.stream.v1 {\"kind\":\"tool_start\",\"tool_name\":\"Write\",\"tool_id\":\"t1\",\"live\":true,\"screened\":false,\"target\":\"apps/x.ts\"}";
+        let rec = parse_stream_line(line);
+        assert_eq!(
+            rec,
+            StreamRecord::ToolStart {
+                tool_name: "Write".to_owned(),
+                tool_id: "t1".to_owned(),
+                live: true,
+                screened: false,
+                target: Some("apps/x.ts".to_owned()),
+            }
+        );
+    }
+
+    #[test]
+    fn live_tool_start_no_target_renders_without_target() {
+        let theme = Theme::dark();
+        let line = "\x1eroko.stream.v1 {\"kind\":\"tool_start\",\"tool_name\":\"bash\",\"tool_id\":\"t5\",\"live\":true}";
+        let rendered = render_output_lines(&[line.to_owned()], &theme);
+        assert_eq!(rendered.len(), 1);
+        let text: String = rendered[0].spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.starts_with('\u{25b8}'), "should use ▸ for live step");
+        assert!(text.contains("bash"));
+        // No trailing space + empty target
+        assert!(!text.ends_with(' '), "should not have trailing space: {text}");
+    }
+
+    #[test]
+    fn non_live_tool_start_uses_filled_triangle() {
+        let theme = Theme::dark();
+        let line = "\x1eroko.stream.v1 {\"kind\":\"tool_start\",\"tool_name\":\"grep\",\"tool_id\":\"t6\",\"live\":false}";
+        let rendered = render_output_lines(&[line.to_owned()], &theme);
+        assert_eq!(rendered.len(), 1);
+        let text: String = rendered[0].spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(
+            text.starts_with('\u{25b6}'),
+            "non-live step must use ▶: {text}"
+        );
+    }
+
+    #[test]
+    fn unscreened_text_is_dimmed_and_labelled() {
+        let theme = Theme::dark();
+        let line = "\x1eroko.stream.v1 {\"kind\":\"text\",\"content\":\"secret draft\",\"live\":true,\"screened\":false}";
+        let rendered = render_output_lines(&[line.to_owned()], &theme);
+        assert_eq!(rendered.len(), 1);
+        let text: String = rendered[0].spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(
+            text.contains("[unscreened]"),
+            "unscreened text must be labelled: {text}"
+        );
+        // Must be rendered dim (TEXT_GHOST color)
+        assert!(
+            rendered[0]
+                .spans
+                .iter()
+                .any(|s| s.style.fg == Some(Theme::TEXT_GHOST)),
+            "unscreened text must use TEXT_GHOST color"
+        );
+    }
+
+    #[test]
+    fn screened_text_renders_normally() {
+        let theme = Theme::dark();
+        // screened defaults to true when absent
+        let line = "\x1eroko.stream.v1 {\"kind\":\"text\",\"content\":\"normal output\",\"live\":true,\"screened\":true}";
+        let rendered = render_output_lines(&[line.to_owned()], &theme);
+        assert_eq!(rendered.len(), 1);
+        let text: String = rendered[0].spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(
+            !text.contains("[unscreened]"),
+            "screened text must not have unscreened label: {text}"
+        );
+    }
+
+    #[test]
+    fn parse_live_screened_flags() {
+        // live=true, screened=false
+        let line = "\x1eroko.stream.v1 {\"kind\":\"text\",\"content\":\"hi\",\"live\":true,\"screened\":false}";
+        let rec = parse_stream_line(line);
+        assert_eq!(
+            rec,
+            StreamRecord::Text {
+                content: "hi".to_owned(),
+                live: true,
+                screened: false,
+            }
+        );
+
+        // live=false (absent means false)
+        let line2 = "\x1eroko.stream.v1 {\"kind\":\"text\",\"content\":\"hi\"}";
+        let rec2 = parse_stream_line(line2);
+        assert_eq!(
+            rec2,
+            StreamRecord::Text {
+                content: "hi".to_owned(),
+                live: false,
+                screened: true,
+            }
         );
     }
 }

@@ -3142,7 +3142,7 @@ default_model = "claude-sonnet"
     }
 
     #[test]
-    fn default_toml_template_disables_auth_with_local_dev_comment() {
+    fn default_toml_template_enables_auth_by_default() {
         let rendered = Config::default_toml_template(false).unwrap();
         assert!(
             rendered.contains("[serve.auth]"),

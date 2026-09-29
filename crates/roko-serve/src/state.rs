@@ -8,7 +8,7 @@
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::Context as _;
@@ -23,6 +23,7 @@ use uuid::Uuid;
 use crate::service_factory::{ServiceConfig, ServiceFactory};
 use roko_agent::ModelCallService;
 use roko_core::config::schema::RokoConfig;
+use roko_core::config::serve::LiveAgentOutput;
 use roko_core::obs::LogScrubber;
 use roko_core::trigger::TriggerBinding;
 use roko_core::{
@@ -387,6 +388,94 @@ pub struct FeedAgentCatalog {
 }
 
 // ---------------------------------------------------------------------------
+// LocalAccess
+// ---------------------------------------------------------------------------
+
+/// Ephemeral local-access state for this server process.
+///
+/// Holds an optional launch token (never persisted) and a set of live sessions.
+/// Session IDs are stored as SHA-256 hashes via [`crate::routes::middleware::hash_api_key`]
+/// so raw IDs are never retained in memory or logs.
+///
+/// The launch token comparison uses
+/// [`crate::routes::middleware::constant_time_eq`] to resist timing attacks.
+pub struct LocalAccess {
+    /// SHA-256 hash of the optional launch token (never the raw token).
+    launch_token_hash: Option<String>,
+    /// SHA-256 hashes of active session ids.
+    sessions: std::sync::Mutex<std::collections::HashSet<String>>,
+}
+
+impl LocalAccess {
+    /// Create a new `LocalAccess`, storing only the hash of the launch token.
+    ///
+    /// Passing `None` creates an instance with no launch token configured.
+    #[must_use]
+    pub fn new(launch_token: Option<String>) -> Self {
+        Self {
+            launch_token_hash: launch_token
+                .map(|t| crate::routes::middleware::hash_api_key(&t)),
+            sessions: std::sync::Mutex::new(std::collections::HashSet::new()),
+        }
+    }
+
+    /// Compare `candidate` against the stored launch token in constant time.
+    ///
+    /// Both sides are hashed before comparison so the comparison length is
+    /// always fixed (64 bytes). Returns `false` when no launch token was
+    /// configured.
+    pub fn launch_token_matches(&self, candidate: &str) -> bool {
+        let Some(ref stored_hash) = self.launch_token_hash else {
+            return false;
+        };
+        let candidate_hash = crate::routes::middleware::hash_api_key(candidate);
+        crate::routes::middleware::constant_time_eq(
+            stored_hash.as_bytes(),
+            candidate_hash.as_bytes(),
+        )
+    }
+
+    /// Create a new session and return its raw 64-hex-character ID.
+    ///
+    /// The raw ID is returned to the caller exactly once and is not stored;
+    /// only its SHA-256 hash is retained so a dump of server state cannot
+    /// replay sessions.
+    pub fn create_session(&self) -> String {
+        let a = Uuid::new_v4();
+        let b = Uuid::new_v4();
+        // {:032x} pads to exactly 32 hex chars per UUID = 64 chars total = 32 bytes.
+        let id = format!("{:032x}{:032x}", a.as_u128(), b.as_u128());
+        let hash = crate::routes::middleware::hash_api_key(&id);
+        self.sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(hash);
+        id
+    }
+
+    /// Return `true` when `session_id` matches a live session.
+    pub fn session_valid(&self, session_id: &str) -> bool {
+        let hash = crate::routes::middleware::hash_api_key(session_id);
+        self.sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains(&hash)
+    }
+
+    /// End the session for `session_id`.
+    ///
+    /// Returns `true` when the session existed and was removed, `false` when
+    /// the session was not found (making repeated calls idempotent).
+    pub fn end_session(&self, session_id: &str) -> bool {
+        let hash = crate::routes::middleware::hash_api_key(session_id);
+        self.sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&hash)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // AppState
 // ---------------------------------------------------------------------------
 
@@ -592,6 +681,17 @@ pub struct AppState {
     /// workers; route-created deployments use their own scoped token verifier.
     /// When neither verifier is available, callbacks fail closed.
     pub worker_callback_token: Option<String>,
+
+    /// Effective live-agent-output level resolved at startup from the config
+    /// and the listener bind address.  `false` = `ToolSteps` (the default),
+    /// `true` = `Trusted`.  Set once by [`Self::configure_live_agent_output`];
+    /// read by plan run handlers to forward the setting into each run.
+    pub(crate) live_agent_output: AtomicBool,
+
+    /// Ephemeral local-access state: the optional launch token hash and the
+    /// set of active session hashes for this process lifetime.
+    /// Never persisted; reset on every server start.
+    pub local_access: LocalAccess,
 }
 
 /// A tracked bench run with its background task handle.
@@ -1161,6 +1261,8 @@ impl AppState {
             worker_callback_token: std::env::var("ROKO_WORKER_CALLBACK_TOKEN")
                 .ok()
                 .filter(|s| !s.is_empty()),
+            live_agent_output: AtomicBool::new(false),
+            local_access: LocalAccess::new(None),
         })
     }
 
@@ -1237,6 +1339,26 @@ impl AppState {
     /// changes when `roko.toml` is reloaded.
     pub fn configure_listener_security(&self, bind: &str, auth_enabled: bool) {
         self.listener_security.configure(bind, auth_enabled);
+    }
+
+    /// Record the effective live-agent-output level chosen at startup.
+    ///
+    /// Called once from `ServerBuilder::start_background` after the bind
+    /// address is resolved and the trust rule applied.
+    pub fn configure_live_agent_output(&self, setting: LiveAgentOutput) {
+        self.live_agent_output.store(
+            matches!(setting, LiveAgentOutput::Trusted),
+            Ordering::Release,
+        );
+    }
+
+    /// Return the effective live-agent-output level for this server instance.
+    pub fn effective_live_agent_output(&self) -> LiveAgentOutput {
+        if self.live_agent_output.load(Ordering::Acquire) {
+            LiveAgentOutput::Trusted
+        } else {
+            LiveAgentOutput::ToolSteps
+        }
     }
 
     /// Whether private run-observability routes are protected by loopback
@@ -1859,6 +1981,67 @@ mod tests {
     use super::*;
 
     use std::collections::BTreeMap;
+
+    // ── LocalAccess unit tests ────────────────────────────────────────────────
+
+    #[test]
+    fn launch_token_matches_correct_token() {
+        let access = LocalAccess::new(Some("secret-launch-token".to_string()));
+        assert!(access.launch_token_matches("secret-launch-token"));
+        assert!(!access.launch_token_matches("wrong-token"));
+        assert!(!access.launch_token_matches(""));
+    }
+
+    #[test]
+    fn launch_token_matches_returns_false_when_no_token_configured() {
+        let access = LocalAccess::new(None);
+        assert!(!access.launch_token_matches("any-token"));
+        assert!(!access.launch_token_matches(""));
+    }
+
+    #[test]
+    fn session_create_validate_end_lifecycle() {
+        let access = LocalAccess::new(None);
+
+        let id = access.create_session();
+        assert_eq!(id.len(), 64, "session ID must be 64 hex chars (32 bytes)");
+        assert!(
+            id.chars().all(|c| c.is_ascii_hexdigit()),
+            "session ID must be lowercase hex"
+        );
+
+        assert!(access.session_valid(&id), "newly created session must be valid");
+
+        let removed = access.end_session(&id);
+        assert!(removed, "end_session must return true for a live session");
+        assert!(!access.session_valid(&id), "ended session must no longer be valid");
+    }
+
+    #[test]
+    fn end_session_returns_false_for_unknown_session() {
+        let access = LocalAccess::new(None);
+        assert!(
+            !access.end_session("0000000000000000000000000000000000000000000000000000000000000000"),
+            "end_session must return false when session does not exist"
+        );
+    }
+
+    #[test]
+    fn multiple_sessions_are_independent() {
+        let access = LocalAccess::new(None);
+        let id1 = access.create_session();
+        let id2 = access.create_session();
+
+        assert_ne!(id1, id2, "two sessions must have different IDs");
+        assert!(access.session_valid(&id1));
+        assert!(access.session_valid(&id2));
+
+        access.end_session(&id1);
+        assert!(!access.session_valid(&id1), "first session should be gone");
+        assert!(access.session_valid(&id2), "second session must be unaffected");
+    }
+
+    // ── (existing tests continue below) ─────────────────────────────────────
 
     use roko_core::{Body, Kind, LensConfig, LensRegistry, ObservableEventKind, TelemetryObserve};
     use roko_runtime::{LensExecutor, LensQueueConfig};

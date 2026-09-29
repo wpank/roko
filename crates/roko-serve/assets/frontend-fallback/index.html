@@ -4,11 +4,24 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Roko</title>
+    <style>
+      body { font-family: system-ui, sans-serif; max-width: 600px; margin: 4rem auto; padding: 0 1rem; }
+      code { background: #f0f0f0; padding: 0.1em 0.3em; border-radius: 3px; }
+      a    { color: #0066cc; }
+    </style>
   </head>
   <body>
     <main>
       <h1>Roko API is running</h1>
-      <p>The web UI was omitted from this Rust-only build.</p>
+      <p>The portal UI has not been built yet.</p>
+      <p>
+        To build it, run <code>npm run build:export</code> in <code>apps/portal</code>
+        and restart <code>roko serve</code>.
+      </p>
+      <p>
+        The demo app is served at <a href="/demo/">/demo/</a> once it is built
+        (<code>npm run build</code> in <code>demo/demo-app</code>).
+      </p>
     </main>
   </body>
 </html>

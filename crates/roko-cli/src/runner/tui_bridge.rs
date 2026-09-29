@@ -230,6 +230,30 @@ impl TuiBridge {
         );
     }
 
+    /// Publish a live tool step. Emitted *before* the immune boundary screens
+    /// the result; the corresponding screened `tool_start` is published later
+    /// by `tool_call`. The record carries `"live": true` and includes a
+    /// `"target"` field in the payload.
+    pub fn tool_step(
+        &self,
+        agent_id: &str,
+        plan_id: &str,
+        task_id: &str,
+        attempt: u32,
+        tool_id: &str,
+        tool_name: &str,
+        target: &str,
+    ) {
+        self.publish_live_stream_record(
+            agent_id,
+            plan_id,
+            task_id,
+            attempt,
+            "tool_start",
+            serde_json::json!({"tool_id": tool_id, "tool": tool_name, "target": target}),
+        );
+    }
+
     fn publish_stream_record(
         &self,
         agent_id: &str,
@@ -240,6 +264,65 @@ impl TuiBridge {
         payload: serde_json::Value,
     ) {
         let record = serde_json::json!({"kind": kind, "agent_id": agent_id, "plan_id": plan_id, "task_id": task_id, "attempt": attempt, "payload": payload});
+        self.sender.publish(DashboardEvent::AgentOutput {
+            agent_id: agent_id.to_string(),
+            plan_id: plan_id.to_string(),
+            task_id: task_id.to_string(),
+            attempt,
+            content: format!("{}{}", STREAM_RECORD_PREFIX, record),
+        });
+    }
+
+    /// Publish a stream record that was emitted *before* screening (`live: true`).
+    fn publish_live_stream_record(
+        &self,
+        agent_id: &str,
+        plan_id: &str,
+        task_id: &str,
+        attempt: u32,
+        kind: &str,
+        payload: serde_json::Value,
+    ) {
+        let record = serde_json::json!({
+            "kind": kind,
+            "agent_id": agent_id,
+            "plan_id": plan_id,
+            "task_id": task_id,
+            "attempt": attempt,
+            "live": true,
+            "payload": payload,
+        });
+        self.sender.publish(DashboardEvent::AgentOutput {
+            agent_id: agent_id.to_string(),
+            plan_id: plan_id.to_string(),
+            task_id: task_id.to_string(),
+            attempt,
+            content: format!("{}{}", STREAM_RECORD_PREFIX, record),
+        });
+    }
+
+    /// Publish a stream record that is unscreened (`live: true`, `screened: false`).
+    ///
+    /// Consumers must treat these records as potentially sensitive.
+    pub fn publish_unscreened_stream_record(
+        &self,
+        agent_id: &str,
+        plan_id: &str,
+        task_id: &str,
+        attempt: u32,
+        kind: &str,
+        payload: serde_json::Value,
+    ) {
+        let record = serde_json::json!({
+            "kind": kind,
+            "agent_id": agent_id,
+            "plan_id": plan_id,
+            "task_id": task_id,
+            "attempt": attempt,
+            "live": true,
+            "screened": false,
+            "payload": payload,
+        });
         self.sender.publish(DashboardEvent::AgentOutput {
             agent_id: agent_id.to_string(),
             plan_id: plan_id.to_string(),
@@ -642,6 +725,21 @@ mod tests {
     use super::*;
     use crate::state_hub::StateHub;
 
+    /// Subscribe first, call the bridge method, then extract the record JSON.
+    fn subscribe_call_recv<F: FnOnce(&TuiBridge)>(f: F) -> serde_json::Value {
+        let hub = StateHub::default_capacity();
+        let bridge = TuiBridge::new(hub.sender());
+        let mut sub = hub.subscribe_events_from(0);
+        f(&bridge);
+        let event = sub.live.try_recv().expect("live event");
+        let DashboardEvent::AgentOutput { content, .. } = event.payload else {
+            panic!("expected AgentOutput event");
+        };
+        assert!(content.starts_with(STREAM_RECORD_PREFIX), "missing prefix");
+        serde_json::from_str(content.strip_prefix(STREAM_RECORD_PREFIX).unwrap())
+            .expect("record json")
+    }
+
     #[test]
     fn semantic_stream_records_are_published_through_statehub() {
         let hub = StateHub::default_capacity();
@@ -658,5 +756,53 @@ mod tests {
                 .expect("record json");
         assert_eq!(payload["kind"], "text");
         assert_eq!(payload["payload"]["text"], "hello");
+    }
+
+    /// A tool step published via `tool_step` carries `"live": true` and a
+    /// `"target"` field in the payload.
+    #[test]
+    fn tool_step_record_shape() {
+        let rec = subscribe_call_recv(|bridge| {
+            bridge.tool_step("agent1", "plan1", "task1", 0, "call-42", "Bash", "echo hi");
+        });
+        assert_eq!(rec["kind"], "tool_start");
+        assert_eq!(rec["live"], true);
+        // screened flag must NOT be present (only unscreened records carry it)
+        assert!(rec.get("screened").is_none(), "screened must be absent on tool_step");
+        assert_eq!(rec["payload"]["tool_id"], "call-42");
+        assert_eq!(rec["payload"]["tool"], "Bash");
+        assert_eq!(rec["payload"]["target"], "echo hi");
+    }
+
+    /// An unscreened text record published via `publish_unscreened_stream_record`
+    /// carries both `"live": true` and `"screened": false`.
+    #[test]
+    fn unscreened_text_record_shape() {
+        let rec = subscribe_call_recv(|bridge| {
+            bridge.publish_unscreened_stream_record(
+                "agent1",
+                "plan1",
+                "task1",
+                0,
+                "text",
+                serde_json::json!({"text": "raw token"}),
+            );
+        });
+        assert_eq!(rec["kind"], "text");
+        assert_eq!(rec["live"], true);
+        assert_eq!(rec["screened"], false);
+        assert_eq!(rec["payload"]["text"], "raw token");
+    }
+
+    /// Ordinary screened records published via `agent_text_delta` carry neither
+    /// `"live"` nor `"screened"` flags — the shape stays backwards-compatible.
+    #[test]
+    fn ordinary_record_carries_no_live_or_screened_flags() {
+        let rec = subscribe_call_recv(|bridge| {
+            bridge.agent_text_delta("agent1", "plan1", "task1", 0, "final output");
+        });
+        assert_eq!(rec["kind"], "text");
+        assert!(rec.get("live").is_none(), "live must be absent on screened record");
+        assert!(rec.get("screened").is_none(), "screened must be absent on screened record");
     }
 }

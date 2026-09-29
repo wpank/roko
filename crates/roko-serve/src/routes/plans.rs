@@ -426,6 +426,7 @@ async fn execute_plans(
     let runtime = state.runtime.clone();
     let workdir = state.workdir.clone();
     let resume = req.resume;
+    let live_agent_output = state.effective_live_agent_output();
     let cancel = CancelToken::new();
     let task_cancel = cancel.clone();
     let plan_target_for_task = plan_target.clone();
@@ -447,6 +448,7 @@ async fn execute_plans(
             force_resume: resume,
             only_plans,
             max_parallel_plans: Some(effective_max),
+            live_agent_output: Some(live_agent_output),
         };
         // Do NOT publish plan lifecycle events (plan_started, plan_completed)
         // for the run_id.  The runtime publishes its own per-plan events
@@ -517,6 +519,7 @@ async fn start_plan_run(
     let bus = state.event_bus.clone();
     let runtime = state.runtime.clone();
     let workdir = state.workdir.clone();
+    let live_agent_output = state.effective_live_agent_output();
 
     // Plans inside a plan set live under their group directory.
     let plan_dir = dto
@@ -560,6 +563,7 @@ async fn start_plan_run(
                 cancel: Some(task_cancel),
                 fresh: !resume,
                 force_resume: resume,
+                live_agent_output: Some(live_agent_output),
                 ..PlanRunOptions::default()
             };
             let success = match runtime

@@ -241,6 +241,18 @@ pub enum StreamEventKind {
         args: serde_json::Value,
     },
 
+    /// The output of a completed tool call, correlated by the provider's call id.
+    ///
+    /// Emitted by providers that surface tool results on the stream (trusted
+    /// live-output mode).  No provider emits this variant yet; it is handled
+    /// on the receiving end only.
+    ToolResult {
+        /// Provider-assigned tool call identifier (correlates with `ToolCallEnd`).
+        id: String,
+        /// The text output returned by the tool.
+        output: String,
+    },
+
     /// Final usage statistics for this turn.
     Usage(Usage),
 
@@ -370,6 +382,11 @@ pub async fn collect_stream_to_response(
                 };
                 in_progress_calls.remove(&key);
                 tool_calls.push(roko_core::tool::ToolCall::new(real_id, name, args));
+            }
+            StreamEventKind::ToolResult { .. } => {
+                // Ignored when collecting a stream to a BackendResponse; tool
+                // results are injected into the conversation by the ToolLoop
+                // dispatcher, not synthesised from stream events.
             }
             StreamEventKind::Usage(u) => usage = u,
             StreamEventKind::Done { finish_reason: fr } => {

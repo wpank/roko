@@ -1,11 +1,11 @@
 [meta]
 plan = "03c-backend-local-access"
-total = 11
+total = 20
 done = 0
 status = "ready"
-max_parallel = 1
+max_parallel = 2
 skip_enrichment = true
-estimated_total_minutes = 285
+estimated_total_minutes = 570
 
 # A fresh workspace's server must be reachable from its own portal and CLI, without
 # weakening auth, and must serve both UIs: the portal at / and the demo app at /demo
@@ -31,8 +31,24 @@ estimated_total_minutes = 285
 # costs little: the middleware already parses credentials from headers, and a Cookie
 # header is one more source.
 #
+# Two independent chains run side by side (max_parallel = 2):
+#   access and serving   T01-T07, T11, T08, T09
+#   live agent output    T12-T20
+# They share two files, so two edges join them:
+#   - T06 waits for T12 (crates/roko-core/src/config/serve.rs);
+#   - T18 waits for T07 (crates/roko-serve/src/lib.rs, and state.rs through T01).
+# T10 joins both chains at the end. No two tasks that can run at the same time list
+# the same file.
+#
+# T12-T20 add live agent output, as Will decided on 2026-09-28 (work item dec-578863):
+#   - each tool call streams live as a step: its name and target only;
+#   - on a loopback-only server with [serve] live_agent_output = "trusted", unscreened
+#     text, reasoning and tool results stream before the immune boundary screens them;
+#   - the screened transcript still arrives at the end and replaces live text.
+# Its check is plans/portal-programme/_harness/live-output-check.sh.
+#
 # Runs after 03b-backend-workspace-server (serve.json, serve_client). The acceptance
-# check is plans/portal-programme/_harness/access-check.sh.
+# check for local access is plans/portal-programme/_harness/access-check.sh.
 
 [[task]]
 id = "T01"
@@ -320,7 +336,7 @@ model_hint = "claude-sonnet-4-6"
 timeout_secs = 2700
 max_retries = 2
 estimated_minutes = 15
-depends_on = ["T05"]
+depends_on = ["T05", "T12"]
 files = [
     "crates/roko-core/src/config/serve.rs",
     "crates/roko-cli/src/config.rs",
@@ -592,8 +608,519 @@ command = "grep -q 'ACCESS-CHECK: PASS' plans/portal-programme/03c-backend-local
 fail_msg = "REVIEW.md does not record a passing check"
 
 [[task]]
+id = "T12"
+title = "Add the live agent output setting and its trust rule"
+description = """
+Will decided on 2026-09-28 how agent output may stream before the immune boundary
+screens it (work item dec-578863):
+  - tool steps always stream;
+  - full text streams only for a trusted local operator.
+This task adds the setting and its rule; T13–T20 build the rest.
+
+In `crates/roko-core/src/config/serve.rs`:
+
+  1. Add `pub enum LiveAgentOutput { ToolSteps, Trusted }`, serialized as
+     `"tool_steps"` and `"trusted"`, defaulting to `ToolSteps`.
+  2. Add `live_agent_output: LiveAgentOutput` to `ServeConfig` (`[serve]`), marked
+     `#[serde(default)]` because the struct denies unknown fields. Document it:
+     - tool steps (a tool's name and target) always stream live;
+     - `"trusted"` also streams text, reasoning, tool calls and tool results before
+       the immune boundary screens them, and takes effect only on a loopback-only
+       host.
+  3. Add `pub fn effective(self, loopback_only: bool) -> LiveAgentOutput`. It returns
+     `Trusted` only when trusted output is requested and the host is loopback-only,
+     and `ToolSteps` otherwise.
+
+Unit tests: the default, both spellings round-tripping through TOML, and `effective`
+for all four combinations.
+"""
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+timeout_secs = 2700
+max_retries = 2
+estimated_minutes = 20
+depends_on = []
+files = ["crates/roko-core/src/config/serve.rs"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-core/src/config/serve.rs", why = "ServeConfig and how its sensitive switches (terminal_enabled, acknowledge_public_risk) are documented" },
+    { path = "work/items/dec-578863-show-agent-output-live-before-immune-boundary.md", why = "the decision this implements" },
+]
+anti_patterns = [
+    "Do not let trusted output take effect on a non-loopback host.",
+    "Do not add a setting that turns tool steps off; they always stream.",
+]
+
+[[task.verify]]
+phase = "test"
+command = "grep -q 'pub enum LiveAgentOutput' crates/roko-core/src/config/serve.rs && cargo test -p roko-core"
+fail_msg = "the live agent output setting is missing, or roko-core tests fail"
+timeout_ms = 2700000
+
+[[task]]
+id = "T13"
+title = "Carry tool results on the provider stream"
+description = """
+`StreamEventKind` (`crates/roko-agent/src/tool_loop/mod.rs`) has events for text,
+reasoning, tool calls and usage, but none for tool results, so no provider can
+stream them. Trusted live output (T12) streams tool results.
+
+  1. Add `ToolResult { id: String, output: String }` to `StreamEventKind`: the output
+     of a completed tool call, correlated by the provider's call id.
+  2. Handle it in every match on `StreamEventKind` in the workspace (grep
+     `StreamEventKind::`):
+     - count its bytes in `stream_event_bytes`
+       (`crates/roko-agent/src/immune_boundary.rs`);
+     - map it to `AgentRuntimeEvent::ToolOutput` where stream events become runtime
+       events (`crates/roko-agent/src/streaming.rs`,
+       `crates/roko-cli/src/dispatch_v2.rs`);
+     - ignore it where tool output has no meaning.
+     No provider emits it yet.
+
+Add a unit test, `tool_result_stream_events_map_to_tool_output`, beside the
+conversion.
+"""
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+timeout_secs = 2700
+max_retries = 2
+estimated_minutes = 30
+depends_on = ["T12"]
+files = [
+    "crates/roko-agent/src",
+    "crates/roko-cli/src/dispatch_v2.rs",
+    "crates/roko-acp/src",
+    "crates/roko-agent-server/src",
+]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-agent/src/tool_loop/mod.rs", why = "StreamEvent and StreamEventKind", symbols = ["StreamEventKind"] },
+    { path = "crates/roko-agent/src/immune_boundary.rs", why = "stream_event_bytes", symbols = ["stream_event_bytes"] },
+]
+anti_patterns = [
+    "Do not add a catch-all arm where a match is exhaustive today; handle the variant explicitly.",
+]
+
+[[task.verify]]
+phase = "test"
+command = "grep -rq 'fn tool_result_stream_events_map_to_tool_output' crates/roko-agent/src crates/roko-cli/src && cargo check -p roko-agent -p roko-cli -p roko-acp -p roko-agent-server && cargo test -p roko-agent --lib"
+fail_msg = "the tool result stream event is missing, a crate no longer compiles, or roko-agent tests fail"
+timeout_ms = 2700000
+
+[[task]]
+id = "T14"
+title = "Stream the Claude CLI's events as they arrive"
+description = """
+`ClaudeCliAgent` (`crates/roko-agent/src/claude_cli_agent.rs`) already reads the CLI's
+stream-json stdout line by line in `run` (the `stdout_handle` task), but only to log
+progress. `supports_streaming` returns false, so nothing downstream can see a tool call
+before the process exits.
+
+  1. Implement `run_streaming` by sharing `run`'s body. Pass an optional
+     `mpsc::Sender<StreamEvent>` into the stdout task, and send one event per parsed
+     line as it arrives:
+     - `assistant` text blocks → `StreamEventKind::TextDelta`;
+     - `thinking` blocks → `ReasoningDelta`;
+     - `tool_use` blocks → `ToolCallEnd { id, name, args: input }`;
+     - `user` messages with `tool_result` blocks → `ToolResult { id: tool_use_id,
+       output }` (T13), with the output flattened to text.
+     `run` passes no sender and behaves exactly as today.
+  2. Return true from `supports_streaming`. Check every caller of
+     `supports_streaming`: `run` and `run_streaming` must return the same
+     `AgentResult`.
+
+Unit tests with canned stream-json lines: the events come out in order, and `run` and
+`run_streaming` agree on the result.
+"""
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+timeout_secs = 2700
+max_retries = 2
+estimated_minutes = 35
+depends_on = ["T13"]
+files = ["crates/roko-agent/src/claude_cli_agent.rs"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-agent/src/claude_cli_agent.rs", why = "run, its stdout task and parse_stream_event", symbols = ["stdout_handle", "fn parse_stream_event", "fn supports_streaming"] },
+    { path = "crates/roko-agent/src/provider/claude_cli/stream.rs", why = "the stream-json event and content-block shapes", symbols = ["ClaudeContentBlock"] },
+]
+anti_patterns = [
+    "Do not change what run returns.",
+    "Do not buffer the events until the process exits.",
+]
+
+[[task.verify]]
+phase = "test"
+command = "grep -q 'async fn run_streaming' crates/roko-agent/src/claude_cli_agent.rs && cargo test -p roko-agent --lib claude_cli"
+fail_msg = "the Claude CLI agent does not stream, or its tests fail"
+timeout_ms = 2700000
+
+[[task]]
+id = "T15"
+title = "Define live agent events and the tool-step projection"
+description = """
+Create `crates/roko-agent/src/live_output.rs` and declare it in `lib.rs`:
+
+  - `pub enum LiveAgentEvent { ToolStep { id: String, name: String, target: String },
+    Unscreened(StreamEventKind) }`.
+  - `pub struct LiveOutput { pub sink: mpsc::Sender<LiveAgentEvent>, pub trusted:
+    bool }`, deriving `Clone`.
+  - `pub fn tool_step_target(name: &str, input: &serde_json::Value) -> String`. It
+    returns the one value that says what the call touches: the first present of
+    `file_path`, `notebook_path`, `path`, `command` (its first line only), `pattern`,
+    `url`, `query`, `description`, or an empty string when none is present. Then:
+    - pass it through `crate::safety::scrub::scrub_secrets` with the default
+      `ScrubPolicy`;
+    - collapse whitespace;
+    - cut it to 120 characters on a char boundary, ending in `…` when cut.
+    Nothing else from the input may appear.
+
+Unit tests:
+  - Write, Read and Edit paths;
+  - a Bash command cut at its first line, and at 120 characters;
+  - a command carrying an API-key-shaped secret is scrubbed;
+  - an unknown tool gives an empty target;
+  - multi-byte text is cut safely.
+"""
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+timeout_secs = 2700
+max_retries = 2
+estimated_minutes = 25
+depends_on = ["T14"]
+files = ["crates/roko-agent/src/live_output.rs", "crates/roko-agent/src/lib.rs"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-agent/src/safety/scrub.rs", why = "scrub_secrets and ScrubPolicy" },
+]
+anti_patterns = [
+    "Do not let tool arguments beyond the target, or any tool result, into a tool step.",
+]
+
+[[task.verify]]
+phase = "test"
+command = "grep -q 'pub enum LiveAgentEvent' crates/roko-agent/src/live_output.rs && cargo test -p roko-agent --lib live_output"
+fail_msg = "the live agent events or the tool-step projection are missing, or their tests fail"
+timeout_ms = 2700000
+
+[[task]]
+id = "T16"
+title = "Tap live events at the immune boundary"
+description = """
+`ImmuneScreenedAgent` (`crates/roko-agent/src/immune_boundary.rs`) buffers every
+provider event in `run_streaming` and replays only the screened final body; `run`
+never sees provider events at all. Make the boundary the one place that decides what
+leaves early.
+
+  1. Plumbing:
+     - add `live_output: Option<LiveOutput>` (T15) to `AgentOptions`
+       (`crates/roko-agent/src/provider/mod.rs`);
+     - pass it to every `wrap_provider_agent` call;
+     - store it on the wrapper with `ImmuneScreenedAgent::with_live_output`.
+  2. In `run` and in `run_streaming`, when a live output is set and the inner agent
+     supports streaming, drive `inner.run_streaming` with an internal channel. For each
+     provider event as it arrives:
+     - on `ToolCallEnd { id, name, args }`, always send `LiveAgentEvent::ToolStep`
+       with `tool_step_target(name, args)`;
+     - when `trusted`, also send `LiveAgentEvent::Unscreened(event)` for text,
+       reasoning, tool-call-end and tool-result events.
+     Keep counting chunks and bytes against `MAX_PROVIDER_STREAM_CHUNKS` and
+     `MAX_PROVIDER_STREAM_BYTES` exactly as `run_streaming` does now; share one loop.
+     A full or closed sink must never block or fail the run: use `try_send`, and drop
+     what the consumer cannot take.
+  3. Everything else is unchanged. The returned `AgentResult` is screened as today,
+     and a `run_streaming` caller still receives only the screened final body.
+
+Unit tests with a scripted inner agent that pauses after its first tool call until the
+test releases it:
+  - the tool step reaches the sink before the inner agent finishes;
+  - no `Unscreened` event is sent unless `trusted`;
+  - the screened result is identical with and without a live output;
+  - a result the boundary denies is still denied, whatever went out live.
+"""
+status = "ready"
+role = "implementer"
+tier = "architectural"
+model_hint = "claude-sonnet-4-6"
+timeout_secs = 2700
+max_retries = 2
+estimated_minutes = 40
+depends_on = ["T15"]
+files = ["crates/roko-agent/src/immune_boundary.rs", "crates/roko-agent/src/provider/mod.rs"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-agent/src/immune_boundary.rs", why = "ImmuneScreenedAgent, run, run_streaming and the stream limits", symbols = ["impl Agent for ImmuneScreenedAgent", "fn wrap_provider_agent"] },
+    { path = "crates/roko-agent/src/provider/mod.rs", why = "AgentOptions and the wrap_provider_agent call sites", symbols = ["pub struct AgentOptions", "pub fn create_agent_for_model"] },
+]
+anti_patterns = [
+    "Do not release anything but tool steps unless trusted is set.",
+    "Do not change the screened result or what run_streaming's caller receives.",
+    "Do not let a slow consumer stall the provider.",
+]
+
+[[task.verify]]
+phase = "test"
+command = "grep -q 'fn with_live_output' crates/roko-agent/src/immune_boundary.rs && cargo test -p roko-agent --lib immune_boundary"
+fail_msg = "the immune boundary does not tap live events, or its tests fail"
+timeout_ms = 2700000
+
+[[task]]
+id = "T17"
+title = "Publish live output from the Graph dispatcher"
+description = """
+The Graph dispatcher publishes an agent's output only after `run_shared_agent_bridge`
+returns (`forward_dispatch_events_to_tui` in `crates/roko-cli/src/graph_task_dispatch.rs`).
+A watcher sees nothing but heartbeats while the agent works (work items gap-be0ac2,
+bug-28f2b9).
+
+  1. Add `live_output: Option<roko_agent::live_output::LiveOutput>` to
+     `AgentDispatchRequest` (`crates/roko-cli/src/dispatch_v2.rs`), and have
+     `run_agent_result_bridge_with_tools_and_cli_mcp` put it on the `AgentOptions` it
+     builds.
+  2. `GraphTaskDispatcher` gains `with_live_agent_output(LiveAgentOutput)`, defaulting
+     to `ToolSteps`. For each dispatch with a TUI bridge:
+     - create a bounded channel;
+     - set `live_output` on the request, with `trusted` when the setting is `Trusted`;
+     - spawn a forwarder beside the heartbeat task that publishes each event as it
+       arrives.
+     The forwarder maps:
+     - `ToolStep` → `TuiBridge::tool_step(agent_id, plan_id, task_id, attempt, id,
+       name, target)`;
+     - `Unscreened(..)` → unscreened records for text, reasoning, a tool call (its
+       input as JSON, cut to 2048 bytes on a char boundary) and a tool result (cut as
+       `forward_dispatch_events_to_tui` cuts it).
+     Cover the failover path too (`run_shared_agent_bridge_with_config`).
+  3. In `crates/roko-cli/src/runner/tui_bridge.rs`, give `publish_stream_record` two
+     top-level flags:
+     - `"live": true` on every record published before screening;
+     - `"screened": false` on unscreened records.
+     A tool step is a `tool_start` record with payload `{ "tool_id", "tool",
+     "target" }`. Existing records keep their shape.
+  4. `forward_dispatch_events_to_tui` still publishes the screened transcript once the
+     agent finishes; that transcript replaces any unscreened text.
+
+Unit tests beside `TuiBridge`, one for each record shape: a tool step, an unscreened
+text record, and an ordinary record carrying neither flag.
+"""
+status = "ready"
+role = "implementer"
+tier = "integrative"
+model_hint = "claude-sonnet-4-6"
+timeout_secs = 2700
+max_retries = 2
+estimated_minutes = 40
+depends_on = ["T16"]
+files = [
+    "crates/roko-cli/src/graph_task_dispatch.rs",
+    "crates/roko-cli/src/dispatch_v2.rs",
+    "crates/roko-cli/src/runner/tui_bridge.rs",
+]
+closes = ["gap-be0ac2", "bug-28f2b9"]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/graph_task_dispatch.rs", why = "the heartbeat task, the dispatch paths and forward_dispatch_events_to_tui", symbols = ["AGENT_HEARTBEAT_INTERVAL", "fn forward_dispatch_events_to_tui", "pub fn with_tui_bridge"] },
+    { path = "crates/roko-cli/src/runner/tui_bridge.rs", why = "the framed roko.stream.v1 records", symbols = ["fn publish_stream_record", "pub fn tool_call"] },
+    { path = "crates/roko-cli/src/dispatch_v2.rs", why = "AgentDispatchRequest and the result bridge", symbols = ["pub struct AgentDispatchRequest", "pub async fn run_agent_result_bridge_with_tools_and_cli_mcp"] },
+]
+anti_patterns = [
+    "Do not wait for the agent to finish before publishing a tool step.",
+    "Do not change the shape of existing records; the flags are additions.",
+]
+
+[[task.verify]]
+phase = "test"
+command = "grep -q 'fn tool_step' crates/roko-cli/src/runner/tui_bridge.rs && grep -q 'with_live_agent_output' crates/roko-cli/src/graph_task_dispatch.rs && cargo test -p roko-cli --lib tui_bridge"
+fail_msg = "the dispatcher does not publish live output, or the TUI bridge tests fail"
+timeout_ms = 2700000
+
+[[task]]
+id = "T18"
+title = "Apply the trust rule where runs start"
+description = """
+Carry the effective setting (T12) to every run.
+
+  1. `GraphPlanRunParams` (`crates/roko-cli/src/graph_execution/plan_runner.rs`) gains
+     `live_agent_output: LiveAgentOutput`, which it hands to the dispatcher with
+     `with_live_agent_output` (T17).
+  2. A standalone `roko plan run` opens no listener, so it passes
+     `config.serve.live_agent_output.effective(true)`. Grep for every construction of
+     the params.
+  3. `roko serve` and `roko up`: in `ServerBuilder::start_background`
+     (`crates/roko-serve/src/lib.rs`), once the effective bind is known:
+     - compute `config.serve.live_agent_output.effective(..)` from whether the bind is
+       loopback (`bind_is_loopback` in `routes/mod.rs`);
+     - keep the result on `AppState`;
+     - print exactly one startup line: `live agent output: tool_steps` or
+       `live agent output: trusted`. When trusted output was requested on a
+       non-loopback bind, print instead `live agent output: trusted ignored on
+       non-loopback bind <bind>; streaming tool steps only`.
+  4. Server runs carry the setting. Add `live_agent_output: Option<LiveAgentOutput>`
+     to `PlanRunOptions` (`crates/roko-serve/src/runtime.rs`), set it from `AppState`
+     in the plan run handlers, and pass it through `run_plan_on_local_runtime` into
+     the params.
+
+Put the startup rule in a function and unit-test it as
+`live_agent_output_honours_the_bind`: loopback, non-loopback, and the default.
+"""
+status = "ready"
+role = "implementer"
+tier = "integrative"
+model_hint = "claude-sonnet-4-6"
+timeout_secs = 2700
+max_retries = 2
+estimated_minutes = 30
+depends_on = ["T17", "T07"]
+files = [
+    "crates/roko-cli/src/graph_execution/plan_runner.rs",
+    "crates/roko-cli/src/commands/plan.rs",
+    "crates/roko-cli/src/serve_runtime.rs",
+    "crates/roko-serve/src/lib.rs",
+    "crates/roko-serve/src/state.rs",
+    "crates/roko-serve/src/runtime.rs",
+    "crates/roko-serve/src/routes/plans.rs",
+]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-serve/src/lib.rs", why = "start_background and how it resolves the effective bind", symbols = ["pub async fn start_background"] },
+    { path = "crates/roko-serve/src/routes/mod.rs", why = "bind_is_loopback", symbols = ["pub(crate) fn bind_is_loopback"] },
+]
+anti_patterns = [
+    "Do not honour trusted output on a non-loopback bind.",
+    "Do not print or log any agent content at startup; only the mode.",
+]
+
+[[task.verify]]
+phase = "test"
+command = "grep -q 'trusted ignored on non-loopback bind' crates/roko-serve/src/lib.rs && cargo check -p roko-cli && cargo test -p roko-serve --lib live_agent_output"
+fail_msg = "runs do not carry the live output setting, or the bind rule is untested"
+timeout_ms = 2700000
+
+[[task]]
+id = "T19"
+title = "Show live tool steps in the TUI Output pane"
+description = """
+The TUI decodes framed records in `crates/roko-cli/src/tui/widgets/stream_output.rs`
+(`parse_stream_line`, `StreamRecord`) and classifies them in
+`crates/roko-cli/src/tui/state/mod.rs` (`classify_output_line`).
+
+  1. Parse the `live` and `screened` flags, and a tool step's `target`.
+  2. Render a tool step as one line as soon as it arrives: the tool name, then its
+     target, for example `▸ Write apps/x.ts`.
+  3. Render unscreened records (`"screened": false`) dimmed and labelled as
+     unscreened. Drop them for that agent and attempt when its screened transcript
+     arrives: the first record without `live` for that agent, or `agent_completed`.
+     Keep the tool steps.
+
+Unit tests beside the parser and the state: a step renders as one line; unscreened
+text is marked, then replaced by the screened transcript while the steps stay. Name
+one of them `renders_live_tool_steps`.
+"""
+status = "ready"
+role = "implementer"
+tier = "focused"
+model_hint = "claude-sonnet-4-6"
+timeout_secs = 2700
+max_retries = 2
+estimated_minutes = 35
+depends_on = ["T18"]
+files = [
+    "crates/roko-cli/src/tui/widgets/stream_output.rs",
+    "crates/roko-cli/src/tui/state/mod.rs",
+    "crates/roko-cli/src/tui/state/tests.rs",
+]
+
+[task.context]
+read_files = [
+    { path = "crates/roko-cli/src/tui/widgets/stream_output.rs", why = "StreamRecord, parse_stream_line and the renderers" },
+    { path = "crates/roko-cli/src/tui/state/mod.rs", why = "classify_output_line and the output records", symbols = ["fn classify_output_line"] },
+]
+anti_patterns = [
+    "Do not show unscreened content without marking it.",
+    "Do not drop the tool steps when the screened transcript arrives.",
+]
+
+[[task.verify]]
+phase = "test"
+command = "grep -rq 'fn renders_live_tool_steps' crates/roko-cli/src/tui && cargo test -p roko-cli --lib tui"
+fail_msg = "the TUI does not render live tool steps, or its tests fail"
+timeout_ms = 2700000
+
+[[task]]
+id = "T20"
+title = "Prove tool steps arrive while the agent works"
+description = """
+Run the acceptance check and record the result in
+`plans/portal-programme/03c-backend-local-access/LIVE-OUTPUT-REVIEW.md`.
+
+  1. `cargo build -p roko-cli`.
+  2. `bash plans/portal-programme/_harness/live-output-check.sh`. It uses a scratch
+     workspace, and the fake agent in live mode: the agent streams a text block and a
+     Write tool call, then waits before writing its file. The check asserts:
+     - in the default mode, a tool step (tool and target) arrives before the task
+       completes;
+     - the step carries no tool input, and nothing unscreened is streamed;
+     - the screened transcript still arrives;
+     - with `[serve] live_agent_output = "trusted"` on a loopback server, the startup
+       line says so;
+     - unscreened text and a tool result arrive before the task completes;
+     - the screened transcript still follows.
+     It costs nothing and takes a few minutes.
+  3. When an assertion fails, fix the cause in this plan's code, rebuild and rerun. If
+     the harness itself is wrong, fix it and say exactly what and why in the review.
+     Never delete or weaken an assertion.
+  4. Write the review with the full PASS/FAIL output, then the verdict line.
+"""
+status = "ready"
+role = "implementer"
+tier = "integrative"
+model_hint = "claude-sonnet-4-6"
+timeout_secs = 2700
+max_retries = 2
+estimated_minutes = 30
+depends_on = ["T19"]
+files = ["plans/portal-programme/03c-backend-local-access/LIVE-OUTPUT-REVIEW.md"]
+closes = ["dec-578863"]
+
+[task.context]
+read_files = [
+    { path = "plans/portal-programme/_harness/live-output-check.sh", why = "the assertions this work must satisfy" },
+    { path = "plans/portal-programme/_harness/fake-claude", why = "the fake agent's live mode" },
+]
+anti_patterns = [
+    "Do not start a server against this repository. The check brings its own workspace.",
+    "Do not edit or remove an assertion to make the check pass.",
+    "Do not report success unless the check printed LIVE-OUTPUT-CHECK: PASS.",
+]
+
+[[task.verify]]
+phase = "test"
+command = "cargo build -p roko-cli && bash plans/portal-programme/_harness/live-output-check.sh"
+fail_msg = "the live output acceptance check does not pass"
+timeout_ms = 2700000
+
+[[task.verify]]
+phase = "structural"
+command = "grep -q 'LIVE-OUTPUT-CHECK: PASS' plans/portal-programme/03c-backend-local-access/LIVE-OUTPUT-REVIEW.md"
+fail_msg = "the review does not record a passing check"
+
+[[task]]
 id = "T10"
-title = "Record local access as built, and update the work graph"
+title = "Record local access and live output as built, and update the work graph"
 description = """
 Under a heading reading exactly `AS BUILT 03c-backend-local-access` in
 `tmp/portal-audit/03-CONTRACT.md`, restate the local access mechanism as built: when
@@ -602,6 +1129,14 @@ attributes, the Origin rule, and the token file. Use REVIEW.md as the evidence.
 Then mark section 4.3 ("Local access") as built, pointing to the new section, and
 correct anything there the build changed.
 
+In the same section, restate live agent output as built, using
+`LIVE-OUTPUT-REVIEW.md` as the evidence. Cover:
+  - the setting and its bind rule;
+  - the startup line;
+  - the tool-step record, and the `live` and `screened` flags;
+  - how the screened transcript replaces live text.
+Correct section 3.5 ("Live agent output") wherever the build differs.
+
 Then update the work graph: `work/items/`, format in `work/README.md`.
 `.roko/GAPS.md` is frozen; do not write there.
 
@@ -609,7 +1144,10 @@ Then update the work graph: `work/items/`, format in `work/README.md`.
      assertion passed: set `status = "done"`, set `updated` and `last_verified` to
      today, and fill `[closed]` with `at`, `by`, `run_id` (from
      `.roko/state/graph/03c-backend-local-access/checkpoint.json`) and `evidence`.
-  2. Create an item for each residual below, after searching `work/items/` for one
+  2. If the live output check passed, close dec-578863, gap-be0ac2 and bug-28f2b9 the
+     same way, with `LIVE-OUTPUT-REVIEW.md` as the evidence. For dec-578863, keep the
+     recorded decision and add the run id.
+  3. Create an item for each residual below, after searching `work/items/` for one
      that already covers it.
      - (gap) The portal's dev server on another port cannot use the cookie without
        credentialed CORS. Development uses `ROKO_API_KEY` or auth disabled.
@@ -618,6 +1156,9 @@ Then update the work graph: `work/items/`, format in `work/README.md`.
      - (gap) Release and Docker builds do not build the portal export:
        `.github/workflows/release.yml` and `Dockerfile` build only the demo app. So a
        packaged binary serves the fallback page at `/`.
+     - (finding) Tool steps stream for every provider that supports streaming. A
+       provider that cannot stream still shows only heartbeats until its turn ends.
+       Name the providers that stream.
 """
 status = "ready"
 role = "implementer"
@@ -625,14 +1166,17 @@ tier = "focused"
 model_hint = "claude-sonnet-4-6"
 max_retries = 2
 estimated_minutes = 20
-depends_on = ["T09"]
+depends_on = ["T09", "T20"]
 files = ["tmp/portal-audit/03-CONTRACT.md", "work/items"]
 
 [task.context]
 read_files = [
     { path = "tmp/portal-audit/03-CONTRACT.md", why = "section 4.3, the planned local access design to restate as built" },
     { path = "work/README.md", why = "the item format, IDs and the closure rules" },
-    { path = "work/items/bug-12d48c-portal-event-stream-sends-no-credential-so.md", why = "the item this plan closes" },
+    { path = "work/items/bug-12d48c-portal-event-stream-sends-no-credential-so.md", why = "an item this plan closes" },
+    { path = "work/items/dec-578863-show-agent-output-live-before-immune-boundary.md", why = "the decision this plan implements and closes" },
+    { path = "work/items/gap-be0ac2-agent-output-is-forwarded-to-the-dashboard.md", why = "an item this plan closes" },
+    { path = "work/items/bug-28f2b9-df-0925-p1-8-agent-output-replayed.md", why = "an item this plan closes" },
 ]
 anti_patterns = [
     "Do not close an item whose assertion did not pass in the live check.",
@@ -642,5 +1186,5 @@ anti_patterns = [
 
 [[task.verify]]
 phase = "structural"
-command = '''grep -q 'AS BUILT 03c-backend-local-access' tmp/portal-audit/03-CONTRACT.md && grep -q '^status = "done"' work/items/bug-12d48c-*.md && python3 -c 'import tomllib, glob; [tomllib.loads(open(f).read().split("+++")[1]) for f in glob.glob("work/items/*.md")]''''
-fail_msg = "the contract has no AS BUILT section, bug-12d48c was not closed, or an item's front matter no longer parses"
+command = '''grep -q 'AS BUILT 03c-backend-local-access' tmp/portal-audit/03-CONTRACT.md && for i in bug-12d48c dec-578863 gap-be0ac2 bug-28f2b9; do grep -q '^status = "done"' work/items/$i-*.md || exit 1; done && python3 -c 'import tomllib, glob; [tomllib.loads(open(f).read().split("+++")[1]) for f in glob.glob("work/items/*.md")]''''
+fail_msg = "the contract has no AS BUILT section, an item this plan fixes was not closed, or an item's front matter no longer parses"

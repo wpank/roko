@@ -254,6 +254,8 @@ impl CliRuntime for RokoCliRuntime {
         let state_hub = self.state_hub.clone();
         let metrics = self.metrics.clone();
         let extension_chain = self.extension_chain_for_workdir(&workdir)?;
+        let live_agent_output =
+            config_live_output_to_dispatcher(options.live_agent_output);
         tokio::task::spawn_blocking(move || {
             run_plan_on_local_runtime(
                 workdir,
@@ -268,6 +270,7 @@ impl CliRuntime for RokoCliRuntime {
                 options.only_plans,
                 options.max_parallel_plans,
                 options.cancel,
+                live_agent_output,
             )
         })
         .await
@@ -577,6 +580,21 @@ fn load_serve_extension_chain(
     Ok(chain)
 }
 
+/// Convert the config-side `LiveAgentOutput` (from `roko-core`) into the
+/// dispatcher-side variant (from `roko-cli`).  `None` becomes `ToolSteps`.
+fn config_live_output_to_dispatcher(
+    setting: Option<roko_core::config::serve::LiveAgentOutput>,
+) -> crate::graph_task_dispatch::LiveAgentOutput {
+    match setting.unwrap_or_default() {
+        roko_core::config::serve::LiveAgentOutput::Trusted => {
+            crate::graph_task_dispatch::LiveAgentOutput::Trusted
+        }
+        roko_core::config::serve::LiveAgentOutput::ToolSteps => {
+            crate::graph_task_dispatch::LiveAgentOutput::ToolSteps
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn run_plan_on_local_runtime(
     workdir: PathBuf,
@@ -591,6 +609,7 @@ fn run_plan_on_local_runtime(
     only_plans: Option<Vec<String>>,
     max_parallel_plans: Option<usize>,
     cancel: Option<CancelToken>,
+    live_agent_output: crate::graph_task_dispatch::LiveAgentOutput,
 ) -> anyhow::Result<PlanExecutionResult> {
     // Acquire the runner lock before touching the workspace.  Server-side runs
     // and `roko plan run` both take this lock, so only one plan executor can be
@@ -663,6 +682,7 @@ fn run_plan_on_local_runtime(
                 max_parallel_plans,
                 fail_fast: false,
                 only_plans,
+                live_agent_output,
             })
             .await?;
 

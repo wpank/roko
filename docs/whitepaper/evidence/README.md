@@ -6,7 +6,12 @@ its sha256, so that a reader can check the quote against the exact bytes the tex
 - **Check the files:** `cd docs/whitepaper/evidence && shasum -a 256 -c SHA256SUMS`.
 - **What may be frozen:** derived, scrubbed data only: counts, rollups, tables and case write-ups. Never
   transcripts, prompts, environment dumps, or anything that could hold a key (bug-7d7200).
-- **Names:** `<YYYY-MM-DD>-<slug>.<ext>`, dated by when the source generated it.
+- **No absolute paths:** rewrite any absolute path in a source (a home directory holds the user's name) to a
+  repo-relative one, or drop it, before freezing, and take the sha256 after scrubbing; the file's row says what was
+  rewritten. Check with `grep -rnE '/(Users|home)/' docs/whitepaper/evidence/`, which should print nothing. None of
+  the files below contained one, so none was scrubbed.
+- **Names:** `<YYYY-MM-DD>-<slug>.<ext>`, dated by when the source generated it. The exception is
+  `learning-loops-B5.md`, named at the coordinator's request.
 - **Never edit a frozen file.** To refresh one, freeze a new dated file, add its row and its `SHA256SUMS` line, and
   update the footnotes that cite it.
 - This `README.md` and `SHA256SUMS` are the only files here that change. `SHA256SUMS` lists every frozen file and
@@ -26,3 +31,4 @@ means the file's sha256 equals the source's at the time it was frozen.
 | `2026-09-29-field-readme.md` | `tmp/cybernetic-harness/evidence/field/README.md` | By hand; last edited 2026-09-29T10:25:38 | How runs are captured and notes logged, and the labelling rules the rollup follows ("observational", verified passes, costs "as recorded"). The rollup's "see `README.md`" means this file | — | Nothing: byte for byte |
 | `2026-09-29-b7-real-run-evidence.md` | `tmp/cybernetic-harness/tldr/research/B7-real-run-evidence.md` | Research note B7, by hand from Roko's attempt, gate and cost records in the main tree and four worktrees; last edited 2026-09-29T14:50:18 | Real runs, the portal build above all. Written in the research round against `d9e79e9d8` | Attempts 09-05 to 2026-09-29 07:41Z | Nothing: byte for byte |
 | `2026-09-29-w12-operator-loop-cost.md` | `tmp/cybernetic-harness/workstreams/assessment/W12-evidence-from-dev-process.md` | Assessment note W12, from derived counts of Claude Code session transcripts priced at the benchmark price table `prices-2026-09-28`; last edited 2026-09-29T11:20:12 | The cost of the Claude sessions that supervised Roko and ran the research programme. An estimate | Sessions 09-25 to 09-29 | An excerpt: lines 1–2 (title), 28–30 (the operator-loop finding) and 69–76 (table F2), verbatim and unjoined, as `sed -n '1,2p;28,30p;69,76p'` prints them. The rest of the note is a telemetry design. The full source's sha256 was `c71b10b126b54f2ffef78e83f75763105ce76a48332e4c6f9c8d0cba290ac1b4` |
+| `learning-loops-B5.md` | `tmp/cybernetic-harness/tldr/research/B5-learning-loops-v2-vs-graph.md` | Research note B5, by hand from the code (Runner-v2 at `bcd1c8624^` and `6b5da8616^`, the Graph path) and `.roko/learn`; last edited 2026-09-29T15:01:01 | The 16 learning loops Runner-v2 had, and their status on the Graph path: the findings table at `d9e79e9d8` and the re-check at `98ee1418f`, which counts 2 WIRED, 5 PARTIAL, 7 ORPHANED, 1 BROKEN and 1 BUILT-UNWIRED | Code at `d9e79e9d8` (with a dirty tree) and at `98ee1418f` | An excerpt under a 12-line header that names the source and the re-check commit: lines 45–67 (the re-check) and 80–114 (the findings table), verbatim, as `sed -n '45,67p;80,114p'` prints them. The rest of the note (TL;DR, timeline, gaps, research basis, questions, proposed items, sources) is left out. The full source's sha256 was `e88e0e97ace8d6282f2f79ffb75563420cce84e4a302f4b8a269994fca89ce40` |

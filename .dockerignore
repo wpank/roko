@@ -41,11 +41,14 @@ contracts/broadcast/
 *.tmp
 tmp/
 
-# Node
-node_modules/
+# Node (a bare `node_modules/` would match only the context root)
+**/node_modules/
 *.tsbuildinfo
-.next/
+**/.next/
 dist/
+# The images build both embedded UIs in their own stages.
+apps/portal/out/
+demo/demo-app/dist/
 
 # Cargo local config (sccache paths are macOS-specific)
 .cargo/

@@ -2,13 +2,30 @@
 # Roko CLI container image (§42.1).
 #
 # Multi-stage build:
-#   builder : rust:1.91-slim-bookworm — compiles the workspace's `roko` binary
-#   runtime : distroless/cc-debian12:nonroot — minimal, non-root, no shell
+#   frontend : node:22-bookworm-slim — demo app (Vite), embedded and served at /demo
+#   portal   : node:22-bookworm-slim — portal static export (Next.js), embedded and served at /
+#   builder  : rust:1.91-slim-bookworm — compiles the workspace's `roko` binary
+#   runtime  : debian:bookworm-slim — minimal, non-root
 #
 # The `roko-cli` crate produces a binary named `roko` (see crates/roko-cli/Cargo.toml).
 # Build context is expected to be the `roko/` workspace root.
 
 ARG BUILDPLATFORM=linux/amd64
+
+FROM --platform=$BUILDPLATFORM node:22-bookworm-slim AS frontend
+WORKDIR /src/demo/demo-app
+COPY demo/demo-app/package.json demo/demo-app/package-lock.json ./
+RUN npm ci --prefer-offline
+COPY demo/demo-app/ ./
+RUN npm run build
+
+FROM --platform=$BUILDPLATFORM node:22-bookworm-slim AS portal
+WORKDIR /src/apps/portal
+ENV NEXT_TELEMETRY_DISABLED=1
+COPY apps/portal/package.json apps/portal/package-lock.json ./
+RUN npm ci --prefer-offline
+COPY apps/portal/ ./
+RUN npm run build:export
 
 FROM --platform=$BUILDPLATFORM rust:1.91-slim-bookworm AS builder
 WORKDIR /src
@@ -22,6 +39,11 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 COPY . .
+COPY --from=frontend /src/demo/demo-app/dist ./demo/demo-app/dist
+COPY --from=portal /src/apps/portal/out ./apps/portal/out
+
+# Fail instead of embedding the fallback page (crates/roko-serve/build.rs).
+ENV ROKO_REQUIRE_EMBEDDED_UI=1
 
 # Build the `roko` binary from the roko-cli crate.
 RUN cargo build --release --bin roko && \

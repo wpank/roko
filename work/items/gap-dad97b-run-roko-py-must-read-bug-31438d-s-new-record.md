@@ -9,7 +9,7 @@ goal = "proof"
 size = "M"
 subsystem = ["benchmarks/viabilitybench/driver"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-09-30
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-model-truth's report on branch work/bug-31438d at ee6a541ef)"
 anchors = ["benchmarks/viabilitybench/driver/run_roko.py"]
@@ -49,3 +49,7 @@ Once bug-31438d merges:
 
 - [ ] The Roko arm reads the new fields, and its checks use them.
 - [ ] The `[[verify]]` command passes.
+
+## Notes
+
+- 2026-09-30 (wk-telemetry2): two more things for the Roko arm. Attempt records still carry `inv: null` (bug-0ba3d9), so the runner can't yet tell which invocation of a resumed run an attempt belongs to. Helper calls still credit the cascade router (bug-b8af02), so `roko_fixed`'s "learning held off" doesn't cover router trials from helpers until that item lands.

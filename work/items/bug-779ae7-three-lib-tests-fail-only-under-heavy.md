@@ -9,7 +9,7 @@ goal = "tooling"
 size = "S"
 subsystem = ["tests"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-09-30
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (21:10, coordinator batch gates 2, 5 and 7)"
 anchors = ["crates/roko-gate/src/generated.rs", "crates/roko-cli/src/graph_task_dispatch/turn_policy.rs", "crates/roko-cli/src/graph_task_dispatch/verification.rs"]
@@ -53,3 +53,7 @@ They pass alone and fail under full parallel load.
 
 - [ ] Each test passes 20 times in a row under heavy parallel load.
 - [ ] The `[[verify]]` command passes.
+
+## Notes
+
+- 2026-09-30 (wk-tiers, on work/gap-8c0a20): two more tests fail under load and pass alone, the sibling-verify pair that bug-ea9959 is about: `a_verify_failure_left_in_a_sibling_file_blames_the_sibling` and `a_verify_failure_beside_an_editing_sibling_is_rerun_once_it_settles` (both use `dispatch_beside_editing_sibling`, `graph_task_dispatch/verification.rs`).

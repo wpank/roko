@@ -3,13 +3,14 @@ id = "bug-7eb27e"
 kind = "bug"
 title = "Run metrics count every task of a succeeded plan as completed and every task of a failed plan as failed"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p1"
 goal = "truth"
 size = "S"
 subsystem = ["roko-cli/graph_execution", "roko-learn/run_metrics"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-29
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e2"
 discovered_from = "tmp/cybernetic-harness/workstreams/assessment/W8-roko-as-executor.md (gate G1: run metrics)"
 anchors = ["crates/roko-cli/src/graph_execution/plan_runner.rs:1578", "crates/roko-learn/src/run_metrics.rs::PlanMetrics"]
@@ -65,3 +66,5 @@ exists.
 ## Notes
 
 `plan_runner.rs` is a hot file. The portal session's `sched` and learning branches edit it, so start after they merge.
+
+Implemented on `work/bug-7eb27e` at `8e6b49f14`; cargo verification deferred to the batch check.

@@ -3,13 +3,14 @@ id = "gap-29a84b"
 kind = "gap"
 title = "A plan can succeed while some of its tasks never ran a verify step"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p1"
 goal = "truth"
 size = "M"
 subsystem = ["roko-cli/graph_execution", "roko-cli/plan_validate"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-29
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e2"
 discovered_from = "tmp/cybernetic-harness/tldr/05-GAPS-AND-PROPOSALS.md (§6 decision 5; tldr/04 step 7)"
 anchors = ["crates/roko-cli/src/graph_execution/plan_runner.rs::run_graph_plan_body", "crates/roko-cli/src/plan_validate.rs:452"]
@@ -73,3 +74,7 @@ plan whose only task has no verify step.
   bug-7eb27e.
 - Existing plans whose tasks lack verify steps will start failing `--strict`. List them in the commit message, for
   example from `roko plan validate --strict plans/`.
+- Display, as implemented: `roko plan status` and `plan list` (so the portal's plan list too) show `unverified`.
+  The live TUI and the portal run view still get `PlanCompleted { success: false }` and show the plan as failed; a
+  state of its own there needs a dashboard event change (see bug-7e1b6b).
+- Implemented on `work/bug-7eb27e` at `d2c092ca5`; cargo verification deferred to the batch check.

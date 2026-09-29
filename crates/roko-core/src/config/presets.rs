@@ -108,7 +108,7 @@ fn minimal() -> RokoConfig {
             replan_on_gate_failure: false,
             replan_max_per_plan: 1,
             replan_gate_attempts: 3,
-            dream_on_completion: true,
+            dream_on_completion: false,
             dreams: Default::default(),
             use_lookahead_router: false,
             lookahead_threshold: 0.7,
@@ -179,7 +179,7 @@ fn thorough() -> RokoConfig {
             replan_on_gate_failure: true,
             replan_max_per_plan: 2,
             replan_gate_attempts: 3,
-            dream_on_completion: true,
+            dream_on_completion: false,
             dreams: Default::default(),
             use_lookahead_router: true,
             lookahead_threshold: 0.7,
@@ -275,5 +275,15 @@ mod tests {
         assert!(t.learning.knowledge_warnings);
         assert!(t.learning.knowledge_wave_context);
         assert!(t.learning.knowledge_error_patterns);
+    }
+
+    #[test]
+    fn no_preset_dreams_on_completion() {
+        for preset in Preset::ALL {
+            assert!(
+                !preset.to_config().learning.dream_on_completion,
+                "preset {preset:?} should leave dream_on_completion off"
+            );
+        }
     }
 }

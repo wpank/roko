@@ -62,8 +62,9 @@ const INITIAL_RECONNECT_DELAY_MS = 1_000;
 /** Maximum reconnect delay cap in milliseconds (16 s). */
 const MAX_RECONNECT_DELAY_MS = 16_000;
 
-/** If no event (including keepalive comments) arrives within this window,
- *  force a reconnect to surface stale connections early. */
+/** If no event arrives within this window, force a reconnect to surface stale
+ *  connections early.  EventSource hides the server's `: keepalive` comments,
+ *  so an idle but healthy stream is reopened too, from its cursor. */
 const KEEPALIVE_TIMEOUT_MS = 60_000;
 
 /** SSE endpoint path on roko-serve. */

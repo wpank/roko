@@ -23,5 +23,6 @@ def test_plan_slice_reference_passes_and_stub_fails():
         assert slicekit.shape_errors(feature) == [], feature.id
         row = slicekit.selftest(feature, seed=1, partials=False)
         assert row["reference"]["hidden"] and row["reference"]["visible"] and row["reference"]["verified"], row
+        assert row["reference"]["vf"] and not row["stub"]["vf"], row
         assert not row["stub"]["hidden"] and not row["stub"]["visible"], row
         assert row["ok"], row

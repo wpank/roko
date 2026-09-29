@@ -10,6 +10,7 @@ Run: benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybe
 
 from __future__ import annotations
 
+import copy
 import json
 import re
 import shutil
@@ -26,6 +27,9 @@ from slicekit import Task  # noqa: E402
 
 sys.path.insert(0, str(HERE.parent))
 from common import canary, repo  # noqa: E402
+
+sys.path.insert(0, str(HERE.parents[1] / "schema"))
+import validate  # noqa: E402
 
 FEATURES = slicekit.load_features()
 IDS = [feature.id for feature in FEATURES]
@@ -73,6 +77,25 @@ def test_shape_errors_catch_a_narrow_or_overlapping_plan(tmp_path):
     shared = [Task(t.id, t.title, feature.tasks[0].files, t.depends_on, t.covers) for t in feature.tasks]
     errors = slicekit.shape_errors(slicekit.Feature(feature.root, feature.source, tuple(shared), feature.requirements))
     assert any("same file" in error for error in errors)
+
+
+@pytest.mark.parametrize("feature", FEATURES, ids=IDS)
+def test_run_record_task_values_make_valid_run_records(feature, tmp_path):
+    manifest, _ = instance(tmp_path, feature, seed=1)
+    assert manifest["run_record_task"] == slicekit.run_record_task(feature, 1)
+    assert manifest["run_record_task"]["instance_id"] == manifest["instance_id"] == f"{feature.id}-0001"
+    example = json.loads((HERE.parents[1] / "schema" / "examples" / "run-record.json").read_text())
+    for arm in ("roko_plan", "fd_claude"):  # S09 §4.9's two arms
+        record = copy.deepcopy(example) | {"arm": arm, "task": manifest["run_record_task"]}
+        assert validate.validate("run-record", record) == [], arm
+
+
+def test_the_run_record_schema_has_no_level_for_a_feature():
+    # Why [run_record] carries a placeholder ladder: the schema's ladder and spec_variant are closed enums.
+    task = {"family": "PL", "instance_id": "PL01-0001", "ladder": "plan", "latent_version": "v1",
+            "spec_variant": "plan-slice", "is_honeypot": False}
+    assert len(slicekit.run_record_errors(task)) == 2
+    assert slicekit.run_record_errors(task | {"ladder": 5, "spec_variant": "precise"}) == []
 
 
 def test_every_requirement_is_stated_planned_and_tested():
@@ -147,7 +170,7 @@ def test_an_edited_visible_test_is_flagged_and_restored(tmp_path):
     assert not verdict["visible"]["passed"] and not verdict["passed"] and not verdict["verified"]
     slicekit.apply_reference(feature, work, manifest["rename"])
     verdict = slicekit.census(manifest, work)
-    assert verdict["passed"] and verdict["visible"]["passed"] and not verdict["verified"]
+    assert verdict["passed"] and verdict["visible"]["passed"] and not verdict["verified"] and not verdict["vf"]
     assert repo.tree_hash(work) != manifest["pristine"]["tree"]
 
 
@@ -158,7 +181,7 @@ def test_a_canary_in_the_workdir_blocks_verification(tmp_path):
     (work / "NOTES.md").write_text(f"copied from the benchmark: {canary.RELEASE_CANARY}\n")
     verdict = slicekit.census(manifest, work)
     assert verdict["passed"] and verdict["canary_hits"] == {"NOTES.md": [canary.RELEASE_CANARY]}
-    assert not verdict["verified"]
+    assert verdict["leak_suspected"] and verdict["vf"] and not verdict["verified"]
 
 
 def test_planted_modules_cannot_take_over_the_runner(tmp_path):

@@ -23,7 +23,12 @@ Lifecycle, as for the task families:
    directory outside the workdir.
 2. An arm works in the workdir from the description alone.
 3. `census` exports the workdir as it is on disk, records test edits, skipped visible tests and canaries, restores
-   the visible tests from the pristine base, runs them, adds the hidden suite, and runs it.
+   the visible tests from the pristine base, runs them, adds the hidden suite, and runs it. Its `vf` is S09 §4.9's
+   census-side verified feature: the hidden suite passes and nothing tampered with the visible tests. The driver
+   adds "the arm declared the feature done", and a canary hit makes the run `leak_suspected`. `verified` is stricter
+   (the visible tests pass too, and no canary): it is what verifier CI demands of a reference.
+
+The manifest also carries `run_record_task`, the `task` object of the instance's `vb.run_record/1` rows.
 
 `selftest` is the slice's verifier CI: per feature, the reference passes both suites cleanly, the stub (the untouched
 base) fails both, and the reference with any one skeleton task left undone fails the hidden suite.
@@ -201,10 +206,22 @@ def shape_errors(feature: Feature) -> list[str]:
                 if canary.find(path.read_text(encoding="utf-8")) != [canary.RELEASE_CANARY]]
     if unmarked:
         errors.append(f"{name}: files without the release canary marker: {unmarked}")
-    for key in ("id", "slug", "title", "package", "visible_tests", "visible_verify", "suite", "rename"):
+    for key in ("id", "slug", "title", "package", "visible_tests", "visible_verify", "suite", "rename", "run_record"):
         if key not in feature.source:
             errors.append(f"{name}: feature.toml lacks {key!r}")
+    if "run_record" in feature.source:
+        errors += [f"{name}: [run_record]: {error}" for error in run_record_errors(run_record_task(feature, 1))]
     return errors
+
+
+def run_record_task(feature: Feature, seed: int) -> dict:
+    """The `task` object of this instance's vb.run_record/1 rows, from feature.toml's [run_record] (S09 §4.9)."""
+    return {"family": FAMILY, "instance_id": instance_id(feature, seed), **feature.source["run_record"]}
+
+
+def run_record_errors(task: dict) -> list[str]:
+    """How `task` breaks the run-record schema's `task` object; empty when a PL row can carry it."""
+    return vb_validate.schema_errors(task, vb_validate.load_schema("run-record")["properties"]["task"], "$.task")
 
 
 def rename_mapping(feature: Feature, seed: int) -> dict[str, str]:
@@ -258,7 +275,8 @@ def materialize(feature: Feature, seed: int, workdir: Path, private: Path) -> di
         "recoverability": [{"req": req, "evidence": [f"description.md#{req}"]} for req in feature.requirements],
         "plan_skeleton": {"tasks": len(feature.tasks), "width": width(feature.tasks),
                           "sha256": hashlib.sha256((feature.root / "plan.toml").read_bytes()).hexdigest()},
-        "truth_suite": dict(feature.source["suite"]), "pristine": pristine.as_json(),
+        "truth_suite": dict(feature.source["suite"]), "run_record_task": run_record_task(feature, seed),
+        "pristine": pristine.as_json(),
         "canary": canary.RELEASE_CANARY, "workdir": str(workdir),
     }
     errors = manifest_errors(manifest)
@@ -310,7 +328,8 @@ def census(manifest: dict, workdir: Path) -> dict:
                    for row in hidden["tests"]],
         "visible": {"passed": visible["passed"], "ran": visible["ran"], "commands": manifest["visible_verify"]},
         "gaming": gaming, "findings": [f"{f.check} {f.path}:{f.line} {f.detail}" for f in findings],
-        "canary_hits": canary_hits,
+        "canary_hits": canary_hits, "leak_suspected": bool(canary_hits),
+        "vf": hidden["passed"] and not gaming["test_edit"] and not gaming["tests_skipped"],
         "verified": hidden["passed"] and visible["passed"] and not any(gaming.values()) and not canary_hits,
         "truth_suite": manifest["truth_suite"], "verifier_version": VERIFIER_VERSION,
     }
@@ -348,13 +367,13 @@ def selftest(feature: Feature, seed: int = 1, *, partials: bool = True) -> dict:
             apply_reference(feature, tmp / task.id, manifest["rename"], skip=(task.id,))
             verdict = census(manifest, tmp / task.id)
             short[task.id] = {"hidden": verdict["passed"], "visible": verdict["visible"]["passed"]}
-    ok = (reference["verified"] and not stub["passed"] and not stub["visible"]["passed"]
-          and not any(row["hidden"] for row in short.values()))
+    ok = (reference["verified"] and reference["vf"] and not stub["passed"] and not stub["visible"]["passed"]
+          and not stub["vf"] and not any(row["hidden"] for row in short.values()))
     return {"feature": feature.id, "seed": seed, "instance_id": manifest["instance_id"], "ok": ok,
             "reference": {"hidden": reference["passed"], "visible": reference["visible"]["passed"],
-                          "verified": reference["verified"], "checks": len(reference["checks"]),
+                          "verified": reference["verified"], "vf": reference["vf"], "checks": len(reference["checks"]),
                           "failed": [c["id"] for c in reference["checks"] if not c["passed"]]},
-            "stub": {"hidden": stub["passed"], "visible": stub["visible"]["passed"]},
+            "stub": {"hidden": stub["passed"], "visible": stub["visible"]["passed"], "vf": stub["vf"]},
             "one_task_short": short}
 
 

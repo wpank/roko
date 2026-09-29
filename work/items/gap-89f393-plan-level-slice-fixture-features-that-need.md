@@ -80,3 +80,7 @@ wide.
 - Not met: the suites were written by `claude-opus-5-5` (Anthropic), the `fd_claude` arm's model family, not by a
   different family. Each `feature.toml` records `cross_family_review = "pending"`. The suites are also static files,
   not HMAC-keyed cases as in F1 and F4.
+- 2026-09-29 (after S09 v1.2 §4.9): every `feature.toml` has `[run_record]` values that validate as
+  `vb.run_record/1` rows for `roko_plan` and `fd_claude`: family `PL`, spec_variant `precise`, and `ladder = 5`,
+  a placeholder, because the schema's ladder is a required 1–5 enum with no value for a feature. The census also
+  reports `vf`, S09 §4.9's census-side verified feature, which has no visible-test condition.

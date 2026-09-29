@@ -62,8 +62,14 @@ $PY $PL census --manifest ~/vb-private/PL03-0001/feature.json --workdir ~/vb-wor
   to the export (never to the workdir) and runs it. Suites run in a child `python -I`, so a planted `unittest.py`
   or `sitecustomize.py` cannot take over the runner.
 - The verdict: `passed` (the hidden suite), `checks` (one per hidden test, with its requirement ids), `visible`,
-  `gaming`, `canary_hits`, and `verified`. `verified` holds when the hidden and visible suites pass with no gaming
-  flag and no canary. It is the census's verified-feature label.
+  `gaming`, `canary_hits`, `leak_suspected`, `vf` and `verified`.
+  - `vf` is the census side of S09 §4.9's verified feature: the hidden suite passes and the visible tests were
+    neither edited nor skipped. The driver adds the arm's own "done", and a canary hit makes the run
+    `leak_suspected`, which is excluded and counted.
+  - `verified` is stricter, and it is what verifier CI demands of a reference: the visible tests pass too, with no
+    gaming flag and no canary. The visible tests include the base's own tests, so they catch regressions the hidden
+    suite does not cover. S09 §4.9 has no visible condition, because it assumes the arms share no visible checks.
+    They do share some here: both arms get the same base repo and its tests.
 
 ## Verifier CI
 
@@ -72,6 +78,21 @@ that, the reference with any one skeleton task left undone fails the hidden suit
 feature to pass. The item's verify runs `tests/test_plan_slice.py`, the reference-and-stub check, in about 10 s.
 `test_slice.py` runs the one-task-short check, a second seed, and the census's isolation, gaming and determinism
 checks.
+
+## Run records
+
+Each `feature.toml` has a `[run_record]` table: the `task` values of the feature's `vb.run_record/1` rows. The
+manifest carries them as `run_record_task`, with the instance id. A test builds a full row from the schema's example
+for both of S09 §4.9's arms, `roko_plan` and `fd_claude`, and validates it.
+
+- `family = "PL"`. S08 §4.7 calls the task set `plan_slice`, and S09's lock entry is `exploratory.PL`.
+- `spec_variant = "precise"`. The description is the precise spec: it states every requirement the hidden suite
+  checks, and there are no vague or refined variants.
+- `ladder = 5` is a **placeholder**. The schema's `ladder` is required and closed (1–5), and a feature has no
+  difficulty level. 5 is the level whose S08 §4.4 `k_files` band, 5–8 files with ordered subgoals, holds every
+  feature (5–7 files). The other knobs sit at ℓ1–ℓ2 (documented conventions, main-path visible tests, a small
+  repo). No ℓ analysis may read PL rows: filter them out by `task.family` or by experiment (`E-PL`). Allowing
+  `null` in the schema's ladder enum would remove the placeholder.
 
 ## Known gaps
 
@@ -83,3 +104,4 @@ checks.
   files. Only isolation and canaries keep them from the agent, and a model that has read this tree could pass them.
 - **No planted gaming solution** per feature. The generic detectors (test edits, skip markers, canaries) apply.
 - **One surface knob.** A seed renames the package, and nothing else varies.
+- **A placeholder ladder** in every run record (see "Run records").

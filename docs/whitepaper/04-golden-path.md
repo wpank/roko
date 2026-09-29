@@ -130,9 +130,8 @@ Each step's tag, its appendix rows, and the epics that would change it:
 
 No step yet does everything its design asks, and the central promise is untested. Every portal attempt pinned
 `claude-sonnet-4-6`[^4-model] and escalation is not wired, so no real task has yet run on a cheap executor with
-escalation. E11's end-to-end run (gap-f30b8e) is designed as the first test of the whole path: a fixture plan runs
-through the ladder on real cheap models and merges green, three runs out of three. §8 plans the comparison with a
-frontier agent.
+escalation. E11's end-to-end run (gap-f30b8e) is designed as the first test of the whole path (§9.3), and §8 plans
+the comparison with a frontier agent.
 
 [^4-plans]: Counted at `a17d4dadd` over the 132 tracked `tasks.toml` files under `plans/`;
     `git grep -l -E '^max_parallel *= *1( |#|$)' a17d4dadd -- 'plans/*tasks.toml'` lists the 102. Tasks could run

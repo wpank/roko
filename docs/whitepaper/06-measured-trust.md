@@ -10,7 +10,7 @@ they will be evaluated.
 
 | Measure | Counts | Denominator | Reported as | Mechanism and status |
 |---|---|---|---|---|
-| Routing learned from verified outcomes | Verified passes on any vendor's model, credited to the model that ran | Settled attempts per model and kind of task; an unverified attempt counts as failed | Pass rate and cost per verified task, with forecast calibration | M3, a calibrated self-model: MISSING@a17d4dadd (row RG5; spec-6ac537). Its base, the router, is PARTIAL@a17d4dadd (row RC2): failures of its own picks never reach LinUCB, failed overrides count as successes, and unverified work earns full reward (bug-8da8ba, bug-f68404, bug-c34782) |
+| Routing learned from verified outcomes | Verified passes on any vendor's model, credited to the model that ran | Settled attempts per model and kind of task; an unverified attempt counts as failed | Pass rate and cost per verified task, with forecast calibration | M3, a calibrated self-model: MISSING@a17d4dadd (row RG5; spec-6ac537). Its base, the router, is PARTIAL@a17d4dadd (row RC2): its learned stage sees successes only, and unverified work earns full reward (bug-8da8ba, bug-f68404, bug-c34782) |
 | False-green rate | Accepted tasks that fail an independent audit: a tamper check, a clean re-run, and hidden tests written from the spec by another model family | Tasks accepted in a window. A keyed lottery audits each with a known chance, and weights it by the inverse of that chance | A Hájek estimate with a confidence interval, per model and kind of task | M4, random deep audits: MISSING@a17d4dadd (row QA5; spec-6ac537) |
 | Per-loop evidence that learning helps | Per loop: exposure (learned state reached the decision), influence (the decision left the default, net of A/A noise) and benefit (the change in verified success) | Decisions the loop could change; a random holdout keeps some on the default as the control | The three figures, with anytime-valid intervals; a harmful loop is demoted to its default | M2, the loop-liveness audit: MISSING@a17d4dadd (row RG4; spec-6ac537). It needs frozen learning (gap-644040) |
 
@@ -30,8 +30,7 @@ model with a cheaper one: Claude Code's `opusplan` plans on Opus and executes on
 is tied to one vendor or made by the vendor's router: Claude Code's workers are always Claude sessions, Cursor's
 router is "managed by Cursor", and Factory's sends routine steps to cheaper models and escalates when one struggles
 [@anthropic2026agents; @cursor2026router; @factory2026router]. None of these pages says that routing learns from
-the user's own verdicts, reports how often a pass is wrong, or gives evidence per learning mechanism. This
-describes documentation on one date, not a claim of priority.
+the user's own verdicts, reports how often a pass is wrong, or gives evidence per learning mechanism.
 
 [^6-verdicts]: Research note B7, frozen as `evidence/2026-09-29-b7-real-run-evidence.md` (sha256 `799b6a2b6184`),
     "TL;DR"; fix commit `725f21e05` (bug-82d47b, bug-521f08, bug-06e2d1). Before: 430 attempts in 31 plans,

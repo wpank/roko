@@ -4,8 +4,7 @@ Status: reviewed · budget 850 words · owner gap-e8cb4d
 
 Roko is designed to improve from verified outcomes and to show that it does. Three layers carry the design: essential
 variables that define "better", first-order loops that tune prompts, retries and routing, and second-order mechanisms
-that audit the gates and the loops and guard every change. Tags come from the appendix at `a17d4dadd`, each followed by
-its row.
+that audit the gates and the loops and guard every change. Each tag names its appendix row.
 
 ## 5.1 Essential variables
 

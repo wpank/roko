@@ -1,4 +1,4 @@
-Status: draft · budget 950 words · owner gap-ac4646
+Status: reviewed · budget 950 words · owner gap-ac4646
 
 # 4 The golden path, step by step
 
@@ -14,9 +14,9 @@ the principle from §2 behind it; §4.12 names the epics that would close the ga
 ## 4.1 Author
 
 A frontier model drafts the plan with the author, who edits and regenerates it quickly: PARTIAL@a17d4dadd. Only some
-CLI paths can choose the planner model (gap-853b31), the prompt cuts the PRD at 8,000 characters and lets the planner
-read at most five files, and the portal's plans were written outside Roko (§7). Principle: *put ambiguity back into
-authoring*.
+CLI paths can choose the planner model (gap-853b31), the prompt (`crates/roko-cli/src/prd.rs`) cuts the PRD at 8,000
+characters and lets the planner read at most five files, and the portal's plans were written outside Roko (§7).
+Principle: *put ambiguity back into authoring*.
 
 ## 4.2 Compile the spec
 
@@ -50,8 +50,9 @@ outputs*.
 
 Each task works in its own workspace, out of reach of the operator's secrets: PARTIAL@a17d4dadd. Tasks edit the
 operator's checkout by default, and the opt-in per-task worktree never merges its edits back. Since `1d923e377`, gates
-and provider CLIs no longer inherit Roko's provider keys (bug-7d7200), but agent tool shells and MCP servers still do,
-there is no OS sandbox, and the git guard lets `reset`, `stash` and `clean` through.
+start from an allowlisted environment and provider CLIs drop the key variables they recognise (bug-7d7200), but agent
+tool shells and MCP servers still inherit the keys, there is no OS sandbox, and the git guard lets `reset`, `stash`
+and `clean` through.
 
 ## 4.7 Verify
 
@@ -72,22 +73,22 @@ MISSING@a17d4dadd. Principle: *retry cheaply, then escalate*.
 
 Each verified task commits to a plan branch through a merge queue (ORPHANED@a17d4dadd), and a whole-plan gate checks
 the merged result (MISSING@a17d4dadd). Nothing merges on the Graph path: `MergeQueue` and `accept_attempt` have no
-production caller. On 2026-09-28 every portal plan was green while the assembled product was unusable (§7).
+production caller. On 2026-09-28 portal plans 05 to 08 passed every gate while the assembled product was unusable (§7).
 Principle: *merge, then verify*.
 
 ## 4.10 Review
 
 An optional hold lets a person approve each task's diff before it merges: MISSING@a17d4dadd. `--approval` only opens
-the TUI, and the per-task diff route looks for `agent/*/<task>` branches that Graph runs never create. No epic covers
-this step yet.
+the TUI, and the per-task diff route looks for `agent/*/<task>` branches that Graph runs never create. gap-0d64d5,
+under E6 integration, covers this step.
 
 ## 4.11 Learn
 
 Verified outcomes teach Roko how to route, size and specify tasks: PARTIAL@a17d4dadd. Merges on 2026-09-29
 (`ce3bdcbb8`, `33e107da1`) re-wired playbook credit, prompt experiments, knowledge write-back and retry budgets from
-gate history, but no loop has a measured benefit, and the knowledge read path, BROKEN@a17d4dadd, injects nothing
-(bug-86117a). On the portal the router saw one pinned model, so it learned nothing about alternatives.[^4-model]
-Principle: *count cost per verified task*. §5 covers the loops.
+gate history. But no loop has a measured benefit, the knowledge read path, BROKEN@a17d4dadd, injects nothing
+(bug-86117a), and on the portal the router saw one pinned model (§4.12). Principle: *count cost per verified task*.
+§5 covers the loops.
 
 ## 4.12 Where the path stands
 
@@ -104,20 +105,20 @@ Each step's tag, its appendix rows, and the epics that would change it:
 | 7 Verify | PARTIAL@a17d4dadd | QA1, QA2, QA3, QA4, QA5 | E2 verdicts (spec-e9d7ec); E9 diff check (spec-9230a9); E17 audits |
 | 8 Recover | PARTIAL@a17d4dadd | EX6, EX7, EX8, EX9, QA7 | E5 tier ladder; E10 watchdog (spec-edda86) |
 | 9 Integrate | ORPHANED@a17d4dadd, MISSING@a17d4dadd | IS2, IS3 | E6 integration |
-| 10 Review | MISSING@a17d4dadd | SS6 | None yet |
+| 10 Review | MISSING@a17d4dadd | SS6 | E6 integration (gap-0d64d5) |
 | 11 Learn | PARTIAL@a17d4dadd | V8, LM3, RC2 | E17 cybernetic core (spec-6ac537) |
 | Whole path: cheaper at equal quality | UNPROVEN@a17d4dadd | V7 | E11 acceptance tests (spec-f09094); E12 pilot (spec-567e52) |
 
 No step yet does everything its design asks, and the central promise is untested. Every portal attempt pinned
 `claude-sonnet-4-6`[^4-model] and escalation is not wired, so no real task has yet run on a cheap executor with
-escalation. E11's end-to-end run (gap-f30b8e) is designed as the first test of the whole path: a fixture plan runs
-through the ladder on real cheap models and merges green, three runs out of three. §8 plans the comparison with a
-frontier agent.
+escalation. E11's end-to-end run (gap-f30b8e) is designed as the first test of the whole path (§9.3), and §8 plans
+the comparison with a frontier agent.
 
 [^4-plans]: Counted at `a17d4dadd` over the 132 tracked `tasks.toml` files under `plans/`;
-    `git grep -l -E '^max_parallel *= *1( |#|$)' a17d4dadd -- plans/` lists the 102. Tasks could run together when two
-    sit at the same depth of the plan's dependency graph (parsed with `tomllib`).
-[^4-verdicts]: spec-e9d7ec, from Roko's run records, which §7 freezes (CASE-001). Visible verify steps only: recorded
-    successes from 2026-09-05 to the fix, then passes to 2026-09-29 07:41Z. Not an audited false-green rate.
-[^4-model]: spec-f09094 and gap-e21595: all 210 portal attempts, to 2026-09-29 07:41Z, pinned one model; §7 gives
-    the record.
+    `git grep -l -E '^max_parallel *= *1( |#|$)' a17d4dadd -- 'plans/*tasks.toml'` lists the 102. Tasks could run
+    together when two sit at the same depth of the plan's dependency graph (parsed with `tomllib`).
+[^4-verdicts]: Research note B7, frozen as `evidence/2026-09-29-b7-real-run-evidence.md` (sha256 `799b6a2b6184`),
+    "TL;DR", and CASE-001 in `evidence/2026-09-29-field-cases.md`; also spec-e9d7ec. Visible verify steps only:
+    recorded successes from 2026-09-05 to the fix, then passes to 2026-09-29 07:41Z. Not an audited false-green rate.
+[^4-model]: B7 as above, "TL;DR": all 210 portal attempts, to 2026-09-29 07:41Z, pinned one model; also
+    spec-f09094 and gap-e21595.

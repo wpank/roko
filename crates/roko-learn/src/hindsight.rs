@@ -1,6 +1,9 @@
 //! Append-only hindsight relabeling for recent episode outcomes.
 
 use std::collections::HashSet;
+use std::fs::{self, OpenOptions};
+use std::io::{self, Write};
+use std::path::Path;
 
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
@@ -9,8 +12,15 @@ use serde_json::Value;
 use crate::episode_logger::{Episode, EpisodeLogger, LoggerError};
 use crate::playbook_rules::Rule;
 
+/// Episode `extra` key listing the tasks a failed gate blamed, as
+/// `"{plan_id}/{task_id}"` keys.
+pub const BLAMED_TASKS_KEY: &str = "blamed_tasks";
+
+/// Default file name for durable adjustments under `.roko/learn/`.
+pub const DEFAULT_ADJUSTMENTS_FILE: &str = "episode-adjustments.jsonl";
+
 /// Why a previous episode assessment changed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AdjustmentKind {
     /// A later gate regression invalidated an earlier success.
@@ -42,12 +52,14 @@ pub struct EpisodeAdjustment {
 #[derive(Debug, Clone)]
 pub struct HindsightRelabeler {
     max_age: Duration,
+    attributed_only: bool,
 }
 
 impl Default for HindsightRelabeler {
     fn default() -> Self {
         Self {
             max_age: Duration::days(30),
+            attributed_only: false,
         }
     }
 }
@@ -59,7 +71,24 @@ impl HindsightRelabeler {
         Self::default()
     }
 
+    /// Relabel a success as a regression only when a later failed gate
+    /// blames its task by name ([`BLAMED_TASKS_KEY`]), and only the task's
+    /// latest episode before that failure.
+    ///
+    /// Where every episode is a fresh attempt that edits files, a later
+    /// failure of the same task, or of a task declaring the same files, does
+    /// not show that the earlier work regressed; the new attempt's own edits
+    /// explain it just as well.
+    #[must_use]
+    pub fn attributed_only(mut self) -> Self {
+        self.attributed_only = true;
+        self
+    }
+
     /// Cross-reference episode outcomes and current rule evidence.
+    ///
+    /// `episodes` must be in write order. Episodes of different plans
+    /// (`extra.plan_id`) never relabel each other.
     #[must_use]
     pub fn scan(&self, episodes: &[Episode], rules: &[Rule]) -> Vec<EpisodeAdjustment> {
         let cutoff = Utc::now() - self.max_age;
@@ -72,23 +101,44 @@ impl HindsightRelabeler {
 
             if episode.success {
                 let files = episode_files(episode);
-                let regression = episodes[index.saturating_add(1)..].iter().find(|later| {
-                    !later.success
-                        && later.timestamp >= episode.timestamp
-                        && (!shared_files(&files, &episode_files(later)).is_empty()
-                            || later.task_id == episode.task_id)
-                        && later.gate_verdicts.iter().any(|verdict| !verdict.passed)
-                });
+                let later_start = index.saturating_add(1);
+                let regression = episodes[later_start..]
+                    .iter()
+                    .enumerate()
+                    .find(|(offset, later)| {
+                        if later.success
+                            || later.timestamp < episode.timestamp
+                            || !same_plan(episode, later)
+                            || !later.gate_verdicts.iter().any(|verdict| !verdict.passed)
+                        {
+                            return false;
+                        }
+                        let attributed = blames(later, episode)
+                            && is_latest_before(episodes, index, later_start + offset);
+                        attributed
+                            || (!self.attributed_only
+                                && (!shared_files(&files, &episode_files(later)).is_empty()
+                                    || later.task_id == episode.task_id))
+                    })
+                    .map(|(_, later)| later);
                 if let Some(later) = regression {
+                    let reason = if blames(later, episode) {
+                        format!(
+                            "later gate failure in episode {} was attributed to this task's files",
+                            later.id
+                        )
+                    } else {
+                        format!(
+                            "later gate failure in episode {} affected the same task or files",
+                            later.id
+                        )
+                    };
                     adjustments.push(EpisodeAdjustment {
                         original_episode_id: episode.id.clone(),
                         adjustment_kind: AdjustmentKind::Regression,
                         old_value: Value::Bool(true),
                         new_value: Value::Bool(false),
-                        reason: format!(
-                            "later gate failure in episode {} affected the same task or files",
-                            later.id
-                        ),
+                        reason,
                         timestamp: Utc::now(),
                     });
                     continue;
@@ -150,6 +200,70 @@ impl HindsightRelabeler {
     }
 }
 
+/// Read the adjustments recorded at `path`, in write order.
+///
+/// A missing file reads as empty; malformed lines are skipped.
+///
+/// # Errors
+///
+/// Returns an error if the file exists but cannot be read.
+pub fn read_adjustments(path: &Path) -> io::Result<Vec<EpisodeAdjustment>> {
+    let text = match fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error),
+    };
+    Ok(text
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .filter_map(|line| serde_json::from_str(line).ok())
+        .collect())
+}
+
+/// Append to the JSONL log at `path` each adjustment it does not already
+/// hold for the same original episode and kind, so repeated scans of one
+/// history record every correction once. Returns how many were appended.
+///
+/// Unlike [`HindsightRelabeler::append`], the log is kept apart from the
+/// episode log, whose readers would count correction records as episodes.
+/// Callers serialize concurrent appends to one path.
+///
+/// # Errors
+///
+/// Returns an error if the log cannot be read or written.
+pub fn append_new_adjustments(path: &Path, adjustments: &[EpisodeAdjustment]) -> io::Result<usize> {
+    if adjustments.is_empty() {
+        return Ok(0);
+    }
+    let mut recorded: HashSet<(String, AdjustmentKind)> = read_adjustments(path)?
+        .into_iter()
+        .map(|adjustment| (adjustment.original_episode_id, adjustment.adjustment_kind))
+        .collect();
+    let mut lines = String::new();
+    let mut appended = 0;
+    for adjustment in adjustments {
+        if !recorded.insert((
+            adjustment.original_episode_id.clone(),
+            adjustment.adjustment_kind,
+        )) {
+            continue;
+        }
+        lines.push_str(&serde_json::to_string(adjustment).map_err(io::Error::other)?);
+        lines.push('\n');
+        appended += 1;
+    }
+    if appended == 0 {
+        return Ok(0);
+    }
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let mut file = OpenOptions::new().create(true).append(true).open(path)?;
+    file.write_all(lines.as_bytes())?;
+    file.flush()?;
+    Ok(appended)
+}
+
 fn episode_files(episode: &Episode) -> HashSet<String> {
     episode
         .extra
@@ -164,6 +278,48 @@ fn episode_files(episode: &Episode) -> HashSet<String> {
 
 fn shared_files(left: &HashSet<String>, right: &HashSet<String>) -> Vec<String> {
     left.intersection(right).cloned().collect()
+}
+
+fn episode_plan(episode: &Episode) -> Option<&str> {
+    episode.extra.get("plan_id").and_then(Value::as_str)
+}
+
+/// Whether two episodes may relabel each other: unscoped episodes match
+/// anything, scoped ones only their own plan.
+fn same_plan(left: &Episode, right: &Episode) -> bool {
+    match (episode_plan(left), episode_plan(right)) {
+        (Some(left), Some(right)) => left == right,
+        _ => true,
+    }
+}
+
+/// Whether `failure` blames `episode`'s task in [`BLAMED_TASKS_KEY`].
+fn blames(failure: &Episode, episode: &Episode) -> bool {
+    let key = match episode_plan(episode) {
+        Some(plan) => format!("{plan}/{}", episode.task_id),
+        None => episode.task_id.clone(),
+    };
+    failure
+        .extra
+        .get(BLAMED_TASKS_KEY)
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .any(|blamed| blamed == key)
+}
+
+/// Whether no other episode of `episodes[original]`'s task (in its plan)
+/// lies between it and `episodes[later]`.
+fn is_latest_before(episodes: &[Episode], original: usize, later: usize) -> bool {
+    let episode = &episodes[original];
+    !episodes[original.saturating_add(1)..later]
+        .iter()
+        .any(|between| {
+            between.kind != "episode_adjustment"
+                && between.task_id == episode.task_id
+                && same_plan(episode, between)
+        })
 }
 
 fn reused_episode(episode: &Episode, source_id: &str) -> bool {
@@ -206,5 +362,104 @@ mod tests {
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].original_episode_id, original.id);
         assert_eq!(found[0].adjustment_kind, AdjustmentKind::Regression);
+    }
+
+    /// An episode of `task` in `plan`, `minutes` after `base`.
+    fn plan_episode(plan: &str, task: &str, success: bool, minutes: i64) -> Episode {
+        let mut episode = Episode::new(task, task);
+        episode.id = format!("ep-{plan}-{task}-{minutes}");
+        episode.timestamp = Utc::now() - Duration::hours(1) + Duration::minutes(minutes);
+        episode.success = success;
+        episode
+            .extra
+            .insert("plan_id".into(), Value::String(plan.into()));
+        if !success {
+            episode.gate_verdicts = vec![EpisodeGateVerdict::new("verify", false)];
+        }
+        episode
+    }
+
+    fn blaming(mut episode: Episode, blamed: &[&str]) -> Episode {
+        episode
+            .extra
+            .insert(BLAMED_TASKS_KEY.into(), serde_json::json!(blamed));
+        episode
+    }
+
+    #[test]
+    fn attributed_failure_relabels_the_blamed_tasks_latest_success() {
+        let older = plan_episode("p", "T12", true, 0);
+        let latest = plan_episode("p", "T12", true, 5);
+        let failure = blaming(plan_episode("p", "T2", false, 6), &["p/T12"]);
+
+        let found = HindsightRelabeler::new()
+            .attributed_only()
+            .scan(&[older, latest.clone(), failure.clone()], &[]);
+
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!(found[0].original_episode_id, latest.id);
+        assert_eq!(found[0].adjustment_kind, AdjustmentKind::Regression);
+        assert_eq!(found[0].old_value, Value::Bool(true));
+        assert_eq!(found[0].new_value, Value::Bool(false));
+        assert!(found[0].reason.contains(&failure.id), "{}", found[0].reason);
+    }
+
+    #[test]
+    fn attributed_only_ignores_same_task_file_and_other_plan_overlaps() {
+        let success = plan_episode("p", "T1", true, 0);
+        // A new attempt of the same task failing proves nothing about the old one.
+        let same_task = plan_episode("p", "T1", false, 1);
+        let mut shared = plan_episode("p", "T3", false, 2);
+        shared
+            .extra
+            .insert("files".into(), serde_json::json!(["src/lib.rs"]));
+        // Blame of a same-named task in another plan does not count either.
+        let other_plan = blaming(plan_episode("q", "T2", false, 3), &["q/T1"]);
+        let mut success_with_files = success.clone();
+        success_with_files
+            .extra
+            .insert("files".into(), serde_json::json!(["src/lib.rs"]));
+
+        let relabeler = HindsightRelabeler::new().attributed_only();
+        assert!(
+            relabeler
+                .scan(&[success_with_files, same_task, shared, other_plan], &[])
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn a_failed_retry_between_success_and_blame_supersedes_the_success() {
+        let success = plan_episode("p", "T12", true, 0);
+        let failed_retry = plan_episode("p", "T12", false, 1);
+        let blame = blaming(plan_episode("p", "T2", false, 2), &["p/T12"]);
+
+        let found = HindsightRelabeler::new()
+            .attributed_only()
+            .scan(&[success, failed_retry, blame], &[]);
+        assert!(found.is_empty(), "{found:?}");
+    }
+
+    #[test]
+    fn durable_adjustments_are_recorded_once() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("learn").join(DEFAULT_ADJUSTMENTS_FILE);
+        let success = plan_episode("p", "T12", true, 0);
+        let blame = blaming(plan_episode("p", "T2", false, 1), &["p/T12"]);
+        let relabeler = HindsightRelabeler::new().attributed_only();
+
+        let first = relabeler.scan(&[success.clone(), blame.clone()], &[]);
+        assert_eq!(append_new_adjustments(&path, &first).expect("append"), 1);
+        let again = relabeler.scan(&[success.clone(), blame], &[]);
+        assert_eq!(append_new_adjustments(&path, &again).expect("append"), 0);
+
+        let recorded = read_adjustments(&path).expect("read");
+        assert_eq!(recorded.len(), 1);
+        assert_eq!(recorded[0].original_episode_id, success.id);
+        assert!(
+            read_adjustments(&dir.path().join("missing.jsonl"))
+                .expect("read")
+                .is_empty()
+        );
     }
 }

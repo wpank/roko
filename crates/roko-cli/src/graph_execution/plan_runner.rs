@@ -938,6 +938,14 @@ async fn run_graph_plan_body(params: GraphPlanRunParams) -> anyhow::Result<i32> 
             .with_sink(std::sync::Arc::new(
                 crate::runtime_feedback::EpisodeSink::at(&graph_episodes_path),
             ))
+            // Reads back the failed episode the episode sink just wrote, so
+            // it must follow it.
+            .with_sink(std::sync::Arc::new(
+                crate::runtime_feedback::HindsightSink::new(
+                    &graph_episodes_path,
+                    graph_learn_dir.join(roko_learn::hindsight::DEFAULT_ADJUSTMENTS_FILE),
+                ),
+            ))
             // Gate-verified attempts grow durable knowledge (tier
             // progression included) under `.roko/neuro/`.
             .with_sink(std::sync::Arc::new(

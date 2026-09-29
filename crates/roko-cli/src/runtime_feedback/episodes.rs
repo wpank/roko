@@ -13,6 +13,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use roko_learn::episode_logger::{Episode, EpisodeGateVerdict, EpisodeLogger, Usage};
 use roko_learn::hdc_fingerprint::{encode as encode_hdc_fingerprint, fingerprint_episode};
+use roko_learn::hindsight::BLAMED_TASKS_KEY;
 
 use super::{FeedbackEvent, FeedbackSink};
 
@@ -78,14 +79,21 @@ impl FeedbackSink for EpisodeSink {
                     serde_json::Value::String(class.to_string()),
                 );
             }
-            // An authored verify gate failed: record its verdict.
-            if failure_reason
+            // An authored verify gate failed: record the verdict, and any
+            // sibling task the failure is attributed to, for hindsight.
+            if let Some(reason) = failure_reason
                 .as_deref()
-                .is_some_and(|r| r.starts_with("verify: "))
+                .filter(|r| r.starts_with("verify: "))
             {
                 episode
                     .gate_verdicts
                     .push(EpisodeGateVerdict::new("verify", false));
+                let blamed = super::hindsight::blamed_tasks(plan_id, reason);
+                if !blamed.is_empty() {
+                    episode
+                        .extra
+                        .insert(BLAMED_TASKS_KEY.into(), serde_json::json!(blamed));
+                }
             }
         }
         episode.usage = Usage {
@@ -309,6 +317,7 @@ mod tests {
             episode.gate_verdicts,
             [EpisodeGateVerdict::new("verify", false)]
         );
+        assert!(!episode.extra.contains_key(BLAMED_TASKS_KEY));
     }
 
     #[tokio::test]

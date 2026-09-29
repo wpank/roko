@@ -32,6 +32,10 @@ use crate::{SourceChannel, apply_source_discount};
 /// Default append-only lifecycle receipt file under `.roko/neuro/`.
 pub const DEFAULT_KNOWLEDGE_LIFECYCLE_FILE: &str = "knowledge-lifecycle.jsonl";
 
+/// Similarity above which a runtime candidate confirms the stored entry of
+/// its kind it duplicates instead of being admitted beside it.
+const RUNTIME_DUPLICATE_SIMILARITY: f64 = 0.8;
+
 /// Runtime lifecycle tuning knobs.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct KnowledgeLifecycleConfig {
@@ -196,6 +200,9 @@ pub enum RuntimeAdmissionPath {
     FullSuppressed,
     /// The candidate missed the light gate and no full admission was requested.
     Deferred,
+    /// The candidate duplicated a stored entry of its kind, which the
+    /// observation confirmed instead.
+    Duplicate,
     /// No candidate could be built from the observation.
     NoCandidate,
 }
@@ -209,7 +216,8 @@ pub struct KnowledgeLifecycleRecord {
     pub episode_id: String,
     /// Timestamp when this lifecycle receipt was recorded.
     pub recorded_at: DateTime<Utc>,
-    /// Candidate entry id, when one was built.
+    /// Candidate entry id, when one was built; for a duplicate, the id of
+    /// the stored entry it confirmed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub candidate_entry_id: Option<String>,
     /// How admission handled the candidate.
@@ -371,12 +379,15 @@ impl RuntimeKnowledgeLifecycle {
             self.config.reinforcement_novelty,
         )?;
 
+        let candidate_is_stored = matches!(
+            admission_path,
+            RuntimeAdmissionPath::LightAdmitted
+                | RuntimeAdmissionPath::FullAdmitted
+                | RuntimeAdmissionPath::Duplicate
+        );
         let promotion_updates = if self.config.promote_context_entries {
             let mut promotion_ids = context_ids;
-            if (admission_path == RuntimeAdmissionPath::LightAdmitted
-                || admission_path == RuntimeAdmissionPath::FullAdmitted)
-                && let Some(id) = candidate_entry_id.as_ref()
-            {
+            if candidate_is_stored && let Some(id) = candidate_entry_id.as_ref() {
                 promotion_ids.push(id.clone());
             }
             promote_runtime_entries(&self.knowledge_store, &promotion_ids, &observation)?
@@ -644,6 +655,20 @@ impl RuntimeKnowledgeLifecycle {
 
         let similarity = self.knowledge_store.max_similarity(candidate)?;
         let source_trust = observation.source_channel.discount_factor();
+        // A repeat of stored knowledge (say, the same task verified again)
+        // confirms that entry instead of adding another.
+        if similarity > RUNTIME_DUPLICATE_SIMILARITY
+            && let Some(existing) = self
+                .knowledge_store
+                .find_similar_entry(candidate, RUNTIME_DUPLICATE_SIMILARITY)?
+        {
+            return Ok((
+                Some(existing.id),
+                RuntimeAdmissionPath::Duplicate,
+                similarity,
+                source_trust,
+            ));
+        }
         if self
             .config
             .light_gate
@@ -828,13 +853,18 @@ fn promote_runtime_entries(
         if !entry.source_episodes.contains(&observation.episode_id) {
             entry.source_episodes.push(observation.episode_id.clone());
         }
-        if !entry.distinct_contexts.contains(&context) {
+        // One observation confirms an entry once: an entry admitted from this
+        // observation already counts it.
+        let new_context = !entry.distinct_contexts.contains(&context);
+        if new_context {
             entry.distinct_contexts.push(context.clone());
         }
 
         if observation.gate_passed {
-            entry.confirmation_count = entry.confirmation_count.saturating_add(1);
-            entry.confidence = (entry.confidence + 0.03).clamp(0.0, 1.0);
+            if new_context {
+                entry.confirmation_count = entry.confirmation_count.saturating_add(1);
+                entry.confidence = (entry.confidence + 0.03).clamp(0.0, 1.0);
+            }
             if let Some(tier) = TierProgression::evaluate_tier_progression_v2(
                 entry,
                 entry.confirmation_count as usize,
@@ -1362,6 +1392,46 @@ mod tests {
         let entries = lifecycle.knowledge_store().read_all().expect("read");
         assert_eq!(entries.len(), 1);
         assert!((entries[0].balance - before - 0.15).abs() < 1e-9);
+    }
+
+    #[test]
+    fn an_observation_confirms_its_own_entry_once_and_context_entries_once() {
+        let temp = TempDir::new().expect("tempdir");
+        let lifecycle = lifecycle(&temp);
+        let first = lifecycle
+            .ingest_observation(observation("episode-one", true))
+            .expect("first");
+        let learned = first.candidate_entry_id.expect("candidate");
+        let entry = |id: &str| {
+            lifecycle
+                .knowledge_store()
+                .read_all()
+                .expect("read")
+                .into_iter()
+                .find(|entry| entry.id == id)
+                .expect("entry")
+        };
+        assert_eq!(first.admission_path, RuntimeAdmissionPath::LightAdmitted);
+        assert_eq!(entry(&learned).confirmation_count, 1);
+        assert_eq!(entry(&learned).tier, KnowledgeTier::Working);
+
+        // A later pass that surfaced the entry is an independent confirmation,
+        // and its repeat of the same knowledge adds no entry.
+        let mut reuse = observation("episode-two", true);
+        reuse.context_entry_ids = vec![learned.clone()];
+        let second = lifecycle.ingest_observation(reuse.clone()).expect("reuse");
+        assert_eq!(second.admission_path, RuntimeAdmissionPath::Duplicate);
+        assert_eq!(second.candidate_entry_id.as_deref(), Some(learned.as_str()));
+        assert_eq!(
+            lifecycle.knowledge_store().read_all().expect("read").len(),
+            1
+        );
+        assert_eq!(entry(&learned).confirmation_count, 2);
+        assert_eq!(entry(&learned).tier, KnowledgeTier::Consolidated);
+
+        // Replaying the same observation adds nothing.
+        lifecycle.ingest_observation(reuse).expect("replay");
+        assert_eq!(entry(&learned).confirmation_count, 2);
     }
 
     #[test]

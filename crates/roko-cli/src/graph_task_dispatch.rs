@@ -1524,7 +1524,9 @@ impl GraphTaskDispatcher {
     /// `attempt_id` comes from [`Self::next_attempt_id`]. `failure_reason` is
     /// the attempt's bounded class-prefixed reason when `succeeded` is false
     /// (see [`attempt_failure_reason`]); it lands on the episode together with
-    /// the provider-reported turn count.
+    /// the provider-reported turn count. A success of a task with authored
+    /// verify steps also emits [`FeedbackEvent::TaskVerified`], which grows
+    /// durable knowledge.
     async fn emit_feedback(
         &self,
         spec: &TaskExecutionSpec,
@@ -1573,8 +1575,9 @@ impl GraphTaskDispatcher {
         };
         let experiment_settlement =
             prompt_experiment::settlement(succeeded, failure_reason.as_deref());
+        let diagnostics = &dispatch_plan.prompt.diagnostics;
 
-        // ── W04: FeedbackFacade (episodes + routing) ─────────────────────
+        // ── W04: FeedbackFacade (episodes + routing + knowledge) ─────────
         if let Some(facade) = &self.feedback.feedback_facade {
             let outcome = crate::dispatch::AgentOutcome {
                 task_id: task.id.clone(),
@@ -1607,7 +1610,7 @@ impl GraphTaskDispatcher {
                 routing_context,
                 prompt_text: Some(dispatch_plan.prompt.system_prompt.clone()),
                 cache_read_tokens: u64::from(dispatch.result.usage.cache_read_tokens),
-                knowledge_ids: vec![],
+                knowledge_ids: diagnostics.knowledge_ids.clone(),
                 playbook_ids: vec![],
                 initial_model: model_slug.clone(),
                 turns: u64::from(agent_num_turns),
@@ -1620,6 +1623,50 @@ impl GraphTaskDispatcher {
                     %error,
                     "graph feedback facade error (best-effort)"
                 );
+            }
+
+            // Authored verify steps are deterministic and never
+            // force-accepted, so a success of a task that declares them is a
+            // gate-backed pass (`TaskGateVerdict::Passed`). Only those grow
+            // durable knowledge.
+            if succeeded && !task.verify.is_empty() {
+                let verified = crate::runtime_feedback::VerifiedAttempt {
+                    plan_id: spec.plan_id.clone(),
+                    task_id: task.id.clone(),
+                    attempt_id: format!("{}:{attempt_id}", prompt_experiment::run_id()),
+                    title: task.title.clone(),
+                    task_type: task.tier.clone(),
+                    role: role.to_string(),
+                    model: model_slug.clone(),
+                    files: task.files.clone(),
+                    verify_steps: task
+                        .verify
+                        .iter()
+                        .enumerate()
+                        .map(|(index, step)| {
+                            (verify_step_label(index, &step.phase), step.command.clone())
+                        })
+                        .collect(),
+                    knowledge_ids: diagnostics.knowledge_ids.clone(),
+                    agent_output: dispatch
+                        .result
+                        .output
+                        .body
+                        .as_text()
+                        .unwrap_or_default()
+                        .to_string(),
+                };
+                if let Err(error) = facade
+                    .on_event(&FeedbackEvent::TaskVerified(verified))
+                    .await
+                {
+                    tracing::warn!(
+                        plan_id = %spec.plan_id,
+                        task_id = %task.id,
+                        %error,
+                        "graph verified-knowledge feedback error (best-effort)"
+                    );
+                }
             }
         }
 

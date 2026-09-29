@@ -35,6 +35,7 @@ pub mod episodes;
 pub mod knowledge;
 pub mod plan_completion;
 pub mod routing;
+pub mod verified_knowledge;
 
 pub use episodes::EpisodeSink;
 pub use knowledge::{KnowledgeIngestionSink, KnowledgeIngestor, NeuroKnowledgeIngestor};
@@ -42,6 +43,7 @@ pub use plan_completion::{
     DaimonPersistenceSink, DeltaConsolidationSink, DreamConsolidationSink, ThetaReflectionSink,
 };
 pub use routing::RoutingObservationSink;
+pub use verified_knowledge::{VerifiedAttempt, VerifiedKnowledgeSink};
 
 use roko_learn::model_router::RoutingContext;
 
@@ -95,6 +97,13 @@ pub enum FeedbackEvent {
         /// a short reason.
         failure_reason: Option<String>,
     },
+    /// Every authored verify step of a task attempt passed.
+    ///
+    /// Emitted after [`Self::TaskCompleted`] and only for gate-backed passes:
+    /// a task without verify steps never produces it, so sinks that grow
+    /// durable knowledge learn from evidence rather than from a provider's
+    /// own claim of success.
+    TaskVerified(VerifiedAttempt),
     /// A gate verdict landed for a task.
     GateOutcome {
         plan_id: String,
@@ -130,6 +139,7 @@ impl FeedbackEvent {
         match self {
             Self::TurnCompleted { .. } => "turn_completed",
             Self::TaskCompleted { .. } => "task_completed",
+            Self::TaskVerified(_) => "task_verified",
             Self::GateOutcome { .. } => "gate_outcome",
             Self::RetryDecision { .. } => "retry_decision",
             Self::PlanCompleted { .. } => "plan_completed",

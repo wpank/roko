@@ -272,7 +272,7 @@ Line 1 of every section file (`NN-*.md` and `appendix-*.md`) is its status heade
   will produce it.
 - Give the setting of every literature result (single function, QA, documents or repository scale), so that no
   result reads as broader than it is.
-- Numbers carry denominators. Use plain mechanism names; the banned words are listed below.
+- Numbers carry denominators. Use plain mechanism names (see the word list below).
 
 ### Status tags
 
@@ -324,16 +324,17 @@ TOML table names such as `[[task.verify]]` inside code spans are not markers.
 
 ### Numbers and footnotes
 
-- Every paragraph or table with a `$` amount, a percentage, an `N×` ratio or an "N of M" count has a footnote
-  naming its source: a commit, a frozen file in `evidence/` with its key, a `[@key]`, or a work item. The footnote
-  also gives the window or scope.
+- Every paragraph, list item or table with a `$` amount, a percentage, an `N×` ratio, an "N of M" count or an
+  `N/M` fraction has a footnote in the same block. Its definition names the source: a commit, a work item id, a
+  `[@key]`, or a rollup or snapshot with its id (e.g. "rollup 2026-09-29T11:14:31") together with the frozen file
+  in `evidence/` that holds it. An inline `[@key]` also counts. The footnote also gives the window or scope.
 - Footnote labels start with the section number, because `build.sh` joins the files: `[^7-portal]`.
 - For example:
 
       Roko built most of the portal: 16 plans and 173 tasks for $174.87 of recorded agent spend.[^7-portal]
 
-      [^7-portal]: `evidence/<date>-<slug>.json` (sha256 `<first 12 hex digits>`), keys `…`. Portal plans only,
-          attempts to 2026-09-29 07:41Z; the supervising sessions are excluded.
+      [^7-portal]: Rollup <id>, frozen as `evidence/<date>-<slug>.json` (sha256 `<first 12 hex digits>`), keys
+          `…`. Portal plans only, attempts to 2026-09-29 07:41Z; the supervising sessions are excluded.
 
 ### Frozen evidence
 
@@ -348,14 +349,16 @@ creates the directory; other sections add files in small commits of their own.
 - **Provenance:** `evidence/README.md` has one row per file: its source path, the tool and time that generated it,
   the commit it describes, its window, and what was removed from it.
 - **Never edit a frozen file.** To refresh one, freeze a new dated file and update the footnotes that cite it.
-- A footnote cites the file, the first 12 hex digits of its sha256, and the key or row it quotes.
+- A footnote names the rollup or snapshot with its id, the frozen file with the first 12 hex digits of its
+  sha256, and the key or row it quotes.
 
 ### Code identifiers
 
 - Every backticked identifier or repo path must exist at HEAD (`git grep -w`, `git ls-files`).
-- A designed name that doesn't exist yet is followed by `(designed)`, or its sentence or table row carries a
-  `MISSING@<sha>` tag. W9 found eight such names in the research draft's §4 (`AttemptKey` and `cost_source` among
-  them): don't carry them over unmarked.
+- A designed name that doesn't exist yet gets (designed), as plain text, in the same sentence as its first use in
+  each file; later uses in that file are then covered. A `[[AS-BUILT: …]]` marker also exempts a name, but
+  `--strict` fails on any marker. W9 found eight such names in the research draft's §4 (`AttemptKey` and
+  `cost_source` among them): don't carry them over unmarked.
 - docs/v3 is not evidence: its headline claims were checked against the code, and several failed (AR9).
 
 ### Figures
@@ -371,10 +374,13 @@ creates the directory; other sections add files in small commits of their own.
 
 ### Banned words
 
-`paperlint --strict` fails on these words and phrases in prose: case-insensitive, whole words, outside code spans
-and link targets (so the crate name `roko-dreams` is allowed). It reads the first column.
+- **Banned:** "provably", "self-aware", "metacognitive", "flywheel", "autocatalytic", "superlinear", "first-of-its-kind", "is the first", "the first to", "world's first", "immune", "dream", "dreams", "dreaming", "hypnagogia", "daimon", "somatic", "demurrage", "cortical", "pheromone", "pheromones".
 
-| Banned | Write instead |
+`paperlint --strict` reads the bullet above, the only one in these conventions that names the list. Each quoted
+word or phrase fails in prose: case-insensitive, whole words, outside code spans and link targets (so the crate
+name `roko-dreams` is allowed). What to write instead:
+
+| Word | Write instead |
 |---|---|
 | `provably` | What was checked, and how |
 | `self-aware` | The mechanism's name, e.g. "calibrated self-model" (M3) |

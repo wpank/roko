@@ -2,7 +2,7 @@
 id = "gap-b24517"
 kind = "gap"
 title = "ViabilityBench report: verified success, cost per verified success, pass^k and false greens with run ids (S08.T7)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "proof"
@@ -11,6 +11,7 @@ subsystem = ["benchmarks/viabilitybench/analysis"]
 created = 2026-09-29
 updated = 2026-09-29
 last_verified = 2026-09-29
+last_verified_rev = "0afbd3df9"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e12"
 discovered_from = "tmp/cybernetic-harness/specs/S08-benchmark-suite.md (§4.12, §5.5, §6 T7; checklist S08.T7)"
 anchors = ["benchmarks/viabilitybench/analysis/metrics.py", "benchmarks/viabilitybench/analysis/passk.py", "benchmarks/viabilitybench/analysis/report.py", "benchmarks/viabilitybench/analysis/test_analysis.py"]
@@ -23,6 +24,12 @@ command = "grep -qw 'def test_pass_k_matches_hand_computed_cases' benchmarks/via
 
 [[verify]]
 command = "grep -qw 'def test_check_rejects_simulated_or_incomplete_bundle' benchmarks/viabilitybench/analysis/test_analysis.py && benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/analysis/test_analysis.py -k test_check_rejects_simulated_or_incomplete_bundle -q"
+
+[closed]
+at = 2026-09-29
+commit = "0afbd3df9"
+by = "wk-bench-report"
+evidence = "0afbd3df9: analysis/passk.py, metrics.py and report.py implement S08.T7 per paper App. D.1-D.3 (VS rate with the unknown = 1 bound; $/VS null when a cost is unknown or VS = 0; pass^k as the mean of C(c,k)/C(n,k); false greens as a share of reported passes; infra_error and leak_suspected excluded and counted; PL rows only in S09 4.9's descriptive section). report.py --experiment writes vb.metric_record/1 rows with run ids and lists every false green with its run id; --check rejects invalid or simulated records, missing runs, unledgered attempts and spend over any budget.toml cap; vb report forwards to it. Both [[verify]] commands pass; test_analysis.py 18 passed and 1 skipped (budget.toml not merged yet); the full benchmarks/viabilitybench suite passed (230). An offline driver run (stub provider) went through vb report --bundle and --check with 0 problems, and deleting one of its records fails the check."
 +++
 
 ## Problem

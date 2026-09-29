@@ -32,7 +32,9 @@ measure that setup rather than Claude Code (W10). Every session gets:
 - `--no-session-persistence`, and `--dangerously-skip-permissions`, since the agent may edit and run anything in its
   workdir, as in the direct loop.
 Its environment is the task's agent environment plus those variables, and `ANTHROPIC_BASE_URL` for a loopback
-`--provider-url`, so an offline run cannot reach the API. No `VB_*` variable and no provider key reach it.
+`--provider-url`, so an offline run cannot reach the API. No `VB_*` variable and no provider key reach it. Its parent
+runs scrubbed too: `vb run`, and the probe below, start themselves again with an allowlisted environment
+(`agent_env.exec_scrubbed`, bug-32eb77).
 
 **Credentials** (`[cli] credentials`). With `CLAUDE_CONFIG_DIR` set, Claude Code looks for its macOS keychain entry
 under a name suffixed with a hash of that directory, and misses the subscription login. `keychain`, the default, sets
@@ -479,6 +481,8 @@ def main(argv: list[str] | None = None) -> int:
     probe.add_argument("--work", type=Path, help="default: $VB_WORK, then ~/vb-work")
     probe.add_argument("--out", type=Path, help="where the probe's JSON goes (default: its directory under --work)")
     args = parser.parse_args(argv)
+    if argv is None and args.allow_network:  # a real probe: claude must not find the operator's credentials here
+        agent_env.exec_scrubbed()
     import vb  # here rather than at the top: `vb run` imports this module as a runner
 
     try:

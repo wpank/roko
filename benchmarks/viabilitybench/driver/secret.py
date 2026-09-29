@@ -519,7 +519,8 @@ def _run_lock(path: Path) -> Iterator[None]:
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
-            raise SecretError(f"another vb run holds {lock}: one run per file at a time") from None
+            raise SecretError(f"another vb run holds {lock}: one run per file at a time. Runs in parallel need a "
+                              "secret file and a key file each, and a share of the instances each (README)") from None
         yield
     finally:
         os.close(fd)

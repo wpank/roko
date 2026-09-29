@@ -2,8 +2,10 @@
 id = "gap-bc0640"
 kind = "gap"
 title = "Only one vb run can use a secret file at a time, and S09's run schedule doesn't account for it"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
+last_verified = 2026-09-29
+last_verified_rev = "b32ebca05"
 severity = "p3"
 goal = "proof"
 size = "S"
@@ -19,6 +21,12 @@ links = { depends_on = [], blocks = [], related = ["gap-308373"], supersedes = [
 
 [[verify]]
 command = "grep -qi 'per secret file' tmp/cybernetic-harness/specs/S09-experiments.md"
+
+[closed]
+at = 2026-09-29
+commit = "b32ebca05"
+by = "wk-bench-fix2"
+evidence = "Option (a) with (b) for parallel runs: S09 v1.4 (tmp, edited in place) states in §4.1 that one vb run at a time may use a secret file (and a key file), since the tripwire's lock allows one; runs sharing a file go one after another; parallel runs each get their own secret file, key-file copy and share of the instances, fixed for the campaign by fingerprint in the E5 runbook, so every arm and seed faces the same truth suite; H5's 'concurrently' now means the same window and build. The README states the rule and the recipe, and secret.tripwire's lock refusal points to it. The [[verify]] command passes: grep -qi 'per secret file' S09-experiments.md."
 +++
 
 ## Problem
@@ -45,5 +53,22 @@ Record the choice in S09.
 
 ## Done when
 
-- [ ] S09's schedule states how runs share secret files, and the driver matches it.
-- [ ] The `[[verify]]` command passes. It checks that S09 states the rule; change it if option (c) makes the rule unnecessary.
+- [x] S09's schedule states how runs share secret files, and the driver matches it.
+- [x] The `[[verify]]` command passes. It checks that S09 states the rule; change it if option (c) makes the rule unnecessary.
+
+## Notes
+
+- **Done 2026-09-29 (wk-bench-fix2): option (a), with (b) for runs that must go in parallel.** S09 v1.4 (tmp, edited in
+  place) states the rule in §4.1 and clarifies H5's "concurrently":
+  - One `vb run` at a time per secret file, and per key file.
+  - "Interleaved" and "concurrently" mean the same window and the same `harness_sha`.
+  - Parallel runs each get their own secret file, their own key-file copy and their own share of the instances. That
+    instance-to-secret assignment is fixed for the campaign, by fingerprint, in the E5 runbook, so every arm and seed
+    faces the same truth suite on a task. Order-dependent streams (H7) are never split.
+  - Option (c) is ruled out: one run's census window would fall inside another run's agent window.
+- **Driver and docs.** The README states the same rule and the parallel recipe, and `secret.tripwire`'s lock refusal
+  now points to it.
+- **Also caught:** parallel runs need separate key files as well, because the tripwire holds the key file at mode 000
+  for a whole run (bug-979a06).
+- **Verify.** It greps `tmp/…/S09-experiments.md`, which exists only in MAIN, so it was run from MAIN's root and, for
+  the close, through a temporary untracked symlink in the worktree.

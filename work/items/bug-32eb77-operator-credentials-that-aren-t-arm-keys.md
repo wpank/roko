@@ -2,8 +2,10 @@
 id = "bug-32eb77"
 kind = "bug"
 title = "Operator credentials that aren't arm keys, such as ANTHROPIC_API_KEY or GITHUB_TOKEN, stay readable by agents through the driver's environment"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
+last_verified = 2026-09-29
+last_verified_rev = "1a22d377d"
 severity = "p2"
 goal = "proof"
 size = "S"
@@ -19,6 +21,12 @@ links = { depends_on = [], blocks = [], related = ["bug-979a06", "bug-a66941"], 
 
 [[verify]]
 command = "grep -qw 'def test_the_driver_runs_with_a_scrubbed_environment' benchmarks/viabilitybench/driver/test_secret.py && benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/driver/test_secret.py -k test_the_driver_runs_with_a_scrubbed_environment -q"
+
+[closed]
+at = 2026-09-29
+commit = "1a22d377d"
+by = "wk-bench-fix2"
+evidence = "Once its checks pass on the operator's environment, vb run (and run_cli.py probe) starts itself again with os.execve, same command line and pid, with the environment cut to an allowlist (agent_env.driver_env: paths, locale, CLAUDE_CONFIG_DIR, the driver's VB_* paths, VB_DRIVER_ENV=scrubbed). The checks run first, so a secret or provider key in the original environment is still refused. The [[verify]] command passes: test_the_driver_runs_with_a_scrubbed_environment starts vb.py with ANTHROPIC_API_KEY, GITHUB_TOKEN, AWS_SECRET_ACCESS_KEY, a DATABASE_URL with a password and a marker; the agent's ps -E of the driver shows HOME, LANG and the restart mark and none of them; no record, transcript, archive or workdir holds one; with CEREBRAS_API_KEY set the start exits 2 before any request. benchmarks/viabilitybench: 326 passed, 4 skipped. Out of a driver's reach and documented: other same-user processes stay readable via ps -E -ax."
 +++
 
 ## Problem
@@ -47,5 +55,28 @@ At 7fa54b873 only arm keys and known key values are checked.
 
 ## Done when
 
-- [ ] No credential from the operator's shell is readable from any process an agent can inspect.
-- [ ] The `[[verify]]` command passes.
+- [x] No credential from the operator's shell is readable from any process an agent can inspect (the driver's process tree; other processes of the operator's user are out of a driver's reach, see Notes).
+- [x] The `[[verify]]` command passes.
+
+## Notes
+
+- **Done 2026-09-29 (wk-bench-fix2), plan option 1.**
+  - Once `vb run`'s checks pass, the process starts itself again with the same command line and process id
+    (`agent_env.exec_scrubbed`, `os.execve`).
+  - The new environment is cut to an allowlist (`agent_env.driver_env`): `PATH`, `HOME`, `USER`, `LOGNAME`, `TMPDIR`,
+    `LANG`, `TZ`, `LC_*`, `SSL_CERT_FILE`/`SSL_CERT_DIR`, `CLAUDE_CONFIG_DIR` and the driver's four `VB_*` paths,
+    plus `VB_DRIVER_ENV=scrubbed`, which makes the restart happen once.
+  - The checks run on the operator's environment first, so a benchmark secret or provider key there is still refused
+    rather than silently dropped.
+  - `run_cli.py probe` does the same before it starts claude.
+  - Only a script restarts itself (`vb.main(argv)` with an explicit argv, as the tests call it, never execs).
+- **Evidence.** `test_the_driver_runs_with_a_scrubbed_environment` runs `vb.py` as a process whose environment holds
+  `ANTHROPIC_API_KEY`, `GITHUB_TOKEN`, `AWS_SECRET_ACCESS_KEY`, a `DATABASE_URL` with a password and a marker:
+  - The agent's `ps -E -p $PPID` shows `HOME`, `LANG` and the restart's mark, and none of them.
+  - No record, transcript, archive or workdir holds one.
+  - The same start with `CEREBRAS_API_KEY` set exits 2 before any request.
+- **Out of a driver's reach (checked on macOS 26 while doing this):** `ps -E` shows the start-up environment of any
+  process of the same user that is not an Apple system binary, not only the driver's: an orphaned `python3` started
+  from another shell showed its marker. So a credential the operator's shell exports is still readable in that shell's
+  other children (an editor, another session). Only a separate user or a container per task hides them (S08 decision
+  4); until then, run the benchmark from a session that exports no credential. `agent_env`'s docstring says so.

@@ -38,7 +38,7 @@ from stub_provider import StubServer, bash, scripted
 
 TOY_STREAM = str(layout.DRIVER_DIR / "testdata" / "toy_stream.toml")
 FAKE_KEY = "sk-test-not-a-real-key-5e1a"
-MARKER = "vb-probe-marker-3c9d"  # in the driver's environment: what a working `ps -E` or /proc probe must show
+MARKER = "vb-probe-marker-3c9d"  # in the operator's environment, which `vb run` sheds before any agent runs
 HOLD_LOCK = ("import fcntl, os, sys, time; fd = os.open(sys.argv[1], os.O_RDWR | os.O_CREAT, 0o600); "
              "fcntl.flock(fd, fcntl.LOCK_EX); print('locked', flush=True); time.sleep(60)")  # another run's lock
 CLAMP = "def clamp(value, low, high):\n    return max(low, min(value, high))\n"
@@ -191,7 +191,8 @@ def test_secret_never_reaches_an_agent_env(operator, tmp_path):
     assert f"HOME={operator['work'] / 'run-1' / '_home' / f'{first}.s1'}" in seen["env | sort"]
     assert "VB_SECRET=unset" in seen[ENV_PROBE] and "No such file" in seen[ENV_PROBE]
     # Control: the probe did read the driver's environment and argv, which name the secret file but never hold it.
-    assert MARKER in seen[PS_PROBE] and f"VB_SECRET_FILE={loaded.path}" in seen[PS_PROBE]
+    # The driver runs scrubbed (bug-32eb77), so the operator's other variables, such as the marker, are gone.
+    assert f"VB_SECRET_FILE={loaded.path}" in seen[PS_PROBE] and MARKER not in seen[PS_PROBE]
     # Control: in the census, the agent's code saw hidden.py's argv with the path, and an agent environment.
     probe = (out / "private" / f"{first}.s1" / "census" / "hidden" / "probe.txt").read_text()
     assert f"--secret-file {loaded.path}" in probe and f"{first}.s1.census" in probe and MARKER not in probe
@@ -380,7 +381,7 @@ def test_no_provider_key_in_the_driver_environment(operator, tmp_path, capsys, m
     out = operator["results"] / "TEST-KEYS" / "run-1"
     rows = {record["task"]["instance_id"]: record for record in read_jsonl(out / "records.jsonl")}
     seen = observations(json.loads((out / "transcripts" / f"{first}.s1.json").read_text()))
-    assert MARKER in seen[PS_PROBE]  # control: the probe read the driver's environment
+    assert f"HOME={operator['home']}" in seen[PS_PROBE]  # control: the probe read the driver's environment
     assert key not in seen[PS_PROBE] and "CEREBRAS_API_KEY" not in seen[PS_PROBE]
     assert "Permission denied" in seen[key_probe] and key not in seen[key_probe]  # the key file sat at mode 000
     assert rows[first]["execution"]["status"] == "completed" and rows[first]["vs"]["label"] == 1
@@ -399,6 +400,46 @@ def test_no_provider_key_in_the_driver_environment(operator, tmp_path, capsys, m
                               agent_env={})
     with pytest.raises(run_roko.RunnerError, match="metering proxy"):
         run_roko._roko_env(network, "CEREBRAS_API_KEY", tmp_path / "roko.toml")
+
+
+def test_the_driver_runs_with_a_scrubbed_environment(operator):
+    """bug-32eb77: a credential the operator's shell exports would sit in the driver's start-up environment, which
+    every agent can read (`ps -E`, /proc). Once its checks pass, `vb run` starts itself again with an allowlisted
+    environment. The checks see the original, so a benchmark key in it is still refused rather than hidden."""
+    credentials = {"ANTHROPIC_API_KEY": "sk-ant-operator-only-4f1e9c", "GITHUB_TOKEN": "ghp_operatorOnly7c2d18",
+                   "AWS_SECRET_ACCESS_KEY": "aws-operator-only-93b0e2", "VB_PROBE": MARKER,
+                   "DATABASE_URL": "postgres://bench:hunter2-operator-only@db.invalid/runs"}
+    first, second = vb.load_stream(TOY_STREAM).order(1)
+    scripts = {first: [bash(PS_PROBE, "Read my parent's environment."), bash("env | sort", "And my own."),
+                       bash(CORRECT, "Solve."), bash("echo VB_SUBMIT")],
+               second: [bash(CORRECT, "Solve."), bash("echo VB_SUBMIT")]}
+    driver_env = {"PATH": os.environ["PATH"], "HOME": str(operator["home"]), "LANG": "en_US.UTF-8", **credentials}
+    command = [sys.executable, str(layout.DRIVER_DIR / "vb.py")]
+    with StubServer(scripted(scripts)) as stub:
+        refused = subprocess.run([*command, *run_args(operator, stub.url)], cwd=operator["workspace"], text=True,
+                                 env={**driver_env, "CEREBRAS_API_KEY": "csk-operator-only-0d8e2b17"},
+                                 capture_output=True, timeout=120)
+        assert refused.returncode == 2 and "CEREBRAS_API_KEY is set in the driver's environment" in refused.stderr
+        assert stub.requests == [] and not operator["results"].exists()
+        done = subprocess.run([*command, *run_args(operator, stub.url, "--transcripts")], cwd=operator["workspace"],
+                              env=driver_env, capture_output=True, text=True, timeout=300)
+    assert done.returncode == 0, done.stderr
+    out = operator["results"] / "TEST-SECRET" / "run-1"
+    for record in read_jsonl(out / "records.jsonl"):
+        assert record["execution"]["status"] == "completed" and record["vs"]["label"] == 1
+    seen = observations(json.loads((out / "transcripts" / f"{first}.s1.json").read_text()))
+    parent = seen[PS_PROBE]
+    # Control: the probe read the driver's start-up environment: the allowlisted names, and the restart's mark.
+    assert f"HOME={operator['home']}" in parent and "LANG=en_US.UTF-8" in parent
+    assert f"{agent_env.DRIVER_SCRUBBED}=scrubbed" in parent
+    assert [name for name, value in credentials.items() if f"{name}=" in parent or value in parent] == []
+    assert [value for value in credentials.values() if value in seen["env | sort"]] == []
+    for root in (out, operator["work"]):  # records, ledger, manifest, transcripts, archives, workdirs, homes
+        assert [path for path in root.rglob("*") if path.is_file()
+                and any(value.encode() in path.read_bytes() for value in credentials.values())] == []
+    assert agent_env.driver_env({"PATH": "/bin", "LC_ALL": "C", "VB_WORK": "/w", "VB_SECRET": "x" * 40,
+                                 "GITHUB_TOKEN": "t", "SHLVL": "2"}) == {
+        "PATH": "/bin", "LC_ALL": "C", "VB_WORK": "/w", agent_env.DRIVER_SCRUBBED: "scrubbed"}
 
 
 def test_the_key_file_is_private_and_well_formed(operator, tmp_path, capsys, monkeypatch):

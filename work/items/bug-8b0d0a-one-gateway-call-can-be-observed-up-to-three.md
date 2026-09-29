@@ -3,13 +3,14 @@ id = "bug-8b0d0a"
 kind = "bug"
 title = "One gateway call can be observed up to three times on serve's shared cascade router"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p2"
 goal = "cybernetic"
 size = "S"
 subsystem = ["roko-serve", "roko-gateway", "roko-agent/model_call_service"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-29
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-router2's report on bug-605a8a, branch work/bug-605a8a)"
 anchors = ["crates/roko-gateway/src/gateway.rs", "crates/roko-learn/src/model_call_feedback.rs", "crates/roko-agent/src/model_call_service.rs", "crates/roko-serve/src/service_factory.rs"]
@@ -56,3 +57,4 @@ The shared router exists only on the branch (not merged at ad391f99a). Before it
 ## Notes
 
 - Land with or after bug-605a8a.
+- Implemented on `work/bug-84de98` at `1df06a526`; cargo verification deferred to the batch check. The model-call feedback is the one observer; the gateway only routes, and serve attaches no override recorder.

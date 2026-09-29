@@ -1519,8 +1519,13 @@ async fn wal_append_gate_threshold_writes_entry() {
     runtime.wal_append_gate_threshold(2, true);
     runtime.wal_append_gate_threshold(3, false);
 
-    let wal_path = learn_root.join("wal.jsonl");
-    let entries = replay_wal(&wal_path).unwrap();
+    // The runtime journals into a WAL segment of its own.
+    let segments = std::fs::read_dir(&runtime.paths().wal_segments_dir)
+        .unwrap()
+        .map(|segment| segment.unwrap().path())
+        .collect::<Vec<_>>();
+    assert_eq!(segments.len(), 1);
+    let entries = replay_wal(&segments[0]).unwrap();
     assert_eq!(entries.len(), 2);
     assert!(matches!(
         entries[0],

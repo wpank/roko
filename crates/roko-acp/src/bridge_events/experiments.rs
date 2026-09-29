@@ -599,7 +599,8 @@ pub(crate) fn record_cascade_observation(
         let reward = compute_acp_reward(success, wall_ms, output_tokens);
         // A failed dispatch is a trial without a success (bug-8da8ba). The
         // journal makes the observation durable before it is applied, and
-        // `save` marks it as folded into the snapshot (find-0dc1d5).
+        // `save` drops it from the journal once the snapshot holds it
+        // (find-0dc1d5).
         let journal = ModelCallJournal::for_snapshot(&router_path);
         journal.observe(&router, &model_slug, context_vec, reward, success);
 

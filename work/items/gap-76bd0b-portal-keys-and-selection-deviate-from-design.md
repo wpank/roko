@@ -2,7 +2,7 @@
 id = "gap-76bd0b"
 kind = "gap"
 title = "Portal keys and selection deviate from design section 9: Esc leaves Revise open, an unknown task id is kept, a later-starting plan is auto-selected"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "visibility"
@@ -11,7 +11,7 @@ subsystem = ["apps/portal"]
 created = 2026-09-29
 updated = 2026-09-29
 last_verified = 2026-09-29
-last_verified_rev = "f99e45dba"
+last_verified_rev = "be73cae63"
 source = "plan:portal-programme/09-acceptance#T04"
 discovered_from = "plan:portal-programme/09-acceptance#T04"
 anchors = ["apps/portal/src/components/shell/Workspace.tsx:247", "apps/portal/src/lib/selection.ts::resolveSelection"]
@@ -19,6 +19,12 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqF --include='*.test.ts' --include='*.test.tsx' 'Esc closes the revise prompt' apps/portal/src && (cd apps/portal && npx vitest run src/lib/selection src/components/shell src/components/stage)"
+
+[closed]
+at = 2026-09-29
+commit = "be73cae63"
+by = "commit trailer"
+evidence = "be73cae63: PromptPanel closes on Esc (a window listener, as SourceEditor) unless its request is in flight, and the workspace's Esc no longer closes the generate prompt itself. resolveSelection clears a task that is not among the selected plan's loaded task ids (or has no plan), and applies the running-plan default only on firstLoad: plan list loaded and connection 'connected', latched once the URL holds the resolved plan. Screen tests in apps/portal/src/components/shell/keys.accept.test.tsx: 'Esc closes the revise prompt'; the generate prompt closes on Esc but stays while waiting; ?task=T99 clears while T02 stays; the default waits for the snapshot; a plan that starts after load is not selected. These 5 fail on 70820a74c; a sixth pins the kept on-load default. Plus selection.test.ts units. [[verify]] passes (114 tests); portal suite 691/691, tsc, orphans and build:export clean."
 +++
 
 ## Problem

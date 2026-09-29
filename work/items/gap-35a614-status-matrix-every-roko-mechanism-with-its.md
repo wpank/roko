@@ -3,13 +3,14 @@ id = "gap-35a614"
 kind = "gap"
 title = "Status matrix: every Roko mechanism with its status tag at a commit"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p1"
 goal = "whitepaper"
 size = "M"
 subsystem = ["docs/whitepaper", "tools/status_matrix"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-29
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e1"
 discovered_from = "tmp/cybernetic-harness/tldr/03-MECHANISMS.md (68 mechanisms, tagged at d9e79e9d8)"
 anchors = ["docs/whitepaper/appendix-status-matrix.md", "docs/whitepaper/data/mechanisms.toml", "tools/status_matrix.py", "tools/test_status_matrix.py"]
@@ -70,8 +71,8 @@ Open branches will change more: `fix/hermetic-child-env`, `fix/diagnose-graph-ru
 
 ## Done when
 
-- [ ] Every tldr/03 mechanism has a row with a tag, a commit, an anchor (or an item) and evidence.
-- [ ] A test shows that `--check` fails when an anchor is removed.
+- [x] Every tldr/03 mechanism has a row with a tag, a commit, an anchor (or an item) and evidence.
+- [x] A test shows that `--check` fails when an anchor is removed.
 - [ ] Both `[[verify]]` commands pass.
 
 ## Notes
@@ -79,3 +80,14 @@ Open branches will change more: `fix/hermetic-child-env`, `fix/diagnose-graph-ru
 - **The matrix is a dated snapshot;** `work/` stays the live status (work/README rule 7). Refresh the matrix at the
   review (gap-8d2c79).
 - Lane `paper`; no hot files.
+- **2026-09-29 (wk-wp-matrix):** implemented on `work/gap-35a614` at `df36c89ec`, pinned at `a17d4dadd`. 70 rows:
+  tldr/03's 68 mechanisms, with QA7/QA8 and DM6/DM7 split because their parts carry different tags, plus the ten
+  vision claims. The first `[[verify]]` passes, and so do the 20 unittest cases. The second needs
+  `tools/paperlint.py` (gap-af0b57), which isn't on this branch yet; a snapshot of that worker's in-progress tool
+  passes `--strict` on the appendix, and a grep finds none of the README's banned words. Close once both branches
+  are merged and the second verify passes.
+- **Rows with an actionable verdict but no filed item:** EX8 (split or replan), IS6 (OS sandbox), SS3 (output screening
+  calibration) and DM2 (task domain selects the verifier pack). `status_matrix.py` warns on each one.
+- **Probed against MAIN at `98ee1418f`:** every anchor still exists, and none of the four merges since the pin changes a
+  tag. Plan generation and revision spend now reaches cost accounting (`9a7e8a1cb`), but RC6 stays partial because cost
+  rows still carry no source.

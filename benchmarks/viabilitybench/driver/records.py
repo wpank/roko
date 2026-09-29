@@ -124,7 +124,7 @@ def build(*, experiment_id: str, run_id: str, arm_id: str, seed: int, head: tupl
                        "workdir_archive": f"archives/{archived.tarball.name}" if archived else None,
                        "bundle": f"archives/{archived.bundle.name}" if archived else None,
                        "diff_sha256": archived.diff_sha256 if archived else None, "transcript_ref": transcript_ref,
-                       "s01_run_dir": None, "canary_hits": result.canary_hits,
+                       "s01_run_dir": outcome.s01_run_dir, "canary_hits": result.canary_hits,
                        "canary_places": sorted(result.canaries)},
         "simulated": False,
     }

@@ -256,6 +256,7 @@ def test_pinned_run_records_attempts_and_leaves_only_the_agents_tree(places, tmp
     assert "return max(low, min(value, high))" in diff
     assert "roko.toml" not in diff and "plans/" not in diff and ".roko/" not in diff
     assert read_jsonl(out / "s01" / "F1-l1-0001.s1" / "episodes.jsonl")[0]["model"] == PIN
+    assert record["provenance"]["s01_run_dir"] == "s01/F1-l1-0001.s1"  # the record points at Roko's own records
 
     calls = read_jsonl(log)
     assert [call["argv"][-1] for call in calls[:1]] == ["--version"]

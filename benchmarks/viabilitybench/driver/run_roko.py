@@ -253,8 +253,10 @@ def run_task(ctx: harness.TaskContext) -> harness.TaskOutcome:
                               reserved_usd=attempt.reserved_usd)
         for key in reserved:  # the attempts Roko did not make; a key whose row was just written is already free
             ctx.ledger.release(key)
+    saved = (ctx.ledger.path.parent / "s01" / ctx.key).is_dir()  # Roko's records, copied by _save_evidence
     return harness.TaskOutcome(status=status, reason=reason, attempts=list(attempts), transcript=transcript,
-                               started_at=started, finished_at=harness.utc_now())
+                               started_at=started, finished_at=harness.utc_now(),
+                               s01_run_dir=f"s01/{ctx.key}" if saved else None)
 
 
 def binary_path(arm: dict) -> Path:

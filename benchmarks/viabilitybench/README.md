@@ -8,10 +8,12 @@ one dated price snapshot.
 The design is spec S08 (`tmp/cybernetic-harness/specs/S08-benchmark-suite.md` in the author's workspace; the
 `§` references below point into it). Suite id `vb`; schemas `vb.*/1`.
 
-**Status (2026-09-29).** Built: `schema/` and the price snapshot (gap-0580f7), the common library
-`families/common/` (gap-2790c5), `speclint/` (S07.1), and the direct-arm driver `driver/` with `arms/cheap_direct.toml`,
-`arms/fd_api.toml` and `streams/pilot.toml` (gap-28ebea). Not built yet: the families F1 and F4 that the pilot stream
-names, verifier CI, analysis and reports, and the other arms. Epic `spec-567e52` in `work/items/` tracks them.
+**What is here.** The schemas and the price snapshot; the common library and the two families the pilot stream
+names, F1 (`f1_pyconv`) and F4 (`f4_kvtool`); the plan-level slice's fixtures (`families/plan_slice/`, S09 §4.9);
+`speclint/` (S07.1); verifier CI (`ci/`); the driver, with three runners (the direct loop, the Roko arm and the
+Claude Code arm), the run ledger with its budget-line caps, the metering and fault proxy and the driver-only secret
+file; and the analysis behind `vb report` (`analysis/`). This README describes what exists. What is still open, and
+what has run, is tracked in `work/items/` under epic `spec-567e52`.
 
 ## Rules
 
@@ -25,34 +27,48 @@ names, verifier CI, analysis and reports, and the other arms. Epic `spec-567e52`
   (its gpt-oss-120b rates are wrong) and never from a fallback rate.
 - **No provider calls in tests.** Tests run offline against fixtures and stub servers.
 
-## Layout (S08 §5.1)
+## Layout
 
 ```
 benchmarks/viabilitybench/
-  families/common/{repo.py, knobs.py, hmac_seed.py, astcheck.py, mutate.py, canary.py}
-  families/f1_pyconv/{gen.py, template/, hidden.py, gaming.py, ladder.toml, spec/precise.md.j2,
-                      reference/{solution, stub, gaming}/}          # same shape for f2…f7; f8 wraps f1–f5
-  external/swebench/{select.py, probe.py, slice-v1.jsonl, run_official.py}
-  streams/{s1_learncurve, s3_disturbance, s5_holdout, p1_core, p1_h3, p1_ext, log1, pilot}.toml
-  arms/{cheap_direct, roko_fixed, roko_full, fd_claude, fd_claude_lite, fd_codex, fd_api, fr_claude}.toml
-  driver/{vb.py, materialize.py, planemit.py, run_roko.py, mini_loop.py, run_cli.py, ledger.py, caps.py,
-          archive.py, census.py, faultproxy.py, records.py}
-  schema/{task, run-record, metric-record, price-snapshot, ledger}.schema.json   # prices: config/prices/2026-09-28.toml (§5.6)
-  analysis/{metrics.py, passk.py, bootstrap.py, cs.py, cuped.py, irt.py, replay.py, report.py}   # shared with S09
-  ci/{verify_verifiers.py, determinism.py, leak_check.py}
+  schema/{task, feature, run-record, metric-record, ledger, price-snapshot}.schema.json  validate.py  examples/
+  families/common/{repo, knobs, hmac_seed, astcheck, mutate, canary}.py
+  families/f1_pyconv/{gen, hidden, gaming}.py  ladder.toml  template/  spec/  reference/{solution, stub, gaming}/
+  families/f4_kvtool/{gen, hidden, gaming, instance}.py  ladder.toml  template/  spec/  reference/
+  families/plan_slice/{slicekit, runner}.py  features/{pl01_stockroom … pl06_csvclean}/   # PL fixtures (S09 §4.9)
+  speclint/{speclint, dynamic}.py  fixtures/
+  streams/pilot.toml
+  arms/{cheap_direct, fd_api, fd_claude, roko_fixed}.toml
+  experiments/budget.toml                                   # budget lines and caps (S09 §4.6)
+  driver/vb.py                                              # vb run | estimate | materialize | ledger | report
+  driver/{mini_loop, run_roko, planemit, run_cli}.py        # the runners: direct loop, Roko arm, Claude Code arm
+  driver/{ledger, faultproxy, secret}.py                    # the run ledger, the metering and fault proxy, the secret
+  driver/{materialize, harness, provider, stub_provider, agent_env, caps, archive, census, records, layout}.py
+  analysis/{metrics, passk, report}.py                      # vb report
+  ci/{verify_verifiers, determinism, leak_check}.py         # verifier CI
 $VB_RESULTS (default ~/.roko-bench/viability)/<experiment_id>/<run_id>/
-  manifest.json  records.jsonl  metrics.json  ledger.jsonl  proxy.jsonl  s01/  archives/  transcripts/ (opt-in)
+  manifest.json  order-<seed>.json  records.jsonl  ledger.jsonl  reservations.jsonl  errors.jsonl  metrics.json
+  proxy.jsonl  s01/  archives/  private/  transcripts/ (opt-in)
 ```
 
-Beyond S08's block, the tree also holds `experiments/` (S09 §6: manifests, budget lines, the pre-registration
-lock), `reports/` (committed pilot summaries), `schema/validate.py`, `schema/test_schemas.py`, `schema/examples/`,
-`requirements.in`, `requirements.lock` and a `.gitignore` for the venv. `driver/` adds `layout.py`, `provider.py`,
-`stub_provider.py`, `harness.py`, `agent_env.py`, `test_driver.py` and a toy family in `testdata/`.
+Tests sit beside the code they test (`test_*.py`), plus `tests/test_plan_slice.py`, and `driver/testdata/` holds a
+toy family. The prices live in `config/prices/2026-09-28.toml` (§5.6). S08 §5.1 plans more than this tree holds: the
+families F2, F3 and F5–F8, `external/swebench/`, the other streams and arms, and
+`analysis/{bootstrap, cs, cuped, irt, replay}.py`.
 
-## The driver (direct arm)
+## The driver
 
-`driver/vb.py` runs a stream of tasks on one arm and one model (S08 §4.9–4.10, §5.7). The direct loop
-(`mini_loop.py`, harness `mini-loop`) serves `cheap_direct` and `fd_api`: one model, one bash tool, no Roko prompt.
+`driver/vb.py` runs a stream of tasks on one arm and one model (S08 §4.9–4.10, §5.7), through the arm's runner:
+
+- the direct loop (`mini_loop.py`, harness `mini-loop`) serves `cheap_direct` and `fd_api`: one model, one bash
+  tool, no Roko prompt;
+- the Roko arm (`run_roko.py`, harness `roko`) serves `roko_fixed`: a one-task plan (`planemit.py`) through
+  `roko plan run` on one pinned model, checked on every attempt;
+- the Claude Code arm (`run_cli.py`, harness `claude-code`) serves `fd_claude`: `claude -p` with an isolated config,
+  on the subscription.
+
+Each runner's module docstring has its isolation, caps and costs. The bullets below describe the direct loop, and
+most hold for every arm.
 
 ```bash
 PY=benchmarks/viabilitybench/.venv/bin/python
@@ -79,15 +95,30 @@ $PY benchmarks/viabilitybench/driver/vb.py run --experiment PILOT-A --stream pil
   checks, and counts canary hits; any hit makes the run `leak_suspected`.
 - **Outputs** in `$VB_RESULTS/<experiment>/<run_id>/`: `manifest.json`, `order-<seed>.json`, `records.jsonl`
   (`vb.run_record/1`, validated before each write, `simulated: false`), `ledger.jsonl` (one validated row per
-  attempt, priced from the snapshot; an unknown cost is null), `archives/`, `private/`, `errors.jsonl`, and
-  `transcripts/` with `--transcripts`.
-- **The secret** is a file (`--secret-file`, `$VB_SECRET_FILE`, default `~/.config/viabilitybench/secret`, mode 0600),
-  read only by the census. Proving that it never reaches an agent is gap-a8a160.
+  attempt, priced from the snapshot; an unknown cost is null) and `reservations.jsonl`, `archives/`, `private/`,
+  `errors.jsonl`, `s01/` (the Roko arm's copy of Roko's own records), and `transcripts/` with `--transcripts`.
+- **Budget lines** (`ledger.py`, `experiments/budget.toml`). Each attempt reserves its worst case against the run's
+  budget line before its first model call, and a dispatch that could pass the line's cap, its experiment's cap or
+  the programme stop is refused. `vb ledger report` shows spend against every cap.
+- **The secret** is a driver-only file (`secret.py`): `--secret-file`, `$VB_SECRET_FILE`, default
+  `~/.config/viabilitybench/secret`, mode 0600 in a 0700 directory, outside the repository, `~/.roko`, the workdirs
+  and the results; `secret.py init` makes one. It reaches only `hidden.py`, as a file path, after the agent's
+  processes have ended: never in an environment variable or on a command line. `vb run` refuses to start when the
+  driver's environment, or a `.roko/.env` that roko would load, holds the secret or its canary, and it checks every
+  agent environment against both. What it does not do: mode 0600 cannot stop an agent running as the driver's user
+  from reading the file by its path. A read that shows the secret or its canary in the transcript, the diff or the
+  tree trips the census; detecting a read that shows neither is gap-308373, and a container per task (S08 decision
+  4) would prevent it.
 - **A new arm** adds `arms/<id>.toml` and, for a new harness, one `driver/<runner>.py` with `run_task(ctx)`
   (`harness.py` has the protocol); `vb.py` does not change.
-- **Not yet built:** budget-line caps in the ledger (gap-33d54b), the metering and fault proxy (gap-e003ec), the
-  Claude Code and Roko arms (gap-c4f364, gap-b7ab99), `vb census`/`vb report`, and S01's BLAKE3 `config_hash`:
-  records carry `sha256:` digests until `driver/fingerprint.py` and its golden vectors exist.
+- **Digests.** `config_hash` and `record_id` are `sha256:` digests of canonical JSON. S01's BLAKE3 `b3:` digests
+  need `driver/fingerprint.py` and its golden vectors, which this tree does not have.
+- **The metering and fault proxy** (`faultproxy.py`, S08 §4.11) meters every model call independently of the
+  client and injects provider faults. The Roko arm reads its log, `proxy.jsonl`, when the run directory holds one.
+- **The report.** `vb report --experiment <id>` writes `metrics.json` and prints the VS rate, $/VS, pass^k and false
+  greens of each arm (of each model, for an arm that ran more than one), every false green with its run id, and the
+  excluded runs. `--bundle` writes the summary bundle for `reports/`, and `--check` holds bundles to their manifests
+  and the budget (`analysis/report.py` has the rules).
 
 ## Schemas
 
@@ -114,7 +145,11 @@ Together, the schemas and the validator enforce S08's honesty invariants (§4.12
 - `simulated` is always `false`;
 - an unknown cost is `null`, never 0: used tokens never cost $0, a `null` cost goes with cost source `unknown`
   and the other way round, missing usage makes the cost unknown, and a billed API row that used tokens cannot
-  bill $0;
+  bill $0 (a subscription CLI session killed before its `result` event is priced from its stream, and its record
+  says `estimated`, with $0 billed);
+- `costs.by_class` (S09 §4.9's cost classes) splits `api_equiv_usd` without changing it, and a queue wait
+  (`execution.queue_wait_s`, the sum of the attempts') is never below 0; both are `null` when the arm cannot
+  observe them;
 - `mock` usage never becomes a run record or a ledger row;
 - every MetricRecord lists at least one run id, and names its `label_source`, `cost_basis` and
   `price_snapshot_id`;

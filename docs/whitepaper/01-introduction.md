@@ -1,33 +1,68 @@
-Status: stub · budget 550 words · owner gap-353d57
+Status: draft · budget 550 words · owner gap-353d57
 
 # 1 Introduction
 
-[[TODO: Write this section to gap-353d57's plan, in about 550 words. Every number has a footnote naming its source, and the numbers match §7. Keep line 1 and set it to `draft`, then replace everything below the heading, this list of claims included. Conventions and canonical numbers: `README.md` in this directory.]]
+## 1.1 Capable or cheap
 
-## Claims
+Unattended agent work forces a choice. Frontier models complete more tasks but cost more per attempt; cheap
+models cost little but fail more often. Models fail more as tasks get longer: on software and research tasks,
+the task length a model completes 80% of the time is 4–6× shorter than the one it completes half the time
+[@kwa2025measuring], and even given the plan, small models go wrong far sooner than large ones
+[@sinha2025illusion].
 
-| Id | Kind | Claim | Writer's source | Cite in the text as |
-|---|---|---|---|---|
-| IN1 | lit | Frontier models are capable but expensive; cheap models are unreliable on their own, and success falls as tasks get longer. | draft §1.1 "Capable or cheap"; C1 | [@kwa2025measuring]; [@sinha2025illusion] |
-| IN2 | lit | The bet: on decomposable, checkable work, most of the dependability comes from the harness (precise specs, executable checks, retries, escalation, integration gates, feedback). The literature supports about frontier quality at 2–6× lower cost there, mostly measured on single-function, QA and document tasks, and not on sequential or integrative work. | tldr/01 "The bet"; C1 TL;DR | [@kim2025towards], plus the studies behind the range (`narayan2025minions`, `chen2024frugalgpt`, `ong2025routellm`; add them after refcheck). The 2–6× range is C1's synthesis: cite the studies, not the range |
-| IN3 | status | Built: the Graph engine, durable checkpoints and resume, and honest per-task verdicts since the 09-28 fix. | tldr/00 point 1; tldr/03 "Execution", "Verification and QA" | WIRED tags from the appendix; `crates/roko-graph/src/engine.rs`; N4 |
-| IN4 | status | Designed, not built: the tier ladder, escalation, integration on the Graph path, and audits. The text says "is designed to". | tldr/04 steps 4, 8 and 9; tldr/03 | Tags from the appendix; spec-98f76d (E5), spec-a0e40a (E6), spec-6ac537 (E17) |
-| IN5 | number | What Roko has built: the portal (N1, N2), on one pinned model (N3). | B7 | Footnotes as for N1–N3, the same figures as §7 |
-| IN6 | case | What the supervising session did: a frontier Claude Code session with about 20 subagents wrote and audited the plans, fixed about 25 engine defects, set up isolation, merged and checked the whole product. Its cost is outside Roko's record (N6). | tldr/01 "Where it stands"; B7; W12 | Frozen CASE-005 and CASE-007; N6, labelled an estimate |
-| IN7 | design | The contributions, and a map of §2–§10. | This README's outline | Section cross-references |
+Roko bets on the harness, the code that wraps a model and decides when its work counts as done. On work that
+splits into small tasks with executable checks, the bet is that specs, checks, retries, escalation, integration
+gates and feedback supply most of the dependability, so cheap models inside the harness can match a frontier
+model working alone, for less. Studies support parts of this. A frontier model that split long-document
+questions into subtasks for a small local model kept 97.9% of its quality at 5.7× lower cost
+[@narayan2025minions]; cascades and routers cut cost at matched quality on single-turn queries
+[@chen2024frugalgpt; @ong2025routellm]; across six agentic benchmarks, multi-agent set-ups helped decomposable
+work and hurt sequential work [@kim2025towards]. None ran a repository-scale plan, and we claim nothing for
+sequential or integrative work.
 
-## Sources
+## 1.2 Built and designed
 
-Writer inputs; the paths under `tmp/` are gitignored and are never cited in the text.
+A frontier model writes the plan: small tasks, each with the commands that prove it done. The Graph engine
+(`crates/roko-graph/src/engine.rs`) runs it as a dependency graph with durable checkpoints and resume
+(WIRED@a17d4dadd), and each task's verify commands decide its verdict (WIRED@a17d4dadd), though a task without any
+still counts as passed (PARTIAL@a17d4dadd, spec-e9d7ec). Roko is designed to run independent tasks in parallel on
+the cheapest model that passes, escalate on failure, merge and check the whole plan, and regulate itself: keep cost
+per verified task and the share of wrong passes in bounds, and audit its own regulators. Today, tasks run one at a
+time by default (PARTIAL@a17d4dadd, spec-a78d57); the tier ladder is MISSING@a17d4dadd and escalation
+ORPHANED@a17d4dadd (spec-98f76d); merging is ORPHANED@a17d4dadd and the whole-plan check MISSING@a17d4dadd
+(spec-a0e40a); and the regulators and audits are MISSING@a17d4dadd, while the learning loops that run
+(PARTIAL@a17d4dadd) have no measured benefit (spec-6ac537).
 
-- draft §N: `tmp/cybernetic-harness/paper/sections/`. The research draft's sections; outline in `paper/OUTLINE.md`, conventions in `paper/00-README.md`.
-- tldr/00: `tmp/cybernetic-harness/tldr/00-README.md`. The ten things to know; the status-tag vocabulary.
-- tldr/01: `tmp/cybernetic-harness/tldr/01-WHAT-AND-WHY.md`. The idea, the bet, where it stands, selling points, positioning.
-- tldr/03: `tmp/cybernetic-harness/tldr/03-MECHANISMS.md`. Every mechanism with basis, status and verdict.
-- tldr/04: `tmp/cybernetic-harness/tldr/04-FRONTIER-PLANS-CHEAP-EXECUTES.md`. The 11-step loop, the eight design rules, the real-run numbers, the three-arm test.
-- B7: `tmp/cybernetic-harness/tldr/research/B7-real-run-evidence.md`. Real-run evidence: the portal build, false greens, concurrency.
-- C1: `tmp/cybernetic-harness/tldr/research/C1-research-planning-decomposition-cascades.md`. Literature: planning, decomposition, cascades, integration.
-- W9: `tmp/cybernetic-harness/workstreams/assessment/W9-paper-workstream.md`. Rules for honest ideal-state writing; the phantom identifiers.
-- W12: `tmp/cybernetic-harness/workstreams/assessment/W12-evidence-from-dev-process.md`. The operator-loop cost estimate.
-- PLAN: `tmp/cybernetic-harness/workstreams/PLAN.md`. The author's answers (section 1) and the epics (section 3).
-- matrix: `docs/whitepaper/appendix-status-matrix.md`. The status matrix (gap-35a614): every tag at one pinned commit.
+## 1.3 The evidence so far
+
+Roko ran most of the build of its own web portal: 16 plans and 173 tasks, 168 gate-verified, for $174.87 of
+recorded agent spend.[^1-portal] Since a verdict fix on 2026-09-28, 0 of 151 recorded passes had a failing gate, against
+101 of 373 before it.[^1-verdicts] Two facts limit what this shows. All 210 attempts pinned one mid-tier model,
+`claude-sonnet-4-6`, so the cheap-model half of the thesis is UNPROVEN@a17d4dadd (spec-567e52). And supervising
+frontier-model Claude Code sessions wrote and audited the plans, fixed engine defects, set up worktrees, merged by
+hand and checked the assembled product (§7), costing an estimated 16–20× Roko's recorded spend over the same
+days.[^1-operator] Across 42 captured runs, Roko recovered from a failure by itself twice and an operator stepped
+in 39 times: an autonomy index of 2/41.[^1-autonomy]
+
+## 1.4 Contributions
+
+- **A design:** eight research-backed rules (§2), the architecture and its control stack (§3), and the golden
+  path in eleven steps, each with its status (§4).
+- **Cybernetic mechanisms** that regulate the loop and audit the regulators (§5), and three measures that make
+  trust checkable (§6).
+- **Field evidence** from the portal build, with the operator's share stated (§7).
+- **An evaluation plan,** with what would count against the thesis (§8).
+- **Status:** limitations and the order of work (§9), related work (§10), and every mechanism's tag at one
+  commit (appendix).
+
+[^1-portal]: Roko's records for the portal plans, attempts to 2026-09-29 07:41Z; costs as recorded, without a
+    cost source or the supervising sessions. §7 cites the frozen copy (gap-29a64e).
+
+[^1-verdicts]: Counts recorded successes whose own gate failed. Before the fix (`725f21e05`): 430 attempts in 31 plans
+    from 2026-09-05; after it, 168 attempts to 2026-09-29 07:41Z. Items bug-82d47b, bug-521f08, bug-06e2d1.
+
+[^1-operator]: An estimate: the sessions' transcripts, 2026-09-25 to 09-29, at API list prices and including
+    research work, against $172.80 recorded by Roko; gap-263de5 will replace it with harvested figures.
+
+[^1-autonomy]: Field rollup 2026-09-29T14:37:51, corrected by bug-7b37c4: 42 runs from 2026-08-22, 124 notes.
+    Index: automatic recoveries over automatic recoveries plus interventions. Observational.

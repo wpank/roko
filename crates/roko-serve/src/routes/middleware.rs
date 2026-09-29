@@ -24,6 +24,21 @@ use crate::routes::auth::{AgentCapability, AgentCredentialClaims, parse_rfc3339}
 use crate::state::AppState;
 
 static UNSAFE_PUBLIC_CORS_WARNING: OnceLock<()> = OnceLock::new();
+static PRIVY_ALLOW_LIST_WARNING: OnceLock<()> = OnceLock::new();
+
+/// Operator hint logged when `privy_app_id` is set without an allow-list.
+pub(crate) const PRIVY_ALLOW_LIST_HINT: &str = "serve.auth.privy_app_id is set without a Privy \
+     allow-list, so every Privy JWT is rejected. To let Privy users in, set \
+     serve.auth.privy_allowed_roles (matched against the JWT `role` claim) or \
+     serve.auth.privy_workspace_id (matched against the JWT `org_id` claim).";
+
+/// Whether the operator has said which Privy users may authenticate.
+///
+/// Anyone can sign in to a Privy app, so a valid signature for
+/// `privy_app_id` alone proves nothing about who the caller is.
+pub(crate) fn privy_allow_list_configured(auth: &ServeAuthConfig) -> bool {
+    !auth.privy_allowed_roles.is_empty() || auth.privy_workspace_id.is_some()
+}
 
 /// Header containing an ERC-3009 payment authorization as JSON.
 pub const X_PAYMENT_AUTHORIZATION: &str = "x-payment-authorization";
@@ -408,12 +423,15 @@ fn authenticate_api_key(
 
 /// Attempt to validate a Bearer token as a Privy JWT using the JWKS cache.
 ///
-/// Performs three checks in order:
-/// 1. Signature + app-id verification via JWKS.
-/// 2. Workspace membership: if `privy_workspace_id` is configured the JWT
+/// Privy auth is off unless the operator set `privy_app_id`. Performs four
+/// checks in order:
+/// 1. Allow-list: `privy_allowed_roles` or `privy_workspace_id` must be
+///    configured. Without either, no Privy JWT authenticates (fail closed).
+/// 2. Signature + app-id verification via JWKS.
+/// 3. Workspace membership: if `privy_workspace_id` is configured the JWT
 ///    `org_id` claim **must** match. Tokens without an `org_id` claim are
 ///    rejected (fail closed).
-/// 3. Role authorization: if `privy_allowed_roles` is non-empty the JWT
+/// 4. Role authorization: if `privy_allowed_roles` is non-empty the JWT
 ///    `role` claim must be present and contained in the allowed list.
 ///    Tokens with an unrecognised or missing role are downgraded to
 ///    `"read"` scope instead of receiving `"admin"`.
@@ -424,6 +442,12 @@ async fn try_privy_jwt(
 ) -> Option<(AuthMethod, String, Option<String>)> {
     let privy_app_id = auth.privy_app_id.as_deref()?;
     if !is_structurally_valid_jwt(token) {
+        return None;
+    }
+    if !privy_allow_list_configured(auth) {
+        if PRIVY_ALLOW_LIST_WARNING.set(()).is_ok() {
+            tracing::warn!("{PRIVY_ALLOW_LIST_HINT}");
+        }
         return None;
     }
     let claims = state.jwks_cache.validate(token, privy_app_id).await?;
@@ -446,7 +470,7 @@ async fn try_privy_jwt(
 
     // --- Role authorization ---
     let scope = if auth.privy_allowed_roles.is_empty() {
-        // No role filter configured — grant admin (legacy behaviour).
+        // The allow-list is the workspace alone, and the caller is a member.
         "admin".to_string()
     } else {
         match claims.role.as_deref() {
@@ -2370,6 +2394,142 @@ mod tests {
             response.status(),
             StatusCode::UNAUTHORIZED,
             "Middleware must reject Privy JWT that fails signature verification"
+        );
+    }
+
+    // --- Privy allow-list tests (signed tokens, offline JWKS cache) ---
+
+    const PRIVY_TEST_APP_ID: &str = "privy-test-app";
+    const PRIVY_TEST_KID: &str = "privy-test-key";
+    const PRIVY_TEST_SUB: &str = "did:privy:test-user";
+
+    fn privy_auth(roles: &[&str], workspace: Option<&str>) -> ServeAuthConfig {
+        ServeAuthConfig {
+            enabled: true,
+            privy_app_id: Some(PRIVY_TEST_APP_ID.to_string()),
+            privy_workspace_id: workspace.map(str::to_string),
+            privy_allowed_roles: roles.iter().map(|role| role.to_string()).collect(),
+            ..Default::default()
+        }
+    }
+
+    /// A test state whose JWKS cache already trusts the test signing key.
+    async fn privy_test_state(auth: ServeAuthConfig) -> Arc<AppState> {
+        let mut state = make_test_state(auth);
+        Arc::get_mut(&mut state)
+            .expect("invariant: a fresh test state is unshared")
+            .jwks_cache = crate::jwks::test_support::seeded_cache("privy.io", PRIVY_TEST_KID).await;
+        state
+    }
+
+    fn privy_test_jwt(aud: &str, role: Option<&str>, org_id: Option<&str>) -> String {
+        crate::jwks::test_support::sign(
+            PRIVY_TEST_KID,
+            &serde_json::json!({
+                "sub": PRIVY_TEST_SUB,
+                "iss": "privy.io",
+                "aud": aud,
+                "exp": Utc::now().timestamp() + 3600,
+                "role": role,
+                "org_id": org_id,
+            }),
+        )
+    }
+
+    async fn privy_middleware_status(state: Arc<AppState>, jwt: &str) -> StatusCode {
+        let app = Router::new()
+            .route("/test", get(|| async { StatusCode::NO_CONTENT }))
+            .layer(axum::middleware::from_fn_with_state(state, require_api_key));
+        auth_response(app, |req| {
+            req.header(AUTHORIZATION, format!("Bearer {jwt}"))
+        })
+        .await
+        .status()
+    }
+
+    #[tokio::test]
+    async fn privy_jwt_without_allow_list_is_not_authenticated() {
+        let auth = privy_auth(&[], None);
+        let state = privy_test_state(auth.clone()).await;
+        let jwt = privy_test_jwt(PRIVY_TEST_APP_ID, Some("admin"), Some("org-a"));
+        // The token is valid; only the missing allow-list keeps it out.
+        assert!(
+            state
+                .jwks_cache
+                .validate(&jwt, PRIVY_TEST_APP_ID)
+                .await
+                .is_some()
+        );
+
+        assert_eq!(try_privy_jwt(&jwt, &auth, &state).await, None);
+        assert_eq!(
+            privy_middleware_status(state, &jwt).await,
+            StatusCode::UNAUTHORIZED
+        );
+    }
+
+    #[tokio::test]
+    async fn privy_jwt_scope_follows_the_role_allow_list() {
+        let auth = privy_auth(&["admin"], None);
+        let state = privy_test_state(auth.clone()).await;
+
+        let admin = privy_test_jwt(PRIVY_TEST_APP_ID, Some("admin"), None);
+        assert_eq!(
+            try_privy_jwt(&admin, &auth, &state).await,
+            Some((
+                AuthMethod::Jwt,
+                "admin".to_string(),
+                Some(PRIVY_TEST_SUB.to_string())
+            ))
+        );
+        for role in [Some("viewer"), None] {
+            let jwt = privy_test_jwt(PRIVY_TEST_APP_ID, role, None);
+            let scope = try_privy_jwt(&jwt, &auth, &state)
+                .await
+                .map(|(_, scope, _)| scope);
+            assert_eq!(scope.as_deref(), Some("read"), "role {role:?}");
+        }
+        assert_eq!(
+            privy_middleware_status(state, &admin).await,
+            StatusCode::NO_CONTENT
+        );
+    }
+
+    #[tokio::test]
+    async fn privy_jwt_workspace_allow_list_admits_only_members() {
+        let auth = privy_auth(&[], Some("org-a"));
+        let state = privy_test_state(auth.clone()).await;
+
+        let member = privy_test_jwt(PRIVY_TEST_APP_ID, None, Some("org-a"));
+        let scope = try_privy_jwt(&member, &auth, &state)
+            .await
+            .map(|(_, scope, _)| scope);
+        assert_eq!(scope.as_deref(), Some("admin"));
+        for org_id in [Some("org-b"), None] {
+            let jwt = privy_test_jwt(PRIVY_TEST_APP_ID, Some("admin"), org_id);
+            assert_eq!(
+                try_privy_jwt(&jwt, &auth, &state).await,
+                None,
+                "org {org_id:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn privy_jwt_is_ignored_without_an_explicit_app_id() {
+        // A Nunchi Privy token does not authenticate unless the operator
+        // configured that app id, even when the allow-list would match.
+        let auth = ServeAuthConfig {
+            privy_app_id: None,
+            ..privy_auth(&["admin"], None)
+        };
+        let state = privy_test_state(auth.clone()).await;
+        let jwt = privy_test_jwt(crate::jwks::NUNCHI_PRIVY_APP_ID, Some("admin"), None);
+
+        assert_eq!(try_privy_jwt(&jwt, &auth, &state).await, None);
+        assert_eq!(
+            privy_middleware_status(state, &jwt).await,
+            StatusCode::UNAUTHORIZED
         );
     }
 

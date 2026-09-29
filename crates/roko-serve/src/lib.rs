@@ -940,7 +940,11 @@ pub(crate) fn warn_if_auth_misconfigured(auth: &roko_core::config::ServeAuthConf
     }
     let has_legacy_key = !auth.api_key.is_empty();
     let has_named_keys = !auth.api_keys.is_empty();
-    let has_privy = auth.privy_app_id.is_some();
+    let has_privy =
+        auth.privy_app_id.is_some() && crate::routes::middleware::privy_allow_list_configured(auth);
+    if auth.privy_app_id.is_some() && !has_privy {
+        tracing::warn!("{}", crate::routes::middleware::PRIVY_ALLOW_LIST_HINT);
+    }
     let has_jwks = !auth.jwks_providers.is_empty();
     if !has_legacy_key && !has_named_keys && !has_privy && !has_jwks {
         tracing::warn!(
@@ -1143,11 +1147,9 @@ fn build_app_state(
     metrics: Option<Arc<roko_core::obs::metrics::MetricRegistry>>,
     launch_token: Option<String>,
 ) -> anyhow::Result<AppState> {
-    // Auto-configure Privy JWT auth: always set the app ID (it's a project
-    // constant) and auto-enable auth when a stored Privy credential exists.
-    if roko_config.serve.auth.privy_app_id.is_none() {
-        roko_config.serve.auth.privy_app_id = Some(crate::jwks::NUNCHI_PRIVY_APP_ID.to_string());
-    }
+    // Auto-enable auth when a stored Privy credential exists. Privy JWTs
+    // themselves are accepted only when the operator sets
+    // `serve.auth.privy_app_id` and an allow-list (see `try_privy_jwt`).
     if !roko_config.serve.auth.enabled {
         // Only auto-enable auth for non-loopback binds. Local dev (127.0.0.1 /
         // localhost) should respect the explicit `enabled = false` in roko.toml.
@@ -4250,6 +4252,26 @@ mod tests {
             msg.contains("PORT env var must be a valid u16"),
             "unexpected error: {msg}"
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn public_bind_does_not_turn_on_privy_jwt_auth() {
+        let workdir = tempdir().expect("tempdir");
+        let mut config = roko_core::config::schema::RokoConfig::default();
+        config.server.bind = "0.0.0.0".to_string();
+        let state = build_app_state(
+            workdir.path().to_path_buf(),
+            Arc::new(NoOpRuntime),
+            config,
+            None,
+            None,
+            None,
+        )
+        .expect("build_app_state");
+
+        let auth = state.load_roko_config().serve.auth.clone();
+        assert!(auth.enabled);
+        assert_eq!(auth.privy_app_id, None);
     }
 
     #[test]

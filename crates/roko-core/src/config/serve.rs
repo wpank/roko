@@ -209,7 +209,12 @@ pub struct ServeAuthConfig {
     /// Named API keys with scoped permissions (hashes stored in `.roko/api-keys.json`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub api_keys: Vec<ApiKeyEntry>,
-    /// Privy application ID for JWT validation (Phase 1b -- stub only).
+    /// Privy application ID whose JWTs this server validates.
+    ///
+    /// Unset by default, which turns Privy JWT auth off. Setting it is not
+    /// enough on its own: anyone can sign in to a Privy app, so without
+    /// `privy_workspace_id` or `privy_allowed_roles` every Privy JWT is
+    /// rejected.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub privy_app_id: Option<String>,
     /// Additional issuer-bound JWKS endpoints. An empty list uses Privy's
@@ -218,16 +223,17 @@ pub struct ServeAuthConfig {
     pub jwks_providers: Vec<JwksProvider>,
     /// Privy workspace / org ID that the JWT `org_id` claim must match.
     ///
-    /// When set, only tokens whose `org_id` claim equals this value are
-    /// granted admin scope. When `None`, membership checks are skipped and
-    /// a valid signature + app-id is sufficient (legacy behaviour).
+    /// When set, tokens whose `org_id` claim is missing or different are
+    /// rejected, and members get admin scope unless `privy_allowed_roles`
+    /// narrows it. When `None`, membership is not checked.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub privy_workspace_id: Option<String>,
     /// Allowed Privy roles (matched against the JWT `role` claim).
     ///
     /// When non-empty, only tokens whose `role` claim is in this list receive
-    /// admin scope; others are downgraded to `"read"`. An empty list disables
-    /// role filtering.
+    /// admin scope; others are downgraded to `"read"`. When empty, roles are
+    /// not checked, and Privy JWTs are rejected unless `privy_workspace_id`
+    /// is set.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub privy_allowed_roles: Vec<String>,
     /// Enforcement mode for scope-based permission checks.

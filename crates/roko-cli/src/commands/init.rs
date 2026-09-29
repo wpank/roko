@@ -57,6 +57,15 @@ impl InitProvider {
     }
 }
 
+/// Whether `workdir` still needs `roko init`, that is, has no `roko.toml`.
+///
+/// `.roko/` cannot decide this: roko's own log creates it before any
+/// command runs, so even an empty directory has one.
+#[must_use]
+pub fn needs_init(workdir: &Path) -> bool {
+    !workdir.join("roko.toml").is_file()
+}
+
 /// Write the default `roko.toml` into `target`, with the default model on
 /// `provider`, and return the text written.
 ///

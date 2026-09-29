@@ -545,6 +545,85 @@ pub fn write_checked_config(path: &Path, text: &str) -> Result<()> {
         .with_context(|| format!("write {}", path.display()))
 }
 
+/// Append the TOML text `block` to the config file at `path`, keeping its
+/// existing text and comments, if the result passes [`check_config_text`].
+pub fn append_checked_config(path: &Path, block: &str) -> Result<()> {
+    let mut text = fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
+    if !text.is_empty() && !text.ends_with('\n') {
+        text.push('\n');
+    }
+    text.push_str(block);
+    write_checked_config(path, &text)
+}
+
+/// Add a `[providers.*]` block to the `roko.toml` at `path` for each
+/// provider `roko setup` detected that the file does not configure yet, and
+/// return how many were added.
+///
+/// `clis` holds `(command, description)` for LLM CLIs found on `PATH`, and
+/// `api_keys` holds `(env var, display name, kind)` for API keys set in the
+/// environment. The blocks carry only schema keys, and the file must pass
+/// [`check_config_text`] afterwards or nothing is written.
+pub fn add_detected_providers(
+    path: &Path,
+    clis: &[(String, String)],
+    api_keys: &[(&str, &str, &str)],
+) -> Result<usize> {
+    let existing = fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
+    // Parse rather than search the text: a commented-out block such as
+    // `# [providers.claude_cli]` configures nothing.
+    let parsed = toml::from_str::<toml::Value>(&existing)
+        .with_context(|| format!("parse {}", path.display()))?;
+    let mut configured = parsed
+        .get("providers")
+        .and_then(toml::Value::as_table)
+        .map(|providers| providers.keys().cloned().collect::<BTreeSet<_>>())
+        .unwrap_or_default();
+    let mut appended = String::new();
+    let mut count = 0usize;
+
+    // CLI providers.
+    for (cmd, _desc) in clis {
+        let (provider_name, kind) = match cmd.as_str() {
+            "claude" => ("claude_cli", "claude_cli"),
+            "codex" => ("codex_cli", "codex_cli"),
+            other => (other, "openai_compat"),
+        };
+        if !configured.insert(provider_name.to_string()) {
+            continue;
+        }
+        appended.push_str(&format!("\n[providers.{provider_name}]\n"));
+        appended.push_str(&format!("kind = \"{kind}\"\n"));
+        appended.push_str(&format!("command = \"{cmd}\"\n"));
+        count += 1;
+    }
+
+    // API key providers, named after their catalog entry.
+    for (env_var, _display, kind) in api_keys {
+        let entry = roko_core::provider_catalog::catalog()
+            .iter()
+            .find(|entry| entry.api_key_env == *env_var);
+        let provider_name =
+            entry.map_or_else(|| env_var.trim_end_matches("_API_KEY"), |entry| entry.id);
+        if !configured.insert(provider_name.to_string()) {
+            continue;
+        }
+        appended.push_str(&format!("\n[providers.{provider_name}]\n"));
+        appended.push_str(&format!("kind = \"{kind}\"\n"));
+        appended.push_str(&format!("api_key_env = \"{env_var}\"\n"));
+        let base_url = entry.map_or("", |entry| entry.base_url);
+        if !base_url.is_empty() {
+            appended.push_str(&format!("base_url = \"{base_url}\"\n"));
+        }
+        count += 1;
+    }
+
+    if count > 0 {
+        append_checked_config(path, &appended)?;
+    }
+    Ok(count)
+}
+
 /// Migrate a legacy project-local `roko.toml` into explicit provider/model tables.
 pub fn cmd_migrate(workdir: &Path, dry_run: bool, yes: bool) -> Result<()> {
     let paths = resolve_paths(workdir);
@@ -1929,6 +2008,41 @@ scheduled_cron = "invalid cron"
         let err = set("budget.max_turn_usd", "20").unwrap_err();
         assert!(format!("{err:#}").contains("invariant 1"), "{err:#}");
         assert_eq!(fs::read_to_string(&path).unwrap(), before);
+    }
+
+    /// bug-131421: in an empty directory `roko setup --quick` skipped init,
+    /// because roko's own log had already created `.roko/`, and so wrote no
+    /// roko.toml; after `roko init` it wrote `providers.*.default_model`,
+    /// a key that validation rejects.
+    #[test]
+    fn setup_quick_in_empty_dir_writes_a_valid_config() {
+        let dir = tempfile::tempdir().unwrap();
+        // roko's own log creates `.roko/` before setup runs.
+        fs::create_dir_all(dir.path().join(".roko")).unwrap();
+        assert!(crate::init::needs_init(dir.path()));
+
+        // What `roko init` writes when neither claude nor a key is found;
+        // its provider blocks are commented out.
+        let unconfigured = crate::init::InitProvider::Unconfigured;
+        crate::init::write_init_config(dir.path(), false, unconfigured).unwrap();
+        assert!(!crate::init::needs_init(dir.path()));
+
+        let path = dir.path().join("roko.toml");
+        let clis = [("claude".to_string(), "Anthropic Claude CLI".to_string())];
+        let api_keys = [("ANTHROPIC_API_KEY", "Anthropic", "anthropic_api")];
+        let first = add_detected_providers(&path, &clis, &api_keys).unwrap();
+        let second = add_detected_providers(&path, &clis, &api_keys).unwrap();
+        assert_eq!((first, second), (2, 0));
+
+        let doc = read_toml_file(&path).unwrap();
+        let claude = &doc["providers"]["claude_cli"];
+        let anthropic = &doc["providers"]["anthropic"];
+        assert_eq!(claude["command"].as_str(), Some("claude"));
+        assert_eq!(anthropic["kind"].as_str(), Some("anthropic_api"));
+        assert!(anthropic.get("default_model").is_none());
+        // The offline checks of `roko config validate`, without its probes.
+        check_config_text(&path, &fs::read_to_string(&path).unwrap())
+            .expect("setup leaves a roko.toml that validation accepts");
     }
 
     #[test]

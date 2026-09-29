@@ -86,3 +86,4 @@ Checked at `41c7ffbd6`: nothing exists. The contract is in B §3.3 and S08 §4.3
 - **A possible null result.** W10 warns that F4's visible check passes dry runs in every arm, which could hide a
   harness effect. Report that; do not tune it away.
 - **From gap-2790c5 (2026-09-29):** S08 §5.2 puts `canary` in `DIR/.vb/task.json` beside the agent's spec. Keep the task manifest outside the agent's workdir, or any agent that reads it trips the canary. Use `families/common/` (`repo`, `knobs`, `hmac_seed`, `astcheck`, `canary`, `mutate`).
+- **Interface (2026-09-29, after closing):** a follow-up commit aligns F4 with F1's committed family interface for gap-7ee7c2: `gen.py --out DIR [--workdir WORKDIR]`, `pristine.json` naming the bundle relative to DIR, `hidden.py`'s extra `findings`, `instance_id` and `secret` keys, and `reference/solutions.py` with `KINDS` and `apply(kind, workdir, task)`.

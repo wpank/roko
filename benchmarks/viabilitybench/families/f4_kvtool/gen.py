@@ -1,17 +1,20 @@
 #!/usr/bin/env python3
 """Generate one F4 `kvtool-cli` instance: the agent's task repo, and a private task directory it never sees.
 
-Usage: gen.py --level L --seed S --out WORKDIR --task-dir PRIVATE
+Usage: gen.py --level L --seed S --out DIR [--workdir WORKDIR] [--latent v1]
 
-- WORKDIR becomes the task repo: a git repo whose one commit is the pristine base (`repo.init_task_repo`).
-- PRIVATE (created with mode 0700) gets `task.json` (the `vb.task/1` manifest, which holds the canary),
-  `spec.precise.md` (the task text the driver hands the agent), `pristine.bundle` and `pristine.json`
-  (`Pristine.as_json()`, which hidden.py reads next to task.json).
+- DIR (new or empty; created with mode 0700) gets `task.json` (the `vb.task/1` manifest, which holds the canary),
+  `spec.precise.md` (the task text the driver hands the agent), `pristine.bundle` and `pristine.json` (the pristine
+  base's {bundle, commit, tree}; the bundle path is relative to DIR, so DIR can move). hidden.py reads the last two
+  next to task.json.
+- WORKDIR (default DIR/repo; it must not exist) becomes the task repo: a git repo whose one commit is the pristine
+  base (`repo.init_task_repo`). It holds no manifest, no spec and no canary.
 
-The two directories must be disjoint: neither may contain the other. This replaces S08 §5.2's `DIR/.vb/`, which
-would put the canary inside the agent's workdir. Paths inside task.json (`spec.precise.path`) are relative to
-task.json's directory. The command prints a JSON summary. Everything is drawn from the instance's public surface
-stream, so the same level and seed always give the same files and the same pristine tree.
+This replaces S08 §5.2's `DIR/.vb/`, which would put the canary inside the agent's workdir, and it is F1's layout and
+command line. The driver passes a WORKDIR under $VB_WORK; the default suits tests and CI. DIR inside WORKDIR is
+refused. Paths inside task.json (`spec.precise.path`) are relative to DIR. The command prints the path of task.json.
+Everything is drawn from the instance's public surface stream, so the same level and seed always give the same files
+and the same pristine tree.
 """
 
 from __future__ import annotations
@@ -19,6 +22,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import string
 import sys
@@ -31,6 +35,8 @@ from f4_kvtool import instance  # noqa: E402
 HERE = Path(__file__).resolve().parent
 TEMPLATE = HERE / "template"
 SPEC = HERE / "spec"
+REPO_DIR = "repo"
+BUNDLE_FILE = "pristine.bundle"
 PLACEHOLDER = re.compile(r"__[A-Z][A-Z_]*__")
 DOCS = {"documented": "kvtool.documented.md", "undocumented": "kvtool.undocumented.md",
         "legacy_distractor": "kvtool.undocumented.md", "stale_or_contradictory": "kvtool.stale.md"}
@@ -104,12 +110,17 @@ class GenError(RuntimeError):
     """The output directories are unusable, or a rendered file is wrong."""
 
 
-def generate(level: int, seed: int, workdir: Path, task_dir: Path) -> dict:
-    """Render instance (level, seed) into `workdir` and its private files into `task_dir`; returns the summary."""
-    workdir, task_dir = Path(workdir).absolute(), Path(task_dir).absolute()
+def generate(level: int, seed: int, out: Path, *, workdir: Path | None = None, latent: str = "v1") -> Path:
+    """Render instance (level, seed): the task repo into `workdir` (default OUT/repo) and the private files into
+    `out`. Returns the path of task.json."""
+    if latent != "v1":
+        raise GenError(f"only latent v1 is built, not {latent!r}")
+    task_dir = Path(out).absolute()
+    workdir = task_dir / REPO_DIR if workdir is None else Path(workdir).absolute()
     _check_dirs(workdir, task_dir)
     plan = instance.plan(level, seed)
-    workdir.mkdir(parents=True, exist_ok=True)
+    task_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    workdir.mkdir(parents=True)
     for relpath, (text, mode) in sorted(render(plan).items()):
         path = workdir / relpath
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -118,8 +129,7 @@ def generate(level: int, seed: int, workdir: Path, task_dir: Path) -> dict:
     leaks = canary.find_in_tree(workdir)
     if leaks:
         raise GenError(f"a canary reached the task repo: {sorted(leaks)[0]}")
-    task_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-    pristine = repo.init_task_repo(workdir, task_dir / "pristine.bundle")
+    pristine = repo.init_task_repo(workdir, task_dir / BUNDLE_FILE)
     spec = render_spec(plan)
     (task_dir / "spec.precise.md").write_text(spec, encoding="utf-8")
     manifest = {
@@ -142,9 +152,9 @@ def generate(level: int, seed: int, workdir: Path, task_dir: Path) -> dict:
         "is_honeypot": False,
     }
     (task_dir / "task.json").write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-    (task_dir / "pristine.json").write_text(json.dumps(pristine.as_json(), indent=2) + "\n", encoding="utf-8")
-    return {"instance_id": plan.instance_id, "workdir": str(workdir), "task": str(task_dir / "task.json"),
-            "pristine": pristine.as_json()}
+    pristine_doc = pristine.as_json() | {"bundle": BUNDLE_FILE}
+    (task_dir / "pristine.json").write_text(json.dumps(pristine_doc, indent=2) + "\n", encoding="utf-8")
+    return task_dir / "task.json"
 
 
 def render(plan: instance.Plan) -> dict[str, tuple[str, int]]:
@@ -257,11 +267,12 @@ def _fill(text: str, values: dict[str, str]) -> str:
 
 
 def _check_dirs(workdir: Path, task_dir: Path) -> None:
-    if workdir == task_dir or workdir in task_dir.parents or task_dir in workdir.parents:
-        raise GenError("the workdir and the task directory must be disjoint: the manifest holds the canary")
-    for path in (workdir, task_dir):
-        if path.exists() and (not path.is_dir() or any(path.iterdir())):
-            raise GenError(f"{path} exists and is not an empty directory")
+    if workdir == task_dir or workdir in task_dir.parents:
+        raise GenError("the task directory cannot be the workdir or sit inside it: task.json holds the canary")
+    if task_dir.exists() and (not task_dir.is_dir() or any(task_dir.iterdir())):
+        raise GenError(f"{task_dir} exists and is not an empty directory")
+    if os.path.lexists(workdir):
+        raise GenError(f"the workdir {workdir} already exists")
 
 
 def _sha256(text: str) -> str:
@@ -270,17 +281,18 @@ def _sha256(text: str) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("--level", type=int, required=True, choices=range(1, 6))
-    parser.add_argument("--seed", type=int, required=True)
-    parser.add_argument("--out", type=Path, required=True, help="the agent's workdir (the task repo)")
-    parser.add_argument("--task-dir", type=Path, required=True, help="the private directory for task.json and friends")
+    parser.add_argument("--level", type=int, required=True, choices=range(1, 6), help="ladder level ℓ1–ℓ5")
+    parser.add_argument("--seed", type=int, required=True, help="instance number (non-negative)")
+    parser.add_argument("--out", type=Path, required=True, help="new task directory (manifest, spec, bundle)")
+    parser.add_argument("--workdir", type=Path, help="the agent's workdir (default: OUT/repo)")
+    parser.add_argument("--latent", default="v1", choices=("v1",), help="latent version (only v1 is built)")
     args = parser.parse_args(argv)
     try:
-        summary = generate(args.level, args.seed, args.out, args.task_dir)
+        task_path = generate(args.level, args.seed, args.out, workdir=args.workdir, latent=args.latent)
     except (GenError, repo.RepoError, ValueError) as err:
         print(f"gen.py: {err}", file=sys.stderr)
         return 2
-    print(json.dumps(summary, indent=2))
+    print(task_path)
     return 0
 
 

@@ -149,10 +149,18 @@ def _usage(raw: object) -> Usage | None:
     prompt, completion = raw.get("prompt_tokens"), raw.get("completion_tokens")
     if not all(isinstance(value, int) and not isinstance(value, bool) and value >= 0 for value in (prompt, completion)):
         return None
-    cached = _count(raw.get("prompt_tokens_details"), "cached_tokens")
     reasoning = _count(raw.get("completion_tokens_details"), "reasoning_tokens")
-    return Usage(prompt_tokens=prompt, completion_tokens=completion, cached_tokens=min(cached, prompt),
+    return Usage(prompt_tokens=prompt, completion_tokens=completion, cached_tokens=min(_cached(raw), prompt),
                  reasoning_tokens=reasoning)
+
+
+def _cached(raw: dict) -> int:
+    """The cache reads inside `prompt_tokens`: `prompt_tokens_details.cached_tokens` (OpenAI, Cerebras, Z.ai), or a
+    top-level `cached_tokens` (Moonshot; Roko's `translate/openai.rs` reads both). The nested count wins when a
+    response has one, as in `faultproxy.usage_classes`, so the driver's ledger and the proxy's meter agree."""
+    details = raw.get("prompt_tokens_details")
+    nested = isinstance(details, dict) and details.get("cached_tokens") is not None
+    return _count(details if nested else raw, "cached_tokens")
 
 
 def _count(details: object, name: str) -> int:

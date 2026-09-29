@@ -2,7 +2,7 @@
 """`vb`, the ViabilityBench driver (S08 §5.7). This item builds `run`, `estimate` and `materialize`.
 
     vb run --experiment PILOT-A --stream pilot --arm cheap_direct --model gpt-oss-120b --seeds 1-3 \
-           --allow-network --max-cost-usd 10 [--line BL0] [--limit N] [--transcripts] [--keep-workdirs]
+           --allow-network --max-cost-usd 10 [--line BL0] [--limit N] [--proxy] [--transcripts] [--keep-workdirs]
     vb estimate --stream pilot --arm cheap_direct --model gpt-oss-120b --seeds 1-3
     vb materialize --stream pilot --instance F1-l1-0001 --out DIR
 
@@ -25,7 +25,17 @@ instead of overspending. dev_benchmark refuses when the whole run's worst case e
 need a $17 flag for a pilot budgeted at $10 (60 cheap_direct runs at $0.29 worst case each, against about $0.02
 typical), and the flag would then no longer cap anything. `vb estimate` and the run manifest show the whole-run
 worst case. A model without a price row cannot be bounded and is refused. `--provider-url` with a loopback URL (such
-as `stub_provider`'s) runs offline, with neither flag.
+as `stub_provider`'s) runs offline, with neither flag. A loopback URL in front of a network provider would skip
+admission, so a run meters a network provider with `--proxy`, never through a proxy started by hand.
+
+**The metering proxy** (`--proxy`; `faultproxy.py`, S08 T13). Once the run is admitted, `vb run --proxy` starts the
+proxy inside the driver's process with one upstream: the arm's provider, or the `--provider-url` that overrides it.
+The runners reach the model only through it: they get its loopback URL and no key, and it sends the provider's key.
+It logs every call to `<run_dir>/proxy.jsonl`, and before each task the driver sets its task to the task key,
+`<instance_id>.s<seed>`; the Roko arm finds its rows by that key (`run_roko`). Admission judges the provider's own
+URL, never the proxy's, so a network provider behind the loopback proxy still needs both flags. The profile is
+`clean`: it meters and injects no fault. A network provider without an `api_key_env` (a subscription CLI signs in by
+itself) cannot go through the proxy, which drops a client's own credentials.
 
 The benchmark secret reaches only `hidden.py`, in the census, as a file path: `--secret-file`, else
 `$VB_SECRET_FILE`, else `~/.config/viabilitybench/secret` (mode 0600; `driver/secret.py init` makes one). Before the
@@ -57,6 +67,7 @@ import agent_env
 import archive
 import caps
 import census
+import faultproxy
 import harness
 import layout
 import ledger
@@ -72,6 +83,7 @@ DEFAULT_RESULTS = Path("~/.roko-bench/viability")
 DEFAULT_WORK = Path("~/vb-work")
 ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 SKIP_IN_SUITE_HASH = ("__pycache__", ".pytest_cache", ".venv")
+PROXY_LOG = "proxy.jsonl"  # in the run directory, where run_roko reads it
 
 
 class DriverError(RuntimeError):
@@ -101,6 +113,7 @@ class Run:
     args: argparse.Namespace
     plan: Plan
     runner: ModuleType
+    endpoint: provider.Endpoint  # what the runners call: the plan's endpoint, or the proxy's in front of it
     chat: provider.ChatProvider
     book: ledger.Ledger
     secret_file: Path
@@ -110,6 +123,7 @@ class Run:
     config_hash: str
     head: tuple[str, bool]
     suite: dict
+    proxy: faultproxy.FaultProxy | None = None
 
 
 @dataclass(frozen=True)
@@ -160,7 +174,9 @@ def run_report(argv: list[str]) -> int:
 
 
 def admit(plan: Plan, *, allow_network: bool, max_cost_usd: float | None) -> None:
-    """Fail closed before any network call (the module docstring has the rule)."""
+    """Fail closed before any network call (the module docstring has the rule). It judges `plan.endpoint`, the
+    provider's own URL: `--proxy` never changes it, so a loopback proxy in front of a network provider is admitted
+    as the network provider it is."""
     if plan.endpoint.offline:
         return
     if not allow_network:
@@ -272,6 +288,10 @@ def cmd_run(args: argparse.Namespace) -> int:
     # A subscription arm's CLI signs in by itself; only a billed arm needs the driver's key.
     if not plan.endpoint.offline and plan.arm["arm"]["billed"] and not os.environ.get(plan.endpoint.api_key_env or ""):
         raise DriverError(f"set {plan.endpoint.api_key_env} for {plan.endpoint.provider}")
+    if args.proxy and not plan.endpoint.offline and not os.environ.get(plan.endpoint.api_key_env or ""):
+        raise DriverError(f"--proxy sends {plan.endpoint.provider}'s key: " + (
+            f"set {plan.endpoint.api_key_env}" if plan.endpoint.api_key_env else
+            "the arm names no api_key_env, since its client signs in by itself"))
     for family, directory in sorted(plan.stream.families.items()):
         if any(knobs.parse_instance_id(i)[0] == family for i in plan.instances) and not all(
                 (directory / name).is_file() for name in ("gen.py", "hidden.py")):
@@ -312,12 +332,15 @@ def cmd_run(args: argparse.Namespace) -> int:
         "started_at": harness.utc_now(), "argv": args.argv, "harness_sha": head[0],
         "dirty": head[1], "config_hash": config_hash, "config": config, "suite": suite,
         "offline": plan.endpoint.offline,
+        "proxy": {"log": PROXY_LOG, "profile": faultproxy.Profile().as_json()} if args.proxy else None,
         "secret_file": str(secret_file), "work_dir": str(work_dir), **plan.summary()})
     book = ledger.Ledger(run_dir / "ledger.jsonl", line=line, experiment_id=args.experiment, run_id=run_id,
                          price_snapshot_id=plan.snapshot.id)
-    run = Run(args=args, plan=plan, runner=runner, chat=provider.OpenAICompatible(plan.endpoint), book=book,
-              secret_file=secret_file, run_dir=run_dir, work_dir=work_dir, run_id=run_id, config_hash=config_hash,
-              head=head, suite=suite)
+    proxy = _start_proxy(plan, run_dir) if args.proxy else None
+    endpoint = proxy.endpoint(plan.endpoint) if proxy else plan.endpoint
+    run = Run(args=args, plan=plan, runner=runner, endpoint=endpoint, chat=provider.OpenAICompatible(endpoint),
+              book=book, secret_file=secret_file, run_dir=run_dir, work_dir=work_dir, run_id=run_id,
+              config_hash=config_hash, head=head, suite=suite, proxy=proxy)
     written = 0
     try:
         for seed in plan.seeds:
@@ -336,6 +359,8 @@ def cmd_run(args: argparse.Namespace) -> int:
                 written += _run_one(run, instance_id, seed, {"id": plan.stream.id, "position": position,
                                                              "length": len(order), "perturbations_active": []})
     finally:
+        if proxy:
+            proxy.close()
         _cleanup(args, [work_dir])
         print(f"vb: {written}/{plan.runs} records in {run_dir}", file=sys.stderr)
     return 0 if written == plan.runs else 1
@@ -355,11 +380,13 @@ def _run_one(run: Run, instance_id: str, seed: int, stream_position: dict) -> bo
         _cleanup(args, [workdir])
         return False
     ctx = harness.TaskContext(
-        experiment_id=args.experiment, run_id=run.run_id, arm=plan.arm, model=plan.model, endpoint=plan.endpoint,
+        experiment_id=args.experiment, run_id=run.run_id, arm=plan.arm, model=plan.model, endpoint=run.endpoint,
         provider=run.chat, snapshot=plan.snapshot, caps=plan.caps, ledger=run.book, billed=plan.arm["arm"]["billed"],
         instance_id=instance_id, seed=seed, key=key, workdir=workdir, spec_text=task.spec_text,
         agent_env=agent_env.build(home=homes[0]), visible_verify=tuple(task.manifest["visible_verify"]),
         files_in_scope=tuple(task.manifest["files_in_scope"]))
+    if run.proxy:  # the proxy's rows for this task carry its key, which is how the Roko arm finds them
+        run.proxy.configure(task=ctx.key)
     try:
         outcome = run.runner.run_task(ctx)
     except Exception as err:  # the runner owns its errors; this catches its bugs
@@ -421,10 +448,20 @@ def _endpoint(arm: dict, row: dict | None, provider_url: str | None) -> provider
     if name is None or (name not in providers and not provider_url):
         raise DriverError(f"arm {arm['arm']['id']} has no [providers.{name}] endpoint for this model")
     table = providers.get(name, {})
-    # An overriding URL (a stub, later the metering proxy) never gets the provider's key.
+    # An overriding URL, such as a stub's, never gets the provider's key.
     keys = ("max_tokens_param", "timeout_s") if provider_url else ("api_key_env", "max_tokens_param", "timeout_s")
     fields = {key: table[key] for key in keys if key in table}
     return provider.Endpoint(provider=name, base_url=provider_url or table["base_url"], **fields)
+
+
+def _start_proxy(plan: Plan, run_dir: Path) -> faultproxy.FaultProxy:
+    """The metering proxy in front of the plan's endpoint, logging to `<run_dir>/proxy.jsonl` (module docstring)."""
+    try:
+        return faultproxy.FaultProxy([faultproxy.Upstream.from_endpoint(plan.endpoint)], log_path=run_dir / PROXY_LOG,
+                                     snapshot=plan.snapshot).start()
+    except (faultproxy.ProxyError, OSError) as err:
+        archive.remove_tree(run_dir)  # made by this run a moment ago; nothing has run
+        raise DriverError(f"the metering proxy cannot start: {err}") from None
 
 
 def _secret_file(value: Path | None) -> Path:
@@ -521,6 +558,8 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("--line", help="budget line for the ledger (default: the arm's)")
     run.add_argument("--allow-network", action="store_true", help="allow calls to a non-loopback provider")
     run.add_argument("--max-cost-usd", type=_positive_float, help="required with --allow-network")
+    run.add_argument("--proxy", action="store_true",
+                     help="route model calls through the metering proxy (faultproxy.py), logged to proxy.jsonl")
     run.add_argument("--secret-file", type=Path, help="default: $VB_SECRET_FILE, then " + str(DEFAULT_SECRET_FILE))
     run.add_argument("--results", type=Path, help="default: $VB_RESULTS, then " + str(DEFAULT_RESULTS))
     run.add_argument("--work", type=Path, help="default: $VB_WORK, then " + str(DEFAULT_WORK))

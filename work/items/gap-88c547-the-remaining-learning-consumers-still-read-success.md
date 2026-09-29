@@ -3,13 +3,14 @@ id = "gap-88c547"
 kind = "gap"
 title = "The remaining learning consumers still read success instead of the settled learning label"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p2"
 goal = "cybernetic"
 size = "S"
 subsystem = ["learn"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-29
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (23:00, wk-settle's report on bug-07bc75 and gap-eb82c9)"
 anchors = ["crates/roko-learn/src/", "crates/roko-cli/src/runtime_feedback/", "crates/roko-dreams/src/"]
@@ -55,3 +56,31 @@ They read `success`.
 
 - [ ] No consumer learns from an unverified success.
 - [ ] The `[[verify]]` command passes.
+
+## Notes
+
+- Implemented on `work/gap-88c547` at `0ff2c2de7`; cargo verification deferred to the batch check. The branch is
+  `work/bug-07bc75` (da1045989) with `413b0dcc9` merged in (`e93736a46`). Its one conflict was gap-eb82c9's notes,
+  resolved by keeping both bullets. In the worktree's own target clone, `cargo check -p roko-cli -p roko-learn
+  -p roko-dreams --lib --tests`, the targeted tests of roko-learn and roko-dreams, nightly fmt and clippy passed.
+- **Decisions (2026-09-29):**
+  - `provider_model_outcome`: `from_episode` records no outcome for an unlabelled episode, and its status reads
+    the label.
+  - `pattern_discovery`: the cross-episode consolidator encodes the outcome as success, failure or unlabelled from
+    the label instead of dropping rows. That way its `episode_indices` still index the caller's list (dream routing
+    advice maps them back), and the dream cycle feeds it learnable episodes only. The trigram miner never read
+    `success`.
+  - `cfactor`: `compute_cfactor`, `detect_pathologies` and `variance_inequality_check` count learnable episodes
+    only. An unlabelled attempt, spend included, leaves the c-factor.
+  - `aggregate` (`compute_compounding_metrics`, no production caller, gap-14f08e): passes and routing accuracy come
+    from the label, `gate_pass_rate` is over labelled attempts, and cost per success is every attempt's spend.
+  - `post_gate_reflection`: its `success` read is an LLM helper's result. `ReflectionInput::from_episode` also
+    returns `None` for an unlabelled episode, which carries no gate verdict today.
+  - roko-learn `runtime_feedback/`, three small hunks: after provider health records it, `record_completed_run`
+    treats an unlabelled attempt like a skipped-gates run; `apply_affect_signature` skips the affect appraisal;
+    `KnowledgeSeedRecord::from_successful_episode` needs label 1. `update_cascade_router` is untouched
+    (wk-router2's bug-3ea1f5).
+  - Dreams: `replay_insights` is ported and replays learnable episodes only.
+- **Left open:** `ProviderModelOutcomeRecord::from_efficiency_event` reads the efficiency rows' `outcome`, which
+  carries no label. Graph dispatch doesn't feed it. `EpisodeView::succeeded` has no reader, and
+  `LearningRuntime::discover_cross_episode_patterns` has no caller.

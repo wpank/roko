@@ -12,7 +12,7 @@ use roko_core::tool::{
 };
 use std::time::Duration;
 
-use super::sandbox::require_string;
+use super::sandbox::{refuse_key_file_in_command, require_string};
 
 /// Canonical `snake_case` name.
 pub const NAME: &str = "bash";
@@ -50,8 +50,10 @@ pub fn tool_def() -> ToolDef {
 }
 
 // Command-level safety (denylist, path confinement) is enforced by the
-// SafetyLayer's `BashPolicy` before this handler is invoked. No second-
-// tier check here — a single authoritative policy avoids divergence.
+// SafetyLayer's `BashPolicy` before this handler is invoked. Provider key
+// files are the exception: the handler refuses a command that names one
+// itself, with the same `refuse_key_file_in_command` SafetyLayer runs, so
+// the block holds whichever dispatcher runs it, as for the file tools.
 
 /// Handler for `bash` (§36.20).
 ///
@@ -81,6 +83,9 @@ impl ToolHandler for Handler {
             Ok(c) => c,
             Err(e) => return ToolResult::Err(e),
         };
+        if let Err(e) = refuse_key_file_in_command(&command, ctx.worktree()) {
+            return ToolResult::Err(e);
+        }
         let effective_timeout = if ctx.timeout.is_zero() {
             Duration::from_mins(2)
         } else {

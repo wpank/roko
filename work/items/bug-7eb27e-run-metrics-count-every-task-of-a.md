@@ -2,7 +2,7 @@
 id = "bug-7eb27e"
 kind = "bug"
 title = "Run metrics count every task of a succeeded plan as completed and every task of a failed plan as failed"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "truth"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/graph_execution", "roko-learn/run_metrics"]
 created = 2026-09-29
 updated = 2026-09-29
 last_verified = 2026-09-29
+last_verified_rev = "c651ddc57"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e2"
 discovered_from = "tmp/cybernetic-harness/workstreams/assessment/W8-roko-as-executor.md (gate G1: run metrics)"
 anchors = ["crates/roko-cli/src/graph_execution/plan_runner.rs:1578", "crates/roko-learn/src/run_metrics.rs::PlanMetrics"]
@@ -20,6 +21,11 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqw 'fn run_metrics_count_task_verdicts' crates/roko-cli/src/ && cargo test -p roko-cli --lib run_metrics_count_task_verdicts"
+
+[closed]
+at = 2026-09-29
+by = "coordinator (session 7622b882)"
+evidence = "Run metrics count each task by its own settled verdict instead of the plan's outcome (8e6b49f14, merged 3383bd8c0). Batch 3 gate (work/rust-batch-3; crates tree identical to MAIN after the merges): cargo check --workspace --tests clean; nightly rustfmt clean after fmt-only commits db7f3f861 and 26947cd62; clippy -p roko-cli -p roko-learn -p roko-gateway -p roko-acp -p roko-serve -p roko-core --no-deps -D warnings clean; lib tests roko-cli 3072, roko-core 1919, roko-learn 1172, roko-serve 950, roko-acp 197, roko-gateway 41, 0 failed."
 +++
 
 ## Problem

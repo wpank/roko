@@ -2,7 +2,7 @@
 id = "gap-853b31"
 kind = "gap"
 title = "Frontier planner everywhere: an [authoring] planner_model on every plan generate and revise path"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "golden-path"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/model_selection", "roko-cli/prd", "roko-core/config"]
 created = 2026-09-29
 updated = 2026-09-29
 last_verified = 2026-09-29
+last_verified_rev = "c651ddc57"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e8"
 discovered_from = "tmp/cybernetic-harness/tldr/research/B1-plan-authoring.md (planner model choice; tldr/05 P1 #9)"
 anchors = ["crates/roko-core/src/config/schema.rs::RokoConfig", "crates/roko-cli/src/model_selection.rs::resolve_effective_model_key", "crates/roko-cli/src/prd.rs::generate_plan_from_prd_isolated", "crates/roko-cli/src/plan_authoring.rs::revise_plan_source", "crates/roko-cli/src/commands/do_cmd.rs::run_complex_path"]
@@ -23,6 +24,11 @@ command = "grep -rqw 'fn planner_model_precedence_cli_then_authoring_then_role' 
 
 [[verify]]
 command = "grep -q 'resolve_planner_model' crates/roko-cli/src/prd.rs && grep -q 'resolve_planner_model' crates/roko-cli/src/plan_authoring.rs && grep -rq 'resolve_planner_model' crates/roko-cli/src/commands/"
+
+[closed]
+at = 2026-09-29
+by = "coordinator (session 7622b882)"
+evidence = "[authoring] planner_model (new roko-core config/authoring.rs) with resolve_planner_model: --model, then [authoring], then the strategist role, then [agent] model; every plan generate and revise path goes through it (prd plan, plan generate/regenerate, roko do plan paths, serve generate and revise); config set and schema docs updated (dd168acfc, merged 28db9c789). Batch 3 gate (work/rust-batch-3; crates tree identical to MAIN after the merges): cargo check --workspace --tests clean; nightly rustfmt clean after fmt-only commits db7f3f861 and 26947cd62; clippy -p roko-cli -p roko-learn -p roko-gateway -p roko-acp -p roko-serve -p roko-core --no-deps -D warnings clean; lib tests roko-cli 3072, roko-core 1919, roko-learn 1172, roko-serve 950, roko-acp 197, roko-gateway 41, 0 failed."
 +++
 
 ## Problem

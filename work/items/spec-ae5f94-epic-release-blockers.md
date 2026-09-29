@@ -75,7 +75,7 @@ This is the implementation plan.
 ## Done when
 
 - [x] bug-7d7200: Agents and verify commands inherit roko's whole environment, including provider API keys (existing item)
-- [ ] bug-da5b41: A running roko serve erases API keys created by the CLI (existing item)
+- [x] bug-da5b41: A running roko serve erases API keys created by the CLI (existing item)
 - [x] bug-09690f: README's quick start fails, and the README claims 100% completion (existing item)
 - [ ] find-8cc7ac: Some GitHub workflows fail on main and required checks are undefined (existing item)
 - [ ] bug-911361: Cargo.toml's repository and homepage point at an unrelated GitHub account (existing item)

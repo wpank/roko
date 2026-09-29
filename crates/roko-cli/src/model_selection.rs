@@ -18,6 +18,8 @@ pub enum SelectionSource {
     ProviderOverride,
     /// Model hint from the task definition.
     TaskModel,
+    /// `[authoring] planner_model`, used to generate and revise plans.
+    AuthoringConfig,
     /// Model override from the role configuration.
     RoleConfig,
     /// Model selected by the cascade router.
@@ -36,6 +38,7 @@ impl SelectionSource {
             Self::CliOverride => "cli override",
             Self::ProviderOverride => "provider override",
             Self::TaskModel => "task model",
+            Self::AuthoringConfig => "authoring config",
             Self::RoleConfig => "role config",
             Self::CascadeRouter => "cascade router",
             Self::ProjectDefault => "project default",
@@ -269,6 +272,10 @@ struct ModelCandidate {
     model: String,
 }
 
+/// Role that plan generation and revision run as. Its `[agent.roles.*]`
+/// model plans when `[authoring] planner_model` is unset.
+const PLANNER_ROLE: &str = "strategist";
+
 /// Resolve the effective model/provider pair using the shared precedence chain.
 pub fn resolve_effective_model(
     cli_model: Option<String>,
@@ -286,6 +293,43 @@ pub fn resolve_effective_model(
         config,
         cli_provider,
     )?;
+    selection_for_candidate(candidate, config)
+}
+
+/// Resolve the model that generates or revises a plan.
+///
+/// Precedence: `--model`, then `[authoring] planner_model`, then the
+/// strategist role's model, then the project default (`[agent] model`).
+/// Frontier models plan and cheap models execute, so the planner is picked
+/// apart from the models that run tasks.
+pub fn resolve_planner_selection(
+    cli_model: Option<String>,
+    config: &RokoConfig,
+) -> Result<EffectiveModelSelection, Error> {
+    match (cli_model, config.authoring.planner_model_key()) {
+        (None, Some(model)) => selection_for_candidate(
+            ModelCandidate {
+                source: SelectionSource::AuthoringConfig,
+                model: model.to_string(),
+            },
+            config,
+        ),
+        (cli_model, _) => resolve_effective_model(
+            cli_model,
+            None,
+            Some(PLANNER_ROLE.to_string()),
+            None,
+            config,
+            None,
+        ),
+    }
+}
+
+/// Resolve the winning candidate to its provider and backend slug.
+fn selection_for_candidate(
+    candidate: ModelCandidate,
+    config: &RokoConfig,
+) -> Result<EffectiveModelSelection, Error> {
     let source = candidate.source;
     let requested_model = candidate.model;
     let resolved = resolve_model(config, &requested_model);
@@ -340,21 +384,48 @@ pub fn resolve_effective_model_key(
     )
     .map_err(|err| anyhow::anyhow!("resolve model selection for {context}: {err}"))?;
     selection.print_stderr();
-    // #162: advisory capability-requirement check for the selected model.
     if let Some(role_label) = role {
-        if let Some(role_override) = find_role_override(&config, role_label) {
-            if let Some(profile) = config.models.get(&selection.effective_model_key) {
-                if !role_override.capabilities_satisfied_by(profile) {
-                    tracing::warn!(
-                        role = role_label,
-                        model = %selection.effective_model_key,
-                        "selected model does not satisfy role capability requirements"
-                    );
-                }
-            }
-        }
+        warn_unmet_role_capabilities(&config, role_label, &selection.effective_model_key);
     }
     Ok(selection.effective_model_key)
+}
+
+/// Resolve the model key that generates or revises a plan in `workdir`.
+///
+/// Every plan generate and revise path calls this, so one key,
+/// `[authoring] planner_model`, reaches all of them: `roko prd plan`,
+/// `roko plan generate` and `regenerate`, both plan-writing bands of
+/// `roko do`, and the serve runtime's generate and revise. It loads
+/// `roko.toml` like [`resolve_effective_model_key`], applies
+/// [`resolve_planner_selection`], and prints the selection to stderr.
+/// `context` names the caller in the error when resolution fails.
+pub fn resolve_planner_model(
+    workdir: &Path,
+    cli_model: Option<String>,
+    context: &str,
+) -> anyhow::Result<String> {
+    let config = roko_core::config::loader::load_config_unified(workdir)
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let selection = resolve_planner_selection(cli_model, &config)
+        .map_err(|err| anyhow::anyhow!("resolve planner model for {context}: {err}"))?;
+    selection.print_stderr();
+    warn_unmet_role_capabilities(&config, PLANNER_ROLE, &selection.effective_model_key);
+    Ok(selection.effective_model_key)
+}
+
+/// #162: advisory check that the selected model has the capabilities `role`
+/// requires. Dispatch goes ahead either way.
+fn warn_unmet_role_capabilities(config: &RokoConfig, role: &str, model_key: &str) {
+    if let Some(role_override) = find_role_override(config, role)
+        && let Some(profile) = config.models.get(model_key)
+        && !role_override.capabilities_satisfied_by(profile)
+    {
+        tracing::warn!(
+            role,
+            model = %model_key,
+            "selected model does not satisfy role capability requirements"
+        );
+    }
 }
 
 fn select_candidate(
@@ -607,6 +678,86 @@ mod tests {
 
     fn cascade_router(model: &str) -> CascadeRouter {
         CascadeRouter::new(vec![model.to_string()])
+    }
+
+    /// [`config_with_claude_models`] whose provider command is an absolute
+    /// path that exists, so the project-default step, which skips models
+    /// whose provider is unavailable, does not depend on `claude` being on
+    /// `PATH`.
+    fn config_with_available_claude_models() -> RokoConfig {
+        let mut config = config_with_claude_models();
+        let command = std::env::current_exe().expect("test binary path");
+        let provider = config
+            .providers
+            .get_mut("claude_cli")
+            .expect("claude_cli provider");
+        provider.command = Some(command.display().to_string());
+        config
+    }
+
+    #[test]
+    fn planner_model_precedence_cli_then_authoring_then_role() {
+        let mut config = config_with_available_claude_models();
+        config.agent.default_model = "claude-haiku-4-5".to_string();
+
+        // Nothing planner-specific is configured: the project default plans.
+        let selection = resolve_planner_selection(None, &config).expect("selection");
+        assert_eq!(selection.source, SelectionSource::ProjectDefault);
+        assert_eq!(selection.effective_model_key, "claude-haiku-4-5");
+
+        // The strategist role's model beats the project default.
+        config
+            .agent
+            .roles
+            .insert("strategist".to_string(), role_model("claude-sonnet-4-6"));
+        let selection = resolve_planner_selection(None, &config).expect("selection");
+        assert_eq!(selection.source, SelectionSource::RoleConfig);
+        assert_eq!(selection.effective_model_key, "claude-sonnet-4-6");
+
+        // `[authoring] planner_model` beats the role.
+        config.authoring.planner_model = "claude-opus-4-6".to_string();
+        let selection = resolve_planner_selection(None, &config).expect("selection");
+        assert_eq!(selection.source, SelectionSource::AuthoringConfig);
+        assert_eq!(selection.effective_model_key, "claude-opus-4-6");
+        assert_eq!(selection.provider_key, "claude_cli");
+        assert!(selection.reason.contains("authoring config"));
+
+        // `--model` beats everything.
+        let selection = resolve_planner_selection(Some("claude-haiku-4-5".to_string()), &config)
+            .expect("selection");
+        assert_eq!(selection.source, SelectionSource::CliOverride);
+        assert_eq!(selection.effective_model_key, "claude-haiku-4-5");
+    }
+
+    #[test]
+    fn blank_planner_model_falls_through_to_the_role() {
+        let mut config = config_with_claude_models();
+        config.authoring.planner_model = "   ".to_string();
+        config
+            .agent
+            .roles
+            .insert("strategist".to_string(), role_model("claude-opus-4-6"));
+
+        let selection = resolve_planner_selection(None, &config).expect("selection");
+
+        assert_eq!(selection.source, SelectionSource::RoleConfig);
+        assert_eq!(selection.effective_model_key, "claude-opus-4-6");
+    }
+
+    #[test]
+    fn unconfigured_planner_model_is_an_error_not_a_silent_fallback() {
+        let mut config = config_with_claude_models();
+        config.authoring.planner_model = "definitely-not-a-model".to_string();
+
+        let err = resolve_planner_selection(None, &config).expect_err("selection should fail");
+
+        assert!(matches!(
+            err,
+            Error::UnknownModel {
+                selection_source: SelectionSource::AuthoringConfig,
+                ..
+            }
+        ));
     }
 
     #[test]

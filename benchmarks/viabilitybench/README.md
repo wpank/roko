@@ -124,7 +124,7 @@ $PY benchmarks/viabilitybench/driver/vb.py run --experiment PILOT-A --stream pil
 
 | File | Validates | Example |
 |---|---|---|
-| `schema/task.schema.json` | `vb.task/1`, a task manifest `DIR/.vb/task.json` (§5.2) | `examples/task.json` (§5.2, verbatim) |
+| `schema/task.schema.json` | `vb.task/1`, a task manifest: `task.json` in the generator's private `--out` directory, never in the agent's workdir (§5.2 put it in `DIR/.vb/`) | `examples/task.json` (§5.2, verbatim) |
 | `schema/feature.schema.json` | `vb.feature/1`, a plan-slice instance's manifest, used in place of `vb.task/1` (S09 §4.9; `families/plan_slice/`) | `examples/feature.json` |
 | `schema/run-record.schema.json` | `vb.run_record/1`, a row of `records.jsonl` (§5.4) | `examples/run-record.json` (§5.4, verbatim) |
 | `schema/metric-record.schema.json` | `vb.metric_record/1`, a row of `metrics.json` (§5.5) | `examples/metric-record.json` |

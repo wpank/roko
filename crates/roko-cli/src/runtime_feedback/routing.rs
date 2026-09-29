@@ -351,8 +351,8 @@ mod tests {
         );
     }
 
-    /// gap-9cbf35: a ladder rung's outcome teaches the router like its own
-    /// pick would, so the learner sees every rung.
+    /// gap-9cbf35: a ladder rung's settled outcome teaches the router like
+    /// its own pick would, so the learner sees every rung.
     #[tokio::test]
     async fn ladder_outcomes_are_recorded_like_router_outcomes() {
         let r = router();
@@ -360,7 +360,7 @@ mod tests {
         let event = FeedbackEvent::TaskCompleted {
             turns: 0,
             failure_reason: None,
-            settled: None,
+            settled: settled_as(AttemptOutcome::Passed, false),
             plan_id: "p".into(),
             task_id: "t".into(),
             outcome: outcome(true),

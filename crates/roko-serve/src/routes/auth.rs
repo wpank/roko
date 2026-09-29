@@ -577,7 +577,10 @@ fn registry_file_stamp(path: &Path) -> Result<Option<FileStamp>, ApiError> {
     match std::fs::metadata(path) {
         Ok(metadata) => Ok(Some(FileStamp::of(&metadata))),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(ApiError::internal(format!("read {}: {error}", path.display()))),
+        Err(error) => Err(ApiError::internal(format!(
+            "read {}: {error}",
+            path.display()
+        ))),
     }
 }
 

@@ -28,3 +28,7 @@ Imported without verification from:
 How to verify: Confirm in crates/roko-learn/src/model_router.rs whether still true: LinUCB A matrix grows without bound, exploration bonus approaches zero
 
 Verified 2026-09-28: update_features_internal does A += x x^T and b += r x with no decay, forgetting factor or window (crates/roko-learn/src/model_router.rs:1110-1118). Alpha also decays with total observations (:771-777), so the exploration bonus shrinks from both sides. Only the Thompson arms have a discount (:519-521). Severity p2: learning quality, not a broken loop.
+
+## Notes
+
+- 2026-09-29 (wk-router2, from bug-605a8a): on `work/bug-605a8a`, cascade-router saves merge each process's learning into the snapshot by adding its A and b deltas (7769a5ae4). That merge assumes learning is additive. Decay, a forgetting factor or a window is not: two processes' decayed deltas can't simply be summed. Whatever this item adds needs its own merge rule for concurrent saves, for example applying decay once, at merge time, from the snapshot's age.

@@ -66,6 +66,22 @@ describe('runCostUsd', () => {
     expect(runCostUsd(run)).toBe(3);
   });
 
+  it('leaves out spend outside the run, such as generating or revising the plan', () => {
+    const generate: WireDashboardEvent = {
+      type: 'efficiency_event',
+      plan_id: 'hello',
+      task_id: 'generate',
+      metric: 'cost_usd',
+      value: 0.5,
+    };
+    const revise: WireDashboardEvent = { ...generate, task_id: 'revise', value: 1 };
+    const [setLoaded, ...rest] = runOf('hello', [0.25]);
+    const run = fold([setLoaded!, generate, ...rest, ...END_HELLO, revise]);
+    expect(run.plans['hello']?.costUsd).toBe(0.25);
+    expect(runCostUsd(run)).toBe(0.25);
+    expect(run.totals.costUsd).toBe(1.75);
+  });
+
   it('counts the running plans when the plan set is from an earlier run', () => {
     let run = fold([...runOf('hello', [10]), ...END_HELLO]);
     // A run that announces no plan set.

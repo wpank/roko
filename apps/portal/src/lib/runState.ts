@@ -977,10 +977,11 @@ export function applyEvent(
         }
       }
 
-      // ── plan (cost only)
+      // ── plan (cost only, while it runs: spend outside a run, such as a
+      //    plan revision, is not the run's — as in the snapshot)
       const plan = state.plans[plan_id];
       let newPlans = state.plans;
-      if (plan && isCost) {
+      if (plan && isCost && plan.phase === 'running') {
         newPlans = {
           ...state.plans,
           [plan_id]: { ...plan, costUsd: plan.costUsd + value },

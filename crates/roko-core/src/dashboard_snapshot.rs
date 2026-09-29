@@ -511,7 +511,7 @@ pub struct PlanDisplayState {
     #[serde(default)]
     pub finished_at_ms: Option<u64>,
     /// What the plan's latest run has cost so far, in USD: the sum of the
-    /// `cost_usd` efficiency events that name the plan.
+    /// `cost_usd` efficiency events that name the plan while it runs.
     #[serde(default)]
     pub cost_usd: f64,
 }
@@ -1891,9 +1891,10 @@ impl DashboardSnapshot {
                             agent.cost_usd += value;
                             agent.last_event_at_ms = ts;
                         }
-                        // Whatever spent it, a cost that names a known plan
-                        // belongs to that plan's current run.
-                        if let Some(plan) = self.plans.get_mut(plan_id) {
+                        // While a plan runs, every cost that names it is its
+                        // run's, whatever spent it. Spend outside a run (a
+                        // plan revision, say) counts only in the total.
+                        if let Some(plan) = self.plans.get_mut(plan_id).filter(|plan| plan.active) {
                             plan.cost_usd += value;
                         }
                         self.stats.cost_usd_total += value;
@@ -4385,6 +4386,34 @@ mod tests {
         // A member that never started has neither time.
         assert_eq!(snap.plans["b"].started_at_ms, None);
         assert_eq!(snap.plans["b"].finished_at_ms, None);
+    }
+
+    #[test]
+    fn spend_outside_a_plans_run_counts_only_in_the_total() {
+        let spend = |task_id: &str, value: f64| DashboardEvent::EfficiencyEvent {
+            plan_id: "p1".into(),
+            task_id: task_id.into(),
+            metric: "cost_usd".into(),
+            value,
+        };
+        let mut snap = DashboardSnapshot::default();
+        snap.apply(&plan_set_event(&[("p1", 1)]));
+        // Generating the plan before it starts.
+        snap.apply(&spend("generate", 0.5));
+        snap.apply(&DashboardEvent::PlanStarted {
+            plan_id: "p1".into(),
+            tasks_total: 1,
+        });
+        snap.apply(&spend("t1", 0.25));
+        snap.apply(&DashboardEvent::PlanCompleted {
+            plan_id: "p1".into(),
+            success: true,
+        });
+        // Revising it afterwards.
+        snap.apply(&spend("revise", 1.0));
+
+        assert_eq!(snap.plans["p1"].cost_usd, 0.25);
+        assert_eq!(snap.stats.cost_usd_total, 1.75);
     }
 
     #[test]

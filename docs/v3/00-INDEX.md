@@ -132,9 +132,15 @@ downstream reactions; only those worth persisting get promoted to Signals via **
 ### 3.3 Cell
 
 The **Cell** is the atomic computation unit. Signals in, Signals out. Every Cell declares
-its typed I/O, capabilities, and protocol conformances. Every Cell is a learner via the
-**predict-publish-correct** loop (Friston 2006): the Graph Engine calls `Cell::predict`
+its typed I/O, capabilities, and protocol conformances. By design every Cell learns through
+the **predict-publish-correct** loop (Friston 2006): the Graph Engine calls `Cell::predict`
 before execution, then `Cell::correct` after, so the Cell can update its internal model.
+That is PARTIAL at `7c556bc0a`. The engine hook runs (`execute_cell_with_retries` in
+`crates/roko-graph/src/engine.rs`), but `predict` defaults to `None`, which leaves the loop
+off, and `correct` runs only after a successful execution. `TaskExecutorCell`, which runs
+every plan task, has no `predict`, so no plan run exercises the loop. The one production
+Cell that predicts is `AssessCell` (`crates/roko-graph/src/cells/cognitive.rs`), which
+predicts its output count from its input count.
 
 | Property | Description |
 |---|---|
@@ -178,9 +184,12 @@ cycle.
 ### 3.5 Protocol
 
 A **Protocol** is a behavioral contract that a Cell conforms to. Roko defines 9 protocols.
-Each supports the predict-publish-correct learning loop. A Cell publishes its prediction as
-a Pulse, reality publishes the outcome, a CalibrationPolicy joins by lineage and computes
-error, and the Cell subscribes to its error topic to update. Learning is structural.
+Each supports the predict-publish-correct learning loop. In the design, a Cell publishes its
+prediction as a Pulse, reality publishes the outcome, a CalibrationPolicy joins by lineage
+and computes error, and the Cell subscribes to its error topic to update. Learning is
+structural. The join is not wired at `7c556bc0a`: `CalibrationPolicy` runs only inside
+`run_learning_subscriber` (`crates/roko-learn/src/event_subscriber.rs`), which has no
+production caller, and the only production Cell that predicts is `AssessCell` (section 3.3).
 
 See section 4 below for the full protocol table.
 
@@ -615,7 +624,9 @@ only path into the audit DAG). **Projection** converts Signal -> Pulse (lossy br
 **Predict-publish-correct** via Bus (Friston 2006). Every Cell publishes its prediction as
 a Pulse, subscribes to its own error topic, and adjusts. Learning is structural -- it
 emerges from the same pub/sub fabric that carries heartbeats and gate verdicts, not from a
-separate bolted-on subsystem.
+separate bolted-on subsystem. This is the design principle; at `7c556bc0a` it holds only
+in part: no Cell that runs plan tasks predicts, and nothing joins predictions with outcomes
+(sections 3.3 and 3.5).
 
 ### P3: Demurrage is default
 

@@ -3,13 +3,14 @@ id = "gap-424bf8"
 kind = "gap"
 title = "Whitepaper §6 Measured trust"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p1"
 goal = "whitepaper"
 size = "S"
 subsystem = ["docs/whitepaper"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-29
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e1"
 discovered_from = "tmp/cybernetic-harness/tldr/research/C3-competitive-landscape.md (what no product documents)"
 anchors = ["docs/whitepaper/06-measured-trust.md"]
@@ -74,3 +75,8 @@ Checked at `41c7ffbd6`.
 - **Needs `tools/paperlint.py`** (gap-af0b57) to close.
 - **Vendor pages** need `@online` bib entries with the access date. Vendor numbers stay vendor claims (C3).
 - Lane `paper`; no hot files.
+- **Written 2026-09-29** on `work/gap-424bf8` at `c9e5f12de`, with five `@online` vendor entries in `167809ce0`.
+  `paperlint --strict --check-identifiers` is clean against gap-af0b57's uncommitted working copy (sha256
+  `91eb8dbe311c`): 553 words counting the footnote, 518 without. The verify fails on this branch only because
+  `tools/paperlint.py` has not merged; close once it has. Tags match the status matrix at `a17d4dadd` (rows RC2,
+  RG5, QA5, RG4). When gap-29a64e freezes CASE-001 into `evidence/`, point the `[^6-verdicts]` footnote at it.

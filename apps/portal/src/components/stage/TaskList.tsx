@@ -18,7 +18,7 @@ import { MetricCell } from '@/components/primitives/MetricCell';
 import { cn } from '@/lib/cn';
 import { formatSpan, shortModel, formatCost } from '@/lib/formatters';
 import type { CheckRun } from '@/lib/runState';
-import { GLYPHS } from '@/lib/glyphs';
+import { GLYPHS, glyphStateForCheck } from '@/lib/glyphs';
 import { digestHeadline, digestOutput } from '@/lib/checks';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
@@ -43,12 +43,7 @@ function failureHeadline(checks: CheckRun[]): string | null {
 
 /** A single inline check chip: glyph + phase label. e.g. "✓ compile" or "✗ test" */
 function CheckChip({ check }: { check: CheckRun }) {
-  const glyphState =
-    check.status === 'passed'
-      ? 'done'
-      : check.status === 'failed'
-        ? 'failed'
-        : 'active';
+  const glyphState = glyphStateForCheck(check.status);
   const label = check.phase || check.name;
   return (
     <span

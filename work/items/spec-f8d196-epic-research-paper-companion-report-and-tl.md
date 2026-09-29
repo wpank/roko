@@ -71,7 +71,7 @@ This is the implementation plan.
 - [x] gap-b64fba: Refresh the TL;DR against the 2026-09-29 merges and fix three known errors
 - [ ] gap-b409fa: Companion report: fill the re-derived numbers into the E10 draft and fix the flagged source errors
 - [x] gap-420202: Research paper §6: align the economics results template with the thesis, add the plan-level template, and trim
-- [ ] gap-0ef29d: Research paper §7: fix the dormant-loop claim in §7.3, align with the thesis, and trim
+- [x] gap-0ef29d: Research paper §7: fix the dormant-loop claim in §7.3, align with the thesis, and trim
 - [ ] gap-856053: Research paper appendices A and B: match the benchmark and the spec standard as built
 - [ ] gap-987510: Research paper appendices C and D: align the audit protocol and metrics with S05, S09 and the ViabilityBench analysis
 - [ ] The `[[verify]]` command passes (paperlint reports on every section).

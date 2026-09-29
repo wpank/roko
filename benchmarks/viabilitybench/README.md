@@ -94,12 +94,17 @@ $PY benchmarks/viabilitybench/driver/vb.py run --experiment PILOT-A --stream pil
 | File | Validates | Example |
 |---|---|---|
 | `schema/task.schema.json` | `vb.task/1`, a task manifest `DIR/.vb/task.json` (§5.2) | `examples/task.json` (§5.2, verbatim) |
+| `schema/feature.schema.json` | `vb.feature/1`, a plan-slice instance's manifest, used in place of `vb.task/1` (S09 §4.9; `families/plan_slice/`) | `examples/feature.json` |
 | `schema/run-record.schema.json` | `vb.run_record/1`, a row of `records.jsonl` (§5.4) | `examples/run-record.json` (§5.4, verbatim) |
 | `schema/metric-record.schema.json` | `vb.metric_record/1`, a row of `metrics.json` (§5.5) | `examples/metric-record.json` |
 | `schema/ledger.schema.json` | a row of `ledger.jsonl` (§4.10, §5.6) | `examples/ledger.json` |
 | `schema/price-snapshot.schema.json` | `roko.price_snapshot/1`, a parsed `config/prices/<date>.toml` (§5.6) | `config/prices/2026-09-28.toml` |
 
-The MetricRecord and ledger examples are built from the §5.4 record, since S08 gives only their field lists.
+The MetricRecord and ledger examples are built from the §5.4 record, since S08 gives only their field lists. The
+feature example comes from `slicekit.py materialize` for PL03 at seed 1, with its paths and canary shortened.
+
+A run record's `task.ladder` is `null` exactly when the task has no difficulty level: a plan-slice feature (family
+`PL`). That widening of `vb.run_record/1` came before any record was written, so the version stays `/1`.
 
 `schema/validate.py` implements exactly the JSON Schema subset these files use (`type`, `required`, `enum`,
 `const`, `properties`, `items`, `minItems`, `additionalProperties`) and refuses a schema with any other keyword.
@@ -125,8 +130,8 @@ python3 benchmarks/viabilitybench/schema/validate.py run-record "$VB_RESULTS/<ex
 python3 benchmarks/viabilitybench/schema/validate.py price-snapshot config/prices/2026-09-28.toml
 ```
 
-The kinds are `task`, `run-record`, `metric-record`, `price-snapshot` and `ledger`. A `.json` file holds one
-document, a `.jsonl` file one per line. The exit status is 1 when any document is invalid.
+The kinds are `task`, `feature`, `run-record`, `metric-record`, `price-snapshot` and `ledger`. A `.json` file
+holds one document, a `.jsonl` file one per line. The exit status is 1 when any document is invalid.
 
 ## The price snapshot
 

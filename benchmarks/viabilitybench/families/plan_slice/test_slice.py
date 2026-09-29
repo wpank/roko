@@ -90,12 +90,15 @@ def test_run_record_task_values_make_valid_run_records(feature, tmp_path):
         assert validate.validate("run-record", record) == [], arm
 
 
-def test_the_run_record_schema_has_no_level_for_a_feature():
-    # Why [run_record] carries a placeholder ladder: the schema's ladder and spec_variant are closed enums.
-    task = {"family": "PL", "instance_id": "PL01-0001", "ladder": "plan", "latent_version": "v1",
-            "spec_variant": "plan-slice", "is_honeypot": False}
-    assert len(slicekit.run_record_errors(task)) == 2
-    assert slicekit.run_record_errors(task | {"ladder": 5, "spec_variant": "precise"}) == []
+def test_run_record_tasks_carry_a_null_ladder():
+    # A feature has no difficulty level: its rows say so with ladder = null, never with a placeholder level.
+    for feature in FEATURES:
+        task = slicekit.run_record_task(feature, 1)
+        assert task["ladder"] is None and task["family"] == "PL" and slicekit.run_record_errors(task) == []
+    assert len(slicekit.run_record_errors(task | {"ladder": "plan", "spec_variant": "plan-slice"})) == 2
+    placeholder = slicekit.Feature(FEATURES[0].root, FEATURES[0].source | {"run_record": {"ladder": 5}},
+                                   FEATURES[0].tasks, FEATURES[0].requirements)
+    assert any("sets ladder" in error for error in slicekit.shape_errors(placeholder))
 
 
 def test_every_requirement_is_stated_planned_and_tested():

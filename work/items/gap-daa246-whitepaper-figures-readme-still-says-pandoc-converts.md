@@ -3,13 +3,14 @@ id = "gap-daa246"
 kind = "gap"
 title = "Whitepaper figures README still says pandoc converts the SVGs, which build.sh now does"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p3"
 goal = "whitepaper"
 size = "S"
 subsystem = ["docs/whitepaper"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-09-30
+last_verified = 2026-09-30
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (16:47, wk-wp-publish's report on gap-8117a8, branch work/gap-8117a8)"
 anchors = ["docs/whitepaper/figures/README.md", "docs/whitepaper/build.sh"]
@@ -44,5 +45,5 @@ Rewrite the paragraph: `build.sh` converts `figures/*.svg` with `rsvg-convert --
 
 ## Done when
 
-- [ ] The "Rendering" section describes what `build.sh` does.
-- [ ] The `[[verify]]` command passes.
+- [x] The "Rendering" section describes what `build.sh` does.
+- [x] The `[[verify]]` command passes.

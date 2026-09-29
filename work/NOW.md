@@ -4,21 +4,21 @@
 
 What to work on next: the top checked, open items of each goal, highest-priority goal first. Reorder or change goals in `goals.toml`; pin an item higher with `rank = 1` (lower first).
 
-**Drift:** 46 anchor gone · 119 changed since checked · 4 mentioned in commits. Re-check them before relying on this list: `DRIFT.md`.
+**Drift:** 45 anchor gone · 121 changed since checked · 4 mentioned in commits. Re-check them before relying on this list: `DRIFT.md`.
 
 ## 1. Public release: security, licence, CI, first run
 
 - **P1** [bug-da5b41](items/bug-da5b41-a-running-roko-serve-erases-api-keys.md) A running roko serve erases API keys created by the CLI [bug] · size M · verified 2026-09-29
 - **P1** [bug-0d9ac4](items/bug-0d9ac4-agent-tool-shells-bypass-child-env-run.md) Agent tool shells bypass child_env: run_tests and ACP's bash inherit provider keys, roko-std's bash keeps its own allowlist [bug] · size M · verified 2026-09-29
-- **P1** [bug-09690f](items/bug-09690f-readme-s-quick-start-fails-and-the.md) README's quick start fails, and the README claims 100% completion [bug] · size M · verified 2026-09-29
+- **P1** [gap-5f4852](items/gap-5f4852-tool-t036-secret-canary-persistence-test-never.md) Secret-canary persistence test never run for scrubbers/persistent sinks · size L · verified 2026-09-29
 
-_21 more open · on hold: gap-8f8544 · 7 unchecked (`TRIAGE.md`) · `goal = "release"`_
+_20 more open · on hold: gap-8f8544 · 12 unchecked (`TRIAGE.md`) · `goal = "release"`_
 
 ## 2. Whitepaper v1 and the research papers
 
 - **P1** [spec-f8d196](items/spec-f8d196-epic-research-paper-companion-report-and-tl.md) Epic: research paper, companion report and TL;DR upkeep [spec] · size L · verified 2026-09-29
 
-_0 more open · on hold: gap-bb619d · 12 unchecked (`TRIAGE.md`) · `goal = "whitepaper"`_
+_0 more open · on hold: gap-bb619d · 9 unchecked (`TRIAGE.md`) · `goal = "whitepaper"`_
 
 ## 3. Roko tells the truth and is safe (P0)
 

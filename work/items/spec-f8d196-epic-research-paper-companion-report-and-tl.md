@@ -81,9 +81,9 @@ This is the implementation plan.
 - [ ] gap-3986d0: Freeze a tarball of .roko state with each audit tag
 - [ ] gap-bb619d: Research paper: the final prior-art kill-search (Track D13) before submission
 - [ ] dec-536bbd: Decide how paperlint --strict treats numbers in the claims-ledger rows
-- [ ] gap-f3be74: TL;DR: fix the stale statements found by the second refresh pass
+- [x] gap-f3be74: TL;DR: fix the stale statements found by the second refresh pass
 - [ ] gap-cb86e4: Companion report: make the draft pass paperlint --strict apart from the rater and author markers
-- [ ] gap-9899b0: Research paper: cite the frozen evidence copies in §1.2, §4.1, §7 and Appendix F
+- [x] gap-9899b0: Research paper: cite the frozen evidence copies in §1.2, §4.1, §7 and Appendix F
 - [ ] The `[[verify]]` command passes (paperlint reports on every section).
 
 ## Notes

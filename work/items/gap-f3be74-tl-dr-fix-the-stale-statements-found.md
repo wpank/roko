@@ -2,14 +2,16 @@
 id = "gap-f3be74"
 kind = "gap"
 title = "TL;DR: fix the stale statements found by the second refresh pass"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p3"
 goal = "whitepaper"
 size = "S"
 subsystem = ["tldr"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-29
+last_verified_rev = "751bc8f13"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (15:57, wk-tldr2's report on gap-4d516a)"
 anchors = ["tmp/cybernetic-harness/tldr/00-README.md", "tmp/cybernetic-harness/tldr/04-FRONTIER-PLANS-CHEAP-EXECUTES.md", "tmp/cybernetic-harness/tldr/05-GAPS-AND-PROPOSALS.md", "tmp/cybernetic-harness/tldr/research/B7-real-run-evidence.md"]
@@ -19,6 +21,11 @@ links = { depends_on = [], blocks = [], related = ["gap-4d516a", "gap-b64fba"], 
 
 [[verify]]
 command = "! grep -q 'agents can read your key files' tmp/cybernetic-harness/tldr/00-README.md && ! grep -q '| B | Roko with a frontier executor |' tmp/cybernetic-harness/tldr/04-FRONTIER-PLANS-CHEAP-EXECUTES.md && ! grep -q 'a `max_parallel` of 3–4' tmp/cybernetic-harness/tldr/research/B7-real-run-evidence.md"
+
+[closed]
+at = 2026-09-29
+by = "coordinator (session 7622b882)"
+evidence = "TL;DR (tmp, wk-tldr2): ten fixes. 00-README item 8 rebuilt from matrix rows IS4-IS6 and the closed bug-a66941/bug-7de5df (0728a2817), best effort without an OS sandbox (gap-8f8544 held), no guard for Codex/Cursor/Gemini; 04 'How to prove it' now three ViabilityBench arms plus the 48-task Roko+frontier probe (D1/S09); 05 §6 marks decisions 3, 6, 9, 12, 13 settled with sources; B7 TL;DR caps 2-4; plus 6 more stale key-file and arm lines in 01, 04 and 05. Verify passes; the frozen B7 copy still matches SHA256SUMS."
 +++
 
 ## Problem

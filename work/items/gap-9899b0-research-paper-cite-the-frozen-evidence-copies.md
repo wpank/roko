@@ -2,14 +2,16 @@
 id = "gap-9899b0"
 kind = "gap"
 title = "Research paper: cite the frozen evidence copies in §1.2, §4.1, §7 and Appendix F"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p2"
 goal = "whitepaper"
 size = "S"
 subsystem = ["paper"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-29
+last_verified_rev = "751bc8f13"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (16:02, wk-rp-cite's report on gap-184da5)"
 anchors = ["tmp/cybernetic-harness/paper/sections/01-introduction.md", "tmp/cybernetic-harness/paper/sections/04-system.md", "tmp/cybernetic-harness/paper/sections/07-results-regulation.md", "tmp/cybernetic-harness/paper/sections/F-ai-assistance-ethics.md"]
@@ -19,6 +21,11 @@ links = { depends_on = [], blocks = [], related = ["gap-184da5"], supersedes = [
 
 [[verify]]
 command = "! grep -rqE 'tldr/research/(B7|B5)|assessment/W12|CASES\\.md' tmp/cybernetic-harness/paper/sections/01-introduction.md tmp/cybernetic-harness/paper/sections/07-results-regulation.md && grep -q 'docs/whitepaper/evidence/' tmp/cybernetic-harness/paper/sections/01-introduction.md"
+
+[closed]
+at = 2026-09-29
+by = "coordinator (session 7622b882)"
+evidence = "Research paper (tmp, wk-rp-cite): §1.2 [^field], §4.1 steps 7 and 9, §7 [^loops] and source line, App F.7 now cite the frozen copies in docs/whitepaper/evidence/ with sha256 prefixes (23 hash citations checked against SHA256SUMS); C1.50-C1.53, C4.38, C4.39, C7.18, CF.21-CF.22 re-pointed; C4.39 narrowed to portal plans 05-08 (CASE-006), live B2 citation dropped. Verify passes; paperlint --budget 1.2 --check-identifiers clean on the four files (§7 1.18x); CLAIMS-EVIDENCE regenerated (418 claims)."
 +++
 
 ## Problem

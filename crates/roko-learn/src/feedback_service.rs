@@ -6,7 +6,7 @@
 use crate::cascade_router::CascadeRouter;
 use crate::efficiency::FEEDBACK_EVENT_SCHEMA;
 use crate::episode_logger::{Episode, EpisodeGateVerdict, EpisodeLogger, Usage};
-use crate::model_call_feedback::observe_model_call_on_router;
+use crate::model_call_feedback::{ModelCallJournal, observe_model_call_on_router};
 use crate::section_effect::SectionEffectivenessRegistry;
 use async_trait::async_trait;
 use chrono::Utc;
@@ -82,6 +82,8 @@ pub struct FeedbackService {
     episode_logger: Option<EpisodeLogger>,
     /// Optional cascade router for eager model-call reward observations.
     cascade_router: Option<Arc<CascadeRouter>>,
+    /// Optional WAL journal for those observations (find-0dc1d5).
+    cascade_journal: Option<Arc<ModelCallJournal>>,
     /// Model-call provenance waiting for a gate/workflow outcome.
     provenance: Mutex<HashMap<String, ProvenanceRecord>>,
     /// Durable score for each knowledge entry.
@@ -103,6 +105,7 @@ impl FeedbackService {
             buffer_capacity: 64,
             episode_logger: None,
             cascade_router: None,
+            cascade_journal: None,
             provenance: Mutex::new(HashMap::new()),
             knowledge_scores: Mutex::new(knowledge_scores),
             section_effectiveness: Mutex::new(section_effectiveness),
@@ -133,6 +136,18 @@ impl FeedbackService {
     #[must_use]
     pub fn with_cascade_router(mut self, router: Arc<CascadeRouter>) -> Self {
         self.cascade_router = Some(router);
+        self
+    }
+
+    /// Journal the cascade router's model-call observations in the learning
+    /// WAL before applying them (find-0dc1d5).
+    ///
+    /// Whoever saves the router must save it through
+    /// [`ModelCallJournal::save`], which marks the journaled observations as
+    /// folded so a replay does not count them twice.
+    #[must_use]
+    pub fn with_cascade_journal(mut self, journal: Arc<ModelCallJournal>) -> Self {
+        self.cascade_journal = Some(journal);
         self
     }
 
@@ -696,7 +711,10 @@ impl FeedbackService {
             return;
         };
 
-        observe_model_call_on_router(router, model, role, success, latency_ms);
+        match &self.cascade_journal {
+            Some(journal) => journal.observe_model_call(router, model, role, success, latency_ms),
+            None => observe_model_call_on_router(router, model, role, success, latency_ms),
+        }
     }
 }
 

@@ -103,6 +103,7 @@ pub async fn dispatch_via_model_call_service(prompt: &str) -> AnyhowResult<Dispa
     };
     use roko_learn::cascade_router::CascadeRouter;
     use roko_learn::feedback_service::FeedbackService;
+    use roko_learn::model_call_feedback::ModelCallJournal;
 
     let workdir = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
     let config = crate::config::load_resolved_config(&workdir)
@@ -141,10 +142,17 @@ pub async fn dispatch_via_model_call_service(prompt: &str) -> AnyhowResult<Dispa
             cascade_model_slugs,
         ))
     });
+    // Observations are journaled in the learning WAL until the save below
+    // (find-0dc1d5).
+    let cascade_journal = Arc::new(ModelCallJournal::for_snapshot(&cascade_path));
 
     let feedback_service = FeedbackService::from_roko_dir(&workdir.join(".roko"));
     let feedback_sink: Arc<dyn FeedbackSink> = match &cascade_router {
-        Some(router) => Arc::new(feedback_service.with_cascade_router(Arc::clone(router))),
+        Some(router) => Arc::new(
+            feedback_service
+                .with_cascade_router(Arc::clone(router))
+                .with_cascade_journal(Arc::clone(&cascade_journal)),
+        ),
         None => Arc::new(feedback_service),
     };
     let cost_table = roko_agent::CostTable::from_config_with_defaults(&model_config.models);
@@ -175,7 +183,7 @@ pub async fn dispatch_via_model_call_service(prompt: &str) -> AnyhowResult<Dispa
 
     let call_result = service.call(request).await;
     if let Some(router) = &cascade_router
-        && let Err(err) = router.save(&cascade_path)
+        && let Err(err) = cascade_journal.save(router)
     {
         tracing::warn!(
             path = %cascade_path.display(),

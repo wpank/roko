@@ -1,0 +1,75 @@
++++
+id = "gap-1cd8d3"
+kind = "gap"
+title = "speclint first slice: static spec-quality rules SQ01–SQ12 with hard fails (S07.1)"
+status = "open"
+triage = "unverified"
+severity = "p2"
+goal = "golden-path"
+size = "M"
+subsystem = ["benchmarks/viabilitybench"]
+created = 2026-09-29
+updated = 2026-09-29
+source = "tmp/cybernetic-harness/workstreams/PLAN.md#e8"
+discovered_from = "tmp/cybernetic-harness/execution/checklist.json (S07.1); specs/S07-spec-quality.md §4.2"
+anchors = ["benchmarks/viabilitybench/speclint/speclint.py", "benchmarks/viabilitybench/speclint/tests/test_speclint.py"]
+lane = "bench"
+parent = "spec-e57870"
+links = { depends_on = ["dec-b78874"], blocks = [], related = ["find-70edcb", "gap-46ab3f"], supersedes = [], duplicate_of = "" }
+
+[[verify]]
+command = "grep -qw 'def test_golden_fixture_per_rule' benchmarks/viabilitybench/speclint/tests/test_speclint.py && benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/speclint/tests/test_speclint.py -k test_golden_fixture_per_rule -q"
+
+[[verify]]
+command = "grep -qw 'def test_e2e_smoke_t02_is_band_d' benchmarks/viabilitybench/speclint/tests/test_speclint.py && benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/speclint/tests/test_speclint.py -k test_e2e_smoke_t02_is_band_d -q"
++++
+
+## Problem
+
+Nothing measures whether a task spec is good enough to execute. `plan validate` checks structure and runtime safety
+only. `TasksFile::quality_warnings` checks presence (description length, read files, verify steps) and prints only
+to stderr during dry runs. A prototype linter scored 484 tasks for spec S07: mean 69.7 of 100; 81.6% declare no
+acceptance criteria; 16.7% have only grep-style verify steps; none has a hidden-test hook. The prototype lived in a
+scratchpad and is gone.
+
+## Why it matters
+
+Spec quality is the cost lever S07 tests (hypothesis H3: vague specs hurt cheap models most). This linter is S07's
+first slice. It feeds the H3 experiment and the pilot benchmark (epic E12), and `plan validate --spec-quality`
+(gap-46ab3f) must match it. tldr/05 P1 #10. Part of epic spec-e57870.
+
+## Where
+
+- **New:** `benchmarks/viabilitybench/speclint/speclint.py`, `fixtures/` (one golden fixture per rule) and
+  `tests/test_speclint.py`. **The path follows decision D4** (dec-b78874: the benchmark's name and location).
+  Checklist S07.1 still cites the stale `benchmarks/rokocyber/speclint/`.
+- Input: every `plans/**/tasks.toml` (136 files at `41c7ffbd6`; 130 when S07 was written).
+- Output: one `spec.quality` JSONL record per task (S07 §5), written outside the repo (`$VB_RESULTS`, default
+  `~/.roko-bench/viability`).
+
+## Current state
+
+Checked at `41c7ffbd6`: `benchmarks/` holds only `dev-audit/`. No speclint or viabilitybench file exists.
+
+## Plan
+
+1. Parse each `tasks.toml` with `tomllib`. Score SQ01–SQ12 with S07 §4.2's weights, bands and vague-term lexicon v1,
+   plus the static hard fails HF1, HF2, HF4 and HF5. In static mode SQ06 and HF3 are `unknown`; gap-b3fa0a adds them.
+2. Classify verify strength: test 1.0, a run with a state assertion 0.8, compile 0.5, structural 0.25. A
+   `cargo test --no-run` step counts as compile.
+3. `speclint.py plans/ --out <dir>/speclint.jsonl` prints a summary: score distribution, bands, per-rule pass rates,
+   verify classes and the worst tasks. Report archived plans separately, since they dominate the corpus.
+4. Golden fixtures: one per rule and one per static hard fail.
+
+## Done when
+
+- [ ] It runs over every `plans/**/tasks.toml` with 0 crashes and one record per task; two runs differ only in `ts`.
+- [ ] Rule-level rates reproduce S07 §3.3 within ±3 points. The 69.7 mean is not a target.
+- [ ] `plans/e2e-smoke-test` T02 is band D with SQ04 = 0.
+- [ ] Both `[[verify]]` commands pass.
+
+## Notes
+
+- Python standard library only, no model calls, $0.
+- Waits for D4. If D4 moves the tree outside this repo, re-anchor this item and gap-b3fa0a, and vendor the fixtures
+  for gap-46ab3f's parity test.

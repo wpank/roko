@@ -5,6 +5,7 @@ title = "Dream journal records hard-coded and fabricated fields"
 status = "open"
 triage = "verified"
 severity = "p2"
+hold = "Set aside per tldr/05 §3; Will chose hold over park on 2026-09-29 (dec-e70592). Remove this line to revive."
 subsystem = ["roko-dreams/journal", "roko-serve/dream"]
 created = 2026-09-28
 updated = 2026-09-29

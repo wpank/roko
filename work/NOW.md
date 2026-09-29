@@ -4,25 +4,87 @@
 
 What to work on next: the top checked, open items of each goal, highest-priority goal first. Reorder or change goals in `goals.toml`; pin an item higher with `rank = 1` (lower first).
 
-**Drift:** 12 changed since checked · 1 mentioned in commits. Re-check them before relying on this list: `DRIFT.md`.
+**Drift:** 70 anchor gone · 90 changed since checked · 1 mentioned in commits. Re-check them before relying on this list: `DRIFT.md`.
 
 ## 1. Public release: security, licence, CI, first run
 
 - **P1** [bug-da5b41](items/bug-da5b41-a-running-roko-serve-erases-api-keys.md) A running roko serve erases API keys created by the CLI [bug] · size M · verified 2026-09-29
-- **P1** [bug-7d7200](items/bug-7d7200-agents-and-verify-commands-inherit-roko-s.md) Agents and verify commands inherit roko's whole environment, including provider API keys [bug] · verified 2026-09-29
 - **P1** [bug-09690f](items/bug-09690f-readme-s-quick-start-fails-and-the.md) README's quick start fails, and the README claims 100% completion [bug] · size M · verified 2026-09-29
+- **P1** [gap-5f4852](items/gap-5f4852-tool-t036-secret-canary-persistence-test-never.md) Secret-canary persistence test never run for scrubbers/persistent sinks · size L · verified 2026-09-29
 
-_20 more open · on hold: bug-7eef96 · `goal = "release"`_
+_21 more open · on hold: bug-7eef96 · 5 unchecked (`TRIAGE.md`) · `goal = "release"`_
 
-## 2. Plan runs work reliably
+## 2. Whitepaper v1: how Roko works, with honest status
+
+- nothing checked and open
+
+_0 more open · 17 unchecked (`TRIAGE.md`) · `goal = "whitepaper"`_
+
+## 3. Roko tells the truth and is safe (P0)
+
+- nothing checked and open
+
+_0 more open · 11 unchecked (`TRIAGE.md`) · `goal = "truth"`_
+
+## 4. Frontier plans, cheap models execute, the result integrates (P1)
+
+- nothing checked and open
+
+_0 more open · 31 unchecked (`TRIAGE.md`) · `goal = "golden-path"`_
+
+## 5. Proof: the pilot benchmark and a record of the work
+
+- nothing checked and open
+
+_0 more open · 27 unchecked (`TRIAGE.md`) · `goal = "proof"`_
+
+## 6. Learning from verified outcomes, M1-M4 (P2)
+
+- nothing checked and open
+
+_0 more open · 1 unchecked (`TRIAGE.md`) · `goal = "cybernetic"`_
+
+## 7. Plan runs work reliably
 
 - **P0** [spec-a0403b](items/spec-a0403b-graph-engine-watchdog-integration.md) Graph Engine Watchdog Integration [spec] · size L · verified 2026-09-29
 - **P0** [gap-4ec59f](items/gap-4ec59f-worktree-isolation-flip-default-and-add-startup.md) Worktree Isolation: Flip Default and Add Startup Repair · size L · verified 2026-09-29
 - **P1** [bug-7c8a57](items/bug-7c8a57-plan-audit-t0-06-100-line-cap.md) 100-line cap on read_files context injection [bug] · size S · verified 2026-09-29
 
-_72 more open · `goal = "core"`_
+_74 more open · 1 unchecked (`TRIAGE.md`) · `goal = "core"`_
 
-## 3. Hermes and ACP integration
+## 8. Live visibility: serve, dashboard, portal
+
+- **P1** [bug-230de6](items/bug-230de6-graph-default-engine-does-not-produce-events.md) Graph (default) engine does not produce events.jsonl in mock plan runs [bug] · size M · verified 2026-09-29
+- **P1** [gap-aabeff](items/gap-aabeff-tool-t003-tui-paths-still-consume-string.md) TUI paths still consume string/tail projections that lose semantics (TUI adoption unproven) · size L · verified 2026-09-29
+- **P1** [find-f489db](items/find-f489db-tool-dispatch-observability-gaps-td-003-td.md) Tool Dispatch Observability Gaps (TD-003, TD-004, TD-005) [finding] · size M · verified 2026-09-29
+
+_43 more open · `goal = "visibility"`_
+
+## 9. Learning loops on the Graph path
+
+- **P1** [find-34a4b5](items/find-34a4b5-cybernetic-re-verify-learning-16-learning-routing.md) 16 learning/routing closures wired into deleted Runner-v2 event_loop.rs [finding] · size M · verified 2026-09-29
+- **P1** [find-4b4344](items/find-4b4344-cybernetic-re-verify-gates-9-gate-threshold.md) 9 gate/threshold closures wired into deleted Runner-v2 [finding] · size M · verified 2026-09-29
+- **P1** [bug-86117a](items/bug-86117a-graph-prompts-never-include-durable-knowledge-promptcache.md) Graph prompts never include durable knowledge: PromptCache loads entries with an empty query that matches nothing [bug] · size S · verified 2026-09-29
+
+_22 more open · on hold: bug-429315, bug-8c5d32, bug-b9be1d, bug-dd5dca, bug-dee062, find-3d8bd4, find-3f99f2, gap-47356e, gap-4d1bff, reg-d76ab0 · `goal = "learning"`_
+
+## 10. Tooling, CLI polish and code hygiene
+
+- **P1** [gap-759041](items/gap-759041-backlog-and-plan-state-reconciliation.md) Backlog and Plan State Reconciliation · size M · verified 2026-09-29
+- **P1** [gap-09e478](items/gap-09e478-dogfood-session-evidence-bundle.md) Dogfood Session Evidence Bundle · size M · verified 2026-09-29
+- **P2** [bug-97c2dc](items/bug-97c2dc-async-runtime-anti-patterns-drop-spawn-unbounded.md) Async Runtime Anti-Patterns (Drop+Spawn, Unbounded Channels, Mutex Across Await) [bug] · size M · verified 2026-09-29
+
+_38 more open · 13 unchecked (`TRIAGE.md`) · `goal = "tooling"`_
+
+## 11. Feature ideas
+
+- **P1** [spec-f830c4](items/spec-f830c4-404-batch-branch-integration.md) #404 — Batch Branch Integration [spec] · size L · verified 2026-09-29
+- **P1** [gap-b0d514](items/gap-b0d514-provider-f019-camel-data-llm-execution-boundary.md) CaMeL Data-LLM execution boundary not enforced · size L · verified 2026-09-29
+- **P1** [gap-f118b3](items/gap-f118b3-deliver-roko-inject-through-the-canonical-acknowledged.md) Deliver `roko inject` Through the Canonical Acknowledged Control Transport · size L · verified 2026-09-29
+
+_12 more open · on hold: gap-63055e, gap-8d80d3, gap-ebd656, spec-743a7e, spec-b3ab28, spec-b4ba72 · `goal = "features"`_
+
+## 12. Hermes and ACP integration
 
 - **P1** [bug-f0f108](items/bug-f0f108-refactor-p0-01-acp-bridge-crash-under.md) ACP bridge crash under sustained load (analyzed, not fixed) [bug] · size M · verified 2026-09-29
 - **P1** [spec-704c28](items/spec-704c28-acp-v2-spec-compliance-refactor-and-best.md) ACP v2 Spec Compliance, Refactor, and Best-in-Class Editor UX [spec] · size L · verified 2026-09-29
@@ -30,36 +92,4 @@ _72 more open · `goal = "core"`_
 
 _14 more open · `goal = "hermes"`_
 
-## 4. Live visibility: serve, dashboard, portal
-
-- **P1** [bug-230de6](items/bug-230de6-graph-default-engine-does-not-produce-events.md) Graph (default) engine does not produce events.jsonl in mock plan runs [bug] · size M · verified 2026-09-29
-- **P1** [gap-aabeff](items/gap-aabeff-tool-t003-tui-paths-still-consume-string.md) TUI paths still consume string/tail projections that lose semantics (TUI adoption unproven) · size L · verified 2026-09-29
-- **P1** [find-f489db](items/find-f489db-tool-dispatch-observability-gaps-td-003-td.md) Tool Dispatch Observability Gaps (TD-003, TD-004, TD-005) [finding] · size M · verified 2026-09-29
-
-_23 more open · `goal = "visibility"`_
-
-## 5. Learning loops on the Graph path
-
-- **P1** [find-34a4b5](items/find-34a4b5-cybernetic-re-verify-learning-16-learning-routing.md) 16 learning/routing closures wired into deleted Runner-v2 event_loop.rs [finding] · size M · verified 2026-09-29
-- **P1** [find-4b4344](items/find-4b4344-cybernetic-re-verify-gates-9-gate-threshold.md) 9 gate/threshold closures wired into deleted Runner-v2 [finding] · size M · verified 2026-09-29
-- **P1** [gap-5fb9a7](items/gap-5fb9a7-provider-f035-hindsight-relabeling-module-is-completely.md) Hindsight relabeling module is completely unwired · size M · verified 2026-09-29
-
-_29 more open · `goal = "learning"`_
-
-## 6. Tooling, CLI polish and code hygiene
-
-- **P1** [gap-759041](items/gap-759041-backlog-and-plan-state-reconciliation.md) Backlog and Plan State Reconciliation · size M · verified 2026-09-29
-- **P1** [gap-09e478](items/gap-09e478-dogfood-session-evidence-bundle.md) Dogfood Session Evidence Bundle · size M · verified 2026-09-29
-- **P2** [bug-97c2dc](items/bug-97c2dc-async-runtime-anti-patterns-drop-spawn-unbounded.md) Async Runtime Anti-Patterns (Drop+Spawn, Unbounded Channels, Mutex Across Await) [bug] · size M · verified 2026-09-29
-
-_32 more open · `goal = "tooling"`_
-
-## 7. Feature ideas
-
-- **P1** [spec-f830c4](items/spec-f830c4-404-batch-branch-integration.md) #404 — Batch Branch Integration [spec] · size L · verified 2026-09-29
-- **P1** [gap-b0d514](items/gap-b0d514-provider-f019-camel-data-llm-execution-boundary.md) CaMeL Data-LLM execution boundary not enforced · size L · verified 2026-09-29
-- **P1** [spec-743a7e](items/spec-743a7e-channel-config-schema.md) Channel Config Schema [spec] · size M · verified 2026-09-29
-
-_18 more open · `goal = "features"`_
-
-10 open items have no goal (later); they are listed in `STATUS.md`.
+15 open items have no goal (later); they are listed in `STATUS.md`.

@@ -6,6 +6,7 @@ status = "open"
 triage = "verified"
 severity = "p2"
 goal = "features"
+hold = "Set aside per tldr/05 §3; Will chose hold over park on 2026-09-29 (dec-e70592). Remove this line to revive."
 subsystem = ["roko-runtime/platforms"]
 created = 2026-09-07
 updated = 2026-09-29

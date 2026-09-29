@@ -9,16 +9,40 @@ now = 3
 why = "roko goes public for the Nous application, so it must not ship with an open auth hole, no licence or failing CI."
 
 [[goal]]
+key = "whitepaper"
+title = "Whitepaper v1: how Roko works, with honest status"
+now = 3
+why = "The first publication: frontier models plan, cheap models execute, gates and a whole-plan check verify, feedback loops improve it. Drafted in docs/whitepaper/ (2026-09-29)."
+
+[[goal]]
+key = "truth"
+title = "Roko tells the truth and is safe (P0)"
+now = 3
+why = "Every number in the whitepaper and every learning signal depends on honest verdicts, safe agents and one settled record per attempt."
+
+[[goal]]
+key = "golden-path"
+title = "Frontier plans, cheap models execute, the result integrates (P1)"
+now = 3
+why = "The core of the pitch, untested today: tier ladder with escalation, scheduler, integration and a whole-plan check. The first claim to prove is cheaper at equal quality."
+
+[[goal]]
+key = "proof"
+title = "Proof: the pilot benchmark and a record of the work"
+now = 3
+why = "Turns 'cheaper at equal quality' into a number, and records how the backlog itself gets done."
+
+[[goal]]
+key = "cybernetic"
+title = "Learning from verified outcomes, M1-M4 (P2)"
+now = 3
+why = "Makes 'gets better over time' measurable: routing from verified outcomes, audits and loop-liveness checks. Starts after the attempt records land."
+
+[[goal]]
 key = "core"
 title = "Plan runs work reliably"
 now = 3
 why = "The core loop (plan, dispatch, gate, merge, resume) has to be trustworthy before anything built on it."
-
-[[goal]]
-key = "hermes"
-title = "Hermes and ACP integration"
-now = 3
-why = "The roko side of the Nous/Hermes demo."
 
 [[goal]]
 key = "visibility"
@@ -43,3 +67,9 @@ key = "features"
 title = "Feature ideas"
 now = 3
 why = "New capabilities, picked up after the defect goals."
+
+[[goal]]
+key = "hermes"
+title = "Hermes and ACP integration"
+now = 3
+why = "The roko side of the Nous/Hermes demo. Moved last on 2026-09-29: it waits until the golden path works."

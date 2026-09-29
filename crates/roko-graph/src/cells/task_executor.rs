@@ -22,6 +22,7 @@ use roko_core::{Body, Kind, ProtocolId, Signal, error::Result};
 use serde::{Deserialize, Serialize};
 
 use crate::cell::{Cell, CellContext, CellVersion};
+use crate::workspace::WorkspaceLease;
 
 /// Provider-neutral task metadata preserved by plan-to-Graph conversion.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -48,6 +49,11 @@ pub struct TaskExecutionSpec {
     pub max_retries: u32,
     /// Full serialized runner task definition.
     pub task_def_json: String,
+    /// Hand a successful attempt's isolated checkout on instead of releasing
+    /// it: a later cell of the task (the rich topology's `plan.gate`) judges
+    /// that checkout, so it must outlive the dispatch. The attempt's output
+    /// carries the lease (see [`TaskAttempt::lease`]).
+    pub keep_workspace: bool,
 }
 
 impl TaskExecutionSpec {
@@ -94,6 +100,10 @@ impl TaskExecutionSpec {
                 .and_then(|value| u32::try_from(value).ok())
                 .unwrap_or_default(),
             task_def_json: string("task_def_json").unwrap_or_default(),
+            keep_workspace: table
+                .and_then(|value| value.get("keep_workspace"))
+                .and_then(toml::Value::as_bool)
+                .unwrap_or(false),
         }
     }
 }
@@ -176,6 +186,109 @@ impl TaskGateVerdict {
                 .insert(TASK_GATE_VERDICT_TAG.to_string(), self.as_str().to_string());
             signal.id = signal.content_hash();
         }
+    }
+}
+
+/// Signal tags of a [`TaskAttempt`].
+const TASK_PLAN_ID_TAG: &str = "plan_id";
+const TASK_ID_TAG: &str = "task_id";
+const TASK_RUN_ID_TAG: &str = "run_id";
+const TASK_ATTEMPT_KEY_TAG: &str = "attempt.key";
+const TASK_ATTEMPT_TAG: &str = "workspace.attempt";
+const TASK_WORKSPACE_TAG: &str = "workspace.path";
+const TASK_WORKSPACE_LEASE_TAG: &str = "workspace.lease";
+
+/// The attempt that produced a plan task's output, stamped on its signals
+/// ([`Self::stamp`]).
+///
+/// The task's later cells read it back ([`Self::from_signals`]) to act on that
+/// exact attempt: the rich topology's `plan.gate` gates the checkout named
+/// here, never the process's working directory.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct TaskAttempt {
+    /// Owning plan.
+    pub plan_id: String,
+    /// Task within the plan.
+    pub task_id: String,
+    /// Graph run the attempt belongs to.
+    pub run_id: Option<String>,
+    /// Durable attempt key (`run:plan:task:ordinal`).
+    pub attempt_key: Option<String>,
+    /// 1-based ordinal of the attempt within its run.
+    pub attempt: u32,
+    /// Isolated checkout the attempt ran in. `None` when it ran in the shared
+    /// working tree, which is the operator's own checkout.
+    pub workspace: Option<PathBuf>,
+    /// Lease of that checkout, when the executor handed it on unreleased
+    /// ([`TaskExecutionSpec::keep_workspace`]) for a later cell to settle.
+    pub lease: Option<WorkspaceLease>,
+}
+
+impl TaskAttempt {
+    /// Stamp this attempt on every signal and refresh their content ids.
+    pub fn stamp(&self, signals: &mut [Signal]) {
+        let lease = self
+            .lease
+            .as_ref()
+            .and_then(|lease| serde_json::to_string(lease).ok());
+        let tags = [
+            (TASK_PLAN_ID_TAG, Some(self.plan_id.clone())),
+            (TASK_ID_TAG, Some(self.task_id.clone())),
+            (TASK_RUN_ID_TAG, self.run_id.clone()),
+            (TASK_ATTEMPT_KEY_TAG, self.attempt_key.clone()),
+            (TASK_ATTEMPT_TAG, Some(self.attempt.to_string())),
+            (
+                TASK_WORKSPACE_TAG,
+                self.workspace
+                    .as_ref()
+                    .map(|path| path.display().to_string()),
+            ),
+            (TASK_WORKSPACE_LEASE_TAG, lease),
+        ];
+        for signal in signals {
+            for (tag, value) in &tags {
+                if let Some(value) = value {
+                    signal.tags.insert((*tag).to_string(), value.clone());
+                }
+            }
+            signal.id = signal.content_hash();
+        }
+    }
+
+    /// Read back the attempt stamped on a task's output: the first signal
+    /// that names one. `Err` says why no usable attempt is named, so callers
+    /// can fail closed instead of guessing.
+    pub fn from_signals(signals: &[Signal]) -> std::result::Result<Self, String> {
+        let signal = signals
+            .iter()
+            .find(|signal| signal.tag(TASK_ATTEMPT_TAG).is_some())
+            .ok_or_else(|| {
+                format!("no input names the attempt that produced it (`{TASK_ATTEMPT_TAG}` tag)")
+            })?;
+        let tag = |key: &str| signal.tag(key).map(ToOwned::to_owned);
+        let ordinal = tag(TASK_ATTEMPT_TAG).unwrap_or_default();
+        let attempt = ordinal
+            .parse::<u32>()
+            .ok()
+            .filter(|attempt| *attempt > 0)
+            .ok_or_else(|| {
+                format!("`{TASK_ATTEMPT_TAG}` is `{ordinal}`, not a 1-based attempt ordinal")
+            })?;
+        let lease = tag(TASK_WORKSPACE_LEASE_TAG)
+            .map(|lease| serde_json::from_str::<WorkspaceLease>(&lease))
+            .transpose()
+            .map_err(|error| {
+                format!("`{TASK_WORKSPACE_LEASE_TAG}` is not a workspace lease: {error}")
+            })?;
+        Ok(Self {
+            plan_id: tag(TASK_PLAN_ID_TAG).unwrap_or_default(),
+            task_id: tag(TASK_ID_TAG).unwrap_or_default(),
+            run_id: tag(TASK_RUN_ID_TAG),
+            attempt_key: tag(TASK_ATTEMPT_KEY_TAG),
+            attempt,
+            workspace: tag(TASK_WORKSPACE_TAG).map(PathBuf::from),
+            lease,
+        })
     }
 }
 
@@ -1117,5 +1230,79 @@ task_def_json = "{}"
         assert_eq!(TaskGateVerdict::from_signals(&unknown), None);
         assert!(TaskGateVerdict::Passed.is_replayable());
         assert!(TaskGateVerdict::Unverified.is_replayable());
+    }
+
+    fn handed_on_attempt() -> TaskAttempt {
+        let attempt_id = crate::workspace::WorkspaceAttemptId {
+            plan_id: "plan-a".to_string(),
+            task_id: "T1".to_string(),
+            attempt: 0,
+        };
+        TaskAttempt {
+            plan_id: "plan-a".to_string(),
+            task_id: "T1".to_string(),
+            run_id: Some("run-7".to_string()),
+            attempt_key: Some("run-7:plan-a:T1:2".to_string()),
+            attempt: 2,
+            workspace: Some(PathBuf::from("/wt/attempt-1")),
+            lease: Some(WorkspaceLease {
+                lease_id: "attempt-1".to_string(),
+                lease_fingerprint: attempt_id.fingerprint(),
+                attempt_id,
+                path: PathBuf::from("/wt/attempt-1"),
+                branch: "roko/attempt/attempt-1".to_string(),
+                base_revision: "HEAD".to_string(),
+            }),
+        }
+    }
+
+    /// bug-50caf2: the attempt, its checkout and its lease survive the trip
+    /// through the output tags, and stamping refreshes the content ids.
+    #[test]
+    fn task_attempt_stamp_round_trips_and_refreshes_ids() {
+        let attempt = handed_on_attempt();
+        let mut signals = vec![
+            Signal::builder(Kind::AgentOutput)
+                .body(Body::text("done"))
+                .build(),
+        ];
+        let before = signals[0].id;
+        attempt.stamp(&mut signals);
+        assert_ne!(signals[0].id, before);
+        assert_eq!(signals[0].id, signals[0].content_hash());
+        assert_eq!(signals[0].tag("task_id"), Some("T1"));
+        assert_eq!(TaskAttempt::from_signals(&signals), Ok(attempt));
+    }
+
+    /// An output that names no attempt, or no usable one, is refused with a
+    /// reason rather than read as some default attempt.
+    #[test]
+    fn task_attempt_refuses_missing_or_malformed_tags() {
+        let untagged = vec![Signal::builder(Kind::AgentOutput).build()];
+        let error = TaskAttempt::from_signals(&untagged).unwrap_err();
+        assert!(error.contains("workspace.attempt"), "{error}");
+
+        for (tag, value) in [
+            ("workspace.attempt", "0"),
+            ("workspace.attempt", "two"),
+            ("workspace.lease", "{not a lease"),
+        ] {
+            let mut signal = Signal::builder(Kind::AgentOutput).build();
+            signal
+                .tags
+                .insert("workspace.attempt".to_string(), "1".to_string());
+            signal.tags.insert(tag.to_string(), value.to_string());
+            let error = TaskAttempt::from_signals(&[signal]).unwrap_err();
+            assert!(error.contains(tag), "{tag}={value}: {error}");
+        }
+    }
+
+    #[test]
+    fn keep_workspace_is_read_from_the_node_config() {
+        assert!(!TaskExecutionSpec::from_config(&config()).keep_workspace);
+        let mut table = config().as_table().cloned().expect("table");
+        table.insert("keep_workspace".to_string(), toml::Value::Boolean(true));
+        let spec = TaskExecutionSpec::from_config(&toml::Value::Table(table));
+        assert!(spec.keep_workspace);
     }
 }

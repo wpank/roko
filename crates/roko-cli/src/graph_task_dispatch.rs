@@ -34,7 +34,8 @@ use roko_graph::cell::CellContext;
 use roko_graph::cells::task_executor::TaskGateVerdict;
 use roko_graph::cells::{
     AttemptReconciliation, GraphTaskEvent, ProviderAttemptRecorder, StreamingTaskDispatcher,
-    TaskDispatchOutcome, TaskDispatchOutcomeKind, TaskDispatcher, TaskExecutionSpec, TaskLease,
+    TaskAttempt, TaskDispatchOutcome, TaskDispatchOutcomeKind, TaskDispatcher, TaskExecutionSpec,
+    TaskLease,
 };
 use roko_learn::costs_db::CostRecord;
 use roko_learn::oracles::coding::{BuildRecord, CodingOracle, TestRecord};
@@ -92,6 +93,8 @@ use turn_policy::{
 #[cfg(test)]
 use verification::published_gate_output;
 
+#[cfg(test)]
+mod attempt_workspace;
 #[cfg(test)]
 mod gate_output_accept;
 
@@ -1339,28 +1342,41 @@ impl TaskDispatcher for GraphTaskDispatcher {
             }
         };
 
-        // ── Worktree isolation: release on success ──────────────────────
+        // ── Worktree isolation: hand on, or release on success ──────────
         //
-        // On success, release the worktree with Delete policy. The changes
-        // are already on the worktree's branch and can be merged separately
-        // via the delivery pipeline. For now the worktree is cleaned up.
+        // When a later cell of the task judges this checkout (the rich
+        // topology's `plan.gate`), it must outlive the dispatch: the lease
+        // travels on the output instead. Otherwise the worktree is released
+        // with Delete policy. The changes are already on the worktree's
+        // branch and can be merged separately via the delivery pipeline.
+        let mut handed_on = None;
         if let Some((provider, lease)) = self.workspace_provider.as_ref().zip(lease.as_ref()) {
-            tracing::info!(
-                plan_id = %spec.plan_id,
-                task_id = %task.id,
-                worktree = %lease.path.display(),
-                "releasing isolated worktree after successful task"
-            );
-            if let Err(e) = provider
-                .release(lease, roko_graph::workspace::WorkspaceReleasePolicy::Delete)
-                .await
-            {
-                tracing::warn!(
+            if spec.keep_workspace {
+                tracing::info!(
                     plan_id = %spec.plan_id,
                     task_id = %task.id,
-                    error = %e,
-                    "worktree release failed (best-effort); worktree may remain on disk"
+                    worktree = %lease.path.display(),
+                    "handing the attempt's worktree on to the task's gate"
                 );
+                handed_on = Some(lease.clone());
+            } else {
+                tracing::info!(
+                    plan_id = %spec.plan_id,
+                    task_id = %task.id,
+                    worktree = %lease.path.display(),
+                    "releasing isolated worktree after successful task"
+                );
+                if let Err(e) = provider
+                    .release(lease, roko_graph::workspace::WorkspaceReleasePolicy::Delete)
+                    .await
+                {
+                    tracing::warn!(
+                        plan_id = %spec.plan_id,
+                        task_id = %task.id,
+                        error = %e,
+                        "worktree release failed (best-effort); worktree may remain on disk"
+                    );
+                }
             }
         }
 
@@ -1374,6 +1390,19 @@ impl TaskDispatcher for GraphTaskDispatcher {
                 .build();
         }
         let mut outputs = vec![output];
+        // The output names the exact attempt and checkout that produced it,
+        // so the task's later cells act on them (bug-50caf2).
+        let key = settled.key();
+        TaskAttempt {
+            plan_id: spec.plan_id.clone(),
+            task_id: task.id.clone(),
+            run_id: Some(key.run_id),
+            attempt_key: Some(settled.attempt_key().to_string()),
+            attempt: key.attempt,
+            workspace: lease.as_ref().map(|lease| lease.path.clone()),
+            lease: handed_on,
+        }
+        .stamp(&mut outputs);
         verdict.stamp(&mut outputs);
         Ok(outputs)
     }
@@ -1576,6 +1605,20 @@ printf '%s\n' '{"type":"result","session_id":"sess-v1","model":"claude-sonnet-4-
         configure: impl FnOnce(&mut RokoConfig),
         feedback: GraphFeedbackContext,
     ) -> (Arc<GraphTaskDispatcher>, TaskDef) {
+        make_test_dispatcher_with(temp, script_content, configure, feedback, |dispatcher| {
+            dispatcher
+        })
+        .await
+    }
+
+    /// Like [`make_test_dispatcher`], finishing the dispatcher with `finish`.
+    pub(super) async fn make_test_dispatcher_with(
+        temp: &tempfile::TempDir,
+        script_content: &str,
+        configure: impl FnOnce(&mut RokoConfig),
+        feedback: GraphFeedbackContext,
+        finish: impl FnOnce(GraphTaskDispatcher) -> GraphTaskDispatcher,
+    ) -> (Arc<GraphTaskDispatcher>, TaskDef) {
         let script = temp.path().join("fake-claude-stream.sh");
         std::fs::write(&script, script_content).expect("write stream provider script");
         let mut permissions = std::fs::metadata(&script)
@@ -1618,11 +1661,11 @@ printf '%s\n' '{"type":"result","session_id":"sess-v1","model":"claude-sonnet-4-
         let config = Arc::new(config);
         let factory =
             Arc::new(SharedAgentFactory::new(Arc::clone(&config), None, None, None).await);
-        let dispatcher = Arc::new(
+        let dispatcher = Arc::new(finish(
             GraphTaskDispatcher::new(factory, Arc::clone(&config), temp.path().to_path_buf())
                 .with_plan_budget(1.00, 0.50, false)
                 .with_feedback(feedback),
-        );
+        ));
 
         let task = TaskDef {
             id: "T-STREAM".to_string(),
@@ -1671,6 +1714,7 @@ printf '%s\n' '{"type":"result","session_id":"sess-v1","model":"claude-sonnet-4-
             timeout_secs: task.timeout_secs,
             max_retries: task.max_retries,
             task_def_json: serde_json::to_string(task).expect("serialize task"),
+            keep_workspace: false,
         }
     }
 

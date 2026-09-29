@@ -11,8 +11,8 @@ use crate::claude_cli_agent::{ClaudeCliAgent, build_settings_json};
 use crate::exec::CodexOperationPolicy;
 use crate::provider::current_safety_layer;
 use crate::provider::{
-    AgentCreationError, AgentOptions, ProviderAdapter, ProviderError, configured_resource_limits,
-    provider_credential_scrub,
+    AgentCreationError, AgentOptions, ProviderAdapter, ProviderError, TurnCapEnforcement,
+    configured_resource_limits, provider_credential_scrub,
 };
 use crate::safety::SafetyLayer;
 use roko_core::agent::ProviderKind;
@@ -115,6 +115,10 @@ impl ProviderAdapter for ClaudeCliAdapter {
 
     fn classify_error(&self, status: u16, body: &Value) -> ProviderError {
         super::error_classify::classify_cli_error(status, body, "CLI")
+    }
+
+    fn turn_cap_enforcement(&self, _provider: &ProviderConfig) -> TurnCapEnforcement {
+        TurnCapEnforcement::Native
     }
 }
 
@@ -265,6 +269,13 @@ impl ProviderAdapter for CodexCliAdapter {
         // Codex CLI errors look similar to Claude CLI errors (stderr text).
         // Reuse the same classification logic.
         ClaudeCliAdapter.classify_error(status, body)
+    }
+
+    /// `codex exec` has no turn-count flag or setting, and roko reads its
+    /// JSONL only after the process exits, so nothing stops it at the cap:
+    /// the cap is advisory, and only the attempt timeout bounds a long run.
+    fn turn_cap_enforcement(&self, _provider: &ProviderConfig) -> TurnCapEnforcement {
+        TurnCapEnforcement::Advisory
     }
 }
 

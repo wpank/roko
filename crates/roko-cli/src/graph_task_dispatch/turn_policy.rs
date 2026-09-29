@@ -35,7 +35,9 @@ pub(super) fn is_express_task(
 ///
 /// Every task gets its tier's `[pipeline.<tier>] max_turns` (unknown tiers
 /// use the `focused` band, so the cap is never unbounded); express dispatch
-/// lowers it further to [`EXPRESS_MAX_TURNS`].
+/// lowers it further to [`EXPRESS_MAX_TURNS`]. The provider adapter decides
+/// how the cap binds (`ProviderAdapter::turn_cap_enforcement`), and agent
+/// construction warns when a provider can treat it only as advisory.
 pub(super) fn task_turn_limit(config: &RokoConfig, task: &TaskDef, express_active: bool) -> u32 {
     let tier_limit = config.pipeline.max_turns_for_tier(&task.tier);
     if express_active {

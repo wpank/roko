@@ -27,9 +27,9 @@ use crate::dispatcher::HandlerResolver;
 use crate::http::ReqwestPoster;
 use crate::mcp::{DynamicToolRegistry as McpDynamicToolRegistry, McpConfig, discover_mcp_runtime};
 use crate::provider::{
-    AgentCreationError, AgentOptions, ProviderAdapter, ProviderError,
+    AgentCreationError, AgentOptions, ProviderAdapter, ProviderError, TurnCapEnforcement,
     build_tool_dispatcher_with_audit, tool_limit_for_temperament,
-    tool_loop_max_iterations_for_profile,
+    tool_loop_max_iterations_for_options,
 };
 use crate::tool_loop::backends::create_openai_compat_backend;
 use crate::tool_loop::{MultimodalInputFormat, ToolLoop, ToolLoopAgent};
@@ -513,7 +513,7 @@ impl ProviderAdapter for OpenAiCompatAdapter {
             let backend = create_openai_compat_backend(&tool_loop_provider, model, poster)?;
 
             let tool_loop = ToolLoop::new(translator, dispatcher, backend)
-                .with_max_iterations(tool_loop_max_iterations_for_profile(Some(model)))
+                .with_max_iterations(tool_loop_max_iterations_for_options(model, options))
                 .with_context_token_limit(
                     usize::try_from(model.context_window).unwrap_or(usize::MAX),
                 )
@@ -535,6 +535,9 @@ impl ProviderAdapter for OpenAiCompatAdapter {
             }
             if let Some(ref token) = options.cancel_token {
                 agent = agent.with_cancel_token(Arc::clone(token));
+            }
+            if let Some(max_turns) = options.max_turns {
+                agent = agent.with_turn_cap(max_turns);
             }
 
             return Ok(Box::new(agent));
@@ -565,6 +568,11 @@ impl ProviderAdapter for OpenAiCompatAdapter {
 
     fn supports_local_tool_runtime(&self) -> bool {
         true
+    }
+
+    // Tool-calling models run roko's tool loop; the others make one call.
+    fn turn_cap_enforcement(&self, _provider: &ProviderConfig) -> TurnCapEnforcement {
+        TurnCapEnforcement::ToolLoop
     }
 
     fn classify_error(&self, status: u16, body: &Value) -> ProviderError {
@@ -1264,6 +1272,88 @@ mod tests {
             message.get("role").and_then(Value::as_str) == Some("tool")
                 && message.get("tool_call_id").and_then(Value::as_str) == Some("call-ls-1")
         }));
+
+        handle.join().expect("server thread");
+    }
+
+    #[tokio::test]
+    async fn adapter_tool_loop_stops_at_the_turn_cap() {
+        let tool_call_response = |n: usize| {
+            serde_json::json!({
+                "id": format!("chatcmpl-cap-{n}"),
+                "choices": [{
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [{
+                            "id": format!("call-ls-{n}"),
+                            "type": "function",
+                            "function": {
+                                "name": "ls",
+                                "arguments": "{\"path\":\".\"}"
+                            }
+                        }]
+                    },
+                    "finish_reason": "tool_calls"
+                }],
+                "usage": {
+                    "prompt_tokens": 17,
+                    "completion_tokens": 4,
+                    "total_tokens": 21
+                }
+            })
+            .to_string()
+        };
+        // Two responses only: a third request would find no server.
+        let (base_url, captured, handle) =
+            spawn_chat_server_sequence(vec![tool_call_response(1), tool_call_response(2)]);
+
+        let provider = ProviderConfig {
+            kind: ProviderKind::OpenAiCompat,
+            base_url: Some(format!("{base_url}/v1")),
+            api_key_env: Some("PATH".to_string()),
+            command: None,
+            args: None,
+            timeout_ms: Some(1_500),
+            ttft_timeout_ms: None,
+            connect_timeout_ms: None,
+            extra_headers: None,
+            max_concurrent: None,
+            limits: None,
+            require_confirmation: false,
+        };
+        let model = ModelProfile {
+            provider: "zai".to_string(),
+            slug: "glm-5.1".to_string(),
+            context_window: 200_000,
+            max_output: Some(1_024),
+            supports_tools: true,
+            tool_format: "openai_json".to_string(),
+            max_tool_iterations: None,
+            ..Default::default()
+        };
+        let options = AgentOptions {
+            max_turns: Some(2),
+            ..AgentOptions::default()
+        };
+
+        let agent = OpenAiCompatAdapter
+            .create_agent(&provider, &model, &options)
+            .expect("create tool-loop agent");
+        let result = agent.run(&prompt("keep listing"), &Context::now()).await;
+
+        assert!(!result.success);
+        let text = result.output.body.as_text().unwrap_or("");
+        assert_eq!(
+            crate::provider::error_classify::detect_turn_cap(text),
+            Some(crate::provider::error_classify::TurnCapHit {
+                num_turns: Some(2),
+                cap: Some(2),
+            }),
+            "{text}"
+        );
+        assert_eq!(captured.lock().expect("capture lock").len(), 2);
 
         handle.join().expect("server thread");
     }

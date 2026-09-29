@@ -117,6 +117,12 @@ struct ChatRequest<'a> {
 /// An [`Agent`] that calls `OpenAI`'s Chat Completions API with Codex model
 /// slugs (`gpt-5-codex`, `o1-codex`, …).
 ///
+/// One `run` is one chat-completions request: the agent never loops, so any
+/// `AgentOptions::max_turns` of at least one holds without enforcement.
+/// Tool-calling models run [`crate::tool_loop::ToolLoop`] instead, whose
+/// iteration cap enforces `max_turns`. The Codex CLI (`codex exec`) is a
+/// separate provider, `CodexCliAdapter`, whose cap is advisory.
+///
 /// The agent is fully configurable; it never reads from the environment. The
 /// API key is injected by the caller (typically the CLI layer). Use
 /// [`CodexAgent::with_base_url`] to redirect requests to a test server.

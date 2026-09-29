@@ -10,8 +10,8 @@ use crate::agent::Agent;
 use crate::http::ReqwestPoster;
 use crate::provider::openai_compat::{max_tokens_for_model, tool_registry_for_options};
 use crate::provider::{
-    AgentCreationError, AgentOptions, ProviderAdapter, ProviderError,
-    build_tool_dispatcher_with_audit, current_safety_layer, tool_loop_max_iterations_for_profile,
+    AgentCreationError, AgentOptions, ProviderAdapter, ProviderError, TurnCapEnforcement,
+    build_tool_dispatcher_with_audit, current_safety_layer, tool_loop_max_iterations_for_options,
 };
 use crate::safety::SafetyLayer;
 use crate::tool_loop::backends::create_tool_loop_backend;
@@ -68,7 +68,7 @@ fn gemini_tool_loop_agent(
         .with_poster(Box::new(ReqwestPoster::new()));
 
     let tool_loop = ToolLoop::new(translator, dispatcher, Arc::new(backend))
-        .with_max_iterations(tool_loop_max_iterations_for_profile(Some(model)))
+        .with_max_iterations(tool_loop_max_iterations_for_options(model, options))
         .with_context_token_limit(usize::try_from(model.context_window).unwrap_or(usize::MAX))
         .with_model_profile(model.clone());
 
@@ -95,6 +95,9 @@ fn gemini_tool_loop_agent(
     if let Some(ref token) = options.cancel_token {
         agent = agent.with_cancel_token(Arc::clone(token));
     }
+    if let Some(max_turns) = options.max_turns {
+        agent = agent.with_turn_cap(max_turns);
+    }
 
     Ok(Box::new(agent))
 }
@@ -112,7 +115,7 @@ fn gemini_native_tool_loop_agent(
         create_tool_loop_backend(provider, model, options, Arc::new(ReqwestPoster::new()))?;
 
     let tool_loop = ToolLoop::new(translator, dispatcher, backend)
-        .with_max_iterations(tool_loop_max_iterations_for_profile(Some(model)))
+        .with_max_iterations(tool_loop_max_iterations_for_options(model, options))
         .with_context_token_limit(usize::try_from(model.context_window).unwrap_or(usize::MAX))
         .with_model_profile(model.clone());
 
@@ -138,6 +141,9 @@ fn gemini_native_tool_loop_agent(
     }
     if let Some(ref token) = options.cancel_token {
         agent = agent.with_cancel_token(Arc::clone(token));
+    }
+    if let Some(max_turns) = options.max_turns {
+        agent = agent.with_turn_cap(max_turns);
     }
 
     Ok(Box::new(agent))
@@ -232,6 +238,10 @@ impl ProviderAdapter for GeminiAdapter {
 
     fn supports_local_tool_runtime(&self) -> bool {
         true
+    }
+
+    fn turn_cap_enforcement(&self, _provider: &ProviderConfig) -> TurnCapEnforcement {
+        TurnCapEnforcement::ToolLoop
     }
 
     fn classify_error(&self, status: u16, body: &Value) -> ProviderError {

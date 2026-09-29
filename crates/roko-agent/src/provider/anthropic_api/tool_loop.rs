@@ -17,7 +17,7 @@ use crate::model_call_service::{ProviderOutcomeRecorder, provider_error_kind};
 use crate::provider::openai_compat::tool_registry_for_options;
 use crate::provider::{
     AgentCreationError, AgentOptions, ProviderError, ProviderSemaphores,
-    build_tool_dispatcher_with_audit, map_provider_error, tool_loop_max_iterations_for_profile,
+    build_tool_dispatcher_with_audit, map_provider_error, tool_loop_max_iterations_for_options,
 };
 use crate::rate_limit::ProviderRateLimiter;
 use crate::tool_loop::{
@@ -58,7 +58,7 @@ pub(super) fn create_tool_loop_agent(
     )?;
 
     let tool_loop = ToolLoop::new(translator, dispatcher, backend)
-        .with_max_iterations(tool_loop_max_iterations_for_profile(Some(model)))
+        .with_max_iterations(tool_loop_max_iterations_for_options(model, options))
         .with_context_token_limit(usize::try_from(model.context_window).unwrap_or(usize::MAX))
         .with_model_profile(model.clone());
 
@@ -84,6 +84,9 @@ pub(super) fn create_tool_loop_agent(
     }
     if let Some(ref token) = options.cancel_token {
         agent = agent.with_cancel_token(Arc::clone(token));
+    }
+    if let Some(max_turns) = options.max_turns {
+        agent = agent.with_turn_cap(max_turns);
     }
 
     Ok(Box::new(agent))

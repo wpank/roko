@@ -3,8 +3,8 @@ use crate::openclaw::{
     OpenClawAcpAgent, OpenClawAcpConfig, OpenClawInferAgent, OpenClawInferConfig,
 };
 use crate::provider::{
-    AgentCreationError, AgentOptions, ProviderAdapter, ProviderError, configured_resource_limits,
-    provider_credential_scrub,
+    AgentCreationError, AgentOptions, ProviderAdapter, ProviderError, TurnCapEnforcement,
+    configured_resource_limits, provider_credential_scrub,
 };
 use roko_core::agent::ProviderKind;
 use roko_core::config::schema::{ModelProfile, ProviderConfig, ProviderTransport};
@@ -102,6 +102,16 @@ impl ProviderAdapter for OpenClawProviderAdapter {
 
     fn classify_error(&self, status: u16, body: &Value) -> ProviderError {
         super::error_classify::classify_cli_error(status, body, "OpenClaw")
+    }
+
+    /// `openclaw infer model run` is one model call without tools. The ACP
+    /// session runs the gateway's own agent loop and takes no turn limit.
+    fn turn_cap_enforcement(&self, provider: &ProviderConfig) -> TurnCapEnforcement {
+        if matches!(provider.transport(), ProviderTransport::Acp { .. }) {
+            TurnCapEnforcement::Advisory
+        } else {
+            TurnCapEnforcement::SingleTurn
+        }
     }
 }
 

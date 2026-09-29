@@ -21,6 +21,7 @@ use crate::tool_loop::StreamEvent;
 use roko_core::{ModelInputMessage, validate_model_input_messages};
 
 use super::context_factory::ToolExecutionContextFactory;
+use super::max_iter::exhausted_message;
 use super::{StopReason, ToolLoop, ToolLoopOutput, ToolLoopTurnTrace};
 
 use tokio::sync::mpsc;
@@ -36,6 +37,8 @@ pub struct ToolLoopAgent {
     immune_root_path: Option<PathBuf>,
     input_messages: Vec<ModelInputMessage>,
     input_format: MultimodalInputFormat,
+    /// Caller's turn cap: a stop at it reads as a turn-cap hit.
+    turn_cap: Option<u32>,
     // Production dispatch policy fields (T026/T027/T032)
     timeout: Duration,
     capabilities: ToolPermission,
@@ -72,6 +75,7 @@ impl ToolLoopAgent {
             worktree_path,
             input_messages: Vec::new(),
             input_format: MultimodalInputFormat::default(),
+            turn_cap: None,
             timeout: Duration::from_secs(60),
             capabilities: ToolPermission {
                 read: true,
@@ -138,6 +142,18 @@ impl ToolLoopAgent {
         input_format: MultimodalInputFormat,
     ) -> Self {
         self.input_format = input_format;
+        self
+    }
+
+    /// Record the caller's turn cap ([`AgentOptions::max_turns`]), which the
+    /// loop's iteration cap enforces. A run that stops at it fails with
+    /// [`TurnCapHit`] text instead of the plain iteration message.
+    ///
+    /// [`AgentOptions::max_turns`]: crate::provider::AgentOptions::max_turns
+    /// [`TurnCapHit`]: crate::provider::error_classify::TurnCapHit
+    #[must_use]
+    pub const fn with_turn_cap(mut self, max_turns: u32) -> Self {
+        self.turn_cap = Some(max_turns);
         self
     }
 
@@ -375,7 +391,7 @@ impl Agent for ToolLoopAgent {
             .with_usage(output.total_usage),
             StopReason::MaxIterations => AgentResult::fail(self.output_signal(
                 input,
-                &format!("Max iterations ({}) reached", output.iterations),
+                &exhausted_message(output.iterations, self.turn_cap),
                 "max_iterations",
                 output.iterations,
             ))
@@ -469,7 +485,7 @@ impl Agent for ToolLoopAgent {
             .with_usage(output.total_usage),
             StopReason::MaxIterations => AgentResult::fail(self.output_signal(
                 input,
-                &format!("Max iterations ({}) reached", output.iterations),
+                &exhausted_message(output.iterations, self.turn_cap),
                 "max_iterations",
                 output.iterations,
             ))
@@ -621,6 +637,27 @@ mod tests {
                     serde_json::json!({"message": {"content": "final answer"}}),
                 ))
             }
+        }
+    }
+
+    /// Calls the echo tool on every turn and never answers.
+    struct LoopingBackend;
+
+    #[async_trait]
+    impl LlmBackend for LoopingBackend {
+        async fn send_turn(
+            &self,
+            _messages: &[serde_json::Value],
+            _tools: &RenderedTools,
+            _session: &crate::translate::SessionState,
+        ) -> Result<BackendResponse, LlmError> {
+            Ok(BackendResponse::Json(serde_json::json!({
+                "tool_calls": [{
+                    "id": "call-loop",
+                    "name": "echo",
+                    "arguments": { "value": 1 }
+                }]
+            })))
         }
     }
 
@@ -777,6 +814,43 @@ mod tests {
             usage_obs.model.as_deref(),
             Some("gpt-5.6-sol"),
             "usage_obs must carry the configured model slug"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_loop_stopped_at_its_turn_cap_reports_a_turn_cap_hit() {
+        let input = Signal::builder(Kind::Prompt)
+            .body(Body::text("keep calling the tool"))
+            .build();
+        let looping = || make_tool_loop(Arc::new(LoopingBackend)).with_max_iterations(3);
+
+        let capped = ToolLoopAgent::new(looping())
+            .with_turn_cap(3)
+            .with_tools(test_tools())
+            .with_worktree_path("/tmp");
+        let result = capped.run(&input, &Context::now()).await;
+
+        assert!(!result.success);
+        let text = result.output.body.as_text().expect("text output");
+        assert_eq!(
+            crate::provider::error_classify::detect_turn_cap(text),
+            Some(crate::provider::error_classify::TurnCapHit {
+                num_turns: Some(3),
+                cap: Some(3),
+            }),
+            "{text}"
+        );
+        assert_eq!(result.output.tag("stop_reason"), Some("max_iterations"));
+        assert_eq!(result.output.tag("iterations"), Some("3"));
+
+        // Without a turn cap, the same stop keeps the plain message.
+        let uncapped = ToolLoopAgent::new(looping())
+            .with_tools(test_tools())
+            .with_worktree_path("/tmp");
+        let result = uncapped.run(&input, &Context::now()).await;
+        assert_eq!(
+            result.output.body.as_text().expect("text output"),
+            "Max iterations (3) reached"
         );
     }
 }

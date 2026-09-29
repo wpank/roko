@@ -44,7 +44,9 @@ pub mod tool_loop;
 
 use crate::Agent;
 use crate::claude_agent::{ClaudeAgent, DEFAULT_BASE_URL};
-use crate::provider::{AgentCreationError, AgentOptions, ProviderAdapter, ProviderError};
+use crate::provider::{
+    AgentCreationError, AgentOptions, ProviderAdapter, ProviderError, TurnCapEnforcement,
+};
 use roko_core::agent::ProviderKind;
 #[cfg(test)]
 use roko_core::config::DEFAULT_TTFT_TIMEOUT_MS;
@@ -116,6 +118,10 @@ impl ProviderAdapter for AnthropicApiAdapter {
 
     fn supports_local_tool_runtime(&self) -> bool {
         true
+    }
+
+    fn turn_cap_enforcement(&self, _provider: &ProviderConfig) -> TurnCapEnforcement {
+        TurnCapEnforcement::ToolLoop
     }
 
     fn classify_error(&self, status: u16, body: &Value) -> ProviderError {

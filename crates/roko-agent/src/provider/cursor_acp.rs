@@ -1,7 +1,8 @@
 use crate::Agent;
 use crate::cursor_agent::{CursorAgent, DEFAULT_BASE_URL};
 use crate::provider::{
-    AgentCreationError, AgentOptions, ProviderAdapter, ProviderError, current_safety_layer,
+    AgentCreationError, AgentOptions, ProviderAdapter, ProviderError, TurnCapEnforcement,
+    current_safety_layer,
 };
 use crate::safety::SafetyLayer;
 use roko_core::agent::ProviderKind;
@@ -72,6 +73,12 @@ impl ProviderAdapter for CursorAcpAdapter {
             body,
             super::error_classify::RetryAfterSource::BodyRetryAfterCompat,
         )
+    }
+
+    /// One request runs Cursor's whole remote agent loop, and the ACP HTTP
+    /// fallback takes no turn limit, so the cap is advisory.
+    fn turn_cap_enforcement(&self, _provider: &ProviderConfig) -> TurnCapEnforcement {
+        TurnCapEnforcement::Advisory
     }
 }
 

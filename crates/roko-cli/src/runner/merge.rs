@@ -599,6 +599,12 @@ pub(crate) async fn git_merge_tree(
         .output()
         .await
         .map_err(|err| format!("failed to spawn git merge-tree: {err}"))?;
+    merge_tree_result(&output)
+}
+
+/// Read the output of `git merge-tree --write-tree --name-only -z`: the merged
+/// tree, the conflicted paths, or git's error when it could not merge at all.
+pub(crate) fn merge_tree_result(output: &std::process::Output) -> Result<MergeTree, String> {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let mut fields = stdout.split('\0').filter(|field| !field.is_empty());
     let tree = fields

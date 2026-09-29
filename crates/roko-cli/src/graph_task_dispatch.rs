@@ -53,6 +53,7 @@ use crate::runtime_feedback::{FeedbackEvent, FeedbackFacade};
 use crate::task_parser::TaskDef;
 
 mod attempt;
+mod attempt_workspace;
 mod budget;
 mod failover;
 mod feedback;
@@ -93,8 +94,6 @@ use turn_policy::{
 #[cfg(test)]
 use verification::published_gate_output;
 
-#[cfg(test)]
-mod attempt_workspace;
 #[cfg(test)]
 mod gate_output_accept;
 
@@ -137,9 +136,13 @@ pub struct GraphTaskDispatcher {
     feedback: GraphFeedbackContext,
     /// Optional per-task worktree isolation provider. When `Some`, each task
     /// dispatch acquires an isolated git worktree via this provider, runs the
-    /// agent and verify steps inside it, and releases the worktree on
-    /// completion. When `None` (the default), all tasks share `self.workdir`.
+    /// agent and verify steps inside it, and on success accepts the attempt
+    /// onto its plan branch (see [`Self::accept_attempt`]). When `None` (the
+    /// default), all tasks share `self.workdir`.
     workspace_provider: Option<Arc<dyn roko_graph::workspace::ExecutionWorkspaceProvider>>,
+    /// Checkout generation per task (`"{plan_id}/{task_id}"`): see
+    /// [`Self::worktree_generation`].
+    worktree_generations: parking_lot::Mutex<HashMap<String, u32>>,
     /// Optional TUI bridge for forwarding live agent output events to the
     /// dashboard. When set, completed dispatch events (text deltas, tool
     /// calls, tool outputs) are published through the StateHub so the TUI
@@ -230,6 +233,7 @@ impl GraphTaskDispatcher {
             dangerously_skip_permissions: false,
             feedback: GraphFeedbackContext::default(),
             workspace_provider: None,
+            worktree_generations: parking_lot::Mutex::new(HashMap::new()),
             tui_bridge: None,
             live_agent_output: None,
             gate_retry_context: retry_feedback::RetryFeedbackBook::default(),
@@ -278,7 +282,10 @@ impl GraphTaskDispatcher {
     /// When set, each `dispatch` call will:
     /// 1. Acquire an isolated worktree for the task attempt.
     /// 2. Run the agent and verify steps inside the worktree.
-    /// 3. Release the worktree on success (`Delete`) or failure (`RetainForFailure`).
+    /// 3. On success, accept the attempt onto its plan branch and keep the
+    ///    worktree for review (`RetainForReview`); on failure, keep it for
+    ///    post-mortem (`RetainForFailure`). A task whose `plan.gate` follows
+    ///    hands the worktree on to it instead.
     ///
     /// This is opt-in via `--worktree-per-task` and defaults to `None` (shared workdir).
     #[must_use]
@@ -739,11 +746,12 @@ impl TaskDispatcher for GraphTaskDispatcher {
         let attempt_id = roko_graph::workspace::WorkspaceAttemptId {
             plan_id: spec.plan_id.clone(),
             task_id: task.id.clone(),
-            // CellContext does not carry an attempt counter; the graph engine
-            // handles retries by re-executing the cell. Use 0 here -- the
-            // workspace provider's idempotent acquire ensures the same
-            // (plan_id, task_id, 0) triple reuses the existing worktree.
-            attempt: 0,
+            // The task's checkout, not one attempt's: the provider's acquire
+            // is idempotent, so every retry reuses it and resumes the work its
+            // predecessor left, until the plan branch refuses that work (see
+            // `worktree_generation`). The attempt itself is named by its key
+            // (`open_attempt`).
+            attempt: self.worktree_generation(&task_spend_key),
         };
         let lease = if let Some(provider) = &self.workspace_provider {
             let lease = provider
@@ -1342,14 +1350,15 @@ impl TaskDispatcher for GraphTaskDispatcher {
             }
         };
 
-        // ── Worktree isolation: hand on, or release on success ──────────
+        // ── Worktree isolation: hand on, or accept on success ───────────
         //
         // When a later cell of the task judges this checkout (the rich
         // topology's `plan.gate`), it must outlive the dispatch: the lease
-        // travels on the output instead. Otherwise the worktree is released
-        // with Delete policy. The changes are already on the worktree's
-        // branch and can be merged separately via the delivery pipeline.
+        // travels on the output, and that cell accepts or keeps it.
+        // Otherwise the attempt is accepted onto its plan branch now, as its
+        // settled verdict allows (gap-3b5361).
         let mut handed_on = None;
+        let mut accepted = None;
         if let Some((provider, lease)) = self.workspace_provider.as_ref().zip(lease.as_ref()) {
             if spec.keep_workspace {
                 tracing::info!(
@@ -1360,23 +1369,9 @@ impl TaskDispatcher for GraphTaskDispatcher {
                 );
                 handed_on = Some(lease.clone());
             } else {
-                tracing::info!(
-                    plan_id = %spec.plan_id,
-                    task_id = %task.id,
-                    worktree = %lease.path.display(),
-                    "releasing isolated worktree after successful task"
-                );
-                if let Err(e) = provider
-                    .release(lease, roko_graph::workspace::WorkspaceReleasePolicy::Delete)
-                    .await
-                {
-                    tracing::warn!(
-                        plan_id = %spec.plan_id,
-                        task_id = %task.id,
-                        error = %e,
-                        "worktree release failed (best-effort); worktree may remain on disk"
-                    );
-                }
+                accepted = self
+                    .accept_attempt(spec, &task, &settled, verdict, provider.as_ref(), lease)
+                    .await?;
             }
         }
 
@@ -1401,6 +1396,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
             attempt: key.attempt,
             workspace: lease.as_ref().map(|lease| lease.path.clone()),
             lease: handed_on,
+            accepted,
         }
         .stamp(&mut outputs);
         verdict.stamp(&mut outputs);

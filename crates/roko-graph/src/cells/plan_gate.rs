@@ -15,23 +15,35 @@
 //! - the `SharedGateEvaluator` is not injected (`resources.gates` is `None`);
 //! - the input names no attempt, or an attempt with no isolated checkout: the
 //!   only other tree is the operator's own, which a gate never judges;
-//! - the checkout it names does not exist.
+//! - the checkout it names does not exist;
+//! - the executor handed the checkout on for the gate to settle, and no
+//!   workspace provider is injected (`resources.workspaces` is `None`).
 //!
 //! A pipeline in which no rung ran (every rung skipped) fails.
+//!
+//! A checkout handed on is the gate's to settle (gap-3b5361): an attempt that
+//! passes, and whose settled verdict lets its work land, is accepted onto its
+//! plan's branch; either way the checkout is kept, for review or after a
+//! failure.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
 use roko_core::{
-    Body, GateResult, Kind, ProtocolId, RokoError, RungResult, SharedGateError, SharedGateRequest,
-    Signal, error::Result,
+    Body, GateResult, Kind, ProtocolId, RokoError, RungResult, SharedGateError,
+    SharedGateEvaluator, SharedGateRequest, Signal, error::Result,
 };
 use tracing::{info, warn};
 
 use crate::cell::{Cell, CellContext, CellVersion};
-use crate::cells::task_executor::TaskAttempt;
+use crate::cells::task_executor::{TaskAttempt, TaskGateVerdict};
+use crate::workspace::{
+    ExecutionWorkspaceProvider, WorkspaceAcceptRequest, WorkspaceAcceptance, WorkspaceLease,
+    WorkspaceReleasePolicy,
+};
 
 /// Canonical gate rungs executed in order.
 ///
@@ -158,7 +170,165 @@ impl PlanGateCell {
                 worktree.display()
             )));
         }
+        if let Some(lease) = attempt
+            .lease
+            .as_ref()
+            .filter(|lease| lease.path != worktree)
+        {
+            return Err(RokoError::Invalid(format!(
+                "PlanGateCell: attempt {} of task `{}` ran in {} but handed on the lease of {}",
+                attempt.attempt,
+                self.task_id,
+                worktree.display(),
+                lease.path.display()
+            )));
+        }
         Ok((attempt, worktree))
+    }
+
+    /// Settle the checkout the executor handed on: accept the attempt when it
+    /// `passed` the gate and its settled verdict (stamped on `input`) lets
+    /// its work land, then keep the checkout, for review after a pass or for
+    /// post-mortem after a failure. An acceptance that fails is an error.
+    async fn settle_handed_on(
+        &self,
+        attempt: &TaskAttempt,
+        lease: &WorkspaceLease,
+        workspaces: &Arc<dyn ExecutionWorkspaceProvider>,
+        passed: bool,
+        input: &[Signal],
+        run_id: Option<&str>,
+    ) -> Result<Option<WorkspaceAcceptance>> {
+        let verdict = TaskGateVerdict::from_signals(input).filter(|v| v.is_replayable());
+        let accepted = match verdict {
+            Some(verdict) if passed => {
+                let request = WorkspaceAcceptRequest {
+                    run_id: run_id.unwrap_or_default().to_owned(),
+                    attempt_key: attempt.attempt_key.clone().unwrap_or_default(),
+                    verdict: verdict.as_str().to_owned(),
+                    title: self.title.clone(),
+                };
+                Some(workspaces.accept(lease, &request).await)
+            }
+            _ => None,
+        };
+        let policy = if passed {
+            WorkspaceReleasePolicy::RetainForReview
+        } else {
+            WorkspaceReleasePolicy::RetainForFailure
+        };
+        if let Err(error) = workspaces.release(lease, policy).await {
+            warn!(
+                task_id = %self.task_id,
+                attempt = attempt.attempt,
+                %error,
+                "PlanGateCell: could not release the attempt's worktree"
+            );
+        }
+        match accepted {
+            Some(Ok(acceptance)) => {
+                info!(
+                    task_id = %self.task_id,
+                    attempt = attempt.attempt,
+                    plan_branch = %acceptance.plan_branch,
+                    accepted_commit = %acceptance.accepted_commit,
+                    "PlanGateCell: accepted the attempt onto its plan branch"
+                );
+                Ok(Some(acceptance))
+            }
+            Some(Err(error)) => Err(RokoError::Rejected(format!(
+                "PlanGateCell: attempt {} of task `{}` passed the plan gate but was not \
+                 accepted onto its plan branch: {error}; its worktree is kept at {}",
+                attempt.attempt,
+                self.task_id,
+                lease.path.display()
+            ))),
+            None => Ok(None),
+        }
+    }
+
+    /// Run every canonical rung for `attempt` in `worktree` and aggregate
+    /// the verdict. A pipeline in which no rung ran fails.
+    async fn run_rungs(
+        &self,
+        evaluator: &dyn SharedGateEvaluator,
+        attempt: &TaskAttempt,
+        worktree: &Path,
+        run_id: Option<&str>,
+    ) -> GateResult {
+        info!(
+            task_id = %self.task_id,
+            plan_id = %self.plan_id,
+            attempt = attempt.attempt,
+            worktree = %worktree.display(),
+            rungs = ?CANONICAL_RUNGS,
+            "PlanGateCell: starting gate pipeline"
+        );
+
+        let mut rung_results = Vec::with_capacity(CANONICAL_RUNGS.len());
+        let mut all_passed = true;
+
+        for &rung in CANONICAL_RUNGS {
+            let request = self.build_request(rung, attempt, worktree, run_id);
+
+            match evaluator.verify_rung(&request).await {
+                Ok(verdict) => {
+                    if verdict.skipped {
+                        info!(rung, "PlanGateCell: rung skipped");
+                        // Skipped rungs do not count as pass or fail.
+                        continue;
+                    }
+
+                    if !verdict.passed {
+                        all_passed = false;
+                        warn!(
+                            rung,
+                            reasons = ?verdict.failed_reasons,
+                            "PlanGateCell: rung failed"
+                        );
+                    } else {
+                        info!(rung, "PlanGateCell: rung passed");
+                    }
+
+                    rung_results.push(RungResult {
+                        rung_name: verdict.rung,
+                        passed: verdict.passed,
+                        score: if verdict.passed { 1.0 } else { 0.0 },
+                        evidence: verdict.evidence,
+                    });
+                }
+                Err(err) => {
+                    all_passed = false;
+                    warn!(rung, error = %err, "PlanGateCell: rung evaluation error");
+                    rung_results.push(Self::error_to_rung_result(rung, &err));
+                }
+            }
+        }
+
+        // A gate that checked nothing passes nothing: with every rung skipped
+        // the attempt fails, with the reason as evidence.
+        let nothing_ran = rung_results.is_empty();
+        if nothing_ran {
+            all_passed = false;
+            warn!(
+                task_id = %self.task_id,
+                attempt = attempt.attempt,
+                "PlanGateCell: no gate rung ran; failing closed"
+            );
+        }
+        let total = rung_results.len() as f64;
+        let passed_count = rung_results.iter().filter(|r| r.passed).count() as f64;
+        let overall_score = if nothing_ran {
+            0.0
+        } else {
+            passed_count / total
+        };
+
+        GateResult {
+            passed: all_passed,
+            rung_results,
+            overall_score,
+        }
     }
 
     /// Convert a `SharedGateError` into a failed `RungResult` with diagnostic
@@ -217,80 +387,28 @@ impl Cell for PlanGateCell {
         let (attempt, worktree) = self.attempt_checkout(&input)?;
         let worktree = worktree.as_path();
         let run_id = attempt.run_id.as_deref().or(ctx.run_id.as_deref());
-
-        info!(
-            task_id = %self.task_id,
-            plan_id = %self.plan_id,
-            attempt = attempt.attempt,
-            worktree = %worktree.display(),
-            rungs = ?CANONICAL_RUNGS,
-            "PlanGateCell: starting gate pipeline"
-        );
-
-        let mut rung_results = Vec::with_capacity(CANONICAL_RUNGS.len());
-        let mut all_passed = true;
-
-        for &rung in CANONICAL_RUNGS {
-            let request = self.build_request(rung, &attempt, worktree, run_id);
-
-            match evaluator.verify_rung(&request).await {
-                Ok(verdict) => {
-                    if verdict.skipped {
-                        info!(rung, "PlanGateCell: rung skipped");
-                        // Skipped rungs do not count as pass or fail.
-                        continue;
-                    }
-
-                    if !verdict.passed {
-                        all_passed = false;
-                        warn!(
-                            rung,
-                            reasons = ?verdict.failed_reasons,
-                            "PlanGateCell: rung failed"
-                        );
-                    } else {
-                        info!(rung, "PlanGateCell: rung passed");
-                    }
-
-                    rung_results.push(RungResult {
-                        rung_name: verdict.rung,
-                        passed: verdict.passed,
-                        score: if verdict.passed { 1.0 } else { 0.0 },
-                        evidence: verdict.evidence,
-                    });
-                }
-                Err(err) => {
-                    all_passed = false;
-                    warn!(rung, error = %err, "PlanGateCell: rung evaluation error");
-                    rung_results.push(Self::error_to_rung_result(rung, &err));
-                }
-            }
-        }
-
-        // A gate that checked nothing passes nothing: with every rung skipped
-        // the attempt fails, with the reason as evidence.
-        let nothing_ran = rung_results.is_empty();
-        if nothing_ran {
-            all_passed = false;
-            warn!(
-                task_id = %self.task_id,
-                attempt = attempt.attempt,
-                "PlanGateCell: no gate rung ran; failing closed"
-            );
-        }
-        let total = rung_results.len() as f64;
-        let passed_count = rung_results.iter().filter(|r| r.passed).count() as f64;
-        let overall_score = if nothing_ran {
-            0.0
-        } else {
-            passed_count / total
+        // A checkout handed on is this gate's to settle, so it needs the
+        // provider that holds it before any rung runs.
+        let handed_on = match &attempt.lease {
+            Some(lease) => Some((
+                lease,
+                ctx.resources.workspaces.as_ref().ok_or_else(|| {
+                    RokoError::Invalid(format!(
+                        "PlanGateCell: attempt {} of task `{}` handed its worktree on for the \
+                         gate to settle, but no workspace provider is injected \
+                         (ctx.resources.workspaces is None)",
+                        attempt.attempt, self.task_id
+                    ))
+                })?,
+            )),
+            None => None,
         };
 
-        let gate_result = GateResult {
-            passed: all_passed,
-            rung_results,
-            overall_score,
-        };
+        let gate_result = self
+            .run_rungs(evaluator.as_ref(), &attempt, worktree, run_id)
+            .await;
+        let all_passed = gate_result.passed;
+        let nothing_ran = gate_result.rung_results.is_empty();
 
         info!(
             task_id = %self.task_id,
@@ -311,6 +429,20 @@ impl Cell for PlanGateCell {
             for (k, v) in &first.tags {
                 output.tags.entry(k.clone()).or_insert_with(|| v.clone());
             }
+        }
+
+        // The attempt as settled here: a handed-on checkout is accepted or
+        // kept, and no longer handed on.
+        if let Some((lease, workspaces)) = handed_on {
+            let accepted = self
+                .settle_handed_on(&attempt, lease, workspaces, all_passed, &input, run_id)
+                .await?;
+            TaskAttempt {
+                lease: None,
+                accepted,
+                ..attempt.clone()
+            }
+            .stamp(std::slice::from_mut(&mut output));
         }
 
         // Tag with gate outcome for conditional edges.
@@ -342,6 +474,8 @@ mod tests {
 
     use super::*;
     use crate::cell::CellResources;
+    use crate::workspace::WorkspaceReconcileResult;
+    use crate::workspace::fake::InMemoryWorkspaceProvider;
 
     // ── Mock evaluators ─────────────────────────────────────────────────────
 
@@ -444,7 +578,45 @@ mod tests {
     fn ctx_with_gates(evaluator: impl SharedGateEvaluator) -> CellContext {
         CellContext::new().with_resources(CellResources {
             gates: Some(Arc::new(evaluator)),
+            workspaces: None,
         })
+    }
+
+    fn ctx_with_gates_and_workspaces(
+        evaluator: impl SharedGateEvaluator,
+        workspaces: &Arc<InMemoryWorkspaceProvider>,
+    ) -> CellContext {
+        CellContext::new().with_resources(CellResources {
+            gates: Some(Arc::new(evaluator)),
+            workspaces: Some(Arc::clone(workspaces) as Arc<dyn ExecutionWorkspaceProvider>),
+        })
+    }
+
+    /// A provider holding the checkout of attempt 2 of `task-1`, handed on
+    /// by an executor whose verify steps passed, and that executor's output.
+    async fn handed_on_attempt(
+        worktrees: &Path,
+    ) -> (Arc<InMemoryWorkspaceProvider>, WorkspaceLease, Vec<Signal>) {
+        let provider = Arc::new(InMemoryWorkspaceProvider::new(
+            PathBuf::from("/repo"),
+            worktrees.to_path_buf(),
+        ));
+        let lease = provider
+            .acquire(&crate::workspace::WorkspaceAttemptId {
+                plan_id: "plan-1".to_string(),
+                task_id: "task-1".to_string(),
+                attempt: 0,
+            })
+            .await
+            .expect("lease");
+        std::fs::create_dir_all(&lease.path).expect("checkout");
+        let attempt = TaskAttempt {
+            lease: Some(lease.clone()),
+            ..attempt_in(Some(lease.path.as_path()))
+        };
+        let mut input = executor_output(&attempt);
+        TaskGateVerdict::Passed.stamp(&mut input);
+        (provider, lease, input)
     }
 
     /// Attempt 2 of `task-1`, run in `worktree`.
@@ -457,6 +629,7 @@ mod tests {
             attempt: 2,
             workspace: worktree.map(Path::to_path_buf),
             lease: None,
+            accepted: None,
         }
     }
 
@@ -650,6 +823,63 @@ mod tests {
             recorder.requests.lock().is_empty(),
             "no rung may run without the attempt's checkout"
         );
+    }
+
+    /// gap-3b5361: a handed-on checkout that passes is accepted onto its
+    /// plan's branch and kept for review; the verdict names where the work
+    /// landed and no longer hands the checkout on.
+    #[tokio::test]
+    async fn plan_gate_accepts_a_handed_on_worktree_that_passes() {
+        let worktrees = tempfile::tempdir().expect("worktrees");
+        let (provider, lease, input) = handed_on_attempt(worktrees.path()).await;
+        let ctx = ctx_with_gates_and_workspaces(AllPassEvaluator, &provider);
+
+        let output = make_cell().execute(input, &ctx).await.unwrap();
+
+        assert_eq!(output[0].tag("gate.passed"), Some("true"));
+        let settled = TaskAttempt::from_signals(&output).expect("attempt");
+        assert_eq!(settled.lease, None);
+        let accepted = settled.accepted.expect("accepted onto the plan branch");
+        assert_eq!(accepted.plan_branch, "roko/plan/plan-1");
+        assert!(matches!(
+            provider.reconcile(&lease).await.unwrap(),
+            WorkspaceReconcileResult::Orphaned(_)
+        ));
+    }
+
+    /// gap-3b5361: a handed-on checkout that fails the gate is kept for
+    /// post-mortem and never accepted.
+    #[tokio::test]
+    async fn plan_gate_keeps_a_failed_worktree_without_accepting_it() {
+        let worktrees = tempfile::tempdir().expect("worktrees");
+        let (provider, lease, input) = handed_on_attempt(worktrees.path()).await;
+        let ctx = ctx_with_gates_and_workspaces(FailTestEvaluator, &provider);
+
+        let output = make_cell().execute(input, &ctx).await.unwrap();
+
+        assert_eq!(output[0].tag("gate.passed"), Some("false"));
+        let settled = TaskAttempt::from_signals(&output).expect("attempt");
+        assert_eq!((settled.lease, settled.accepted), (None, None));
+        assert!(provider.active_leases().is_empty());
+        assert!(matches!(
+            provider.reconcile(&lease).await.unwrap(),
+            WorkspaceReconcileResult::Orphaned(_)
+        ));
+    }
+
+    /// gap-3b5361: a checkout handed on to a gate that cannot settle it is
+    /// refused before any rung runs.
+    #[tokio::test]
+    async fn plan_gate_needs_a_workspace_provider_for_a_handed_on_worktree() {
+        let worktrees = tempfile::tempdir().expect("worktrees");
+        let (_provider, _lease, input) = handed_on_attempt(worktrees.path()).await;
+        let recorder = RecordingEvaluator::default();
+        let ctx = ctx_with_gates(recorder.clone());
+
+        let error = make_cell().execute(input, &ctx).await.unwrap_err();
+
+        assert!(error.to_string().contains("workspaces is None"), "{error}");
+        assert!(recorder.requests.lock().is_empty());
     }
 
     fn input_without_attempt() -> Vec<Signal> {

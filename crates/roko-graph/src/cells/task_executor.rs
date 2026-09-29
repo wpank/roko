@@ -22,7 +22,7 @@ use roko_core::{Body, Kind, ProtocolId, Signal, error::Result};
 use serde::{Deserialize, Serialize};
 
 use crate::cell::{Cell, CellContext, CellVersion};
-use crate::workspace::WorkspaceLease;
+use crate::workspace::{WorkspaceAcceptance, WorkspaceLease};
 
 /// Provider-neutral task metadata preserved by plan-to-Graph conversion.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -197,6 +197,9 @@ const TASK_ATTEMPT_KEY_TAG: &str = "attempt.key";
 const TASK_ATTEMPT_TAG: &str = "workspace.attempt";
 const TASK_WORKSPACE_TAG: &str = "workspace.path";
 const TASK_WORKSPACE_LEASE_TAG: &str = "workspace.lease";
+const TASK_ATTEMPT_COMMIT_TAG: &str = "workspace.attempt_commit";
+const TASK_PLAN_BRANCH_TAG: &str = "workspace.plan_branch";
+const TASK_ACCEPTED_COMMIT_TAG: &str = "workspace.accepted_commit";
 
 /// The attempt that produced a plan task's output, stamped on its signals
 /// ([`Self::stamp`]).
@@ -222,15 +225,21 @@ pub struct TaskAttempt {
     /// Lease of that checkout, when the executor handed it on unreleased
     /// ([`TaskExecutionSpec::keep_workspace`]) for a later cell to settle.
     pub lease: Option<WorkspaceLease>,
+    /// Where the attempt's work landed, once it was accepted onto its plan's
+    /// branch.
+    pub accepted: Option<WorkspaceAcceptance>,
 }
 
 impl TaskAttempt {
-    /// Stamp this attempt on every signal and refresh their content ids.
+    /// Stamp this attempt on every signal and refresh their content ids. A
+    /// field that is `None` clears its tag, so a cell that settled the
+    /// attempt's lease can stamp that over the tags it passes on.
     pub fn stamp(&self, signals: &mut [Signal]) {
         let lease = self
             .lease
             .as_ref()
             .and_then(|lease| serde_json::to_string(lease).ok());
+        let accepted = self.accepted.as_ref();
         let tags = [
             (TASK_PLAN_ID_TAG, Some(self.plan_id.clone())),
             (TASK_ID_TAG, Some(self.task_id.clone())),
@@ -244,12 +253,25 @@ impl TaskAttempt {
                     .map(|path| path.display().to_string()),
             ),
             (TASK_WORKSPACE_LEASE_TAG, lease),
+            (
+                TASK_ATTEMPT_COMMIT_TAG,
+                accepted.map(|accepted| accepted.attempt_commit.clone()),
+            ),
+            (
+                TASK_PLAN_BRANCH_TAG,
+                accepted.map(|accepted| accepted.plan_branch.clone()),
+            ),
+            (
+                TASK_ACCEPTED_COMMIT_TAG,
+                accepted.map(|accepted| accepted.accepted_commit.clone()),
+            ),
         ];
         for signal in signals {
             for (tag, value) in &tags {
-                if let Some(value) = value {
-                    signal.tags.insert((*tag).to_string(), value.clone());
-                }
+                match value {
+                    Some(value) => signal.tags.insert((*tag).to_string(), value.clone()),
+                    None => signal.tags.remove(*tag),
+                };
             }
             signal.id = signal.content_hash();
         }
@@ -280,6 +302,20 @@ impl TaskAttempt {
             .map_err(|error| {
                 format!("`{TASK_WORKSPACE_LEASE_TAG}` is not a workspace lease: {error}")
             })?;
+        let accepted = match (
+            tag(TASK_ATTEMPT_COMMIT_TAG),
+            tag(TASK_PLAN_BRANCH_TAG),
+            tag(TASK_ACCEPTED_COMMIT_TAG),
+        ) {
+            (Some(attempt_commit), Some(plan_branch), Some(accepted_commit)) => {
+                Some(WorkspaceAcceptance {
+                    attempt_commit,
+                    plan_branch,
+                    accepted_commit,
+                })
+            }
+            _ => None,
+        };
         Ok(Self {
             plan_id: tag(TASK_PLAN_ID_TAG).unwrap_or_default(),
             task_id: tag(TASK_ID_TAG).unwrap_or_default(),
@@ -288,6 +324,7 @@ impl TaskAttempt {
             attempt,
             workspace: tag(TASK_WORKSPACE_TAG).map(PathBuf::from),
             lease,
+            accepted,
         })
     }
 }
@@ -775,7 +812,9 @@ impl Cell for TaskExecutorCell {
                         Ok(output) => return Ok(output),
                         // A non-retryable gateway error (e.g. every candidate
                         // provider is out of usage) fails identically on an
-                        // immediate retry, so surface it at once.
+                        // immediate retry, and so does a gate's rejection
+                        // (e.g. a plan branch that refused the attempt's
+                        // work), so surface them at once.
                         Err(error)
                             if retry < self.spec.max_retries
                                 && !matches!(
@@ -783,7 +822,7 @@ impl Cell for TaskExecutorCell {
                                     roko_core::error::RokoError::Gateway {
                                         retryable: false,
                                         ..
-                                    }
+                                    } | roko_core::error::RokoError::Rejected(_)
                                 ) =>
                         {
                             retry = retry.saturating_add(1);
@@ -1253,7 +1292,64 @@ task_def_json = "{}"
                 branch: "roko/attempt/attempt-1".to_string(),
                 base_revision: "HEAD".to_string(),
             }),
+            accepted: None,
         }
+    }
+
+    /// gap-3b5361: an accepted attempt names where its work landed, and a
+    /// cell that settled a handed-on lease stamps it away.
+    #[test]
+    fn task_attempt_records_acceptance_and_clears_a_settled_lease() {
+        let handed_on = handed_on_attempt();
+        let mut signals = vec![Signal::builder(Kind::AgentOutput).build()];
+        handed_on.stamp(&mut signals);
+
+        let settled = TaskAttempt {
+            lease: None,
+            accepted: Some(WorkspaceAcceptance {
+                attempt_commit: "a".repeat(40),
+                plan_branch: "roko/plan/plan-a".to_string(),
+                accepted_commit: "b".repeat(40),
+            }),
+            ..handed_on
+        };
+        settled.stamp(&mut signals);
+        assert_eq!(signals[0].tag("workspace.lease"), None);
+        assert_eq!(TaskAttempt::from_signals(&signals), Ok(settled));
+    }
+
+    #[derive(Default)]
+    struct RejectsDispatcher {
+        calls: AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl TaskDispatcher for RejectsDispatcher {
+        async fn dispatch(
+            &self,
+            _spec: &TaskExecutionSpec,
+            _input: Vec<Signal>,
+            _ctx: &CellContext,
+        ) -> Result<Vec<Signal>> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Err(roko_core::error::RokoError::Rejected(
+                "the plan branch refused the work".to_string(),
+            ))
+        }
+    }
+
+    /// gap-3b5361: a gate's rejection fails the same way on a retry, so it
+    /// is surfaced at once.
+    #[tokio::test]
+    async fn a_rejection_is_not_retried() {
+        let dispatcher = Arc::new(RejectsDispatcher::default());
+        let cell = TaskExecutorCell::live(config(), dispatcher.clone());
+        let error = cell
+            .execute(Vec::new(), &CellContext::new())
+            .await
+            .expect_err("the rejection fails the task");
+        assert!(matches!(error, roko_core::error::RokoError::Rejected(_)));
+        assert_eq!(dispatcher.calls.load(Ordering::SeqCst), 1);
     }
 
     /// bug-50caf2: the attempt, its checkout and its lease survive the trip

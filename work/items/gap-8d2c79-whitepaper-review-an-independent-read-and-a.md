@@ -3,13 +3,14 @@ id = "gap-8d2c79"
 kind = "gap"
 title = "Whitepaper review: an independent read and a strict paperlint pass"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p1"
 goal = "whitepaper"
 size = "S"
 subsystem = ["docs/whitepaper"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-29
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e1"
 discovered_from = "tmp/cybernetic-harness/workstreams/assessment/W9-paper-workstream.md (risk 2; rules for keeping ideal and as-built honest)"
 anchors = ["docs/whitepaper/REVIEW.md", "docs/whitepaper"]
@@ -70,3 +71,7 @@ Checked at `41c7ffbd6`: there is nothing to review yet. This item waits for the 
 
 - **Whether `REVIEW.md` goes into the PDF** is gap-8117a8's call. It stays in the repo as the review record.
 - Lane `paper`; no hot files.
+- **Reviewed on `work/gap-8d2c79`** (2026-09-29, wk-wp-review): `REVIEW.md` lists 25 findings with dispositions and
+  ends with `Verdict: accept`; §0–§10 say `Status: reviewed`; `paperlint --strict docs/whitepaper` passes. The
+  verify's one remaining failure is the appendix header, which `data/mechanisms.toml` renders as `draft`: set its
+  `[matrix] status` to `reviewed`, regenerate with `tools/status_matrix.py`, then close.

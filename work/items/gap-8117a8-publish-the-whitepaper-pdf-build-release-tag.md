@@ -70,3 +70,4 @@ Checked at `41c7ffbd6`: no build script exists.
 - **Don't commit the PDF;** attach it to the release instead. Any change to `.gitignore` needs the author's OK.
 - **Waits** for gap-8d2c79, dec-2cd76a and the release goal. Lane `paper`; no hot files.
 - **Decided 2026-09-29 (Will):** publish in the repo with a generated PDF, with no arXiv for now. Install librsvg (`brew install librsvg`, with Will's OK) so pandoc can embed SVG figures. Tagging still needs Will's approval.
+- **From gap-d1d92c (2026-09-29):** `build.sh` must call pandoc with `-f markdown-implicit_figures`, or the PDF prints each figure caption twice (see `docs/whitepaper/figures/README.md`).

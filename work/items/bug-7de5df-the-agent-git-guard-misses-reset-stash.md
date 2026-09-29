@@ -2,7 +2,7 @@
 id = "bug-7de5df"
 kind = "bug"
 title = "The agent git guard misses reset, stash and clean, and commands after the first in a chain"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "release"
@@ -11,6 +11,7 @@ subsystem = ["roko-agent/claude_cli_agent"]
 created = 2026-09-29
 updated = 2026-09-29
 last_verified = 2026-09-29
+last_verified_rev = "48d35a67f"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e3"
 discovered_from = "tmp/cybernetic-harness/workstreams/assessment/W8-roko-as-executor.md (main-checkout hazards, gate G2); tldr/research/B4-gates-qa-safety.md"
 anchors = ["crates/roko-agent/src/claude_cli_agent.rs::build_settings_json"]
@@ -23,6 +24,11 @@ command = "grep -rqw 'fn settings_hook_denies_destructive_git_anywhere_in_a_comm
 
 [[verify]]
 command = "! grep -q 'command -v python3 >/dev/null 2>&1 || exit 0' crates/roko-agent/src/claude_cli_agent.rs && grep -rqw 'fn settings_hook_fails_closed_without_python3' crates/roko-agent/src/ && cargo test -p roko-agent --lib settings_hook_fails_closed_without_python3"
+
+[closed]
+at = 2026-09-29
+by = "coordinator (session 7622b882)"
+evidence = "Git guard rewritten as claude_cli_guard.py: quote-aware chain splitting, follows sh -c/eval/$()/backquotes, denies checkout/switch/restore/push/branch -m|-D/reset --hard/stash/clean, and fails closed without python3 (22cd8c88b, merged 0728a2817). batch check 1 (work/rust-batch-1 @ a507ce39f = 7c556bc0a + bug-470de8 + gap-528762 + bug-7de5df): cargo check --workspace --tests clean, 0 warnings; cargo test -p roko-core -p roko-learn -p roko-agent --lib: 1912, 1166 and 2237 passed, 0 failed, including settings_hook_denies_destructive_git_anywhere_in_a_command and settings_hook_fails_closed_without_python3."
 +++
 ## Problem
 

@@ -15,7 +15,7 @@ discovered_from = "tmp/cybernetic-harness/tldr/05-GAPS-AND-PROPOSALS.md (P0 #3);
 anchors = ["crates/roko-agent/src/claude_cli_agent.rs::build_settings_json", "crates/roko-gate/src/shell.rs::ShellGate", "crates/roko-agent/src/safety/path.rs::canonicalize_with_policy", "crates/roko-cli/tests/secrets_and_git_guard_canary.rs"]
 doc = "tmp/cybernetic-harness/workstreams/PLAN.md"
 lane = "rust-cold"
-links = { depends_on = ["bug-7d7200", "gap-8be530", "gap-5f4852", "bug-7de5df", "bug-a66941", "gap-0e2c40"], blocks = [], related = ["spec-ae5f94"], supersedes = [], duplicate_of = "" }
+links = { depends_on = ["bug-7d7200", "gap-8be530", "gap-5f4852", "bug-7de5df", "bug-a66941", "gap-0e2c40", "gap-8f8544"], blocks = [], related = ["spec-ae5f94"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "grep -rqw 'fn secrets_and_git_guard_canary' crates/roko-cli/tests/ && cargo test -p roko-cli --test secrets_and_git_guard_canary"
@@ -77,9 +77,10 @@ This is the implementation plan.
 - [x] bug-7d7200: Agents and verify commands inherit roko's whole environment, including provider API keys (existing item)
 - [ ] gap-8be530: Claude Code runs load the user's own ~/.claude settings, hooks and plugins (existing item)
 - [ ] gap-5f4852: Secret-canary persistence test never run for scrubbers/persistent sinks (existing item)
-- [ ] bug-7de5df: The agent git guard misses reset, stash and clean, and commands after the first in a chain
-- [ ] bug-a66941: Agents can read the provider key files, such as ~/.roko/.env
+- [x] bug-7de5df: The agent git guard misses reset, stash and clean, and commands after the first in a chain
+- [x] bug-a66941: Agents can read the provider key files, such as ~/.roko/.env
 - [ ] gap-0e2c40: Integration test C2: no provider key reaches an agent, a gate or a log, and the git guard denies destructive commands
+- [ ] gap-8f8544: Sandbox levels are enforced only in-process: no OS sandbox confines agent processes
 - [ ] The epic's `[[verify]]` command (test C2) passes on the merged branch.
 
 ## Notes

@@ -75,3 +75,4 @@ is missing.
 - The module can land now (rust-cold). The one-line call in `graph_task_dispatch.rs` waits for the dispatch-file
   split (E15.4, gap-c8e1f1).
 - Tasks without `files`, and refactor tasks, are exempt from the empty-diff rule.
+- **From wk-filer (2026-09-29):** reuse `SafetyLayer::post_dispatch_check` (`crates/roko-agent/src/safety/mod.rs`, about line 1107), which today only ACP calls.

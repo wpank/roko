@@ -75,3 +75,4 @@ Checked at `41c7ffbd6`: no tamper or scope code anywhere (S05 §3). `roko_gate::
 - Hot file: write `attempt_diff.rs` first; wire it after the dispatch-file split (E15.4, gap-c8e1f1).
 - Reuse gap-b72761's diff snapshot if it has landed. Fail-or-label is the author's call (epic spec-9230a9).
 - **Decided 2026-09-29 (Will):** tampering fails the attempt; scope findings are recorded, and enforced only on opt-in.
+- **From wk-filer (2026-09-29):** reuse `SafetyLayer::post_dispatch_check` (`crates/roko-agent/src/safety/mod.rs`, about line 1107), which today only ACP calls.

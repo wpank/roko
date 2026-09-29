@@ -79,3 +79,4 @@ library comes from gap-2790c5.
 - `hidden.py` and `reference/` carry the canary; agents work outside the repo.
 - Out of scope: latent v2, the flipped convention. Runs in parallel with F4 (disjoint directories).
 - A repo-wide pytest run must not collect the template's own `tests/`.
+- **From gap-2790c5 (2026-09-29):** S08 §5.2 puts `canary` in `DIR/.vb/task.json` beside the agent's spec. Keep the task manifest outside the agent's workdir, or any agent that reads it trips the canary. Use `families/common/` (`repo`, `knobs`, `hmac_seed`, `astcheck`, `canary`, `mutate`).

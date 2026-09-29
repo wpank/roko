@@ -15,7 +15,7 @@ discovered_from = "tmp/cybernetic-harness/tldr/05-GAPS-AND-PROPOSALS.md (P1 #12;
 anchors = ["crates/roko-cli/src/orchestrator/worktree/mod.rs::accept_attempt", "crates/roko-cli/src/graph_execution/delivery.rs::GitDeliveryBackend", "crates/roko-cli/src/graph_execution/plan_runner.rs::run_one_plan", "crates/roko-cli/src/task_parser.rs::TaskMeta"]
 doc = "tmp/cybernetic-harness/workstreams/PLAN.md"
 lane = "rust-hot"
-links = { depends_on = ["gap-3b5361", "bug-a3760a", "spec-f830c4", "gap-60233f", "bug-50caf2", "gap-4ec59f", "gap-af00b1"], blocks = [], related = ["gap-d58ae8", "gap-415c54", "bug-53475e", "gap-439794"], supersedes = [], duplicate_of = "" }
+links = { depends_on = ["gap-3b5361", "bug-a3760a", "spec-f830c4", "gap-60233f", "bug-50caf2", "gap-4ec59f", "gap-af00b1", "gap-0d64d5"], blocks = [], related = ["gap-d58ae8", "gap-415c54", "bug-53475e", "gap-439794"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "grep -rqw 'fn c3_each_passed_task_commits_once_on_the_plan_branch' crates/roko-cli/tests/ && grep -rqw 'fn c4_meta_verify_catches_tasks_that_break_together' crates/roko-cli/tests/ && cargo test -p roko-cli --test plan_branch_integration"
@@ -105,6 +105,7 @@ Order: 1 and 2 now. Then 3 → 4 → 5 → 6 → 7, one at a time, because they 
 - [ ] bug-50caf2: PlanGateCell gates the process working directory as attempt 0 (existing item)
 - [ ] gap-4ec59f: Worktree Isolation: Flip Default and Add Startup Repair (existing item)
 - [ ] gap-af00b1: Integration tests C3 and C4: per-task commits on a plan branch, and a whole-plan gate that catches
+- [ ] gap-0d64d5: Golden-path step 10: an opt-in hold that shows each task's diff and waits for approval before it merges
       tasks that break together
 - [ ] The epic's `[[verify]]` command (tests C3 and C4) passes on the merged branch.
 

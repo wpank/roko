@@ -3,13 +3,14 @@ id = "bug-477ede"
 kind = "bug"
 title = "prd plan escalation drops a planner model outside the haiku/sonnet/opus chain to the cheapest model"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p2"
 goal = "golden-path"
 size = "S"
 subsystem = ["roko-cli/prd"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-29
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (16:47, wk-planner's report on gap-853b31)"
 anchors = ["crates/roko-cli/src/prd.rs::next_tier_model", "crates/roko-cli/src/prd.rs:1780"]
@@ -51,3 +52,8 @@ At BASE the starting model is `--model` or `agent.model`; on `work/gap-853b31` i
 ## Notes
 
 - `agent.tier_models` is dropped on load today (bug-12153c), so the chain in practice is always the default one.
+- Premise confirmed at `407ce30d5` by reading the code and the tracked `roko.toml`. It bites this repo without a
+  planner too: `[agent] default_model` is the key `claude-sonnet` (slug `claude-sonnet-4-6`), which matched no chain
+  entry by string, so a validation retry went to `claude-haiku-4-5`. The fix compares by slug and keeps a model that
+  is outside the chain.
+- Implemented on `work/bug-477ede` at `d9c68c573`; cargo verification deferred to the batch check.

@@ -35,7 +35,7 @@ use crate::workspace_paths::{
 };
 use anyhow::{Context as _, Result, anyhow};
 use indexmap::IndexMap;
-use roko_core::config::schema::RokoConfig;
+use roko_core::config::schema::{ModelProfile, RokoConfig};
 use roko_core::io::atomic_write_str;
 use roko_core::{Body, Kind, Provenance, Signal, Store};
 use roko_fs::FileSubstrate;
@@ -1272,24 +1272,31 @@ pub async fn generate_plan_from_prd_with_failure_context(
 
 /// Default model escalation chain: haiku -> sonnet -> opus.
 ///
-/// When `configured_models` is non-empty, candidates not present in the set are
-/// skipped so we never escalate to a model the workspace hasn't configured.
+/// When the workspace configures models, chain models it does not configure
+/// are skipped so we never escalate to a model it cannot run.
 const DEFAULT_ESCALATION_CHAIN: &[&str] =
     &["claude-haiku-4-5", "claude-sonnet-4-6", "claude-opus-4-6"];
 
 /// Return the next-tier model for escalation on validation failures.
 ///
 /// Checks `tier_models` config first (keys: `"haiku"`, `"sonnet"`, `"opus"`),
-/// falling back to [`DEFAULT_ESCALATION_CHAIN`]. Returns `None` if the current
-/// model is already at the highest tier or if no configured model is available
-/// at a higher tier.
+/// falling back to [`DEFAULT_ESCALATION_CHAIN`]. `current` and the chain
+/// entries are compared by slug, so a `[models.*]` key matches the chain entry
+/// for its slug.
 ///
-/// When `configured_models` is non-empty, only models present in that set are
-/// eligible for escalation. An empty set disables filtering (backward compat).
+/// Escalation only moves up from `current`, which starts as the planner model.
+/// It returns `None`, and the retry keeps `current`, when `current` is at the
+/// top of the chain, when no configured model sits above it, or when `current`
+/// is not in the chain at all: a model outside the chain, such as a newer
+/// frontier planner, has no known rank, so no chain model is known to be
+/// stronger.
+///
+/// When `models` is non-empty, only chain models it configures (by key or
+/// slug) are eligible. An empty map disables filtering (backward compat).
 fn next_tier_model(
     current: Option<&str>,
     tier_models: &HashMap<String, String>,
-    configured_models: &HashSet<String>,
+    models: &IndexMap<String, ModelProfile>,
 ) -> Option<String> {
     // Build the chain from config or defaults.
     let chain: Vec<&str> = if tier_models.is_empty() {
@@ -1302,27 +1309,38 @@ fn next_tier_model(
             .collect()
     };
 
-    let current_slug = current.unwrap_or("");
-    // Find position of the current model in the chain.
-    let pos = chain.iter().position(|m| *m == current_slug);
+    // Find the current model's rank; a model outside the chain stays put.
+    let current_slug = model_slug(models, current?);
+    let pos = chain
+        .iter()
+        .position(|m| model_slug(models, m) == current_slug)?;
 
-    // Candidates above the current position (or the whole chain when unknown).
-    let candidates: &[&str] = match pos {
-        Some(i) if i + 1 < chain.len() => &chain[i + 1..],
-        None if !chain.is_empty() => &chain,
-        _ => return None,
-    };
-
-    // When configured_models is non-empty, only return a model that's actually
-    // configured in the workspace so we don't escalate to an unavailable model.
-    if configured_models.is_empty() {
-        candidates.first().map(|m| (*m).to_string())
+    // Candidates above the current position. When models are configured, only
+    // return one the workspace configures so we don't escalate to an
+    // unavailable model.
+    let mut candidates = chain[pos + 1..].iter().copied();
+    if models.is_empty() {
+        candidates.next().map(str::to_string)
     } else {
         candidates
-            .iter()
-            .find(|m| configured_models.contains(**m))
-            .map(|m| (*m).to_string())
+            .find(|m| model_is_configured(models, m))
+            .map(str::to_string)
     }
+}
+
+/// The provider slug `model` names: the slug of its `[models.*]` entry when it
+/// is a key there, else `model` itself.
+fn model_slug<'a>(models: &'a IndexMap<String, ModelProfile>, model: &'a str) -> &'a str {
+    models
+        .get(model)
+        .map(|profile| profile.slug.trim())
+        .filter(|slug| !slug.is_empty())
+        .unwrap_or(model)
+}
+
+/// Whether `model` names a `[models.*]` entry, by key or by slug.
+fn model_is_configured(models: &IndexMap<String, ModelProfile>, model: &str) -> bool {
+    models.contains_key(model) || models.values().any(|profile| profile.slug.trim() == model)
 }
 
 async fn generate_plan_from_prd_with_outcome(
@@ -1769,21 +1787,12 @@ async fn generate_plan_from_prd_with_outcome(
             let mut escalated_model: Option<String> = None;
             let mut last_output = output.clone();
 
-            // Collect configured model keys and slugs so escalation never
-            // picks a model that isn't actually available in this workspace.
-            let configured_models: HashSet<String> = resolved
-                .config
-                .models
-                .iter()
-                .flat_map(|(key, profile)| {
-                    std::iter::once(key.clone()).chain(std::iter::once(profile.slug.clone()))
-                })
-                .collect();
-
             for attempt in 1..=max_retries {
                 let t_retry = Instant::now();
 
-                // Escalate model on format/validation failures (not auth/network).
+                // Escalate model on format/validation failures (not auth/network),
+                // only ever upward from the planner model, and only to a model
+                // this workspace configures.
                 let current_model = escalated_model
                     .as_deref()
                     .or(effective_model);
@@ -1791,7 +1800,7 @@ async fn generate_plan_from_prd_with_outcome(
                     if let Some(next) = next_tier_model(
                         current_model,
                         &resolved.config.agent.tier_models,
-                        &configured_models,
+                        &resolved.config.models,
                     ) {
                         tracing::info!(
                             from = current_model.unwrap_or("<default>"),
@@ -4328,17 +4337,37 @@ command = "cargo test -p <crate> -- <test_name>"
 
     // ---- next_tier_model tests ----
 
+    /// `[models.*]` entries from `(key, slug)` pairs.
+    fn models_with(entries: &[(&str, &str)]) -> IndexMap<String, ModelProfile> {
+        entries
+            .iter()
+            .map(|(key, slug)| {
+                let profile = ModelProfile {
+                    slug: (*slug).to_string(),
+                    ..ModelProfile::default()
+                };
+                ((*key).to_string(), profile)
+            })
+            .collect()
+    }
+
+    /// `[models.*]` entries keyed by their own slug.
+    fn models_for(slugs: &[&str]) -> IndexMap<String, ModelProfile> {
+        let entries: Vec<(&str, &str)> = slugs.iter().map(|slug| (*slug, *slug)).collect();
+        models_with(&entries)
+    }
+
     #[test]
     fn next_tier_model_escalates_with_empty_configured_set() {
-        // Empty configured set = no filtering (backward compat).
+        // No configured models = no filtering (backward compat).
         let empty_tier = HashMap::new();
-        let empty_configured = HashSet::new();
+        let no_models = IndexMap::new();
         assert_eq!(
-            next_tier_model(Some("claude-haiku-4-5"), &empty_tier, &empty_configured),
+            next_tier_model(Some("claude-haiku-4-5"), &empty_tier, &no_models),
             Some("claude-sonnet-4-6".to_string()),
         );
         assert_eq!(
-            next_tier_model(Some("claude-sonnet-4-6"), &empty_tier, &empty_configured),
+            next_tier_model(Some("claude-sonnet-4-6"), &empty_tier, &no_models),
             Some("claude-opus-4-6".to_string()),
         );
     }
@@ -4347,10 +4376,7 @@ command = "cargo test -p <crate> -- <test_name>"
     fn next_tier_model_skips_unconfigured() {
         let empty_tier = HashMap::new();
         // Only sonnet is configured — opus should be skipped.
-        let configured: HashSet<String> = ["claude-sonnet-4-6"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
+        let configured = models_for(&["claude-sonnet-4-6"]);
         assert_eq!(
             next_tier_model(Some("claude-haiku-4-5"), &empty_tier, &configured),
             Some("claude-sonnet-4-6".to_string()),
@@ -4366,8 +4392,7 @@ command = "cargo test -p <crate> -- <test_name>"
     fn next_tier_model_skips_to_higher_configured() {
         let empty_tier = HashMap::new();
         // Only opus is configured — should skip sonnet and land on opus.
-        let configured: HashSet<String> =
-            ["claude-opus-4-6"].iter().map(|s| s.to_string()).collect();
+        let configured = models_for(&["claude-opus-4-6"]);
         assert_eq!(
             next_tier_model(Some("claude-haiku-4-5"), &empty_tier, &configured),
             Some("claude-opus-4-6".to_string()),
@@ -4378,8 +4403,7 @@ command = "cargo test -p <crate> -- <test_name>"
     fn next_tier_model_none_when_no_configured_above() {
         let empty_tier = HashMap::new();
         // Only haiku is configured; already at haiku → nothing above.
-        let configured: HashSet<String> =
-            ["claude-haiku-4-5"].iter().map(|s| s.to_string()).collect();
+        let configured = models_for(&["claude-haiku-4-5"]);
         assert_eq!(
             next_tier_model(Some("claude-haiku-4-5"), &empty_tier, &configured),
             None,
@@ -4389,37 +4413,89 @@ command = "cargo test -p <crate> -- <test_name>"
     #[test]
     fn next_tier_model_at_top_returns_none() {
         let empty_tier = HashMap::new();
-        let empty_configured = HashSet::new();
+        let no_models = IndexMap::new();
         // Already at the highest tier — no escalation possible.
         assert_eq!(
-            next_tier_model(Some("claude-opus-4-6"), &empty_tier, &empty_configured),
+            next_tier_model(Some("claude-opus-4-6"), &empty_tier, &no_models),
+            None,
+        );
+    }
+
+    /// bug-477ede: a planner outside the chain used to be "escalated" to the
+    /// cheapest configured chain model. The retry now keeps it.
+    #[test]
+    fn next_tier_model_never_downgrades_an_unknown_model() {
+        let empty_tier = HashMap::new();
+        // A frontier planner outside the chain, with Haiku configured.
+        let configured = models_for(&["claude-opus-5-5", "claude-haiku-4-5"]);
+        assert_eq!(
+            next_tier_model(Some("claude-opus-5-5"), &empty_tier, &configured),
+            None,
+        );
+        assert_eq!(
+            next_tier_model(Some("some-random-model"), &empty_tier, &configured),
+            None,
+        );
+        // Unfiltered (nothing configured), an unknown model stays put too.
+        assert_eq!(
+            next_tier_model(Some("claude-opus-5-5"), &empty_tier, &IndexMap::new()),
+            None,
+        );
+        // With no current model there is no known rank either.
+        assert_eq!(next_tier_model(None, &empty_tier, &configured), None);
+    }
+
+    /// Keys that are not slugs, as in this repo's roko.toml: the key
+    /// `claude-sonnet` is in the chain through its slug, so the retry moves up
+    /// to Opus, never down to Haiku.
+    #[test]
+    fn next_tier_model_matches_a_model_key_by_its_slug() {
+        let empty_tier = HashMap::new();
+        let configured = models_with(&[
+            ("claude-haiku", "claude-haiku-4-5"),
+            ("claude-sonnet", "claude-sonnet-4-6"),
+            ("claude-opus", "claude-opus-4-6"),
+        ]);
+        assert_eq!(
+            next_tier_model(Some("claude-sonnet"), &empty_tier, &configured),
+            Some("claude-opus-4-6".to_string()),
+        );
+        // Without Opus configured, the retry stays on Sonnet.
+        let configured = models_with(&[
+            ("claude-haiku", "claude-haiku-4-5"),
+            ("claude-sonnet", "claude-sonnet-4-6"),
+        ]);
+        assert_eq!(
+            next_tier_model(Some("claude-sonnet"), &empty_tier, &configured),
             None,
         );
     }
 
     #[test]
-    fn next_tier_model_unknown_current_picks_configured() {
-        let empty_tier = HashMap::new();
-        // Unknown current model with only sonnet configured → picks sonnet
-        // (skips haiku which is first in chain but not configured).
-        let configured: HashSet<String> = ["claude-sonnet-4-6"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
+    fn next_tier_model_follows_tier_models_named_by_key() {
+        let tiers = HashMap::from([
+            ("haiku".to_string(), "fast".to_string()),
+            ("sonnet".to_string(), "mid".to_string()),
+            ("opus".to_string(), "deep".to_string()),
+        ]);
+        let configured = models_with(&[
+            ("fast", "claude-haiku-4-5"),
+            ("mid", "claude-sonnet-4-6"),
+            ("deep", "claude-opus-4-6"),
+        ]);
+        // A current model named by slug finds its tier entry, named by key.
         assert_eq!(
-            next_tier_model(Some("some-random-model"), &empty_tier, &configured),
-            Some("claude-sonnet-4-6".to_string()),
+            next_tier_model(Some("claude-sonnet-4-6"), &tiers, &configured),
+            Some("deep".to_string()),
         );
+        assert_eq!(next_tier_model(Some("deep"), &tiers, &configured), None);
     }
 
     #[test]
     fn next_tier_model_none_configured_returns_none() {
         let empty_tier = HashMap::new();
-        // No chain model is in the configured set → None.
-        let configured: HashSet<String> = ["totally-different-model"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
+        // No chain model is configured → None.
+        let configured = models_for(&["totally-different-model"]);
         assert_eq!(
             next_tier_model(Some("claude-haiku-4-5"), &empty_tier, &configured),
             None,

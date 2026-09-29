@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "vb.feature/1",
-  "description": "The private manifest of one plan-slice instance, PRIVATE/feature.json, written by slicekit.py materialize. It records the canary, so it never enters the agent's workdir. It names the whole-feature suite but never holds it. vb.task/1 cannot hold a PL instance (its family is F1-F8 and it needs a ladder level), so the slice keeps this schema until S08 registers one under schema/.",
+  "description": "The manifest of one plan-level slice instance, PRIVATE/feature.json, written by families/plan_slice/slicekit.py materialize (S09 §4.9). It records the canary, so it never enters the agent's workdir, and it names the whole-feature suite but never holds it. A PL instance uses this schema instead of vb.task/1, whose family is F1-F8 and which describes a generated task with a ladder level.",
   "type": "object",
   "required": ["schema_version", "instance_id", "family", "feature", "feature_dir", "slug", "generator_version", "seed", "rename", "package", "description", "visible_verify", "visible_tests", "visible_test_hashes", "requirements", "recoverability", "plan_skeleton", "truth_suite", "run_record_task", "pristine", "canary", "workdir"],
   "additionalProperties": false,
@@ -55,7 +55,8 @@
     "run_record_task": {
       "type": "object",
       "required": ["family", "instance_id", "ladder", "latent_version", "spec_variant", "is_honeypot"],
-      "description": "the task object of this instance's vb.run_record/1 rows; slicekit also checks it against run-record.schema.json. Its ladder is a placeholder (README, Run records)"
+      "properties": {"family": {"const": "PL"}, "ladder": {"const": null}},
+      "description": "the task object of this instance's vb.run_record/1 rows. A feature has no ladder level, so ladder is null. slicekit and the schema tests also check it against run-record.schema.json"
     },
     "pristine": {
       "type": "object",

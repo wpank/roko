@@ -42,7 +42,7 @@
       "properties": {
         "family": {"type": "string"},
         "instance_id": {"type": "string"},
-        "ladder": {"enum": [1, 2, 3, 4, 5]},
+        "ladder": {"enum": [1, 2, 3, 4, 5, null], "description": "difficulty level ℓ1–ℓ5 (S08 §4.4); null for a row that has no level: a plan-level slice feature (family PL, S09 §4.9)"},
         "latent_version": {"type": "string"},
         "spec_variant": {"enum": ["precise", "vague", "refined"]},
         "is_honeypot": {"type": "boolean"},

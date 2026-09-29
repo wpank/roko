@@ -11,7 +11,7 @@ subsystem = ["benchmarks/viabilitybench/driver"]
 created = 2026-09-29
 updated = 2026-09-29
 last_verified = 2026-09-29
-last_verified_rev = "c67a7eacb"
+last_verified_rev = "ab8391a75"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-bench-rokoarm's report for gap-e003ec's integration)"
 anchors = ["benchmarks/viabilitybench/driver/vb.py::admit", "benchmarks/viabilitybench/driver/vb.py::cmd_run", "benchmarks/viabilitybench/driver/run_roko.py"]
@@ -24,9 +24,9 @@ command = "grep -q 'configure(task=' benchmarks/viabilitybench/driver/vb.py && g
 
 [closed]
 at = 2026-09-29
-commit = "c67a7eacb"
+commit = "ab8391a75"
 by = "wk-bench-fix1"
-evidence = "c67a7eacb: vb run --proxy starts faultproxy in-process after admission (upstream = plan.endpoint, log <run_dir>/proxy.jsonl), gives runners proxy.endpoint(...), and calls proxy.configure(task=ctx.key) in _run_one; admit still judges plan.endpoint. Verify passes (test_a_loopback_proxy_url_still_needs_network_admission), with test_vb_run_meters_every_task_through_the_proxy and test_the_roko_arm_through_the_proxy_is_metered_by_its_task_key; full viabilitybench suite 303 passed. Manual: MAIN's prebuilt roko (33e107da1) through vb run --proxy against a loopback fake: 3 proxy rows keyed F1-l1-0001.s1, attempt metered at $0.0011625, VS=1; F1-l3-0001 and F4-l3-0001 through --proxy with the stub: rows per task key, proxy total equals the ledger ($0.00109)."
+evidence = "c67a7eacb and ab8391a75: every billed network run (and any run with --proxy) starts faultproxy in-process after admission, through _start_proxy(plan, run_dir, keys=...) (upstream = plan.endpoint, log <run_dir>/proxy.jsonl), gives runners proxy.endpoint(...), and calls proxy.configure(task=ctx.key) in _run_one; admit still judges plan.endpoint. Verify passes (test_a_loopback_proxy_url_still_needs_network_admission), with test_vb_run_meters_every_task_through_the_proxy and test_the_roko_arm_through_the_proxy_is_metered_by_its_task_key; full viabilitybench suite 303 passed. Manual: MAIN's prebuilt roko (33e107da1) through vb run --proxy against a loopback fake: 3 proxy rows keyed F1-l1-0001.s1, attempt metered at $0.0011625, VS=1; F1-l3-0001 and F4-l3-0001 through --proxy with the stub: rows per task key, proxy total equals the ledger ($0.00109)."
 +++
 
 ## Problem

@@ -16,6 +16,10 @@ real plan run completes in seconds at no cost.
   * Every other prompt is a task: `SLOW <n>` sleeps n seconds first, then each
     `ARTIFACT <path>` named in the prompt is written (a `.rs` path gets a
     hello-world program).
+  * `EXIT_EARLY` (optionally `EXIT_EARLY <code>`, default 1) in a task prompt
+    makes the agent exit with that code before printing any stream event, as
+    a crashed or misconfigured CLI would. Evidence checks use it for the
+    "agent exits before its first event" case.
   * Live mode, on when `.roko/fake-claude-live` exists in the working
     directory: a task first streams a text block and one Write tool call per
     artifact, as the real CLI does, before any SLOW wait; after writing it
@@ -156,6 +160,14 @@ fail_msg = "the program did not print hello world"
 '''
     emit("```toml\n" + plan + "```\n")
     sys.exit(0)
+
+exit_early = re.search(r"EXIT_EARLY(?: (\d+))?", prompt)
+if exit_early:
+    code = int(exit_early.group(1) or 1)
+    log("exit-early", str(code))
+    print(f"fake-claude: EXIT_EARLY, exiting {code} before the first stream event",
+          file=sys.stderr)
+    sys.exit(code)
 
 artifacts = list(dict.fromkeys(re.findall(r"ARTIFACT ([\w./-]+)", prompt)))
 live = os.path.exists(os.path.join(".roko", "fake-claude-live"))

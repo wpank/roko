@@ -66,7 +66,7 @@ This is the implementation plan.
 - [ ] gap-04b0ff: Research paper §8 and §9: the operator loop, field-evidence threats, and trims
 - [ ] gap-2abf34: Research paper appendices E and F: reproducibility formats and the cost of the supervising sessions
 - [ ] gap-c4d630: Research paper claims aggregator: regenerate CLAIMS-EVIDENCE.md from the section ledgers
-- [ ] gap-cdd5f4: Companion report: re-derive every number at the audit/baseline-2026-09-28 tag
+- [x] gap-cdd5f4: Companion report: re-derive every number at the audit/baseline-2026-09-28 tag
 - [x] gap-652d05: Companion report: draft the E10 main text with E1 number markers
 - [x] gap-b64fba: Refresh the TL;DR against the 2026-09-29 merges and fix three known errors
 - [ ] The `[[verify]]` command passes (paperlint reports on every section).

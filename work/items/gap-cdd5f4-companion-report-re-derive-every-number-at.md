@@ -2,7 +2,7 @@
 id = "gap-cdd5f4"
 kind = "gap"
 title = "Companion report: re-derive every number at the audit/baseline-2026-09-28 tag"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "whitepaper"
@@ -11,6 +11,7 @@ subsystem = ["companion"]
 created = 2026-09-29
 updated = 2026-09-29
 last_verified = 2026-09-29
+last_verified_rev = "98ee1418f"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e18"
 discovered_from = "tmp/cybernetic-harness/workstreams/assessment/W9-paper-workstream.md"
 anchors = ["tmp/cybernetic-harness/companion-audit/"]
@@ -20,6 +21,11 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "test -f tmp/cybernetic-harness/companion-audit/E1-REDERIVATION.md && grep -q '91b4745f8' tmp/cybernetic-harness/companion-audit/E1-REDERIVATION.md"
+
+[closed]
+at = 2026-09-29
+by = "coordinator (session 7622b882)"
+evidence = "tmp/cybernetic-harness/companion-audit/E1-REDERIVATION.md (untracked) re-derives 74 figures at audit/baseline-2026-09-28 (91b4745f8), extracted with git archive: 56 exact, 7 match after rounding, 4 changed (commit count 2,719, lines added 1,649,221, doc drift 406 to 407, README S1 row stale), none changing a conclusion. The false-green figures 102/350 and 101/373 come from the same data ending 09-26 11:29Z and agree on one basis (102/373 vs 101/373). The loop counts 17, 16 and 10 measure different things. Verify passes."
 +++
 
 ## Problem

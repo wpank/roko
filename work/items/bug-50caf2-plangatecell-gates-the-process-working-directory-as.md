@@ -14,7 +14,7 @@ last_verified = 2026-09-29
 last_verified_rev = "a17d9d766"
 source = "local-audit-2026-09-26"
 discovered_from = "audit:local-defect-review-2026-09-26 (untracked design notes)"
-anchors = ["crates/roko-graph/src/cells/plan_gate.rs::PlanGateCell::build_request", "crates/roko-graph/src/cells/plan_gate.rs::PlanGateCell::execute", "crates/roko-graph/src/topology.rs::ProductionPlanTopology", "crates/roko-cli/src/graph_task_dispatch.rs:3365", "crates/roko-cli/src/runner/gate_adapter.rs::RunnerProductionGateAdapter"]
+anchors = ["crates/roko-graph/src/cells/plan_gate.rs::PlanGateCell::build_request", "crates/roko-graph/src/cells/plan_gate.rs::PlanGateCell::execute", "crates/roko-graph/src/topology.rs::ProductionPlanTopology", "crates/roko-cli/src/graph_task_dispatch.rs::GraphTaskDispatcher::dispatch", "crates/roko-cli/src/runner/gate_adapter.rs::RunnerProductionGateAdapter"]
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
 
 [[repro]]

@@ -14,7 +14,7 @@ last_verified = 2026-09-29
 last_verified_rev = "33e107da1"
 source = "session:roko-b6 2026-09-29 direct-implementation batch"
 discovered_from = "merge:fix/dispatch-timeouts-cost e0673e3e0"
-anchors = ["crates/roko-cli/src/graph_task_dispatch.rs::verified_outcome_drives_output_verdict_and_feedback", "crates/roko-cli/src/graph_task_dispatch.rs::efficiency_records", "crates/roko-cli/src/graph_task_dispatch.rs::append_jsonl_line_async", "crates/roko-cli/src/graph_task_dispatch.rs:3013"]
+anchors = ["crates/roko-cli/src/graph_task_dispatch/verification.rs::verified_outcome_drives_output_verdict_and_feedback", "crates/roko-cli/src/graph_task_dispatch/verification.rs::efficiency_records", "crates/roko-cli/src/graph_task_dispatch/tui_forward.rs::append_jsonl_line_async", "crates/roko-cli/src/graph_task_dispatch/verification.rs::GraphTaskDispatcher::settle_task_verification"]
 links = { depends_on = [], blocks = [], related = ["bug-c34782", "bug-0b668a", "bug-ea9959"], supersedes = [], duplicate_of = "" }
 
 [[verify]]

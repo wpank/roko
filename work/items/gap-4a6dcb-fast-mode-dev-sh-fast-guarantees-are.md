@@ -14,7 +14,7 @@ last_verified = 2026-09-29
 last_verified_rev = "a17d9d766"
 source = "session:roko-b6 message 2026-09-28 (commit 725f21e05)"
 discovered_from = "item:bug-f7943a"
-anchors = ["crates/roko-cli/src/graph_execution/fast_lane.rs::arm_plan_deadline", "crates/roko-cli/src/graph_task_dispatch.rs::task_turn_limit", "crates/roko-cli/src/graph_task_dispatch.rs::GraphTaskDispatcher::settle_task_verification", "crates/roko-cli/src/graph_task_dispatch.rs::GraphTaskDispatcher::dispatch", "crates/roko-cli/src/runner/cargo_command.rs::cargo_profile_available", "dev.sh:225"]
+anchors = ["crates/roko-cli/src/graph_execution/fast_lane.rs::arm_plan_deadline", "crates/roko-cli/src/graph_task_dispatch/turn_policy.rs::task_turn_limit", "crates/roko-cli/src/graph_task_dispatch/verification.rs::GraphTaskDispatcher::settle_task_verification", "crates/roko-cli/src/graph_task_dispatch.rs::GraphTaskDispatcher::dispatch", "crates/roko-cli/src/runner/cargo_command.rs::cargo_profile_available", "dev.sh:225"]
 links = { depends_on = [], blocks = [], related = ["bug-f7943a"], supersedes = [], duplicate_of = "" }
 
 [[verify]]

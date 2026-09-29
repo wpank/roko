@@ -13,7 +13,7 @@ last_verified = 2026-09-29
 last_verified_rev = "d9e79e9d8"
 source = "tmp/cybernetic-harness/assessment-2026-09-28/process-capacity.md"
 discovered_from = "audit:tmp/cybernetic-harness/assessment-2026-09-28/process-capacity.md"
-anchors = ["crates/roko-cli/src/runner/gate_dispatch.rs::compile_coordinator", "crates/roko-cli/src/runner/gate_dispatch.rs::acquire_compile_ownership", "crates/roko-cli/src/graph_task_dispatch.rs::verify_compile_permit"]
+anchors = ["crates/roko-cli/src/runner/gate_dispatch.rs::compile_coordinator", "crates/roko-cli/src/runner/gate_dispatch.rs::acquire_compile_ownership", "crates/roko-cli/src/graph_task_dispatch/verification.rs::verify_compile_permit"]
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
 
 [[verify]]

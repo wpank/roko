@@ -14,7 +14,7 @@ last_verified = 2026-09-29
 last_verified_rev = "a17d9d766"
 source = "tmp/archive/provider-audit/29-FINDINGS-REGISTER.md#F037"
 discovered_from = "audit:tmp/archive/provider-audit/29-FINDINGS-REGISTER.md#F037"
-anchors = ["crates/roko-cli/src/graph_task_dispatch.rs::emit_feedback", "crates/roko-learn/src/efficiency.rs::AgentEfficiencyEvent", "crates/roko-core/src/chat_types.rs::Usage::fill_cost_from_pricing", "crates/roko-cli/src/dispatch_v2.rs::dispatch_events_from_result", "crates/roko-agent/src/safety/contract.rs::AgentContract"]
+anchors = ["crates/roko-cli/src/graph_task_dispatch/feedback.rs::emit_feedback", "crates/roko-learn/src/efficiency.rs::AgentEfficiencyEvent", "crates/roko-core/src/chat_types.rs::Usage::fill_cost_from_pricing", "crates/roko-cli/src/dispatch_v2.rs::dispatch_events_from_result", "crates/roko-agent/src/safety/contract.rs::AgentContract"]
 links = { depends_on = [], blocks = [], related = ["bug-f9ae3e"], supersedes = [], duplicate_of = "" }
 
 [[verify]]

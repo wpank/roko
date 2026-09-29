@@ -106,6 +106,13 @@ pub struct LearningConfig {
     /// Defaults to 0.7.
     #[serde(default = "default_lookahead_threshold")]
     pub lookahead_threshold: f64,
+    /// Serve plan tasks that author no verify steps from matching T0 reflex
+    /// rules (`.roko/learn/reflexes.jsonl`) instead of dispatching a model.
+    ///
+    /// Off by default: a reflex skips the provider and every gate, so its
+    /// output is unverified and its rule earns no gate pass.
+    #[serde(default)]
+    pub t0_reflexes: bool,
     /// Dampening factor for manual model override learning (UX34).
     ///
     /// When a user manually overrides the model via `--model` /
@@ -217,6 +224,7 @@ impl Default for LearningConfig {
             dreams: DreamsConfig::default(),
             use_lookahead_router: false,
             lookahead_threshold: default_lookahead_threshold(),
+            t0_reflexes: false,
             override_learning_dampening: None,
             gate_threshold_flush_interval: default_gate_threshold_flush_interval(),
             knowledge: KnowledgeProgressionConfig::default(),

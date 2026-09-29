@@ -14,7 +14,7 @@ last_verified = 2026-09-29
 last_verified_rev = "33e107da1"
 source = "session:roko-b6 2026-09-29 direct-implementation batch"
 discovered_from = "merge:fix/diagnose-graph-runs 05f8854ce"
-anchors = ["crates/roko-gate/src/compile_errors.rs::GateFailureRecord::from_classification", "crates/roko-cli/src/graph_task_dispatch.rs::settle_task_verification", "crates/roko-cli/src/commands/diagnose.rs::classify_recorded_failure"]
+anchors = ["crates/roko-gate/src/compile_errors.rs::GateFailureRecord::from_classification", "crates/roko-cli/src/graph_task_dispatch/verification.rs::settle_task_verification", "crates/roko-cli/src/commands/diagnose.rs::classify_recorded_failure"]
 links = { depends_on = [], blocks = [], related = ["bug-165b22"], supersedes = [], duplicate_of = "" }
 
 [[verify]]

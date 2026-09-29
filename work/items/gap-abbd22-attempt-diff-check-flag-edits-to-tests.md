@@ -12,7 +12,7 @@ created = 2026-09-29
 updated = 2026-09-29
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e9"
 discovered_from = "tmp/cybernetic-harness/specs/S05-deep-audits.md (§4.3, check A1); tldr/05 P1 #13"
-anchors = ["crates/roko-gate/src/attempt_diff.rs", "crates/roko-cli/src/graph_task_dispatch.rs::GraphTaskDispatcher::settle_task_verification", "crates/roko-cli/src/graph_task_dispatch.rs:4651"]
+anchors = ["crates/roko-gate/src/attempt_diff.rs", "crates/roko-cli/src/graph_task_dispatch/verification.rs::GraphTaskDispatcher::settle_task_verification", "crates/roko-cli/src/graph_task_dispatch/streaming.rs::dispatch_streaming"]
 lane = "rust-cold"
 parent = "spec-9230a9"
 links = { depends_on = ["gap-d14a43"], blocks = [], related = ["gap-b72761", "find-d1a883"], supersedes = [], duplicate_of = "" }

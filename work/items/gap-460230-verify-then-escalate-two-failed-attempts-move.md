@@ -12,7 +12,7 @@ created = 2026-09-29
 updated = 2026-09-29
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e5"
 discovered_from = "tmp/cybernetic-harness/tldr/04-FRONTIER-PLANS-CHEAP-EXECUTES.md (step 8, design rule 5); specs/S04-self-model-routing.md §4.4 (baseline H4-B1)"
-anchors = ["crates/roko-cli/src/graph_task_dispatch.rs::GraphTaskDispatcher::dispatch", "crates/roko-cli/src/graph_task_dispatch.rs::dispatch_streaming", "crates/roko-cli/src/graph_task_dispatch/retry_feedback.rs::NextAttempt", "crates/roko-cli/src/graph_task_dispatch/retry_budget.rs::TaskRetryBudgets", "crates/roko-cli/src/dispatch/model_routing.rs::ModelRouter::route"]
+anchors = ["crates/roko-cli/src/graph_task_dispatch.rs::GraphTaskDispatcher::dispatch", "crates/roko-cli/src/graph_task_dispatch/streaming.rs::dispatch_streaming", "crates/roko-cli/src/graph_task_dispatch/retry_feedback.rs::NextAttempt", "crates/roko-cli/src/graph_task_dispatch/retry_budget.rs::TaskRetryBudgets", "crates/roko-cli/src/dispatch/model_routing.rs::ModelRouter::route"]
 lane = "rust-hot"
 parent = "spec-98f76d"
 links = { depends_on = ["gap-9cbf35", "gap-96f7ed"], blocks = [], related = ["gap-b62e95", "bug-35379d"], supersedes = [], duplicate_of = "" }

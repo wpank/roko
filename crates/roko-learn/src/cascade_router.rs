@@ -194,15 +194,14 @@ impl roko_agent::model_call_service::ForceBackendOverrideRecorder for CascadeRou
 }
 
 /// A manual model override outcome as a cascade observation (UX34): what
-/// [`CascadeRouter::record_override_outcome`] applies, and what
-/// [`crate::model_call_feedback::ModelCallJournal`] journals for one.
-pub(crate) struct OverrideObservation {
+/// [`CascadeRouter::record_override_outcome`] applies.
+struct OverrideObservation {
     /// Features of the routing context the override ran under.
-    pub(crate) context_features: Vec<f64>,
+    context_features: Vec<f64>,
     /// The dampened quality signal as a `LinUCB` reward.
-    pub(crate) reward: f64,
+    reward: f64,
     /// Whether the confidence counters count a success.
-    pub(crate) success: bool,
+    success: bool,
 }
 
 impl CascadeRouter {
@@ -1567,9 +1566,8 @@ impl CascadeRouter {
         true
     }
 
-    /// The observation [`Self::record_override_outcome`] makes, so a journal
-    /// can record exactly what the router applies.
-    pub(crate) fn override_observation(
+    /// The observation [`Self::record_override_outcome`] makes.
+    fn override_observation(
         ctx: &RoutingContext,
         success: bool,
         dampening: Option<f64>,
@@ -1601,7 +1599,7 @@ impl CascadeRouter {
     /// bandit gets a more representative feature vector. The routing.rs
     /// FeedbackSink path already uses the real dispatch-time RoutingContext;
     /// this only covers the ModelCallService force_backend path.
-    pub(crate) fn forced_override_context(model_slug: &str, success: bool) -> RoutingContext {
+    fn forced_override_context(model_slug: &str, success: bool) -> RoutingContext {
         let tier = crate::cascade::helpers::slug_to_tier_heuristic(model_slug);
         let complexity = match tier {
             roko_core::agent::ModelTier::Fast => roko_core::task::TaskComplexityBand::Fast,

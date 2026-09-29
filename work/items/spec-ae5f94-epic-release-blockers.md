@@ -89,8 +89,8 @@ This is the implementation plan.
 - [x] bug-39d54c: roko serve rewrites agent-tokens.json and relay-tokens.json whole from memory, losing other processes' tokens and revocations
 - [x] bug-8d7d18: Several roko.toml writers skip the check-before-write: config preset, tune and the TUI config and effects saves
 - [x] bug-367f33: roko --config <file> fills missing [budget] keys with the CLI's legacy defaults ($10 per plan, $1 per task) instead of core [budget]'s
-- [ ] bug-647249: About 100 more roko.toml keys are missing from the loader's schema tree, so loading strips them
-- [ ] bug-4e7d40: roko config preset --global edits ~/.roko/roko.toml instead of ~/.roko/config.toml, and fails unless that file exists
+- [x] bug-647249: About 100 more roko.toml keys are missing from the loader's schema tree, so loading strips them
+- [x] bug-4e7d40: roko config preset --global edits ~/.roko/roko.toml instead of ~/.roko/config.toml, and fails unless that file exists
 - [ ] Both of the epic's `[[verify]]` commands pass.
 
 ## Notes

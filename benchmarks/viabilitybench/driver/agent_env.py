@@ -18,9 +18,11 @@ value holds either. Runners never handle the secret. `check` also refuses an env
 an agent whose HOME is the driver's would find the real `~/.roko/.env` and `~/.config/viabilitybench/`.
 
 What it cannot do: an agent under the same uid can still read a file it names by absolute path, and see the driver's
-own environment with `ps -E` or `/proc/<pid>/environ`. `secret.preflight` keeps the secret out of the driver's
-environment; canaries catch reads of benchmark files and of the secret file (`census`); a container per task is the
-stronger option (S08 decision 4).
+own environment with `ps -E` or `/proc/<pid>/environ`. So `secret.preflight` keeps the secret and every provider key out
+of the driver's environment (the keys live in a driver-only key file, bug-979a06), and registers both with `forbid`.
+Canaries catch reads of benchmark files, and the tripwire catches a read of the secret file or the key file, which
+must be chmod'ed first while agents run (`census`, gap-308373). A container per task is the stronger option (S08
+decision 4).
 
 API:
     build(*, home: Path, extra: Mapping[str, str] | None = None, forbidden_values: Iterable[str] = ()) -> dict

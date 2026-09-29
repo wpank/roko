@@ -89,9 +89,9 @@ This is the implementation plan.
 - [x] gap-5d95a5: Companion report: trim §3, §7, §5 and §1 to budget, and fix the mapping-table misreadings and the zhang2025darwin venue
 - [x] gap-8cf47b: Research paper Appendix E: Table E.2 says no S01 record type exists at a17d4dadd; recheck Built by at a newer pin
 - [ ] gap-85f86a: Research paper: re-run the prior-art listing sweep (Q13–Q15, Q17) in submission week and read the Li 2026 lead
-- [ ] gap-42d749: Companion telemetry leftovers: scripts hard-code the repo path, and the E3 rating sheets still cite the freeze file
+- [x] gap-42d749: Companion telemetry leftovers: scripts hard-code the repo path, and the E3 rating sheets still cite the freeze file
 - [x] gap-02a66e: Research paper: D.12 and §5.4 pick up S09 v1.3's visible-test condition for the plan-level slice
-- [ ] gap-4ec886: Companion report leftovers: stale review and outline notes, bibliography gloss and fields, and E10 at 1.28x budget
+- [x] gap-4ec886: Companion report leftovers: stale review and outline notes, bibliography gloss and fields, and E10 at 1.28x budget
 - [ ] The `[[verify]]` command passes (paperlint reports on every section).
 
 ## Notes

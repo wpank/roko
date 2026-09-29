@@ -2,14 +2,16 @@
 id = "bug-f62293"
 kind = "bug"
 title = "A killed Claude Code session's partial cost is labelled cli_usage, because the schema rejects estimated with $0 billed"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p3"
 goal = "proof"
 size = "S"
 subsystem = ["benchmarks/viabilitybench/schema", "benchmarks/viabilitybench/driver"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-29
+last_verified_rev = "c68ffc43e"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-bench-ccarm's report on gap-c4f364, merged in 157f1d434)"
 anchors = ["benchmarks/viabilitybench/schema/validate.py", "benchmarks/viabilitybench/driver/run_cli.py", "benchmarks/viabilitybench/schema/run-record.schema.json"]
@@ -19,6 +21,12 @@ links = { depends_on = [], blocks = [], related = ["gap-c4f364", "gap-b24517"], 
 
 [[verify]]
 command = "grep -qw 'def test_a_killed_subscription_session_gets_an_honest_cost_label' benchmarks/viabilitybench/driver/test_run_cli.py && benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/driver/test_run_cli.py -k test_a_killed_subscription_session_gets_an_honest_cost_label -q"
+
+[closed]
+at = 2026-09-29
+commit = "c68ffc43e"
+by = "wk-bench-fix3"
+evidence = "Decided option (a), estimated: records.py labels a CLI session priced from its stream (cli.cost_basis stream, killed before its result event) costs.source estimated, which metrics counts as estimated_cost_runs; validate.py accepts estimated with $0 billed only for a run record whose every attempt carries the CLI runner's cli block, so a billed API run still never bills $0. Verify: test_a_killed_subscription_session_gets_an_honest_cost_label passes (driver/test_run_cli.py 11 passed). Left for run_cli.py's owner: its ledger row still says cli_usage (Meter.cost), since ledger rows carry no subscription mark."
 +++
 
 ## Problem

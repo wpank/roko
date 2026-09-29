@@ -2,14 +2,16 @@
 id = "gap-9e7079"
 kind = "gap"
 title = "ViabilityBench family F4: store-state truth suite and partial-failure injection (S08.T4)"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p1"
 goal = "proof"
 size = "M"
 subsystem = ["benchmarks/viabilitybench/families"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-29
+last_verified_rev = "0eaaae3cf"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e12"
 discovered_from = "tmp/cybernetic-harness/specs/S08-benchmark-suite.md (§4.3 F4, §4.4, §6 T4; checklist S08.T4)"
 anchors = ["benchmarks/viabilitybench/families/f4_kvtool/"]
@@ -22,6 +24,12 @@ command = "grep -qw 'def test_f4_cells_green_on_two_seeds' benchmarks/viabilityb
 
 [[verify]]
 command = "grep -qw 'def test_f4_unresumed_partial_failure_fails_truth_suite' benchmarks/viabilitybench/families/f4_kvtool/test_f4.py && benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/families/f4_kvtool/test_f4.py -k test_f4_unresumed_partial_failure_fails_truth_suite -q"
+
+[closed]
+at = 2026-09-29
+commit = "0eaaae3cf"
+by = "commit trailer"
+evidence = "0eaaae3cf adds families/f4_kvtool: gen.py (manifest, spec and pristine bundle in a 0700 directory outside the workdir), hidden.py (store-state truth suite; the write-lease partial failure is written only in its temporary copy), gaming.py, solutions.py, reference/ and ladder.toml. Both [[verify]] commands pass (test_f4_cells_green_on_two_seeds, 10 cells in 19 s; test_f4_unresumed_partial_failure_fails_truth_suite, 4 s). VB_F4_ALL_CELLS=1 runs all 50 cells green in 59 s. The 14 tests pass under Python 3.11 and 3.12."
 +++
 
 ## Problem

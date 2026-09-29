@@ -861,6 +861,9 @@ async fn run_graph_plan_body(params: GraphPlanRunParams) -> anyhow::Result<i32> 
     .await?;
 
     let roko_config = Arc::new(roko_config);
+    // S01 P0-2: the harness build and config fingerprint every checkpoint
+    // run's manifest records.
+    let run_manifests = super::run_manifest::RunManifests::capture(workdir, &roko_config);
     let prompt_cache = Arc::new(crate::dispatch::PromptCache::load(workdir));
     let mut shared_factory = crate::dispatch::SharedAgentFactory::new(
         Arc::clone(&roko_config),
@@ -1351,6 +1354,7 @@ async fn run_graph_plan_body(params: GraphPlanRunParams) -> anyhow::Result<i32> 
         graph_event_logger: graph_event_logger.as_ref(),
         shared_pause_flag: &shared_pause_flag,
         interrupt: &interrupt,
+        run_manifests: &run_manifests,
     };
     let mut scheduler = super::plan_set::PlanSetScheduler::new(
         &plan_order,
@@ -1727,6 +1731,15 @@ struct PlanRunContext<'a> {
     graph_event_logger: Option<&'a Arc<dyn roko_graph::events::GraphEventSink>>,
     shared_pause_flag: &'a Arc<AtomicBool>,
     interrupt: &'a PlanRunInterruptHandle,
+    /// Each checkpoint run's `manifest.json` (S01 §5.1).
+    run_manifests: &'a super::run_manifest::RunManifests,
+}
+
+/// Close checkpoint run `run_id`'s attempt log, then record in its manifest
+/// that it ended with `status` and how many attempts it opened and settled.
+fn close_run_manifest(ctx: &PlanRunContext<'_>, run_id: &str, status: GraphCheckpointStatus) {
+    let writer = ctx.graph_task_dispatcher.close_run_attempts(run_id);
+    ctx.run_manifests.close(run_id, status, writer);
 }
 
 /// Operator controls the plan-set driver routes to one running plan.
@@ -2045,6 +2058,8 @@ async fn run_one_plan(
         ctx.force_resume,
     )?;
     let run_id = checkpoint.run_id().to_string();
+    // A new run's manifest, or one more invocation of a resumed run.
+    ctx.run_manifests.open(&run_id, &plan.id);
     let replayed_entries = checkpoint.replayed_entries();
     ctx.graph_task_dispatcher
         .attach_plan_budget_checkpoint(&plan.id, checkpoint.take_cost_ledger())?;
@@ -2112,6 +2127,7 @@ async fn run_one_plan(
             tracing::error!(plan_id = %plan.id, issue, "validation error");
         }
         graph_tui_bridge.plan_completed(&plan.id, false);
+        close_run_manifest(ctx, &run_id, GraphCheckpointStatus::Failed);
         checkpoint.finish(false)?;
         return Ok(PlanRunResult::failed(tasks.len()));
     }
@@ -2256,6 +2272,7 @@ async fn run_one_plan(
             was_cancelled_by_tui,
         );
         checkpoint.record_task_outcomes(&TaskOutcomeSummary::default())?;
+        close_run_manifest(ctx, &run_id, plan_checkpoint_status(outcome));
         checkpoint.finish_with_status(plan_checkpoint_status(outcome))?;
         return Ok(PlanRunResult {
             outcome,
@@ -2393,6 +2410,7 @@ async fn run_one_plan(
             }
         }
     }
+    close_run_manifest(ctx, &run_id, plan_checkpoint_status(outcome));
     checkpoint.finish_with_status(plan_checkpoint_status(outcome))?;
     Ok(PlanRunResult {
         outcome,
@@ -3188,6 +3206,63 @@ max_retries = 0
                 .any(|entry| entry.event_type == "graph.plan_unverified"),
             "the outcome is explained"
         );
+    }
+
+    /// S01 P0-2: a plan run writes its checkpoint run's manifest (harness
+    /// build, config fingerprint, one invocation) and closes it with the
+    /// run's attempt counts; resuming the run records a second invocation.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn graph_plan_run_writes_run_manifest() {
+        use roko_learn::telemetry::RunProvenanceManifest;
+
+        let dir = verified_plan_set(&[("a", "a.txt", &[])], "");
+        let (exit_code, _, _) = run_plan_set(dir.path(), Some(1), None).await;
+        assert_eq!(exit_code, EXIT_SUCCESS);
+
+        let runs_dir = dir.path().join(".roko/runs");
+        let run_dirs: Vec<PathBuf> = std::fs::read_dir(&runs_dir)
+            .expect("read .roko/runs")
+            .map(|entry| entry.expect("run directory").path())
+            .collect();
+        assert_eq!(run_dirs.len(), 1, "one run, one directory: {run_dirs:?}");
+        let run_dir = &run_dirs[0];
+        let manifest = RunProvenanceManifest::load(run_dir)
+            .expect("read the manifest")
+            .expect("the run wrote a manifest");
+        let run_id = run_dir.file_name().and_then(|name| name.to_str());
+        assert_eq!(Some(manifest.run_id.as_str()), run_id);
+        assert_eq!(manifest.kind, "plan_run");
+        assert_eq!(manifest.plan_ids, ["a"]);
+        assert_eq!(manifest.harness.sha, env!("ROKO_GIT_HASH"));
+        assert_eq!(manifest.harness.rustc.as_deref(), Some(env!("ROKO_RUSTC_VERSION")));
+        assert!(manifest.config.hash.starts_with("b3:"), "{}", manifest.config.hash);
+        assert_eq!(manifest.config.hash.len(), 3 + 64);
+        let invocation = &manifest.invocations[..];
+        assert_eq!(invocation.len(), 1);
+        assert_eq!((invocation[0].inv, invocation[0].resumed), (1, false));
+        assert_eq!(invocation[0].pid, std::process::id());
+        let closed = manifest.closed.as_ref().expect("the run closed");
+        assert_eq!(closed.status, "succeeded");
+        let counts = (closed.attempts_opened, closed.attempts_settled, closed.abandoned);
+        assert_eq!(counts, (1, 1, 0));
+
+        // The second run resumes the checkpoint: same run, one more
+        // invocation, and no new attempt for the replayed task.
+        run_plan_set(dir.path(), Some(1), None).await;
+        let resumed = RunProvenanceManifest::load(run_dir)
+            .expect("read the manifest")
+            .expect("the manifest is still there");
+        assert_eq!(resumed.run_id, manifest.run_id);
+        assert_eq!(resumed.config.hash, manifest.config.hash);
+        let invocations: Vec<(u32, bool)> = resumed
+            .invocations
+            .iter()
+            .map(|invocation| (invocation.inv, invocation.resumed))
+            .collect();
+        assert_eq!(invocations, [(1, false), (2, true)]);
+        let closed = resumed.closed.as_ref().expect("the resumed run closed");
+        assert_eq!(closed.attempts_opened, 1);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

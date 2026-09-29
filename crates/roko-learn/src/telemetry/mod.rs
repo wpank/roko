@@ -8,6 +8,8 @@
 //! - [`assign`](mod@assign): the one keyed-BLAKE3 assignment function.
 //! - [`writer`]: the per-run [`TelemetryWriter`] and the durable
 //!   [`AttemptOrdinals`].
+//! - [`manifest`]: reading and writing `manifest.json`, and the
+//!   [`AttemptTally`] of a run's attempts.
 //!
 //! A run's files live in `.roko/runs/<run_id>/`: `attempts.jsonl` holds the
 //! attempt-open lines and verdicts, next to `decisions.jsonl` and
@@ -22,10 +24,12 @@
 //! and `ConfigHashProvenance`.
 
 pub mod assign;
+pub mod manifest;
 pub mod records;
 pub mod writer;
 
 pub use assign::{Arm, Assignment, AssignmentUnit, LayerSpec, assign};
+pub use manifest::AttemptTally;
 pub use records::{
     AttemptCost, AttemptFailureClass, AttemptIdentity, AttemptKey, AttemptKeyed, AttemptOpenRecord,
     AttemptOutcome, AttemptTiming, AttemptUsage, AttemptVerdictRecord, Blame, CostSource,

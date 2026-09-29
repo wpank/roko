@@ -2,7 +2,8 @@
 """`vb`, the ViabilityBench driver (S08 §5.7). This item builds `run`, `estimate` and `materialize`.
 
     vb run --experiment PILOT-A --stream pilot --arm cheap_direct --model gpt-oss-120b --seeds 1-3 \
-           --allow-network --max-cost-usd 10 [--line BL0] [--limit N] [--proxy] [--transcripts] [--keep-workdirs]
+           --allow-network --max-cost-usd 10 [--line BL0] [--limit N] [--proxy] [--disturbance SPEC.toml] \
+           [--transcripts] [--keep-workdirs]
     vb estimate --stream pilot --arm cheap_direct --model gpt-oss-120b --seeds 1-3
     vb materialize --stream pilot --instance F1-l1-0001 --out DIR
 
@@ -34,9 +35,18 @@ starts the proxy inside the driver's process with one upstream: the arm's provid
 overrides it. The runners reach the model only through it: they get its loopback URL and no key, and it sends the
 provider's key. It logs every call to `<run_dir>/proxy.jsonl`, and before each task the driver sets its task to the
 task key, `<instance_id>.s<seed>`; the Roko arm finds its rows by that key (`run_roko`). Admission judges the
-provider's own URL, never the proxy's, so a network provider behind the loopback proxy still needs both flags. The
-profile is `clean`: it meters and injects no fault. A network provider without an `api_key_env` (a subscription CLI
-signs in by itself) cannot go through the proxy, which drops a client's own credentials.
+provider's own URL, never the proxy's, so a network provider behind the loopback proxy still needs both flags. Before
+each task the driver also sets the task's caps in the proxy: the arm's input cap, the per-attempt cap for a runner
+whose `PROXY_CAPS` name it (Roko has none of its own), and the fault profile, which is `clean` unless a disturbance
+covers the task. A network provider without an `api_key_env` (a subscription CLI signs in by itself) cannot go
+through the proxy, which drops a client's own credentials.
+
+**Disturbances** (`--disturbance SPEC.toml`, `disturb.py`, gap-15bb83). A `vb.disturbance/1` spec applies S08 §4.6's
+hooks for H6 to stream positions: `provider_fault` (a proxy fault profile), `budget_cut` (the task's caps scaled),
+`harder_mix` (the harder instances first from a position on) and `convention_flip` (a family's other latent). A spec
+the run cannot apply is refused before anything runs, and so are the two hooks not built yet, `model_swap` and
+`flaky_verify`. The config and so `config_hash` carry the spec, each record's `stream.perturbations_active` names the
+hooks that covered its task, and each attempt's `fault_injected` names the fault the proxy injected into its calls.
 
 The benchmark secret reaches only `hidden.py`, in the census, as a file path: `--secret-file`, else
 `$VB_SECRET_FILE`, else `~/.config/viabilitybench/secret` (mode 0600; `driver/secret.py init` makes one). Before the
@@ -69,6 +79,7 @@ import re
 import secrets
 import stat
 import sys
+import tempfile
 import tomllib
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass
@@ -79,6 +90,7 @@ import agent_env
 import archive
 import caps
 import census
+import disturb
 import faultproxy
 import harness
 import layout
@@ -136,6 +148,7 @@ class Run:
     head: tuple[str, bool]
     suite: dict
     proxy: faultproxy.FaultProxy | None = None
+    disturbances: tuple[disturb.Disturbance, ...] = ()  # the H6 hooks this run applies (disturb.py)
 
 
 @dataclass(frozen=True)
@@ -309,6 +322,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         if any(knobs.parse_instance_id(i)[0] == family for i in plan.instances) and not all(
                 (directory / name).is_file() for name in ("gen.py", "hidden.py")):
             raise DriverError(f"family {family} at {directory} needs gen.py and hidden.py")
+    disturbances = _disturbances(args.disturbance, plan, proxied)
     secret_file = _secret_file(args.secret_file)
     runner = load_runner(plan.arm)
     results_root = _outside_repo(args.results or os.environ.get("VB_RESULTS") or DEFAULT_RESULTS, "--results")
@@ -338,7 +352,8 @@ def cmd_run(args: argparse.Namespace) -> int:
               "stream": {"id": plan.stream.id, "instances": plan.instances, "spec_variant": plan.stream.spec_variant},
               "price_snapshot_id": plan.snapshot.id, "line": line,
               "prompt": {"version": getattr(runner, "PROMPT_VERSION", None),
-                         "sha256": getattr(runner, "PROMPT_SHA256", None)}}
+                         "sha256": getattr(runner, "PROMPT_SHA256", None)},
+              **({"disturbances": [one.as_json() for one in disturbances]} if disturbances else {})}
     config_hash = records.canonical_hash(config)
     head = records.harness_state()
     suite = {"id": "vb", "hash": _suite_hash(plan)}
@@ -355,12 +370,13 @@ def cmd_run(args: argparse.Namespace) -> int:
     endpoint = proxy.endpoint(plan.endpoint) if proxy else plan.endpoint
     run = Run(args=args, plan=plan, runner=runner, endpoint=endpoint, chat=provider.OpenAICompatible(endpoint),
               book=book, secret_file=secret_file, run_dir=run_dir, work_dir=work_dir, run_id=run_id,
-              config_hash=config_hash, head=head, suite=suite, proxy=proxy)
+              config_hash=config_hash, head=head, suite=suite, proxy=proxy, disturbances=disturbances)
     written = 0
     try:
         with secret.tripwire(loaded, keys):  # the secret file and the key file at mode 000 while the tasks run
             for seed in plan.seeds:
-                order = [instance for instance in plan.stream.order(seed) if instance in plan.instances]
+                order = disturb.reorder([i for i in plan.stream.order(seed) if i in plan.instances], disturbances,
+                                        lambda instance: knobs.parse_instance_id(instance)[1])
                 _write_json(run_dir / f"order-{seed}.json", {"stream": plan.stream.id, "seed": seed, "order": order})
                 for position, instance_id in enumerate(order, 1):
                     refusal = book.refusal(plan.worst_task_usd if plan.arm["arm"]["billed"] else 0.0)
@@ -372,8 +388,9 @@ def cmd_run(args: argparse.Namespace) -> int:
                         _log_error(run_dir, f"{instance_id}.s{seed}", "budget", f"stopped: ${book.spent_bound_usd:.4f} "
                                    "spent; the next task could pass --max-cost-usd")
                         return 1
-                    written += _run_one(run, instance_id, seed, {"id": plan.stream.id, "position": position,
-                                                                 "length": len(order), "perturbations_active": []})
+                    written += _run_one(run, instance_id, seed, {
+                        "id": plan.stream.id, "position": position, "length": len(order),
+                        "perturbations_active": disturb.kinds(disturbances, position)})
     except secret.SecretError as err:  # the tripwire could not be armed, so no task ran
         raise DriverError(str(err)) from None
     finally:
@@ -390,23 +407,28 @@ def _run_one(run: Run, instance_id: str, seed: int, stream_position: dict) -> bo
     key = f"{instance_id}.s{seed}"
     workdir, private = work_dir / key, run_dir / "private" / key
     homes = [work_dir / "_home" / key, work_dir / "_home" / f"{key}.census"]
+    position = stream_position["position"]
+    limits = disturb.scaled(plan.caps, run.disturbances, position)  # the arm's caps, cut by a budget_cut
     try:
         task = materialize.materialize(family_dir=plan.stream.family_dir(instance_id), instance_id=instance_id,
-                                       workdir=workdir, private_dir=private, spec_variant=plan.stream.spec_variant)
+                                       workdir=workdir, private_dir=private, spec_variant=plan.stream.spec_variant,
+                                       latent=disturb.latent(run.disturbances, position))
     except (materialize.MaterializeError, repo.RepoError, OSError, ValueError) as err:
         _log_error(run_dir, key, "materialize", err)
         _cleanup(args, [workdir])
         return False
     ctx = harness.TaskContext(
         experiment_id=args.experiment, run_id=run.run_id, arm=plan.arm, model=plan.model, endpoint=run.endpoint,
-        provider=run.chat, snapshot=plan.snapshot, caps=plan.caps, ledger=run.book, billed=plan.arm["arm"]["billed"],
+        provider=run.chat, snapshot=plan.snapshot, caps=limits, ledger=run.book, billed=plan.arm["arm"]["billed"],
         instance_id=instance_id, seed=seed, key=key, workdir=workdir, spec_text=task.spec_text,
         agent_env=agent_env.build(home=homes[0]), visible_verify=tuple(task.manifest["visible_verify"]),
         files_in_scope=tuple(task.manifest["files_in_scope"]))
     if run.proxy:  # the proxy's rows for this task carry its key, which is how the Roko arm finds them
         held = getattr(run.runner, "PROXY_CAPS", ())  # the caps a runner's harness cannot hold itself
-        run.proxy.configure(task=ctx.key, attempt_input_cap=plan.caps.input_tokens_per_attempt
-                            if "input_tokens_per_attempt" in held else None)
+        run.proxy.configure(task=ctx.key, profile=disturb.profile(run.disturbances, position),
+                            input_token_cap=limits.input_tokens_per_task,
+                            attempt_input_cap=limits.input_tokens_per_attempt if "input_tokens_per_attempt" in held
+                            else None)
     try:
         outcome = run.runner.run_task(ctx)
     except Exception as err:  # the runner owns its errors; this catches its bugs
@@ -414,6 +436,8 @@ def _run_one(run: Run, instance_id: str, seed: int, stream_position: dict) -> bo
         outcome = harness.TaskOutcome("infra_error", f"runner crashed: {type(err).__name__}: {err}", [], [], now, now)
     meter = _task_meter(run.proxy, key)
     _end_on_proxy_cap(outcome, meter)
+    if run.proxy:
+        _mark_faults(outcome.attempts, run_dir / PROXY_LOG, key)
     meter_usd = None if meter is None or meter["cost_unknown"] else meter["api_equiv_usd"]
     final = archived = None
     transcript_text = json.dumps(outcome.transcript, ensure_ascii=False)
@@ -528,6 +552,46 @@ def _end_on_proxy_cap(outcome: harness.TaskOutcome, meter: dict | None) -> None:
     outcome.status, outcome.reason = "aborted_cap", "input_token_cap"
 
 
+def _mark_faults(attempts: list[harness.Attempt], log: Path, key: str) -> None:
+    """Each attempt's `fault_injected` (S08 §4.6's ground truth): the first fault the proxy injected into its calls,
+    which are the task's requests in order, `calls` of them each."""
+    try:
+        lines = log.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return
+    rows = sorted((row for row in (json.loads(line) for line in lines if line.strip()) if row.get("task") == key),
+                  key=lambda row: row.get("ordinal") or 0)
+    start = 0
+    for attempt in attempts:
+        calls, start = rows[start:start + attempt.calls], start + attempt.calls
+        attempt.fault_injected = next((row["fault_injected"] for row in calls if row.get("fault_injected")), None)
+
+
+def _disturbances(path: Path | None, plan: Plan, proxied: bool) -> tuple[disturb.Disturbance, ...]:
+    """The run's `--disturbance` spec (`disturb.py`), refused before anything runs when the run cannot apply it."""
+    if path is None:
+        return ()
+    try:
+        found = disturb.load(path)
+    except disturb.DisturbanceError as err:
+        raise DriverError(str(err)) from None
+    if not proxied and any(one.kind == "provider_fault" for one in found):
+        raise DriverError("provider_fault injects its faults through the metering proxy: pass --proxy")
+    for latent in sorted({one.params["latent"] for one in found if one.kind == "convention_flip"}):
+        for family, directory in sorted(plan.stream.families.items()):  # render one instance of each family
+            instance = next((i for i in plan.instances if knobs.parse_instance_id(i)[0] == family), None)
+            if instance is None:
+                continue
+            with tempfile.TemporaryDirectory(prefix="vb-latent-") as tmp:
+                try:
+                    materialize.materialize(family_dir=directory, instance_id=instance, workdir=Path(tmp) / "work",
+                                            private_dir=Path(tmp) / "private", latent=latent)
+                except (materialize.MaterializeError, repo.RepoError, OSError, ValueError) as err:
+                    raise DriverError(f"convention_flip: family {family} cannot render latent {latent}: {err}") \
+                        from None
+    return tuple(found)
+
+
 def _secret_file(value: Path | None) -> Path:
     path = Path(value or os.environ.get("VB_SECRET_FILE") or DEFAULT_SECRET_FILE).expanduser().absolute()
     try:
@@ -625,6 +689,8 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("--proxy", action="store_true",
                      help="route an offline or unbilled run through the metering proxy (faultproxy.py), as every "
                           "billed network run is; its log is proxy.jsonl")
+    run.add_argument("--disturbance", type=Path, help="a vb.disturbance/1 spec: the H6 hooks to apply, and the "
+                     "stream positions they cover (driver/disturb.py)")
     run.add_argument("--secret-file", type=Path, help="default: $VB_SECRET_FILE, then " + str(DEFAULT_SECRET_FILE))
     run.add_argument("--key-file", type=Path, help=f"provider keys, NAME=value; default: ${secret.KEYS_FILE_ENV}, then "
                      f"{secret.KEYS_DEFAULT_PATH}")

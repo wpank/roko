@@ -16,16 +16,21 @@ from __future__ import annotations
 import json
 import os
 import re
+import signal
 import stat
 import subprocess
 import sys
+import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 import agent_env
 import census
 import layout
+import provider
+import run_roko
 import secret
 import vb
 from common import canary, hmac_seed
@@ -34,6 +39,8 @@ from stub_provider import StubServer, bash, scripted
 TOY_STREAM = str(layout.DRIVER_DIR / "testdata" / "toy_stream.toml")
 FAKE_KEY = "sk-test-not-a-real-key-5e1a"
 MARKER = "vb-probe-marker-3c9d"  # in the driver's environment: what a working `ps -E` or /proc probe must show
+HOLD_LOCK = ("import fcntl, os, sys, time; fd = os.open(sys.argv[1], os.O_RDWR | os.O_CREAT, 0o600); "
+             "fcntl.flock(fd, fcntl.LOCK_EX); print('locked', flush=True); time.sleep(60)")  # another run's lock
 CLAMP = "def clamp(value, low, high):\n    return max(low, min(value, high))\n"
 CORRECT = f"cat > calc/ops.py <<'EOF'\n{CLAMP}EOF"
 ENV_PROBE = ("printf 'VB_SECRET=%s\\n' \"${VB_SECRET-unset}\"; echo \"HOME=$HOME\"; "
@@ -300,6 +307,25 @@ def test_a_silent_read_of_the_secret_file_is_detected(operator, tmp_path, capsys
         assert vb.main(run_args(operator, "http://127.0.0.1:9/v1", "--run-id", "run-2")) == 2
         assert reason in capsys.readouterr().err
     os.chmod(loaded.path, secret.REST_MODE)
+    # One run per file, across processes: while another process holds the lock, the tripwire arms nothing.
+    holder = subprocess.Popen([sys.executable, "-c", HOLD_LOCK, f"{loaded.path}.lock"], stdout=subprocess.PIPE,
+                              text=True)
+    try:
+        assert holder.stdout.readline().strip() == "locked"
+        with pytest.raises(secret.SecretError, match="another vb run holds"), secret.tripwire(loaded):
+            pass
+        assert stat.S_IMODE(loaded.path.stat().st_mode) == secret.REST_MODE and secret.tripwires() == ()
+    finally:
+        holder.kill()
+        holder.wait()
+    # A SIGTERM ends the run through its `finally` blocks, which put the file back at rest.
+    before = signal.getsignal(signal.SIGTERM)
+    with pytest.raises(SystemExit) as stopped, secret.tripwire(loaded):
+        assert stat.S_IMODE(loaded.path.stat().st_mode) == secret.ARMED_MODE
+        os.kill(os.getpid(), signal.SIGTERM)
+        time.sleep(5)  # the handler raises before this ends
+    assert stopped.value.code == 128 + signal.SIGTERM and signal.getsignal(signal.SIGTERM) is before
+    assert stat.S_IMODE(loaded.path.stat().st_mode) == secret.REST_MODE and secret.tripwires() == ()
     # The stamp sees a replaced file, and the tripwire never chmods a file it did not stamp.
     wire = secret.Tripwire("secret-file", loaded.path, loaded)
     wire.arm()
@@ -364,6 +390,15 @@ def test_no_provider_key_in_the_driver_environment(operator, tmp_path, capsys, m
     assert stat.S_IMODE(key_file.stat().st_mode) == secret.REST_MODE
     for root in (out, operator["work"]):  # records, ledger, manifest, transcripts, archives, workdirs, homes
         assert [path for path in root.rglob("*") if path.is_file() and key.encode() in path.read_bytes()] == []
+    # Roko, whose tools run the agent's commands, gets a placeholder on a loopback URL, and a network endpoint (one
+    # that skipped the proxy) is refused before Roko starts.
+    loopback = SimpleNamespace(endpoint=provider.Endpoint("cerebras", "http://127.0.0.1:9/cerebras"), agent_env={})
+    assert run_roko._roko_env(loopback, "CEREBRAS_API_KEY", tmp_path / "roko.toml")["CEREBRAS_API_KEY"] == \
+        run_roko.OFFLINE_KEY
+    network = SimpleNamespace(endpoint=provider.Endpoint("cerebras", "https://api.cerebras.ai/v1", "CEREBRAS_API_KEY"),
+                              agent_env={})
+    with pytest.raises(run_roko.RunnerError, match="metering proxy"):
+        run_roko._roko_env(network, "CEREBRAS_API_KEY", tmp_path / "roko.toml")
 
 
 def test_the_key_file_is_private_and_well_formed(operator, tmp_path, capsys, monkeypatch):

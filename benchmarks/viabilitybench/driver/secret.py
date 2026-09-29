@@ -37,6 +37,11 @@ must `chmod` it before reading it. A chmod sets the file's ctime, and no normal 
   file is never handed to `hidden.py`.
 - **At rest** the file is 0600, and `preflight` refuses it at any other mode. Another mode means a `vb run` is using
   it (one run per secret file at a time), or a run was killed with the file armed.
+- **One run at a time.** `tripwire` also holds an exclusive lock on `<file>.lock` next to each file it arms. A second
+  `vb run` on the same file is refused even when both passed `preflight` at once; the lock goes with the process.
+- **Ending a run.** While `tripwire` holds the files, SIGTERM and SIGHUP (unless ignored, as under `nohup`) raise
+  SystemExit, so the run unwinds through the `finally` blocks that put the files back at 0600; by default Python dies
+  on either without running them. Only a SIGKILL leaves the files armed, and then `preflight` says so.
 - **Limits.** It detects, it does not prevent. A read by agent code while `hidden.py` has the file open still goes
   unseen (gap-8c3752), as does a debugger reading the driver's memory, and an agent running as root needs no chmod.
   A container per task (S08 decision 4) prevents all three. It also needs sub-second ctimes (APFS, ext4 and the
@@ -88,11 +93,14 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import fcntl
 import os
 import re
 import secrets
+import signal
 import stat
 import sys
+import threading
 import tomllib
 from collections.abc import Iterable, Iterator, Mapping
 from pathlib import Path
@@ -479,23 +487,61 @@ def key_exposures(keys: Mapping[str, str] | None = None) -> list[str]:
 @contextlib.contextmanager
 def tripwire(loaded: DriverSecret, keys: ProviderKeys | None = None) -> Iterator[tuple[Tripwire, ...]]:
     """Hold the secret file, and the key file when `keys` came from one, at mode 000 for the block: `vb run`'s
-    tasks. The census checks them (`armed`, `tripwires`), and both are back at 0600 afterwards. Raises SecretError
-    when a file cannot be armed (`Tripwire.arm`), or is armed already."""
+    tasks. The census checks them (`armed`, `tripwires`), and both are back at 0600 afterwards, also after a SIGTERM
+    or SIGHUP. Raises SecretError when a file cannot be armed (`Tripwire.arm`), or another run holds it."""
     wires = [Tripwire("secret-file", loaded.path, loaded),
              *([Tripwire("key-file", keys.path)] if keys is not None and keys.path is not None else [])]
     done: list[Tripwire] = []
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(_signals_exit())
+        try:
+            for wire in wires:
+                if wire.path in _armed:
+                    raise SecretError(f"{wire.path} is armed already: one vb run per file at a time")
+                stack.enter_context(_run_lock(wire.path))
+                wire.arm()
+                _armed[wire.path] = wire
+                done.append(wire)
+            yield tuple(wires)
+        finally:
+            for wire in done:
+                del _armed[wire.path]
+                wire.set(REST_MODE)
+
+
+@contextlib.contextmanager
+def _run_lock(path: Path) -> Iterator[None]:
+    """An exclusive lock on `<path>.lock` for the block: one `vb run` per armed file at a time. The lock is released
+    when its descriptor closes, which the process's death does too."""
+    lock = path.with_name(path.name + ".lock")
+    fd = os.open(lock, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
     try:
-        for wire in wires:
-            if wire.path in _armed:
-                raise SecretError(f"{wire.path} is armed already: one vb run per secret file at a time")
-            wire.arm()
-            _armed[wire.path] = wire
-            done.append(wire)
-        yield tuple(wires)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise SecretError(f"another vb run holds {lock}: one run per file at a time") from None
+        yield
     finally:
-        for wire in done:
-            del _armed[wire.path]
-            wire.set(REST_MODE)
+        os.close(fd)
+
+
+@contextlib.contextmanager
+def _signals_exit() -> Iterator[None]:
+    """For the block, SIGTERM and SIGHUP raise SystemExit, unless they are ignored (`nohup`) or handled already, so
+    the run unwinds through its `finally` blocks. Signal handlers belong to the main thread; elsewhere, nothing."""
+    previous = {}
+    if threading.current_thread() is threading.main_thread():
+        previous = {sig: signal.signal(sig, _raise_exit) for sig in (signal.SIGTERM, signal.SIGHUP)
+                    if signal.getsignal(sig) is signal.SIG_DFL}
+    try:
+        yield
+    finally:
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
+
+
+def _raise_exit(signum: int, frame: object) -> None:
+    raise SystemExit(128 + signum)
 
 
 def armed(path: Path) -> Tripwire | None:

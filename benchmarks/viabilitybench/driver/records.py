@@ -148,9 +148,9 @@ def _costs(attempts: list[harness.Attempt], billed: bool) -> dict:
 
     `billed_usd` is the API-equivalent cost for a billed API arm and $0 for a subscription arm. A CLI runner's attempts
     (`run_cli.CliAttempt`) carry their source, `cli_usage`, and the CLI's own figure as `vendor_usd`. A CLI session
-    killed before its `result` event was priced from its streamed messages (`cli.cost_basis` "stream"): a partial
-    total that misses background calls, so the record's source is `estimated` (bug-f62293), which the report counts
-    apart. Its ledger row keeps the runner's `cli_usage`.
+    killed before its `result` event was priced from its streamed messages (`cli.cost_basis` "stream"), a partial
+    total that misses background calls, which its runner labels `estimated`, as in its ledger row (bug-f62293,
+    bug-a49003). One estimated attempt makes the record's source `estimated`, which the report counts apart.
     """
     costs = [attempt.cost or ledger.Cost(None, None, "unknown") for attempt in attempts]
     if any(cost.source == "unknown" for cost in costs):
@@ -158,8 +158,7 @@ def _costs(attempts: list[harness.Attempt], billed: bool) -> dict:
                 "source": "unknown", "meter_cross_check_usd": None}
     api_equiv = sum(cost.api_equiv_usd for cost in costs)
     without_cache = sum(cost.without_cache_usd for cost in costs)
-    sources = {"estimated" if (getattr(attempt, "cli", None) or {}).get("cost_basis") == "stream" else cost.source
-               for attempt, cost in zip(attempts, costs)}
+    sources = {cost.source for cost in costs}
     vendor = [getattr(attempt, "vendor_usd", None) for attempt in attempts]
     source = "estimated" if "estimated" in sources else sources.pop() if len(sources) == 1 else "provider_usage"
     return {"api_equiv_usd": api_equiv, "billed_usd": api_equiv if billed else 0.0, "without_cache_usd": without_cache,

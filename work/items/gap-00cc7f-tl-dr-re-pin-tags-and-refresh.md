@@ -2,14 +2,16 @@
 id = "gap-00cc7f"
 kind = "gap"
 title = "TL;DR: re-pin tags and refresh statements to the whitepaper matrix after the 2026-09-29 merges"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p2"
 goal = "whitepaper"
 size = "M"
 subsystem = ["tldr"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-29
+last_verified_rev = "0cf9bacfe"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (22:55, coordinator after gap-fcea53)"
 anchors = ["tmp/cybernetic-harness/tldr/00-README.md", "tmp/cybernetic-harness/tldr/03-MECHANISMS.md", "tmp/cybernetic-harness/tldr/04-FRONTIER-PLANS-CHEAP-EXECUTES.md", "tmp/cybernetic-harness/tldr/05-GAPS-AND-PROPOSALS.md", "tmp/cybernetic-harness/tldr/research/"]
@@ -19,6 +21,11 @@ links = { depends_on = [], blocks = [], related = ["gap-fcea53", "gap-f3be74"], 
 
 [[verify]]
 command = "test $(grep -rhoE '(WIRED|PARTIAL|BROKEN|ORPHANED|BUILT-UNWIRED|MISSING|REMOVED)@(98ee1418f|a17d4dadd)' tmp/cybernetic-harness/tldr/*.md | wc -l) -eq 0"
+
+[closed]
+at = 2026-09-29
+by = "coordinator (session 7622b882)"
+evidence = "TL;DR re-pinned (tmp, wk-tldr2): all 136 tags in 00-06 read TAG@ed0c33bd5 with values from mechanisms.toml (03's 70 rows script-checked against the matrix: 0 mismatches; 05 §1 matches V1-V10); AU3/AU7/IS4 moves applied; statements refreshed (planner_model, write-set exclusion, plan verdicts, attempt records, router learning, reflex bypass, ViabilityBench); 05 gains Landed notes; changelog entry; 17 research notes got a 'Changed since' pointer. Verify passes; gap-4d516a and gap-f3be74 verifies still pass; frozen evidence untouched."
 +++
 
 ## Problem

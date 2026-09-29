@@ -32,7 +32,9 @@ measure that setup rather than Claude Code (W10). Every session gets:
 - `--no-session-persistence`, and `--dangerously-skip-permissions`, since the agent may edit and run anything in its
   workdir, as in the direct loop.
 Its environment is the task's agent environment plus those variables, and `ANTHROPIC_BASE_URL` for a loopback
-`--provider-url`, so an offline run cannot reach the API. No `VB_*` variable and no provider key reach it.
+`--provider-url`, so an offline run cannot reach the API. No `VB_*` variable and no provider key reach it. Its parent
+runs scrubbed too: `vb run`, and the probe below, start themselves again with an allowlisted environment
+(`agent_env.exec_scrubbed`, bug-32eb77).
 
 **Credentials** (`[cli] credentials`). With `CLAUDE_CONFIG_DIR` set, Claude Code looks for its macOS keychain entry
 under a name suffixed with a hash of that directory, and misses the subscription login. `keychain`, the default, sets
@@ -56,7 +58,8 @@ the task ends `aborted_cap` (reason `budget`) and claude never starts.
   unknown;
 - R, `total_cost_usd`, the CLI's own figure, kept as `vendor_usd`. The attempt records both and |U′ − R|/R.
 A session killed before its `result` event is priced from the usage its assistant messages carried
-(`cli.cost_basis = "stream"`): still the CLI's report, but a partial total that misses background calls.
+(`cli.cost_basis = "stream"`), a partial total that misses background calls, so its source is `estimated` in the
+ledger row and the run record alike (bug-f62293, bug-a49003).
 
 **Model.** `model_reported` is the model that served the main thread's messages (the `init` event's when none did). If
 any other model served it, the attempt reports that model, and `records.final_status` makes the run an `infra_error`
@@ -228,11 +231,12 @@ class Meter:
         return sum(cost.api_equiv_usd for cost in self._costs() if cost.api_equiv_usd is not None)
 
     def cost(self) -> ledger.Cost:
+        """The streamed messages' cost, `estimated`: a lower bound, not the CLI's own report (bug-a49003)."""
         costs = self._costs()
         if not costs or any(cost.source == "unknown" for cost in costs):
             return ledger.Cost(None, None, "unknown")
         return ledger.Cost(sum(cost.api_equiv_usd for cost in costs), sum(cost.without_cache_usd for cost in costs),
-                           "cli_usage")
+                           "estimated")
 
     def usage(self) -> dict | None:
         usages = [usage for _, usage in self.messages.values()]
@@ -477,6 +481,8 @@ def main(argv: list[str] | None = None) -> int:
     probe.add_argument("--work", type=Path, help="default: $VB_WORK, then ~/vb-work")
     probe.add_argument("--out", type=Path, help="where the probe's JSON goes (default: its directory under --work)")
     args = parser.parse_args(argv)
+    if argv is None and args.allow_network:  # a real probe: claude must not find the operator's credentials here
+        agent_env.exec_scrubbed()
     import vb  # here rather than at the top: `vb run` imports this module as a runner
 
     try:

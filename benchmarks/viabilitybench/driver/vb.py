@@ -49,7 +49,9 @@ which every agent can read (`ps -E`, `/proc/<pid>/environ`). A proxied run reads
 driver's memory for the proxy, the only sender of a key; a loopback `--provider-url` and a CLI that signs in by itself
 need none. `vb run` refuses to start while its environment holds any arm's `api_key_env` or a loaded key. While the
 tasks run, the secret file and the key file sit at mode 000, and the census reports any change to them as
-`leak_suspected` (the tripwire, gap-308373, `secret.tripwire`).
+`leak_suspected` (the tripwire, gap-308373, `secret.tripwire`). Once its checks have passed, `vb run` starts itself
+again with its environment cut to an allowlist (`agent_env.exec_scrubbed`, bug-32eb77). No other credential of the
+operator's (`GITHUB_TOKEN`, a key no arm names) reaches an agent through the driver.
 
 Exit status: 0 when every (task, seed) got a record, 1 when some did not (see `errors.jsonl`), 2 for a usage,
 configuration or admission error.
@@ -170,6 +172,7 @@ def main(argv: list[str] | None = None) -> int:
         return run_report(forwarded[1:])
     args = _parser().parse_args(argv)
     args.argv = ["vb", *(sys.argv[1:] if argv is None else argv)]
+    args.own_process = argv is None  # a script, not a call: `vb run` may start itself again (`agent_env.exec_scrubbed`)
     try:
         return args.handler(args)
     except (DriverError, caps.CapError, ledger.PriceError) as err:
@@ -316,6 +319,8 @@ def cmd_run(args: argparse.Namespace) -> int:
         loaded = secret.preflight(secret_file, work_root=work_root, results_root=results_root, keys=keys)
     except secret.SecretError as err:
         raise DriverError(str(err)) from None
+    if args.own_process:  # the checks passed on the operator's environment; now shed its credentials (bug-32eb77)
+        agent_env.exec_scrubbed()
     for value, flag in ((args.experiment, "--experiment"), (args.run_id or "x", "--run-id")):
         if not ID_RE.fullmatch(value):
             raise DriverError(f"{flag} must match {ID_RE.pattern}")

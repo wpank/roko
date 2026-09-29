@@ -2,14 +2,16 @@
 id = "bug-a49003"
 kind = "bug"
 title = "A killed subscription session's ledger row still says cli_usage; it needs an estimated cost and a subscription marker"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p3"
 goal = "proof"
 size = "S"
 subsystem = ["benchmarks/viabilitybench/driver"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-29
+last_verified_rev = "f3d563880"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-bench-fix3's report on bug-f62293)"
 anchors = ["benchmarks/viabilitybench/driver/run_cli.py", "benchmarks/viabilitybench/driver/ledger.py"]
@@ -19,6 +21,12 @@ links = { depends_on = [], blocks = [], related = ["bug-f62293", "gap-c4f364"], 
 
 [[verify]]
 command = "grep -qw 'def test_a_killed_sessions_ledger_row_is_an_estimate' benchmarks/viabilitybench/driver/test_run_cli.py && benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/driver/test_run_cli.py -k test_a_killed_sessions_ledger_row_is_an_estimate -q"
+
+[closed]
+at = 2026-09-29
+commit = "f3d563880"
+by = "wk-bench-fix3"
+evidence = "run_cli.Meter.cost labels the streamed total estimated, so a killed session's ledger row and run record both say estimated; records.py takes the runner's label. Ledger rows carry billed (Ledger.append; optional in ledger.schema.json for older rows): validate.py lets a billed-false row be estimated with $0 and requires it to bill exactly $0, refuses $0 for tokens on a billed-true row whatever its source, and keeps the source rule for unmarked rows; ledger._subscription reads the mark, inferring from a $0 bill only for older rows. Verify: test_a_killed_sessions_ledger_row_is_an_estimate passes; full bench suite 326 passed, 4 skipped."
 +++
 
 ## Problem

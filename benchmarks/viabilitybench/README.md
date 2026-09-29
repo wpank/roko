@@ -88,7 +88,9 @@ $PY benchmarks/viabilitybench/driver/vb.py run --experiment PILOT-A --stream pil
 - **Isolation.** Each (task, seed) gets a fresh workdir under `$VB_WORK` (default `~/vb-work/<run_id>/`). The task
   manifest, which holds the canary, and the pristine bundle live in the run's `private/` directory, never in a
   workdir. Agent processes get an allowlisted environment (`agent_env.py`): no `VB_*` variables, no provider keys, a
-  per-task HOME.
+  per-task HOME. Agents can read the driver's own start-up environment (`ps -E`, `/proc`), so once its checks pass,
+  `vb run` starts itself again with an allowlisted environment (`agent_env.exec_scrubbed`). Every other process of
+  your user stays readable (`ps -E -ax`), so run the benchmark from a session that exports no credential.
 - **Label.** The driver commits the final tree as c_i with `families/common/repo.export_tree`, never with git in the
   agent's repo, then archives it (a git bundle, a tarball and the diff). The census (`census.py`) re-runs the visible
   checks on a clean export with the test files restored, runs the family's `hidden.py --secret-file` and the integrity
@@ -105,10 +107,22 @@ $PY benchmarks/viabilitybench/driver/vb.py run --experiment PILOT-A --stream pil
   and the results; `secret.py init` makes one. It reaches only `hidden.py`, as a file path, after the agent's
   processes have ended: never in an environment variable or on a command line. `vb run` refuses to start when the
   driver's environment, or a `.roko/.env` that roko would load, holds the secret or its canary, and it checks every
-  agent environment against both. What it does not do: mode 0600 cannot stop an agent running as the driver's user
-  from reading the file by its path. A read that shows the secret or its canary in the transcript, the diff or the
-  tree trips the census; detecting a read that shows neither is gap-308373, and a container per task (S08 decision
-  4) would prevent it.
+  agent environment against both. Mode 0600 cannot stop an agent running as the driver's user from opening the file
+  by its path, so while the tasks run, the tripwire holds it at mode 000 (`secret.tripwire`). A read then needs a
+  chmod, the chmod changes the file's ctime, and the census marks the run `leak_suspected`. A container per task (S08
+  decision 4) would prevent the read rather than detect it.
+- **Provider keys** live in a key file under the secret file's rules: `--key-file`, `$VB_KEY_FILE`, default
+  `~/.config/viabilitybench/keys`, one `NAME=value` line per arm `api_key_env`. `secret.py keys` checks it. Only the
+  metering proxy, inside the driver, sends a key. `vb run` refuses to start while its environment holds one, and the
+  tripwire holds the key file at mode 000 for the whole run.
+- **One `vb run` at a time per secret file and per key file.** The tripwire takes an exclusive lock next to each file
+  (`<file>.lock`), so a second run on it stops at start. Run the arms one after another.
+  - **Parallel runs.** Give each run its own secret file (`secret.py init --secret-file PATH`, then `vb run
+    --secret-file PATH`), its own copy of the key file (`--key-file`), and its own share of the instances (a stream of
+    its own).
+  - **Keep that assignment for every arm and seed.** The hidden cases are HMAC(secret, instance), so an instance
+    audited under two secrets would face two different truth suites. `secret.py check` prints each file's
+    fingerprint for the record, and S09 §4.1 has the campaign rule.
 - **A new arm** adds `arms/<id>.toml` and, for a new harness, one `driver/<runner>.py` with `run_task(ctx)`
   (`harness.py` has the protocol); `vb.py` does not change.
 - **Digests.** `config_hash` and `record_id` are `sha256:` digests of canonical JSON. S01's BLAKE3 `b3:` digests
@@ -146,7 +160,7 @@ Together, the schemas and the validator enforce S08's honesty invariants (§4.12
 - an unknown cost is `null`, never 0: used tokens never cost $0, a `null` cost goes with cost source `unknown`
   and the other way round, missing usage makes the cost unknown, and a billed API row that used tokens cannot
   bill $0 (a subscription CLI session killed before its `result` event is priced from its stream, and its record
-  says `estimated`, with $0 billed);
+  and its ledger row say `estimated`, with $0 billed; a ledger row says whether it was billed, `billed`);
 - `costs.by_class` (S09 §4.9's cost classes) splits `api_equiv_usd` without changing it, and a queue wait
   (`execution.queue_wait_s`, the sum of the attempts') is never below 0; both are `null` when the arm cannot
   observe them;

@@ -386,10 +386,12 @@ def test_proxy_caps_meter_check_and_bundle(places, tmp_path, monkeypatch):
     binary.parent.mkdir()
     binary.write_text(CALLING_ROKO.replace("__PYTHON__", sys.executable).replace("__CALLS__", "10"))
     binary.chmod(0o755)
-    arm = tmp_path / "roko_capped.toml"  # each call reads 1,070 input tokens, so the cap refuses a task's third
+    # A task's first call may bill up to its bytes (4,600 input tokens), and each repeat of that prompt its first
+    # call's 1,070: under a 5,000-token cap, four calls fit and the fifth could cross it.
+    arm = tmp_path / "roko_capped.toml"
     arm.write_text((layout.ARMS_DIR / "roko_fixed.toml").read_text().replace(
         'binary = "target/debug/roko"', f"binary = {json.dumps(str(binary))}").replace(
-        "input_tokens_per_task = 450000", "input_tokens_per_task = 2000"))
+        "input_tokens_per_task = 450000", "input_tokens_per_task = 5000"))
 
     def run(run_id: str, arm: str, url: str) -> int:
         return vb.main(["run", "--experiment", "TEST-OFFLINE", "--run-id", run_id, "--stream", TOY_STREAM, "--arm", arm,
@@ -403,9 +405,8 @@ def test_proxy_caps_meter_check_and_bundle(places, tmp_path, monkeypatch):
     rows = read_jsonl(out / "proxy.jsonl")
     for key in ("F1-l1-0001.s1", "F1-l1-0002.s1"):  # the cap is per task: each gets all of it
         calls = [row for row in rows if row["task"] == key]
-        assert [(row["status"], row["refused"]) for row in calls] == [(200, None), (200, None),
-                                                                      (403, "input_token_cap")]
-    assert served == 4  # a refused call never reaches the provider
+        assert [(row["status"], row["refused"]) for row in calls] == [(200, None)] * 4 + [(403, "input_token_cap")]
+    assert served == 8  # a refused call never reaches the provider
     for record in by_instance(out / "records.jsonl").values():
         assert (record["execution"]["status"], record["execution"]["reason"]) == ("aborted_cap", "input_token_cap")
         assert record["vs"]["label"] == 0 and validate.validate("run-record", record) == []

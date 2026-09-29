@@ -350,7 +350,7 @@ def test_result_event_is_priced_as_u_prime_and_r(tmp_path):
     assert meter.usage() == {"tokens_in": 20, "tokens_out": 47, "tokens_cache_read": 2000, "tokens_cache_write_5m": 0,
                              "tokens_cache_write_1h": 1000, "tokens_reasoning": 0}
     assert meter.spent_usd() == pytest.approx((20 * 4.00 + 47 * 20.00 + 2000 * 0.20 + 1000 * 8.00) / 1e6)
-    assert meter.cost().source == "cli_usage"
+    assert meter.cost().source == "estimated"  # a lower bound from the stream, not the CLI's own report
 
 
 def test_vb_run_with_a_fake_claude_labels_and_prices_the_run(places):
@@ -459,6 +459,35 @@ def test_a_killed_subscription_session_gets_an_honest_cost_label(places):
     [estimated] = [m for m in metrics.arm_metrics([record], "TEST-CLI", "fd_claude")
                    if m.metric == "estimated_cost_runs" and m.cell == "all"]
     assert (estimated.value, estimated.n) == (1, 1)
+
+
+def test_a_killed_sessions_ledger_row_is_an_estimate(places):
+    """bug-a49003: the killed session's ledger row carries its run record's label, `estimated`, and says it is a
+    subscription row (`billed` false), which is what lets it bill $0. A row marked billed never bills $0 for tokens,
+    a subscription row bills exactly $0, and a row from before the mark keeps the rule of its source."""
+    program, _ = fake_claude(places, "spend")
+    assert run_vb(places, arm_file(places, program)) == 0
+    [record] = read_jsonl(run_dir(places) / "records.jsonl")
+    [row] = read_jsonl(run_dir(places) / "ledger.jsonl")
+    assert validate.validate("ledger", row) == [] and validate.validate("run-record", record) == []
+    assert row["source"] == record["costs"]["source"] == "estimated"
+    assert (row["billed"], row["billed_usd"], row["api_equiv_usd"]) == (
+        False, 0.0, pytest.approx(record["costs"]["api_equiv_usd"]))
+    assert ledger._subscription(row)
+    for change, error in (({"billed": True}, "$.billed_usd: $0 billed for"),
+                          ({"billed_usd": 0.5}, "a subscription row (billed false) bills $0, not 0.5")):
+        assert any(error in problem for problem in validate.validate("ledger", {**row, **change})), change
+    unmarked = {key: value for key, value in row.items() if key != "billed"}
+    assert any("$0 billed for" in problem for problem in validate.validate("ledger", unmarked))
+    # A session that reached its result event keeps the CLI's own figure; a billed API row says it was billed.
+    book = ledger.Ledger(run_dir(places) / "extra.jsonl", line="BL0", experiment_id="TEST-CLI", run_id="run-1",
+                         price_snapshot_id=ledger.load_snapshot().id)
+    usage = ledger.vb_usage(1000, 100)
+    for cost, billed in ((ledger.Cost(0.01, 0.01, "cli_usage"), False), (ledger.Cost(0.01, 0.01, "provider_usage"),
+                                                                        True)):
+        written = book.append(attempt_key=f"run-1/x:{int(billed)}", provider="anthropic", model_reported=MODEL,
+                              usage=usage, cost=cost, billed=billed, reserved_usd=1.0)
+        assert written["billed"] is billed and ledger._subscription(written) is not billed
 
 
 def test_the_wallclock_limit_kills_a_hung_session(places):

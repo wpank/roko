@@ -2,14 +2,16 @@
 id = "gap-7ee870"
 kind = "gap"
 title = "Research paper: re-pin status tags to the whitepaper matrix at its new pin"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p2"
 goal = "whitepaper"
 size = "M"
 subsystem = ["paper"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-29
+last_verified_rev = "8c03bad1f"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (22:55, coordinator after gap-fcea53)"
 anchors = ["tmp/cybernetic-harness/paper/sections/"]
@@ -19,6 +21,11 @@ links = { depends_on = [], blocks = [], related = ["gap-fcea53"], supersedes = [
 
 [[verify]]
 command = "test $(grep -rhoE '(WIRED|PARTIAL|BROKEN|ORPHANED|BUILT-UNWIRED|MISSING|REMOVED)@a17d4dadd' tmp/cybernetic-harness/paper/sections/*.md | wc -l) -eq 0 && python3 tools/paperlint.py --budget 1.2 --check-identifiers tmp/cybernetic-harness/paper/sections/*.md"
+
+[closed]
+at = 2026-09-29
+by = "coordinator (session 7622b882)"
+evidence = "Research paper re-pinned (tmp, wk-rp-appCD): all 81 status tags moved from a17d4dadd to ed0c33bd5 with values from the whitepaper matrix (§4 T1 spec-gate and §4.7 MISSING->PARTIAL per AU3; verify-then-escalate MISSING->ORPHANED in §1/C1.54 per EX7); non-matrix tags checked in the tree (ViabilityBench PARTIAL; arms BUILT-UNWIRED or MISSING); text corrections in §4 steps 1, 2, 5, 6, 7, 11, App B (AU3), App A (gap-a8a160) and C4.36; E.2 re-pinned. Verify passes: 0 tags at a17d4dadd, paperlint --budget 1.2 --check-identifiers clean on 18 sections, no bad tag commits under --strict; CLAIMS-EVIDENCE regenerated."
 +++
 
 ## Problem

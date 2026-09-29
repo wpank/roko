@@ -338,6 +338,40 @@ def test_proxy_meters_attempts_and_flags_silent_ones():
                for problem in settle(evidence([PIN], proxy_rows=swapped))[1])
 
 
+
+def test_attempts_ending_in_the_same_second_get_their_own_usage():
+    # bug-09fac4: the proxy stamps requests to the microsecond, as roko stamps its episodes (these three ends are real
+    # roko's, from one capped task), so three attempts that end within one second each keep their own requests. The
+    # second attempt's only call was refused at the input cap: it billed nothing, so it costs $0, not unknown.
+    usage = {"tokens_in": 900, "tokens_cache_read": 100, "tokens_cache_write_5m": 0, "tokens_cache_write_1h": 0,
+             "tokens_out": 50, "tokens_reasoning": 0}
+    base = {"task": "F1-l1-0001.s1", "model_requested": PIN, "model_reported": PIN, "usage": usage,
+            "usage_source": "reported", "status": 200}
+    refused = {**base, "usage": None, "usage_source": "none", "model_reported": None, "status": 403,
+               "refused": "input_token_cap"}
+    stamps = ["19:49:04.100512", "19:49:04.150034", "19:49:04.240871", "19:49:04.290006"]
+    rows = [{**row, "ordinal": ordinal, "ts": f"2026-09-29T{stamp}Z"}
+            for ordinal, (row, stamp) in enumerate(zip([base, base, refused, base], stamps), 1)]
+
+    def with_ends(proxy_rows: list[dict]) -> run_roko.Evidence:
+        found = evidence([PIN, PIN, PIN], proxy_rows=proxy_rows)
+        for episode, end in zip(found.episodes, ("19:49:04.216594", "19:49:04.266200", "19:49:04.311739")):
+            episode["completed_at"] = f"2026-09-29T{end}Z"
+        return found
+
+    attempts, problems = settle(with_ends(rows))
+    assert problems == []
+    assert [(attempt.calls, attempt.usage_unknown) for attempt in attempts] == [(2, False), (1, False), (1, False)]
+    assert [attempt.usage["tokens_in"] for attempt in attempts] == [1800, 0, 900]
+    row = ledger.load_snapshot().row(PIN)
+    assert [attempt.cost.api_equiv_usd for attempt in attempts] == pytest.approx(
+        [ledger.price(attempts[0].usage, row).api_equiv_usd, 0.0, ledger.price(attempts[2].usage, row).api_equiv_usd])
+    assert {attempt.cost.source for attempt in attempts} == {"provider_usage"}
+    # The proxy's older whole-second stamps could not tell these attempts apart: the first took every request.
+    attempts, problems = settle(with_ends([{**row, "ts": row["ts"][:19] + "Z"} for row in rows]))
+    assert problems == [] and [(attempt.calls_known, attempt.usage_unknown) for attempt in attempts] == [
+        (True, False), (False, True), (False, True)]
+
 def test_plan_slice_records_carry_queue_waits_and_class_costs(places, tmp_path):
     # gap-04e8e2: the fake roko records two attempts with their dispatch times, and the metering proxy's log holds
     # their calls, one of them rate limited. The record carries the queue wait, each attempt's class and busy time,

@@ -240,6 +240,11 @@ def test_pinned_run_records_attempts_and_leaves_only_the_agents_tree(places, tmp
     assert record["costs"]["api_equiv_usd"] is None and record["costs"]["source"] == "unknown"
     assert last["roko_usage"]["input_tokens"] == 1200
     assert all(row["api_equiv_usd"] is None for row in read_jsonl(out / "ledger.jsonl"))
+    # Each attempt Roko may make (max_retries 2) was reserved before `plan run`; a row or a release freed each.
+    keys = [f"run-1/F1-l1-0001.s1:{number}" for number in (1, 2, 3)]
+    events = [(event["event"], event["attempt_key"]) for event in read_jsonl(out / "reservations.jsonl")]
+    assert events == [("reserve", key) for key in keys] + [("release", keys[2])]
+    assert ledger.read_books(places["results"]).reservations == []
     diff = (out / "archives" / "F1-l1-0001.s1.diff").read_text()
     assert "return max(low, min(value, high))" in diff
     assert "roko.toml" not in diff and "plans/" not in diff and ".roko/" not in diff
@@ -258,6 +263,25 @@ def test_pinned_run_records_attempts_and_leaves_only_the_agents_tree(places, tmp
     assert extra <= {"ROKO_CONFIG", "CEREBRAS_API_KEY", "__CF_USER_TEXT_ENCODING"}
     assert env["CEREBRAS_API_KEY"] == run_roko.OFFLINE_KEY and env["ROKO_CONFIG"].endswith("/roko.toml")
     assert env["ROKO_CONFIG"] != "/elsewhere/roko.toml" and env["HOME"].startswith(str(places["work"]))
+
+
+def test_attempt_reservations_are_all_or_nothing(tmp_path):
+    budget = tmp_path / "budget.toml"
+    budget.write_text('schema_version = "vb.budget/1"\nsource = "test"\n[programme]\ntotal_usd = 10\n'
+                      'never_allocated_min_usd = 1\nstop_usd = 5\n[[line]]\nid = "BL0"\ngate = "G0"\n'
+                      'content = "test"\nplanned_usd = 0.1\ncap_usd = 0.25\n')
+    run_dir = tmp_path / "results" / "T" / "r"
+    run_dir.mkdir(parents=True)
+    book = ledger.Ledger(run_dir / "ledger.jsonl", line="BL0", experiment_id="T", run_id="r",
+                         price_snapshot_id=ledger.DEFAULT_SNAPSHOT, budget=ledger.load_budget(budget))
+    keys = ["r/x:1", "r/x:2", "r/x:3"]
+    with pytest.raises(ledger.BudgetError):  # two attempts fit under $0.25, the third does not
+        run_roko._reserve(book, keys, 0.1)
+    events = [(event["event"], event["attempt_key"]) for event in read_jsonl(run_dir / ledger.RESERVATIONS)]
+    assert events == [("reserve", "r/x:1"), ("reserve", "r/x:2"), ("release", "r/x:1"), ("release", "r/x:2")]
+    assert ledger.read_books(tmp_path / "results").reservations == []
+    run_roko._reserve(book, keys[:2], 0.1)  # nothing is left held, so two attempts fit again
+    assert len(ledger.read_books(tmp_path / "results").reservations) == 2
 
 
 def test_roko_failures_timeouts_and_missing_records(places, tmp_path):

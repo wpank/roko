@@ -38,7 +38,9 @@ environment to the agent's shell.
 `--max-turns` and `usd_per_task` to `--max-budget-usd`, where Claude Code stops itself and still reports its usage.
 The runner also kills the session once the live API-equivalent spend of its streamed messages passes `usd_per_task`,
 and at `wallclock_s`. The direct loop's other caps do not apply. A kill ends Claude Code's process group; a command it
-started in a session of its own can outlive it.
+started in a session of its own can outlive it. Before claude starts, the attempt is reserved on the run's budget
+line (`Ledger.reserve`, $0 on the subscription), and its ledger row releases the reservation. If the line refuses,
+the task ends `aborted_cap` (reason `budget`) and claude never starts.
 
 **Cost** (S09 §4.1), from the last `result` event, whose figures are cumulative:
 - U′, the headline (`api_equiv_usd`, source `cli_usage`): Σ over `modelUsage`'s models of their tokens × the snapshot
@@ -279,6 +281,14 @@ def run_task(ctx: harness.TaskContext) -> harness.TaskOutcome:
         invocation = build_invocation(ctx, cli)
     except (CliError, OSError, agent_env.AgentEnvError) as err:
         return harness.TaskOutcome("infra_error", f"claude setup: {err}", [], transcript, started, harness.utc_now())
+    attempt = CliAttempt(number=1, attempt_key=f"{ctx.chain_key}:1", model_requested=ctx.model,
+                         provider=ctx.endpoint.provider,
+                         reserved_usd=caps.worst_task_usd(ctx.caps, ctx.price_row) or ctx.caps.usd_per_task)
+    try:  # a subscription bills nothing, so it reserves $0 against its budget line
+        ctx.ledger.reserve(attempt.attempt_key, attempt.reserved_usd if ctx.billed else 0.0)
+    except ledger.BudgetError as err:  # the line has no room for the session, which never starts
+        transcript.append({"attempt": 1, "event": "stop", "kind": "aborted_cap", "reason": str(err)})
+        return harness.TaskOutcome("aborted_cap", "budget", [], transcript, started, harness.utc_now())
     meter = Meter(ctx.snapshot, cache_write_ttl=cli.cache_write_ttl)
     session = run_session(invocation, prompt, cwd=ctx.workdir, wallclock_s=ctx.caps.wallclock_s,
                           usd_cap=ctx.caps.usd_per_task, meter=meter)
@@ -288,14 +298,12 @@ def run_task(ctx: harness.TaskContext) -> harness.TaskOutcome:
         transcript.append({"attempt": 1, "event": "stop", "kind": session.stop.kind, "reason": session.stop.reason})
     if session.stderr:
         transcript.append({"attempt": 1, "stderr": session.stderr})
-    attempts = []
-    if session.started:
-        attempt = CliAttempt(number=1, attempt_key=f"{ctx.chain_key}:1", model_requested=ctx.model,
-                             provider=ctx.endpoint.provider, ended_by=reason if status != "infra_error" else status,
-                             reserved_usd=caps.worst_task_usd(ctx.caps, ctx.price_row) or ctx.caps.usd_per_task)
-        _settle(ctx, attempt, session, meter, invocation, cli)
-        attempts.append(attempt)
-    return harness.TaskOutcome(status=status, reason=reason, attempts=attempts, transcript=transcript,
+    if not session.started:  # no process, so no model call: nothing to book
+        ctx.ledger.release(attempt.attempt_key)
+        return harness.TaskOutcome(status, reason, [], transcript, started, harness.utc_now())
+    attempt.ended_by = reason if status != "infra_error" else status
+    _settle(ctx, attempt, session, meter, invocation, cli)  # its ledger row releases the reservation
+    return harness.TaskOutcome(status=status, reason=reason, attempts=[attempt], transcript=transcript,
                                started_at=started, finished_at=harness.utc_now())
 
 

@@ -23,9 +23,10 @@ import ledger
 import provider
 import records
 import run_cli
+import secret
 import validate
 import vb
-from common import canary, hmac_seed
+from common import canary
 
 TOY_STREAM = str(layout.DRIVER_DIR / "testdata" / "toy_stream.toml")
 MODEL = "claude-opus-5-5"
@@ -128,21 +129,22 @@ emit(CONFIG["result"])
 
 @pytest.fixture
 def places(tmp_path: Path, monkeypatch) -> dict[str, Path]:
-    secret = hmac_seed.write_secret_file(tmp_path / "private-config" / "secret")
+    secret_file = secret.create(tmp_path / "private-config" / "secret")  # a secret line and a canary line
     fake_bin = tmp_path / "fake-bin"
     fake_bin.mkdir()
     monkeypatch.setenv("PATH", os.pathsep.join([str(fake_bin), *agent_env.SYSTEM_PATH]))  # no real claude on it
-    for name, value in {"VB_SECRET": secret.read_text().strip(), "VB_SECRET_FILE": str(secret),
-                        "ANTHROPIC_API_KEY": FAKE_KEY, "CLAUDE_CODE_OAUTH_TOKEN": FAKE_KEY}.items():
+    monkeypatch.delenv(secret.ENV_NAME, raising=False)  # `vb run` refuses a driver that holds VB_SECRET (preflight)
+    for name, value in {"VB_SECRET_FILE": str(secret_file), "ANTHROPIC_API_KEY": FAKE_KEY,
+                        "CLAUDE_CODE_OAUTH_TOKEN": FAKE_KEY}.items():
         monkeypatch.setenv(name, value)  # the driver may hold these; claude must never see them
     return {"tmp": tmp_path, "bin": fake_bin, "results": tmp_path / "results", "work": tmp_path / "work",
-            "secret": secret}
+            "secret": secret_file}
 
 
 def fake_claude(places: dict[str, Path], scenario: str) -> tuple[Path, Path]:
     """Put the fake `claude` for `scenario` on PATH; returns it and the log of what it was given."""
     log, config = places["tmp"] / f"claude-{scenario}.jsonl", places["tmp"] / f"claude-{scenario}.json"
-    needles = [places["secret"].read_text().strip(), canary.RELEASE_CANARY, "vb.task/1"]
+    needles = [*secret.load(places["secret"]).needles, canary.RELEASE_CANARY, "vb.task/1"]
     config.write_text(json.dumps({"scenario": scenario, "log": str(log), "result": RESULT, "needles": needles,
                                   "files": {"calc/ops.py": CORRECT}}))
     program = places["bin"] / "claude"
@@ -179,7 +181,7 @@ def run_dir(places: dict[str, Path]) -> Path:
     return places["results"] / "TEST-CLI" / "run-1"
 
 
-def task_context(places: dict[str, Path], arm: dict, *, key: str = "F1-l1-0001.s1",
+def task_context(places: dict[str, Path], arm: dict, *, key: str = "F1-l1-0001.s1", line: str = "BL0",
                  endpoint: provider.Endpoint | None = None) -> harness.TaskContext:
     snapshot = ledger.load_snapshot()
     results = places["results"] / "TEST" / "run-1"
@@ -190,7 +192,7 @@ def task_context(places: dict[str, Path], arm: dict, *, key: str = "F1-l1-0001.s
         experiment_id="TEST", run_id="run-1", arm=arm, model=MODEL, provider=None, snapshot=snapshot,
         endpoint=endpoint or provider.Endpoint("anthropic", "https://api.anthropic.com"),
         caps=caps.Caps.from_table(arm["caps"]), billed=False, instance_id="F1-l1-0001", seed=1, key=key,
-        ledger=ledger.Ledger(results / "ledger.jsonl", line="BL0", experiment_id="TEST", run_id="run-1",
+        ledger=ledger.Ledger(results / "ledger.jsonl", line=line, experiment_id="TEST", run_id="run-1",
                              price_snapshot_id=snapshot.id),
         workdir=work / key, spec_text="Implement clamp.", agent_env=agent_env.build(home=work / "_home" / key))
 
@@ -241,8 +243,8 @@ def test_claude_arm_command_is_isolated_and_pinned(places, monkeypatch):
                                              "CLAUDE_CODE_DISABLE_AUTO_MEMORY",
                                              "CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD", "DISABLE_AUTOUPDATER"}
     assert not [name for name in env if agent_env.FORBIDDEN_NAME.search(name)]  # no VB_*, key or token
-    for secret in (FAKE_KEY, places["secret"].read_text().strip(), str(places["secret"])):
-        assert secret not in "".join(env.values())
+    for needle in (FAKE_KEY, str(places["secret"]), *secret.load(places["secret"]).needles):
+        assert needle not in "".join(env.values())
     assert env["PATH"].split(os.pathsep)[0] == str(home / ".vb-bin")  # the agent's PATH, not the driver's
     assert run_cli.ancestor_instructions(ctx.workdir) == []
 
@@ -364,6 +366,10 @@ def test_vb_run_with_a_fake_claude_labels_and_prices_the_run(places):
     [row] = read_jsonl(out / "ledger.jsonl")
     assert validate.validate("ledger", row) == [] and row["source"] == "cli_usage" and row["billed_usd"] == 0.0
     assert row["api_equiv_usd"] == pytest.approx(U_PRIME) and row["model_reported"] == MODEL
+    # The session was reserved before claude started ($0 on the subscription), and its row released it.
+    [reserved] = read_jsonl(out / "reservations.jsonl")
+    assert (reserved["event"], reserved["attempt_key"], reserved["reserved_usd"]) == ("reserve", row["attempt_key"], 0)
+    assert ledger.read_books(places["results"]).reservations == []
     manifest = json.loads((out / "manifest.json").read_text())
     assert manifest["config"]["prompt"] == {"version": run_cli.PROMPT_VERSION, "sha256": run_cli.PROMPT_SHA256}
     assert manifest["config"]["arm"]["cli"]["effort"] == "high" and record["config_hash"] == manifest["config_hash"]
@@ -436,6 +442,15 @@ def test_a_model_switch_or_a_crash_is_an_infra_error(places, scenario):
         assert "exited 3 without a result event" in record["execution"]["reason"]
         assert "crashing before the first event" in record["execution"]["reason"]
         assert record["costs"]["source"] == "unknown" and row["api_equiv_usd"] is None
+
+
+def test_a_budget_refusal_starts_no_session(places):
+    program, log = fake_claude(places, "solve")
+    ctx = task_context(places, vb.load_arm(arm_file(places, program)), line="BL99")  # the budget funds no BL99
+    outcome = run_cli.run_task(ctx)
+    assert (outcome.status, outcome.reason, outcome.attempts) == ("aborted_cap", "budget", [])
+    assert "BL99" in outcome.transcript[-1]["reason"] and not log.exists()  # claude never started
+    assert not ctx.ledger.path.exists() and not ctx.ledger.path.with_name(ledger.RESERVATIONS).exists()
 
 
 def test_probe_saves_the_init_event(places):

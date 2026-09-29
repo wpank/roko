@@ -22,21 +22,21 @@ sequential or integrative work.
 
 A frontier model writes the plan: small tasks, each with the commands that prove it done. The Graph engine
 (`crates/roko-graph/src/engine.rs`) runs it as a dependency graph with durable checkpoints and resume
-(WIRED@a17d4dadd), and each task's verify commands decide its verdict (WIRED@a17d4dadd), though a task without any
-still counts as passed (PARTIAL@a17d4dadd, spec-e9d7ec). Roko is designed to run independent tasks in parallel on
+(WIRED@ed0c33bd5), and each task's verify commands decide its verdict (WIRED@ed0c33bd5), though learning and the
+dashboard still count a task without any as passed (PARTIAL@ed0c33bd5, spec-e9d7ec). Roko is designed to run independent tasks in parallel on
 the cheapest model that passes, escalate on failure, merge and check the whole plan, and regulate itself: keep cost
 per verified task and the share of wrong passes in bounds, and audit its own regulators. Today, tasks run one at a
-time by default (PARTIAL@a17d4dadd, spec-a78d57); the tier ladder is MISSING@a17d4dadd and escalation
-ORPHANED@a17d4dadd (spec-98f76d); merging is ORPHANED@a17d4dadd and the whole-plan check MISSING@a17d4dadd
-(spec-a0e40a); and the regulators and audits are MISSING@a17d4dadd, while the learning loops that run
-(PARTIAL@a17d4dadd) have no measured benefit (spec-6ac537).
+time by default (PARTIAL@ed0c33bd5, spec-a78d57); the tier ladder is MISSING@ed0c33bd5 and escalation
+ORPHANED@ed0c33bd5 (spec-98f76d); merging is ORPHANED@ed0c33bd5 and the whole-plan check MISSING@ed0c33bd5
+(spec-a0e40a); and the regulators and audits are MISSING@ed0c33bd5, while the learning loops that run
+(PARTIAL@ed0c33bd5) have no measured benefit (spec-6ac537).
 
 ## 1.3 The evidence so far
 
 Roko ran most of the build of its own web portal: 16 plans and 173 tasks, 168 gate-verified, for $174.87 of
 recorded agent spend.[^1-portal] Since a verdict fix on 2026-09-28, 0 of 151 recorded passes had a failing gate, against
 101 of 373 before it.[^1-verdicts] Two facts limit what this shows. All 210 attempts pinned one mid-tier model,
-`claude-sonnet-4-6`, so the cheap-model half of the thesis is UNPROVEN@a17d4dadd (spec-567e52). And supervising
+`claude-sonnet-4-6`, so the cheap-model half of the thesis is UNPROVEN@ed0c33bd5 (spec-567e52). And supervising
 frontier-model Claude Code sessions wrote and audited the plans, fixed engine defects, set up worktrees, merged by
 hand and checked the assembled product (§7), costing an estimated 16–20× Roko's recorded spend over the same
 days.[^1-operator] Across 42 captured runs, Roko recovered from a failure by itself twice and people stepped in

@@ -9,7 +9,8 @@
  *
  *  - Regular events:  `id: <seq>\ndata: <DashboardEvent JSON>\n\n`
  *  - Gap frames:      `event: gap\nid: <seq>\ndata: <GapPayload JSON>\n\n`
- *  - Keep-alive:      `: keepalive` comments every 8 s (ignored by this client)
+ *  - Keep-alive:      `event: keepalive\ndata: {}\n\n` every 8 s while idle
+ *                     (it only resets the keepalive watchdog)
  *
  * The server accepts the last-seen cursor via the `Last-Event-ID` HTTP header
  * (highest precedence) or the `?lastEventId=<seq>` query parameter.  Because
@@ -62,9 +63,9 @@ const INITIAL_RECONNECT_DELAY_MS = 1_000;
 /** Maximum reconnect delay cap in milliseconds (16 s). */
 const MAX_RECONNECT_DELAY_MS = 16_000;
 
-/** If no event arrives within this window, force a reconnect to surface stale
- *  connections early.  EventSource hides the server's `: keepalive` comments,
- *  so an idle but healthy stream is reopened too, from its cursor. */
+/** If nothing arrives within this window, force a reconnect to surface stale
+ *  connections early.  An idle but healthy stream still delivers a keepalive
+ *  event every 8 s. */
 const KEEPALIVE_TIMEOUT_MS = 60_000;
 
 /** SSE endpoint path on roko-serve. */
@@ -251,6 +252,9 @@ export class SseClient {
       this.resetKeepalive();
       this.handleGapFrame(msgEv.data, msgEv.lastEventId ?? null);
     });
+
+    // `event: keepalive` frames carry nothing; they only show the stream is alive.
+    es.addEventListener('keepalive', () => this.resetKeepalive());
 
     es.onerror = () => {
       // EventSource error fires on both initial connection failure and mid-

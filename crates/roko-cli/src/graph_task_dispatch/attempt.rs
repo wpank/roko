@@ -314,6 +314,7 @@ impl Settlement {
             gate_verdict: None,
             first_token_seen: false,
             failure_reason: Some(format!("harness: {error}")),
+            rung: None,
         }
     }
 }

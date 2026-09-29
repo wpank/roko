@@ -3,13 +3,14 @@ id = "bug-ceab60"
 kind = "bug"
 title = "The agent command guard lets deletes through find | xargs rm, fd -x rm, and command strings given to ssh or parallel"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p2"
 goal = "release"
 size = "S"
 subsystem = ["roko-agent/claude_cli_guard"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-29
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-guard2's report)"
 anchors = ["crates/roko-agent/src/claude_cli_guard.py"]
@@ -50,3 +51,11 @@ The guard's rules for wrappers and `find`, around :28-33, :78, :132, :211 and :2
 
 - [ ] The guard blocks all four forms.
 - [ ] The `[[verify]]` command passes: it runs the guard on each form and expects exit 2.
+
+## Notes
+
+- Premise confirmed at `942d2a6c3`: the item's verify ran the guard on all four forms and each exited 0.
+- The guard now tracks pipes: a command that a pipe feeds with what find or fd lists (`find . | xargs rm`, `find . | while read f; do rm "$f"; done`, through compound commands until the pipeline ends), and any command in a line where a substitution runs find (`rm $(find ...)`), is checked like `find -exec`, so any `rm` in it is denied. fd/fdfind `-x`, `--exec`, `-X` and `--exec-batch` are checked the same way. ssh joins the words after the destination and checks them as the remote command, and checks `-o ProxyCommand`/`LocalCommand`/`RemoteCommand`/`KnownHostsCommand` values; ssh's option values and destination are never read as programs (`ssh git ls`). parallel is a wrapper whose every argument is checked as a command line. A wrapper inside a wrapper is followed (`sudo parallel 'rm -rf {}' ::: a`).
+- Over-approximations (fail closed): a substitution that runs find marks the whole line (`x=$(find . | wc -l); rm tmp` is denied), and any rm fed by find is denied, not only a recursive one. `ls | xargs rm` and `xargs rm < list` still pass: nothing ties them to find.
+- The item's verify (Python) passes. The four forms and their neighbours are in `settings_hook_denies_destructive_commands_behind_wrappers`.
+- Implemented on `work/bug-ceab60` at `2a2b4d4e0`; cargo verification deferred to the batch check.

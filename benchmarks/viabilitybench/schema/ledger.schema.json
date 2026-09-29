@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "vb ledger row",
+  "description": "One append-only row of ledger.jsonl, one per dispatched attempt (S08 §4.10, §5.6). It carries the budget line the spend counts against, the reservation made before dispatch and the snapshot that priced it. validate.py also enforces the cost invariants: an unknown cost is null, never 0.",
+  "type": "object",
+  "required": ["ts", "line", "experiment_id", "run_id", "attempt_key", "provider", "model_reported", "usage", "api_equiv_usd", "billed_usd", "reserved_usd", "price_snapshot_id", "source"],
+  "additionalProperties": false,
+  "properties": {
+    "ts": {"type": "string"},
+    "line": {"type": "string", "description": "the budget line, e.g. BL0 (S09 §4.6)"},
+    "experiment_id": {"type": "string"},
+    "run_id": {"type": "string"},
+    "attempt_key": {"type": "string", "description": "joins the row to its run record's attempt"},
+    "provider": {"type": "string"},
+    "model_reported": {"type": ["string", "null"]},
+    "usage": {
+      "type": ["object", "null"],
+      "description": "The same token fields as a run record's attempt usage; null when none was reported, which makes the cost unknown.",
+      "required": ["tokens_in", "tokens_out", "tokens_cache_read", "tokens_reasoning"],
+      "additionalProperties": false,
+      "properties": {
+        "tokens_in": {"type": "integer"},
+        "tokens_out": {"type": "integer"},
+        "tokens_cache_read": {"type": "integer"},
+        "tokens_cache_write_5m": {"type": "integer"},
+        "tokens_cache_write_1h": {"type": "integer"},
+        "tokens_reasoning": {"type": "integer"}
+      }
+    },
+    "api_equiv_usd": {"type": ["number", "null"]},
+    "billed_usd": {"type": ["number", "null"]},
+    "reserved_usd": {"type": "number", "description": "the worst-case cost reserved against the line before dispatch"},
+    "price_snapshot_id": {"type": "string"},
+    "source": {"enum": ["provider_usage", "cli_usage", "estimated", "unknown"]}
+  }
+}

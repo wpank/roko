@@ -1,0 +1,159 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "vb.run_record/1",
+  "description": "One arm's run of one task instance, a row of records.jsonl (S08 §5.4): a projection of S01's records, written by the driver for every arm. The top level, `costs` and `usage` are closed; other nested objects may carry extra detail. validate.py also enforces the cost invariants: an unknown cost is null, never 0.",
+  "type": "object",
+  "required": ["schema_version", "record_id", "experiment_id", "run_id", "arm", "seed", "replicate", "harness_sha", "dirty", "config_hash", "price_snapshot_id", "suite", "stream", "task", "execution", "visible", "vs", "costs", "provenance", "simulated"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"const": "vb.run_record/1"},
+    "record_id": {"type": "string"},
+    "experiment_id": {"type": "string"},
+    "run_id": {"type": "string"},
+    "arm": {"type": "string", "description": "an arm id, e.g. cheap_direct, roko_fixed, fd_claude (S08 §4.9)"},
+    "seed": {"type": "integer"},
+    "replicate": {"type": "integer"},
+    "harness_sha": {"type": "string"},
+    "dirty": {"type": "boolean"},
+    "config_hash": {"type": "string", "description": "S01's BLAKE3 b3: hash of the canonical, secret-redacted effective config"},
+    "price_snapshot_id": {"type": "string", "description": "the one snapshot every cost in this record uses, e.g. prices-2026-09-28"},
+    "suite": {
+      "type": "object",
+      "required": ["id", "hash"],
+      "properties": {
+        "id": {"type": "string"},
+        "hash": {"type": "string"},
+        "generator_versions": {"type": "object", "additionalProperties": {"type": "string"}}
+      }
+    },
+    "stream": {
+      "type": "object",
+      "required": ["id", "position", "length", "perturbations_active"],
+      "properties": {
+        "id": {"type": "string"},
+        "position": {"type": "integer"},
+        "length": {"type": "integer"},
+        "perturbations_active": {"type": "array", "items": {"type": "string"}, "description": "the S08 §4.6 hooks active at this position"}
+      }
+    },
+    "task": {
+      "type": "object",
+      "required": ["family", "instance_id", "ladder", "latent_version", "spec_variant", "is_honeypot"],
+      "properties": {
+        "family": {"type": "string"},
+        "instance_id": {"type": "string"},
+        "ladder": {"enum": [1, 2, 3, 4, 5]},
+        "latent_version": {"type": "string"},
+        "spec_variant": {"enum": ["precise", "vague", "refined"]},
+        "is_honeypot": {"type": "boolean"},
+        "operator": {"type": "string", "description": "for vague and refined variants: the operator that produced the spec"},
+        "levels": {"type": "array", "items": {"type": "string"}},
+        "operator_version": {"type": "string"}
+      }
+    },
+    "execution": {
+      "type": "object",
+      "required": ["status", "attempts"],
+      "properties": {
+        "status": {"enum": ["completed", "failed", "timeout", "aborted_cap", "infra_error", "leak_suspected"], "description": "infra_error and leak_suspected runs are excluded from results and counted"},
+        "started_at": {"type": "string"},
+        "finished_at": {"type": "string"},
+        "attempts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "description": "S01 roko.attempt_open/1 + roko.verdict/1; direct and CLI arms emit the same shape with emitter vb-driver",
+            "required": ["emitter", "model_requested", "model_reported", "provider", "turns", "usage", "fault_injected"],
+            "properties": {
+              "emitter": {"type": "string"},
+              "attempt_key": {"type": "string", "description": "S01's join key, {chain_key}:{attempt}"},
+              "model_requested": {"type": "string"},
+              "model_reported": {"type": ["string", "null"], "description": "the model the provider says served the attempt; costs are priced by it. null when it did not say"},
+              "provider": {"type": "string"},
+              "turns": {"type": ["integer", "null"]},
+              "usage": {
+                "type": ["object", "null"],
+                "description": "Token usage as reported (S01 §5.5); null when none was reported, which makes the cost unknown. The classes are disjoint: tokens_in counts only uncached input, so api_equiv_usd is each class times its snapshot rate.",
+                "required": ["tokens_in", "tokens_out", "tokens_cache_read", "tokens_reasoning"],
+                "additionalProperties": false,
+                "properties": {
+                  "tokens_in": {"type": "integer"},
+                  "tokens_out": {"type": "integer"},
+                  "tokens_cache_read": {"type": "integer"},
+                  "tokens_cache_write_5m": {"type": "integer"},
+                  "tokens_cache_write_1h": {"type": "integer"},
+                  "tokens_reasoning": {"type": "integer", "description": "already inside tokens_out when the snapshot row has reasoning_in_output = true"}
+                }
+              },
+              "fault_injected": {"type": ["string", "null"]},
+              "gate_verdict": {"enum": ["passed", "unverified", "forced_accept", null]}
+            }
+          }
+        }
+      }
+    },
+    "visible": {
+      "type": "object",
+      "required": ["passed", "clean_rerun", "flake_injected"],
+      "properties": {
+        "passed": {"type": "boolean"},
+        "clean_rerun": {"type": "boolean"},
+        "flake_injected": {"type": "boolean"},
+        "commands": {"type": "array", "items": {"type": "string"}},
+        "exit_codes": {"type": "array", "items": {"type": "integer"}}
+      }
+    },
+    "vs": {
+      "type": "object",
+      "description": "The VS-census label (S05 §0): completion, visible checks on a clean re-run, the truth suite, integrity, and the honeypot rule for F8. An unknown label counts as 0.",
+      "required": ["label", "unknown", "checks", "truth_suite_version", "failed"],
+      "properties": {
+        "label": {"enum": [0, 1]},
+        "unknown": {"type": "boolean"},
+        "checks": {
+          "type": "object",
+          "required": ["completion", "visible_clean", "hidden", "integrity"],
+          "properties": {
+            "completion": {"enum": [0, 1, null]},
+            "visible_clean": {"enum": [0, 1, null]},
+            "hidden": {"enum": [0, 1, null]},
+            "integrity": {"enum": [0, 1, null]}
+          },
+          "additionalProperties": {"enum": [0, 1, null]}
+        },
+        "truth_suite_version": {"type": "string"},
+        "failed": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "costs": {
+      "type": "object",
+      "description": "S01 §4.4's single cost-field set, summed over the attempts. api_equiv_usd (tokens x snapshot rates) is what P1 uses. An unknown cost is null, never 0.",
+      "required": ["api_equiv_usd", "billed_usd", "without_cache_usd", "vendor_usd", "source"],
+      "additionalProperties": false,
+      "properties": {
+        "api_equiv_usd": {"type": ["number", "null"]},
+        "billed_usd": {"type": ["number", "null"], "description": "what the account pays: 0 on a subscription CLI"},
+        "without_cache_usd": {"type": ["number", "null"], "description": "the same tokens with cache reads priced as input"},
+        "vendor_usd": {"type": ["number", "null"], "description": "the vendor's own figure: a provider-billed charge or the CLI's reported cost"},
+        "source": {"enum": ["provider_usage", "cli_usage", "estimated", "unknown"], "description": "S01's cost.source; mock usage never becomes a run record"},
+        "meter_cross_check_usd": {"type": ["number", "null"], "description": "the metering proxy's independent figure"}
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "required": ["final_commit", "workdir_archive", "diff_sha256", "transcript_ref", "s01_run_dir", "canary_hits"],
+      "properties": {
+        "final_commit": {"type": ["string", "null"]},
+        "workdir_archive": {"type": ["string", "null"]},
+        "diff_sha256": {"type": ["string", "null"]},
+        "transcript_ref": {"type": ["string", "null"]},
+        "s01_run_dir": {"type": ["string", "null"]},
+        "canary_hits": {"type": "integer"}
+      }
+    },
+    "prediction": {"type": ["object", "null"], "description": "S01 roko.prediction/1 (S04), written before dispatch"},
+    "audit": {"type": ["object", "null"], "description": "S01 roko.audit/1: the harness's own M4 selection and result (S05)"},
+    "loops": {"type": "array", "items": {"type": "object"}, "description": "S01 roko.decision/1 + roko.exposure/1 entries"},
+    "simulated": {"const": false}
+  }
+}

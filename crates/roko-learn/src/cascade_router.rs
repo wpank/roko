@@ -33,6 +33,7 @@ use roko_core::agent::TaskRequirements;
 use roko_core::agent::{AgentRole, ModelSpec, ModelTier};
 use roko_core::config::schema::RewardWeights;
 use roko_core::task::{TaskCategory, TaskComplexityBand};
+use roko_fs::with_locked_json_transaction;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
@@ -62,8 +63,8 @@ use crate::cascade::helpers::{
     temperament_tier_shift, thinking_filtered_candidates, thinking_preference,
 };
 use crate::cascade::persistence::{
-    CascadeSnapshot, PersistedModelStats, detect_version_changes, migrated_confidence_stats,
-    remap_role_table_entry,
+    CascadeSnapshot, PersistedModelStats, detect_version_changes, merge_learning,
+    migrated_confidence_stats, remap_role_table_entry,
 };
 use crate::cascade::types::{
     CATEGORY_CONFIDENCE_WEIGHT, CATEGORY_MIN_TRIALS, CategoryModelStats, GeminiObservationTotals,
@@ -132,6 +133,12 @@ pub struct CascadeRouter {
     /// appears in this list are filtered out before any health or scoring
     /// pass.  An empty list (the default) disables the filter.
     disabled_providers: Vec<String>,
+    /// The persisted state this router last loaded or saved.
+    ///
+    /// [`Self::save`] writes only what the router learned since, merged into
+    /// the snapshot on disk, so processes sharing the snapshot keep each
+    /// other's observations (bug-9c88ac).
+    baseline: Mutex<CascadeSnapshot>,
 }
 
 impl std::fmt::Debug for CascadeRouter {
@@ -214,11 +221,18 @@ impl CascadeRouter {
             !model_slugs.is_empty(),
             "CascadeRouter: need at least one model"
         );
+        let role_table = default_role_model_table(&model_slugs);
+        // Nothing is learned yet. The default role table is not a change
+        // to persist over the entries other writers saved.
+        let baseline = CascadeSnapshot {
+            role_table: role_table.clone(),
+            ..CascadeSnapshot::default()
+        };
         Self {
             linucb: LinUCBRouter::new(model_slugs.clone()),
             confidence_stats: Mutex::new(HashMap::new()),
             pareto_frontier: Mutex::new(ParetoFrontierState::default()),
-            role_table: Mutex::new(default_role_model_table(&model_slugs)),
+            role_table: Mutex::new(role_table),
             tier_map: HashMap::new(),
             model_slugs,
             stage_tracking: Mutex::new(StageTracking {
@@ -231,6 +245,7 @@ impl CascadeRouter {
             verdict_blend_weight: 0.2,
             cost_pressure_until: Mutex::new(None),
             disabled_providers: Vec::new(),
+            baseline: Mutex::new(baseline),
         }
     }
 
@@ -2187,8 +2202,20 @@ impl CascadeRouter {
 
     /// Build a JSON snapshot of the current router state (same format as `save()`).
     pub fn snapshot_json(&self) -> String {
+        let snapshot = self.persisted_snapshot();
+        tracing::debug!(
+            total_observations = snapshot.total_observations,
+            linucb_persisted = snapshot.linucb_state.is_some(),
+            pareto_frontier_len = snapshot.pareto_frontier.len(),
+            "cascade router snapshot built"
+        );
+        serde_json::to_string_pretty(&snapshot).unwrap_or_default()
+    }
+
+    /// The router's state in its persisted form.
+    fn persisted_snapshot(&self) -> CascadeSnapshot {
         let stage_transitions = self.stage_tracking.lock().transitions.clone();
-        let snapshot = CascadeSnapshot {
+        CascadeSnapshot {
             model_slugs: self.model_slugs.clone(),
             role_table: self.role_table.lock().clone(),
             confidence_stats: self
@@ -2223,34 +2250,42 @@ impl CascadeRouter {
             stage_transitions,
             linucb_state: Some(self.linucb.export_linucb_snapshot()),
             pareto_frontier: self.pareto_frontier.lock().frontier.clone(),
-        };
-        tracing::debug!(
-            total_observations = snapshot.total_observations,
-            linucb_persisted = snapshot.linucb_state.is_some(),
-            pareto_frontier_len = snapshot.pareto_frontier.len(),
-            "cascade router snapshot built"
-        );
-        serde_json::to_string_pretty(&snapshot).unwrap_or_default()
+        }
     }
 
-    /// Save confidence stats, model slugs, and total observation count to a JSON file.
+    /// Save what this router has learned into the snapshot at `path`.
+    ///
+    /// The save is a locked read-merge-write (bug-9c88ac). Under the
+    /// snapshot's sibling lock it reads the latest file, adds what this
+    /// router learned since it was loaded or last saved, model by model, and
+    /// writes the result. Processes that share the file therefore keep each
+    /// other's observations, and models this router does not track keep
+    /// their persisted state (bug-605a8a).
+    ///
+    /// A file that no longer parses is backed up to `<path>.corrupted` and
+    /// replaced, as [`Self::load_or_new`] resets on one.
     pub fn save(&self, path: &Path) -> Result<(), crate::error::LearnError> {
-        let json = self.snapshot_json();
-        if json.is_empty() {
-            return Err(crate::error::LearnError::Io {
-                path: path.display().to_string(),
-                source: std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    "failed to serialize cascade snapshot",
-                ),
-            });
+        // Held until the baseline moves on, so two saves of this router never
+        // write the same observations twice.
+        let mut baseline = self.baseline.lock();
+        let current = self.persisted_snapshot();
+        let merge = |latest: &mut CascadeSnapshot| -> std::io::Result<()> {
+            merge_learning(latest, &current, &baseline);
+            Ok(())
+        };
+        let mut saved = with_locked_json_transaction(path, merge);
+        let unreadable = saved
+            .as_ref()
+            .is_err_and(|error| error.kind() == std::io::ErrorKind::InvalidData);
+        if unreadable && Self::quarantine_unreadable_snapshot(path) {
+            saved = with_locked_json_transaction(path, merge);
         }
-        roko_core::io::atomic_write_str(path, &json).map_err(|source| {
-            crate::error::LearnError::Io {
-                path: path.display().to_string(),
-                source,
-            }
-        })
+        saved.map_err(|source| crate::error::LearnError::Io {
+            path: path.display().to_string(),
+            source,
+        })?;
+        *baseline = current;
+        Ok(())
     }
 
     fn from_snapshot(snapshot: CascadeSnapshot, model_slugs: Vec<String>) -> Self {
@@ -2329,6 +2364,13 @@ impl CascadeRouter {
             frontier_state.frontier = pareto_frontier;
         }
 
+        // The router has learned nothing yet. Its baseline keeps the counters
+        // as persisted, so the ones a version upgrade transferred to a new
+        // slug are the router's to save.
+        let mut baseline = router.persisted_snapshot();
+        baseline.confidence_stats = confidence_stats;
+        *router.baseline.lock() = baseline;
+
         router
     }
 
@@ -2369,6 +2411,29 @@ impl CascadeRouter {
                     );
                 }
                 Self::new(model_slugs)
+            }
+        }
+    }
+
+    /// Move a snapshot that no longer parses to `<path>.corrupted`, so a save
+    /// can write a fresh one. Returns whether it moved the file.
+    fn quarantine_unreadable_snapshot(path: &Path) -> bool {
+        let unreadable = std::fs::read(path)
+            .is_ok_and(|raw| serde_json::from_slice::<CascadeSnapshot>(&raw).is_err());
+        if !unreadable {
+            return false;
+        }
+        let backup = path.with_extension("json.corrupted");
+        tracing::warn!(
+            path = %path.display(),
+            backup = %backup.display(),
+            "cascade router state corrupted — backing up and saving fresh state"
+        );
+        match std::fs::rename(path, &backup) {
+            Ok(()) => true,
+            Err(error) => {
+                tracing::error!(%error, "failed to back up corrupted cascade router file");
+                false
             }
         }
     }

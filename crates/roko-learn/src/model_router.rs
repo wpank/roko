@@ -1403,12 +1403,13 @@ impl LinUCBRouter {
     /// Export the current LinUCB arm parameters as a [`LinUCBSnapshot`].
     ///
     /// Each arm's `a_matrix` (dim x dim) is flattened row-major into a single
-    /// `Vec<f64>`. The snapshot can later be restored via
-    /// [`import_linucb_snapshot`](Self::import_linucb_snapshot).
+    /// `Vec<f64>`, and its slug is recorded beside it. The snapshot can later
+    /// be restored via [`import_linucb_snapshot`](Self::import_linucb_snapshot).
     pub fn export_linucb_snapshot(&self) -> LinUCBSnapshot {
         let state = self.state.read();
         let mut a_matrices = Vec::with_capacity(state.arms.len());
         let mut b_vectors = Vec::with_capacity(state.arms.len());
+        let mut slugs = Vec::with_capacity(state.arms.len());
         let mut total_obs: usize = 0;
 
         for arm in &state.arms {
@@ -1420,6 +1421,7 @@ impl LinUCBRouter {
                 .collect();
             a_matrices.push(flat);
             b_vectors.push(arm.b_vector.clone());
+            slugs.push(arm.slug.clone());
             total_obs = total_obs.saturating_add(arm.observations as usize);
         }
 
@@ -1428,6 +1430,7 @@ impl LinUCBRouter {
             b_vectors,
             dim: CONTEXT_DIM,
             observations: total_obs,
+            slugs,
         }
     }
 

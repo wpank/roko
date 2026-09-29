@@ -13,12 +13,12 @@
 # - git reset --hard;
 # - git stash, except stash list and stash show;
 # - git clean, except dry runs (-n);
-# - recursive rm.
+# - recursive rm (-r, -R or --recursive, anywhere before --).
 #
 # Every command in a chain is checked (;, &&, ||, |, & and newlines), after
 # assignments, shell keywords and wrappers such as sudo, env and xargs, and
 # past git's global options (-C, -c, --git-dir, --work-tree). Commands run by
-# sh -c, eval, $(...) and backquotes are checked too.
+# subshells, sh -c, eval, $(...) and backquotes are checked too.
 #
 # `file` (Read, Edit, Write, Grep, Glob and the like) denies a file_path,
 # notebook_path or path argument that is a provider key file: .env,
@@ -45,13 +45,6 @@ def block(reason):
     sys.exit(2)
 
 
-# Recursive rm, matched on the raw command as before this guard parsed it.
-RM_PATTERNS = [
-    r"(^|[;&|]\s*)rm\s+-[A-Za-z]*r[A-Za-z]*f[A-Za-z]*(?:\s|$)",
-    r"(^|[;&|]\s*)rm\s+-[A-Za-z]*f[A-Za-z]*r[A-Za-z]*(?:\s|$)",
-    r"(^|[;&|]\s*)rm\s+-[A-Za-z]*r[A-Za-z]*(?:\s|$)",
-]
-
 # Words that can start a command without being its program.
 SHELL_KEYWORDS = {"if", "then", "else", "elif", "do", "while", "until", "!", "{", "}", "time"}
 # Programs that run another program named later in their arguments.
@@ -61,6 +54,8 @@ WRAPPERS = {
 }
 # Programs that run their arguments as shell commands.
 SHELLS = {"sh", "bash", "zsh", "dash", "ksh", "fish"}
+# Programs whose arguments this guard checks.
+CHECKED_PROGRAMS = {"git", "rm", "eval"} | SHELLS
 # git global options whose value is the next argument.
 GIT_VALUE_OPTIONS = {
     "-C", "-c", "--git-dir", "--work-tree", "--namespace", "--super-prefix", "--config-env",
@@ -69,6 +64,10 @@ GIT_VALUE_OPTIONS = {
 
 ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
 SUBSTITUTION = re.compile(r"\$\(([^()]*)\)|`([^`]*)`")
+# An rm argument that can expand to options: an option built from a
+# variable, or the positional parameters, through which a function or a git
+# shell alias passes its arguments.
+UNCHECKABLE_RM_ARGUMENT = re.compile(r"-.*[$`]|\$\{?[@*1-9]")
 # Operators that end a command. Redirections (<, >) do not.
 SEPARATOR_CHARS = set(";&|()\n")
 OPERATOR_CHARS = SEPARATOR_CHARS | set("<>")
@@ -128,15 +127,16 @@ def check_words(words, depth):
         return
     program = program_name(words[0])
     if program in WRAPPERS:
-        # The wrapper's own options come first; the wrapped program is the
-        # first later word that names a program this guard checks.
+        # The wrapper's own options come first, and an option's value can
+        # name a program too (sudo -u git rm -rf x), so every later word that
+        # names a program this guard checks starts a command to check.
         for index in range(1, len(words)):
-            name = program_name(words[index])
-            if name == "git" or name == "eval" or name in SHELLS:
+            if program_name(words[index]) in CHECKED_PROGRAMS:
                 check_words(words[index:], depth)
-                return
     elif program == "git":
         check_git(words[1:])
+    elif program == "rm":
+        check_rm(words[1:])
     elif program in SHELLS:
         for argument in words[1:]:
             if not argument.startswith("-"):
@@ -154,6 +154,18 @@ def short_flags(arguments):
         if len(argument) > 1 and argument[0] == "-" and argument[1] != "-":
             letters.update(argument[1:])
     return letters
+
+
+def check_rm(arguments):
+    # GNU rm reads options anywhere before --, and accepts a long option
+    # shortened to any unambiguous prefix (--rec).
+    options = arguments[:arguments.index("--")] if "--" in arguments else arguments
+    if {"r", "R"} & short_flags(options) or any(
+        len(option) > 2 and "--recursive".startswith(option) for option in options
+    ):
+        block("recursive rm forbidden: it deletes whole directory trees")
+    if any(UNCHECKABLE_RM_ARGUMENT.match(option) for option in options):
+        block("rm options taken from a variable cannot be checked")
 
 
 def check_git(arguments):
@@ -243,9 +255,6 @@ def check_bash(tool_input, data):
         block("the Bash command is not a string")
     if names_key_file(command):
         block(KEY_FILE_REASON)
-    for pattern in RM_PATTERNS:
-        if re.search(pattern, command):
-            block("destructive file deletion forbidden")
     check_command(command)
 
 

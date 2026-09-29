@@ -1579,6 +1579,62 @@ mod tests {
     }
 
     #[test]
+    fn settings_hook_denies_recursive_rm_in_any_form() {
+        let command = bash_hook_command();
+
+        for denied in [
+            "rm -rf target",
+            "rm -R x",
+            "rm --recursive x",
+            "rm --rec x",
+            "rm -f -r x",
+            "rm x -r",
+            "sudo rm -rf x",
+            "sudo -u git rm -rf x",
+            "/bin/rm -rf x",
+            "(rm -rf x)",
+            "{ rm -rf x; }",
+            "bash -c \"rm -rf x\"",
+            "sh -c 'rm -R x'",
+            "eval \"rm -rf x\"",
+            "echo $(rm -rf x)",
+            "echo `rm -r x`",
+            "FOO=1 rm -rf x",
+            "env FOO=1 rm -rf x",
+            "timeout 5 rm -r x",
+            "find . -name '*.o' | xargs rm -r",
+            "echo ok\nrm -rf x",
+            "if true; then rm -rf x; fi",
+            "rm -$FLAGS x",
+            "f() { rm -f \"$@\"; }; f -r x",
+        ] {
+            assert_eq!(
+                run_hook_command(&command, denied).code(),
+                Some(2),
+                "`{denied}` should be denied"
+            );
+        }
+        for allowed in [
+            "rm x",
+            "rm -f x",
+            "rm -d emptydir",
+            "rm -- -r",
+            "rm -f \"$tmpfile\"",
+            "git rm -r --cached x",
+            "grep -rn 'rm -rf' src",
+            "echo \"rm -rf x\"",
+            "git commit -m \"fix; rm -rf build\"",
+            "cp -r a b",
+        ] {
+            assert_eq!(
+                run_hook_command(&command, allowed).code(),
+                Some(0),
+                "`{allowed}` should be allowed"
+            );
+        }
+    }
+
+    #[test]
     fn settings_hook_fails_closed_without_python3() {
         let command = bash_hook_command();
         let no_python = tempdir().unwrap();

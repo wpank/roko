@@ -75,7 +75,7 @@ stack plus the loop.
 - **Needs `tools/paperlint.py`** (gap-af0b57) to close.
 - **Tags must agree with the status matrix** (gap-35a614). The review (gap-8d2c79) checks this.
 - Lane `paper`; no hot files.
-- **Drafted** on `work/gap-4161ea` at `9b739b611`, then aligned with the merged status matrix at `77d69b6a9`: every
+- **Drafted** on `work/gap-4161ea` at `9b739b611`, then aligned with the merged status matrix at `77d69b6a9` and `4bb68a8a6`: every
   tag is a matrix row's tag at `a17d4dadd` and names its row. The claims AR2 and AR4–AR9 are recorded in the README
   (`b3f1f6d6e`, `4e0abe7e1`). `tools/paperlint.py` is not at BASE, so the `[[verify]]` can't run yet; gap-af0b57's
-  uncommitted draft passes `--strict` on the file (797 words, 1.14× the budget). Close once paperlint merges.
+  uncommitted draft passes `--strict` on the file (802 words, 1.15× the budget). Close once paperlint merges.

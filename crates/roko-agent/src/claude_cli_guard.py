@@ -1,9 +1,12 @@
 # PreToolUse guard for Claude CLI agents.
 #
 # build_settings_json (claude_cli_agent.rs) writes this script into the
-# Claude CLI `--settings` payload, which runs it with `python3 -c` before
-# every Bash call and passes the hook input as JSON on stdin. It denies
-# commands that discard the operator's work or move branches:
+# Claude CLI `--settings` payload, which runs it with `python3 -c` before a
+# tool call and passes the hook input as JSON on stdin. The first argument
+# names the check.
+#
+# `bash` (Bash calls) denies commands that name a provider key file (see
+# below) and commands that discard the operator's work or move branches:
 #
 # - git checkout, switch, restore and push;
 # - git branch -m, -M and -D (renames and force deletes);
@@ -17,13 +20,18 @@
 # past git's global options (-C, -c, --git-dir, --work-tree). Commands run by
 # sh -c, eval, $(...) and backquotes are checked too.
 #
-# Exit 0 lets the command run. Exit 2 blocks it, and Claude Code shows
-# stderr to the model. Claude Code treats any other exit code as a
-# non-blocking error and runs the command anyway, so every failure here,
-# including unreadable input, exits 2.
+# `file` (Read, Edit, Write, Grep, Glob and the like) denies a file_path,
+# notebook_path or path argument that is a provider key file: .env,
+# secrets.toml or credentials.json in any .roko directory, or anything in
+# ~/.roko. A Grep or Glob rooted at a .roko directory is denied as well.
+#
+# Exit 0 lets the call run. Exit 2 blocks it, and Claude Code shows stderr
+# to the model. Claude Code treats any other exit code as a non-blocking
+# error and runs the call anyway, so every failure here, including
+# unreadable input, exits 2.
 #
 # This is best effort, not a sandbox: a script file, a git alias or a
-# variable can still hide a command from it.
+# variable can still hide a command or a path from it.
 
 import json
 import os
@@ -179,7 +187,86 @@ def check_git(arguments):
         block("git clean forbidden (dry runs with -n are allowed): it deletes untracked files")
 
 
+# Files in a .roko directory that hold provider keys or roko credentials
+# (roko_core::child_env::KEY_FILE_NAMES). All of ~/.roko is off limits too.
+KEY_FILE_NAMES = (".env", "secrets.toml", "credentials.json")
+KEY_FILE_REASON = (
+    "provider key files are off limits to agents"
+    " (.roko/.env, .roko/secrets.toml and everything in ~/.roko)"
+)
+# ~/.roko spelled with a tilde or a variable.
+HOME_ROKO_TEXT = re.compile(r"(~|\$HOME|\$\{HOME\})\"?/\.roko(?![\w.-])")
+ROKO_DIR_TEXT = re.compile(r"(?<![\w.-])\.roko(?![\w.-])")
+KEY_FILE_TEXT = re.compile(r"\.env(?![\w-])|secrets\.toml|credentials\.json")
+
+
+def home_roko_dirs():
+    home = os.path.expanduser("~")
+    if not os.path.isabs(home) or home == os.sep:
+        return set()
+    return {os.path.join(os.path.normpath(home), ".roko"), os.path.join(os.path.realpath(home), ".roko")}
+
+
+HOME_ROKO_DIRS = home_roko_dirs()
+
+
+def names_key_file(command):
+    """Whether `command` names ~/.roko, or a .roko directory and a key file."""
+    if HOME_ROKO_TEXT.search(command):
+        return True
+    for home_roko in HOME_ROKO_DIRS:
+        if re.search(re.escape(home_roko) + r"(?![\w.-])", command):
+            return True
+    return bool(ROKO_DIR_TEXT.search(command) and KEY_FILE_TEXT.search(command))
+
+
+def is_key_path(path, cwd, search_root):
+    """Whether a tool's path argument is a key file or lies in ~/.roko, as
+    given or with symlinks resolved. A search root is also denied when it is
+    a .roko directory, since the search would read the key files in it."""
+    path = os.path.join(cwd, os.path.expanduser(path))
+    for candidate in {os.path.normpath(path), os.path.realpath(path)}:
+        for home_roko in HOME_ROKO_DIRS:
+            if candidate == home_roko or candidate.startswith(home_roko + os.sep):
+                return True
+        parent, name = os.path.split(candidate)
+        if os.path.basename(parent) == ".roko" and name in KEY_FILE_NAMES:
+            return True
+        if search_root and name == ".roko":
+            return True
+    return False
+
+
+def check_bash(tool_input, data):
+    command = tool_input.get("command", data.get("command"))
+    if not isinstance(command, str):
+        block("the Bash command is not a string")
+    if names_key_file(command):
+        block(KEY_FILE_REASON)
+    for pattern in RM_PATTERNS:
+        if re.search(pattern, command):
+            block("destructive file deletion forbidden")
+    check_command(command)
+
+
+def check_file(tool_input, data):
+    cwd = data.get("cwd")
+    if not isinstance(cwd, str) or not cwd:
+        cwd = os.getcwd()
+    # Read, Edit and Write take file_path, NotebookEdit notebook_path, and
+    # Grep and Glob path, the directory they search.
+    for field in ("file_path", "notebook_path", "path"):
+        value = tool_input.get(field)
+        if value is None:
+            continue
+        if not isinstance(value, str):
+            block("the " + field + " argument is not a string")
+        if value and is_key_path(value, cwd, search_root=field == "path"):
+            block(KEY_FILE_REASON)
+
+
 def main():
+    check = sys.argv[1] if len(sys.argv) > 1 else "bash"
     try:
         data = json.load(sys.stdin)
     except ValueError:
@@ -189,13 +276,12 @@ def main():
     tool_input = data.get("tool_input") or data.get("toolInput") or {}
     if not isinstance(tool_input, dict):
         block("the hook input has no tool_input object")
-    command = tool_input.get("command", data.get("command"))
-    if not isinstance(command, str):
-        block("the Bash command is not a string")
-    for pattern in RM_PATTERNS:
-        if re.search(pattern, command):
-            block("destructive file deletion forbidden")
-    check_command(command)
+    if check == "bash":
+        check_bash(tool_input, data)
+    elif check == "file":
+        check_file(tool_input, data)
+    else:
+        block("unknown guard check " + repr(check))
 
 
 try:

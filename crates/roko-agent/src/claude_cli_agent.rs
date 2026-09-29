@@ -19,7 +19,7 @@ use crate::tool_loop::{StreamEvent, StreamEventKind};
 use crate::usage::{Usage, UsageObservation, UsageSource};
 use async_trait::async_trait;
 use roko_core::agent::ProviderKind;
-use roko_core::child_env::CredentialScrub;
+use roko_core::child_env::{CredentialScrub, KEY_FILE_NAMES};
 use roko_core::config::model_registry::model_meta;
 use roko_core::defaults::DEFAULT_REQUEST_TIMEOUT_MS;
 use roko_core::{Body, Context, Kind, OperatingFrequency, Provenance, Signal};
@@ -34,21 +34,45 @@ use tokio::process::Command;
 use tokio::sync::mpsc;
 use tokio::time::{Duration, timeout};
 
-/// The PreToolUse guard for Bash calls: destructive git commands anywhere in
-/// a command, and recursive `rm`. What it checks is documented at its top.
+/// The PreToolUse guard: destructive git commands anywhere in a Bash
+/// command, recursive `rm`, and provider key files named by a command or a
+/// file tool's path. What it checks is documented at its top.
 const GUARD_SCRIPT: &str = include_str!("claude_cli_guard.py");
 
-/// The shell command of the guard hook. Claude Code runs hooks with `sh -c`
-/// and blocks the tool call only on exit 2; any other failure is a
-/// non-blocking error that lets the call run. So a missing `python3`, and a
-/// guard that fails for any reason, exit 2 with a `BLOCKED:` message.
-fn guard_hook_command() -> String {
+/// Claude's file tools, whose path arguments the guard checks for provider
+/// key files.
+const FILE_TOOL_MATCHER: &str = "Read|Edit|MultiEdit|Write|NotebookEdit|Grep|Glob";
+
+/// The shell command of a guard hook running `check` (`bash` or `file`).
+/// Claude Code runs hooks with `sh -c` and blocks the tool call only on exit
+/// 2; any other failure is a non-blocking error that lets the call run. So a
+/// missing `python3`, and a guard that fails for any reason, exit 2 with a
+/// `BLOCKED:` message.
+fn guard_hook_command(check: &str) -> String {
     format!(
         "command -v python3 >/dev/null 2>&1 || {{ echo 'BLOCKED: the roko command guard needs python3 on PATH' >&2; exit 2; }}\n\
-         python3 -c '{script}' || {{ status=$?; [ \"$status\" -eq 2 ] || echo \"BLOCKED: the roko command guard failed (python3 exit $status)\" >&2; exit 2; }}",
+         python3 -c '{script}' {check} || {{ status=$?; [ \"$status\" -eq 2 ] || echo \"BLOCKED: the roko command guard failed (python3 exit $status)\" >&2; exit 2; }}",
         // Close the single-quoted string, add an escaped quote, reopen it.
         script = GUARD_SCRIPT.replace('\'', r"'\''"),
     )
+}
+
+/// Permission rules that keep Claude's file tools, and the file commands it
+/// recognizes in Bash (`cat`, `head`, redirections), away from provider key
+/// files. Deny rules hold in every permission mode, including
+/// `--dangerously-skip-permissions`; the guard hooks check the same files
+/// in case a Claude Code version does not apply a rule.
+fn key_file_deny_rules() -> Vec<String> {
+    let mut rules = vec![
+        "Read(~/.roko)".to_string(),
+        "Read(~/.roko/**)".to_string(),
+        "Edit(~/.roko/**)".to_string(),
+    ];
+    for name in KEY_FILE_NAMES {
+        rules.push(format!("Read(//**/.roko/{name})"));
+        rules.push(format!("Edit(//**/.roko/{name})"));
+    }
+    rules
 }
 
 /// Build the Claude CLI `--settings` JSON payload with safety hooks.
@@ -56,18 +80,31 @@ fn guard_hook_command() -> String {
 /// Claude Code hook entries do not support per-hook condition fields. Keep the
 /// filtering inside one command so ordinary Bash calls are allowed while the
 /// destructive commands that should never be launched by a model in this
-/// workspace are blocked.
+/// workspace are blocked. The payload does not depend on the environment:
+/// the guard resolves `~` and the working directory when it runs.
 #[must_use]
 pub fn build_settings_json() -> String {
     serde_json::json!({
+        "permissions": {
+            "deny": key_file_deny_rules(),
+        },
         "hooks": {
-            "PreToolUse": [{
-                "matcher": "Bash",
-                "hooks": [{
-                    "type": "command",
-                    "command": guard_hook_command(),
-                }]
-            }]
+            "PreToolUse": [
+                {
+                    "matcher": "Bash",
+                    "hooks": [{
+                        "type": "command",
+                        "command": guard_hook_command("bash"),
+                    }]
+                },
+                {
+                    "matcher": FILE_TOOL_MATCHER,
+                    "hooks": [{
+                        "type": "command",
+                        "command": guard_hook_command("file"),
+                    }]
+                }
+            ]
         }
     })
     .to_string()
@@ -1490,6 +1527,96 @@ mod tests {
             assert!(
                 String::from_utf8_lossy(&output.stderr).starts_with("BLOCKED:"),
                 "{output:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn settings_json_denies_reading_key_files() {
+        let value: Value = serde_json::from_str(&build_settings_json()).unwrap();
+        let deny: Vec<&str> = value
+            .pointer("/permissions/deny")
+            .and_then(Value::as_array)
+            .expect("deny rules")
+            .iter()
+            .filter_map(Value::as_str)
+            .collect();
+        for rule in [
+            "Read(~/.roko/**)",
+            "Read(//**/.roko/.env)",
+            "Read(//**/.roko/secrets.toml)",
+            "Read(//**/.roko/credentials.json)",
+        ] {
+            assert!(deny.contains(&rule), "missing {rule} in {deny:?}");
+        }
+
+        // The hooks deny the same files, in case a rule does not apply. HOME
+        // points at an empty directory so no real key file is involved.
+        assert_eq!(
+            value
+                .pointer("/hooks/PreToolUse/1/matcher")
+                .and_then(Value::as_str),
+            Some(FILE_TOOL_MATCHER)
+        );
+        let file_hook = value
+            .pointer("/hooks/PreToolUse/1/hooks/0/command")
+            .and_then(Value::as_str)
+            .expect("file hook command");
+        let bash_hook = bash_hook_command();
+        let home = tempdir().unwrap();
+        let workdir = tempdir().unwrap();
+        let env = [("HOME", home.path())];
+        let file_payload = |tool_input: &Value| {
+            serde_json::json!({ "cwd": workdir.path(), "tool_input": tool_input }).to_string()
+        };
+
+        for tool_input in [
+            serde_json::json!({ "file_path": "~/.roko/.env" }),
+            serde_json::json!({ "file_path": ".roko/.env" }),
+            serde_json::json!({ "file_path": "../other/.roko/secrets.toml" }),
+            serde_json::json!({ "path": "~/.roko" }),
+            serde_json::json!({ "path": ".roko", "pattern": "API_KEY" }),
+        ] {
+            let output = run_hook(file_hook, &file_payload(&tool_input), &env);
+            assert_eq!(
+                output.status.code(),
+                Some(2),
+                "{tool_input} should be denied"
+            );
+        }
+        for tool_input in [
+            serde_json::json!({ "file_path": "src/lib.rs" }),
+            serde_json::json!({ "file_path": ".roko/state/graph/p/checkpoint.json" }),
+            serde_json::json!({ "path": "src", "pattern": "fn main" }),
+            serde_json::json!({ "pattern": "**/*.rs" }),
+        ] {
+            let output = run_hook(file_hook, &file_payload(&tool_input), &env);
+            assert_eq!(
+                output.status.code(),
+                Some(0),
+                "{tool_input} should be allowed"
+            );
+        }
+
+        for denied in [
+            "cat ~/.roko/.env",
+            "cat .roko/secrets.toml",
+            "cd .roko && cat .env",
+            "grep KEY \"$HOME/.roko/credentials.json\"",
+        ] {
+            let output = run_hook(&bash_hook, &bash_payload(denied), &env);
+            assert_eq!(
+                output.status.code(),
+                Some(2),
+                "`{denied}` should be blocked"
+            );
+        }
+        for allowed in ["cat README.md", "ls .roko/state"] {
+            let output = run_hook(&bash_hook, &bash_payload(allowed), &env);
+            assert_eq!(
+                output.status.code(),
+                Some(0),
+                "`{allowed}` should be allowed"
             );
         }
     }

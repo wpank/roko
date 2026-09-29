@@ -222,6 +222,7 @@ impl ProductionPlanTopology {
     }
 
     /// Add the 11-node subgraph for a single task.
+    #[allow(clippy::too_many_lines)]
     fn add_task_subgraph(
         &self,
         graph: &mut Graph,

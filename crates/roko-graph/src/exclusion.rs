@@ -30,9 +30,10 @@ pub(crate) fn first_overlap<'a>(
 /// same working tree. A path that is empty once normalized declares nothing.
 fn overlaps(left: &str, right: &str) -> bool {
     let (left, right) = (lexical(left), lexical(right));
-    !left.as_os_str().is_empty()
-        && !right.as_os_str().is_empty()
-        && (left.starts_with(&right) || right.starts_with(&left))
+    if left.as_os_str().is_empty() || right.as_os_str().is_empty() {
+        return false;
+    }
+    left.starts_with(&right) || right.starts_with(&left)
 }
 
 /// `path` trimmed, without `.` components, and with each `..` removing the

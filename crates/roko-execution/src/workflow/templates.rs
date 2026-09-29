@@ -237,6 +237,7 @@ pub mod cell_types {
 /// The `generation` index is embedded in node IDs to prevent aliasing across
 /// generations.
 #[must_use]
+#[allow(clippy::too_many_lines)]
 pub fn build_generation_subgraph(
     descriptor: &WorkflowTemplateDescriptor,
     generation: u32,
@@ -368,6 +369,7 @@ pub fn build_generation_subgraph(
 ///
 /// Topology: `Compose(failure evidence) -> AutoFix(Activity) -> Gate -> [Review] -> [Commit]`
 #[must_use]
+#[allow(clippy::too_many_lines)]
 pub fn build_autofix_subgraph(descriptor: &WorkflowTemplateDescriptor, generation: u32) -> Graph {
     let prefix = format!("gen{generation}");
     let mut graph = Graph::new(GraphMetadata {

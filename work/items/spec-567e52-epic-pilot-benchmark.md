@@ -15,7 +15,7 @@ discovered_from = "tmp/cybernetic-harness/workstreams/assessment/W10-benchmarks-
 anchors = ["benchmarks/viabilitybench/driver/vb.py", "benchmarks/viabilitybench/analysis/report.py", "benchmarks/viabilitybench/reports/pilot/REPORT.md"]
 doc = "tmp/cybernetic-harness/workstreams/PLAN.md"
 lane = "bench"
-links = { depends_on = ["dec-b78874", "gap-0580f7", "gap-2790c5", "gap-4723ff", "gap-9e7079", "gap-7ee7c2", "gap-28ebea", "gap-b24517", "gap-33d54b", "gap-e003ec", "gap-c4f364", "gap-b7ab99", "gap-a8a160", "gap-c33709", "gap-327242", "gap-d9e9fe", "gap-89f393", "gap-1cd676", "q-ab27d3", "gap-419298", "dec-39c781", "bug-993e7e", "gap-204848", "gap-455aef", "gap-db9a26", "gap-8c3752", "gap-04e8e2", "bug-3c1c4a", "bug-2930a8", "bug-979a06", "gap-308373", "gap-6e1381", "gap-154f93", "bug-f62293", "gap-f253cf", "gap-e90ebd", "dec-1089ec", "bug-b70d40", "gap-60654d"], blocks = [], related = ["bug-7d7200", "bug-35379d", "gap-644040", "bug-28becc", "bug-3a037b", "bug-a22228"], supersedes = [], duplicate_of = "" }
+links = { depends_on = ["dec-b78874", "gap-0580f7", "gap-2790c5", "gap-4723ff", "gap-9e7079", "gap-7ee7c2", "gap-28ebea", "gap-b24517", "gap-33d54b", "gap-e003ec", "gap-c4f364", "gap-b7ab99", "gap-a8a160", "gap-c33709", "gap-327242", "gap-d9e9fe", "gap-89f393", "gap-1cd676", "q-ab27d3", "gap-419298", "dec-39c781", "bug-993e7e", "gap-204848", "gap-455aef", "gap-db9a26", "gap-8c3752", "gap-04e8e2", "bug-3c1c4a", "bug-2930a8", "bug-979a06", "gap-308373", "gap-6e1381", "gap-154f93", "bug-f62293", "gap-f253cf", "gap-e90ebd", "dec-1089ec", "bug-b70d40", "gap-60654d", "bug-a49003", "gap-4667a4", "gap-0bd49a", "bug-32eb77", "gap-bc0640", "bug-09fac4", "bug-c30764", "gap-dad97b"], blocks = [], related = ["bug-7d7200", "bug-35379d", "gap-644040", "bug-28becc", "bug-3a037b", "bug-a22228"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "test -f benchmarks/viabilitybench/reports/pilot/REPORT.md && benchmarks/viabilitybench/.venv/bin/python benchmarks/viabilitybench/analysis/report.py --check benchmarks/viabilitybench/reports/pilot"
@@ -137,6 +137,14 @@ providers. This removes the checklist's circular `budget` gate (W10 rec 2).
 - [ ] dec-1089ec: Raise ViabilityBench budget line BL0's cap from $10 to $14 for Pilot B's seeds 2–3
 - [x] bug-b70d40: The ViabilityBench provider client ignores a top-level cached_tokens and prices that input at the full rate
 - [x] gap-60654d: ViabilityBench: enforce token caps through the proxy, fill the meter cross-check, and bundle proxy.jsonl
+- [ ] bug-a49003: A killed subscription session's ledger row still says cli_usage; it needs an estimated cost and a subscription marker
+- [ ] gap-4667a4: S08 still describes VB_SECRET as an environment variable at lines 106 and 302
+- [ ] gap-0bd49a: Agent shells in every ViabilityBench arm can reach the network, so an agent can fetch the public repo's hidden suites
+- [ ] bug-32eb77: Operator credentials that aren't arm keys, such as ANTHROPIC_API_KEY or GITHUB_TOKEN, stay readable by agents through the driver's environment
+- [ ] gap-bc0640: Only one vb run can use a secret file at a time, and S09's run schedule doesn't account for it
+- [ ] bug-09fac4: The metering proxy stamps whole seconds, so an attempt that ends in the same second as the one before gets no usage
+- [ ] bug-c30764: The metering proxy forwards the call that crosses input_token_cap, so a task can overshoot its input cap by one call
+- [ ] gap-dad97b: run_roko.py must read bug-31438d's new record fields: turns_unknown, model_reported, substitution, attempt_key and helper rows
 - [ ] The epic's `[[verify]]` command passes: the pilot page is committed, and `report.py --check` accepts its
       bundle.
 

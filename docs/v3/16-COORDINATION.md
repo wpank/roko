@@ -1267,10 +1267,20 @@ sharing an environment.
 
 ## 11. Exponential Flywheel
 
-Roko should improve **superlinearly** with accumulated usage, deployment count,
-and connected data. The result is an exponential flywheel only when the
-feedback loops are wired deliberately; otherwise the system falls back to
-linear growth or stagnation.
+> **Status (2026-09-29): a hypothesis the evidence does not support.** No
+> measurement shows Roko improving superlinearly, and recent studies argue against
+> expecting it:
+> gains from agent optimizers fail to compound across tasks (Wang, Kattakinda and
+> Feizi 2026, arXiv:2607.14004), self-improvement results depend on task order and
+> amplify noise (Ye et al. 2026, arXiv:2608.18066), and harness evolution does not
+> consistently beat matched test-time scaling (Wang et al. 2026, arXiv:2607.12227).
+> The defensible goal is bounded, audited improvement with rollback. The loops below
+> are kept as design material.
+
+The original design goal was for Roko to improve **superlinearly** with accumulated
+usage, deployment count, and connected data: an exponential flywheel, which the design
+expected only when the feedback loops are wired deliberately, with linear growth or
+stagnation otherwise.
 
 ### The Seven Loops
 

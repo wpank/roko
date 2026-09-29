@@ -13,7 +13,8 @@ truth, and `roko.toml` provides runtime overrides rather than serving as the
 plugin catalog. The loader validates each manifest, selects the tier-appropriate
 sandbox, and registers exposed capabilities with the relevant subsystem.
 
-**Current status:** Signed dependency graphs, bounded typed WASM hooks, strict
+**Current status:** Signed dependency graphs, bounded typed WASM hook validation
+(no hook runs: the runtime was removed with Runner-v2), strict
 plugin admission, verified relay/install, and current CLI/MCP targets satisfy
 the E32 8/8 manifest. WIT/Component hostcalls and OpenClaw/legacy adapter parity
 remain separate roadmap work.

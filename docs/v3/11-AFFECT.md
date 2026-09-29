@@ -1,14 +1,21 @@
 # 11 -- Affect and Daimon
 
-> **Implementation status**: WIRED -- `roko-daimon` owns the complete affect engine:
-> PAD vector, ALMA three-layer temporal model, OCC/Scherer appraisal pipeline,
-> six behavioral states with hysteresis, somatic landscape (8D k-d tree),
-> 15% contrarian retrieval, four-factor retrieval scoring, prospect-theory
-> appraisal asymmetry, collective contagion primitives, cognitive energy
-> accounting, vitality lifecycle, emergent goal trees, and bidirectional
-> energy/affect coupling. E23 (cognitive autonomy) is 10/10 complete.
-> DaimonState is loaded per-task in the runner and modulates dispatch strategy,
-> model tier, turn limits, and prompt context.
+> **Implementation status** (corrected 2026-09-29 at `7c556bc0a`): PARTIAL --
+> `roko-daimon` implements the affect engine: PAD vector, ALMA three-layer temporal
+> model, OCC/Scherer appraisal pipeline, six behavioral states with hysteresis, somatic
+> landscape (8D k-d tree), 15% contrarian retrieval, four-factor retrieval scoring,
+> prospect-theory appraisal asymmetry, collective contagion primitives, cognitive energy
+> accounting, vitality lifecycle, emergent goal trees, and bidirectional energy/affect
+> coupling. The E23 (cognitive autonomy) manifest lists 10/10 tasks accepted; that counts
+> built components, not runtime effect. On Graph runs the plan runner loads one
+> `DaimonState`, and each task outcome is appraised into it. Its effect is limited to
+> routing and one detector (`crates/roko-cli/src/graph_task_dispatch.rs`): its confidence
+> and behavioral state enter the router's `RoutingContext`, a Struggling state adds a
+> conservative-routing recommendation, and its pleasure value adjusts the gate-gaming
+> detector's judge score. `AffectPolicy::modulate_dispatch`
+> (`crates/roko-daimon/src/policy.rs`) has no caller, so affect never sets turn limits or
+> exploration; no affect state reaches the prompt; and the somatic landscape has no
+> caller outside `roko-daimon`.
 
 ---
 
@@ -1345,8 +1352,8 @@ only -- no episode content, task details, or PAD state.
 
 ## 13. Energy Accounting
 
-E23 (cognitive autonomy, 10/10 complete) introduces energy accounting through
-CorticalState energy fields.
+E23 (cognitive autonomy; its manifest lists 10/10 tasks accepted) introduces energy
+accounting through CorticalState energy fields.
 
 ### 13.1 CognitiveEnergy
 

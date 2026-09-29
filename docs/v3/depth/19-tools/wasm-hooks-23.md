@@ -3,6 +3,11 @@
 > Depth file for [19-TOOLS-PLUGINS](../../19-TOOLS-PLUGINS.md) -- the 23
 > validated WASM hook points available to plugin extensions, their lifecycle
 > positions, and the bounded execution contract.
+>
+> **Status (2026-09-29, at `7c556bc0a`): validation only.** The registry still validates
+> hook exports at install, but the runtime that executed hooks was removed with
+> Runner-v2: `WasmExtension::load` (`crates/roko-cli/src/runner/extension_loader.rs`)
+> always fails, so a WASM extension is skipped and no hook on this page is ever called.
 
 ---
 

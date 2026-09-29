@@ -1347,7 +1347,14 @@ discarded.
 
 ### 13.12 Zero-Knowledge Proofs
 
-Four ZK proof types (generated off the hot path via plonky2):
+> **Status (2026-09-29, at `7c556bc0a`): DOCS-ONLY.** No ZK code exists: no crate
+> depends on a proving library, and nothing generates or verifies these proofs. The
+> four proof types below are a design target; the witness DAG depth page lists ZK proof
+> generation as product work. The `[safety.witness_dag]` block below belongs to the same
+> design: `RokoConfig` (`crates/roko-core/src/config/schema.rs`) has no `[safety]`
+> section, so these keys have no effect.
+
+Four ZK proof types are designed, to be generated off the hot path:
 
 | Proof Type | Statement | Gap Addressed |
 |---|---|---|

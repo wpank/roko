@@ -37,9 +37,9 @@ two errors:
 2. **Discarded signal** -- failed episodes that contained partially correct
    approaches are thrown away entirely, losing useful learning signal.
 
-Andrychowicz et al. (2017) demonstrated that relabeling failed trajectories
-with achieved sub-goals (rather than the original goal) recovers useful
-learning signal from at least 45% of otherwise-discarded episodes. Roko
+Andrychowicz et al. (2017, Hindsight Experience Replay) showed that replaying
+failed trajectories with the goals they did achieve, rather than the original
+goal, lets an agent learn from sparse, binary rewards. Roko
 applies this principle to software engineering episodes: a failed episode
 that was later reused successfully is relabeled as a positive episode for a
 smaller (achieved) goal.
@@ -359,11 +359,10 @@ Hindsight adjustments (last 30 days):
     Regressions:        12 episodes downgraded
     Successful reuses:   7 episodes upgraded
     Rules falsified:     3 rule-episode links weakened
-    Signal recovered:   ~45% of failed episodes had reusable approaches
 ```
 
-The 45% signal recovery rate aligns with Andrychowicz et al.'s finding that
-nearly half of failed trajectories contain useful sub-goal achievements.
+No signal-recovery rate has been measured. An earlier revision of this page quoted
+one and attributed it to Andrychowicz et al., who report no such figure.
 
 ---
 

@@ -9,8 +9,13 @@
 > definitions ship by default (16 local executables + 19 GitHub MCP). Signed semantic-version
 > dependency graphs, range-aware relay/CLI graph validation, strict admission, kernel
 > confinement, verified registry install/publish, fail-fast required-extension startup,
-> bounded no-import typed WASM ABI for all 23 current hooks, Claude/Codex MCP, Cursor/Hermes
-> ACP, and native authenticated Gemini CLI MCP are live. The `DynamicToolRegistry` merges
+> Claude/Codex MCP, Cursor/Hermes ACP, and native authenticated Gemini CLI MCP are live.
+> WASM hooks are not (checked at `7c556bc0a`, 2026-09-29): install still validates the
+> bounded no-import typed ABI for all 23 hooks (`validate_wasm_abi` in
+> `crates/roko-plugin/src/registry.rs`), but the runtime that executed them was removed
+> with Runner-v2. `WasmExtension::load` (`crates/roko-cli/src/runner/extension_loader.rs`)
+> always fails, so WASM extensions are skipped and no hook runs (section 7).
+> The `DynamicToolRegistry` merges
 > static builtins with plugin-declared tools at runtime, with per-plugin sandbox inheritance.
 > Component-model Store/Bus hostcalls, OpenClaw/legacy one-shot parity, and optional chain
 > handlers remain open product work.
@@ -494,6 +499,12 @@ resolver accepts any version satisfying the requirement, not just exact matches.
 ---
 
 ## 7. Bounded Typed WASM Hooks
+
+> **Status (2026-09-29, at `7c556bc0a`): validation only.** The install-time
+> validation in 7.2 runs. Execution does not: the WASM runtime was deleted with
+> Runner-v2, and `WasmExtension::load` (`crates/roko-cli/src/runner/extension_loader.rs`)
+> always returns an error, so a WASM extension is skipped and none of the 23 hooks
+> below is ever called.
 
 ### 7.1 The 23 Hook Points
 

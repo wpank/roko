@@ -110,6 +110,30 @@ pub fn build_settings_json() -> String {
     .to_string()
 }
 
+/// The Claude Code setting sources (`user`, `project`, `local`) an agent
+/// loads by default: none. Only managed policy and Roko's `--settings` then
+/// apply, so the invoking user's own configuration stays out of the run:
+/// hooks, plugins, permission rules and `env` from settings files; skills,
+/// agents and commands from `.claude` directories; and discovered CLAUDE.md
+/// files. `project` is no substitute: besides the workdir's CLAUDE.md it
+/// loads those of every directory above it, and for a workdir under the
+/// home directory that includes `~/.claude/CLAUDE.md` and `~/.claude/rules`.
+/// The workdir's own instructions come back through `--add-dir` instead
+/// (see [`ISOLATION_ENV`]).
+pub const ISOLATED_SETTING_SOURCES: &str = "";
+
+/// Environment an agent gets on top of [`ISOLATED_SETTING_SOURCES`].
+/// Auto-memory loads what the user's own sessions saved for the project
+/// (`~/.claude/projects/<project>/memory/`) whatever the setting sources, so
+/// it is switched off. The second variable makes Claude load the CLAUDE.md,
+/// `.claude/CLAUDE.md` and `.claude/rules` of each `--add-dir` directory,
+/// and nothing above it; Roko passes the workdir, so the repository's own
+/// instructions reach the agent.
+pub const ISOLATION_ENV: &[(&str, &str)] = &[
+    ("CLAUDE_CODE_DISABLE_AUTO_MEMORY", "1"),
+    ("CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD", "1"),
+];
+
 /// Agent wrapper around the `claude` CLI.
 #[derive(Debug, Clone)]
 pub struct ClaudeCliAgent {
@@ -124,6 +148,7 @@ pub struct ClaudeCliAgent {
     disallowed_tools: Option<String>,
     max_turns: Option<u32>,
     settings_json: String,
+    setting_sources: String,
     extra_args: Vec<String>,
     env: Vec<(String, String)>,
     credential_scrub: CredentialScrub,
@@ -156,6 +181,7 @@ impl ClaudeCliAgent {
             disallowed_tools: None,
             max_turns: Some(OperatingFrequency::Theta.turn_limit()),
             settings_json: build_settings_json(),
+            setting_sources: ISOLATED_SETTING_SOURCES.to_string(),
             extra_args: Vec::new(),
             env: Vec::new(),
             credential_scrub: CredentialScrub::for_kind(ProviderKind::ClaudeCli),
@@ -254,6 +280,19 @@ impl ClaudeCliAgent {
         self
     }
 
+    /// Override the setting sources passed via `--setting-sources`, a
+    /// comma-separated list of `user`, `project` and `local` (default:
+    /// [`ISOLATED_SETTING_SOURCES`], none). `project` also brings in the
+    /// CLAUDE.md files above the workdir, `~/.claude/CLAUDE.md` among them
+    /// when the workdir is under the home directory. Claude takes the last
+    /// `--setting-sources` it is given, so this flag beats one in
+    /// [`with_extra_args`](Self::with_extra_args).
+    #[must_use]
+    pub fn with_setting_sources(mut self, sources: impl Into<String>) -> Self {
+        self.setting_sources = sources.into();
+        self
+    }
+
     /// Pass through additional CLI args before the canonical Claude flags.
     #[must_use]
     pub fn with_extra_args<I, S>(mut self, args: I) -> Self
@@ -308,6 +347,17 @@ impl ClaudeCliAgent {
         self
     }
 
+    /// The output's `setting_sources` tag, which records the Claude Code
+    /// setting sources the run loaded: `none`, or the `--setting-sources`
+    /// list.
+    fn setting_sources_tag(&self) -> &str {
+        if self.setting_sources.trim().is_empty() {
+            "none"
+        } else {
+            &self.setting_sources
+        }
+    }
+
     fn failure(&self, input: &Signal, reason: &str, started: Instant) -> AgentResult {
         let stream_usage = StreamUsage::default();
         self.failure_with_stream_usage(input, reason, started, &stream_usage)
@@ -325,6 +375,7 @@ impl ClaudeCliAgent {
             .derive(Kind::AgentOutput, Body::text(reason))
             .provenance(Provenance::agent(&self.name))
             .tag("agent", &self.name)
+            .tag("setting_sources", self.setting_sources_tag())
             .tag("failed", "true");
         if let Some(model) = stream_usage
             .model
@@ -414,7 +465,19 @@ impl ClaudeCliAgent {
             .arg("--effort")
             .arg(&self.effort)
             .arg("--settings")
-            .arg(&self.settings_json);
+            .arg(&self.settings_json)
+            // Keep the invoking user's Claude Code configuration out of the
+            // run and the workdir's own CLAUDE.md files in: see
+            // `ISOLATED_SETTING_SOURCES` and `ISOLATION_ENV`. The workdir is
+            // the working directory, so `--add-dir` grants no file access.
+            // Keep out every MCP server Roko did not pass: none from
+            // `~/.claude.json`, `.mcp.json` or claude.ai connectors, whether
+            // or not Roko has an MCP config.
+            .arg("--setting-sources")
+            .arg(&self.setting_sources)
+            .arg("--add-dir")
+            .arg(&self.current_dir)
+            .arg("--strict-mcp-config");
         if self.dangerously_skip_permissions {
             cmd.arg("--dangerously-skip-permissions");
         }
@@ -447,7 +510,6 @@ impl ClaudeCliAgent {
         let mcp_config = self.discovered_mcp_config();
         if let Some(mcp_config) = &mcp_config {
             cmd.arg("--mcp-config").arg(mcp_config);
-            cmd.arg("--strict-mcp-config");
         }
         if let Some(resume) = &self.resume {
             cmd.arg("--resume").arg(resume);
@@ -469,6 +531,13 @@ impl ClaudeCliAgent {
                 .unwrap_or_default(),
         );
         apply_credential_scrub(&mut cmd, &scrub);
+        // Before the caller's variables, so an explicit one wins. The config
+        // directory (`CLAUDE_CONFIG_DIR`) is left alone: a subscription
+        // login is stored under it, and on macOS the keychain entry's name
+        // depends on it.
+        for (key, value) in ISOLATION_ENV {
+            cmd.env(key, value);
+        }
         for (key, value) in &self.env {
             cmd.env(key, value);
         }
@@ -1182,6 +1251,7 @@ impl ClaudeCliAgent {
             .derive(Kind::AgentOutput, Body::text(text))
             .provenance(Provenance::agent(&self.name))
             .tag("agent", &self.name)
+            .tag("setting_sources", self.setting_sources_tag())
             .tag(
                 "model",
                 stream_usage.model.as_deref().unwrap_or(&self.model),
@@ -1841,6 +1911,186 @@ mod tests {
         assert!(!args.iter().any(|arg| arg == "--system-prompt"));
     }
 
+    fn args_of(command: &Command) -> Vec<String> {
+        command
+            .as_std()
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    /// The value `command` sets for `name`, or `None` when it sets none.
+    fn env_of(command: &Command, name: &str) -> Option<String> {
+        command
+            .as_std()
+            .get_envs()
+            .find(|(key, _)| *key == name)
+            .and_then(|(_, value)| value)
+            .map(|value| value.to_string_lossy().into_owned())
+    }
+
+    #[test]
+    fn command_isolates_claude_code_from_the_user_configuration() {
+        let workdir = tempdir().unwrap();
+        let command = ClaudeCliAgent::new("claude", workdir.path(), "claude-test-model")
+            .build_command()
+            .expect("build command");
+        let args = args_of(&command);
+
+        // An empty list loads no user, project or local settings file.
+        let sources = args
+            .iter()
+            .position(|arg| arg == "--setting-sources")
+            .expect("setting sources flag");
+        assert_eq!(args[sources + 1], "");
+        // The workdir's own CLAUDE.md files still load, and only those.
+        let add_dir = args
+            .iter()
+            .position(|arg| arg == "--add-dir")
+            .expect("add-dir flag");
+        assert_eq!(args[add_dir + 1], workdir.path().to_string_lossy());
+        let workdir_claude_md = env_of(&command, "CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD");
+        assert_eq!(workdir_claude_md.as_deref(), Some("1"));
+        // Only the MCP servers Roko passes, even with no MCP config.
+        assert_eq!(
+            args.iter()
+                .filter(|arg| *arg == "--strict-mcp-config")
+                .count(),
+            1
+        );
+        // Auto-memory is off. The config directory is inherited, and with it
+        // the subscription login.
+        let auto_memory = env_of(&command, "CLAUDE_CODE_DISABLE_AUTO_MEMORY");
+        assert_eq!(auto_memory.as_deref(), Some("1"));
+        assert!(
+            command
+                .as_std()
+                .get_envs()
+                .all(|(key, _)| key != "CLAUDE_CONFIG_DIR"),
+            "the config directory must be the user's"
+        );
+
+        // Roko's own settings still apply: both guard hooks and the key-file
+        // deny rules.
+        let settings = args
+            .iter()
+            .position(|arg| arg == "--settings")
+            .expect("settings flag");
+        assert_eq!(args[settings + 1], build_settings_json());
+        let value: Value = serde_json::from_str(&args[settings + 1]).unwrap();
+        for (index, matcher) in [(0, "Bash"), (1, FILE_TOOL_MATCHER)] {
+            assert_eq!(
+                value
+                    .pointer(&format!("/hooks/PreToolUse/{index}/matcher"))
+                    .and_then(Value::as_str),
+                Some(matcher)
+            );
+            let hook = value
+                .pointer(&format!("/hooks/PreToolUse/{index}/hooks/0/command"))
+                .and_then(Value::as_str)
+                .expect("guard hook command");
+            assert!(hook.contains("roko command guard"), "{matcher}: {hook}");
+        }
+        let deny: Vec<&str> = value
+            .pointer("/permissions/deny")
+            .and_then(Value::as_array)
+            .expect("deny rules")
+            .iter()
+            .filter_map(Value::as_str)
+            .collect();
+        for rule in ["Read(~/.roko/**)", "Read(//**/.roko/.env)"] {
+            assert!(deny.contains(&rule), "missing {rule} in {deny:?}");
+        }
+    }
+
+    #[test]
+    fn only_explicit_caller_choices_widen_the_isolation() {
+        let workdir = tempdir().unwrap();
+        let mcp_config = workdir.path().join("mcp.json");
+        let command = ClaudeCliAgent::new("claude", workdir.path(), "claude-test-model")
+            .with_extra_args(["--setting-sources", "user,project,local"])
+            .with_setting_sources("project")
+            .with_mcp_config(mcp_config.clone())
+            .with_env_var("CLAUDE_CODE_DISABLE_AUTO_MEMORY", "0")
+            .with_env_var("CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD", "0")
+            .build_command()
+            .expect("build command");
+        let args = args_of(&command);
+
+        // Claude takes the last `--setting-sources`: Roko's own, not one
+        // passed through in the extra args.
+        let first = args
+            .iter()
+            .position(|arg| arg == "--setting-sources")
+            .expect("extra setting sources");
+        let last = args
+            .iter()
+            .rposition(|arg| arg == "--setting-sources")
+            .expect("setting sources flag");
+        assert!(first < last);
+        assert_eq!(args[last + 1], "project");
+        let mcp = args
+            .iter()
+            .position(|arg| arg == "--mcp-config")
+            .expect("MCP config flag");
+        assert_eq!(args[mcp + 1], mcp_config.to_string_lossy());
+        assert_eq!(
+            args.iter()
+                .filter(|arg| *arg == "--strict-mcp-config")
+                .count(),
+            1
+        );
+        // Explicit variables beat the isolation's: "0" here turns off the
+        // workdir's CLAUDE.md too, for a run that must see no instructions.
+        let auto_memory = env_of(&command, "CLAUDE_CODE_DISABLE_AUTO_MEMORY");
+        assert_eq!(auto_memory.as_deref(), Some("0"));
+        let workdir_claude_md = env_of(&command, "CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD");
+        assert_eq!(workdir_claude_md.as_deref(), Some("0"));
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn run_disables_auto_memory_and_tags_its_setting_sources() {
+        let tmp = tempdir().unwrap();
+        let capture_env = tmp.path().join("env.txt");
+        let script = tmp.path().join("claude-fake.sh");
+        let script_body = format!(
+            r#"#!/bin/sh
+set -eu
+cat >/dev/null
+printf '%s\n' "${{CLAUDE_CODE_DISABLE_AUTO_MEMORY:-unset}}" > "{env_file}"
+printf '%s\n' "${{CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD:-unset}}" >> "{env_file}"
+printf '%s\n' '{{"type":"content_block_delta","delta":{{"text":"ok"}}}}'
+"#,
+            env_file = capture_env.display(),
+        );
+        fs::write(&script, script_body).unwrap();
+        let mut perms = fs::metadata(&script).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&script, perms).unwrap();
+
+        let result = ClaudeCliAgent::new(&script, tmp.path(), "claude-test-model")
+            .run(&prompt("x"), &Context::now())
+            .await;
+        assert!(
+            result.success,
+            "{}",
+            result.output.body.as_text().unwrap_or("unknown")
+        );
+        // Auto-memory off, the workdir's CLAUDE.md files on.
+        assert_eq!(fs::read_to_string(&capture_env).unwrap(), "1\n1\n");
+        assert_eq!(result.output.tag("setting_sources"), Some("none"));
+
+        // A failed run records them too.
+        let missing = tmp.path().join("no-claude");
+        let failed = ClaudeCliAgent::new(missing, tmp.path(), "claude-test-model")
+            .with_setting_sources("project")
+            .run(&prompt("x"), &Context::now())
+            .await;
+        assert!(!failed.success);
+        assert_eq!(failed.output.tag("setting_sources"), Some("project"));
+    }
+
     #[tokio::test]
     async fn runs_fake_claude_binary_and_passes_flags() {
         let tmp = tempdir().unwrap();
@@ -1892,6 +2142,10 @@ printf '%s\n' '{{"type":"content_block_delta","delta":{{"text":"hello"}}}}'
         assert!(!args_text.contains("--append-system-prompt"));
         assert!(args_text.contains("system guidance"));
         assert!(args_text.contains("--settings"));
+        assert!(args_text.contains("--setting-sources\n\n"));
+        let add_dir = format!("--add-dir\n{}\n", tmp.path().display());
+        assert!(args_text.contains(&add_dir));
+        assert!(args_text.contains("--strict-mcp-config"));
         assert!(args_text.contains("--dangerously-skip-permissions"));
         assert!(args_text.contains("--tools"));
         assert!(args_text.contains("Read,Edit"));

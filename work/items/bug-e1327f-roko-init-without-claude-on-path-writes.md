@@ -2,14 +2,16 @@
 id = "bug-e1327f"
 kind = "bug"
 title = "roko init without claude on PATH writes a roko.toml that fails every command with config invariant 3"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p1"
 goal = "release"
 size = "S"
 subsystem = ["cli", "config"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-29
+last_verified_rev = "5e50e959a"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (16:15, wk-readme's quick-start check for bug-09690f; details in bug-09690f's Notes)"
 anchors = ["crates/roko-cli/src/commands/init.rs", "crates/roko-core/src/config/validation.rs"]
@@ -19,6 +21,11 @@ links = { depends_on = [], blocks = [], related = ["bug-09690f"], supersedes = [
 
 [[verify]]
 command = "grep -rqw 'fn init_without_claude_cli_writes_a_loadable_config' crates/roko-cli/src/ && cargo test -p roko-cli --lib init_without_claude_cli_writes_a_loadable_config"
+
+[closed]
+at = 2026-09-29
+by = "coordinator (session 7622b882)"
+evidence = "roko init picks the Claude CLI, else the Anthropic API when its key is set, else writes the model block commented out, and refuses to write a file config validation rejects (435893094, merged 19d4d4ac3). Batch 4 gate (work/rust-batch-4; crates tree identical to MAIN after the merges): cargo check --workspace --tests clean; nightly rustfmt clean after fmt-only b0ae64620; clippy -p roko-cli -p roko-core -p roko-agent --no-deps -D warnings clean; lib tests roko-cli 3077, roko-core 1921, roko-agent 2240, 0 failed."
 +++
 
 ## Problem
@@ -46,3 +53,9 @@ Reproduced on 2026-09-29 with `target/debug/roko` built at `33e107da1`, in scrat
 
 - [ ] `roko init` without `claude` writes a config that every command can load.
 - [ ] The `[[verify]]` command passes.
+
+## Notes
+
+- Premise confirmed at `98a77c510` with `target/debug/roko` built at `33e107da1` (no config-code changes in between): without `claude` on `PATH`, `roko init` leaves `[models.claude-sonnet-4-6]` on the commented-out `claude_cli` provider and `roko config show` fails with config invariant 3.
+- init now picks Claude CLI, else the Anthropic API when `ANTHROPIC_API_KEY` is set, else writes the model block commented out with its provider. The template passes `config_cmd::write_checked_config` (the offline checks of `roko config validate`) before it is written. Layout touch-ups followed in `3bf3af074`.
+- Implemented on `work/bug-e1327f` at `435893094`; cargo verification deferred to the batch check.

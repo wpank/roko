@@ -2,14 +2,16 @@
 id = "bug-8465a2"
 kind = "bug"
 title = "roko config validate passes a budget table that the core config loader rejects"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p2"
 goal = "release"
 size = "S"
 subsystem = ["cli", "config"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-29
+last_verified_rev = "5e50e959a"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (16:15, wk-readme's quick-start check for bug-09690f; details in bug-09690f's Notes)"
 anchors = ["crates/roko-core/src/config/validation.rs", "crates/roko-cli/src/commands/config_cmd.rs"]
@@ -19,6 +21,11 @@ links = { depends_on = [], blocks = [], related = ["bug-09690f"], supersedes = [
 
 [[verify]]
 command = "grep -rqw 'fn config_validate_matches_the_core_loader_on_budgets' crates/ && cargo test -p roko-cli --lib config_validate_matches_the_core_loader_on_budgets"
+
+[closed]
+at = 2026-09-29
+by = "coordinator (session 7622b882)"
+evidence = "roko config validate resolves the file through the core loader, so it rejects what the loader rejects (f99ae073e, merged 19d4d4ac3). Batch 4 gate (work/rust-batch-4; crates tree identical to MAIN after the merges): cargo check --workspace --tests clean; nightly rustfmt clean after fmt-only b0ae64620; clippy -p roko-cli -p roko-core -p roko-agent --no-deps -D warnings clean; lib tests roko-cli 3077, roko-core 1921, roko-agent 2240, 0 failed."
 +++
 
 ## Problem
@@ -47,3 +54,9 @@ Reproduced on 2026-09-29 with `target/debug/roko` built at `33e107da1`, in scrat
 
 - [ ] `config validate` and the loader agree on budget tables.
 - [ ] The `[[verify]]` command passes.
+
+## Notes
+
+- Premise confirmed at `98a77c510` (same binary): the loader rejects `[budget] max_plan_usd = 10, max_task_usd = 1` with invariant 1, while `roko config validate` passes it. Validate also passed `max_turn_usd = 2` above `max_plan_usd = 1`, which the loader rejects.
+- Invariant 1 now fires only for a finite turn cap above a finite plan cap. `roko config validate` has a new phase that resolves the file through the core loader, as commands do, and lists the loader's invariant warnings.
+- Implemented on `work/bug-e1327f` at `f99ae073e`; cargo verification deferred to the batch check.

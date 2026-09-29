@@ -12,7 +12,7 @@ created = 2026-09-29
 updated = 2026-09-29
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e9"
 discovered_from = "tmp/cybernetic-harness/tldr/05-GAPS-AND-PROPOSALS.md (P1 #13; tldr/04 design rule 4)"
-anchors = ["crates/roko-gate/src/diff_gate.rs::analyze_diff", "crates/roko-cli/src/graph_task_dispatch.rs::GraphTaskDispatcher::settle_task_verification"]
+anchors = ["crates/roko-gate/src/diff_gate.rs::analyze_diff", "crates/roko-cli/src/graph_task_dispatch/verification.rs::GraphTaskDispatcher::settle_task_verification"]
 doc = "tmp/cybernetic-harness/workstreams/PLAN.md"
 lane = "rust-cold"
 links = { depends_on = ["gap-abbd22", "gap-b72761", "gap-b954ad"], blocks = [], related = ["gap-d14a43"], supersedes = [], duplicate_of = "" }

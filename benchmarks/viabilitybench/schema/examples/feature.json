@@ -1,0 +1,101 @@
+{
+ "canary": "vb-canary-f6c9…",
+ "description": {
+  "path": "description.md",
+  "sha256": "d61322a38a96c05810de3266821388a3312ca0420e5733debc190416d79a6f9a"
+ },
+ "family": "PL",
+ "feature": "PL03",
+ "feature_dir": "pl03_logtally",
+ "generator_version": "pl-1.0.0",
+ "instance_id": "PL03-0001",
+ "package": "hitcount",
+ "plan_skeleton": {
+  "sha256": "729824b850e92568fe6b4c0ec46b0532c94f8f7adad8bb1a4e4742dd97a2c209",
+  "tasks": 5,
+  "width": 3
+ },
+ "pristine": {
+  "bundle": "/home/vb/vb-private/PL03-0001/pristine.bundle",
+  "commit": "1d298195ad01696b0676c1e37513e34e488cb9d4",
+  "tree": "1c94356aae05fe17f3cc2e73f6dc42325bfc4cf5"
+ },
+ "recoverability": [
+  {
+   "evidence": [
+    "description.md#R1"
+   ],
+   "req": "R1"
+  },
+  {
+   "evidence": [
+    "description.md#R2"
+   ],
+   "req": "R2"
+  },
+  {
+   "evidence": [
+    "description.md#R3"
+   ],
+   "req": "R3"
+  },
+  {
+   "evidence": [
+    "description.md#R4"
+   ],
+   "req": "R4"
+  },
+  {
+   "evidence": [
+    "description.md#R5"
+   ],
+   "req": "R5"
+  },
+  {
+   "evidence": [
+    "description.md#R6"
+   ],
+   "req": "R6"
+  }
+ ],
+ "rename": {
+  "logtally": "hitcount"
+ },
+ "requirements": [
+  "R1",
+  "R2",
+  "R3",
+  "R4",
+  "R5",
+  "R6"
+ ],
+ "run_record_task": {
+  "family": "PL",
+  "instance_id": "PL03-0001",
+  "is_honeypot": false,
+  "ladder": null,
+  "latent_version": "v1",
+  "spec_variant": "precise"
+ },
+ "schema_version": "vb.feature/1",
+ "seed": 1,
+ "slug": "logtally-access-report",
+ "truth_suite": {
+  "author": "claude-opus-5-5 (Anthropic)",
+  "cross_family_review": "pending",
+  "id": "pl03-whole-feature",
+  "version": "1.0.0"
+ },
+ "visible_test_hashes": {
+  "tests/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "tests/test_count.py": "0c5f7995f7b62ad8b46644eaf770e8da4908f94bc371af5ae9a8b815245f0f5d",
+  "tests/test_report_smoke.py": "896335f4c8c5901d7fa01eb7e7935e0d42ed6fb48f222f828338d5751aca90cd"
+ },
+ "visible_tests": [
+  "tests"
+ ],
+ "visible_verify": [
+  "python3 -m unittest discover -s tests -t ."
+ ],
+ "workdir": "/home/vb/vb-work/PL03-0001"
+}

@@ -2,14 +2,16 @@
 id = "gap-5d95a5"
 kind = "gap"
 title = "Companion report: trim §3, §7, §5 and §1 to budget, and fix the mapping-table misreadings and the zhang2025darwin venue"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p2"
 goal = "whitepaper"
 size = "M"
 subsystem = ["companion"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-29
+last_verified_rev = "fce93aced"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (16:40, wk-companion-review's report on gap-a3031b)"
 anchors = ["tmp/cybernetic-harness/companion-audit/E10-DRAFT.md", "tmp/cybernetic-harness/companion-audit/MAPPING-TABLE.md", "tmp/cybernetic-harness/companion-audit/data/bib-overrides.json", "tmp/cybernetic-harness/companion-audit/references.bib"]
@@ -19,6 +21,11 @@ links = { depends_on = [], blocks = [], related = ["gap-a3031b", "gap-cb86e4"], 
 
 [[verify]]
 command = "! grep -q '&amp;' tmp/cybernetic-harness/companion-audit/references.bib && ! grep -q 'count empty replies as success (zhu2025establishing)' tmp/cybernetic-harness/companion-audit/MAPPING-TABLE.md"
+
+[closed]
+at = 2026-09-29
+by = "coordinator (session 7622b882)"
+evidence = "Companion trims and fixes (tmp, wk-companion-strict): §1 719->675/687, §3 615->406/412, §5 899->792/825, §7 1,293->1,085/1,100 words, cut detail moved to appendix blocks B.2, B.3, C.2, E.1 with no number, anchor, CL id, sha or date lost (script diff); MAPPING-TABLE lines 33 and 81 fixed and the MAST note closed; zhang2025darwin venue fixed via data/bib-overrides.json and the bib rebuilt (no &amp;); A4 labelled author-reported. Verify passes."
 +++
 
 ## Problem

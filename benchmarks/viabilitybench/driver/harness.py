@@ -54,6 +54,9 @@ class TaskContext:
     workdir: Path
     spec_text: str
     agent_env: dict[str, str]
+    # The manifest's public parts, which the spec already states; plan-emitting arms need them (planemit).
+    visible_verify: tuple[str, ...] = ()
+    files_in_scope: tuple[str, ...] = ()
 
     @property
     def chain_key(self) -> str:

@@ -2,14 +2,16 @@
 id = "gap-33d54b"
 kind = "gap"
 title = "ViabilityBench budget lines and caps in the run ledger (S09.E2)"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p1"
 goal = "proof"
 size = "S"
 subsystem = ["benchmarks/viabilitybench/driver", "benchmarks/viabilitybench/experiments"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-29
+last_verified_rev = "50ba68c08"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e12"
 discovered_from = "tmp/cybernetic-harness/specs/S09-experiments.md (§4.6, §6 E2; checklist S09.E2); workstreams/assessment/W10-benchmarks-proof.md (circular budget gate, recs 2 and 7)"
 anchors = ["benchmarks/viabilitybench/experiments/budget.toml", "benchmarks/viabilitybench/driver/ledger.py", "benchmarks/viabilitybench/driver/test_ledger.py"]
@@ -22,6 +24,12 @@ command = "grep -qw 'def test_dispatch_over_line_cap_is_refused' benchmarks/viab
 
 [[verify]]
 command = "grep -qw 'def test_reconcile_flags_drift_over_five_percent' benchmarks/viabilitybench/driver/test_ledger.py && benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/driver/test_ledger.py -k test_reconcile_flags_drift_over_five_percent -q"
+
+[closed]
+at = 2026-09-29
+commit = "50ba68c08"
+by = "wk-bench-ledger (commit trailer)"
+evidence = "experiments/budget.toml holds S09 v1.2's budget lines (BL0-BL11 and BL13; caps sum to $390, BL12 held back for D43), the pilot's $15 experiment cap over PILOT-A and PILOT-B, and a $400 programme stop. The v1.2 rebalance (BL1 160, BL6 44, BL7 26, BL13 6) is marked confirm = \"lock\"; W10 rec 7's BL0 raise to $14 is recorded as proposed_cap_usd and is not in force. ledger.py reserves each attempt's worst case over every run in the results root and refuses a dispatch that would pass a line, experiment or programme cap before any provider call; vb run stops before a task that could pass one. New: vb ledger report and vb ledger reconcile (per-day drift against a provider CSV, flagged above 5%, with zai and Moonshot exports and their inferred reasoning_in_output covered). Checks: both [[verify]] commands pass (-k test_dispatch_over_line_cap_is_refused: 2 passed, including an offline vb run whose stub server gets 0 requests; -k test_reconcile_flags_drift_over_five_percent: 1 passed), and the whole benchmarks/viabilitybench suite passes (221 passed, 1 skipped)."
 +++
 
 ## Problem
@@ -68,9 +76,9 @@ Checked at `41c7ffbd6`: nothing exists, and no money has been spent.
 
 ## Done when
 
-- [ ] A dispatch that would exceed a line cap or the experiment cap is refused before any provider call.
-- [ ] Reconciliation flags a synthetic export that differs by more than 5%.
-- [ ] Both `[[verify]]` commands pass.
+- [x] A dispatch that would exceed a line cap or the experiment cap is refused before any provider call.
+- [x] Reconciliation flags a synthetic export that differs by more than 5%.
+- [x] Both `[[verify]]` commands pass.
 
 ## Notes
 

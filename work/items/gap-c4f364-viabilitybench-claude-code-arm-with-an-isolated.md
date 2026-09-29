@@ -2,14 +2,16 @@
 id = "gap-c4f364"
 kind = "gap"
 title = "ViabilityBench Claude Code arm with an isolated config (S08.T12)"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p1"
 goal = "proof"
 size = "S"
 subsystem = ["benchmarks/viabilitybench/driver"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-29
+last_verified_rev = "81c08e7be"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e12"
 discovered_from = "tmp/cybernetic-harness/workstreams/assessment/W10-benchmarks-proof.md (the unclean baseline, rec 4); specs/S08-benchmark-suite.md (§4.9, §6 T12)"
 anchors = ["benchmarks/viabilitybench/driver/run_cli.py", "benchmarks/viabilitybench/driver/test_run_cli.py", "benchmarks/viabilitybench/arms/fd_claude.toml"]
@@ -22,6 +24,12 @@ command = "grep -qw 'def test_claude_arm_command_is_isolated_and_pinned' benchma
 
 [[verify]]
 command = "grep -qw 'def test_result_event_is_priced_as_u_prime_and_r' benchmarks/viabilitybench/driver/test_run_cli.py && benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/driver/test_run_cli.py -k test_result_event_is_priced_as_u_prime_and_r -q"
+
+[closed]
+at = 2026-09-29
+commit = "81c08e7be"
+by = "wk-bench-ccarm"
+evidence = "fd_claude arm on 81c08e7be: driver/run_cli.py runs claude -p on claude-opus-5-5 with gap-8be530's final isolation settings (setting-sources empty, the --add-dir pair, strict empty MCP config, no auto-memory) and a fresh CLAUDE_CONFIG_DIR per task; it prices U' from modelUsage x prices-2026-09-28, keeps R as vendor_usd, and records the exact argv/env in each attempt. Checked by 9 offline tests with a fake claude (driver/test_run_cli.py): both [[verify]] commands pass, and the benchmark suite gives 221 passed, 1 skipped. Not done: the live probe. The init event and a recorded result fixture await one real run of 'run_cli.py probe --arm fd_claude --allow-network'."
 +++
 
 ## Problem
@@ -67,10 +75,10 @@ Checked at `41c7ffbd6`: nothing exists. W10 rec 4 leaves the isolation mechanism
 
 ## Done when
 
-- [ ] A unit test shows that the command and environment the arm builds are isolated and pinned.
+- [x] A unit test shows that the command and environment the arm builds are isolated and pinned.
 - [ ] A recorded `result` fixture yields both U′ and R.
 - [ ] The probe's `init` event is saved as closing evidence.
-- [ ] Both `[[verify]]` commands pass.
+- [x] Both `[[verify]]` commands pass.
 
 ## Notes
 
@@ -80,3 +88,21 @@ Checked at `41c7ffbd6`: nothing exists. W10 rec 4 leaves the isolation mechanism
   off-hours.
 - **Small models in the bill.** Claude Code may bill background turns to `claude-haiku-4-5`, which then shows up in
   `modelUsage`. The snapshot in S08 §5.6 has a row for it.
+- **Built on `work/gap-c4f364` (2026-09-29).** It adds `driver/run_cli.py` (runner `run_cli`, harness `claude-code`,
+  and `run_cli.py probe`), `arms/fd_claude.toml` and `driver/test_run_cli.py` (9 offline tests with a fake `claude`).
+  - **Isolation:** the final settings from gap-8be530 (`de36081b9`): `--setting-sources ""`, the
+    `--add-dir <workdir>` + `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1` pair (for parity with Roko's runs),
+    `--strict-mcp-config` with an empty `--mcp-config`, and `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`.
+  - **Config dir:** each task gets a fresh `CLAUDE_CONFIG_DIR` under its own HOME. In `keychain` mode the runner sets
+    `CLAUDE_SECURESTORAGE_CONFIG_DIR=`.
+  - **Shared hooks:**
+    - `vb.py` skips the driver's API-key check for a subscription arm (`billed = false`).
+    - `records._costs` passes the attempts' shared cost source (`cli_usage`) and their `vendor_usd` (R) through to the
+      record.
+- **Not done: the live probe.** No real `claude` ran in this push.
+  - Done-when items 2–3 therefore rest on an invented `result` fixture, which has Claude Code 2.1.282's `modelUsage`
+    fields but is not a recording, and on a fake `init` event.
+  - To finish: run `benchmarks/viabilitybench/.venv/bin/python benchmarks/viabilitybench/driver/run_cli.py probe
+    --arm fd_claude --allow-network` once, off-hours, and keep its JSON. The run confirms three things: the keychain
+    mechanism works, the model is pinned, and no MCP server, plugin or memory loads. It also records a real `result`
+    event, which should replace the fixture.

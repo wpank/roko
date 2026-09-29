@@ -8,6 +8,7 @@ Run: python3 tools/test_paperlint.py [-k NAME]
 """
 
 import contextlib
+import hashlib
 import io
 import os
 import subprocess
@@ -273,6 +274,49 @@ class TestMarkersAndCitations(FixtureRepo):
         self.assertEqual(out.count("[status-tag]"), 1, out)
         self.assertIn("PARTIAL@1234567: 1234567 is not a commit in this repository", out)
 
+    def test_claim_level_names_in_code_or_tables_are_not_status_tags(self):
+        p = self.section(self.paper(), "01-introduction.md", """\
+            Status: draft · owner gap-aaaaaa
+
+            # T
+
+            | Claim type | N | EFFECTIVE | WIRED | PARTIAL |
+            |---|---|---|---|---|
+            | Mechanism | 38 | 2 | 20 | 16 |
+
+            | Level | Meaning |
+            |---|---|
+            | WIRED | Reachable from a production command |
+            | PARTIAL | Part of it is not on a production path |
+            | ORPHANED@1234567 | A tag with a commit is checked in a table too |
+
+            The legend names `WIRED` and `PARTIAL`, but in prose the router is PARTIAL.
+            """)
+        code, out = run("--strict", p)
+        self.assertEqual(out.count("[status-tag]"), 2, out)
+        self.assertIn("ORPHANED@1234567: 1234567 is not a commit in this repository", out)
+        self.assertIn("status tag PARTIAL has no @<commit>", out)
+
+    def test_claim_levels_directive(self):
+        """A file whose own scale shares names with the tags (the companion's claim levels) declares them once."""
+        p = self.section(self.paper(), "01-introduction.md", """\
+            Status: draft · owner gap-aaaaaa
+            <!-- paperlint: claim-levels WIRED PARTIAL -->
+
+            # T
+
+            Levels run from EFFECTIVE through WIRED and PARTIAL to STUB, and an effect seen only on the deleted
+            engine leaves a row WIRED. The loop is ORPHANED, and the router is PARTIAL@1234567.
+
+            ```markdown
+            <!-- paperlint: claim-levels ORPHANED -->
+            ```
+            """)
+        code, out = run("--strict", p)
+        self.assertEqual(out.count("[status-tag]"), 2, out)
+        self.assertIn("status tag ORPHANED has no @<commit>", out)
+        self.assertIn("PARTIAL@1234567: 1234567 is not a commit in this repository", out)
+
     def test_markers_may_wrap_lines_and_report_counts_them(self):
         p = self.section(self.paper(), "01-introduction.md", """\
             Status: template · owner gap-aaaaaa
@@ -470,6 +514,34 @@ class TestBudgets(FixtureRepo):
         # "3 Related work" 3, "Prose one two." 3, the other table 7; nothing under the ledger heading
         self.assertEqual(paperlint.Doc(p, "x").word_count(), 13)
 
+    def test_ledger_skip_is_limited_to_ledger_sections(self):
+        s = self.research_paper()
+        p = self.section(s, "01-intro.md", """\
+            Status: draft · owner PS4
+
+            # 4 Method
+
+            ### 4.1 Claims ledger
+
+            One row per claim.
+
+            ## Building the claims ledger
+
+            Two rows.
+
+            ## Claims ledger (§4)
+
+            | ID | Claim |
+            |---|---|
+            | C4.1 | Not counted |
+
+            ## Claims ledger
+
+            Not counted either.
+            """)
+        # "4 Method" 2, "4.1 Claims ledger" 3, "One row per claim." 4, "Building the claims ledger" 4, "Two rows." 2
+        self.assertEqual(paperlint.Doc(p, "x").word_count(), 15)
+
     def test_banned_words_from_the_research_style_rules(self):
         s = self.research_paper()
         p = self.section(s, "01-intro.md", "Status: stable-draft · owner PS1\n\n# T\n\nThe first harness, provably "
@@ -514,6 +586,44 @@ class TestCommandLine(FixtureRepo):
                                  f"Roko built 16 plans for $174.87.[^1-p]\n\n[^1-p]: {note}\n")
                 code, out = run("--strict", p)
                 self.assertEqual(out.count("[number]"), want, out)
+
+    def evidence(self, d: Path) -> str:
+        """A frozen file and its SHA256SUMS line, as docs/whitepaper/evidence/ keeps them; returns its digest."""
+        (d / "evidence").mkdir()
+        frozen = b"# B7\n\n173 tasks, 168 gate-verified, for $174.87.\n"
+        (d / "evidence" / "2026-09-29-b7.md").write_bytes(frozen)
+        (d / "evidence" / "2026-09-29-unlisted.md").write_text("Not in SHA256SUMS.\n")
+        digest = hashlib.sha256(frozen).hexdigest()
+        (d / "evidence" / "SHA256SUMS").write_text(f"{digest}  2026-09-29-b7.md\n")
+        return digest
+
+    def footnoted(self, d: Path, note: str) -> Path:
+        return self.section(d, "01-introduction.md", "Status: draft · owner gap-aaaaaa\n\n# T\n\n"
+                            f"Roko built 16 plans for $174.87.[^1-p]\n\n[^1-p]: {note}\n")
+
+    def test_sha256_footnote_counts_as_source(self):
+        """The README's form: the frozen file and the first 12 hex digits of its sha256, with no item or commit."""
+        d = self.paper()
+        digest = self.evidence(d)
+        cases = {
+            "first 12 hex digits": f"Note B7, frozen as `evidence/2026-09-29-b7.md` (sha256 `{digest[:12]}`).",
+            "digest on the next line": f"Note B7, frozen as `evidence/2026-09-29-b7.md` (sha256\n    `{digest[:12]}`).",
+            "the whole digest": f"Note B7, frozen as `evidence/2026-09-29-b7.md` (sha256 `{digest}`).",
+            "a file SHA256SUMS doesn't list": "Frozen as `evidence/2026-09-29-unlisted.md` (sha256 `3f2a9c1b7e44`).",
+        }
+        for name, note in cases.items():
+            with self.subTest(name):
+                code, out = run("--strict", self.footnoted(d, note))
+                self.assertEqual(out.count("[number]"), 0, out)
+
+    def test_sha256_footnote_must_match_sha256sums(self):
+        d = self.paper()
+        digest = self.evidence(d)
+        wrong = "0" * 12
+        code, out = run("--strict", self.footnoted(d, f"Frozen as `evidence/2026-09-29-b7.md` (sha256 `{wrong}`)."))
+        self.assertEqual(out.count("[number]"), 1, out)
+        self.assertIn(f"[number] [^1-p]: sha256 `{wrong}` does not match `evidence/2026-09-29-b7.md` (SHA256SUMS:"
+                      f" `{digest[:12]}…`)", out)
 
     def test_commit_spans(self):
         cases = {

@@ -19,7 +19,7 @@ anything else.
 6. [Foundation Service Traits](#6-foundation-service-traits)
 7. [Supporting Protocol Traits](#7-supporting-protocol-traits)
 8. [The Cell Supertrait](#8-the-cell-supertrait)
-9. [Workflow Contract Types (formerly WorkflowEngine)](#9-workflowengine-and-pipelinestatev2)
+9. [Workflow Contract Types (formerly WorkflowEngine)](#9-workflow-contract-types-formerly-workflowengine)
 10. [EffectDriver Pattern](#10-effectdriver-pattern)
 11. [Agent Dispatch and ToolDispatcher](#11-agent-dispatch-and-tooldispatcher)
 12. [Gate Pipeline Architecture](#12-gate-pipeline-architecture)

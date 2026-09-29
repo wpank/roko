@@ -155,19 +155,27 @@ impl Default for ConfigMigrator {
     }
 }
 
+/// Keys that config schema v2 renamed, as `(table, v1 name, v2 name)`.
+///
+/// The v1 -> v2 migration renames them when it loads an older file, and
+/// config editors use the table to write the v2 name for a v1 key.
+pub const V1_RENAMED_KEYS: &[(&str, &str, &str)] = &[
+    ("agent", "model", "default_model"),
+    ("agent", "backend", "default_backend"),
+    ("agent", "effort", "default_effort"),
+    ("budget", "max_session_usd", "max_plan_usd"),
+    ("budget", "max_agent_usd", "max_turn_usd"),
+];
+
 fn migrate_v1_to_v2(value: &mut toml::Value) -> Result<(), String> {
     let root = value
         .as_table_mut()
         .ok_or_else(|| "config root must be a TOML table".to_string())?;
 
-    if let Some(agent) = root.get_mut("agent").and_then(toml::Value::as_table_mut) {
-        rename_if_absent(agent, "model", "default_model");
-        rename_if_absent(agent, "backend", "default_backend");
-        rename_if_absent(agent, "effort", "default_effort");
-    }
-    if let Some(budget) = root.get_mut("budget").and_then(toml::Value::as_table_mut) {
-        rename_if_absent(budget, "max_session_usd", "max_plan_usd");
-        rename_if_absent(budget, "max_agent_usd", "max_turn_usd");
+    for (table, old, new) in V1_RENAMED_KEYS {
+        if let Some(section) = root.get_mut(*table).and_then(toml::Value::as_table_mut) {
+            rename_if_absent(section, old, new);
+        }
     }
 
     // Migrate top-level [[gate]] entries to [[gates.rungs]].
@@ -1419,6 +1427,33 @@ pub fn validate_known_config_paths(value: &toml::Value) -> Vec<ConfigDiagnostic>
     let mut diagnostics = Vec::new();
     walk_config_paths(value, &schema, "", &mut diagnostics);
     diagnostics
+}
+
+/// The schema's value at the dotted config `path`, if the path is known.
+///
+/// Reads the schema tree that [`validate_known_config_paths`] checks against.
+/// The value is a placeholder: only its TOML type is meaningful. Keys below a
+/// dynamic map section (`providers.<name>`, `models.<name>`, ...) resolve
+/// through the map's value template, as validation does; a map without a
+/// template has no types to offer, so paths below it resolve to `None`.
+#[must_use]
+pub fn schema_value_for_path(path: &str) -> Option<toml::Value> {
+    let schema = build_schema_tree();
+    let mut node = &schema;
+    let mut prefix = String::new();
+    for segment in path.split('.') {
+        let table = node.as_table()?;
+        node = if DYNAMIC_MAP_SECTIONS.contains(&prefix.as_str()) {
+            table.values().next()?
+        } else {
+            table.get(segment)?
+        };
+        if !prefix.is_empty() {
+            prefix.push('.');
+        }
+        prefix.push_str(segment);
+    }
+    Some(node.clone())
 }
 
 /// Build a schema tree that includes all `RokoConfig` fields, including those
@@ -3412,6 +3447,26 @@ strict_validation = true
                 .any(|d| d.key == "budget.max_plna_usd" && d.message.contains("max_plan_usd")),
             "expected typo suggestion for 'budget.max_plna_usd', got: {diags:?}"
         );
+    }
+
+    #[test]
+    fn schema_value_for_path_types_known_keys() {
+        assert!(matches!(
+            schema_value_for_path("budget.max_plan_usd"),
+            Some(toml::Value::Float(_))
+        ));
+        assert!(matches!(
+            schema_value_for_path("agent.default_model"),
+            Some(toml::Value::String(_))
+        ));
+        // Dynamic map keys resolve through the map's value template.
+        assert!(matches!(
+            schema_value_for_path("providers.zai.timeout_ms"),
+            Some(toml::Value::Integer(_))
+        ));
+        assert_eq!(schema_value_for_path("budget.max_plna_usd"), None);
+        // v1 names are not v2 keys.
+        assert_eq!(schema_value_for_path("agent.model"), None);
     }
 
     #[test]

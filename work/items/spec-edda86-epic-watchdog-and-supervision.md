@@ -12,7 +12,7 @@ created = 2026-09-29
 updated = 2026-09-29
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e10"
 discovered_from = "tmp/cybernetic-harness/tldr/05-GAPS-AND-PROPOSALS.md (P1 #14); evidence/field/CASES.md (CASE-004)"
-anchors = ["crates/roko-cli/src/graph_task_dispatch.rs::task_turn_limit", "crates/roko-cli/src/graph_task_dispatch.rs::base_attempt_timeout_ms", "crates/roko-cli/src/graph_execution/plan_runner.rs::run_graph_plan"]
+anchors = ["crates/roko-cli/src/graph_task_dispatch/turn_policy.rs::task_turn_limit", "crates/roko-cli/src/graph_task_dispatch/turn_policy.rs::base_attempt_timeout_ms", "crates/roko-cli/src/graph_execution/plan_runner.rs::run_graph_plan"]
 doc = "tmp/cybernetic-harness/workstreams/PLAN.md"
 lane = "rust-hot"
 links = { depends_on = ["spec-a0403b", "reg-7cf6f9", "gap-a791b4", "gap-5a6e01", "gap-9eebcb"], blocks = [], related = ["gap-ebd656", "find-43768e", "gap-c89b40"], supersedes = [], duplicate_of = "" }

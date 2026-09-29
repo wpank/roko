@@ -1611,7 +1611,7 @@ impl GraphTaskDispatcher {
                 prompt_text: Some(dispatch_plan.prompt.system_prompt.clone()),
                 cache_read_tokens: u64::from(dispatch.result.usage.cache_read_tokens),
                 knowledge_ids: diagnostics.knowledge_ids.clone(),
-                playbook_ids: vec![],
+                playbook_ids: diagnostics.playbook_ids.clone(),
                 initial_model: model_slug.clone(),
                 turns: u64::from(agent_num_turns),
                 failure_reason,
@@ -1849,16 +1849,20 @@ impl GraphTaskDispatcher {
         }
 
         // ── W07: Playbook outcome recording ──────────────────────────────
+        //
+        // Credit the playbooks prompt assembly actually injected.
         if let Some(playbook_dir) = &self.feedback.playbook_dir {
             let store = roko_learn::playbook::PlaybookStore::new(playbook_dir);
-            let playbook_id = format!("task-{}", task.id);
-            if let Err(error) = store.record_outcome(&playbook_id, succeeded).await {
-                tracing::warn!(
-                    plan_id = %spec.plan_id,
-                    task_id = %task.id,
-                    %error,
-                    "graph playbook outcome recording failed (best-effort)"
-                );
+            for playbook_id in &diagnostics.playbook_ids {
+                if let Err(error) = store.record_outcome(playbook_id, succeeded).await {
+                    tracing::warn!(
+                        plan_id = %spec.plan_id,
+                        task_id = %task.id,
+                        %playbook_id,
+                        %error,
+                        "graph playbook outcome recording failed (best-effort)"
+                    );
+                }
             }
         }
 
@@ -7507,6 +7511,119 @@ printf '%s\n' '{{"type":"result","session_id":"sess-b","model":"claude-sonnet-4-
             attempt_failure_reason("verify", "  \n"),
             "verify: no detail"
         );
+    }
+
+    /// Through the batch dispatch path: a verified attempt grows durable
+    /// knowledge and credits its prompt treatment and the playbook its prompt
+    /// used with a success; a verify failure credits both with a failure and
+    /// keeps the failing step and its output on the episode.
+    #[tokio::test]
+    async fn dispatch_outcomes_feed_knowledge_experiments_playbooks_and_episodes() {
+        use roko_learn::prompt_experiment::{ExperimentStore, PromptExperiment, PromptVariant};
+
+        let temp = tempdir().expect("tempdir");
+        let store_path = temp.path().join(".roko/learn/experiments.json");
+        std::fs::create_dir_all(store_path.parent().unwrap()).unwrap();
+        let mut experiment = PromptExperiment::new(
+            "role-ab",
+            "role_identity",
+            ["terse", "thorough"]
+                .into_iter()
+                .map(|id| PromptVariant {
+                    id: id.into(),
+                    name: id.into(),
+                    section_name: "role_identity".into(),
+                    content: format!("You are the Implementer ({id} variant)."),
+                    slug: None,
+                    active: true,
+                })
+                .collect(),
+        );
+        experiment.role = Some("implementer".into());
+        let mut store = ExperimentStore::new();
+        store.register(experiment);
+        store.save(&store_path).unwrap();
+        let playbook_dir = temp.path().join(".roko/learn/playbooks");
+        let playbooks = roko_learn::playbook::PlaybookStore::new(&playbook_dir);
+        playbooks
+            .save(&roko_learn::playbook::Playbook::new(
+                "banner-steps",
+                "Render a greeting banner",
+            ))
+            .await
+            .unwrap();
+        let episodes_path = temp.path().join(".roko/episodes.jsonl");
+        let facade = crate::runtime_feedback::FeedbackFacade::new()
+            .with_sink(Arc::new(crate::runtime_feedback::EpisodeSink::at(
+                &episodes_path,
+            )))
+            .with_sink(Arc::new(
+                crate::runtime_feedback::VerifiedKnowledgeSink::for_workdir(temp.path()),
+            ));
+        let feedback = GraphFeedbackContext {
+            feedback_facade: Some(Arc::new(facade)),
+            experiment_store_path: Some(store_path.clone()),
+            playbook_dir: Some(playbook_dir),
+            ..GraphFeedbackContext::default()
+        };
+        let (dispatcher, mut task) =
+            make_test_dispatcher(&temp, VERIFY_PROVIDER, no_auto_fix, feedback).await;
+        task.title = "Render the greeting banner".into();
+        task.verify = vec![verify_step("structural", "true")];
+        dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &CellContext::new())
+            .await
+            .expect("the verified attempt passes");
+
+        let mut failing = task.clone();
+        failing.id = "T-FAIL".into();
+        failing.verify = vec![verify_step(
+            "check",
+            "echo 'checking the banner'; echo 'banner.txt: the greeting is missing' >&2; exit 3",
+        )];
+        dispatcher
+            .dispatch(&make_spec(&failing), Vec::new(), &CellContext::new())
+            .await
+            .expect_err("the failing verify step fails the attempt");
+
+        let knowledge = roko_neuro::KnowledgeStore::for_workdir(temp.path())
+            .read_all()
+            .unwrap();
+        assert!(
+            knowledge.iter().any(|entry| {
+                entry.source.as_deref() == Some("runtime:gate_verdict")
+                    && entry.content.contains("Render the greeting banner")
+            }),
+            "{knowledge:#?}"
+        );
+
+        let stats = ExperimentStore::load_strict(&store_path)
+            .unwrap()
+            .get("role-ab")
+            .unwrap()
+            .stats
+            .values()
+            .fold((0, 0), |(trials, successes), stats| {
+                (trials + stats.trials, successes + stats.successes)
+            });
+        assert_eq!(stats, (2, 1), "one observed success and one failure");
+        let playbook = playbooks.load("banner-steps").await.unwrap().unwrap();
+        assert_eq!((playbook.success_count, playbook.failure_count), (1, 1));
+
+        let episodes = roko_learn::episode_logger::EpisodeLogger::read_all(&episodes_path)
+            .await
+            .unwrap();
+        let failed = episodes
+            .iter()
+            .find(|episode| episode.task_id == "T-FAIL")
+            .expect("failure episode");
+        let reason = failed.failure_reason.as_deref().unwrap_or_default();
+        assert!(
+            reason.starts_with("verify: 1/1 verify step(s) failed for task"),
+            "{reason}"
+        );
+        assert!(reason.contains("verify[0:check]"), "{reason}");
+        assert!(reason.contains("the greeting is missing"), "{reason}");
     }
 
     #[test]

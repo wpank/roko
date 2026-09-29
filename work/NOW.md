@@ -4,7 +4,7 @@
 
 What to work on next: the top checked, open items of each goal, highest-priority goal first. Reorder or change goals in `goals.toml`; pin an item higher with `rank = 1` (lower first).
 
-**Drift:** 32 anchor gone · 156 changed since checked · 7 mentioned in commits. Re-check them before relying on this list: `DRIFT.md`.
+**Drift:** 32 anchor gone · 158 changed since checked · 7 mentioned in commits. Re-check them before relying on this list: `DRIFT.md`.
 
 ## 1. Public release: security, licence, CI, first run
 
@@ -37,7 +37,7 @@ _0 more open · 39 unchecked (`TRIAGE.md`) · `goal = "golden-path"`_
 
 - nothing checked and open
 
-_0 more open · 26 unchecked (`TRIAGE.md`) · `goal = "proof"`_
+_0 more open · 20 unchecked (`TRIAGE.md`) · `goal = "proof"`_
 
 ## 6. Learning from verified outcomes, M1-M4 (P2)
 

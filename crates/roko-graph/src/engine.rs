@@ -6187,8 +6187,17 @@ exclusive = ["./web/src/stage/PlanView.tsx"]
             .await
             .unwrap();
         assert!(output.success);
-        assert_eq!(log.max_running.load(Ordering::SeqCst), 1, "{:?}", log.events());
-        assert!(!ran_together(&log, "stage", "plan-view"), "{:?}", log.events());
+        assert_eq!(
+            log.max_running.load(Ordering::SeqCst),
+            1,
+            "{:?}",
+            log.events()
+        );
+        assert!(
+            !ran_together(&log, "stage", "plan-view"),
+            "{:?}",
+            log.events()
+        );
 
         let log = Arc::new(SleepLog::default());
         let handle = GraphEngine::new(graph, sleep_registry(&log)).start(CellContext::new());
@@ -6201,8 +6210,17 @@ exclusive = ["./web/src/stage/PlanView.tsx"]
         assert!(output.success);
         assert_eq!(result_status(&output, "stage"), NodeStatus::Complete);
         assert_eq!(result_status(&output, "plan-view"), NodeStatus::Complete);
-        assert_eq!(log.max_running.load(Ordering::SeqCst), 1, "{:?}", log.events());
-        assert!(!ran_together(&log, "stage", "plan-view"), "{:?}", log.events());
+        assert_eq!(
+            log.max_running.load(Ordering::SeqCst),
+            1,
+            "{:?}",
+            log.events()
+        );
+        assert!(
+            !ran_together(&log, "stage", "plan-view"),
+            "{:?}",
+            log.events()
+        );
     }
 
     /// Nodes whose exclusive paths do not overlap still run side by side:
@@ -6246,8 +6264,17 @@ exclusive = ["src/app.rs"]
             };
 
             assert!(output.success, "through_start = {through_start}");
-            assert_eq!(log.max_running.load(Ordering::SeqCst), 2, "{:?}", log.events());
-            assert!(ran_together(&log, "app-dir", "app-file"), "{:?}", log.events());
+            assert_eq!(
+                log.max_running.load(Ordering::SeqCst),
+                2,
+                "{:?}",
+                log.events()
+            );
+            assert!(
+                ran_together(&log, "app-dir", "app-file"),
+                "{:?}",
+                log.events()
+            );
         }
     }
 

@@ -3,13 +3,15 @@ id = "bug-647249"
 kind = "bug"
 title = "About 100 more roko.toml keys are missing from the loader's schema tree, so loading strips them"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p1"
 goal = "release"
 size = "M"
 subsystem = ["roko-core/config"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-29
+last_verified_rev = "13f7a1358"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-onboard's report on bug-12153c, branch work/bug-12153c)"
 anchors = ["crates/roko-core/src/config/loader.rs::build_schema_tree", "crates/roko-core/src/config/loader.rs::strip_unknown_fields", "crates/roko-core/src/config/serve.rs", "crates/roko-core/src/config/provider.rs", "crates/roko-core/src/config/agent.rs"]
@@ -69,3 +71,9 @@ At ad391f99a no sentinel covers any of these keys. bug-12153c's branch covers it
 ## Notes
 
 - Build on bug-12153c's branch, whose test and sentinels this extends.
+- Premise confirmed at `13f7a1358` with `target/debug/roko` (built at `33e107da1`; since then the tree only gained bug-12153c's four keys). After loading a file that sets them, `roko config show --effective` has no `[[serve.auth.api_keys]]`, `server.auth_token` or `timeouts.hard_run_secs`. One correction to the scope: entries of dynamic maps (`[agent.roles.<name>] model`, provider `extra_headers`) do survive a load, because `strip_unknown_fields` passes the parent prefix into each entry and so never strips inside one. They still fail `config validate` and cannot be set with `config set`.
+- Sentinels now cover every such field, with full templates for roles, profiles, provider limits, model routing and the watcher sections (`from_empty_table`). `gates.domain_gates`, `retrieval.role_token_budgets` and `providers.*.extra_headers` became dynamic sections, and `is_dynamic_section` matches a `*` segment. `Vec` fields whose elements have required fields get an empty array in the tree.
+- Guard: `every_accepted_config_field_is_in_the_schema_tree` reads, for each table, the keys serde accepts from its unknown-field error (the aliases `agent.model`, `agent.effort`, `budget.tier_multipliers.{focused,integrative,architectural}` and `gates.custom_rungs` are allowlisted). It also flags any map table that keeps an unknown key through a load and a save but is not a dynamic section, and it checks the role, provider-limits and model-routing templates against the field list serde passes to `deserialize_struct`. `documented_optional_keys_survive_a_load` loads the serve auth, deploy, server, timeout, watcher, gate, retrieval, dream, learning and runner keys and checks each value.
+- Knock-on change in `roko-cli/src/config_cmd.rs`: `dreams.scheduled_cron` used to fail `config validate` as an unknown key, which is what `validate_rejects_invalid_dream_schedule_before_semantic_checks` relied on. Now that the key is kept, the loader phase also builds the CLI config, as `load_resolved_config` does, and that rejects an invalid cron.
+- Left as is (candidates for items): the stripper's dynamic-map prefix quirk above, where a typo inside a provider or model entry fails the load through `deny_unknown_fields` rather than being stripped with a warning; `DomainProfile` flattens unknown keys into `extra`, so validation still flags extra profile keys that serde accepts, and the guard cannot introspect it; `tools.profiles` has no template.
+- Implemented on `work/bug-647249` at `162ef67c6`; cargo verification deferred to the batch check.

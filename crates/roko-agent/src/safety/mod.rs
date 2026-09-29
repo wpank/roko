@@ -61,6 +61,7 @@ use roko_core::config::schema::{RokoConfig, RoleOverride};
 use roko_core::corrigibility::ActionContext;
 use roko_core::extension::CamelTaintLevel;
 use roko_core::tool::{ToolCall, ToolContext, ToolError, ToolResult};
+use roko_std::tool::builtin::sandbox::refuse_key_file_in_command;
 
 use self::bash::BashPolicy;
 use self::contract::{AgentContract, GovernanceRule, Invariant};
@@ -661,10 +662,12 @@ impl SafetyLayer {
             }
         }
 
-        // 3. Bash / run_tests policy (command argument).
+        // 3. Bash / run_tests policy (command argument). Provider key files
+        //    first, so no allowlist prefix admits a command that names one.
         if BASH_TOOLS.contains(&name)
             && let Some(cmd) = call.arguments.get("command").and_then(|v| v.as_str())
         {
+            refuse_key_file_in_command(cmd, &ctx.worktree_path)?;
             bash::check_command_with_policy(cmd, &self.bash_policy)?;
             git::check_git_command_with_policy(cmd, &self.git_policy)?;
         }
@@ -1534,6 +1537,72 @@ mod tests {
         let ctx = test_ctx();
         let call = bash_call("cargo test");
         assert!(layer.check_pre_execution(&call, &ctx).is_ok());
+    }
+
+    #[tokio::test]
+    async fn bash_commands_naming_key_files_are_refused() {
+        use roko_core::tool::ToolHandler;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let worktree = tmp.path().canonicalize().unwrap();
+        std::fs::create_dir_all(worktree.join(".roko/worktrees/p-t1")).unwrap();
+        std::fs::write(worktree.join(".roko/.env"), "OPENAI_API_KEY=sk-test\n").unwrap();
+        let ctx = ToolContext::testing(&worktree);
+        let mut layer = permissive_layer();
+        layer.rate_limiter = None;
+        // No allowlist prefix admits a command that names a key file.
+        layer.bash_policy.allow_prefixes.push("cat ".to_string());
+
+        #[cfg_attr(not(unix), allow(unused_mut))]
+        let mut denied = vec![
+            "cat .roko/.env",
+            "cat ~/.roko/config.toml",
+            "cd .roko && cat .env",
+            "cat .ro\"\"ko/.e''nv",
+            "sh -c 'cat .ro\"\"ko/.env'",
+            "python3 -c \"print(open('.roko/.env').read())\"",
+            "cd ~/.roko && cat *",
+            "cat ~/.roko/*",
+            "docker run --env-file=.roko/.env image",
+            "source .roko/.env",
+        ];
+        // A symlink to a key file, by what it resolves to.
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(worktree.join(".roko/.env"), worktree.join("notes.txt"))
+                .unwrap();
+            denied.push("cat notes.txt");
+        }
+        for command in denied {
+            let result = layer.check_pre_execution(&bash_call(command), &ctx);
+            assert!(
+                matches!(result, Err(ToolError::KeyFileBlocked(_))),
+                "`{command}`: {result:?}"
+            );
+        }
+        let in_plan_worktree = format!(
+            "cd {}/.roko/worktrees/p-t1 && cp .env.example .env",
+            worktree.display()
+        );
+        for command in [
+            "cat README.md",
+            "ls .roko/state",
+            "cp .env.example .env",
+            "cat .cargo/config.toml",
+            in_plan_worktree.as_str(),
+        ] {
+            let result = layer.check_pre_execution(&bash_call(command), &ctx);
+            assert!(result.is_ok(), "`{command}`: {result:?}");
+        }
+
+        // roko-std's bash tool refuses on its own, before it runs anything,
+        // for a dispatcher without SafetyLayer.
+        let handler = roko_std::tool::builtin::bash::Handler;
+        let result = handler.execute(bash_call("cat .roko/.env"), &ctx).await;
+        assert!(
+            matches!(result, ToolResult::Err(ToolError::KeyFileBlocked(_))),
+            "{result:?}"
+        );
     }
 
     #[test]

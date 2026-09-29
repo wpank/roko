@@ -83,15 +83,17 @@ impl FeedbackSink for HindsightSink {
         "hindsight"
     }
 
+    /// A failure of the agent's work (learning label 0) whose verify
+    /// failure blames a sibling task.
     fn interested(&self, event: &FeedbackEvent) -> bool {
         matches!(
             event,
             FeedbackEvent::TaskCompleted {
                 plan_id,
-                succeeded: false,
                 failure_reason: Some(reason),
                 ..
-            } if !blamed_tasks(plan_id, reason).is_empty()
+            } if event.learning_success() == Some(false)
+                && !blamed_tasks(plan_id, reason).is_empty()
         )
     }
 
@@ -141,8 +143,9 @@ impl FeedbackSink for HindsightSink {
 mod tests {
     use super::*;
     use crate::dispatch::{AgentOutcome, ModelChoiceSource};
-    use crate::runtime_feedback::{EpisodeSink, FeedbackFacade};
+    use crate::runtime_feedback::{EpisodeSink, FeedbackFacade, settled_as};
     use roko_learn::hindsight::{AdjustmentKind, BLAMED_TASKS_KEY, read_adjustments};
+    use roko_learn::telemetry::AttemptOutcome;
     use tempfile::tempdir;
 
     #[test]
@@ -199,7 +202,14 @@ mod tests {
             initial_model: String::new(),
             turns: 1,
             failure_reason: failure_reason.map(str::to_string),
-            settled: None,
+            settled: settled_as(
+                if succeeded {
+                    AttemptOutcome::Passed
+                } else {
+                    AttemptOutcome::GateFailed
+                },
+                true,
+            ),
         }
     }
 

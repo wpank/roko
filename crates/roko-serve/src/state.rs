@@ -1059,6 +1059,9 @@ impl AppState {
             )
         });
         let gateway_caller: Arc<dyn roko_core::ModelCaller> = model_call_service.clone();
+        // The gateway calls through the model-call service, whose feedback
+        // observes every attempt on this router already, so the gateway only
+        // routes with it: each call is observed once (bug-8b0d0a).
         let gateway_config = roko_gateway::GatewayConfig::from_model_caller(
             Arc::clone(&cascade_router),
             gateway_caller,
@@ -1066,7 +1069,8 @@ impl AppState {
         )
         .with_event_writer(Arc::new(roko_agent::GatewayEventWriter::for_workdir(
             &workdir,
-        )));
+        )))
+        .without_outcome_observation();
         let gateway_http = roko_gateway::GatewayHttpState::new(Arc::new(
             roko_gateway::InferenceGateway::new(gateway_config),
         ));

@@ -22,6 +22,13 @@ measure that setup rather than Claude Code (W10). Every session gets:
 - `--settings` with no hooks, and deny rules for the repository, `~/.roko`, the run's results and the default secret
   directory (S08 §4.9, "where the CLI supports them": they bind Claude's file tools, not its shell, and canaries
   catch the rest);
+- no web tools (gap-f253cf): `--disallowed-tools WebFetch,WebSearch` takes them out of the model's context, and
+  deny rules for both in `--settings` also bind subagents. The repository is public, so a web fetch could return a
+  truth suite, and WebFetch hands back a model-written digest in which the canary may never appear. The tasks need
+  no web (S08 §4.2 (3): every requirement is in the spec or the repo), so this is the arm's one departure from
+  Claude Code's default tools. A session whose `init` event still offers a web tool (any tool named `Web…`) is
+  killed before its first turn and ends `infra_error` (reason `web_tools`). Any web request that reaches the
+  transcript anyway makes the census mark the run `leak_suspected` (`census`, place `web`);
 - `--no-session-persistence`, and `--dangerously-skip-permissions`, since the agent may edit and run anything in its
   workdir, as in the direct loop.
 Its environment is the task's agent environment plus those variables, and `ANTHROPIC_BASE_URL` for a loopback
@@ -62,7 +69,7 @@ it and the arm file, covers every flag.
 
 **Probe** (gap-c4f364, step 2): `run_cli.py probe --arm fd_claude --allow-network` runs one throwaway session with the
 arm's invocation and a trivial prompt, and saves its argv, environment, `init` and `result` events as JSON. It passes
-when the `init` event shows the pinned model and no MCP server, plugin or memory, and the session signed in.
+when the `init` event shows the pinned model and no MCP server, plugin, memory or web tool, and the session signed in.
 
 API:
     run_task(ctx: harness.TaskContext) -> harness.TaskOutcome
@@ -70,7 +77,7 @@ API:
     build_invocation(ctx, cli) -> Invocation                    # raises CliError
     run_session(invocation, prompt, *, cwd, wallclock_s, usd_cap, meter) -> Session
     parse_result(event, snapshot, *, cache_write_ttl) -> ResultCost
-    Meter(snapshot, *, cache_write_ttl); CliAttempt; settings(run_dir) -> dict
+    Meter(snapshot, *, cache_write_ttl); CliAttempt; settings(run_dir) -> dict; web_tools(event) -> list[str]
     ancestor_instructions(workdir) -> list[Path]; config_dir_digest(path) -> str
     main(argv) -> int                                           # `probe`
     PROMPT_VERSION, PROMPT_SHA256
@@ -110,9 +117,11 @@ EFFORTS = ("low", "medium", "high", "xhigh", "max")
 CREDENTIALS = ("keychain", "credentials_file")
 CACHE_WRITE_TTLS = ("5m", "1h")
 CREDENTIAL_FILE = ".credentials.json"
+WEB_TOOLS = ("WebFetch", "WebSearch")  # disallowed, and denied in the settings (gap-f253cf)
+WEB_TOOL_PREFIX = "Web"  # a tool the init event offers under this prefix kills the session
 FIXED_FLAGS = ("--print", "--verbose", "--output-format", "stream-json", "--setting-sources", "",
-               "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}', "--no-session-persistence",
-               "--dangerously-skip-permissions")
+               "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}', "--disallowed-tools", ",".join(WEB_TOOLS),
+               "--no-session-persistence", "--dangerously-skip-permissions")
 WORKDIR_FLAG = "--add-dir"  # followed by the workdir, whose own CLAUDE.md files then load
 FIXED_ENV = {"CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1", "CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD": "1",
              "DISABLE_AUTOUPDATER": "1"}
@@ -138,7 +147,7 @@ The repository is your current working directory. Complete the task, then stop.
 PROBE_PROMPT = "Reply with the single word READY. Do not use any tools."
 
 PROMPT_SHA256 = hashlib.sha256(json.dumps([TASK_MESSAGE, FIXED_FLAGS, WORKDIR_FLAG, FIXED_ENV, SETTINGS, DENY_TOOLS,
-                                           CREDENTIAL_FILE], sort_keys=True).encode()).hexdigest()
+                                           WEB_TOOLS, CREDENTIAL_FILE], sort_keys=True).encode()).hexdigest()
 
 
 class CliError(RuntimeError):
@@ -328,11 +337,19 @@ def build_invocation(ctx: harness.TaskContext, cli: CliConfig) -> Invocation:
 
 
 def settings(run_dir: Path) -> dict:
-    """`--settings`: no hooks, and deny rules (absolute `//path` patterns) for what the agent must not read or edit."""
+    """`--settings`: no hooks, deny rules for the web tools, and deny rules (absolute `//path` patterns) for what the
+    agent must not read or edit."""
     home = Path.home()
     denied = (layout.REPO_ROOT, home / ".roko", Path(run_dir), home / ".config" / "viabilitybench")
-    return {**SETTINGS, "permissions": {"deny": [f"{tool}(/{Path(path).resolve()}/**)" for path in denied
-                                                 for tool in DENY_TOOLS]}}
+    return {**SETTINGS, "permissions": {"deny": [*WEB_TOOLS, *(f"{tool}(/{Path(path).resolve()}/**)"
+                                                               for path in denied for tool in DENY_TOOLS)]}}
+
+
+def web_tools(event: Mapping) -> list[str]:
+    """The web tools an `init` event offers (tools named `Web…`); [] for any other event."""
+    if event.get("type") != "system" or event.get("subtype") != "init" or not isinstance(event.get("tools"), list):
+        return []
+    return [tool for tool in event["tools"] if isinstance(tool, str) and tool.startswith(WEB_TOOL_PREFIX)]
 
 
 def ancestor_instructions(workdir: Path) -> list[Path]:
@@ -392,8 +409,10 @@ def run_session(invocation: Invocation, prompt: str, *, cwd: Path, wallclock_s: 
                 continue
             if raw is None:
                 break
-            _take(session, meter, raw)
-            if meter.spent_usd() > usd_cap:
+            event = _take(session, meter, raw)
+            if event is not None and web_tools(event):  # the init event offers a web tool: stop before any turn
+                session.stop = caps.Stop("infra_error", "web_tools")
+            elif meter.spent_usd() > usd_cap:
                 session.stop = caps.Stop("aborted_cap", "usd")
         ended = True
     finally:
@@ -502,6 +521,7 @@ def _probe(args: argparse.Namespace, vb) -> int:
                         and all(records.same_model(model, served) for served in _served_models(session)),
         "no_mcp_servers": init.get("mcp_servers") == [],
         "no_mcp_tools": tools is not None and not any(str(tool).startswith("mcp__") for tool in tools),
+        "no_web_tools": tools is not None and not web_tools(init),
         "no_plugins": not init.get("plugins"),
         "no_memory": not init.get("memory_paths"),
         "signed_in": status == "completed",
@@ -648,10 +668,11 @@ def _slug(model: str | None) -> str | None:
     return CONTEXT_TAG.sub("", model) if isinstance(model, str) else None
 
 
-def _take(session: Session, meter: Meter, raw: bytes) -> None:
+def _take(session: Session, meter: Meter, raw: bytes) -> dict | None:
+    """Record one line of claude's stdout as an event; returns it, or None for a blank line."""
     text = raw.decode("utf-8", "replace").strip()
     if not text:
-        return
+        return None
     try:
         event = json.loads(text)
     except ValueError:
@@ -660,6 +681,7 @@ def _take(session: Session, meter: Meter, raw: bytes) -> None:
         event = {"type": "raw", "text": text[:2000]}
     session.events.append(event)
     meter.observe(event)
+    return event
 
 
 def _feed(stream: IO[bytes], data: bytes) -> None:

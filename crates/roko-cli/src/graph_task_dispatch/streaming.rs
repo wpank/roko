@@ -164,7 +164,10 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
             cached_workspace_context: cached_workspace_context.clone(),
             cached_cfactor_context: cached_cfactor_context.clone(),
         };
-        let dispatch_plan = self.plan_dispatch(spec, &task, &mut dispatch_ctx)?;
+        let dispatch_plan = match self.plan_dispatch(spec, &task, &mut dispatch_ctx) {
+            Ok(dispatch_plan) => dispatch_plan,
+            Err(error) => return Err(self.fail_attempt(spec, &task, attempt, None, error).await),
+        };
         attempt.prompt_assembled();
         let contract = effective_agent_contract(role, &task);
         let timeout_ms = base_attempt_timeout_ms(&self.config, spec);
@@ -309,7 +312,10 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
                 };
                 self.task_spend
                     .record(&format!("{}/{}", spec.plan_id, task.id), cost_usd);
-                budget_reservation.settle(cost_usd.max(0.0))?;
+                if let Err(error) = budget_reservation.settle(cost_usd.max(0.0)) {
+                    let routed = Some((dispatch_plan.model.slug.as_str(), &dispatch));
+                    return Err(self.fail_attempt(spec, &task, attempt, routed, error).await);
+                }
 
                 // Forward final usage event with cost.
                 let _ = event_tx

@@ -19,4 +19,4 @@ CONTROL STACK (reads the records, acts on the path)     ● wired  ◐ partial  
   4 fast regulators       ● retry  ○ escalation  ○ split or replan
   3 comparators           ● visible verify  ○ tamper diff  ○ hidden tests
   2 sensors               ● telemetry  ◐ attempt records  ◐ costs
-  1 feedforward           ● plan lints  ○ spec-quality gate
+  1 feedforward           ● plan lints  ◐ spec-quality lint

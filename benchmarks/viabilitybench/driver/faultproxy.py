@@ -5,11 +5,14 @@ independently of the client, and injects the provider faults of S08 §4.6's `pro
 its own prefix: a client whose base URL is `proxy.base_url("cerebras")` has `POST /cerebras/chat/completions`
 forwarded to `<the upstream's base_url>/chat/completions`. Nothing else is forwarded anywhere. An upstream's host
 must be one an arm file names (`arm_hosts`) or a loopback address, and a network upstream must use https; a client
-cannot name a target; only POST is forwarded; redirects go back to the client and are never followed. The client's
-credentials are dropped and the upstream's key is sent instead, read from the environment variable the upstream
-names, in the proxy's process. A client routed through the proxy therefore needs no key (`vb.py` gives an override
-URL none). Connections to an upstream are kept alive and reused, as a provider's own client would, so routing a call
-through the proxy adds no connection or TLS setup to it.
+cannot name a target; only POST is forwarded; redirects go back to the client and are never followed.
+
+The client's credentials are dropped, and the proxy sends the upstream's key instead: the entry of `keys` that the
+upstream's `api_key_env` names. The keys come from the driver-only key file (`secret.load_keys`), never from an
+environment, where agents could read them (bug-979a06). A client routed through the proxy therefore needs no key
+(`vb.py` gives an override URL none), and the proxy is the only holder of a provider key. Connections to an upstream
+are kept alive and reused, as a provider's own client would, so routing a call through the proxy adds no connection or
+TLS setup to it.
 
 **Metering** (always on). Each response's `usage` is mapped onto S01 §4.4's disjoint token classes (`usage_classes`:
 `tokens_in` is uncached input only; cache reads and cache writes are classes of their own) and priced from the price
@@ -65,7 +68,7 @@ API:
     Upstream(name, base_url, api_key_env=None, stream_usage=True); Upstream.from_endpoint(endpoint) -> Upstream
     Profile(name="clean", p=0.0, seed=0, ...); Profile.parse(spec: str | Mapping | Profile) -> Profile
     Profile.draw(task, ordinal) -> dict | None; Profile.as_json() -> dict
-    FaultProxy(upstreams, *, log_path, snapshot=None, allowed_hosts=None, input_token_cap=None, token=None)
+    FaultProxy(upstreams, *, log_path, snapshot=None, allowed_hosts=None, input_token_cap=None, token=None, keys=None)
     FaultProxy: a context manager (.start(), .close()); .url, .token, .base_url(name) -> str
     FaultProxy.endpoint(endpoint: provider.Endpoint) -> provider.Endpoint      # the same provider, through the proxy
     FaultProxy.configure(*, task=..., profile=..., input_token_cap=...) -> dict; .state() -> dict
@@ -284,7 +287,8 @@ class _Meter:
 class FaultProxy:
     def __init__(self, upstreams: Iterable[Upstream], *, log_path: Path, snapshot: ledger.Snapshot | None = None,
                  allowed_hosts: Iterable[str] | None = None, input_token_cap: int | None = None,
-                 token: str | None = None, upstream_timeout_s: float = UPSTREAM_TIMEOUT_S) -> None:
+                 token: str | None = None, upstream_timeout_s: float = UPSTREAM_TIMEOUT_S,
+                 keys: Mapping[str, str] | None = None) -> None:
         allowed = frozenset(host.lower() for host in (arm_hosts() if allowed_hosts is None else allowed_hosts))
         self.upstreams: dict[str, Upstream] = {}
         for upstream in upstreams:
@@ -294,9 +298,11 @@ class FaultProxy:
             self.upstreams[upstream.name] = upstream
         if not self.upstreams:
             raise ProxyError("the proxy needs at least one upstream")
-        unset = [u.api_key_env for u in self.upstreams.values() if u.api_key_env and not os.environ.get(u.api_key_env)]
-        if unset:
-            raise ProxyError(f"set {', '.join(unset)} for the proxy's upstreams")
+        self._keys: Mapping[str, str] = keys if keys is not None else {}
+        missing = [upstream.api_key_env for upstream in self.upstreams.values()
+                   if upstream.api_key_env and not self._keys.get(upstream.api_key_env)]
+        if missing:
+            raise ProxyError(f"no key for {', '.join(missing)}: the proxy's upstreams need them in the key file")
         self.snapshot = snapshot or ledger.load_snapshot()
         self.token = token or secrets.token_urlsafe(24)
         self.upstream_timeout_s = upstream_timeout_s
@@ -421,7 +427,7 @@ class FaultProxy:
         headers = {"Content-Type": "application/json", "Accept": handler.headers.get("Accept") or "application/json"}
         if handler.headers.get("User-Agent"):
             headers["User-Agent"] = handler.headers["User-Agent"]
-        key = os.environ.get(upstream.api_key_env) if upstream.api_key_env else None
+        key = self._keys.get(upstream.api_key_env) if upstream.api_key_env else None
         if key:
             headers["Authorization"] = f"Bearer {key}"
         connection, reusable = self._connection(upstream), False

@@ -12,9 +12,14 @@
 //! Ordinals are 1-based and durable. A run's attempts of a task continue from
 //! the highest ordinal its `attempts.jsonl` holds, so a resumed run never
 //! reuses a key; an attempt whose process died after its open line has no
-//! verdict, counts as abandoned, and keeps its ordinal. An attempt that fails
-//! prompt assembly or its cost-ledger write also ends without a verdict for
-//! now; S01 P0-3 types those harness outcomes.
+//! verdict, counts as abandoned, and keeps its ordinal. An attempt the
+//! harness fails after its open line, in prompt assembly or in its
+//! cost-ledger write, settles as `harness_error`
+//! ([`GraphTaskDispatcher::fail_attempt`]).
+//!
+//! Learners read only the verdict's learning label
+//! ([`SettledAttempt::learning_success`]): an attempt without one updates no
+//! learner.
 
 use roko_learn::telemetry::records::b3_digest;
 use roko_learn::telemetry::{
@@ -224,9 +229,10 @@ impl AttemptContext {
 
     /// Settle the attempt: build its verdict record, queue it for the run's
     /// `attempts.jsonl`, and return it with the inputs the feedback sinks
-    /// read. `model_requested` is the model dispatch asked for; `dispatch`
-    /// is the provider call's result, when there was one. Settling consumes
-    /// the attempt, so it settles once.
+    /// read. `model_requested` is the model dispatch asked for, empty when
+    /// the attempt failed before routing; `dispatch` is the provider call's
+    /// result, when there was one. Settling consumes the attempt, so it
+    /// settles once.
     pub(super) fn settle(
         self,
         settlement: Settlement,
@@ -303,10 +309,21 @@ impl Settlement {
             failure_reason: Some(provider_failure_reason(message)),
         }
     }
+
+    /// The harness failed the attempt outside its provider call and verify
+    /// steps: prompt assembly, or recording its spend in the cost ledger.
+    pub(super) fn harness_failure(error: &RokoError) -> Self {
+        Self {
+            outcome: AttemptOutcome::HarnessError,
+            gate_verdict: None,
+            first_token_seen: false,
+            failure_reason: Some(format!("harness: {error}")),
+        }
+    }
 }
 
 /// A settled attempt (S01 §4.3): its verdict record, and the inputs the
-/// feedback sinks that predate S01 still read.
+/// analysis rows (episodes, efficiency, costs) still read.
 pub(super) struct SettledAttempt {
     /// The `roko.verdict/1` record, shared with the feedback events.
     pub(super) verdict: Arc<AttemptVerdictRecord>,
@@ -326,14 +343,22 @@ impl SettledAttempt {
         self.verdict.identity.key()
     }
 
-    /// The success flag the sinks that predate S01 read: the provider call
-    /// succeeded and no verify step failed. Unlike the verdict's
-    /// `learning_label`, it counts an unverified attempt as a success.
+    /// The success flag the analysis rows record: the provider call
+    /// succeeded and no verify step failed. It counts an unverified attempt
+    /// as a success, so no learner reads it; learners read
+    /// [`Self::learning_success`].
     pub(super) fn succeeded(&self) -> bool {
         matches!(
             self.verdict.outcome,
             AttemptOutcome::Passed | AttemptOutcome::Unverified | AttemptOutcome::ForcedAccept
         )
+    }
+
+    /// What learners record (S01 §4.1): a pass (`Some(true)`), a failure of
+    /// the agent's work (`Some(false)`), or nothing (`None`: unverified,
+    /// provider and harness outcomes).
+    pub(super) fn learning_success(&self) -> Option<bool> {
+        self.verdict.learning_success()
     }
 }
 
@@ -363,6 +388,27 @@ impl GraphTaskDispatcher {
             task,
             ctx.cell_id.as_deref(),
         )
+    }
+
+    /// Settle `attempt`, which the harness failed after its open line with
+    /// `error` (S01 §4.3), and publish its verdict, so the attempt does not
+    /// read as abandoned. `routed` is the model dispatch asked for and the
+    /// provider call's result, when the failure came after the call. Returns
+    /// `error`, for the caller to return.
+    pub(super) async fn fail_attempt(
+        &self,
+        spec: &TaskExecutionSpec,
+        task: &TaskDef,
+        attempt: AttemptContext,
+        routed: Option<(&str, &crate::dispatch_v2::AgentResultDispatch)>,
+        error: RokoError,
+    ) -> RokoError {
+        let (model_requested, dispatch) =
+            routed.map_or(("", None), |(model, dispatch)| (model, Some(dispatch)));
+        let settlement = Settlement::harness_failure(&error);
+        let settled = attempt.settle(settlement, model_requested, dispatch);
+        self.publish_settlement(spec, task, &settled).await;
+        error
     }
 }
 
@@ -413,7 +459,7 @@ fn executed_model(
     failover: FailoverChain,
 ) -> ExecutedModel {
     let mut executed = ExecutedModel {
-        model_requested: Some(model_requested.to_string()),
+        model_requested: (!model_requested.is_empty()).then(|| model_requested.to_string()),
         failover_chain: failover.models,
         failover_reason: failover.reason,
         ..ExecutedModel::default()
@@ -706,6 +752,15 @@ printf '%s\n' '{"type":"result","session_id":"sess-r","model":"claude-sonnet-4-6
                 None,
                 false,
             ),
+            (
+                Settlement::harness_failure(&RokoError::Planning(
+                    "prompt assembly failed: invalid context file".to_string(),
+                )),
+                "harness_error",
+                Blame::Harness,
+                None,
+                false,
+            ),
         ];
         for (settlement, outcome, blame, label, succeeded) in cases {
             let settled = settle(settlement);
@@ -717,6 +772,8 @@ printf '%s\n' '{"type":"result","session_id":"sess-r","model":"claude-sonnet-4-6
                 (blame, label, succeeded),
                 "{outcome}"
             );
+            let learned = label.map(|label| label == 1);
+            assert_eq!(settled.learning_success(), learned, "{outcome}");
             assert_eq!(verdict.failure_class.is_some(), !succeeded, "{outcome}");
             assert_eq!(settled.failure_reason.is_some(), !succeeded, "{outcome}");
             assert_eq!(verdict.executed.model_requested.as_deref(), Some("model-a"));
@@ -728,6 +785,58 @@ printf '%s\n' '{"type":"result","session_id":"sess-r","model":"claude-sonnet-4-6
                     .attempt
             })
             .collect();
-        assert_eq!(keys, [5, 6], "each open mints the chain's next ordinal");
+        assert_eq!(keys, [6, 7], "each open mints the chain's next ordinal");
+    }
+
+    /// An attempt whose prompt cannot be assembled settles as a harness
+    /// error with no learning label, so it neither reads as abandoned nor
+    /// teaches a learner, and names no model: it never reached routing.
+    #[tokio::test]
+    async fn a_prompt_assembly_failure_settles_as_a_harness_error() {
+        let temp = tempdir().expect("tempdir");
+        let runs_dir = temp.path().join(".roko/runs");
+        let feedback = GraphFeedbackContext {
+            runs_dir: Some(runs_dir.clone()),
+            ..GraphFeedbackContext::default()
+        };
+        let (dispatcher, mut task) =
+            make_test_dispatcher(&temp, VERIFY_PROVIDER, no_auto_fix, feedback).await;
+        // A declared context file that does not exist fails prompt assembly.
+        task.context = Some(crate::task_parser::TaskContext {
+            read_files: vec![crate::task_parser::ReadFile {
+                path: "src/missing.rs".to_string(),
+                lines: None,
+                why: "context".to_string(),
+            }],
+            ..crate::task_parser::TaskContext::default()
+        });
+        let spec = make_spec(&task);
+        let ctx = CellContext::new().with_run_id(RUN.to_string());
+        let error = dispatcher
+            .dispatch(&spec, Vec::new(), &ctx)
+            .await
+            .expect_err("prompt assembly fails");
+        assert!(matches!(error, RokoError::Planning(_)), "{error:?}");
+        drop(dispatcher);
+
+        let rows = jsonl_rows(&runs_dir.join(RUN).join("attempts.jsonl"), 2).await;
+        assert_eq!(
+            field(&rows, "schema_version"),
+            ["roko.attempt_open/1", "roko.verdict/1"]
+        );
+        let verdict = &rows[1];
+        assert_eq!(verdict["attempt_key"], rows[0]["attempt_key"]);
+        assert_eq!(verdict["outcome"], "harness_error");
+        assert_eq!(verdict["blame"], "harness");
+        assert!(verdict["learning_label"].is_null(), "{verdict}");
+        assert_eq!(verdict["failure_class"]["kind"], "harness_error");
+        assert!(
+            verdict["executed"]["model_requested"].is_null(),
+            "{verdict}"
+        );
+        assert!(
+            verdict["timing"]["prompt_assembled_at"].is_null(),
+            "{verdict}"
+        );
     }
 }

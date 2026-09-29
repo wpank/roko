@@ -2,14 +2,16 @@
 id = "bug-2930a8"
 kind = "bug"
 title = "vb run cannot materialize any F1 or F4 instance: materialize.py expects the .vb/ layout both families dropped"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p1"
 goal = "proof"
 size = "S"
 subsystem = ["benchmarks/viabilitybench/driver"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-29
+last_verified_rev = "b5da763b9"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (20:01, wk-bench-rokoarm's report on gap-b7ab99)"
 anchors = ["benchmarks/viabilitybench/driver/materialize.py::materialize", "benchmarks/viabilitybench/driver/testdata/toy_family/gen.py", "benchmarks/viabilitybench/families/f1_pyconv/gen.py", "benchmarks/viabilitybench/families/f4_kvtool/gen.py"]
@@ -19,6 +21,12 @@ links = { depends_on = [], blocks = [], related = ["gap-9e7079", "gap-4723ff", "
 
 [[verify]]
 command = "grep -qw 'def test_materialize_renders_real_family_instances' benchmarks/viabilitybench/driver/test_driver.py && benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/driver/test_driver.py -k test_materialize_renders_real_family_instances -q"
+
+[closed]
+at = 2026-09-29
+commit = "b5da763b9"
+by = "wk-bench-fix1"
+evidence = "b5da763b9: materialize.py runs gen.py --out <private>/.vb --workdir <workdir>, reads task.json, spec and pristine.json from that private dir, and checks the workdir's tree and HEAD against the pristine base; the toy family uses the same interface. Verify passes (test_materialize_renders_real_family_instances: vb materialize on F1-l1-0001 and F4-l1-0001, workdir holds no manifest or canary). vb run with the stub provider reached a run record for F1-l3-0001 and F4-l3-0001; full viabilitybench suite green."
 +++
 
 ## Problem

@@ -2,34 +2,46 @@
 //!
 //! # Overview
 //!
-//! [`WalWriter`] provides crash-safe durability for learning state that would
+//! The WAL gives crash-safe durability to learning state that would
 //! otherwise be lost if the process exits between in-memory updates and the
 //! next periodic snapshot flush.
 //!
-//! The WAL file lives at `.roko/learn/wal.jsonl`. Each line is a
-//! JSON-serialised [`WalEntry`] appended with `sync_data()` before returning,
-//! guaranteeing that the entry reaches durable storage even on power loss.
+//! Each writer journals into its own [`WalSegment`] under
+//! `.roko/learn/wal/`. Each line is a JSON-serialised [`WalEntry`] appended
+//! with `sync_data()` before returning, guaranteeing that the entry reaches
+//! durable storage even on power loss. `.roko/learn/wal.jsonl` is the shared
+//! WAL that writers used before segments; it is still replayed, and
+//! [`WalWriter`] still reads and writes it.
 //!
 //! # Write-Ahead Protocol
 //!
 //! ```text
 //! in-memory update
 //!      │
-//!      ├──► WalWriter::append(entry)   // durable before returning
+//!      ├──► WalSegment::append(entry)  // durable before returning
+//!      │
+//! snapshot save ──► WalSegment::truncate()
 //!      │
 //! ... process may crash here ...
 //!      │
-//! next startup
+//! next open
 //!      │
-//!      ├──► replay_wal(path)           // recover entries since last snapshot
+//!      ├──► orphaned_segments(dir)     // segments no live writer holds
 //!      │
-//!      └──► apply to in-memory state
+//!      └──► replay into the snapshots, then remove them
 //! ```
 //!
-//! After a successful snapshot save (e.g. writing `cascade-router.json` or
-//! `gate-thresholds.json`), callers must call [`WalWriter::truncate`] to reset
-//! the WAL to zero. This is the "checkpoint" step: the durable snapshot now
-//! covers all state that was in the WAL, so the WAL is safe to clear.
+//! After a successful snapshot save (e.g. writing `cascade-router.json`), the
+//! writer truncates its segment. This is the "checkpoint" step: the durable
+//! snapshot now covers all state that was in the segment, so it is safe to
+//! clear, and the WAL stays bounded however long the writer runs
+//! (bug-7a2630).
+//!
+//! A writer holds an exclusive lock on its segment for as long as it lives.
+//! An opener replays only segments whose lock it can take, the orphans of
+//! writers that are gone, and leaves a live writer's segment to that writer:
+//! the writer saves those entries itself, and replaying them as well would
+//! count them twice (bug-84de98).
 //!
 //! # Entry Types
 //!
@@ -47,12 +59,11 @@
 //! # Model-call observations
 //!
 //! Model-call surfaces (feedback Path B: chat, direct dispatch, ACP, the
-//! vision loop) load `cascade-router.json`, observe one call and save the
-//! snapshot again, so they cannot truncate a WAL that `LearningRuntime` may
-//! share. Each of their observations is journaled with an `id` before it is
-//! applied, and a `ModelCallObservationsFolded` marker names the ids once a
-//! saved snapshot contains them. Replay applies only the unfolded ones, so an
-//! observation is neither lost nor counted twice.
+//! vision loop, serve) journal each observation with an `id` before they
+//! apply it. In the shared `wal.jsonl` they wrote, a
+//! `ModelCallObservationsFolded` marker names the ids a saved snapshot
+//! contains, and replay skips those. Segments need no markers: a writer
+//! truncates its segment once a saved snapshot holds its entries.
 //!
 //! # Crash Safety
 //!
@@ -64,9 +75,12 @@
 //!   entry never blocks recovery.
 //! - If the WAL file is absent, `replay_wal` returns an empty `Vec` and
 //!   `WalWriter::open` creates it fresh.
+//! - A segment becomes visible under its final name only once its writer
+//!   holds the lock, so an opener never mistakes a live writer's segment
+//!   for an orphan.
 
 use std::collections::HashSet;
-use std::fs::{File, OpenOptions};
+use std::fs::{File, OpenOptions, TryLockError};
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 
@@ -222,6 +236,15 @@ pub fn append_entry(path: &Path, entry: &WalEntry) -> io::Result<()> {
     write_entry(&mut file, entry)
 }
 
+/// Empty the WAL at `path`, once saved snapshots hold all its entries.
+pub fn truncate_wal(path: &Path) -> io::Result<()> {
+    OpenOptions::new()
+        .write(true)
+        .truncate(true)
+        .open(path)?
+        .sync_all()
+}
+
 fn write_entry(file: &mut File, entry: &WalEntry) -> io::Result<()> {
     let mut line =
         serde_json::to_string(entry).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
@@ -258,6 +281,11 @@ pub fn replay_wal(path: &Path) -> io::Result<Vec<WalEntry>> {
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(vec![]),
         Err(e) => return Err(e),
     };
+    read_entries(&file)
+}
+
+/// Deserialize every entry in `file`, skipping malformed lines.
+fn read_entries(file: &File) -> io::Result<Vec<WalEntry>> {
     let mut entries = Vec::new();
     for (i, line) in BufReader::new(file).lines().enumerate() {
         let line = line?;
@@ -272,6 +300,169 @@ pub fn replay_wal(path: &Path) -> io::Result<Vec<WalEntry>> {
         }
     }
     Ok(entries)
+}
+
+// ── Per-writer segments ─────────────────────────────────────────────────
+
+/// Directory beside `wal.jsonl` that holds one [`WalSegment`] per writer.
+pub const SEGMENTS_DIR: &str = "wal";
+
+/// A WAL file that one writer owns, locked for as long as the writer lives.
+///
+/// Only its writer appends to a segment, and the writer truncates it once a
+/// saved snapshot holds its entries, so the segment stays bounded however
+/// long the writer runs (bug-7a2630). The lock tells an opener that the
+/// entries are a live writer's to save, not orphans to replay (bug-84de98).
+#[derive(Debug)]
+pub struct WalSegment {
+    path: PathBuf,
+    file: File,
+    entry_count: usize,
+}
+
+impl WalSegment {
+    /// Create a segment in `dir` and lock it.
+    ///
+    /// The segment is locked under a staging name and only then renamed
+    /// into place, so an opener never finds it unlocked while its writer
+    /// lives.
+    pub fn create(dir: &Path) -> io::Result<Self> {
+        std::fs::create_dir_all(dir)?;
+        let name = format!("{}-{}", std::process::id(), uuid::Uuid::new_v4());
+        let staging = dir.join(format!("{name}.jsonl.tmp"));
+        let path = dir.join(format!("{name}.jsonl"));
+        let file = OpenOptions::new()
+            .create_new(true)
+            .append(true)
+            .open(&staging)?;
+        if let Err(error) = file.lock().and_then(|()| std::fs::rename(&staging, &path)) {
+            let _ = std::fs::remove_file(&staging);
+            return Err(error);
+        }
+        Ok(Self {
+            path,
+            file,
+            entry_count: 0,
+        })
+    }
+
+    /// Where the segment lives.
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// Entries appended since the segment was created or last truncated.
+    pub fn entry_count(&self) -> usize {
+        self.entry_count
+    }
+
+    /// Append `entry` and sync it to durable storage before returning.
+    pub fn append(&mut self, entry: &WalEntry) -> io::Result<()> {
+        write_entry(&mut self.file, entry)?;
+        self.entry_count += 1;
+        Ok(())
+    }
+
+    /// Drop every entry, once a saved snapshot holds them all.
+    pub fn truncate(&mut self) -> io::Result<()> {
+        self.file.set_len(0)?;
+        self.file.sync_data()?;
+        self.entry_count = 0;
+        Ok(())
+    }
+}
+
+impl Drop for WalSegment {
+    fn drop(&mut self) {
+        // An empty segment has nothing to replay. The writer still holds the
+        // lock here, so no opener is reading it.
+        if self.entry_count == 0 {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
+}
+
+/// Append `entry` to the writer's segment in `dir`, creating the segment on
+/// the writer's first append.
+pub fn append_to_segment(
+    segment: &mut Option<WalSegment>,
+    dir: &Path,
+    entry: &WalEntry,
+) -> io::Result<()> {
+    let segment = match segment {
+        Some(segment) => segment,
+        slot @ None => slot.insert(WalSegment::create(dir)?),
+    };
+    segment.append(entry)
+}
+
+/// A segment whose writer is gone, locked by the opener that replays it.
+#[derive(Debug)]
+pub struct OrphanedSegment {
+    path: PathBuf,
+    file: File,
+    entries: Vec<WalEntry>,
+}
+
+impl OrphanedSegment {
+    /// The entries its writer journaled and never saved.
+    pub fn entries(&self) -> &[WalEntry] {
+        &self.entries
+    }
+
+    /// Delete the segment once saved snapshots hold its entries.
+    ///
+    /// The segment is emptied before the lock is released, so no other
+    /// opener replays it again, even where an open file cannot be removed.
+    pub fn remove(self) -> io::Result<()> {
+        self.file.set_len(0)?;
+        match std::fs::remove_file(&self.path) {
+            // Another opener replayed and removed it first.
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+            removed => removed,
+        }
+    }
+}
+
+/// The segments in `dir` whose writers are gone, with their entries.
+///
+/// A segment whose writer still lives is skipped: that writer saves its
+/// entries itself (bug-84de98). Each orphan comes back locked, so no other
+/// opener replays it at the same time. A missing `dir` holds no segments.
+pub fn orphaned_segments(dir: &Path) -> io::Result<Vec<OrphanedSegment>> {
+    let listing = match std::fs::read_dir(dir) {
+        Ok(listing) => listing,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error),
+    };
+    let mut orphans = Vec::new();
+    for dir_entry in listing {
+        let path = dir_entry?.path();
+        if path
+            .extension()
+            .is_none_or(|extension| extension != "jsonl")
+        {
+            continue;
+        }
+        let file = match OpenOptions::new().read(true).write(true).open(&path) {
+            Ok(file) => file,
+            // Its writer removed it after saving.
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error),
+        };
+        match file.try_lock() {
+            Ok(()) => {}
+            Err(TryLockError::WouldBlock) => continue,
+            Err(TryLockError::Error(error)) => return Err(error),
+        }
+        let entries = read_entries(&file)?;
+        orphans.push(OrphanedSegment {
+            path,
+            file,
+            entries,
+        });
+    }
+    Ok(orphans)
 }
 
 #[cfg(test)]
@@ -414,6 +605,42 @@ mod tests {
         let folded = folded_model_call_ids(&entries);
         assert!(folded.contains("obs-1"));
         assert!(!folded.contains("obs-2"));
+    }
+
+    #[test]
+    fn only_segments_whose_writer_is_gone_are_orphans() {
+        // bug-84de98: a live writer's segment is its own to save; an opener
+        // replays only the segments of writers that are gone.
+        let dir = TempDir::new().unwrap();
+        let segments = dir.path().join(SEGMENTS_DIR);
+        let entry = WalEntry::GateThresholdUpdate {
+            rung: 1,
+            passed: true,
+            ts_ms: 1,
+        };
+
+        let mut live = WalSegment::create(&segments).unwrap();
+        live.append(&entry).unwrap();
+        assert!(
+            orphaned_segments(&segments).unwrap().is_empty(),
+            "a live writer's segment is not an orphan"
+        );
+
+        let mut saved = WalSegment::create(&segments).unwrap();
+        saved.append(&entry).unwrap();
+        saved.truncate().unwrap();
+        // Its entries are saved, so the writer removes it when it goes.
+        drop(saved);
+
+        // This writer dies with an unsaved entry.
+        drop(live);
+        let orphans = orphaned_segments(&segments).unwrap();
+        assert_eq!(orphans.len(), 1);
+        assert_eq!(orphans[0].entries().len(), 1);
+        for orphan in orphans {
+            orphan.remove().unwrap();
+        }
+        assert_eq!(std::fs::read_dir(&segments).unwrap().count(), 0);
     }
 
     #[test]

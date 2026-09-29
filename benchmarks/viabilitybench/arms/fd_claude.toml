@@ -1,6 +1,8 @@
 # Arm fd_claude (S08 §4.9, S09 §4.2): Claude Code alone, non-interactive, with no Roko prompt, on the author's
 # subscription. D2 pins claude-opus-5-5, and D42 (dec-b78874) allows scripted `claude -p` runs on the subscription, so
 # nothing is billed and the ledger carries the API-equivalent cost. driver/run_cli.py has the isolation, caps and costs.
+# The arm has Claude Code's default tools except WebFetch and WebSearch: the truth suites are in a public repository
+# (gap-f253cf).
 schema_version = "vb.arm/1"
 
 [arm]

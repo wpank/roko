@@ -2,7 +2,7 @@
 id = "spec-ddc287"
 kind = "spec"
 title = "PB-005: SSE client + reconnection"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "visibility"
@@ -10,7 +10,7 @@ subsystem = ["apps/portal"]
 created = 2026-09-23
 updated = 2026-09-29
 last_verified = 2026-09-29
-last_verified_rev = "d9e79e9d8"
+last_verified_rev = "b6d8f4bef"
 source = "tmp/portal-backlog/PB-005-sse-client.md#PB-005"
 discovered_from = "audit:tmp/portal-backlog/PB-005-sse-client.md#PB-005"
 anchors = ["apps/portal/src/api/sse-client.ts", "apps/portal/src/hooks/useStateHubSSE.ts", "apps/portal/src/api/client.ts"]
@@ -18,6 +18,12 @@ links = { depends_on = [], blocks = [], related = ["gap-eb4a65", "bug-12d48c"], 
 
 [[verify]]
 command = "grep -qF 'replays from the last event id after a reconnect' apps/portal/src/api/sse-client.test.ts && (cd apps/portal && npx vitest run src/api/sse-client)"
+
+[closed]
+at = 2026-09-29
+commit = "b6d8f4bef"
+by = "commit trailer"
+evidence = "Every PB-005 criterion is met or was replaced by the portal redesign; the item body gives the evidence for each. The new apps/portal/src/api/sse-client.test.ts has 9 tests (the [[verify]]; each catches a mutation of the client). They cover /api/events on the page origin with the snapshot cursor, replay via ?lastEventId, the 1-16 s backoff and its reset, a gap frame becoming a snapshot, the 60 s watchdog, dropping untyped frames, retry, and the status sequence. Replaced by the design: ROKO_SERVE_URL (same-origin, 02-DESIGN §0); api/types.ts and the ~35 types (api/contracts.ts, with the 18 run-view events); the buffer caps (no episode or log view; runState has its own caps); the /health probe (snapshot before stream); and the bearer header (plan 03c trades the launch token or an API key for a session cookie). The cross-origin remainder is gap-eb4a65."
 +++
 
 ## Problem

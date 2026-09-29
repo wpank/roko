@@ -2,7 +2,7 @@
 id = "bug-64fb48"
 kind = "bug"
 title = "While a plan generates, the portal requests the unwritten plan every second, logging one 404 per second"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "visibility"
@@ -11,7 +11,7 @@ subsystem = ["apps/portal"]
 created = 2026-09-29
 updated = 2026-09-29
 last_verified = 2026-09-29
-last_verified_rev = "f99e45dba"
+last_verified_rev = "1c65a8c46"
 source = "plan:portal-programme/09-acceptance#T04"
 discovered_from = "plan:portal-programme/09-acceptance#T04"
 anchors = ["apps/portal/src/lib/operation.ts::waitForOperation", "apps/portal/src/api/queries.ts::planExists"]
@@ -19,6 +19,12 @@ links = { depends_on = [], blocks = [], related = ["bug-a0f01e"], supersedes = [
 
 [[verify]]
 command = "grep -rqF --include='*.test.ts' 'does not poll the plan while the operation runs' apps/portal/src && (cd apps/portal && npx vitest run src/lib/operation)"
+
+[closed]
+at = 2026-09-29
+commit = "1c65a8c46"
+by = "commit trailer"
+evidence = "waitForOperation (apps/portal/src/lib/operation.ts) now leaves a known operation to finish in both modes, and asks GET /api/plans/{id} only when the operation is unknown (404: swept after finishing, or lost in a restart). The item's other fallback, a server that never reports result, cannot be reached: generate operations that never finish predate plan 04, and those servers reject {prompt} with a 400 that the portal shows as an outdated server (authoring.accept.test.tsx). Proven by operation.test.ts 'does not poll the plan while the operation runs' (the [[verify]]; the old code requested the plan on each of 3 running polls) and its 404-fallback test, plus PromptPanel.test.tsx, which drives the panel against a stubbed server and sees no GET /api/plans/hello while the operation runs (fails on the old code). tsc, vitest (63 files, 689 tests), orphans and build:export pass."
 +++
 
 ## Problem

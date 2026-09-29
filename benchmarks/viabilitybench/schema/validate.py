@@ -9,10 +9,12 @@ On top of the schemas it checks the honesty rules they cannot express (S08 §4.1
 
 - run records and ledger rows: an unknown cost is null, never 0. Used tokens never cost $0; a null cost goes with
   cost source "unknown" and the other way round; missing usage makes the cost unknown; and a billed API row
-  (source provider_usage or estimated) that used tokens cannot bill $0. A subscription CLI session bills $0, and
-  its record says so: every attempt carries the CLI runner's `cli` block. Such a record may be `estimated` with $0
-  billed, because a session killed before its `result` event is priced from its streamed messages, a partial total
-  (bug-f62293). A ledger row has no such mark, so an estimated ledger row that bills $0 is still refused;
+  (source provider_usage or estimated) that used tokens cannot bill $0. A subscription bills $0 and says so: a run
+  record whose every attempt carries the CLI runner's `cli` block, or a ledger row marked `billed: false`. Either may
+  be `estimated` with $0 billed, because a session killed before its `result` event is priced from its streamed
+  messages, a partial total (bug-f62293, bug-a49003). A ledger row marked `billed: true` never bills $0 for tokens,
+  whatever its source, and one marked `billed: false` bills exactly $0. A row from before the mark keeps the source
+  rule;
 - run records: `costs.by_class` splits `api_equiv_usd` without changing it. Its known classes add up to no more than
   the total, and to exactly the total when every class is known (which a null total then rules out); no class and no
   queue wait is below 0, and the record's `execution.queue_wait_s` is the sum of its attempts' when all are known;
@@ -133,10 +135,15 @@ def invariant_errors(kind: str, doc: dict) -> list[str]:
     if kind == "run-record":
         attempts = doc["execution"]["attempts"]
         cli = bool(attempts) and all(isinstance(attempt.get("cli"), dict) for attempt in attempts)
-        return (_cost_errors(doc["costs"], [attempt["usage"] for attempt in attempts], "$.costs", subscription_cli=cli)
+        return (_cost_errors(doc["costs"], [attempt["usage"] for attempt in attempts], "$.costs",
+                             subscription=True if cli else None)
                 + _class_errors(doc["costs"], "$.costs") + _wait_errors(doc["execution"], "$.execution"))
     if kind == "ledger":
-        return _cost_errors(doc, [doc["usage"]], "$")
+        marked = doc.get("billed")
+        errors = _cost_errors(doc, [doc["usage"]], "$", subscription=None if marked is None else not marked)
+        if marked is False and doc["billed_usd"] != 0:
+            errors.append(f"$.billed_usd: a subscription row (billed false) bills $0, not {doc['billed_usd']}")
+        return errors
     if kind == "price-snapshot":
         return _snapshot_errors(doc)
     return []
@@ -181,7 +188,9 @@ def main(argv: list[str] | None = None) -> int:
     return 1 if invalid else 0
 
 
-def _cost_errors(cost: dict, usages: list, path: str, *, subscription_cli: bool = False) -> list[str]:
+def _cost_errors(cost: dict, usages: list, path: str, *, subscription: bool | None = None) -> list[str]:
+    """`subscription` is True or False when the document says whether it was billed, and None when only its source
+    can tell (module docstring)."""
     source = cost["source"]
     tokens = sum(usage.get(key, 0) for usage in usages if usage for key in BILLED_TOKENS)
     errors = []
@@ -198,8 +207,11 @@ def _cost_errors(cost: dict, usages: list, path: str, *, subscription_cli: bool 
             errors.append(f"{path}.{field}: an unknown cost is null, not {amount}")
         elif amount == 0 and tokens:
             errors.append(f"{path}.{field}: $0 for {tokens} tokens; an unknown cost is null, never 0")
-    billed_api = source == "provider_usage" or (source == "estimated" and not subscription_cli)
-    if cost["billed_usd"] == 0 and tokens and billed_api:
+    if subscription is None:
+        billed = source in ("provider_usage", "estimated")
+    else:  # a subscription may estimate its cost, but usage a provider reported was billed by that provider
+        billed = not subscription or source == "provider_usage"
+    if cost["billed_usd"] == 0 and tokens and billed:
         errors.append(f"{path}.billed_usd: $0 billed for {tokens} tokens; only a subscription run bills $0")
     return errors
 

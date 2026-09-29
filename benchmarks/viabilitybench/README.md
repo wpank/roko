@@ -146,7 +146,7 @@ Together, the schemas and the validator enforce S08's honesty invariants (§4.12
 - an unknown cost is `null`, never 0: used tokens never cost $0, a `null` cost goes with cost source `unknown`
   and the other way round, missing usage makes the cost unknown, and a billed API row that used tokens cannot
   bill $0 (a subscription CLI session killed before its `result` event is priced from its stream, and its record
-  says `estimated`, with $0 billed);
+  and its ledger row say `estimated`, with $0 billed; a ledger row says whether it was billed, `billed`);
 - `costs.by_class` (S09 §4.9's cost classes) splits `api_equiv_usd` without changing it, and a queue wait
   (`execution.queue_wait_s`, the sum of the attempts') is never below 0; both are `null` when the arm cannot
   observe them;

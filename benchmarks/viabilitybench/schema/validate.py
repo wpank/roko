@@ -9,7 +9,10 @@ On top of the schemas it checks the honesty rules they cannot express (S08 §4.1
 
 - run records and ledger rows: an unknown cost is null, never 0. Used tokens never cost $0; a null cost goes with
   cost source "unknown" and the other way round; missing usage makes the cost unknown; and a billed API row
-  (source provider_usage or estimated) that used tokens cannot bill $0;
+  (source provider_usage or estimated) that used tokens cannot bill $0. A subscription CLI session bills $0, and
+  its record says so: every attempt carries the CLI runner's `cli` block. Such a record may be `estimated` with $0
+  billed, because a session killed before its `result` event is priced from its streamed messages, a partial total
+  (bug-f62293). A ledger row has no such mark, so an estimated ledger row that bills $0 is still refused;
 - run records: `costs.by_class` splits `api_equiv_usd` without changing it. Its known classes add up to no more than
   the total, and to exactly the total when every class is known (which a null total then rules out); no class and no
   queue wait is below 0, and the record's `execution.queue_wait_s` is the sum of its attempts' when all are known;
@@ -128,9 +131,10 @@ def schema_errors(value: Any, schema: dict, path: str = "$") -> list[str]:
 def invariant_errors(kind: str, doc: dict) -> list[str]:
     """The honesty rules the schema subset cannot express. `doc` must already conform to its schema."""
     if kind == "run-record":
-        usages = [attempt["usage"] for attempt in doc["execution"]["attempts"]]
-        return (_cost_errors(doc["costs"], usages, "$.costs") + _class_errors(doc["costs"], "$.costs")
-                + _wait_errors(doc["execution"], "$.execution"))
+        attempts = doc["execution"]["attempts"]
+        cli = bool(attempts) and all(isinstance(attempt.get("cli"), dict) for attempt in attempts)
+        return (_cost_errors(doc["costs"], [attempt["usage"] for attempt in attempts], "$.costs", subscription_cli=cli)
+                + _class_errors(doc["costs"], "$.costs") + _wait_errors(doc["execution"], "$.execution"))
     if kind == "ledger":
         return _cost_errors(doc, [doc["usage"]], "$")
     if kind == "price-snapshot":
@@ -177,7 +181,7 @@ def main(argv: list[str] | None = None) -> int:
     return 1 if invalid else 0
 
 
-def _cost_errors(cost: dict, usages: list, path: str) -> list[str]:
+def _cost_errors(cost: dict, usages: list, path: str, *, subscription_cli: bool = False) -> list[str]:
     source = cost["source"]
     tokens = sum(usage.get(key, 0) for usage in usages if usage for key in BILLED_TOKENS)
     errors = []
@@ -194,7 +198,8 @@ def _cost_errors(cost: dict, usages: list, path: str) -> list[str]:
             errors.append(f"{path}.{field}: an unknown cost is null, not {amount}")
         elif amount == 0 and tokens:
             errors.append(f"{path}.{field}: $0 for {tokens} tokens; an unknown cost is null, never 0")
-    if cost["billed_usd"] == 0 and tokens and source in ("provider_usage", "estimated"):
+    billed_api = source == "provider_usage" or (source == "estimated" and not subscription_cli)
+    if cost["billed_usd"] == 0 and tokens and billed_api:
         errors.append(f"{path}.billed_usd: $0 billed for {tokens} tokens; only a subscription run bills $0")
     return errors
 

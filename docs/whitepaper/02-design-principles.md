@@ -1,31 +1,59 @@
-Status: stub · budget 550 words · owner gap-370d3c
+Status: draft · budget 550 words · owner gap-370d3c
 
 # 2 Design principles
 
-[[TODO: Write this section to gap-370d3c's plan, in about 550 words. Each of the eight rules cites at least one verified source, so the section has at least 8 `[@` citations. Keep line 1 and set it to `draft`, then replace everything below the heading, this list of claims included. Conventions and canonical numbers: `README.md` in this directory.]]
+Eight rules from the literature shape the golden path. Each ends with Roko's design response; §4 gives the status of
+each golden-path step at a commit. The evidence comes mostly from single functions, question answering, text
+environments and single repository issues. None of it compares a repository-scale plan with one frontier agent at
+matched cost, so the rules guide the design without showing that it pays.
 
-## Claims
+## 2.1 Eight rules
 
-| Id | Kind | Claim | Writer's source | Cite in the text as |
-|---|---|---|---|---|
-| DP1 | lit | Size tasks for the executor, not for cohesion: models' 80%-success horizons are 4–6× shorter than their 50% horizons, and per-step errors compound. | tldr/04 rule 1; C1 | [@kwa2025measuring]; [@sinha2025illusion] |
-| DP2 | lit | Split on independent outputs, not sequential steps: parallel agents helped decomposable work (+80.8%) and hurt sequential work (−70%). | tldr/04 rule 2; C1 | [@kim2025towards] |
-| DP3 | lit | The planner writes the gating checks and the implementer never does: model-written oracles tend to encode the code's actual behaviour, not the expected one. | tldr/04 rule 3; C2 | [@konstantinou2024do] |
-| DP4 | lit | Assume visible checks will be gamed, most of all by cheap models: the gap between visible and held-out tests is larger for smaller models. | tldr/04 rule 4; C2 | [@zhao2026specbench] |
-| DP5 | lit | Retry twice cheaply with the distilled gate errors (never the failed transcript), then escalate one rung, then split or replan. | tldr/04 rule 5; C1 | [@sinha2025illusion]; [@prasad2024adapt] |
-| DP6 | lit | Merge, then verify, through a queue: in one study 16% of merges conflicted, and a further 7% merged cleanly but broke the build or tests. | tldr/04 rule 6; C1 | [@brun2011proactive] |
-| DP7 | lit | Put ambiguity back into authoring: models don't notice underspecification, and a check before execution recovers most of the loss. | tldr/04 rule 7; C2 | [@vijayvargiya2025ambigswe]; [@edwards2026askorassume] |
-| DP8 | lit | Count cost per verified task, including verification, retries, escalations and the planner: a cheap verifier's blind spots can cancel the savings. | tldr/04 rule 8; C1; C2 | [@rajput2026cheap] |
-| DP9 | lit | The cybernetic vocabulary: essential variables (verified pass rate, cost per verified task, false-green rate, latency), regulation, and audits of the regulators. *Agent Cybernetics* is the closest framing; no claim of firstness. | tldr/02 "What cybernetic means here"; draft §2.2 and §2.7 | `wang2026agent` and `ashby1960design` (both in the draft's `references.bib`; §2 adds them after refcheck) |
-| DP10 | scope | Say where each result was measured (single function, QA, documents or repository scale), so that no single-function result reads as repository-scale evidence. | C1 "Size of the effects"; tldr/01 "The bet" | A hedge beside each [@key] |
+**1. Size tasks for the executor, not for cohesion.** On software and research tasks timed against human experts, the
+task length models complete with 80% success is 4–6× shorter than at 50% [@kwa2025measuring]; on a synthetic long
+task, per-step errors compound [@sinha2025illusion]. *Design:* size each task to its executor tier's measured pass
+rate (§4, step 3).
 
-## Sources
+**2. Split on independent outputs, not on sequential steps.** Across six agentic benchmarks, multi-agent teams changed
+performance against a single agent by +80.8% on decomposable financial reasoning and −70.0% on sequential planning
+[@kim2025towards]. *Design:* parallel siblings get disjoint write sets; sequential or integrative work stays one
+frontier task (§4, steps 3 and 5).
 
-Writer inputs; the paths under `tmp/` are gitignored and are never cited in the text.
+**3. The planner writes the gating checks; the implementer never does.** In 24 Java projects, LLM-written unit-test
+oracles tended to encode what the code does, not what it should do [@konstantinou2024do]. *Design:* each task carries
+a plan-time check that fails on the base commit; the implementer's tests are extra evidence, never the gate (§4, steps
+2 and 7).
 
-- tldr/02: `tmp/cybernetic-harness/tldr/02-HOW-IT-WORKS.md`. Architecture, the control stack, what `.roko/` records.
-- tldr/04: `tmp/cybernetic-harness/tldr/04-FRONTIER-PLANS-CHEAP-EXECUTES.md`. The 11-step loop, the eight design rules, the real-run numbers, the three-arm test.
-- C1: `tmp/cybernetic-harness/tldr/research/C1-research-planning-decomposition-cascades.md`. Literature: planning, decomposition, cascades, integration.
-- C2: `tmp/cybernetic-harness/tldr/research/C2-research-specs-acceptance-verification.md`. Literature: specs, acceptance, verification.
-- draft §N: `tmp/cybernetic-harness/paper/sections/`. The research draft's sections; outline in `paper/OUTLINE.md`, conventions in `paper/00-README.md`.
-- 01-THESIS: `tmp/cybernetic-harness/01-THESIS.md`. Section 6: safe and avoided claims.
+**4. Assume visible checks will be gamed, most of all by cheap models.** On 30 systems-programming tasks, smaller
+models showed larger gaps between visible and held-out test pass rates, and the gap grew 28 percentage points per
+tenfold growth in code size [@zhao2026specbench]. *Design:* freeze the checks, diff each attempt for edits to tests or
+out-of-scope files, and sample hidden tests (§4, step 7).
+
+**5. Retry twice cheaply, then escalate, then split.** On the same synthetic task, models erred more once their own
+mistakes were in context [@sinha2025illusion]. In three text environments, decomposing a subtask only when the
+executor failed raised success rates by up to 33% [@prasad2024adapt]. *Design:* retry with the distilled gate errors,
+never the failed transcript; after two failures, go one tier up, then split or replan (§4, step 8).
+
+**6. Merge, then verify, through a queue.** In 5,355 merges by human developers on three open-source projects, 16%
+conflicted textually and 7% more merged cleanly but broke the build or tests [@brun2011proactive]. *Design:* a queue
+merges finished tasks into a plan branch and re-runs the affected checks, then a whole-plan check runs (§4, step 9).
+
+**7. Put ambiguity back into authoring.** On underspecified SWE-bench Verified issues, models struggled to tell them
+from well-specified ones [@vijayvargiya2025ambigswe]; a scaffold that checks for underspecification and asks before
+executing resolved 69.4%, close to the fully specified level [@edwards2026askorassume]. *Design:* the planner records
+open questions, and dispatch waits for the author's answers (§4, step 1).
+
+**8. Count cost per verified task,** including verification, retries, escalations and the planner. In a cascade
+answering math questions, the verifier passed 12% to 55% of a cheap student's wrong answers, more as the student grew;
+a frontier verifier cut that to about 5% but escalated 46% of hard queries, giving the saving back [@rajput2026cheap].
+*Design:* route and report on this cost, which §8 measures (§4, step 4).
+
+## 2.2 The cybernetic vocabulary
+
+The rules form one loop: sense, compare with the specification, correct, audit. Ashby called the quantities that must
+stay within limits essential variables [@ashby1960design]; Roko's design names four: the verified pass rate, cost per
+verified task, the false-green rate and latency. Its regulators act on them within a run (retry, escalation, split)
+and across runs (routing, task sizing), and its audits check the regulators (§5), because metrics read through a
+loop's own verifier can hide its decline [@rajput2026cheap]. *Agent Cybernetics*, a position paper without an
+implementation or experiments, maps cybernetic laws onto agent design [@wang2026agent]. It is the closest framing we
+found as of 2026-09-29, and we claim no priority for it.

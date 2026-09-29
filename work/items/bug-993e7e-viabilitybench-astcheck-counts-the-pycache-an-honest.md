@@ -3,7 +3,8 @@ id = "bug-993e7e"
 kind = "bug"
 title = "ViabilityBench astcheck counts the __pycache__ an honest agent's test run writes as an added test file"
 status = "open"
-triage = "unverified"
+triage = "verified"
+last_verified = 2026-09-29
 severity = "p1"
 goal = "proof"
 size = "S"
@@ -18,7 +19,7 @@ parent = "spec-567e52"
 links = { depends_on = [], blocks = [], related = ["gap-2790c5", "gap-4723ff", "gap-7ee7c2"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
-command = "grep -rqw 'def test_pycache_from_visible_test_run_is_not_a_test_edit' benchmarks/viabilitybench/families/common/ && cd benchmarks/viabilitybench && python3 -m pytest -q families/common -k test_pycache_from_visible_test_run_is_not_a_test_edit"
+command = "grep -rqw 'def test_pycache_from_visible_test_run_is_not_a_test_edit' benchmarks/viabilitybench/families/common/ && benchmarks/viabilitybench/.venv/bin/python -m pytest -q benchmarks/viabilitybench/families/common -k test_pycache_from_visible_test_run_is_not_a_test_edit"
 +++
 
 ## Problem
@@ -47,3 +48,15 @@ Only F1 filters `__pycache__`.
 
 - [ ] A visible-test run's bytecode is never a test edit, in every family.
 - [ ] The `[[verify]]` command passes.
+
+## Notes
+
+- 2026-09-29 (wk-bench-ci): the verify runs pytest with the pinned venv (README, "Tests"), not `python3`: the system
+  Python has no pytest, so the old command failed whatever the code did.
+- The same false positive comes from pytest's `.pytest_cache/`, which lands in the test directory when an agent runs
+  `cd tests/visible && pytest`. At BASE it gave F4 four `test_edit` findings on an honest reference, and F1's local
+  filter did not catch it. `astcheck.is_cache` covers both, and the census's `CACHE_PARTS` names the same two.
+- `common.VERSION` is now `common-1.1.0`, so records show the changed verifier (the package's own rule).
+- F1's local `_bytecode_cache` filter (`families/f1_pyconv/gaming.py`) is now redundant. It was left in place because
+  it is outside this item's files. It still drops a symlink under a cache name, which astcheck now flags; that path
+  is removed anyway when the census restores the visible tests.

@@ -7,6 +7,7 @@ import { AlertBand } from '@/components/shell/AlertBand';
 import { PlanRail } from '@/components/rail/PlanRail';
 import { Stage } from '@/components/stage/Stage';
 import { usePrimaryAction } from '@/components/stage/PlanView';
+import { validationCounts } from '@/components/stage/ValidationBadge';
 import { StreamPane } from '@/components/stream/StreamPane';
 import { RunBand } from '@/components/run/RunBand';
 import {
@@ -16,6 +17,7 @@ import {
   useRunPlans,
   useCancelPlan,
   useWorkspace,
+  useValidation,
 } from '@/api/queries';
 import { confirmDiscard, useDashboardStore } from '@/stores/dashboard';
 import { useSelection } from '@/lib/useSelection';
@@ -162,12 +164,15 @@ export function Workspace() {
     [plans],
   );
 
+  // ── Validation of the selected plan (the badge's query) for the alert ─────────
+  const { data: validation } = useValidation(resolved.plan ?? undefined);
+
   // ── Alert ─────────────────────────────────────────────────────────────────────
   const alert = pickAlert({
     run,
     connection,
     selectedPlanId: resolved.plan,
-    validationErrors: 0,
+    validationErrors: validationCounts(validation).errors,
     requestError,
     requestNotice,
     planTitles,

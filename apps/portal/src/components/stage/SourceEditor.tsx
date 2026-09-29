@@ -10,7 +10,8 @@
  * Error handling:
  *  200  → success: onClose() (mutation already invalidated tasks/source/validation)
  *  409  → plan is running; surface a clear message, keep the editor open
- *  422  → validation failure; list diagnostics, move caret to first task_id hit
+ *  422  → validation failure; list diagnostics (rule id, task id links), move
+ *         the caret to the first diagnostic's task
  *  404/405 on load or save → feature not supported by this roko-serve build
  */
 
@@ -60,6 +61,34 @@ function extractDiagnostics(body: unknown): WireDiagnostic[] {
   }
   if (Array.isArray(b['diagnostics'])) return b['diagnostics'] as WireDiagnostic[];
   return [];
+}
+
+/** A table header line: `[name]` or `[[name]]`, optionally followed by a comment. */
+const TABLE_HEADER = /^\s*\[\[?[^[\]]+\]\]?\s*(#.*)?$/;
+/** The header of one task: `[[task]]`. */
+const TASK_HEADER = /^\s*\[\[\s*task\s*\]\]\s*(#.*)?$/;
+/** A task's own `id` key, in either quote style, with any spacing. */
+const ID_KEY = /^\s*(?:id|"id"|'id')\s*=\s*(["'])(.*?)\1/;
+
+/**
+ * Find the offset in `toml` of the `[[task]]` line of the task whose `id` is
+ * `taskId`. Only an `id` key in the task's own table counts, not one in a
+ * sub-table such as `[task.context]`. Returns null when no task has that id.
+ */
+export function findTaskLine(toml: string, taskId: string): number | null {
+  let offset = 0;
+  let header: number | null = null;
+  for (const line of toml.split('\n')) {
+    const start = offset;
+    offset += line.length + 1;
+    if (TABLE_HEADER.test(line)) {
+      header = TASK_HEADER.test(line) ? start : null;
+      continue;
+    }
+    const id = header !== null ? ID_KEY.exec(line) : null;
+    if (id && id[2] === taskId) return header;
+  }
+  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -143,22 +172,19 @@ export function SourceEditor({ planId, running, onClose, onDirtyChange }: Source
   // ------------------------------------------------------------------
 
   /**
-   * After a 422, find the first diagnostic with a task_id and move the
-   * textarea caret to the `id = "<task_id>"` line so the author can see it.
+   * Move the textarea caret to the start of the `[[task]]` line of `taskId`
+   * and scroll that line into view. Does nothing when the text has no such
+   * task (for example, after the author renamed it).
    */
-  const moveCaret = useCallback(
-    (diags: WireDiagnostic[], currentText: string) => {
-      const taskDiag = diags.find(d => d.task_id);
-      if (!taskDiag?.task_id) return;
+  const jumpToTask = useCallback(
+    (taskId: string, currentText: string) => {
       const el = textareaRef.current;
-      if (!el) return;
-      const target = `id = "${taskDiag.task_id}"`;
-      const idx = currentText.indexOf(target);
-      if (idx === -1) return;
+      const at = findTaskLine(currentText, taskId);
+      if (!el || at === null) return;
       el.focus();
-      el.setSelectionRange(idx, idx + target.length);
+      el.setSelectionRange(at, at);
       // Scroll the matching line into the visible portion of the textarea.
-      const linesAbove = currentText.slice(0, idx).split('\n').length - 1;
+      const linesAbove = currentText.slice(0, at).split('\n').length - 1;
       const lineHeight =
         parseFloat(getComputedStyle(el).lineHeight) || 20;
       el.scrollTop = Math.max(
@@ -199,14 +225,15 @@ export function SourceEditor({ planId, running, onClose, onDirtyChange }: Source
             const diags = extractDiagnostics(err.body);
             setDiagnostics(diags);
             // Defer caret move until after React renders the diagnostics.
-            setTimeout(() => moveCaret(diags, text), 0);
+            const firstTask = diags.find((d) => d.task_id)?.task_id;
+            if (firstTask) setTimeout(() => jumpToTask(firstTask, text), 0);
             return;
           }
           setInlineError(`Save failed: ${err.message}`);
         },
       },
     );
-  }, [planId, text, saveMutation, onClose, moveCaret]);
+  }, [planId, text, saveMutation, onClose, jumpToTask]);
 
   // ------------------------------------------------------------------
   // Load error states
@@ -296,12 +323,16 @@ export function SourceEditor({ planId, running, onClose, onDirtyChange }: Source
         </div>
       )}
 
-      {/* ---- Validation diagnostics (422) ---- */}
+      {/* ---- Validation diagnostics (422): severity, rule id, task link, message ---- */}
       {diagnostics.length > 0 && (
-        <div className="px-3 py-2 border-b border-border-default shrink-0 max-h-36 overflow-y-auto space-y-1">
+        <div
+          data-region="diagnostics"
+          className="px-3 py-2 border-b border-border-default shrink-0 max-h-36 overflow-y-auto space-y-1"
+        >
           {diagnostics.map((d, i) => (
             <div
               key={i}
+              data-diagnostic
               className={cn(
                 'text-xs font-mono',
                 d.severity === 'error'
@@ -310,13 +341,27 @@ export function SourceEditor({ planId, running, onClose, onDirtyChange }: Source
               )}
             >
               <span className="uppercase font-semibold">{d.severity}</span>
+              {' '}
+              <span data-rule-id className="text-text-muted">{d.rule_id}</span>
+              {d.task_id && (
+                <>
+                  {' '}
+                  {/* Jumps to the task's [[task]] line in the text below. */}
+                  <button
+                    type="button"
+                    data-task-link={d.task_id}
+                    title={`Go to ${d.task_id} in the source`}
+                    onClick={() => {
+                      if (text !== null) jumpToTask(d.task_id!, text);
+                    }}
+                    className="font-mono text-xs leading-none px-1.5 py-0.5 border border-text-ghost/40 hover:border-text-ghost text-inherit"
+                  >
+                    {d.task_id}
+                  </button>
+                </>
+              )}
               {': '}
               {d.message}
-              {d.task_id && (
-                <span className="ml-1 text-text-ghost">
-                  [{d.task_id}]
-                </span>
-              )}
             </div>
           ))}
         </div>

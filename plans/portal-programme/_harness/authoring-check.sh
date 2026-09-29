@@ -88,7 +88,7 @@ check "the source parses as a plan" \
     jcheck "$WS/source0.json" 'isinstance(d["toml"], str) and "[[task]]" in d["toml"]'
 GOOD="$(source_variant good)"
 check "PUT source saves a valid edit (200)" [ "$(api PUT "/api/plans/$PLAN/source" "$GOOD")" = 200 ]
-check "the save reports no errors" jcheck "$WS/last.json" 'd["saved"] is True and d["errors"] == 0'
+check "the save reports no errors" jcheck "$WS/last.json" 'd["saved"] is True and d["errors"] == []'
 api GET "/api/plans/$PLAN/source" >/dev/null
 check "the saved source comes back byte-for-byte, comment included" \
     python3 -c 'import json, sys; sent = json.loads(sys.argv[1])["toml"]; got = json.load(open(sys.argv[2]))["toml"]; sys.exit(0 if sent == got else 1)' "$GOOD" "$WS/last.json"
@@ -113,11 +113,17 @@ wait_idle live-a 90 || true
 
 # ── Validate ──────────────────────────────────────────────────────────────
 check "validate a saved plan returns 200" [ "$(api POST "/api/plans/$PLAN/validate")" = 200 ]
-check "the saved plan is valid" jcheck "$WS/last.json" 'd["valid"] is True and d["errors"] == 0'
+check "the saved plan is valid" jcheck "$WS/last.json" 'd["valid"] is True and d["errors"] == []'
+check "validate with {} (the portal's old body) validates the saved plan" \
+    [ "$(api POST "/api/plans/$PLAN/validate" '{}')" = 200 ]
+check "the {} validation is valid, with warnings as a list" \
+    jcheck "$WS/last.json" 'd["valid"] is True and d["errors"] == [] and isinstance(d["warnings"], list)'
 check "validate an unsaved invalid draft still returns 200" \
     [ "$(api POST "/api/plans/$PLAN/validate" "$(source_variant dangle)")" = 200 ]
 check "the draft is reported invalid with an error on the task" \
     jcheck "$WS/last.json" 'd["valid"] is False and any(x.get("task_id") == "T02" and x["severity"] == "error" and x["rule_id"] for x in d["diagnostics"])'
+check "the draft's errors list one line per error diagnostic" \
+    jcheck "$WS/last.json" 'len(d["errors"]) == sum(x["severity"] == "error" for x in d["diagnostics"]) and all(isinstance(e, str) for e in d["errors"])'
 check "validating a draft did not write it" same_sha "$BEFORE" "$WS/plans/$PLAN/tasks.toml"
 
 # ── Generate ──────────────────────────────────────────────────────────────

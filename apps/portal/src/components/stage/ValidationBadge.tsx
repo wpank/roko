@@ -6,12 +6,17 @@
  * Shows the validation state of a plan as a compact inline badge.
  *
  * States:
- *  - Loading                → `·`
+ *  - Loading                → `validating…`
  *  - 404 / 405              → `validation unavailable` (server lacks the route;
  *                              never blocks Run)
+ *  - any other failure      → `validation failed` (warn token; the reason is
+ *                              its title) — a failed request is never valid
  *  - errors > 0             → `N errors`  (error token — plan cannot run)
  *  - warnings > 0, no errors→ `N warnings` (muted — a normal editing state)
  *  - clean                  → `valid ✓`  (done token)
+ *
+ * Counts come from the diagnostics (see `validationCounts`), so an older
+ * server that sends `errors` as a number still reads right.
  *
  * Clicking the badge opens a panel listing diagnostics as
  * `rule_id · task · message`; clicking a row with a task_id calls
@@ -21,8 +26,28 @@
 import React, { useRef, useEffect, useState } from 'react';
 import { clsx } from 'clsx';
 import { useValidation } from '@/api/queries';
-import { isMissingRoute } from '@/lib/apiErrors';
-import type { WireDiagnostic } from '@/api/contracts';
+import { describeRequestError, isMissingRoute } from '@/lib/apiErrors';
+import type { WireDiagnostic, WireValidation } from '@/api/contracts';
+
+// ---------------------------------------------------------------------------
+// Counts
+// ---------------------------------------------------------------------------
+
+/**
+ * Error and warning counts of a validation report, from its diagnostics.
+ * A report without `valid: true` counts at least one error, so only the
+ * server's own verdict reads as valid. No report counts nothing.
+ */
+export function validationCounts(report: WireValidation | undefined): {
+  errors: number;
+  warnings: number;
+} {
+  if (!report) return { errors: 0, warnings: 0 };
+  const diagnostics = Array.isArray(report.diagnostics) ? report.diagnostics : [];
+  const errors = diagnostics.filter((d) => d.severity === 'error').length;
+  const warnings = diagnostics.filter((d) => d.severity === 'warning').length;
+  return { errors: report.valid === true ? errors : Math.max(errors, 1), warnings };
+}
 
 // ---------------------------------------------------------------------------
 // Props
@@ -82,12 +107,31 @@ export function ValidationBadge({ planId, onSelectTask }: ValidationBadgeProps) 
   }
 
   // -------------------------------------------------------------------------
+  // Failed state — any other error, or no report at all
+  // -------------------------------------------------------------------------
+
+  if (error || data === undefined) {
+    return (
+      <span
+        data-validation="failed"
+        className="text-accent-warn font-mono text-xs select-none cursor-default"
+        title={
+          error
+            ? describeRequestError(error, 'validating plans')
+            : 'The server sent no validation report.'
+        }
+      >
+        validation failed
+      </span>
+    );
+  }
+
+  // -------------------------------------------------------------------------
   // Determine badge label + variant from validation result
   // -------------------------------------------------------------------------
 
-  const errorCount = data?.errors?.length ?? 0;
-  const warnCount = data?.warnings?.length ?? 0;
-  const diagnostics: WireDiagnostic[] = data?.diagnostics ?? [];
+  const { errors: errorCount, warnings: warnCount } = validationCounts(data);
+  const diagnostics: WireDiagnostic[] = Array.isArray(data.diagnostics) ? data.diagnostics : [];
 
   // Badge display properties
   let label: string;

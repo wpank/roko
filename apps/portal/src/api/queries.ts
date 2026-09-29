@@ -99,11 +99,10 @@ export function usePlanSource(id: string | undefined, enabled = true) {
 export function useValidation(id: string | undefined) {
   return useQuery<WireValidation>({
     queryKey: queryKeys.validation(id ?? ''),
+    // No body: validate the saved file (ask P-3). Servers before the fix
+    // answered `{}` with 400, since they required `toml` in any body.
     queryFn: () =>
-      api.post<WireValidation>(
-        `/api/plans/${encodeURIComponent(id!)}/validate`,
-        {},
-      ),
+      api.post<WireValidation>(`/api/plans/${encodeURIComponent(id!)}/validate`),
     enabled: Boolean(id),
   });
 }

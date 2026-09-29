@@ -6,8 +6,9 @@
 //! 2. `PUT /api/plans/{id}/source` — valid body gives 200 `saved: true`; invalid
 //!    gives 422 with `code` and `diagnostics`; 409 when a registered active run
 //!    includes the plan.
-//! 3. `POST /api/plans/{id}/validate` — 200 both with no body and with `{toml}`.
-//!    The text reaches the stub unchanged; an invalid report is still 200.
+//! 3. `POST /api/plans/{id}/validate` — 200 with no body, with `{}` and with
+//!    `{toml}`. The text reaches the stub unchanged; an invalid report is still
+//!    200; `errors` and `warnings` are arrays.
 //! 4. `POST /api/plans` — 201 with the slug derived from the title; 409 when the
 //!    stub reports the slug already exists.
 //! 5. `POST /api/plans/generate` — `{}` and `{"prompt":"x","slug":"y"}` give 422.
@@ -160,26 +161,16 @@ impl StubBuilder {
 // ---------------------------------------------------------------------------
 
 fn valid_dto() -> PlanValidationDto {
-    PlanValidationDto {
-        valid: true,
-        errors: 0,
-        warnings: 0,
-        diagnostics: vec![],
-    }
+    PlanValidationDto::from_diagnostics(vec![])
 }
 
 fn invalid_dto() -> PlanValidationDto {
-    PlanValidationDto {
-        valid: false,
-        errors: 1,
-        warnings: 0,
-        diagnostics: vec![PlanDiagnosticDto {
-            severity: "error".to_string(),
-            rule_id: "PLAN_TEST".to_string(),
-            task_id: None,
-            message: "stub validation error".to_string(),
-        }],
-    }
+    PlanValidationDto::from_diagnostics(vec![PlanDiagnosticDto {
+        severity: "error".to_string(),
+        rule_id: "PLAN_TEST".to_string(),
+        task_id: None,
+        message: "stub validation error".to_string(),
+    }])
 }
 
 fn stub_summary(plan_id: &str) -> PlanSummaryDto {
@@ -555,6 +546,16 @@ async fn put_source_invalid_body_returns_422_with_code_and_diagnostics() {
         diagnostics.map_or(false, |d| !d.is_empty()),
         "response must contain non-empty diagnostics: {payload}"
     );
+    assert_eq!(
+        payload["errors"],
+        serde_json::json!(["PLAN_TEST: stub validation error"]),
+        "errors must be an array of lines: {payload}"
+    );
+    assert_eq!(
+        payload["warnings"],
+        serde_json::json!([]),
+        "warnings must be an array: {payload}"
+    );
 }
 
 /// 2c. PUT source while an active run includes the plan returns 409.
@@ -716,6 +717,115 @@ async fn validate_invalid_plan_returns_200() {
     assert_eq!(
         payload["valid"], false,
         "valid must be false for invalid plan: {payload}"
+    );
+}
+
+/// 3d. POST validate with `{}` (what the portal sent) or `{"toml": null}`
+/// validates the file on disk, exactly like no body.
+#[tokio::test]
+async fn validate_body_without_toml_validates_the_file_on_disk() {
+    for body in ["{}", r#"{"toml":null}"#] {
+        let calls: Arc<Mutex<Vec<RecordedCall>>> = Arc::new(Mutex::new(Vec::new()));
+        let mut stub = StubAuthoringRuntime::builder()
+            .with_validate_result("my-plan", valid_dto())
+            .build();
+        stub.calls = Arc::clone(&calls);
+        let (_dir, state) = make_state(stub).await;
+
+        let response = build_app(state)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/plans/my-plan/validate")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body))
+                    .expect("build request"),
+            )
+            .await
+            .expect("send request");
+
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "{body} must validate the saved plan"
+        );
+        let payload = body_json(response).await;
+        assert_eq!(payload["valid"], true, "{body}: {payload}");
+        assert_eq!(
+            payload["errors"],
+            serde_json::json!([]),
+            "{body}: {payload}"
+        );
+        assert_eq!(
+            payload["warnings"],
+            serde_json::json!([]),
+            "{body}: {payload}"
+        );
+
+        let recorded = calls.lock().await;
+        let call = recorded
+            .iter()
+            .find(|c| c.method == "validate_plan_source")
+            .expect("validate_plan_source must be called");
+        assert_eq!(call.arg, None, "{body} must validate the file on disk");
+    }
+}
+
+/// 3e. `errors` and `warnings` are arrays of lines, not counts (contract ask
+/// P-3), and each diagnostic keeps its rule id and task id.
+#[tokio::test]
+async fn validate_lists_errors_and_warnings_as_arrays() {
+    let report = PlanValidationDto::from_diagnostics(vec![
+        PlanDiagnosticDto {
+            severity: "error".to_string(),
+            rule_id: "PLAN_005".to_string(),
+            task_id: Some("T01".to_string()),
+            message: "task 'T01' depends on unknown task 'T99'".to_string(),
+        },
+        PlanDiagnosticDto {
+            severity: "warning".to_string(),
+            rule_id: "PLAN_031".to_string(),
+            task_id: Some("T01".to_string()),
+            message: "task 'T01' reads 'docs/missing.md', which does not exist".to_string(),
+        },
+    ]);
+    let stub = StubAuthoringRuntime::builder()
+        .with_validate_result("my-plan", report)
+        .build();
+    let (_dir, state) = make_state(stub).await;
+
+    let response = build_app(state)
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/plans/my-plan/validate")
+                .body(Body::empty())
+                .expect("build request"),
+        )
+        .await
+        .expect("send request");
+
+    assert_eq!(response.status(), StatusCode::OK, "expected 200");
+    let payload = body_json(response).await;
+    assert_eq!(payload["valid"], false, "{payload}");
+    assert_eq!(
+        payload["errors"],
+        serde_json::json!(["PLAN_005: task 'T01' depends on unknown task 'T99'"]),
+        "{payload}"
+    );
+    assert_eq!(
+        payload["warnings"],
+        serde_json::json!(["PLAN_031: task 'T01' reads 'docs/missing.md', which does not exist"]),
+        "{payload}"
+    );
+    assert_eq!(
+        payload["diagnostics"][0]["rule_id"], "PLAN_005",
+        "{payload}"
+    );
+    assert_eq!(payload["diagnostics"][0]["task_id"], "T01", "{payload}");
+    assert_eq!(
+        payload["diagnostics"][1]["severity"], "warning",
+        "{payload}"
     );
 }
 

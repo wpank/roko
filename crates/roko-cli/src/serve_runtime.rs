@@ -1653,11 +1653,8 @@ fn plan_estimated_minutes(tasks_file: &crate::task_parser::TasksFile) -> Option<
 /// [`PlanValidationDto`].
 fn plan_source_report_to_dto(report: crate::plan_authoring::PlanSourceReport) -> PlanValidationDto {
     use crate::plan_validate::Severity;
-    PlanValidationDto {
-        valid: report.valid,
-        errors: report.errors,
-        warnings: report.warnings,
-        diagnostics: report
+    PlanValidationDto::from_diagnostics(
+        report
             .diagnostics
             .into_iter()
             .map(|d| PlanDiagnosticDto {
@@ -1670,7 +1667,7 @@ fn plan_source_report_to_dto(report: crate::plan_authoring::PlanSourceReport) ->
                 message: d.message,
             })
             .collect(),
-    }
+    )
 }
 
 #[cfg(test)]

@@ -218,6 +218,7 @@ pub mod worker;
 pub mod workspace_lock;
 pub mod workspace_paths;
 
+pub mod serve_client;
 pub mod serve_runtime;
 pub mod state_hub_ipc;
 

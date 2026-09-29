@@ -45,7 +45,7 @@ pub use delivery::{
 pub use event_log::{EventTap, RunEventLog, Tapped};
 pub use feedback::{CompletionSinkResult, build_settler};
 pub use identity_map::{GraphIdentityMap, NodeIdentity};
-pub use plan_runner::{GraphPlanRunParams, run_graph_plan};
+pub use plan_runner::{GraphPlanRunParams, compute_plan_run_order, run_graph_plan};
 pub use plan_set::{PlanSetOrder, plan_set_order};
 pub use runtime_event_adapter::GraphRuntimeEventAdapter;
 pub use view_state::{

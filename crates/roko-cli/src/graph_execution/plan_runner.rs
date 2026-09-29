@@ -4,6 +4,7 @@
 //! from the binary-side `cmd_plan_run_engine` so that `serve_runtime` and
 //! other library callers can invoke it without depending on the binary crate.
 
+use std::collections::HashMap;
 use std::io::IsTerminal as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -585,6 +586,49 @@ fn preflight_provider_for_model(
 
 // ── Public API ────────────────────────────────────────────────────────────
 
+/// Filter `plans` to those listed in `only`. Returns an error for any id in
+/// `only` that does not exist in `plans`. When `only` is `None`, all plans
+/// are returned unchanged.
+fn filter_only_plans(
+    mut plans: Vec<crate::runner::plan_loader::Plan>,
+    only: Option<&[String]>,
+    plans_dir: &Path,
+) -> anyhow::Result<Vec<crate::runner::plan_loader::Plan>> {
+    let Some(only) = only else {
+        return Ok(plans);
+    };
+    let mut filtered = Vec::with_capacity(only.len());
+    for id in only {
+        let pos = plans.iter().position(|p| p.id == *id).ok_or_else(|| {
+            anyhow!(
+                "plan '{id}' not found in {}; available: {}",
+                plans_dir.display(),
+                plans.iter().map(|p| p.id.as_str()).collect::<Vec<_>>().join(", ")
+            )
+        })?;
+        filtered.push(plans.remove(pos));
+    }
+    Ok(filtered)
+}
+
+/// Return the ordered list of plan ids for `plans_dir`, optionally filtered
+/// to `only_plans`.
+///
+/// Ids in `only_plans` that are not found in the directory produce an error;
+/// `None` means "all discovered plans in topological order". This is the same
+/// ordering the run uses — callers may use it to build a plan-set member list
+/// before the run starts.
+pub fn compute_plan_run_order(
+    workdir: &Path,
+    plans_dir: &Path,
+    only_plans: Option<&[String]>,
+) -> anyhow::Result<Vec<String>> {
+    let plans = crate::runner::plan_loader::load_plans(plans_dir)?;
+    let plans = filter_only_plans(plans, only_plans, plans_dir)?;
+    let plan_order = super::plan_set::plan_set_order(workdir, plans_dir, &plans)?;
+    Ok(plan_order.order)
+}
+
 /// Parameters for running plans through the Graph Engine.
 ///
 /// Mirrors the arguments of the binary-side `cmd_plan_run_engine`, but
@@ -632,6 +676,10 @@ pub struct GraphPlanRunParams {
     /// running finish; the rest end blocked. `false` keeps running every
     /// plan whose prerequisites succeeded.
     pub fail_fast: bool,
+    /// Restrict execution to these plan ids; `None` means run the whole
+    /// discovered set. Any id listed here that is not present in `plans_dir`
+    /// causes an immediate error.
+    pub only_plans: Option<Vec<String>>,
 }
 
 /// Execute plans via the Graph Engine path.
@@ -641,12 +689,78 @@ pub struct GraphPlanRunParams {
 /// `roko_graph::topology::ProductionPlanTopology` (when `rich_topology` is
 /// true), and runs them through the GraphEngine with the default cell registry.
 pub async fn run_graph_plan(params: GraphPlanRunParams) -> anyhow::Result<i32> {
-    use roko_graph::cells::TaskDispatcher;
-
-    // `--log-file`: run under a JSONL recorder of this run's hub events.
+    // `--log-file`: delegates entirely to `event_log::run_recorded`, which is
+    // responsible for publishing its own terminal events.
     if params.log_file.is_some() {
         return super::event_log::run_recorded(params).await;
     }
+
+    // Resolve the hub early so `DashboardEvent::RunCompleted` is published on
+    // every exit path, including the early `?` returns in the body (plan load,
+    // config validation, provider preflight, extension start-up, checkpoint).
+    let hub_sender = params
+        .state_hub
+        .as_ref()
+        .map(|hub| hub.sender())
+        .unwrap_or_else(|| crate::state_hub::shared_state_hub().sender());
+
+    // Ensure a consistent interrupt handle: if the caller passed None, create
+    // one now and put it back so the body and this wrapper share the same
+    // Arc<AtomicU8>.  Clone *after* the insert so both ends observe the same
+    // stop flag.
+    let mut params = params;
+    if params.interrupt.is_none() {
+        params.interrupt = Some(PlanRunInterruptHandle::default());
+    }
+    let interrupt_handle = params
+        .interrupt
+        .as_ref()
+        .expect("interrupt handle was just set")
+        .clone();
+    let run_start = Instant::now();
+
+    let result = run_graph_plan_body(params).await;
+
+    let outcome = graph_run_outcome(&result, &interrupt_handle);
+    hub_sender.publish(roko_core::DashboardEvent::RunCompleted {
+        outcome: outcome.to_string(),
+        duration_ms: run_start.elapsed().as_millis() as u64,
+        cleanup_degraded: false,
+        surviving_agent_ids: vec![],
+        surviving_agent_pids: vec![],
+    });
+
+    result
+}
+
+/// Map the run result to an outcome label for `DashboardEvent::RunCompleted`.
+///
+/// - `"succeeded"`: exit code `EXIT_SUCCESS`.
+/// - `"cancelled"`: a stop request whose exit code matches the returned code
+///   (TUI cancel routes through the same handle via `PlanRunInterrupt`).
+/// - `"failed"`: any `Err` and every other non-zero exit code.
+fn graph_run_outcome(
+    result: &anyhow::Result<i32>,
+    interrupt: &PlanRunInterruptHandle,
+) -> &'static str {
+    match result {
+        Ok(code) if *code == EXIT_SUCCESS => "succeeded",
+        Ok(code) => {
+            if interrupt
+                .requested()
+                .is_some_and(|req| req.exit_code() == *code)
+            {
+                "cancelled"
+            } else {
+                "failed"
+            }
+        }
+        Err(_) => "failed",
+    }
+}
+
+async fn run_graph_plan_body(params: GraphPlanRunParams) -> anyhow::Result<i32> {
+    use roko_graph::cells::TaskDispatcher;
 
     let GraphPlanRunParams {
         plans_dir,
@@ -670,6 +784,7 @@ pub async fn run_graph_plan(params: GraphPlanRunParams) -> anyhow::Result<i32> {
         interrupt,
         max_parallel_plans,
         fail_fast,
+        only_plans,
     } = params;
     let interrupt = interrupt.unwrap_or_default();
     // FAST lane (`./dev.sh fast`): stop the run when its deadline elapses.
@@ -682,6 +797,9 @@ pub async fn run_graph_plan(params: GraphPlanRunParams) -> anyhow::Result<i32> {
 
     let run_start = std::time::Instant::now();
     let plans = crate::runner::plan_loader::load_plans(plans_dir)?;
+    // Apply only_plans filter: keep exactly the named ids, in name order, and
+    // fail immediately if any listed id does not exist in the directory.
+    let plans = filter_only_plans(plans, only_plans.as_deref(), plans_dir)?;
     // Validate the complete selected set before initializing extensions or
     // launching a provider. This makes missing, incomplete, and cyclic
     // cross-plan dependencies fail closed without partially executing the
@@ -1933,10 +2051,14 @@ async fn run_one_plan(
             if plan_task_count == 1 { "" } else { "s" },
         ),
     );
-    // Pre-populate the TUI plan tree with all nodes.
-    for (task_id, info) in &tasks {
-        graph_tui_bridge.node_started(&plan.id, task_id, &info.title);
-    }
+    // Build the node→title lookup once so the status-polling loop can emit
+    // accurate TaskStarted/TaskCompleted deltas without iterating all tasks
+    // on every tick. Only IDs present in this map are real tasks; the rich
+    // topology adds helper nodes that must be ignored.
+    let node_titles = crate::runner::graph_tui_bridge::build_node_title_map(&tasks);
+    // Tracks the status snapshot from the previous polling tick so the bridge
+    // can emit a diff (started / completed) rather than a full replay.
+    let mut previous_statuses: HashMap<String, roko_graph::engine::NodeStatus> = HashMap::new();
 
     // P2-TUI-3: Use engine.start() instead of engine.execute() so we can
     // watch for stop requests and operator cancels while the graph runs.
@@ -1998,6 +2120,15 @@ async fn run_one_plan(
             was_cancelled_by_tui = true;
         }
         tokio::time::sleep(PLAN_WATCH_INTERVAL).await;
+        // Emit incremental TaskStarted/TaskCompleted events for any node whose
+        // status changed since the last tick. Filter to real tasks only (the
+        // rich topology adds helper nodes absent from `node_titles`).
+        let current_statuses: HashMap<String, roko_graph::engine::NodeStatus> =
+            flow_handle.status().node_statuses.into_iter()
+                .filter(|(id, _)| node_titles.contains_key(id))
+                .collect();
+        graph_tui_bridge.poll_status_changes(&plan.id, &previous_statuses, &current_statuses, &node_titles);
+        previous_statuses = current_statuses;
     }
 
     // Collect the final result from the background task.
@@ -2041,14 +2172,18 @@ async fn run_one_plan(
     let budget = ctx.graph_task_dispatcher.plan_budget_snapshot(&plan.id);
     let execution_succeeded = output.success && !budget.dispatch_blocked && !was_cancelled_by_tui;
 
-    // ── Graph TUI bridge: emit per-node completions + PlanCompleted ──
-    crate::runner::graph_tui_bridge::emit_plan_lifecycle(
-        graph_tui_bridge,
-        &plan.id,
-        plan_task_count,
-        &output,
-        execution_succeeded,
-    );
+    // ── Graph TUI bridge: final status diff + PlanCompleted ──
+    // Emit any transitions (Running→Complete/Failed/Skipped, or
+    // Pending→Running for tasks that started and finished between ticks)
+    // that the polling loop did not yet publish, then close the plan.
+    let final_statuses: HashMap<String, roko_graph::engine::NodeStatus> = output
+        .node_results
+        .iter()
+        .filter(|r| node_titles.contains_key(&r.node_id))
+        .map(|r| (r.node_id.clone(), r.status))
+        .collect();
+    graph_tui_bridge.poll_status_changes(&plan.id, &previous_statuses, &final_statuses, &node_titles);
+    graph_tui_bridge.plan_completed(&plan.id, execution_succeeded);
 
     if !ctx.quiet && !ctx.json {
         if was_cancelled_by_tui {
@@ -2235,6 +2370,7 @@ files = ["README.md"]
             interrupt: None,
             max_parallel_plans: None,
             fail_fast: false,
+            only_plans: None,
         })
         .await
         .expect("run plan set");
@@ -2328,6 +2464,7 @@ depends_on_plan = [{depends_on_plan}]
             interrupt,
             max_parallel_plans,
             fail_fast: false,
+            only_plans: None,
         })
         .await
         .expect("run plan set");

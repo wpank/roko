@@ -233,10 +233,13 @@ stop_server() {
 }
 
 # start_capture [NAME]: stream GET /api/events into $WS/NAME (default events.sse).
+# Uses ?n=9999999999 so the server skips all historical replay and only streams
+# events generated after this connection — prevents stale events from previous
+# runs contaminating per-run assertions (e.g. "exactly one plan_started").
 start_capture() {
     stop_capture
     SSE_FILE="$WS/${1:-events.sse}"
-    curl -sN "http://127.0.0.1:$PORT/api/events" >"$SSE_FILE" 2>/dev/null &
+    curl -sN "http://127.0.0.1:$PORT/api/events?n=9999999999" >"$SSE_FILE" 2>/dev/null &
     CAPTURE_PID=$!
     sleep 1
 }

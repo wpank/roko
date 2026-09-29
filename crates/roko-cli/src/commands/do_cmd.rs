@@ -844,6 +844,7 @@ pub(crate) async fn run_plan_execution(
         interrupt: Some(interrupt),
         max_parallel_plans: None,
         fail_fast: false,
+        only_plans: None,
     })
     .await
 }

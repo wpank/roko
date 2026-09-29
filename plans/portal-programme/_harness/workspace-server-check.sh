@@ -95,6 +95,8 @@ wait_idle live-a 90 || true
 stop_capture
 check "executing a completed plan again succeeds" sse has plan_completed plan_id=live-a success=true
 check "a plain execute runs the plan fresh" fresh_ran_agents
+check "an execute publishes exactly one plan_started" sse count plan_started plan_id=live-a --eq 1
+check "that plan_started carries the plan's task count" sse has plan_started plan_id=live-a tasks_total=2
 
 # ── One run per workspace; cancel through a member plan really cancels ─────
 start_capture events-cancel.sse

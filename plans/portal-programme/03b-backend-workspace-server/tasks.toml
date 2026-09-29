@@ -326,6 +326,19 @@ a clone into its spawned task, and races `runtime.run_plan(..)` against
   4. In `cancel_plan` and `pause_plan`, keep grace-then-abort as the last resort, but
      publish `PlanCompleted` from the handler only when it actually had to abort the
      task. Today a cancelled run publishes plan_completed twice.
+  5. Stop publishing `ServerEvent::PlanStarted` from the handler. Every execute now
+     emits two plan_started events:
+     - the run's own, with `tasks_total`, published into the server hub (e2);
+     - the handler's copy, which the bus-to-hub bridge (`server_event_to_dashboard`
+       in `crates/roko-serve/src/lib.rs`) turns into a bogus one with
+       `tasks_total: 0`.
+     The hub-to-bus bridge (`dashboard_event_to_server`) already forwards the run's
+     event to WebSocket clients. Leave both bridge mappings alone; other producers
+     use them.
+
+Add a unit test beside the handlers, `execute_leaves_plan_started_to_the_run`: after
+an execute with the module's `RecordingRuntime`, the event bus has carried no
+`ServerEvent::PlanStarted` for that plan.
 
 Leave `resume_plan` to T17, which makes it share this handler's path.
 """
@@ -342,12 +355,14 @@ files = ["crates/roko-serve/src/routes/plans.rs"]
 [task.context]
 read_files = [
     { path = "crates/roko-serve/src/routes/plans.rs", why = "execute_plan's select race, and the cancel and pause handlers" },
+    { path = "crates/roko-serve/src/lib.rs", why = "server_event_to_dashboard, which turns the handler's PlanStarted into a second plan_started", symbols = ["server_event_to_dashboard"] },
     { path = "crates/roko-serve/src/runtime.rs", why = "run_plan_with_options and PlanRunOptions" },
     { path = "crates/roko-serve/src/extract.rs", why = "how optional JSON bodies are extracted and validated" },
 ]
 anti_patterns = [
     "Do not keep racing the run against the token; the run observes the token itself now.",
     "Do not publish plan_completed twice for one run.",
+    "Do not publish plan_started from the handler; the run publishes its own.",
     "Do not make a body mandatory; the portal's run button sends none.",
 ]
 
@@ -359,7 +374,7 @@ timeout_ms = 2700000
 
 [[task.verify]]
 phase = "structural"
-command = "grep -q 'run_plan_with_options' crates/roko-serve/src/routes/plans.rs && grep -q 'force_resume' crates/roko-serve/src/routes/plans.rs"
+command = "grep -q 'run_plan_with_options' crates/roko-serve/src/routes/plans.rs && grep -q 'force_resume' crates/roko-serve/src/routes/plans.rs && grep -q 'fn execute_leaves_plan_started_to_the_run' crates/roko-serve/src/routes/plans.rs"
 fail_msg = "the execute handler does not pass its cancel token and resume option to the run"
 
 [[task]]
@@ -1042,7 +1057,9 @@ Run the acceptance check and record the result in
        - dashboard, plan list and plan validate work beside the server;
        - `roko plan run` submits to the server and its events reach the server's
          stream;
-       - a resumed, unchanged plan dispatches no agent;
+       - a resumed, unchanged plan dispatches no agent, and a plain execute of a
+         completed plan runs it fresh (agents dispatched), with exactly one
+         plan_started carrying the real `tasks_total`;
        - one run at a time is enforced (409);
        - cancel through a member plan id stops the agent process, and run_completed
          reports "cancelled";

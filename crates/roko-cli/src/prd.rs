@@ -1173,6 +1173,7 @@ async fn run_generated_plans(workdir: &Path, plans_root: &Path) -> Result<()> {
             interrupt: None,
             max_parallel_plans: None,
             fail_fast: false,
+            only_plans: None,
         })
         .await?;
     if exit_code != crate::exit_codes::EXIT_SUCCESS {

@@ -234,6 +234,12 @@ pub struct PlanHandle {
     pub id: String,
     /// Directory containing the plan files.
     pub plan_dir: PathBuf,
+    /// The plan ids this run executes, in order.
+    ///
+    /// Single-plan executions contain exactly one entry (`[plan_id]`).
+    /// Multi-plan executions (future) would list every member plan id so that
+    /// `active_run_for` can resolve the entry from any member's id.
+    pub members: Vec<String>,
     /// Current execution status.
     pub status: OperationStatus,
     /// Background task driving the plan runner.

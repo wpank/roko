@@ -16,6 +16,10 @@ real plan run completes in seconds at no cost.
   * Every other prompt is a task: `SLOW <n>` sleeps n seconds first, then each
     `ARTIFACT <path>` named in the prompt is written (a `.rs` path gets a
     hello-world program).
+  * Live mode, on when `.roko/fake-claude-live` exists in the working
+    directory: a task first streams a text block and one Write tool call per
+    artifact, as the real CLI does, before any SLOW wait; after writing it
+    streams the tool results. Checks use it to see output arrive mid-task.
 
 Every call reports provider usage, so dashboards see non-zero tokens and cost.
 Each call is appended to `.roko/fake-claude.log` in the working directory.
@@ -148,10 +152,18 @@ fail_msg = "the program did not print hello world"
     emit("```toml\n" + plan + "```\n")
     sys.exit(0)
 
+artifacts = list(dict.fromkeys(re.findall(r"ARTIFACT ([\w./-]+)", prompt)))
+live = os.path.exists(os.path.join(".roko", "fake-claude-live"))
+if live:
+    blocks = [{"type": "text", "text": "Working on " + ", ".join(artifacts) + "."}]
+    blocks += [{"type": "tool_use", "id": f"toolu_{i}", "name": "Write",
+                "input": {"file_path": path, "content": "(fixture)"}}
+               for i, path in enumerate(artifacts, 1)]
+    print(json.dumps({"type": "assistant", "message": {"content": blocks}}))
+    sys.stdout.flush()
 slow = re.search(r"SLOW (\d+)", prompt)
 if slow:
     time.sleep(int(slow.group(1)))
-artifacts = list(dict.fromkeys(re.findall(r"ARTIFACT ([\w./-]+)", prompt)))
 for path in artifacts:
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     with open(path, "w") as fh:
@@ -159,5 +171,10 @@ for path in artifacts:
             fh.write('fn main() {\n    println!("hello world");\n}\n')
         else:
             fh.write(path + "\n")
+if live:
+    results = [{"type": "tool_result", "tool_use_id": f"toolu_{i}", "content": f"wrote {path}"}
+               for i, path in enumerate(artifacts, 1)]
+    print(json.dumps({"type": "user", "message": {"content": results}}))
+    sys.stdout.flush()
 log("task", " ".join(artifacts))
 emit("Wrote the requested artifacts.")

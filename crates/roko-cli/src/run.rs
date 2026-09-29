@@ -456,6 +456,7 @@ pub async fn run_prompt(run: PromptRun<'_>) -> Result<WorkflowRunReport> {
         interrupt: Some(interrupt),
         max_parallel_plans: None,
         fail_fast: false,
+        only_plans: None,
     })
     .await?;
     let duration = started.elapsed();

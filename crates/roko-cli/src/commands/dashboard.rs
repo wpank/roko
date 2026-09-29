@@ -14,9 +14,10 @@ pub(crate) async fn cmd_dashboard(
     let workdir = workdir.unwrap_or_else(|| resolve_workdir(cli));
     prepare_runtime_hooks(&workdir, cli.quiet);
 
-    // Acquire a shared lock so the read-only TUI can coexist with other
-    // readers but will fail if an exclusive writer holds the lock.
-    let _lock = roko_cli::workspace_lock::acquire_workspace_lock_shared(&workdir.join(".roko"))?;
+    // Skip the shared lock when a server owns the workspace (it is the only
+    // writer and operates atomically); otherwise take the shared lock as usual.
+    let _lock = roko_cli::serve_client::read_lock_unless_served(&workdir)?;
+    let server_owns = _lock.is_none();
 
     let initial_page = page.as_deref().map(|page| {
         parse_dashboard_page(page).ok_or_else(|| {
@@ -29,9 +30,24 @@ pub(crate) async fn cmd_dashboard(
     let initial_page = initial_page.transpose()?;
 
     if !text && !list_pages && std::io::stdout().is_terminal() {
+        // Resolve which hub to connect the TUI to:
+        //   1. Caller-provided hub (e.g. from `roko plan run` in the same process).
+        //   2. IPC mirror when a live `roko serve` owns the workspace and no
+        //      caller hub was supplied — this lets `roko dashboard` show the
+        //      server's live runs without being blocked by the exclusive lock.
+        //   3. No hub → static file-polling TUI.
+        let ipc_hub: Option<roko_cli::state_hub::SharedStateHub> =
+            if state_hub.is_none() && server_owns {
+                roko_cli::state_hub_ipc::try_connect_hub_ipc(&workdir).await
+            } else {
+                None
+            };
+
+        let effective_hub = state_hub.as_ref().or(ipc_hub.as_ref());
+
         // Use the Mori-style interactive TUI with 60fps event loop.
-        let mut app = if let Some(state_hub) = state_hub.as_ref() {
-            App::new_connected_with_page(&workdir, initial_page, state_hub)
+        let mut app = if let Some(hub) = effective_hub {
+            App::new_connected_with_page(&workdir, initial_page, hub)
         } else {
             App::new_with_page(&workdir, initial_page)
         };

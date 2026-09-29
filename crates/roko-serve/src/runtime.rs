@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::bench::BenchConfigOverrides;
 use crate::plan_types::{PlanSummaryDto, PlanTasksDto};
+use roko_runtime::cancel::CancelToken;
 
 /// Token usage reported by an LLM provider.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -70,6 +71,43 @@ pub struct PlanExecutionResult {
     pub output_text: Option<String>,
     /// Structured gate results when the runtime can provide them.
     pub gate_results: Vec<RuntimeGateResult>,
+}
+
+/// Options forwarded to a plan execution initiated through the HTTP API.
+///
+/// All fields are optional; the default leaves every choice to the runtime,
+/// mirroring a plain `roko plan run` invocation with no flags.
+#[derive(Debug, Clone, Default)]
+pub struct PlanRunOptions {
+    /// Cancellation token observed by the executor.
+    ///
+    /// When `Some`, the runtime must poll or `select!` this token and abort
+    /// the run when it fires, so that `POST /api/plans/{id}/cancel` can reach
+    /// a run that executes inside `spawn_blocking` or a detached task.
+    pub cancel: Option<CancelToken>,
+
+    /// Start the plan from scratch, discarding any existing checkpoint.
+    ///
+    /// Mirrors the `--fresh` flag of `roko plan run`.
+    pub fresh: bool,
+
+    /// Resume from the last checkpoint even when a run is not currently
+    /// paused, overriding the default "run only pending tasks" logic.
+    ///
+    /// Mirrors the `--force-resume` flag of `roko plan run`.
+    pub force_resume: bool,
+
+    /// Restrict a plan-set directory to these plan ids; others are skipped.
+    ///
+    /// `None` means run all plans discovered under the target.
+    pub only_plans: Option<Vec<String>>,
+
+    /// Maximum number of independent plans in a plan-set that may execute
+    /// concurrently.
+    ///
+    /// `None` defers to the workspace `[conductor] max_parallel_plans` setting,
+    /// matching the default behaviour of `roko plan run`.
+    pub max_parallel_plans: Option<usize>,
 }
 
 /// Summary info for a configured repository, used to give agents
@@ -309,6 +347,42 @@ pub trait CliRuntime: Send + Sync + 'static {
             output_text: result.output_text,
             gate_results: Vec::new(),
         })
+    }
+
+    /// Execute a plan target with caller-supplied options.
+    ///
+    /// Implementations should honour `options.cancel` so that the HTTP
+    /// cancel handler can interrupt a run that lives inside `spawn_blocking`
+    /// or a detached task — dropping the future of `run_plan` is not enough
+    /// when the executor does not observe the token.
+    ///
+    /// The default ignores every option and delegates to `run_plan`, keeping
+    /// every existing runtime (including test stubs) compilable without changes.
+    async fn run_plan_with_options(
+        &self,
+        workdir: &std::path::Path,
+        plan_target: &std::path::Path,
+        _options: PlanRunOptions,
+    ) -> anyhow::Result<PlanExecutionResult> {
+        self.run_plan(workdir, plan_target).await
+    }
+
+    /// Return the ordered list of plan ids that would be executed for
+    /// `plan_target`, respecting `only_plans` when provided.
+    ///
+    /// Callers use this to populate `PlanHandle::members` before a run starts,
+    /// so that cancel / pause / status can resolve a plan-set member id to its
+    /// active run key.
+    ///
+    /// The default bails so that callers can detect unsupported runtimes and
+    /// fall back gracefully (e.g. treat the target itself as the only member).
+    async fn plan_run_order(
+        &self,
+        _workdir: &std::path::Path,
+        _plan_target: &std::path::Path,
+        _only_plans: Option<Vec<String>>,
+    ) -> anyhow::Result<Vec<String>> {
+        anyhow::bail!("runtime does not support plan run order")
     }
 
     /// Execute the graph attached to a trigger firing.

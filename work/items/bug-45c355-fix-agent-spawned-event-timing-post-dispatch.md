@@ -2,7 +2,7 @@
 id = "bug-45c355"
 kind = "bug"
 title = "Fix Agent Spawned Event Timing (Post-Dispatch)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "visibility"
@@ -14,6 +14,12 @@ source = "tmp/backlog/archive/378-fix-agent-spawned-event-timing.md#378 — Fix 
 discovered_from = "audit:tmp/backlog/archive/378-fix-agent-spawned-event-timing.md#378 — Fix Agent Spawned Event Timing (Post-Dispatch)"
 anchors = ["crates/roko-cli/src/graph_task_dispatch.rs::forward_dispatch_events_to_tui", "crates/roko-cli/src/graph_task_dispatch.rs:3750"]
 links = { depends_on = [], blocks = [], related = ["bug-70fd41"], supersedes = [], duplicate_of = "" }
+
+[closed]
+at = 2026-09-28
+by = "plan:portal-programme/03-backend-live-events#T04"
+run_id = "graph-03-backend-live-events-0ea932f0-fc26-479a-92e0-90c2cb2648a3"
+evidence = "PASS the agent is visible while it works (heartbeat between spawn and completion) — LIVE-EVENTS-CHECK: PASS (12 checks)"
 +++
 TUI shows agent as spawned only after it finishes. The running-audit claimed this was fixed (event emitted pre-dispatch), but verification shows it's still emitted AFTER dispatch completes. `forward_dispatch_events_to_tui()` is called at line 1951 after `run_shared_agent_bridge()` returns at line…
 

@@ -12,6 +12,8 @@ Merges on 2026-09-29 changed scheduling (`bbf6517fc`), retry budgets (`99adacd6d
 
 Figure 3: The status matrix at `a17d4dadd`: mechanisms per status.
 
+<!-- gap-d1d92c generates this as figures/fig3-status-matrix.svg; the image include then replaces the text diagram. -->
+
 ```text
 WIRED          21  #####################
 PARTIAL        23  #######################
@@ -56,18 +58,22 @@ None of the ten vision claims is fully met:
 ## 9.3 Roadmap
 
 After the release blockers (spec-ae5f94), four goals follow in order, each epic ending in an executable exit check.
+Epic numbers match §4.12.
 
-1. **Truth:** honest verdicts (spec-e9d7ec), secrets and the git guard (spec-ba7bea), and one settled record per
-   attempt (spec-b7303f). Exit: fixture tests show honest verdicts everywhere, no leaked keys, and one record per
-   attempt with its verdict, executed model and cost source.
-2. **Golden path:** the tier ladder (spec-98f76d), integration (spec-a0e40a), the scheduler (spec-a78d57), specs a
-   cheap model can execute (spec-e57870), the attempt diff check (spec-9230a9) and supervision (spec-edda86). Exit
-   (spec-f09094): a fixture plan runs on real cheap models, escalates on failure, merges as a branch and passes
-   formatting, lint and test checks unattended, three runs out of three.
-3. **Proof:** the pilot of §8 (spec-567e52) and a record of the work itself (spec-f2463d). Exit: a committed pilot
-   report, and a rollup of cost per merged item.
-4. **Cybernetic core** (spec-6ac537): routing that learns from verified failures and a frozen-learning mode, then the
-   audits, self-model and controller of §5. Exit: tests for router labels, playbook credit and frozen runs.
+1. **Truth:** E2 honest verdicts (spec-e9d7ec), E3 secrets and the git guard (spec-ba7bea), and E4 one settled
+   record per attempt (spec-b7303f). Exit: fixture tests show honest verdicts everywhere, no leaked keys, and one
+   record per attempt with its verdict, executed model and cost source.
+2. **Golden path:** E5 tier ladder (spec-98f76d), E6 integration (spec-a0e40a), E7 scheduler (spec-a78d57), E8 specs
+   a cheap model can execute (spec-e57870), E9 diff check (spec-9230a9) and E10 watchdog (spec-edda86). Exit (E11
+   acceptance tests, spec-f09094): a fixture plan runs on real cheap models, escalates on failure, merges as a branch
+   and passes formatting, lint and test checks unattended, three runs out of three.
+3. **Proof:** E12, the pilot of §8 (spec-567e52), and E13, a record of the work itself (spec-f2463d). Exit: a
+   committed pilot report, and a rollup of cost per merged item.
+4. **Cybernetic core** (E17, spec-6ac537): routing that learns from verified failures and a frozen-learning mode,
+   then the audits, self-model and controller of §5. Exit: tests for router labels, playbook credit and frozen runs.
+
+Four matrix rows call for work that has no item yet: split or replan on failure (EX8), an OS sandbox after v1 (IS6),
+calibrating output screening (SS3), and choosing gates by task domain (DM2).
 
 ## 9.4 Proposed parking
 

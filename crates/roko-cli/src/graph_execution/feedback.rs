@@ -347,10 +347,12 @@ struct EfficiencySummary {
 
 /// Updates the cascade router with the routing outcome.
 ///
-/// For normal (router-selected) outcomes, records via `record_confidence_outcome`
-/// so the bandit signal stays accurate. For manual overrides (`force_backend`),
-/// records via the dampened `record_override_outcome` path so the router learns
-/// from overrides without polluting the primary bandit signal.
+/// For normal (router-selected) outcomes, successes and failures update the
+/// same learners, the confidence counters and `LinUCB` (a failure with reward
+/// 0), exactly as [`crate::runtime_feedback::RoutingObservationSink`] does.
+/// For manual overrides (`force_backend`), records via the dampened
+/// `record_override_outcome` path so the router learns from overrides without
+/// polluting the primary bandit signal.
 /// Skipped only when no router is available.
 #[derive(Debug)]
 struct RoutingSink {
@@ -384,9 +386,22 @@ impl SettlementSink for RoutingSink {
                 receipt.succeeded(),
             );
         } else {
-            // Router-selected or experiment: record via the binary confidence
-            // path so trial/success counters stay accurate.
-            router.record_confidence_outcome(&receipt.resolved_model, receipt.succeeded());
+            // Router-selected or experiment: successes and failures feed the
+            // same learners (bug-8da8ba). The receipt carries no dispatch-time
+            // routing context, so LinUCB sees the fallback context.
+            // bug-c34782 plugs in here: `succeeded()` still counts provider
+            // failures and cancellations (`terminal_status`) as model failures.
+            let ctx = crate::runtime_feedback::routing::build_fallback_routing_context(
+                &receipt.resolved_model,
+            );
+            crate::runtime_feedback::routing::observe_router_outcome(
+                router,
+                &receipt.resolved_model,
+                &ctx,
+                receipt.succeeded(),
+                receipt.cost_usd(),
+                receipt.duration_ms(),
+            );
         }
         Ok(())
     }
@@ -896,6 +911,43 @@ mod tests {
             cascade.total_observations() >= 1,
             "override outcome must advance the LinUCB observation counter via the dampened path"
         );
+    }
+
+    #[tokio::test]
+    async fn routing_settles_router_failure_into_linucb() {
+        // bug-8da8ba: a router-chosen failure updates the same learners as a
+        // success, the confidence counters and LinUCB.
+        let tmp = TempDir::new().unwrap();
+        let learn_dir = tmp.path().join("learn");
+        std::fs::create_dir_all(&learn_dir).unwrap();
+
+        let cascade = Arc::new(roko_learn::cascade_router::CascadeRouter::new(vec![
+            "claude-sonnet-4-6".into(),
+        ]));
+        let bundle = FeedbackBundle {
+            learn_dir: learn_dir.clone(),
+            health_registry: Arc::new(roko_learn::provider_health::ProviderHealthRegistry::new()),
+            cascade_router: Some(cascade.clone()),
+        };
+        let settler = build_settler(&bundle);
+        let mut failed = test_receipt();
+        failed.terminal_status = AttemptTerminalStatus::GateFailed;
+
+        let (_, ledger) = settler.settle(&failed, None).await;
+        assert_eq!(
+            ledger.entries["routing"].state,
+            SinkSettlementState::Settled
+        );
+        assert_eq!(cascade.confidence_snapshot()["claude-sonnet-4-6"], (1, 0));
+        assert_eq!(
+            cascade.total_observations(),
+            1,
+            "a router-chosen failure must reach LinUCB"
+        );
+
+        let _ = settler.settle(&test_receipt(), None).await;
+        assert_eq!(cascade.confidence_snapshot()["claude-sonnet-4-6"], (2, 1));
+        assert_eq!(cascade.total_observations(), 2);
     }
 
     #[tokio::test]

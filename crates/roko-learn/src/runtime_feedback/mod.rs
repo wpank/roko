@@ -204,23 +204,45 @@ fn replay_and_open_wal(
         tracing::info!(entries = entry_count, "[wal] replaying learning WAL");
     }
 
+    let folded = wal::folded_model_call_ids(&entries);
     for entry in &entries {
-        if let WalEntry::CascadeObservation {
-            model_slug,
-            context_features,
-            model_idx,
-            reward,
-            success,
-            ..
-        } = entry
-        {
-            cascade_router.replay_observation(
+        match entry {
+            WalEntry::CascadeObservation {
                 model_slug,
                 context_features,
-                *model_idx,
-                *reward,
-                *success,
-            );
+                model_idx,
+                reward,
+                success,
+                ..
+            } => {
+                cascade_router.replay_observation(
+                    model_slug,
+                    context_features,
+                    *model_idx,
+                    *reward,
+                    *success,
+                );
+            }
+            // A model-call surface journaled this observation, but no saved
+            // snapshot contains it (find-0dc1d5).
+            WalEntry::ModelCallObservation {
+                id,
+                model_slug,
+                context_features,
+                model_idx,
+                reward,
+                success,
+                ..
+            } if !folded.contains(id.as_str()) => {
+                cascade_router.replay_observation(
+                    model_slug,
+                    context_features,
+                    *model_idx,
+                    *reward,
+                    *success,
+                );
+            }
+            _ => {}
         }
     }
 

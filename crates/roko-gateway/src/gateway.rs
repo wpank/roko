@@ -513,18 +513,11 @@ impl InferenceGateway {
             .record_output(execution.session_id, response.usage.output_tokens);
         self.convergence_detector
             .record_response(execution.session_id, simhash(&response.text));
-        self.write_event(
-            execution.request_id,
-            request,
-            provider,
-            &response,
-            record.cost.actual_cost,
-            false,
-            None,
-        )?;
 
         // P0-11: record a richer multi-objective observation so the cascade
-        // router learns from gateway-level quality/cost/latency.
+        // router learns from gateway-level quality/cost/latency. This is the
+        // success's only router observation (bug-8da8ba), so it comes before
+        // the event write, which can fail.
         {
             let ctx = routing_context(&request.metadata);
             self.cascade_router.record_observation(
@@ -534,6 +527,16 @@ impl InferenceGateway {
                 true,
             );
         }
+
+        self.write_event(
+            execution.request_id,
+            request,
+            provider,
+            &response,
+            record.cost.actual_cost,
+            false,
+            None,
+        )?;
 
         self.finish_trace(execution.session_id, trace);
         self.counters
@@ -638,14 +641,25 @@ impl InferenceGateway {
                     .and_then(std::convert::identity);
             match result {
                 Ok(mut response) => {
-                    self.cascade_router.record_confidence_outcome(model, true);
+                    // The router observes this success once, with its cost and
+                    // latency, in `finalize_provider_response`.
                     response.model = model.clone();
                     response.fallback = attempt > 0;
                     response.original_model = (attempt > 0).then(|| original_model.to_string());
                     return Ok((response, provider.name().to_string()));
                 }
                 Err(error) => {
-                    self.cascade_router.record_confidence_outcome(model, false);
+                    // bug-8da8ba: a failed attempt updates the same learners
+                    // as a success (category and confidence counters, LinUCB)
+                    // with reward 0. bug-c34782 plugs in here if transport
+                    // failures (`ProviderFailureKind`) should stop counting as
+                    // model-quality evidence.
+                    self.cascade_router.record_observation(
+                        &routing_context(&request.metadata),
+                        model,
+                        0.0,
+                        false,
+                    );
                     let retryable = match &error {
                         GatewayError::Provider { kind, .. } => {
                             if *kind == ProviderFailureKind::RateLimited {
@@ -1120,6 +1134,44 @@ mod tests {
         assert_eq!(response.model, "fallback-two");
         assert_eq!(response.original_model.as_deref(), Some("primary"));
         assert_eq!(fallback_two.calls.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn gateway_failed_attempt_updates_linucb_like_a_success() {
+        // bug-8da8ba: the failed primary and the successful fallback each
+        // count once in the confidence counters and once in LinUCB.
+        let primary = ScriptedProvider::failure(
+            "primary-provider",
+            "primary",
+            ProviderFailureKind::RateLimited,
+        );
+        let fallback = ScriptedProvider::success("fallback-provider", "fallback", "fallback ok");
+        let router = Arc::new(CascadeRouter::new(vec![
+            "primary".into(),
+            "fallback".into(),
+        ]));
+        let mut config = GatewayConfig::new(
+            Arc::clone(&router),
+            vec![primary, fallback],
+            cost_table(),
+        );
+        config.max_fallbacks = 2;
+        let gateway = InferenceGateway::new(config);
+        gateway
+            .process_request(
+                request("primary", "learning-session"),
+                "agent",
+                &AtomicU64::new(1_000_000),
+            )
+            .await
+            .unwrap();
+
+        let confidence = router.confidence_snapshot();
+        assert_eq!(confidence.get("primary"), Some(&(1, 0)));
+        assert_eq!(confidence.get("fallback"), Some(&(1, 1)));
+        for arm in router.linucb().arm_stats() {
+            assert_eq!(arm.observations, 1, "{} needs one LinUCB update", arm.slug);
+        }
     }
 
     #[tokio::test]

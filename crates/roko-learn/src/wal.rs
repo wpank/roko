@@ -36,11 +36,23 @@
 //! | Variant | What it records |
 //! |---------|----------------|
 //! | `CascadeObservation` | One cascade router LinUCB arm update (model slug, context features, reward) |
+//! | `ModelCallObservation` | The same update, journaled by a model-call surface (see below) |
+//! | `ModelCallObservationsFolded` | Ids of model-call observations already in a snapshot |
 //! | `ExperimentOutcome` | One A/B prompt experiment trial (variant ID, success flag) |
 //! | `GateThresholdUpdate` | One gate rung EMA update (rung index, passed flag) |
 //!
 //! Each variant carries exactly the fields needed to replay the in-memory update,
 //! not a full snapshot. This keeps entries small (~100-400 bytes each).
+//!
+//! # Model-call observations
+//!
+//! Model-call surfaces (feedback Path B: chat, direct dispatch, ACP, the
+//! vision loop) load `cascade-router.json`, observe one call and save the
+//! snapshot again, so they cannot truncate a WAL that `LearningRuntime` may
+//! share. Each of their observations is journaled with an `id` before it is
+//! applied, and a `ModelCallObservationsFolded` marker names the ids once a
+//! saved snapshot contains them. Replay applies only the unfolded ones, so an
+//! observation is neither lost nor counted twice.
 //!
 //! # Crash Safety
 //!
@@ -53,6 +65,7 @@
 //! - If the WAL file is absent, `replay_wal` returns an empty `Vec` and
 //!   `WalWriter::open` creates it fresh.
 
+use std::collections::HashSet;
 use std::fs::{File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -79,6 +92,34 @@ pub enum WalEntry {
         reward: f64,
         /// Whether the task gated successfully.
         success: bool,
+        /// Unix timestamp in milliseconds.
+        ts_ms: i64,
+    },
+    /// A cascade router observation journaled by a model-call surface before
+    /// it was applied.
+    ///
+    /// Replay skips it once a [`WalEntry::ModelCallObservationsFolded`]
+    /// marker names its `id`.
+    ModelCallObservation {
+        /// Unique journal id, named by the fold marker.
+        id: String,
+        /// Model slug that was called.
+        model_slug: String,
+        /// Context feature vector applied to LinUCB.
+        context_features: Vec<f64>,
+        /// Index into the router's model slug list.
+        model_idx: usize,
+        /// Scalar reward applied to LinUCB.
+        reward: f64,
+        /// Whether the call counts as a success.
+        success: bool,
+        /// Unix timestamp in milliseconds.
+        ts_ms: i64,
+    },
+    /// The listed model-call observations are in a saved `cascade-router.json`.
+    ModelCallObservationsFolded {
+        /// Ids of the [`WalEntry::ModelCallObservation`] entries it contains.
+        ids: Vec<String>,
         /// Unix timestamp in milliseconds.
         ts_ms: i64,
     },
@@ -139,11 +180,7 @@ impl WalWriter {
     /// Append `entry` to the WAL, flushing to the OS page cache and
     /// syncing the data to durable storage before returning.
     pub fn append(&mut self, entry: &WalEntry) -> io::Result<()> {
-        let mut line = serde_json::to_string(entry)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-        line.push('\n');
-        self.file.write_all(line.as_bytes())?;
-        self.file.sync_data()?;
+        write_entry(&mut self.file, entry)?;
         self.entry_count += 1;
         Ok(())
     }
@@ -170,6 +207,42 @@ impl WalWriter {
         self.entry_count = 0;
         Ok(())
     }
+}
+
+/// Append one `entry` to the WAL at `path`, creating it if absent, and sync
+/// it to durable storage before returning.
+///
+/// For writers that journal an entry now and then: unlike
+/// [`WalWriter::open`], it does not count the existing entries first.
+pub fn append_entry(path: &Path, entry: &WalEntry) -> io::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut file = OpenOptions::new().create(true).append(true).open(path)?;
+    write_entry(&mut file, entry)
+}
+
+fn write_entry(file: &mut File, entry: &WalEntry) -> io::Result<()> {
+    let mut line =
+        serde_json::to_string(entry).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    line.push('\n');
+    file.write_all(line.as_bytes())?;
+    file.sync_data()
+}
+
+/// Ids of the model-call observations that a saved snapshot already contains.
+///
+/// Replay must skip these: applying them again would count them twice.
+pub fn folded_model_call_ids(entries: &[WalEntry]) -> HashSet<&str> {
+    entries
+        .iter()
+        .filter_map(|entry| match entry {
+            WalEntry::ModelCallObservationsFolded { ids, .. } => Some(ids),
+            _ => None,
+        })
+        .flatten()
+        .map(String::as_str)
+        .collect()
 }
 
 /// Read and deserialize all entries from `path`.
@@ -308,6 +381,42 @@ mod tests {
     }
 
     #[test]
+    fn append_entry_creates_the_wal_and_folds_by_id() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("learn").join("wal.jsonl");
+
+        for id in ["obs-1", "obs-2"] {
+            append_entry(
+                &path,
+                &WalEntry::ModelCallObservation {
+                    id: id.into(),
+                    model_slug: "model-a".into(),
+                    context_features: vec![0.0; 18],
+                    model_idx: 0,
+                    reward: 1.0,
+                    success: true,
+                    ts_ms: 1,
+                },
+            )
+            .unwrap();
+        }
+        append_entry(
+            &path,
+            &WalEntry::ModelCallObservationsFolded {
+                ids: vec!["obs-1".into()],
+                ts_ms: 2,
+            },
+        )
+        .unwrap();
+
+        let entries = replay_wal(&path).unwrap();
+        assert_eq!(entries.len(), 3);
+        let folded = folded_model_call_ids(&entries);
+        assert!(folded.contains("obs-1"));
+        assert!(!folded.contains("obs-2"));
+    }
+
+    #[test]
     fn replay_missing_file_returns_empty() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("nonexistent.jsonl");
@@ -335,6 +444,19 @@ mod tests {
                 rung: 5,
                 passed: true,
                 ts_ms: 300,
+            },
+            WalEntry::ModelCallObservation {
+                id: "obs-1".into(),
+                model_slug: "model-c".into(),
+                context_features: vec![0.0; 18],
+                model_idx: 2,
+                reward: 0.0,
+                success: false,
+                ts_ms: 400,
+            },
+            WalEntry::ModelCallObservationsFolded {
+                ids: vec!["obs-1".into()],
+                ts_ms: 500,
             },
         ];
         for entry in &entries {

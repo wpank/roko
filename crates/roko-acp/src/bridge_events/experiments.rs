@@ -10,6 +10,7 @@ use roko_core::agent::resolve_model;
 use roko_core::config::schema::RokoConfig;
 use roko_learn::{
     cascade_router::CascadeRouter,
+    model_call_feedback::ModelCallJournal,
     model_router::RoutingContext,
     prompt_experiment::{
         AssignmentSettlement, ExperimentStatus, ExperimentStore, PromptAttemptKey,
@@ -586,19 +587,23 @@ pub(crate) fn record_cascade_observation(
 
         let router = CascadeRouter::load_or_new(&router_path, model_slugs);
 
-        let Some(model_idx) = router.model_index_for_slug(&model_slug) else {
+        if router.model_index_for_slug(&model_slug).is_none() {
             debug!(
                 model = %model_slug,
                 "skipping cascade observation: model not in router arms"
             );
             return;
-        };
+        }
 
         let context_vec = routing_ctx.to_features();
         let reward = compute_acp_reward(success, wall_ms, output_tokens);
-        router.observe(context_vec, model_idx, reward);
+        // A failed dispatch is a trial without a success (bug-8da8ba). The
+        // journal makes the observation durable before it is applied, and
+        // `save` marks it as folded into the snapshot (find-0dc1d5).
+        let journal = ModelCallJournal::for_snapshot(&router_path);
+        journal.observe(&router, &model_slug, context_vec, reward, success);
 
-        if let Err(error) = router.save(&router_path) {
+        if let Err(error) = journal.save(&router) {
             warn!(
                 path = %router_path.display(),
                 error = %error,

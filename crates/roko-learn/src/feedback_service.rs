@@ -6,7 +6,7 @@
 use crate::cascade_router::CascadeRouter;
 use crate::efficiency::FEEDBACK_EVENT_SCHEMA;
 use crate::episode_logger::{Episode, EpisodeGateVerdict, EpisodeLogger, Usage};
-use crate::model_call_feedback::observe_model_call_on_router;
+use crate::model_call_feedback::{ModelCallJournal, observe_model_call_on_router};
 use crate::section_effect::SectionEffectivenessRegistry;
 use async_trait::async_trait;
 use chrono::Utc;
@@ -82,6 +82,8 @@ pub struct FeedbackService {
     episode_logger: Option<EpisodeLogger>,
     /// Optional cascade router for eager model-call reward observations.
     cascade_router: Option<Arc<CascadeRouter>>,
+    /// Optional WAL journal for those observations (find-0dc1d5).
+    cascade_journal: Option<Arc<ModelCallJournal>>,
     /// Model-call provenance waiting for a gate/workflow outcome.
     provenance: Mutex<HashMap<String, ProvenanceRecord>>,
     /// Durable score for each knowledge entry.
@@ -103,6 +105,7 @@ impl FeedbackService {
             buffer_capacity: 64,
             episode_logger: None,
             cascade_router: None,
+            cascade_journal: None,
             provenance: Mutex::new(HashMap::new()),
             knowledge_scores: Mutex::new(knowledge_scores),
             section_effectiveness: Mutex::new(section_effectiveness),
@@ -127,12 +130,24 @@ impl FeedbackService {
 
     /// Attach a cascade router for bandit reward observations.
     ///
-    /// On each `ModelCall` event, the service will call `router.observe()`
-    /// with a success/failure reward signal so the bandit can update its
-    /// model selection policy.
+    /// On each `ModelCall` event, the service records the call's outcome on
+    /// the router (a success with reward 1, or a failed trial with reward 0)
+    /// so the bandit can update its model selection policy.
     #[must_use]
     pub fn with_cascade_router(mut self, router: Arc<CascadeRouter>) -> Self {
         self.cascade_router = Some(router);
+        self
+    }
+
+    /// Journal the cascade router's model-call observations in the learning
+    /// WAL before applying them (find-0dc1d5).
+    ///
+    /// Whoever saves the router must save it through
+    /// [`ModelCallJournal::save`], which marks the journaled observations as
+    /// folded so a replay does not count them twice.
+    #[must_use]
+    pub fn with_cascade_journal(mut self, journal: Arc<ModelCallJournal>) -> Self {
+        self.cascade_journal = Some(journal);
         self
     }
 
@@ -696,7 +711,10 @@ impl FeedbackService {
             return;
         };
 
-        observe_model_call_on_router(router, model, role, success, latency_ms);
+        match &self.cascade_journal {
+            Some(journal) => journal.observe_model_call(router, model, role, success, latency_ms),
+            None => observe_model_call_on_router(router, model, role, success, latency_ms),
+        }
     }
 }
 
@@ -1101,6 +1119,39 @@ mod tests {
         .unwrap();
 
         assert_eq!(router.total_observations(), 1);
+    }
+
+    #[tokio::test]
+    async fn observes_failed_model_call_as_failed_trial() {
+        // bug-8da8ba: a failed call reaches LinUCB like a success does, and
+        // counts as a trial without a success.
+        let dir = tempfile::tempdir().unwrap();
+        let router = Arc::new(CascadeRouter::new(vec!["sonnet".into(), "opus".into()]));
+        let svc =
+            FeedbackService::new(dir.path().to_path_buf()).with_cascade_router(Arc::clone(&router));
+
+        svc.record(FeedbackEvent::ModelCall {
+            run_id: Some("r1".into()),
+            request_id: None,
+            prompt_section_ids: Vec::new(),
+            knowledge_ids: Vec::new(),
+            model: Some("sonnet".into()),
+            provider: None,
+            token_usage: None,
+            cost: None,
+            role: "implementer".into(),
+            input_tokens: 1000,
+            output_tokens: 500,
+            cost_usd: 0.01,
+            latency_ms: 2000,
+            success: false,
+            error_class: Some("timeout".into()),
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(router.total_observations(), 1);
+        assert_eq!(router.confidence_snapshot()["sonnet"], (1, 0));
     }
 
     #[tokio::test]

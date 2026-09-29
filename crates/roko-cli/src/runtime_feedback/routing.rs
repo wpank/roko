@@ -80,6 +80,10 @@ impl FeedbackSink for RoutingObservationSink {
             None => build_fallback_routing_context(&outcome.model),
         };
 
+        // bug-c34782 plugs in here: it replaces `succeeded` with the
+        // settled attempt verdict, so unverified, force-accepted and
+        // provider-failed attempts stop counting as quality evidence.
+
         // Audit #84: always record category-level stats (even for
         // overrides) so confidence_scores can adjust per-category.
         self.router
@@ -87,53 +91,70 @@ impl FeedbackSink for RoutingObservationSink {
 
         // Audit #90: manual overrides must not pollute the bandit signal.
         // Route them through the dampened `record_override_outcome` path
-        // instead of the full `observe_multi_objective` / confidence path.
+        // instead of the full router-outcome path.
         if *model_source == ModelChoiceSource::Override {
             self.router
                 .record_override_outcome(&outcome.model, &ctx, *succeeded, None);
             return Ok(());
         }
 
-        // If the slug isn't tracked yet, fall back to the binary
-        // outcome path so the trial counter still moves.
-        let Some(model_idx) = self.router.model_index_for_slug(&outcome.model) else {
-            self.router
-                .record_confidence_outcome(&outcome.model, *succeeded);
-            return Ok(());
-        };
-
-        if *succeeded {
-            // P0-05: Feed real cost from the agent outcome into the bandit.
-            // Normalize against a $1.00 per-task ceiling so the cost signal
-            // stays in [0, 1] for the LinUCB reward computation. Latency
-            // remains 0.0 until a SLA signal is available.
-            let normalized_cost = (outcome.cost_usd / 1.0).clamp(0.0, 1.0);
-            let normalized_latency = (outcome.duration_ms as f64 / 300_000.0).clamp(0.0, 1.0);
-            let weights = RewardWeights::default();
-            self.router.observe_multi_objective(
-                ctx.to_features(),
-                model_idx,
-                /* quality */ 1.0,
-                normalized_cost,
-                normalized_latency,
-                &weights,
-            );
-        } else {
-            // observe_multi_objective always counts as success — record
-            // failures via the binary path so the trial counter and
-            // failure rate stay accurate.
-            self.router.record_confidence_outcome(&outcome.model, false);
-        }
+        observe_router_outcome(
+            &self.router,
+            &outcome.model,
+            &ctx,
+            *succeeded,
+            outcome.cost_usd,
+            outcome.duration_ms,
+        );
         Ok(())
     }
+}
+
+/// Record the outcome of a router-chosen model.
+///
+/// Successes and failures update the same learners (bug-8da8ba): one
+/// confidence trial, a success only when `succeeded`, and one `LinUCB`
+/// observation. A success earns the multi-objective reward; a failure earns
+/// 0. A slug the router does not track falls back to the binary confidence
+/// path, which logs and drops it.
+pub(crate) fn observe_router_outcome(
+    router: &CascadeRouter,
+    model: &str,
+    ctx: &RoutingContext,
+    succeeded: bool,
+    cost_usd: f64,
+    duration_ms: u64,
+) {
+    let Some(model_idx) = router.model_index_for_slug(model) else {
+        router.record_confidence_outcome(model, succeeded);
+        return;
+    };
+
+    // P0-05: Feed real cost from the agent outcome into the bandit.
+    // Normalize against a $1.00 per-task ceiling and latency against a
+    // 5-minute ceiling so both signals stay in [0, 1] for the LinUCB
+    // reward computation.
+    let normalized_cost = (cost_usd / 1.0).clamp(0.0, 1.0);
+    let normalized_latency = (duration_ms as f64 / 300_000.0).clamp(0.0, 1.0);
+    let weights = RewardWeights::default();
+    router.observe_multi_objective_outcome(
+        ctx.to_features(),
+        model_idx,
+        /* quality */ 1.0,
+        normalized_cost,
+        normalized_latency,
+        &weights,
+        succeeded,
+    );
 }
 
 /// Build a fallback [`RoutingContext`] for observations that lack
 /// dispatch-time context.
 ///
 /// Used when `routing_context` is `None` (backward compat with older
-/// code paths that don't carry context through `FeedbackEvent`).
-fn build_fallback_routing_context(model: &str) -> RoutingContext {
+/// code paths that don't carry context through `FeedbackEvent`), and by
+/// the Graph settlement routing sink, whose receipts carry no context.
+pub(crate) fn build_fallback_routing_context(model: &str) -> RoutingContext {
     RoutingContext {
         task_category: TaskCategory::Implementation,
         complexity: TaskComplexityBand::Standard,
@@ -240,7 +261,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn failure_records_through_record_outcome() {
+    async fn routing_sink_updates_linucb_on_failure() {
+        // bug-8da8ba: a router-chosen failure reaches the same learners as a
+        // success, the confidence counters and LinUCB, with reward 0.
         let r = router();
         let sink = RoutingObservationSink::new(r.clone());
         let event = FeedbackEvent::TaskCompleted {
@@ -251,7 +274,7 @@ mod tests {
             outcome: outcome(false),
             model_source: ModelChoiceSource::Router,
             succeeded: false,
-            routing_context: None,
+            routing_context: Some(test_routing_context()),
             prompt_text: None,
             cache_read_tokens: 0,
             knowledge_ids: vec![],
@@ -268,8 +291,18 @@ mod tests {
         assert_eq!(successes, 0, "failure must not increment successes");
         assert_eq!(
             r.total_observations(),
-            0,
-            "failures should not push LinUCB observations on the success-only path",
+            1,
+            "a failure must reach LinUCB like a success does",
+        );
+        let arms = r.linucb().arm_stats();
+        let arm = arms
+            .iter()
+            .find(|arm| arm.slug == "claude-sonnet-4-6")
+            .expect("arm for the observed slug");
+        assert_eq!(arm.observations, 1);
+        assert!(
+            arm.b_vector.iter().all(|b| *b == 0.0),
+            "a failure earns reward 0, so the arm's b vector stays 0",
         );
     }
 

@@ -36,6 +36,7 @@ use roko_core::foundation::{
 use roko_core::{Body, Context, Kind, OperatingFrequency, Signal};
 use roko_learn::cascade_router::CascadeRouter;
 use roko_learn::feedback_service::FeedbackService;
+use roko_learn::model_call_feedback::ModelCallJournal;
 use thiserror::Error;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command as TokioCommand;
@@ -69,7 +70,7 @@ const SKIP_DIR_NAMES: [&str; 12] = [
 struct ChatFeedbackRuntime {
     sink: Arc<dyn FeedbackSink>,
     cascade_router: Option<Arc<CascadeRouter>>,
-    cascade_path: PathBuf,
+    cascade_journal: Arc<ModelCallJournal>,
 }
 
 impl ChatFeedbackRuntime {
@@ -85,17 +86,24 @@ impl ChatFeedbackRuntime {
                 cascade_model_slugs,
             ))
         });
+        // Observations are journaled in the learning WAL until `flush` saves
+        // them (find-0dc1d5).
+        let cascade_journal = Arc::new(ModelCallJournal::for_snapshot(&cascade_path));
 
         let feedback_service = FeedbackService::from_roko_dir(&workdir.join(".roko"));
         let sink: Arc<dyn FeedbackSink> = match &cascade_router {
-            Some(router) => Arc::new(feedback_service.with_cascade_router(Arc::clone(router))),
+            Some(router) => Arc::new(
+                feedback_service
+                    .with_cascade_router(Arc::clone(router))
+                    .with_cascade_journal(Arc::clone(&cascade_journal)),
+            ),
             None => Arc::new(feedback_service),
         };
 
         Self {
             sink,
             cascade_router,
-            cascade_path,
+            cascade_journal,
         }
     }
 
@@ -108,10 +116,10 @@ impl ChatFeedbackRuntime {
             );
         }
         if let Some(router) = &self.cascade_router
-            && let Err(error) = router.save(&self.cascade_path)
+            && let Err(error) = self.cascade_journal.save(router)
         {
             tracing::warn!(
-                path = %self.cascade_path.display(),
+                path = %self.cascade_journal.snapshot_path().display(),
                 error = %error,
                 context,
                 "failed to persist chat cascade observation"

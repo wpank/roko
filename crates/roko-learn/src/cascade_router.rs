@@ -1696,7 +1696,22 @@ impl CascadeRouter {
 
     /// Record a successful observation from a raw 18-dim context vector.
     pub fn observe(&self, context_vec: Vec<f64>, model_idx: usize, reward: f64) {
-        self.observe_internal(&context_vec, model_idx, reward, true, None, None);
+        self.observe_outcome(context_vec, model_idx, reward, true);
+    }
+
+    /// Record an observation from a raw 18-dim context vector, counting a
+    /// success only when `success` is true.
+    ///
+    /// This applies the same update as [`Self::replay_observation`], so an
+    /// observation journaled in the WAL replays exactly as it was applied.
+    pub fn observe_outcome(
+        &self,
+        context_vec: Vec<f64>,
+        model_idx: usize,
+        reward: f64,
+        success: bool,
+    ) {
+        self.observe_internal(&context_vec, model_idx, reward, success, None, None);
     }
 
     /// Record a successful multi-objective observation from a raw context vector.
@@ -1709,6 +1724,35 @@ impl CascadeRouter {
         normalized_latency: f64,
         weights: &RewardWeights,
     ) {
+        self.observe_multi_objective_outcome(
+            context_vec,
+            model_idx,
+            quality,
+            normalized_cost,
+            normalized_latency,
+            weights,
+            true,
+        );
+    }
+
+    /// Record a settled multi-objective outcome from a raw context vector.
+    ///
+    /// Successes and failures update the same learners: the confidence
+    /// counters (a trial, plus a success only when `success` is true) and the
+    /// `LinUCB` arm for `model_idx`. A success earns the multi-objective
+    /// reward for `quality`, cost and latency. A failure earns a reward of 0,
+    /// because the cost and latency of a failed attempt bought nothing
+    /// (bug-8da8ba); `quality` applies to successes only.
+    pub fn observe_multi_objective_outcome(
+        &self,
+        context_vec: Vec<f64>,
+        model_idx: usize,
+        quality: f64,
+        normalized_cost: f64,
+        normalized_latency: f64,
+        weights: &RewardWeights,
+        success: bool,
+    ) {
         let Some(slug) = self.model_slugs.get(model_idx) else {
             return;
         };
@@ -1716,17 +1760,23 @@ impl CascadeRouter {
         let mut stats = self.confidence_stats.lock();
         let entry = stats.entry(slug.clone()).or_default();
         entry.trials += 1;
-        entry.successes += 1;
+        if success {
+            entry.successes += 1;
+        }
         drop(stats);
 
-        self.linucb.update_features_multi_objective(
-            &context_vec,
-            model_idx,
-            quality,
-            normalized_cost,
-            normalized_latency,
-            weights,
-        );
+        if success {
+            self.linucb.update_features_multi_objective(
+                &context_vec,
+                model_idx,
+                quality,
+                normalized_cost,
+                normalized_latency,
+                weights,
+            );
+        } else {
+            self.linucb.update_features(&context_vec, model_idx, 0.0);
+        }
     }
 
     fn observe_internal(
@@ -3214,6 +3264,42 @@ mod cascade_router_tests {
         let entry = stats.get("claude-sonnet-4-5").expect("stats should exist");
         assert_eq!(entry.trials, 1);
         assert_eq!(entry.successes, 1);
+    }
+
+    #[test]
+    fn failed_outcome_reaches_linucb_with_zero_reward() {
+        // bug-8da8ba: a failure updates the same learners as a success: a
+        // confidence trial without a success, and a LinUCB observation whose
+        // reward (and so the arm's b vector) stays 0.
+        let router =
+            CascadeRouter::new(vec!["claude-sonnet-4-5".into(), "claude-haiku-4-5".into()]);
+        let context = RoutingContext::default().to_features();
+        let weights = RewardWeights::default();
+
+        router.observe_multi_objective_outcome(context.clone(), 0, 1.0, 0.1, 0.1, &weights, false);
+        router.observe_outcome(context.clone(), 1, 0.0, false);
+
+        let confidence = router.confidence_snapshot();
+        assert_eq!(confidence["claude-sonnet-4-5"], (1, 0));
+        assert_eq!(confidence["claude-haiku-4-5"], (1, 0));
+        assert_eq!(router.total_observations(), 2);
+        for arm in router.linucb().arm_stats() {
+            assert_eq!(arm.observations, 1, "{} must see its failure", arm.slug);
+            assert!(
+                arm.b_vector.iter().all(|b| *b == 0.0),
+                "{} was rewarded for failing",
+                arm.slug
+            );
+        }
+
+        router.observe_multi_objective_outcome(context, 0, 1.0, 0.1, 0.1, &weights, true);
+        assert_eq!(router.confidence_snapshot()["claude-sonnet-4-5"], (2, 1));
+        let arms = router.linucb().arm_stats();
+        assert_eq!(arms[0].observations, 2);
+        assert!(
+            arms[0].b_vector.iter().any(|b| *b > 0.0),
+            "a success earns a positive reward"
+        );
     }
 
     // ── Cross-restart LinUCB persistence ────────────────────────────────

@@ -26,6 +26,7 @@ use crate::agent_exec::{
     AgentCrashClass, AgentExecEpisode, AgentExecOpts, classify_agent_crash,
     persist_capture_episode, run_agent_capture_silent_with_usage, run_agent_logged,
 };
+use crate::model_selection::resolve_planner_model;
 use crate::plan_authoring::AuthoringSpend;
 use crate::runner::tui_bridge::TuiBridge;
 use crate::task_parser::TasksFile;
@@ -1207,6 +1208,8 @@ fn auto_plan_enabled(workdir: &Path) -> Result<bool> {
 }
 
 /// Generate implementation plans from a published PRD file.
+///
+/// The plan is written by the planner model ([`resolve_planner_model`]).
 pub async fn generate_plan_from_prd(slug: &str, prd_path: &Path, dry_run: bool) -> Result<PathBuf> {
     let (plans_root, _) =
         generate_plan_from_prd_with_outcome(slug, prd_path, dry_run, None, None, true, None)
@@ -1220,6 +1223,7 @@ pub async fn generate_plan_from_prd(slug: &str, prd_path: &Path, dry_run: bool) 
 /// Use this from the API so that a single "Generate" request does not start one
 /// LLM agent per old-format plan in the repository. Each agent call's spend is
 /// published on `live` when given (see [`crate::plan_authoring::AuthoringSpend`]).
+/// The plan is written by the planner model ([`resolve_planner_model`]).
 pub async fn generate_plan_from_prd_isolated(
     slug: &str,
     prd_path: &Path,
@@ -1355,6 +1359,12 @@ async fn generate_plan_from_prd_with_outcome(
         let spend = AuthoringSpend::generation(workdir_ref, slug, live);
 
         let resolved = crate::load_resolved_config(workdir_ref)?;
+        // Callers that pass no model (the serve runtime, auto-plan on
+        // promote) plan with the planner model.
+        let planner_model = match model {
+            Some(model) => model.to_string(),
+            None => resolve_planner_model(workdir_ref, None, "plan generation")?,
+        };
         let system = augment_generator_system_prompt(
             crate::plan_generate::build_generator_system_prompt(workdir_ref),
             failure_context,
@@ -1460,7 +1470,7 @@ async fn generate_plan_from_prd_with_outcome(
         let prompt_ms = t_phase.elapsed().as_millis();
         let t_phase = Instant::now();
         let task_id = format!("prd:plan:{slug}");
-        let effective_model = model.or_else(|| resolved.config.agent.model.as_deref());
+        let effective_model = Some(planner_model.as_str());
         let plan_agent_command =
             command_from_config(workdir_ref).unwrap_or_else(|| "claude".to_string());
         let plan_started = Instant::now();
@@ -2001,7 +2011,7 @@ async fn generate_plan_from_prd_with_outcome(
         if !dry_run && regenerate_old_plans {
             if let Err(e) = regenerate_old_format_plans(
                 workdir_ref,
-                model.or_else(|| resolved.config.agent.model.as_deref()),
+                effective_model,
                 Some(resolved.config.agent.effort.as_str()),
                 &resolved.config.agent.env,
                 &plans_root,

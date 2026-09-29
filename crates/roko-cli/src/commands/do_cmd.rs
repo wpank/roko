@@ -484,10 +484,9 @@ async fn run_standard_path(
     prepare_runtime_hooks(workdir, cli.quiet);
 
     let gw = load_gateway_env(workdir);
-    let model_key = roko_cli::model_selection::resolve_effective_model_key(
+    let model_key = roko_cli::model_selection::resolve_planner_model(
         workdir,
         cli.model.clone(),
-        Some("strategist"),
         "roko do (standard)",
     )?;
 
@@ -661,6 +660,13 @@ async fn run_complex_path(
             .unwrap_or_default();
         crate::commands::util::preflight_provider_for_model(&do_config, &model_key)?;
     }
+    // Resolve the planner now, so a bad `[authoring] planner_model` fails
+    // before the PRD draft is paid for.
+    let planner_model = roko_cli::model_selection::resolve_planner_model(
+        workdir,
+        cli.model.clone(),
+        "roko do (complex) plan",
+    )?;
 
     let title = prompt;
     let frontmatter = roko_cli::prd::new_draft_frontmatter(&slug, title);
@@ -751,7 +757,14 @@ async fn run_complex_path(
 
     // ── Step 3: Generate plan from the PRD ───────────────────────────
     out.step("Step 3/4", "Generating plan...");
-    let plans_root = match roko_cli::prd::generate_plan_from_prd(&slug, &draft_path, false).await {
+    let plans_root = match roko_cli::prd::generate_plan_from_prd_with_model(
+        &slug,
+        &draft_path,
+        false,
+        Some(planner_model.as_str()),
+    )
+    .await
+    {
         Ok(root) => root,
         Err(err) => {
             out.error(&format!("Plan generation from PRD failed: {err:#}"));
@@ -864,10 +877,9 @@ async fn run_standard_path_inner(
     use roko_cli::agent_exec::{AgentExecOpts, run_agent_capture_silent};
 
     let gw = load_gateway_env(workdir);
-    let model_key = roko_cli::model_selection::resolve_effective_model_key(
+    let model_key = roko_cli::model_selection::resolve_planner_model(
         workdir,
         cli.model.clone(),
-        Some("strategist"),
         "roko do (fallback plan)",
     )?;
 

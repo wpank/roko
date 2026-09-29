@@ -1605,6 +1605,7 @@ fn parse_value_for_key(key: &str, value: &str) -> Result<toml::Value> {
         | ["agent", "effort"]
         | ["agent", "fallback_model"]
         | ["agent", "mcp_config"]
+        | ["authoring", "planner_model"]
         | ["dreams", "scheduled_cron"]
         | ["prompt", "role"]
         | ["serve", "auth", "api_key"]
@@ -3021,6 +3022,17 @@ command = "x${ROKO_TEST_MISSING_DEF456:-}y"
                 .as_integer()
                 .unwrap(),
             7
+        );
+    }
+
+    #[test]
+    fn set_toml_dotted_key_sets_the_planner_model() {
+        let mut doc = toml::Value::Table(toml::map::Map::new());
+        set_toml_dotted_key(&mut doc, "authoring.planner_model", "claude-opus-4-6").unwrap();
+
+        assert_eq!(
+            doc["authoring"]["planner_model"].as_str().unwrap(),
+            "claude-opus-4-6"
         );
     }
 

@@ -1347,8 +1347,11 @@ mod tests {
             "pwd -P > '{}' && test -f plan.txt && test -f main.txt",
             ran_in.display()
         );
-        let backend = GitDeliveryBackend::new(path.to_path_buf())
-            .with_regression_command(vec!["sh".into(), "-c".into(), script]);
+        let backend = GitDeliveryBackend::new(path.to_path_buf()).with_regression_command(vec![
+            "sh".into(),
+            "-c".into(),
+            script,
+        ]);
         let service = CliCompletionDeliveryService::new(Arc::new(backend));
 
         let receipt = service

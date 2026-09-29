@@ -15,7 +15,7 @@ discovered_from = "tmp/cybernetic-harness/tldr/05-GAPS-AND-PROPOSALS.md (P0 #6-7
 anchors = ["crates/roko-cli/src/graph_task_dispatch.rs", "crates/roko-cli/src/main.rs", "crates/roko-serve/src/routes/plans.rs", "crates/roko-core/src/config/learning.rs::LearningConfig", "docs/v3/", ".github/workflows/ci.yml"]
 doc = "tmp/cybernetic-harness/workstreams/PLAN.md"
 lane = "rust-cold"
-links = { depends_on = ["find-8cc7ac", "bug-470de8", "dec-e70592", "gap-c8e1f1", "gap-0d0e81", "gap-a6de8d", "gap-cdf3fc", "bug-b16d55", "bug-b17805", "bug-91af0e", "bug-31bca6", "bug-9434c4", "bug-919fe8", "bug-c1950e", "bug-7df50d", "dec-01be49", "gap-4b3bd5", "bug-779ae7"], blocks = [], related = ["spec-ae5f94", "spec-b7303f", "gap-b23ebd"], supersedes = [], duplicate_of = "" }
+links = { depends_on = ["find-8cc7ac", "bug-470de8", "dec-e70592", "gap-c8e1f1", "gap-0d0e81", "gap-a6de8d", "gap-cdf3fc", "bug-b16d55", "bug-b17805", "bug-91af0e", "bug-31bca6", "bug-9434c4", "bug-919fe8", "bug-c1950e", "bug-7df50d", "dec-01be49", "gap-4b3bd5", "bug-779ae7", "bug-ccfa0d"], blocks = [], related = ["spec-ae5f94", "spec-b7303f", "gap-b23ebd"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "test -f crates/roko-cli/src/graph_task_dispatch/verification.rs && test -f crates/roko-serve/src/routes/plans/run_control.rs && ! grep -qE 'enum (LearnCmd|PlanCmd) [{]' crates/roko-cli/src/main.rs && grep -q '^dream_on_completion = false' roko.toml && ! grep -q 'This is law' docs/v3/30-CONDUCTOR.md"
@@ -104,6 +104,7 @@ This is the implementation plan.
 - [ ] dec-01be49: Decide how the doctor tests stop depending on the machine's claude and API keys: injectable probes or relaxed assertions
 - [ ] gap-4b3bd5: commands/plan.rs walks plan directories itself instead of reusing plan_validate's collect_tasks_files
 - [ ] bug-779ae7: Three lib tests fail only under heavy load: a roko-gate tautology-filter test and two dispatcher timing tests
+- [ ] bug-ccfa0d: config validate flags [profiles.<name>] keys that DomainProfile collects into extra, and tools.profiles has no schema template
 - [ ] Both of the epic's `[[verify]]` commands pass.
 
 ## Notes

@@ -15,7 +15,7 @@ discovered_from = "tmp/cybernetic-harness/tldr/05-GAPS-AND-PROPOSALS.md (P0 #4);
 anchors = ["crates/roko-cli/src/graph_task_dispatch/feedback.rs::GraphTaskDispatcher::emit_feedback", "crates/roko-cli/src/runtime_feedback/mod.rs::FeedbackEvent", "crates/roko-learn/src/routing_log.rs::RoutingDecisionLog", "crates/roko-cli/tests/learning_wiring_census.rs"]
 doc = "tmp/cybernetic-harness/workstreams/PLAN.md"
 lane = "rust-hot"
-links = { depends_on = ["gap-528762", "gap-96f7ed", "bug-c34782", "bug-35379d", "gap-ad0d39", "bug-690dc6", "gap-8cb382", "gap-1f2661", "gap-c7c946", "gap-3c430e", "bug-b72a37", "gap-4468bd", "gap-8f6206", "bug-ccc7c4", "bug-55fd84", "bug-31438d", "bug-62e3f4"], blocks = [], related = ["gap-7a8474", "bug-f9ae3e", "spec-e9d7ec"], supersedes = [], duplicate_of = "" }
+links = { depends_on = ["gap-528762", "gap-96f7ed", "bug-c34782", "bug-35379d", "gap-ad0d39", "bug-690dc6", "gap-8cb382", "gap-1f2661", "gap-c7c946", "gap-3c430e", "bug-b72a37", "gap-4468bd", "gap-8f6206", "bug-ccc7c4", "bug-55fd84", "bug-31438d", "bug-62e3f4", "bug-2379dc", "bug-92f655", "bug-220385", "bug-ad5487", "bug-b2dd44", "bug-c65bfe"], blocks = [], related = ["gap-7a8474", "bug-f9ae3e", "spec-e9d7ec"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "grep -rqw 'fn loop_census_fixture_settles_one_record_per_attempt' crates/roko-cli/tests/ && cargo test -p roko-cli --test learning_wiring_census"
@@ -102,6 +102,12 @@ and state digests). The census lists them in `EXPECTED_MISSING`, and E17 files t
 - [ ] bug-55fd84: Episodes record turns = 1 for dispatches on providers that report no turn count
 - [ ] bug-31438d: Roko records the model it dispatched, never the model the provider reports serving
 - [ ] bug-62e3f4: Episodes, costs.json and efficiency.jsonl leave out the three helper calls after each failed gate
+- [ ] bug-2379dc: When a CLI names no model, the CLI adapters still record the configured slug as the served model
+- [ ] bug-92f655: ModelCallService's model_call rows carry no model_reported and no attempt key
+- [ ] bug-220385: Calls refused for provider exhaustion during failover leave no record
+- [ ] bug-ad5487: Gate rows in verification.rs still record turn 1 when the attempt's turn count is unknown
+- [ ] bug-b2dd44: The streaming dispatch path ignores a substituted pinned model, which the batch path fails as model_substituted
+- [ ] bug-c65bfe: The tool loop leaves usage_obs.source as Unknown
 - [ ] The epic's `[[verify]]` command passes on the merged branch: the census fixture shows, for every attempt, a row
       with the attempt key, verdict, executed model and cost source.
 

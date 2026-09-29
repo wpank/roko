@@ -4,11 +4,13 @@
 - **Read at:** `9947af4d2`, with the status matrix pinned at `a17d4dadd` (71 rows; `status_matrix.py --check`
   passes).
 - **Fixes:** `f173fa9e1` (section text), `97c0c22e1` (`references.bib`), `7df1354b5` (frozen S09 excerpt and §8's
-  footnotes), `d8cd83b23` (this directory's `README.md`) and `856e52cac` (trims after the sync). `bb3a42650` added
-  this file and moved §0–§10 to `Status: reviewed`.
-- **Sync:** `87e0eca96` merged the coordinator branch at `7c556bc0a`. The merge brought in the §9 roadmap follow-up
-  (gap-c19902), B5's frozen loop table and paperlint's update (gap-af0b57), and the review read that text too
-  (finding 25).
+  footnotes), `d8cd83b23` (this directory's `README.md`), `856e52cac` (trims after the sync) and `5c144601f` (§5.2's
+  loop count, §0–§1 footnote rows). `bb3a42650` added this file and moved §0–§10 to `Status: reviewed`; `45829814d`
+  moved the appendix to `reviewed`, with the coordinator's approval, by changing only `[matrix] status` in
+  `data/mechanisms.toml`.
+- **Sync:** `87e0eca96` merged the coordinator branch at `7c556bc0a`. That brought in the §9 roadmap follow-up
+  (gap-c19902), B5's frozen loop table and paperlint's update (gap-af0b57). `06ee34e6f` then merged `48d35a67f`, with
+  the figures (gap-d1d92c). The review read that text too (findings 25 and 26).
 
 ## How the read was done
 
@@ -40,7 +42,7 @@
 | 9 | §8 | The falsifier bar (0.90 and 0.30), the expected level (3, with Claude Code ahead at 5) and the 48-task probe come from S09 v1.1. S09 is gitignored and no tracked item carries these figures; the footnotes cited items that only refer to the bar. The text matches the spec | Fixed in `7df1354b5`: the excerpt is frozen with its hash and provenance, and the footnotes cite it |
 | 10 | `references.bib` | The dedupe left comments with other entries' identifiers on yang2024sweagent, filieri2015software and paul2026context, plus a dangling comment from §1's FrugalGPT copy. FrugalGPT's journal field repeated the year, and one Devin page had two keys. The five kept entries the brief names match the verified bibliography, and no field holds an internal path | Fixed in `97c0c22e1`; §10 now cites the Devin page by §6's key (`f173fa9e1`) |
 | 11 | README | N7, FE8 and the ROLLUP source row described the 11:14:31 rollup (3/41, 121 notes), and IN6 carried the unsourced counts. N12 was unresolved. N4 said "different window", where gap-cdd5f4 found the same data counted in another unit and denominator. GP14 had the tldr's plan counts. Six rows still showed keys in backticks that are now in the bib | Fixed in `d8cd83b23` |
-| 12 | §0–§10 | 7,250 words, 1.12× the 6,500 budget. The cuts remove repeated detail: §1.1 repeated §2's results, §3.2 repeated §5.2's table, §9.2 repeated §7, and §10 repeated §5.4; §5.2 had a commit-by-commit narrative; there were also §6's intro, one §4.11 sentence and one §8.3 clause. After the sync the total was 7,153 | Fixed in `f173fa9e1` and `856e52cac`: 7,112 words, 1.09×. Every file is within 0.5–1.3× of its budget. The figure swap (gap-d1d92c) must not add words: an image's alt text replaces its caption line and doesn't repeat it |
+| 12 | §0–§10 | 7,250 words, 1.12× the 6,500 budget. The cuts remove repeated detail: §1.1 repeated §2's results, §3.2 repeated §5.2's table, §9.2 repeated §7, and §10 repeated §5.4; §5.2 had a commit-by-commit narrative; there were also §6's intro, one §4.11 sentence and one §8.3 clause. After the first sync the total was 7,153 | Fixed in `f173fa9e1` and `856e52cac`. With the figures merged, the total is 7,123 words, 1.10×, and every file is within 0.5–1.3× of its budget |
 | 13 | §1.3 | Said "an operator stepped in 39 times". The rollup's 39 interventions include users; §7.3 says "people" | Fixed in `f173fa9e1` |
 | 14 | §9.1 | Called "planning" WIRED while §4.1 tags authoring PARTIAL. The WIRED rows are plan generation and validation (AU1, AU2) | Fixed in `f173fa9e1` |
 | 15 | §10 | Wrote opusplan as plain text, where §6 marks it as code | Fixed in `f173fa9e1` |
@@ -53,7 +55,8 @@
 | 22 | Numbers | Checked against the frozen files and the code: B7's TL;DR and Corrections, CASE-001 and CASE-005 to CASE-007, the rollup's totals and day rows ($159.36, $33.56, $172.80), W12's F2, §9's tag counts (21, 23, 2, 7, 7, 10 and 1 of 71) and §9.4's line counts (64,066 of 1,052,880 at `1f4481133`) | Accepted: all match |
 | 23 | Tags | Every tag in §0–§10 matches its matrix row or vision claim, and §4.12's step tags match the rows it lists | Accepted |
 | 24 | Figure 3 | §9's link to the appendix resolves at this commit. The SVG path belongs to gap-d1d92c, whose verify checks it, and `paperlint --strict` checks the link again after the swap | Accepted; recheck after gap-d1d92c merges |
-| 25 | §9.3, `evidence/` | Text from the sync: §9.3's epic numbers match §4.12; its new sentence on the four rows with no item (EX8, IS6, SS3, DM2) matches the matrix's own warnings; B5's frozen file is named against the date convention, and the evidence README records that exception and hashes the file | Accepted: all consistent. The sections don't cite B5's file yet |
+| 25 | §9.3, `evidence/` | Text from the first sync: §9.3's epic numbers match §4.12; its new sentence on the four rows with no item (EX8, IS6, SS3, DM2) matches the matrix's own warnings; B5's frozen file is named against the date convention, and the evidence README records that exception and hashes the file | Accepted: all consistent |
+| 26 | §5.2, §9 | B5's frozen re-check at `98ee1418f` counts Runner-v2's 16 loops as two wired, five partial, seven orphaned, one broken and one built but unwired. §5.2 said only "most" and "several", and §9 gives no count | Fixed in `5c144601f`: §5.2 states the count and cites the frozen file; §9 agrees because it gives no count |
 
 ## For the author
 
@@ -69,8 +72,5 @@
   the approval hold or the per-task diff.
 - **Matrix rows EX8, IS6, SS3 and DM2** have a verdict but no item. `status_matrix.py` already warns about them, and
   §9.3 now names them.
-- **The appendix's header** is generated from `data/mechanisms.toml` (`status = "draft"`), which this review does not
-  edit. The matrix owner moves it to `reviewed` so that `paperlint --require-status reviewed` passes on the whole
-  directory.
 
 Verdict: accept

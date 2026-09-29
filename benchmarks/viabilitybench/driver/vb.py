@@ -338,7 +338,8 @@ def _run_one(run: Run, instance_id: str, seed: int, stream_position: dict) -> bo
         experiment_id=args.experiment, run_id=run.run_id, arm=plan.arm, model=plan.model, endpoint=plan.endpoint,
         provider=run.chat, snapshot=plan.snapshot, caps=plan.caps, ledger=run.book, billed=plan.arm["arm"]["billed"],
         instance_id=instance_id, seed=seed, key=key, workdir=workdir, spec_text=task.spec_text,
-        agent_env=agent_env.build(home=homes[0]))
+        agent_env=agent_env.build(home=homes[0]), visible_verify=tuple(task.manifest["visible_verify"]),
+        files_in_scope=tuple(task.manifest["files_in_scope"]))
     try:
         outcome = run.runner.run_task(ctx)
     except Exception as err:  # the runner owns its errors; this catches its bugs

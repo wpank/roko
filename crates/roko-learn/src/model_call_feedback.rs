@@ -569,7 +569,8 @@ mod tests {
                 "round {round}: the save truncates the segment"
             );
         }
-        let saved = CascadeRouter::load_or_new(journal.snapshot_path(), vec!["model-a".to_string()]);
+        let saved =
+            CascadeRouter::load_or_new(journal.snapshot_path(), vec!["model-a".to_string()]);
         assert_eq!(saved.confidence_snapshot()["model-a"], (6, 3));
     }
 

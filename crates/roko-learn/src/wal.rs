@@ -438,7 +438,10 @@ pub fn orphaned_segments(dir: &Path) -> io::Result<Vec<OrphanedSegment>> {
     let mut orphans = Vec::new();
     for dir_entry in listing {
         let path = dir_entry?.path();
-        if path.extension().is_none_or(|extension| extension != "jsonl") {
+        if path
+            .extension()
+            .is_none_or(|extension| extension != "jsonl")
+        {
             continue;
         }
         let file = match OpenOptions::new().read(true).write(true).open(&path) {

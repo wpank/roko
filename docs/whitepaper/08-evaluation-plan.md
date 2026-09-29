@@ -69,9 +69,12 @@ replaces `roko bench`, which leaks the SWE-bench gold patch (bug-28becc).
 No arm has run: the pilot's results are pending gap-d9e9fe (`vb report --pilot`), and the plan slice's
 gap-1cd676.
 
-[^8-pilot]: spec-567e52. The direct arms run in gap-c33709, the Roko and Claude Code arms in gap-327242.
+[^8-pilot]: spec-567e52. The direct arms run in gap-c33709, the Roko and Claude Code arms in gap-327242. The full
+    comparison's arms and the 48-task probe: programme spec S09 v1.1, frozen as `evidence/2026-09-28-s09-h1-bar.md`
+    (sha256 `029756b064eb`), "Design (D1)".
 
 [^8-metrics]: gap-d9e9fe, which labels the pilot's page "pilot, descriptive".
 
-[^8-bar]: The author's bar, decided on 2026-09-28; gap-c4f364 and gap-d9e9fe refer to it, and spec-567e52
-    defers `roko_full` until its mechanisms are live.
+[^8-bar]: The author's bar (D3), decided on 2026-09-28: S09 v1.1, frozen as `evidence/2026-09-28-s09-h1-bar.md`
+    (sha256 `029756b064eb`), "Envelope procedure" and H1's "Primary", which also give the expectation. gap-c4f364
+    and gap-d9e9fe refer to the bar, and spec-567e52 defers `roko_full` until its mechanisms are live.

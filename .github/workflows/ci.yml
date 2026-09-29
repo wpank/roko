@@ -66,3 +66,74 @@ jobs:
         env:
           SKIP_FRONTEND_BUILD: "1"
         run: cargo check -p roko-cli --features alloy-backend,acp
+
+  portal:
+    name: Portal (types, tests, export)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: apps/portal
+    env:
+      NEXT_TELEMETRY_DISABLED: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/portal/package-lock.json
+      - run: npm ci --no-audit --no-fund
+      - run: npm run typecheck
+      - run: npm test
+      - name: No unreachable source files
+        run: node scripts/orphans.mjs
+      - run: npm run build:export
+      - name: The export is the portal, which roko serve embeds at /
+        run: grep -q 'name="roko-portal"' out/index.html
+
+  # The two-action flow in a real browser against `roko serve`, with the
+  # deterministic fake agent (no API keys, no spend). Non-blocking until it has
+  # a record on Linux runners; remove continue-on-error once it does.
+  portal-browser:
+    name: Portal browser check (fake agent)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    continue-on-error: true
+    env:
+      NEXT_TELEMETRY_DISABLED: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.96.1
+      # Same build as layer-check: reuse its dependency cache, save none.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: layer-check
+          save-if: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            apps/portal/package-lock.json
+            demo/demo-app/package-lock.json
+      - name: Build the portal export
+        working-directory: apps/portal
+        run: npm ci --no-audit --no-fund && npm run build:export
+      - name: Build the demo app and install Playwright's Chromium
+        working-directory: demo/demo-app
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build
+          npx playwright install --with-deps chromium
+      - name: Build roko-cli
+        run: cargo build -p roko-cli
+      - name: Portal check
+        run: bash plans/portal-programme/09-acceptance/portal-check.sh
+      - name: Upload the check's evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: portal-check-evidence
+          path: tmp/portal-audit/evidence/portal-check/
+          overwrite: true

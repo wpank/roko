@@ -35,6 +35,8 @@ LOOPBACK = "http://127.0.0.1:9/v1"
 FAKE_KEY = "sk-ant-test-not-a-real-key-5b2e"
 CORRECT = ('def clamp(value, low, high):\n    """Return value limited to the range [low, high]."""\n'
            "    return max(low, min(value, high))\n")
+HIDDEN_URL = ("https://raw.githubusercontent.com/example/roko/main/benchmarks/viabilitybench/families/f1_pyconv/"
+              "hidden.py")  # a truth suite, once the repository is public
 
 # A `result` event in Claude Code 2.1.282's stream-json shape (the SDK's `modelUsage` fields, cumulative for the
 # session), with background turns on the small model. The figures are made up; a live probe saves real ones.
@@ -99,17 +101,40 @@ def assistant(number, model, block, input_tokens=1200, output_tokens=300):
                                 "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}}})
 
 
+def fetch(parent):
+    """A WebFetch of a truth suite: the tool returns a model-written digest, which carries no canary."""
+    emit({"type": "assistant", "parent_tool_use_id": parent, "session_id": "fake-session",
+          "message": {"id": "msg_fetch", "model": model, "role": "assistant", "content": [
+              {"type": "tool_use", "id": "toolu_fetch", "name": "WebFetch",
+               "input": {"url": CONFIG["hidden_url"], "prompt": "List the test cases."}}],
+              "usage": {"input_tokens": 900, "output_tokens": 60, "cache_read_input_tokens": 0,
+                        "cache_creation_input_tokens": 0}}})
+    emit({"type": "user", "parent_tool_use_id": parent, "message": {"role": "user", "content": [
+        {"type": "tool_result", "tool_use_id": "toolu_fetch", "content": "It checks clamp at both bounds."}]}})
+
+
 scenario = CONFIG["scenario"]
 if scenario == "crash":
     print("fake-claude: crashing before the first event", file=sys.stderr)
     sys.exit(3)
 model = sys.argv[sys.argv.index("--model") + 1]
+denied = []  # --disallowed-tools, which the "ignoring_flags" scenarios do not honour
+for flag in ("--disallowed-tools", "--disallowedTools"):
+    if flag in sys.argv and not scenario.endswith("ignoring_flags"):
+        denied += sys.argv[sys.argv.index(flag) + 1].replace(",", " ").split()
+tools = [tool for tool in ("Bash", "Edit", "Glob", "Grep", "Read", "WebFetch", "WebSearch", "Write")
+         if tool not in denied]
 emit({"type": "system", "subtype": "init", "cwd": os.getcwd(), "session_id": "fake-session", "model": model,
-      "tools": ["Bash", "Edit", "Glob", "Grep", "Read", "Write"], "mcp_servers": [], "plugins": [], "skills": [],
+      "tools": tools, "mcp_servers": [], "plugins": [], "skills": [],
       "memory_paths": [], "permissionMode": "bypassPermissions", "apiKeySource": "none",
       "claude_code_version": "2.1.282"})
 if scenario == "hang":
     time.sleep(120)
+if scenario.startswith("fetch") and "WebFetch" in tools:  # a model that fetches the truth suite when it can
+    time.sleep(5)  # the runner kills a session that offers a web tool before its first turn
+    fetch(None)
+if scenario == "subagent_fetch":  # a subagent's fetch, which the init event's tool list does not show
+    fetch("toolu_task")
 if scenario == "spend":
     for number in range(1, 1000):
         assistant(number, model, {"type": "text", "text": "Still reading."}, input_tokens=150000, output_tokens=5000)
@@ -146,7 +171,7 @@ def fake_claude(places: dict[str, Path], scenario: str) -> tuple[Path, Path]:
     log, config = places["tmp"] / f"claude-{scenario}.jsonl", places["tmp"] / f"claude-{scenario}.json"
     needles = [*secret.load(places["secret"]).needles, canary.RELEASE_CANARY, "vb.task/1"]
     config.write_text(json.dumps({"scenario": scenario, "log": str(log), "result": RESULT, "needles": needles,
-                                  "files": {"calc/ops.py": CORRECT}}))
+                                  "files": {"calc/ops.py": CORRECT}, "hidden_url": HIDDEN_URL}))
     program = places["bin"] / "claude"
     program.write_text(FAKE_CLAUDE.replace("__CONFIG__", repr(str(config))))
     program.chmod(0o755)
@@ -442,6 +467,44 @@ def test_a_model_switch_or_a_crash_is_an_infra_error(places, scenario):
         assert "exited 3 without a result event" in record["execution"]["reason"]
         assert "crashing before the first event" in record["execution"]["reason"]
         assert record["costs"]["source"] == "unknown" and row["api_equiv_usd"] is None
+
+
+@pytest.mark.parametrize("scenario", ["fetch", "fetch_ignoring_flags", "subagent_fetch"])
+def test_fd_claude_cannot_fetch_the_hidden_suites(places, scenario):
+    """gap-f253cf: the truth suites are in a public repository, and WebFetch returns a digest without the canary. The
+    arm has no web tools; a claude that offers one anyway is killed before its first turn, and a web request that
+    happens all the same (here a subagent's) makes the run leak_suspected."""
+    program, log = fake_claude(places, scenario)
+    arm = arm_file(places, program)
+    assert run_vb(places, arm, "--transcripts") == 0
+    [record] = read_jsonl(run_dir(places) / "records.jsonl")
+    assert validate.validate("run-record", record) == []
+    [seen] = read_jsonl(log)
+    flags = seen["argv"]
+    assert flags.count("--disallowed-tools") == 1 and flags[flags.index("--disallowed-tools") + 1] == \
+        "WebFetch,WebSearch"
+    assert {"WebFetch", "WebSearch"} <= set(json.loads(flags[flags.index("--settings") + 1])["permissions"]["deny"])
+    [attempt] = record["execution"]["attempts"]
+    transcript = (run_dir(places) / record["provenance"]["transcript_ref"]).read_text()
+    execution = (record["execution"]["status"], record["execution"]["reason"])
+    if scenario == "fetch":  # the flags hold, so the model has only the repository to work from
+        assert run_cli.web_tools(attempt["cli"]["init"]) == [] and "Bash" in attempt["cli"]["init"]["tools"]
+        assert execution == ("completed", "ended") and record["vs"]["label"] == 1
+        assert record["provenance"]["canary_places"] == [] and HIDDEN_URL not in transcript
+    elif scenario == "fetch_ignoring_flags":  # web tools offered anyway: killed at the init event, before any fetch
+        assert run_cli.web_tools(attempt["cli"]["init"]) == ["WebFetch", "WebSearch"]
+        assert execution == ("infra_error", "web_tools") and attempt["cli"]["killed"] == "web_tools"
+        assert HIDDEN_URL not in transcript and record["vs"]["label"] == 0
+        out = places["tmp"] / "probe-out"  # the probe fails on the same claude
+        assert run_cli.main(["probe", "--arm", arm, "--allow-network", "--work", str(places["work"]),
+                             "--out", str(out)]) == 1
+        [path] = out.glob("claude-probe-*.json")
+        assert json.loads(path.read_text())["checks"]["no_web_tools"] is False
+    else:  # the fetch reached the transcript without the canary; the census flags the request itself
+        assert run_cli.web_tools(attempt["cli"]["init"]) == [] and HIDDEN_URL in transcript
+        assert canary.RELEASE_CANARY not in transcript and "vb-canary-" not in transcript
+        assert execution[0] == "leak_suspected" and record["provenance"]["canary_places"] == ["web"]
+        assert record["provenance"]["canary_hits"] == 1
 
 
 def test_a_budget_refusal_starts_no_session(places):

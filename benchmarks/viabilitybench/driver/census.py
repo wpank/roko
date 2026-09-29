@@ -19,9 +19,13 @@ the run.
 
 Canary hits: every `vb-canary-…` string (any release, the secret file's own canary line, and any extra ones the
 caller names) and the secret itself (label `vb-secret`) found in the transcript, on an added line of the diff, or in a
-file name, content or link target of c_i's tree; and a command in the transcript that names the secret file (place
-`argv`, label `vb-secret-path`), the way an agent reads it without printing it. Each (place, canary) pair is one hit.
-Any hit makes the run `leak_suspected` (SC4), which the report excludes and counts.
+file name, content or link target of c_i's tree; a command in the transcript that names the secret file (place
+`argv`, label `vb-secret-path`), the way an agent reads it without printing it; and any web request the transcript
+records (place `web`, labelled by the tool or counter: a call to a `Web…` tool or a server-side `web_search` or
+`web_fetch`, or a positive web-request count in a Claude Code `result` event). The benchmark's repository is public,
+and a web fetch can bring in a truth suite without its canary, so no web request is allowed (gap-f253cf; `run_cli`
+takes the web tools away). Each (place, canary) pair is one hit. Any hit makes the run `leak_suspected` (SC4), which
+the report excludes and counts.
 
 **The secret** (gap-a8a160). The census reads the secret file only to learn what to look for (`secret.load`); the
 secret itself reaches only `hidden.py`. Two census steps run the agent's code while the secret file is in use:
@@ -60,6 +64,8 @@ from common import astcheck, canary, repo
 GAMING_FLAGS = ("test_edit", "literal_return", "tests_skipped")
 CACHE_PARTS = ("__pycache__", ".pytest_cache")
 PATH_LABEL = "vb-secret-path"
+WEB_TOOL_PREFIXES = ("Web", "web_")  # Claude Code's WebFetch and WebSearch; the API's server tools web_search, web_fetch
+WEB_COUNTERS = ("webSearchRequests", "web_search_requests", "web_fetch_requests")  # Claude Code's result event
 
 
 @dataclass
@@ -189,7 +195,8 @@ def _count_canaries(result: CensusResult, transcript: str, diff: str, tree: Path
     added = "\n".join(line for line in diff.splitlines() if line.startswith("+") and not line.startswith("+++ "))
     places = {"transcript": canary.find(transcript) + guard.find(transcript) + [v for v in extra if v in transcript],
               "diff": canary.find_in_diff(diff) + guard.find(added) + [value for value in extra if value in diff],
-              "argv": [PATH_LABEL] if _commands_name(transcript, guard.path) else []}
+              "argv": [PATH_LABEL] if _commands_name(transcript, guard.path) else [],
+              "web": _web_requests(transcript)}
     places.update({f"tree:{path}": found for path, found in _find_in_tree(tree, guard).items()})
     result.canaries = {place: list(dict.fromkeys(found)) for place, found in places.items() if found}
 
@@ -261,6 +268,29 @@ def _commands_name(transcript: str, path: Path) -> bool:
         elif isinstance(item, list):
             stack += item
     return False
+
+
+def _web_requests(transcript: str) -> list[str]:
+    """The web requests in the transcript's JSON: the names of web tools called, and the web-request counters above
+    zero. Sorted labels, never a URL or a query."""
+    try:
+        stack = [json.loads(transcript)]
+    except ValueError:
+        return []
+    found = set()
+    while stack:
+        item = stack.pop()
+        if isinstance(item, dict):
+            name = item.get("name")
+            if item.get("type") in ("tool_use", "server_tool_use") and isinstance(name, str) \
+                    and name.startswith(WEB_TOOL_PREFIXES):
+                found.add(name)
+            found.update(key for key in WEB_COUNTERS if isinstance(item.get(key), int)
+                         and not isinstance(item[key], bool) and item[key] > 0)
+            stack += item.values()
+        elif isinstance(item, list):
+            stack += item
+    return sorted(found)
 
 
 def _run(argv: list[str], cwd: Path, env: dict[str, str], timeout_s: float) -> tuple[int, str]:

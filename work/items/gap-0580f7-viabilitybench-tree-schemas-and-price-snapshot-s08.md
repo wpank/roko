@@ -2,14 +2,16 @@
 id = "gap-0580f7"
 kind = "gap"
 title = "ViabilityBench tree, schemas and price snapshot (S08.T1)"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p1"
 goal = "proof"
 size = "S"
 subsystem = ["benchmarks/viabilitybench/schema", "config/prices"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-29
+last_verified_rev = "cef0f4089"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e12"
 discovered_from = "tmp/cybernetic-harness/specs/S08-benchmark-suite.md (§5.1–5.6, §6 T1; checklist S08.T1)"
 anchors = ["benchmarks/viabilitybench/schema/", "benchmarks/viabilitybench/README.md", "config/prices/2026-09-28.toml"]
@@ -22,6 +24,12 @@ command = "grep -qw 'def test_price_snapshot_rows_have_every_column' benchmarks/
 
 [[verify]]
 command = "grep -qw 'def test_spec_examples_validate_and_mutants_fail' benchmarks/viabilitybench/schema/test_schemas.py && benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/schema/test_schemas.py -k test_spec_examples_validate_and_mutants_fail -q"
+
+[closed]
+at = 2026-09-29
+commit = "cef0f4089"
+by = "commit trailer"
+evidence = "cef0f4089 adds benchmarks/viabilitybench/: a README (S08 §5.1 layout, stdlib-only rule, $VB_RESULTS, venv steps), a hash-pinned requirements.lock and a nested .gitignore for .venv/; five schemas in schema/; a stdlib validate.py for the JSON Schema subset that refuses other keywords and enforces simulated=false, unknown cost null never 0, and non-empty run_ids; and config/prices/2026-09-28.toml with the 10 S08 §5.6 rows, re-checked on the provider pages on 2026-09-29. Both [[verify]] commands pass in the pinned venv, and all 40 tests in schema/test_schemas.py pass."
 +++
 
 ## Problem

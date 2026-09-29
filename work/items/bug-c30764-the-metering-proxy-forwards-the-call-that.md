@@ -2,14 +2,16 @@
 id = "bug-c30764"
 kind = "bug"
 title = "The metering proxy forwards the call that crosses input_token_cap, so a task can overshoot its input cap by one call"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p2"
 goal = "proof"
 size = "S"
 subsystem = ["benchmarks/viabilitybench/driver"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-29
+last_verified_rev = "6c44ef04a"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-bench-fix1's report on gap-e003ec)"
 anchors = ["benchmarks/viabilitybench/driver/faultproxy.py", "benchmarks/viabilitybench/driver/vb.py"]
@@ -19,6 +21,12 @@ links = { depends_on = [], blocks = [], related = ["gap-e003ec", "gap-e90ebd", "
 
 [[verify]]
 command = "grep -qw 'def test_the_input_cap_bounds_a_tasks_input' benchmarks/viabilitybench/driver/test_faultproxy.py && benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/driver/test_faultproxy.py -k test_the_input_cap_bounds_a_tasks_input -q"
+
+[closed]
+at = 2026-09-29
+commit = "6c44ef04a"
+by = "wk-bench-fix1"
+evidence = "6c44ef04a: faultproxy refuses a call when counted input + in-flight reservations + the call's input bound would pass input_token_cap; the bound is the request's bytes + PREAMBLE_TOKENS, or an extended prompt's earlier reported input + the added messages' bytes; missing usage counts the bound; rows log input_bound. Verify passes (test_the_input_cap_bounds_a_tasks_input: metered input stays under the cap, every bound covers the billed input, a held call's reservation refuses a second); full viabilitybench suite 329 passed, 2 skipped with the prebuilt roko. Real roko keeps its prefixes, so its later calls' bounds were 1,332 and 1,469 against a 24,036-byte first call."
 +++
 
 ## Problem

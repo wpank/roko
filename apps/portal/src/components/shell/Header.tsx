@@ -9,7 +9,8 @@
  * - Live run progress when plans are running: plan-set summary or single-plan
  *   progress, elapsed time, ETA when known, and accumulated cost when > 0.
  *   The entire section is a button that cycles selectedPlanId through
- *   runningPlanIds. A ■ cancel button stops the whole run.
+ *   runningPlanIds; its glyph turns amber while any running plan is
+ *   unverified (runningState). A ■ cancel button stops the whole run.
  * - Connection dot with data-connection attribute and descriptive title.
  */
 
@@ -19,6 +20,7 @@ import { useDashboardStore } from '@/stores/dashboard';
 import { compactDuration, formatCost, middleEllipsis } from '@/lib/formatters';
 import { useNow } from '@/lib/useNow';
 import { StatusGlyph } from '@/components/primitives/StatusGlyph';
+import { runningState } from '@/lib/planRows';
 
 // ---------------------------------------------------------------------------
 // Props
@@ -62,6 +64,9 @@ export function Header({
 
   // Plans currently in the 'running' phase.
   const runningPlans = Object.values(run.plans).filter((p) => p.phase === 'running');
+  const runGlyph = runningPlans.some((p) => runningState(run, p) === 'unverified')
+    ? 'unverified'
+    : 'active';
 
   // Is this a multi-plan set (more than one plan in the set)?
   const isMultiPlanSet = run.planSet !== null && run.planSet.planIds.length > 1;
@@ -154,7 +159,7 @@ export function Header({
             className="rd-header__summary"
             onClick={handleSelectNext}
           >
-            <StatusGlyph state="active" />
+            <StatusGlyph state={runGlyph} />
             <span>{runSummaryText}</span>
           </button>
           <button

@@ -19,7 +19,8 @@ export interface StatusGlyphProps {
  * aria-label: always the registry label (e.g. "accepted").
  * title:      defaults to the label; overridable for richer tooltip text.
  * color:      inline style from the CSS token (e.g. var(--state-accepted)).
- * animation:  active state receives `rd-pulse` (2.4 s, paused under prefers-reduced-motion).
+ * animation:  the running states (active, unverified) receive `rd-pulse` (2.4 s,
+ *             paused under prefers-reduced-motion).
  */
 export function StatusGlyph({ state, title }: StatusGlyphProps) {
   const def = GLYPHS[state];
@@ -29,7 +30,7 @@ export function StatusGlyph({ state, title }: StatusGlyphProps) {
       aria-label={def.label}
       title={title ?? def.label}
       style={{ color: def.token }}
-      className={state === 'active' ? 'rd-pulse' : undefined}
+      className={state === 'active' || state === 'unverified' ? 'rd-pulse' : undefined}
     >
       {def.glyph}
     </span>

@@ -29,8 +29,10 @@
 #
 # `file` (Read, Edit, Write, Grep, Glob and the like) denies a file_path,
 # notebook_path or path argument that is a provider key file: .env,
-# secrets.toml or credentials.json in any .roko directory, or anything in
-# ~/.roko. A Grep or Glob rooted at a .roko directory is denied as well.
+# secrets.toml or credentials.json in any .roko directory, ~/.roko
+# included. A Grep or Glob rooted at a .roko directory is denied as well.
+# The rest of .roko stays readable: when HOME is the workdir, ~/.roko is
+# the workdir's .roko, with its plans, state and plan worktrees.
 #
 # Exit 0 lets the call run. Exit 2 blocks it, and Claude Code shows stderr
 # to the model. Claude Code treats any other exit code as a non-blocking
@@ -312,48 +314,32 @@ def git_failure(result):
     return result.stderr.strip() or "git exited %d" % result.returncode
 
 
-# Files in a .roko directory that hold provider keys or roko credentials
-# (roko_core::child_env::KEY_FILE_NAMES). All of ~/.roko is off limits too.
+# Files in a .roko directory, ~/.roko or a checkout's, that hold provider
+# keys or roko credentials (roko_core::child_env::KEY_FILE_NAMES).
 KEY_FILE_NAMES = (".env", "secrets.toml", "credentials.json")
 KEY_FILE_REASON = (
     "provider key files are off limits to agents"
-    " (.roko/.env, .roko/secrets.toml and everything in ~/.roko)"
+    " (.env, secrets.toml and credentials.json in any .roko directory, ~/.roko included)"
 )
-# ~/.roko spelled with a tilde or a variable.
-HOME_ROKO_TEXT = re.compile(r"(~|\$HOME|\$\{HOME\})\"?/\.roko(?![\w.-])")
 ROKO_DIR_TEXT = re.compile(r"(?<![\w.-])\.roko(?![\w.-])")
 KEY_FILE_TEXT = re.compile(r"\.env(?![\w-])|secrets\.toml|credentials\.json")
-
-
-def home_roko_dirs():
-    home = os.path.expanduser("~")
-    if not os.path.isabs(home) or home == os.sep:
-        return set()
-    return {os.path.join(os.path.normpath(home), ".roko"), os.path.join(os.path.realpath(home), ".roko")}
-
-
-HOME_ROKO_DIRS = home_roko_dirs()
+# A glob directly in a .roko directory (.roko/*), which can match a key file.
+ROKO_GLOB_TEXT = re.compile(r"(?<![\w.-])\.roko/[^/\s;&|<>()]*[*?\[{]")
 
 
 def names_key_file(command):
-    """Whether `command` names ~/.roko, or a .roko directory and a key file."""
-    if HOME_ROKO_TEXT.search(command):
+    """Whether `command` names a .roko directory and a key file, or globs in one."""
+    if ROKO_GLOB_TEXT.search(command):
         return True
-    for home_roko in HOME_ROKO_DIRS:
-        if re.search(re.escape(home_roko) + r"(?![\w.-])", command):
-            return True
     return bool(ROKO_DIR_TEXT.search(command) and KEY_FILE_TEXT.search(command))
 
 
 def is_key_path(path, cwd, search_root):
-    """Whether a tool's path argument is a key file or lies in ~/.roko, as
-    given or with symlinks resolved. A search root is also denied when it is
-    a .roko directory, since the search would read the key files in it."""
+    """Whether a tool's path argument is a key file, as given or with
+    symlinks resolved. A search root is also denied when it is a .roko
+    directory, since the search would read the key files in it."""
     path = os.path.join(cwd, os.path.expanduser(path))
     for candidate in {os.path.normpath(path), os.path.realpath(path)}:
-        for home_roko in HOME_ROKO_DIRS:
-            if candidate == home_roko or candidate.startswith(home_roko + os.sep):
-                return True
         parent, name = os.path.split(candidate)
         if os.path.basename(parent) == ".roko" and name in KEY_FILE_NAMES:
             return True

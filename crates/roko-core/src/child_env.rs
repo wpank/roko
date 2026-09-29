@@ -434,7 +434,7 @@ pub const KEY_FILE_NAMES: &[&str] = &[".env", "secrets.toml", "credentials.json"
 /// The files that hold provider keys and roko credentials for home directory
 /// `home` and workdir `workdir`: each of [`KEY_FILE_NAMES`] in `~/.roko` and
 /// in `<workdir>/.roko`. Agents must read none of them; [`is_key_file`] is
-/// the check, and it covers the rest of `~/.roko` as well.
+/// the check.
 #[must_use]
 pub fn key_file_paths(home: Option<&Path>, workdir: &Path) -> Vec<PathBuf> {
     let mut paths = Vec::new();
@@ -445,15 +445,16 @@ pub fn key_file_paths(home: Option<&Path>, workdir: &Path) -> Vec<PathBuf> {
     paths
 }
 
-/// Whether agents must be kept away from `path`: it lies in `home`'s `.roko`
-/// directory, or it is one of [`KEY_FILE_NAMES`] in any other `.roko`
-/// directory, such as another checkout's. Pass `path` and `home` in the same
-/// form, both canonical or both lexical.
+/// Whether agents must be kept away from `path`: it is one of
+/// [`KEY_FILE_NAMES`] in a `.roko` directory, `~/.roko`, the workdir's or
+/// any other checkout's.
+///
+/// The rest of a `.roko` directory, `~/.roko` included, stays readable. When
+/// `HOME` is the workdir, as in many containers and CI jobs, `~/.roko` is
+/// the workdir's `.roko`, and agents need its plans, state and the plan
+/// worktrees under `.roko/worktrees`.
 #[must_use]
-pub fn is_key_file(path: &Path, home: Option<&Path>) -> bool {
-    if home.is_some_and(|home| path.starts_with(home.join(".roko"))) {
-        return true;
-    }
+pub fn is_key_file(path: &Path) -> bool {
     let mut components = path.components().rev();
     matches!(
         (components.next(), components.next()),
@@ -704,7 +705,7 @@ mod tests {
     }
 
     #[test]
-    fn key_files_cover_both_roko_dirs_and_all_of_home_roko() {
+    fn key_files_cover_both_roko_dirs() {
         let home = Path::new("/home/dev");
         let workdir = Path::new("/work/repo");
         let paths = key_file_paths(Some(home), workdir);
@@ -720,23 +721,51 @@ mod tests {
             );
         }
         for path in &paths {
-            assert!(is_key_file(path, Some(home)), "{}", path.display());
+            assert!(is_key_file(path), "{}", path.display());
         }
         assert_eq!(key_file_paths(None, workdir).len(), KEY_FILE_NAMES.len());
 
-        // All of ~/.roko, and the key files in any other checkout's .roko.
-        for path in ["/home/dev/.roko/config.toml", "/elsewhere/repo/.roko/.env"] {
-            assert!(is_key_file(Path::new(path), Some(home)), "{path}");
+        // The key files in any other checkout's .roko, and relative paths.
+        for path in ["/elsewhere/repo/.roko/.env", ".roko/secrets.toml"] {
+            assert!(is_key_file(Path::new(path)), "{path}");
         }
-        // The rest of a workdir's .roko, and look-alikes.
+        // The rest of a .roko directory, ~/.roko's too, and look-alikes.
         for path in [
             "/work/repo/.roko/state/graph/p/checkpoint.json",
+            "/home/dev/.roko/config.toml",
             "/work/repo/.env",
             "/work/repo/.roko-old/.env",
+            "/work/repo/.roko/.env/nested",
             "/home/dev/.rokorc",
         ] {
-            assert!(!is_key_file(Path::new(path), Some(home)), "{path}");
+            assert!(!is_key_file(Path::new(path)), "{path}");
         }
+    }
+
+    #[test]
+    fn key_file_policy_when_home_is_workdir() {
+        // Containers and CI jobs often run with HOME set to the project, so
+        // ~/.roko and the workdir's .roko are one directory. Its key files
+        // are refused; its plans, state and plan worktrees are not.
+        let workdir = Path::new("/app");
+        let paths = key_file_paths(Some(workdir), workdir);
+        assert_eq!(paths.len(), 2 * KEY_FILE_NAMES.len());
+        for name in KEY_FILE_NAMES {
+            let path = workdir.join(".roko").join(name);
+            assert!(paths.contains(&path), "{} missing", path.display());
+            assert!(is_key_file(&path), "{}", path.display());
+        }
+        for path in [
+            "/app/.roko",
+            "/app/.roko/state/graph/p/checkpoint.json",
+            "/app/.roko/prd/drafts/x.md",
+            "/app/.roko/worktrees/p-t1/src/lib.rs",
+            "/app/.roko/config.toml",
+        ] {
+            assert!(!is_key_file(Path::new(path)), "{path}");
+        }
+        // A plan worktree's own .roko is still covered.
+        assert!(is_key_file(Path::new("/app/.roko/worktrees/p-t1/.roko/.env")));
     }
 
     #[test]

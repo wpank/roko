@@ -17,9 +17,10 @@
 //!    missing tail components. We never call [`std::fs::canonicalize`] on
 //!    a non-existent leaf because the platform behavior differs.
 //! 3. A provider key file ([`roko_core::child_env::is_key_file`]: the
-//!    `.roko/.env` and `.roko/secrets.toml` of a checkout, anything in
-//!    `~/.roko`) is refused with [`ToolError::KeyFileBlocked`], inside the
-//!    worktree too and whatever the policy says.
+//!    `.env`, `secrets.toml` or `credentials.json` of any `.roko`
+//!    directory, `~/.roko` included) is refused with
+//!    [`ToolError::KeyFileBlocked`], inside the worktree too and whatever
+//!    the policy says. The rest of `.roko` stays readable.
 //! 4. If `policy.prevent_escapes` is set (default), the canonical
 //!    `joined` must `starts_with` the canonical worktree root. Otherwise
 //!    we return [`ToolError::PathOutsideWorktree`] carrying the canonical
@@ -146,15 +147,11 @@ pub fn canonicalize_with_policy(
     // 3. Provider key files, by the path as given and as resolved (either
     //    may be a symlink to the other). The plan may run in the operator's
     //    checkout, so `.roko/.env` can sit inside the worktree.
-    let home = std::env::var_os("HOME")
-        .filter(|home| !home.is_empty())
-        .map(PathBuf::from);
     let lexical = normalize(&joined);
-    if is_key_file(&lexical, home.as_deref()) {
+    if is_key_file(&lexical) {
         return Err(ToolError::KeyFileBlocked(lexical));
     }
-    let canonical_home = home.as_deref().map(canonicalize_existing_or_parent);
-    if is_key_file(&canonical_joined, canonical_home.as_deref()) {
+    if is_key_file(&canonical_joined) {
         return Err(ToolError::KeyFileBlocked(canonical_joined));
     }
 
@@ -514,18 +511,23 @@ mod tests {
                 .expect("the rest of .roko stays readable");
         }
 
-        // Anything in ~/.roko, even when escapes are allowed. The check only
+        // The key files of another .roko directory, such as ~/.roko, even
+        // when escapes are allowed, but not the rest of it. The check only
         // resolves the path; it never opens the file.
-        if let Some(home) = std::env::var_os("HOME").filter(|home| !home.is_empty()) {
-            for name in [".env", "credentials.json", "config.toml"] {
-                let path = PathBuf::from(&home).join(".roko").join(name);
-                let arg = path.to_str().expect("utf8 home");
-                let err = canonicalize_with_policy(&root, arg, &loose).expect_err("home key file");
-                assert!(
-                    matches!(err, ToolError::KeyFileBlocked(_)),
-                    "{arg}: expected KeyFileBlocked, got {err:?}"
-                );
-            }
+        let (_home_guard, home) = tempdir();
+        for (name, is_key) in [
+            (".env", true),
+            ("credentials.json", true),
+            ("config.toml", false),
+        ] {
+            let path = home.join(".roko").join(name);
+            let arg = path.to_str().expect("utf8 path");
+            let result = canonicalize_with_policy(&root, arg, &loose);
+            assert_eq!(
+                matches!(result, Err(ToolError::KeyFileBlocked(_))),
+                is_key,
+                "{arg}: {result:?}"
+            );
         }
     }
 

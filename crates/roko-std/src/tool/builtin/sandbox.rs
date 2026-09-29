@@ -62,15 +62,11 @@ pub fn require_within_worktree(worktree: &Path, rel: &str) -> Result<PathBuf, To
 ///
 /// Returns [`ToolError::KeyFileBlocked`] naming the form that is a key file.
 pub fn refuse_key_file(path: &Path) -> Result<(), ToolError> {
-    let home = std::env::var_os("HOME")
-        .filter(|home| !home.is_empty())
-        .map(PathBuf::from);
-    if is_key_file(path, home.as_deref()) {
+    if is_key_file(path) {
         return Err(ToolError::KeyFileBlocked(path.to_path_buf()));
     }
     let resolved = resolve_symlinks(path);
-    let resolved_home = home.as_deref().map(resolve_symlinks);
-    if is_key_file(&resolved, resolved_home.as_deref()) {
+    if is_key_file(&resolved) {
         return Err(ToolError::KeyFileBlocked(resolved));
     }
     Ok(())

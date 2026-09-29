@@ -570,6 +570,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn wal_replay_keeps_entries_for_untracked_models() {
+        // bug-7a2630: an opener that tracks fewer models than the WAL names
+        // still saves every entry, so a wider router later sees them all.
+        let tmp = tempdir().expect("tempdir");
+        let learn_dir = tmp.path().join("learn");
+        let models = vec!["model-a".to_string(), "model-b".to_string()];
+        {
+            let router = CascadeRouter::new(models.clone());
+            let journal = ModelCallJournal::for_learn_dir(&learn_dir);
+            journal.observe_model_call(&router, "model-a", "implementer", true, 1_000);
+            journal.observe_model_call(&router, "model-b", "implementer", false, 1_000);
+            // The writer dies before it saves.
+        }
+
+        let narrow = reopen(&learn_dir, vec!["model-a".to_string()]).await;
+        let narrow_confidence = narrow.cascade_router().confidence_snapshot();
+        assert_eq!(narrow_confidence["model-a"], (1, 1));
+        drop(narrow);
+
+        let wide = reopen(&learn_dir, models).await;
+        let confidence = wide.cascade_router().confidence_snapshot();
+        assert_eq!(confidence["model-a"], (1, 1));
+        assert_eq!(
+            confidence["model-b"],
+            (1, 0),
+            "the narrower opener kept model-b's entry"
+        );
+        assert_eq!(wide.cascade_router().total_observations(), 2);
+    }
+
+    #[tokio::test]
     async fn forced_override_outcome_replayed_from_wal() {
         // bug-012303: an override outcome recorded through the journal
         // survives a process that dies before saving, and replays as the

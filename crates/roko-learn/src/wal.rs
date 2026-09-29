@@ -222,6 +222,15 @@ pub fn append_entry(path: &Path, entry: &WalEntry) -> io::Result<()> {
     write_entry(&mut file, entry)
 }
 
+/// Empty the WAL at `path`, once saved snapshots hold all its entries.
+pub fn truncate_wal(path: &Path) -> io::Result<()> {
+    OpenOptions::new()
+        .write(true)
+        .truncate(true)
+        .open(path)?
+        .sync_all()
+}
+
 fn write_entry(file: &mut File, entry: &WalEntry) -> io::Result<()> {
     let mut line =
         serde_json::to_string(entry).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;

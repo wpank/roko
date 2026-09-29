@@ -2,14 +2,16 @@
 id = "gap-42d749"
 kind = "gap"
 title = "Companion telemetry leftovers: scripts hard-code the repo path, and the E3 rating sheets still cite the freeze file"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p3"
 goal = "whitepaper"
 size = "S"
 subsystem = ["companion-audit"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-29
+last_verified_rev = "b88ea1150"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (15:47, wk-companion-fin's report on gap-b409fa)"
 anchors = ["tmp/cybernetic-harness/companion-audit/telemetry/scripts/", "tmp/cybernetic-harness/companion-audit/HUMAN-RATING-E3.csv", "tmp/cybernetic-harness/companion-audit/HUMAN-RATING-E3-key.csv", "tmp/cybernetic-harness/execution/evidence/E2/build_rating_worksheets.py"]
@@ -19,6 +21,11 @@ links = { depends_on = [], blocks = [], related = ["gap-b409fa", "gap-cdd5f4", "
 
 [[verify]]
 command = "! grep -rq --include='*.py' '/Users/will' tmp/cybernetic-harness/companion-audit/telemetry/scripts/ && ! grep -q 'claude-md-status-2026-09-28.md' tmp/cybernetic-harness/companion-audit/HUMAN-RATING-E3.csv tmp/cybernetic-harness/companion-audit/HUMAN-RATING-E3-key.csv"
+
+[closed]
+at = 2026-09-29
+by = "coordinator (session 7622b882)"
+evidence = "Companion telemetry leftovers (tmp, wk-companion-tidy): a stdlib-only reporoot.py supplies the default checkout and the 10 scripts take arguments (drift3_at_tag.py at the tag reproduces E1's log byte for byte); E3 rating sheets rebuilt with the same 40-claim sample, 28 re-pointed sources match E1's line map, and FS:21/FS:23 cite code checked at 91b4745f8; the E2 sheet is unchanged. Verify passes."
 +++
 
 ## Problem

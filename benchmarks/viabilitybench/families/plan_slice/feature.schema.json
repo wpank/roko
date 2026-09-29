@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "vb.feature/1",
+  "description": "The private manifest of one plan-slice instance, PRIVATE/feature.json, written by slicekit.py materialize. It records the canary, so it never enters the agent's workdir. It names the whole-feature suite but never holds it. vb.task/1 cannot hold a PL instance (its family is F1-F8 and it needs a ladder level), so the slice keeps this schema until S08 registers one under schema/.",
+  "type": "object",
+  "required": ["schema_version", "instance_id", "family", "feature", "feature_dir", "slug", "generator_version", "seed", "rename", "package", "description", "visible_verify", "visible_tests", "visible_test_hashes", "requirements", "recoverability", "plan_skeleton", "truth_suite", "pristine", "canary", "workdir"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"const": "vb.feature/1"},
+    "instance_id": {"type": "string", "description": "feature id and seed, e.g. PL03-0001"},
+    "family": {"const": "PL"},
+    "feature": {"type": "string"},
+    "feature_dir": {"type": "string"},
+    "slug": {"type": "string"},
+    "generator_version": {"type": "string"},
+    "seed": {"type": "integer"},
+    "rename": {"type": "object", "additionalProperties": {"type": "string"}, "description": "the seed's surface renames"},
+    "package": {"type": "string", "description": "the feature's package name after renaming"},
+    "description": {
+      "type": "object",
+      "required": ["path", "sha256"],
+      "additionalProperties": false,
+      "properties": {"path": {"type": "string"}, "sha256": {"type": "string"}},
+      "description": "the feature description both arms get, relative to the private directory"
+    },
+    "visible_verify": {"type": "array", "minItems": 1, "items": {"type": "string"}},
+    "visible_tests": {"type": "array", "minItems": 1, "items": {"type": "string"}},
+    "visible_test_hashes": {"type": "object", "additionalProperties": {"type": "string"}},
+    "requirements": {"type": "array", "minItems": 1, "items": {"type": "string"}},
+    "recoverability": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["req", "evidence"],
+        "properties": {"req": {"type": "string"}, "evidence": {"type": "array", "minItems": 1, "items": {"type": "string"}}}
+      }
+    },
+    "plan_skeleton": {
+      "type": "object",
+      "required": ["tasks", "width", "sha256"],
+      "additionalProperties": false,
+      "properties": {"tasks": {"type": "integer"}, "width": {"type": "integer"}, "sha256": {"type": "string"}}
+    },
+    "truth_suite": {
+      "type": "object",
+      "required": ["id", "version", "author", "cross_family_review"],
+      "properties": {
+        "id": {"type": "string"},
+        "version": {"type": "string"},
+        "author": {"type": "string", "description": "the model that wrote the suite; the design asks for a family other than the arms'"},
+        "cross_family_review": {"enum": ["pending", "done"]}
+      }
+    },
+    "pristine": {
+      "type": "object",
+      "required": ["bundle", "commit", "tree"],
+      "additionalProperties": false,
+      "properties": {"bundle": {"type": "string"}, "commit": {"type": "string"}, "tree": {"type": "string"}}
+    },
+    "canary": {"type": "string"},
+    "workdir": {"type": "string"}
+  }
+}

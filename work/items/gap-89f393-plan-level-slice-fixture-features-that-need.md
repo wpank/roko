@@ -3,13 +3,14 @@ id = "gap-89f393"
 kind = "gap"
 title = "Plan-level slice: fixture features that need whole multi-task plans, with hidden whole-feature tests"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p2"
 goal = "proof"
 size = "M"
 subsystem = ["benchmarks/viabilitybench"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-29
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e12"
 discovered_from = "workstreams/assessment/W10-benchmarks-proof.md (rec 12); decided 2026-09-29: evaluation covers single tasks plus a plan-level slice"
 anchors = ["benchmarks/viabilitybench/families/plan_slice/"]
@@ -64,3 +65,11 @@ wide.
 
 - Building the fixtures spends nothing; the runs are the sibling item.
 - The tests use the benchmark's pinned venv. Will decided on 2026-09-29 that it is created by gap-0580f7.
+- 2026-09-29 (wk-bench-slice): built 6 features (PL01–PL06, 5–7 tasks each, width 3–4, 5–7 modules) under
+  `benchmarks/viabilitybench/families/plan_slice/`, with `slicekit.py` (materialize, census, selftest), a private
+  `vb.feature/1` manifest and a plan skeleton per feature. Beyond the reference and the stub, verifier CI shows that
+  the reference with any one skeleton task undone fails the hidden suite. The verify file
+  `benchmarks/viabilitybench/tests/test_plan_slice.py` is the one file outside the anchor.
+- Not met: the suites were written by `claude-opus-5-5` (Anthropic), the `fd_claude` arm's model family, not by a
+  different family. Each `feature.toml` records `cross_family_review = "pending"`. The suites are also static files,
+  not HMAC-keyed cases as in F1 and F4.

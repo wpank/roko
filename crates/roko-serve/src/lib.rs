@@ -109,6 +109,29 @@ use crate::events::{ExecutionEvent, ServerEvent};
 use runtime::CliRuntime;
 use state::AppState;
 
+/// Resolve the live-agent-output mode and startup log line from the configured
+/// value and the effective listener bind address.
+///
+/// Trusted output is silently downgraded to `ToolSteps` on non-loopback binds
+/// and a warning message is returned instead of the normal confirmation so the
+/// operator knows the requested level was not applied.
+fn live_agent_output_for_bind(
+    configured: roko_core::config::serve::LiveAgentOutput,
+    bind: &str,
+) -> (roko_core::config::serve::LiveAgentOutput, String) {
+    use roko_core::config::serve::LiveAgentOutput;
+    let loopback = routes::bind_is_loopback(bind);
+    let effective = configured.effective(loopback);
+    let message = match effective {
+        LiveAgentOutput::Trusted => "live agent output: trusted".to_string(),
+        LiveAgentOutput::ToolSteps if configured == LiveAgentOutput::Trusted => format!(
+            "live agent output: trusted ignored on non-loopback bind {bind}; streaming tool steps only"
+        ),
+        LiveAgentOutput::ToolSteps => "live agent output: tool_steps".to_string(),
+    };
+    (effective, message)
+}
+
 /// Inputs required to start the HTTP server.
 pub struct ServerBuildConfig {
     /// Project working directory.
@@ -131,6 +154,13 @@ pub struct ServerBuildConfig {
     /// binding so that CLI commands can discover the running server.
     /// Off by default; opt in with [`Self::with_advertised_endpoint`].
     pub advertise_endpoint: bool,
+    /// Optional ephemeral launch token for the local-access auth flow.
+    ///
+    /// When set **and** `advertise_endpoint` is `true`, the server writes
+    /// `.roko/runtime/serve.token` (mode 0600) alongside `serve.json` so that
+    /// local CLI commands can authenticate without a full API key.
+    /// The token is **never** written to `serve.json` or any log.
+    pub launch_token: Option<String>,
 }
 
 impl ServerBuildConfig {
@@ -151,6 +181,7 @@ impl ServerBuildConfig {
             port,
             metrics: None,
             advertise_endpoint: false,
+            launch_token: None,
         }
     }
 
@@ -178,6 +209,21 @@ impl ServerBuildConfig {
     #[must_use]
     pub fn with_advertised_endpoint(mut self) -> Self {
         self.advertise_endpoint = true;
+        self
+    }
+
+    /// Attach an ephemeral launch token to this server configuration.
+    ///
+    /// When the server advertises its endpoint (`with_advertised_endpoint`),
+    /// the token is written to `.roko/runtime/serve.token` (mode 0600) so that
+    /// local CLI commands can authenticate without a pre-configured API key.
+    /// The token is **never** written to `serve.json` or any log.
+    ///
+    /// The token is also stored on [`AppState::local_access`] for the
+    /// duration of the server process.
+    #[must_use]
+    pub fn with_launch_token(mut self, token: String) -> Self {
+        self.launch_token = Some(token);
         self
     }
 
@@ -329,6 +375,7 @@ impl ServerBuilder {
                 roko_config,
                 state_hub,
                 metrics,
+                self.config.launch_token.clone(),
             )?));
         }
         let state = Arc::clone(
@@ -339,6 +386,11 @@ impl ServerBuilder {
         let roko_config = state.load_roko_config();
         validate_bind_safety(&addr, &roko_config.serve)?;
         state.configure_listener_security(&effective_bind, roko_config.serve.auth.enabled);
+        let (live_setting, live_msg) =
+            live_agent_output_for_bind(roko_config.serve.live_agent_output, &effective_bind);
+        state.configure_live_agent_output(live_setting);
+        println!("{live_msg}");
+        info!("{live_msg}");
         if !roko_config.serve.auth.enabled {
             tracing::warn!(
                 "roko serve is running WITHOUT authentication. Set [serve.auth] enabled = true in roko.toml to require API keys."
@@ -478,6 +530,14 @@ impl ServerBuilder {
                 if let Err(err) = endpoint::write_endpoint(&endpoint_workdir, &ep) {
                     warn!(%err, "failed to write serve endpoint file");
                 }
+                // Write the ephemeral launch token alongside serve.json (mode 0600).
+                // The token never goes into serve.json — it is a separate file so
+                // secrets are not accidentally included in endpoint payloads.
+                if let Some(ref token) = self.config.launch_token {
+                    if let Err(err) = endpoint::write_token(&endpoint_workdir, token) {
+                        warn!(%err, "failed to write serve token file");
+                    }
+                }
             }
         }
 
@@ -588,8 +648,11 @@ impl ServerBuilder {
                 warn!(%error, "periodic telemetry observer join failed");
             }
             serve_result?;
-            // Remove the endpoint advertisement when we are the owner.
+            // Remove the endpoint advertisement and token when we are the owner.
+            // The token file must be removed first because remove_token_if_owned
+            // reads serve.json to verify PID ownership.
             if advertise_endpoint {
+                endpoint::remove_token_if_owned(&endpoint_workdir, std::process::id());
                 endpoint::remove_endpoint_if_owned(&endpoint_workdir, std::process::id());
             }
             info!("server stopped");
@@ -1078,6 +1141,7 @@ fn build_app_state(
     mut roko_config: RokoConfig,
     state_hub: Option<crate::SharedStateHub>,
     metrics: Option<Arc<roko_core::obs::metrics::MetricRegistry>>,
+    launch_token: Option<String>,
 ) -> anyhow::Result<AppState> {
     // Auto-configure Privy JWT auth: always set the app ID (it's a project
     // constant) and auto-enable auth when a stored Privy credential exists.
@@ -1115,6 +1179,12 @@ fn build_app_state(
         roko_core::obs::metrics::register_standard_metrics(&shared_metrics);
         crate::state::register_observability_foundation_metrics(&shared_metrics);
         state.metrics = shared_metrics;
+    }
+
+    // Install the ephemeral launch token for the local-access auth flow.
+    // Replaces the default `LocalAccess::new(None)` set in AppState::new.
+    if launch_token.is_some() {
+        state.local_access = crate::state::LocalAccess::new(launch_token);
     }
 
     // Warm the cached cascade router once so gateway selection reuses the
@@ -3467,6 +3537,7 @@ mod tests {
                 roko_core::config::schema::RokoConfig::default(),
                 Some(hub.clone()),
                 None,
+                None,
             )
             .expect("build state"),
         );
@@ -3687,6 +3758,7 @@ mod tests {
             config.clone(),
             None,
             None,
+            None,
         )
         .expect("build_app_state");
 
@@ -3707,6 +3779,7 @@ mod tests {
             fresh_dir.path().to_path_buf(),
             Arc::new(NoOpRuntime),
             config,
+            None,
             None,
             None,
         )
@@ -3773,6 +3846,7 @@ mod tests {
             roko_core::config::schema::RokoConfig::default(),
             None,
             None,
+            None,
         )
         .unwrap();
         let captured = state.state_hub.cursor_snapshot();
@@ -3798,6 +3872,7 @@ mod tests {
             workdir.clone(),
             Arc::new(NoOpRuntime),
             roko_core::config::schema::RokoConfig::default(),
+            None,
             None,
             None,
         )
@@ -3982,6 +4057,7 @@ mod tests {
                 config,
                 None,
                 None,
+                None,
             )
             .expect("build app state"),
         );
@@ -4021,6 +4097,7 @@ mod tests {
                 dir.path().to_path_buf(),
                 Arc::new(NoOpRuntime),
                 roko_core::config::schema::RokoConfig::default(),
+                None,
                 None,
                 None,
             )
@@ -4213,5 +4290,48 @@ mod tests {
             ..Default::default()
         };
         warn_if_auth_misconfigured(&auth);
+    }
+
+    // ── live_agent_output_honours_the_bind ───────────────────────────────────
+
+    #[test]
+    fn live_agent_output_honours_the_bind() {
+        use crate::live_agent_output_for_bind;
+        use roko_core::config::serve::LiveAgentOutput;
+
+        // Loopback + Trusted → effective Trusted, confirmation message.
+        let (eff, msg) = live_agent_output_for_bind(LiveAgentOutput::Trusted, "127.0.0.1");
+        assert_eq!(
+            eff,
+            LiveAgentOutput::Trusted,
+            "loopback should allow Trusted"
+        );
+        assert_eq!(msg, "live agent output: trusted");
+
+        // Non-loopback + Trusted → effective ToolSteps, warning message.
+        let (eff, msg) = live_agent_output_for_bind(LiveAgentOutput::Trusted, "0.0.0.0");
+        assert_eq!(
+            eff,
+            LiveAgentOutput::ToolSteps,
+            "non-loopback must downgrade Trusted"
+        );
+        assert!(
+            msg.contains("trusted ignored on non-loopback bind"),
+            "expected warning in: {msg}"
+        );
+        assert!(
+            msg.contains("0.0.0.0"),
+            "bind address must appear in: {msg}"
+        );
+
+        // Default (ToolSteps) on loopback → ToolSteps, plain confirmation.
+        let (eff, msg) = live_agent_output_for_bind(LiveAgentOutput::ToolSteps, "127.0.0.1");
+        assert_eq!(eff, LiveAgentOutput::ToolSteps);
+        assert_eq!(msg, "live agent output: tool_steps");
+
+        // Default (ToolSteps) on non-loopback → ToolSteps (not a demotion, no warning).
+        let (eff, msg) = live_agent_output_for_bind(LiveAgentOutput::ToolSteps, "0.0.0.0");
+        assert_eq!(eff, LiveAgentOutput::ToolSteps);
+        assert_eq!(msg, "live agent output: tool_steps");
     }
 }

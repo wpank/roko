@@ -457,6 +457,7 @@ pub async fn run_prompt(run: PromptRun<'_>) -> Result<WorkflowRunReport> {
         max_parallel_plans: None,
         fail_fast: false,
         only_plans: None,
+        live_agent_output: crate::graph_task_dispatch::LiveAgentOutput::ToolSteps,
     })
     .await?;
     let duration = started.elapsed();

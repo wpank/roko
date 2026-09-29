@@ -420,6 +420,7 @@ printf '%s\n' '{{"type":"content_block_delta","delta":{{"text":"adapter-ok"}}}}'
             cancel_token: None,
             tool_audit: None,
             max_turns: None,
+            live_output: None,
         };
         let model = claude_model();
 

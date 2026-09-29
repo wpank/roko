@@ -1868,6 +1868,9 @@ impl AgentDispatcherV2 {
             // Thread the persistent file audit adapter so every tool call
             // records scrubbed admit/result lines to disk.
             tool_audit: self.tool_audit.clone(),
+            // Thread the live output channel so the immune boundary can
+            // forward tool steps and unscreened events before screening.
+            live_output: request.live_output.clone(),
             ..Default::default()
         }
     }
@@ -1981,7 +1984,7 @@ async fn record_agent_dispatch_feedback(
 }
 
 /// Request for provider-factory dispatch.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentDispatchRequest {
     /// Logical model key to resolve.
     pub model_key: String,
@@ -2028,6 +2031,14 @@ pub struct AgentDispatchRequest {
     /// `None` means use the provider default (Theta = 10 for Claude CLI).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_turns: Option<u32>,
+    /// Optional live output channel.
+    ///
+    /// When set, the immune boundary taps the provider event stream and
+    /// forwards qualifying events (tool steps, unscreened text/reasoning)
+    /// before the final result is screened. Skipped by serde because
+    /// `LiveOutput` is not serializable.
+    #[serde(skip)]
+    pub live_output: Option<roko_agent::live_output::LiveOutput>,
 }
 
 impl AgentDispatchRequest {
@@ -2195,6 +2206,14 @@ fn stream_chunk_from_event(event: roko_agent::tool_loop::StreamEvent) -> StreamC
             name_delta: Some(name),
             args_delta: None,
         },
+        StreamEventKind::ToolResult { id, output } => {
+            // Map provider-surfaced tool results to ToolProgress so they flow
+            // through to AgentRuntimeEvent::ToolOutput via agent_event_from_chunk.
+            StreamChunk::ToolProgress {
+                tool: id,
+                status: output,
+            }
+        }
         StreamEventKind::Usage(usage) => StreamChunk::Usage(usage),
         StreamEventKind::Done { finish_reason } => StreamChunk::Done(finish_reason),
     }
@@ -2651,6 +2670,7 @@ mod tests {
                 bare_mode: false,
                 dangerously_skip_permissions: false,
                 max_turns: None,
+                live_output: None,
             };
             let error = request.validate().expect_err("invalid identity must fail");
             assert_eq!(error, DispatchV2Error::InvalidAgentId);
@@ -3116,6 +3136,7 @@ mod tests {
             bare_mode: false,
             dangerously_skip_permissions: false,
             max_turns: None,
+            live_output: None,
         };
         // All provider kinds are now in the contract support whitelist,
         // so OpenClaw with a contract should pass validation.
@@ -3182,6 +3203,7 @@ printf '%s\n' '{"type":"content_block_delta","delta":{"text":"dispatch-ok"}}'
             bare_mode: false,
             dangerously_skip_permissions: false,
             max_turns: None,
+            live_output: None,
         };
         let health_path = tmp.path().join(".roko/learn/provider-health.json");
         let registry = Arc::new(ProviderHealthRegistry::new());

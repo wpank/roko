@@ -2,18 +2,24 @@
 id = "bug-28f2b9"
 kind = "bug"
 title = "Agent output replayed in one burst after the agent finishes"
-status = "blocked"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "visibility"
 subsystem = ["roko-cli/graph_task_dispatch"]
 created = 2026-09-25
-updated = 2026-09-28
-last_verified = 2026-09-28
+updated = 2026-09-29
+last_verified = 2026-09-29
 source = "tmp/dogfood/2026-09-25-portal-programme-run.md#P1-8. Agent output is replayed in one burst after the agent finishes"
 discovered_from = "audit:tmp/dogfood/2026-09-25-portal-programme-run.md#P1-8. Agent output is replayed in one burst after the agent finishes"
 anchors = ["crates/roko-cli/src/graph_task_dispatch.rs::forward_dispatch_events_to_tui", "crates/roko-cli/src/graph_task_dispatch.rs:3472", "crates/roko-cli/src/graph_task_dispatch.rs:3875"]
 links = { depends_on = ["dec-578863"], blocks = [], related = [], supersedes = [], duplicate_of = "" }
+
+[closed]
+at = 2026-09-29
+by = "plan:portal-programme/03c-backend-local-access#T10"
+run_id = "graph-03c-backend-local-access-ecb447db-1cfe-4ad3-9f93-2bc34ba59f34"
+evidence = "LIVE-OUTPUT-CHECK: PASS (15 checks). 'PASS a tool step arrives while the task is still running' and 'PASS the step names the tool' confirm that tool steps now stream live during agent execution rather than bursting after it finishes. The immune-boundary decision (dec-578863) was the blocker; 03c T12-T20 implemented the chosen option."
 +++
 forward_dispatch_events_to_tui runs after run_shared_agent_bridge returns, so the output pane is blank for the whole agent turn and then fills at once.
 

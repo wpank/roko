@@ -2,13 +2,13 @@
 id = "dec-578863"
 kind = "decision"
 title = "Show agent output live before the immune boundary screens it?"
-status = "in_progress"
+status = "done"
 triage = "verified"
 severity = "p2"
 subsystem = ["roko-agent/safety", "roko-cli/graph-dispatch"]
 created = 2026-09-28
-updated = 2026-09-28
-last_verified = 2026-09-28
+updated = 2026-09-29
+last_verified = 2026-09-29
 source = "plan:portal-programme/03-backend-live-events#T07"
 discovered_from = "plan:portal-programme/03-backend-live-events#T04"
 anchors = ["crates/roko-agent/src/immune_boundary.rs", "crates/roko-cli/src/graph_task_dispatch.rs::GraphTaskDispatcher::dispatch"]
@@ -16,8 +16,9 @@ links = { depends_on = [], blocks = ["gap-be0ac2", "bug-28f2b9"], related = [], 
 
 [closed]
 at = 2026-09-28
-by = "Will (recorded by team-lead)"
-evidence = "Decision recorded: tool steps live + opt-in full text. Implementation planned in plans/portal-programme/03c-backend-local-access T12-T20; the item moves to done when that plan's live-output check passes."
+by = "Will (recorded by team-lead); implementation confirmed by plan:portal-programme/03c-backend-local-access#T10"
+run_id = "graph-03c-backend-local-access-ecb447db-1cfe-4ad3-9f93-2bc34ba59f34"
+evidence = "Decision recorded: tool steps live + opt-in full text. LIVE-OUTPUT-CHECK: PASS (15 checks) confirmed the full implementation: tool steps arrive mid-task in default mode (live:true, target only, no input), unscreened text and tool results arrive in trusted mode (live:true, screened:false), the startup line announces the mode on stdout, and the screened transcript still arrives after agent_completed."
 +++
 
 The immune boundary (`crates/roko-agent/src/immune_boundary.rs`) releases only the screened final body after a turn; its `run_streaming` implementation explicitly states "Provider events are not replayed." Streaming raw provider output before the boundary screens it is a safety and trust question, not a wiring question.

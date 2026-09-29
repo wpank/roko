@@ -2518,3 +2518,102 @@ fn accepted_with_failures_is_its_own_task_state() {
         TaskStatus::AcceptedWithFailures
     );
 }
+
+// =======================================================================
+// Live-unscreened tracking and settle tests (T19)
+// =======================================================================
+
+/// Ingesting a live+unscreened text record tracks its seq in
+/// `live_unscreened_seqs` so it can be dropped on settle.
+#[test]
+fn ingest_live_unscreened_text_is_tracked() {
+    let mut history = AgentOutputHistory::default();
+    let unscreened_line =
+        "\x1eroko.stream.v1 {\"kind\":\"text\",\"content\":\"draft\",\"live\":true,\"screened\":false}"
+            .to_string();
+    history.ingest_lines("agent-a", &[unscreened_line], "assistant");
+
+    // The record must be present.
+    assert_eq!(history.len("agent-a"), 1);
+    // The seq must be in the unscreened tracking set.
+    let seq = history.before("agent-a", None, 1)[0].seq;
+    assert!(
+        history
+            .live_unscreened_seqs
+            .get("agent-a")
+            .is_some_and(|s| s.contains(&seq)),
+        "live unscreened seq {seq} must be tracked"
+    );
+}
+
+/// `settle_screened_transcript` drops unscreened text records but keeps
+/// tool steps (ToolCall/ToolResult) intact.
+#[test]
+fn settle_screened_transcript_keeps_tool_steps() {
+    let mut history = AgentOutputHistory::default();
+
+    // Push a live unscreened text record.
+    let unscreened_text =
+        "\x1eroko.stream.v1 {\"kind\":\"text\",\"content\":\"draft\",\"live\":true,\"screened\":false}"
+            .to_string();
+    // Push a live tool start (should be KEPT after settle).
+    let tool_step = "\x1eroko.stream.v1 {\"kind\":\"tool_start\",\"tool_name\":\"Write\",\"tool_id\":\"t1\",\"live\":true}".to_string();
+    // Push another unscreened reasoning record.
+    let unscreened_reasoning = "\x1eroko.stream.v1 {\"kind\":\"reasoning\",\"content\":\"thinking\",\"live\":true,\"screened\":false}".to_string();
+
+    history.ingest_lines(
+        "a",
+        &[unscreened_text, tool_step, unscreened_reasoning],
+        "assistant",
+    );
+    assert_eq!(history.len("a"), 3);
+
+    // Settle: provide the screened transcript as two new lines.
+    let settled =
+        vec!["\x1eroko.stream.v1 {\"kind\":\"text\",\"content\":\"settled output\"}".to_string()];
+    history.settle_screened_transcript("a", &settled, "assistant");
+
+    // After settle: 1 tool step (kept) + 1 settled text line.
+    let records = history.before("a", None, 10);
+    let kinds: Vec<OutputRecordKind> = records.iter().map(|r| r.kind).collect();
+    assert!(
+        kinds.contains(&OutputRecordKind::ToolCall),
+        "tool call must be kept after settle: {kinds:?}"
+    );
+    let tool_count = kinds
+        .iter()
+        .filter(|&&k| k == OutputRecordKind::ToolCall)
+        .count();
+    assert_eq!(tool_count, 1, "exactly one tool call must remain");
+    let text_count = kinds
+        .iter()
+        .filter(|&&k| k == OutputRecordKind::Text)
+        .count();
+    assert_eq!(
+        text_count, 1,
+        "exactly one settled text record must be present"
+    );
+
+    // Unscreened seqs must be cleared after settle.
+    assert!(
+        history
+            .live_unscreened_seqs
+            .get("a")
+            .map_or(true, |s| s.is_empty()),
+        "live_unscreened_seqs must be cleared after settle"
+    );
+}
+
+/// Settling an agent with no unscreened records is a safe no-op.
+#[test]
+fn settle_screened_transcript_noop_when_no_unscreened() {
+    let mut history = AgentOutputHistory::default();
+    let lines = vec!["\x1eroko.stream.v1 {\"kind\":\"text\",\"content\":\"hello\"}".to_string()];
+    history.ingest_lines("a", &lines, "assistant");
+    assert_eq!(history.len("a"), 1);
+
+    // Settle with new content — should just append (no records dropped).
+    let settled = vec!["\x1eroko.stream.v1 {\"kind\":\"text\",\"content\":\"world\"}".to_string()];
+    history.settle_screened_transcript("a", &settled, "assistant");
+    assert_eq!(history.len("a"), 2);
+}

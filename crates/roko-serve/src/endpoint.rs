@@ -87,6 +87,64 @@ pub fn remove_endpoint_if_owned(workdir: &Path, pid: u32) {
 }
 
 // ---------------------------------------------------------------------------
+// Launch token file (.roko/runtime/serve.token)
+// ---------------------------------------------------------------------------
+
+/// Return the canonical path where the launch token file lives.
+///
+/// Resolves to `<workdir>/.roko/runtime/serve.token`, next to `serve.json`.
+pub fn token_path(workdir: &Path) -> PathBuf {
+    workdir.join(".roko").join("runtime").join("serve.token")
+}
+
+/// Write the launch token to `.roko/runtime/serve.token` with mode 0600.
+///
+/// The token is written atomically: a temp file is written next to the
+/// destination and restricted to owner-read/write before being renamed so
+/// it is never world-readable, even transiently.
+///
+/// The token **never** goes into `serve.json`; it is a separate file so
+/// endpoint payloads remain free of secrets.
+///
+/// # Errors
+///
+/// Returns an error if the directory cannot be created, the file cannot be
+/// written, permissions cannot be set, or the rename fails.
+pub fn write_token(workdir: &Path, token: &str) -> anyhow::Result<()> {
+    let dest = token_path(workdir);
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    // Write to a sibling temp file, restrict permissions, then rename for atomicity.
+    let tmp = dest.with_extension("token.tmp");
+    std::fs::write(&tmp, token)?;
+
+    // Restrict to owner-read/write only before renaming.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))?;
+    }
+
+    std::fs::rename(&tmp, &dest)?;
+    Ok(())
+}
+
+/// Remove the workspace token file when the current process owns the endpoint.
+///
+/// Reads `serve.json` to verify PID ownership before removing `serve.token`.
+/// **Must be called before [`remove_endpoint_if_owned`]** so the PID can still
+/// be read from the endpoint file.
+pub fn remove_token_if_owned(workdir: &Path, pid: u32) {
+    if let Some(endpoint) = read_endpoint(workdir) {
+        if endpoint.pid == pid {
+            let _ = std::fs::remove_file(token_path(workdir));
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Helper: build a loopback URL from a bound socket address
 // ---------------------------------------------------------------------------
 
@@ -169,6 +227,97 @@ mod tests {
         assert!(
             read_endpoint(dir.path()).is_none(),
             "file should be gone after correct-pid remove"
+        );
+    }
+
+    #[test]
+    fn write_token_creates_file_with_restricted_permissions() {
+        let dir = temp_workdir();
+        write_token(dir.path(), "my-launch-token").expect("write_token should succeed");
+
+        let path = token_path(dir.path());
+        assert!(path.exists(), "token file should exist after write");
+
+        let contents = std::fs::read_to_string(&path).expect("read token file");
+        assert_eq!(
+            contents, "my-launch-token",
+            "token file must contain the exact token"
+        );
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path)
+                .expect("metadata")
+                .permissions()
+                .mode();
+            assert_eq!(
+                mode & 0o777,
+                0o600,
+                "token file must have mode 0600 (owner read/write only)"
+            );
+        }
+    }
+
+    #[test]
+    fn remove_token_if_owned_removes_token_with_correct_pid() {
+        let dir = temp_workdir();
+        let pid: u32 = 42424;
+
+        let ep = ServeEndpoint {
+            pid,
+            url: "http://127.0.0.1:6677".to_string(),
+            workdir: dir.path().to_path_buf(),
+            started_at: "2026-09-28T00:00:00Z".to_string(),
+        };
+        write_endpoint(dir.path(), &ep).expect("write endpoint");
+        write_token(dir.path(), "secret").expect("write token");
+
+        assert!(
+            token_path(dir.path()).exists(),
+            "token should exist before removal attempt"
+        );
+
+        // Wrong PID must not remove the token.
+        remove_token_if_owned(dir.path(), 99999);
+        assert!(
+            token_path(dir.path()).exists(),
+            "token must survive a wrong-pid remove attempt"
+        );
+
+        // Correct PID removes the token.
+        remove_token_if_owned(dir.path(), pid);
+        assert!(
+            !token_path(dir.path()).exists(),
+            "token must be removed after a correct-pid remove"
+        );
+    }
+
+    #[test]
+    fn token_is_removed_before_endpoint_on_shutdown_sequence() {
+        let dir = temp_workdir();
+        let pid: u32 = 55555;
+
+        let ep = ServeEndpoint {
+            pid,
+            url: "http://127.0.0.1:6677".to_string(),
+            workdir: dir.path().to_path_buf(),
+            started_at: "2026-09-28T00:00:00Z".to_string(),
+        };
+        write_endpoint(dir.path(), &ep).expect("write endpoint");
+        write_token(dir.path(), "shutdown-token").expect("write token");
+
+        // Simulate the shutdown sequence: token first, then endpoint.
+        remove_token_if_owned(dir.path(), pid);
+        remove_endpoint_if_owned(dir.path(), pid);
+
+        assert!(
+            !token_path(dir.path()).exists(),
+            "serve.token must be gone after shutdown"
+        );
+        assert!(
+            read_endpoint(dir.path()).is_none(),
+            "serve.json must be gone after shutdown"
         );
     }
 

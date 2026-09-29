@@ -1172,6 +1172,7 @@ async fn run_generated_plans(workdir: &Path, plans_root: &Path) -> Result<()> {
             max_parallel_plans: None,
             fail_fast: false,
             only_plans: None,
+            live_agent_output: crate::graph_task_dispatch::LiveAgentOutput::ToolSteps,
         })
         .await?;
     if exit_code != crate::exit_codes::EXIT_SUCCESS {

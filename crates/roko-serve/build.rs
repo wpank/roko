@@ -6,6 +6,7 @@ use std::process::Command;
 
 fn main() {
     println!("cargo:rustc-check-cfg=cfg(roko_frontend_fallback)");
+    println!("cargo:rustc-check-cfg=cfg(roko_portal_fallback)");
     println!("cargo:rerun-if-env-changed=SKIP_FRONTEND_BUILD");
     println!("cargo:rerun-if-env-changed=ROKO_BUILD_FRONTEND");
     println!("cargo:rerun-if-changed=../../demo/demo-app/src");
@@ -13,11 +14,25 @@ fn main() {
     println!("cargo:rerun-if-changed=../../demo/demo-app/package.json");
     println!("cargo:rerun-if-changed=../../demo/demo-app/vite.config.ts");
     println!("cargo:rerun-if-changed=../../demo/demo-app/tsconfig.json");
+    // Rerun when the portal export appears or changes (no npm invoked for it).
+    println!("cargo:rerun-if-changed=../../apps/portal/out/index.html");
     println!("cargo:rerun-if-changed=assets/frontend-fallback/index.html");
 
     let Ok(manifest_dir) = env::var("CARGO_MANIFEST_DIR") else {
+        println!("cargo:rustc-cfg=roko_frontend_fallback");
+        println!("cargo:rustc-cfg=roko_portal_fallback");
         return;
     };
+
+    // ── Portal embed ──────────────────────────────────────────────────────────
+    // Never run npm for the portal. The static export is produced by running
+    // `npm run build:export` in `apps/portal` outside of Cargo.
+    let portal_out = Path::new(&manifest_dir).join("../../apps/portal/out");
+    if !portal_out.join("index.html").is_file() {
+        println!("cargo:rustc-cfg=roko_portal_fallback");
+    }
+
+    // ── Demo app embed ────────────────────────────────────────────────────────
     let demo_app = Path::new(&manifest_dir).join("../../demo/demo-app");
 
     // The real dist/ is intentionally ignored. Use a tracked placeholder when

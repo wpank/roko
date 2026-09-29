@@ -208,6 +208,11 @@ async fn stream_prompt(
                 "usage": usage,
                 "done": false,
             }),
+            StreamEventKind::ToolResult { .. } => {
+                // Tool results are dispatched by the ToolLoop, not surfaced
+                // through the agent-server message stream.
+                continue;
+            }
             StreamEventKind::Done { finish_reason } => {
                 if finish_reason.starts_with("error:") {
                     json!({

@@ -521,6 +521,12 @@ pub struct AgentOutputHistory {
     next_seq: HashMap<String, u64>,
     /// Total records evicted across all agents.
     pub evicted: u64,
+    /// Per-agent set of sequence numbers for live-unscreened non-tool records.
+    ///
+    /// These records are pending replacement by the settled screened
+    /// transcript. They are removed (while preserving tool steps) when
+    /// [`settle_screened_transcript`] is called.
+    live_unscreened_seqs: HashMap<String, HashSet<u64>>,
 }
 
 impl AgentOutputHistory {
@@ -715,6 +721,10 @@ impl AgentOutputHistory {
     /// Convert raw output lines into records and populate the history for
     /// an agent. Used to backfill from legacy `AgentRow::output_lines` or
     /// `task_output_tails` during snapshot ingestion.
+    ///
+    /// Lines parsed as live-unscreened non-tool records are tracked in
+    /// `live_unscreened_seqs` so they can be dropped when the screened
+    /// transcript arrives via [`settle_screened_transcript`].
     pub fn ingest_lines(&mut self, agent_id: &str, lines: &[String], role: &str) {
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -722,11 +732,62 @@ impl AgentOutputHistory {
             .as_millis() as u64;
 
         for line in lines {
-            let (kind, tool_id, tool_name) = classify_output_line(line);
+            let (kind, tool_id, tool_name, is_live_unscreened) = classify_output_line(line);
+            // Assign the sequence number before push so we can track it.
+            let seq = *self.next_seq.entry(agent_id.to_string()).or_insert(1);
             self.push(
                 agent_id,
                 AgentOutputRecord {
-                    seq: 0, // assigned by push()
+                    seq: 0, // overwritten by push()
+                    timestamp_ms: now_ms,
+                    role: role.to_string(),
+                    kind,
+                    text: line.clone(),
+                    redacted: false,
+                    tool_id,
+                    tool_name,
+                },
+            );
+            if is_live_unscreened {
+                self.live_unscreened_seqs
+                    .entry(agent_id.to_string())
+                    .or_insert_with(HashSet::new)
+                    .insert(seq);
+            }
+        }
+    }
+
+    /// Replace live-unscreened non-tool records for `agent_id` with the
+    /// settled screened transcript.
+    ///
+    /// Called when the first non-`live` record arrives for an agent (or when
+    /// `agent_completed` is signalled). Drops all previously tracked
+    /// unscreened records from the deque while preserving every tool step.
+    /// The new `settled_lines` are then ingested as normal screened records.
+    pub fn settle_screened_transcript(
+        &mut self,
+        agent_id: &str,
+        settled_lines: &[String],
+        role: &str,
+    ) {
+        // Remove the unscreened non-tool records.
+        if let Some(unscreened) = self.live_unscreened_seqs.remove(agent_id) {
+            if let Some(deque) = self.records.get_mut(agent_id) {
+                deque.retain(|r| !unscreened.contains(&r.seq));
+            }
+        }
+
+        // Ingest the settled, screened lines.
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        for line in settled_lines {
+            let (kind, tool_id, tool_name, _) = classify_output_line(line);
+            self.push(
+                agent_id,
+                AgentOutputRecord {
+                    seq: 0,
                     timestamp_ms: now_ms,
                     role: role.to_string(),
                     kind,
@@ -742,17 +803,38 @@ impl AgentOutputHistory {
 
 /// Classify a raw output line into an `OutputRecordKind` with optional
 /// tool metadata, based on the `roko.stream.v1` protocol or text heuristics.
-fn classify_output_line(line: &str) -> (OutputRecordKind, Option<String>, Option<String>) {
+///
+/// Returns `(kind, tool_id, tool_name, is_live_unscreened)`.  The fourth
+/// element is `true` only when the record is a live-preview, non-tool record
+/// that has not yet been validated by the safety screener (`screened: false`).
+/// Callers use this to track which records should be replaced when the
+/// settled, screened transcript arrives.
+fn classify_output_line(line: &str) -> (OutputRecordKind, Option<String>, Option<String>, bool) {
     use super::widgets::stream_output::{StreamRecord, parse_stream_line};
 
     match parse_stream_line(line) {
-        StreamRecord::Text { .. } => (OutputRecordKind::Text, None, None),
-        StreamRecord::Reasoning { .. } => (OutputRecordKind::Reasoning, None, None),
-        StreamRecord::ToolStart { tool_id, tool_name } => {
-            (OutputRecordKind::ToolCall, Some(tool_id), Some(tool_name))
+        StreamRecord::Text { live, screened, .. } => {
+            let unscreened = live && !screened;
+            (OutputRecordKind::Text, None, None, unscreened)
+        }
+        StreamRecord::Reasoning { live, screened, .. } => {
+            let unscreened = live && !screened;
+            (OutputRecordKind::Reasoning, None, None, unscreened)
+        }
+        StreamRecord::ToolStart {
+            tool_id, tool_name, ..
+        } => {
+            // Tool steps are never treated as unscreened for drop purposes —
+            // they are kept even when the screened transcript replaces text.
+            (
+                OutputRecordKind::ToolCall,
+                Some(tool_id),
+                Some(tool_name),
+                false,
+            )
         }
         StreamRecord::ToolResult { tool_id, .. } => {
-            (OutputRecordKind::ToolResult, Some(tool_id), None)
+            (OutputRecordKind::ToolResult, Some(tool_id), None, false)
         }
         StreamRecord::Plain { ref content } => {
             // Legacy heuristic classification for untyped records.
@@ -761,11 +843,11 @@ fn classify_output_line(line: &str) -> (OutputRecordKind, Option<String>, Option
                 || trimmed.starts_with("error")
                 || trimmed.contains("FAILED")
             {
-                (OutputRecordKind::Error, None, None)
+                (OutputRecordKind::Error, None, None, false)
             } else if trimmed.starts_with("────") || trimmed.is_empty() {
-                (OutputRecordKind::System, None, None)
+                (OutputRecordKind::System, None, None, false)
             } else {
-                (OutputRecordKind::Text, None, None)
+                (OutputRecordKind::Text, None, None, false)
             }
         }
     }

@@ -59,6 +59,24 @@ const MICRO_USD_PER_USD: f64 = 1_000_000.0;
 /// time at a human-readable granularity without generating excessive events.
 const AGENT_HEARTBEAT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
 
+/// Which live events the dispatcher forwards to the TUI while an agent runs.
+///
+/// Configured via [`GraphTaskDispatcher::with_live_agent_output`]. The
+/// default is `None` (no live output).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LiveAgentOutput {
+    /// Forward tool steps only (name + target, no raw text/reasoning).
+    ///
+    /// Safe to display without additional scrubbing: only the tool ID, tool
+    /// name, and the projected/scrubbed target string are forwarded.
+    ToolSteps,
+    /// Forward tool steps **and** unscreened text/reasoning/tool-call deltas.
+    ///
+    /// Should only be used for trusted local consumers (e.g. the developer's
+    /// TUI), since unscreened content may include sensitive output.
+    Trusted,
+}
+
 /// Thin `Agent` adapter that forwards a one-shot prompt through the shared
 /// factory bridge so `error_enrichment` and `quality_judge` can use the
 /// live provider without rebuilding the full dispatch stack.
@@ -106,6 +124,7 @@ impl roko_agent::Agent for CheapFactoryAgent {
             bare_mode: false,
             dangerously_skip_permissions: false,
             max_turns: None,
+            live_output: None,
         };
         match self.factory.run_shared_agent_bridge(request).await {
             Ok(dispatch) => dispatch.result,
@@ -1110,6 +1129,11 @@ pub struct GraphTaskDispatcher {
     /// calls, tool outputs) are published through the StateHub so the TUI
     /// can render agent activity in real time.
     tui_bridge: Option<TuiBridge>,
+    /// Which live events to forward to the TUI while the agent runs.
+    ///
+    /// Defaults to `None` (no live output). Set via
+    /// [`Self::with_live_agent_output`]. Requires `tui_bridge` to be set.
+    live_agent_output: Option<LiveAgentOutput>,
     /// Per-task gate failure context carried across retries.
     ///
     /// When a task's verify steps fail, the structured gate output is stored
@@ -1183,6 +1207,7 @@ impl GraphTaskDispatcher {
             feedback: GraphFeedbackContext::default(),
             workspace_provider: None,
             tui_bridge: None,
+            live_agent_output: None,
             gate_retry_context: parking_lot::Mutex::new(HashMap::new()),
             agg_tokens_in: AtomicU64::new(0),
             agg_tokens_out: AtomicU64::new(0),
@@ -1248,6 +1273,23 @@ impl GraphTaskDispatcher {
     #[must_use]
     pub fn with_tui_bridge(mut self, bridge: TuiBridge) -> Self {
         self.tui_bridge = Some(bridge);
+        self
+    }
+
+    /// Configure which live events are forwarded to the TUI while an agent runs.
+    ///
+    /// Requires [`Self::with_tui_bridge`] to also be configured. When set,
+    /// each task dispatch creates a bounded channel, attaches it to the
+    /// [`AgentDispatchRequest`] so the immune boundary can push events, and
+    /// spawns a forwarder task that publishes each event to the TUI bridge
+    /// before the screened transcript arrives via
+    /// [`Self::forward_dispatch_events_to_tui`].
+    ///
+    /// Default setting: [`LiveAgentOutput::ToolSteps`] when called with `None`
+    /// is not applicable — call this method with the desired variant.
+    #[must_use]
+    pub fn with_live_agent_output(mut self, setting: LiveAgentOutput) -> Self {
+        self.live_agent_output = Some(setting);
         self
     }
 
@@ -2835,6 +2877,112 @@ impl GraphTaskDispatcher {
     }
 }
 
+/// Forward a single [`roko_agent::live_output::LiveAgentEvent`] to the TUI
+/// bridge.
+///
+/// Called from the forwarder task spawned alongside the heartbeat task.
+/// Mapping:
+/// - `ToolStep` → `TuiBridge::tool_step` (always; safe, scrubbed target)
+/// - `Unscreened(TextDelta)` → unscreened `text` record
+/// - `Unscreened(ReasoningDelta)` → unscreened `reasoning` record
+/// - `Unscreened(ToolCallEnd)` → unscreened `tool_start` record with args
+///   truncated to 2 048 bytes on a char boundary
+/// - `Unscreened(ToolResult)` → unscreened `tool_result` record with output
+///   truncated the same way `forward_dispatch_events_to_tui` truncates it
+/// - All other `Unscreened` variants are silently ignored.
+fn forward_live_event_to_tui(
+    tui: &TuiBridge,
+    agent_id: &str,
+    plan_id: &str,
+    task_id: &str,
+    event: roko_agent::live_output::LiveAgentEvent,
+) {
+    use roko_agent::StreamEventKind;
+    use roko_agent::live_output::LiveAgentEvent;
+
+    const ARGS_MAX_BYTES: usize = 2048;
+
+    match event {
+        LiveAgentEvent::ToolStep { id, name, target } => {
+            tui.tool_step(agent_id, plan_id, task_id, 0, &id, &name, &target);
+        }
+        LiveAgentEvent::Unscreened(kind) => match kind {
+            StreamEventKind::TextDelta(text) => {
+                tui.publish_unscreened_stream_record(
+                    agent_id,
+                    plan_id,
+                    task_id,
+                    0,
+                    "text",
+                    serde_json::json!({"text": text}),
+                );
+            }
+            StreamEventKind::ReasoningDelta(text) => {
+                tui.publish_unscreened_stream_record(
+                    agent_id,
+                    plan_id,
+                    task_id,
+                    0,
+                    "reasoning",
+                    serde_json::json!({"text": text}),
+                );
+            }
+            StreamEventKind::ToolCallEnd { id, name, args } => {
+                // Serialize args and truncate to ARGS_MAX_BYTES on a char
+                // boundary to avoid overwhelming the TUI ring buffer.
+                let args_str = serde_json::to_string(&args).unwrap_or_default();
+                let args_truncated = if args_str.len() > ARGS_MAX_BYTES {
+                    let cut = (0..=ARGS_MAX_BYTES)
+                        .rev()
+                        .find(|&i| args_str.is_char_boundary(i))
+                        .unwrap_or(0);
+                    format!("{}…", &args_str[..cut])
+                } else {
+                    args_str
+                };
+                tui.publish_unscreened_stream_record(
+                    agent_id,
+                    plan_id,
+                    task_id,
+                    0,
+                    "tool_start",
+                    serde_json::json!({
+                        "tool_id": id,
+                        "tool": name,
+                        "args": args_truncated,
+                    }),
+                );
+            }
+            StreamEventKind::ToolResult { id, output } => {
+                // Truncate tool output the same way forward_dispatch_events_to_tui
+                // does: keep the last 1 024 bytes (aligned to a char boundary).
+                let truncated = if output.len() > 2048 {
+                    let raw_start = output.len().saturating_sub(1024);
+                    let char_start = (0..=raw_start)
+                        .rev()
+                        .find(|&i| output.is_char_boundary(i))
+                        .unwrap_or(0);
+                    let tail = &output[char_start..];
+                    format!("[...truncated]\n{tail}")
+                } else {
+                    output
+                };
+                tui.publish_unscreened_stream_record(
+                    agent_id,
+                    plan_id,
+                    task_id,
+                    0,
+                    "tool_result",
+                    serde_json::json!({"tool_id": id, "output": truncated}),
+                );
+            }
+            // All other stream event kinds (ToolCallStart, ToolCallDelta,
+            // Usage, Done) are not forwarded as unscreened records.
+            _ => {}
+        },
+    }
+}
+
 /// Append a single JSON line to a JSONL file, creating parent dirs as needed.
 #[allow(dead_code)] // sync fallback; production paths use append_jsonl_line_async
 fn append_jsonl_line(path: &std::path::Path, value: &impl serde::Serialize) -> std::io::Result<()> {
@@ -3484,7 +3632,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
             spec.timeout_secs
         };
         let timeout_ms = effective_timeout_secs.max(1).saturating_mul(1_000);
-        let request = AgentDispatchRequest {
+        let mut request = AgentDispatchRequest {
             model_key: dispatch_plan.model.slug.clone(),
             prompt: match turn_cap_resume {
                 Some(previous) => format!(
@@ -3516,6 +3664,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
             // EXPRESS_MAX_TURNS for express tasks and raised after a turn-cap
             // stop. Never unbounded.
             max_turns: Some(max_turns),
+            live_output: None,
         };
 
         // ── T04: Pre-dispatch agent_spawned ─────────────────────────────
@@ -3544,6 +3693,39 @@ impl TaskDispatcher for GraphTaskDispatcher {
                 &dispatch_plan.model.slug,
                 &planned_provider,
             );
+        }
+
+        // ── Live output forwarder ──────────────────────────────────────
+        //
+        // When both a TUI bridge and a live-output setting are configured,
+        // create a bounded channel, attach it to the request so the immune
+        // boundary can push events while the agent runs, and spawn a task
+        // that forwards each event to the TUI before screening completes.
+        // `forward_dispatch_events_to_tui` still publishes the screened
+        // transcript after `run_bridge_with_failover` returns (§4).
+        if let (Some(tui), Some(live_setting)) = (&self.tui_bridge, &self.live_agent_output) {
+            let (live_tx, mut live_rx) =
+                tokio::sync::mpsc::channel::<roko_agent::live_output::LiveAgentEvent>(64);
+            let trusted = matches!(live_setting, LiveAgentOutput::Trusted);
+            request.live_output = Some(roko_agent::live_output::LiveOutput {
+                sink: live_tx,
+                trusted,
+            });
+            let tui_clone = tui.clone();
+            let agent_id_clone = pre_dispatch_agent_id.clone();
+            let plan_id_clone = spec.plan_id.clone();
+            let task_id_clone = task.id.clone();
+            tokio::spawn(async move {
+                while let Some(event) = live_rx.recv().await {
+                    forward_live_event_to_tui(
+                        &tui_clone,
+                        &agent_id_clone,
+                        &plan_id_clone,
+                        &task_id_clone,
+                        event,
+                    );
+                }
+            });
         }
 
         let started_at = Instant::now();
@@ -4045,6 +4227,41 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
             bare_mode: self.config.agent.bare_mode,
             dangerously_skip_permissions: self.dangerously_skip_permissions,
             max_turns: Some(max_turns),
+            live_output: None,
+        };
+
+        // ── Live output forwarder (streaming path) ────────────────────────
+        let request = {
+            let mut req = request;
+            if let (Some(tui), Some(live_setting)) = (&self.tui_bridge, &self.live_agent_output) {
+                let (live_tx, mut live_rx) =
+                    tokio::sync::mpsc::channel::<roko_agent::live_output::LiveAgentEvent>(64);
+                let trusted = matches!(live_setting, LiveAgentOutput::Trusted);
+                req.live_output = Some(roko_agent::live_output::LiveOutput {
+                    sink: live_tx,
+                    trusted,
+                });
+                let tui_clone = tui.clone();
+                let agent_id_s = format!(
+                    "{}/{}",
+                    spec.plan_id,
+                    ctx.cell_id.as_deref().unwrap_or(&task.id)
+                );
+                let plan_id_s = spec.plan_id.clone();
+                let task_id_s = task.id.clone();
+                tokio::spawn(async move {
+                    while let Some(event) = live_rx.recv().await {
+                        forward_live_event_to_tui(
+                            &tui_clone,
+                            &agent_id_s,
+                            &plan_id_s,
+                            &task_id_s,
+                            event,
+                        );
+                    }
+                });
+            }
+            req
         };
 
         // ── Provider invocation ──────────────────────────────────────────

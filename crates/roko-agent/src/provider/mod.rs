@@ -43,6 +43,7 @@ use crate::SafetyLayer;
 use crate::dispatcher::{HandlerResolver, ToolDispatcher};
 use crate::gemini::GeminiAdapter;
 use crate::immune_boundary::{safe_provider_agent_identity, wrap_provider_agent};
+use crate::live_output::LiveOutput;
 use crate::mcp::McpRuntime;
 use crate::mock::MockAgent;
 use crate::process::ResourceLimits;
@@ -218,6 +219,7 @@ pub fn create_agent_for_model(
             mock_agent,
             &requested_agent_id,
             options.effective_immune_root(),
+            options.live_output.clone(),
         ));
     }
     let safety_layer = options
@@ -298,6 +300,7 @@ pub fn create_agent_for_model(
                 Box::new(agent) as Box<dyn Agent>,
                 &requested_agent_id,
                 options.effective_immune_root(),
+                options.live_output.clone(),
             ));
         }
     };
@@ -322,6 +325,7 @@ pub fn create_agent_for_model(
             mock_agent,
             &requested_agent_id,
             options.effective_immune_root(),
+            options.live_output.clone(),
         ));
     }
 
@@ -375,6 +379,7 @@ pub fn create_agent_for_model(
         agent,
         &effective_agent_id,
         options.effective_immune_root(),
+        options.live_output.clone(),
     ))
 }
 
@@ -865,6 +870,13 @@ pub struct AgentOptions {
     /// When set, the tool dispatcher records scrubbed admit/result lines
     /// to `.roko/tool_audit.jsonl` for every executed tool call.
     pub tool_audit: Option<Arc<roko_fs::tool_audit::ScrubAuditAdapter>>,
+    /// Live output channel for forwarding provider events before screening.
+    ///
+    /// When set and the provider supports streaming, the immune boundary taps
+    /// the inner stream and emits [`LiveAgentEvent::ToolStep`] for every tool
+    /// call. Text, reasoning, and result events are additionally forwarded as
+    /// [`LiveAgentEvent::Unscreened`] when `trusted` is set.
+    pub live_output: Option<LiveOutput>,
 }
 
 impl std::fmt::Debug for AgentOptions {

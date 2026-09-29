@@ -845,6 +845,7 @@ pub(crate) async fn run_plan_execution(
         max_parallel_plans: None,
         fail_fast: false,
         only_plans: None,
+        live_agent_output: roko_cli::graph_task_dispatch::LiveAgentOutput::ToolSteps,
     })
     .await
 }

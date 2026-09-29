@@ -110,6 +110,13 @@ pub struct PlanRunOptions {
     /// `None` defers to the workspace `[conductor] max_parallel_plans` setting,
     /// matching the default behaviour of `roko plan run`.
     pub max_parallel_plans: Option<usize>,
+
+    /// Which live-output level the dispatcher should use for this run.
+    ///
+    /// `None` falls back to `ToolSteps` (the safe default).  Set from
+    /// `AppState::effective_live_agent_output()` by plan run handlers so that
+    /// the trust level configured at startup flows into every server-side run.
+    pub live_agent_output: Option<roko_core::config::serve::LiveAgentOutput>,
 }
 
 /// Summary info for a configured repository, used to give agents

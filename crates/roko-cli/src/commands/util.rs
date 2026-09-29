@@ -334,7 +334,8 @@ pub(crate) async fn cmd_init(
     }
 
     print_next_step_hint(
-        "Next: roko doctor (verify setup) · roko setup (configure providers) · roko develop \"your task\"",
+        "Next: roko doctor (verify setup) · roko setup (configure providers) · roko develop \"your task\"\n\
+         Tip:  roko serve  — prints a portal URL with a one-time token so you can open the UI instantly",
     );
 
     Ok(())

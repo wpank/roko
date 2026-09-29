@@ -3,13 +3,14 @@ id = "gap-853b31"
 kind = "gap"
 title = "Frontier planner everywhere: an [authoring] planner_model on every plan generate and revise path"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p1"
 goal = "golden-path"
 size = "M"
 subsystem = ["roko-cli/model_selection", "roko-cli/prd", "roko-core/config"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-29
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e8"
 discovered_from = "tmp/cybernetic-harness/tldr/research/B1-plan-authoring.md (planner model choice; tldr/05 P1 #9)"
 anchors = ["crates/roko-core/src/config/schema.rs::RokoConfig", "crates/roko-cli/src/model_selection.rs::resolve_effective_model_key", "crates/roko-cli/src/prd.rs::generate_plan_from_prd_isolated", "crates/roko-cli/src/plan_authoring.rs::revise_plan_source", "crates/roko-cli/src/commands/do_cmd.rs::run_complex_path"]
@@ -82,3 +83,7 @@ Checked at `41c7ffbd6`: no `planner_model` or `[authoring]` in `crates/`. `prd.r
   `resolve_planner_model`.
 - tldr/05 decision 1's default planner is Opus 5.5. Leave the key unset in this repo's `roko.toml` until the author
   sets it.
+- Implemented on `work/gap-853b31` at `0fe265ba5`; cargo verification deferred to the batch check.
+- bug-8b1bf8's `run_once` path in `roko-serve/src/routes/prds.rs` is untouched: roko-serve was owned by another
+  worker, and roko-serve cannot call roko-cli's resolver. Fixing bug-8b1bf8 (route through
+  `generate_plan_from_prd`) picks up the planner model.

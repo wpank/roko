@@ -2048,6 +2048,43 @@ scheduled_cron = "invalid cron"
             .expect("setup leaves a roko.toml that validation accepts");
     }
 
+    /// bug-8d7d18: `config preset`, `tune` and the TUI's config and effects
+    /// saves wrote roko.toml without the check that `config set` runs. Each
+    /// library writer now refuses a result that validation rejects and keeps
+    /// the old file.
+    #[test]
+    fn every_roko_toml_writer_checks_before_writing() {
+        use crate::tui::config_meta::save_pending_edits;
+        use crate::tui::effects_config::{EffectsPreset, save_preset_to_root};
+
+        fn turn_cap(usd: &str) -> HashMap<String, String> {
+            HashMap::from([("budget.max_turn_usd".to_string(), usd.to_string())])
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("roko.toml");
+        let valid = "[budget]\nmax_plan_usd = 10.0\n";
+        fs::write(&path, valid).unwrap();
+
+        // The TUI config editor and `roko config preset`: a $20 turn cap
+        // above the $10 plan cap fails config invariant 1.
+        let err = save_pending_edits(dir.path(), &turn_cap("20")).unwrap_err();
+        assert!(err.contains("invariant 1"), "{err}");
+        assert_eq!(fs::read_to_string(&path).unwrap(), valid);
+        // A valid edit still saves.
+        save_pending_edits(dir.path(), &turn_cap("2")).unwrap();
+        let saved = fs::read_to_string(&path).unwrap();
+        assert!(saved.contains("max_turn_usd = 2.0"), "{saved}");
+
+        // The TUI effects preset: a save into a config that fails the check
+        // is refused too.
+        let invalid = "[budget]\nmax_plan_usd = 1.0\nmax_turn_usd = 2.0\n";
+        fs::write(&path, invalid).unwrap();
+        let err = save_preset_to_root(dir.path(), EffectsPreset::Full).unwrap_err();
+        assert!(err.contains("invariant 1"), "{err}");
+        assert_eq!(fs::read_to_string(&path).unwrap(), invalid);
+    }
+
     #[test]
     fn set_dotted_key_sets_prompt_budget() {
         let mut doc = empty_doc();

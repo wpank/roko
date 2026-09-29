@@ -376,11 +376,10 @@ fn ensure_project_config(workdir: &Path) -> Result<()> {
         return Ok(());
     }
 
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
-    }
+    // The `roko init` template, checked like `roko config validate` before
+    // it is written.
     let template = Config::default_toml_template(false)?;
-    std::fs::write(&path, template).with_context(|| format!("write {}", path.display()))?;
+    roko_cli::config_cmd::write_checked_config(&path, &template)?;
     Ok(())
 }
 

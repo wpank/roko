@@ -3,13 +3,15 @@ id = "bug-12153c"
 kind = "bug"
 title = "The config loader silently drops agent.fallback_model, agent.tier_models, serve.port and project.default_domain from roko.toml"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p1"
 goal = "release"
 size = "S"
 subsystem = ["roko-core/config"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-29
+last_verified_rev = "407ce30d5"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (16:47, wk-planner's report on gap-853b31)"
 anchors = ["crates/roko-core/src/config/loader.rs::build_schema_tree", "crates/roko-core/src/config/loader.rs::strip_unknown_fields", "crates/roko-core/src/config/loader.rs::validate_known_config_paths"]
@@ -61,3 +63,7 @@ At BASE the sentinels cover `agent.command`, `args`, `timeout_ms`, `env`, `env_p
 - `project.default_domain` has no runtime reader today, so dropping it has no effect yet. It still belongs in the test.
 - gap-853b31's new `[authoring] planner_model` is a `String` with a default, so it serializes and survives the strip.
 - bug-477ede (plan escalation) reads `agent.tier_models`, which this bug removes on load.
+- Premise confirmed at `407ce30d5` with `target/debug/roko` (built at `33e107da1`; `build_schema_tree` has not changed since): `roko config validate` calls all four keys unknown, and loading strips them.
+- The four now have sentinels. `agent.tier_models` also became a dynamic map section (user-defined keys, string values), so `config set agent.tier_models.<tier>` is typed as well. `every_optional_config_key_survives_a_load` loads the four and the keys that already had sentinels. Plan step 3 (print the unknown-key diagnostic on stderr by default) is not done: while the gaps below are open it would fire on keys serde accepts, so it belongs with them.
+- Same bug, not fixed here (for a follow-up item, probably p1): validating a `roko.toml` that sets every field reachable from `RokoConfig` (generated from the struct definitions) reports about 100 more keys missing from the tree, so loading strips them too. A few may be artifacts of the generator. Among them: `[agent.roles.<name>]` overrides (`model`, `effort`, `tools`, ...; the template is `RoleOverride::default()`), `[profiles.<name>]` fields, `[providers.<name>.extra_headers]` entries and `limits.*`, `models.<name>.tier`, `use_max_completion_tokens` and `provider_routing.*`, `serve.auth.api_keys`, `jwks_providers` and `privy_*`, `serve.deploy.webhooks`, `server.auth_token`, `serve.event_ingest_allowlist`, `serve.tracing.otlp_endpoint`, `timeouts.*`, `conductor.watchers.*`, `routing.weights.*`, `retrieval.role_token_budgets.*`, `dreams.scheduled_cron`, `gates.domain_gates` and `max_rung`, `runner.max_concurrent_*`, `scheduler.cron`, `resources.per_plan_disk_budget_mb`, `agent.defaults.*_model`, `agent.data_llm.output_schema`, `learning.override_learning_dampening`, and the optional keys of `deploy`, `relay`, `chain`, `gemini` and `perplexity`. A sentinel list will keep drifting; a guard test can read the fields each `deny_unknown_fields` section accepts from serde's unknown-field error and fail when the tree lacks one.
+- Implemented on `work/bug-12153c` at `f96efeeb9`; cargo verification deferred to the batch check.

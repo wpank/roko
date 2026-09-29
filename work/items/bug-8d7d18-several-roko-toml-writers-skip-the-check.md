@@ -3,13 +3,15 @@ id = "bug-8d7d18"
 kind = "bug"
 title = "Several roko.toml writers skip the check-before-write: config preset, tune and the TUI config and effects saves"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p2"
 goal = "release"
 size = "S"
 subsystem = ["roko-cli/config"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-29
+last_verified_rev = "407ce30d5"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (17:09, wk-onboard's report on bug-e1327f, branch work/bug-e1327f)"
 anchors = ["crates/roko-cli/src/commands/tune.rs::cmd_config_preset", "crates/roko-cli/src/commands/tune.rs::ensure_project_config", "crates/roko-cli/src/tui/config_meta.rs::save_pending_edits", "crates/roko-cli/src/tui/effects_config.rs::save_preset_to_root", "crates/roko-cli/src/tui/app/actions.rs::dispatch_action"]
@@ -58,3 +60,8 @@ Found by searching the branch for non-test writes near `roko.toml`. Two more unc
 ## Notes
 
 - Depends on bug-e1327f. Skip `cmd_provider_add` here: it is bug-e2cfdf.
+- Premise confirmed at `407ce30d5`: `save_pending_edits`, `save_preset_to_root`, `ensure_project_config` and the TUI welcome action wrote `roko.toml` with `std::fs::write`. The welcome default fails `roko config validate` (`agent.effort` and `learning.enabled` are unknown keys).
+- All four now write through `config_cmd::write_checked_config`; the welcome action writes the `roko init` template.
+- Not gated, by decision. `cmd_edit`'s placeholder is a comment-only file, valid by construction, and a check could only block editing when the global config breaks the loader. `cmd_migrate` deliberately keeps v1 keys such as `agent.model`, because the legacy `--config` parser reads them (see `build_config_migration_plan_synthesizes_supported_legacy_claude_config`). But the migrated file is v2, which skips the loader's v1 migration, so those keys and any `[[gate]]` are stripped after migrating, and a check would refuse most v1 files. Gating migrate needs it to apply the loader's v1 -> v2 migration and the `--config` parser to accept `default_model`: a separate item.
+- Also found: `config preset --global` edits `~/.roko/roko.toml`, not `~/.roko/config.toml`, because `save_pending_edits` always edits `<dir>/roko.toml`. It fails unless that file happens to exist.
+- Implemented on `work/bug-12153c` at `0108d9f98`; cargo verification deferred to the batch check.

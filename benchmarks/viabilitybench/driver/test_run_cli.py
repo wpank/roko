@@ -339,7 +339,7 @@ def test_vb_run_with_a_fake_claude_labels_and_prices_the_run(places):
     assert attempt["model_reported"] == MODEL and attempt["provider"] == "anthropic" and attempt["turns"] == 7
     assert record["costs"] == {"api_equiv_usd": pytest.approx(U_PRIME), "billed_usd": 0.0,
                                "without_cache_usd": pytest.approx(0.985725), "vendor_usd": R,
-                               "source": "cli_usage", "meter_cross_check_usd": None}
+                               "source": "cli_usage", "meter_cross_check_usd": None, "by_class": None}
     cli = attempt["cli"]
     assert cli["cost_basis"] == "model_usage" and cli["u_prime_usd"] == pytest.approx(U_PRIME)
     assert cli["r_usd"] == R and cli["u_r_gap"] == pytest.approx(abs(U_PRIME - R) / R)

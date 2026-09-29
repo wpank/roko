@@ -410,14 +410,37 @@ def render(report: dict, found: list[Metric]) -> str:
     if section:
         lines += ["", f"Plan-level slice, {section['label']}:"]
         for arm, got in section["arms"].items():
-            median = got["makespan_median_s"]
+            median, wait = got["makespan_median_s"], got["queue_wait_median_s"]
             lines.append(f"- {arm}: {got['verified']} of {got['features']} features verified (95% "
                          f"{got['verified_ci95'][0]:.2f}-{got['verified_ci95'][1]:.2f}); cost per verified feature "
                          + (f"${got['cpf_usd']:.4f}" if got["cpf_usd"] is not None else got["cpf_note"])
-                         + "; median makespan " + (f"{median:.0f} s" if median is not None else "not recorded"))
+                         + "; median makespan " + (f"{median:.0f} s" if median is not None else "not recorded")
+                         + "; median queue wait " + (f"{wait:.0f} s ({got['queue_wait_recorded']} of "
+                                                     f"{got['features']} features)" if wait is not None
+                                                     else "not recorded"))
+            if got.get("process"):
+                lines.append(f"  process: {_process_text(got['process'])}")
         lines += [f"- ratios (roko_plan / fd_claude, point estimates): {section['ratios']}" if section["ratios"] else
-                  "- ratios: need both roko_plan and fd_claude", f"- discordant: {section['discordant']}"]
+                  "- ratios: need both roko_plan and fd_claude", f"- discordant: {section['discordant']}",
+                  "- per feature:"]
+        for row in section["table"]:
+            for arm, cell in ((arm, cell) for arm, cell in row["arms"].items() if cell is not None):
+                cost, span, wait = cell["cost_usd"], cell["makespan_s"], cell["queue_wait_s"]
+                lines.append(f"  - {row['feature']} {arm}: VF {cell['vf']}, cost "
+                             + (f"${cost:.4f}" if cost is not None else "unknown") + ", makespan "
+                             + (f"{span:.0f} s" if span is not None else "not recorded") + ", queue wait "
+                             + (f"{wait:.0f} s" if wait is not None else "not recorded") + f", run {cell['run_id']}")
+        lines.append(f"- not recorded: {section['not_recorded']}")
     return "\n".join(lines)
+
+
+def _process_text(process: dict) -> str:
+    """S09 §4.9's process measures of a Roko arm, as printed; a measure a feature did not record is "not recorded"."""
+    shown = {"planner_share": "planner's share of the cost {:.1%}", "realized_parallelism_median":
+             "realized parallelism {:.2f} (median)", "tasks_escalated_share": "tasks escalated {:.0%}",
+             "integrations_rejected": "{} integrated features rejected by the whole-plan gate"}
+    return "; ".join(text.format(process[name]) if process[name] is not None else
+                     f"{name.replace('_', ' ')} not recorded" for name, text in shown.items())
 
 
 def _check_planned(run: Run) -> list[str]:

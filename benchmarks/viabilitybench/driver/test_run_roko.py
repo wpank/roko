@@ -60,17 +60,23 @@ slug = Path(args[args.index("run") + 1]).name
 roko = repo / ".roko"
 (roko / "learn").mkdir(parents=True, exist_ok=True)
 models, succeeded = behaviour["models"], behaviour["status"] == "succeeded"
+completed = behaviour.get("completed") or [f"2026-09-29T15:00:0{number}Z" for number in range(len(models))]
 for number, model in enumerate(models):
     passed = succeeded and number == len(models) - 1
     usage = {"input_tokens": 1200, "output_tokens": 80, "cache_read_tokens": 0, "cache_write_tokens": 0,
              "cost_usd": 0.0005}
     episode = {"task_id": "T01", "model": model, "backend": "cerebras", "success": passed, "turns": 1,
-               "usage": usage, "completed_at": f"2026-09-29T15:00:0{number}Z", "extra": {"plan_id": slug},
+               "usage": usage, "completed_at": completed[number], "extra": {"plan_id": slug},
                "failure_reason": None if passed else "verify: 1/1 verify step(s) failed"}
+    if "durations" in behaviour:  # the Graph path's dispatch time, in seconds
+        episode["duration_secs"] = behaviour["durations"][number]
     with open(roko / "episodes.jsonl", "a") as handle:
         handle.write(json.dumps(episode) + "\n")
     with open(roko / "learn" / "costs.jsonl", "a") as handle:
         handle.write(json.dumps({"model": model, "provider": "cerebras", "plan_id": slug, "task_id": "T01"}) + "\n")
+if behaviour.get("proxy_log"):  # what the metering proxy would have logged for these calls
+    with open(behaviour["proxy_log"], "a") as handle:
+        handle.writelines(json.dumps(row) + "\n" for row in behaviour["proxy"])
 if behaviour["solve"]:
     (repo / "calc" / "ops.py").write_text(behaviour["solution"])
 extensions = {"roko.gate.verdict@1": {"value": {"verdicts": {"T01": "passed"}}}} if succeeded else {}
@@ -100,11 +106,12 @@ def plan_spec(task: materialize.Materialized, **changes: object) -> planemit.Pla
     return planemit.PlanSpec(**{**fields, **changes})
 
 
-def fake_roko(tmp_path: Path, models: list[str], *, status: str = "succeeded") -> tuple[Path, Path]:
-    """Write the fake roko and its behaviour; return the binary and the log of its calls."""
+def fake_roko(tmp_path: Path, models: list[str], *, status: str = "succeeded", **extra: object) -> tuple[Path, Path]:
+    """Write the fake roko and its behaviour (`extra` adds episode `completed` times and `durations`, and `proxy` rows
+    to append to `proxy_log`); return the binary and the log of its calls."""
     log, behaviour = tmp_path / "fake-roko.jsonl", tmp_path / "fake-roko.json"
     behaviour.write_text(json.dumps({"models": models, "status": status, "solve": True, "solution": SOLUTION,
-                                     "log": str(log)}))
+                                     "log": str(log), **extra}))
     binary = tmp_path / "bin" / "roko"
     binary.parent.mkdir()
     binary.write_text(FAKE_ROKO.replace("__PYTHON__", sys.executable).replace("__BEHAVIOUR__", repr(str(behaviour))))
@@ -327,6 +334,71 @@ def test_proxy_meters_attempts_and_flags_silent_ones():
     swapped = [{**proxied[0], "model_requested": "llama-3.3-70b", "model_reported": "llama-3.3-70b"}]
     assert any("model_requested 'llama-3.3-70b'" in problem
                for problem in settle(evidence([PIN], proxy_rows=swapped))[1])
+
+
+def test_plan_slice_records_carry_queue_waits_and_class_costs(places, tmp_path):
+    # gap-04e8e2: the fake roko records two attempts with their dispatch times, and the metering proxy's log holds
+    # their calls, one of them rate limited. The record carries the queue wait, each attempt's class and busy time,
+    # and the cost per class; the schema accepts them; and the plan-level report prints them.
+    out = places["results"] / "TEST-ROKO" / "run-1"
+    usage = {"tokens_in": 900, "tokens_cache_read": 0, "tokens_out": 120, "tokens_reasoning": 0}
+    call = {"task": "F1-l1-0001.s1", "model_requested": PIN, "model_reported": PIN, "usage": usage,
+            "usage_source": "reported", "status": 200, "elapsed_ms": 800.0}
+    limited = {**call, "usage": None, "usage_source": "none", "model_reported": None, "status": 429,
+               "fault_injected": "rate_limit", "elapsed_ms": 5.0}
+    calls = [{**row, "ordinal": ordinal, "ts": f"2026-09-29T15:00:{second:02d}Z"}
+             for ordinal, (row, second) in enumerate(((call, 1), (limited, 2), (call, 4), (call, 11), (call, 13)), 1)]
+    binary, _ = fake_roko(tmp_path, [PIN, PIN], completed=["2026-09-29T15:00:06Z", "2026-09-29T15:00:14Z"],
+                          durations=[5.5, 4.5], proxy=calls, proxy_log=str(out / "proxy.jsonl"))
+    assert run_vb(places, arm_with(tmp_path, binary)) == 0
+    [record] = read_jsonl(out / "records.jsonl")
+    assert validate.validate("run-record", record) == []
+    first, second = record["execution"]["attempts"]
+    assert (first["task_id"], first["cost_class"], second["task_id"], second["cost_class"]) == (
+        "T01", "execute", "T01", "retry")
+    assert (first["started_at"], first["finished_at"]) == ("2026-09-29T15:00:00.500Z", "2026-09-29T15:00:06.000Z")
+    assert (second["started_at"], second["finished_at"]) == ("2026-09-29T15:00:09.500Z", "2026-09-29T15:00:14.000Z")
+    assert (first["queue_wait_s"], second["queue_wait_s"]) == (1.995, 0.0)  # 2 s after the 429, less its 5 ms
+    assert record["execution"]["queue_wait_s"] == pytest.approx(1.995)
+    each = ledger.price(ledger.add_usage(usage, usage), ledger.load_snapshot().row(PIN)).api_equiv_usd
+    assert (first["api_equiv_usd"], second["api_equiv_usd"]) == (pytest.approx(each), pytest.approx(each))
+    assert record["costs"]["by_class"] == {"plan": 0.0, "execute": pytest.approx(each), "retry": pytest.approx(each),
+                                           "escalate": 0.0, "integrate": 0.0}
+    assert record["costs"]["api_equiv_usd"] == pytest.approx(2 * each)
+    # The schema holds the classes to the total and the record's wait to its attempts' waits.
+    for path, value, error in (("costs.by_class.retry", 0.0, "add up to"),
+                               ("execution.queue_wait_s", 5.0, "add up to"),
+                               ("execution.attempts.0.queue_wait_s", -1.0, "below 0")):
+        broken = json.loads(json.dumps(record))
+        *parents, last = path.split(".")
+        target = broken
+        for key in parents:
+            target = target[int(key)] if isinstance(target, list) else target[key]
+        target[last] = value
+        assert any(error in problem for problem in validate.validate("run-record", broken)), path
+
+    # The plan-level report, fed the same record as a roko_plan feature of 20 s, prints what it carries.
+    sys.path.insert(0, str(layout.VB_ROOT / "analysis"))
+    import metrics
+    import report
+    feature = json.loads(json.dumps(record))
+    feature.update(arm="roko_plan")
+    feature["task"].update(family="PL", instance_id="PL01-0001", ladder=None)
+    feature["execution"].update(started_at="2026-09-29T15:00:00Z", finished_at="2026-09-29T15:00:20Z")
+    written, found = report.build([feature], "TEST-ROKO", ks=(3,), analysis_commit="x", computed_at="y")
+    section = written["plan_slice"]
+    assert section["table"][0]["arms"]["roko_plan"]["queue_wait_s"] == pytest.approx(1.995)
+    got = section["arms"]["roko_plan"]
+    assert got["queue_wait_median_s"] == pytest.approx(1.995) and got["queue_wait_recorded"] == 1
+    assert got["process"] == {"planner_share": 0.0, "realized_parallelism_median": pytest.approx(10 / 20),
+                              "tasks_escalated_share": 0.0, "integrations_rejected": 0}
+    assert "queue waits" not in section["not_recorded"] and "planner share" not in section["not_recorded"]
+    assert {m.metric for m in found} >= {"pl_queue_wait_median_s", "pl_planner_share", "pl_tasks_escalated_share"}
+    printed = report.render(written, found)
+    assert "median queue wait 2 s (1 of 1 features)" in printed
+    assert "planner's share of the cost 0.0%; realized parallelism 0.50 (median); tasks escalated 0%" in printed
+    assert "PL01-0001 roko_plan: VF 1, cost $" in printed and "queue wait 2 s, run run-1" in printed
+    assert metrics.process_measures([feature])["planner_share"][0] == 0.0
 
 
 @real_roko

@@ -10,6 +10,9 @@ On top of the schemas it checks the honesty rules they cannot express (S08 §4.1
 - run records and ledger rows: an unknown cost is null, never 0. Used tokens never cost $0; a null cost goes with
   cost source "unknown" and the other way round; missing usage makes the cost unknown; and a billed API row
   (source provider_usage or estimated) that used tokens cannot bill $0;
+- run records: `costs.by_class` splits `api_equiv_usd` without changing it. Its known classes add up to no more than
+  the total, and to exactly the total when every class is known (which a null total then rules out); no class and no
+  queue wait is below 0, and the record's `execution.queue_wait_s` is the sum of its attempts' when all are known;
 - price snapshots: slugs are unique, every rate is above 0, and each row's columns follow the schema's order.
 
 The schemas enforce the rest: `simulated` is always false, and every MetricRecord lists at least one run id.
@@ -38,6 +41,7 @@ KEYWORDS = frozenset({"type", "required", "enum", "const", "properties", "items"
 ANNOTATIONS = frozenset({"$schema", "$id", "$comment", "title", "description"})
 TYPES = frozenset({"null", "boolean", "integer", "number", "string", "array", "object"})
 RATE_COLUMNS = ("input", "cache_read", "cache_write_5m", "cache_write_1h", "output")
+COST_CLASSES = ("plan", "execute", "retry", "escalate", "integrate")  # costs.by_class (S09 §4.9)
 # The disjoint token classes a provider bills; tokens_reasoning is not one, since it sits inside tokens_out.
 BILLED_TOKENS = ("tokens_in", "tokens_out", "tokens_cache_read", "tokens_cache_write_5m", "tokens_cache_write_1h")
 
@@ -125,7 +129,8 @@ def invariant_errors(kind: str, doc: dict) -> list[str]:
     """The honesty rules the schema subset cannot express. `doc` must already conform to its schema."""
     if kind == "run-record":
         usages = [attempt["usage"] for attempt in doc["execution"]["attempts"]]
-        return _cost_errors(doc["costs"], usages, "$.costs")
+        return (_cost_errors(doc["costs"], usages, "$.costs") + _class_errors(doc["costs"], "$.costs")
+                + _wait_errors(doc["execution"], "$.execution"))
     if kind == "ledger":
         return _cost_errors(doc, [doc["usage"]], "$")
     if kind == "price-snapshot":
@@ -191,6 +196,39 @@ def _cost_errors(cost: dict, usages: list, path: str) -> list[str]:
             errors.append(f"{path}.{field}: $0 for {tokens} tokens; an unknown cost is null, never 0")
     if cost["billed_usd"] == 0 and tokens and source in ("provider_usage", "estimated"):
         errors.append(f"{path}.billed_usd: $0 billed for {tokens} tokens; only a subscription run bills $0")
+    return errors
+
+
+def _class_errors(cost: dict, path: str) -> list[str]:
+    by_class = cost.get("by_class")
+    if by_class is None:
+        return []
+    amounts = [by_class[name] for name in COST_CLASSES]
+    errors = [f"{path}.by_class.{name}: a cost cannot be below 0, not {amount}"
+              for name, amount in zip(COST_CLASSES, amounts) if amount is not None and amount < 0]
+    total, known = cost["api_equiv_usd"], [amount for amount in amounts if amount is not None]
+    tolerance = 1e-9 * max(1.0, abs(total or 0.0))
+    if len(known) == len(amounts) and total is None:
+        errors.append(f"{path}.by_class: every class is known, so api_equiv_usd cannot be unknown")
+    elif len(known) == len(amounts) and abs(math.fsum(known) - total) > tolerance:
+        errors.append(f"{path}.by_class: the classes add up to {math.fsum(known)}, not api_equiv_usd {total}")
+    elif total is not None and math.fsum(known) > total + tolerance:
+        errors.append(f"{path}.by_class: the known classes add up to {math.fsum(known)}, more than api_equiv_usd "
+                      f"{total}")
+    return errors
+
+
+def _wait_errors(execution: dict, path: str) -> list[str]:
+    waits = [(f"{path}.attempts[{index}].queue_wait_s", attempt["queue_wait_s"])
+             for index, attempt in enumerate(execution["attempts"]) if "queue_wait_s" in attempt]
+    total = execution.get("queue_wait_s")
+    errors = [f"{where}: a wait cannot be below 0, not {wait}"
+              for where, wait in [*waits, (f"{path}.queue_wait_s", total)] if wait is not None and wait < 0]
+    if total is not None and waits and len(waits) == len(execution["attempts"]) and all(
+            wait is not None for _, wait in waits):
+        summed = math.fsum(wait for _, wait in waits)
+        if abs(summed - total) > 1e-6:
+            errors.append(f"{path}.queue_wait_s: {total}, but the attempts' waits add up to {summed}")
     return errors
 
 

@@ -10,6 +10,14 @@ The status is the runner's, overridden in this order: `leak_suspected` when the 
 `infra_error` when a verifier failed or an attempt was served by a model other than the one requested (compared
 without a date suffix).
 
+S09 §4.9's process measures come from what a runner's attempts carry, beside their usage: `queue_wait_s` (the
+seconds the attempt's work waited for a dispatch slot or a provider rate limit) and `cost_class` (plan, execute,
+retry, escalate or integrate). `execution.queue_wait_s` sums the attempts' waits, and is null unless every attempt
+knows its own. `costs.by_class` sums the attempts' costs per class, and is null unless the runner classed every
+attempt; a runner that classes its attempts accounts for all of the run's spend in them, so a class with no attempt
+costs $0, and a class holding an attempt of unknown cost is null. The direct and CLI runners record neither, so
+their records carry nulls.
+
 `config_hash` and `record_id` are `sha256:` digests of canonical JSON (sorted keys, no whitespace). S01 §4.7 wants
 BLAKE3 `b3:` digests from `driver/fingerprint.py` with its golden vectors; neither exists yet, and the stdlib has
 no BLAKE3, so the prefix says which algorithm made each value. The config holds no secret values (API keys are
@@ -27,6 +35,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import subprocess
 from pathlib import Path
@@ -102,14 +111,15 @@ def build(*, experiment_id: str, run_id: str, arm_id: str, seed: int, head: tupl
         "harness_sha": head[0], "dirty": head[1], "config_hash": config_hash,
         "price_snapshot_id": snapshot_id, "suite": suite, "stream": stream, "task": task,
         "execution": {"status": status, "reason": outcome.reason, "started_at": outcome.started_at,
-                      "finished_at": outcome.finished_at, "attempts": attempts},
+                      "finished_at": outcome.finished_at, "queue_wait_s": _queue_wait(attempts),
+                      "attempts": attempts},
         "visible": {"passed": result.visible_clean == 1, "clean_rerun": result.visible_clean is not None,
                     "flake_injected": False, "commands": result.visible_commands,
                     "exit_codes": result.visible_exit_codes},
         "vs": {"label": result.label, "unknown": result.unknown, "checks": result.checks,
                "truth_suite_version": manifest["truth_suite"]["version"], "failed": failed,
                "verifier_version": (result.hidden_output or {}).get("verifier_version")},
-        "costs": _costs(outcome.attempts, billed),
+        "costs": {**_costs(outcome.attempts, billed), "by_class": _by_class(attempts)},
         "provenance": {"final_commit": final.commit if final else None,
                        "workdir_archive": f"archives/{archived.tarball.name}" if archived else None,
                        "bundle": f"archives/{archived.bundle.name}" if archived else None,
@@ -149,3 +159,21 @@ def _costs(attempts: list[harness.Attempt], billed: bool) -> dict:
     return {"api_equiv_usd": api_equiv, "billed_usd": api_equiv if billed else 0.0, "without_cache_usd": without_cache,
             "vendor_usd": sum(vendor) if vendor and None not in vendor else None,
             "source": sources.pop() if len(sources) == 1 else "provider_usage", "meter_cross_check_usd": None}
+
+
+def _by_class(attempts: list[dict]) -> dict | None:
+    """The attempt records' API-equivalent cost per class (module docstring); None unless each has a `cost_class`."""
+    classes = [attempt.get("cost_class") for attempt in attempts]
+    if not attempts or None in classes:
+        return None
+    totals: dict[str, float | None] = dict.fromkeys(validate.COST_CLASSES, 0.0)
+    for name, attempt in zip(classes, attempts):
+        cost = attempt.get("api_equiv_usd")
+        totals[name] = totals[name] + cost if totals[name] is not None and cost is not None else None
+    return totals
+
+
+def _queue_wait(attempts: list[dict]) -> float | None:
+    """The attempt records' queue waits summed; None unless every attempt knows its own."""
+    waits = [attempt.get("queue_wait_s") for attempt in attempts]
+    return math.fsum(waits) if waits and None not in waits else None

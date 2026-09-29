@@ -75,6 +75,7 @@ ROKO_ARMS = frozenset({"roko_fixed", "roko_full", "fr_claude", "roko_plan"})
 ROUTED_ARMS = frozenset({"roko_full", "roko_plan", "hybrid"})
 NOT_PASSED = ("unverified", "forced_accept")
 PL_RATIO = ("roko_plan", "fd_claude")  # S09 §4.9: the slice's ratios are roko_plan / fd_claude
+TASK_CLASSES = ("execute", "retry", "escalate")  # an attempt on one plan task; plan and integrate span the plan
 
 
 class MetricsError(ValueError):
@@ -328,6 +329,21 @@ def plan_slice(records: Iterable[dict], experiment_id: str) -> tuple[dict | None
             for name, value in (("median", statistics.median(spans)), ("min", min(spans)), ("max", max(spans))):
                 out += _metric(mine, f"pl_makespan_{name}_s", value, len(spans), f"{label}: the {name} over features "
                                "of execution.finished_at - execution.started_at, in seconds", "PL")
+        waits = [wait for wait in (row["execution"].get("queue_wait_s") for row in rows) if wait is not None]
+        summary[arm].update(queue_wait_median_s=statistics.median(waits) if waits else None,
+                            queue_wait_range_s=[min(waits), max(waits)] if waits else None,
+                            queue_wait_recorded=len(waits))
+        if waits:
+            out += _metric(mine, "pl_queue_wait_median_s", statistics.median(waits), len(waits), f"{label}: the median "
+                           "over features of execution.queue_wait_s, the seconds ready work waited for a dispatch slot "
+                           "or a provider rate limit; reported beside the makespan, never subtracted from it", "PL")
+        if arm in ROKO_ARMS:
+            process = process_measures(rows)
+            summary[arm]["process"] = {name: value for name, (value, _, _) in process.items()}
+            for name, (value, n, estimator) in process.items():
+                if value is not None:
+                    out += _metric(mine, f"pl_{name}", value, n, f"{label}: {estimator}", "PL",
+                                   cost_basis="api_equiv_usd" if name == "planner_share" else None)
 
     ratios = {}
     if all(arm in summary for arm in PL_RATIO):
@@ -357,10 +373,67 @@ def plan_slice(records: Iterable[dict], experiment_id: str) -> tuple[dict | None
         else [],
         "plan_level_false_greens": sorted(f"{row['arm']}:{row['task']['instance_id']}" for row in kept.rows
                                           if row["arm"] in ROKO_ARMS and reported_pass(row) and not vs_minus(row)),
-        "not_recorded": "the planner's cost share, realized parallelism, escalations and gate-rejected integrations "
-                        "need per-class costs and task timings that run records do not carry yet",
+        "not_recorded": _not_recorded(summary),
     }
     return section, out
+
+
+def process_measures(rows: Sequence[dict]) -> dict[str, tuple[float | None, int, str]]:
+    """S09 §4.9's process measures over one Roko arm's features, as {name: (value, n, estimator)}. A value is None
+    when a feature lacks what it needs: `costs.by_class` for the planner's share, attempt start and finish times for
+    realized parallelism, and attempts with a `task_id` and a `cost_class` for escalations and integrations."""
+    plan = [((row["costs"].get("by_class") or {}).get("plan"), row["costs"]["api_equiv_usd"]) for row in rows]
+    spent = math.fsum(total for _, total in plan if total is not None)
+    share = (math.fsum(part for part, _ in plan) / spent
+             if all(part is not None and total is not None for part, total in plan) and spent > 0 else None)
+    parallel = [realized_parallelism(row) for row in rows]
+    classed = [row for row in rows if row["execution"]["attempts"]
+               and all(attempt.get("cost_class") for attempt in row["execution"]["attempts"])]
+    tasks, escalated, rejected = 0, 0, 0
+    for row in classed:
+        runs: dict[str, list[dict]] = {}
+        for attempt in row["execution"]["attempts"]:
+            if attempt["cost_class"] in TASK_CLASSES:
+                runs.setdefault(attempt.get("task_id") or "", []).append(attempt)
+        tasks += len(runs)
+        escalated += sum(any(attempt["cost_class"] == "escalate" for attempt in run) for run in runs.values())
+        gates = [attempt.get("gate_verdict") for attempt in row["execution"]["attempts"]
+                 if attempt["cost_class"] == "integrate"]
+        rejected += bool(runs) and bool(gates) and gates[-1] != "passed" and all(
+            run[-1].get("gate_verdict") == "passed" for run in runs.values())
+    complete = len(classed) == len(rows)
+    return {
+        "planner_share": (share, len(rows), "the sum of costs.by_class.plan / the sum of costs.api_equiv_usd over the "
+                                            "arm's features: the planner's share of the cost"),
+        "realized_parallelism_median": (
+            statistics.median(parallel) if parallel and None not in parallel else None, len(rows),
+            "the median over features of the attempts' busy time (started_at to finished_at, summed) / the makespan"),
+        "tasks_escalated_share": (escalated / tasks if complete and tasks else None, tasks,
+                                  "tasks with an attempt of cost_class escalate (a rung up the ladder) / tasks run"),
+        "integrations_rejected": (rejected if complete and rows else None, len(rows), "features whose tasks all "
+                                  "ended with a passed gate while the whole-plan gate's last verdict (the last "
+                                  "integrate attempt) did not pass"),
+    }
+
+
+def realized_parallelism(record: dict) -> float | None:
+    """The attempts' summed busy time over the makespan; None unless every attempt has its start and finish."""
+    span, busy = makespan_s(record), []
+    for attempt in record["execution"]["attempts"]:
+        try:
+            start, end = (dt.datetime.fromisoformat(attempt[key]) for key in ("started_at", "finished_at"))
+        except (KeyError, TypeError, ValueError):
+            return None
+        busy.append((end - start).total_seconds())
+    return math.fsum(busy) / span if busy and span else None
+
+
+def _not_recorded(summary: dict[str, dict]) -> str:
+    """What the section cannot show, by arm: queue waits and, for Roko arms, the process measures."""
+    missing = [f"queue waits ({arm})" for arm, got in summary.items() if not got["queue_wait_recorded"]]
+    missing += [f"{name.replace('_', ' ')} ({arm})" for arm, got in summary.items()
+                for name, value in got.get("process", {}).items() if value is None]
+    return "; ".join([*missing, "total work / critical path (the plan's task graph is not in the run records)"])
 
 
 def makespan_s(record: dict) -> float | None:

@@ -27,7 +27,7 @@ import mini_loop
 import provider
 import validate
 import vb
-from common import canary, hmac_seed, repo
+from common import canary, hmac_seed, repo, sandbox
 from stub_provider import StubServer, bash, scripted
 
 TOY_FAMILY = layout.DRIVER_DIR / "testdata" / "toy_family"
@@ -204,6 +204,38 @@ def test_materialize_renders_real_family_instances(tmp_path, capsys):
     with pytest.raises(materialize.MaterializeError, match="not the pristine tree"):
         materialize.materialize(family_dir=drifting, instance_id="F1-l1-0001", workdir=tmp_path / "late",
                                 private_dir=tmp_path / "late.private")
+
+
+def test_hidden_suite_runs_agent_code_without_the_secret_file(places, tmp_path):
+    """gap-8c3752: the census opens the secret file for hidden.py, which runs the agent's code: here F4's migration
+    script, planted to read the secret file and the private task.json. The truth suite starts it through
+    common.sandbox, so on a host with a sandbox both reads fail, and the record names the sandbox."""
+    evidence = tmp_path / "evidence.txt"
+    run_dir = places["results"] / "TEST-SANDBOX" / "run-1"
+    task_json = run_dir / "private" / "F4-l1-0001.s1" / materialize.TASK_DIR / "task.json"
+    snoop = ("mkdir -p scripts && cat > scripts/migrate_prefix.sh <<'EOF'\n"  # the name is split: no command names it
+             f"for f in '{places['secret'].parent}/sec''ret' '{task_json}'; do\n"
+             f"  printf 'read %s\\n' \"$f\" >> '{evidence}'\n"
+             f"  cat \"$f\" >> '{evidence}' 2>&1\n"
+             "done\nEOF")
+    stream = tmp_path / "f4.toml"
+    stream.write_text('schema_version = "vb.stream/1"\n[stream]\nid = "f4-sandbox"\nspec_variant = "precise"\n'
+                      'families = { F4 = "families/f4_kvtool" }\ninstances = ["F4-l1-0001"]\n')
+    with StubServer(scripted({"": [bash(snoop, "Plant the script."), bash("echo VB_SUBMIT")]})) as stub:
+        assert vb.main(["run", "--experiment", "TEST-SANDBOX", "--run-id", "run-1", "--stream", str(stream),
+                        "--arm", "cheap_direct", "--model", "gpt-oss-120b", "--provider-url", stub.url,
+                        "--results", str(places["results"]), "--work", str(places["work"]),
+                        "--secret-file", str(places["secret"])]) == 0
+    [record] = read_jsonl(run_dir / "records.jsonl")
+    assert validate.validate("run-record", record) == [] and record["vs"]["sandbox"] == sandbox.KIND
+    seen = evidence.read_text()
+    assert f"read {places['secret']}" in seen and f"read {task_json}" in seen  # control: hidden.py ran the script
+    value = next(line for line in places["secret"].read_text().splitlines() if not line.startswith("#"))
+    if sandbox.KIND == "none":  # no sandbox on this host: the record says so, and the reads succeed
+        assert value in seen
+        return
+    assert value not in seen and '"instance_id"' not in seen and seen.count("Operation not permitted") >= 4
+    assert record["execution"]["status"] == "completed" and record["provenance"]["canary_places"] == []
 
 
 def test_runaway_agent_is_killed_within_30_calls(places):

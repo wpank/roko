@@ -24,3 +24,7 @@ command = "grep -q 'with_locked_json_transaction' crates/roko-learn/src/cascade_
 `roko serve` loads the router at startup and saves it on shutdown (`crates/roko-serve/src/state.rs:1270-1272`); Graph plan runs save at run end, under a different workspace lock.
 Observations a CLI run persisted while serve was up are erased when serve shuts down, and vice versa (last writer wins).
 Fix: save as a locked read-merge-write of this process's delta so concurrent writers never drop each other's learning.
+
+## Notes
+
+- Implemented on `work/bug-605a8a` at `7769a5ae4`; cargo verification deferred to the batch check.

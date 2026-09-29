@@ -380,6 +380,25 @@ fn validate_tasks_file(
                     message: issue.to_string(),
                 });
             }
+            // gap-d14a43: a `[task.accept]` test must exist and pin a real
+            // passing count; a verify step that still copies a test out of
+            // `accept/` by hand should declare it in `[task.accept]` instead.
+            let plan_dir = tasks_path.parent().unwrap_or_else(|| Path::new("."));
+            for task in &tasks_file.tasks {
+                for issue in roko_cli::task_accept::accept_issues(task, plan_dir) {
+                    diagnostics.push(Diagnostic {
+                        severity: if issue.blocking {
+                            Severity::Error
+                        } else {
+                            Severity::Warning
+                        },
+                        rule_id: "PLAN_038".to_string(),
+                        plan_id: Some(plan_id.clone()),
+                        task_id: Some(task.id.clone()),
+                        message: issue.message,
+                    });
+                }
+            }
         }
         Err(runtime_err) => {
             diagnostics.push(Diagnostic {
@@ -736,10 +755,17 @@ fn snapshot_task(ordinal: usize, task: &Value) -> TaskSnapshot {
                         .is_some_and(|path| !path.trim().is_empty())
                 })
             }),
+        // Pinned `[task.accept]` tests run as verify steps (gap-d14a43).
         has_verify_steps: table
             .and_then(|table| table.get("verify"))
             .and_then(Value::as_array)
-            .is_some_and(|steps| !steps.is_empty()),
+            .is_some_and(|steps| !steps.is_empty())
+            || table
+                .and_then(|table| table.get("accept"))
+                .and_then(Value::as_table)
+                .and_then(|accept| accept.get("files"))
+                .and_then(Value::as_array)
+                .is_some_and(|files| !files.is_empty()),
         acceptance_contract: table
             .and_then(|table| table.get("acceptance_contract"))
             .cloned(),
@@ -1654,6 +1680,86 @@ depends_on = ["T1"]
         assert_eq!(report.totals.errors, 0, "{report:?}");
         assert_eq!(report.exit_code(false), 0, "a warning without --strict");
         assert_eq!(report.exit_code(true), 1, "--strict rejects it");
+    }
+
+    /// gap-d14a43: `[task.accept]` problems are PLAN_038 errors, a hand copy
+    /// out of `accept/` is a PLAN_038 warning, and a task whose only checks
+    /// are pinned acceptance tests counts as verified.
+    #[test]
+    fn accept_tests_are_validated_as_plan_038() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path();
+        fs::create_dir_all(root.join("plans/demo/accept")).unwrap();
+        fs::write(root.join("plans/demo/accept/x.test.ts"), "test('x', () => {});\n").unwrap();
+        fs::write(
+            root.join("plans/demo/tasks.toml"),
+            r#"
+[meta]
+plan = "demo"
+
+[[task]]
+id = "T1"
+title = "Pass the pinned test"
+role = "implementer"
+files = ["src/x.ts", "src/x.test.ts"]
+depends_on = []
+
+[task.accept]
+files = [
+    { src = "accept/x.test.ts", dest = "src/x.test.ts", runner = "npx vitest run {dest}", count = 3 },
+]
+
+[[task]]
+id = "T2"
+title = "Pass two broken ones"
+role = "implementer"
+files = ["src/y.ts"]
+depends_on = ["T1"]
+verify = [{ phase = "test", command = "cp plans/demo/accept/x.test.ts src/y.test.ts && npx vitest run src/y.test.ts" }]
+
+[task.accept]
+files = [
+    { src = "accept/missing.test.ts", dest = "src/m.test.ts", runner = "npx vitest run {dest}", count = 1 },
+    { src = "accept/x.test.ts", dest = "src/z.test.ts", runner = "npx vitest run {dest}", count = 0 },
+]
+"#,
+        )
+        .unwrap();
+
+        let report = validate_plans_dir(root.join("plans").as_path(), None).unwrap();
+        let accept = report
+            .plans
+            .iter()
+            .flat_map(|plan| &plan.diagnostics)
+            .filter(|diag| diag.rule_id == "PLAN_038")
+            .collect::<Vec<_>>();
+        let errors = accept
+            .iter()
+            .filter(|diag| diag.severity == Severity::Error)
+            .map(|diag| diag.message.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(errors.len(), 2, "{report:?}");
+        assert!(errors.iter().any(|m| m.contains("src `accept/missing.test.ts` is missing")));
+        assert!(errors.iter().any(|m| m.contains("count of `accept/x.test.ts` is 0")));
+        let warnings = accept
+            .iter()
+            .filter(|diag| diag.severity == Severity::Warning)
+            .collect::<Vec<_>>();
+        assert_eq!(warnings.len(), 1, "{report:?}");
+        assert_eq!(warnings[0].task_id.as_deref(), Some("T2"));
+        assert!(
+            accept.iter().all(|diag| diag.task_id.as_deref() == Some("T2")),
+            "T1's entry is valid: {report:?}"
+        );
+        // T1 has no [[task.verify]], yet its pinned test verifies it.
+        assert!(
+            report
+                .plans
+                .iter()
+                .flat_map(|plan| &plan.diagnostics)
+                .all(|diag| !(diag.rule_id == "PLAN_037" || diag.rule_id == "PLAN_035")),
+            "{report:?}"
+        );
     }
 
     #[test]

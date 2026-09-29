@@ -885,6 +885,7 @@ mod tests {
             max_retries: 1,
             acceptance: vec![],
             acceptance_contract: None,
+            accept: None,
             domain: None,
             estimated_minutes: minutes,
             crates_touched: None,

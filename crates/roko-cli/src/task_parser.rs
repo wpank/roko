@@ -13,6 +13,7 @@ use std::io::Write;
 use std::path::Path;
 
 use crate::orchestrator::{ReplanStrategy, detect_cycle_nodes};
+use crate::task_accept::TaskAccept;
 use anyhow::{Context as _, Result};
 use roko_agent::safety::contract::{AgentContract, ContractLoadMode, RoleCapabilities};
 use roko_core::{OperatingFrequency, TaskDomain};
@@ -110,6 +111,11 @@ pub struct TaskDef {
     /// Typed done-gate contract for self-hosting tasks.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub acceptance_contract: Option<AcceptanceContract>,
+    /// Planner-written acceptance tests (`[task.accept]`). A run pins them
+    /// outside the working tree and runs them before `verify`
+    /// ([`crate::task_accept`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accept: Option<TaskAccept>,
     /// Work domain — controls gate selection and git policy.
     pub domain: Option<TaskDomain>,
     /// Estimated wall-clock minutes for this task. Used by the critical-path
@@ -132,6 +138,15 @@ impl TaskDef {
     #[must_use]
     pub fn effective_domain(&self, config_default: Option<&TaskDomain>) -> Option<TaskDomain> {
         self.domain.clone().or_else(|| config_default.cloned())
+    }
+
+    /// Whether the task declares planner-written acceptance tests
+    /// (`[task.accept]`), which verify it like `verify` steps do.
+    #[must_use]
+    pub fn has_accept_tests(&self) -> bool {
+        self.accept
+            .as_ref()
+            .is_some_and(|accept| !accept.files.is_empty())
     }
 }
 
@@ -182,6 +197,8 @@ struct TaskDefSerde {
     #[serde(default)]
     pub acceptance_contract: Option<AcceptanceContract>,
     #[serde(default)]
+    pub accept: Option<TaskAccept>,
+    #[serde(default)]
     pub domain: Option<TaskDomain>,
     #[serde(default)]
     pub estimated_minutes: Option<u32>,
@@ -215,6 +232,7 @@ impl From<TaskDefSerde> for TaskDef {
             max_retries: raw.max_retries,
             acceptance: raw.acceptance,
             acceptance_contract: raw.acceptance_contract,
+            accept: raw.accept,
             domain: raw.domain,
             estimated_minutes: raw.estimated_minutes,
             crates_touched: raw.crates_touched,
@@ -787,7 +805,7 @@ pub struct VerifyStep {
     pub timeout_ms: u64,
 }
 
-fn default_verify_timeout() -> u64 {
+pub(crate) fn default_verify_timeout() -> u64 {
     roko_core::config::TimeoutConfig::default()
         .gate_test()
         .as_secs()
@@ -895,7 +913,7 @@ impl TasksFile {
             if task.tier.is_empty() || task.tier == "unknown" {
                 issues.push(format!("{tid}: missing or unknown tier"));
             }
-            if task.verify.is_empty() {
+            if task.verify.is_empty() && !task.has_accept_tests() {
                 issues.push(format!("{tid}: missing verify steps"));
             }
             if task
@@ -945,7 +963,7 @@ impl TasksFile {
                 });
             }
 
-            if task.verify.is_empty() {
+            if task.verify.is_empty() && !task.has_accept_tests() {
                 warnings.push(TaskQualityWarning::MissingVerify {
                     task_id: task.id.clone(),
                 });
@@ -998,7 +1016,7 @@ impl TasksFile {
             if role == "implementer" {
                 for &field in IMPLEMENTER_REQUIRED {
                     let missing = match field {
-                        "verify" => task.verify.is_empty(),
+                        "verify" => task.verify.is_empty() && !task.has_accept_tests(),
                         "files" => task.files.is_empty(),
                         _ => false,
                     };
@@ -1914,6 +1932,7 @@ command = "cargo check -p roko-cli"
             max_retries: 3,
             acceptance: vec![],
             acceptance_contract: None,
+            accept: None,
             domain: None,
             estimated_minutes: None,
             crates_touched: None,
@@ -1962,6 +1981,7 @@ command = "cargo check -p roko-cli"
             max_retries: 3,
             acceptance: vec![],
             acceptance_contract: None,
+            accept: None,
             domain: None,
             estimated_minutes: None,
             crates_touched: None,
@@ -1996,6 +2016,7 @@ command = "cargo check -p roko-cli"
             max_retries: 3,
             acceptance: vec![],
             acceptance_contract: None,
+            accept: None,
             domain: None,
             estimated_minutes: None,
             crates_touched: None,
@@ -2027,6 +2048,7 @@ command = "cargo check -p roko-cli"
             max_retries: 3,
             acceptance: vec![],
             acceptance_contract: None,
+            accept: None,
             domain: None,
             estimated_minutes: None,
             crates_touched: None,
@@ -2058,6 +2080,7 @@ command = "cargo check -p roko-cli"
             max_retries: 3,
             acceptance: vec![],
             acceptance_contract: None,
+            accept: None,
             domain: None,
             estimated_minutes: None,
             crates_touched: None,
@@ -2421,6 +2444,7 @@ depends_on = []
                 max_retries: 3,
                 acceptance: vec![],
                 acceptance_contract: None,
+                accept: None,
                 domain: None,
                 estimated_minutes: None,
                 crates_touched: None,
@@ -2492,6 +2516,7 @@ depends_on = ["other-plan:T3"]
             max_retries: 3,
             acceptance: vec![],
             acceptance_contract: None,
+            accept: None,
             domain: None,
             estimated_minutes: None,
             crates_touched: None,
@@ -2533,6 +2558,7 @@ depends_on = ["other-plan:T3"]
             max_retries: 3,
             acceptance: vec![],
             acceptance_contract: None,
+            accept: None,
             domain: None,
             estimated_minutes: None,
             crates_touched: None,

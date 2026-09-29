@@ -2,7 +2,7 @@
 id = "bug-48494b"
 kind = "bug"
 title = "Portal validation badge shows valid for invalid plans: the validate call gets 400 and a failed request renders as valid"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "visibility"
@@ -11,7 +11,7 @@ subsystem = ["apps/portal", "roko-serve/plans"]
 created = 2026-09-29
 updated = 2026-09-29
 last_verified = 2026-09-29
-last_verified_rev = "f99e45dba"
+last_verified_rev = "6e01e441f"
 source = "plan:portal-programme/09-acceptance#T04"
 discovered_from = "plan:portal-programme/09-acceptance#T04"
 anchors = ["apps/portal/src/api/queries.ts::useValidation", "apps/portal/src/components/stage/ValidationBadge.tsx::ValidationBadge", "crates/roko-serve/src/routes/plans.rs::ValidatePlanRequest", "crates/roko-serve/src/plan_types.rs::PlanValidationDto", "apps/portal/src/components/shell/Workspace.tsx:153"]
@@ -22,6 +22,11 @@ command = "cargo build -p roko-cli && bash -c 'source plans/portal-programme/_ha
 
 [[verify]]
 command = "grep -rqF --include='*.test.ts' --include='*.test.tsx' 'validation request fails' apps/portal/src && (cd apps/portal && npx vitest run src/components/stage)"
+
+[closed]
+at = 2026-09-29
+commit = "6e01e441f"
+evidence = "6e01e441f: POST /api/plans/{id}/validate accepts no body, {} and {\"toml\": null} and answers errors/warnings as arrays (roko-serve tests/plan_authoring.rs, 17 passed; routes::plans lib tests, 48 passed). Portal posts no body; a failed request shows 'validation failed', never 'valid ✓' (components/stage/validation.test.tsx, 11 passed, 9 fail on 70820a74c; full suite 63 files / 692 tests). verify[1] passes against the rebuilt binary; AUTHORING-CHECK PASS (36), REVISION-CHECK PASS (15). Headless Chromium on live-b with depends_on = [\"T99\"]: badge '1 ERROR', Run disabled with 'Fix 1 validation error first', alert '1 validation error', no failed validate request."
 +++
 
 ## Problem

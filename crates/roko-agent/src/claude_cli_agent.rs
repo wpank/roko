@@ -1927,6 +1927,30 @@ printf '%s\n' '{"type":"content_block_delta","delta":{"text":"ok"}}'
         assert_eq!(ClaudeCliAgent::failure_reason("", ""), "claude failed");
     }
 
+    #[test]
+    fn output_text_separates_assistant_messages() {
+        // The shape of the 09 real-model run: three messages with tool calls
+        // between them, one stream-json event per content block.
+        let stdout = [
+            r#"{"type":"system","subtype":"init","session_id":"s1","model":"claude-sonnet-4-6"}"#,
+            r#"{"type":"assistant","message":{"id":"msg_1","content":[{"type":"text","text":"I'll start by reading the relevant files."}]}}"#,
+            r#"{"type":"assistant","message":{"id":"msg_1","content":[{"type":"tool_use","id":"toolu_1","name":"Read","input":{"file_path":"/ws/roko.toml"}}]}}"#,
+            r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"[agent]"}]}}"#,
+            r#"{"type":"assistant","message":{"id":"msg_2","content":[{"type":"text","text":"No `Cargo.toml` exists yet. I'll create both files now."}]}}"#,
+            r#"{"type":"assistant","message":{"id":"msg_2","content":[{"type":"tool_use","id":"toolu_2","name":"Write","input":{"file_path":"/ws/Cargo.toml","content":"[package]"}}]}}"#,
+            r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_2","content":"ok"}]}}"#,
+            r#"{"type":"assistant","message":{"id":"msg_3","content":[{"type":"text","text":"Both files are created."}]}}"#,
+            r#"{"type":"result","subtype":"success","is_error":false,"result":"Both files are created.","num_turns":3}"#,
+        ]
+        .join("\n");
+        assert_eq!(
+            ClaudeCliAgent::output_text(&stdout),
+            "I'll start by reading the relevant files.\n\n\
+             No `Cargo.toml` exists yet. I'll create both files now.\n\n\
+             Both files are created."
+        );
+    }
+
     // ── event_kinds_from_value unit tests ─────────────────────────────
 
     #[test]

@@ -171,7 +171,9 @@ impl BackendResponse {
                 .to_string(),
             Self::StreamJson(events) => {
                 let mut buf = String::new();
-                for ev in events {
+                // Event index and message id of the text block `buf` ends with.
+                let mut last_text: Option<(usize, Option<&str>)> = None;
+                for (index, ev) in events.iter().enumerate() {
                     let event_type = ev.get("type").and_then(|t| t.as_str());
                     match event_type {
                         // Tool events: include tool output in the response text
@@ -214,12 +216,27 @@ impl BackendResponse {
                             } else if let Some(blocks) =
                                 ev.pointer("/message/content").and_then(|x| x.as_array())
                             {
+                                // Whole blocks of one message (Claude CLI emits an
+                                // event per block, all with the message's id). Text
+                                // from another message starts a new paragraph, so a
+                                // session's messages do not run together.
+                                let id = ev.pointer("/message/id").and_then(|x| x.as_str());
                                 for block in blocks {
                                     if block.get("type").and_then(|t| t.as_str()) == Some("text")
                                         && let Some(text) =
                                             block.get("text").and_then(|t| t.as_str())
+                                        && !text.is_empty()
                                     {
+                                        let same_message =
+                                            last_text.is_some_and(|(last_index, last_id)| {
+                                                last_index == index
+                                                    || (id.is_some() && last_id == id)
+                                            });
+                                        if !same_message {
+                                            start_paragraph(&mut buf);
+                                        }
                                         buf.push_str(text);
+                                        last_text = Some((index, id));
                                     }
                                 }
                             }
@@ -465,6 +482,17 @@ fn extract_reasoning_from_value(value: &serde_json::Value) -> Option<String> {
         .get("content")
         .and_then(serde_json::Value::as_array)
         .and_then(|blocks| extract_reasoning_from_blocks(blocks.as_slice()))
+}
+
+/// End non-empty `buf` with a blank line, adding only the newlines it lacks.
+fn start_paragraph(buf: &mut String) {
+    if buf.is_empty() {
+        return;
+    }
+    let newlines = buf.len() - buf.trim_end_matches('\n').len();
+    for _ in newlines..2 {
+        buf.push('\n');
+    }
 }
 
 fn extract_gemini_text(value: &serde_json::Value) -> Option<&str> {
@@ -912,6 +940,64 @@ mod tests {
         assert!(text.contains("[Read]"));
         assert!(text.contains("fn main() {}"));
         assert!(text.contains(" Done."));
+    }
+
+    #[test]
+    fn stream_json_extract_text_separates_assistant_messages() {
+        // Two messages, a tool call between them. The first pair carries
+        // message ids as the Claude CLI does; the second has none, like the
+        // live-check fake agent.
+        for (first_id, second_id) in [(Some("msg_1"), Some("msg_2")), (None, None)] {
+            let r = BackendResponse::StreamJson(vec![
+                serde_json::json!({"type": "assistant", "message": {"id": first_id, "content": [
+                    {"type": "text", "text": "Working on hello/main.rs."},
+                    {"type": "tool_use", "id": "toolu_1", "name": "Write", "input": {}}
+                ]}}),
+                serde_json::json!({"type": "user", "message": {"content": [
+                    {"type": "tool_result", "tool_use_id": "toolu_1", "content": "ok"}
+                ]}}),
+                serde_json::json!({"type": "assistant", "message": {"id": second_id, "content": [
+                    {"type": "text", "text": "Wrote the requested artifacts."}
+                ]}}),
+            ]);
+            assert_eq!(
+                r.extract_text(),
+                "Working on hello/main.rs.\n\nWrote the requested artifacts."
+            );
+        }
+
+        // A message already ending in newlines gets only the missing one.
+        let r = BackendResponse::StreamJson(vec![
+            serde_json::json!({"type": "assistant", "message": {"id": "msg_1", "content": [
+                {"type": "text", "text": "First.\n"}
+            ]}}),
+            serde_json::json!({"type": "assistant", "message": {"id": "msg_2", "content": [
+                {"type": "text", "text": "Second."}
+            ]}}),
+        ]);
+        assert_eq!(r.extract_text(), "First.\n\nSecond.");
+    }
+
+    #[test]
+    fn stream_json_extract_text_joins_blocks_of_one_message() {
+        // The CLI emits one event per content block, each with the message's
+        // id; blocks of one message join as they are.
+        let r = BackendResponse::StreamJson(vec![
+            serde_json::json!({"type": "assistant", "message": {"id": "msg_1", "content": [
+                {"type": "text", "text": "The answer "}
+            ]}}),
+            serde_json::json!({"type": "assistant", "message": {"id": "msg_1", "content": [
+                {"type": "text", "text": "is 42."}
+            ]}}),
+            serde_json::json!({"type": "assistant", "message": {"content": [
+                {"type": "text", "text": "One event, "},
+                {"type": "text", "text": "one message."}
+            ]}}),
+        ]);
+        assert_eq!(
+            r.extract_text(),
+            "The answer is 42.\n\nOne event, one message."
+        );
     }
 
     #[test]

@@ -2,7 +2,7 @@
 id = "bug-0c7e11"
 kind = "bug"
 title = "A plan generation that writes no plan still ends its operation completed"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "visibility"
@@ -11,12 +11,18 @@ subsystem = ["roko-serve/plans"]
 created = 2026-09-29
 updated = 2026-09-29
 last_verified = 2026-09-29
+last_verified_rev = "9bd016a48"
 source = "session:roko-b6 2026-09-29 portal close-out"
 anchors = ["crates/roko-serve/src/routes/plans.rs::generate_plan", "crates/roko-serve/tests/plan_authoring.rs::get_operation_reports_failed_when_generation_writes_no_plan"]
 links = { depends_on = [], blocks = [], related = ["gap-a6e2c3"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "grep -qw 'fn get_operation_reports_failed_when_generation_writes_no_plan' crates/roko-serve/tests/plan_authoring.rs && cargo test -p roko-serve --test plan_authoring get_operation_reports_"
+
+[closed]
+at = 2026-09-29
+commit = "9bd016a48"
+evidence = "9bd016a48: generate_plan's background task (crates/roko-serve/src/routes/plans.rs) settles the operation from one result: Completed {slug, task_count} only when the runtime reports plan targets and load_plan_summary(<slug>) finds the plan; Failed {error naming the plan} when generation errs, reports no targets, or the plan is missing or does not load. The plan_generate.completed/.failed log entry and OperationCompleted.success match the status. revise_plan already settled its operation this way, so it is unchanged. [[verify]] passes: plan_authoring::get_operation_reports_failed_when_generation_writes_no_plan (stub reports success without writing the plan; the operation ends failed and the error names the plan) and get_operation_reports_running_then_completed_with_slug; all 18 plan_authoring tests pass; clippy -p roko-serve -D warnings is clean."
 +++
 
 ## Problem

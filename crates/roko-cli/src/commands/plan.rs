@@ -4,6 +4,7 @@ use std::io::IsTerminal as _;
 
 use crate::*;
 use anyhow::Context as _;
+use roko_cli::plan_validate;
 use roko_fs::RokoLayout;
 
 fn join_approval_tui_thread(handle: Option<std::thread::JoinHandle<anyhow::Result<()>>>) {
@@ -2240,7 +2241,7 @@ fn format_pre_validation_context(
     validate_fn: &dyn Fn(
         &std::path::Path,
         Option<&indexmap::IndexMap<String, roko_core::config::ModelProfile>>,
-    ) -> anyhow::Result<crate::plan_validate::ValidationReport>,
+    ) -> anyhow::Result<roko_cli::plan_validate::ValidationReport>,
 ) -> String {
     let parent = tasks_path.parent().unwrap_or(tasks_path);
     match validate_fn(parent, None) {

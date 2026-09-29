@@ -59,6 +59,7 @@ impl PlanDiscoveryRuntime {
             old_format: false,
             last_error: None,
             group: None,
+            estimated_minutes: None,
         };
 
         let task = PlanTaskDto {
@@ -72,12 +73,17 @@ impl PlanDiscoveryRuntime {
             files: vec!["demo/smoke-output.md".to_string()],
             completed: false,
             verify_phases: vec!["structural".to_string()],
+            model_hint: None,
+            estimated_minutes: None,
+            verify: Vec::new(),
         };
 
         let tasks_dto = PlanTasksDto {
             plan_id: "test-plan".to_string(),
             task_count: 1,
             tasks: vec![task],
+            title: None,
+            max_parallel: 1,
         };
 
         Self {

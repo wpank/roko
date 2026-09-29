@@ -3,11 +3,12 @@ id = "bug-9f340c"
 kind = "bug"
 title = "DF-0926 R-7: Plan API residuals after directory-plan discovery"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p2"
 subsystem = ["roko-serve/routes/plans"]
 created = 2026-09-26
-updated = 2026-09-28
+updated = 2026-09-29
+last_verified = 2026-09-29
 source = "tmp/dogfood/2026-09-25-portal-programme-run.md#R-7. The plan-01 code is good where it counts, weak where it verifies"
 discovered_from = "audit:tmp/dogfood/2026-09-25-portal-programme-run.md#R-7. The plan-01 code is good where it counts, weak where it verifies"
 anchors = ["crates/roko-serve/src/routes/plans.rs find_plan", "create_plan", "crates/roko-cli/src/serve_runtime.rs"]
@@ -19,3 +20,5 @@ Imported without verification from:
 - `tmp/dogfood/2026-09-25-portal-programme-run.md#R-7. The plan-01 code is good where it counts, weak where it verifies`
 
 How to verify: Call each plans route for a directory plan id.
+
+**Partial fix landed 2026-09-29 (plan 04 T07):** `POST /api/plans` now writes `plans/<slug>/tasks.toml` (a directory plan) instead of `<uuid>.json`. The created plan is immediately visible to `GET /api/plans` (discovery-based listing) and passes `roko plan validate`. Verified: PASS "POST /api/plans creates a plan (201) and returns its slug", PASS "the created plan is a directory plan", PASS "the created plan is listed". The `find_plan` flat-file lookup backing the other nine handlers (resume, costs, gates, estimate, chat, reviews, diff, validate, source) is addressed by plan 03b T18; those handlers remain open.

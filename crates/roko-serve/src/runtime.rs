@@ -10,7 +10,9 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 use crate::bench::BenchConfigOverrides;
-use crate::plan_types::{PlanSummaryDto, PlanTasksDto};
+use crate::plan_types::{
+    CreatePlanOutcome, PlanSourceDto, PlanSummaryDto, PlanTasksDto, PlanValidationDto, RevisionDto,
+};
 use roko_runtime::cancel::CancelToken;
 
 /// Token usage reported by an LLM provider.
@@ -485,6 +487,82 @@ pub trait CliRuntime: Send + Sync + 'static {
     ) -> anyhow::Result<Option<PlanTasksDto>> {
         let _ = (workdir, plan_id);
         anyhow::bail!("runtime does not support plan discovery")
+    }
+
+    /// Return the raw TOML source of a plan's `tasks.toml`.
+    ///
+    /// Returns `Ok(None)` when no plan with `plan_id` is found in `workdir`.
+    async fn plan_source(
+        &self,
+        workdir: &std::path::Path,
+        plan_id: &str,
+    ) -> anyhow::Result<Option<PlanSourceDto>> {
+        let _ = (workdir, plan_id);
+        anyhow::bail!("runtime does not support plan source access")
+    }
+
+    /// Validate a plan source text.
+    ///
+    /// - `toml = None` validates the plan file currently on disk.
+    /// - `toml = Some(text)` validates that text without writing anything.
+    ///
+    /// Returns `Ok(None)` when no plan with `plan_id` is found in `workdir`.
+    async fn validate_plan_source(
+        &self,
+        workdir: &std::path::Path,
+        plan_id: &str,
+        toml: Option<String>,
+    ) -> anyhow::Result<Option<PlanValidationDto>> {
+        let _ = (workdir, plan_id, toml);
+        anyhow::bail!("runtime does not support plan source validation")
+    }
+
+    /// Validate and save a plan source text.
+    ///
+    /// Saves only when validation succeeds; on failure the file on disk is
+    /// left completely untouched and the returned report contains the errors.
+    ///
+    /// Returns `Ok(None)` when no plan with `plan_id` is found in `workdir`.
+    async fn save_plan_source(
+        &self,
+        workdir: &std::path::Path,
+        plan_id: &str,
+        toml: String,
+    ) -> anyhow::Result<Option<PlanValidationDto>> {
+        let _ = (workdir, plan_id, toml);
+        anyhow::bail!("runtime does not support plan source saving")
+    }
+
+    /// Revise a plan's `tasks.toml` using an LLM and caller-supplied feedback.
+    ///
+    /// The runtime calls the plan-authoring agent with the current source and
+    /// `feedback`, validates the result, and writes it only when it passes.
+    ///
+    /// Returns `Ok(None)` when no plan with `plan_id` is found in `workdir`.
+    async fn revise_plan(
+        &self,
+        workdir: &std::path::Path,
+        plan_id: &str,
+        feedback: &str,
+    ) -> anyhow::Result<Option<RevisionDto>> {
+        let _ = (workdir, plan_id, feedback);
+        anyhow::bail!("runtime does not support plan revision")
+    }
+
+    /// Create a new plan with the given slug and title.
+    ///
+    /// Writes `<plans_dir>/<slug>/tasks.toml` from a generated starter source
+    /// and a sibling `plan.md` carrying the title.  The starter source is
+    /// validated before any file is written; a failed validation returns
+    /// [`CreatePlanOutcome::Rejected`] rather than an error.
+    async fn create_plan(
+        &self,
+        workdir: &std::path::Path,
+        slug: &str,
+        title: &str,
+    ) -> anyhow::Result<CreatePlanOutcome> {
+        let _ = (workdir, slug, title);
+        anyhow::bail!("runtime does not support plan creation")
     }
 
     /// Run a SWE-bench evaluation. Returns per-instance results.

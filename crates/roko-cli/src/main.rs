@@ -36,7 +36,7 @@
 
 mod agent_serve;
 mod commands;
-mod plan_validate;
+
 
 use roko_cli::auth;
 

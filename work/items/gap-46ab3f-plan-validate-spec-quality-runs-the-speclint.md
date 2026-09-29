@@ -3,13 +3,14 @@ id = "gap-46ab3f"
 kind = "gap"
 title = "plan validate --spec-quality runs the speclint rules when a plan loads (S07.9)"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p2"
 goal = "golden-path"
 size = "M"
 subsystem = ["roko-gate/spec_quality", "roko-cli/plan_validate"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-29
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e8"
 discovered_from = "tmp/cybernetic-harness/execution/checklist.json (S07.9, with the S07.7 scorer)"
 anchors = ["crates/roko-gate/src/spec_quality.rs", "crates/roko-cli/src/commands/plan.rs::cmd_plan_validate", "crates/roko-cli/src/main.rs:1988"]
@@ -74,3 +75,10 @@ Checked at `41c7ffbd6`: no scorer in Rust and no flag. The checklist entry (AS4,
   gap-b3fa0a) are later items.
 - `main.rs` is a hot file, but the change is one flag.
 - If porting the scorer takes more than a day, split S07.7 (the library) into its own item.
+- Implemented on `work/gap-46ab3f` at `d0cad4760`; cargo verification deferred to the batch check.
+- 2026-09-29: premise re-checked at `7f2796462` (no Rust scorer, no flag). `--spec-quality` scores the files
+  `plan validate` lints, so `archive/` and `archived/` plans are skipped as in the rest of validate. Plan step 4
+  still needs a built roko: `python3 benchmarks/viabilitybench/speclint/rust_parity.py` runs `plan validate` on
+  `plans/` and on each archive directory, runs speclint on the same files, and exits 0 when every task is within
+  0.5 points with identical hard fails. Put its summary in the closing evidence. The Rust record leaves out
+  speclint's `spec_hash`, `spec_origin`, `critic`, `ambiguity` and `ts`.

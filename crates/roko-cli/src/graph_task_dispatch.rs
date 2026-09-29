@@ -747,6 +747,46 @@ fn turn_cap_resume_note(previous: TurnCapRetry, cap: u32) -> String {
     )
 }
 
+/// Ceiling on timeout escalation, as a multiple of a task's base attempt
+/// timeout.
+const MAX_TIMEOUT_ESCALATION: u64 = 4;
+
+/// Wall-clock budget of one Graph task attempt, in ms: the task's authored
+/// `timeout_secs`, else `timeouts.agent_dispatch_secs`.
+fn base_attempt_timeout_ms(config: &RokoConfig, spec: &TaskExecutionSpec) -> u64 {
+    let secs = if spec.timeout_secs == 0 {
+        config.timeouts.agent_dispatch_secs
+    } else {
+        spec.timeout_secs
+    };
+    secs.max(1).saturating_mul(1_000)
+}
+
+/// Timeout for the attempt after one that ran out of `timeout_ms`: half
+/// again, at most [`MAX_TIMEOUT_ESCALATION`] times the base, and never less
+/// than the timeout that ran out.
+fn raised_attempt_timeout_ms(timeout_ms: u64, base_ms: u64) -> u64 {
+    timeout_ms
+        .saturating_add(timeout_ms.div_ceil(2))
+        .min(base_ms.saturating_mul(MAX_TIMEOUT_ESCALATION))
+        .max(timeout_ms)
+}
+
+/// Section appended to the user prompt of the attempt after a timeout, so the
+/// agent continues the partial work instead of starting over.
+fn timeout_resume_note(previous_ms: u64, timeout_ms: u64) -> String {
+    format!(
+        "\n\n# Resuming a timed-out task\n\n\
+         Your previous attempt at this task was stopped when it ran out of its \
+         {previous:?} time limit. Its edits are still in the working tree. Inspect the \
+         current state of the files in scope (for example with `git diff`), keep what is \
+         already correct, and continue from there instead of starting over. This attempt \
+         has {timeout:?}.\n",
+        previous = std::time::Duration::from_millis(previous_ms),
+        timeout = std::time::Duration::from_millis(timeout_ms),
+    )
+}
+
 /// Short, class-prefixed reason for a failed attempt (`"<class>: <first line>"`),
 /// recorded on its episode.
 fn attempt_failure_reason(class: &str, detail: &str) -> String {
@@ -763,12 +803,16 @@ fn attempt_failure_reason(class: &str, detail: &str) -> String {
 
 /// [`attempt_failure_reason`] for an unsuccessful provider result.
 fn provider_failure_reason(message: &str) -> String {
-    use roko_agent::provider::error_classify::{detect_provider_exhaustion, detect_turn_cap};
+    use roko_agent::provider::error_classify::{
+        detect_attempt_timeout, detect_provider_exhaustion, detect_turn_cap,
+    };
 
     let class = if detect_turn_cap(message).is_some() {
         "turn_cap"
     } else if detect_provider_exhaustion(message).is_some() {
         "provider_exhausted"
+    } else if detect_attempt_timeout(message) {
+        "timeout"
     } else {
         "provider"
     };
@@ -1173,6 +1217,10 @@ pub struct GraphTaskDispatcher {
     /// Tasks (`"{plan_id}/{task_id}"`) whose last attempt stopped at its turn
     /// cap; the next attempt raises the cap and resumes the partial work.
     turn_cap_retries: parking_lot::Mutex<HashMap<String, TurnCapRetry>>,
+    /// Tasks (`"{plan_id}/{task_id}"`) whose last attempt ran out of time,
+    /// with that attempt's timeout in ms; the next attempt gets more time
+    /// and resumes the partial work.
+    timeout_retries: parking_lot::Mutex<HashMap<String, u64>>,
     /// Dispatch attempts started per task (`"{plan_id}/{task_id}"`) in this
     /// run; numbers each attempt's efficiency records.
     task_attempts: parking_lot::Mutex<HashMap<String, u32>>,
@@ -1221,6 +1269,7 @@ impl GraphTaskDispatcher {
             task_spend: GraphTaskSpendLedger::default(),
             skip_enrichment_plans: parking_lot::Mutex::new(HashMap::new()),
             turn_cap_retries: parking_lot::Mutex::new(HashMap::new()),
+            timeout_retries: parking_lot::Mutex::new(HashMap::new()),
             task_attempts: parking_lot::Mutex::new(HashMap::new()),
             in_flight: sibling_settle::InFlightTasks::default(),
         }
@@ -3623,22 +3672,32 @@ impl TaskDispatcher for GraphTaskDispatcher {
         }
 
         let contract = effective_agent_contract(role, &task);
-        let effective_timeout_secs = if spec.timeout_secs == 0 {
-            self.config.timeouts.agent_dispatch_secs
-        } else {
-            spec.timeout_secs
-        };
-        let timeout_ms = effective_timeout_secs.max(1).saturating_mul(1_000);
+        let base_timeout_ms = base_attempt_timeout_ms(&self.config, spec);
+        // The last attempt ran out of time with partial work on disk: give
+        // this one half again as long (bounded) and tell it to resume, never
+        // rerun the budget that already ran out.
+        let timeout_resume = self.timeout_retries.lock().remove(&task_spend_key);
+        let timeout_ms = timeout_resume.map_or(base_timeout_ms, |previous_ms| {
+            let raised = raised_attempt_timeout_ms(previous_ms, base_timeout_ms);
+            tracing::info!(
+                plan_id = %spec.plan_id,
+                task_id = %task.id,
+                previous_timeout_ms = previous_ms,
+                timeout_ms = raised,
+                "previous attempt timed out; resuming with an escalated timeout"
+            );
+            raised
+        });
+        let mut prompt = dispatch_plan.prompt.user_prompt.clone();
+        if let Some(previous) = turn_cap_resume {
+            prompt.push_str(&turn_cap_resume_note(previous, max_turns));
+        }
+        if let Some(previous_ms) = timeout_resume {
+            prompt.push_str(&timeout_resume_note(previous_ms, timeout_ms));
+        }
         let mut request = AgentDispatchRequest {
             model_key: dispatch_plan.model.slug.clone(),
-            prompt: match turn_cap_resume {
-                Some(previous) => format!(
-                    "{}{}",
-                    dispatch_plan.prompt.user_prompt,
-                    turn_cap_resume_note(previous, max_turns)
-                ),
-                None => dispatch_plan.prompt.user_prompt.clone(),
-            },
+            prompt,
             system_prompt: dispatch_plan.prompt.system_prompt.clone(),
             workdir: effective_workdir.clone(),
             immune_root: Some(effective_workdir.clone()),
@@ -3858,6 +3917,11 @@ impl TaskDispatcher for GraphTaskDispatcher {
                     limit: max_turns,
                     num_turns: hit.num_turns.unwrap_or(max_turns),
                 });
+            }
+            if roko_agent::provider::error_classify::detect_attempt_timeout(&message) {
+                self.timeout_retries
+                    .lock()
+                    .insert(task_spend_key.clone(), timeout_ms);
             }
             return Err(RokoError::Agent {
                 backend: dispatch.target.provider_id,
@@ -4269,12 +4333,7 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
             .plan(&task, &dispatch_ctx)
             .map_err(|error| RokoError::Planning(error.to_string()))?;
         let contract = effective_agent_contract(role, &task);
-        let effective_timeout_secs = if spec.timeout_secs == 0 {
-            self.config.timeouts.agent_dispatch_secs
-        } else {
-            spec.timeout_secs
-        };
-        let timeout_ms = effective_timeout_secs.max(1).saturating_mul(1_000);
+        let timeout_ms = base_attempt_timeout_ms(&self.config, spec);
         let request = AgentDispatchRequest {
             model_key: dispatch_plan.model.slug.clone(),
             prompt: dispatch_plan.prompt.user_prompt.clone(),
@@ -4399,6 +4458,8 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
                     );
                     None
                 };
+                self.task_spend
+                    .record(&format!("{}/{}", spec.plan_id, task.id), cost_usd);
                 budget_reservation.settle(cost_usd.max(0.0))?;
 
                 // Forward final usage event with cost.
@@ -4768,11 +4829,11 @@ impl GraphTaskDispatcher {
                 .record_exhaustion(&provider_id, until_ms);
             // The caller settles only the result it receives; account the
             // refused call here.
-            self.budget_ledger.settle(
-                &spec.plan_id,
-                0,
-                f64::from(dispatch.result.usage.cost_usd),
-            )?;
+            let refused_cost_usd = f64::from(dispatch.result.usage.cost_usd);
+            self.task_spend
+                .record(&format!("{}/{task_id}", spec.plan_id), refused_cost_usd);
+            self.budget_ledger
+                .settle(&spec.plan_id, 0, refused_cost_usd)?;
             tracing::warn!(
                 plan_id = %spec.plan_id,
                 task_id,
@@ -7347,8 +7408,40 @@ printf '%s\n' '{{"type":"result","session_id":"sess-b","model":"claude-sonnet-4-
                 .starts_with("provider_exhausted: ")
         );
         assert_eq!(
+            provider_failure_reason("timed out after 600000 ms"),
+            "timeout: timed out after 600000 ms"
+        );
+        assert_eq!(
             provider_failure_reason("exit 1: claude failed\nmore"),
             "provider: exit 1: claude failed"
+        );
+    }
+
+    #[test]
+    fn a_timeout_retry_raises_the_timeout_by_half_up_to_four_times_the_base() {
+        assert_eq!(raised_attempt_timeout_ms(600_000, 600_000), 900_000);
+        assert_eq!(raised_attempt_timeout_ms(900_000, 600_000), 1_350_000);
+        assert_eq!(raised_attempt_timeout_ms(2_025_000, 600_000), 2_400_000);
+        assert_eq!(raised_attempt_timeout_ms(2_400_000, 600_000), 2_400_000);
+        assert_eq!(
+            raised_attempt_timeout_ms(3_000_000, 600_000),
+            3_000_000,
+            "never below the timeout that ran out"
+        );
+        assert_eq!(raised_attempt_timeout_ms(1_000, 1_000), 1_500);
+        assert_eq!(raised_attempt_timeout_ms(u64::MAX, u64::MAX), u64::MAX);
+    }
+
+    #[test]
+    fn the_base_attempt_timeout_is_the_authored_timeout_else_the_dispatch_default() {
+        let mut config = RokoConfig::default();
+        config.timeouts.agent_dispatch_secs = 600;
+        let mut task = make_task_def("focused");
+        assert_eq!(base_attempt_timeout_ms(&config, &make_spec(&task)), 600_000);
+        task.timeout_secs = 2_700;
+        assert_eq!(
+            base_attempt_timeout_ms(&config, &make_spec(&task)),
+            2_700_000
         );
     }
 
@@ -7439,5 +7532,108 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"num_turns"
         assert_eq!(episodes[1]["success"], true);
         assert_eq!(episodes[1]["turns"], 7);
         assert!(episodes[1]["failure_reason"].is_null());
+    }
+
+    /// A fake Claude CLI that streams one API message, then works past its
+    /// timeout without reaching its `result` event, recording each prompt.
+    const STREAMS_THEN_TIMES_OUT_PROVIDER: &str = r#"#!/bin/sh
+dir=$(dirname -- "$0")
+n=$(( $(cat "$dir/calls" 2>/dev/null || echo 0) + 1 ))
+echo "$n" > "$dir/calls"
+cat > "$dir/prompt-$n"
+printf '%s\n' '{"type":"assistant","message":{"id":"msg_1","model":"claude-sonnet-4-6","content":[{"type":"tool_use","id":"tu_1","name":"Bash","input":{"command":"cargo build"}}],"usage":{"input_tokens":1000,"output_tokens":200}},"parent_tool_use_id":null}'
+sleep 30
+"#;
+
+    /// The first `costs.jsonl` record, once the background writer lands it.
+    async fn first_cost_record(path: &Path) -> serde_json::Value {
+        for _ in 0..600 {
+            if let Some(record) = std::fs::read_to_string(path)
+                .unwrap_or_default()
+                .lines()
+                .find_map(|line| serde_json::from_str(line).ok())
+            {
+                return record;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        panic!("no cost record was written to {}", path.display());
+    }
+
+    #[tokio::test]
+    async fn a_timed_out_attempt_settles_the_spend_it_streamed() {
+        let temp = tempdir().expect("tempdir");
+        let costs_path = temp.path().join("costs.jsonl");
+        let (dispatcher, mut task) =
+            make_scripted_batch_dispatcher(&temp, STREAMS_THEN_TIMES_OUT_PROVIDER, |_| {}).await;
+        let dispatcher = dispatcher.with_feedback(GraphFeedbackContext {
+            costs_path: Some(costs_path.clone()),
+            ..GraphFeedbackContext::default()
+        });
+        task.timeout_secs = 1;
+        let spec = make_spec(&task);
+
+        let error = dispatcher
+            .dispatch(&spec, Vec::new(), &batch_ctx())
+            .await
+            .expect_err("the attempt runs out of time");
+        assert!(
+            matches!(&error, RokoError::Agent { message, .. } if message == "timed out after 1000 ms"),
+            "got {error:?}"
+        );
+
+        // Sonnet per million: $3 in, $15 out.
+        let streamed_usd = (1_000.0 * 3.0 + 200.0 * 15.0) / 1e6;
+        let plan_spent = dispatcher.plan_budget_snapshot(&spec.plan_id).spent_usd;
+        assert!(
+            (plan_spent - streamed_usd).abs() < 1e-6,
+            "plan ledger settled {plan_spent}"
+        );
+        let task_spent = dispatcher
+            .task_spend
+            .tasks
+            .lock()
+            .get(&format!("{}/{}", spec.plan_id, task.id))
+            .copied();
+        assert_eq!(task_spent, Some(usd_to_micro_usd(streamed_usd)));
+
+        let record = first_cost_record(&costs_path).await;
+        assert_eq!(record["success"], false, "{record}");
+        assert_eq!(record["input_tokens"], 1_000, "{record}");
+        assert_eq!(record["output_tokens"], 200, "{record}");
+        let recorded_usd = record["cost_usd"].as_f64().expect("cost_usd");
+        assert!((recorded_usd - streamed_usd).abs() < 1e-6, "{record}");
+    }
+
+    #[tokio::test]
+    async fn a_timed_out_attempt_is_resumed_with_an_escalated_timeout() {
+        let temp = tempdir().expect("tempdir");
+        let (dispatcher, mut task) =
+            make_scripted_batch_dispatcher(&temp, STREAMS_THEN_TIMES_OUT_PROVIDER, |_| {}).await;
+        task.timeout_secs = 1;
+        let spec = make_spec(&task);
+
+        for expected in ["timed out after 1000 ms", "timed out after 1500 ms"] {
+            let error = dispatcher
+                .dispatch(&spec, Vec::new(), &batch_ctx())
+                .await
+                .expect_err("the attempt runs out of time");
+            assert!(
+                matches!(&error, RokoError::Agent { message, .. } if message == expected),
+                "the retry must not rerun the same timeout: got {error:?}"
+            );
+        }
+
+        let first_prompt =
+            std::fs::read_to_string(temp.path().join("prompt-1")).expect("first prompt");
+        assert!(!first_prompt.contains("Resuming"));
+        let resumed_prompt =
+            std::fs::read_to_string(temp.path().join("prompt-2")).expect("second prompt");
+        assert!(
+            resumed_prompt.contains("# Resuming a timed-out task"),
+            "{resumed_prompt}"
+        );
+        assert!(resumed_prompt.contains("ran out of its 1s time limit"));
+        assert!(resumed_prompt.contains("This attempt has 1.5s."));
     }
 }

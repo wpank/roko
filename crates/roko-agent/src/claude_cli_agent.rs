@@ -13,13 +13,15 @@ use crate::process::{
     GRACE_STDIN_CLOSE_MS, ResourceLimits, benign_stderr_warn_once, classify_benign_stderr,
     confined_command, kill_tree, register_spawned_pid, set_process_group, unregister_pid,
 };
-use crate::provider::error_classify::detect_provider_exhaustion;
+use crate::provider::error_classify::{ATTEMPT_TIMEOUT_MARKER, detect_provider_exhaustion};
 use crate::tool_loop::{StreamEvent, StreamEventKind};
-use crate::usage::Usage;
+use crate::usage::{Usage, UsageObservation, UsageSource};
 use async_trait::async_trait;
+use roko_core::config::model_registry::model_meta;
 use roko_core::defaults::DEFAULT_REQUEST_TIMEOUT_MS;
 use roko_core::{Body, Context, Kind, OperatingFrequency, Provenance, Signal};
 use serde_json::Value;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::Arc;
@@ -291,7 +293,7 @@ impl ClaudeCliAgent {
             output = output.tag("num_turns", num_turns.to_string());
         }
         let output = output.build();
-        AgentResult::fail(output).with_usage(Self::usage_from_stream(stream_usage, wall_ms))
+        AgentResult::fail(output).with_usage_obs(self.usage_observation(stream_usage, wall_ms))
     }
 
     /// The run stopped at `--max-turns`: the final stream-json `result` has
@@ -441,9 +443,16 @@ impl ClaudeCliAgent {
         }
     }
 
-    fn parse_stream_usage(stdout: &str) -> StreamUsage {
+    /// Usage from stream-json output.
+    ///
+    /// The final `result` event carries the provider-reported totals. A run
+    /// killed before it (a timeout) has only its `assistant` events, whose
+    /// usage becomes an [`UsageSource::Estimated`] partial total (see
+    /// [`StreamedMessages`]); `fallback_model` prices messages naming no model.
+    fn parse_stream_usage(output: &str, fallback_model: &str) -> StreamUsage {
         let mut usage = StreamUsage::default();
-        for line in stdout
+        let mut streamed = StreamedMessages::default();
+        for line in output
             .lines()
             .map(str::trim)
             .filter(|line| !line.is_empty())
@@ -451,7 +460,12 @@ impl ClaudeCliAgent {
             let Some(event) = Self::parse_stream_event(line) else {
                 continue;
             };
-            if event.get("type").and_then(Value::as_str) != Some("result") {
+            let kind = event.get("type").and_then(Value::as_str);
+            if kind == Some("assistant") {
+                streamed.observe(&event);
+                continue;
+            }
+            if kind != Some("result") {
                 continue;
             }
 
@@ -495,17 +509,28 @@ impl ClaudeCliAgent {
                 );
             }
         }
+        if usage.source == UsageSource::Unknown {
+            return streamed.into_stream_usage(fallback_model);
+        }
         usage
     }
 
-    fn usage_from_stream(stream_usage: &StreamUsage, wall_ms: u64) -> Usage {
-        Usage {
-            input_tokens: Self::saturating_u64_to_u32(stream_usage.input_tokens),
-            output_tokens: Self::saturating_u64_to_u32(stream_usage.output_tokens),
-            cache_read_tokens: Self::saturating_u64_to_u32(stream_usage.cache_read_tokens),
-            cache_create_tokens: Self::saturating_u64_to_u32(stream_usage.cache_creation_tokens),
-            reasoning_tokens: 0,
-            cost_usd: stream_usage.cost_usd.unwrap_or(0.0) as f32,
+    /// Canonical usage for a run, keeping the source of `stream_usage`:
+    /// provider-reported, estimated from what a killed run streamed, or
+    /// unknown.
+    fn usage_observation(&self, stream_usage: &StreamUsage, wall_ms: u64) -> UsageObservation {
+        UsageObservation {
+            input_tokens: stream_usage.input_tokens,
+            output_tokens: stream_usage.output_tokens,
+            cache_creation_tokens: stream_usage.cache_creation_tokens,
+            cache_read_tokens: stream_usage.cache_read_tokens,
+            reasoning_tokens: None,
+            cost_usd: stream_usage.cost_usd,
+            source: stream_usage.source.clone(),
+            model: stream_usage
+                .model
+                .clone()
+                .or_else(|| Some(self.model.clone())),
             wall_ms,
         }
     }
@@ -519,12 +544,6 @@ impl ClaudeCliAgent {
         if let Some(value) = value {
             *slot = Some(value);
         }
-    }
-
-    fn saturating_u64_to_u32(value: Option<u64>) -> u32 {
-        value
-            .and_then(|value| u32::try_from(value).ok())
-            .unwrap_or(0)
     }
 
     fn tool_summary(block: &Value) -> String {
@@ -1011,30 +1030,36 @@ impl ClaudeCliAgent {
             }
         });
 
-        let status = match timeout(Duration::from_millis(self.timeout_ms), child.wait()).await {
-            Ok(Ok(status)) => status,
-            Ok(Err(e)) => {
-                heartbeat_handle.abort();
-                if track_pids()
-                    && let Some(pid) = pid
-                {
-                    unregister_pid(pid);
-                }
-                return self.failure(input, &format!("wait failed: {e}"), started);
-            }
-            Err(_) => {
-                heartbeat_handle.abort();
+        let waited = match timeout(Duration::from_millis(self.timeout_ms), child.wait()).await {
+            Ok(Ok(status)) => Ok(status),
+            Ok(Err(e)) => Err(format!("wait failed: {e}")),
+            Err(_) => Err(format!("{ATTEMPT_TIMEOUT_MARKER} {} ms", self.timeout_ms)),
+        };
+        heartbeat_handle.abort();
+        let status = match waited {
+            Ok(status) => status,
+            Err(reason) => {
                 let _ = kill_tree(&mut child, Duration::from_millis(GRACE_STDIN_CLOSE_MS)).await;
                 if track_pids()
                     && let Some(pid) = pid
                 {
                     unregister_pid(pid);
                 }
-                return self.failure(
-                    input,
-                    &format!("timed out after {} ms", self.timeout_ms),
-                    started,
+                // Killed before its final `result` event: keep the usage it
+                // streamed, so a long failed run is not recorded as free.
+                let (stdout, stderr) = tokio::join!(
+                    drain_killed_output(stdout_handle),
+                    drain_killed_output(stderr_handle)
                 );
+                let stream_usage = Self::parse_stream_usage(&stdout, &self.model)
+                    .merge(Self::parse_stream_usage(&stderr, &self.model));
+                tracing::warn!(
+                    agent = %self.name,
+                    elapsed_s = started.elapsed().as_secs(),
+                    streamed_cost_usd = stream_usage.cost_usd.unwrap_or_default(),
+                    "agent {reason}"
+                );
+                return self.failure_with_stream_usage(input, &reason, started, &stream_usage);
             }
         };
         if track_pids()
@@ -1043,14 +1068,13 @@ impl ClaudeCliAgent {
             unregister_pid(pid);
         }
 
-        heartbeat_handle.abort();
         let elapsed_secs = started.elapsed().as_secs();
 
         let stdout = stdout_handle.await.unwrap_or_default();
         let stderr = stderr_handle.await.unwrap_or_default();
         let wall_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
-        let stream_usage =
-            Self::parse_stream_usage(&stdout).merge(Self::parse_stream_usage(&stderr));
+        let stream_usage = Self::parse_stream_usage(&stdout, &self.model)
+            .merge(Self::parse_stream_usage(&stderr, &self.model));
 
         if let Some(hit) = self.turn_cap_hit(&stdout, &stderr) {
             tracing::warn!(agent = %self.name, elapsed_s = elapsed_secs, "{hit}");
@@ -1115,7 +1139,7 @@ impl ClaudeCliAgent {
 
         AgentResult::ok(output_signal)
             .with_trace(self.stderr_trace(&stderr))
-            .with_usage(Self::usage_from_stream(&stream_usage, wall_ms))
+            .with_usage_obs(self.usage_observation(&stream_usage, wall_ms))
     }
 }
 
@@ -1151,15 +1175,9 @@ impl Agent for ClaudeCliAgent {
     }
 }
 
-/// Whether usage was reported by the final Claude CLI result event.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-enum UsageSource {
-    ProviderReported,
-    #[default]
-    Unknown,
-}
-
-/// Parsed usage metadata from Claude CLI `result` events.
+/// Parsed usage metadata from Claude CLI stream-json output: the final
+/// `result` event ([`UsageSource::ProviderReported`]), or what a killed run
+/// streamed before it ([`UsageSource::Estimated`]).
 #[derive(Debug, Clone, PartialEq, Default)]
 struct StreamUsage {
     input_tokens: Option<u64>,
@@ -1168,27 +1186,148 @@ struct StreamUsage {
     cache_read_tokens: Option<u64>,
     cost_usd: Option<f64>,
     model: Option<String>,
-    /// Agent turns the CLI reported in its final `result` event.
+    /// Agent turns the CLI reported in its final `result` event, or the
+    /// main-loop messages a killed run streamed.
     num_turns: Option<u64>,
     source: UsageSource,
 }
 
 impl StreamUsage {
     fn merge(mut self, other: Self) -> Self {
-        if self.source == UsageSource::Unknown {
-            return other;
-        }
-        if other.source == UsageSource::ProviderReported {
-            self.input_tokens = self.input_tokens.or(other.input_tokens);
-            self.output_tokens = self.output_tokens.or(other.output_tokens);
-            self.cache_creation_tokens = self.cache_creation_tokens.or(other.cache_creation_tokens);
-            self.cache_read_tokens = self.cache_read_tokens.or(other.cache_read_tokens);
-            self.cost_usd = self.cost_usd.or(other.cost_usd);
-            self.model = self.model.or(other.model);
-            self.num_turns = self.num_turns.or(other.num_turns);
+        match (&self.source, &other.source) {
+            // A provider-reported total beats a partial estimate.
+            (UsageSource::Unknown, _) | (UsageSource::Estimated, UsageSource::ProviderReported) => {
+                return other;
+            }
+            (UsageSource::ProviderReported, UsageSource::ProviderReported) => {
+                self.input_tokens = self.input_tokens.or(other.input_tokens);
+                self.output_tokens = self.output_tokens.or(other.output_tokens);
+                self.cache_creation_tokens =
+                    self.cache_creation_tokens.or(other.cache_creation_tokens);
+                self.cache_read_tokens = self.cache_read_tokens.or(other.cache_read_tokens);
+                self.cost_usd = self.cost_usd.or(other.cost_usd);
+                self.model = self.model.or(other.model);
+                self.num_turns = self.num_turns.or(other.num_turns);
+            }
+            _ => {}
         }
         self
     }
+}
+
+/// Usage of the API messages a run streamed as stream-json `assistant`
+/// events. The CLI emits one event per content block, each repeating its
+/// message's usage, so a message id counts once (its largest values).
+#[derive(Debug, Default)]
+struct StreamedMessages {
+    messages: Vec<StreamedMessage>,
+    by_id: HashMap<String, usize>,
+}
+
+#[derive(Debug, Default)]
+struct StreamedMessage {
+    model: Option<String>,
+    /// Main-loop message; a sub-agent's messages set `parent_tool_use_id`.
+    top_level: bool,
+    usage: Usage,
+}
+
+impl StreamedMessages {
+    fn observe(&mut self, event: &Value) {
+        let Some(message) = event.get("message") else {
+            return;
+        };
+        let Some(usage) = message.get("usage").filter(|usage| usage.is_object()) else {
+            return;
+        };
+        let index = match message.get("id").and_then(Value::as_str) {
+            Some(id) => *self.by_id.entry(id.to_string()).or_insert_with(|| {
+                self.messages.push(StreamedMessage::default());
+                self.messages.len() - 1
+            }),
+            None => {
+                self.messages.push(StreamedMessage::default());
+                self.messages.len() - 1
+            }
+        };
+        let streamed = &mut self.messages[index];
+        if let Some(model) = message
+            .get("model")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|model| !model.is_empty())
+        {
+            streamed.model = Some(model.to_string());
+        }
+        streamed.top_level = event.get("parent_tool_use_id").is_none_or(Value::is_null);
+        let count = |keys: &[&str]| {
+            ClaudeCliAgent::stream_usage_u64(usage, keys)
+                .map_or(0, |count| u32::try_from(count).unwrap_or(u32::MAX))
+        };
+        let tokens = &mut streamed.usage;
+        tokens.input_tokens = tokens.input_tokens.max(count(&["input_tokens"]));
+        tokens.output_tokens = tokens.output_tokens.max(count(&["output_tokens"]));
+        tokens.cache_create_tokens = tokens.cache_create_tokens.max(count(&[
+            "cache_creation_input_tokens",
+            "cache_creation_tokens",
+        ]));
+        tokens.cache_read_tokens = tokens
+            .cache_read_tokens
+            .max(count(&["cache_read_input_tokens", "cache_read_tokens"]));
+    }
+
+    /// The streamed totals as [`UsageSource::Estimated`] usage, each message
+    /// priced from the model pricing table (`fallback_model` when it names
+    /// none). Unknown when nothing was streamed.
+    fn into_stream_usage(self, fallback_model: &str) -> StreamUsage {
+        if self.messages.is_empty() {
+            return StreamUsage::default();
+        }
+        let (mut input, mut output, mut cache_creation, mut cache_read) = (0_u64, 0, 0, 0);
+        let mut cost_usd = None;
+        for message in &self.messages {
+            let mut usage = message.usage;
+            input += u64::from(usage.input_tokens);
+            output += u64::from(usage.output_tokens);
+            cache_creation += u64::from(usage.cache_create_tokens);
+            cache_read += u64::from(usage.cache_read_tokens);
+            let model = message.model.as_deref().unwrap_or(fallback_model);
+            if let Some(pricing) = model_meta(model).pricing {
+                usage.fill_cost_from_pricing(
+                    Some(pricing.input_per_m),
+                    Some(pricing.output_per_m),
+                    Some(pricing.cache_read_per_m),
+                    Some(pricing.cache_write_per_m),
+                );
+                *cost_usd.get_or_insert(0.0) += f64::from(usage.cost_usd);
+            }
+        }
+        let top_level = || self.messages.iter().filter(|message| message.top_level);
+        StreamUsage {
+            input_tokens: Some(input),
+            output_tokens: Some(output),
+            cache_creation_tokens: Some(cache_creation),
+            cache_read_tokens: Some(cache_read),
+            cost_usd,
+            model: top_level().rev().find_map(|message| message.model.clone()),
+            num_turns: Some(top_level().count() as u64),
+            source: UsageSource::Estimated,
+        }
+    }
+}
+
+/// Longest wait for a killed run's output readers to reach end of file.
+const KILLED_OUTPUT_DRAIN_MS: u64 = 2_000;
+
+/// What `reader` collected from a killed run's pipe. A reader still blocked
+/// after [`KILLED_OUTPUT_DRAIN_MS`] (a surviving descendant holds the pipe
+/// open) is left behind, and its output is lost.
+async fn drain_killed_output(reader: tokio::task::JoinHandle<String>) -> String {
+    timeout(Duration::from_millis(KILLED_OUTPUT_DRAIN_MS), reader)
+        .await
+        .ok()
+        .and_then(Result::ok)
+        .unwrap_or_default()
 }
 
 async fn read_pipe_to_string<R>(pipe: &mut Option<R>) -> String
@@ -1292,6 +1431,7 @@ mod tests {
         let usage = ClaudeCliAgent::parse_stream_usage(
             r#"{"type":"assistant","subtype":"message","message":{"content":[{"type":"text","text":"hello"}],"usage":{"input_tokens":999,"output_tokens":888,"cache_creation_input_tokens":777,"cache_read_input_tokens":666}}}
 {"type":"result","session_id":"sess-1","model":"claude-sonnet-4-6","total_cost_usd":0.25,"usage":{"input_tokens":11,"output_tokens":22,"cache_creation_input_tokens":33,"cache_read_input_tokens":44}}"#,
+            "claude-test-model",
         );
         assert_eq!(usage.source, UsageSource::ProviderReported);
         assert_eq!(usage.input_tokens, Some(11));
@@ -1306,6 +1446,7 @@ mod tests {
     fn parse_stream_usage_leaves_missing_fields_none_and_keeps_zeroes() {
         let usage = ClaudeCliAgent::parse_stream_usage(
             r#"{"type":"result","session_id":"sess-2","model":"claude-sonnet-4-6","total_cost_usd":0,"usage":{"input_tokens":0,"cache_read_input_tokens":5}}"#,
+            "claude-test-model",
         );
         assert_eq!(usage.source, UsageSource::ProviderReported);
         assert_eq!(usage.input_tokens, Some(0));
@@ -1320,6 +1461,7 @@ mod tests {
     fn parse_stream_usage_accepts_cache_alias_fields() {
         let usage = ClaudeCliAgent::parse_stream_usage(
             r#"{"type":"result","session_id":"sess-3","model":"claude-sonnet-4-6","total_cost_usd":0.5,"usage":{"input_tokens":1,"output_tokens":2,"cache_creation_tokens":3,"cache_read_tokens":4}}"#,
+            "claude-test-model",
         );
         assert_eq!(usage.cache_creation_tokens, Some(3));
         assert_eq!(usage.cache_read_tokens, Some(4));
@@ -1327,12 +1469,56 @@ mod tests {
     }
 
     #[test]
-    fn parse_stream_usage_stays_unknown_without_result_event() {
+    fn parse_stream_usage_stays_unknown_without_reported_usage() {
         let usage = ClaudeCliAgent::parse_stream_usage(
-            r#"{"type":"assistant","subtype":"message","message":{"content":[{"type":"text","text":"hello"}],"usage":{"input_tokens":1,"output_tokens":2,"cache_creation_input_tokens":3,"cache_read_input_tokens":4}}}
+            r#"{"type":"assistant","subtype":"message","message":{"content":[{"type":"text","text":"hello"}],"usage":null}}
 {"type":"tool","subtype":"result","tool_name":"Bash","tool_use_id":"tu_1","content":"done"}"#,
+            "claude-sonnet-4-6",
         );
         assert_eq!(usage, StreamUsage::default());
+    }
+
+    #[test]
+    fn parse_stream_usage_estimates_streamed_usage_without_result_event() {
+        // One API message arrives as one `assistant` event per content block,
+        // each repeating its usage; a sub-agent's message sets
+        // `parent_tool_use_id`; msg_3 names no model.
+        let usage = ClaudeCliAgent::parse_stream_usage(
+            r#"{"type":"assistant","message":{"id":"msg_1","model":"claude-sonnet-4-6","content":[{"type":"text","text":"building"}],"usage":{"input_tokens":1000,"output_tokens":200,"cache_creation_input_tokens":3000,"cache_read_input_tokens":4000}},"parent_tool_use_id":null}
+{"type":"assistant","message":{"id":"msg_1","model":"claude-sonnet-4-6","content":[{"type":"tool_use","id":"tu_1","name":"Task","input":{}}],"usage":{"input_tokens":1000,"output_tokens":200,"cache_creation_input_tokens":3000,"cache_read_input_tokens":4000}},"parent_tool_use_id":null}
+{"type":"assistant","message":{"id":"msg_2","model":"claude-haiku-4-5","content":[{"type":"text","text":"sub-agent"}],"usage":{"input_tokens":500,"output_tokens":100}},"parent_tool_use_id":"tu_1"}
+{"type":"assistant","message":{"id":"msg_3","content":[{"type":"text","text":"still going"}],"usage":{"input_tokens":10,"output_tokens":50,"cache_read_input_tokens":7000}}}"#,
+            "claude-sonnet-4-6",
+        );
+        assert_eq!(usage.source, UsageSource::Estimated);
+        assert_eq!(usage.input_tokens, Some(1_510));
+        assert_eq!(usage.output_tokens, Some(350));
+        assert_eq!(usage.cache_creation_tokens, Some(3_000));
+        assert_eq!(usage.cache_read_tokens, Some(11_000));
+        // Per million: Sonnet $3 in, $15 out, $0.30 cache read, $3.75 cache
+        // write (msg_1, and msg_3 at the fallback model); Haiku $0.80 in,
+        // $4 out (msg_2).
+        let sonnet = 1_010.0 * 3.0 + 250.0 * 15.0 + 11_000.0 * 0.30 + 3_000.0 * 3.75;
+        let haiku = 500.0 * 0.80 + 100.0 * 4.0;
+        let cost = usage.cost_usd.expect("priced from the model table");
+        assert!((cost - (sonnet + haiku) / 1e6).abs() < 1e-6, "{usage:?}");
+        assert_eq!(usage.model.as_deref(), Some("claude-sonnet-4-6"));
+        assert_eq!(usage.num_turns, Some(2), "main-loop messages only");
+    }
+
+    #[test]
+    fn provider_reported_usage_beats_a_streamed_estimate() {
+        let estimated = ClaudeCliAgent::parse_stream_usage(
+            r#"{"type":"assistant","message":{"id":"msg_1","usage":{"input_tokens":1}}}"#,
+            "claude-sonnet-4-6",
+        );
+        let reported = ClaudeCliAgent::parse_stream_usage(
+            r#"{"type":"result","total_cost_usd":0.5,"usage":{"input_tokens":9}}"#,
+            "claude-sonnet-4-6",
+        );
+        assert_eq!(estimated.source, UsageSource::Estimated);
+        assert_eq!(estimated.clone().merge(reported.clone()), reported);
+        assert_eq!(reported.clone().merge(estimated), reported);
     }
 
     #[test]
@@ -1563,6 +1749,9 @@ printf '%s\n' '{"type":"result","session_id":"sess-1","model":"claude-sonnet-4-6
         assert_eq!(result.usage.cache_read_tokens, 44);
         assert_eq!(result.usage.cache_create_tokens, 33);
         assert!((result.usage.cost_usd - 0.25).abs() < 0.0001);
+        let observation = result.usage_obs.expect("usage observation");
+        assert_eq!(observation.source, UsageSource::ProviderReported);
+        assert_eq!(observation.model.as_deref(), Some("claude-sonnet-4-6"));
     }
 
     #[tokio::test]
@@ -1592,6 +1781,57 @@ exit 1
         assert_eq!(result.usage.cache_read_tokens, 6);
         assert_eq!(result.usage.cache_create_tokens, 7);
         assert!((result.usage.cost_usd - 0.5).abs() < 0.0001);
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn a_timed_out_attempt_reports_the_usage_it_streamed() {
+        let tmp = tempdir().unwrap();
+        let script = tmp.path().join("claude-fake.sh");
+        // Streams two API messages (the first as two content-block events),
+        // then works past the timeout without reaching its `result` event.
+        let script_body = r#"#!/bin/sh
+cat >/dev/null
+printf '%s\n' '{"type":"system","subtype":"init","session_id":"sess-t","model":"claude-sonnet-4-6"}'
+printf '%s\n' '{"type":"assistant","message":{"id":"msg_1","model":"claude-sonnet-4-6","content":[{"type":"text","text":"building"}],"usage":{"input_tokens":1000,"output_tokens":200,"cache_creation_input_tokens":3000,"cache_read_input_tokens":4000}},"parent_tool_use_id":null}'
+printf '%s\n' '{"type":"assistant","message":{"id":"msg_1","model":"claude-sonnet-4-6","content":[{"type":"tool_use","id":"tu_1","name":"Bash","input":{"command":"cargo build"}}],"usage":{"input_tokens":1000,"output_tokens":200,"cache_creation_input_tokens":3000,"cache_read_input_tokens":4000}},"parent_tool_use_id":null}'
+printf '%s\n' '{"type":"assistant","message":{"id":"msg_2","model":"claude-sonnet-4-6","content":[{"type":"text","text":"still building"}],"usage":{"input_tokens":10,"output_tokens":50,"cache_creation_input_tokens":0,"cache_read_input_tokens":7000}},"parent_tool_use_id":null}'
+sleep 30
+"#;
+        fs::write(&script, script_body).unwrap();
+        let mut perms = fs::metadata(&script).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&script, perms).unwrap();
+
+        let agent =
+            ClaudeCliAgent::new(&script, tmp.path(), "claude-sonnet-4-6").with_timeout_ms(1_000);
+        let result = agent.run(&prompt("build it"), &Context::now()).await;
+
+        assert!(!result.success);
+        let text = result.output.body.as_text().expect("failure text");
+        assert_eq!(text, "timed out after 1000 ms");
+        assert!(crate::provider::error_classify::detect_attempt_timeout(
+            text
+        ));
+        assert_eq!(result.output.tag("model"), Some("claude-sonnet-4-6"));
+        assert_eq!(result.output.tag("num_turns"), Some("2"));
+        assert_eq!(result.usage.input_tokens, 1_010);
+        assert_eq!(result.usage.output_tokens, 250);
+        assert_eq!(result.usage.cache_create_tokens, 3_000);
+        assert_eq!(result.usage.cache_read_tokens, 11_000);
+        // Sonnet per million: $3 in, $15 out, $0.30 cache read, $3.75 cache write.
+        let expected = (1_010.0 * 3.0 + 250.0 * 15.0 + 11_000.0 * 0.30 + 3_000.0 * 3.75) / 1e6;
+        assert!(
+            (f64::from(result.usage.cost_usd) - expected).abs() < 1e-6,
+            "{:?}",
+            result.usage
+        );
+        let observation = result.usage_obs.expect("usage observation");
+        assert_eq!(
+            observation.source,
+            UsageSource::Estimated,
+            "a killed run's usage is partial"
+        );
     }
 
     #[tokio::test]

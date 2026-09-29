@@ -3,13 +3,14 @@ id = "bug-7a6da3"
 kind = "bug"
 title = "The markdown link checker reads footnote definitions as reference links"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p3"
 goal = "whitepaper"
 size = "S"
 subsystem = ["tooling/docs-integrity"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-29
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (15:13, next paper wave)"
 anchors = ["tools/docs_integrity/check_markdown_links.py:81", "tools/docs_integrity/check_markdown_links.py:357", "tools/docs_integrity/test_check_markdown_links.py"]
@@ -56,8 +57,8 @@ Reproduced at `4c0326dfc`: a file containing `[^1]: Commit abc1234; see the log.
 
 ## Done when
 
-- [ ] Footnote definitions produce no link findings, and reference definitions are still checked.
-- [ ] The `[[verify]]` command passes, and the rest of the suite still passes.
+- [x] Footnote definitions produce no link findings, and reference definitions are still checked.
+- [x] The `[[verify]]` command passes, and the rest of the suite still passes.
 
 ## Notes
 

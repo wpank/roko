@@ -78,7 +78,8 @@ _FENCE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
 _ATX_HEADING_RE = re.compile(r"^ {0,3}(#{1,6})(?:[ \t]+|$)(.*)$")
 _SETEXT_RE = re.compile(r"^ {0,3}(?:=+|-+)[ \t]*$")
 _INLINE_LINK_RE = re.compile(r"!?\[[^\]\n]*\]\(([^\n)]*)\)")
-_REFERENCE_TARGET_RE = re.compile(r"^ {0,3}\[[^\]\n]+\]:[ \t]*(\S+)")
+# A `[^label]:` line is a GitHub footnote definition, not a reference link.
+_REFERENCE_TARGET_RE = re.compile(r"^ {0,3}\[(?!\^)[^\]\n]+\]:[ \t]*(\S+)")
 _HTML_ANCHOR_RE = re.compile(
     r"<a\b[^>]*\b(?:id|name)\s*=\s*(?:\"([^\"]+)\"|'([^']+)'|([^\s>]+))",
     re.IGNORECASE,

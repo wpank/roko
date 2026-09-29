@@ -180,6 +180,31 @@ class MarkdownLinkCheckerTests(unittest.TestCase):
         self.assertTrue(any("target does not exist" in message for message in messages))
         self.assertTrue(any("anchor does not exist" in message for message in messages))
 
+    def test_footnote_definitions_are_not_links(self) -> None:
+        temporary, root = self.fixture(
+            {
+                "README.md": (
+                    "A claim.[^1] Another.[^note] A third.[^log]\n"
+                    "\n"
+                    "[^1]: Commit abc1234; see the log.\n"
+                    "[^note]: Measured at `a17d4dadd`.\n"
+                    "[^log]: See [the log](log.md).\n"
+                    "[missing]: docs/missing.md\n"
+                ),
+            }
+        )
+        self.addCleanup(temporary.cleanup)
+
+        findings = check_paths(root, ["README.md"])
+
+        self.assertEqual(
+            [(finding.line, finding.message) for finding in findings],
+            [
+                (5, "local link target does not exist: log.md"),
+                (6, "local link target does not exist: docs/missing.md"),
+            ],
+        )
+
     def test_ignores_external_links_and_fenced_or_inline_code(self) -> None:
         temporary, root = self.fixture(
             {

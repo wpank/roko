@@ -35,7 +35,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use roko_core::agent::ModelSpec;
-use roko_core::task::{TaskCategory, TaskComplexityBand};
+use roko_core::task::{TaskCategory, TaskTier};
 use roko_learn::cascade_router::{CascadeRouter, RoutingBias};
 use roko_learn::latency::LatencyRegistry;
 use roko_learn::model_router::RoutingContext;
@@ -66,9 +66,9 @@ pub struct RoutingInputs {
     /// Task domain (`"rust"`, `"docs"`, `"frontend"`, ...). Used by the
     /// router to bias toward domain-strong models.
     pub task_domain: Option<String>,
-    /// Task tier (`"focused"`, `"deep"`, ...). Higher tiers can spend
-    /// more per call.
-    pub task_tier: String,
+    /// Task tier, read by [`TaskDef::tier_class`] (an unknown tier is
+    /// focused).
+    pub task_tier: TaskTier,
     /// Author-provided model hint (`task.model_hint`).
     pub task_model_hint: Option<String>,
     /// Operator override from the unified CLI `--model` flag.
@@ -99,7 +99,7 @@ impl RoutingInputs {
     pub fn from_task(task: &TaskDef, ctx: &DispatchContext) -> Self {
         Self {
             task_domain: task.domain.as_ref().map(|d| d.label().to_string()),
-            task_tier: task.tier.clone(),
+            task_tier: task.tier_class(),
             task_model_hint: task.model_hint.clone().or_else(|| ctx.model_hint.clone()),
             force_backend: ctx.force_backend.clone(),
             budget_remaining_usd: ctx.budget_remaining_usd,
@@ -518,21 +518,12 @@ impl ModelRouter {
     }
 }
 
-/// Map a task tier string to a [`TaskComplexityBand`].
-#[allow(dead_code)] // used only in tests
-pub(crate) fn tier_to_complexity(tier: &str) -> TaskComplexityBand {
-    match tier {
-        "focused" | "quick" | "trivial" => TaskComplexityBand::Fast,
-        "deep" | "architectural" | "complex" => TaskComplexityBand::Complex,
-        _ => TaskComplexityBand::Standard,
-    }
-}
-
 // ─── Tests ─────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use roko_core::task::TaskComplexityBand;
     use std::path::PathBuf;
 
     fn task() -> TaskDef {
@@ -682,18 +673,18 @@ mod tests {
     }
 
     #[test]
-    fn tier_to_complexity_mapping() {
-        assert_eq!(tier_to_complexity("focused"), TaskComplexityBand::Fast);
-        assert_eq!(tier_to_complexity("quick"), TaskComplexityBand::Fast);
-        assert_eq!(tier_to_complexity("trivial"), TaskComplexityBand::Fast);
-        assert_eq!(tier_to_complexity("deep"), TaskComplexityBand::Complex);
-        assert_eq!(
-            tier_to_complexity("architectural"),
-            TaskComplexityBand::Complex
-        );
-        assert_eq!(tier_to_complexity("complex"), TaskComplexityBand::Complex);
-        assert_eq!(tier_to_complexity("standard"), TaskComplexityBand::Standard);
-        assert_eq!(tier_to_complexity("anything"), TaskComplexityBand::Standard);
+    fn routing_inputs_read_the_tier_through_task_tier() {
+        let mut t = task();
+        for (tier, expected) in [
+            ("mechanical", TaskTier::Mechanical),
+            ("Trivial", TaskTier::Mechanical),
+            ("integrative", TaskTier::Integrative),
+            ("deep", TaskTier::Architectural),
+            ("mechancial", TaskTier::Focused),
+        ] {
+            t.tier = tier.into();
+            assert_eq!(RoutingInputs::from_task(&t, &ctx()).task_tier, expected);
+        }
     }
 
     // ── Conductor routing bias tests (E08-T07) ─────────────────────────

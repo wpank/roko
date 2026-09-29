@@ -2,6 +2,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::task::TaskTier;
+
 // ---- [routing] -----------------------------------------------------------
 
 /// Routing algorithm for model selection.
@@ -103,16 +105,18 @@ pub struct RoutingRewardWeightsConfig {
 }
 
 impl RoutingRewardWeightsConfig {
-    /// Resolve the effective weights for a task tier.
+    /// Resolve the effective weights for a task tier, read by
+    /// [`TaskTier::parse`]. An unknown tier gets the default weights.
     #[must_use]
     pub fn for_tier(&self, tier: &str) -> RewardWeights {
-        match tier {
-            "mechanical" => self.mechanical.unwrap_or(self.default),
-            "focused" => self.focused.unwrap_or(self.default),
-            "integrative" => self.integrative.unwrap_or(self.default),
-            "architectural" => self.architectural.unwrap_or(self.default),
-            _ => self.default,
-        }
+        let tier_weights = match TaskTier::parse(tier) {
+            Some(TaskTier::Mechanical) => self.mechanical,
+            Some(TaskTier::Focused) => self.focused,
+            Some(TaskTier::Integrative) => self.integrative,
+            Some(TaskTier::Architectural) => self.architectural,
+            None => None,
+        };
+        tier_weights.unwrap_or(self.default)
     }
 }
 

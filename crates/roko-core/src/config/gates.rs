@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use serde::{Deserialize, Deserializer, Serialize};
 
 use super::agent::default_true;
+use crate::task::TaskTier;
 
 // ---- [gates] -------------------------------------------------------------
 
@@ -557,25 +558,23 @@ pub struct PipelineConfig {
 }
 
 impl PipelineConfig {
-    /// Resolve the pipeline settings for a named complexity tier.
+    /// Resolve the pipeline settings for a task tier.
     #[must_use]
-    pub fn for_tier(&self, tier: &str) -> PipelineBandConfig {
+    pub fn for_tier(&self, tier: TaskTier) -> PipelineBandConfig {
         match tier {
-            "mechanical" => self.mechanical,
-            "focused" => self.focused,
-            "integrative" => self.integrative,
-            "architectural" => self.architectural,
-            _ => self.focused,
+            TaskTier::Mechanical => self.mechanical,
+            TaskTier::Focused => self.focused,
+            TaskTier::Integrative => self.integrative,
+            TaskTier::Architectural => self.architectural,
         }
     }
 
-    /// Agent turn cap for a task tier (case-insensitive). Unknown tiers use
-    /// the `focused` band, so the cap is never unbounded.
+    /// Agent turn cap for a task tier, never below one turn. A task whose
+    /// tier is unknown reads as focused (`TaskDef::tier_class`), so the cap
+    /// is never unbounded.
     #[must_use]
-    pub fn max_turns_for_tier(&self, tier: &str) -> u32 {
-        self.for_tier(tier.trim().to_ascii_lowercase().as_str())
-            .max_turns
-            .max(1)
+    pub fn max_turns_for_tier(&self, tier: TaskTier) -> u32 {
+        self.for_tier(tier).max_turns.max(1)
     }
 }
 
@@ -594,6 +593,7 @@ impl Default for PipelineConfig {
 #[cfg(test)]
 mod tests {
     use super::super::schema::RokoConfig;
+    use crate::task::TaskTier;
 
     #[test]
     fn gates_rungs_deserializes_as_custom_rungs() {
@@ -626,13 +626,16 @@ required = true
     #[test]
     fn pipeline_max_turns_defaults_are_bounded_per_tier() {
         let pipeline = super::PipelineConfig::default();
-        assert_eq!(pipeline.max_turns_for_tier("mechanical"), 40);
-        assert_eq!(pipeline.max_turns_for_tier("focused"), 60);
-        assert_eq!(pipeline.max_turns_for_tier("integrative"), 90);
-        assert_eq!(pipeline.max_turns_for_tier("Architectural"), 120);
-        // Unknown and empty tiers fall back to the focused band, never unbounded.
-        assert_eq!(pipeline.max_turns_for_tier("trivial"), 60);
-        assert_eq!(pipeline.max_turns_for_tier(""), 60);
+        let turns =
+            |tier: &str| pipeline.max_turns_for_tier(TaskTier::parse(tier).unwrap_or_default());
+        assert_eq!(turns("mechanical"), 40);
+        assert_eq!(turns("trivial"), 40, "an alias of mechanical");
+        assert_eq!(turns("focused"), 60);
+        assert_eq!(turns("integrative"), 90);
+        assert_eq!(turns("Architectural"), 120);
+        // Unknown and empty tiers read as focused, never unbounded.
+        assert_eq!(turns("mechancial"), 60);
+        assert_eq!(turns(""), 60);
     }
 
     #[test]
@@ -648,18 +651,21 @@ max_turns = 0
         )
         .expect("config parses");
 
-        assert_eq!(cfg.pipeline.max_turns_for_tier("integrative"), 45);
+        assert_eq!(cfg.pipeline.max_turns_for_tier(TaskTier::Integrative), 45);
         assert!(
             cfg.pipeline.integrative.strategist,
             "unset keys keep defaults"
         );
         assert_eq!(cfg.pipeline.integrative.max_iterations, 2);
         assert_eq!(
-            cfg.pipeline.max_turns_for_tier("focused"),
+            cfg.pipeline.max_turns_for_tier(TaskTier::Focused),
             1,
             "zero is raised to one turn"
         );
-        assert_eq!(cfg.pipeline.max_turns_for_tier("architectural"), 120);
+        assert_eq!(
+            cfg.pipeline.max_turns_for_tier(TaskTier::Architectural),
+            120
+        );
     }
 
     #[test]

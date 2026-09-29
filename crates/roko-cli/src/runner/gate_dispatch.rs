@@ -2302,7 +2302,6 @@ fn verify_step_gate(
 mod tests {
     use super::super::cargo_command::*;
     use super::super::gate_input::*;
-    use super::super::gate_report::*;
     use super::*;
 
     use std::collections::BTreeMap;

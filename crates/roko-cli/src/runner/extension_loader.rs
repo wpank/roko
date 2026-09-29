@@ -293,6 +293,9 @@ impl PluginConfinement {
             }
             #[cfg(target_os = "linux")]
             Self::LinuxFirejail { executable } => {
+                // firejail gets no per-path write rules; only Seatbelt applies
+                // `sandbox.allowed_paths`.
+                let _ = sandbox;
                 let mut command = tokio::process::Command::new(executable);
                 command.args([
                     "--quiet",

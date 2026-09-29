@@ -2,14 +2,16 @@
 id = "gap-cdf3fc"
 kind = "gap"
 title = "Correct the 16 docs claims that the code or the literature contradicts"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p1"
 goal = "tooling"
 size = "M"
 subsystem = ["docs/v3"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-29
+last_verified_rev = "1f0f73e1f"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e15"
 discovered_from = "tmp/cybernetic-harness/tldr/05-GAPS-AND-PROPOSALS.md (P0 #7; §5 doc corrections)"
 anchors = ["docs/v3/00-INDEX.md", "docs/v3/04-EXECUTION.md", "docs/v3/07-GATES.md", "docs/v3/08-LEARNING.md", "docs/v3/11-AFFECT.md", "docs/v3/12-SAFETY.md", "docs/v3/16-COORDINATION.md", "docs/v3/19-TOOLS-PLUGINS.md", "docs/v3/20-GATEWAY.md", "docs/v3/30-CONDUCTOR.md", "docs/v3/31-SELF-HOSTING.md", "CLAUDE.md"]
@@ -19,6 +21,12 @@ links = { depends_on = [], blocks = [], related = ["bug-09690f", "gap-b23ebd", "
 
 [[verify]]
 command = "! grep -q 'This is law' docs/v3/30-CONDUCTOR.md && ! grep -q 'All eight loops are wired' docs/v3/08-LEARNING.md && ! grep -q 'at least 45%' docs/v3/08-LEARNING.md && ! grep -q 'is 10/10 complete' docs/v3/11-AFFECT.md && ! grep -q 'Graph of Graphs is just a Graph' docs/v3/00-INDEX.md && ! grep -q 'via plonky2' docs/v3/12-SAFETY.md && ! grep -q '2607.25891' docs/v3/07-GATES.md && ! grep -q 'inside isolated git worktrees' docs/v3/04-EXECUTION.md && ! grep -q '124/124' docs/v3/00-INDEX.md && ! grep -q 'uses graph templates via' CLAUDE.md"
+
+[closed]
+at = 2026-09-29
+commit = "1f0f73e1f"
+by = "wk-docs"
+evidence = "1f0f73e1f corrects all 16 rows at their listed locations, each checked against the code at 7c556bc0a: 07-GATES header and section 5 (plan tasks run only authored verify commands via ShellGate; run_gate_once is test-only), 04-EXECUTION header and sections 10-11 (shared working tree; --worktree-per-task opt-in, never merged back; merge queue ORPHANED), 31-SELF-HOSTING status, section 3 and 6.2 (ReplanController BUILT-UNWIRED; portal build as the evidence), 30-CONDUCTOR status and section 3 (BUILT-UNWIRED; 'This is law' gone), 08-LEARNING section 11 (2 of 8 loops close; per-loop status lines), section 6 (no recovery rate) and section 10 (hypothesis, with arXiv:2607.14004, 2608.18066, 2607.12227 from docs/whitepaper/references.bib), 11-AFFECT status (PARTIAL; modulate_dispatch has no caller), 00-INDEX (no impl Cell for Graph; 48/48 and the task count withdrawn; code-first, PARTIAL), 16-COORDINATION section 11, 12-SAFETY 13.12 (DOCS-ONLY), 20-GATEWAY scope note (roko serve only), 19-TOOLS-PLUGINS status and section 7 (WASM hooks never run), 07-GATES 9.5 (citation withdrawn), CLAUDE.md:75-76 (roko run writes a one-task plan and calls run_graph_plan). The 00-INDEX crate, section 13 and chapter tables and 17 depth pages carry the same corrections. Left for other items: the README copy (bug-09690f); the wrong Messier title in REFERENCES.md:1282,:1862, 39-ROADMAP.md:93 and depth/39-references/17-process-reward-models.md:51, 24-additions-2025-2026.md:347 (gap-b23ebd); '19-gate pipeline' as the verifier in 26-HTTP-API.md:12, 35-ARCHITECTURE.md:205,:675, 31-SELF-HOSTING.md:286, depth/07-gates/evaluation-lifecycle.md:260-271 and depth/35-architecture/*; 'E23 10/10 complete' in 05-AGENT.md:10,:977, 29-HEARTBEAT.md:16, 39-ROADMAP.md:379 and depth/05-agent/*cognitive-autonomy-e23.md:3; WASM hooks 'live' in 39-ROADMAP.md:388 and 35-ARCHITECTURE.md:722; '48 epics accepted' in 35-ARCHITECTURE.md:6,:1048; CLAUDE.md:138 ('Single prompt through graph templates'), not changed because the item lists only CLAUDE.md:75. Added at the coordinator's request: 00-INDEX.md:127-129 'Every Cell is a learner' (A1: PARTIAL), qualified in 1031c1137 with sections 3.5 and P2: TaskExecutorCell has no predict(), AssessCell is the only production Cell that predicts, and CalibrationPolicy runs only in run_learning_subscriber, which has no production caller. Also added: 03-GRAPH 'Parallel Waves' described wave-by-wave execution, stale since 445a60d0d; 6fbc7ef14 describes GraphEngine::execute_ready_queue instead (test a_ready_node_does_not_wait_for_its_wave), drops 'Runner-v2 retained' from its status note, and fixes the repeats in 04-EXECUTION section 6, 00-INDEX and depth/03-graph; write-set exclusion (gap-439794) is left out, and work/gap-4d835d's 03-GRAPH edits merge with it cleanly (git merge-file). Check: the item's [[verify]] passes."
 +++
 
 ## Problem
@@ -67,11 +75,17 @@ belongs to bug-09690f.
 
 ## Done when
 
-- [ ] All 16 rows are corrected, or a row is explicitly left for a named item.
-- [ ] The `[[verify]]` command passes.
+- [x] All 16 rows are corrected, or a row is explicitly left for a named item.
+- [x] The `[[verify]]` command passes.
 
 ## Notes
 
 - **Docs lane.** gap-452185 also edits `CLAUDE.md`, so merge one after the other.
 - **Related:** gap-b23ebd (the citation errors across `docs/v3`) and gap-38a529 (the controller that is never
   driven).
+- **Added 2026-09-29 (coordinator, from the filer):** a 17th claim, `docs/v3/00-INDEX.md:127-129` "Every Cell is a
+  learner" (A1 rates it PARTIAL: `TaskExecutorCell` has no `predict()`). Qualified in `1031c1137`, together with its
+  repeats in 00-INDEX section 3.5 and principle P2.
+- **Added 2026-09-29 (coordinator):** an 18th claim, the "Parallel Waves" section of `docs/v3/03-GRAPH.md`, stale
+  since `445a60d0d` (`GraphEngine::execute_ready_queue`). Corrected in `6fbc7ef14`, with the repeats in 04-EXECUTION
+  section 6, 00-INDEX and `depth/03-graph/`. Write-set exclusion (gap-439794) is left out.

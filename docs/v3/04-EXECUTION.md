@@ -1,16 +1,21 @@
 # 04 -- Execution and Orchestration
 
-> **Implementation status (2026-09):** WIRED -- The plan-execute-gate-persist pipeline
-> works end-to-end through the Graph engine. Plan directories load as Graph topologies,
-> tasks run in bounded parallel waves inside isolated git worktrees, 19 gates validate
-> each task, the merge queue serializes integration, and durable checkpoints allow
-> resume after crash.
+> **Implementation status (corrected 2026-09-29 at `7c556bc0a`):** WIRED -- The
+> plan-execute-verify-persist pipeline works end-to-end through the Graph engine. Plan
+> directories load as Graph topologies, each task starts as soon as its dependencies
+> finish (up to the plan's `max_parallel`, which defaults to 1), each task's authored
+> `verify` commands check it, and durable checkpoints allow resume after crash. Three
+> parts of the design are not on this path. Tasks run in the operator's working tree:
+> `--worktree-per-task` is opt-in, and its worktrees are never merged back (section 10).
+> Nothing merges: the merge queue has no production caller (section 11). The 19-gate
+> rung pipeline runs only in tests ([07-GATES](07-GATES.md)).
 
-> The plan-execute-gate-persist pipeline. A plan directory becomes a Graph of
-> Cells, the Graph engine runs each task as soon as its dependencies finish, inside
-> isolated git worktrees, gates validate each task, a merge queue serializes
-> integration, and durable checkpoints allow resume after crash. One engine,
-> one path, end to end.
+> The plan-execute-verify-persist pipeline. A plan directory becomes a Graph of
+> Cells, the Graph engine runs each task as soon as its dependencies finish, each
+> task's `verify` commands check its result, and durable checkpoints allow resume
+> after crash. One engine, one path, end to end. Per-task worktree isolation and a
+> merge queue that serializes integration are designed (sections 10 and 11) but not
+> wired.
 
 ---
 
@@ -21,7 +26,7 @@ codebase. The pipeline has five stages:
 
 ```
 plan directory  -->  plan discovery  -->  plan-to-graph conversion
-     -->  graph execution (waves, gates, worktrees)
+     -->  graph execution (ready queue, verify steps)
      -->  delivery (merge queue, snapshot, feedback)
 ```
 
@@ -31,13 +36,15 @@ Every plan passes through the same path:
    `tasks.toml`. Parse frontmatter, validate, rank by priority.
 2. **Convert**: transform the TOML task DAG into a `Graph` of Cells via
    `plan_to_graph()` or `ProductionPlanTopology::build()`.
-3. **Execute**: the `GraphEngine` topologically sorts the graph and runs
-   Cells in bounded parallel waves, dispatching agents, composing prompts,
-   and running gates.
+3. **Execute**: the `GraphEngine` topologically sorts the graph and starts
+   each Cell once its own dependencies settle (bounded by
+   `max_concurrent_nodes`), dispatching agents, composing prompts, and running
+   each task's verify steps.
 4. **Persist**: Activity outputs are recorded to JSONL, checkpoints are
    written to `.roko/state/graph/`, episodes are logged.
-5. **Deliver**: completed plan branches enter the merge queue for
-   conflict-free integration into the target branch.
+5. **Deliver** (designed, not wired): completed plan branches would enter the
+   merge queue for conflict-free integration into the target branch. Today nothing
+   merges (section 11).
 
 The entire pipeline is orchestrated by the `AuthoredGraphController` (for
 user-defined graphs) or `drive_controller` (for plan execution), both
@@ -50,7 +57,7 @@ backed by the shared `RuntimeServices` facade.
 | `roko-graph` | `crates/roko-graph/` | Graph engine, topology, convert, cells, snapshot, replay |
 | `roko-execution` | `crates/roko-execution/` | RuntimeServices builder, profiles, authored graph controller |
 | `roko-cli` | `crates/roko-cli/` | Plan discovery, plan loader, CLI commands, TUI |
-| `roko-gate` | `crates/roko-gate/` | 19 gates, 7-rung pipeline, adaptive thresholds |
+| `roko-gate` | `crates/roko-gate/` | 19 gates and a 7-rung pipeline (plan runs use only `ShellGate`, for verify commands), adaptive thresholds |
 | `roko-runtime` | `crates/roko-runtime/` | ProcessSupervisor, event bus, cancellation |
 
 ---
@@ -212,10 +219,10 @@ flowchart LR
     C -->|DAG valid| D["Dependency<br/>resolution"]
     D --> E["Graph nodes<br/>(1 per task)"]
     E --> F["Edges from<br/>depends_on"]
-    F --> G["topological_waves()"]
-    G --> W0["Wave 0<br/>(root tasks)"]
-    G --> W1["Wave 1<br/>(depth-1 tasks)"]
-    G --> WN["Wave N<br/>(leaf tasks)"]
+    F --> G["topological_order()"]
+    G --> W0["Depth 0<br/>(root tasks)"]
+    G --> W1["Depth 1<br/>(depth-1 tasks)"]
+    G --> WN["Depth N<br/>(leaf tasks)"]
 
     style A fill:#2d333b,stroke:#539bf5,color:#adbac7
     style ERR fill:#462c2c,stroke:#e5534b,color:#e5534b
@@ -296,9 +303,15 @@ The `--waves` flag on `roko plan list` renders the cross-plan DAG.
 
 ## 6. Parallel Wave Execution
 
-The `GraphEngine` is the sole execution engine. It topologically sorts
-nodes and groups them into waves where every node in a wave is independent
-of every other.
+> **Corrected 2026-09-29 (at `7c556bc0a`).** The engine no longer executes wave
+> by wave. Since `445a60d0d` (gap-4d835d), `GraphEngine::execute_ready_queue`
+> starts each node as soon as its own predecessors have settled, up to
+> `max_concurrent_nodes`, so the diagram below shows depth layers, not
+> scheduling barriers. [03-GRAPH](03-GRAPH.md) describes the ready queue.
+
+The `GraphEngine` is the sole execution engine. It orders nodes
+topologically; grouped by depth, they form layers ("waves") in which every
+node is independent of every other.
 
 **Source:** `crates/roko-graph/src/engine.rs`, `crates/roko-graph/src/topo.rs`
 
@@ -352,15 +365,17 @@ flowchart TB
 execution order. If the graph contains a cycle, `GraphError::CycleDetected`
 is returned.
 
-`topological_waves()` groups the sorted nodes into parallel waves. Within
-each wave, all nodes have no edges between them and can execute
-concurrently.
+`topological_waves()` groups the sorted nodes into depth layers. Within
+each layer, all nodes have no edges between them and can execute
+concurrently, but the engine does not wait for a layer to finish before
+starting nodes of the next.
 
 ### Bounded parallelism
 
-The graph's `policy.max_concurrent_nodes` caps how many nodes execute
-simultaneously within a wave. The engine uses a Tokio semaphore for
-concurrency limiting.
+The graph's `policy.max_concurrent_nodes` caps how many nodes execute at
+once across the Graph: the ready queue starts a queued node whenever fewer
+than that many are running. With a cap of 1, nodes run one at a time in
+topological order.
 
 ### Conditional routing
 
@@ -538,11 +553,19 @@ closed.
 
 ## 10. Worktree Isolation
 
+> **Status (2026-09-29, at `7c556bc0a`): PARTIAL.** This section describes the design.
+> On Graph runs every task edits the operator's working tree by default.
+> `plan run --worktree-per-task` is opt-in: each attempt gets a worktree under
+> `.roko/worktrees/`, forked from `HEAD`, and a successful attempt's edits are never
+> merged back, which is why `crates/roko-cli/src/graph_execution/plan_runner.rs` refuses
+> the flag when plans run in parallel. The per-plan path (`ensure_for_plan`,
+> `create_for_plan`) and `reclaim_idle` have no production caller, and `max_live` is unset.
+
 Git worktrees provide per-plan filesystem isolation. Each active plan gets
 its own worktree -- a separate working directory on its own branch, sharing
 the same `.git` repository.
 
-**Source:** `crates/roko-cli/src/runner/worktree.rs`
+**Source:** `crates/roko-cli/src/orchestrator/worktree/mod.rs`
 
 ```mermaid
 flowchart TB
@@ -628,9 +651,14 @@ first attempts `reclaim_idle()`. If still over budget, it returns
 
 ## 11. Merge Queue
 
+> **Status (2026-09-29, at `7c556bc0a`): ORPHANED.** The merge queue served Runner-v2,
+> whose event loop was deleted on 2026-09-06 (`6b5da8616`), and nothing re-attached it.
+> On Graph runs nothing merges: `MergeQueue` and `PlanMerger`
+> (`crates/roko-cli/src/runner/merge.rs`) are constructed only in tests.
+
 The merge queue serializes plan merges to prevent file conflicts.
 
-**Source:** `crates/roko-cli/src/runner/merge_queue.rs`
+**Source:** `crates/roko-cli/src/orchestrator/merge_queue.rs`
 
 ### Conflict detection
 

@@ -18,7 +18,7 @@
 | Minimum rustc version | 1.91 (alloy dependency) |
 | Green release checkpoint rustc | 1.96.1 (2026-08-16) |
 | Accepted epics | 48/48 |
-| Executable tasks complete | 124/124 |
+| Executable tasks complete | Withdrawn 2026-09-29: stale count (`work/history/claude-md-status-2026-09-28.md`) |
 
 ---
 

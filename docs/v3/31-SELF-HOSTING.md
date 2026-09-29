@@ -1,7 +1,7 @@
 # 31 -- Self-Hosting: Recursive Self-Development
 
 > Roko develops itself. It reads PRDs, generates implementation plans, executes
-> tasks via LLM agents, validates results through a 19-gate pipeline, learns
+> tasks via LLM agents, validates results with each task's verify commands, learns
 > from outcomes, and iterates. This chapter covers both the practical CLI
 > workflow that makes self-hosting operational today and the theoretical
 > foundations that bound what recursive self-improvement can and cannot achieve.
@@ -13,14 +13,19 @@ playbook rules, cascade router), [09-MEMORY](09-MEMORY.md) (durable knowledge st
 [10-DREAMS](10-DREAMS.md) (offline consolidation), [12-SAFETY](12-SAFETY.md) (capability
 intersection, corrigibility, immune system)
 
-**Implementation status (2026-09-15):** The self-hosting workflow is **operational**.
-The 8-step CLI loop (idea -> draft -> research -> plan -> execute -> resume ->
-monitor -> verify) works end-to-end. 48/48 epics were accepted using this
-workflow. The first live dogfood run (2026-08-13) exposed 4 blockers, all of
-which have regression fixes. A clean full-cycle rerun is pending as separate
-sign-off. FAST self-development via `dev.sh fast` is live. The `roko develop`
-command has been retired in favor of `roko do --plan`. Gate-failure replan,
-adaptive thresholds, and durable prompt experiments are wired. The theoretical
+**Implementation status (2026-09-15; corrected 2026-09-29 at `7c556bc0a`):** The
+self-hosting workflow is **operational**. The 8-step CLI loop (idea -> draft ->
+research -> plan -> execute -> resume -> monitor -> verify) works end-to-end. The
+earlier claim that the 48 epics were accepted using this workflow is withdrawn:
+they were accepted as programme manifests, and most of the code was written outside
+Roko's own runner (section 1). The largest recorded run is the portal build: 16 plans
+and 173 tasks, 168 of them gate-verified, under a supervising operator session
+(`docs/whitepaper/evidence/2026-09-29-b7-real-run-evidence.md`). The first live
+dogfood run (2026-08-13) exposed 4 blockers, all of which have regression fixes. A
+clean full-cycle rerun is pending as separate sign-off. FAST self-development via
+`dev.sh fast` is live. The `roko develop` command has been retired in favor of
+`roko do --plan`. Adaptive thresholds (they set retry budgets) and durable prompt
+experiments are wired; gate-failure replan is not (section 3). The theoretical
 ceiling -- autonomous structural self-modification (Loop 4, ADAS) -- requires
 human approval by design and is not implemented as a closed loop.
 
@@ -46,9 +51,12 @@ human approval by design and is not implemented as a closed loop.
 
 ## 1. The Self-Hosting Workflow
 
-Roko's self-hosting is not a theoretical aspiration -- it is the system's
-primary development workflow. The entire programme (48 epics, 124 executable
-tasks, ~1M LOC) was built using the loop described here.
+Roko's self-hosting is meant to be the system's primary development workflow.
+It is not yet: the companion audit of the repository history (2026-09-28) credits
+Roko's own plan runner with 0.22-0.67% of the Rust lines added, and most of the
+programme (48 epics, ~1M LOC) was written in operator-directed assistant sessions.
+The portal build (section 6.2) is the largest body of work Roko has produced with
+the loop described here.
 
 ### 1.1 The Eight-Step CLI Loop
 
@@ -99,7 +107,7 @@ Each step has a specific role in the pipeline:
 | 2. Draft | `roko prd draft new "<slug>"` | Agent generates a structured PRD from the idea, with requirements, scope, and acceptance criteria. | 30-120s |
 | 3. Research | `roko research enhance-prd <slug>` | Agent researches the topic (web search, codebase analysis, citation gathering) and enriches the PRD with findings. | 60-300s |
 | 4. Plan | `roko prd plan <slug>` | Agent generates a `tasks.toml` with dependencies, crate targets, and verification commands from the enriched PRD. | 30-120s |
-| 5. Execute | `roko plan run plans/` | The Graph engine converts tasks.toml into a DAG of Cells, runs each task as soon as its dependencies finish, in parallel inside isolated git worktrees, validates through the 19-gate pipeline, and persists results. | minutes-hours |
+| 5. Execute | `roko plan run plans/` | The Graph engine converts tasks.toml into a DAG of Cells, runs each task as soon as its dependencies finish (up to the plan's `max_parallel`) in the working tree, checks each task with its `verify` commands, and persists results. | minutes-hours |
 | 6. Resume | `roko plan run plans/ --resume-plan` | Restores graph checkpoint from `.roko/state/graph/`, skips completed Activity nodes using recorded outputs, resumes from the first non-complete node. | varies |
 | 7. Monitor | `roko dashboard` | Interactive ratatui TUI with F1-F10 tabs showing live plan progress, agent status, cost tracking, and learning metrics. | real-time |
 | 8. Verify | `roko status` | Query signal counts, episode counts, and plan state. | <1s |
@@ -133,13 +141,17 @@ For each task (as soon as its dependencies finish):
     |
     +-- ComposeCell          --> assemble 9-layer system prompt from enrichment
     +-- TaskExecutorCell     --> dispatch to LLM provider, collect response
-    +-- GateCell             --> run 19-gate pipeline (compile, test, clippy, ...)
+    +-- GateCell             --> run compile, lint and test rungs (`PlanGateCell`)
     +-- SuccessBoundary      --> mark task complete, emit downstream signal
 ```
 
 Each step of this pipeline is a Cell in a Graph -- the same primitive used
 everywhere else in the system. The production topology (11 nodes per task) is
 built by `ProductionPlanTopology::build()` in `crates/roko-graph/src/topology.rs`.
+It runs only with `plan run --rich-topology`, and its six enricher cells are still
+passthrough stubs (the plan runner warns when the flag is used). By default
+`plan_to_graph()` builds one `TaskExecutorCell` per task, which dispatches the agent
+and then runs the task's authored `verify` commands.
 
 ### 1.3 FAST Self-Development
 
@@ -290,8 +302,15 @@ that are inappropriate for a system modifying production codebases.
 
 ## 3. Gate-Failure Replan Loop
 
-When a task fails its gate pipeline and ordinary retry is exhausted, the
-system does not simply give up. The `ReplanController` in `roko-execution`
+> **Status (2026-09-29, at `7c556bc0a`): BUILT-UNWIRED.** `ReplanController`
+> (`crates/roko-execution/src/replan_controller.rs`) is built and tested, but nothing
+> outside that file uses it, and the gate-failure plan revision that Runner-v2 performed
+> was deleted with it on 2026-09-06 (`6b5da8616`). On Graph runs a failed task is retried
+> with its gate feedback up to `max_retries` and then fails; none of the strategies
+> below runs.
+
+In the design, when a task fails its gate pipeline and ordinary retry is exhausted,
+the system does not simply give up: the `ReplanController` in `roko-execution`
 applies deterministic structural mutations to the plan itself.
 
 > **Cross-references:** [depth/31-self-hosting/02-replan-loop.md](depth/31-self-hosting/02-replan-loop.md)
@@ -574,7 +593,7 @@ an archive of past solutions.
 | DGM Concept | Roko Analogue | Status |
 |---|---|---|
 | Archive of solutions | Episode log + skill library + playbook store | Wired |
-| Empirical evaluation | 19-gate pipeline + 4 key metrics | Wired |
+| Empirical evaluation | Per-task verify commands (the 19-gate pipeline runs only in tests) + 4 key metrics | Partial |
 | Population of candidates | Prompt experiment variants | Wired |
 | Selection pressure | Bandit algorithms (UCB1, Thompson) | Wired |
 | Self-referential proof | Not attempted | By design |
@@ -635,20 +654,20 @@ passes. A clean live full-cycle rerun is pending as separate sign-off.
 
 | Capability | Evidence |
 |---|---|
-| Generate plans from PRDs | 48 epics accepted using this workflow |
-| Execute plans end-to-end | 124/124 executable tasks completed |
+| Generate plans from PRDs | `roko prd plan` writes `tasks.toml` from a PRD (the old "48 epics accepted using this workflow" is withdrawn; section 1) |
+| Execute plans end-to-end | Portal build: 16 plans, 173 tasks, 168 gate-verified (`docs/whitepaper/evidence/2026-09-29-b7-real-run-evidence.md`) |
 | Resume after crash | Graph checkpoint + Activity replay proven in dogfood |
 | Learn from failures | Playbook rules + cascade router + adaptive thresholds wired |
 | Route to cost-effective models | Cascade router with per-model pass rate tracking |
 | Prevent known mistakes | Playbook rule injection into agent prompts before dispatch |
-| Self-monitor | C-Factor metrics, autocatalytic health checks, gate gaming detection |
-| Structural replan on failure | 5-strategy deterministic replan controller |
+| Self-monitor | Gate-gaming detection runs after each task's verify, without ground truth to check it against; the autocatalytic metrics are built but have no caller |
 
 ### 6.3 What the System Cannot Do Today
 
 | Limitation | Why | What Would Be Needed |
 |---|---|---|
 | Autonomously modify its own structure | By design (safety) | L4 human approval gate |
+| Replan a failing task's structure | `ReplanController` is built but has no caller (section 3) | Wire it into Graph task failure handling |
 | Modify its own gate pipeline | Constitutional constraint | Would require removing safety invariant |
 | Transfer knowledge across workspaces | C6/C7 loops not connected | Network transport for knowledge sync |
 | Evolve its own learning algorithms | AI4AI-Bench level 3 | ADAS-style meta-agent |
@@ -746,9 +765,9 @@ concrete Roko subsystem:
    failure in plan A prevents the same mistake in plan B.
 
 2. **Deterministic verification**: Most self-improvement research uses
-   LLM-as-judge (weak verifiers subject to bias). Roko uses a 19-gate
-   pipeline with deterministic gates (compile, test, clippy) that are not
-   subject to model hallucination.
+   LLM-as-judge (weak verifiers subject to bias). Roko checks each task with
+   deterministic commands (its authored `verify` steps, typically build, test and
+   lint) that are not subject to model hallucination.
 
 3. **Online optimization**: DSPy optimizes statically (generate variants,
    evaluate on test set, select winner). Roko optimizes online via bandit

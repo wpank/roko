@@ -2,7 +2,10 @@
 
 > **v3 depth file** -- `/docs/v3/depth/00-architecture/cross-section-integration-map.md`
 > Canonical source: v1 `docs/v1/00-architecture/24-cross-section-integration-map.md`
-> Status: **Current** (48/48 epics accepted, all subsystems wired, ~376 canonical routes)
+> Status: **Current** (48/48 epics accepted as programme manifests, ~376 canonical routes).
+> Corrected 2026-09-29: not every subsystem is wired on plan runs; the Conductor, replan,
+> WASM hooks and most learning loops are not, or only partly ([00-INDEX](../../00-INDEX.md)
+> section 13).
 
 ---
 
@@ -285,7 +288,7 @@ The following metrics characterize the integration state of the system:
 | LOC (approximate) | ~1M | Workspace |
 | Tests | 10,300+ | cargo test --workspace |
 | Accepted epics | 48/48 | Epic manifest |
-| Executable tasks | 124/124 | Plan queue |
+| Executable tasks | Withdrawn 2026-09-29 | Stale count (`work/history/claude-md-status-2026-09-28.md`) |
 | Canonical HTTP routes | ~376 | route inventory |
 | Kernel traits | 12 | roko-core |
 | Agent providers | 12 | roko-agent |

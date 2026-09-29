@@ -2,6 +2,13 @@
 
 > Depth file for [04-EXECUTION.md](../../04-EXECUTION.md) section 10.
 > Preserves and updates content from v1 `01-orchestration/07-worktree-isolation.md`.
+>
+> **Status (2026-09-29, at `7c556bc0a`): PARTIAL.** This page describes the design. On
+> Graph runs every task edits the operator's working tree by default.
+> `plan run --worktree-per-task` is opt-in, and a successful attempt's worktree edits
+> are never merged back. The per-plan path (`ensure_for_plan`, `create_for_plan`) and
+> `reclaim_idle` have no production caller. See [04-EXECUTION.md](../../04-EXECUTION.md)
+> section 10.
 
 ---
 
@@ -16,7 +23,7 @@ The `WorktreeManager` handles the full lifecycle: creation, branch naming,
 health monitoring, idle reclamation, stale lock cleanup, and budget
 enforcement.
 
-**Source:** `crates/roko-cli/src/runner/worktree.rs`
+**Source:** `crates/roko-cli/src/orchestrator/worktree/mod.rs`
 
 ---
 

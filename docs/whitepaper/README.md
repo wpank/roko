@@ -229,3 +229,21 @@ models in general.
   purpose. `--budget F` fails a file longer than F times its budget, and `--report` prints the counts and exits 0.
 - Tags must agree with the appendix, and every number with its frozen source; the review (gap-8d2c79, `REVIEW.md`)
   checked both.
+
+## Building the PDF
+
+`build.sh` (gap-8117a8) builds the PDF from this directory alone. pandoc joins the sections in the outline's order
+without their status headers, resolves the citations against `references.bib` and writes LaTeX; librsvg converts
+the figures, and tectonic typesets the result. Install the tools with `brew install pandoc tectonic librsvg`;
+tectonic downloads its LaTeX packages on its first run.
+
+```sh
+docs/whitepaper/build.sh            # writes tmp/whitepaper/roko-whitepaper.pdf (tmp/ is gitignored)
+docs/whitepaper/build.sh out.pdf    # or a path you choose
+```
+
+- **Checks:** any pandoc warning fails the build, so an unknown citation key stops it.
+- **Reproducible:** the PDF's dates are the commit time of the sources, so one commit built with the same pandoc,
+  tectonic and librsvg gives the same bytes. The script ends by printing the PDF's sha256. It needs no git
+  metadata, so it also builds from an export: `git archive <tag> docs/whitepaper | tar -x -C <dir>`.
+- **Don't commit the PDF:** a release carries it.

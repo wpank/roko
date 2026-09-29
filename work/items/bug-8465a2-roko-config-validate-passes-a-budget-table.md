@@ -2,7 +2,7 @@
 id = "bug-8465a2"
 kind = "bug"
 title = "roko config validate passes a budget table that the core config loader rejects"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "release"
@@ -11,7 +11,7 @@ subsystem = ["cli", "config"]
 created = 2026-09-29
 updated = 2026-09-29
 last_verified = 2026-09-29
-last_verified_rev = "98a77c510"
+last_verified_rev = "5e50e959a"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (16:15, wk-readme's quick-start check for bug-09690f; details in bug-09690f's Notes)"
 anchors = ["crates/roko-core/src/config/validation.rs", "crates/roko-cli/src/commands/config_cmd.rs"]
@@ -21,6 +21,11 @@ links = { depends_on = [], blocks = [], related = ["bug-09690f"], supersedes = [
 
 [[verify]]
 command = "grep -rqw 'fn config_validate_matches_the_core_loader_on_budgets' crates/ && cargo test -p roko-cli --lib config_validate_matches_the_core_loader_on_budgets"
+
+[closed]
+at = 2026-09-29
+by = "coordinator (session 7622b882)"
+evidence = "roko config validate resolves the file through the core loader, so it rejects what the loader rejects (f99ae073e, merged 19d4d4ac3). Batch 4 gate (work/rust-batch-4; crates tree identical to MAIN after the merges): cargo check --workspace --tests clean; nightly rustfmt clean after fmt-only b0ae64620; clippy -p roko-cli -p roko-core -p roko-agent --no-deps -D warnings clean; lib tests roko-cli 3077, roko-core 1921, roko-agent 2240, 0 failed."
 +++
 
 ## Problem

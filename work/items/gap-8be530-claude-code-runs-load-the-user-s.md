@@ -2,7 +2,7 @@
 id = "gap-8be530"
 kind = "gap"
 title = "Claude Code runs load the user's own ~/.claude settings, hooks and plugins"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "core"
@@ -10,7 +10,7 @@ subsystem = ["roko-agent/claude-cli"]
 created = 2026-09-28
 updated = 2026-09-29
 last_verified = 2026-09-29
-last_verified_rev = "d9e79e9d8"
+last_verified_rev = "5e50e959a"
 source = "tmp/cybernetic-harness/assessment-2026-09-28/measurement-validity.md"
 discovered_from = "audit:tmp/cybernetic-harness/assessment-2026-09-28/measurement-validity.md"
 anchors = ["crates/roko-agent/src/claude_cli_agent.rs::build_command", "crates/roko-agent/src/claude_cli_agent.rs:370"]
@@ -18,6 +18,11 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -q -- \"setting-sources\" crates/roko-agent/src/claude_cli_agent.rs"
+
+[closed]
+at = 2026-09-29
+by = "coordinator (session 7622b882)"
+evidence = "Claude Code runs load no user or project setting sources (--setting-sources \"\"), use --strict-mcp-config and CLAUDE_CODE_DISABLE_AUTO_MEMORY=1, and get the workdir's own CLAUDE.md and rules via --add-dir <workdir> with CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1 ('project' was rejected: it walks up to / and loads ~/.claude/CLAUDE.md); guard hooks and key-file deny rules unchanged (ea10d7bd0, bf9a5a573, merged fccbe30a0). Batch 4 gate (work/rust-batch-4; crates tree identical to MAIN after the merges): cargo check --workspace --tests clean; nightly rustfmt clean after fmt-only b0ae64620; clippy -p roko-cli -p roko-core -p roko-agent --no-deps -D warnings clean; lib tests roko-cli 3077, roko-core 1921, roko-agent 2240, 0 failed."
 +++
 roko passes `--settings` to the Claude CLI (`claude_cli_agent.rs:368`) but never `--setting-sources`, so the invoking user's global and project settings also apply: hooks, plugins, permissions and model defaults. The same plan can behave differently on different machines, and benchmark runs through the Claude CLI are not reproducible. The effect on runs has not been measured.
 

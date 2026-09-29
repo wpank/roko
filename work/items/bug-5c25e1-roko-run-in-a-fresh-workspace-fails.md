@@ -2,7 +2,7 @@
 id = "bug-5c25e1"
 kind = "bug"
 title = "roko run in a fresh workspace fails budget admission against a $1 turn cap although roko.toml sets max_turn_usd = 0"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "release"
@@ -11,7 +11,7 @@ subsystem = ["cli", "config"]
 created = 2026-09-29
 updated = 2026-09-29
 last_verified = 2026-09-29
-last_verified_rev = "98a77c510"
+last_verified_rev = "5e50e959a"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (16:15, wk-readme's quick-start check for bug-09690f; details in bug-09690f's Notes)"
 anchors = ["crates/roko-cli/src/commands/util.rs"]
@@ -21,6 +21,11 @@ links = { depends_on = [], blocks = [], related = ["bug-09690f"], supersedes = [
 
 [[verify]]
 command = "grep -rqw 'fn fresh_workspace_run_passes_budget_admission' crates/roko-cli/src/ && cargo test -p roko-cli --lib fresh_workspace_run_passes_budget_admission"
+
+[closed]
+at = 2026-09-29
+by = "coordinator (session 7622b882)"
+evidence = "0 means no cap everywhere: invariant 1 fires only when a finite turn cap exceeds a finite plan cap, and roko run's admission (run::check_budget_admission) takes caps from core [budget] (4c1ff3c5c, merged 19d4d4ac3). Batch 4 gate (work/rust-batch-4; crates tree identical to MAIN after the merges): cargo check --workspace --tests clean; nightly rustfmt clean after fmt-only b0ae64620; clippy -p roko-cli -p roko-core -p roko-agent --no-deps -D warnings clean; lib tests roko-cli 3077, roko-core 1921, roko-agent 2240, 0 failed."
 +++
 
 ## Problem

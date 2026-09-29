@@ -15,7 +15,7 @@ discovered_from = "tmp/cybernetic-harness/tldr/05-GAPS-AND-PROPOSALS.md (P1 #9-1
 anchors = ["crates/roko-cli/src/prd.rs::generate_plan_from_prd_with_outcome", "crates/roko-cli/src/plan_policy.rs::validate_plan_budgets", "crates/roko-cli/src/plan_validate.rs::validate_tasks_file", "crates/roko-cli/src/task_parser.rs::TaskDef"]
 doc = "tmp/cybernetic-harness/workstreams/PLAN.md"
 lane = "rust-cold"
-links = { depends_on = ["gap-853b31", "gap-2623b2", "gap-d14a43", "gap-1cd8d3", "gap-b3fa0a", "find-70edcb", "gap-a8d786", "gap-1d1fa6", "gap-46ab3f"], blocks = [], related = ["find-84bfa8", "bug-8b1bf8", "gap-b3e513", "gap-3bea93", "gap-0f3980", "gap-25065c"], supersedes = [], duplicate_of = "" }
+links = { depends_on = ["gap-853b31", "gap-2623b2", "gap-d14a43", "gap-1cd8d3", "gap-b3fa0a", "find-70edcb", "gap-a8d786", "gap-1d1fa6", "gap-46ab3f", "bug-477ede"], blocks = [], related = ["find-84bfa8", "bug-8b1bf8", "gap-b3e513", "gap-3bea93", "gap-0f3980", "gap-25065c"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "grep -rqw 'fn spec_lints_reject_a_weak_plan_and_pass_its_fixed_twin' crates/roko-cli/tests/ && cargo test -p roko-cli --test plan_validate spec_lints_reject_a_weak_plan_and_pass_its_fixed_twin"
@@ -102,6 +102,7 @@ This is the implementation plan.
 - [ ] gap-a8d786: Plan lint: tasks that can run at the same time must not share files
 - [ ] gap-1d1fa6: Task size limits per executor tier in plan validate
 - [ ] gap-46ab3f: plan validate --spec-quality runs the speclint rules when a plan loads (S07.9)
+- [ ] bug-477ede: prd plan escalation drops a planner model outside the haiku/sonnet/opus chain to the cheapest model
 - [ ] The epic's `[[verify]]` command (the weak and fixed fixture pair) passes on the merged branch.
 
 ## Notes

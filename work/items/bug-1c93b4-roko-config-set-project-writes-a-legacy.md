@@ -2,7 +2,7 @@
 id = "bug-1c93b4"
 kind = "bug"
 title = "roko config set --project writes a legacy agent.model key that validation rejects, and refuses v2 keys"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "release"
@@ -11,7 +11,7 @@ subsystem = ["cli", "config"]
 created = 2026-09-29
 updated = 2026-09-29
 last_verified = 2026-09-29
-last_verified_rev = "98a77c510"
+last_verified_rev = "5e50e959a"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (16:15, wk-readme's quick-start check for bug-09690f; details in bug-09690f's Notes)"
 anchors = ["crates/roko-cli/src/commands/config_cmd.rs", "crates/roko-cli/src/resolved_overrides.rs"]
@@ -21,6 +21,11 @@ links = { depends_on = [], blocks = [], related = ["bug-09690f"], supersedes = [
 
 [[verify]]
 command = "grep -rqw 'fn config_set_project_keeps_the_file_valid' crates/roko-cli/src/ && cargo test -p roko-cli --lib config_set_project_keeps_the_file_valid"
+
+[closed]
+at = 2026-09-29
+by = "coordinator (session 7622b882)"
+evidence = "config set --project writes v2 keys only (types via loader::schema_value_for_path, v1 names mapped via V1_RENAMED_KEYS), drops the agent.model alias, and refuses to leave an invalid file (3bf3af074, merged 19d4d4ac3). Batch 4 gate (work/rust-batch-4; crates tree identical to MAIN after the merges): cargo check --workspace --tests clean; nightly rustfmt clean after fmt-only b0ae64620; clippy -p roko-cli -p roko-core -p roko-agent --no-deps -D warnings clean; lib tests roko-cli 3077, roko-core 1921, roko-agent 2240, 0 failed."
 +++
 
 ## Problem

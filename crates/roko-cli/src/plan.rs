@@ -442,6 +442,10 @@ pub fn overlay_graph_checkpoint_status(workdir: &Path, summaries: &mut [PlanSumm
                     summary.tasks_failed = 1;
                 }
             }
+            // Every task ran, but some ran no verify step: not done.
+            "unverified" => {
+                summary.status = format!("unverified{age_suffix}");
+            }
             "running" => {
                 if summary.status == "ready" || summary.status == "pending" {
                     summary.status = "running".to_string();

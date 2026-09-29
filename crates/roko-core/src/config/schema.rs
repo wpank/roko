@@ -20,6 +20,7 @@ use serde::{Deserialize, Serialize};
 
 // Re-export all section structs from submodules.
 pub use super::agent::*;
+pub use super::authoring::*;
 pub use super::budget::*;
 pub use super::chain::*;
 pub use super::execution::{DaimonConfig, DreamScheduleConfig, RepoConfig, StrategySpaceConfig};
@@ -100,6 +101,9 @@ pub struct RokoConfig {
     pub prd: PrdConfig,
     #[serde(default)]
     pub agent: AgentConfig,
+    /// Plan authoring: the model that generates and revises plans.
+    #[serde(default)]
+    pub authoring: AuthoringConfig,
     #[serde(default)]
     pub providers: IndexMap<String, ProviderConfig>,
     #[serde(default)]
@@ -427,6 +431,7 @@ impl Default for RokoConfig {
             project: ProjectConfig::default(),
             prd: PrdConfig::default(),
             agent: AgentConfig::default(),
+            authoring: AuthoringConfig::default(),
             providers: IndexMap::new(),
             models: IndexMap::new(),
             profiles: HashMap::new(),
@@ -1651,6 +1656,17 @@ pub(crate) fn validate_references(config: &RokoConfig) -> Vec<ValidationWarning>
         warnings.push(ValidationWarning::UnknownModel {
             field: format!("agent.tier_models.{tier}"),
             model: model_key.to_string(),
+        });
+    }
+
+    // The planner may also name a builtin model that has no `[models.*]` entry.
+    if let Some(planner) = config.authoring.planner_model_key()
+        && !explicit_model_keys.contains(planner)
+        && super::model_registry::builtin_model(planner).is_none()
+    {
+        warnings.push(ValidationWarning::UnknownModel {
+            field: "authoring.planner_model".to_string(),
+            model: planner.to_string(),
         });
     }
 
@@ -3143,6 +3159,35 @@ max_output = 16384
                     if field == "routing.fast_task_model"
             )),
             "explicit model key should not produce a warning, got: {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn validate_references_warns_on_unknown_planner_model() {
+        let mut cfg = RokoConfig::default();
+        cfg.models.clear();
+        cfg.authoring.planner_model = "nonexistent-planner".to_string();
+
+        let warnings = validate_references(&cfg);
+        assert!(
+            warnings.iter().any(|w| matches!(
+                w,
+                ValidationWarning::UnknownModel { field, model }
+                    if field == "authoring.planner_model" && model == "nonexistent-planner"
+            )),
+            "expected warning for unknown planner_model, got: {warnings:?}"
+        );
+
+        // A builtin slug needs no `[models.*]` entry.
+        cfg.authoring.planner_model = "claude-opus-4-6".to_string();
+        let warnings = validate_references(&cfg);
+        assert!(
+            !warnings.iter().any(|w| matches!(
+                w,
+                ValidationWarning::UnknownModel { field, .. }
+                    if field == "authoring.planner_model"
+            )),
+            "builtin slug should not produce a warning, got: {warnings:?}"
         );
     }
 

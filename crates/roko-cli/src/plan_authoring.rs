@@ -24,6 +24,7 @@ use roko_learn::costs_db::CostRecord;
 use roko_learn::efficiency::AgentEfficiencyEvent;
 
 use crate::agent_exec::{AgentCapture, AgentExecOpts, run_agent_capture_silent_with_usage};
+use crate::model_selection::resolve_planner_model;
 use crate::plan_policy::{PlanExecutionPolicy, validate_plan_context};
 use crate::plan_validate::{Severity, validate_plans_dir_with_workdir};
 use crate::runner::tui_bridge::TuiBridge;
@@ -352,10 +353,11 @@ pub fn apply_revision_output(
 
 /// Run the planning agent to revise an existing plan and write the result.
 ///
-/// Reads the current `tasks.toml`, invokes the strategist agent with the
-/// revision prompt, then calls [`apply_revision_output`].  On a validation
-/// rejection the agent is retried once with the diagnostics appended to the
-/// feedback before the final outcome is returned.
+/// Reads the current `tasks.toml`, invokes the strategist agent on the planner
+/// model ([`resolve_planner_model`]) with the revision prompt, then calls
+/// [`apply_revision_output`].  On a validation rejection the agent is retried
+/// once with the diagnostics appended to the feedback before the final outcome
+/// is returned.
 ///
 /// Every agent call's spend is recorded against the plan through
 /// [`AuthoringSpend::revision`], and published on `live` when given.
@@ -372,12 +374,13 @@ pub async fn revise_plan_source(
         .with_context(|| format!("read {}", tasks_path.display()))?;
 
     let resolved = crate::load_resolved_config(workdir)?;
+    let planner_model = resolve_planner_model(workdir, None, "plan revision")?;
     let system_prompt = crate::plan_generate::build_generator_system_prompt(workdir);
     let spend = AuthoringSpend::revision(workdir, plan_id, live);
 
     let run_agent = |prompt: String| {
         let env_vars = resolved.config.agent.env.clone();
-        let model = resolved.config.agent.model.clone();
+        let model = planner_model.clone();
         let effort = resolved.config.agent.effort.clone();
         let system = system_prompt.clone();
         let spend = &spend;
@@ -385,7 +388,7 @@ pub async fn revise_plan_source(
             let call = run_agent_capture_silent_with_usage(AgentExecOpts {
                 prompt: &prompt,
                 workdir,
-                model: model.as_deref(),
+                model: Some(model.as_str()),
                 effort: Some(effort.as_str()),
                 system_prompt: Some(&system),
                 resume_session: None,

@@ -143,8 +143,9 @@ evidence:
 
 | Metric | Value | Evidence |
 |---|---|---|
-| Epics accepted | 48/48 | Plan execution through the 8-step workflow |
-| Executable tasks completed | 124/124 | Graph engine plan execution |
+| Epics accepted | 48/48 | Programme manifests; corrected 2026-09-29: not built through the 8-step workflow (most code came from operator-directed sessions) |
+| Executable tasks completed | Withdrawn | Corrected 2026-09-29: the old "all 124 complete" count was stale (`work/history/claude-md-status-2026-09-28.md`) |
+| Largest recorded plan run | 16 plans, 173 tasks, 168 gate-verified | The portal build (`docs/whitepaper/evidence/2026-09-29-b7-real-run-evidence.md`) |
 | Plans completed | 30/30 | All executable plans |
 | Self-heal tasks completed | 57/57 (SH01-SH06) | Automated fix-and-verify cycles |
 

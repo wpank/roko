@@ -5,15 +5,22 @@
 > checkers. They return **Verdicts**, not Results. A gate failure is
 > knowledge, not an error.
 
-> **Implementation status (2026-09):** 19 concrete gate implementations
-> ship in `crates/roko-gate/src/`. The 7-rung pipeline, adaptive EMA
-> thresholds, ratchet, artifact store, agent feedback filter, forensic
-> replay, verdict publisher, SPC detectors (CUSUM/EWMA/BOCPD), PELT
-> offline analysis, Hotelling T-squared multi-gate detection, gate
-> composition wrappers (Parallel/Voting/Fallback), production gate
-> service, and graph-cell integration are all wired. Process reward
-> models, continuous progress scoring, and the full evaluation lifecycle
-> remain target design.
+> **Implementation status (corrected 2026-09-29 at `7c556bc0a`):** 19 concrete
+> gate implementations ship in `crates/roko-gate/src/`, together with the 7-rung
+> pipeline, adaptive EMA thresholds, ratchet, artifact store, agent feedback filter,
+> forensic replay, verdict publisher, SPC detectors (CUSUM/EWMA/BOCPD), PELT offline
+> analysis, Hotelling T-squared multi-gate detection, gate composition wrappers
+> (Parallel/Voting/Fallback), the production gate service and the graph cell. Plan runs
+> use little of this. A Graph plan task runs only its authored `verify` commands, each
+> through `ShellGate`, sequentially and fail-fast
+> (`GraphTaskDispatcher::settle_task_verification` in
+> `crates/roko-cli/src/graph_task_dispatch.rs`); a task with no `verify` steps settles as
+> `Unverified`. `run_gate_once` (`crates/roko-cli/src/runner/gate_dispatch.rs`) is reached
+> only from tests, through `spawn_gate`, and nothing outside `roko-gate` constructs
+> `GatePipelineCell`. Graph runs do update each rung's pass-rate EMA after every task, and
+> the EMA sets the retry budget of tasks that don't author `max_retries`
+> (`crates/roko-cli/src/graph_task_dispatch/retry_budget.rs`). Process reward models,
+> continuous progress scoring, and the full evaluation lifecycle remain target design.
 
 ### Implementation sources
 
@@ -660,8 +667,13 @@ threshold ~ 18.48), a multi-gate anomaly is flagged with per-gate attribution.
 
 ## 5. Gate Dispatch Wiring
 
-The `gate_dispatch.rs` module in `roko-cli/src/runner/` connects gate
-infrastructure to the plan execution event loop.
+The `gate_dispatch.rs` module in `roko-cli/src/runner/` connected gate
+infrastructure to the Runner-v2 plan execution event loop, which was deleted on
+2026-09-06 (`6b5da8616`). Graph runs use two of its helpers: `attempt_auto_fix`,
+the compile auto-fix after a failed verify, and `acquire_compile_ownership`, which
+serializes cargo verify commands. Only tests reach `spawn_gate` and `run_gate_once`;
+a Graph task runs its authored `verify` commands instead (see the status note at the
+top of this chapter).
 
 ```rust
 // crates/roko-cli/src/runner/gate_dispatch.rs
@@ -695,8 +707,9 @@ Sub-modules:
 - `gate_adapter` -- `RunnerProductionGateAdapter` and artifact store
 
 The production gate service (`ProductionGateService`, `DefaultGateService`)
-provides the trait interface used by both the Runner-v2 event loop and the
-Graph engine's `GatePipelineCell` (#250).
+provides the trait interface that the Runner-v2 event loop used and that the
+Graph engine's `GatePipelineCell` (#250) calls. Nothing outside `roko-gate`
+constructs `GatePipelineCell`, so plan runs never reach it.
 
 ---
 
@@ -980,9 +993,9 @@ flowchart TB
 
 ### 9.5 Related Work
 
-> **Citation**: Messier (arXiv:2607.25891) -- demonstrates that partial-pass
-> scoring for agent verification produces more informative training signals
-> than binary outcomes, enabling 2.3x faster convergence on complex tasks.
+> **Correction (2026-09-29):** an earlier revision cited a benchmark-corpus paper
+> here for a 2.3x faster convergence from partial-pass scoring. That paper does not
+> report such a result, and no cited study does, so the claim is withdrawn.
 
 > **Citation**: PACE (arXiv:2607.02032) -- proxy capability evaluation shows
 > that continuous verification scores enable accurate capability assessment

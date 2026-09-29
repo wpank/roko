@@ -2,6 +2,12 @@
 
 > Depth file for [07-GATES.md](../../07-GATES.md) section 5.
 > Source: `crates/roko-cli/src/runner/gate_dispatch.rs` and sub-modules
+>
+> **Status (2026-09-29, at `7c556bc0a`):** the plan execution event loop this module
+> served was Runner-v2's, deleted on 2026-09-06 (`6b5da8616`). Graph runs use two of its
+> helpers (`attempt_auto_fix`, `acquire_compile_ownership`); only tests reach `spawn_gate`
+> and `run_gate_once`. Graph plan tasks run their authored `verify` commands through
+> `ShellGate` instead (see [07-GATES.md](../../07-GATES.md)).
 
 ---
 

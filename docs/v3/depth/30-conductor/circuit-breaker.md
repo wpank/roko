@@ -3,6 +3,11 @@
 > Depth file for [30-CONDUCTOR.md](../../30-CONDUCTOR.md) section 3.
 > Source: `crates/roko-conductor/src/circuit_breaker.rs`,
 >         `crates/roko-learn/src/provider_health.rs`
+>
+> **Status (2026-09-29, at `7c556bc0a`):** the plan circuit breaker is built but not
+> enforced: nothing on the Graph path evaluates the Conductor (see
+> [30-CONDUCTOR.md](../../30-CONDUCTOR.md) section 3). The provider-health breaker in
+> `provider_health.rs` is a separate mechanism, and plan-run routing does use it.
 
 ---
 

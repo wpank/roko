@@ -15,7 +15,11 @@ adjustments, bounded c-factor governance recommendations, chi-square/Wilson
 experiment conclusions and archives, Variance Inequality checks, seven
 autocatalytic metrics, and explicit when/then playbook matching injected by
 the Graph engine before dispatch. The full declarative Loop-Graph realization
-and autonomous structural L4 evolution remain target design.
+and autonomous structural L4 evolution remain target design. The 10/10 counts
+built components, not loops that run on plans: on Graph runs (checked at
+`7c556bc0a`) two of the eight loops in section 11 close, the per-rung gate EMA
+sets retry budgets, and playbook outcomes are credited to the injected playbooks.
+No loop has a measured effect on outcomes yet.
 
 ### Authoritative sources
 
@@ -698,9 +702,14 @@ similarity above `TEMPLATE_SUGGESTION_MIN_SIMILARITY` = 0.7.
 > **Crate:** `roko-learn` -- **Module:** `hindsight.rs`
 > **Cross-references:** [depth/08-learning/06-hindsight-adjustments.md](depth/08-learning/06-hindsight-adjustments.md)
 
-Hindsight relabeling recovers value from failed trajectories by decomposing
-them into sub-goals and marking achieved sub-goals as positive episodes. This
-is the append-only shipped implementation from E25.
+Hindsight relabeling corrects earlier episode outcomes with later evidence. The
+design below decomposes failed trajectories into sub-goals and marks achieved
+sub-goals as positive episodes; that sub-goal relabeling is not implemented. What
+runs on Graph plans (checked at `7c556bc0a`) is narrower: `HindsightSink`
+(`crates/roko-cli/src/runtime_feedback/hindsight.rs`) appends corrections to
+`.roko/learn/episode-adjustments.jsonl`, for example a `Regression`
+against a task's latest success when a later verify failure blames that task's
+edits. Nothing reads those corrections yet.
 
 ### 6.1 Relabeling Protocol
 
@@ -717,8 +726,9 @@ Relabel: trajectory is SUCCESSFUL for "implement auth"
 Episode relabeled with achieved sub-goal -> enters replay as positive data
 ```
 
-**Recovery rate:** Recovers useful learning signal from at least 45% of
-otherwise-discarded episodes.
+**Recovery rate:** Not measured. An earlier revision stated a recovery figure
+that had no source; no recovery rate has been measured for any version of this
+mechanism.
 
 ### 6.2 Append-Only Guarantee
 
@@ -881,6 +891,17 @@ and adjusts section weights accordingly.
 
 > **Cross-references:** [depth/08-learning/10-autocatalytic.md](depth/08-learning/10-autocatalytic.md)
 
+> **Status (2026-09-29): a hypothesis, not a result.** No measurement shows Roko's
+> learning compounding, and recent studies argue against expecting it:
+> gains from agent optimizers fail to compound across tasks (Wang, Kattakinda and
+> Feizi 2026, arXiv:2607.14004), self-improvement results depend on task order and
+> amplify noise (Ye et al. 2026, arXiv:2608.18066), and harness evolution does not
+> consistently beat matched test-time scaling (Wang et al. 2026, arXiv:2607.12227).
+> The defensible claim is bounded, audited improvement with rollback. The metric
+> functions in `crates/roko-learn/src/aggregate.rs` (`compute_compounding_metrics`)
+> have no production caller at `7c556bc0a`, and `check_autocatalytic` below is a
+> sketch with no counterpart in `crates/`.
+
 A reaction network is autocatalytic when every reaction's inputs are produced
 by some other reaction in the network (Kauffman 1993). In learning terms: the
 system compounds when its feedback graph forms a **strongly connected cycle** --
@@ -1015,8 +1036,11 @@ flowchart TD
 +---------------------------------------------------------------------+
 ```
 
-All eight loops are wired. Each implements negative feedback for stability:
-detecting a deviation from desired behavior and applying a corrective signal.
+Each loop is designed as negative feedback: detect a deviation from desired
+behavior and apply a corrective signal. On Graph runs (checked at `7c556bc0a`),
+two of the eight close: provider health (loop 1) and the plan budget (loop 6).
+The rest are partial or not wired, as each loop's status line says, and none has
+a measured effect on outcomes yet.
 
 ### Loop 1: Health -> Routing
 
@@ -1045,8 +1069,10 @@ scoring. Prevents routing to degraded providers.
 +-----------------------+     +-------------------------+     +------------------+
 ```
 
-**Status:** Wired. `RoutingContext` carries conductor pressure; cascade router
-biases toward cheaper tiers when pressure is high.
+**Status:** Not wired on Graph runs. Graph dispatch builds its `RoutingContext`
+with `conductor_load: 0.0` and `active_agents: 1`
+(`crates/roko-cli/src/graph_task_dispatch.rs`), and nothing evaluates the
+Conductor ([30-CONDUCTOR](30-CONDUCTOR.md)), so no load signal reaches the router.
 
 ### Loop 3: Section -> Scaffold
 
@@ -1058,9 +1084,11 @@ biases toward cheaper tiers when pressure is high.
 +-----------------------+     +-------------------------+     +------------------+
 ```
 
-**Status:** Wired for the live orchestration path. Composed prompts emit
-per-section inclusion/drop metadata into efficiency events. The next prompt
-build reweights section priorities from learned lift signals.
+**Status:** Partial. Composed prompts emit per-section inclusion/drop metadata
+into efficiency events, and the prompt build reads the learned section weights
+(`crates/roko-cli/src/dispatch/prompt_cache.rs`), but plan runs never record
+section outcomes, so the weights don't learn from plan runs (checked at
+`7c556bc0a`).
 
 **Impact:** Highest-leverage self-improvement loop. Adaptive context assembly
 can reduce prompt size by 30-50% while improving pass rates.
@@ -1075,9 +1103,12 @@ can reduce prompt size by 30-50% while improving pass rates.
 +-----------------------+     +-------------------------+     +------------------+
 ```
 
-**Status:** Wired. Gate failures increment per-plan failure counters; when
-auto-replan is enabled, strategy-specific replan flows retry, escalate, or
-decompose the task.
+**Status:** Not wired on Graph runs. Runner-v2's plan revision was deleted
+with it on 2026-09-06 (`6b5da8616`), and `ReplanController`
+(`crates/roko-execution/src/replan_controller.rs`) has no caller. A failed task is
+retried with its gate feedback up to `max_retries`. With
+`learning.replan_on_gate_failure` (on by default) and a cheap model available,
+each failure also gets an LLM reflection.
 
 ### Loop 5: Skills -> Prompts
 
@@ -1089,8 +1120,9 @@ decompose the task.
 +-----------------------+     +-------------------------+     +------------------+
 ```
 
-**Status:** Wired. Matching skills are rendered into a dedicated `skill-library`
-prompt section before composition.
+**Status:** Built, not wired. The prompt builder can render a skills section
+(`RoleSystemPromptSpec::with_relevant_skills`), but no dispatch path supplies
+skills, so plan-run prompts carry none (checked at `7c556bc0a`).
 
 ### Loop 6: Cost -> Routing
 
@@ -1102,8 +1134,10 @@ prompt section before composition.
 +-----------------------+     +-------------------------+     +------------------+
 ```
 
-**Status:** Wired. `BudgetGuardrail` checks current spend before dispatch;
-can block execution or force cheaper tier.
+**Status:** Wired on Graph runs, through the per-plan budget reservation rather
+than `BudgetGuardrail`: each dispatch reserves budget (`GraphPlanBudgetPolicy` in
+`crates/roko-cli/src/graph_task_dispatch.rs`), a plan at its ceiling stops
+dispatching, and routing receives the remaining budget.
 
 ### Loop 7: Latency -> Reward
 
@@ -1115,8 +1149,10 @@ can block execution or force cheaper tier.
 +-----------------------+     +-------------------------+     +------------------+
 ```
 
-**Status:** Wired. Runtime feedback computes routing reward with observed
-latency plus model/provider latency registries.
+**Status:** Partial. On Graph runs `RoutingObservationSink`
+(`crates/roko-cli/src/runtime_feedback/routing.rs`) folds normalized latency and
+cost into the router's multi-objective reward, but only for successful tasks; a
+failure updates only the model's success-rate statistics.
 
 ### Loop 8: Experiments -> Static
 
@@ -1128,8 +1164,11 @@ latency plus model/provider latency registries.
 +-----------------------+     +-------------------------+     +------------------+
 ```
 
-**Status:** Wired. Concluded experiments persist their winner; the cascade
-router's static table is updated from concluded role/model experiments.
+**Status:** Partial. Graph runs assign and settle prompt experiments per attempt
+(`crates/roko-cli/src/graph_task_dispatch/prompt_experiment.rs`). Model experiments
+never run on plans: `CascadeRouter::route_with_experiments` has no production
+caller, so no plan-run outcome can conclude one and update the router's static
+table.
 
 ### Cross-Loop Interaction Matrix
 
@@ -1168,8 +1207,9 @@ Task intractable: decompose differently. Skill available: inject it. Budget
 exhausted: downgrade. Latency excessive: penalize slow models. Experiment
 concluded: lock in winner.
 
-The compound effect is convergence toward an optimal operating point without
-manual tuning (Argyris & Schon 1978, double-loop learning).
+The intended compound effect is convergence toward an optimal operating point
+without manual tuning (Argyris & Schon 1978, double-loop learning); section 10's
+status note explains why that remains a hypothesis.
 
 ---
 
@@ -1194,8 +1234,9 @@ concrete Roko subsystem:
 ### 12.1 External Verifier Requirement
 
 The self-improvement literature consistently requires an external verifier
-(Huang et al. ICLR 2024, Song et al. ICLR 2025). Roko's 19-gate pipeline
-provides deterministic external verification -- stronger than the weak
+(Huang et al. ICLR 2024, Song et al. ICLR 2025). Roko's gates provide
+deterministic external verification (on plan runs, each task's authored `verify`
+commands; the 19-gate pipeline runs only in tests) -- stronger than the weak
 verifiers (LLM-as-judge) used in most research, because gate outcomes are
 not subject to model bias or hallucination.
 
@@ -1334,12 +1375,12 @@ registration) that require human approval. Gated by C-Factor and the
 | Playbook Rules | `.roko/learn/playbook-rules.toml` | Per-episode | Wired |
 | Cascade Router | `.roko/learn/cascade-router.json` | Per-episode | Wired |
 | HDC Clustering | In-memory + episode fingerprints | Per-episode | Wired |
-| Hindsight Adjustments | Append-only adjustment records | Per-session | Wired |
+| Hindsight Adjustments | Append-only adjustment records | Per-session | Partial: written on plan runs, read by nothing |
 | C-Factor | `.roko/learn/cfactor.json` | Per-cohort | Wired |
 | Prompt Experiments | `.roko/learn/experiments/` | Per-attempt | Wired |
 | Efficiency Events | `.roko/learn/efficiency.jsonl` | Per-turn | Wired |
 | Gate Thresholds | `.roko/learn/gate-thresholds.json` | Per-rung EMA | Wired |
-| Autocatalytic Metrics | Computed from feedback graph | Per-session | Wired |
+| Autocatalytic Metrics | Computed from feedback graph | Per-session | Built, no production caller |
 
 ---
 

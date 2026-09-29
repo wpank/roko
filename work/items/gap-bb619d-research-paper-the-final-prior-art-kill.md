@@ -2,15 +2,16 @@
 id = "gap-bb619d"
 kind = "gap"
 title = "Research paper: the final prior-art kill-search (Track D13) before submission"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p2"
 goal = "whitepaper"
 size = "M"
-hold = "Runs in submission week (paper/OUTLINE.md, Track D13)"
 subsystem = ["paper"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-29
+last_verified_rev = "cac54e574"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (15:04); tmp/cybernetic-harness/paper/OUTLINE.md:113"
 anchors = ["tmp/cybernetic-harness/paper/OUTLINE.md", "tmp/cybernetic-harness/paper/REVIEW-SKELETON.md", "tmp/cybernetic-harness/paper/sections/08-discussion.md", "tmp/cybernetic-harness/paper/sections/B-spec-standard.md"]
@@ -20,6 +21,11 @@ links = { depends_on = [], blocks = [], related = ["gap-56a1b4", "gap-ec516e"], 
 
 [[verify]]
 command = "test -f tmp/cybernetic-harness/paper/PRIOR-ART-D13.md && grep -q '^Verdict:' tmp/cybernetic-harness/paper/PRIOR-ART-D13.md"
+
+[closed]
+at = 2026-09-29
+by = "coordinator (session 7622b882)"
+evidence = "PRIOR-ART-D13.md (tmp, wk-prior-art): 24 query rows, about 90 papers screened, 44 candidates, verdicts for K1-K8, proposed edits E1-E18 and 33 bib records; ends with a Verdict line. Key finding: C1.23's general form is false (PinSieve arXiv 2608.24040; Bounded Loops 2609.27871), so M4 must be claimed as the combination; M1, M2 and routing claims narrowed; contribution 1 and the golden-path framing stand. WebSearch quota was exhausted, so arXiv listings, Crossref and gh were used. Applying E1-E17 and the submission-week re-run are follow-ups."
 +++
 
 ## Problem

@@ -185,7 +185,7 @@ impl Config {
                 dangerously_skip_permissions: core.runner.dangerously_skip_permissions,
             },
             runtime: RuntimeControlConfig::default(),
-            budget: BudgetConfig::default(),
+            budget: BudgetConfig::from_core(&core.budget),
             providers: core.providers.clone(),
             models: core.models.clone(),
             learning: LearningLayer::from_core_learning(&core.learning),
@@ -534,6 +534,22 @@ impl BudgetConfig {
     }
     const fn default_warn_pct() -> u32 {
         80
+    }
+
+    /// Take the spend caps from the core `[budget]` section.
+    ///
+    /// A cap of `0.0` means no cap there, and it must stay `0.0` here: the
+    /// legacy defaults of this type (`$10` plan, `$1` task and turn) would
+    /// otherwise cap a workspace whose `roko.toml` sets no cap. Settings the
+    /// core section lacks keep their defaults.
+    #[must_use]
+    pub fn from_core(core: &roko_core::config::BudgetConfig) -> Self {
+        Self {
+            max_plan_usd: f64::from(core.max_plan_usd),
+            max_turn_usd: f64::from(core.max_turn_usd),
+            max_task_usd: f64::from(core.max_task_usd),
+            ..Self::default()
+        }
     }
 
     /// Return the USD spend at which the plan should start warning.
@@ -1515,12 +1531,6 @@ pub(crate) fn set_toml_dotted_key(doc: &mut toml::Value, key: &str, value: &str)
     if segments.is_empty() {
         bail!("empty key");
     }
-    // Normalise alias: agent.default_model -> agent.model
-    let segments: Vec<&str> = if segments.as_slice() == ["agent", "default_model"] {
-        vec!["agent", "model"]
-    } else {
-        segments
-    };
 
     // Walk/create intermediate tables.
     let _table = doc
@@ -1605,6 +1615,7 @@ fn parse_value_for_key(key: &str, value: &str) -> Result<toml::Value> {
         | ["agent", "effort"]
         | ["agent", "fallback_model"]
         | ["agent", "mcp_config"]
+        | ["authoring", "planner_model"]
         | ["dreams", "scheduled_cron"]
         | ["prompt", "role"]
         | ["serve", "auth", "api_key"]
@@ -1722,7 +1733,55 @@ fn parse_value_for_key(key: &str, value: &str) -> Result<toml::Value> {
                 .with_context(|| format!("parse {key} as float"))?;
             Ok(toml::Value::Float(f))
         }
-        _ => Err(anyhow!("unknown key: {key}")),
+        _ => parse_value_from_schema(key, value),
+    }
+}
+
+/// Parse `value` for a key the table above does not list, by the TOML type
+/// the v2 schema gives the key (`budget.max_plan_usd` is a float). A key
+/// that `roko config validate` would not accept is unknown.
+fn parse_value_from_schema(key: &str, value: &str) -> Result<toml::Value> {
+    let expected = roko_core::config::loader::schema_value_for_path(key)
+        .ok_or_else(|| anyhow!("unknown key: {key}"))?;
+    match expected {
+        toml::Value::Boolean(_) => {
+            let b = value
+                .parse::<bool>()
+                .with_context(|| format!("parse {key} as bool"))?;
+            Ok(toml::Value::Boolean(b))
+        }
+        toml::Value::Integer(_) => {
+            let n = value
+                .parse::<i64>()
+                .with_context(|| format!("parse {key} as integer"))?;
+            Ok(toml::Value::Integer(n))
+        }
+        toml::Value::Float(_) => {
+            let f = value
+                .parse::<f64>()
+                .with_context(|| format!("parse {key} as float"))?;
+            Ok(toml::Value::Float(f))
+        }
+        toml::Value::String(_) => Ok(toml::Value::String(value.to_string())),
+        toml::Value::Datetime(_) => {
+            let datetime = value
+                .parse::<toml::value::Datetime>()
+                .with_context(|| format!("parse {key} as datetime"))?;
+            Ok(toml::Value::Datetime(datetime))
+        }
+        // Arrays take a JSON array or whitespace-separated strings.
+        toml::Value::Array(_) if !value.trim_start().starts_with('[') => {
+            let items = value
+                .split_whitespace()
+                .map(|item| toml::Value::String(item.to_string()))
+                .collect();
+            Ok(toml::Value::Array(items))
+        }
+        toml::Value::Array(_) | toml::Value::Table(_) => {
+            let json_val: serde_json::Value =
+                serde_json::from_str(value).with_context(|| format!("parse {key} as JSON"))?;
+            json_to_toml(&json_val).with_context(|| format!("convert {key} JSON to TOML"))
+        }
     }
 }
 
@@ -2603,6 +2662,7 @@ pub fn command_on_path(cmd: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::init::{InitProvider, render_init_template_for, write_init_config};
 
     /// Derive the set of known top-level TOML keys from serializing a default
     /// `RokoConfig`.  This stays in sync automatically as fields are added.
@@ -3025,6 +3085,17 @@ command = "x${ROKO_TEST_MISSING_DEF456:-}y"
     }
 
     #[test]
+    fn set_toml_dotted_key_sets_the_planner_model() {
+        let mut doc = toml::Value::Table(toml::map::Map::new());
+        set_toml_dotted_key(&mut doc, "authoring.planner_model", "claude-opus-4-6").unwrap();
+
+        assert_eq!(
+            doc["authoring"]["planner_model"].as_str().unwrap(),
+            "claude-opus-4-6"
+        );
+    }
+
+    #[test]
     fn global_path_ends_in_roko_config_toml() {
         if let Some(path) = global_config_path() {
             assert!(
@@ -3055,7 +3126,7 @@ command = "x${ROKO_TEST_MISSING_DEF456:-}y"
 
     #[test]
     fn default_toml_template_includes_required_env_section() {
-        let rendered = Config::default_toml_template(false).unwrap();
+        let rendered = render_init_template_for(false, InitProvider::ClaudeCli).unwrap();
         assert!(rendered.contains("# REQUIRED_ENV"));
         assert!(rendered.contains("GITHUB_TOKEN"));
         assert!(rendered.contains("GITHUB_WEBHOOK_SECRET"));
@@ -3087,7 +3158,7 @@ command = "x${ROKO_TEST_MISSING_DEF456:-}y"
 
     #[test]
     fn init_template_model_overrides_same_slug_from_global_config() {
-        let rendered = Config::default_toml_template(false).unwrap();
+        let rendered = render_init_template_for(false, InitProvider::ClaudeCli).unwrap();
         let mut project = RokoConfig::from_toml(&rendered).expect("parse init template");
         let rendered_value: toml::Value = toml::from_str(&rendered).expect("parse template TOML");
         let unknown_keys = rendered_value
@@ -3127,6 +3198,49 @@ default_model = "claude-sonnet"
             !project.models.contains_key("claude-sonnet"),
             "global alias with the init template's slug should be shadowed"
         );
+    }
+
+    /// bug-e1327f: without `claude` on PATH, `roko init` used to leave the
+    /// default model pointing at the commented-out `claude_cli` provider, so
+    /// every command failed with config invariant 3.
+    #[test]
+    fn init_without_claude_cli_writes_a_loadable_config() {
+        // With ANTHROPIC_API_KEY set the model uses the Anthropic API;
+        // without it, the model block is commented out with its provider.
+        for (provider, model_provider) in [
+            (InitProvider::AnthropicApi, Some("anthropic")),
+            (InitProvider::Unconfigured, None),
+        ] {
+            let dir = tempfile::tempdir().expect("tempdir");
+            write_init_config(dir.path(), false, provider)
+                .unwrap_or_else(|err| panic!("{provider:?}: init refused its template: {err:#}"));
+
+            let loaded = roko_core::config::loader::load_config_file(
+                &dir.path().join("roko.toml"),
+                &roko_core::config::loader::LoadOptions {
+                    merge_global: false,
+                    apply_env_overrides: false,
+                    apply_hierarchical_env: false,
+                    strict_validation: false,
+                },
+            )
+            .unwrap_or_else(|err| panic!("{provider:?}: the loader rejected it: {err}"));
+            assert_eq!(
+                loaded
+                    .models
+                    .get("claude-sonnet-4-6")
+                    .map(|model| model.provider.as_str()),
+                model_provider,
+                "{provider:?}"
+            );
+            for model in loaded.models.values() {
+                assert!(
+                    loaded.providers.contains_key(&model.provider),
+                    "{provider:?}: model provider '{}' is not configured",
+                    model.provider
+                );
+            }
+        }
     }
 
     #[test]

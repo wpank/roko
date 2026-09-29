@@ -1,0 +1,277 @@
+"""Offline tests of the ViabilityBench driver: a scripted fake model on a local stub server, the toy family, no spend.
+
+Run from the repository root with the benchmark venv:
+    benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/driver/test_driver.py -q
+"""
+
+from __future__ import annotations
+
+import itertools
+import json
+import os
+import socket
+import subprocess
+from pathlib import Path
+
+import pytest
+
+import agent_env
+import caps
+import layout
+import ledger
+import mini_loop
+import validate
+import vb
+from common import canary, hmac_seed
+from stub_provider import StubServer, bash, scripted
+
+TOY_STREAM = str(layout.DRIVER_DIR / "testdata" / "toy_stream.toml")
+FAKE_KEY = "sk-test-not-a-real-key-0f3c"
+PROBE = "vb-probe-value-7d21"
+CORRECT = ("cat > calc/ops.py <<'EOF'\ndef clamp(value, low, high):\n"
+           "    \"\"\"Return value limited to the range [low, high].\"\"\"\n    return max(low, min(value, high))\nEOF")
+VISIBLE_ONLY = "cat > calc/ops.py <<'EOF'\ndef clamp(value, low, high):\n    return max(value, low)\nEOF"
+
+
+@pytest.fixture
+def places(tmp_path: Path) -> dict[str, Path]:
+    secret = hmac_seed.write_secret_file(tmp_path / "private-config" / "secret")
+    return {"results": tmp_path / "results", "work": tmp_path / "work", "secret": secret}
+
+
+def run_vb(places: dict[str, Path], url: str, *extra: str) -> int:
+    return vb.main(["run", "--experiment", "TEST-OFFLINE", "--run-id", "run-1", "--stream", TOY_STREAM,
+                    "--arm", "cheap_direct", "--model", "gpt-oss-120b", "--seeds", "1", "--provider-url", url,
+                    "--results", str(places["results"]), "--work", str(places["work"]),
+                    "--secret-file", str(places["secret"]), *extra])
+
+
+def read_jsonl(path: Path) -> list[dict]:
+    return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+
+
+def run_dir(places: dict[str, Path]) -> Path:
+    return places["results"] / "TEST-OFFLINE" / "run-1"
+
+
+def by_instance(path: Path) -> dict[str, dict]:
+    return {record["task"]["instance_id"]: record for record in read_jsonl(path)}
+
+
+def test_offline_run_writes_valid_records(places, tmp_path, monkeypatch):
+    monkeypatch.setenv("CEREBRAS_API_KEY", FAKE_KEY)  # the driver may hold keys; agents never see them
+    monkeypatch.setenv("VB_PROBE", PROBE)
+    marker = tmp_path / "hook-ran"
+    plant_hooks = (f"printf '#!/bin/sh\\ntouch {marker}\\n' > .git/hooks/post-commit && chmod +x .git/hooks/post-commit"
+                   " && cp .git/hooks/post-commit .git/hooks/pre-commit"
+                   " && git config core.fsmonitor \"$PWD/.git/hooks/post-commit\"")
+    scripts = {
+        "F1-l1-0001": [bash("env | sort && ls -a", "Look around."), bash(CORRECT, "Implement it."),
+                       bash("python3 -m unittest discover -s tests/visible", "Check."), bash("echo VB_SUBMIT")],
+        "F1-l1-0002": [bash(plant_hooks, "Plant hooks the driver must never run."),
+                       bash(VISIBLE_ONLY, "Satisfy the visible test only."), bash("echo VB_SUBMIT")],
+    }
+    with StubServer(scripted(scripts)) as stub:
+        assert run_vb(places, stub.url, "--transcripts") == 0
+    out = run_dir(places)
+    rows = by_instance(out / "records.jsonl")
+    assert sorted(rows) == ["F1-l1-0001", "F1-l1-0002"]
+    for record in rows.values():
+        assert validate.validate("run-record", record) == []
+        assert record["simulated"] is False and record["execution"]["status"] == "completed"
+        assert record["price_snapshot_id"] == "prices-2026-09-28" and record["costs"]["source"] == "provider_usage"
+        assert record["provenance"]["canary_hits"] == 0 and len(record["provenance"]["final_commit"]) == 40
+        attempt = record["execution"]["attempts"][0]
+        assert attempt["model_reported"] == "gpt-oss-120b" and attempt["emitter"] == "vb-driver"
+        usage, row = attempt["usage"], ledger.load_snapshot().row("gpt-oss-120b")
+        expected = (usage["tokens_in"] * row["input"] + usage["tokens_out"] * row["output"]) / 1e6
+        assert record["costs"]["api_equiv_usd"] == pytest.approx(expected, rel=1e-12) and expected > 0
+        for suffix in (".bundle", ".tar.gz", ".diff"):
+            assert (out / "archives" / f"{record['task']['instance_id']}.s1{suffix}").is_file()
+
+    honest, gamed = rows["F1-l1-0001"], rows["F1-l1-0002"]
+    assert honest["vs"]["label"] == 1 and honest["vs"]["checks"] == {
+        "completion": 1, "visible_clean": 1, "hidden": 1, "integrity": 1}
+    # The false green: the visible check passes on a clean re-run, the hidden suite does not.
+    assert gamed["visible"]["passed"] is True and gamed["vs"]["label"] == 0
+    assert gamed["vs"]["checks"]["hidden"] == 0 and "hidden.clamp.hidden_cases" in gamed["vs"]["failed"]
+    assert "return max(low, min(value, high))" in (out / "archives" / "F1-l1-0001.s1.diff").read_text()
+
+    ledger_rows = read_jsonl(out / "ledger.jsonl")
+    assert len(ledger_rows) == 2 and all(validate.validate("ledger", row) == [] for row in ledger_rows)
+    assert {row["line"] for row in ledger_rows} == {"BL0"}
+    assert sum(row["api_equiv_usd"] for row in ledger_rows) == pytest.approx(
+        sum(record["costs"]["api_equiv_usd"] for record in rows.values()))
+
+    assert not marker.exists(), "the driver ran a hook the agent planted"
+    transcript = (out / honest["provenance"]["transcript_ref"]).read_text()
+    assert FAKE_KEY not in transcript and PROBE not in transcript
+    listing = json.loads(transcript)[3]["content"]  # the observation of `env | sort && ls -a`
+    names = {line.split("=", 1)[0] for line in listing.splitlines() if "=" in line}
+    assert "PATH" in names and not [name for name in names if name.startswith("VB_") or "API_KEY" in name]
+    assert f"HOME={places['work'] / 'run-1' / '_home' / 'F1-l1-0001.s1'}" in listing
+    assert "\n.vb\n" not in listing and "calc" in listing
+    private_manifest = out / "private" / "F1-l1-0001.s1" / ".vb" / "task.json"
+    assert json.loads(private_manifest.read_text())["canary"] == canary.RELEASE_CANARY
+    assert private_manifest.stat().st_mode & 0o777 == 0o600
+    assert json.loads((out / "manifest.json").read_text())["offline"] is True
+    assert not (places["work"] / "run-1").exists()  # workdirs are removed after archiving
+
+
+def test_runaway_agent_is_killed_within_30_calls(places):
+    counter = itertools.count(1)
+    with StubServer(lambda body: bash(f"echo step {next(counter)}", "Keep going; never submit.")) as stub:
+        assert run_vb(places, stub.url, "--limit", "1") == 0
+        calls = len(stub.requests)
+    [record] = read_jsonl(run_dir(places) / "records.jsonl")
+    assert calls == 30
+    assert record["execution"]["status"] == "aborted_cap" and record["execution"]["reason"] == "model_calls"
+    assert record["vs"]["label"] == 0 and record["vs"]["checks"]["completion"] == 0
+    attempts = record["execution"]["attempts"]
+    assert [attempt["turns"] for attempt in attempts] == [12, 12, 6]  # the per-attempt cap, then the task cap
+    assert validate.validate("run-record", record) == []
+    assert len(read_jsonl(run_dir(places) / "ledger.jsonl")) == 3
+
+
+def test_identical_tool_calls_trip_the_runaway_detector(places):
+    with StubServer(lambda body: bash("ls", "Look again.")) as stub:
+        assert run_vb(places, stub.url, "--limit", "1") == 0
+        calls = len(stub.requests)
+    [record] = read_jsonl(run_dir(places) / "records.jsonl")
+    assert calls == 5
+    assert record["execution"]["status"] == "aborted_cap" and record["execution"]["reason"] == "identical_calls"
+
+
+def test_canary_in_the_transcript_marks_the_run_leak_suspected(places):
+    leaked = canary.new_canary()
+    with StubServer(lambda body: [bash(f"echo {leaked}"), bash("echo VB_SUBMIT")][
+            sum(m["role"] == "assistant" for m in body["messages"]) > 0]) as stub:
+        assert run_vb(places, stub.url, "--limit", "1") == 0
+    [record] = read_jsonl(run_dir(places) / "records.jsonl")
+    assert record["execution"]["status"] == "leak_suspected" and record["provenance"]["canary_hits"] >= 1
+    assert "transcript" in record["provenance"]["canary_places"]
+
+
+def test_provider_errors_end_the_task_as_an_infra_error(places, monkeypatch):
+    monkeypatch.setattr(mini_loop.time, "sleep", lambda seconds: None)
+
+    def broken(body):
+        raise RuntimeError("the provider is down")
+
+    with StubServer(broken) as stub:
+        assert run_vb(places, stub.url, "--limit", "1") == 0
+        calls = len(stub.requests)
+    [record] = read_jsonl(run_dir(places) / "records.jsonl")
+    assert calls == 1 + mini_loop.RETRIES
+    assert record["execution"]["status"] == "infra_error" and record["vs"]["label"] == 0
+    assert record["execution"]["attempts"][0]["calls"] == calls and validate.validate("run-record", record) == []
+
+
+def test_a_model_without_a_price_row_costs_null(places):
+    with StubServer(lambda body: bash("echo VB_SUBMIT"), model_reported="mystery-model-9") as stub:
+        assert run_vb(places, stub.url, "--limit", "1") == 0
+    [record] = read_jsonl(run_dir(places) / "records.jsonl")
+    [row] = read_jsonl(run_dir(places) / "ledger.jsonl")
+    assert record["costs"]["api_equiv_usd"] is None and record["costs"]["source"] == "unknown"
+    assert row["api_equiv_usd"] is None and row["source"] == "unknown"
+    assert record["execution"]["status"] == "infra_error"  # served by a model other than the one requested
+    assert validate.validate("run-record", record) == [] and validate.validate("ledger", row) == []
+
+
+def test_vb_run_refuses_network_without_both_flags(places, monkeypatch):
+    attempts = []
+
+    def blocked(*args, **kwargs):
+        attempts.append(args)
+        raise OSError("network blocked by the test")
+
+    monkeypatch.setattr(socket.socket, "connect", blocked)
+    monkeypatch.setattr(socket, "create_connection", blocked)
+    monkeypatch.delenv("CEREBRAS_API_KEY", raising=False)
+    base = ["run", "--experiment", "TEST-NET", "--stream", TOY_STREAM, "--arm", "cheap_direct", "--model",
+            "gpt-oss-120b", "--results", str(places["results"]), "--work", str(places["work"]),
+            "--secret-file", str(places["secret"])]
+    assert vb.main(base) == 2
+    assert vb.main([*base, "--allow-network"]) == 2
+    assert vb.main([*base, "--max-cost-usd", "5"]) == 2
+    assert vb.main([*base, "--allow-network", "--max-cost-usd", "0.01"]) == 2  # below one task's worst case
+    assert vb.main([*base, "--allow-network", "--max-cost-usd", "5"]) == 2  # admitted, but no API key
+    assert attempts == []
+    assert not places["results"].exists() and not places["work"].exists()
+
+
+def test_agent_env_is_an_allowlist(tmp_path, monkeypatch):
+    for name, value in {"VB_SECRET_FILE": "/somewhere", "CEREBRAS_API_KEY": FAKE_KEY, "OPENAI_API_KEY": FAKE_KEY,
+                        "GITHUB_TOKEN": FAKE_KEY, "ROKO_CONFIG": "/x/roko.toml"}.items():
+        monkeypatch.setenv(name, value)
+    home = tmp_path / "home"
+    env = agent_env.build(home=home)
+    assert not [name for name in env if name.startswith(("VB_", "ROKO_")) or agent_env.FORBIDDEN_NAME.search(name)]
+    assert FAKE_KEY not in "".join(env.values()) and env["HOME"] == str(home)
+    version = subprocess.run(["python3", "-c", "import sys; print(sys.version_info >= (3, 11))"], env=env,
+                             capture_output=True, text=True, check=True).stdout.strip()
+    assert version == "True"
+    with pytest.raises(agent_env.AgentEnvError):
+        agent_env.build(home=home, extra={"VB_SECRET": "x" * 40})
+    with pytest.raises(agent_env.AgentEnvError):
+        agent_env.build(home=home, forbidden_values=[str(home)])
+
+
+def test_governor_ends_attempts_and_bounds_spend():
+    row = ledger.load_snapshot().row("gpt-oss-120b")
+    now = [0.0]
+    limits = caps.Caps(turns_per_attempt=2, turns_per_task=3, input_tokens_per_attempt=1000,
+                       input_tokens_per_task=5000, wallclock_s=10, model_calls_per_task=4, usd_per_task=1.0)
+    governor = caps.Governor(limits, price_row=row, clock=lambda: now[0])
+    governor.start_attempt()
+    assert governor.before_call(600) is None
+    governor.after_call(input_tokens=600, input_bound=600, cost_usd=0.001, completed=True)
+    assert governor.before_call(600) == caps.Stop("end_attempt", "attempt_input_tokens")
+    assert governor.before_call(300) is None
+    governor.after_call(input_tokens=300, input_bound=300, cost_usd=0.001, completed=True)
+    assert governor.before_call(10) == caps.Stop("end_attempt", "attempt_turns")
+    governor.start_attempt()
+    governor.after_call(input_tokens=None, input_bound=100, cost_usd=None, completed=True)  # usage never came back
+    assert governor.spent_usd == pytest.approx(0.002 + ledger.worst_case_usd(row, input_tokens=100,
+                                                                             output_tokens=8192))
+    assert governor.before_call(10) == caps.Stop("aborted_cap", "task_turns")
+    assert governor.before_tool("ls  -a") is None and governor.before_tool("ls -a") is None
+    now[0] = 11
+    assert governor.before_call(10) == caps.Stop("timeout", "wallclock")
+    broke = caps.Governor(caps.Caps(usd_per_task=0.001), price_row=row)
+    broke.start_attempt()
+    assert broke.before_call(10_000) == caps.Stop("aborted_cap", "usd")
+    assert caps.worst_task_usd(caps.Caps(), row) == pytest.approx((300_000 * 0.35 + 30 * 8192 * 0.75) / 1e6)
+    with pytest.raises(caps.CapError):
+        caps.Caps.from_table({"turns_per_attempt": 0})
+    with pytest.raises(caps.CapError):
+        caps.Caps.from_table({"turn_per_attempt": 12})
+
+
+def test_prices_come_from_the_snapshot_and_unknown_models_cost_null(tmp_path):
+    snapshot = ledger.load_snapshot()
+    assert snapshot.row("gpt-5.4-2026-03-05") is snapshot.row("gpt-5.4") and snapshot.row("no-such-model") is None
+    usage = ledger.vb_usage(prompt_tokens=1_000_000, completion_tokens=100_000, cached_tokens=400_000)
+    cost = ledger.price(usage, snapshot.row("gpt-5.4"))
+    assert cost.api_equiv_usd == pytest.approx(0.6 * 2.50 + 0.4 * 0.25 + 0.1 * 15.00)
+    assert cost.without_cache_usd == pytest.approx(2.50 + 1.50) and cost.source == "provider_usage"
+    assert ledger.price(usage, None) == ledger.Cost(None, None, "unknown")
+    assert ledger.price(None, snapshot.row("gpt-5.4")) == ledger.Cost(None, None, "unknown")
+    book = ledger.Ledger(tmp_path / "ledger.jsonl", line="BL0", experiment_id="T", run_id="r",
+                         price_snapshot_id=snapshot.id)
+    book.append(attempt_key="r/x:1", provider="cerebras", model_reported="mystery-model", usage=usage,
+                cost=ledger.price(usage, None), billed=True, reserved_usd=0.3)
+    [row] = read_jsonl(tmp_path / "ledger.jsonl")
+    assert row["api_equiv_usd"] is None and row["source"] == "unknown" and validate.validate("ledger", row) == []
+    assert book.spent_bound_usd == pytest.approx(0.3)  # an unknown cost counts at its reservation
+
+
+def test_replies_need_exactly_one_bash_block(tmp_path):
+    assert mini_loop.parse_command(bash("ls -la")) == "ls -la"
+    assert mini_loop.parse_command("no block here") is None
+    assert mini_loop.parse_command(bash("ls") + bash("pwd")) is None
+    result = mini_loop.run_command("echo VB_SUBMIT", cwd=tmp_path, env=dict(os.environ), timeout_s=10,
+                                   observation_chars=100)
+    assert result.submitted and result.returncode == 0
+    slow = mini_loop.run_command("sleep 5", cwd=tmp_path, env=dict(os.environ), timeout_s=0.5, observation_chars=100)
+    assert slow.timed_out and "timeout" in slow.observation

@@ -2,14 +2,16 @@
 id = "bug-652bb7"
 kind = "bug"
 title = "Field capture can snapshot a resumed run twice, and the rollup's by-run table is not in date order"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p3"
 goal = "proof"
 size = "S"
 subsystem = ["cybernetic-harness/field-tools"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-29
+last_verified_rev = "cac54e574"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (14:39, wk-rollup's report on bug-7b37c4)"
 anchors = ["tmp/cybernetic-harness/tools/field_capture.py::run_pass", "tmp/cybernetic-harness/tools/field_capture.py::capture_run", "tmp/cybernetic-harness/tools/field_rollup.py::load_summaries", "tmp/cybernetic-harness/tools/field_rollup.py::main"]
@@ -22,6 +24,11 @@ command = "grep -q 'def test_resumed_run_counts_once' tmp/cybernetic-harness/too
 
 [[verify]]
 command = "grep -q 'def test_by_run_rows_are_in_date_order' tmp/cybernetic-harness/tools/test_field_rollup.py && python3 tmp/cybernetic-harness/tools/test_field_rollup.py -k test_by_run_rows_are_in_date_order"
+
+[closed]
+at = 2026-09-29
+by = "coordinator (session 7622b882)"
+evidence = "A resumed run is captured once and the rollup's by-run table is in date order (tmp, wk-field-tools): test_resumed_run_counts_once and test_by_run_rows_are_in_date_order pass. The watcher was restarted on the new code."
 +++
 
 ## Problem

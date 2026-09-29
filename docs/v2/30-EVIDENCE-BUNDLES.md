@@ -1,6 +1,6 @@
 # 30 — Run Evidence Bundles
 
-> **Status**: IMPLEMENTED AND STRICT LOOPBACK SMOKE VERIFIED AS A DEVELOPMENT HARNESS
+> **Status**: IMPLEMENTED; STRICT LOOPBACK SMOKE VERIFIED; GRAPH-ENGINE BUNDLES VERIFIED (2026-09-29)
 >
 > **Scope**: Private, bounded evidence for FAST/self-hosting runs and arbitrary local commands.
 > It does not make endpoint, browser, or screenshot probes mandatory unless the operator requests
@@ -66,18 +66,23 @@ invalid bundle.
 ## Collection contract
 
 The bundle is created before command dispatch. Its evidence run ID is exported as
-`ROKO_EVIDENCE_RUN_ID`; Roko's internal runner ID is discovered separately from structured events
-and fresh status samples.
+`ROKO_EVIDENCE_RUN_ID`. A Graph plan run given `--log-file` stamps that ID on every line of its
+event log (`graph_execution/event_log.rs`), so the log and the bundle share one run ID. Each plan's
+Graph checkpoint keeps a run ID of its own (`graph-<plan>-<uuid>`), and the collector reads it from
+the plan's `checkpoint.json`.
 
 During execution the collector:
 
 - writes separate bounded stdout and stderr while preserving live output;
 - samples only status-file revisions newer than the pre-run snapshot and locks onto the first
-  observed runner ID;
+  observed runner ID. The Graph engine writes no `.roko/state/status.json`, so a Graph run has no
+  samples and `summary.collection.status_sampling` records `skipped`, never `sampled`;
 - inventories only processes in the wrapped command's process group;
 - enforces the deadline on the complete process group, including descendants left after leader
   exit;
-- takes byte offsets for known append-only logs before launch.
+- takes byte offsets for known append-only logs before launch, and fingerprints every plan under
+  `.roko/state/graph/` (Activity-log size and head hash, checkpoint and cost-ledger hashes, and the
+  checkpoint's run ID).
 
 Before a FAST launch it also records disk, swap/memory, and Cargo target allocation evidence. FAST
 fails closed below either 5 GiB or 3% free disk. `--min-free-gib` and `--min-free-percent` tune the
@@ -87,7 +92,11 @@ recorded in `resource-admission.json`. Target sizing has a two-second cap and ca
 After execution it:
 
 - slices only bytes appended during the command and retains only JSON objects containing the
-  evidence or observed runner ID;
+  evidence or observed runner ID. `.roko/events.jsonl` and the two Runner-v2 run ledgers are
+  optional sources: an absent one is recorded as `present: false`, and a bare `roko plan run`
+  writes no `.roko/events.jsonl`;
+- collects the Graph state of every plan whose state changed or that the event log names (see
+  below);
 - captures bounded Git state/diff and untracked path names;
 - optionally discovers OpenAPI GET operations and queries safe paths;
 - optionally executes CLI, text-snapshot, and browser/PNG hooks;
@@ -95,6 +104,35 @@ After execution it:
   directories make ownership ambiguous;
 - calculates event, status, provider, gate, Git, process, endpoint, screenshot, and latency metrics;
 - creates `score.json`, `DEBRIEF.md`, and `validation.json` deterministically.
+
+### Graph state
+
+For each plan the command touched, `graph/NN-<plan>/` holds:
+
+- `checkpoint.json` and `costs.json`: the redacted checkpoint and actual-cost ledger;
+- `activities.jsonl`: the plan's Activity records for the checkpoint's run ID, reduced to derived
+  facts (graph, run, node and tick; per signal its id, kind, time, scalar tags such as
+  `roko.gate.verdict`, body format and body size). Signal bodies hold agent output and are never
+  copied. A resume of the same run is sliced from the pre-launch offset. A fresh run truncates the
+  log under a new run ID, so it is read from the start;
+- `diagnose.json`: the read-only `roko diagnose <plan>` answer when the command was a
+  `roko ... plan run` (its `failed_task` is also summarised in the index).
+
+`graph/ledgers/` holds the rows that the learning ledgers (`.roko/learn/efficiency.jsonl`,
+`gate-failures.jsonl`, `costs.jsonl`, `run-metrics.jsonl`) gained during the command and that name a
+touched plan. The field whitelist is the one the field-evidence capture uses. Rows that name no
+plan, such as model-call rows, are counted and dropped. Failed tasks write no Activity records, so
+the evidence for a failure is in the event log, the ledgers and the diagnosis.
+
+`graph/index.json` indexes all of this. It records each plan's run ID, status, slice mode (`new`,
+`fresh`, `resumed` or `rewritten`) and verdict counts. It also compares every gate timeout seen in
+the event log with the gate-failure ledger row for the same task (`gate_timeouts`).
+
+Metrics read the Graph event log (`dashboard.<kind>` lines). `dashboard.agent_spawned` counts as a
+launch. `dashboard.gate_result` counts as a gate verdict and, when its output says `timed out after
+N ms`, as a timeout with its duration measured from `dashboard.gate_rung_started`. A
+`dashboard.task_completed` that is not passed, with no gate verdict for its task, is a
+`failed_before_gate` first failure; an agent that exits before its first event lands there.
 
 ## Bundle layout
 
@@ -107,11 +145,14 @@ stdout.log / stderr.log       live command output, captured separately
 events.jsonl                  optional runner-owned structured event stream
 events-validation.json        lifecycle and run-ID analysis
 status.jsonl                  evidence-wrapper start and exactly one terminal
-status-samples.jsonl          fresh run-scoped runner status samples
+status-samples.jsonl          fresh run-scoped runner status samples (empty for Graph runs)
 commands.jsonl                primary command timing, PID/PGID, exit and capture bounds
 processes.json[l]             aggregate and sampled process-group inventory
 resource-admission.json       pre-launch disk/swap/memory/target facts and decision
 filtered-logs/                newly appended records matching this run only
+graph/index.json              Graph plans touched: run IDs, status, slices, timeout checks
+graph/NN-<plan>/              checkpoint, cost ledger, derived Activity rows, diagnosis
+graph/ledgers/                learning-ledger rows naming a touched plan
 endpoints.json                GET-only request results and response artifacts
 cli-smoke.json                explicit CLI hook results
 screenshots/manifest.json     text/PNG evidence and dimensions/hashes
@@ -137,7 +178,15 @@ The base validator checks:
 - run-ID ownership for status and screenshot records;
 - GET-only endpoint evidence and valid PNG headers/dimensions;
 - common private-key, provider-token, bearer-token, and named-secret value patterns;
-- total portable bundle size.
+- total portable bundle size;
+- Graph evidence, when the manifest says it was collected: `graph/index.json` exists, every
+  artifact it names exists, each plan's Activity rows carry only that plan's run ID and no signal
+  bodies, and no plan whose checkpoint failed or was cancelled sits under a command reported as
+  `succeeded`.
+
+Two findings are warnings, not errors. The first is a plan named by `run.started` that has no Graph
+evidence. The second is a gate timeout that the gate-failure ledger records under another failure
+kind: on 2026-09-29 the ledger recorded a timed-out verify step as `permanent`.
 
 FAST passes `--require-events`. Other acceptance evidence can be promoted from optional to required
 with `--require-status-sample`, `--require-cli-smoke-pass`, `--require-endpoints-pass`, and
@@ -149,11 +198,14 @@ exit semantics.
 
 Bundle directories use mode `0700` and files use `0600`. The full environment and credential
 values are never added to metadata. Endpoint JSON fields with secret-like names and hook argv are
-redacted. Artifact validation rejects common leaked-secret shapes.
+redacted. Artifact validation rejects common leaked-secret shapes. Everything the collector writes
+itself (JSON, JSONL, `command.txt`, `DEBRIEF.md`) spells the home directory as `~`. Graph evidence
+is derived: no Activity signal body, and so no agent output, is copied.
 
-Stdout, stderr, Git diffs, and source logs can still contain sensitive data before validation. Do
-not publish a bundle merely because it is local, and do not bypass a validator failure without
-inspecting the named artifact.
+Stdout, stderr, Git diffs, and source logs can still contain sensitive data before validation. The
+runner's own `events.jsonl` is copied verbatim, and its `dashboard.agent_output` lines carry agent
+output. Do not publish a bundle merely because it is local, and do not bypass a validator failure
+without inspecting the named artifact.
 
 The principal limits are 16 MiB per stdout/stderr or tracked diff, 8 MiB per filtered source log,
 4 MiB for a direct runner JSONL artifact, 2 MiB per hook stream, 1 MiB per endpoint response, 8 MiB
@@ -163,8 +215,14 @@ record so final validation stays deterministic.
 
 ## Known boundaries
 
-- Metrics normalize the current runner event schema. Prompt tokens are estimates unless the runner
-  emits provider usage, and the harness does not invent missing internal command spans.
+- Metrics normalize the Graph event log and the older Runner-v2 event names. Prompt tokens are
+  estimates unless the runner emits provider usage, and the harness does not invent missing
+  internal command spans.
+- Graph state is read from `--cwd`. A run pointed elsewhere with `roko --workdir` keeps its state
+  there, and the bundle then records `graph.skipped_reason`.
+- A `roko plan run` that fails before the run starts (for example, a plan directory that does not
+  exist) writes no `--log-file`, so `--require-events` marks the bundle invalid. The command still
+  keeps its own failed state.
 - Browser automation is intentionally adapter-based; install and select the browser tool that fits
   the changed UI rather than adding one heavyweight mandatory dependency.
 - The score command aggregates arbitrary existing bundles. The separate fixed-SHA orchestrator in
@@ -191,3 +249,22 @@ complete endpoint contract. All eight requests and the explicit CLI smoke passed
 validation found no errors, warnings, or secret hits; and `feedback` plus `score` both reported
 green. This proves the collector and seeded loopback fixture, not a representative provider run,
 browser screenshot, paid benchmark matrix, or full-CI release lane.
+
+## Graph-engine checkpoint
+
+`scripts/test_run_evidence_graph.py` runs a prebuilt `target/debug/roko` (or `ROKO_BIN`) on
+fixture plans in throwaway workspaces. Their `claude_cli` provider is the deterministic
+`plans/portal-programme/_harness/fake-claude`. On 2026-09-29 these bundles passed
+`evidence-validate --require-events`:
+
+- a one-task success;
+- an agent that exits before its first event (`EXIT_EARLY 3`). It is `failed`, with first failure
+  `failed_before_gate` and a `roko diagnose` answer naming the exit;
+- a verify step that overruns its 1500 ms `timeout_ms`. It is `failed`, with first failure
+  `timeout`, a measured gate duration of at least 1500 ms, and the ledger disagreement above as a
+  warning;
+- a resume and a `--fresh` rerun of the same plan, each holding only its own run's records;
+- `./dev.sh fast` on the one-task plan.
+
+None was labelled successful unless the plan succeeded. This proves the collector against real
+Graph runs with a fake provider, not a paid provider run.

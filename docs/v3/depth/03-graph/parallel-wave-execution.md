@@ -4,6 +4,12 @@
 > Covers the sequential and parallel execution paths, NodeStatus lifecycle,
 > NodeActivation decisions, FlowHandle for background execution, and the
 > ValidatedGraph proof token.
+>
+> **Status (2026-09-29, at `7c556bc0a`): the wave scheduling below is stale.**
+> Since `445a60d0d` (gap-4d835d) the parallel path is a ready queue
+> (`GraphEngine::execute_ready_queue`): each node starts once its own
+> predecessors have settled, without waiting for the rest of its wave. See
+> [03-GRAPH.md](../../03-GRAPH.md), "Parallel Execution: the Ready Queue".
 
 ---
 

@@ -3,8 +3,10 @@
 > The eight inter-subsystem connections that close the cybernetic circuit.
 > Each loop has a source (where the signal originates), a target (where it
 > flows), and a mechanism (how the signal is transformed into corrective
-> action). All eight are wired. Together they implement negative feedback
-> for stability (Ashby 1956) within a Viable System architecture (Beer 1972).
+> action). Together they are designed as negative feedback for stability
+> (Ashby 1956) within a Viable System architecture (Beer 1972). On Graph runs
+> (checked at `7c556bc0a`) two of the eight close, provider health and the plan
+> budget; [08-LEARNING](../../08-LEARNING.md) section 11 gives each loop's status.
 
 **Parent:** [08-LEARNING](../../08-LEARNING.md) section 11
 

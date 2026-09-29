@@ -2,14 +2,16 @@
 id = "gap-3986d0"
 kind = "gap"
 title = "Freeze a tarball of .roko state with each audit tag"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p2"
 goal = "whitepaper"
 size = "S"
 subsystem = ["cybernetic-harness/evidence"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-29
+last_verified_rev = "cac54e574"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (14:52 and 14:58, wk-companion-e1's report on gap-cdd5f4); tmp/cybernetic-harness/companion-audit/E1-REDERIVATION.md:357"
 anchors = ["tmp/cybernetic-harness/companion-audit/E1-REDERIVATION.md", "tmp/cybernetic-harness/companion-audit/04-EVALUATION-PLAN.md", "tmp/cybernetic-harness/tools/field_note.py::scrub"]
@@ -19,6 +21,11 @@ links = { depends_on = [], blocks = [], related = ["gap-cdd5f4", "bug-469537", "
 
 [[verify]]
 command = "test -f tmp/cybernetic-harness/tools/freeze_state.py && grep -q 'def test_archive_excludes_secret_files' tmp/cybernetic-harness/tools/test_freeze_state.py && python3 tmp/cybernetic-harness/tools/test_freeze_state.py"
+
+[closed]
+at = 2026-09-29
+by = "coordinator (session 7622b882)"
+evidence = "freeze_state.py (tmp, wk-field-tools) archives .roko state for an audit tag and excludes secret files (test_archive_excludes_secret_files passes); the procedure is documented in E1-REDERIVATION.md and 04-EVALUATION-PLAN.md. No real state has been frozen yet."
 +++
 
 ## Problem

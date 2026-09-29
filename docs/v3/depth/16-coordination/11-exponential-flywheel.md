@@ -1,6 +1,12 @@
 # Depth: Exponential Flywheel
 
 > Parent: [16-COORDINATION](../../16-COORDINATION.md) -- Section 11
+>
+> **Status (2026-09-29): a hypothesis the evidence does not support.** In short, no
+> measurement shows Roko's learning compounding, and recent studies argue against
+> expecting it (the status note in [08-LEARNING](../../08-LEARNING.md) section 10 cites
+> them). The defensible claim is bounded, audited improvement with rollback. This page
+> is kept as design material.
 
 ---
 

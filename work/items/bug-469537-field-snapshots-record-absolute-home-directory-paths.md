@@ -2,14 +2,16 @@
 id = "bug-469537"
 kind = "bug"
 title = "Field snapshots record absolute home-directory paths, so they cannot be published as they are"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p2"
 goal = "proof"
 size = "S"
 subsystem = ["cybernetic-harness/field-tools"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-29
+last_verified_rev = "cac54e574"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (14:50, wk-rp-appx's report on gap-2abf34, finding 4)"
 anchors = ["tmp/cybernetic-harness/tools/field_capture.py::provenance", "tmp/cybernetic-harness/tools/field_capture.py::excerpts", "tmp/cybernetic-harness/tools/field_note.py::scrub"]
@@ -22,6 +24,11 @@ command = '''test -d tmp/cybernetic-harness/evidence/field/snapshots && ! grep -
 
 [[verify]]
 command = "grep -q 'def test_snapshot_has_no_home_paths' tmp/cybernetic-harness/tools/test_field_capture.py && python3 tmp/cybernetic-harness/tools/test_field_capture.py -k test_snapshot_has_no_home_paths"
+
+[closed]
+at = 2026-09-29
+by = "coordinator (session 7622b882)"
+evidence = "Field snapshots no longer record absolute home paths (tmp, wk-field-tools): field_capture provenance and excerpts write ~ for $HOME and existing snapshots were rewritten; test_snapshot_has_no_home_paths passes. The watcher was restarted on the new code."
 +++
 
 ## Problem

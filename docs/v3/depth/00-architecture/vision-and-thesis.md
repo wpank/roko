@@ -2,7 +2,8 @@
 
 > **v3 depth file** -- `/docs/v3/depth/00-architecture/vision-and-thesis.md`
 > Canonical source: v1 `docs/v1/00-architecture/00-vision-and-thesis.md`
-> Status: **Current** (48/48 epics accepted, Graph sole engine, 124/124 executable tasks)
+> Status: **Current** (48/48 epics accepted as programme manifests, Graph sole engine;
+> the executable-task count was withdrawn on 2026-09-29 as stale)
 
 ---
 
@@ -341,8 +342,10 @@ demonstrates the scaffold thesis in practice:
 ```
 
 Each step uses Roko's own infrastructure. The scaffold improves the scaffold. This is the
-autocatalytic cycle made concrete. As of September 2026, all 48 epics are accepted and
-124/124 executable tasks are complete.
+autocatalytic cycle made concrete. That is the design. As of September 2026 the 48 epics
+are accepted as programme manifests, but most of the code was written in operator-directed
+sessions rather than by Roko's own runner; the largest recorded plan run is the portal
+build, 16 plans and 173 tasks (`docs/whitepaper/evidence/2026-09-29-b7-real-run-evidence.md`).
 
 ---
 
@@ -399,8 +402,8 @@ not pretend to solve problems it has not solved.
 
 | Metric | Value |
 |---|---|
-| Epics accepted | 48/48 |
-| Executable tasks complete | 124/124 |
+| Epics accepted | 48/48 (programme manifests) |
+| Executable tasks complete | Withdrawn 2026-09-29: stale count (`work/history/claude-md-status-2026-09-28.md`) |
 | Execution engine | Graph is sole engine (#260 default, #276 retired WorkflowEngine) |
 | Workspace members | 39 crates |
 | Lines of code | ~1M LOC |

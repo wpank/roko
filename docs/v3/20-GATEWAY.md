@@ -1,7 +1,8 @@
 # 20 -- Inference Gateway
 
-> Agents never hold API keys. A centralized nine-stage Pipeline Graph owns all secrets,
-> runs every request through multi-stage processing, and calls providers. Expressed
+> In this design, agents never hold API keys: a centralized nine-stage Pipeline Graph owns
+> all secrets, runs every request through multi-stage processing, and calls providers
+> (today only `roko serve`'s gateway routes work this way; see the scope note). Expressed
 > entirely as a composition of kernel primitives. The `InferenceGateway` in `roko-gateway`
 > is a Pipeline -- a linear Graph of Cells where each can reject (Verify), transform
 > (Compose), or redirect (Route).
@@ -16,6 +17,12 @@ queue, HTTP adapters, and loader-verified TOML graph definition. `roko-serve`
 constructs it from the live `ModelCallService`, `CascadeRouter`, cost table, and
 `GatewayEventWriter`; starts the gateway and batch loops; and routes inference, stats,
 and batch HTTP traffic through it.
+
+**Scope (checked at `7c556bc0a`, 2026-09-29):** the gateway is not Roko's inference
+path. Only `roko-serve` depends on `roko-gateway`, and only its gateway HTTP routes go
+through it. Plan runs (`roko plan run`, `roko run`, and the plans `roko serve` starts)
+dispatch agents through `roko-agent`'s providers directly, the Claude CLI among them, so
+the gateway's caching, budgets, backpressure and key custody do not apply to them.
 
 **Roadmap beyond E26:** Native provider batch-job submission/polling and WebSocket
 `StatsEvent` broadcast remain adapter work. The current batch processor makes bounded

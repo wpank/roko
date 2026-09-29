@@ -72,8 +72,8 @@ The primary protocol noun is `Signal`, backed by the `Engram` struct and its
 (Store, ColdStore, Score, Verify, Route, Compose, React, Bus, Observe, Connect, Trigger,
 Substrate). Missing or unknown safety contracts fail closed: unsupported tool use is denied.
 The conceptual workflow is query -> score -> route -> compose -> act -> verify -> write ->
-react. Production ownership is explicit: `roko run` uses graph templates via
-`WorkflowGraphController` (backlog #276 retired `WorkflowEngine`), plans use the Graph engine,
+react. Production ownership is explicit: `roko run` writes a one-task plan and runs it with
+`run_graph_plan` (backlog #276 retired `WorkflowEngine`), plans use the Graph engine,
 which is the only plan executor, and the core `select_compose_verify_persist` helper covers only
 the non-ACT/non-BROADCAST signal-selection subset. Backlog #260 made Graph the default. The
 Runner-v2 event loop was deleted on 2026-09-06 (`6b5da8616`); `--engine legacy` and

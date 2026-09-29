@@ -3749,26 +3749,39 @@ mod config_scope_tests {
         let dir = tempfile::tempdir().unwrap();
         let global_path = dir.path().join("config.toml");
         std::fs::write(&global_path, "").unwrap();
-        // Write via cmd_set with Global target.
-        config_cmd::cmd_set(dir.path(), EditTarget::Global, "agent.model", "test-model")
-            .unwrap_or_else(|_| {
-                // If there is no global path, the function will error.
-                // That is expected behavior — global path resolution
-                // depends on HOME. The test verifies the target selection,
-                // not the full I/O path.
-            });
+        // `cmd_set` resolves the global file from HOME, and a test must not
+        // edit the user's real config, so write the temp file directly.
+        config_cmd::set_config_key(
+            &global_path,
+            EditTarget::Global,
+            "agent.model",
+            "test-model",
+        )
+        .unwrap();
+        let content = std::fs::read_to_string(&global_path).unwrap();
+        assert!(
+            content.contains("default_model = \"test-model\""),
+            "the v1 key is written under its v2 name: {content}"
+        );
     }
 
     #[test]
     fn config_set_project_writes_project_file() {
         let dir = tempfile::tempdir().unwrap();
-        // No roko.toml exists yet — cmd_set with Project creates it.
-        config_cmd::cmd_set(dir.path(), EditTarget::Project, "agent.model", "test-model").unwrap();
+        // No roko.toml exists yet — cmd_set with Project creates it. The
+        // model must resolve, or validation refuses the file.
+        config_cmd::cmd_set(
+            dir.path(),
+            EditTarget::Project,
+            "agent.model",
+            "claude-haiku-4-5",
+        )
+        .unwrap();
         let project_path = dir.path().join("roko.toml");
         assert!(project_path.exists(), "project roko.toml should be created");
         let content = std::fs::read_to_string(&project_path).unwrap();
         assert!(
-            content.contains("test-model"),
+            content.contains("claude-haiku-4-5"),
             "written value should appear in project config"
         );
     }

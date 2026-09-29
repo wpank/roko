@@ -15,10 +15,16 @@ pub struct RunMetricsRecord {
     pub duration_ms: u64,
     /// Total number of tasks in the run.
     pub total_tasks: usize,
-    /// Number of tasks that completed successfully.
+    /// Number of tasks that passed every verify step.
     pub tasks_completed: usize,
     /// Number of tasks that failed.
     pub tasks_failed: usize,
+    /// Number of tasks that completed without running a verify step.
+    #[serde(default)]
+    pub tasks_unverified: usize,
+    /// Number of tasks that never ran.
+    #[serde(default)]
+    pub tasks_skipped: usize,
     /// Total cost in USD across all providers.
     pub total_cost_usd: f64,
     /// Total input tokens consumed.
@@ -38,12 +44,20 @@ pub struct RunMetricsRecord {
 pub struct PlanMetrics {
     /// Plan identifier.
     pub plan_id: String,
-    /// Whether the plan completed successfully.
+    /// Whether the plan succeeded: every task passed its verify steps.
     pub completed: bool,
-    /// Number of tasks that completed in this plan.
+    /// Number of tasks in this plan that passed every verify step.
     pub tasks_completed: usize,
     /// Number of tasks that failed in this plan.
     pub tasks_failed: usize,
+    /// Number of tasks in this plan that completed without running a verify
+    /// step.
+    #[serde(default)]
+    pub tasks_unverified: usize,
+    /// Number of tasks in this plan that never ran: blocked by a failed task,
+    /// or not started.
+    #[serde(default)]
+    pub tasks_skipped: usize,
 }
 
 /// Append a single JSON line to the given path (creates file if not exists).
@@ -73,6 +87,8 @@ mod tests {
             total_tasks: 5,
             tasks_completed: 4,
             tasks_failed: 1,
+            tasks_unverified: 0,
+            tasks_skipped: 0,
             total_cost_usd: 0.35,
             total_tokens_in: 10_000,
             total_tokens_out: 3_000,
@@ -83,6 +99,8 @@ mod tests {
                 completed: true,
                 tasks_completed: 4,
                 tasks_failed: 1,
+                tasks_unverified: 0,
+                tasks_skipped: 0,
             }],
         };
 
@@ -111,6 +129,8 @@ mod tests {
             total_tasks: 1,
             tasks_completed: 1,
             tasks_failed: 0,
+            tasks_unverified: 0,
+            tasks_skipped: 0,
             total_cost_usd: 0.01,
             total_tokens_in: 500,
             total_tokens_out: 200,
@@ -128,5 +148,20 @@ mod tests {
 
         let parsed: RunMetricsRecord = serde_json::from_str(lines[0]).unwrap();
         assert_eq!(parsed.run_id, "r1");
+    }
+
+    /// Rows written before the unverified and skipped counts existed still
+    /// parse, with both counts zero.
+    #[test]
+    fn rows_without_unverified_or_skipped_counts_still_parse() {
+        let row = r#"{"run_id":"graph-run-1","timestamp":"2026-09-28T12:00:00Z","duration_ms":1000,"total_tasks":2,"tasks_completed":2,"tasks_failed":0,"total_cost_usd":0.5,"total_tokens_in":10,"total_tokens_out":5,"total_agent_calls":2,"budget_exhausted":false,"plans":[{"plan_id":"p1","completed":true,"tasks_completed":2,"tasks_failed":0}]}"#;
+
+        let parsed: RunMetricsRecord = serde_json::from_str(row).unwrap();
+
+        assert_eq!(parsed.tasks_completed, 2);
+        assert_eq!(parsed.tasks_unverified, 0);
+        assert_eq!(parsed.tasks_skipped, 0);
+        assert_eq!(parsed.plans[0].tasks_unverified, 0);
+        assert_eq!(parsed.plans[0].tasks_skipped, 0);
     }
 }

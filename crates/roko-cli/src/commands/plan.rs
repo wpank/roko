@@ -1500,6 +1500,7 @@ async fn cmd_plan_dir_status(
     let status_str = if let Some(gs) = &graph_status {
         match gs.as_str() {
             "succeeded" => "complete",
+            "unverified" => "unverified",
             "failed" => "failed",
             "running" => "running",
             _ => {

@@ -27,9 +27,10 @@ typical), and the flag would then no longer cap anything. `vb estimate` and the 
 worst case. A model without a price row cannot be bounded and is refused. `--provider-url` with a loopback URL (such
 as `stub_provider`'s) runs offline, with neither flag.
 
-The benchmark secret is read only by the census, as a file path handed to `hidden.py`: `--secret-file`, else
-`$VB_SECRET_FILE`, else `~/.config/viabilitybench/secret` (mode 0600). `vb run` checks the file's mode before the
-first task, without reading it. Keeping it away from agents is gap-a8a160's (`agent_env` is the seam).
+The benchmark secret reaches only `hidden.py`, in the census, as a file path: `--secret-file`, else
+`$VB_SECRET_FILE`, else `~/.config/viabilitybench/secret` (mode 0600; `driver/secret.py init` makes one). Before the
+first task, `vb run` refuses a secret file that breaks its rules and a secret that roko or an agent could inherit, and
+from then on every agent environment is checked against it (`secret.preflight`, `agent_env`).
 
 Exit status: 0 when every (task, seed) got a record, 1 when some did not (see `errors.jsonl`), 2 for a usage,
 configuration or admission error.
@@ -62,6 +63,7 @@ import ledger
 import materialize
 import provider
 import records
+import secret
 from common import hmac_seed, knobs, repo
 
 DRIVER_VERSION = "vb-driver-1.0.0"
@@ -279,6 +281,10 @@ def cmd_run(args: argparse.Namespace) -> int:
     work_root = _outside_repo(args.work or os.environ.get("VB_WORK") or DEFAULT_WORK, "--work")
     if layout.within(work_root, results_root) or layout.within(results_root, work_root):
         raise DriverError("--work and --results must not contain each other")
+    try:
+        secret.preflight(secret_file, work_root=work_root, results_root=results_root)
+    except secret.SecretError as err:
+        raise DriverError(str(err)) from None
     for value, flag in ((args.experiment, "--experiment"), (args.run_id or "x", "--run-id")):
         if not ID_RE.fullmatch(value):
             raise DriverError(f"{flag} must match {ID_RE.pattern}")

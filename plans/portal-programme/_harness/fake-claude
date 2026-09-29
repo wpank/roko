@@ -20,6 +20,11 @@ real plan run completes in seconds at no cost.
     directory: a task first streams a text block and one Write tool call per
     artifact, as the real CLI does, before any SLOW wait; after writing it
     streams the tool results. Checks use it to see output arrive mid-task.
+  * Slow knob, read from `.roko/fake-claude-slow` when it exists: the integer
+    it holds is a minimum sleep (in seconds) applied after the live streaming
+    blocks and before writing, taking the larger of that value and any `SLOW n`
+    in the prompt. Lets tests hold a task active long enough for browser checks
+    without baking fixed waits into the prompt text.
 
 Every call reports provider usage, so dashboards see non-zero tokens and cost.
 Each call is appended to `.roko/fake-claude.log` in the working directory.
@@ -162,8 +167,15 @@ if live:
     print(json.dumps({"type": "assistant", "message": {"content": blocks}}))
     sys.stdout.flush()
 slow = re.search(r"SLOW (\d+)", prompt)
-if slow:
-    time.sleep(int(slow.group(1)))
+slow_secs = int(slow.group(1)) if slow else 0
+knob_path = os.path.join(".roko", "fake-claude-slow")
+if os.path.exists(knob_path):
+    try:
+        slow_secs = max(slow_secs, int(open(knob_path).read().strip()))
+    except (ValueError, OSError):
+        pass
+if slow_secs:
+    time.sleep(slow_secs)
 for path in artifacts:
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     with open(path, "w") as fh:

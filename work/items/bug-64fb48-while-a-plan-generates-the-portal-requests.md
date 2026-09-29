@@ -1,0 +1,58 @@
++++
+id = "bug-64fb48"
+kind = "bug"
+title = "While a plan generates, the portal requests the unwritten plan every second, logging one 404 per second"
+status = "open"
+triage = "verified"
+severity = "p3"
+goal = "visibility"
+size = "S"
+subsystem = ["apps/portal"]
+created = 2026-09-29
+updated = 2026-09-29
+last_verified = 2026-09-29
+last_verified_rev = "f99e45dba"
+source = "plan:portal-programme/09-acceptance#T04"
+discovered_from = "plan:portal-programme/09-acceptance#T04"
+anchors = ["apps/portal/src/lib/operation.ts::waitForOperation", "apps/portal/src/api/queries.ts::planExists"]
+links = { depends_on = [], blocks = [], related = ["bug-a0f01e"], supersedes = [], duplicate_of = "" }
+
+[[verify]]
+command = "grep -rqF --include='*.test.ts' 'does not poll the plan while the operation runs' apps/portal/src && (cd apps/portal && npx vitest run src/lib/operation)"
++++
+
+## Problem
+
+`waitForOperation` (expecting `new-plan`) polls `GET /api/operations/{id}` every second. While the
+operation is `running`, it also calls `planExists(planId)`, a `GET /api/plans/{id}` that answers 404
+until the plan is written. The real-model run's console
+(`tmp/portal-audit/evidence/hello-world-real/browser-real.json`) holds 30 "404 (Not Found)" entries
+for a 29 s generation.
+
+Since plan 04, the server finalizes a generate operation with `status: completed` and `result.slug`.
+The plan poll is only needed for servers whose operations never finish (bug-a0f01e covers other
+operation producers).
+
+## Why it matters
+
+Goal `visibility`. The noise hid real errors: the validate 400s filed alongside this item went
+unnoticed through every preview. Each poll is also a wasted request.
+
+## Where
+
+`apps/portal/src/lib/operation.ts::waitForOperation` and `apps/portal/src/api/queries.ts::planExists`.
+
+## Plan
+
+Poll the plan only when the operation is unknown (404), or when the server does not report
+`result`. Otherwise wait for `completed` or `failed`.
+
+## Done when
+
+A test in `operation.test.ts` whose name contains "does not poll the plan while the operation runs".
+The `[[verify]]` runs it.
+
+## Notes
+
+The portal-check parallel flow (`browser-parallel.json`) logged one 404 without any generation; a
+scratch probe did not reproduce it. Found by plan 09 T04 (see VERDICT).

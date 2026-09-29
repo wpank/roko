@@ -12,7 +12,14 @@ use serde::{Deserialize, Serialize};
 use tokio::fs::OpenOptions;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
+use crate::telemetry::records::DecisionSource;
+
 /// Persisted routing-decision record.
+///
+/// It is also the route decision row of the S01 run telemetry
+/// (`roko.decision/1`, see [`crate::telemetry`]): the fields after
+/// `outcome_latency_ms` were added for it, and rows written before them
+/// still parse.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RoutingDecisionLog {
     /// RFC 3339 timestamp for when the record was written.
@@ -46,6 +53,22 @@ pub struct RoutingDecisionLog {
     pub outcome_cost_usd: Option<f64>,
     /// Final observed turn latency in milliseconds.
     pub outcome_latency_ms: Option<u64>,
+    /// Attempt the decision belongs to (`AttemptKey::attempt_key`). Rows
+    /// written before S01 have none.
+    #[serde(default)]
+    pub attempt_key: Option<String>,
+    /// Who produced `selected_model` (S01 §5.3). A guard that rewrites the
+    /// router's pick is `fallback`, not `router`.
+    #[serde(default)]
+    pub source: Option<DecisionSource>,
+    /// The configured default the decision falls back to
+    /// (`proposals.default`).
+    #[serde(default)]
+    pub default_model: Option<String>,
+    /// Probability the logging policy gave `selected_model`; off-policy
+    /// estimates need it.
+    #[serde(default)]
+    pub propensity: Option<f64>,
 }
 
 impl RoutingDecisionLog {
@@ -329,6 +352,10 @@ mod tests {
             outcome_success: None,
             outcome_cost_usd: None,
             outcome_latency_ms: None,
+            attempt_key: None,
+            source: None,
+            default_model: None,
+            propensity: None,
         }
     }
 

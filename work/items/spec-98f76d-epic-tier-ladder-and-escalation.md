@@ -12,7 +12,7 @@ created = 2026-09-29
 updated = 2026-09-29
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e5"
 discovered_from = "tmp/cybernetic-harness/tldr/05-GAPS-AND-PROPOSALS.md (P1 #8); tldr/04 steps 4 and 8, design rules 1 and 5"
-anchors = ["crates/roko-cli/src/graph_task_dispatch.rs::build_routing_context", "crates/roko-cli/src/dispatch/model_routing.rs::ModelRouter::route", "crates/roko-core/src/config/routing.rs::RoutingConfig"]
+anchors = ["crates/roko-cli/src/graph_task_dispatch/routing_context.rs::build_routing_context", "crates/roko-cli/src/dispatch/model_routing.rs::ModelRouter::route", "crates/roko-core/src/config/routing.rs::RoutingConfig"]
 doc = "tmp/cybernetic-harness/workstreams/PLAN.md"
 lane = "rust-hot"
 links = { depends_on = ["gap-8c0a20", "gap-0f3980", "gap-9cbf35", "gap-dbf2a6", "gap-460230", "gap-b62e95", "gap-e21595"], blocks = [], related = ["gap-a791b4", "bug-35379d", "gap-1d1fa6", "gap-853b31"], supersedes = [], duplicate_of = "" }

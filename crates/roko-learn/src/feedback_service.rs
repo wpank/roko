@@ -127,9 +127,9 @@ impl FeedbackService {
 
     /// Attach a cascade router for bandit reward observations.
     ///
-    /// On each `ModelCall` event, the service will call `router.observe()`
-    /// with a success/failure reward signal so the bandit can update its
-    /// model selection policy.
+    /// On each `ModelCall` event, the service records the call's outcome on
+    /// the router (a success with reward 1, or a failed trial with reward 0)
+    /// so the bandit can update its model selection policy.
     #[must_use]
     pub fn with_cascade_router(mut self, router: Arc<CascadeRouter>) -> Self {
         self.cascade_router = Some(router);
@@ -1101,6 +1101,39 @@ mod tests {
         .unwrap();
 
         assert_eq!(router.total_observations(), 1);
+    }
+
+    #[tokio::test]
+    async fn observes_failed_model_call_as_failed_trial() {
+        // bug-8da8ba: a failed call reaches LinUCB like a success does, and
+        // counts as a trial without a success.
+        let dir = tempfile::tempdir().unwrap();
+        let router = Arc::new(CascadeRouter::new(vec!["sonnet".into(), "opus".into()]));
+        let svc =
+            FeedbackService::new(dir.path().to_path_buf()).with_cascade_router(Arc::clone(&router));
+
+        svc.record(FeedbackEvent::ModelCall {
+            run_id: Some("r1".into()),
+            request_id: None,
+            prompt_section_ids: Vec::new(),
+            knowledge_ids: Vec::new(),
+            model: Some("sonnet".into()),
+            provider: None,
+            token_usage: None,
+            cost: None,
+            role: "implementer".into(),
+            input_tokens: 1000,
+            output_tokens: 500,
+            cost_usd: 0.01,
+            latency_ms: 2000,
+            success: false,
+            error_class: Some("timeout".into()),
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(router.total_observations(), 1);
+        assert_eq!(router.confidence_snapshot()["sonnet"], (1, 0));
     }
 
     #[tokio::test]

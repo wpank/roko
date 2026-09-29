@@ -3085,6 +3085,38 @@ async fn cascade_observation_updates_the_dispatched_config_key() {
     assert_eq!(stats.get(&config_key).map(|entry| entry.successes), Some(1));
 }
 
+/// A failed dispatch is a trial without a success, and still reaches LinUCB
+/// (bug-8da8ba).
+#[tokio::test]
+async fn cascade_observation_counts_failed_dispatch_as_failure() {
+    use roko_learn::cascade_router::CascadeRouter;
+
+    let tmp = tempfile::tempdir().expect("create tmpdir");
+    let router_dir = tmp.path().join(".roko").join("learn");
+    std::fs::create_dir_all(&router_dir).expect("create router dir");
+    let router_path = router_dir.join("cascade-router.json");
+    let config_key = "my-custom-model-key".to_string();
+
+    record_cascade_observation(
+        router_path.clone(),
+        config_key.clone(),
+        RoutingContext::default(),
+        false,
+        1_000,
+        None,
+        vec![config_key.clone()],
+    )
+    .await
+    .expect("observation task");
+
+    let router_loaded = CascadeRouter::load_or_new(&router_path, vec![config_key.clone()]);
+    assert_eq!(router_loaded.total_observations(), 1);
+    assert_eq!(
+        router_loaded.confidence_snapshot().get(&config_key),
+        Some(&(1, 0))
+    );
+}
+
 // ── P2-ACP-3: client capability declaration ──────────────────────────────────
 
 /// No capabilities declared → all tool flags must be false (safe text-only default).

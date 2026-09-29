@@ -221,8 +221,15 @@ pub fn observe_model_call_on_router(
         return;
     };
 
+    // A failed call is a trial without a success, not a zero-reward success
+    // (bug-8da8ba).
     let reward = if success { 1.0 } else { 0.0 };
-    router.observe(model_call_context_vec(role, latency_ms), model_idx, reward);
+    router.observe_outcome(
+        model_call_context_vec(role, latency_ms),
+        model_idx,
+        reward,
+        success,
+    );
 }
 
 fn model_call_context_vec(role: &str, latency_ms: u64) -> Vec<f64> {

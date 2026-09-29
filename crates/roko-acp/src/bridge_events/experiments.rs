@@ -596,7 +596,8 @@ pub(crate) fn record_cascade_observation(
 
         let context_vec = routing_ctx.to_features();
         let reward = compute_acp_reward(success, wall_ms, output_tokens);
-        router.observe(context_vec, model_idx, reward);
+        // A failed dispatch is a trial without a success (bug-8da8ba).
+        router.observe_outcome(context_vec, model_idx, reward, success);
 
         if let Err(error) = router.save(&router_path) {
             warn!(

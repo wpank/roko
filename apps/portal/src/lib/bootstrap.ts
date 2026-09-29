@@ -13,15 +13,21 @@
  *
  * A `snapshot_rebased` stream event means the server's ring was reset; refetch
  * the snapshot and reopen the stream from the new cursor.
+ *
+ * Sessions live in the server's memory, so a restarted `roko serve` answers
+ * 401 to the old cookie. EventSource hides that status; after each failed
+ * stream attempt `probe` asks, and a 401 reports 'unauthorized'.
  */
 
 import type { WireDashboardEvent, WireDashboardSnapshot, WireStateHubSnapshotResponse } from '@/api/contracts';
+import { ApiError } from '@/api/client';
 
 // ---------------------------------------------------------------------------
 // Exported types defined here (T09 will make the SSE client import these)
 // ---------------------------------------------------------------------------
 
-export type ConnectionStatus = 'connecting' | 'connected' | 'disconnected' | 'error';
+/** 'unauthorized': the server is up but refuses this session; it wants a sign-in link. */
+export type ConnectionStatus = 'connecting' | 'connected' | 'disconnected' | 'error' | 'unauthorized';
 
 /**
  * Events that flow through the live stream callback.
@@ -107,6 +113,9 @@ export interface LiveDeps {
   /** GET /api/statehub/snapshot */
   fetchSnapshot(): Promise<WireStateHubSnapshotResponse>;
 
+  /** GET /api/status with the stream's credentials — the HTTP status, or 0 when unreachable. */
+  probe(): Promise<number>;
+
   /**
    * Open the SSE stream.
    *
@@ -152,6 +161,24 @@ export function startLiveState(deps: LiveDeps): { stop(): void } {
   let stopped = false;
   let stream: { close(): void } | null = null;
 
+  // While signed out, every status short of 'connected' reads 'unauthorized',
+  // so retries keep asking for the sign-in link instead of flickering.
+  let signedOut = false;
+  let latest: ConnectionStatus = 'connecting';
+
+  function report(status: ConnectionStatus): void {
+    latest = status;
+    if (status === 'connected') signedOut = false;
+    deps.setStatus(signedOut && status !== 'connected' ? 'unauthorized' : status);
+  }
+
+  async function checkSession(): Promise<void> {
+    const code = await deps.probe().catch(() => 0);
+    if (stopped || latest === 'connected') return;
+    signedOut = code === 401;
+    report(latest);
+  }
+
   // ── Step 1: session ────────────────────────────────────────────────────────
 
   async function doSession(): Promise<void> {
@@ -189,9 +216,10 @@ export function startLiveState(deps: LiveDeps): { stop(): void } {
     let resp: WireStateHubSnapshotResponse;
     try {
       resp = await deps.fetchSnapshot();
-    } catch {
+    } catch (err) {
       if (stopped) return;
-      deps.setStatus('error');
+      signedOut = err instanceof ApiError && err.status === 401;
+      report('error');
       await deps.sleep(retryDelayMs);
       if (!stopped) {
         await fetchAndOpen(Math.min(retryDelayMs * 2, MAX_RETRY_MS));
@@ -200,6 +228,7 @@ export function startLiveState(deps: LiveDeps): { stop(): void } {
     }
 
     if (stopped) return;
+    signedOut = false;
 
     // Install the snapshot BEFORE opening the stream.
     deps.replace(resp.state);
@@ -231,9 +260,9 @@ export function startLiveState(deps: LiveDeps): { stop(): void } {
         }
       },
       (status: ConnectionStatus) => {
-        if (!stopped) {
-          deps.setStatus(status);
-        }
+        if (stopped) return;
+        report(status);
+        if (status === 'disconnected' || status === 'error') void checkSession();
       },
     );
   }

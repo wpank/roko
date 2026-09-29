@@ -12,6 +12,7 @@ import type { TaskStatus } from '@/lib/runState';
 export type GlyphState =
   | 'done'
   | 'active'
+  | 'unverified'
   | 'accepted'
   | 'failed'
   | 'queued'
@@ -35,10 +36,13 @@ export interface GlyphDef {
  * Tokens map 1-to-1 with the CSS custom properties in tokens.css:
  *   --state-done, --state-active, --state-accepted (amber, NOT green),
  *   --state-failed, --state-queued, --state-pending, --state-skipped.
+ * `unverified` is a running plan in amber: a task was accepted despite failing
+ * checks, or every task is dispatched and only checks remain.
  */
 export const GLYPHS: Record<GlyphState, GlyphDef> = {
   done:     { glyph: '✓', token: 'var(--state-done)',     label: 'done'     },
   active:   { glyph: '►', token: 'var(--state-active)',   label: 'active'   },
+  unverified: { glyph: '▷', token: 'var(--state-accepted)', label: 'running, not verified' },
   accepted: { glyph: '⚠', token: 'var(--state-accepted)', label: 'accepted' },
   failed:   { glyph: '✗', token: 'var(--state-failed)',   label: 'failed'   },
   queued:   { glyph: '◌', token: 'var(--state-queued)',   label: 'queued'   },

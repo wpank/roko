@@ -13,22 +13,22 @@ export interface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElemen
 const variantClasses: Record<NonNullable<ButtonProps['variant']>, string> = {
   primary: [
     'bg-button-primary-bg text-button-primary-fg border-button-primary-bg',
-    'hover:bg-button-primary-hover hover:border-button-primary-hover',
+    'enabled:hover:bg-button-primary-hover enabled:hover:border-button-primary-hover',
   ].join(' '),
 
   secondary: [
     'bg-bg-highlight text-text-muted border-text-ghost',
-    'hover:border-border-hover hover:text-text-strong',
+    'enabled:hover:border-border-hover enabled:hover:text-text-strong',
   ].join(' '),
 
   ghost: [
     'bg-transparent text-text-muted border-transparent',
-    'hover:bg-bg-highlight hover:border-border-default hover:text-text-strong',
+    'enabled:hover:bg-bg-highlight enabled:hover:border-border-default enabled:hover:text-text-strong',
   ].join(' '),
 
   danger: [
     'bg-danger-fill text-danger-fill-fg border-danger-fill',
-    'hover:border-danger-fill-fg hover:text-danger-fill-fg',
+    'enabled:hover:border-danger-fill-fg enabled:hover:text-danger-fill-fg',
   ].join(' '),
 };
 
@@ -67,7 +67,8 @@ export function Button({
         'duration-[80ms]',
         variantClasses[variant],
         sizeClasses[size],
-        isDisabled && 'opacity-40 cursor-not-allowed pointer-events-none',
+        // Disabled keeps pointer events: the hover shows the title saying why.
+        isDisabled && 'opacity-40 cursor-not-allowed',
         className,
       )}
     >

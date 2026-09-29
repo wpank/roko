@@ -9,6 +9,7 @@
  * Mirrors the philosophy in mori's `widgets/agent_output.rs:327`.
  */
 
+import { SIGN_IN_HINT } from '@/lib/bootstrap';
 import type { ConnectionStatus } from '@/lib/bootstrap';
 import type { PlanPhase, RunState } from '@/lib/runState';
 import type { TaskRowModel } from '@/lib/taskRows';
@@ -61,6 +62,7 @@ export function describeEmpty(input: EmptyStateInput): string {
   const { connection, workspace, planCount, plan } = input;
 
   // ── 1. Connection problems ──────────────────────────────────────────────────
+  if (connection === 'unauthorized') return SIGN_IN_HINT;
   if (connection === 'disconnected' || connection === 'error') {
     return 'Lost the server; reconnecting.';
   }

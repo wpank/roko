@@ -2,7 +2,7 @@
 id = "gap-63e0b6"
 kind = "gap"
 title = "Design rule 'green means verified' is partly built: the header is never amber, nor is a running plan whose tasks are all dispatched"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "visibility"
@@ -11,7 +11,7 @@ subsystem = ["apps/portal"]
 created = 2026-09-29
 updated = 2026-09-29
 last_verified = 2026-09-29
-last_verified_rev = "f99e45dba"
+last_verified_rev = "e0b469bdb"
 source = "plan:portal-programme/09-acceptance#T04"
 discovered_from = "plan:portal-programme/09-acceptance#T04"
 anchors = ["apps/portal/src/components/shell/Header.tsx:157", "apps/portal/src/lib/planRows.ts:150"]
@@ -19,6 +19,12 @@ links = { depends_on = [], blocks = [], related = ["bug-7e1b6b"], supersedes = [
 
 [[verify]]
 command = "grep -rqF --include='*.test.ts' --include='*.test.tsx' 'header is amber' apps/portal/src && (cd apps/portal && npx vitest run src/components/shell src/lib/planRows)"
+
+[closed]
+at = 2026-09-29
+commit = "e0b469bdb"
+by = "commit trailer"
+evidence = "e0b469bdb: runningState (apps/portal/src/lib/planRows.ts) gives a running plan the new unverified glyph state (▷, --state-accepted amber, pulsing) once a task was accepted_with_failures or no task waits to be dispatched; the rail row takes it and the header run glyph (Header.tsx) is amber while any running plan is. apps/portal/src/components/shell/amber.test.tsx renders the header and the rail row: 'header is amber once every task is dispatched', 'header is amber once a task was accepted despite failing checks', 'header is amber while any running plan is' (all fail on the parent commit), and the running colour stays while a task waits. [[verify]] passes (vitest src/components/shell src/lib/planRows: 8 files, 57 tests)."
 +++
 
 ## Problem

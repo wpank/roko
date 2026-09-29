@@ -6,7 +6,8 @@
  * See task specification for the complete rule set.
  *
  * Rules summary:
- * - Live phase: running → active; pending (live run) → queued; completed → done/accepted;
+ * - Live phase: running → active, amber `unverified` once nothing waits for dispatch or a
+ *   task was accepted (see runningState); pending (live run) → queued; completed → done/accepted;
  *   failed → failed; cancelled → skipped.  Pending after the run ends → disk fallback.
  * - Disk only: superseded → skipped; completed → done; tasks_failed > 0 → failed; else pending.
  * - barToken: takes its plan's state colour (GLYPHS[state].token) — not a fraction band.
@@ -124,6 +125,19 @@ function diskGlyphState(disk: WirePlanSummary): GlyphState {
   return 'pending';
 }
 
+/**
+ * A running plan's state. Green means verified (design §6 rule 1), so it turns
+ * amber once a task was accepted despite failing checks, or once no task waits
+ * to be dispatched and only checks remain (mori, `plan_tree.rs:572`).
+ */
+export function runningState(run: RunState, plan: PlanRun): 'active' | 'unverified' {
+  const active = Object.values(run.tasks).filter(
+    (t) => t.planId === plan.planId && t.status === 'active',
+  ).length;
+  const waiting = plan.tasksTotal - plan.tasksDone - plan.tasksFailed - active;
+  return plan.tasksAccepted > 0 || (plan.tasksTotal > 0 && waiting <= 0) ? 'unverified' : 'active';
+}
+
 // ── buildPlanRows ──────────────────────────────────────────────────────────────
 
 /**
@@ -156,7 +170,7 @@ export function buildPlanRows(
     if (live) {
       switch (live.phase) {
         case 'running':
-          state = 'active';
+          state = runningState(run, live);
           running = true;
           break;
 

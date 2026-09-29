@@ -427,9 +427,12 @@ impl CredentialScrub {
 
 /// Files in a `.roko` directory that hold provider keys or roko credentials:
 /// `.env` (`~/.roko/.env` and `<workdir>/.roko/.env`, loaded at startup),
-/// `secrets.toml` (`roko config secrets`) and `credentials.json`
-/// (`roko login`).
-pub const KEY_FILE_NAMES: &[&str] = &[".env", "secrets.toml", "credentials.json"];
+/// `secrets.toml` (`roko config secrets`), `credentials.json`
+/// (`roko login`) and `config.toml` (`~/.roko/config.toml`, the global
+/// config). The global config counts whether or not it holds a secret yet:
+/// it can hold `serve.auth.api_key` and provider `extra_headers`, and a check
+/// of its contents could not be repeated in the Claude CLI permission rules.
+pub const KEY_FILE_NAMES: &[&str] = &[".env", "secrets.toml", "credentials.json", "config.toml"];
 
 /// The files that hold provider keys and roko credentials for home directory
 /// `home` and workdir `workdir`: each of [`KEY_FILE_NAMES`] in `~/.roko` and
@@ -729,10 +732,13 @@ mod tests {
         for path in ["/elsewhere/repo/.roko/.env", ".roko/secrets.toml"] {
             assert!(is_key_file(Path::new(path)), "{path}");
         }
+        // The global config, which can hold serve.auth.api_key.
+        assert!(is_key_file(Path::new("/home/dev/.roko/config.toml")));
         // The rest of a .roko directory, ~/.roko's too, and look-alikes.
         for path in [
             "/work/repo/.roko/state/graph/p/checkpoint.json",
-            "/home/dev/.roko/config.toml",
+            "/home/dev/.roko/logs/daemon.log",
+            "/work/repo/.roko/config/config.toml",
             "/work/repo/.env",
             "/work/repo/.roko-old/.env",
             "/work/repo/.roko/.env/nested",
@@ -760,7 +766,7 @@ mod tests {
             "/app/.roko/state/graph/p/checkpoint.json",
             "/app/.roko/prd/drafts/x.md",
             "/app/.roko/worktrees/p-t1/src/lib.rs",
-            "/app/.roko/config.toml",
+            "/app/.roko/worktrees/p-t1/config.toml",
         ] {
             assert!(!is_key_file(Path::new(path)), "{path}");
         }

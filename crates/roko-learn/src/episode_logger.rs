@@ -43,6 +43,9 @@ use tokio::sync::Mutex as AsyncMutex;
 /// field. Enforced in [`EpisodeLogger::append`] so that a runaway
 /// optimizer cannot blow up the log.
 const MAX_EXTRA_BYTES: usize = 16 * 1024;
+/// Key of the settled verdict's learning label in [`Episode::extra`]
+/// (S01 §4.1): `1`, `0`, or `null` when the attempt teaches nothing.
+pub const LEARNING_LABEL_KEY: &str = "learning_label";
 const TEXT_FINGERPRINT_KEY: &str = "text_fingerprint";
 const METADATA_FINGERPRINT_KEY: &str = "metadata_fingerprint";
 const TEMPLATE_SUGGESTION_MIN_SIMILARITY: f64 = 0.7;
@@ -352,6 +355,27 @@ impl Episode {
         self
     }
 
+    /// What a learner records from this episode (S01 §4.1): a pass
+    /// (`Some(true)`), a failure of the agent's work (`Some(false)`), or
+    /// nothing (`None`).
+    ///
+    /// It reads the settled verdict's label in `extra.learning_label`,
+    /// which is `null` for an attempt that teaches nothing: an unverified
+    /// one, or a provider failure. `success` does not tell those apart,
+    /// since an unverified attempt counts as a success there. An episode
+    /// written before labels existed has none and keeps `success`.
+    #[must_use]
+    pub fn learning_success(&self) -> Option<bool> {
+        let Some(label) = self.extra.get(LEARNING_LABEL_KEY) else {
+            return Some(self.success);
+        };
+        match label.as_u64() {
+            Some(1) => Some(true),
+            Some(0) => Some(false),
+            _ => None,
+        }
+    }
+
     /// Attach an emotional tag to the episode.
     #[must_use]
     pub fn with_emotional_tag(mut self, emotional_tag: EmotionalTag) -> Self {
@@ -651,6 +675,20 @@ fn suggest_template_from_episodes(episodes: &[Episode], signal: &Signal) -> Opti
     }
 
     best.map(|(_, template)| template)
+}
+
+/// The episodes a learner may learn from (S01 §4.1): an episode whose
+/// attempt carried no learning label is dropped, and each other one has
+/// `success` set from its label ([`Episode::learning_success`]).
+#[must_use]
+pub fn learnable_episodes(episodes: impl IntoIterator<Item = Episode>) -> Vec<Episode> {
+    episodes
+        .into_iter()
+        .filter_map(|mut episode| {
+            episode.success = episode.learning_success()?;
+            Some(episode)
+        })
+        .collect()
 }
 
 /// Compute a composite importance score for `episode` relative to `history`.
@@ -2281,5 +2319,105 @@ mod tests {
             results[0].1 >= results[1].1,
             "results should be sorted by descending similarity"
         );
+    }
+
+    /// gap-eb82c9: episode readers learn from the settled learning label
+    /// (S01 §4.1). An unverified success and a provider failure (label
+    /// `null`) teach the skill library, the hindsight relabeler and the
+    /// curriculum nothing; a labelled pass or failure teaches them; an
+    /// episode written before labels existed keeps `success`.
+    #[test]
+    fn episode_readers_use_the_learning_label() {
+        use crate::curriculum::RoleToolProfile;
+        use crate::hindsight::{AdjustmentKind, HindsightRelabeler};
+        use crate::skill_library::{SkillUpdate, evolve_skills};
+
+        let episode = |id: &str, success: bool, label: Option<serde_json::Value>| {
+            let mut episode = Episode::new("implementer", "T1");
+            episode.id = id.to_string();
+            episode.success = success;
+            episode.agent_template = "implementer".into();
+            episode.trigger_kind = "implementation".into();
+            episode.external_actions = vec![serde_json::json!({"tool": "Write"})];
+            episode
+                .extra
+                .insert("files".into(), serde_json::json!(["src/lib.rs"]));
+            if !success {
+                episode.gate_verdicts = vec![EpisodeGateVerdict::new("verify", false)];
+            }
+            if let Some(label) = label {
+                episode.extra.insert(LEARNING_LABEL_KEY.into(), label);
+            }
+            episode
+        };
+        let unverified = episode("unverified", true, Some(serde_json::Value::Null));
+        let mut provider_failure = episode("provider", false, Some(serde_json::Value::Null));
+        provider_failure.gate_verdicts.clear();
+        let passed = episode("passed", true, Some(serde_json::json!(1)));
+        let gate_failed = episode("gate-failed", false, Some(serde_json::json!(0)));
+        let legacy = episode("legacy", true, None);
+
+        let learned: Vec<Option<bool>> = [
+            &unverified,
+            &provider_failure,
+            &passed,
+            &gate_failed,
+            &legacy,
+        ]
+        .iter()
+        .map(|episode| episode.learning_success())
+        .collect();
+        assert_eq!(learned, [None, None, Some(true), Some(false), Some(true)]);
+        let learnable: Vec<String> = learnable_episodes([
+            unverified.clone(),
+            provider_failure.clone(),
+            passed.clone(),
+            gate_failed.clone(),
+            legacy.clone(),
+        ])
+        .into_iter()
+        .map(|episode| format!("{}={}", episode.id, episode.success))
+        .collect();
+        assert_eq!(
+            learnable,
+            ["passed=true", "gate-failed=false", "legacy=true"]
+        );
+
+        // Skill library: an unverified success is no skill, and a provider
+        // failure is no anti-pattern; a pass is a skill.
+        let skills = evolve_skills(&[unverified.clone(), provider_failure], &[]);
+        assert!(skills.is_empty(), "{skills:?}");
+        let skills = evolve_skills(&[passed.clone()], &[]);
+        assert!(
+            matches!(skills.as_slice(), [SkillUpdate::Add { .. }]),
+            "{skills:?}"
+        );
+
+        // Hindsight: a later gate failure on the same files relabels a
+        // labelled pass, never an unverified success.
+        let mut later = gate_failed.clone();
+        later.timestamp = unverified.timestamp.max(passed.timestamp) + chrono::Duration::minutes(1);
+        let relabeler = HindsightRelabeler::new();
+        assert!(relabeler.scan(&[unverified, later.clone()], &[]).is_empty());
+        let found = relabeler.scan(&[passed.clone(), later], &[]);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!(found[0].original_episode_id, "passed");
+        assert_eq!(found[0].adjustment_kind, AdjustmentKind::Regression);
+
+        // Curriculum: the unverified success is left out of the tool's
+        // success rate, which the gate failure alone sets.
+        let profiles = RoleToolProfile::from_episodes(
+            &[
+                episode("u2", true, Some(serde_json::Value::Null)),
+                gate_failed,
+            ],
+            1,
+        );
+        let write = profiles
+            .iter()
+            .flat_map(|profile| &profile.tools)
+            .find(|tool| tool.tool_name == "Write")
+            .expect("the Write tool profile");
+        assert_eq!((write.usage_count, write.success_rate), (1, 0.0));
     }
 }

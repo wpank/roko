@@ -940,7 +940,10 @@ impl TaskDispatcher for GraphTaskDispatcher {
             cached_cfactor_context: cached_cfactor_context.clone(),
         };
         let prompt_assembly_started = std::time::Instant::now();
-        let dispatch_plan = self.plan_dispatch(spec, &task, &mut dispatch_ctx)?;
+        let dispatch_plan = match self.plan_dispatch(spec, &task, &mut dispatch_ctx) {
+            Ok(dispatch_plan) => dispatch_plan,
+            Err(error) => return Err(self.fail_attempt(spec, &task, attempt, None, error).await),
+        };
         let prompt_assembly_latency_ms = prompt_assembly_started.elapsed().as_millis() as u64;
         attempt.prompt_assembled();
 
@@ -1206,7 +1209,10 @@ impl TaskDispatcher for GraphTaskDispatcher {
         // results: callers may still have incurred the reported cost.
         self.task_spend
             .record(&task_spend_key, f64::from(dispatch.result.usage.cost_usd));
-        budget_reservation.settle(f64::from(dispatch.result.usage.cost_usd))?;
+        if let Err(error) = budget_reservation.settle(f64::from(dispatch.result.usage.cost_usd)) {
+            let routed = Some((dispatch_plan.model.slug.as_str(), &dispatch));
+            return Err(self.fail_attempt(spec, &task, attempt, routed, error).await);
+        }
 
         // ── TUI streaming output ─────────────────────────────────────────
         //

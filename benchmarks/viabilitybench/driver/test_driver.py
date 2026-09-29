@@ -6,31 +6,75 @@ Run from the repository root with the benchmark venv:
 
 from __future__ import annotations
 
+import hashlib
 import itertools
 import json
 import os
 import socket
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
 import agent_env
 import caps
+import faultproxy
 import layout
 import ledger
+import materialize
 import mini_loop
+import provider
 import validate
 import vb
-from common import canary, hmac_seed
+from common import canary, hmac_seed, repo
 from stub_provider import StubServer, bash, scripted
 
+TOY_FAMILY = layout.DRIVER_DIR / "testdata" / "toy_family"
 TOY_STREAM = str(layout.DRIVER_DIR / "testdata" / "toy_stream.toml")
 FAKE_KEY = "sk-test-not-a-real-key-0f3c"
 PROBE = "vb-probe-value-7d21"
 CORRECT = ("cat > calc/ops.py <<'EOF'\ndef clamp(value, low, high):\n"
            "    \"\"\"Return value limited to the range [low, high].\"\"\"\n    return max(low, min(value, high))\nEOF")
 VISIBLE_ONLY = "cat > calc/ops.py <<'EOF'\ndef clamp(value, low, high):\n    return max(value, low)\nEOF"
+CALLING_ROKO = r'''#!__PYTHON__
+"""A stand-in for roko's `plan run`: up to __CALLS__ model calls to the provider its roko.toml names, then a Graph
+run's records. A refused call fails the plan, as roko's does; otherwise it solves the task."""
+import datetime, json, os, sys, tomllib, urllib.error, urllib.request
+from pathlib import Path
+
+args = sys.argv[1:]
+if args == ["--version"]:
+    print("roko 0.1.0 (git 0fa4e0fa4e)")
+    sys.exit(0)
+if "validate" in args:
+    sys.exit(0)
+repo, slug = Path(args[args.index("--repo") + 1]), Path(args[args.index("run") + 1]).name
+config = tomllib.loads(Path(os.environ["ROKO_CONFIG"]).read_text())
+[provider], [model] = config["providers"].values(), config["models"]
+body = {"model": model, "messages": [{"role": "user", "content": "Implement clamp. " * 250}]}
+failure = None
+for _ in range(__CALLS__):
+    request = urllib.request.Request(provider["base_url"] + "/chat/completions", data=json.dumps(body).encode(),
+                                     headers={"Content-Type": "application/json",
+                                              "Authorization": "Bearer " + os.environ[provider["api_key_env"]]})
+    try:
+        urllib.request.build_opener(urllib.request.ProxyHandler({})).open(request, timeout=30).read()
+    except urllib.error.HTTPError as err:
+        failure = f"provider: http {err.code}"
+        break
+if failure is None:
+    (repo / "calc" / "ops.py").write_text("def clamp(value, low, high):\n    return max(low, min(value, high))\n")
+roko, now = repo / ".roko", datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+(roko / "state" / "graph" / slug).mkdir(parents=True)
+(roko / "episodes.jsonl").write_text(json.dumps({"task_id": "T01", "model": model, "backend": "cerebras",
+                                                 "success": failure is None, "turns": 1, "completed_at": now,
+                                                 "failure_reason": failure, "extra": {"plan_id": slug}}) + "\n")
+verdicts = {} if failure else {"roko.gate.verdict@1": {"value": {"verdicts": {"T01": "passed"}}}}
+(roko / "state" / "graph" / slug / "checkpoint.json").write_text(json.dumps(
+    {"plan_id": slug, "status": "failed" if failure else "succeeded", "extensions": verdicts}))
+sys.exit(1 if failure else 0)
+'''
 
 
 @pytest.fixture
@@ -59,7 +103,10 @@ def by_instance(path: Path) -> dict[str, dict]:
 
 
 def test_offline_run_writes_valid_records(places, tmp_path, monkeypatch):
-    monkeypatch.setenv("CEREBRAS_API_KEY", FAKE_KEY)  # the driver may hold keys; agents never see them
+    # A real run refuses a key in the driver's environment (bug-979a06); with the tests' escape hatch it shows that an
+    # agent's environment never carries one anyway.
+    monkeypatch.setattr(vb.secret, "KEYS_IN_ENV_OK", True)
+    monkeypatch.setenv("CEREBRAS_API_KEY", FAKE_KEY)
     monkeypatch.setenv("VB_PROBE", PROBE)
     marker = tmp_path / "hook-ran"
     plant_hooks = (f"printf '#!/bin/sh\\ntouch {marker}\\n' > .git/hooks/post-commit && chmod +x .git/hooks/post-commit"
@@ -120,6 +167,43 @@ def test_offline_run_writes_valid_records(places, tmp_path, monkeypatch):
     assert private_manifest.stat().st_mode & 0o777 == 0o600
     assert json.loads((out / "manifest.json").read_text())["offline"] is True
     assert not (places["work"] / "run-1").exists()  # workdirs are removed after archiving
+
+
+def test_materialize_renders_real_family_instances(tmp_path, capsys):
+    # bug-2930a8: F1 and F4 write the task repo to --workdir and everything private to --out, not to <workdir>/.vb/.
+    for instance_id in ("F1-l1-0001", "F4-l1-0001"):
+        workdir = tmp_path / instance_id
+        assert vb.main(["materialize", "--stream", "pilot", "--instance", instance_id, "--out", str(workdir)]) == 0
+        shown = json.loads(capsys.readouterr().out)
+        private = tmp_path / f"{instance_id}.private" / materialize.TASK_DIR
+        assert (shown["workdir"], shown["manifest"]) == (str(workdir), str(private / "task.json"))
+        manifest = json.loads((private / "task.json").read_text())
+        assert manifest["instance_id"] == instance_id and manifest["canary"] == canary.RELEASE_CANARY
+        assert (private / "task.json").stat().st_mode & 0o777 == 0o600
+        spec = (private / manifest["spec"]["precise"]["path"]).read_bytes()
+        assert hashlib.sha256(spec).hexdigest() == manifest["spec"]["precise"]["sha256"]
+        # The agent's workdir is the pristine base at its commit, with no manifest, spec, bundle or canary in it.
+        names = {path.relative_to(workdir).as_posix() for path in workdir.rglob("*")
+                 if ".git" not in path.relative_to(workdir).parts}
+        assert "tests/visible" in names and not [name for name in names if Path(name).name in (
+            "task.json", "spec.precise.md", "pristine.json", "pristine.bundle", materialize.TASK_DIR)]
+        assert canary.find_in_tree(workdir) == {}
+        pristine = shown["pristine"]
+        assert Path(pristine["bundle"]) == private / "pristine.bundle" and Path(pristine["bundle"]).is_file()
+        head = subprocess.run(["git", "-C", str(workdir), "rev-parse", "HEAD"], capture_output=True, text=True,
+                              check=True).stdout.strip()
+        assert repo.tree_hash(workdir) == pristine["tree"] and head == pristine["commit"]
+
+    # A generator whose workdir drifts from the pristine base it recorded is refused before any agent runs.
+    drifting = tmp_path / "drifting"
+    drifting.mkdir()
+    (drifting / "gen.py").write_text(
+        "import runpy, sys\nfrom pathlib import Path\n"
+        f"try:\n    runpy.run_path({str(TOY_FAMILY / 'gen.py')!r}, run_name='__main__')\nexcept SystemExit:\n    pass\n"
+        "(Path(sys.argv[sys.argv.index('--workdir') + 1]) / 'late.txt').write_text('after the commit')\n")
+    with pytest.raises(materialize.MaterializeError, match="not the pristine tree"):
+        materialize.materialize(family_dir=drifting, instance_id="F1-l1-0001", workdir=tmp_path / "late",
+                                private_dir=tmp_path / "late.private")
 
 
 def test_runaway_agent_is_killed_within_30_calls(places):
@@ -204,6 +288,160 @@ def test_vb_run_refuses_network_without_both_flags(places, monkeypatch):
     assert not places["results"].exists() and not places["work"].exists()
 
 
+def test_a_loopback_proxy_url_still_needs_network_admission(places, monkeypatch):
+    # gap-e90ebd: with --proxy the runner calls the proxy's loopback URL, but admission judges the provider behind it.
+    attempts = []
+    loopback = ("127.0.0.1", "::1", "localhost")
+    real_connect, real_create = socket.socket.connect, socket.create_connection
+
+    def connect(sock, address, *args):
+        if isinstance(address, tuple) and address[0] in loopback:
+            return real_connect(sock, address, *args)
+        attempts.append(address)
+        raise OSError("network blocked by the test")
+
+    def create_connection(address, *args, **kwargs):
+        if address[0] in loopback:
+            return real_create(address, *args, **kwargs)
+        attempts.append(address)
+        raise OSError("network blocked by the test")
+
+    monkeypatch.setattr(socket.socket, "connect", connect)
+    monkeypatch.setattr(socket, "create_connection", create_connection)
+    monkeypatch.setattr(mini_loop.time, "sleep", lambda seconds: None)
+    monkeypatch.delenv("CEREBRAS_API_KEY", raising=False)
+    base = ["run", "--experiment", "TEST-NET", "--run-id", "run-1", "--stream", TOY_STREAM, "--arm", "cheap_direct",
+            "--model", "gpt-oss-120b", "--limit", "1", "--results", str(places["results"]),
+            "--work", str(places["work"]), "--secret-file", str(places["secret"])]
+    for flags in ([], ["--allow-network"], ["--max-cost-usd", "5"], ["--allow-network", "--max-cost-usd", "0.01"],
+                  ["--allow-network", "--max-cost-usd", "5"]):  # the last is admitted, but has no key to send
+        assert vb.main([*base, "--proxy", *flags]) == 2, flags
+    assert attempts == [] and not places["results"].exists() and not places["work"].exists()
+
+    # Admitted, a billed network run goes through the proxy even without --proxy. Only the proxy calls the provider,
+    # and nothing else leaves the machine: the test refuses that one connection. Its key comes from the driver-only key
+    # file, never from the environment (bug-979a06).
+    key_file = vb.secret.create_keys(places["secret"].parent / "keys", {"CEREBRAS_API_KEY": FAKE_KEY})
+    assert vb.main([*base, "--allow-network", "--max-cost-usd", "5", "--key-file", str(key_file)]) == 0
+    out = places["results"] / "TEST-NET" / "run-1"
+    manifest = json.loads((out / "manifest.json").read_text())
+    assert manifest["network"] is True and manifest["proxy"]["log"] == "proxy.jsonl"
+    assert set(attempts) == {("api.cerebras.ai", 443)}
+    rows = read_jsonl(out / "proxy.jsonl")
+    assert len(rows) == 1 + mini_loop.RETRIES and {(row["task"], row["upstream"], row["status"], row["forwarded"])
+                                                   for row in rows} == {("F1-l1-0001.s1", "cerebras", 502, False)}
+    [record] = read_jsonl(out / "records.jsonl")
+    assert record["execution"]["status"] == "infra_error" and validate.validate("run-record", record) == []
+
+
+def test_vb_run_meters_every_task_through_the_proxy(places):
+    def respond(body: dict) -> str:  # look once, then submit
+        return bash("echo VB_SUBMIT") if any(m["role"] == "assistant" for m in body["messages"]) else bash("ls")
+
+    with StubServer(respond) as stub:
+        assert run_vb(places, stub.url, "--proxy") == 0
+        calls = len(stub.requests)
+    out = run_dir(places)
+    assert json.loads((out / "manifest.json").read_text())["proxy"] == {"log": "proxy.jsonl",
+                                                                        "profile": {"name": "clean"}}
+    rows, booked = read_jsonl(out / "proxy.jsonl"), read_jsonl(out / "ledger.jsonl")
+    assert len(rows) == calls == 4 and all(row["forwarded"] and row["status"] == 200 for row in rows)
+    for key in ("F1-l1-0001.s1", "F1-l1-0002.s1"):  # every row carries its task's key, and the meter is the ledger
+        metered = [row for row in rows if row["task"] == key]
+        ledger_rows = [row for row in booked if row["attempt_key"].startswith(f"run-1/{key}:")]
+        assert len(metered) == 2 and ledger_rows
+        assert sum(row["api_equiv_usd"] for row in ledger_rows) == pytest.approx(
+            sum(row["api_equiv_usd"] for row in metered), rel=1e-12)
+
+
+def test_the_roko_arm_through_the_proxy_is_metered_by_its_task_key(places, tmp_path):
+    binary = tmp_path / "bin" / "roko"
+    binary.parent.mkdir()
+    binary.write_text(CALLING_ROKO.replace("__PYTHON__", sys.executable).replace("__CALLS__", "1"))
+    binary.chmod(0o755)
+    arm = tmp_path / "roko_test.toml"
+    arm.write_text((layout.ARMS_DIR / "roko_fixed.toml").read_text().replace(
+        'binary = "target/debug/roko"', f"binary = {json.dumps(str(binary))}"))
+    with StubServer(lambda body: "Done.") as stub:
+        assert vb.main(["run", "--experiment", "TEST-OFFLINE", "--run-id", "run-1", "--stream", TOY_STREAM,
+                        "--arm", str(arm), "--model", "gpt-oss-120b", "--limit", "1", "--provider-url", stub.url,
+                        "--proxy", "--results", str(places["results"]), "--work", str(places["work"]),
+                        "--secret-file", str(places["secret"])]) == 0
+        assert [request["model"] for request in stub.requests] == ["gpt-oss-120b"]
+    out = run_dir(places)
+    [row] = read_jsonl(out / "proxy.jsonl")
+    assert (row["task"], row["model_reported"], row["usage_source"]) == ("F1-l1-0001.s1", "gpt-oss-120b", "reported")
+    [record] = read_jsonl(out / "records.jsonl")
+    [attempt] = record["execution"]["attempts"]
+    assert record["execution"]["status"] == "completed" and attempt["checks"] == [] and attempt["calls"] == 1
+    assert attempt["model_reported"] == "gpt-oss-120b" and attempt["usage"]["tokens_in"] == row["usage"]["tokens_in"]
+    assert record["costs"]["api_equiv_usd"] == pytest.approx(row["api_equiv_usd"]) and row["api_equiv_usd"] > 0
+
+
+def test_proxy_caps_meter_check_and_bundle(places, tmp_path, monkeypatch):
+    # gap-60654d: the proxy holds every task to the arm's input_tokens_per_task, and a task it cuts off ends
+    # aborted_cap; each record carries the proxy's own cost, and drift past ±5% is flagged; the report's bundle
+    # carries the proxy's log cut to its meter fields.
+    binary = tmp_path / "bin" / "roko"
+    binary.parent.mkdir()
+    binary.write_text(CALLING_ROKO.replace("__PYTHON__", sys.executable).replace("__CALLS__", "10"))
+    binary.chmod(0o755)
+    # A task's first call may bill up to its bytes (4,600 input tokens), and each repeat of that prompt its first
+    # call's 1,070: under a 5,000-token cap, four calls fit and the fifth could cross it.
+    arm = tmp_path / "roko_capped.toml"
+    arm.write_text((layout.ARMS_DIR / "roko_fixed.toml").read_text().replace(
+        'binary = "target/debug/roko"', f"binary = {json.dumps(str(binary))}").replace(
+        "input_tokens_per_task = 450000", "input_tokens_per_task = 5000"))
+
+    def run(run_id: str, arm: str, url: str) -> int:
+        return vb.main(["run", "--experiment", "TEST-OFFLINE", "--run-id", run_id, "--stream", TOY_STREAM, "--arm", arm,
+                        "--model", "gpt-oss-120b", "--provider-url", url, "--proxy", "--results",
+                        str(places["results"]), "--work", str(places["work"]), "--secret-file", str(places["secret"])])
+
+    with StubServer(lambda body: "Done.") as stub:
+        assert run("run-1", str(arm), stub.url) == 0
+        served = len(stub.requests)
+    out = run_dir(places)
+    rows = read_jsonl(out / "proxy.jsonl")
+    for key in ("F1-l1-0001.s1", "F1-l1-0002.s1"):  # the cap is per task: each gets all of it
+        calls = [row for row in rows if row["task"] == key]
+        assert [(row["status"], row["refused"]) for row in calls] == [(200, None)] * 4 + [(403, "input_token_cap")]
+    assert served == 8  # a refused call never reaches the provider
+    for record in by_instance(out / "records.jsonl").values():
+        assert (record["execution"]["status"], record["execution"]["reason"]) == ("aborted_cap", "input_token_cap")
+        assert record["vs"]["label"] == 0 and validate.validate("run-record", record) == []
+        assert record["costs"]["meter_cross_check_usd"] == pytest.approx(record["costs"]["api_equiv_usd"])
+        assert record["costs"]["api_equiv_usd"] > 0
+    assert not (out / "errors.jsonl").exists()  # the meter and the ledger agree: nothing to flag
+
+    bundle = tmp_path / "bundle"
+    assert vb.main(["report", "--experiment", "TEST-OFFLINE", "--results", str(places["results"]), "--out",
+                    str(tmp_path / "metrics.json"), "--bundle", str(bundle)]) == 0
+    bundled = read_jsonl(bundle / "run-1" / "proxy.jsonl")
+    assert len(bundled) == len(rows) and all(row == {key: full[key] for key in row} for row, full in zip(bundled, rows))
+    assert all({"task", "usage", "api_equiv_usd"} <= set(row) and not {"profile", "fault", "path"} & set(row)
+               for row in bundled)
+
+    # A proxy figure 10% above the ledger's is drift past ±5%: flagged in errors.jsonl, and the record keeps both.
+    real_state = faultproxy.FaultProxy.state
+
+    def inflated(proxy: faultproxy.FaultProxy) -> dict:
+        state = real_state(proxy)
+        for meter in state["tasks"]:
+            meter["api_equiv_usd"] *= 1.1
+        return state
+
+    monkeypatch.setattr(faultproxy.FaultProxy, "state", inflated)
+    with StubServer(lambda body: bash("echo VB_SUBMIT")) as stub:
+        assert run("run-2", "cheap_direct", stub.url) == 0
+    drifted = places["results"] / "TEST-OFFLINE" / "run-2"
+    for record in by_instance(drifted / "records.jsonl").values():
+        assert record["costs"]["meter_cross_check_usd"] == pytest.approx(1.1 * record["costs"]["api_equiv_usd"])
+    flags = read_jsonl(drifted / "errors.jsonl")
+    assert sorted(flag["task"] for flag in flags) == ["F1-l1-0001.s1", "F1-l1-0002.s1"]
+    assert all(flag["stage"] == "meter check" and "±5%" in flag["error"] for flag in flags)
+
+
 def test_agent_env_is_an_allowlist(tmp_path, monkeypatch):
     for name, value in {"VB_SECRET_FILE": "/somewhere", "CEREBRAS_API_KEY": FAKE_KEY, "OPENAI_API_KEY": FAKE_KEY,
                         "GITHUB_TOKEN": FAKE_KEY, "ROKO_CONFIG": "/x/roko.toml"}.items():
@@ -268,6 +506,33 @@ def test_prices_come_from_the_snapshot_and_unknown_models_cost_null(tmp_path):
     [row] = read_jsonl(tmp_path / "ledger.jsonl")
     assert row["api_equiv_usd"] is None and row["source"] == "unknown" and validate.validate("ledger", row) == []
     assert book.spent_bound_usd == pytest.approx(0.3)  # an unknown cost counts at its reservation
+
+
+def test_usage_reads_a_top_level_cached_tokens():
+    # bug-b70d40: Moonshot reports its cache reads as a top-level `cached_tokens`, OpenAI and Cerebras inside
+    # `prompt_tokens_details`. Either way they are priced at the cache-read rate, the way mini_loop prices a call.
+    def usage_of(raw: dict) -> dict:
+        usage = provider.parse_completion({"choices": [{"message": {"content": "ok"}}], "usage": raw}).usage
+        return ledger.vb_usage(usage.prompt_tokens, usage.completion_tokens, usage.cached_tokens,
+                               usage.reasoning_tokens)
+
+    row = ledger.load_snapshot().row("kimi-k2.6")
+    top = {"prompt_tokens": 1000, "completion_tokens": 100, "cached_tokens": 600}
+    nested = {"prompt_tokens": 1000, "completion_tokens": 100, "prompt_tokens_details": {"cached_tokens": 600}}
+    for raw in (top, nested):
+        assert usage_of(raw)["tokens_cache_read"] == 600
+        assert ledger.price(usage_of(raw), row).api_equiv_usd == pytest.approx(
+            (400 * row["input"] + 600 * row["cache_read"] + 100 * row["output"]) / 1e6)
+    # A nested count wins over a top-level one, a count above prompt_tokens is capped, and a bad count is 0: the
+    # same reading as the proxy's meter, so the ledger and the meter agree on every layout.
+    cases = [({**nested, "cached_tokens": 999}, 600), ({**top, "prompt_tokens_details": None}, 600),
+             ({**top, "prompt_tokens_details": {}}, 600), ({**top, "prompt_tokens_details": {"cached_tokens": 0}}, 0),
+             ({**top, "cached_tokens": 5000}, 1000), ({**top, "cached_tokens": True}, 0),
+             ({**top, "cached_tokens": -3}, 0), ({**top, "cached_tokens": "600"}, 0)]
+    for raw, cached in cases:
+        assert usage_of(raw)["tokens_cache_read"] == cached, raw
+        metered = faultproxy.usage_classes(raw)
+        assert usage_of(raw) == {key: metered[key] for key in usage_of(raw)}, raw
 
 
 def test_replies_need_exactly_one_bash_block(tmp_path):

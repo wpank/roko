@@ -11,7 +11,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use roko_learn::episode_logger::{Episode, EpisodeGateVerdict, EpisodeLogger, Usage};
+use roko_learn::episode_logger::{
+    Episode, EpisodeGateVerdict, EpisodeLogger, LEARNING_LABEL_KEY, Usage,
+};
 use roko_learn::hdc_fingerprint::{encode as encode_hdc_fingerprint, fingerprint_episode};
 use roko_learn::hindsight::BLAMED_TASKS_KEY;
 
@@ -71,12 +73,27 @@ impl FeedbackSink for EpisodeSink {
 
         let mut episode = Episode::new(outcome.task_id.clone(), task_id.clone());
         // The attempt this episode records (S01): it joins the attempt's
-        // verdict, efficiency and cost rows.
+        // verdict, efficiency and cost rows. The verdict's outcome, blame
+        // and learning label ride along: `success` keeps its meaning (the
+        // provider call succeeded and no verify step failed), so a learner
+        // reading episodes reads `learning_label`, and `null` teaches it
+        // nothing.
         if let Some(settled) = settled {
             episode.extra.insert(
                 "attempt_key".into(),
                 serde_json::Value::String(settled.identity.attempt_key.clone()),
             );
+            let verdict = [
+                ("outcome", serde_json::json!(settled.outcome)),
+                ("blame", serde_json::json!(settled.blame)),
+                (
+                    LEARNING_LABEL_KEY,
+                    serde_json::json!(settled.learning_label),
+                ),
+            ];
+            for (key, value) in verdict {
+                episode.extra.insert(key.into(), value);
+            }
         }
         episode.success = *succeeded;
         episode.turns = *turns;
@@ -329,6 +346,71 @@ mod tests {
             [EpisodeGateVerdict::new("verify", false)]
         );
         assert!(!episode.extra.contains_key(BLAMED_TASKS_KEY));
+    }
+
+    /// Every attempt still gets its episode, but a learner reading episodes
+    /// can tell an attempt that teaches nothing: an unverified attempt keeps
+    /// `success` (its provider call succeeded and no verify step failed) and
+    /// carries a `null` learning label.
+    #[tokio::test]
+    async fn episodes_carry_the_learning_label_learners_read() {
+        use crate::runtime_feedback::settled_as;
+        use roko_learn::telemetry::AttemptOutcome;
+
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("episodes.jsonl");
+        let sink = EpisodeSink::at(&path);
+        let cases = [
+            (
+                AttemptOutcome::Unverified,
+                true,
+                "none",
+                serde_json::Value::Null,
+            ),
+            (AttemptOutcome::Passed, true, "none", serde_json::json!(1)),
+            (
+                AttemptOutcome::GateFailed,
+                false,
+                "agent",
+                serde_json::json!(0),
+            ),
+            (
+                AttemptOutcome::ProviderError,
+                false,
+                "infra",
+                serde_json::Value::Null,
+            ),
+        ];
+        for (verdict, succeeded, _, _) in &cases {
+            sink.on_event(&FeedbackEvent::TaskCompleted {
+                turns: 1,
+                failure_reason: None,
+                settled: settled_as(*verdict, true),
+                plan_id: "plan-1".into(),
+                task_id: "task-1".into(),
+                outcome: outcome(),
+                model_source: ModelChoiceSource::Router,
+                succeeded: *succeeded,
+                routing_context: None,
+                prompt_text: None,
+                cache_read_tokens: 0,
+                knowledge_ids: vec![],
+                playbook_ids: vec![],
+                initial_model: String::new(),
+            })
+            .await
+            .unwrap();
+        }
+
+        let episodes = EpisodeLogger::read_all(&path).await.unwrap();
+        assert_eq!(episodes.len(), cases.len());
+        for (episode, (verdict, succeeded, blame, label)) in episodes.iter().zip(&cases) {
+            let wire = serde_json::to_value(verdict).unwrap();
+            assert_eq!(episode.extra["outcome"], wire);
+            assert_eq!(episode.success, *succeeded, "{wire}");
+            assert_eq!(episode.extra["blame"], *blame, "{wire}");
+            assert_eq!(episode.extra["learning_label"], *label, "{wire}");
+        }
     }
 
     #[tokio::test]

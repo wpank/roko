@@ -2,14 +2,16 @@
 id = "bug-3c1c4a"
 kind = "bug"
 title = "ViabilityBench metrics group runs by arm only, so an arm that runs two models in one experiment is pooled"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p2"
 goal = "proof"
 size = "S"
 subsystem = ["benchmarks/viabilitybench/analysis"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-29
+last_verified_rev = "8673b1d9f"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (20:01, wk-bench-report's report on gap-b24517)"
 anchors = ["benchmarks/viabilitybench/analysis/metrics.py::arm_metrics", "benchmarks/viabilitybench/analysis/metrics.py::check_unique", "benchmarks/viabilitybench/analysis/report.py::build", "benchmarks/viabilitybench/arms/cheap_direct.toml"]
@@ -19,6 +21,12 @@ links = { depends_on = [], blocks = [], related = ["gap-b24517", "gap-327242", "
 
 [[verify]]
 command = "grep -qw 'def test_an_arm_with_two_models_is_reported_per_model' benchmarks/viabilitybench/analysis/test_analysis.py && benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/analysis/test_analysis.py -k test_an_arm_with_two_models_is_reported_per_model -q"
+
+[closed]
+at = 2026-09-29
+commit = "8673b1d9f"
+by = "wk-bench-fix3"
+evidence = "metrics.cells/with_models/run_models make the cell (arm, model) when an arm ran more than one model in an experiment; check_unique, arm_metrics(model=...), false_greens/excluded (a model field) and report.render split per model, and such a cell's record_filter adds model == \"<slug>\"; single-model arms keep arm-only cells and filters; a non-routed run that switches models, or a model-less run in a two-model arm, raises MetricsError. Verify: test_an_arm_with_two_models_is_reported_per_model passes; analysis/test_analysis.py 20 passed; full bench suite 299 passed, 4 skipped (8673b1d9f)."
 +++
 
 ## Problem

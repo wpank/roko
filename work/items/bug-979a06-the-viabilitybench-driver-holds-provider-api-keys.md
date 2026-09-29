@@ -2,8 +2,10 @@
 id = "bug-979a06"
 kind = "bug"
 title = "The ViabilityBench driver holds provider API keys in its own environment, where same-uid agents can read them"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
+last_verified = 2026-09-29
+last_verified_rev = "161f29dda"
 severity = "p1"
 goal = "proof"
 size = "M"
@@ -19,6 +21,12 @@ links = { depends_on = [], blocks = [], related = ["gap-e003ec", "gap-a8a160", "
 
 [[verify]]
 command = "grep -qw 'def test_no_provider_key_in_the_driver_environment' benchmarks/viabilitybench/driver/test_secret.py && benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/driver/test_secret.py -k test_no_provider_key_in_the_driver_environment -q"
+
+[closed]
+at = 2026-09-29
+commit = "161f29dda"
+by = "wk-bench-fix2"
+evidence = "Provider keys now live in a driver-only key file (--key-file, $VB_KEY_FILE, ~/.config/viabilitybench/keys; secret.load_keys, secret.py keys) and reach only the driver's memory: vb run hands them to the in-process metering proxy (FaultProxy(keys=...)), the chat client never reads a key, and os.environ is never read for one. secret.preflight refuses a run whose environment holds any arm's api_key_env or a key value, and forbids the keys in agent environments (escape hatch KEYS_IN_ENV_OK for tests). The [[verify]] command passes: test_no_provider_key_in_the_driver_environment runs vb.py as a process through the proxy; the stub sees the key file's key on every request while ps -E and /proc on the driver show the probe marker and no key; the refusals exit 2 before any request or directory; a silent read of the key file is leak_suspected (key-file:ctime). benchmarks/viabilitybench: 309 passed, 4 skipped."
 +++
 
 ## Problem
@@ -62,10 +70,36 @@ At BASE (4315add32), the keys come from the driver's environment. The metering p
 
 ## Done when
 
-- [ ] No process an agent can inspect holds a provider key, and `vb run` refuses to start with one in its environment.
-- [ ] The `[[verify]]` command passes.
+- [x] No process an agent can inspect holds a provider key, and `vb run` refuses to start with one in its environment.
+- [x] The `[[verify]]` command passes.
 
 ## Notes
 
 - A container per task (S08 decision 4) would also close this, but is a larger change. See gap-308373 and gap-8c3752.
 - bug-a66941 is the same class of problem for Roko's own agents and `~/.roko/.env`.
+- **Done 2026-09-29 (wk-bench-fix2)**, on top of gap-e90ebd's proxy wiring (work/bug-2930a8, merged into this
+  branch).
+  - The keys live in a driver-only key file: `--key-file`, else `$VB_KEY_FILE`, else `~/.config/viabilitybench/keys`.
+    It follows the secret file's rules, and `secret.py keys` checks it.
+  - `vb run` reads the key into the driver's memory for the in-process metering proxy (`FaultProxy(keys=…)`), which
+    alone sends it. The chat client never reads a key, and Roko gets the proxy's URL and a placeholder.
+  - `secret.preflight` refuses a run whose environment holds any arm's `api_key_env` or a key value under any name,
+    and forbids the key values in every agent environment. `secret.KEYS_IN_ENV_OK` is the tests' escape hatch, and
+    `driver/conftest.py` keeps a developer's exported keys and key file out of the tests.
+  - The tripwire (gap-308373) holds the key file at mode 000 for the run, so a silent read of it is `leak_suspected`
+    too (`key-file:ctime`).
+- **Evidence.** `test_no_provider_key_in_the_driver_environment` runs `vb.py` as its own process through the proxy.
+  The stub sees the key file's key on every request. `ps -E` and `/proc` on the driver show the probe's marker but no
+  key, and the key file reads "Permission denied". The refusals exit 2 before any request or directory.
+- **Not covered here:**
+  - Credentials that aren't arm keys and sit in the operator's environment (`ANTHROPIC_API_KEY`, `GITHUB_TOKEN`, …)
+    are still visible to agents through `ps -E`. Launch `vb` from a clean environment.
+  - On Linux with `kernel.yama.ptrace_scope=0`, or on macOS with developer tools enabled, a same-uid agent could read
+    the driver's memory. A container per task (S08 decision 4) closes that.
+  - `run_roko._roko_env`'s "set CEREBRAS_API_KEY" message is stale. It can only fire for an unproxied network
+    endpoint, which a billed Roko run no longer has.
+- **Follow-up (same day, wk-bench-fix2, per the coordinator).**
+  - `run_roko._roko_env` no longer reads a key from the environment. Roko gets the placeholder on a loopback URL (the
+    proxy's or a stub's), and a network endpoint is refused before Roko starts, with a message that points to
+    `vb run`'s proxy and `--key-file`.
+  - The chat client is keyless, rather than taking `key=`, since fix1's wiring makes the proxy the only sender.

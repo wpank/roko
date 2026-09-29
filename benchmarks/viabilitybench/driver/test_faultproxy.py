@@ -20,6 +20,7 @@ import pytest
 import faultproxy
 import layout
 import ledger
+import secret
 import vb
 from common import hmac_seed
 from stub_provider import StubServer, bash
@@ -354,7 +355,8 @@ def test_meter_equals_upstream_usage(upstream, log):
             for line in legacy_lines] == [("missing", None, None, "unknown")] * 3
     assert totals["legacy"]["usage_missing"] == totals["legacy"]["cost_unknown"] == 3
     assert totals["legacy"]["usage"] == {} and totals["legacy"]["api_equiv_usd"] == 0.0
-    assert totals["legacy"]["input_tokens"] == 3 * len(json.dumps(STREAM).encode())  # bytes bound the unknown input
+    # An unknown input counts at the call's bound: its bytes, and the header a provider may add.
+    assert totals["legacy"]["input_tokens"] == 3 * (len(json.dumps(STREAM).encode()) + faultproxy.PREAMBLE_TOKENS)
     assert all("stream_options" not in body for _, body in legacy.requests)
 
 
@@ -425,8 +427,11 @@ def test_truncate_never_completes_a_response(proxy, upstream, log):
 
 
 def test_input_token_cap_refuses_further_calls(proxy, upstream, log):
-    proxy.configure(task="capped", input_token_cap=raw_usage(1)["prompt_tokens"] + 1)
-    assert [post(completions(proxy), REQUEST).status for _ in range(2)] == [200, 200]  # the cap is reached
+    # Room for a first call's bound (its bytes and a provider's header) and a second call's (the first's input, since
+    # it repeats that prompt), but no third.
+    first_bound = len(json.dumps(REQUEST).encode()) + faultproxy.PREAMBLE_TOKENS
+    proxy.configure(task="capped", input_token_cap=first_bound + raw_usage(1)["prompt_tokens"])
+    assert [post(completions(proxy), REQUEST).status for _ in range(2)] == [200, 200]
     refused = post(completions(proxy), REQUEST)
     assert refused.status == 403 and refused.json()["error"]["type"] == "vb_cap_exceeded"
     assert len(upstream.requests) == 2  # a refused call never reaches the provider
@@ -439,6 +444,52 @@ def test_input_token_cap_refuses_further_calls(proxy, upstream, log):
         ("none", 0.0, "not_billed")] * 2
     [capped] = [row for row in proxy.state()["tasks"] if row["task"] == "capped"]
     assert capped["refused"] == 2 and capped["forwarded"] == 2 and capped["requests"] == 4
+
+
+def test_the_input_cap_bounds_a_tasks_input(tmp_path):
+    # bug-c30764: the proxy refuses a call before sending it when the call could take the task past its cap, so the
+    # metered input never passes it. The stub's usage, like a real provider's, is a function of the prompt.
+    cap = 4000
+    with StubServer(lambda body: "ok " * 40) as stub, faultproxy.FaultProxy(
+            [faultproxy.Upstream("stub", stub.url)], log_path=tmp_path / "proxy.jsonl", input_token_cap=cap) as proxy:
+        proxy.configure(task="long")
+        messages, bodies, statuses = [{"role": "system", "content": "Be careful. " * 150},
+                                      {"role": "user", "content": "Go."}], [], []
+        while not statuses or statuses[-1] == 200:  # a conversation that grows until the cap stops it
+            bodies.append({"model": MODEL, "messages": list(messages)})
+            reply = post(completions(proxy), bodies[-1])
+            statuses.append(reply.status)
+            if reply.status == 200:
+                messages += [reply.json()["choices"][0]["message"], {"role": "user", "content": "output " * 150}]
+        [meter] = proxy.state()["tasks"]
+        forwarded = len(stub.requests)
+    rows = read_log(tmp_path / "proxy.jsonl", "long")
+    assert statuses == [200, 200, 200, 403] and forwarded == 3 and rows[-1]["refused"] == "input_token_cap"
+    assert meter["input_tokens"] <= cap and meter["reserved"] == 0
+    assert meter["input_tokens"] + rows[-1]["input_bound"] > cap  # the refused call could have crossed it
+    for row, body in zip(rows, bodies):  # every bound holds, and an extended prompt's is below its bytes
+        billed = row["usage"]["tokens_in"] + row["usage"]["tokens_cache_read"] if row["usage"] else 0
+        assert row["input_bound"] >= billed
+        assert row["input_bound"] == len(json.dumps(body)) + faultproxy.PREAMBLE_TOKENS if row["ordinal"] == 1 else \
+            row["input_bound"] < len(json.dumps(body))  # the earlier prompt's input, plus the added messages' bytes
+
+    # The calls in flight count too: while one call is held, a second that would fit on its own is refused.
+    held: list[Reply] = []
+    with StubServer(lambda body: "ok") as stub, faultproxy.FaultProxy(
+            [faultproxy.Upstream("stub", stub.url)], log_path=tmp_path / "flight.jsonl") as proxy:
+        body = {"model": MODEL, "messages": [{"role": "user", "content": "x" * 1000}]}
+        bound = len(json.dumps(body)) + faultproxy.PREAMBLE_TOKENS
+        proxy.configure(task="parallel", input_token_cap=bound * 3 // 2, profile={"name": "latency", "ms": 1500})
+        first = threading.Thread(target=lambda: held.append(post(completions(proxy), body)))
+        first.start()
+        deadline = time.monotonic() + 5
+        while not any(task["reserved"] for task in proxy.state()["tasks"]) and time.monotonic() < deadline:
+            time.sleep(0.01)
+        second = post(completions(proxy), body)
+        first.join()
+        [meter] = proxy.state()["tasks"]
+    assert (second.status, held[0].status, len(stub.requests)) == (403, 200, 1)
+    assert meter["input_tokens"] <= bound * 3 // 2 and meter["reserved"] == 0
 
 
 def test_control_endpoint_needs_the_token(proxy, upstream):
@@ -464,16 +515,19 @@ def test_upstreams_are_allowlisted_and_get_the_proxys_key(tmp_path, monkeypatch,
     for base_url in ("https://example.com/v1", "http://api.openai.com/v1", "ftp://127.0.0.1/v1"):
         with pytest.raises(faultproxy.ProxyError):
             faultproxy.FaultProxy([faultproxy.Upstream("x", base_url)], log_path=tmp_path / "refused.jsonl")
-    monkeypatch.delenv("VB_TEST_UNSET_KEY", raising=False)
-    with pytest.raises(faultproxy.ProxyError):
+    # The keys come from the key file (bug-979a06), never from the environment, even when a variable of that name is
+    # set there.
+    keys = secret.load_keys(secret.create_keys(tmp_path / "private-config" / "keys",
+                                               {"VB_TEST_UPSTREAM_KEY": "sk-upstream-test-7c1d"}))
+    monkeypatch.setenv("VB_TEST_UNSET_KEY", "sk-from-the-environment-4a2b")
+    with pytest.raises(faultproxy.ProxyError, match="VB_TEST_UNSET_KEY"):
         faultproxy.FaultProxy([faultproxy.Upstream("openai", "https://api.openai.com/v1", "VB_TEST_UNSET_KEY")],
-                              log_path=tmp_path / "refused.jsonl")
-    monkeypatch.setenv("VB_TEST_UPSTREAM_KEY", "sk-upstream-test-7c1d")
+                              log_path=tmp_path / "refused.jsonl", keys=keys)
     faultproxy.FaultProxy([faultproxy.Upstream("openai", "https://api.openai.com/v1", "VB_TEST_UPSTREAM_KEY")],
-                          log_path=tmp_path / "allowed.jsonl").close()  # an arm's host is allowed; nothing is sent
+                          log_path=tmp_path / "allowed.jsonl", keys=keys).close()  # an arm's host; nothing is sent
     with StubUpstream(redirect_to="http://127.0.0.1:9/elsewhere") as redirecting, faultproxy.FaultProxy(
             [faultproxy.Upstream("stub", upstream.url, "VB_TEST_UPSTREAM_KEY"), faultproxy.Upstream(
-                "moved", redirecting.url)], log_path=tmp_path / "proxy.jsonl") as proxy:
+                "moved", redirecting.url)], log_path=tmp_path / "proxy.jsonl", keys=keys) as proxy:
         assert post(completions(proxy), REQUEST, headers={"Authorization": "Bearer client-secret"}).status == 200
         moved = post(completions(proxy, "moved"), REQUEST)
     assert upstream.requests[0][0]["authorization"] == "Bearer sk-upstream-test-7c1d"

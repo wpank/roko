@@ -58,6 +58,13 @@ MUTANTS = [
     ("feature", "family", "F1", '$.family: must be "PL", not "F1"'),
     ("feature", "canary", DELETE, "missing required field 'canary'"),
     ("run-record", "task.ladder", "plan", '$.task.ladder: "plan" is not one of [1, 2, 3, 4, 5, null]'),
+    # S09 §4.9's per-class costs split api_equiv_usd (0.0231) without changing it; a queue wait is never below 0.
+    ("run-record", "costs.by_class", {"plan": 0.0, "execute": 0.02, "retry": 0.0, "escalate": 0.0, "integrate": 0.0},
+     "$.costs.by_class: the classes add up to 0.02, not api_equiv_usd 0.0231"),
+    ("run-record", "costs.by_class", {"plan": 0.03, "execute": None, "retry": 0.0, "escalate": 0.0, "integrate": 0.0},
+     "the known classes add up to 0.03, more than api_equiv_usd 0.0231"),
+    ("run-record", "costs.by_class", {"plan": 0.0, "execute": 0.0231}, "missing required field 'retry'"),
+    ("run-record", "execution.queue_wait_s", -1.0, "$.execution.queue_wait_s: a wait cannot be below 0"),
 ]
 
 

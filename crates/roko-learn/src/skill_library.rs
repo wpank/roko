@@ -769,8 +769,10 @@ fn episode_gate_passed(episode: &crate::episode_logger::Episode) -> bool {
     }
 }
 
+/// A pass by its learning label (S01 §4.1) whose gates all passed: an
+/// unverified success is no evidence of a skill.
 fn episode_is_skill_candidate(episode: &crate::episode_logger::Episode) -> bool {
-    episode.success && episode_gate_passed(episode)
+    episode.learning_success() == Some(true) && episode_gate_passed(episode)
 }
 
 fn episode_task_category(episode: &crate::episode_logger::Episode) -> String {
@@ -1501,8 +1503,10 @@ impl SkillLibrary {
     }
 
     /// Check whether an episode qualifies for skill extraction (§16.3.2).
+    /// Success is the learning label's (S01 §4.1), so an unverified success
+    /// never qualifies.
     fn episode_qualifies(episode: &crate::episode_logger::Episode) -> bool {
-        if !episode.success {
+        if episode.learning_success() != Some(true) {
             return false;
         }
         let iteration = episode
@@ -1855,13 +1859,18 @@ pub fn evolve_skills(
     let mut updates = Vec::new();
 
     for episode in episodes {
+        // An attempt without a learning label (S01 §4.1), unverified or
+        // failed at the provider, neither teaches a pattern nor weakens one.
+        let Some(success) = episode.learning_success() else {
+            continue;
+        };
         let gate_passed = if !episode.gate_verdicts.is_empty() {
             episode.gate_verdicts.iter().all(|v| v.passed)
         } else {
-            episode.success
+            success
         };
 
-        if episode.success && gate_passed {
+        if success && gate_passed {
             // Successful episode: extract skill pattern.
             let tags = extra_strings(episode, "task_tags");
             let category = extra_str(episode, "task_category");

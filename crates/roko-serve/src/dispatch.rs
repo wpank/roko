@@ -20,7 +20,7 @@ use chrono::Utc;
 use parking_lot::{Mutex, RwLock};
 use regex::Regex;
 use roko_agent::chat_types::FinishReason;
-use roko_agent::mcp::{McpConfig, McpServerConfig, find_mcp_config};
+use roko_agent::mcp::{McpConfig, McpServerConfig, workspace_mcp_config};
 use roko_agent::provider::{AgentOptions, create_agent_for_model};
 use roko_agent::{Agent, AgentResult};
 use roko_compose::SystemPromptBuilder;
@@ -2377,7 +2377,7 @@ fn resolve_template_mcp_config(
 ) -> Result<Option<PathBuf>> {
     if template.mcp_servers.is_empty() {
         return Ok(base_mcp_config.cloned().or_else(|| {
-            find_mcp_config(workdir).and_then(|result| match result {
+            workspace_mcp_config(workdir).and_then(|result| match result {
                 Ok((path, _)) => Some(path),
                 Err(err) => {
                     warn!(error = %err, "failed to discover MCP config for template");
@@ -2390,7 +2390,7 @@ fn resolve_template_mcp_config(
     let discovered = if let Some(path) = base_mcp_config {
         Some(path.clone())
     } else {
-        match find_mcp_config(workdir) {
+        match workspace_mcp_config(workdir) {
             Some(Ok((path, _))) => Some(path),
             Some(Err(err)) => return Err(err.into()),
             None => None,

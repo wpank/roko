@@ -518,7 +518,8 @@ mod tests {
         for (name, is_key) in [
             (".env", true),
             ("credentials.json", true),
-            ("config.toml", false),
+            ("config.toml", true),
+            ("daemon.log", false),
         ] {
             let path = home.join(".roko").join(name);
             let arg = path.to_str().expect("utf8 path");

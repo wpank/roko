@@ -2,7 +2,7 @@
 id = "bug-b69a47"
 kind = "bug"
 title = "The portal header shows the server's lifetime cost instead of the running run's cost"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "visibility"
@@ -11,7 +11,7 @@ subsystem = ["apps/portal"]
 created = 2026-09-29
 updated = 2026-09-29
 last_verified = 2026-09-29
-last_verified_rev = "f99e45dba"
+last_verified_rev = "3fb11e23e"
 source = "plan:portal-programme/09-acceptance#T04"
 discovered_from = "plan:portal-programme/09-acceptance#T04"
 anchors = ["apps/portal/src/lib/runState.ts:968", "apps/portal/src/lib/runState.ts:1268", "apps/portal/src/components/shell/Header.tsx:116"]
@@ -19,6 +19,11 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqF --include='*.test.ts' --include='*.test.tsx' 'cost restarts with each run' apps/portal/src && (cd apps/portal && npx vitest run src/lib/runState src/components/shell)"
+
+[closed]
+at = 2026-09-29
+commit = "3fb11e23e"
+evidence = "Header.tsx shows runCostUsd(run), the cost of the current run's plans (plan set, else running plans), each reset with its run, instead of run.totals.costUsd. [[verify]] passes at 3fb11e23e: Header.cost.test.tsx ('cost restarts with each run': a second run starts at $0, then shows $0.21 not $10.41; after a reload it reads the snapshot's plan costs, not stats.cost_usd_total) and runState.cost.test.ts; the header test fails when the header reads run.totals.costUsd again."
 +++
 
 ## Problem

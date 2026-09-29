@@ -873,6 +873,7 @@ fn update_from_dashboard_snapshot_maps_connected_state_and_preserves_navigation(
                     tasks_done: 1,
                     tasks_failed: 0,
                     active: true,
+                    ..Default::default()
                 },
             ),
             (
@@ -884,6 +885,7 @@ fn update_from_dashboard_snapshot_maps_connected_state_and_preserves_navigation(
                     tasks_done: 1,
                     tasks_failed: 1,
                     active: false,
+                    ..Default::default()
                 },
             ),
         ]
@@ -1070,6 +1072,7 @@ fn update_from_dashboard_snapshot_keeps_expanded_state_when_matching_plan_remain
                 tasks_done: 1,
                 tasks_failed: 0,
                 active: false,
+                ..Default::default()
             },
         )]
         .into_iter()
@@ -1360,6 +1363,7 @@ fn update_from_dashboard_snapshot_maps_streaming_fields() {
             tasks_done: 1,
             tasks_failed: 0,
             active: true,
+            ..Default::default()
         },
     );
     snap.tasks.insert(
@@ -1545,6 +1549,7 @@ fn update_from_dashboard_snapshot_preserves_navigation_state_by_id() {
             tasks_done: 0,
             tasks_failed: 0,
             active: true,
+            ..Default::default()
         },
     );
     snap.plans.insert(
@@ -1556,6 +1561,7 @@ fn update_from_dashboard_snapshot_preserves_navigation_state_by_id() {
             tasks_done: 0,
             tasks_failed: 0,
             active: false,
+            ..Default::default()
         },
     );
     snap.tasks.insert(

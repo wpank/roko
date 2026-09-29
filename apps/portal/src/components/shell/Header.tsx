@@ -7,7 +7,7 @@
  * - Workspace name (and branch when reported) from useWorkspace(); sets
  *   document.title to "roko · <name>" via an effect.
  * - Live run progress when plans are running: plan-set summary or single-plan
- *   progress, elapsed time, ETA when known, and accumulated cost when > 0.
+ *   progress, elapsed time, ETA when known, and the run's cost when > 0.
  *   The entire section is a button that cycles selectedPlanId through
  *   runningPlanIds; its glyph turns amber while any running plan is
  *   unverified (runningState). A ■ cancel button stops the whole run.
@@ -18,6 +18,7 @@ import { useEffect } from 'react';
 import { useWorkspace } from '@/api/queries';
 import { useDashboardStore } from '@/stores/dashboard';
 import { compactDuration, formatCost, middleEllipsis } from '@/lib/formatters';
+import { runCostUsd } from '@/lib/runState';
 import { useNow } from '@/lib/useNow';
 import { StatusGlyph } from '@/components/primitives/StatusGlyph';
 import { runningState } from '@/lib/planRows';
@@ -118,7 +119,9 @@ export function Header({
   if (mainLabel) runParts.push(mainLabel);
   if (elapsedMs !== null) runParts.push(compactDuration(elapsedMs));
   if (maxEtaMinutes !== null) runParts.push(`~${maxEtaMinutes}m`);
-  if (run.totals.costUsd > 0) runParts.push(formatCost(run.totals.costUsd));
+  // The run's own cost; `run.totals` is everything since the server started.
+  const costUsd = runCostUsd(run);
+  if (costUsd > 0) runParts.push(formatCost(costUsd));
   const runSummaryText = runParts.join(' · ');
 
   // Cycle selectedPlanId through runningPlanIds on each click.

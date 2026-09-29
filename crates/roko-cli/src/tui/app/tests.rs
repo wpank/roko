@@ -445,6 +445,7 @@ fn dashboard_snapshot_updates_preserve_navigation_state() {
                     tasks_done: 2,
                     tasks_failed: 0,
                     active: false,
+                    ..Default::default()
                 },
             ),
             (
@@ -456,6 +457,7 @@ fn dashboard_snapshot_updates_preserve_navigation_state() {
                     tasks_done: 0,
                     tasks_failed: 0,
                     active: true,
+                    ..Default::default()
                 },
             ),
         ]

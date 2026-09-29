@@ -86,3 +86,12 @@ These are hot files. Start only after the env and learn-a branches merge and the
   `AttemptKey` is 1-based with the same string layout. Pick one base here and convert the other.
 - Prompt-experiment keys use a per-process `graph-<uuid>` run id and 0-based ordinals, so they won't join to
   `AttemptKey` until this item switches them to the attempt context.
+- Implemented on `work/gap-96f7ed` at `5d65eaf27`; cargo verification deferred to the batch check.
+- **Decisions (2026-09-29):** one base, 1-based: the receipt's `attempt` doc now says so (no production code builds
+  receipts). Efficiency rows keep a unique `attempt_id` (the key, `/gate-pass` or `/gate-fail` on gate rows, which
+  `tests/cost_dedup.rs` needs) and gain an exact `attempt_key` through `roko_learn::telemetry::AttemptKeyed`, as cost
+  rows do; episodes get `extra.attempt_key`. The anchor `next_attempt_id` became `attempt.rs::open_attempt`.
+- **Left for later items:** the sinks still read `succeeded` (unverified counts as a success) until bug-c34782,
+  bug-35379d and gap-ad0d39 move them to the verdict; the verdict's usage, dollar costs, TTFT, verify steps and
+  failover chain stay `null` (P0-4, P0-5, P0-6, bug-35379d). Prompt-assembly and cost-ledger errors after the open
+  line leave no verdict yet, so they read as abandoned (P0-3).

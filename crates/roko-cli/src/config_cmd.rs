@@ -520,8 +520,7 @@ pub fn check_config_text(path: &Path, text: &str) -> Result<()> {
             .collect::<Vec<_>>();
         return Err(anyhow!("unknown config paths: {}", messages.join("; ")));
     }
-    let config = toml::from_str::<RokoConfig>(text)
-        .context("config does not match the schema")?;
+    let config = toml::from_str::<RokoConfig>(text).context("config does not match the schema")?;
     let errors = semantic_errors(&config);
     load_like_commands(path, config)?;
     if !errors.is_empty() {
@@ -740,32 +739,28 @@ pub fn cmd_edit(workdir: &Path, which: EditTarget) -> Result<()> {
 }
 
 /// Set a single dotted-key value and write it to the chosen layer file.
+///
+/// See [`set_config_key`]: the key is written under its v2 name, and a
+/// project `roko.toml` edit that `roko config validate` would reject is
+/// refused.
 pub fn cmd_set(workdir: &Path, target: EditTarget, key: &str, value: &str) -> Result<()> {
-    let resolved = load_resolved_config(workdir)?;
+    // Only the paths are needed. Loading the config would stop `config set`
+    // from repairing a file that no longer loads.
+    let paths = resolve_paths(workdir);
     let path = match target {
-        EditTarget::Global | EditTarget::Auto => resolved
-            .paths
+        EditTarget::Global | EditTarget::Auto => paths
             .global
             .ok_or_else(|| anyhow!("cannot determine global config path: HOME is not set"))?,
-        EditTarget::Project => resolved
-            .paths
-            .project
-            .unwrap_or_else(|| workdir.join("roko.toml")),
+        EditTarget::Project => paths.project.unwrap_or_else(|| workdir.join("roko.toml")),
     };
 
-    let mut doc = if path.exists() {
-        read_toml_file(&path)?
-    } else {
-        toml::Value::Table(toml::map::Map::new())
-    };
-    set_toml_dotted_key(&mut doc, key, value).with_context(|| format!("set {key} = {value}"))?;
-    write_toml_file(&path, &doc)?;
+    let key = set_config_key(&path, target, key, value)?;
     println!("set {key} = {value} in {}", path.display());
 
     // Append an audit entry to the config journal so changes can be traced.
     let journal_path = workdir.join(".roko").join("config-journal.jsonl");
     let change = ConfigChange {
-        section: ConfigSection::Other(key.split('.').next().unwrap_or(key).to_string()),
+        section: ConfigSection::Other(key.split('.').next().unwrap_or(&key).to_string()),
         summary: format!("config set {key} = {value}"),
     };
     if let Err(err) = hot_reload::append_config_journal(&journal_path, &[change], "config-set") {
@@ -773,6 +768,38 @@ pub fn cmd_set(workdir: &Path, target: EditTarget, key: &str, value: &str) -> Re
     }
 
     Ok(())
+}
+
+/// Set `key` to `value` in the config file at `path`, the `target` layer,
+/// and return the key that was written.
+///
+/// A v1 key name that schema v2 renamed (`agent.model`) is written under its
+/// v2 name (`agent.default_model`), so the file never gains a key that
+/// validation rejects. A project file must pass [`check_config_text`] after
+/// the edit, or it is not written.
+pub fn set_config_key(path: &Path, target: EditTarget, key: &str, value: &str) -> Result<String> {
+    let key = v2_config_key(key);
+    let mut doc = if path.exists() {
+        read_toml_file(path)?
+    } else {
+        toml::Value::Table(toml::map::Map::new())
+    };
+    set_toml_dotted_key(&mut doc, &key, value).with_context(|| format!("set {key} = {value}"))?;
+    if target == EditTarget::Project {
+        let text = toml::to_string_pretty(&doc).context("serialize config")?;
+        write_checked_config(path, &text)?;
+    } else {
+        write_toml_file(path, &doc)?;
+    }
+    Ok(key)
+}
+
+/// The v2 name of a dotted config key (`agent.model` -> `agent.default_model`).
+fn v2_config_key(key: &str) -> String {
+    roko_core::config::loader::V1_RENAMED_KEYS
+        .iter()
+        .find(|(table, old, _)| key.split_once('.') == Some((*table, *old)))
+        .map_or_else(|| key.to_string(), |(table, _, new)| format!("{table}.{new}"))
 }
 
 /// Which file `config edit` / `config set` should target.
@@ -1867,6 +1894,41 @@ scheduled_cron = "invalid cron"
                 "config validate on {budget:?}: {validated:?}"
             );
         }
+    }
+
+    /// bug-1c93b4: `config set --project agent.default_model X` wrote the
+    /// legacy `agent.model` key, which validation rejects, and v2 keys such
+    /// as `budget.max_plan_usd` were refused as unknown.
+    #[tokio::test]
+    async fn config_set_project_keeps_the_file_valid() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("roko.toml");
+        crate::init::write_init_config(dir.path(), false, crate::init::InitProvider::ClaudeCli)
+            .unwrap();
+
+        let set = |key: &str, value: &str| cmd_set(dir.path(), EditTarget::Project, key, value);
+        set("agent.default_model", "claude-opus-4-6").unwrap();
+        set("budget.max_plan_usd", "10").unwrap();
+        // A v1 name is written under its v2 name.
+        set("agent.effort", "high").unwrap();
+
+        let doc = read_toml_file(&path).unwrap();
+        let agent = &doc["agent"];
+        assert_eq!(agent["default_model"].as_str(), Some("claude-opus-4-6"));
+        assert_eq!(agent["default_effort"].as_str(), Some("high"));
+        assert!(agent.get("model").is_none(), "legacy key written");
+        assert!(agent.get("effort").is_none(), "legacy key written");
+        assert_eq!(doc["budget"]["max_plan_usd"].as_float(), Some(10.0));
+        cmd_validate(dir.path())
+            .await
+            .expect("config validate accepts the edited file");
+
+        // An edit that validation would reject is refused, and the file is
+        // left as it was: a $20 turn cap cannot sit beneath a $10 plan cap.
+        let before = fs::read_to_string(&path).unwrap();
+        let err = set("budget.max_turn_usd", "20").unwrap_err();
+        assert!(format!("{err:#}").contains("invariant 1"), "{err:#}");
+        assert_eq!(fs::read_to_string(&path).unwrap(), before);
     }
 
     #[test]

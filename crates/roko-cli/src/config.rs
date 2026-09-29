@@ -1531,12 +1531,6 @@ pub(crate) fn set_toml_dotted_key(doc: &mut toml::Value, key: &str, value: &str)
     if segments.is_empty() {
         bail!("empty key");
     }
-    // Normalise alias: agent.default_model -> agent.model
-    let segments: Vec<&str> = if segments.as_slice() == ["agent", "default_model"] {
-        vec!["agent", "model"]
-    } else {
-        segments
-    };
 
     // Walk/create intermediate tables.
     let _table = doc
@@ -1738,7 +1732,55 @@ fn parse_value_for_key(key: &str, value: &str) -> Result<toml::Value> {
                 .with_context(|| format!("parse {key} as float"))?;
             Ok(toml::Value::Float(f))
         }
-        _ => Err(anyhow!("unknown key: {key}")),
+        _ => parse_value_from_schema(key, value),
+    }
+}
+
+/// Parse `value` for a key the table above does not list, by the TOML type
+/// the v2 schema gives the key (`budget.max_plan_usd` is a float). A key
+/// that `roko config validate` would not accept is unknown.
+fn parse_value_from_schema(key: &str, value: &str) -> Result<toml::Value> {
+    let expected = roko_core::config::loader::schema_value_for_path(key)
+        .ok_or_else(|| anyhow!("unknown key: {key}"))?;
+    match expected {
+        toml::Value::Boolean(_) => {
+            let b = value
+                .parse::<bool>()
+                .with_context(|| format!("parse {key} as bool"))?;
+            Ok(toml::Value::Boolean(b))
+        }
+        toml::Value::Integer(_) => {
+            let n = value
+                .parse::<i64>()
+                .with_context(|| format!("parse {key} as integer"))?;
+            Ok(toml::Value::Integer(n))
+        }
+        toml::Value::Float(_) => {
+            let f = value
+                .parse::<f64>()
+                .with_context(|| format!("parse {key} as float"))?;
+            Ok(toml::Value::Float(f))
+        }
+        toml::Value::String(_) => Ok(toml::Value::String(value.to_string())),
+        toml::Value::Datetime(_) => {
+            let datetime = value
+                .parse::<toml::value::Datetime>()
+                .with_context(|| format!("parse {key} as datetime"))?;
+            Ok(toml::Value::Datetime(datetime))
+        }
+        // Arrays take a JSON array or whitespace-separated strings.
+        toml::Value::Array(_) if !value.trim_start().starts_with('[') => {
+            let items = value
+                .split_whitespace()
+                .map(|item| toml::Value::String(item.to_string()))
+                .collect();
+            Ok(toml::Value::Array(items))
+        }
+        toml::Value::Array(_) | toml::Value::Table(_) => {
+            let json_val: serde_json::Value =
+                serde_json::from_str(value).with_context(|| format!("parse {key} as JSON"))?;
+            json_to_toml(&json_val).with_context(|| format!("convert {key} JSON to TOML"))
+        }
     }
 }
 
@@ -3170,7 +3212,7 @@ default_model = "claude-sonnet"
                     strict_validation: false,
                 },
             )
-            .unwrap_or_else(|err| panic!("{provider:?}: the loader rejected init's config: {err}"));
+            .unwrap_or_else(|err| panic!("{provider:?}: the loader rejected it: {err}"));
             assert_eq!(
                 loaded
                     .models

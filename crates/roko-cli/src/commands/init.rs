@@ -117,9 +117,9 @@ pub fn render_init_template_for(cloud: bool, provider: InitProvider) -> Result<S
         InitProvider::AnthropicApi => {
             out.push_str("\n# Claude CLI was not found on PATH when this workspace was\n");
             out.push_str("# initialized, so the default model uses the Anthropic API through\n");
-            out.push_str("# ANTHROPIC_API_KEY. To use Claude CLI instead, install it, uncomment\n");
-            out.push_str("# the provider block below and set provider = \"claude_cli\" in\n");
-            out.push_str("# [models.claude-sonnet-4-6].\n");
+            out.push_str("# ANTHROPIC_API_KEY. To use Claude CLI instead, install it,\n");
+            out.push_str("# uncomment the provider block below and set\n");
+            out.push_str("# provider = \"claude_cli\" in [models.claude-sonnet-4-6].\n");
             push_claude_cli_provider(&mut out, "# ");
             out.push_str("\n[providers.anthropic]\n");
             out.push_str("kind = \"anthropic_api\"\n");

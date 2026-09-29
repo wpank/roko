@@ -87,7 +87,7 @@ This is the implementation plan, in order.
 ## Done when
 
 - [x] dec-2cd76a: Decide the whitepaper's title, audience, length and venue
-- [ ] gap-0191eb: Whitepaper outline and section stubs: the claims each section makes and their sources
+- [x] gap-0191eb: Whitepaper outline and section stubs: the claims each section makes and their sources
 - [ ] gap-af0b57: paperlint: a whitepaper check that fails on unsupported claims
 - [ ] gap-35a614: Status matrix: every Roko mechanism with its status tag at a commit
 - [ ] gap-353d57: Whitepaper §1 Introduction

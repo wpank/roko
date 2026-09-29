@@ -2,7 +2,7 @@
 id = "gap-0191eb"
 kind = "gap"
 title = "Whitepaper outline and section stubs: the claims each section makes and their sources"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "whitepaper"
@@ -11,6 +11,7 @@ subsystem = ["docs/whitepaper"]
 created = 2026-09-29
 updated = 2026-09-29
 last_verified = 2026-09-29
+last_verified_rev = "5eac79f0d"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e1"
 discovered_from = "tmp/cybernetic-harness/workstreams/PLAN.md (§3 E1, proposed outline)"
 anchors = ["docs/whitepaper/README.md", "docs/whitepaper"]
@@ -20,6 +21,11 @@ links = { depends_on = [], blocks = [], related = ["dec-2cd76a", "gap-af0b57"], 
 
 [[verify]]
 command = "test -f docs/whitepaper/README.md && grep -q '^## Outline' docs/whitepaper/README.md && grep -q '^## Conventions' docs/whitepaper/README.md && test -f docs/whitepaper/references.bib && test -f docs/whitepaper/appendix-status-matrix.md && test $(ls docs/whitepaper/[01][0-9]-*.md | wc -l) -ge 11"
+
+[closed]
+at = 2026-09-29
+by = "coordinator (session 7622b882)"
+evidence = "docs/whitepaper/README.md: the title block from dec-2cd76a, the outline with budgets (6,500 words), owners and dependencies, 96 claims across 11 section tables with sources, 13 canonical numbers with their windows, conventions in the forms paperlint parses, and references.bib (the ten tldr/04 keys, refcheck-verified). Eleven section stubs, 00 to 10. Merged in 1f4481133. The appendix it checks for arrived with gap-35a614 (5eac79f0d), and its verify passes at HEAD."
 +++
 
 ## Problem

@@ -3,13 +3,14 @@ id = "gap-1f2661"
 kind = "gap"
 title = "Wiring census: a fixture proves every learning loop reads the settled attempt record (S01.P0-11, S01.P0-12)"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p1"
 goal = "truth"
 size = "M"
 subsystem = ["roko-cli/tests", "roko-cli/graph_execution"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-29
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e4"
 discovered_from = "tmp/cybernetic-harness/specs/S01-instrumentation.md (P0-11, P0-12, §4.8, §5.8, §7)"
 anchors = ["crates/roko-cli/tests/learning_wiring_census.rs", "crates/roko-cli/src/graph_execution/plan_runner.rs::run_graph_plan_body"]
@@ -77,3 +78,6 @@ Nothing exists at `41c7ffbd6`. bug-0b668a, which isolates `.roko/learn` in tests
 
 The seams add a few lines each to two hot files, `graph_task_dispatch.rs` and `plan_runner.rs`. Land them in the same
 window as gap-96f7ed.
+- Implemented on `work/gap-8cb382` at `59898ec5e`; cargo verification deferred to the batch check. On the branch, `graph_dispatcher_production_wiring_census` passes. `loop_census_fixture_settles_one_record_per_attempt` passes every check but the last: T3's unverified attempt still trains the router (2 trials on its model). `work/gap-8f6206` (gap-8f6206) gates the routing sink on the learning label, which makes it pass.
+- `EXPECTED_MISSING` at BASE differs from the list above. Knowledge ingestion (`VerifiedKnowledgeSink`, `189a14e65`) and the prompt-experiment context are wired now. The error-pattern store joins the list: nothing on the Graph path writes `learn/error-patterns.json`, since `build_settler` is test-only. The list is the error-pattern writer, the section-effect writer, the decision writer, the exposure writer and `record_access`.
+- The by-hand check is part of the test: a facade built without the cascade router loses the routing sink, and the census fails on it.

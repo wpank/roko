@@ -10,7 +10,7 @@ use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use roko_agent::mcp::find_mcp_config;
+use roko_agent::mcp::workspace_mcp_config;
 
 use crate::error::ApiError;
 use crate::events::ServerEvent;
@@ -226,7 +226,7 @@ impl RequestPayload for DeployRequest {
 }
 
 fn configured_mcp_servers(workdir: &std::path::Path) -> Option<HashSet<String>> {
-    match find_mcp_config(workdir) {
+    match workspace_mcp_config(workdir) {
         Some(Ok((_path, config))) => Some(
             config
                 .servers

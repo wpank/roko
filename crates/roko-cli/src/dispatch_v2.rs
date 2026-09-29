@@ -521,6 +521,7 @@ impl CliProviderConfig {
         request: &CliDispatchRequest,
     ) -> Result<CliInvocation, DispatchV2Error> {
         let settings_json = roko_agent::claude_cli_agent::build_settings_json();
+        let isolation = roko_agent::claude_cli_agent::ClaudeIsolation::new(&request.workdir);
         let mut args = vec![
             "--print".to_string(),
             "--output-format".to_string(),
@@ -534,6 +535,10 @@ impl CliProviderConfig {
             settings_json,
         ];
         args.extend(self.provider_args.clone());
+        // The Claude Code isolation (`--add-dir`, `--setting-sources`,
+        // `--strict-mcp-config`), after the provider's own arguments so they
+        // cannot undo it.
+        args.extend(isolation.args());
 
         if request.dangerously_skip_permissions {
             args.push("--dangerously-skip-permissions".to_string());
@@ -551,6 +556,13 @@ impl CliProviderConfig {
             args.push(effort.clone());
         }
         if request.mcp_config.is_some() || request.plugin_mcp.is_some() {
+            if let Some(reason) = isolation.mcp_config_refusal() {
+                tracing::warn!(provider_id = %self.descriptor.provider_id, "{reason}");
+                return Err(DispatchV2Error::McpConfigUnsupported {
+                    provider_id: self.descriptor.provider_id.clone(),
+                    protocol: self.descriptor.protocol,
+                });
+            }
             args.push("--mcp-config".to_string());
             if let Some(mcp_config) = &request.mcp_config {
                 args.push(mcp_config.to_string_lossy().to_string());
@@ -558,7 +570,6 @@ impl CliProviderConfig {
             if let Some(plugin_mcp) = &request.plugin_mcp {
                 args.push(claude_plugin_mcp_json(plugin_mcp));
             }
-            args.push("--strict-mcp-config".to_string());
         }
         if let Some(session) = &request.resume_session {
             args.push("--resume".to_string());
@@ -581,12 +592,20 @@ impl CliProviderConfig {
             }
         }
 
-        Ok(CliInvocation::new(
-            self,
-            request,
-            args,
-            request.prompt.clone(),
-        ))
+        let mut invocation = CliInvocation::new(self, request, args, request.prompt.clone());
+        // The request's own variables win.
+        for &(key, value) in isolation.env() {
+            if !invocation.env.iter().any(|(existing, _)| existing == key) {
+                invocation.env.push((key.to_string(), value.to_string()));
+            }
+        }
+        tracing::debug!(
+            provider_id = %self.descriptor.provider_id,
+            isolation = ?isolation.tags(),
+            mcp_config = ?request.mcp_config,
+            "claude run isolated from the user's Claude Code configuration"
+        );
+        Ok(invocation)
     }
 
     fn build_codex_invocation(

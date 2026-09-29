@@ -2,15 +2,16 @@
 id = "gap-8c3752"
 kind = "gap"
 title = "The census runs hidden.py, which executes agent code, without the sandbox agents get"
-status = "open"
+status = "done"
 triage = "verified"
 last_verified = 2026-09-30
+last_verified_rev = "f112c23d2"
 severity = "p2"
 goal = "proof"
 size = "S"
 subsystem = ["benchmarks/viabilitybench/driver"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-09-30
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (16:47, wk-bench-f4's report on gap-9e7079)"
 anchors = ["benchmarks/viabilitybench/driver/census.py", "benchmarks/viabilitybench/families/f4_kvtool/hidden.py"]
@@ -20,6 +21,12 @@ links = { depends_on = [], blocks = [], related = ["gap-a8a160", "gap-9e7079", "
 
 [[verify]]
 command = "grep -qw 'def test_hidden_suite_runs_agent_code_without_the_secret_file' benchmarks/viabilitybench/driver/test_driver.py && benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/driver/test_driver.py -k test_hidden_suite_runs_agent_code_without_the_secret_file -q"
+
+[closed]
+at = 2026-09-30
+commit = "f112c23d2"
+by = "wk-bench-fix2"
+evidence = "families/common/sandbox.py (common-1.2.0): F4's migration runs, F1's probes, the toy suite's clamp and the census's visible re-run start the agent's code through sandbox.command, which on macOS wraps it in sandbox-exec denying every file operation on the secret file and DIR (the directory of task.json); verdicts carry `sandbox`, kept as vs.sandbox in run records; other hosts have no confinement yet and record 'none'; the network is left to gap-0bd49a. The [[verify]] command passes: test_hidden_suite_runs_agent_code_without_the_secret_file (a planted F4 script's reads of the secret file and task.json during the census all fail with EPERM; the run completes with no canary place; vs.sandbox = sandbox-exec). Verifier CI 20/20 green with references sandboxed; benchmarks/viabilitybench: 330 passed, 4 skipped."
 +++
 
 ## Problem

@@ -22,7 +22,7 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 command = "grep -n 'No role filter configured' crates/roko-serve/src/routes/middleware.rs"
 
 [[verify]]
-command = "! grep -q 'No role filter configured' crates/roko-serve/src/routes/middleware.rs && cargo test -p roko-serve privy_jwt_without_allow_list_gets_read_scope"
+command = "! grep -q 'No role filter configured' crates/roko-serve/src/routes/middleware.rs && cargo test -p roko-serve --lib privy_jwt_without_allow_list_is_not_authenticated"
 +++
 
 `roko-serve/src/lib.rs` always sets `serve.auth.privy_app_id` to the Nunchi Privy app id
@@ -40,3 +40,9 @@ instances (Railway) before shipping, since they may rely on today's behaviour.
 Deferred by Will on 2026-09-28 ("file it for later"); not changed in the portal push.
 
 2026-09-28: `wpank/roko` is public (checked with `gh repo view`), so this code is already public. `deploy-fly.yml` and `docker-publish.yml` are guarded by the repository variable `ALLOW_PUBLIC_DEPLOY` (b02812036) until this is fixed.
+
+2026-09-29: fixed on branch `fix/privy-no-default-admin`. `roko serve` no longer fills in
+`NUNCHI_PRIVY_APP_ID`: Privy JWT auth is off until the operator sets `serve.auth.privy_app_id`.
+Without `privy_allowed_roles` or `privy_workspace_id`, a Privy JWT is rejected outright rather
+than getting read scope (the direction given for the fix), with a warning at startup and on the
+first such request. The verify test was renamed to match.

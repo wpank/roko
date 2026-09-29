@@ -139,8 +139,8 @@ TOML table names such as `[[task.verify]]` inside code spans are not markers.
   `[@key]`, or a rollup or snapshot with its id (e.g. "rollup 2026-09-29T14:37:51") together with the frozen file
   in `evidence/` that holds it. An inline `[@key]` also counts. The footnote also gives the window or scope.
 - Footnote labels start with the section number, because `build.sh` joins the files: `[^7-portal]`.
-- `paperlint` counts a footnote as a source only when it names a commit, a work item, a `[@key]` or a rollup or
-  snapshot id. A frozen file cited by its sha256 alone does not count, so name the item that froze it as well.
+- `paperlint` counts a footnote as a source when it names a commit, a work item, a `[@key]`, a rollup or snapshot
+  id, or a frozen file in `evidence/`. The sha256 given with a frozen file must match its line in `SHA256SUMS`.
 - For example:
 
 ```markdown

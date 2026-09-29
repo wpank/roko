@@ -11,7 +11,7 @@ subsystem = ["roko-cli"]
 created = 2026-09-07
 updated = 2026-09-29
 last_verified = 2026-09-29
-last_verified_rev = "a17d9d766"
+last_verified_rev = "f8e08a8a5"
 source = "tmp/backlog/228-dogfood-session-evidence-bundle.md#228 — Dogfood Session Evidence Bundle"
 discovered_from = "audit:tmp/backlog/228-dogfood-session-evidence-bundle.md#228 — Dogfood Session Evidence Bundle"
 anchors = ["scripts/run_evidence.py::DEFAULT_APPEND_LOGS", "scripts/run_evidence.py::validate_bundle", "dev.sh::cmd_fast", "crates/roko-cli/src/graph_execution/event_log.rs::run_recorded", "crates/roko-cli/src/runner/status_file.rs::write_status_debounced", "plans/portal-programme/_harness/fake-claude"]
@@ -122,3 +122,18 @@ Merged 2 mined candidates: m1-007, m4-012.
 Verified 2026-09-28: still partial - scripts/run_evidence.py exists (its validator requires exactly one run start/terminal in the bundle events.jsonl, run_evidence.py:2320-2332), but the FAST bundle path is broken (dev.sh:307 passes the removed --engine runner-v2; bug-f7943a notes the Graph --log-file sink is never written) and bare Graph runs write no .roko/events.jsonl (bug-230de6), so no Graph-engine bundle has been validated.
 
 Re-verified 2026-09-29: the FAST bundle path is fixed. 725f21e05 removed --engine runner-v2 from dev.sh::cmd_fast. --log-file now writes a JSONL log through graph_execution/event_log.rs::run_recorded, with one run.started and one run.completed per run_id, which matches the lifecycle names that run_evidence.py validates. Three things remain. First, a bare `roko plan run` without --log-file still writes no .roko/events.jsonl (bug-230de6; tests/default_engine.rs:11 is still ignored). Second, no Graph-engine bundle has been validated end to end; the missing runs are a one-task success, a mock agent exiting before its first event (lost_effect), and a mock gate timeout. Third, the rest of FAST mode is tracked as gap-4a6dcb.
+
+Implemented 2026-09-29 on `work/gap-09e478` (wk-evidence). I re-checked the premise at `f8e08a8a5`. It still held: the collector did not read `.roko/state/graph`, and `runner/status_file.rs` has no production writer. The `fake-claude` in the main checkout matches BASE again.
+
+Two facts about the Graph path changed the plan:
+
+- A failed task writes no Activity record.
+- Each Graph checkpoint keeps its own run ID (`graph-<plan>-<uuid>`), separate from the `--log-file` run ID.
+
+So the collector slices `activities.jsonl` by the checkpoint's run ID, starting at the pre-launch offset only when a run resumes the same checkpoint. It takes the evidence for a failure from the event log, the learning ledgers and `roko diagnose`.
+
+The Graph engine writes no `lost_effect` record. An agent that exits before its first event ends as a failed `dashboard.task_completed` with no gate verdict, which the bundle records as `failed_before_gate`.
+
+Status sampling is recorded as `skipped`. Option (c), writing the status file, needs `plan_runner.rs`, which another worker owns.
+
+Found during this work: for a verify step that overran its `timeout_ms`, `.roko/learn/gate-failures.jsonl` records `failure_kind = "permanent"` and `roko diagnose` reports `timed_out_attempts = 0`. The `dashboard.gate_result` event says `timed out after 1500 ms`. Bundles report the disagreement as a validation warning.

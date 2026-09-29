@@ -247,6 +247,9 @@ Wrapper options:
 Evidence requirements are opt-in with --require-status-sample,
 --require-cli-smoke-pass, --require-endpoints-pass, and --require-screenshots.
 FAST always requires a valid one-start/one-terminal structured event stream.
+The bundle's graph/ directory holds each plan's Graph checkpoint, cost ledger,
+derived Activity rows (no agent output), learning-ledger rows and
+`roko diagnose` output; graph/index.json indexes them.
 Before launch it records disk, swap, and target size evidence and rejects severe
 disk pressure unless --allow-low-disk (or ROKO_EVIDENCE_ALLOW_LOW_DISK=1) is explicit.
 

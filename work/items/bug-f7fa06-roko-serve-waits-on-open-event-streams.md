@@ -2,7 +2,7 @@
 id = "bug-f7fa06"
 kind = "bug"
 title = "roko serve waits on open event streams at Ctrl-C: about 60 s with a portal tab open, forever with curl"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "visibility"
@@ -11,12 +11,18 @@ subsystem = ["roko-serve/shutdown"]
 created = 2026-09-29
 updated = 2026-09-29
 last_verified = 2026-09-29
+last_verified_rev = "f813e0486"
 source = "session:roko-b6 2026-09-29 portal close-out"
 anchors = ["crates/roko-serve/src/routes/sse.rs::until_shutdown", "crates/roko-serve/src/lib.rs::serve_until_cancelled", "crates/roko-serve/src/lib.rs::drain_within", "crates/roko-serve/src/routes/ws.rs::handle_ws", "crates/roko-serve/tests/lifecycle.rs::serve_shutdown_ends_open_event_streams"]
 links = { depends_on = [], blocks = [], related = ["bug-a5dcaa"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "grep -qw 'fn serve_shutdown_ends_open_event_streams' crates/roko-serve/tests/lifecycle.rs && grep -qw 'fn stream_ends_when_the_server_shuts_down' crates/roko-serve/src/routes/sse.rs && grep -qw 'fn shutdown_drain_abandons_connections_open_past_the_grace_period' crates/roko-serve/src/lib.rs && cargo test -p roko-serve --test lifecycle serve_shutdown_ends_open_event_streams && cargo test -p roko-serve --lib -- routes::sse::tests::stream_ends_when_the_server_shuts_down tests::shutdown_drain_abandons_connections_open_past_the_grace_period"
+
+[closed]
+at = 2026-09-29
+commit = "f813e0486"
+evidence = "f813e0486: every SSE route wraps its stream in routes::sse::until_shutdown (ends it when AppState.cancel fires): /api/events and /api/sse, run events, /api/workflow/events, bench events, projection and workflow streams; /ws sends a 1001 close frame at shutdown; both axum serve paths (ServerBuilder::start_background for roko serve, run_server_with_state) go through lib.rs::serve_until_cancelled, whose drain_within gives open connections 5 s (SHUTDOWN_DRAIN_GRACE) after draining starts. [[verify]] passes: lifecycle::serve_shutdown_ends_open_event_streams (real listener, /api/events and /ws held open, cancel: server exits within 3 s, SSE body ends, /ws gets 1001; the lifecycle file ran in 0.14 s; on the pre-fix sources the test fails with 'server did not shut down within 3 seconds with event streams open'), routes::sse::tests::stream_ends_when_the_server_shuts_down and tests::shutdown_drain_abandons_connections_open_past_the_grace_period. Also run: lib tests for routes::{sse,runs,projections,workflows,ws,bench} and routes::tests (75 pass), api_integration (102 pass, incl. jobs_events_are_visible_over_websocket); clippy -p roko-serve -D warnings clean. Not checked by hand against a rebuilt roko binary."
 +++
 
 ## Problem

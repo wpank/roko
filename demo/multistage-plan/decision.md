@@ -39,7 +39,7 @@ These sources collectively indicate that a streamlined, command‑driven onboard
 
 ---
 
-## Follow‑up
+## Follow-up
 
 1. **Monitor adoption** – Track the number of first‑time contributors who complete the onboarding guide within 30 days using the telemetry endpoint `/api/projections/onboarding` (to be added).
 2. **Iterate on optional steps** – Gather feedback on the optional research/draft stages and decide whether to surface them as separate “advanced” sections.

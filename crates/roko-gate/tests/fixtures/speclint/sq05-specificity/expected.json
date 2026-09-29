@@ -1,0 +1,125 @@
+{
+  "focus": {
+    "rule": "SQ05",
+    "expect": {
+      "T1": 1.0,
+      "T2": 0.5,
+      "T3": 0.0,
+      "T4": 0.0,
+      "T5": 1.0
+    }
+  },
+  "tasks": {
+    "T1": {
+      "score": 37,
+      "band": "D",
+      "hard_fail": [],
+      "verify_classes": [
+        "test"
+      ],
+      "rules": {
+        "SQ01": 0,
+        "SQ02": 0,
+        "SQ03": 0,
+        "SQ04": 1,
+        "SQ05": 1,
+        "SQ06": 0,
+        "SQ07": 0,
+        "SQ08": 1,
+        "SQ09": 0,
+        "SQ10": 1,
+        "SQ11": 1,
+        "SQ12": 0
+      }
+    },
+    "T2": {
+      "score": 34.5,
+      "band": "D",
+      "hard_fail": [],
+      "verify_classes": [
+        "test",
+        "test"
+      ],
+      "rules": {
+        "SQ01": 0,
+        "SQ02": 0,
+        "SQ03": 0,
+        "SQ04": 1,
+        "SQ05": 0.5,
+        "SQ06": 0,
+        "SQ07": 0,
+        "SQ08": 1,
+        "SQ09": 0,
+        "SQ10": 1,
+        "SQ11": 1,
+        "SQ12": 0
+      }
+    },
+    "T3": {
+      "score": 32,
+      "band": "D",
+      "hard_fail": [],
+      "verify_classes": [
+        "test"
+      ],
+      "rules": {
+        "SQ01": 0,
+        "SQ02": 0,
+        "SQ03": 0,
+        "SQ04": 1,
+        "SQ05": 0,
+        "SQ06": 0,
+        "SQ07": 0,
+        "SQ08": 1,
+        "SQ09": 0,
+        "SQ10": 1,
+        "SQ11": 1,
+        "SQ12": 0
+      }
+    },
+    "T4": {
+      "score": 20.75,
+      "band": "D",
+      "hard_fail": [],
+      "verify_classes": [
+        "structural"
+      ],
+      "rules": {
+        "SQ01": 0,
+        "SQ02": 0,
+        "SQ03": 0,
+        "SQ04": 0.25,
+        "SQ05": 0,
+        "SQ06": 0,
+        "SQ07": 0,
+        "SQ08": 1,
+        "SQ09": 0,
+        "SQ10": 1,
+        "SQ11": 1,
+        "SQ12": 0
+      }
+    },
+    "T5": {
+      "score": 37,
+      "band": "D",
+      "hard_fail": [],
+      "verify_classes": [
+        "test"
+      ],
+      "rules": {
+        "SQ01": 0,
+        "SQ02": 0,
+        "SQ03": 0,
+        "SQ04": 1,
+        "SQ05": 1,
+        "SQ06": 0,
+        "SQ07": 0,
+        "SQ08": 1,
+        "SQ09": 0,
+        "SQ10": 1,
+        "SQ11": 1,
+        "SQ12": 0
+      }
+    }
+  }
+}

@@ -130,6 +130,8 @@ pub mod rung_selector;
 pub mod shell;
 /// Statistical Process Control extensions: CUSUM, EWMA Control Chart, BOCPD (GATE-01).
 pub mod spc;
+/// Static spec-quality score for task specs: speclint's `sq-1` rules (S07.7).
+pub mod spec_quality;
 pub mod symbol_gate;
 pub mod test_gate;
 pub mod verdict_publisher;

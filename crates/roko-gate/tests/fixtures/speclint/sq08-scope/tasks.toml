@@ -1,0 +1,61 @@
+# speclint golden fixture: SQ08. T4 lists 33 files; T5 uses a glob.
+[meta]
+plan = "sq08-scope"
+total = 5
+
+[[task]]
+id = "T1"
+title = "Retry limit"
+description = """Add the retry limit to `parse_config`."""
+role = "implementer"
+files = ["src/config.rs"]
+max_loc = 40
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p fixture --lib config"
+
+[[task]]
+id = "T2"
+title = "Retry limit"
+description = """Add the retry limit to `parse_config`."""
+role = "implementer"
+files = ["src/config.rs"]
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p fixture --lib config"
+
+[[task]]
+id = "T3"
+title = "Retry limit"
+description = """Add the retry limit to `parse_config`."""
+role = "implementer"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p fixture --lib config"
+
+[[task]]
+id = "T4"
+title = "Retry limit"
+description = """Add the retry limit to `parse_config`."""
+role = "implementer"
+files = ["src/f01.rs", "src/f02.rs", "src/f03.rs", "src/f04.rs", "src/f05.rs", "src/f06.rs", "src/f07.rs", "src/f08.rs", "src/f09.rs", "src/f10.rs", "src/f11.rs", "src/f12.rs", "src/f13.rs", "src/f14.rs", "src/f15.rs", "src/f16.rs", "src/f17.rs", "src/f18.rs", "src/f19.rs", "src/f20.rs", "src/f21.rs", "src/f22.rs", "src/f23.rs", "src/f24.rs", "src/f25.rs", "src/f26.rs", "src/f27.rs", "src/f28.rs", "src/f29.rs", "src/f30.rs", "src/f31.rs", "src/f32.rs", "src/f33.rs"]
+max_loc = 40
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p fixture --lib config"
+
+[[task]]
+id = "T5"
+title = "Retry limit"
+description = """Add the retry limit to `parse_config`."""
+role = "implementer"
+files = ["src/*.rs"]
+max_loc = 40
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p fixture --lib config"

@@ -3,13 +3,14 @@ id = "gap-46ab3f"
 kind = "gap"
 title = "plan validate --spec-quality runs the speclint rules when a plan loads (S07.9)"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p2"
 goal = "golden-path"
 size = "M"
 subsystem = ["roko-gate/spec_quality", "roko-cli/plan_validate"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-29
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e8"
 discovered_from = "tmp/cybernetic-harness/execution/checklist.json (S07.9, with the S07.7 scorer)"
 anchors = ["crates/roko-gate/src/spec_quality.rs", "crates/roko-cli/src/commands/plan.rs::cmd_plan_validate", "crates/roko-cli/src/main.rs:1988"]
@@ -74,3 +75,14 @@ Checked at `41c7ffbd6`: no scorer in Rust and no flag. The checklist entry (AS4,
   gap-b3fa0a) are later items.
 - `main.rs` is a hot file, but the change is one flag.
 - If porting the scorer takes more than a day, split S07.7 (the library) into its own item.
+- Implemented on `work/gap-46ab3f` at `d0cad4760`; cargo verification deferred to the batch check.
+- 2026-09-29: premise re-checked at `7f2796462` (no Rust scorer, no flag). `--spec-quality` scores the files
+  `plan validate` lints, so `archive/` and `archived/` plans are skipped as in the rest of validate;
+  `benchmarks/viabilitybench/speclint/rust_parity.py` runs `plan validate` on `plans/` and on each archive
+  directory and runs speclint on the same files. The Rust record leaves out speclint's `spec_hash`, `spec_origin`,
+  `critic`, `ambiguity` and `ts`.
+- Batch 6 fixes at `24be02c53`: clippy (`-D warnings`) and nightly rustfmt are clean for roko-gate and roko-cli;
+  the 14 `spec_quality` lib tests and the 19 `plan_validate` CLI tests pass, including both verify tests. Plan
+  step 4 with that build: `rust_parity.py --strict plans` compared 132 files and 551 tasks, with max |score
+  delta| 0.00, 0 hard-fail, band, rule, verify-class or detail differences, and the vendored fixtures in sync. The
+  same 551 records match speclint's whole-corpus JSONL exactly.

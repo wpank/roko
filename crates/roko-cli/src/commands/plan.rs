@@ -359,6 +359,7 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
             strict,
             json,
             dag,
+            spec_quality,
         } => {
             let workdir = resolve_workdir(cli);
             // Read-only lint: skip the lock when a server owns the workspace;
@@ -369,7 +370,8 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
             } else {
                 workdir.join(&dir)
             };
-            let exit = cmd_plan_validate(&plans_dir, &workdir, strict, json || cli.json)?;
+            let exit =
+                cmd_plan_validate(&plans_dir, &workdir, strict, json || cli.json, spec_quality)?;
 
             if dag {
                 // Run DAG analysis on top of the lint output.
@@ -2009,11 +2011,51 @@ fn validate_before_run(plans_dir: &Path, workdir: &Path) -> Option<i32> {
     }
 }
 
+/// `plan validate --json` output with the `--spec-quality` report added.
+#[derive(serde::Serialize)]
+struct ValidateJsonWithSpecQuality<'a> {
+    #[serde(flatten)]
+    report: &'a plan_validate::ValidationReport,
+    spec_quality: &'a roko_gate::spec_quality::SpecQualityReport,
+}
+
+/// The `tasks.toml` files `plan validate` lints: `dir` itself when it is one, otherwise every one
+/// under it outside `archive/` and `archived/` directories, sorted. This is the walk of
+/// `plan_validate::collect_tasks_files`, which is private.
+fn validated_tasks_files(dir: &Path) -> Vec<PathBuf> {
+    if dir.is_file() {
+        return vec![dir.to_path_buf()];
+    }
+    let mut files = Vec::new();
+    let mut pending = vec![dir.to_path_buf()];
+    while let Some(current) = pending.pop() {
+        let Ok(entries) = std::fs::read_dir(&current) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                let archived = path
+                    .file_name()
+                    .is_some_and(|name| name == "archive" || name == "archived");
+                if !archived {
+                    pending.push(path);
+                }
+            } else if path.is_file() && path.file_name().is_some_and(|name| name == "tasks.toml") {
+                files.push(path);
+            }
+        }
+    }
+    files.sort();
+    files
+}
+
 pub(crate) fn cmd_plan_validate(
     dir: &Path,
     workdir: &Path,
     strict: bool,
     json_output: bool,
+    spec_quality: bool,
 ) -> Result<i32> {
     let config_path = workdir.join("roko.toml");
     let models = if config_path.is_file() {
@@ -2040,8 +2082,20 @@ pub(crate) fn cmd_plan_validate(
         Err(_) => Vec::new(),
     };
 
+    // S07.9: score every task's spec with the speclint rules. Only the flag adds output.
+    let spec_report = spec_quality
+        .then(|| roko_gate::spec_quality::lint_files(&validated_tasks_files(dir), workdir));
+
     if json_output {
-        println!("{}", plan_validate::render_json(&report)?);
+        if let Some(spec_quality) = &spec_report {
+            let output = ValidateJsonWithSpecQuality {
+                report: &report,
+                spec_quality,
+            };
+            println!("{}", serde_json::to_string_pretty(&output)?);
+        } else {
+            println!("{}", plan_validate::render_json(&report)?);
+        }
     } else {
         let mut text = plan_validate::render_text(&report);
         if !overlaps.is_empty() {
@@ -2056,8 +2110,15 @@ pub(crate) fn cmd_plan_validate(
             }
         }
         println!("{text}");
+        if let Some(spec_quality) = &spec_report {
+            println!("\n{}", roko_gate::spec_quality::render_text(spec_quality));
+        }
     }
-    Ok(report.exit_code(strict))
+    // A hard fail fails the run only under --strict; a low score never does.
+    let spec_exit = spec_report
+        .as_ref()
+        .map_or(0, |spec_quality| spec_quality.exit_code(strict));
+    Ok(report.exit_code(strict).max(spec_exit))
 }
 
 pub(crate) fn find_plan_source_document(plan_dir: &Path) -> Result<PathBuf> {

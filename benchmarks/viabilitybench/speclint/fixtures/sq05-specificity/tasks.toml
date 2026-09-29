@@ -1,0 +1,68 @@
+# speclint golden fixture: SQ05. T4 has no test or compile run; T5 is scoped by `cd app`.
+[meta]
+plan = "sq05-specificity"
+total = 5
+
+[[task]]
+id = "T1"
+title = "Retry limit"
+description = """Add the retry limit to `parse_config`."""
+role = "implementer"
+files = ["src/config.rs"]
+max_loc = 40
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p fixture --lib config"
+
+[[task]]
+id = "T2"
+title = "Retry limit"
+description = """Add the retry limit to `parse_config`."""
+role = "implementer"
+files = ["src/config.rs"]
+max_loc = 40
+
+[[task.verify]]
+phase = "test"
+command = "cargo test -p fixture --lib config"
+
+[[task.verify]]
+phase = "test"
+command = "cargo test --workspace"
+
+[[task]]
+id = "T3"
+title = "Retry limit"
+description = """Add the retry limit to `parse_config`."""
+role = "implementer"
+files = ["src/config.rs"]
+max_loc = 40
+
+[[task.verify]]
+phase = "test"
+command = "cargo test --workspace"
+
+[[task]]
+id = "T4"
+title = "Retry limit"
+description = """Add the retry limit to `parse_config`."""
+role = "implementer"
+files = ["src/config.rs"]
+max_loc = 40
+
+[[task.verify]]
+phase = "test"
+command = "grep -q 'fn parse_config' src/config.rs"
+
+[[task]]
+id = "T5"
+title = "Retry limit"
+description = """Add the retry limit to `parse_config`."""
+role = "implementer"
+files = ["app/src/config.ts"]
+max_loc = 40
+
+[[task.verify]]
+phase = "test"
+command = "cd app && npm test"

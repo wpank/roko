@@ -967,20 +967,7 @@ fn cargo_scope(sub: &str, args: &[String]) -> Scope {
             after_dashes = true;
         } else if after_dashes && TEST_BINARY_VALUE_FLAGS.contains(&arg) {
             i += 1;
-        } else if !after_dashes
-            && matches!(
-                arg,
-                "-p" | "--package" | "--manifest-path" | "--test" | "--bin" | "--example"
-            )
-        {
-            return Scope::Scoped;
-        } else if !after_dashes
-            && ["--package=", "--manifest-path=", "--test=", "--bin="]
-                .iter()
-                .any(|prefix| arg.starts_with(prefix))
-        {
-            return Scope::Scoped;
-        } else if !after_dashes && arg.starts_with("-p") && arg.len() > 2 {
+        } else if !after_dashes && names_cargo_target(arg) {
             return Scope::Scoped;
         } else if !after_dashes && CARGO_VALUE_FLAGS.contains(&arg) {
             i += 1;
@@ -993,6 +980,17 @@ fn cargo_scope(sub: &str, args: &[String]) -> Scope {
         return Scope::Scoped;
     }
     Scope::Workspace
+}
+
+/// A cargo flag that names a package, manifest or target: `-p x`, `-px`, `--test=x` …
+fn names_cargo_target(arg: &str) -> bool {
+    matches!(
+        arg,
+        "-p" | "--package" | "--manifest-path" | "--test" | "--bin" | "--example"
+    ) || ["--package=", "--manifest-path=", "--test=", "--bin="]
+        .iter()
+        .any(|prefix| arg.starts_with(prefix))
+        || (arg.starts_with("-p") && arg.len() > 2)
 }
 
 /// `npm`, `pnpm`, `yarn`, `bun`: setup, `exec` of another program, or a package script classed
@@ -1335,9 +1333,7 @@ fn normpath(path: &str) -> String {
         if part.is_empty() || part == "." {
             continue;
         }
-        if part != ".."
-            || (initial_slashes == 0 && parts.is_empty())
-            || parts.last() == Some(&"..")
+        if part != ".." || (initial_slashes == 0 && parts.is_empty()) || parts.last() == Some(&"..")
         {
             parts.push(part);
         } else {
@@ -1364,12 +1360,18 @@ mod tests {
     #[test]
     fn step_classes_match_speclint() {
         let cases = [
-            ("cargo test -p roko-cli --lib plan_validate", VerifyClass::Test),
+            (
+                "cargo test -p roko-cli --lib plan_validate",
+                VerifyClass::Test,
+            ),
             (
                 "cargo test -p roko-serve --lib --no-run 2>&1 | tail -10",
                 VerifyClass::Compile,
             ),
-            ("cargo check -p roko-cli 2>&1 | tail -5", VerifyClass::Compile),
+            (
+                "cargo check -p roko-cli 2>&1 | tail -5",
+                VerifyClass::Compile,
+            ),
             (
                 "grep -q 'cargo test --workspace' justfile && grep -q 'cargo clippy' justfile",
                 VerifyClass::Structural,
@@ -1474,7 +1476,10 @@ mod tests {
     #[test]
     fn scopes_follow_packages_and_cd_targets() {
         let scopes = |command: &str| analyze_step(command, &BTreeSet::new()).scopes;
-        assert_eq!(scopes("cargo test -p fixture --lib config"), [Scope::Scoped]);
+        assert_eq!(
+            scopes("cargo test -p fixture --lib config"),
+            [Scope::Scoped]
+        );
         assert_eq!(scopes("cargo test --workspace"), [Scope::Workspace]);
         assert_eq!(scopes("cargo test config"), [Scope::Scoped]);
         assert_eq!(scopes("cd app && npm test"), [Scope::Scoped]);
@@ -1501,6 +1506,9 @@ mod tests {
         assert_eq!(path_name("./node_modules/.bin/tsc"), "tsc");
         assert_eq!(path_name("a/."), "a");
         assert_eq!(path_name("."), "");
-        assert_eq!(resolve("apps/portal", "scripts/x.sh"), "apps/portal/scripts/x.sh");
+        assert_eq!(
+            resolve("apps/portal", "scripts/x.sh"),
+            "apps/portal/scripts/x.sh"
+        );
     }
 }

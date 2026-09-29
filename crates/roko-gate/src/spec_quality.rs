@@ -201,9 +201,11 @@ static ANCHOR: LazyLock<Regex> = LazyLock::new(|| {
 // --------------------------------------------------------------------------------------------
 // The task view.
 
-/// The fields of one `[[task]]` that the rules read: a neutral view that any task source can
-/// fill. [`SpecTask::from_toml`] reads a raw `tasks.toml` table the way speclint does: a field of
-/// the wrong type counts as absent, and list items are trimmed, with empty items dropped.
+/// The fields of one `[[task]]` that the rules read.
+///
+/// A neutral view that any task source can fill. [`SpecTask::from_toml`] reads a raw `tasks.toml`
+/// table the way speclint does: a field of the wrong type counts as absent, and list items are
+/// trimmed, with empty items dropped.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SpecTask {
     /// `id`, as written.
@@ -889,11 +891,8 @@ fn hard_fails(
     }
 
     // HF3: every step passes on the base, though the task expects one to turn green.
-    let all_pass_on_base = !task.verify.is_empty()
-        && task
-            .verify
-            .iter()
-            .all(|step| step.expect == "pass_on_base");
+    let all_pass_on_base =
+        !task.verify.is_empty() && task.verify.iter().all(|step| step.expect == "pass_on_base");
     if red_on_base == RedOnBase::Pass && implementer && !all_pass_on_base {
         hard.push("HF3");
     }
@@ -1353,12 +1352,16 @@ mod tests {
         let mut focused = Vec::new();
         for dir in &dirs {
             let name = dir.display().to_string();
-            let expected = std::fs::read_to_string(dir.join("expected.json"))
-                .expect("read expected.json");
+            let expected =
+                std::fs::read_to_string(dir.join("expected.json")).expect("read expected.json");
             let expected: serde_json::Value =
                 serde_json::from_str(&expected).expect("parse expected.json");
             let report = lint_files(&[dir.join("tasks.toml")], dir);
-            assert!(report.parse_errors.is_empty(), "{name}: {:?}", report.parse_errors);
+            assert!(
+                report.parse_errors.is_empty(),
+                "{name}: {:?}",
+                report.parse_errors
+            );
             let got: HashMap<&str, &SpecQualityRecord> = report
                 .tasks
                 .iter()
@@ -1441,7 +1444,10 @@ mod tests {
         let mut all: Vec<String> = RULES.iter().map(|rule| rule.id.to_string()).collect();
         all.extend(["HF1", "HF2", "HF4", "HF5"].map(String::from));
         all.sort();
-        assert_eq!(focused, all, "the fixtures cover every rule and static hard fail");
+        assert_eq!(
+            focused, all,
+            "the fixtures cover every rule and static hard fail"
+        );
     }
 
     #[test]
@@ -1484,8 +1490,14 @@ mod tests {
     #[test]
     fn symbol_anchors_follow_plan_policy() {
         assert_eq!(explicit_symbol_anchor("parse_config"), Some("parse_config"));
-        assert_eq!(explicit_symbol_anchor("`Config::load()` loads it"), Some("Config::load"));
-        assert_eq!(explicit_symbol_anchor("exact: run_gate_once"), Some("run_gate_once"));
+        assert_eq!(
+            explicit_symbol_anchor("`Config::load()` loads it"),
+            Some("Config::load")
+        );
+        assert_eq!(
+            explicit_symbol_anchor("exact: run_gate_once"),
+            Some("run_gate_once")
+        );
         assert_eq!(explicit_symbol_anchor("the Config struct"), None);
         assert!(find_anchor("pub fn load() {}", "Config::load"));
         assert!(!find_anchor("pub fn loader() {}", "load"));
@@ -1519,8 +1531,14 @@ mod tests {
             "{text}"
         );
         assert!(text.contains("hard=HF2"), "{text}");
-        assert!(text.contains("HF2: step 1: the step only runs `echo done`"), "{text}");
-        assert!(text.ends_with("6 tasks: 0 A, 0 B, 0 C, 6 D; 4 with hard fails"), "{text}");
+        assert!(
+            text.contains("HF2: step 1: the step only runs `echo done`"),
+            "{text}"
+        );
+        assert!(
+            text.ends_with("6 tasks: 0 A, 0 B, 0 C, 6 D; 4 with hard fails"),
+            "{text}"
+        );
         assert_eq!(report.exit_code(false), 0);
         assert_eq!(report.exit_code(true), 1);
     }

@@ -370,13 +370,8 @@ pub(crate) async fn cmd_plan(cli: &Cli, cmd: PlanCmd) -> Result<i32> {
             } else {
                 workdir.join(&dir)
             };
-            let exit = cmd_plan_validate(
-                &plans_dir,
-                &workdir,
-                strict,
-                json || cli.json,
-                spec_quality,
-            )?;
+            let exit =
+                cmd_plan_validate(&plans_dir, &workdir, strict, json || cli.json, spec_quality)?;
 
             if dag {
                 // Run DAG analysis on top of the lint output.
@@ -2088,9 +2083,8 @@ pub(crate) fn cmd_plan_validate(
     };
 
     // S07.9: score every task's spec with the speclint rules. Only the flag adds output.
-    let spec_report = spec_quality.then(|| {
-        roko_gate::spec_quality::lint_files(&validated_tasks_files(dir), workdir)
-    });
+    let spec_report = spec_quality
+        .then(|| roko_gate::spec_quality::lint_files(&validated_tasks_files(dir), workdir));
 
     if json_output {
         if let Some(spec_quality) = &spec_report {

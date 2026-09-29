@@ -366,10 +366,11 @@ name = "Environment isolation"
 tag = "PARTIAL"
 verdict = "fix"
 note = """
-Since `dc99a9e81`, gates and provider CLIs start from an allowlisted environment that drops provider keys (bug-7d7200).
-Agent tool shells, MCP servers and provider probes still inherit them, and the key files stay readable.
+Since `dc99a9e81` (bug-7d7200), gates start from an allowlisted environment, and provider CLIs have the key variables
+they recognise scrubbed, so a key under an unrecognised name still reaches the agent. Agent tool shells, MCP servers
+and provider probes inherit everything, and the key files stay readable.
 """
-anchors = ["crates/roko-core/src/child_env.rs::gate_env", "crates/roko-core/src/child_env.rs::is_provider_key_var"]
+anchors = ["crates/roko-core/src/child_env.rs::gate_env", "crates/roko-gate/src/gate_env.rs", "crates/roko-agent/src/process/env.rs::apply_credential_scrub"]
 evidence = ["dc99a9e81", "bug-7d7200", "crates/roko-core/src/child_env.rs::gate_env_drops_secret_looking_names_even_under_allowed_prefixes", "bug-0d9ac4", "bug-0eb8e2", "bug-a66941"]
 item = "spec-ba7bea"
 

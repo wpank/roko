@@ -596,7 +596,8 @@ impl CliProviderConfig {
         }
         tracing::debug!(
             provider_id = %self.descriptor.provider_id,
-            setting_sources = isolation.setting_sources_tag(),
+            isolation = ?isolation.tags(),
+            mcp_config = ?request.mcp_config,
             "claude run isolated from the user's Claude Code configuration"
         );
         Ok(invocation)

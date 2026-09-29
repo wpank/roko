@@ -1269,7 +1269,8 @@ fn build_streaming_command(session: &ChatAgentSession, program: &Path) -> TokioC
     cmd.env("CARGO_BUILD_JOBS", "2");
     cmd.env_remove("CLAUDECODE");
     tracing::debug!(
-        setting_sources = isolation.setting_sources_tag(),
+        isolation = ?isolation.tags(),
+        mcp_config = ?session.mcp_config,
         "chat turn isolated from the user's Claude Code configuration"
     );
     cmd

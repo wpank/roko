@@ -654,9 +654,14 @@ MCP (Model Context Protocol) integration operates at two levels:
 ### CLI passthrough
 
 For CLI-based providers (ClaudeCli, CodexCli, GeminiCli), MCP config is passed
-directly via `--mcp-config` flag. The config file at `.roko/mcp-config.json` is
-authored solely by `PlanRunner::resolve_mcp_config_path` in
-`roko-cli/src/runner/event_loop.rs`.
+directly via the `--mcp-config` flag. Plan tasks pass only `[agent] mcp_config`
+from `roko.toml`. Other Claude runs (`ClaudeCliAgent`, ACP sessions, serve
+templates) pass it, or else the workspace's own `.mcp.json`
+(`workspace_mcp_config`). A `.mcp.json` in a directory above the workspace or in
+`$HOME` never reaches a run. `find_mcp_config` still finds one for
+`roko config mcp` and `roko doctor`, which report where a config is. `roko chat`
+has its own order: `[agent] mcp_config`, then `.roko/mcp.json`, then
+`~/.claude/mcp-config.json`.
 
 ```rust
 // crates/roko-agent/src/process/mcp.rs

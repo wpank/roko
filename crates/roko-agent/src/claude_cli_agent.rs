@@ -8,7 +8,7 @@
 //! Claude-specific resume and tool-loop wiring are not needed.
 
 use crate::agent::{Agent, AgentResult};
-use crate::mcp::find_mcp_config;
+use crate::mcp::workspace_mcp_config;
 use crate::process::{
     GRACE_STDIN_CLOSE_MS, ResourceLimits, apply_credential_scrub, benign_stderr_warn_once,
     classify_benign_stderr, config_file_env_names, confined_command, kill_tree,
@@ -188,15 +188,18 @@ impl ClaudeIsolation {
         ISOLATION_ENV
     }
 
-    /// The setting sources the run loads, as recorded with it: `none`, or
-    /// the `--setting-sources` list.
+    /// What the run loads, as `(tag, value)` pairs. [`ClaudeCliAgent`] tags
+    /// its output with them, and every spawn logs them with the MCP config
+    /// it passes. `setting_sources` is `none` or the `--setting-sources`
+    /// list.
     #[must_use]
-    pub fn setting_sources_tag(&self) -> &str {
-        if self.setting_sources.trim().is_empty() {
+    pub fn tags(&self) -> Vec<(&'static str, String)> {
+        let setting_sources: &str = if self.setting_sources.trim().is_empty() {
             "none"
         } else {
             &self.setting_sources
-        }
+        };
+        vec![("setting_sources", setting_sources.to_string())]
     }
 }
 
@@ -431,8 +434,10 @@ impl ClaudeCliAgent {
             .derive(Kind::AgentOutput, Body::text(reason))
             .provenance(Provenance::agent(&self.name))
             .tag("agent", &self.name)
-            .tag("setting_sources", self.isolation.setting_sources_tag())
             .tag("failed", "true");
+        for (key, value) in self.isolation.tags() {
+            output = output.tag(key, value);
+        }
         if let Some(model) = stream_usage
             .model
             .as_deref()
@@ -471,11 +476,13 @@ impl ClaudeCliAgent {
         })
     }
 
+    /// The MCP config the run passes: the explicit one, or else the
+    /// workdir's own `.mcp.json` (never a file above it or in `$HOME`).
     fn discovered_mcp_config(&self) -> Option<PathBuf> {
         if let Some(path) = &self.mcp_config {
             return Some(path.clone());
         }
-        match find_mcp_config(&self.current_dir) {
+        match workspace_mcp_config(&self.current_dir) {
             Some(Ok((path, _))) => Some(path),
             Some(Err(err)) => {
                 tracing::warn!(agent = "claude-cli", "ignoring invalid MCP config: {err}");
@@ -559,6 +566,12 @@ impl ClaudeCliAgent {
         if let Some(mcp_config) = &mcp_config {
             cmd.arg("--mcp-config").arg(mcp_config);
         }
+        tracing::debug!(
+            agent = %self.name,
+            isolation = ?self.isolation.tags(),
+            mcp_config = ?mcp_config,
+            "claude run isolated from the user's Claude Code configuration"
+        );
         if let Some(resume) = &self.resume {
             cmd.arg("--resume").arg(resume);
         }
@@ -1296,11 +1309,13 @@ impl ClaudeCliAgent {
             .derive(Kind::AgentOutput, Body::text(text))
             .provenance(Provenance::agent(&self.name))
             .tag("agent", &self.name)
-            .tag("setting_sources", self.isolation.setting_sources_tag())
             .tag(
                 "model",
                 stream_usage.model.as_deref().unwrap_or(&self.model),
             );
+        for (key, value) in self.isolation.tags() {
+            output_signal = output_signal.tag(key, value);
+        }
         if let Some(num_turns) = stream_usage.num_turns {
             output_signal = output_signal.tag("num_turns", num_turns.to_string());
         }
@@ -2346,6 +2361,48 @@ mod tests {
         assert_eq!(auto_memory.as_deref(), Some("0"));
         let workdir_claude_md = env_of(&command, "CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD");
         assert_eq!(workdir_claude_md.as_deref(), Some("0"));
+    }
+
+    #[test]
+    fn discovered_mcp_config_ignores_ancestor_and_home_files() {
+        // A config in a directory above the workdir, and one in a home
+        // directory above it. The test cannot point `$HOME` at `home`
+        // (setting a variable is unsafe in edition 2024), but the agent's
+        // lookup reads neither a parent directory nor `$HOME`.
+        let root = tempdir().unwrap();
+        let home = root.path().join("home");
+        let workdir = home.join("repo");
+        fs::create_dir_all(&workdir).unwrap();
+        for dir in [root.path(), home.as_path()] {
+            fs::write(dir.join(".mcp.json"), r#"{"servers":[]}"#).unwrap();
+        }
+        let discovered = crate::mcp::find_mcp_config(&workdir)
+            .and_then(Result::ok)
+            .map(|(path, _)| path);
+        assert_eq!(
+            discovered,
+            Some(home.join(".mcp.json")),
+            "discovery still walks up"
+        );
+
+        let command = ClaudeCliAgent::new("claude", &workdir, "claude-test-model")
+            .build_command()
+            .expect("build command");
+        let args = args_of(&command);
+        assert!(!args.iter().any(|arg| arg == "--mcp-config"), "{args:?}");
+
+        // The workspace's own config still reaches the run.
+        let own = workdir.join(".mcp.json");
+        fs::write(&own, r#"{"servers":[]}"#).unwrap();
+        let command = ClaudeCliAgent::new("claude", &workdir, "claude-test-model")
+            .build_command()
+            .expect("build command");
+        let args = args_of(&command);
+        let mcp = args
+            .iter()
+            .position(|arg| arg == "--mcp-config")
+            .expect("workspace MCP config");
+        assert_eq!(args[mcp + 1], own.to_string_lossy());
     }
 
     #[tokio::test]

@@ -31,8 +31,8 @@ depends_on = []
 [task.context]
 read_files = [
     { path = "Cargo.toml", lines = "1-130", why = "Read workspace version and release scope." },
-    { path = "CHANGELOG.md", lines = "1-180", why = "Assess documented release history." },
-    { path = "release-plz.toml", lines = "1-180", why = "Inspect release automation policy." },
+    { path = "CHANGELOG.md", why = "Assess documented release history." },
+    { path = "release-plz.toml", why = "Inspect release automation policy." },
     { path = ".github/workflows/release.yml", why = "Inspect automated release checks when present." },
 ]
 anti_patterns = [

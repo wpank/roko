@@ -443,7 +443,7 @@ files = ["crates/roko-serve/tests/plan_discovery.rs"]
 read_files = [
     { path = "crates/roko-serve/src/routes/plans.rs", why = "the handlers under test and their exact response shapes" },
     { path = "crates/roko-serve/src/plan_types.rs", why = "the DTO fields the assertions check" },
-    { path = "plans/demo-hello/tasks.toml", why = "a minimal valid tasks file to model the fixture on" },
+    { path = "plans/demos/demo-hello/tasks.toml", why = "a minimal valid tasks file to model the fixture on" },
 ]
 anti_patterns = [
     "Do not write the fixture into the real plans directory. Use a temporary workspace.",

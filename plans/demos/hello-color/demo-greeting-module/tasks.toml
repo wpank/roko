@@ -1,0 +1,49 @@
+[meta]
+plan = "demo-greeting-module"
+total = 1
+done = 0
+status = "fixture"
+max_parallel = 1
+skip_enrichment = true
+estimated_total_minutes = 2
+
+[[task]]
+id = "T01"
+title = "Add a greeting module to hello-color"
+description = """Read `demo/hello-color/src/main.rs` and `demo/hello-color/Cargo.toml`
+(the crate built by the `demo-hello-color` plan), then:
+
+1. Create `demo/hello-color/src/greeting.rs` with
+   `pub fn greeting(name: &str) -> String` returning `Hello, <name>!`, and a
+   `#[cfg(test)] mod tests` asserting `greeting("World") == "Hello, World!"`.
+2. In `demo/hello-color/src/main.rs`, declare `mod greeting;` and print
+   `greeting::greeting("World")` in place of the literal greeting, keeping the
+   colours and both border lines, so the program's output does not change.
+
+Use no `.unwrap()`. Do not change `Cargo.toml` or create any other file. If both
+files already satisfy this contract, leave them unchanged."""
+status = "ready"
+tier = "focused"
+max_loc = 25
+files = [
+    "demo/hello-color/src/greeting.rs",
+    "demo/hello-color/src/main.rs",
+]
+role = "implementer"
+depends_on = []
+depends_on_plan = ["demo-hello-color"]
+
+[[task.verify]]
+phase = "source"
+command = "grep -Fq 'pub fn greeting' demo/hello-color/src/greeting.rs && grep -Eq '^mod greeting;' demo/hello-color/src/main.rs && grep -Fq 'greeting::greeting' demo/hello-color/src/main.rs && ! grep -Fq '.unwrap()' demo/hello-color/src/greeting.rs"
+fail_msg = "greeting.rs must define pub fn greeting, and main.rs must declare mod greeting and call greeting::greeting."
+
+[[task.verify]]
+phase = "unit-tests"
+command = '''out="$(CARGO_TARGET_DIR="${TMPDIR:-/tmp}/roko-demo-hello-color" cargo test --quiet --manifest-path demo/hello-color/Cargo.toml 2>&1)" && grep -Eq 'test result: ok\. [1-9][0-9]* passed' <<<"$out"'''
+fail_msg = "cargo test must pass at least one test (the greeting unit test)."
+
+[[task.verify]]
+phase = "runs"
+command = '''out="$(CARGO_TARGET_DIR="${TMPDIR:-/tmp}/roko-demo-hello-color" cargo run --quiet --manifest-path demo/hello-color/Cargo.toml)" && grep -Fq 'Hello, World!' <<<"$out" && test "$(printf '%s\n' "$out" | wc -l)" -ge 3'''
+fail_msg = "cargo run must still print Hello, World! between two border lines."

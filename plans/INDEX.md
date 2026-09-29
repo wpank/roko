@@ -19,16 +19,3 @@
 **Executable Total**: 6 plans, 17 tasks, 0 done (0%), 17 remaining
 **Complete Plans**: 0
 **Ready/In-Progress Plans**: 6
-
-## Fixtures / Examples
-
-| Plan | Tasks | Status |
-|------|-------|--------|
-| `demo-full-stack` | 6 | 🧪 fixture |
-| `demo-hello` | 1 | 🧪 fixture |
-| `demo-incident-tabletop` | 4 | 🧪 fixture |
-| `demo-multistage` | 5 | 🧪 fixture |
-| `demo-parallel-integration` | 3 | 🧪 fixture |
-| `demo-resume-recovery` | 2 | 🧪 fixture |
-
-**Fixtures excluded from backlog**: 6 plans, 21 tasks

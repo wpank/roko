@@ -1,0 +1,12 @@
+config_version = 2
+
+[timeouts]
+agent_silence_secs = 600
+
+[gates]
+
+[[gates.rungs]]
+name = "demo-base"
+command = "true"
+timeout_secs = 30
+required = true

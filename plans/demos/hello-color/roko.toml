@@ -1,0 +1,15 @@
+config_version = 2
+
+# Shared by both plans of this set. `demo-greeting-module` depends on
+# `demo-hello-color`, so a set run executes them in that order.
+[timeouts]
+agent_silence_secs = 600
+
+# The authored Cargo and Markdown checks are the meaningful gates for this demo.
+[gates]
+
+[[gates.rungs]]
+name = "demo-base"
+command = "true"
+timeout_secs = 30
+required = true

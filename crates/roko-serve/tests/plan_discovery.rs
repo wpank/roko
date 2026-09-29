@@ -44,7 +44,7 @@ struct PlanDiscoveryRuntime {
 
 impl PlanDiscoveryRuntime {
     /// Seed the runtime with a single "test-plan" that mirrors the shape of
-    /// `plans/demo-hello/tasks.toml` (one task, a role, and an empty
+    /// `plans/demos/demo-hello/tasks.toml` (one task, a role, and an empty
     /// `depends_on` list).
     fn with_fixture() -> Self {
         let summary = PlanSummaryDto {

@@ -1434,11 +1434,19 @@ mod tests {
             .and_then(Value::as_str)
             .expect("hook command");
         assert!(command.contains("tool_input"));
-        for subcommand in ["checkout", "switch", "restore", "push", "reset", "stash", "clean"] {
-            assert!(command.contains(subcommand), "guard ignores git {subcommand}");
+        for subcommand in [
+            "checkout", "switch", "restore", "push", "reset", "stash", "clean",
+        ] {
+            assert!(
+                command.contains(subcommand),
+                "guard ignores git {subcommand}"
+            );
         }
         assert!(command.contains("rm"));
-        assert!(!command.contains("|| exit 0"), "the guard must not fail open");
+        assert!(
+            !command.contains("|| exit 0"),
+            "the guard must not fail open"
+        );
     }
 
     #[test]

@@ -73,3 +73,4 @@ Everything is pinned at `a17d4dadd`, and the matrix is marked reviewed (gap-8d2c
   unwired, 9 missing, 1 removed (was 21/23/2/7/7/10/1). `REVIEW.md` keeps its record of the review at `a17d4dadd`.
 - The verify's middle check, `! grep -q 'pin = "a17d4dadd"'`, can never fail: the key is `pinned`, so the pattern
   never matches. `status_matrix.py --check` and the section tags carry the real check.
+- **Coordinator, 2026-09-29:** the verify's `! grep -q 'pin = "a17d4dadd"'` can never fail, because the key is `pinned`. The real check is `status_matrix.py --check`, which reports the pin.

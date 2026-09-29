@@ -80,9 +80,9 @@ Open branches will change more: `fix/hermetic-child-env`, `fix/diagnose-graph-ru
 - **The matrix is a dated snapshot;** `work/` stays the live status (work/README rule 7). Refresh the matrix at the
   review (gap-8d2c79).
 - Lane `paper`; no hot files.
-- **2026-09-29 (wk-wp-matrix):** implemented on `work/gap-35a614` at `df36c89ec`, pinned at `a17d4dadd`. 70 rows:
-  tldr/03's 68 mechanisms, with QA7/QA8 and DM6/DM7 split because their parts carry different tags, plus the ten
-  vision claims. The first `[[verify]]` passes, and so do the 20 unittest cases. The second needs
+- **2026-09-29 (wk-wp-matrix):** implemented on `work/gap-35a614` at `df36c89ec`, pinned at `a17d4dadd`. 71 rows:
+  tldr/03's 68 mechanisms, with QA7/QA8 and DM6/DM7 split because their parts carry different tags, LM12 (hindsight
+  relabelling, wired into plan runs since `33e107da1`), and the ten vision claims. The first `[[verify]]` passes, and so do the 20 unittest cases. The second needs
   `tools/paperlint.py` (gap-af0b57), which isn't on this branch yet; a snapshot of that worker's in-progress tool
   passes `--strict` on the appendix, and a grep finds none of the README's banned words. Close once both branches
   are merged and the second verify passes.
@@ -91,3 +91,10 @@ Open branches will change more: `fix/hermetic-child-env`, `fix/diagnose-graph-ru
 - **Probed against MAIN at `98ee1418f`:** every anchor still exists, and none of the four merges since the pin changes a
   tag. Plan generation and revision spend now reaches cost accounting (`9a7e8a1cb`), but RC6 stays partial because cost
   rows still carry no source.
+- **Compared with the tldr refresh at `98ee1418f`:** playbooks (WIRED; selection adds the success count) and prompt
+  experiments (PARTIAL; UCB1 assignment with a chi-squared winner test) now match it. Three rows differ on purpose,
+  each checked in code at the pin:
+  - knowledge store: BROKEN. Plan runs read knowledge only through the prompt cache, which loads it with an empty
+    query that returns nothing (bug-86117a).
+  - offline consolidation: ORPHANED. No production code emits the plan-completed event (q-6b7cca).
+  - tool policy: PARTIAL. Count rules never fire (bug-1948c9), and the Codex policy is advisory (gap-baab0a).

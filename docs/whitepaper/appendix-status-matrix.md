@@ -34,13 +34,13 @@ Rows per status and group at a17d4dadd.
 | Status | AU | EX | IS | QA | RC | LM | RG | SS | DM | Total |
 |---|---|---|---|---|---|---|---|---|---|---|
 | WIRED@a17d4dadd | 3 | 5 | 0 | 2 | 3 | 1 | 1 | 2 | 4 | 21 |
-| PARTIAL@a17d4dadd | 2 | 1 | 4 | 2 | 3 | 5 | 1 | 2 | 2 | 22 |
+| PARTIAL@a17d4dadd | 2 | 1 | 4 | 2 | 3 | 6 | 1 | 2 | 2 | 23 |
 | BROKEN@a17d4dadd | 0 | 0 | 0 | 0 | 0 | 1 | 0 | 1 | 0 | 2 |
 | ORPHANED@a17d4dadd | 0 | 1 | 1 | 1 | 0 | 3 | 1 | 0 | 0 | 7 |
 | BUILT-UNWIRED@a17d4dadd | 1 | 1 | 0 | 1 | 1 | 1 | 0 | 0 | 2 | 7 |
 | MISSING@a17d4dadd | 1 | 1 | 1 | 2 | 0 | 0 | 4 | 1 | 0 | 10 |
 | REMOVED@a17d4dadd | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 1 | 1 |
-| Rows | 7 | 9 | 6 | 8 | 7 | 11 | 7 | 6 | 9 | 70 |
+| Rows | 7 | 9 | 6 | 8 | 7 | 12 | 7 | 6 | 9 | 71 |
 
 ## AU · Authoring and specs
 
@@ -121,16 +121,17 @@ Records of past attempts, and the loops that feed them back into prompts and rou
 | Row | Mechanism | Status | Today | Code | Evidence | Next |
 |---|---|---|---|---|---|---|
 | LM1 | Episode and efficiency records | PARTIAL@a17d4dadd | Each attempt leaves records for learning; since 2026-09-29 episodes keep the full failure reason and classify timeouts. Many efficiency fields stay empty on the live path, and tool events are counted as tool calls. | `crates/roko-cli/src/runtime_feedback/episodes.rs`; `crates/roko-learn/src/efficiency.rs`: `AgentEfficiencyEvent` | `e39b5519a`, `d4be4e872`, gap-7a8474, bug-f9ae3e | fix · spec-b7303f |
-| LM2 | Playbooks | PARTIAL@a17d4dadd | Since `763596768` outcomes are credited to the playbooks a prompt actually used (reg-3f5969). A relevance floor still puts three playbooks into every prompt, and nothing measures whether they help. | `crates/roko-cli/src/dispatch/prompt_builder.rs`: `collect_playbooks_cached` | `763596768`, reg-3f5969 | fix · spec-6ac537 |
+| LM2 | Playbooks | WIRED@a17d4dadd | Since `763596768` outcomes are credited to the playbooks a prompt actually used (reg-3f5969), and selection adds each playbook's success count to its relevance. A floor still puts three playbooks into every prompt, and nothing measures whether they help. | `crates/roko-cli/src/dispatch/prompt_builder.rs`: `collect_playbooks_cached` | `763596768`, reg-3f5969 | fix · spec-6ac537 |
 | LM3 | Knowledge store | BROKEN@a17d4dadd | Since `189a14e65`, gate-verified attempts grow and reinforce the store (reg-06ae9f). But the prompt cache queries it with an empty topic, which matches nothing, so plan-run prompts carry no knowledge (bug-86117a). | `crates/roko-cli/src/runtime_feedback/verified_knowledge.rs`: `VerifiedKnowledgeSink`; `crates/roko-cli/src/dispatch/prompt_cache.rs`: `PromptCache` | `189a14e65`, reg-06ae9f, bug-86117a | fix · bug-86117a |
 | LM4 | Error patterns and post-gate lessons | ORPHANED@a17d4dadd | Runner-v2 fed discovered error patterns and retry lessons back into prompts. On the Graph path the pattern reader loads a file that nothing writes, and each gate failure pays for a lesson that no retry prompt reads. | `crates/roko-learn/src/error_pattern_store.rs`: `ErrorPatternStore`; `crates/roko-learn/src/post_gate_reflection.rs`: `PostGateReflectionStore` | `6b5da8616`, gap-e483e7 | wire · spec-6ac537 |
-| LM5 | Prompt experiments | WIRED@a17d4dadd | Since `ebf274ada`, prompt variants are assigned per attempt, bound to the hash of the final prompt and settled with the attempt's outcome, on both dispatch paths (gap-fdd27f). | `crates/roko-cli/src/graph_task_dispatch/prompt_experiment.rs`: `LaunchedTreatments`; `crates/roko-learn/src/prompt_experiment.rs`: `ExperimentStore` | `ebf274ada`, gap-fdd27f | keep |
+| LM5 | Prompt experiments | PARTIAL@a17d4dadd | Since `ebf274ada`, prompt variants are assigned per attempt, bound to the hash of the final prompt and settled with the attempt's outcome, on both dispatch paths (gap-fdd27f). But arms are assigned adaptively (UCB1) and the winner is declared by a chi-squared test, whose error rate is not controlled under adaptive assignment. | `crates/roko-cli/src/graph_task_dispatch/prompt_experiment.rs`: `LaunchedTreatments`; `crates/roko-learn/src/prompt_experiment.rs`: `ExperimentStore` | `ebf274ada`, gap-fdd27f | fix · spec-6ac537 |
 | LM6 | Section selection by bandit and auction | PARTIAL@a17d4dadd | Prompt composition reads per-section posteriors and bids, but nothing on the plan path records section outcomes, so the posteriors never move. | `crates/roko-learn/src/section_outcome.rs`: `SectionOutcomeStore`; `crates/roko-runtime/src/heartbeat_attention.rs`: `ContextBidder` | `6b5da8616` | redesign · spec-6ac537 |
 | LM7 | Offline consolidation | ORPHANED@a17d4dadd | Runner-v2 ran a paid consolidation job after plans. The Graph path registers a plan-completion sink for it, but no production code emits the plan-completed event, so plan runs never start it. | `crates/roko-cli/src/runtime_feedback/plan_completion.rs`: `DreamConsolidationSink` | q-6b7cca, bug-470de8, bug-b9be1d | park · q-6b7cca |
 | LM8 | Affect state | PARTIAL@a17d4dadd | An affect state is appraised after every task and shifts the routing tier, with no record of its influence. The sink that saves it fires only on the plan-completed event, so each run's updates are lost. | `crates/roko-cli/src/graph_task_dispatch.rs`: `build_routing_context`; `crates/roko-cli/src/runtime_feedback/plan_completion.rs` | q-6b7cca | park · q-6b7cca |
 | LM9 | Reflex shortcut | ORPHANED@a17d4dadd | Nothing on the plan path promotes reflex rules, and a rule hit would record a gate pass without running any gate. | `crates/roko-learn/src/reflex_store.rs`: `record_gate_pass_for`; `crates/roko-cli/src/graph_task_dispatch.rs`: `record_gate_pass_for` | bug-94151f | remove · bug-94151f |
 | LM10 | Similarity and collective-intelligence metrics | BUILT-UNWIRED@a17d4dadd | Episode fingerprints are hash-expanded vectors that nothing reads; the active-inference router has no caller; the collective-intelligence prompt block reads a file that plan runs never write; compounding metrics are never computed. | `crates/roko-cli/src/runtime_feedback/episodes.rs`: `attach_episode_hdc_fingerprint`; `crates/roko-learn/src/active_inference.rs`: `EfeRouter`; `crates/roko-cli/src/dispatch/prompt_builder.rs`: `generate_cfactor_context` | gap-14f08e | park |
 | LM11 | Second learning pipeline | PARTIAL@a17d4dadd | A separate learning runtime settles roko do, roko prd and plan-authoring runs, not plan runs, and updates router and section state on its own. | `crates/roko-learn/src/runtime_feedback/mod.rs`: `LearningRuntime`; `crates/roko-cli/src/agent_exec.rs`: `record_completed_run` | spec-b7303f | redesign · spec-b7303f |
+| LM12 | Hindsight relabelling | PARTIAL@a17d4dadd | Since `33e107da1`, a verify failure that names a sibling task relabels that sibling's latest success as a failure. The corrections go to an adjustments file that nothing reads, so no learner sees them. | `crates/roko-cli/src/runtime_feedback/hindsight.rs`: `HindsightSink`; `crates/roko-cli/src/graph_execution/plan_runner.rs`: `HindsightSink` | `fb87e3738`, `33e107da1`, gap-5fb9a7, gap-5be28d | fix · gap-5be28d |
 
 ## RG · Regulation and audits
 
@@ -188,6 +189,6 @@ The paper's ten vision claims, each tagged at the same commit and traced to the 
 | V5 Safe isolation and correct integration | PARTIAL@a17d4dadd | IS1, IS2, IS3, IS4, IS5, IS6 | The shared checkout is the default, nothing merges, no whole-plan check exists, and agent tool shells still see provider keys. |
 | V6 Trust from gates and acceptance criteria | PARTIAL@a17d4dadd | QA1, QA2, QA3, QA4, QA5, QA6, AU6, AU7 | Acceptance criteria are prompt text, and there are no hidden, tamper, scope or whole-plan checks. |
 | V7 Cheaper and faster than top models | UNPROVEN@a17d4dadd | RC2, RC6, EX7 | No head-to-head run exists, escalation is not wired, and cost rows carry no source. |
-| V8 Improves over time | PARTIAL@a17d4dadd | LM1, LM2, LM3, LM4, LM5, LM6, LM11, RC2 | Several loops were re-wired on 2026-09-29, but no loop has a measured benefit, and the knowledge read path injects nothing. |
+| V8 Improves over time | PARTIAL@a17d4dadd | LM1, LM2, LM3, LM4, LM5, LM6, LM11, LM12, RC2 | Several loops were re-wired on 2026-09-29, but no loop has a measured benefit, and the knowledge read path injects nothing. |
 | V9 Cybernetic throughout | PARTIAL@a17d4dadd | RG1, RG2, RG3, RG4, RG5, RG6, RC3, RC5, QA7 | Provider health, the plan budget and adaptive retry budgets close loops, but nothing audits the gates or the regulators. |
 | V10 Observable and controllable | PARTIAL@a17d4dadd | RG1, SS4, SS5, SS6 | Watching works; pause is cosmetic, the CLI controls are no-ops, and there is no approval step or diff view. |

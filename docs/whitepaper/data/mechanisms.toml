@@ -4,7 +4,8 @@
 # docs/whitepaper/appendix-status-matrix.md from this file; `--check` fails when a row is bad or the appendix is
 # out of date. Rows were seeded from the TL;DR's mechanism table (68 mechanisms in 9 groups, tagged at d9e79e9d8) and
 # re-checked against the code at the pin. Two TL;DR rows are split because their parts carry different tags:
-# QA7/QA8 (adaptive thresholds; gaming detector and holdout) and DM6/DM7 (plugin install; WASM hooks).
+# QA7/QA8 (adaptive thresholds; gaming detector and holdout) and DM6/DM7 (plugin install; WASM hooks). LM12
+# (hindsight relabelling) is added: plan runs wire it since 33e107da1.
 #
 # Row fields:
 #   id, group    row id = group id + number (the paper cites rows by id, such as EX3)
@@ -614,11 +615,12 @@ item = "spec-b7303f"
 id = "LM2"
 group = "LM"
 name = "Playbooks"
-tag = "PARTIAL"
+tag = "WIRED"
 verdict = "fix"
 note = """
-Since `763596768` outcomes are credited to the playbooks a prompt actually used (reg-3f5969). A relevance floor still
-puts three playbooks into every prompt, and nothing measures whether they help.
+Since `763596768` outcomes are credited to the playbooks a prompt actually used (reg-3f5969), and selection adds each
+playbook's success count to its relevance. A floor still puts three playbooks into every prompt, and nothing
+measures whether they help.
 """
 anchors = ["crates/roko-cli/src/dispatch/prompt_builder.rs::collect_playbooks_cached"]
 evidence = ["763596768", "reg-3f5969"]
@@ -656,14 +658,16 @@ item = "spec-6ac537"
 id = "LM5"
 group = "LM"
 name = "Prompt experiments"
-tag = "WIRED"
-verdict = "keep"
+tag = "PARTIAL"
+verdict = "fix"
 note = """
 Since `ebf274ada`, prompt variants are assigned per attempt, bound to the hash of the final prompt and settled with the
-attempt's outcome, on both dispatch paths (gap-fdd27f).
+attempt's outcome, on both dispatch paths (gap-fdd27f). But arms are assigned adaptively (UCB1) and the winner is
+declared by a chi-squared test, whose error rate is not controlled under adaptive assignment.
 """
 anchors = ["crates/roko-cli/src/graph_task_dispatch/prompt_experiment.rs::LaunchedTreatments", "crates/roko-learn/src/prompt_experiment.rs::ExperimentStore"]
 evidence = ["ebf274ada", "gap-fdd27f"]
+item = "spec-6ac537"
 
 [[row]]
 id = "LM6"
@@ -746,6 +750,20 @@ section state on its own.
 anchors = ["crates/roko-learn/src/runtime_feedback/mod.rs::LearningRuntime", "crates/roko-cli/src/agent_exec.rs::record_completed_run"]
 evidence = ["spec-b7303f"]
 item = "spec-b7303f"
+
+[[row]]
+id = "LM12"
+group = "LM"
+name = "Hindsight relabelling"
+tag = "PARTIAL"
+verdict = "fix"
+note = """
+Since `33e107da1`, a verify failure that names a sibling task relabels that sibling's latest success as a failure.
+The corrections go to an adjustments file that nothing reads, so no learner sees them.
+"""
+anchors = ["crates/roko-cli/src/runtime_feedback/hindsight.rs::HindsightSink", "crates/roko-cli/src/graph_execution/plan_runner.rs::HindsightSink"]
+evidence = ["fb87e3738", "33e107da1", "gap-5fb9a7", "gap-5be28d"]
+item = "gap-5be28d"
 
 # ── RG · Regulation and audits ──────────────────────────────────────────────────
 
@@ -1103,7 +1121,7 @@ blocker = "No head-to-head run exists, escalation is not wired, and cost rows ca
 id = "V8"
 name = "Improves over time"
 tag = "PARTIAL"
-rows = ["LM1", "LM2", "LM3", "LM4", "LM5", "LM6", "LM11", "RC2"]
+rows = ["LM1", "LM2", "LM3", "LM4", "LM5", "LM6", "LM11", "LM12", "RC2"]
 blocker = "Several loops were re-wired on 2026-09-29, but no loop has a measured benefit, and the knowledge read path injects nothing."
 
 [[claim]]

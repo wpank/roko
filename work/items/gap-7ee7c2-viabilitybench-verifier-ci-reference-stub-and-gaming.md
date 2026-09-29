@@ -77,3 +77,4 @@ same way.
 
 - **Later:** `vb ci` (S08 §5.7) will wrap these scripts, and F2–F8 join as they are built.
 - **Waits for:** F1 and F4. No hot files.
+- **From wk-bench-f4 (gap-9e7079, 2026-09-29):** the F1 and F4 interfaces differ, so the CI scripts must reconcile them, or the families converge first. F4: `gen.py --level L --seed S --out WORKDIR --task-dir PRIVATE`, `hidden.py --task PRIVATE/task.json --workdir TREE --secret-file PATH [--timeout S] [--scratch DIR]`, and `solutions.py::apply_solution(kind, workdir, task)` at the family root. F1 (on `work/gap-4723ff`): `gen.py --level ℓ --seed s --out DIR [--workdir WORKDIR] [--latent v1]`, where `DIR` holds the private `task.json`; `hidden.py --task DIR/task.json --workdir TREE --secret-file PATH`; and `reference/solutions.py::apply(kind, workdir, task)`. The plan slice has its own verifier CI, `families/plan_slice/slicekit.py selftest`, which `ci/verify_verifiers.py` could call.

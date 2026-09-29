@@ -18,10 +18,12 @@ import pytest
 
 import agent_env
 import caps
+import faultproxy
 import layout
 import ledger
 import materialize
 import mini_loop
+import provider
 import validate
 import vb
 from common import canary, hmac_seed, repo
@@ -308,6 +310,33 @@ def test_prices_come_from_the_snapshot_and_unknown_models_cost_null(tmp_path):
     [row] = read_jsonl(tmp_path / "ledger.jsonl")
     assert row["api_equiv_usd"] is None and row["source"] == "unknown" and validate.validate("ledger", row) == []
     assert book.spent_bound_usd == pytest.approx(0.3)  # an unknown cost counts at its reservation
+
+
+def test_usage_reads_a_top_level_cached_tokens():
+    # bug-b70d40: Moonshot reports its cache reads as a top-level `cached_tokens`, OpenAI and Cerebras inside
+    # `prompt_tokens_details`. Either way they are priced at the cache-read rate, the way mini_loop prices a call.
+    def usage_of(raw: dict) -> dict:
+        usage = provider.parse_completion({"choices": [{"message": {"content": "ok"}}], "usage": raw}).usage
+        return ledger.vb_usage(usage.prompt_tokens, usage.completion_tokens, usage.cached_tokens,
+                               usage.reasoning_tokens)
+
+    row = ledger.load_snapshot().row("kimi-k2.6")
+    top = {"prompt_tokens": 1000, "completion_tokens": 100, "cached_tokens": 600}
+    nested = {"prompt_tokens": 1000, "completion_tokens": 100, "prompt_tokens_details": {"cached_tokens": 600}}
+    for raw in (top, nested):
+        assert usage_of(raw)["tokens_cache_read"] == 600
+        assert ledger.price(usage_of(raw), row).api_equiv_usd == pytest.approx(
+            (400 * row["input"] + 600 * row["cache_read"] + 100 * row["output"]) / 1e6)
+    # A nested count wins over a top-level one, a count above prompt_tokens is capped, and a bad count is 0: the
+    # same reading as the proxy's meter, so the ledger and the meter agree on every layout.
+    cases = [({**nested, "cached_tokens": 999}, 600), ({**top, "prompt_tokens_details": None}, 600),
+             ({**top, "prompt_tokens_details": {}}, 600), ({**top, "prompt_tokens_details": {"cached_tokens": 0}}, 0),
+             ({**top, "cached_tokens": 5000}, 1000), ({**top, "cached_tokens": True}, 0),
+             ({**top, "cached_tokens": -3}, 0), ({**top, "cached_tokens": "600"}, 0)]
+    for raw, cached in cases:
+        assert usage_of(raw)["tokens_cache_read"] == cached, raw
+        metered = faultproxy.usage_classes(raw)
+        assert usage_of(raw) == {key: metered[key] for key in usage_of(raw)}, raw
 
 
 def test_replies_need_exactly_one_bash_block(tmp_path):

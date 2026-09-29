@@ -28,6 +28,7 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::OnceLock;
 
 use crate::agent::ProviderKind;
+use crate::config::loader::config_text_holds_secrets;
 use crate::provider_catalog;
 
 // ---- .env names ------------------------------------------------------------
@@ -466,6 +467,41 @@ pub fn is_key_file(path: &Path) -> bool {
     )
 }
 
+/// Whether agents must be kept away from `path`, a roko config file that
+/// holds a secret such as `serve.auth.api_key`.
+///
+/// A secret is a value `roko config show` would redact
+/// ([`config_text_holds_secrets`]). Besides `~/.roko/config.toml`, a key
+/// file whatever it holds, roko reads
+/// its config from the project `roko.toml` (in the workdir or an ancestor),
+/// from the file `ROKO_CONFIG` names, and from the legacy
+/// `~/.config/roko/config.toml`. Agents may read those while they hold no
+/// secret; a secret kept in `ROKO__*` variables in `.roko/.env` (for example
+/// `ROKO__SERVE__AUTH__API_KEY`) leaves them readable.
+#[must_use]
+pub fn is_config_with_secrets(path: &Path) -> bool {
+    let roko_config = std::env::var_os("ROKO_CONFIG").map(PathBuf::from);
+    config_holds_secrets(path, roko_config.as_deref())
+}
+
+/// [`is_config_with_secrets`], with `roko_config` the file `ROKO_CONFIG` names.
+fn config_holds_secrets(path: &Path, roko_config: Option<&Path>) -> bool {
+    let name = path.file_name().and_then(|name| name.to_str());
+    let dir = path.parent().and_then(Path::file_name);
+    let is_config = name == Some("roko.toml")
+        || (name == Some("config.toml") && dir.is_some_and(|dir| dir == "roko"))
+        || roko_config.is_some_and(|config| same_file(config, path));
+    // Only a regular file is read: opening a FIFO named roko.toml would block.
+    is_config
+        && std::fs::metadata(path).is_ok_and(|meta| meta.is_file())
+        && std::fs::read_to_string(path).is_ok_and(|text| config_text_holds_secrets(&text))
+}
+
+/// Whether `a` and `b` name the same file, as given or resolved.
+fn same_file(a: &Path, b: &Path) -> bool {
+    a == b || matches!((a.canonicalize(), b.canonicalize()), (Ok(a), Ok(b)) if a == b)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -774,6 +810,55 @@ mod tests {
         assert!(is_key_file(Path::new(
             "/app/.roko/worktrees/p-t1/.roko/.env"
         )));
+    }
+
+    #[test]
+    fn no_agent_readable_config_file_holds_the_serve_api_key() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let write = |path: &Path, text: &str| std::fs::write(path, text).expect("write config");
+        let serve_key = "[serve.auth]\nenabled = true\napi_key = \"sk-serve-test\"\n";
+
+        // Every file roko reads its config from is off limits while it
+        // holds the key: the project roko.toml, the file ROKO_CONFIG names,
+        // the legacy ~/.config/roko/config.toml, and ~/.roko/config.toml,
+        // a key file whatever it holds.
+        let project = dir.path().join("roko.toml");
+        write(&project, serve_key);
+        assert!(config_holds_secrets(&project, None));
+        let named = dir.path().join("deploy.toml");
+        write(&named, serve_key);
+        assert!(!config_holds_secrets(&named, None), "not a config file");
+        assert!(config_holds_secrets(&named, Some(named.as_path())));
+        let legacy = dir.path().join("roko").join("config.toml");
+        std::fs::create_dir_all(dir.path().join("roko")).expect("mkdir");
+        write(&legacy, serve_key);
+        assert!(config_holds_secrets(&legacy, None));
+        assert!(is_key_file(&dir.path().join(".roko").join("config.toml")));
+
+        // The other credentials a config can hold, and one that won't parse.
+        for text in [
+            "[server]\nauth_token = \"t\"\n",
+            "[deploy]\nrailway_api_token = \"t\"\n",
+            "[webhooks.github]\nsecret = \"s\"\n",
+            "[chain]\nwallet_key = \"0xabc\"\n",
+            "[platforms.chat]\nkind = \"discord\"\ntoken = \"literal\"\n",
+            "[providers.x.extra_headers]\nX-Org = \"org-1\"\n",
+            "[serve.auth\napi_key = \"sk-serve-test\"\n",
+        ] {
+            write(&project, text);
+            assert!(config_holds_secrets(&project, None), "{text}");
+        }
+        // Without a secret, agents keep reading the project config.
+        for text in [
+            "[serve.auth]\nenabled = true\napi_key = \"\"\n",
+            "[providers.x]\napi_key_env = \"X_API_KEY\"\n",
+            "[platforms.chat]\nkind = \"discord\"\ntoken = { env = \"DISCORD_TOKEN\" }\n",
+            "[agent]\nmax_tokens_per_turn = 4096\n",
+            "",
+        ] {
+            write(&project, text);
+            assert!(!config_holds_secrets(&project, None), "{text}");
+        }
     }
 
     #[test]

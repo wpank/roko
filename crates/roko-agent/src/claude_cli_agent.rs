@@ -1913,6 +1913,57 @@ mod tests {
     }
 
     #[test]
+    fn settings_hooks_refuse_a_roko_toml_holding_a_secret() {
+        let workdir = tempdir().unwrap();
+        let config = workdir.path().join("roko.toml");
+        let value: Value = serde_json::from_str(&build_settings_json()).unwrap();
+        let file_hook = value
+            .pointer("/hooks/PreToolUse/1/hooks/0/command")
+            .and_then(Value::as_str)
+            .expect("file hook command");
+        let bash_hook = bash_hook_command();
+        let file_code = |tool_name: &str, tool_input: Value| {
+            let payload = serde_json::json!({
+                "cwd": workdir.path(),
+                "tool_name": tool_name,
+                "tool_input": tool_input,
+            });
+            run_hook(file_hook, &payload.to_string(), &[])
+                .status
+                .code()
+        };
+        let bash_code = |command: &str| {
+            let payload = serde_json::json!({
+                "cwd": workdir.path(),
+                "tool_input": { "command": command },
+            });
+            run_hook(&bash_hook, &payload.to_string(), &[])
+                .status
+                .code()
+        };
+
+        fs::write(
+            &config,
+            "[serve.auth]\nenabled = true\napi_key = \"sk-serve-test\"\n",
+        )
+        .unwrap();
+        let read = serde_json::json!({ "file_path": "roko.toml" });
+        let grep = serde_json::json!({ "pattern": "api_key" });
+        assert_eq!(file_code("Read", read.clone()), Some(2));
+        assert_eq!(file_code("Grep", grep.clone()), Some(2));
+        let rust_only = serde_json::json!({ "pattern": "fn main", "glob": "*.rs" });
+        assert_eq!(file_code("Grep", rust_only), Some(0));
+        assert_eq!(bash_code("cat roko.toml"), Some(2));
+        assert_eq!(bash_code("cargo test"), Some(0));
+
+        // Without the secret, roko.toml is an ordinary file.
+        fs::write(&config, "[serve.auth]\nenabled = true\n").unwrap();
+        assert_eq!(file_code("Read", read), Some(0));
+        assert_eq!(file_code("Grep", grep), Some(0));
+        assert_eq!(bash_code("cat roko.toml"), Some(0));
+    }
+
+    #[test]
     fn settings_hooks_key_file_policy_when_home_is_workdir() {
         // With HOME set to the project, as in many containers, ~/.roko is
         // the workdir's .roko, and plan worktrees live under it.

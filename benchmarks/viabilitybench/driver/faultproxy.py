@@ -5,11 +5,14 @@ independently of the client, and injects the provider faults of S08 §4.6's `pro
 its own prefix: a client whose base URL is `proxy.base_url("cerebras")` has `POST /cerebras/chat/completions`
 forwarded to `<the upstream's base_url>/chat/completions`. Nothing else is forwarded anywhere. An upstream's host
 must be one an arm file names (`arm_hosts`) or a loopback address, and a network upstream must use https; a client
-cannot name a target; only POST is forwarded; redirects go back to the client and are never followed. The client's
-credentials are dropped and the upstream's key is sent instead, read from the environment variable the upstream
-names, in the proxy's process. A client routed through the proxy therefore needs no key (`vb.py` gives an override
-URL none). Connections to an upstream are kept alive and reused, as a provider's own client would, so routing a call
-through the proxy adds no connection or TLS setup to it.
+cannot name a target; only POST is forwarded; redirects go back to the client and are never followed.
+
+The client's credentials are dropped, and the proxy sends the upstream's key instead: the entry of `keys` that the
+upstream's `api_key_env` names. The keys come from the driver-only key file (`secret.load_keys`), never from an
+environment, where agents could read them (bug-979a06). A client routed through the proxy therefore needs no key
+(`vb.py` gives an override URL none), and the proxy is the only holder of a provider key. Connections to an upstream
+are kept alive and reused, as a provider's own client would, so routing a call through the proxy adds no connection or
+TLS setup to it.
 
 **Metering** (always on). Each response's `usage` is mapped onto S01 §4.4's disjoint token classes (`usage_classes`:
 `tokens_in` is uncached input only; cache reads and cache writes are classes of their own) and priced from the price
@@ -23,9 +26,15 @@ end, even when a fault cuts or rewrites what the client gets, so the meter holds
 - `none`: nothing was billed, because the proxy answered itself (a fault or a refusal) or the upstream answered an
   error status.
 
-Each task's input tokens (every input class) are counted, and once they reach the `input_token_cap`, further calls of
-that task are refused with a 403 (`vb_cap_exceeded`) and never forwarded. A call whose usage is missing counts its
-request's bytes, since a token is never shorter than a byte (`caps`).
+Each task's input tokens (every input class) are counted against the `input_token_cap`. A call that could take them
+past it is refused with a 403 (`vb_cap_exceeded`) and never forwarded: the proxy adds an upper bound on the call's
+input to what the task has counted and what its calls in flight may still count (bug-c30764). The bound is the
+request's bytes plus `PREAMBLE_TOKENS`, since a token is never shorter than a byte and a provider may put a header of
+its own before the first message (as `mini_loop` bounds its calls). When the request extends one the task sent
+before, with the same settings and that request's messages first, the bound is that request's reported input plus
+the bytes of the messages it adds, so a long conversation's bound stays close to its real size. A call whose usage is
+missing counts its bound. The bound holds for text: an image a request only links to can cost more tokens than its
+URL has bytes.
 
 **Faults.** One profile is active at a time (`Profile`; the names and parameters are S08 §4.11's):
 - `clean`: no faults;
@@ -55,17 +64,18 @@ to another task.
 
 **The log.** Every request to an upstream is metered and logged before the client can see the end of its response, so
 a caller whose call has returned finds it in the log and in `state`. Each appends one JSON line to `log_path`, flushed
-but not fsynced: `ts`, `task`, `ordinal`, `profile`, `fault_injected` (the profile's name when its fault fired, else
-null), `fault` (the fault's detail), `upstream`, `path`, `model_requested`, `model_reported`, `stream`, `status` (what
-the client got; null when it got none), `forwarded`, `usage_source`, `usage` (the classes; null when none came back),
-`api_equiv_usd`, `without_cache_usd`, `cost_source` (`provider_usage`, `unknown` or `not_billed`), `price_snapshot_id`,
-`refused` and `elapsed_ms`.
+but not fsynced: `ts` (when the request arrived, in UTC to the microsecond, so a runner can tell apart attempts that
+end within one second: bug-09fac4), `task`, `ordinal`, `profile`, `fault_injected` (the profile's name when its fault
+fired, else null), `fault` (the fault's detail), `upstream`, `path`, `model_requested`, `model_reported`, `stream`,
+`status` (what the client got; null when it got none), `forwarded`, `usage_source`, `usage` (the classes; null when
+none came back), `api_equiv_usd`, `without_cache_usd`, `cost_source` (`provider_usage`, `unknown` or `not_billed`),
+`price_snapshot_id`, `refused`, `input_bound` (the most input the call could have been billed for) and `elapsed_ms`.
 
 API:
     Upstream(name, base_url, api_key_env=None, stream_usage=True); Upstream.from_endpoint(endpoint) -> Upstream
     Profile(name="clean", p=0.0, seed=0, ...); Profile.parse(spec: str | Mapping | Profile) -> Profile
     Profile.draw(task, ordinal) -> dict | None; Profile.as_json() -> dict
-    FaultProxy(upstreams, *, log_path, snapshot=None, allowed_hosts=None, input_token_cap=None, token=None)
+    FaultProxy(upstreams, *, log_path, snapshot=None, allowed_hosts=None, input_token_cap=None, token=None, keys=None)
     FaultProxy: a context manager (.start(), .close()); .url, .token, .base_url(name) -> str
     FaultProxy.endpoint(endpoint: provider.Endpoint) -> provider.Endpoint      # the same provider, through the proxy
     FaultProxy.configure(*, task=..., profile=..., input_token_cap=...) -> dict; .state() -> dict
@@ -75,6 +85,8 @@ API:
 
 from __future__ import annotations
 
+import datetime as dt
+import hashlib
 import hmac
 import http.client
 import json
@@ -94,7 +106,6 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
-import harness
 import layout  # also puts families/ on sys.path for common
 import ledger
 import provider
@@ -114,6 +125,11 @@ IDLE_CONNECTIONS = 8  # kept-alive upstream connections held per upstream
 NOT_RELAYED = frozenset({"connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailer",
                          "transfer-encoding", "upgrade", "content-length", "date", "server"})
 EVENT_END = re.compile(rb"\r\n\r\n|\n\n|\r\r")
+PREAMBLE_TOKENS = 256  # what a provider may put before the first message (a harmony system header), as in mini_loop
+# Request fields that set how a model samples, not what its prompt holds: a change to one keeps a conversation's prefix.
+NOT_PROMPT = frozenset({"stream", "stream_options", "max_tokens", "max_completion_tokens", "temperature", "top_p",
+                        "seed", "n", "stop", "user", "metadata", "logprobs", "top_logprobs", "presence_penalty",
+                        "frequency_penalty", "logit_bias"})
 _UNSET: Any = object()
 
 
@@ -276,7 +292,8 @@ class _Meter:
     refused: int = 0
     usage_missing: int = 0
     cost_unknown: int = 0
-    input_tokens: int = 0  # every input class, plus the request bytes of calls whose usage is missing
+    input_tokens: int = 0  # every input class, plus the input bound of each call whose usage is missing
+    reserved: int = 0  # the input bounds of the calls in flight
     usage: dict = field(default_factory=dict)
     api_equiv_usd: float = 0.0
 
@@ -284,7 +301,8 @@ class _Meter:
 class FaultProxy:
     def __init__(self, upstreams: Iterable[Upstream], *, log_path: Path, snapshot: ledger.Snapshot | None = None,
                  allowed_hosts: Iterable[str] | None = None, input_token_cap: int | None = None,
-                 token: str | None = None, upstream_timeout_s: float = UPSTREAM_TIMEOUT_S) -> None:
+                 token: str | None = None, upstream_timeout_s: float = UPSTREAM_TIMEOUT_S,
+                 keys: Mapping[str, str] | None = None) -> None:
         allowed = frozenset(host.lower() for host in (arm_hosts() if allowed_hosts is None else allowed_hosts))
         self.upstreams: dict[str, Upstream] = {}
         for upstream in upstreams:
@@ -294,9 +312,11 @@ class FaultProxy:
             self.upstreams[upstream.name] = upstream
         if not self.upstreams:
             raise ProxyError("the proxy needs at least one upstream")
-        unset = [u.api_key_env for u in self.upstreams.values() if u.api_key_env and not os.environ.get(u.api_key_env)]
-        if unset:
-            raise ProxyError(f"set {', '.join(unset)} for the proxy's upstreams")
+        self._keys: Mapping[str, str] = keys if keys is not None else {}
+        missing = [upstream.api_key_env for upstream in self.upstreams.values()
+                   if upstream.api_key_env and not self._keys.get(upstream.api_key_env)]
+        if missing:
+            raise ProxyError(f"no key for {', '.join(missing)}: the proxy's upstreams need them in the key file")
         self.snapshot = snapshot or ledger.load_snapshot()
         self.token = token or secrets.token_urlsafe(24)
         self.upstream_timeout_s = upstream_timeout_s
@@ -305,6 +325,7 @@ class FaultProxy:
         self._profile = Profile()
         self._cap = _cap(input_token_cap)
         self._meters: dict[str | None, _Meter] = {}
+        self._prompts: dict[str | None, dict[str, int]] = {}  # per task: a prompt's digest -> its reported input
         self._idle: dict[str, list[http.client.HTTPConnection]] = {}
         self._closed = False
         self._log = os.fdopen(os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600), "a", encoding="utf-8")
@@ -370,23 +391,28 @@ class FaultProxy:
         """One call to an upstream: refuse it, fault it or forward it; it is metered and logged before it ends."""
         started = time.monotonic()
         request = _json_object(body)
+        digests, sizes = _prompt_digests(request)
         with self._lock:
             task, profile, cap = self._task, self._profile, self._cap
             meter = self._meters.setdefault(task, _Meter())
             meter.requests += 1
             ordinal = meter.requests
-            refused = cap is not None and meter.input_tokens >= cap
-        call = _Call(self, handler, meter, len(body), started, {
-            "ts": harness.utc_now(), "task": task, "ordinal": ordinal, "profile": profile.as_json(),
+            bound = self._input_bound(task, digests, sizes, len(body))
+            counted = meter.input_tokens + meter.reserved
+            refused = cap is not None and counted + bound > cap
+            if not refused:
+                meter.reserved += bound
+        call = _Call(self, handler, meter, bound, None if refused else digests[-1], started, {
+            "ts": _now(), "task": task, "ordinal": ordinal, "profile": profile.as_json(),
             "fault_injected": None, "fault": None, "upstream": upstream.name, "path": path,
             "model_requested": _text(request.get("model")), "model_reported": None,
             "stream": request.get("stream") is True, "status": None, "forwarded": False, "usage_source": "none",
-            "usage": None, "refused": None})
+            "usage": None, "refused": None, "input_bound": bound})
         try:
             if refused:
                 call.entry["refused"] = "input_token_cap"
-                call.answer(403, _error("vb_cap_exceeded", f"task {task!r} reached its input-token cap of {cap}",
-                                        "input_token_cap"))
+                call.answer(403, _error("vb_cap_exceeded", f"task {task!r} could pass its input-token cap of {cap}: "
+                                        f"{counted} counted, and this call may add up to {bound}", "input_token_cap"))
                 return
             detail = profile.draw(task, ordinal)
             fault = None if detail is None else profile.name
@@ -421,7 +447,7 @@ class FaultProxy:
         headers = {"Content-Type": "application/json", "Accept": handler.headers.get("Accept") or "application/json"}
         if handler.headers.get("User-Agent"):
             headers["User-Agent"] = handler.headers["User-Agent"]
-        key = os.environ.get(upstream.api_key_env) if upstream.api_key_env else None
+        key = self._keys.get(upstream.api_key_env) if upstream.api_key_env else None
         if key:
             headers["Authorization"] = f"Bearer {key}"
         connection, reusable = self._connection(upstream), False
@@ -523,7 +549,17 @@ class FaultProxy:
         relay.end(complete)
         return complete
 
-    def _settle(self, entry: dict, meter: _Meter, body_bytes: int, started: float) -> None:
+    def _input_bound(self, task: str | None, digests: list[str], sizes: list[int], body_bytes: int) -> int:
+        """The most input tokens a request can be billed for (module docstring); call it holding the lock."""
+        bound = body_bytes + PREAMBLE_TOKENS
+        seen = self._prompts.get(task, {})
+        for index in range(len(digests) - 1, -1, -1):  # the longest earlier prompt this one extends
+            if digests[index] in seen:
+                return min(bound, seen[digests[index]] + sum(sizes[index:]))
+        return bound
+
+    def _settle(self, call: _Call) -> None:
+        entry, meter, started = call.entry, call.meter, call.started
         usage, source = entry["usage"], entry["usage_source"]
         if source == "reported":
             cost = ledger.price(usage, self.snapshot.row(entry["model_reported"]))
@@ -538,9 +574,13 @@ class FaultProxy:
             counted = sum(usage[key] for key in ("tokens_in", "tokens_cache_read", "tokens_cache_write_5m",
                                                  "tokens_cache_write_1h"))
         else:
-            counted = body_bytes if source == "missing" else 0
+            counted = call.bound if source == "missing" else 0
         line = json.dumps(entry, sort_keys=True) + "\n"
         with self._lock:
+            if call.digest is not None:  # it held a reservation, and a reported input makes its prompt a known prefix
+                meter.reserved -= call.bound
+                if usage:
+                    self._prompts.setdefault(entry["task"], {})[call.digest] = counted
             meter.forwarded += entry["forwarded"]
             meter.faults += entry["fault_injected"] is not None
             meter.refused += entry["refused"] is not None
@@ -582,12 +622,13 @@ class _Call:
     """One call's log entry. It is metered and logged once, just before the client can see the end of its response,
     so a caller that got its response finds the call in the log and in `state`."""
 
-    def __init__(self, proxy: FaultProxy, handler: _Handler, meter: _Meter, body_bytes: int, started: float,
-                 entry: dict) -> None:
+    def __init__(self, proxy: FaultProxy, handler: _Handler, meter: _Meter, bound: int, digest: str | None,
+                 started: float, entry: dict) -> None:
         self.proxy = proxy
         self.handler = handler
         self.meter = meter
-        self.body_bytes = body_bytes
+        self.bound = bound  # the call's input bound, reserved on the meter until it settles
+        self.digest = digest  # its prompt's digest; None for a refused call, which reserved nothing
         self.started = started
         self.entry = entry
         self.settled = False
@@ -595,7 +636,7 @@ class _Call:
     def settle(self) -> None:
         if not self.settled:
             self.settled = True
-            self.proxy._settle(self.entry, self.meter, self.body_bytes, self.started)
+            self.proxy._settle(self)
 
     def answer(self, status: int, payload: dict, headers: Mapping[str, str] | None = None) -> None:
         """Answer the client from the proxy itself."""
@@ -781,6 +822,30 @@ def _cap(value: object) -> int | None:
 def _error(kind: str, message: str, code: str | None = None) -> dict:
     """An error body in the OpenAI shape."""
     return {"error": {"message": message, "type": kind, "code": code}}
+
+
+def _prompt_digests(request: dict) -> tuple[list[str], list[int]]:
+    """Digests of a request's prompt through each of its messages, and each message's size in canonical JSON bytes.
+    The first digest, before any message, covers the settings that shape a prompt: the other fields but `NOT_PROMPT`."""
+    digest = hashlib.sha256(_canonical({key: value for key, value in request.items()
+                                        if key != "messages" and key not in NOT_PROMPT}))
+    digests, sizes = [digest.hexdigest()], []
+    messages = request.get("messages")
+    for message in messages if isinstance(messages, list) else []:
+        data = _canonical(message)
+        digest.update(b"\n" + data)
+        digests.append(digest.hexdigest())
+        sizes.append(len(data))
+    return digests, sizes
+
+
+def _now() -> str:
+    """The current UTC time in ISO 8601, to the microsecond."""
+    return dt.datetime.now(dt.UTC).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+
+
+def _canonical(value: object) -> bytes:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
 
 
 def _json_object(data: bytes) -> dict:

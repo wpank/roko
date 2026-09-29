@@ -457,7 +457,7 @@ pub async fn cmd_validate(workdir: &Path) -> Result<()> {
         Ok(effective) => effective,
         Err(err) => {
             print_phase_status("Phase 2b: Loader invariants", false);
-            println!("  ✗ {err}");
+            println!("  ✗ {err:#}");
             println!();
             println!("Result: 0 warnings, 1 error");
             return Err(anyhow!("config validation failed"));
@@ -1395,12 +1395,16 @@ fn legacy_layout_warning(config: &RokoConfig) -> Option<String> {
 /// merge, env overrides, interpolation, file secrets and the loader's
 /// cross-section invariants.
 fn load_like_commands(path: &Path, config: RokoConfig) -> Result<RokoConfig> {
-    roko_core::config::loader::resolve_config_source(
+    let effective = roko_core::config::loader::resolve_config_source(
         config,
         path,
         &roko_core::config::loader::LoadOptions::default(),
     )
-    .map_err(|err| anyhow!("{err}"))
+    .map_err(|err| anyhow!("{err}"))?;
+    // Commands then build their CLI config from it (`load_resolved_config`),
+    // which validates the dream schedule and the daimon strategy space.
+    crate::config::Config::from_roko_config(&effective)?;
+    Ok(effective)
 }
 
 /// The invariant warnings the loader logs for a resolved config.

@@ -4,31 +4,32 @@ Status: reviewed · budget 550 words · owner gap-c19902
 
 ## 9.1 Status
 
-The [status matrix](appendix-status-matrix.md) tags the paper's 71 mechanisms against the code at `a17d4dadd`: 21
-wired, 23 partial, 2 broken, 7 orphaned, 7 built but unwired, 10 missing and 1 removed (Figure 3).[^9-matrix] What is
-WIRED@a17d4dadd is the core loop: plan generation and validation, the Graph engine with resume, verify commands,
-retries and budgets.
-Merges on 2026-09-29 changed scheduling (`bbf6517fc`), retry budgets (`99adacd6d`), the cost of timed-out attempts
-(`d4be4e872`), environment isolation (`1d923e377`) and learning loops (`ce3bdcbb8`, `33e107da1`).
+The [status matrix](appendix-status-matrix.md) tags the paper's 71 mechanisms against the code at `ed0c33bd5`: 23
+wired, 22 partial, 2 broken, 7 orphaned, 7 built but unwired, 9 missing and 1 removed (Figure 3).[^9-matrix] What is
+WIRED@ed0c33bd5 is the core loop: plan generation and validation, the Graph engine with resume, verify commands,
+pinned acceptance tests, retries and budgets.
+Merges on 2026-09-29 changed scheduling (`bbf6517fc`, `1697fea53`), retry budgets (`99adacd6d`), the cost of timed-out
+attempts (`d4be4e872`), plan verdicts (`3383bd8c0`), attempt records (`42349d8ee`), isolation and the git guard
+(`1d923e377`, `0728a2817`) and learning loops (`ce3bdcbb8`, `33e107da1`, `91cfe0467`).
 
 ![Figure 3: status matrix chart](figures/fig3-status-matrix.svg)
 
-**Figure 3:** The status matrix at `a17d4dadd`: mechanisms per status and group.
+**Figure 3:** The status matrix at `ed0c33bd5`: mechanisms per status and group.
 
 None of the ten vision claims is fully met:
 
 | Claim | Status | Main epics |
 |---|---|---|
-| V1 Domain-agnostic orchestration | PARTIAL@a17d4dadd | No epic |
-| V2 Fast authoring, frontier planner | PARTIAL@a17d4dadd | spec-e57870 |
-| V3 Cheapest capable model per task | MISSING@a17d4dadd | spec-98f76d, spec-e57870 |
-| V4 Parallel execution | PARTIAL@a17d4dadd | spec-a78d57 |
-| V5 Isolation and integration | PARTIAL@a17d4dadd | spec-ba7bea, spec-a0e40a |
-| V6 Trust from gates | PARTIAL@a17d4dadd | spec-e9d7ec, spec-9230a9, spec-6ac537 |
-| V7 Cheaper and faster than top models | UNPROVEN@a17d4dadd | spec-567e52 |
-| V8 Improves over time | PARTIAL@a17d4dadd | spec-6ac537 |
-| V9 Cybernetic throughout | PARTIAL@a17d4dadd | spec-6ac537 |
-| V10 Observable and controllable | PARTIAL@a17d4dadd | No epic; bug-8208a6 |
+| V1 Domain-agnostic orchestration | PARTIAL@ed0c33bd5 | No epic |
+| V2 Fast authoring, frontier planner | PARTIAL@ed0c33bd5 | spec-e57870 |
+| V3 Cheapest capable model per task | MISSING@ed0c33bd5 | spec-98f76d, spec-e57870 |
+| V4 Parallel execution | PARTIAL@ed0c33bd5 | spec-a78d57 |
+| V5 Isolation and integration | PARTIAL@ed0c33bd5 | spec-ba7bea, spec-a0e40a |
+| V6 Trust from gates | PARTIAL@ed0c33bd5 | spec-e9d7ec, spec-9230a9, spec-6ac537 |
+| V7 Cheaper and faster than top models | UNPROVEN@ed0c33bd5 | spec-567e52 |
+| V8 Improves over time | PARTIAL@ed0c33bd5 | spec-6ac537 |
+| V9 Cybernetic throughout | PARTIAL@ed0c33bd5 | spec-6ac537 |
+| V10 Observable and controllable | PARTIAL@ed0c33bd5 | No epic; bug-8208a6 |
 
 ## 9.2 Limitations
 
@@ -40,9 +41,10 @@ None of the ten vision claims is fully met:
   agent work (appendix rows DM1–DM3). No epic covers other domains.
 - **Safety.** There is no OS sandbox in v1 (decided 2026-09-29; spec-ba7bea), and agents work in the operator's
   checkout by default. Since `1d923e377`, gates and provider CLIs drop known provider keys (bug-7d7200), but agent
-  tool shells and MCP servers still inherit them (bug-0d9ac4, bug-0eb8e2), the key files stay readable (bug-a66941),
-  and the git guard misses reset, stash and clean (bug-7de5df). Environment isolation is PARTIAL@a17d4dadd.
-- **No measured learning.** A benefit from any learning loop is UNPROVEN@a17d4dadd: the router saw one model on the
+  tool shells and MCP servers still inherit them (bug-0d9ac4, bug-0eb8e2), and roko-std's bash tool can read the key
+  files (bug-62e7e6). Environment isolation is PARTIAL@ed0c33bd5; the git guard is WIRED@ed0c33bd5 for Claude CLI runs
+  only.
+- **No measured learning.** A benefit from any learning loop is UNPROVEN@ed0c33bd5: the router saw one model on the
   portal runs, and learning cannot yet be frozen for a comparison (gap-644040).
 
 ## 9.3 Roadmap
@@ -64,7 +66,7 @@ Epic numbers match §4.12.
 
 Two matrix rows have only parked items: split or replan on failure (EX8, gap-3b170b) and calibrating output
 screening (SS3, gap-f75dc8). Gates chosen by task domain (DM2) are gap-7a3527; an OS sandbox (IS6) is gap-8f8544,
-filed after the matrix's commit and on hold for v1.
+on hold for v1.
 
 ## 9.4 Proposed parking
 
@@ -73,7 +75,8 @@ build: the chain and marketplace code, offline batch consolidation, the conducto
 extra modules. The four crates it would park whole hold 6.1% of the Rust in `crates/` at `1f4481133`; with the other
 modules, about 9%, an estimate.[^9-park]
 
-[^9-matrix]: gap-35a614's matrix, each tag re-checked against the code at `a17d4dadd` (2026-09-29).
+[^9-matrix]: gap-35a614's matrix, re-pinned by gap-fcea53 with each tag re-checked against the code at `ed0c33bd5`
+    (2026-09-29).
 [^9-model]: Research note B7, frozen as `evidence/2026-09-29-b7-real-run-evidence.md` (sha256 `799b6a2b6184`),
     "TL;DR": portal plans, attempts to 2026-09-29 07:41Z, from Roko's efficiency records; also spec-f09094 and
     gap-e21595.

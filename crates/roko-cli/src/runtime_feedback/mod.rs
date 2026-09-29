@@ -78,6 +78,9 @@ pub enum FeedbackEvent {
         task_id: String,
         outcome: AgentOutcome,
         model_source: ModelChoiceSource,
+        /// The provider call succeeded and no verify step failed. Episodes
+        /// record it; it is not a learning signal, since an unverified
+        /// attempt counts. Learners read [`FeedbackEvent::learning_success`].
         succeeded: bool,
         /// The dispatch-time routing context, when available. Enables the
         /// routing sink to feed real task features into the LinUCB bandit.
@@ -101,10 +104,10 @@ pub enum FeedbackEvent {
         /// a short reason.
         failure_reason: Option<String>,
         /// The attempt's settled record (S01 §5.5), when the producer keys
-        /// its attempts as Graph dispatch does. Episodes carry its attempt
-        /// key. Sinks still learn from `succeeded`, which counts an
-        /// unverified attempt as a success; bug-c34782, bug-35379d and
-        /// gap-ad0d39 each move one sink to this record.
+        /// its attempts as Graph dispatch does. Learners read only its
+        /// learning label ([`FeedbackEvent::learning_success`]), so an event
+        /// without it teaches nothing. Episodes carry its attempt key,
+        /// outcome and label.
         settled: Option<Arc<AttemptVerdictRecord>>,
     },
     /// One task attempt settled (S01 §4.3): its typed verdict record,
@@ -160,6 +163,23 @@ impl FeedbackEvent {
             Self::RetryDecision { .. } => "retry_decision",
             Self::PlanCompleted { .. } => "plan_completed",
             Self::IdleTick { .. } => "idle_tick",
+        }
+    }
+
+    /// What a learner records for the attempt this event settles, from its
+    /// settled record's learning label (S01 §4.1): a pass (`Some(true)`), a
+    /// failure of the agent's work (`Some(false)`), or nothing (`None`).
+    ///
+    /// `None` covers unverified, force-accepted, provider-failed and
+    /// harness-failed attempts, a [`Self::TaskCompleted`] without a settled
+    /// record, and every event that settles no attempt. Learners update only
+    /// on `Some`.
+    #[must_use]
+    pub fn learning_success(&self) -> Option<bool> {
+        match self {
+            Self::TaskCompleted { settled, .. } => settled.as_deref()?.learning_success(),
+            Self::AttemptSettled(verdict) => verdict.learning_success(),
+            _ => None,
         }
     }
 }
@@ -350,6 +370,19 @@ impl FeedbackFacade {
                 .collect(),
         }
     }
+}
+
+/// The settled record of an attempt of task `p/t` that ended with `outcome`,
+/// for the sinks' tests.
+#[cfg(test)]
+pub(crate) fn settled_as(
+    outcome: roko_learn::telemetry::AttemptOutcome,
+    first_token_seen: bool,
+) -> Option<Arc<AttemptVerdictRecord>> {
+    use roko_learn::telemetry::{AttemptIdentity, AttemptKey};
+    let identity = AttemptIdentity::new(&AttemptKey::new("run-1", "p", "t", 1));
+    let verdict = AttemptVerdictRecord::settle(identity, outcome, first_token_seen);
+    Some(Arc::new(verdict))
 }
 
 // ─── Tests ─────────────────────────────────────────────────────────────

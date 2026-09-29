@@ -15,9 +15,9 @@ label = "cheap·roko"
 
 [caps]                                # S08 §4.10: 150K input tokens and 12 turns per attempt, Roko ≤ 3 attempts
 turns_per_attempt = 12                # roko.toml [pipeline.<tier>] max_turns
-input_tokens_per_attempt = 150000     # enforced only by the metering proxy (gap-e003ec); Roko has no such cap
+input_tokens_per_attempt = 150000     # not enforced: Roko has no such cap, and the proxy meters tasks, not attempts
 turns_per_task = 36
-input_tokens_per_task = 450000
+input_tokens_per_task = 450000        # the metering proxy refuses the task's calls once its input reaches this
 wallclock_s = 1200                    # the runner kills Roko's session at this limit
 model_calls_per_task = 45             # 3 attempts x (12 turns + 3 auxiliary calls after a failed gate)
 usd_per_task = 0.60                   # the token caps bind first ($0.43), which also becomes Roko's own plan budget

@@ -6,8 +6,10 @@ protocol with stdlib `urllib` to a base URL: a real provider (Cerebras, OpenAI),
 `vb run` admits only with both `--allow-network` and `--max-cost-usd` (`vb.admit`).
 
 Usage comes back as the provider reports it (`Usage`), or None when the response has none, which makes that call's
-cost unknown. The API key is read from the environment variable the arm names, in the driver's process only; agent
-processes never see it (`agent_env`). Proxies from the environment are ignored for loopback URLs.
+cost unknown. The client sends no API key: it reaches a network provider only through the metering proxy, which holds
+the key from the driver-only key file (`vb.py`, `faultproxy`), and never reads one from an environment variable, since
+every agent under the driver's user can read the driver's environment (bug-979a06). A network endpoint is refused
+before any request. Proxies from the environment are ignored for loopback URLs.
 
 A failed call raises `ProviderError`. `retryable` says whether trying again may help (429, 5xx, a dropped
 connection); `billed_unknown` says whether the provider may have billed it (the request may have reached the model
@@ -28,7 +30,6 @@ from __future__ import annotations
 
 import ipaddress
 import json
-import os
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -94,12 +95,9 @@ class OpenAICompatible:
     def complete(self, messages: Sequence[dict], *, model: str, max_tokens: int, timeout_s: float) -> Completion:
         endpoint = self.endpoint
         headers = {"Content-Type": "application/json", "Accept": "application/json"}
-        key = os.environ.get(endpoint.api_key_env) if endpoint.api_key_env else None
-        if key:
-            headers["Authorization"] = f"Bearer {key}"
-        elif not endpoint.offline:
-            raise ProviderError(f"{endpoint.api_key_env or 'the API key variable'} is not set for {endpoint.provider}",
-                                retryable=False, billed_unknown=False)
+        if not endpoint.offline:
+            raise ProviderError(f"{endpoint.provider} is a network provider: the client reaches one only through the "
+                                "metering proxy, which holds its key", retryable=False, billed_unknown=False)
         body = {"model": model, "messages": list(messages), endpoint.max_tokens_param: max_tokens}
         request = urllib.request.Request(endpoint.base_url.rstrip("/") + "/chat/completions",
                                          data=json.dumps(body).encode("utf-8"), headers=headers, method="POST")
@@ -149,10 +147,18 @@ def _usage(raw: object) -> Usage | None:
     prompt, completion = raw.get("prompt_tokens"), raw.get("completion_tokens")
     if not all(isinstance(value, int) and not isinstance(value, bool) and value >= 0 for value in (prompt, completion)):
         return None
-    cached = _count(raw.get("prompt_tokens_details"), "cached_tokens")
     reasoning = _count(raw.get("completion_tokens_details"), "reasoning_tokens")
-    return Usage(prompt_tokens=prompt, completion_tokens=completion, cached_tokens=min(cached, prompt),
+    return Usage(prompt_tokens=prompt, completion_tokens=completion, cached_tokens=min(_cached(raw), prompt),
                  reasoning_tokens=reasoning)
+
+
+def _cached(raw: dict) -> int:
+    """The cache reads inside `prompt_tokens`: `prompt_tokens_details.cached_tokens` (OpenAI, Cerebras, Z.ai), or a
+    top-level `cached_tokens` (Moonshot; Roko's `translate/openai.rs` reads both). The nested count wins when a
+    response has one, as in `faultproxy.usage_classes`, so the driver's ledger and the proxy's meter agree."""
+    details = raw.get("prompt_tokens_details")
+    nested = isinstance(details, dict) and details.get("cached_tokens") is not None
+    return _count(details if nested else raw, "cached_tokens")
 
 
 def _count(details: object, name: str) -> int:

@@ -1,7 +1,9 @@
-//! `.mcp.json` walk-up config reader (SS36.61).
+//! `.mcp.json` config readers (SS36.61).
 //!
-//! Searches upward from a starting directory to find the nearest
-//! `.mcp.json` config file, then parses it into [`McpConfig`].
+//! [`find_mcp_config`] searches upward from a starting directory for the
+//! nearest `.mcp.json` config file, for discovery. [`workspace_mcp_config`]
+//! reads only the workspace's own file, for agent runs. Both parse it into
+//! [`McpConfig`].
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -74,8 +76,11 @@ impl McpConfig {
 /// Walk up from `start_dir` looking for a `.mcp.json` file.
 ///
 /// Checks `start_dir`, then its parent, then grandparent, etc. until
-/// the filesystem root. Returns the parsed config and its path on
-/// success.
+/// the filesystem root, then `$HOME/.mcp.json`. Returns the parsed config
+/// and its path on success. This is discovery, for commands that report
+/// where a config is (`roko config mcp`, `roko doctor`). An agent run uses
+/// [`workspace_mcp_config`] instead, so that it never gets the MCP servers
+/// of a file outside its workspace.
 ///
 /// # Errors
 ///
@@ -101,6 +106,20 @@ pub fn find_mcp_config(start_dir: &Path) -> Option<Result<(PathBuf, McpConfig), 
     }
 
     None
+}
+
+/// The MCP config an agent run in `workdir` may use when none is set
+/// explicitly: the workspace's own `.mcp.json`, and no file above it or in
+/// `$HOME`. Those can hold servers, and the tokens in their `env`, that
+/// belong to the user rather than the workspace.
+///
+/// # Errors
+///
+/// Returns `None` if `workdir` has no `.mcp.json`. Returns `Some(Err(...))`
+/// if it has one that cannot be read or parsed.
+pub fn workspace_mcp_config(workdir: &Path) -> Option<Result<(PathBuf, McpConfig), ConfigError>> {
+    let candidate = workdir.join(".mcp.json");
+    candidate.is_file().then(|| load_config(&candidate))
 }
 
 /// Load and parse a `.mcp.json` file.

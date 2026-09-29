@@ -5,20 +5,34 @@
 # tool call and passes the hook input as JSON on stdin. The first argument
 # names the check.
 #
-# `bash` (Bash calls) denies commands that name a provider key file (see
-# below) and commands that discard the operator's work or move branches:
+# `bash` (Bash calls) denies commands that name a provider key file and
+# commands that discard the operator's work or move branches. A command
+# names a key file when, in its text or its words with quotes removed
+# (those of sh -c '...' strings too):
+#
+# - a path to one appears (.roko/.env, ~/.roko/config.toml), or a glob
+#   directly in a .roko directory (.roko/*);
+# - a word names a .roko directory itself (cd ~/.roko) and another ends in
+#   a key file's name (.env) or is a bare glob (*);
+# - a word, resolved against the working directory with symlinks followed,
+#   is a key file.
+#
+# The destructive commands are:
 #
 # - git checkout, switch, restore and push;
 # - git branch -m, -M and -D (renames and force deletes);
 # - git reset --hard;
 # - git stash, except stash list and stash show;
 # - git clean, except dry runs (-n);
-# - recursive rm (-r, -R or --recursive, anywhere before --).
+# - recursive rm (-r, -R or --recursive, anywhere before --);
+# - find -delete, and any rm that find -exec runs.
 #
 # Every command in a chain is checked (;, &&, ||, |, & and newlines), after
 # assignments, shell keywords and wrappers such as sudo, env and xargs, and
 # past git's global options (-C, -c, --git-dir, --work-tree). Commands run by
-# subshells, sh -c, eval, $(...) and backquotes are checked too.
+# subshells, sh -c, eval, $(...), backquotes, find -exec, busybox applets
+# and command strings handed to wrappers (watch '...', flock -c '...') are
+# checked too.
 #
 # A git subcommand that is not one of git's own commands is looked up as an
 # alias, where the Bash call runs and with the command's -C and -c options,
@@ -29,10 +43,10 @@
 #
 # `file` (Read, Edit, Write, Grep, Glob and the like) denies a file_path,
 # notebook_path or path argument that is a provider key file: .env,
-# secrets.toml or credentials.json in any .roko directory, ~/.roko
-# included. A Grep or Glob rooted at a .roko directory is denied as well.
-# The rest of .roko stays readable: when HOME is the workdir, ~/.roko is
-# the workdir's .roko, with its plans, state and plan worktrees.
+# secrets.toml, credentials.json or config.toml in any .roko directory,
+# ~/.roko included. A Grep or Glob rooted at a .roko directory is denied as
+# well. The rest of .roko stays readable: when HOME is the workdir, ~/.roko
+# is the workdir's .roko, with its plans, state and plan worktrees.
 #
 # Exit 0 lets the call run. Exit 2 blocks it, and Claude Code shows stderr
 # to the model. Claude Code treats any other exit code as a non-blocking
@@ -62,11 +76,22 @@ SHELL_KEYWORDS = {"if", "then", "else", "elif", "do", "while", "until", "!", "{"
 WRAPPERS = {
     "sudo", "doas", "env", "command", "builtin", "exec", "nohup", "nice", "ionice", "time",
     "timeout", "gtimeout", "xargs", "stdbuf", "unbuffer", "chronic", "caffeinate", "watch", "flock",
+    "su", "runuser", "script", "sg",
 }
+# Wrappers that hand every argument to sh -c as one command (watch 'rm -rf x').
+STRING_WRAPPERS = {"watch", "sg"}
+# Wrapper options whose value is a shell command (flock -c, su -c, env -S).
+COMMAND_OPTIONS = {"-c", "--command", "-S", "--split-string"}
+# Wrapper options whose value is a user or group, never the program (sudo -u git).
+USER_OPTIONS = {"-u", "-g", "-U", "--user", "--group", "--other-user"}
+# Multi-call binaries whose first argument names the program (busybox rm).
+MULTICALL = {"busybox", "toybox"}
+# find actions that run a command, up to ; or +.
+FIND_EXEC = {"-exec", "-execdir", "-ok", "-okdir"}
 # Programs that run their arguments as shell commands.
 SHELLS = {"sh", "bash", "zsh", "dash", "ksh", "fish"}
 # Programs whose arguments this guard checks.
-CHECKED_PROGRAMS = {"git", "rm", "eval"} | SHELLS
+CHECKED_PROGRAMS = {"git", "rm", "eval", "find"} | SHELLS | MULTICALL
 # git global options whose value is the next argument.
 GIT_VALUE_OPTIONS = {
     "-C", "-c", "--git-dir", "--work-tree", "--namespace", "--super-prefix", "--config-env",
@@ -103,8 +128,9 @@ FALLBACK_TOKEN = re.compile(r"[;&|()<>\n]+|[^\s;&|()<>]+")
 MAX_DEPTH = 8
 
 # The Bash call being checked (check_bash sets it): the directory git
-# aliases are looked up in, and the whole command.
-BASH_CALL = {"cwd": None, "command": ""}
+# aliases are looked up in, and the whole command. under_find is set while
+# the command a find -exec runs is checked.
+BASH_CALL = {"cwd": None, "command": "", "under_find": False}
 
 
 def tokens(text):
@@ -160,31 +186,66 @@ def check_words(words, depth, maybe_argument=False):
     if not words:
         return
     program = program_name(words[0])
-    if program in WRAPPERS:
-        # The wrapper's own options come first, and an option's value can
-        # name a program too (sudo -u git rm -rf x), so every later word that
-        # names a program this guard checks starts a command to check. After
-        # a word that is not an option, an assignment, a number (timeout's
-        # duration) or another wrapper, it may be an argument instead
-        # (timeout 5 grep git src).
-        for index in range(1, len(words)):
-            if program_name(words[index]) in CHECKED_PROGRAMS:
-                after_argument = not all(
-                    word.startswith("-") or ASSIGNMENT.match(word) or DURATION.match(word)
-                    or program_name(word) in WRAPPERS
-                    for word in words[1:index]
-                )
-                check_words(words[index:], depth, after_argument)
+    if program in MULTICALL:
+        check_words(words[1:], depth, maybe_argument)
+    elif program in WRAPPERS:
+        check_wrapped(program, words, depth)
     elif program == "git":
         check_git(words[1:], depth, maybe_argument)
     elif program == "rm":
         check_rm(words[1:])
+    elif program == "find":
+        check_find(words[1:], depth)
     elif program in SHELLS:
         for argument in words[1:]:
             if not argument.startswith("-"):
                 check_command(argument, depth + 1)
     elif program == "eval":
         check_command(" ".join(words[1:]), depth + 1)
+
+
+def check_wrapped(program, words, depth):
+    """Check the commands a wrapper (`words[0]`, named `program`) runs.
+
+    Its own options come first, and an option's value can name a program too
+    (xargs -a git rm -rf x), so every later word that names a program this
+    guard checks starts a command to check. A user or group is skipped
+    (sudo -u git whoami). After a word that is not an option, an assignment,
+    a number (timeout's duration), a user or another wrapper, the word may
+    be an argument instead (timeout 5 grep git src). A command handed over
+    as one string (watch 'rm -rf x', flock l -c '...') is checked as a
+    command line."""
+    after_argument = False
+    for index in range(1, len(words)):
+        word, previous = words[index], words[index - 1]
+        is_user = previous in USER_OPTIONS
+        if program_name(word) in CHECKED_PROGRAMS and not is_user:
+            check_words(words[index:], depth, after_argument)
+        option, _, value = word.partition("=")
+        if program in STRING_WRAPPERS or previous in COMMAND_OPTIONS:
+            check_command(word, depth + 1)
+        elif option in COMMAND_OPTIONS and value:
+            check_command(value, depth + 1)
+        if not (
+            word.startswith("-") or ASSIGNMENT.match(word) or DURATION.match(word) or is_user
+            or program_name(word) in WRAPPERS
+        ):
+            after_argument = True
+
+
+def check_find(arguments, depth):
+    if "-delete" in arguments:
+        block("find -delete forbidden: it deletes whole directory trees")
+    for index, argument in enumerate(arguments):
+        if argument in FIND_EXEC:
+            command = []
+            for word in arguments[index + 1:]:
+                if word in (";", "+"):
+                    break
+                command.append(word)
+            under_find, BASH_CALL["under_find"] = BASH_CALL["under_find"], True
+            check_words(command, depth)
+            BASH_CALL["under_find"] = under_find
 
 
 def short_flags(arguments):
@@ -199,6 +260,8 @@ def short_flags(arguments):
 
 
 def check_rm(arguments):
+    if BASH_CALL["under_find"]:
+        block("find -exec rm forbidden: it deletes files across the whole tree find walks")
     # GNU rm reads options anywhere before --, and accepts a long option
     # shortened to any unambiguous prefix (--rec).
     options = arguments[:arguments.index("--")] if "--" in arguments else arguments
@@ -315,23 +378,52 @@ def git_failure(result):
 
 
 # Files in a .roko directory, ~/.roko or a checkout's, that hold provider
-# keys or roko credentials (roko_core::child_env::KEY_FILE_NAMES).
-KEY_FILE_NAMES = (".env", "secrets.toml", "credentials.json")
+# keys or roko credentials (roko_core::child_env::KEY_FILE_NAMES), the
+# global config.toml included.
+KEY_FILE_NAMES = (".env", "secrets.toml", "credentials.json", "config.toml")
 KEY_FILE_REASON = (
-    "provider key files are off limits to agents"
-    " (.env, secrets.toml and credentials.json in any .roko directory, ~/.roko included)"
+    "provider key files are off limits to agents (.env, secrets.toml, credentials.json"
+    " and config.toml in any .roko directory, ~/.roko included)"
 )
-ROKO_DIR_TEXT = re.compile(r"(?<![\w.-])\.roko(?![\w.-])")
-KEY_FILE_TEXT = re.compile(r"\.env(?![\w-])|secrets\.toml|credentials\.json")
-# A glob directly in a .roko directory (.roko/*), which can match a key file.
-ROKO_GLOB_TEXT = re.compile(r"(?<![\w.-])\.roko/[^/\s;&|<>()]*[*?\[{]")
+# A key file's name, ending there (.env, not .envrc).
+KEY_NAME = r"(?:\.env|secrets\.toml|credentials\.json|config\.toml)(?![\w-])"
+# In a command's text: a path to a key file, or a glob directly in a .roko
+# directory (.roko/*).
+KEY_PATH_TEXT = re.compile(r"(?<![\w.-])\.roko/(?:" + KEY_NAME + r"|[^/\s;&|<>()]*[*?\[{])")
+# A word naming a .roko directory itself (cd ~/.roko, D=.roko), and one that
+# ends in a key file's name (.env, $D/secrets.toml) or is a bare glob (*).
+ROKO_DIR_WORD = re.compile(r"(?<![\w.-])\.roko$")
+KEY_NAME_WORD = re.compile(r"(?<![\w.-])" + KEY_NAME + r"$|^[^/]*[*?\[{][^/]*$")
 
 
-def names_key_file(command):
-    """Whether `command` names a .roko directory and a key file, or globs in one."""
-    if ROKO_GLOB_TEXT.search(command):
+def command_words(text, depth=0):
+    """The words of `text` with quotes removed, and the words of each word
+    that is itself a command line (sh -c '...')."""
+    words = []
+    for token in tokens(text.replace("\\\n", " ")):
+        if set(token) <= OPERATOR_CHARS:
+            continue
+        words.append(token)
+        if depth < MAX_DEPTH and re.search(r"[\s'\"\\]", token):
+            words += command_words(token, depth + 1)
+    return words
+
+
+def names_key_file(command, cwd):
+    """Whether a Bash command names a provider key file (see the top)."""
+    words = command_words(command)
+    if any(KEY_PATH_TEXT.search(text) for text in [command] + words):
         return True
-    return bool(ROKO_DIR_TEXT.search(command) and KEY_FILE_TEXT.search(command))
+    if any(ROKO_DIR_WORD.search(os.path.normpath(word)) for word in words) and any(
+        KEY_NAME_WORD.search(word) for word in words
+    ):
+        return True
+    for word in words:
+        # The word, and an option's or assignment's value (--env-file=x).
+        for value in {word, word.split("=", 1)[-1]}:
+            if value and not re.search(r"[$`*?\[{]", value) and is_key_path(value, cwd, False):
+                return True
+    return False
 
 
 def is_key_path(path, cwd, search_root):
@@ -358,9 +450,10 @@ def check_bash(tool_input, data):
     command = tool_input.get("command", data.get("command"))
     if not isinstance(command, str):
         block("the Bash command is not a string")
-    if names_key_file(command):
+    cwd = hook_cwd(data)
+    if names_key_file(command, cwd):
         block(KEY_FILE_REASON)
-    BASH_CALL.update(cwd=hook_cwd(data), command=command)
+    BASH_CALL.update(cwd=cwd, command=command)
     check_command(command)
 
 

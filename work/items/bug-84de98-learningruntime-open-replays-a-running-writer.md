@@ -2,14 +2,16 @@
 id = "bug-84de98"
 kind = "bug"
 title = "LearningRuntime::open replays a running writer's unsaved model-call observations, which that writer later saves again"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p2"
 goal = "cybernetic"
 size = "M"
 subsystem = ["roko-learn/runtime_feedback", "roko-learn/wal"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-29
+last_verified_rev = "607d9a1fc"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-router2's report on bug-605a8a, branch work/bug-605a8a)"
 anchors = ["crates/roko-learn/src/runtime_feedback/mod.rs::replay_and_open_wal", "crates/roko-learn/src/wal.rs::folded_model_call_ids", "crates/roko-learn/src/model_call_feedback.rs"]
@@ -19,6 +21,11 @@ links = { depends_on = ["bug-605a8a"], blocks = [], related = ["bug-605a8a", "bu
 
 [[verify]]
 command = "grep -rqw 'fn a_running_writers_unsaved_observations_are_counted_once' crates/roko-learn/src/ && cargo test -p roko-learn --lib a_running_writers_unsaved_observations_are_counted_once"
+
+[closed]
+at = 2026-09-29
+by = "coordinator (session 7622b882)"
+evidence = "Each writer (ModelCallJournal, LearningRuntime) journals into its own locked segment under .roko/learn/wal/; an opener replays the legacy wal.jsonl and only segments whose lock it can take, so a running writer's unsaved observations are counted once; tests a_running_writers_unsaved_observations_are_counted_once and only_segments_whose_writer_is_gone_are_orphans (c48c6a2ad; merged). Batch 8 gate (router WAL and config branches on ef9676771): cargo check --workspace --tests clean; nightly rustfmt clean after fmt-only b38c70a5e and 474732a71; clippy -p roko-cli -p roko-core -p roko-learn -p roko-serve -p roko-gateway --no-deps -D warnings clean; lib tests roko-cli 3091, roko-core 1925, roko-learn 1181, roko-serve 956, roko-gateway pass, 0 failed."
 +++
 
 ## Problem
@@ -58,3 +65,4 @@ At ad391f99a replay skips only folded ids. Nothing tells replay whether an unfol
 ## Notes
 
 - Land with or after bug-605a8a, whose merge-on-save semantics this interacts with.
+- Implemented on `work/bug-84de98` at `c48c6a2ad`; cargo verification deferred to the batch check. Each writer journals into its own locked segment under `.roko/learn/wal/`, and an opener replays only segments whose lock it can take. A crash between a save and the truncation after it still replays that segment once more, the same window the fold markers had.

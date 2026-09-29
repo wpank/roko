@@ -8,7 +8,7 @@
 //! Claude-specific resume and tool-loop wiring are not needed.
 
 use crate::agent::{Agent, AgentResult};
-use crate::mcp::find_mcp_config;
+use crate::mcp::workspace_mcp_config;
 use crate::process::{
     GRACE_STDIN_CLOSE_MS, ResourceLimits, apply_credential_scrub, benign_stderr_warn_once,
     classify_benign_stderr, config_file_env_names, confined_command, kill_tree,
@@ -25,7 +25,7 @@ use roko_core::defaults::DEFAULT_REQUEST_TIMEOUT_MS;
 use roko_core::{Body, Context, Kind, OperatingFrequency, Provenance, Signal};
 use serde_json::Value;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Instant;
@@ -133,6 +133,152 @@ pub const ISOLATION_ENV: &[(&str, &str)] = &[
     ("CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD", "1"),
 ];
 
+/// Claude Code's managed-settings directory, where an administrator puts
+/// `managed-mcp.json`. Claude Code 2.1.282 has no way to move it.
+fn claude_managed_settings_dir() -> PathBuf {
+    PathBuf::from(if cfg!(target_os = "macos") {
+        "/Library/Application Support/ClaudeCode"
+    } else if cfg!(windows) {
+        r"C:\Program Files\ClaudeCode"
+    } else {
+        "/etc/claude-code"
+    })
+}
+
+/// The managed MCP config in `dir`, if there is one.
+fn managed_mcp_config_in(dir: &Path) -> Option<PathBuf> {
+    let path = dir.join("managed-mcp.json");
+    path.is_file().then_some(path)
+}
+
+/// The flags and environment that keep a Claude Code run apart from the
+/// invoking user's own configuration, as [`ISOLATED_SETTING_SOURCES`] and
+/// [`ISOLATION_ENV`] describe. Every Roko spawn of `claude` builds them here
+/// ([`ClaudeCliAgent`], `roko chat` and the CLI dispatcher), so the spawns
+/// cannot drift apart.
+///
+/// Shell snapshots are not covered. Claude Code's Bash tool runs commands
+/// with a snapshot of the user's shell (`~/.claude/shell-snapshots/`, taken
+/// from a login shell and `~/.zshrc` or `~/.bashrc`): their aliases,
+/// functions and exported variables. Claude Code 2.1.282 has no switch for
+/// it, and without a snapshot each command runs in a login shell that reads
+/// the user's profile anyway. Pointing `HOME` elsewhere would also move
+/// cargo, rustup, git and a Linux login, so each run records
+/// `shell_snapshot=user` instead (see [`tags`](Self::tags)).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClaudeIsolation {
+    setting_sources: String,
+    workdir: PathBuf,
+    managed_mcp_config: Option<PathBuf>,
+}
+
+impl ClaudeIsolation {
+    /// Isolation for a run whose working directory is `workdir`, on this
+    /// machine: a managed MCP config in Claude Code's managed-settings
+    /// directory changes it (see [`args`](Self::args)).
+    #[must_use]
+    pub fn new(workdir: impl Into<PathBuf>) -> Self {
+        Self {
+            setting_sources: ISOLATED_SETTING_SOURCES.to_string(),
+            workdir: workdir.into(),
+            managed_mcp_config: managed_mcp_config_in(&claude_managed_settings_dir()),
+        }
+    }
+
+    /// Look for the managed MCP config in `dir` instead of Claude Code's
+    /// managed-settings directory.
+    #[must_use]
+    pub fn with_managed_settings_dir(mut self, dir: &Path) -> Self {
+        self.managed_mcp_config = managed_mcp_config_in(dir);
+        self
+    }
+
+    /// The administrator's managed MCP config, when this machine has one.
+    #[must_use]
+    pub fn managed_mcp_config(&self) -> Option<&Path> {
+        self.managed_mcp_config.as_deref()
+    }
+
+    /// Load these setting sources instead; see
+    /// [`ClaudeCliAgent::with_setting_sources`].
+    #[must_use]
+    pub fn with_setting_sources(mut self, sources: impl Into<String>) -> Self {
+        self.setting_sources = sources.into();
+        self
+    }
+
+    /// The flags. Pass them after any caller-supplied arguments, because
+    /// Claude takes the last `--setting-sources` it is given. `--add-dir`
+    /// comes first since it takes every argument up to the next flag.
+    /// `--strict-mcp-config` keeps out every MCP server that Roko does not
+    /// pass with `--mcp-config`: none from `~/.claude.json`, `.mcp.json` or
+    /// claude.ai connectors, whether or not Roko passes a config. A managed
+    /// MCP config already keeps them out, and Claude Code refuses the flag
+    /// while one exists, so it is left off then.
+    #[must_use]
+    pub fn args(&self) -> Vec<String> {
+        let mut args = vec![
+            "--add-dir".to_string(),
+            self.workdir.to_string_lossy().into_owned(),
+            "--setting-sources".to_string(),
+            self.setting_sources.clone(),
+        ];
+        if self.managed_mcp_config.is_none() {
+            args.push("--strict-mcp-config".to_string());
+        }
+        args
+    }
+
+    /// Why a run that passes an MCP config (`--mcp-config`) cannot start
+    /// here: Claude Code refuses one while a managed MCP config exists.
+    /// Checking before the spawn gives the run this reason instead of a
+    /// failed start. `None` when a run may pass one.
+    #[must_use]
+    pub fn mcp_config_refusal(&self) -> Option<String> {
+        self.managed_mcp_config.as_deref().map(|managed| {
+            format!(
+                "the managed MCP config {} keeps exclusive control of MCP servers on this \
+                 machine, and Claude Code refuses --mcp-config while it exists; run without \
+                 an MCP config ([agent] mcp_config, the workspace's .mcp.json or plugin tools)",
+                managed.display()
+            )
+        })
+    }
+
+    /// The environment. Set it before any caller-supplied variables, so an
+    /// explicit value wins. The config directory (`CLAUDE_CONFIG_DIR`) is
+    /// left alone: a subscription login is stored under it, and on macOS
+    /// the keychain entry's name depends on it.
+    #[must_use]
+    pub const fn env(&self) -> &'static [(&'static str, &'static str)] {
+        ISOLATION_ENV
+    }
+
+    /// What the run loads, as `(tag, value)` pairs. [`ClaudeCliAgent`] tags
+    /// its output with them, and every spawn logs them with the MCP config
+    /// it passes. `setting_sources` is `none` or the `--setting-sources`
+    /// list; `mcp_servers` is `roko` (only those Roko passes) or `managed`
+    /// (the managed MCP config's); `shell_snapshot` is always `user`.
+    #[must_use]
+    pub fn tags(&self) -> Vec<(&'static str, String)> {
+        let setting_sources: &str = if self.setting_sources.trim().is_empty() {
+            "none"
+        } else {
+            &self.setting_sources
+        };
+        let mcp_servers = if self.managed_mcp_config.is_some() {
+            "managed"
+        } else {
+            "roko"
+        };
+        vec![
+            ("setting_sources", setting_sources.to_string()),
+            ("mcp_servers", mcp_servers.to_string()),
+            ("shell_snapshot", "user".to_string()),
+        ]
+    }
+}
+
 /// Agent wrapper around the `claude` CLI.
 #[derive(Debug, Clone)]
 pub struct ClaudeCliAgent {
@@ -147,7 +293,7 @@ pub struct ClaudeCliAgent {
     disallowed_tools: Option<String>,
     max_turns: Option<u32>,
     settings_json: String,
-    setting_sources: String,
+    isolation: ClaudeIsolation,
     extra_args: Vec<String>,
     env: Vec<(String, String)>,
     credential_scrub: CredentialScrub,
@@ -168,9 +314,11 @@ impl ClaudeCliAgent {
         model: impl Into<String>,
     ) -> Self {
         let model = model.into();
+        let current_dir: PathBuf = current_dir.into();
         Self {
             program: program.into(),
-            current_dir: current_dir.into(),
+            isolation: ClaudeIsolation::new(current_dir.clone()),
+            current_dir,
             model: model.clone(),
             effort: "medium".to_string(),
             fallback_model: Some(roko_core::defaults::MODEL_FAST.to_string()),
@@ -180,7 +328,6 @@ impl ClaudeCliAgent {
             disallowed_tools: None,
             max_turns: Some(OperatingFrequency::Theta.turn_limit()),
             settings_json: build_settings_json(),
-            setting_sources: ISOLATED_SETTING_SOURCES.to_string(),
             extra_args: Vec::new(),
             env: Vec::new(),
             credential_scrub: CredentialScrub::for_kind(ProviderKind::ClaudeCli),
@@ -288,7 +435,7 @@ impl ClaudeCliAgent {
     /// [`with_extra_args`](Self::with_extra_args).
     #[must_use]
     pub fn with_setting_sources(mut self, sources: impl Into<String>) -> Self {
-        self.setting_sources = sources.into();
+        self.isolation = self.isolation.with_setting_sources(sources);
         self
     }
 
@@ -346,17 +493,6 @@ impl ClaudeCliAgent {
         self
     }
 
-    /// The output's `setting_sources` tag, which records the Claude Code
-    /// setting sources the run loaded: `none`, or the `--setting-sources`
-    /// list.
-    fn setting_sources_tag(&self) -> &str {
-        if self.setting_sources.trim().is_empty() {
-            "none"
-        } else {
-            &self.setting_sources
-        }
-    }
-
     fn failure(&self, input: &Signal, reason: &str, started: Instant) -> AgentResult {
         let stream_usage = StreamUsage::default();
         self.failure_with_stream_usage(input, reason, started, &stream_usage)
@@ -374,8 +510,10 @@ impl ClaudeCliAgent {
             .derive(Kind::AgentOutput, Body::text(reason))
             .provenance(Provenance::agent(&self.name))
             .tag("agent", &self.name)
-            .tag("setting_sources", self.setting_sources_tag())
             .tag("failed", "true");
+        for (key, value) in self.isolation.tags() {
+            output = output.tag(key, value);
+        }
         if let Some(model) = stream_usage
             .model
             .as_deref()
@@ -414,11 +552,20 @@ impl ClaudeCliAgent {
         })
     }
 
+    /// Why this run cannot start on this machine with the MCP config it
+    /// would pass (see [`ClaudeIsolation::mcp_config_refusal`]).
+    fn mcp_config_refusal(&self) -> Option<String> {
+        let reason = self.isolation.mcp_config_refusal()?;
+        self.discovered_mcp_config().map(|_| reason)
+    }
+
+    /// The MCP config the run passes: the explicit one, or else the
+    /// workdir's own `.mcp.json` (never a file above it or in `$HOME`).
     fn discovered_mcp_config(&self) -> Option<PathBuf> {
         if let Some(path) = &self.mcp_config {
             return Some(path.clone());
         }
-        match find_mcp_config(&self.current_dir) {
+        match workspace_mcp_config(&self.current_dir) {
             Some(Ok((path, _))) => Some(path),
             Some(Err(err)) => {
                 tracing::warn!(agent = "claude-cli", "ignoring invalid MCP config: {err}");
@@ -465,18 +612,10 @@ impl ClaudeCliAgent {
             .arg(&self.effort)
             .arg("--settings")
             .arg(&self.settings_json)
-            // Keep the invoking user's Claude Code configuration out of the
-            // run and the workdir's own CLAUDE.md files in: see
-            // `ISOLATED_SETTING_SOURCES` and `ISOLATION_ENV`. The workdir is
-            // the working directory, so `--add-dir` grants no file access.
-            // Keep out every MCP server Roko did not pass: none from
-            // `~/.claude.json`, `.mcp.json` or claude.ai connectors, whether
-            // or not Roko has an MCP config.
-            .arg("--setting-sources")
-            .arg(&self.setting_sources)
-            .arg("--add-dir")
-            .arg(&self.current_dir)
-            .arg("--strict-mcp-config");
+            // The invoking user's Claude Code configuration stays out of the
+            // run and the workdir's own CLAUDE.md files come in. The workdir
+            // is the working directory, so `--add-dir` grants no file access.
+            .args(self.isolation.args());
         if self.dangerously_skip_permissions {
             cmd.arg("--dangerously-skip-permissions");
         }
@@ -510,6 +649,12 @@ impl ClaudeCliAgent {
         if let Some(mcp_config) = &mcp_config {
             cmd.arg("--mcp-config").arg(mcp_config);
         }
+        tracing::debug!(
+            agent = %self.name,
+            isolation = ?self.isolation.tags(),
+            mcp_config = ?mcp_config,
+            "claude run isolated from the user's Claude Code configuration"
+        );
         if let Some(resume) = &self.resume {
             cmd.arg("--resume").arg(resume);
         }
@@ -530,11 +675,8 @@ impl ClaudeCliAgent {
                 .unwrap_or_default(),
         );
         apply_credential_scrub(&mut cmd, &scrub);
-        // Before the caller's variables, so an explicit one wins. The config
-        // directory (`CLAUDE_CONFIG_DIR`) is left alone: a subscription
-        // login is stored under it, and on macOS the keychain entry's name
-        // depends on it.
-        for (key, value) in ISOLATION_ENV {
+        // Before the caller's variables, so an explicit one wins.
+        for (key, value) in self.isolation.env() {
             cmd.env(key, value);
         }
         for (key, value) in &self.env {
@@ -996,6 +1138,10 @@ impl ClaudeCliAgent {
             Err(reason) => return self.failure(input, &reason, started),
         };
 
+        if let Some(reason) = self.mcp_config_refusal() {
+            tracing::warn!(agent = %self.name, "claude run not started: {reason}");
+            return self.failure(input, &reason, started);
+        }
         let mut cmd = match self.build_command() {
             Ok(command) => command,
             Err(error) => {
@@ -1250,11 +1396,13 @@ impl ClaudeCliAgent {
             .derive(Kind::AgentOutput, Body::text(text))
             .provenance(Provenance::agent(&self.name))
             .tag("agent", &self.name)
-            .tag("setting_sources", self.setting_sources_tag())
             .tag(
                 "model",
                 stream_usage.model.as_deref().unwrap_or(&self.model),
             );
+        for (key, value) in self.isolation.tags() {
+            output_signal = output_signal.tag(key, value);
+        }
         if let Some(num_turns) = stream_usage.num_turns {
             output_signal = output_signal.tag("num_turns", num_turns.to_string());
         }
@@ -1634,6 +1782,61 @@ mod tests {
     }
 
     #[test]
+    fn settings_hook_denies_destructive_commands_behind_wrappers() {
+        let command = bash_hook_command();
+
+        for denied in [
+            // A command handed to a wrapper as one string.
+            "watch 'rm -rf x'",
+            "watch -n 1 'git stash'",
+            "flock /tmp/l -c 'rm -rf x'",
+            "flock /tmp/l --command='git checkout main'",
+            "su dev -c 'git stash'",
+            "script -c 'rm -rf x' /dev/null",
+            "env -S 'rm -rf x'",
+            // find deletes across the tree it walks.
+            "find . -delete",
+            "find . -name '*.o' -delete",
+            "find . -exec rm -rf {} +",
+            "find . -type f -exec rm {} \\;",
+            "find . -execdir sudo rm {} +",
+            "find . -exec sh -c 'rm \"$1\"' _ {} \\;",
+            "find . -exec git checkout {} \\;",
+            "sudo find . -delete",
+            // Multi-call binaries.
+            "busybox rm -rf x",
+            "/bin/busybox sh -c 'rm -rf x'",
+            "toybox rm -r x",
+            // A user named git hides nothing.
+            "sudo -u git rm -rf x",
+            "sudo -u git git stash",
+        ] {
+            assert_eq!(
+                run_hook_command(&command, denied).code(),
+                Some(2),
+                "`{denied}` should be denied"
+            );
+        }
+        for allowed in [
+            "sudo -u git whoami",
+            "sudo -g git ls",
+            "watch -n 1 'git status'",
+            "flock /tmp/l -c 'cargo build'",
+            "find . -name '*.rs'",
+            "find . -type f -exec grep -l rm {} +",
+            "busybox ls",
+            "ionice -c 3 cargo build",
+            "git commit -m \"watch 'rm -rf x'\"",
+        ] {
+            assert_eq!(
+                run_hook_command(&command, allowed).code(),
+                Some(0),
+                "`{allowed}` should be allowed"
+            );
+        }
+    }
+
+    #[test]
     fn settings_hook_denies_git_aliases_to_denied_commands() {
         let command = bash_hook_command();
         // A repository with its own aliases, and no user or system git
@@ -1749,6 +1952,7 @@ mod tests {
             "Read(//**/.roko/.env)",
             "Read(//**/.roko/secrets.toml)",
             "Read(//**/.roko/credentials.json)",
+            "Read(//**/.roko/config.toml)",
             "Edit(//**/.roko/.env)",
         ] {
             assert!(deny.contains(&rule), "missing {rule} in {deny:?}");
@@ -1782,6 +1986,7 @@ mod tests {
 
         for tool_input in [
             serde_json::json!({ "file_path": "~/.roko/.env" }),
+            serde_json::json!({ "file_path": "~/.roko/config.toml" }),
             serde_json::json!({ "file_path": ".roko/.env" }),
             serde_json::json!({ "file_path": "../other/.roko/secrets.toml" }),
             serde_json::json!({ "path": "~/.roko" }),
@@ -1797,7 +2002,7 @@ mod tests {
         for tool_input in [
             serde_json::json!({ "file_path": "src/lib.rs" }),
             serde_json::json!({ "file_path": ".roko/state/graph/p/checkpoint.json" }),
-            serde_json::json!({ "file_path": "~/.roko/config.toml" }),
+            serde_json::json!({ "file_path": "~/.roko/logs/daemon.log" }),
             serde_json::json!({ "path": "src", "pattern": "fn main" }),
             serde_json::json!({ "pattern": "**/*.rs" }),
         ] {
@@ -1811,10 +2016,14 @@ mod tests {
 
         for denied in [
             "cat ~/.roko/.env",
+            "cat ~/.roko/config.toml",
             "cat .roko/secrets.toml",
             "cd .roko && cat .env",
             "grep KEY \"$HOME/.roko/credentials.json\"",
             "cat ~/.roko/*",
+            "cd ~/.roko && cat *",
+            "cat .ro\"\"ko/.e''nv",
+            "sh -c 'cat .ro\"\"ko/.env'",
         ] {
             let output = run_hook(&bash_hook, &bash_payload(denied), &env);
             assert_eq!(
@@ -1823,7 +2032,7 @@ mod tests {
                 "`{denied}` should be blocked"
             );
         }
-        for allowed in ["cat README.md", "ls .roko/state"] {
+        for allowed in ["cat README.md", "ls .roko/state", "cp .env.example .env"] {
             let output = run_hook(&bash_hook, &bash_payload(allowed), &env);
             assert_eq!(
                 output.status.code(),
@@ -2138,6 +2347,12 @@ mod tests {
         assert_eq!(args[add_dir + 1], workdir.path().to_string_lossy());
         let workdir_claude_md = env_of(&command, "CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD");
         assert_eq!(workdir_claude_md.as_deref(), Some("1"));
+        // The block every Roko spawn of `claude` shares.
+        let isolation = ClaudeIsolation::new(workdir.path()).args();
+        assert_eq!(
+            args.get(add_dir..add_dir + isolation.len()),
+            Some(&isolation[..])
+        );
         // Only the MCP servers Roko passes, even with no MCP config.
         assert_eq!(
             args.iter()
@@ -2233,6 +2448,107 @@ mod tests {
         assert_eq!(auto_memory.as_deref(), Some("0"));
         let workdir_claude_md = env_of(&command, "CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD");
         assert_eq!(workdir_claude_md.as_deref(), Some("0"));
+    }
+
+    #[test]
+    fn discovered_mcp_config_ignores_ancestor_and_home_files() {
+        // A config in a directory above the workdir, and one in a home
+        // directory above it. The test cannot point `$HOME` at `home`
+        // (setting a variable is unsafe in edition 2024), but the agent's
+        // lookup reads neither a parent directory nor `$HOME`.
+        let root = tempdir().unwrap();
+        let home = root.path().join("home");
+        let workdir = home.join("repo");
+        fs::create_dir_all(&workdir).unwrap();
+        for dir in [root.path(), home.as_path()] {
+            fs::write(dir.join(".mcp.json"), r#"{"servers":[]}"#).unwrap();
+        }
+        let discovered = crate::mcp::find_mcp_config(&workdir)
+            .and_then(Result::ok)
+            .map(|(path, _)| path);
+        assert_eq!(
+            discovered,
+            Some(home.join(".mcp.json")),
+            "discovery still walks up"
+        );
+
+        let command = ClaudeCliAgent::new("claude", &workdir, "claude-test-model")
+            .build_command()
+            .expect("build command");
+        let args = args_of(&command);
+        assert!(!args.iter().any(|arg| arg == "--mcp-config"), "{args:?}");
+
+        // The workspace's own config still reaches the run.
+        let own = workdir.join(".mcp.json");
+        fs::write(&own, r#"{"servers":[]}"#).unwrap();
+        let command = ClaudeCliAgent::new("claude", &workdir, "claude-test-model")
+            .build_command()
+            .expect("build command");
+        let args = args_of(&command);
+        let mcp = args
+            .iter()
+            .position(|arg| arg == "--mcp-config")
+            .expect("workspace MCP config");
+        assert_eq!(args[mcp + 1], own.to_string_lossy());
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn a_managed_mcp_config_is_reported_before_the_run() {
+        let tmp = tempdir().unwrap();
+        // Stands in for Claude Code's managed-settings directory.
+        let managed = tmp.path().join("managed");
+        fs::create_dir_all(&managed).unwrap();
+        fs::write(managed.join("managed-mcp.json"), r#"{"mcpServers":{}}"#).unwrap();
+        let started = tmp.path().join("started");
+        let script = tmp.path().join("claude-fake.sh");
+        let script_body = format!(
+            r#"#!/bin/sh
+touch "{started}"
+cat >/dev/null
+printf '%s\n' '{{"type":"content_block_delta","delta":{{"text":"ok"}}}}'
+"#,
+            started = started.display(),
+        );
+        fs::write(&script, script_body).unwrap();
+        let mut perms = fs::metadata(&script).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&script, perms).unwrap();
+        let on_managed_machine = |mut agent: ClaudeCliAgent| {
+            agent.isolation = agent.isolation.with_managed_settings_dir(&managed);
+            agent
+        };
+
+        // Without an MCP config the run goes ahead, without the flag Claude
+        // Code refuses on such a machine, and records whose servers it had.
+        let agent = ClaudeCliAgent::new(&script, tmp.path(), "claude-test-model");
+        let agent = on_managed_machine(agent);
+        let args = args_of(&agent.build_command().expect("build command"));
+        assert!(
+            !args.iter().any(|arg| arg == "--strict-mcp-config"),
+            "{args:?}"
+        );
+        let result = agent.run(&prompt("x"), &Context::now()).await;
+        assert!(
+            result.success,
+            "{}",
+            result.output.body.as_text().unwrap_or("unknown")
+        );
+        assert_eq!(result.output.tag("mcp_servers"), Some("managed"));
+        assert_eq!(result.output.tag("shell_snapshot"), Some("user"));
+
+        // With one, Claude Code would refuse to start: the run fails with
+        // the reason, and Claude Code is never started.
+        fs::remove_file(&started).unwrap();
+        let agent = ClaudeCliAgent::new(&script, tmp.path(), "claude-test-model")
+            .with_mcp_config(tmp.path().join("mcp.json"));
+        let agent = on_managed_machine(agent);
+        let result = agent.run(&prompt("x"), &Context::now()).await;
+        assert!(!result.success);
+        let reason = result.output.body.as_text().expect("failure reason");
+        assert!(reason.contains("managed-mcp.json"), "{reason}");
+        assert!(!started.exists(), "Claude Code was started");
+        assert_eq!(result.output.tag("mcp_servers"), Some("managed"));
     }
 
     #[tokio::test]

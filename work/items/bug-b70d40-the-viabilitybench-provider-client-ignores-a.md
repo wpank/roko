@@ -2,14 +2,16 @@
 id = "bug-b70d40"
 kind = "bug"
 title = "The ViabilityBench provider client ignores a top-level cached_tokens and prices that input at the full rate"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p2"
 goal = "proof"
 size = "S"
 subsystem = ["benchmarks/viabilitybench/driver"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-29
+last_verified_rev = "66ba628ab"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-bench-proxy's report on gap-e003ec)"
 anchors = ["benchmarks/viabilitybench/driver/provider.py::_usage", "benchmarks/viabilitybench/driver/ledger.py"]
@@ -19,6 +21,12 @@ links = { depends_on = [], blocks = [], related = ["gap-e003ec", "bug-b72a37"], 
 
 [[verify]]
 command = "grep -qw 'def test_usage_reads_a_top_level_cached_tokens' benchmarks/viabilitybench/driver/test_driver.py && benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/driver/test_driver.py -k test_usage_reads_a_top_level_cached_tokens -q"
+
+[closed]
+at = 2026-09-29
+commit = "66ba628ab"
+by = "wk-bench-fix1"
+evidence = "66ba628ab: provider._cached reads usage.prompt_tokens_details.cached_tokens, else a top-level usage.cached_tokens (Moonshot), capped at prompt_tokens: the rule faultproxy.usage_classes already used, so the ledger and the meter agree. Verify passes: test_usage_reads_a_top_level_cached_tokens prices both layouts at kimi-k2.6's cache-read rate and matches the proxy's classes on eight edge cases; it fails on the old _usage."
 +++
 
 ## Problem

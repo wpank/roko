@@ -29,8 +29,9 @@ EXPERIMENT = "PILOT-T"
 def run_record(instance: str, seed: int = 1, *, run_id: str = "run-a", arm: str = "cheap_direct", label: int = 1,
                unknown: bool = False, visible: bool | None = None, status: str = "completed", cost: float | None = 0.02,
                billed: bool = True, vendor: float | None = None, verdict: str | None = None, honeypot: bool = False,
-               started: str | None = None, finished: str | None = None) -> dict:
-    """A valid run record for one (instance, seed). The visible checks pass iff VS = 1 unless `visible` says."""
+               started: str | None = None, finished: str | None = None, model: str | None = None) -> dict:
+    """A valid run record for one (instance, seed). The visible checks pass iff VS = 1 unless `visible` says. Its one
+    attempt ran the example's gpt-oss-120b unless `model` names another."""
     record = json.loads(json.dumps(EXAMPLE))
     family, ladder = ("PL", 5) if instance.startswith("PL") else (instance.split("-")[0], int(instance.split("-")[1][1:]))
     record.update(experiment_id=EXPERIMENT, run_id=run_id, arm=arm, seed=seed,
@@ -39,6 +40,8 @@ def run_record(instance: str, seed: int = 1, *, run_id: str = "run-a", arm: str 
     record["execution"]["status"] = status
     attempt = record["execution"]["attempts"][0]
     attempt["attempt_key"] = f"{run_id}/{instance}.s{seed}:1"
+    if model:
+        attempt.update(model_requested=model, model_reported=model)
     if verdict:
         attempt["gate_verdict"] = verdict
     if started:
@@ -304,6 +307,14 @@ def drop_ledger_row(path: Path) -> None:
     path.write_text("".join(line + "\n" for line in path.read_text().splitlines()[1:]))
 
 
+def switch_model(path: Path) -> None:
+    """The first record's attempt ran another model than the rest of its run: a single-model arm may not switch."""
+    lines = path.read_text().splitlines()
+    record = json.loads(lines[0])
+    record["execution"]["attempts"][0].update(model_requested="glm-4.7", model_reported="glm-4.7")
+    path.write_text("\n".join([json.dumps(record), *lines[1:]]) + "\n")
+
+
 @pytest.mark.parametrize(("tamper", "expected"), [
     (lambda b: rewrite_json(b / "metrics.json", lambda d: d["records"][0].update(run_ids=["run-z"])),
      "run ids not in the bundle: run-z"),
@@ -316,8 +327,9 @@ def drop_ledger_row(path: Path) -> None:
     (lambda b: drop_ledger_row(b / "run-a" / "ledger.jsonl"), "no row for attempt run-a/F4-l1-0001.s1:1"),
     (lambda b: (b / "metrics.json").unlink(), "no readable metrics file"),
     (lambda b: shutil.copytree(b / "run-b", b / "run-b2"), "does not name its directory run-b2"),
+    (lambda b: switch_model(b / "run-a" / "records.jsonl"), "run run-a of arm cheap_direct requested 2 models"),
 ], ids=["foreign-run-id", "no-run-ids", "unlisted-false-green", "second-snapshot", "unledgered-attempt",
-        "no-metrics", "copied-run"])
+        "no-metrics", "copied-run", "switched-model"])
 def test_check_rejects_a_tampered_bundle(pilot, capsys, tamper, expected):
     bundle = pilot["tmp"] / "bundle"
     make_report(pilot, "--bundle", str(bundle))
@@ -372,6 +384,79 @@ def test_report_refuses_repeats_simulations_and_second_snapshots(pilot):
     (pilot["experiment"] / "run-b" / "records.jsonl").write_text("\n".join(lines) + "\n")
     assert report.main(["--experiment", EXPERIMENT, "--results", str(pilot["results"])]) == 1
     assert not (pilot["experiment"] / "metrics.json").exists()
+
+
+def no_attempt(record: dict) -> dict:
+    """The record as a budget refusal leaves it: no attempt, so no model call and $0."""
+    record["execution"]["attempts"] = []
+    record["costs"].update(api_equiv_usd=0.0, billed_usd=0.0, without_cache_usd=0.0)
+    assert validate.validate("run-record", record) == []
+    return record
+
+
+def test_an_arm_with_two_models_is_reported_per_model():
+    # S09 §4.2: cheap_direct runs gpt-oss-120b on seeds 1-3 and the pool's best cheap model on seeds 1-2, in one
+    # experiment. The two share (task, seed) pairs, yet neither is a repeat, and no metric pools them.
+    oss = [run_record("F4-l1-0001", 1, run_id="run-oss"), run_record("F4-l1-0001", 2, run_id="run-oss"),
+           run_record("F4-l1-0001", 3, run_id="run-oss", label=0, visible=True),  # a false green
+           run_record("F1-l3-0003", 1, run_id="run-oss"), run_record("F1-l3-0003", 2, run_id="run-oss", label=0),
+           run_record("F1-l3-0003", 3, run_id="run-oss")]
+    glm = [run_record("F4-l1-0001", 1, run_id="run-glm", model="glm-4.7", cost=0.05),
+           run_record("F4-l1-0001", 2, run_id="run-glm", model="glm-4.7", cost=0.05),
+           run_record("F1-l3-0003", 1, run_id="run-glm", model="glm-4.7", cost=0.05),
+           no_attempt(run_record("F1-l3-0003", 2, run_id="run-glm", label=0, status="aborted_cap"))]
+    records = [*oss, *glm]
+    metrics.check_unique(records)
+    assert metrics.cells(records) == [("cheap_direct", "glm-4.7"), ("cheap_direct", "gpt-oss-120b")]
+    written, found = report.build(records, EXPERIMENT, ks=(2,), analysis_commit="abc", computed_at="now")
+
+    def get(metric: str, model: str, cost_basis: str | None = None) -> metrics.Metric:
+        [match] = [m for m in found if (m.metric, m.model, m.cell, m.cost_basis) == (metric, model, "all", cost_basis)]
+        return match
+
+    # gpt-oss-120b: 2/3 on both tasks; glm-4.7: 2/2 and 1/2, the refused run staying in its model's cell with VS = 0.
+    assert get("vs_rate", "gpt-oss-120b").value == pytest.approx(2 / 3) and get("vs_rate", "gpt-oss-120b").n == 6
+    assert get("vs_rate", "glm-4.7").value == pytest.approx(0.75) and get("vs_rate", "glm-4.7").n == 4
+    assert get("pass_hat_2", "gpt-oss-120b").value == pytest.approx(1 / 3)  # C(2,2)/C(3,2) on each task
+    assert get("pass_hat_2", "glm-4.7").value == pytest.approx(0.5)
+    assert get("usd_per_vs", "gpt-oss-120b", "api_equiv_usd").value == pytest.approx(6 * 0.02 / 4)
+    assert get("usd_per_vs", "glm-4.7", "api_equiv_usd").value == pytest.approx(3 * 0.05 / 3)
+    assert get("cap_censored_runs", "glm-4.7").value == 1 and get("cap_censored_runs", "gpt-oss-120b").value == 0
+    assert get("false_greens", "gpt-oss-120b").value == 1 and get("false_greens", "glm-4.7").value == 0
+    for metric in found:  # every number comes from one model's runs
+        assert {row["run_id"] for row in metric.cut.rows} == {"run-oss" if metric.model == "gpt-oss-120b" else
+                                                              "run-glm"}
+    for row in written["records"]:
+        model = "glm-4.7" if row["run_ids"] == ["run-glm"] else "gpt-oss-120b"
+        assert row["run_ids"] in (["run-glm"], ["run-oss"]) and row["arms"] == ["cheap_direct"]
+        assert row["record_filter"].startswith(f'experiment_id == "{EXPERIMENT}" and arm == "cheap_direct" and '
+                                               f'model == "{model}" and task.family != "PL"')
+        assert validate.validate("metric-record", row) == []
+    [green] = written["false_greens"]
+    assert (green["model"], green["run_id"], green["instance_id"], green["seed"]) == (
+        "gpt-oss-120b", "run-oss", "F4-l1-0001", 3)
+    printed = report.render(written, found)
+    assert "cheap_direct (glm-4.7): 4 runs in run-glm" in printed
+    assert "cheap_direct (gpt-oss-120b): 6 runs in run-oss" in printed
+    assert "- cheap_direct (gpt-oss-120b) F4-l1-0001 seed 3 (completed): run run-oss," in printed
+    with pytest.raises(metrics.MetricsError, match=r"its cells are cheap_direct \(glm-4.7\), cheap_direct "
+                                                   r"\(gpt-oss-120b\), not cheap_direct$"):
+        metrics.arm_metrics(records, EXPERIMENT, "cheap_direct")  # the pooled cell is refused
+
+    # A run of a single-model arm may not switch models, and a model-less run cannot join one of two models.
+    switched = run_record("F4-l1-0001", 3, run_id="run-glm", model="glm-4.7")
+    switched["execution"]["attempts"].append(dict(switched["execution"]["attempts"][0], model_requested="gpt-oss-120b"))
+    with pytest.raises(metrics.MetricsError, match="run run-glm of arm cheap_direct requested 2 models"):
+        metrics.check_unique([*records, switched])
+    orphan = no_attempt(run_record("F4-l3-0002", 1, run_id="run-z", label=0, status="aborted_cap"))
+    with pytest.raises(metrics.MetricsError, match="run run-z of arm cheap_direct made no model call"):
+        metrics.check_unique([*records, orphan])
+    # A routed arm switches models by design, so its cell stays the arm; so does an arm that ran one model.
+    routed = run_record("F4-l1-0001", run_id="run-full", arm="roko_full", verdict="passed")
+    routed["execution"]["attempts"].append(dict(routed["execution"]["attempts"][0], model_requested="glm-4.7"))
+    assert ("roko_full", None) in metrics.cells([*records, routed])
+    assert metrics.cells(all_records()) == [("cheap_direct", None), ("fd_api", None), ("roko_fixed", None)]
+    assert all("model" not in item for item in metrics.false_greens(all_records()))
 
 
 def test_plan_slice_rows_stay_out_of_level_analysis():

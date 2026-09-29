@@ -1912,7 +1912,7 @@ async fn run_one_plan(
     let max_parallel_usize = usize::try_from(max_parallel.max(1)).unwrap_or(usize::MAX);
     let plan_dir_str = plan.dir.display().to_string();
 
-    let (graph, registry) = if ctx.rich_topology {
+    let (mut graph, registry) = if ctx.rich_topology {
         // ── Rich 11-node-per-task production topology ──────────────────
         // Warn: enricher cells are currently PassthroughCell stubs and do
         // not yet add runtime value. The richer topology is available for
@@ -2003,6 +2003,13 @@ async fn run_one_plan(
     let replayed_entries = checkpoint.replayed_entries();
     ctx.graph_task_dispatcher
         .attach_plan_budget_checkpoint(&plan.id, checkpoint.take_cost_ledger())?;
+    // A failed task blocks only its own dependants: the tasks that do not
+    // depend on it keep running, and the plan reports failure once every task
+    // has settled. This is set after the checkpoint identity is taken: the
+    // failure strategy does not change what a replayed task produced, and
+    // hashing it into the plan fingerprint would stop every checkpoint written
+    // under the FailFast default from resuming.
+    graph.policy.failure_strategy = roko_graph::FailureStrategy::SkipFailed;
     let mut engine = GraphEngine::new(graph, registry)
         .with_recorder(checkpoint.take_recorder())
         .with_telemetry(Arc::clone(ctx.graph_telemetry))
@@ -2560,6 +2567,105 @@ depends_on_plan = [{depends_on_plan}]
                 Some(GraphCheckpointStatus::Succeeded)
             );
         }
+    }
+
+    /// Stand-in `claude_cli` provider: it ignores its prompt and reports a
+    /// finished turn, so each task's verify step alone decides its outcome.
+    const FAKE_PROVIDER_SCRIPT: &str = r#"#!/bin/sh
+set -eu
+cat >/dev/null
+printf '%s\n' '{"type":"content_block_delta","delta":{"text":"done"}}'
+printf '%s\n' '{"type":"result","session_id":"fake","model":"claude-sonnet-4-6","total_cost_usd":0.0,"usage":{"input_tokens":1,"output_tokens":1},"is_error":false}'
+"#;
+
+    /// gap-4d835d: in a plan run a failed task blocks only its own
+    /// dependants. `T3` does not depend on the failed `T1` and becomes ready
+    /// only after `T1` has failed, yet it still runs; `T4` needs `T1` and is
+    /// skipped; the plan reports failure once every task has settled.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_failed_task_blocks_only_its_dependants() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let provider = dir.path().join("fake-provider.sh");
+        std::fs::write(&provider, FAKE_PROVIDER_SCRIPT).expect("provider script");
+        std::fs::set_permissions(&provider, std::fs::Permissions::from_mode(0o755))
+            .expect("make provider executable");
+        std::fs::write(
+            dir.path().join("roko.toml"),
+            format!(
+                r#"
+[agent]
+default_model = "graph-model"
+command = {provider:?}
+bare_mode = false
+
+[providers.graph-cli]
+kind = "claude_cli"
+command = {provider:?}
+
+[models.graph-model]
+provider = "graph-cli"
+slug = "claude-sonnet-4-6"
+context_window = 200000
+
+[gates]
+sibling_settle_secs = 0
+"#,
+                provider = provider.display().to_string()
+            ),
+        )
+        .expect("config");
+        let task = |id: &str, depends_on: &str, verify: &str| {
+            format!(
+                r#"
+[[task]]
+id = "{id}"
+title = "Task {id}"
+description = "Its verify step decides its outcome."
+role = "implementer"
+status = "ready"
+tier = "focused"
+model_hint = "graph-model"
+files = ["{id}.txt"]
+depends_on = [{depends_on}]
+verify = [{{ phase = "structural", command = "{verify}", fail_msg = "{id} failed" }}]
+timeout_secs = 60
+max_retries = 0
+"#
+            )
+        };
+        let plan_dir = dir.path().join("plans").join("isolation");
+        std::fs::create_dir_all(&plan_dir).expect("plan dir");
+        std::fs::write(
+            plan_dir.join("tasks.toml"),
+            format!(
+                "[meta]\nplan = \"isolation\"\nmax_parallel = 2\nskip_enrichment = true\n{}{}{}{}",
+                task("T1", "", "false"),
+                task("T2", "", "sleep 2 && touch T2.verified"),
+                task("T3", "\"T2\"", "touch T3.verified"),
+                task("T4", "\"T1\"", "touch T4.verified"),
+            ),
+        )
+        .expect("tasks.toml");
+
+        let (exit_code, _, _) = run_plan_set(dir.path(), Some(1), None).await;
+
+        assert_eq!(exit_code, EXIT_FAILURE);
+        assert!(dir.path().join("T2.verified").exists(), "T2 passes");
+        assert!(
+            dir.path().join("T3.verified").exists(),
+            "T3 does not depend on the failed T1, so it runs"
+        );
+        assert!(
+            !dir.path().join("T4.verified").exists(),
+            "T4 depends on the failed T1, so it is skipped"
+        );
+        assert_eq!(
+            crate::graph_checkpoint::canonical_checkpoint_status(dir.path(), "isolation"),
+            Some(GraphCheckpointStatus::Failed)
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

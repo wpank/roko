@@ -146,9 +146,12 @@ impl ProviderModelOutcomeRecord {
         )
     }
 
-    /// Build an outcome record from a completed episode.
+    /// Build an outcome record from a completed episode, or `None` when the
+    /// attempt carried no learning label (S01 §4.1): an unverified success
+    /// is no pass, and a provider failure says nothing about the model.
     #[must_use]
     pub fn from_episode(episode: &Episode, provider_override: Option<&str>) -> Option<Self> {
+        let learned = episode.learning_success()?;
         let model = first_non_empty_owned([
             Some(episode.model.clone()),
             extra_string_ref(episode, "model"),
@@ -173,7 +176,7 @@ impl ProviderModelOutcomeRecord {
             extra_string_ref(episode, "role"),
             Some(episode.agent_template.clone()),
         ]);
-        let status = status_from_episode(episode);
+        let status = status_from_episode(episode, learned);
         let retry_count = retry_count_from_episode(episode);
         let usage = ProviderModelUsageTelemetry {
             input_tokens: nonzero_u64(episode.usage.input_tokens),
@@ -520,14 +523,14 @@ fn ratio(numerator: u64, denominator: u64) -> f64 {
     }
 }
 
-fn status_from_episode(episode: &Episode) -> ProviderModelOutcomeStatus {
+fn status_from_episode(episode: &Episode, learned: bool) -> ProviderModelOutcomeStatus {
     if let Some(status) = extra_string_ref(episode, "provider_model_outcome_status")
         .as_deref()
         .and_then(parse_status)
     {
         return status;
     }
-    if episode.success {
+    if learned {
         ProviderModelOutcomeStatus::Passed
     } else {
         ProviderModelOutcomeStatus::Failed

@@ -2420,4 +2420,74 @@ mod tests {
             .expect("the Write tool profile");
         assert_eq!((write.usage_count, write.success_rate), (1, 0.0));
     }
+
+    /// gap-88c547: the remaining consumers read the learning label too. An
+    /// attempt without one (unverified, or failed at the provider) records
+    /// no provider-model outcome, reflection or c-factor pathology, and
+    /// counts neither as a pass nor in the pass rate. Cost per success still
+    /// counts its spend.
+    #[test]
+    fn remaining_consumers_use_the_learning_label() {
+        use crate::aggregate::compute_compounding_metrics;
+        use crate::cfactor::{CollectivePathology, detect_pathologies};
+        use crate::post_gate_reflection::ReflectionInput;
+        use crate::provider_model_outcome::{
+            ProviderModelOutcomeRecord, ProviderModelOutcomeStatus,
+        };
+
+        let attempt = |agent: &str, success: bool, label: serde_json::Value| {
+            let mut episode = Episode::new(agent, "T1");
+            episode.model = "claude-sonnet-4-6".into();
+            episode.backend = "claude_cli".into();
+            episode.success = success;
+            episode.usage.cost_usd = 1.0;
+            if !success {
+                episode.gate_verdicts = vec![EpisodeGateVerdict::new("verify", false)];
+            }
+            episode.extra.insert(LEARNING_LABEL_KEY.into(), label);
+            episode
+        };
+        let null = serde_json::Value::Null;
+        let unverified = attempt("a", true, null.clone());
+        let passed = attempt("a", true, serde_json::json!(1));
+        let gate_failed = attempt("a", false, serde_json::json!(0));
+
+        // Provider-model pass rates.
+        assert!(ProviderModelOutcomeRecord::from_episode(&unverified, None).is_none());
+        let outcome = ProviderModelOutcomeRecord::from_episode(&passed, None).expect("a pass");
+        assert_eq!(outcome.status, ProviderModelOutcomeStatus::Passed);
+
+        // Post-gate reflection.
+        assert!(ReflectionInput::from_episode(&attempt("a", false, null.clone())).is_none());
+        assert!(ReflectionInput::from_episode(&gate_failed).is_some());
+
+        // C-factor pathologies: provider failures of three agents on one
+        // task are no cascade; failures of their work are.
+        let provider_failed: Vec<Episode> = ["a", "b", "c"]
+            .into_iter()
+            .map(|agent| {
+                let mut episode = attempt(agent, false, null.clone());
+                episode.gate_verdicts.clear();
+                episode
+            })
+            .collect();
+        assert!(detect_pathologies(&provider_failed).is_empty());
+        let failed: Vec<Episode> = ["a", "b", "c"]
+            .into_iter()
+            .map(|agent| attempt(agent, false, serde_json::json!(0)))
+            .collect();
+        let pathologies = detect_pathologies(&failed);
+        assert!(
+            pathologies
+                .iter()
+                .any(|pathology| matches!(pathology, CollectivePathology::Cascade { .. })),
+            "{pathologies:?}"
+        );
+
+        // Compounding metrics: one pass of two labelled attempts; all three
+        // attempts' spend over the one pass.
+        let metrics = compute_compounding_metrics(&[unverified, passed, gate_failed]);
+        assert_eq!(metrics.gate_pass_rate, 0.5);
+        assert_eq!(metrics.cost_per_success, 3.0);
+    }
 }

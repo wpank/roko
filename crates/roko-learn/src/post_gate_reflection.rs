@@ -228,6 +228,8 @@ impl ReflectionInput {
     /// Build a reflection input from an episode with gate verdicts.
     #[must_use]
     pub fn from_episode(episode: &Episode) -> Option<Self> {
+        // An attempt without a learning label (S01 §4.1) teaches nothing.
+        episode.learning_success()?;
         let failed = episode.gate_verdicts.iter().find(|verdict| !verdict.passed);
         let passed = episode.gate_verdicts.iter().find(|verdict| verdict.passed);
         let verdict = failed.or(passed)?;

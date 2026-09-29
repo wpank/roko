@@ -7,7 +7,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::episode_logger::Episode;
+use crate::episode_logger::{Episode, learnable_episodes};
 
 const BASELINE_TASK_COUNT: usize = 10;
 
@@ -432,6 +432,8 @@ impl CFactor {
     /// therefore do not warn.
     #[must_use]
     pub fn variance_inequality_check(&self, episodes: &[Episode]) -> VICheck {
+        // Only attempts with a learning label count (S01 §4.1).
+        let episodes = learnable_episodes(episodes.iter().cloned());
         if episodes.len() < 5 {
             return VICheck {
                 valid: true,
@@ -442,7 +444,7 @@ impl CFactor {
 
         let mut by_task: HashMap<&str, Vec<f64>> = HashMap::new();
         let mut by_agent: HashMap<&str, Vec<f64>> = HashMap::new();
-        for episode in episodes {
+        for episode in &episodes {
             let outcome = if episode.success { 1.0 } else { 0.0 };
             by_task.entry(&episode.task_id).or_default().push(outcome);
             by_agent.entry(&episode.agent_id).or_default().push(outcome);
@@ -546,7 +548,9 @@ pub fn compute_cfactor(
 
     // P3-05: Deduplicate episodes by (plan_id, task_id, attempt) before
     // computing c-factor to prevent resumed plans from inflating statistics.
-    let deduped = deduplicate_episodes(episodes);
+    // Only attempts with a learning label count (S01 §4.1): an unverified
+    // success is no gate pass.
+    let deduped = learnable_episodes(deduplicate_episodes(episodes));
 
     let cutoff = match chrono::Duration::from_std(window) {
         Ok(delta) => Utc::now() - delta,
@@ -836,6 +840,9 @@ pub fn detect_cfactor_regression(
 /// Detect collective pathologies from a batch of episodes.
 #[must_use]
 pub fn detect_pathologies(episodes: &[Episode]) -> Vec<CollectivePathology> {
+    // Only attempts with a learning label count (S01 §4.1): a provider
+    // failure is no failure of the agents' work.
+    let episodes = learnable_episodes(episodes.iter().cloned());
     if episodes.is_empty() {
         return Vec::new();
     }

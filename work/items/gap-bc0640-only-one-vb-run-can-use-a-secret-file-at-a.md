@@ -2,9 +2,10 @@
 id = "gap-bc0640"
 kind = "gap"
 title = "Only one vb run can use a secret file at a time, and S09's run schedule doesn't account for it"
-status = "open"
+status = "done"
 triage = "verified"
 last_verified = 2026-09-29
+last_verified_rev = "b32ebca05"
 severity = "p3"
 goal = "proof"
 size = "S"
@@ -20,6 +21,12 @@ links = { depends_on = [], blocks = [], related = ["gap-308373"], supersedes = [
 
 [[verify]]
 command = "grep -qi 'per secret file' tmp/cybernetic-harness/specs/S09-experiments.md"
+
+[closed]
+at = 2026-09-29
+commit = "b32ebca05"
+by = "wk-bench-fix2"
+evidence = "Option (a) with (b) for parallel runs: S09 v1.4 (tmp, edited in place) states in §4.1 that one vb run at a time may use a secret file (and a key file), since the tripwire's lock allows one; runs sharing a file go one after another; parallel runs each get their own secret file, key-file copy and share of the instances, fixed for the campaign by fingerprint in the E5 runbook, so every arm and seed faces the same truth suite; H5's 'concurrently' now means the same window and build. The README states the rule and the recipe, and secret.tripwire's lock refusal points to it. The [[verify]] command passes: grep -qi 'per secret file' S09-experiments.md."
 +++
 
 ## Problem

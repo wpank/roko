@@ -2,14 +2,16 @@
 id = "gap-8cf47b"
 kind = "gap"
 title = "Research paper Appendix E: Table E.2 says no S01 record type exists at a17d4dadd; recheck Built by at a newer pin"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p3"
 goal = "whitepaper"
 size = "S"
 subsystem = ["paper"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-29
+last_verified_rev = "fce93aced"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (16:47, wk-rp-appCD's report on gap-e2d092)"
 anchors = ["tmp/cybernetic-harness/paper/sections/E-reproducibility.md"]
@@ -19,6 +21,11 @@ links = { depends_on = [], blocks = [], related = ["gap-528762", "gap-e2d092", "
 
 [[verify]]
 command = "! grep -q 'None exists at .a17d4dadd.' tmp/cybernetic-harness/paper/sections/E-reproducibility.md"
+
+[closed]
+at = 2026-09-29
+by = "coordinator (session 7622b882)"
+evidence = "Research paper App E Table E.2 (tmp, wk-rp-appCD) pinned at 407ce30d5 (caption, status line, header note): Built-by names the merged types (RunProvenanceManifest + ConfigHashProvenance; AttemptOpenRecord + AttemptKey; AttemptVerdictRecord with GateVerdictTag, AttemptFailureClass, VerifyStepVerdict, AttemptUsage; RoutingDecisionLog) as BUILT-UNWIRED@407ce30d5 and exposure/prediction/audit/census as MISSING@407ce30d5; CE.2 and CE.16 re-tagged. Verify and paperlint clean."
 +++
 
 ## Problem

@@ -4,7 +4,7 @@
 
 What to work on next: the top checked, open items of each goal, highest-priority goal first. Reorder or change goals in `goals.toml`; pin an item higher with `rank = 1` (lower first).
 
-**Drift:** 41 anchor gone · 131 changed since checked · 3 mentioned in commits. Re-check them before relying on this list: `DRIFT.md`.
+**Drift:** 38 anchor gone · 131 changed since checked · 3 mentioned in commits. Re-check them before relying on this list: `DRIFT.md`.
 
 ## 1. Public release: security, licence, CI, first run
 
@@ -19,7 +19,7 @@ _19 more open · on hold: gap-8f8544 · 14 unchecked (`TRIAGE.md`) · `goal = "r
 - **P1** [spec-f8d196](items/spec-f8d196-epic-research-paper-companion-report-and-tl.md) Epic: research paper, companion report and TL;DR upkeep [spec] · size L · verified 2026-09-29
 - **P1** [gap-8117a8](items/gap-8117a8-publish-the-whitepaper-pdf-build-release-tag.md) Publish the whitepaper: PDF build, release tag and venue · size S · verified 2026-09-29
 
-_0 more open · on hold: gap-85f86a · 8 unchecked (`TRIAGE.md`) · `goal = "whitepaper"`_
+_0 more open · on hold: gap-85f86a · 5 unchecked (`TRIAGE.md`) · `goal = "whitepaper"`_
 
 ## 3. Roko tells the truth and is safe (P0)
 
@@ -37,7 +37,7 @@ _0 more open · 36 unchecked (`TRIAGE.md`) · `goal = "golden-path"`_
 
 - nothing checked and open
 
-_0 more open · 26 unchecked (`TRIAGE.md`) · `goal = "proof"`_
+_0 more open · 23 unchecked (`TRIAGE.md`) · `goal = "proof"`_
 
 ## 6. Learning from verified outcomes, M1-M4 (P2)
 

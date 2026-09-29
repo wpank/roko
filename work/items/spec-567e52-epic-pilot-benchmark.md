@@ -104,13 +104,13 @@ providers. This removes the checklist's circular `budget` gate (W10 rec 2).
 - [ ] gap-7ee7c2: ViabilityBench verifier CI: reference, stub and gaming solutions, determinism and leak checks
       (S08.T5)
 - [x] gap-28ebea: ViabilityBench driver for the direct arm (S08.T6)
-- [ ] gap-b24517: ViabilityBench report: verified success, cost per verified success, pass^k and false greens
+- [x] gap-b24517: ViabilityBench report: verified success, cost per verified success, pass^k and false greens
       with run ids (S08.T7)
 - [ ] gap-33d54b: ViabilityBench budget lines and caps in the run ledger (S09.E2)
 - [ ] gap-e003ec: ViabilityBench metering and fault proxy (S08.T13)
 - [ ] gap-c4f364: ViabilityBench Claude Code arm with an isolated config (S08.T12)
-- [ ] gap-b7ab99: ViabilityBench Roko arm with the model pinned and checked on every attempt (S08.T11)
-- [ ] gap-a8a160: Keep VB_SECRET in a driver-only file and prove agents cannot read it
+- [x] gap-b7ab99: ViabilityBench Roko arm with the model pinned and checked on every attempt (S08.T11)
+- [x] gap-a8a160: Keep VB_SECRET in a driver-only file and prove agents cannot read it
 - [ ] gap-c33709: Pilot A: the direct arms on 20 tasks (S09.E1a)
 - [ ] gap-327242: Pilot B plus seeds 2–3: the Roko and Claude Code arms on the same tasks (S09.E1b)
 - [ ] gap-d9e9fe: vb report --pilot: a one-page pilot result with confidence intervals and run ids

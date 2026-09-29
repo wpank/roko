@@ -200,6 +200,42 @@ Each needs code, a dependency change or a decision. The Rust files named here ar
   - `Supply-chain audit` fails whenever RustSec publishes a new advisory, whatever the PR changes. To keep that from
     blocking unrelated merges, run `cargo deny check advisories` as a separate job that is not required (or on a
     schedule), and require only `cargo deny check bans licenses sources`.
+- 2026-09-29 (wk-ci2), on `work/find-8cc7ac` from `407ce30d5`. Causes were confirmed from the logs of CI run
+  36575337397, coverage run 36575337223 and cargo-deny run 36575337065 on `de94e4402`.
+  - Fixed, remaining 1: `extension_loader.rs`: the firejail arm now reads `let _ = sandbox;`, with a comment that
+    firejail gets no per-path write rules. `agent_stream.rs`: `AgentWait` allows `clippy::large_enum_variant`, as
+    `AgentTermination` does. Nothing in the workspace depends on `roko-cli`, so every other crate already passed
+    Linux clippy in that run.
+  - Fixed, remaining 2: removed `use super::super::gate_report::*;`. The parent module imports all five
+    `pub(super)` items, and `use super::*` passes them to the tests.
+  - Fixed, remaining 3 (model_selection, 4 tests): `config_with_claude_models()` resolves `claude` on `PATH`, and
+    runners don't have it, so the cascade-router and project-default steps fell through to `BuiltInDefault`. The
+    tests now use `config_with_available_claude_models()`.
+  - Not fixed, remaining 3 (doctor, 2 tests; needs a decision). The cause is reproduced, not read from the log: the
+    prebuilt `roko doctor --json` ran in a fresh workspace with no `claude` on `PATH`, no API keys and an empty
+    `HOME`. Exactly two checks fail: `shared_credentials_none` (roko-execution `check_credentials`, which accepts
+    only API-key env vars or `claude` on `PATH` and ignores the config) and `provider_usable` (`auth_detect`, which
+    runs `claude --version`). With a stub `claude` on `PATH`, doctor is healthy. Both tests assert
+    `report.healthy`, so they need a host with a provider. The options are to inject the credential and auth
+    probes into `run_doctor`, or to have the tests allow only these two host-credential failures.
+  - Fixed, remaining 4, 8 advisories:
+    - `rustls` 0.23.45 via `cargo update -p rustls --precise 0.23.45`. Plain `-p rustls` locks nothing, because
+      0.23.45 needs `rustls-webpki` 0.103.15 and `aws-lc-rs` 1.18.1 / `aws-lc-sys` 0.45.0 (all rust-version 1.71).
+    - `indicatif` 0.18 (rust-version 1.85) drops `number_prefix`.
+    - `trigger_tls.rs` parses PEM with `rustls::pki_types::pem::PemObject`, and `rustls-pemfile` is removed.
+    - `deny.toml` ignores the 5 advisories that have no fix, each with its reason: `lru` (2; ratatui 0.29 and
+      mirage-rs call neither `iter_mut()`, and their keys have no `Drop` that can panic), `paste`,
+      `proc-macro-error2`, and `rsa` (octocrab is built with `personal_token()` only).
+    - cargo-deny 0.20.2, the version CI installs: `cargo deny check` passes (advisories, bans, licenses, sources).
+  - Lockfile: every `cargo update` re-resolves the `tempfile` edge `getrandom >=0.3, <0.5` from 0.4.3 to 0.3.4.
+    The BASE edge was restored by hand, so the diff holds only the intended packages. `--locked` builds accept it.
+  - Local checks (macOS): `cargo +nightly fmt --all --check` is clean.
+    `cargo clippy -p roko-cli -p roko-serve --no-deps --locked -- -D warnings` and
+    `cargo check -p roko-cli --locked` pass. These don't compile the Linux-only arms or the test code.
+  - Only CI on Linux can show: the rest of `cargo test --workspace` (no run has reached it), the Lean CLI
+    `--features alloy-backend,acp` step, Layer Check, and MSRV on a real 1.91.
+  - Still open: the doctor tests, 5 (plan anchors; Will decides) and branch protection (Will decides).
+  - Implemented on `work/find-8cc7ac` at `6e98eb87b`; cargo verification deferred to the batch check.
 
 ## Original notes
 

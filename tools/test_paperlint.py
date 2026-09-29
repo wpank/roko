@@ -313,6 +313,7 @@ class TestIdentifiers(FixtureRepo):
             "(designed) in the sentence": "The key `AttemptKey` (designed) names attempts.\n",
             "(external) in the sentence": "Claude Code reports `modelUsage` (external) per model.\n",
             "MISSING in the table row": "| `AttemptKey` | MISSING@abc1234 |\n|---|---|\n",
+            "MISSING@sha in the sentence": "Each attempt gets an `AttemptKey`, MISSING@abc1234 (gap-528762).\n",
             "first use covers later ones": "The key `AttemptKey` (designed) names attempts.\n\nLater, `AttemptKey` is"
                                            " used.\n",
             "code blocks are examples": "```rust\nlet k = AttemptKey::new();\n```\n",
@@ -446,6 +447,29 @@ class TestBudgets(FixtureRepo):
         # "5 Section" 2, "One … five." 5, one RESULT slot plus "nine." 2, "[[AS-BUILT: ten eleven]]" 3
         self.assertEqual(paperlint.Doc(p, "x").word_count(), 12)
 
+    def test_word_count_leaves_out_the_claims_ledger(self):
+        s = self.research_paper()
+        p = self.section(s, "01-intro.md", """\
+            Status: stable-draft · owner PS3
+
+            # 3 Related work
+
+            Prose one two.
+
+            | A table | outside the ledger |
+            |---|---|
+            | counts | too |
+
+            ### Claims ledger (§3.1–§3.3)
+
+            | ID | Claim | Type (lit / design / result) | Evidence (key, spec, or H#) | Status |
+            |---|---|---|---|---|
+            | C3a.1 | A long claim that must not count toward the budget | lit | lee2026meta | supported |
+            | C3a.2 | Another one | design | S05 | pending |
+            """)
+        # "3 Related work" 3, "Prose one two." 3, the other table 7; nothing under the ledger heading
+        self.assertEqual(paperlint.Doc(p, "x").word_count(), 13)
+
     def test_banned_words_from_the_research_style_rules(self):
         s = self.research_paper()
         p = self.section(s, "01-intro.md", "Status: stable-draft · owner PS1\n\n# T\n\nThe first harness, provably "
@@ -473,6 +497,41 @@ class TestCommandLine(FixtureRepo):
                             str(p.relative_to(self.root))], capture_output=True, text=True, cwd=self.root)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
+    def test_footnote_sources(self):
+        d = self.paper()
+        (d / "evidence").mkdir()
+        (d / "evidence" / "2026-09-29-portal.json").write_text("{}\n")
+        cases = {
+            "frozen evidence file": ("Frozen as `evidence/2026-09-29-portal.json` (sha256 `3f2a9c1b7e44`).", 0),
+            "evidence file from the root": (f"See `docs/{d.name}/evidence/2026-09-29-portal.json`.", 0),
+            "rollup with its id": ("Rollup 2026-09-29T11:14:31, key `totals.runs`.", 0),
+            "missing evidence file": ("Frozen as `evidence/2026-09-30-nothing.json`.", 1),
+            "templated evidence file": ("Frozen as `evidence/<date>-<slug>.json`.", 1),
+        }
+        for name, (note, want) in cases.items():
+            with self.subTest(name):
+                p = self.section(d, "01-introduction.md", "Status: draft · owner gap-aaaaaa\n\n# T\n\n"
+                                 f"Roko built 16 plans for $174.87.[^1-p]\n\n[^1-p]: {note}\n")
+                code, out = run("--strict", p)
+                self.assertEqual(out.count("[number]"), want, out)
+
+    def test_commit_spans(self):
+        cases = {
+            "in HEAD's history": (f"Fixed in `{self.sha}`.", 0),
+            "off HEAD": (f"Fixed in `{self.side}` on a side branch.", 1),
+            "unknown": ("Fixed in `abc1234ef`.", 1),
+            "a sha256 prefix": ("Frozen (sha256 `3f2a9c1b7e44`).", 0),
+            "a sha256 prefix on the next line": ("Frozen as `evidence/x.md` (sha256\n    `3f2a9c1`).", 0),
+            "a full sha": (f"Fixed in `{'0' * 39}a`.", 1),
+            "not hex enough": ("Numbers such as `1234567` and words such as `defaced` are not commits.", 0),
+        }
+        for name, (body, want) in cases.items():
+            with self.subTest(name):
+                p = self.section(self.paper(), "01-introduction.md",
+                                 "Status: draft · owner gap-aaaaaa\n\n# T\n\n" + body)
+                code, out = run("--check-identifiers", p)
+                self.assertEqual(out.count("[identifier] commit"), want, out)
+
     def test_footnotes_and_citations_are_not_link_definitions(self):
         p = self.section(self.paper(), "01-introduction.md", """\
             Status: draft · owner gap-aaaaaa
@@ -481,9 +540,10 @@ class TestCommandLine(FixtureRepo):
 
             [@wiener1948]: feedback came first.
 
-            A claim.[^n]
+            A claim.[^n] Another.[^m]
 
             [^n]: Source: gap-aaaaaa.
+            [^m]: `wc -l` over the tracked files.
             """)
         code, out = run("--report", p)
         self.assertNotIn("link", out.split("findings", 1)[1].split("\n", 1)[0], out)

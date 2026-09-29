@@ -91,3 +91,8 @@ fixture repository, not the real tree.
   then be refreshed.
 - The research draft can adopt the tool later. W9 PW01's claims aggregator is out of scope.
 - **Decided 2026-09-29:** the tests use the standard library's `unittest`, and `tools/test_paperlint.py` ends with `unittest.main()`. pytest is not installed for the system `python3`.
+- **Decided 2026-09-29 (coordinator), where the draft differed from `docs/whitepaper/README.md`, the README won:** the
+  word count leaves out the status line, code blocks, footnote definitions, HTML comments and every section under a
+  "Claims ledger" heading; a use is covered by `[[AS-BUILT: …]]`, or by "(designed)" or a `MISSING@<sha>` tag in its
+  sentence or table row. A footnote naming an existing `evidence/` file is a source, and a code span of 7–11 or 40 hex
+  digits is a commit that must be in HEAD's history.

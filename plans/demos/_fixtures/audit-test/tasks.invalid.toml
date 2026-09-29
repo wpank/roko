@@ -1,0 +1,4 @@
+[[tasks]]
+description = "test task"
+files = ["test.rs"]
+id = "T01"

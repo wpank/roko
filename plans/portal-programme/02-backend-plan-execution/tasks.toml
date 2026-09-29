@@ -492,7 +492,7 @@ files = ["plans/portal-programme/02-backend-plan-execution/REVIEW.md"]
 read_files = [
     { path = "tmp/portal-audit/01-FINDINGS.md", why = "the A1 defect this plan claims to fix" },
     { path = "tmp/portal-audit/03-CONTRACT.md", why = "the eleven events the run view consumes" },
-    { path = "plans/demo-hello/tasks.toml", why = "the plan being executed and the artifact it must produce" },
+    { path = "plans/demos/demo-hello/tasks.toml", why = "the plan being executed and the artifact it must produce" },
 ]
 anti_patterns = [
     "Do not fabricate server output. Put anything needing a live server under the deferred heading.",

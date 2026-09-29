@@ -1,0 +1,193 @@
+[meta]
+plan = "demo-hello-color"
+total = 5
+done = 0
+status = "fixture"
+max_parallel = 2
+skip_enrichment = true
+estimated_total_minutes = 6
+
+# T01 (scribe: research) runs beside T02 and informs T03 without blocking it.
+# T02 -> T03 -> {T04 (scribe: review), T05 (scribe: README)}
+
+[[task]]
+id = "T01"
+title = "Compare terminal-colour crates"
+description = """Write `demo/hello-color/research.md`, a short comparison of Rust crates
+for coloured terminal output, with exactly these headings in order:
+
+  ## Candidates
+  ## Comparison
+  ## Recommendation
+
+Under `## Candidates`, describe `colored`, `owo-colors` and `termcolor` in one
+line each. Under `## Comparison`, give a Markdown table comparing API
+ergonomics, maintenance, dependency footprint and Windows support. Under
+`## Recommendation`, recommend `colored` for this demo and say why in one or
+two sentences. This is a writing task: do not create or modify any other file."""
+status = "ready"
+tier = "focused"
+max_loc = 40
+files = ["demo/hello-color/research.md"]
+role = "scribe"
+depends_on = []
+
+[[task.verify]]
+phase = "headings"
+command = "test -f demo/hello-color/research.md && for h in '## Candidates' '## Comparison' '## Recommendation'; do grep -Fqx \"$h\" demo/hello-color/research.md || exit 1; done"
+fail_msg = "research.md must contain the Candidates, Comparison and Recommendation headings."
+
+[[task.verify]]
+phase = "content"
+command = '''python3 -c 'text=open("demo/hello-color/research.md").read(); low=text.lower(); assert all(c in low for c in ("colored","owo-colors","termcolor")); cmp=text.split("## Comparison",1)[1].split("## Recommendation",1)[0]; assert cmp.count("|")>=8; rec=text.split("## Recommendation",1)[1]; assert "colored" in rec.lower()' '''
+fail_msg = "research.md must cover all three crates, compare them in a table, and recommend colored."
+
+[[task]]
+id = "T02"
+title = "Scaffold the hello-color crate"
+description = """Create the standalone Rust package `demo/hello-color/`:
+
+1. `demo/hello-color/Cargo.toml`: a `[package]` named `hello-color`, version
+   `0.1.0`, edition `2021`; a `[[bin]]` named `hello-color` with path
+   `src/main.rs`; `[dependencies]` with `colored = "2"`; and an empty
+   `[workspace]` table so Cargo never treats the package as a member of an
+   enclosing workspace. Do not edit any other Cargo.toml.
+2. `demo/hello-color/src/main.rs`: a `main` that prints `Hello, World!`.
+   T03 adds the colours.
+
+The verify step builds the package, which writes `demo/hello-color/Cargo.lock`;
+that is expected. If both files already satisfy this contract (for example a
+coloured `main.rs` that still prints `Hello, World!`), leave them unchanged."""
+status = "ready"
+tier = "mechanical"
+max_loc = 20
+files = [
+    "demo/hello-color/Cargo.toml",
+    "demo/hello-color/src/main.rs",
+]
+role = "implementer"
+depends_on = []
+
+[[task.verify]]
+phase = "manifest"
+command = '''python3 -c 'import tomllib; d=tomllib.load(open("demo/hello-color/Cargo.toml","rb")); p=d["package"]; assert p["name"]=="hello-color" and p["edition"]=="2021"; assert "colored" in d.get("dependencies",{}); assert "workspace" in d' '''
+fail_msg = "Cargo.toml must declare package hello-color, edition 2021, the colored dependency, and an empty [workspace] table."
+
+[[task.verify]]
+phase = "builds"
+command = '''grep -Fq 'Hello, World!' demo/hello-color/src/main.rs && CARGO_TARGET_DIR="${TMPDIR:-/tmp}/roko-demo-hello-color" cargo build --quiet --manifest-path demo/hello-color/Cargo.toml'''
+fail_msg = "demo/hello-color must build, and src/main.rs must print Hello, World!."
+
+[[task]]
+id = "T03"
+title = "Print the greeting in colour"
+description = """Update `demo/hello-color/src/main.rs` to use the `colored` crate
+(`use colored::Colorize;`): print a bright-magenta border line, then
+`Hello, World!` in bold green, then the same border line. If
+`demo/hello-color/research.md` exists, read it first; it compares the crates.
+Use no `.unwrap()`. Modify only `src/main.rs`. If it already satisfies this
+contract, leave it unchanged."""
+status = "ready"
+tier = "focused"
+max_loc = 15
+files = ["demo/hello-color/src/main.rs"]
+role = "implementer"
+depends_on = ["T02"]
+
+[task.context]
+read_files = [
+    { path = "demo/hello-color/src/main.rs", why = "The plain greeting T02 wrote." },
+    { path = "demo/hello-color/Cargo.toml", why = "The colored dependency T02 declared." },
+]
+
+[[task.verify]]
+phase = "source"
+command = "grep -Fq 'use colored::Colorize' demo/hello-color/src/main.rs && grep -Fq '.green()' demo/hello-color/src/main.rs && grep -q 'magenta' demo/hello-color/src/main.rs && ! grep -Fq '.unwrap()' demo/hello-color/src/main.rs"
+fail_msg = "src/main.rs must import colored::Colorize, use green and magenta, and avoid .unwrap()."
+
+[[task.verify]]
+phase = "runs"
+command = '''out="$(CARGO_TARGET_DIR="${TMPDIR:-/tmp}/roko-demo-hello-color" cargo run --quiet --manifest-path demo/hello-color/Cargo.toml)" && grep -Fq 'Hello, World!' <<<"$out" && test "$(printf '%s\n' "$out" | wc -l)" -ge 3'''
+fail_msg = "cargo run must print Hello, World! between two border lines."
+
+[[task]]
+id = "T04"
+title = "Review the hello-color crate"
+description = """Review `demo/hello-color/src/main.rs` and
+`demo/hello-color/Cargo.toml` and write `demo/hello-color/REVIEW.md` with
+exactly these headings in order:
+
+  ## Summary
+  ## Strengths
+  ## Issues
+  ## Rust idioms
+  ## Verdict
+
+Under `## Verdict`, write `APPROVE` or `REQUEST CHANGES` on its own line,
+followed by one sentence of reasoning. This is a review: do not modify the
+source files or create any other file."""
+status = "ready"
+tier = "focused"
+max_loc = 40
+files = ["demo/hello-color/REVIEW.md"]
+role = "scribe"
+depends_on = ["T03"]
+
+[task.context]
+read_files = [
+    { path = "demo/hello-color/src/main.rs", why = "The code under review." },
+    { path = "demo/hello-color/Cargo.toml", why = "The dependency and workspace setup under review." },
+]
+anti_patterns = [
+    "Do not edit src/main.rs or Cargo.toml to resolve review findings.",
+]
+
+[[task.verify]]
+phase = "headings"
+command = "test -f demo/hello-color/REVIEW.md && for h in '## Summary' '## Strengths' '## Issues' '## Rust idioms' '## Verdict'; do grep -Fqx \"$h\" demo/hello-color/REVIEW.md || exit 1; done"
+fail_msg = "REVIEW.md must contain the five required headings."
+
+[[task.verify]]
+phase = "verdict"
+command = '''python3 -c 'v=open("demo/hello-color/REVIEW.md").read().split("## Verdict",1)[1].strip(); assert v.startswith("APPROVE") or v.startswith("REQUEST CHANGES")' '''
+fail_msg = "The Verdict section must start with APPROVE or REQUEST CHANGES."
+
+[[task]]
+id = "T05"
+title = "Write the hello-color README"
+description = """Write `demo/hello-color/README.md` for the finished crate, with exactly
+these headings in order:
+
+  # hello-color
+  ## About
+  ## Usage
+  ## Dependencies
+  ## License
+
+Under `## About`, describe what `src/main.rs` actually prints. Under `## Usage`,
+give the command `cargo run --manifest-path demo/hello-color/Cargo.toml` in a
+fenced code block. Under `## Dependencies`, name the `colored` crate. Under
+`## License`, write `MIT OR Apache-2.0`. Do not modify the source files or
+create any other file."""
+status = "ready"
+tier = "mechanical"
+max_loc = 30
+files = ["demo/hello-color/README.md"]
+role = "scribe"
+depends_on = ["T03"]
+
+[task.context]
+read_files = [
+    { path = "demo/hello-color/src/main.rs", why = "Describe the real output." },
+    { path = "demo/hello-color/Cargo.toml", why = "Name the dependency and the run command." },
+]
+
+[[task.verify]]
+phase = "headings"
+command = "test -f demo/hello-color/README.md && for h in '# hello-color' '## About' '## Usage' '## Dependencies' '## License'; do grep -Fqx \"$h\" demo/hello-color/README.md || exit 1; done"
+fail_msg = "README.md must contain the five required headings."
+
+[[task.verify]]
+phase = "content"
+command = "grep -Fq 'cargo run --manifest-path demo/hello-color/Cargo.toml' demo/hello-color/README.md && grep -q 'colored' demo/hello-color/README.md && grep -Fq 'MIT OR Apache-2.0' demo/hello-color/README.md"
+fail_msg = "README.md must give the run command, name colored, and state the licence."

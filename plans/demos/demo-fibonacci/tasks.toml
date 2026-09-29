@@ -1,0 +1,99 @@
+[meta]
+plan = "demo-fibonacci"
+total = 2
+done = 0
+status = "fixture"
+max_parallel = 1
+skip_enrichment = true
+estimated_total_minutes = 3
+
+[[task]]
+id = "FIB-1"
+title = "Create the fibonacci crate"
+description = """Create the standalone Rust package `demo/fibonacci/` with two files:
+
+1. `demo/fibonacci/Cargo.toml`: a `[package]` named `fibonacci`, version
+   `0.1.0`, edition `2021`, with no dependencies, followed by an empty
+   `[workspace]` table so Cargo never treats it as a member of an enclosing
+   workspace. Do not edit any other Cargo.toml.
+2. `demo/fibonacci/src/main.rs`:
+   - `pub fn fibonacci(n: u32) -> u64`, computed iteratively, with
+     `fibonacci(0) == 0` and `fibonacci(1) == 1`;
+   - `fn main()` printing the first ten values on one line, separated by
+     single spaces: `0 1 1 2 3 5 8 13 21 34`;
+   - a `#[cfg(test)] mod tests` asserting `fibonacci(0) == 0`,
+     `fibonacci(1) == 1`, `fibonacci(10) == 55` and
+     `fibonacci(50) == 12586269025`.
+
+Use only the standard library and no `.unwrap()`. Do not create or modify any
+other file. If both files already satisfy this contract, leave them unchanged."""
+status = "ready"
+tier = "focused"
+max_loc = 40
+files = [
+    "demo/fibonacci/Cargo.toml",
+    "demo/fibonacci/src/main.rs",
+]
+role = "implementer"
+depends_on = []
+
+[[task.verify]]
+phase = "manifest"
+command = '''python3 -c 'import tomllib; d=tomllib.load(open("demo/fibonacci/Cargo.toml","rb")); p=d["package"]; assert p["name"]=="fibonacci" and p["edition"]=="2021"; assert not d.get("dependencies"); assert "workspace" in d' '''
+fail_msg = "demo/fibonacci/Cargo.toml must declare package fibonacci, edition 2021, no dependencies, and an empty [workspace] table."
+
+[[task.verify]]
+phase = "output"
+command = '''bin="${TMPDIR:-/tmp}/roko-demo-fibonacci-$$" && rustc --edition 2021 -o "$bin" demo/fibonacci/src/main.rs && out="$("$bin")"; status=$?; rm -f "$bin"; test "$status" -eq 0 && test "$out" = "0 1 1 2 3 5 8 13 21 34"'''
+fail_msg = "src/main.rs must compile with rustc and print exactly `0 1 1 2 3 5 8 13 21 34`."
+
+[[task.verify]]
+phase = "unit-tests"
+command = '''bin="${TMPDIR:-/tmp}/roko-demo-fibonacci-tests-$$" && rustc --edition 2021 --test -o "$bin" demo/fibonacci/src/main.rs && out="$("$bin")"; status=$?; rm -f "$bin"; test "$status" -eq 0 && grep -Eq 'test result: ok\. [1-9][0-9]* passed' <<<"$out" && grep -q '12586269025' demo/fibonacci/src/main.rs'''
+fail_msg = "src/main.rs must contain passing unit tests, including fibonacci(50) == 12586269025."
+
+[[task]]
+id = "FIB-2"
+title = "Document the fibonacci crate"
+description = """Read the accepted `demo/fibonacci/src/main.rs` and
+`demo/fibonacci/Cargo.toml`, then write `demo/fibonacci/README.md` with exactly
+these headings, in order:
+
+  # fibonacci
+  ## Usage
+  ## Function
+  ## Tests
+
+Under `## Usage`, give the command `cargo run --manifest-path demo/fibonacci/Cargo.toml`
+and the line it prints. Under `## Function`, document the signature
+`fibonacci(n: u32) -> u64`, state that `fibonacci(10)` is `55`, and note that
+values beyond `fibonacci(93)` do not fit in a `u64`. Under `## Tests`,
+give the command `cargo test --manifest-path demo/fibonacci/Cargo.toml`.
+
+Do not modify the source files or create any other file."""
+status = "ready"
+tier = "mechanical"
+max_loc = 40
+files = ["demo/fibonacci/README.md"]
+role = "scribe"
+depends_on = ["FIB-1"]
+
+[task.context]
+read_files = [
+    { path = "demo/fibonacci/src/main.rs", why = "Document the function and output that FIB-1 produced." },
+    { path = "demo/fibonacci/Cargo.toml", why = "Document the package name and how to run it." },
+]
+anti_patterns = [
+    "Do not document behaviour that src/main.rs does not implement.",
+    "Do not edit src/main.rs or Cargo.toml while documenting them.",
+]
+
+[[task.verify]]
+phase = "headings"
+command = "test -f demo/fibonacci/README.md && for h in '# fibonacci' '## Usage' '## Function' '## Tests'; do grep -Fqx \"$h\" demo/fibonacci/README.md || exit 1; done"
+fail_msg = "README.md must contain the four required headings."
+
+[[task.verify]]
+phase = "content"
+command = "grep -Fq 'cargo run --manifest-path demo/fibonacci/Cargo.toml' demo/fibonacci/README.md && grep -Fq 'cargo test --manifest-path demo/fibonacci/Cargo.toml' demo/fibonacci/README.md && grep -Fq 'fibonacci(n: u32) -> u64' demo/fibonacci/README.md && grep -q '55' demo/fibonacci/README.md"
+fail_msg = "README.md must give the run and test commands, the function signature, and fibonacci(10) = 55."

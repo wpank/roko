@@ -292,11 +292,12 @@ cargo clean
 
 ## 8. Reference Plans
 
-The repository includes several example plans you can study:
+The repository includes several example plans you can study. The full list,
+with run commands, is in [`plans/demos/README.md`](../../plans/demos/README.md):
 
 | Plan | Description |
 |---|---|
-| `plans/demo-hello/` | Single-task smoke test (simplest possible plan) |
-| `plans/demo-multistage/` | 5-task pipeline: discovery, evidence, decision, validation, review |
-| `plans/demo-parallel-integration/` | Demonstrates parallel task execution |
-| `plans/demo-resume-recovery/` | Tests the resume-from-checkpoint workflow |
+| `plans/demos/demo-hello/` | Single-task smoke test (simplest possible plan) |
+| `plans/demos/demo-multistage/` | 5-task pipeline: discovery, evidence, decision, validation, review |
+| `plans/demos/demo-parallel-integration/` | Demonstrates parallel task execution |
+| `plans/demos/demo-resume-recovery/` | Tests the resume-from-checkpoint workflow |

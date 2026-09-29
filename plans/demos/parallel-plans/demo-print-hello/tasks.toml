@@ -1,0 +1,30 @@
+[meta]
+plan = "demo-print-hello"
+total = 1
+done = 0
+status = "fixture"
+max_parallel = 1
+skip_enrichment = true
+estimated_total_minutes = 1
+
+[[task]]
+id = "PRINT-1"
+title = "Write a Rust program that prints hello"
+description = """Create `demo/print-hello/main.rs`: a single-file Rust program whose
+`main` prints one line that starts with the word `hello`, for example
+`hello from roko`. Use only the standard library. Do not create a Cargo
+project, and do not modify or create any other file. If the file already
+satisfies this contract, leave it unchanged.
+
+Output file (the fake test agent reads this marker): ARTIFACT demo/print-hello/main.rs"""
+status = "ready"
+tier = "mechanical"
+max_loc = 3
+files = ["demo/print-hello/main.rs"]
+role = "implementer"
+depends_on = []
+
+[[task.verify]]
+phase = "runs"
+command = '''bin="${TMPDIR:-/tmp}/roko-demo-print-hello-$$" && rustc --edition 2021 -o "$bin" demo/print-hello/main.rs && out="$("$bin")"; status=$?; rm -f "$bin"; test "$status" -eq 0 && [[ "$out" == hello* ]]'''
+fail_msg = "demo/print-hello/main.rs must compile with rustc and print a line starting with `hello`."

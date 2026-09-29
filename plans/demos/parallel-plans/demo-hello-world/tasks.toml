@@ -1,0 +1,29 @@
+[meta]
+plan = "demo-hello-world"
+total = 1
+done = 0
+status = "fixture"
+max_parallel = 1
+skip_enrichment = true
+estimated_total_minutes = 1
+
+[[task]]
+id = "HELLO-1"
+title = "Write a Rust program that prints hello world"
+description = """Create `demo/hello-world/main.rs`: a single-file Rust program whose
+`main` prints exactly `hello world` followed by a newline. Use only the standard
+library. Do not create a Cargo project, and do not modify or create any other
+file. If the file already satisfies this contract, leave it unchanged.
+
+Output file (the fake test agent reads this marker): ARTIFACT demo/hello-world/main.rs"""
+status = "ready"
+tier = "mechanical"
+max_loc = 3
+files = ["demo/hello-world/main.rs"]
+role = "implementer"
+depends_on = []
+
+[[task.verify]]
+phase = "runs"
+command = '''bin="${TMPDIR:-/tmp}/roko-demo-hello-world-$$" && rustc --edition 2021 -o "$bin" demo/hello-world/main.rs && out="$("$bin")"; status=$?; rm -f "$bin"; test "$status" -eq 0 && test "$out" = "hello world"'''
+fail_msg = "demo/hello-world/main.rs must compile with rustc and print exactly `hello world`."

@@ -2248,8 +2248,8 @@ The legacy Runner-v2 engine has been removed. --engine legacy is accepted but ex
     /// When omitted, shows the global runner status (phase, plans, agents).
     #[command(after_help = "\
 Examples:
-  roko plan status                    Show global runner status
-  roko plan status plans/demo-hello   Show task status for a specific plan")]
+  roko plan status                          Show global runner status
+  roko plan status plans/demos/demo-hello   Show task status for a specific plan")]
     Status {
         /// Optional plan directory to show status for (e.g. plans/my-plan).
         /// When provided, shows task-level status for that specific plan.

@@ -17,8 +17,10 @@
 //!    missing tail components. We never call [`std::fs::canonicalize`] on
 //!    a non-existent leaf because the platform behavior differs.
 //! 3. A provider key file ([`roko_core::child_env::is_key_file`]: the
-//!    `.env`, `secrets.toml` or `credentials.json` of any `.roko`
-//!    directory, `~/.roko` included) is refused with
+//!    `.env`, `secrets.toml`, `credentials.json` or `config.toml` of any
+//!    `.roko` directory, `~/.roko` included), or a roko config file such as
+//!    `roko.toml` while it holds a secret
+//!    ([`roko_core::child_env::is_config_with_secrets`]), is refused with
 //!    [`ToolError::KeyFileBlocked`], inside the worktree too and whatever
 //!    the policy says. The rest of `.roko` stays readable.
 //! 4. If `policy.prevent_escapes` is set (default), the canonical
@@ -49,7 +51,7 @@
 
 use std::path::{Path, PathBuf};
 
-use roko_core::child_env::is_key_file;
+use roko_core::child_env::{is_config_with_secrets, is_key_file};
 use roko_core::tool::ToolError;
 
 // ─── Types ────────────────────────────────────────────────────────────────
@@ -148,10 +150,10 @@ pub fn canonicalize_with_policy(
     //    may be a symlink to the other). The plan may run in the operator's
     //    checkout, so `.roko/.env` can sit inside the worktree.
     let lexical = normalize(&joined);
-    if is_key_file(&lexical) {
+    if is_key_file(&lexical) || is_config_with_secrets(&lexical) {
         return Err(ToolError::KeyFileBlocked(lexical));
     }
-    if is_key_file(&canonical_joined) {
+    if is_key_file(&canonical_joined) || is_config_with_secrets(&canonical_joined) {
         return Err(ToolError::KeyFileBlocked(canonical_joined));
     }
 

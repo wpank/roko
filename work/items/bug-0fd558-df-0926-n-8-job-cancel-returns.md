@@ -7,8 +7,8 @@ triage = "verified"
 severity = "p2"
 subsystem = ["roko-serve/routes/jobs"]
 created = 2026-09-26
-updated = 2026-09-28
-last_verified = 2026-09-28
+updated = 2026-09-29
+last_verified = 2026-09-29
 source = "tmp/dogfood/2026-09-25-portal-programme-run.md#N-8. Whole-crate gates inherit pre-existing failures"
 discovered_from = "audit:tmp/dogfood/2026-09-25-portal-programme-run.md#N-8. Whole-crate gates inherit pre-existing failures"
 anchors = ["routes/jobs.rs:1217", "JobExecutionService::cancel", "crates/roko-serve/tests/job_lifecycle.rs"]
@@ -16,7 +16,8 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [closed]
 at = 2026-09-28
-evidence = "duplicate of bug-12be66 (verified 2026-09-28): same defect, same handler (cancel_job_endpoint, routes/jobs.rs:1217) and the same three ignored job_lifecycle tests; bug-12be66 carries the repro and verify commands."
+commit = "725f21e05"
+evidence = "duplicate of bug-12be66 (verified 2026-09-28): same defect, same handler (cancel_job_endpoint, routes/jobs.rs:1217) and the same three ignored job_lifecycle tests; bug-12be66 carries the repro and verify commands. The defect itself was fixed in 725f21e05: MarketplaceJob.reward rejected the null reward that roko-serve writes, and the catch-all 500 mapping hid it. Re-verified 2026-09-29 at dda23167f: cargo test -p roko-serve --test job_lifecycle passes 23/23 with no ignored tests."
 +++
 POST /api/jobs/{id}/cancel returns 500 because every JobError except InvalidTransition maps to ApiError::internal, masking JobExecutionService::cancel failures; three job_lifecycle tests marked #[ignore] and logged to GAPS.md.
 

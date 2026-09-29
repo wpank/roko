@@ -7,8 +7,8 @@ triage = "verified"
 severity = "p1"
 subsystem = ["roko-cli/runner"]
 created = 2026-09-28
-updated = 2026-09-28
-last_verified = 2026-09-28
+updated = 2026-09-29
+last_verified = 2026-09-29
 source = "tmp/work-management/01-gaps-md-audit.md"
 discovered_from = "doc:tmp/work-management/01-gaps-md-audit.md"
 anchors = ["crates/roko-cli/src/prd.rs:1161", "crates/roko-cli/src/commands/do_cmd.rs:997", "crates/roko-cli/src/worker/cloud.rs:568", "crates/roko-cli/src/runner/mod.rs::run"]
@@ -24,7 +24,7 @@ command = 'test -z "$(grep -rn "runner::run(" crates/roko-cli/src --include="*.r
 at = 2026-09-28
 commit = "725f21e05"
 by = "session roko-b6"
-evidence = "Verify re-run here at HEAD 725f21e05: there are no runner::run( call sites outside runner/, and runner/mod.rs no longer defines run. do_cmd::run_plan_execution, prd::run_generated_plans and worker/cloud.rs call graph_execution::run_graph_plan. The portal session reports that crates/roko-cli/tests/runner_v2_guard.rs (no_runner_run_call_sites, plan_execution_callers_use_graph_engine) and tests/graph_plan_callers.rs pass; not re-run here, to avoid cargo contention with that running session."
+evidence = "Verify re-run here at HEAD 725f21e05: there are no runner::run( call sites outside runner/, and runner/mod.rs no longer defines run. do_cmd::run_plan_execution, prd::run_generated_plans and worker/cloud.rs call graph_execution::run_graph_plan. The portal session reports that crates/roko-cli/tests/runner_v2_guard.rs (no_runner_run_call_sites, plan_execution_callers_use_graph_engine) and tests/graph_plan_callers.rs pass; not re-run here, to avoid cargo contention with that running session. Re-verified 2026-09-29 at dda23167f (roko-53 triage): the verify command passes, and cargo test -p roko-cli --test runner_v2_guard --test graph_plan_callers passes (2 + 3 tests)."
 +++
 
 `crate::runner::run` is a deprecated stub that always bails ("the legacy Runner-v2 event loop has been removed").

@@ -272,56 +272,41 @@ impl MergeBackend for GitMergeBackend {
             );
         }
 
-        // G06: Pre-merge feasibility check via `git merge-tree --write-tree` (git 2.39+).
+        // G06: Pre-merge feasibility check via `git merge-tree --write-tree` (git 2.38+).
         // This predicts conflicts without side effects — no checkout, no ref updates,
         // no working tree changes. When conflicts are predicted, we fail closed and
         // return the conflicted paths so the caller can trigger a conflict-aware replan
         // (G04) without ever touching the working tree.
-        let merge_tree = tokio::process::Command::new("git")
-            .args(["merge-tree", "--write-tree", "HEAD", &request.branch_name])
-            .current_dir(&config.workdir)
-            .env("GIT_TERMINAL_PROMPT", "0")
-            .output()
-            .await;
-        match merge_tree {
-            Ok(ref out) if !out.status.success() => {
-                // merge-tree reports conflicts via non-zero exit; parse from stdout.
-                let stdout = String::from_utf8_lossy(&out.stdout);
-                let conflict_lines: Vec<String> = stdout
-                    .lines()
-                    .filter(|l| l.contains("CONFLICT"))
-                    .map(|l| l.to_string())
-                    .collect();
-                if !conflict_lines.is_empty() {
-                    let duration_ms = started.elapsed().as_millis() as u64;
-                    tracing::info!(
-                        branch = %request.branch_name,
-                        conflicts = ?conflict_lines,
-                        "merge-tree predicts conflicts; skipping real merge (G06)"
-                    );
-                    return MergeBackendOutcome::fail_with_conflicts(
-                        format!(
-                            "merge-tree predicts conflicts for `{}`; conflicted paths: {}",
-                            request.branch_name,
-                            conflict_lines.join("; ")
-                        ),
-                        RunnerFailureKind::Structural,
-                        duration_ms,
-                        conflict_lines,
-                    );
-                }
+        match git_merge_tree(&config.workdir, "HEAD", &request.branch_name).await {
+            Ok(MergeTree::Conflicted { paths }) => {
+                let duration_ms = started.elapsed().as_millis() as u64;
+                tracing::info!(
+                    branch = %request.branch_name,
+                    conflicts = ?paths,
+                    "merge-tree predicts conflicts; skipping real merge (G06)"
+                );
+                return MergeBackendOutcome::fail_with_conflicts(
+                    format!(
+                        "merge-tree predicts conflicts for `{}`; conflicted paths: {}",
+                        request.branch_name,
+                        paths.join(",")
+                    ),
+                    RunnerFailureKind::Structural,
+                    duration_ms,
+                    paths,
+                );
             }
-            Ok(_) => {
+            Ok(MergeTree::Clean { .. }) => {
                 tracing::debug!(
                     "pre-merge check: no conflicts predicted for branch `{}`",
                     request.branch_name,
                 );
             }
-            Err(ref e) => {
-                // git merge-tree unavailable (git < 2.39) or spawn failure — log and
+            Err(e) => {
+                // git merge-tree unavailable (git < 2.38) or failed — log and
                 // continue; the actual merge will catch any real conflicts.
                 tracing::debug!(
-                    "pre-merge feasibility check skipped (git merge-tree not available or failed to spawn): {e}",
+                    "pre-merge feasibility check skipped (git merge-tree not available or failed): {e}",
                 );
             }
         }
@@ -529,22 +514,31 @@ impl RegressionGate for CargoCheckRegressionGate {
     }
 }
 
-async fn git_success(workdir: &std::path::Path, args: &[&str]) -> bool {
-    tokio::process::Command::new("git")
-        .args(args)
+/// A `git` command run in `workdir`. It drops the variables that point git
+/// at another repository, checkout or index, which git sets for hooks.
+pub(crate) fn git_command(workdir: &std::path::Path) -> tokio::process::Command {
+    let mut command = tokio::process::Command::new("git");
+    command
         .current_dir(workdir)
         .env("GIT_TERMINAL_PROMPT", "0")
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE");
+    command
+}
+
+async fn git_success(workdir: &std::path::Path, args: &[&str]) -> bool {
+    git_command(workdir)
+        .args(args)
         .output()
         .await
         .map(|output| output.status.success())
         .unwrap_or(false)
 }
 
-async fn git_output(workdir: &std::path::Path, args: &[&str]) -> Result<String, String> {
-    let output = tokio::process::Command::new("git")
+pub(crate) async fn git_output(workdir: &std::path::Path, args: &[&str]) -> Result<String, String> {
+    let output = git_command(workdir)
         .args(args)
-        .current_dir(workdir)
-        .env("GIT_TERMINAL_PROMPT", "0")
         .output()
         .await
         .map_err(|err| err.to_string())?;
@@ -569,6 +563,58 @@ async fn git_conflicted_paths(workdir: &std::path::Path) -> Vec<String> {
         .filter(|line| !line.is_empty())
         .map(ToOwned::to_owned)
         .collect()
+}
+
+/// Result of [`git_merge_tree`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum MergeTree {
+    /// The merge is clean; `tree` is the OID of the merged tree.
+    Clean { tree: String },
+    /// The merge conflicts in these paths.
+    Conflicted { paths: Vec<String> },
+}
+
+/// Merge `theirs` into `ours` in the object database with
+/// `git merge-tree --write-tree` (git 2.38+).
+///
+/// Only objects are written: no checkout, index or ref changes. Fails when git
+/// cannot compute the merge at all, for example for an unknown revision or a
+/// git without `--write-tree`.
+pub(crate) async fn git_merge_tree(
+    workdir: &std::path::Path,
+    ours: &str,
+    theirs: &str,
+) -> Result<MergeTree, String> {
+    let output = git_command(workdir)
+        .args([
+            "merge-tree",
+            "--write-tree",
+            "--name-only",
+            "--no-messages",
+            "-z",
+            "--end-of-options",
+            ours,
+            theirs,
+        ])
+        .output()
+        .await
+        .map_err(|err| format!("failed to spawn git merge-tree: {err}"))?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut fields = stdout.split('\0').filter(|field| !field.is_empty());
+    let tree = fields
+        .next()
+        .filter(|tree| tree.bytes().all(|byte| byte.is_ascii_hexdigit()));
+    match (output.status.code(), tree) {
+        (Some(0), Some(tree)) => Ok(MergeTree::Clean {
+            tree: tree.to_string(),
+        }),
+        // Exit 1 also means "not something we can merge"; only a conflict
+        // prints the merged tree first.
+        (Some(1), Some(_)) => Ok(MergeTree::Conflicted {
+            paths: fields.map(ToOwned::to_owned).collect(),
+        }),
+        _ => Err(String::from_utf8_lossy(&output.stderr).trim().to_string()),
+    }
 }
 
 impl PlanMerger {

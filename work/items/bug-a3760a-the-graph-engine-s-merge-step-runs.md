@@ -144,6 +144,33 @@ Expected: delivering a branch never changes the user's checked-out branch, index
   only the temporary regression worktree.
 - Safe to do in parallel with most work. It touches only `delivery.rs`, plus a small helper shared with
   `runner/merge.rs`.
+- 2026-09-29 (wk-merge-safety): Implemented on `work/bug-a3760a` at `809ae920d`; cargo verification deferred to
+  the batch check.
+  - Approach: git plumbing, not a dedicated merge worktree. Plumbing needs no checkout at all, and a worktree
+    cannot check out a target that is already checked out elsewhere. `merge-base --is-ancestor` covers the
+    already-merged and fast-forward cases. Otherwise `merge-tree --write-tree` then `commit-tree`. The target
+    moves only by `update-ref <ref> <new> <old>`. The `merge-tree` call and its parsing now live in
+    `runner::merge::git_merge_tree`, which `GitMergeBackend`'s G06 pre-check also uses. Its conflicted paths are
+    now file paths, not `CONFLICT` message lines.
+  - A target checked out in any worktree, clean or dirty, never moves: that checkout's index and files would no
+    longer match its HEAD. The merge fails closed (`merged: false`, so the service records `Conflict` with
+    `RetainForReview`). The result is parked at `refs/roko/delivered/<plan_id>` by compare-and-swap, and the
+    summary says to run `git merge --ff-only refs/roko/delivered/<plan_id>` in that checkout. Failing closed for a
+    clean checkout too keeps a receipt from saying `Delivered` when the target did not move.
+  - The regression runs in a temporary detached worktree of the merge commit, under the system temp dir, with
+    `gate_dispatch`'s `RegisteredBaselineWorktree` guard (now `pub(crate)`). `run_regression` now receives the
+    merge commit. Outside the repo, the checkout never shows in the user's `git status`; `roko init` does not
+    gitignore `.roko/`. `with_regression_command` replaces the hard-coded `cargo check`; tests use it, and
+    gap-60233f can set it from `[meta] verify`.
+  - The fire-and-forget `MergeQueue::enqueue` is gone, and `GitDeliveryBackend::new` takes only the workdir. The
+    service's merge slot serializes deliveries; the compare-and-swap guards against other writers. Git commands
+    drop `GIT_DIR`, `GIT_WORK_TREE` and `GIT_INDEX_FILE`, which git sets inside hooks.
+  - Tests in `delivery.rs`: `merge_leaves_the_user_checkout_alone`, `merge_into_checked_out_target_does_not_move_it`,
+    `merge_conflict_is_reported_without_touching_refs`, `merge_fast_forwards_a_target_that_is_behind` and
+    `regression_runs_in_a_temporary_checkout_of_the_merge`. The same git command sequence passed these scenarios
+    in a scratch mirror on git 2.39.5.
+  - Left for later: the regression's `cargo check` starts cold in a fresh checkout, with no shared target dir. The
+    merge takes the branch head and does not compare it with `request.commit_oid`.
 
 ## Original notes
 

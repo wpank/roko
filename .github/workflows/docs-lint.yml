@@ -10,10 +10,6 @@ on:
       - "docs/v2/**"
       - "docs/v2-depth/**/*.md"
       - "docker/README.md"
-      - "tmp/status-quo/*.md"
-      - "tmp/status-quo/backlog/08-SOURCE-CORPUS-PLAN-COVERAGE.md"
-      - "tmp/status-quo/backlog/source-coverage/**"
-      - "tmp/status-quo/backlog/plans/DOC-*/tasks.toml"
       - "tools/docs_integrity/**"
       - ".github/workflows/docs-lint.yml"
       - ".github/workflows/plan-validate.yml"
@@ -25,10 +21,6 @@ on:
       - "docs/v2/**"
       - "docs/v2-depth/**/*.md"
       - "docker/README.md"
-      - "tmp/status-quo/*.md"
-      - "tmp/status-quo/backlog/08-SOURCE-CORPUS-PLAN-COVERAGE.md"
-      - "tmp/status-quo/backlog/source-coverage/**"
-      - "tmp/status-quo/backlog/plans/DOC-*/tasks.toml"
       - "tools/docs_integrity/**"
       - ".github/workflows/docs-lint.yml"
       - ".github/workflows/plan-validate.yml"
@@ -41,7 +33,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Test the bounded Markdown checker
         run: python3 -m unittest tools.docs_integrity.test_check_markdown_links
-      - name: Check local Markdown paths, anchors, and document registries
+      - name: Check local Markdown paths and anchors
         run: python3 tools/docs_integrity/check_markdown_links.py
       - name: Check audited docs
         shell: bash

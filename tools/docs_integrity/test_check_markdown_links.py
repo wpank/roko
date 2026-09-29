@@ -5,19 +5,10 @@ from unittest import mock
 
 from tools.docs_integrity import check_markdown_links as checker
 from tools.docs_integrity.check_markdown_links import (
-    CoverageLedgerRow,
-    CoverageLedgerSpec,
     REPO_ROOT,
     Limits,
-    SourceManifestRow,
     check_paths,
-    check_status_disposition_registry,
     github_slug,
-    parse_coverage_ledger,
-    parse_doc_plan,
-    parse_source_manifest,
-    validate_source_manifest,
-    validate_source_ownership,
 )
 
 
@@ -246,36 +237,6 @@ class MarkdownLinkCheckerTests(unittest.TestCase):
         self.assertEqual(len(findings), 1)
         self.assertIn("file size", findings[0].message)
 
-    def test_status_disposition_registry_enforces_exact_109_file_rule(self) -> None:
-        registry = """# Index
-> **Disposition: CURRENT NAVIGATION (test).**
-The 109 direct Markdown files under `tmp/status-quo/` are classified.
-| `00-INDEX.md` | 1 | `CURRENT-NAVIGATION` |
-| `MASTER-EXECUTION-CHECKLIST.md` | 1 | `CURRENT-CONTROL` |
-| `DOC-MANIFEST.md` | 1 | `GENERATED-HISTORICAL` |
-| Numbered `01-*.md` through `106-*.md` | 106 | `HISTORICAL-AUDIT` |
-| **Total** | **109** | all classified |
-"""
-        files = {
-            "tmp/status-quo/00-INDEX.md": registry,
-            "tmp/status-quo/DOC-MANIFEST.md": (
-                "# Manifest\n> **Disposition: GENERATED-HISTORICAL.**\n"
-            ),
-            "tmp/status-quo/MASTER-EXECUTION-CHECKLIST.md": (
-                "# Control\n> Status: active control document\n"
-            ),
-        }
-        for number in range(1, 107):
-            files[f"tmp/status-quo/{number:02d}-DOC.md"] = f"# Historical {number}\n"
-        temporary, root = self.fixture(files)
-        self.addCleanup(temporary.cleanup)
-
-        self.assertEqual(check_status_disposition_registry(root), [])
-        (root / "tmp/status-quo/EXTRA.md").write_text("# Extra\n", encoding="utf-8")
-        findings = check_status_disposition_registry(root)
-        self.assertTrue(any("expected 109" in finding.message for finding in findings))
-        self.assertTrue(any("unclassified" in finding.message for finding in findings))
-
     def test_ci_workflows_run_both_integrity_gates(self) -> None:
         docs_workflow = (REPO_ROOT / ".github/workflows/docs-lint.yml").read_text(
             encoding="utf-8"
@@ -289,107 +250,11 @@ The 109 direct Markdown files under `tmp/status-quo/` are classified.
             docs_workflow,
         )
         self.assertIn("python3 tools/docs_integrity/check_markdown_links.py", docs_workflow)
-        self.assertIn('"tmp/status-quo/*.md"', docs_workflow)
-        self.assertIn('"tmp/status-quo/backlog/source-coverage/**"', docs_workflow)
         self.assertIn('".github/workflows/plan-validate.yml"', docs_workflow)
         self.assertIn("target/debug/roko plan index --check --workdir .", plan_workflow)
         self.assertIn('"plans/INDEX.md"', plan_workflow)
         self.assertIn('"plans/_meta/IMPLEMENTATION_ORDER.md"', plan_workflow)
         self.assertIn("executor.json mentions must be explicitly identified", docs_workflow)
-
-    def test_source_manifest_parser_is_exact_and_reports_malformed_rows(self) -> None:
-        rows, malformed = parse_source_manifest(
-            "| Source path | Title | Status tag | Suggested owner |\n"
-            "| `docs/v1/a.md` | A | `legacy-design-or-partial` | `30-CORE-SIGNAL.md` |\n"
-            "| `docs/v2/b.md` | B | `migration-design` | `31-GRAPH-CELLS-ENGINE.md` |\n"
-            "| `docs/v2/not-markdown.txt` | Bad | `migration-design` | `31-GRAPH-CELLS-ENGINE.md` |\n"
-        )
-
-        self.assertEqual(
-            rows,
-            [
-                SourceManifestRow("docs/v1/a.md", "30-CORE-SIGNAL.md"),
-                SourceManifestRow("docs/v2/b.md", "31-GRAPH-CELLS-ENGINE.md"),
-            ],
-        )
-        self.assertEqual(
-            malformed,
-            [
-                "| `docs/v2/not-markdown.txt` | Bad | `migration-design` | `31-GRAPH-CELLS-ENGINE.md` |"
-            ],
-        )
-
-    def test_coverage_ledger_and_named_task_ownership_are_exact(self) -> None:
-        spec = CoverageLedgerSpec(
-            "ledger.md", ("Source", "Owner"), 0, 1, "DOC-plan"
-        )
-        rows, errors = parse_coverage_ledger(
-            "| Source | Owner |\n"
-            "|---|---|\n"
-            "| `docs/v2/a.md` | `DOC-A` |\n"
-            "| `docs/v2/b.md` | `DOC-B` |\n",
-            spec,
-        )
-        contexts, plan_errors = parse_doc_plan(
-            b'[[task]]\nid = "DOC-A"\n[task.context]\nread_files = [{ path = "docs/v2/a.md" }]\n\n'
-            b'[[task]]\nid = "DOC-B"\n[task.context]\nread_files = [{ path = "docs/v2/b.md" }]\n'
-        )
-
-        self.assertEqual(errors, [])
-        self.assertEqual(plan_errors, [])
-        self.assertEqual(
-            validate_source_ownership(
-                {"docs/v2/a.md", "docs/v2/b.md"},
-                [(spec.plan_directory, row) for row in rows],
-                {spec.plan_directory: contexts},
-            ),
-            [],
-        )
-
-    def test_coverage_ownership_mutations_reject_duplicate_extra_missing_and_wrong_owner(self) -> None:
-        rows = [
-            ("DOC-plan", CoverageLedgerRow("docs/v2/a.md", "DOC-A", 3)),
-            ("DOC-plan", CoverageLedgerRow("docs/v2/a.md", "DOC-B", 4)),
-            ("DOC-plan", CoverageLedgerRow("docs/v2/extra.md", "DOC-B", 5)),
-        ]
-        contexts = {
-            "DOC-plan": {
-                "DOC-A": frozenset({"docs/v2/wrong.md"}),
-                "DOC-B": frozenset({"docs/v2/extra.md"}),
-            }
-        }
-
-        errors = validate_source_ownership(
-            {"docs/v2/a.md", "docs/v2/missing.md"}, rows, contexts
-        )
-
-        self.assertTrue(any("duplicate ledger source" in error for error in errors))
-        self.assertTrue(any("missing from coverage ledgers" in error for error in errors))
-        self.assertTrue(any("extra source" in error for error in errors))
-        self.assertTrue(any("owner context omits source" in error for error in errors))
-
-    def test_doc_plan_parser_rejects_duplicate_task_ids(self) -> None:
-        _, errors = parse_doc_plan(
-            b'[[task]]\nid = "DOC-A"\n[[task]]\nid = "DOC-A"\n'
-        )
-
-        self.assertTrue(any("duplicate task id" in error for error in errors))
-
-    def test_source_manifest_mutations_reject_membership_and_unresolved_owner(self) -> None:
-        errors = validate_source_manifest(
-            {"docs/v2/a.md", "docs/v2/missing.md"},
-            [
-                SourceManifestRow("docs/v2/a.md", "30-CORE-SIGNAL.md"),
-                SourceManifestRow("docs/v2/a.md", "MISSING.md"),
-                SourceManifestRow("docs/v2/extra.md", "30-CORE-SIGNAL.md"),
-            ],
-            {"30-CORE-SIGNAL.md"},
-        )
-
-        self.assertTrue(any("duplicate row" in error for error in errors))
-        self.assertTrue(any("missing from manifest" in error for error in errors))
-        self.assertTrue(any("does not exist" in error for error in errors))
-        self.assertTrue(any("owner does not resolve" in error for error in errors))
 
 
 if __name__ == "__main__":

@@ -32,12 +32,14 @@ jobs:
       - uses: dtolnay/rust-toolchain@nightly
         with:
           components: rustfmt
-      - run: cargo fmt --all --check
+      # rust-toolchain.toml overrides rustup's default toolchain, so name nightly explicitly.
+      - run: cargo +nightly fmt --all --check
 
   layer-check:
     name: Layer Check
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # A cold `cargo build -p roko-cli` takes 13-15 minutes on ubuntu-latest.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.96.1

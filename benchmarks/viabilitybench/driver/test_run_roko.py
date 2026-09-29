@@ -224,6 +224,7 @@ def test_model_mismatch_marks_attempt_infra_error(places, tmp_path):
 
 
 def test_pinned_run_records_attempts_and_leaves_only_the_agents_tree(places, tmp_path, monkeypatch):
+    monkeypatch.setattr(vb.secret, "KEYS_IN_ENV_OK", True)  # the tests' escape hatch (bug-979a06) for the next line
     monkeypatch.setenv("CEREBRAS_API_KEY", "sk-driver-only-9d1e")  # an offline run never hands Roko the real key
     monkeypatch.setenv("ROKO_CONFIG", "/elsewhere/roko.toml")
     binary, log = fake_roko(tmp_path, [PIN, PIN])

@@ -214,6 +214,7 @@ goes in only after refcheck confirms it.
 | SR8 | design | The roadmap by goal, in order: truth (E2–E4), golden path (E5–E11), proof (E12–E13), cybernetic core (E17), each with its epic ids and exit check. Give the order, not dates. | PLAN §2–§4; `work/goals.toml` | The epic items |
 | SR9 | status | Proposed parking: the chain and marketplace code, offline batch consolidation, the conductor, affect and the extra knowledge-store modules, about 94k LOC by tldr/05's estimate (N13). Mark it as proposed. | tldr/05 §3 | N13, recomputed at a commit or labelled an estimate |
 | SR10 | figure | Figure 3: the status matrix; gap-d1d92c draws it. | gap-d1d92c | `figures/fig3-status-matrix.svg` |
+| SR11 | status | Four matrix rows whose verdict calls for work have no item filed: EX8 (split or replan), IS6 (an OS sandbox after v1), SS3 (calibrating output screening) and DM2 (gates chosen by task domain). Added by gap-c19902. | The appendix's "Next" column | Row ids from the appendix |
 
 ### §10 Related work (`10-related-work.md`, gap-ec516e)
 

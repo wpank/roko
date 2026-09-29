@@ -343,7 +343,11 @@ async fn run_events_sse(
         },
     );
 
-    let sse = Sse::new(stream::iter(replay).chain(live)).keep_alive(
+    let sse = Sse::new(super::sse::until_shutdown(
+        stream::iter(replay).chain(live),
+        state.cancel.clone(),
+    ))
+    .keep_alive(
         KeepAlive::new()
             .interval(std::time::Duration::from_secs(8))
             .text("keepalive"),

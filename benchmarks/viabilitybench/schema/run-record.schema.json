@@ -73,7 +73,7 @@
               "turns": {"type": ["integer", "null"]},
               "usage": {
                 "type": ["object", "null"],
-                "description": "Token usage as reported (S01 §5.5); null when none was reported, which makes the cost unknown. The classes are disjoint: tokens_in counts only uncached input, so api_equiv_usd is each class times its snapshot rate.",
+                "description": "Token usage as reported (S01 §5.5), mapped onto disjoint classes by S01 §4.4's table; null when none was reported, which makes the cost unknown. tokens_in counts only uncached input: Anthropic's input_tokens already excludes cache reads and writes, but an OpenAI-style prompt_tokens includes its cached tokens, so there tokens_in = prompt_tokens - cached_tokens. api_equiv_usd is then each class times its snapshot rate. A missing cache-write field means no cache writes were reported.",
                 "required": ["tokens_in", "tokens_out", "tokens_cache_read", "tokens_reasoning"],
                 "additionalProperties": false,
                 "properties": {
@@ -152,7 +152,7 @@
       }
     },
     "prediction": {"type": ["object", "null"], "description": "S01 roko.prediction/1 (S04), written before dispatch"},
-    "audit": {"type": ["object", "null"], "description": "S01 roko.audit/1: the harness's own M4 selection and result (S05)"},
+    "audit": {"type": ["object", "null"], "description": "S01 roko.audit/1: the harness's own M4 selection and result (S05). Its digests (record_id, prev_hash, record_hash) are SHA-256, written sha256:, because they belong to S05's ledger chain (S01 §5.7)"},
     "loops": {"type": "array", "items": {"type": "object"}, "description": "S01 roko.decision/1 + roko.exposure/1 entries"},
     "simulated": {"const": false}
   }

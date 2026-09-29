@@ -1,4 +1,4 @@
-Status: draft · budget 500 words · owner gap-ec516e
+Status: reviewed · budget 500 words · owner gap-ec516e
 
 # 10 Related work
 
@@ -7,17 +7,16 @@ This survey covers the literature as of 2026-09-29 and vendor documentation fetc
 **Harness engineering.** Recent work optimizes the harness around a frozen model directly [@lee2026meta]. The 2026
 papers on self-improving harnesses converge on one guard: test each edit on held-out and anchor tasks, and commit only
 what passes, with rollback [@kang2026harness; @tayebati2026self; @xia2026rrsi]. The guard matters: agents predict the
-regressions of their own edits poorly [@lin2026agentic], and on Terminal-Bench gains compounded only with regression
-control in the loop; without it, one optimized agent fell below its unoptimized baseline [@wang2026compound]. Harness
-evolution also does not consistently beat test-time scaling on matched budgets [@wang2026rethinking]. Roko is designed
-to adopt the guard (§5, spec-6ac537), not the promise of compounding gains.
+regressions of their own edits poorly [@lin2026agentic], and harness gains compounded only with regression control in
+the loop [@wang2026compound] (§5.4). Roko is designed to adopt the guard (§5, spec-6ac537), not the promise of
+compounding gains.
 
 **Coding agents and planner–executor products.** Open agents defined the tool-using loop [@yang2024sweagent;
 @wang2025openhands], multi-agent systems split plans across roles [@hong2024metagpt; @fourney2024magentic], and a
 fixed localize–repair–validate pipeline remains a cheap, strong baseline [@xia2025agentless]. Several products pair a
-frontier model with a cheaper one: Claude Code's opusplan alias plans with Opus and executes with Sonnet
+frontier model with a cheaper one: Claude Code's `opusplan` alias plans with Opus and executes with Sonnet
 [@anthropic2026modelconfig], Devin Fusion pairs "a frontier lead model with a cost-efficient sidekick"
-[@cognition2026fusion], and aider's architect mode has one model describe a solution and another edit the files
+[@cognition2026models], and aider's architect mode has one model describe a solution and another edit the files
 [@aider2024architect]. Kiro turns a spec into tasks and runs independent ones concurrently, in dependency waves
 [@kiro2026specs]. At a fixed model, a paired, contamination-controlled study found no average difference between a
 vendor's own harness and a neutral one [@arjmandi2026harness]; §8 plans to measure Roko's harness effect rather than

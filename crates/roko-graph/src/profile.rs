@@ -612,6 +612,7 @@ mod tests {
                 inputs: vec![],
                 outputs: vec![],
                 execution_class: Default::default(),
+                exclusive: vec![],
             })
             .unwrap();
 
@@ -643,6 +644,7 @@ mod tests {
                 inputs: vec![],
                 outputs: vec![],
                 execution_class: Default::default(),
+                exclusive: vec![],
             })
             .unwrap();
 
@@ -673,6 +675,7 @@ mod tests {
                 inputs: vec![],
                 outputs: vec![],
                 execution_class: Default::default(),
+                exclusive: vec![],
             })
             .unwrap();
 

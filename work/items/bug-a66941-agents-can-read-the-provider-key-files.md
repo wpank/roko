@@ -2,14 +2,16 @@
 id = "bug-a66941"
 kind = "bug"
 title = "Agents can read the provider key files, such as ~/.roko/.env"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p1"
 goal = "release"
 size = "S"
 subsystem = ["roko-agent/safety", "roko-agent/claude_cli_agent"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-29
+last_verified_rev = "48d35a67f"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e3"
 discovered_from = "tmp/cybernetic-harness/tldr/05-GAPS-AND-PROPOSALS.md (P0 #3: make key files unreadable to agents); workstreams/assessment/W10-benchmarks-proof.md (VB_SECRET leak)"
 anchors = ["crates/roko-agent/src/safety/path.rs::canonicalize_with_policy", "crates/roko-agent/src/claude_cli_agent.rs::build_settings_json"]
@@ -22,6 +24,11 @@ command = "grep -rqw 'fn path_policy_denies_provider_key_files' crates/roko-agen
 
 [[verify]]
 command = "grep -rqw 'fn settings_json_denies_reading_key_files' crates/roko-agent/src/ && cargo test -p roko-agent --lib settings_json_denies_reading_key_files"
+
+[closed]
+at = 2026-09-29
+by = "coordinator (session 7622b882)"
+evidence = "Key files blocked: child_env KEY_FILE_NAMES/key_file_paths/is_key_file, ToolError::KeyFileBlocked in canonicalize_with_policy, Claude settings deny Read/Edit rules plus a Read|Edit|Write|Grep|Glob hook (9c0d7196b, merged 0728a2817). batch check 1 (work/rust-batch-1 @ a507ce39f = 7c556bc0a + bug-470de8 + gap-528762 + bug-7de5df): cargo check --workspace --tests clean, 0 warnings; cargo test -p roko-core -p roko-learn -p roko-agent --lib: 1912, 1166 and 2237 passed, 0 failed, including path_policy_denies_provider_key_files and settings_json_denies_reading_key_files."
 +++
 
 ## Problem
@@ -78,3 +85,4 @@ Unchanged at `41c7ffbd6`. bug-7d7200's fix is uncommitted in `../roko-wt-env`. I
 - **Wait for bug-7d7200.** Do this after bug-7de5df, which edits the same function.
 - **This is best effort without an OS sandbox.** An obfuscated `python3 -c open(…)` still reads the file. Keeping
   keys out of the agent user's reach (a sandbox, the keychain or a separate user) is a decision for the author.
+- Implemented on `work/bug-7de5df` at `9c0d7196b`; cargo verification deferred to the batch check.

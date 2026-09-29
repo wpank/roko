@@ -1,11 +1,11 @@
-Status: draft · budget 550 words · owner gap-370d3c
+Status: reviewed · budget 550 words · owner gap-370d3c
 
 # 2 Design principles
 
-Eight rules from the literature shape the golden path. Each ends with Roko's design response; §4 gives the status of
-each golden-path step at a commit. The evidence comes mostly from single functions, question answering, text
-environments and single repository issues. None of it compares a repository-scale plan with one frontier agent at
-matched cost, so the rules guide the design without showing that it pays.
+Eight rules from the literature shape the golden path. Each ends with Roko's design response; §4 tags each step's
+status. The evidence comes mostly from single functions, question answering, text environments and single repository
+issues. None of it compares a repository-scale plan with one frontier agent at matched cost, so the rules guide the
+design without showing that it pays.
 
 ## 2.1 Eight rules
 
@@ -54,6 +54,5 @@ The rules form one loop: sense, compare with the specification, correct, audit. 
 stay within limits essential variables [@ashby1960design]; Roko's design names four: the verified pass rate, cost per
 verified task, the false-green rate and latency. Its regulators act on them within a run (retry, escalation, split)
 and across runs (routing, task sizing), and its audits check the regulators (§5), because metrics read through a
-loop's own verifier can hide its decline [@rajput2026cheap]. *Agent Cybernetics*, a position paper without an
-implementation or experiments, maps cybernetic laws onto agent design [@wang2026agent]. It is the closest framing we
-found as of 2026-09-29, and we claim no priority for it.
+loop's own verifier can hide its decline [@rajput2026cheap]. The closest framing we found as of 2026-09-29 is a
+position paper, *Agent Cybernetics* [@wang2026agent] (§10); we claim no priority for it.

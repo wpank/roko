@@ -76,6 +76,7 @@ pub struct Node {
     pub inputs:          Vec<String>,     // named input slots
     pub outputs:         Vec<String>,     // named output slots
     pub execution_class: ExecutionClass,  // Workflow | Activity
+    pub exclusive:       Vec<String>,     // paths written in a shared tree (see Exclusive Paths)
 }
 ```
 
@@ -180,6 +181,32 @@ B and C start together once A finishes, up to `max_concurrent_nodes`, and D
 starts once both have settled. If C is slow and a node E needs only B, E starts
 as soon as B finishes, while C still runs (test
 `a_ready_node_does_not_wait_for_its_wave` in `crates/roko-graph/src/engine.rs`).
+
+### Exclusive Paths
+
+A node's `exclusive` list names the files and directories it writes in a
+working tree it shares with other nodes. The engine never runs two nodes whose
+exclusive paths overlap at the same time. Paths overlap when they are the same,
+or when one is a directory holding the other; they are compared lexically,
+component by component, so `src/app` covers `src/app/view.tsx` but not
+`src/app.rs`.
+
+When a ready node's paths overlap a running node's, the node waits in the
+queue until that node finishes, and the engine logs which node it waits for.
+It holds no `max_concurrent_nodes` slot while it waits, so ready nodes behind
+it may start first. Exclusive paths order nodes but are not dependencies: if
+the running node fails, the waiting node still runs. A node with no
+exclusive paths never waits.
+
+Graph TOML declares them per node (`exclusive = ["src/lib.rs"]`), and plan
+conversion fills them from each task's `files`. They are not part of the
+Graph fingerprints, so adding or changing them never stops a checkpoint from
+resuming.
+
+```
+Source: crates/roko-graph/src/engine.rs (execute_ready_queue),
+        crates/roko-graph/src/exclusion.rs
+```
 
 ### Edge Condition Evaluation
 

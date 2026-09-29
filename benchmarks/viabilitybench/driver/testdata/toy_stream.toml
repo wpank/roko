@@ -1,0 +1,8 @@
+# The driver tests' stream: two instances of the toy family (driver/testdata/toy_family), not benchmark tasks.
+schema_version = "vb.stream/1"
+
+[stream]
+id = "toy"
+spec_variant = "precise"
+families = { F1 = "driver/testdata/toy_family" }
+instances = ["F1-l1-0001", "F1-l1-0002"]

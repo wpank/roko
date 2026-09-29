@@ -13,8 +13,11 @@ repo (decision D4; ``$VB_RESULTS`` defaults to ``~/.roko-bench/viability``). Sta
 no model calls. Records are deterministic apart from ``ts``.
 
 Static mode cannot run anything, so SQ06 (red on base) scores 0 and HF3 is not evaluated; both are
-listed under ``unknown`` in every record. The dynamic checker (gap-b3fa0a) passes ``red_on_base``
-to :func:`score_task`.
+listed under ``unknown`` in every record. ``--dynamic`` first runs each implementer task's verify
+steps on a clean checkout of the base commit and passes the task's ``red_on_base`` to
+:func:`score_task` (``dynamic.py``, S07.2)::
+
+    python3 benchmarks/viabilitybench/speclint/speclint.py plans/ --dynamic [--base REV]
 
 The rule definitions below are frozen as ``sq-1``: the Rust port (``roko plan validate
 --spec-quality``, gap-46ab3f) must match them within 0.5 points on the golden fixtures in
@@ -1305,7 +1308,8 @@ def _quantile(values: list[float], q: float) -> float:
     return ordered[low] + (ordered[high] - ordered[low]) * (pos - low)
 
 
-def summarize(records: list[dict], files: int, errors: list[tuple[str, str]], worst: int = 10) -> str:
+def summarize(records: list[dict], files: int, errors: list[tuple[str, str]], worst: int = 10, dynamic: bool = False) -> str:
+    unknown = () if dynamic else STATIC_UNKNOWN
     groups = {
         "all": records,
         "active": [r for r in records if not r["archived"]],
@@ -1313,7 +1317,7 @@ def summarize(records: list[dict], files: int, errors: list[tuple[str, str]], wo
     }
     names = list(groups)
     lines = [
-        f"speclint {LINTER} (static): {files} files, {len(records)} tasks "
+        f"speclint {LINTER} ({'dynamic' if dynamic else 'static'}): {files} files, {len(records)} tasks "
         f"({len(groups['active'])} active, {len(groups['archived'])} archived), {len(errors)} parse errors",
     ]
     for path, err in errors:
@@ -1339,7 +1343,7 @@ def summarize(records: list[dict], files: int, errors: list[tuple[str, str]], wo
 
     lines += ["", row("Hard fails (tasks)", names)]
     for hf, label in HARD_FAILS.items():
-        if hf in STATIC_UNKNOWN:
+        if hf in unknown:
             lines.append(row(f"{hf} {label}", ["unknown"] * 3))
         else:
             lines.append(row(f"{hf} {label}", [str(sum(1 for r in g if hf in r["hard_fail"])) for g in groups.values()]))
@@ -1354,7 +1358,7 @@ def summarize(records: list[dict], files: int, errors: list[tuple[str, str]], wo
             mean = sum(r["rules"][rule] for r in g) / len(g)
             full = 100.0 * sum(1 for r in g if r["rules"][rule] >= 1.0) / len(g)
             cells.append(f"{mean:.2f}/{full:3.0f}%")
-        suffix = " (unknown)" if rule in STATIC_UNKNOWN else ""
+        suffix = " (unknown)" if rule in unknown else ""
         lines.append(row(f"{rule} {RULE_NAMES[rule]} ({weight}){suffix}", cells))
 
     lines += ["", row("S07 section 3.3 rates", names)]
@@ -1377,7 +1381,7 @@ def summarize(records: list[dict], files: int, errors: list[tuple[str, str]], wo
     ranked = sorted(records, key=lambda r: (r["score"], r["plan_path"], r["task_id"]))[:worst]
     lines += ["", f"Worst {len(ranked)} tasks"]
     for r in ranked:
-        zero = [rule for rule, value in r["rules"].items() if value == 0 and rule not in STATIC_UNKNOWN]
+        zero = [rule for rule, value in r["rules"].items() if value == 0 and rule not in unknown]
         hard = f" hard={','.join(r['hard_fail'])}" if r["hard_fail"] else ""
         lines.append(f"  {r['score']:5.1f} {r['band']}  {r['plan_path']} {r['task_id']}{hard}  zero: {' '.join(zero)}")
     return "\n".join(lines)
@@ -1396,21 +1400,51 @@ def default_out() -> Path:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="speclint.py",
-        description="Score task specs (S07 SQS v1, static mode) and write spec.quality records.",
+        description="Score task specs (S07 SQS v1, static or dynamic mode) and write spec.quality records.",
     )
     parser.add_argument("paths", nargs="+", type=Path, help="plan directories or tasks.toml files")
     parser.add_argument("--out", help="JSONL output path; '-' for stdout (default: $VB_RESULTS/speclint/<run_id>/speclint.jsonl)")
     parser.add_argument("--root", type=Path, help="workspace root for context files (default: nearest .git or roko.toml)")
     parser.add_argument("--worst", type=int, default=10, help="how many of the lowest-scoring tasks to list")
     parser.add_argument("--strict", action="store_true", help="exit 1 when any task has a hard fail")
+    parser.add_argument("--dynamic", action="store_true", help="run each implementer task's verify steps twice on a clean base checkout first, to score SQ06 and HF3 (dynamic.py)")
+    parser.add_argument("--base", help="with --dynamic: the commit to check every plan against (default: HEAD for plans that have not run; none for the rest)")
+    parser.add_argument("--timeout", type=float, help="with --dynamic: the most seconds a verify step may take (default: 120)")
+    parser.add_argument("--scratch", type=Path, help="with --dynamic: an existing directory outside the checkout for the base checkouts (default: the system temp directory)")
+    parser.add_argument("--fixture", action="store_true", help="with --dynamic: the workspace root (default: the first path) is a plain directory; check against a one-commit snapshot of it")
     args = parser.parse_args(argv)
+    if not args.dynamic and (args.base or args.timeout is not None or args.scratch or args.fixture):
+        parser.error("--base, --timeout, --scratch and --fixture need --dynamic")
+    if args.timeout is not None and args.timeout <= 0:
+        parser.error("--timeout must be positive")
 
     files = discover(args.paths)
     if not files:
         print("speclint: no tasks.toml under " + ", ".join(str(p) for p in args.paths), file=sys.stderr)
         return 2
-    root = args.root.resolve() if args.root else find_root(args.paths[0])
-    records, errors = lint_files(files, root)
+    if args.root:
+        root = args.root.resolve()
+    elif args.fixture:
+        root = (args.paths[0] if args.paths[0].is_dir() else args.paths[0].parent).resolve()
+    else:
+        root = find_root(args.paths[0])
+    if args.dynamic:
+        import dynamic  # it imports this module, so load it only when asked
+
+        try:
+            records, errors = dynamic.lint(
+                files,
+                root,
+                base=args.base,
+                timeout=args.timeout or dynamic.STEP_TIMEOUT_S,
+                scratch=args.scratch,
+                fixture=args.fixture,
+            )
+        except dynamic.CheckError as err:
+            print(f"speclint: {err}", file=sys.stderr)
+            return 2
+    else:
+        records, errors = lint_files(files, root)
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     lines = [json.dumps({**record, "ts": ts}, sort_keys=True, ensure_ascii=False) for record in records]
 
@@ -1423,7 +1457,9 @@ def main(argv: list[str] | None = None) -> int:
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
         print(f"records: {out}", file=summary_stream)
-    print(summarize(records, len(files), errors, args.worst), file=summary_stream)
+    print(summarize(records, len(files), errors, args.worst, dynamic=args.dynamic), file=summary_stream)
+    if args.dynamic:
+        print("\n".join(dynamic.summary_lines(records)), file=summary_stream)
     if args.strict and any(record["hard_fail"] for record in records):
         return 1
     return 0

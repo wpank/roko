@@ -13,7 +13,7 @@ last_verified = 2026-09-29
 last_verified_rev = "d9e79e9d8"
 source = "tmp/backlog/archive/170-adaptive-verify-scoping.md#170 — Adaptive Task-Verify Command Scoping"
 discovered_from = "audit:tmp/backlog/archive/170-adaptive-verify-scoping.md#170 — Adaptive Task-Verify Command Scoping"
-anchors = ["crates/roko-cli/src/graph_task_dispatch.rs::settle_task_verification", "crates/roko-cli/src/runner/gate_dispatch.rs:923", "crates/roko-cli/src/runner/impact_analysis.rs"]
+anchors = ["crates/roko-cli/src/graph_task_dispatch/verification.rs::settle_task_verification", "crates/roko-cli/src/runner/gate_dispatch.rs:923", "crates/roko-cli/src/runner/impact_analysis.rs"]
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
 
 [[verify]]

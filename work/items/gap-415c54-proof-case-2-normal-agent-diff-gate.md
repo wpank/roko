@@ -14,7 +14,7 @@ last_verified = 2026-09-29
 last_verified_rev = "a17d9d766"
 source = "tmp/archive/MASTER-ACTION-PLAN-2026-09-23.md#5.2 Proof Case 2: Normal agent diff + gate + merge"
 discovered_from = "audit:tmp/archive/MASTER-ACTION-PLAN-2026-09-23.md#5.2 Proof Case 2: Normal agent diff + gate + merge"
-anchors = ["crates/roko-cli/src/graph_task_dispatch.rs:3924", "crates/roko-cli/src/graph_execution/workspaces.rs::WorktreeExecutionWorkspaceProvider", "crates/roko-graph/src/engine.rs::GraphEngine::with_merge_queue", "crates/roko-cli/src/graph_execution/delivery.rs::CliCompletionDeliveryService", "crates/roko-graph/src/workspace.rs::WorkspaceReleasePolicy", "crates/roko-cli/src/graph_execution/plan_runner.rs:840"]
+anchors = ["crates/roko-cli/src/graph_task_dispatch.rs::GraphTaskDispatcher::dispatch", "crates/roko-cli/src/graph_execution/workspaces.rs::WorktreeExecutionWorkspaceProvider", "crates/roko-graph/src/engine.rs::GraphEngine::with_merge_queue", "crates/roko-cli/src/graph_execution/delivery.rs::CliCompletionDeliveryService", "crates/roko-graph/src/workspace.rs::WorkspaceReleasePolicy", "crates/roko-cli/src/graph_execution/plan_runner.rs:840"]
 links = { depends_on = ["spec-f830c4"], blocks = [], related = ["spec-f830c4"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
@@ -135,6 +135,15 @@ Entry point: `roko plan run <dir> --worktree-per-task` → `run_graph_plan` → 
 - This is git-mutation code (commits, branches, worktree removal). The repository mutation lock
   (`WorktreeManager::acquire_repository_mutation_lock`) must cover commit and merge.
 - Safe to run in parallel with items that do not touch `graph_task_dispatch.rs` or `plan_runner.rs`.
+- 2026-09-29 (wk-filer2): bug-a3760a (`809ae920d` on `work/bug-a3760a`, in Rust batch 2) replaced the merge.
+  `GitDeliveryBackend::git_merge` now merges with git plumbing only: `merge-base` for the fast-forward and
+  already-merged cases, otherwise `git merge-tree --write-tree` plus `commit-tree`, then `update-ref` with the
+  expected old value. It never checks out, merges or commits in `workdir`. A target branch that is checked out
+  anywhere is left alone, and the result is parked at `refs/roko/delivered/<plan_id>`. The regression runs in a
+  temporary detached worktree of the merge commit. `delivery.rs` no longer uses `MergeQueue`: the service's merge
+  slot and the compare-and-swap serialize merges. The `Where` bullet on `GitDeliveryBackend` and the Notes caution
+  about `git checkout` describe the old code. `PlanMerger`'s `GitMergeBackend` still merges in and auto-commits its
+  workdir (bug-207f35), so don't use it for this proof. Open follow-ups on delivery: bug-453481 and bug-aaa924.
 
 ## Original notes
 

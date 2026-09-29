@@ -877,6 +877,10 @@ mod tests {
             outcome_success: Some(true),
             outcome_cost_usd: Some(0.12),
             outcome_latency_ms: Some(1_000),
+            attempt_key: None,
+            source: None,
+            default_model: None,
+            propensity: None,
         };
 
         let probability = selected_probability(&record).expect("probability");
@@ -901,6 +905,10 @@ mod tests {
             outcome_success: Some(true),
             outcome_cost_usd: Some(0.12),
             outcome_latency_ms: Some(1_000),
+            attempt_key: None,
+            source: None,
+            default_model: None,
+            propensity: None,
         };
 
         assert_eq!(fallback_stage_probability(&base), 0.65);
@@ -929,6 +937,10 @@ mod tests {
             outcome_success: Some(true),
             outcome_cost_usd: Some(0.10),
             outcome_latency_ms: Some(900),
+            attempt_key: None,
+            source: None,
+            default_model: None,
+            propensity: None,
         };
 
         let tracker = CalibrationTracker::from_routing_logs(&[record]);

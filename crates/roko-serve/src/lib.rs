@@ -632,13 +632,7 @@ impl ServerBuilder {
             let serve_result = if let Some(trigger_tls) = trigger_tls {
                 trigger_tls::serve(listener, router, serve_state.cancel.clone(), trigger_tls).await
             } else {
-                axum::serve(
-                    listener,
-                    router.into_make_service_with_connect_info::<SocketAddr>(),
-                )
-                .with_graceful_shutdown(shutdown_on_cancel(serve_state))
-                .await
-                .context("axum server error")
+                serve_until_cancelled(listener, router, serve_state).await
             };
             // Also cancel on an unexpected Axum exit, then join the observer
             // before reporting the server result. This prevents detached
@@ -1046,13 +1040,7 @@ pub async fn run_server_with_state(state: Arc<AppState>, bind: &str, port: u16) 
     let serve_result = if let Some(trigger_tls) = trigger_tls {
         trigger_tls::serve(listener, router, state.cancel.clone(), trigger_tls).await
     } else {
-        axum::serve(
-            listener,
-            router.into_make_service_with_connect_info::<SocketAddr>(),
-        )
-        .with_graceful_shutdown(shutdown_on_cancel(Arc::clone(&state)))
-        .await
-        .context("axum server error")
+        serve_until_cancelled(listener, router, Arc::clone(&state)).await
     };
     if let Err(error) = state.runtime_feeds.stop_all().await {
         warn!(%error, "one or more runtime feeds failed to stop cleanly");
@@ -3371,6 +3359,57 @@ async fn shutdown_on_cancel(state: Arc<AppState>) {
     state.shutdown().await;
 }
 
+/// How long graceful shutdown waits for open connections to finish. Event
+/// streams end as soon as the server is cancelled (`routes::sse::until_shutdown`);
+/// this bounds whatever else is still open, such as a slow request.
+const SHUTDOWN_DRAIN_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Serve `router` until `state` is cancelled, then shut down gracefully, giving
+/// open connections at most [`SHUTDOWN_DRAIN_GRACE`] to finish.
+async fn serve_until_cancelled(
+    listener: TcpListener,
+    router: axum::Router,
+    state: Arc<AppState>,
+) -> Result<()> {
+    let (draining_tx, draining_rx) = tokio::sync::oneshot::channel();
+    let signal = async move {
+        shutdown_on_cancel(state).await;
+        let _ = draining_tx.send(());
+    };
+    let server = axum::serve(
+        listener,
+        router.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(signal)
+    .into_future();
+    drain_within(server, draining_rx, SHUTDOWN_DRAIN_GRACE)
+        .await
+        .context("axum server error")
+}
+
+/// Await `server`, but once `draining` fires, give it only `grace` more to
+/// finish. Connections still open then are abandoned, so one client that
+/// never disconnects cannot keep the process alive.
+async fn drain_within<E>(
+    server: impl Future<Output = std::result::Result<(), E>>,
+    draining: tokio::sync::oneshot::Receiver<()>,
+    grace: std::time::Duration,
+) -> std::result::Result<(), E> {
+    tokio::pin!(server);
+    tokio::select! {
+        result = &mut server => return result,
+        Ok(()) = draining => {}
+    }
+    if let Ok(result) = tokio::time::timeout(grace, server).await {
+        return result;
+    }
+    warn!(
+        ?grace,
+        "connections still open after the shutdown grace period; stopping without them"
+    );
+    Ok(())
+}
+
 /// Read `~/.roko/credentials.json` and return the "default" profile as a
 /// raw JSON value. This avoids a dependency on roko-cli's `Credential` type.
 fn load_stored_credential() -> Result<Option<serde_json::Value>> {
@@ -3447,9 +3486,9 @@ fn init_otlp_tracing(endpoint: &str, service_name: &str, _sample_rate: f64) {
 #[cfg(test)]
 mod tests {
     use super::{
-        ServerBuildConfig, ServerBuilder, build_app_state, resolve_bind_with_port_env,
-        run_cold_archival_tick, run_server_with_state, serve_api_or_spa_fallback,
-        start_telemetry_producer_bridge, warn_if_auth_misconfigured,
+        ServerBuildConfig, ServerBuilder, build_app_state, drain_within,
+        resolve_bind_with_port_env, run_cold_archival_tick, run_server_with_state,
+        serve_api_or_spa_fallback, start_telemetry_producer_bridge, warn_if_auth_misconfigured,
     };
 
     use axum::body::{Body, to_bytes};
@@ -4148,6 +4187,30 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(names, ["token-usage", "latency", "cost"]);
         assert!(state.cancel.is_cancelled());
+    }
+
+    /// A connection that never closes cannot keep a cancelled server alive:
+    /// once draining starts, the server gets the grace period and no more.
+    #[tokio::test(start_paused = true)]
+    async fn shutdown_drain_abandons_connections_open_past_the_grace_period() {
+        let grace = std::time::Duration::from_secs(5);
+        let never_drains = std::future::pending::<std::io::Result<()>>;
+
+        let (_draining_tx, not_draining) = tokio::sync::oneshot::channel();
+        let serving = tokio::time::timeout(
+            std::time::Duration::from_secs(3600),
+            drain_within(never_drains(), not_draining, grace),
+        )
+        .await;
+        assert!(serving.is_err(), "the grace period started before draining");
+
+        let (draining_tx, draining) = tokio::sync::oneshot::channel();
+        draining_tx.send(()).expect("start draining");
+        let started = tokio::time::Instant::now();
+        drain_within(never_drains(), draining, grace)
+            .await
+            .expect("an abandoned drain is not an error");
+        assert_eq!(started.elapsed(), grace);
     }
 
     /// T3-25: a `PORT` env override must replace **only** the port, leaving

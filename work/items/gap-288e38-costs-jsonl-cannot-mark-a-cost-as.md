@@ -14,7 +14,7 @@ last_verified = 2026-09-29
 last_verified_rev = "33e107da1"
 source = "session:roko-b6 2026-09-29 direct-implementation batch"
 discovered_from = "merge:fix/dispatch-timeouts-cost e0673e3e0"
-anchors = ["crates/roko-learn/src/costs_db.rs::CostRecord", "crates/roko-learn/src/costs_db.rs::create_cost_record", "crates/roko-cli/src/graph_task_dispatch.rs:1913", "crates/roko-core/src/usage.rs::UsageSource", "crates/roko-cli/src/commands/diagnose.rs"]
+anchors = ["crates/roko-learn/src/costs_db.rs::CostRecord", "crates/roko-learn/src/costs_db.rs::create_cost_record", "crates/roko-cli/src/graph_task_dispatch/feedback.rs::GraphTaskDispatcher::emit_feedback", "crates/roko-core/src/usage.rs::UsageSource", "crates/roko-cli/src/commands/diagnose.rs"]
 links = { depends_on = [], blocks = [], related = ["bug-690dc6", "q-1faa0c", "bug-2b1ddc", "bug-dc4d63", "spec-b7303f", "gap-528762"], supersedes = [], duplicate_of = "" }
 
 [[verify]]

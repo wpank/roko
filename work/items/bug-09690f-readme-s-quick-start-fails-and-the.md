@@ -2,7 +2,7 @@
 id = "bug-09690f"
 kind = "bug"
 title = "README's quick start fails, and the README claims 100% completion"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 size = "M"
@@ -11,7 +11,7 @@ subsystem = ["docs/readme"]
 created = 2026-09-28
 updated = 2026-09-29
 last_verified = 2026-09-29
-last_verified_rev = "a17d9d766"
+last_verified_rev = "822070666"
 source = "tmp/cybernetic-harness/assessment-2026-09-28/publication-readiness.md"
 discovered_from = "audit:tmp/cybernetic-harness/assessment-2026-09-28/publication-readiness.md"
 anchors = ["README.md:7", "README.md:9", "README.md:12", "README.md:68", "README.md:108", "README.md:111", "README.md:596", "README.md:606", ".github/workflows/docs-lint.yml:77"]
@@ -19,6 +19,12 @@ links = { depends_on = [], blocks = [], related = ["bug-f279ea", "gap-ae2f55"], 
 
 [[verify]]
 command = "! grep -q -- \"--engine runner-v2\" README.md && ! grep -q \"48 epics\" README.md && ! grep -q \"124/124\" README.md && ! grep -q \"tmp/status-quo\" README.md"
+
+[closed]
+at = 2026-09-29
+commit = "822070666"
+by = "wk-readme"
+evidence = "README.md rewritten: no --engine runner-v2, 48 epics, 124/124, tmp/status-quo, tmp/ links or GAPS.md source-of-truth; counts match CLAUDE.md (36 members, ~1M lines, 10,300+ tests); status points at work/NOW.md and work/STATUS.md. Quick start (roko init, config providers list, run, plan run of demo-hello-world, serve) run in scratch dirs with target/debug/roko at 33e107da1 and the fake agent: plan reached succeeded, serve /health and /ready 200 (details in Notes). docs-lint.yml bare_plan rule dropped. Checks: item verify passes; check_markdown_links finds 0 README findings; docs-lint stale and executor.json rules pass; test_check_markdown_links passes."
 +++
 
 ## Problem
@@ -117,6 +123,38 @@ files, done).
 - `docs/v2/CLI-REFERENCE.md` and the other `docs/v2` examples are covered by `bug-f279ea`, not by this item.
 - Docs only, with no Rust changes. Safe in parallel with code work. It conflicts only with other README edits
   and with `bug-f279ea` (edit `docs-lint.yml` in one place).
+- 2026-09-29 (wk-readme), how the new quick start was checked. Binary: `target/debug/roko` built at
+  `33e107da1`. Scratch directories under `/private/tmp`, an empty `HOME`, no API keys, no `cargo` on
+  `PATH`, and the fake agent `plans/portal-programme/_harness/fake-claude` standing in for `claude`.
+  - `roko init` wrote `roko.toml` and `.roko/`, and `roko config providers list` showed
+    `claude_cli ... ok (cli found)`.
+  - Empty workspace: the one-task prompt path stopped before dispatch with `no gate can verify this change`,
+    which confirms `bug-1410e8`. Cargo workspace: `roko run` dispatched the agent and ran
+    `cargo check --workspace` as its verify step.
+  - `git init && roko init`, plus a copy of `plans/demos/parallel-plans/demo-hello-world`: `roko plan run`
+    reached `status: succeeded`, and its `rustc` verify step passed. `plan status`, `--resume-plan`,
+    `--dry-run` and `plan validate` also worked.
+  - `roko serve --port 16677`: `/health` and `/ready` returned 200, and `/api/plans` returned 401 without a
+    token.
+  - `cargo install` was checked statically: `[[bin]] roko`, rust-version 1.91.
+  - The README's minimal config passes `roko config validate` and the core loader.
+- Found while checking; not fixed here (for the coordinator to file):
+  - `roko init` without `claude` on `PATH` leaves `[models.claude-sonnet-4-6]` pointing at the commented-out
+    `claude_cli` provider. Every config-loading command then fails with `config invariant 3 violated`, even
+    with `ANTHROPIC_API_KEY` exported, which is what init itself advises.
+  - `roko setup --quick` in an empty directory skips init because `.roko/` already exists (roko's own log
+    creates it). It then prints `roko.toml already contains all detected providers` and writes no
+    `roko.toml`. After `roko init`, it writes `providers.anthropic.default_model`, a key that
+    `roko config providers validate` rejects.
+  - The core loader rejects `[budget] max_plan_usd = 10, max_task_usd = 1` without `max_turn_usd`
+    (`max_turn_usd (0) must not exceed max_plan_usd (10)`), while `roko config validate` passes the same
+    file. The old README's budget example hit this.
+  - `roko config set --project agent.default_model X` rewrites `roko.toml` and adds a legacy `agent.model`
+    key that `roko config validate` then rejects. It also refuses v2 keys such as `budget.max_plan_usd`.
+  - In a fresh `roko init` workspace, `roko run --max-retries 0 "..."` fails budget admission with
+    `predicted turn cost $1.5000 exceeds max_turn_usd $1.0000`, although `roko.toml` sets
+    `max_turn_usd = 0.0`.
+  - `roko prd plan` and the `roko setup` provider advice were not run: both need a live provider.
 
 ## Original notes
 

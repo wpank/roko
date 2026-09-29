@@ -2,14 +2,16 @@
 id = "gap-419298"
 kind = "gap"
 title = "S09 v1.2: register the plan-level slice as an exploratory experiment"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p2"
 goal = "proof"
 size = "S"
 subsystem = ["cybernetic-harness/specs"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-29
+last_verified_rev = "7fa3bdf57"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (15:13 and 15:25, next paper wave)"
 anchors = ["tmp/cybernetic-harness/specs/S09-experiments.md", "tmp/cybernetic-harness/specs/S08-benchmark-suite.md"]
@@ -19,6 +21,11 @@ links = { depends_on = [], blocks = [], related = ["gap-89f393", "gap-1cd676", "
 
 [[verify]]
 command = "grep -q 'v1.2' tmp/cybernetic-harness/specs/S09-experiments.md && grep -qi 'plan-level' tmp/cybernetic-harness/specs/S09-experiments.md"
+
+[closed]
+at = 2026-09-29
+by = "coordinator (session 7622b882)"
+evidence = "S09 v1.2 §4.9 registers the plan-level slice as exploratory (wk-specs): arm roko_plan vs fd_claude, 6-10 features x 1 seed, VF/CPF/makespan, a descriptive reporting rule outside Holm, a NOT RUN rule and caps, lock entry exploratory.PL, run item E12; relies on D1, D2, D4, D11, D13, D36, D42, dec-b78874, dec-39c781; budget line BL13 ($5/$6) with BL1 160, BL6 44, BL7 26 to hold $390 (a default for the author to confirm at the lock). Verify passes. Paper pickup filed as gap-e2d092."
 +++
 
 ## Problem

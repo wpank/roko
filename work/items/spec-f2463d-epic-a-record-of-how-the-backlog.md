@@ -15,7 +15,7 @@ discovered_from = "tmp/cybernetic-harness/workstreams/assessment/W12-evidence-fr
 anchors = ["tools/work.py::cmd_claim", "tools/work.py::close_item", "tmp/cybernetic-harness/tools/field_rollup.py::load_summaries", "work/telemetry/"]
 doc = "tmp/cybernetic-harness/workstreams/PLAN.md"
 lane = "tracker"
-links = { depends_on = ["bug-7b37c4", "gap-d0643c", "gap-0b9056", "gap-92033c", "gap-263de5", "gap-7984a5", "gap-ccb87e", "gap-dc6775", "gap-09e478"], blocks = [], related = ["spec-1e1b45"], supersedes = [], duplicate_of = "" }
+links = { depends_on = ["bug-7b37c4", "gap-d0643c", "gap-0b9056", "gap-92033c", "gap-263de5", "gap-7984a5", "gap-ccb87e", "gap-dc6775", "gap-09e478", "bug-652bb7", "bug-469537"], blocks = [], related = ["spec-1e1b45"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "test -f work/telemetry/DEFINITIONS.md && grep -qw 'def test_rollup_reports_cost_per_merged_item_with_coverage' tools/test_work_telemetry.py && python3 tools/test_work_telemetry.py -k test_rollup_reports_cost_per_merged_item_with_coverage"
@@ -79,6 +79,8 @@ after the P0/P1 fixes (W12 Phase B).
 - [ ] gap-ccb87e: Daily rollup of the development record with a committed manifest
 - [ ] gap-dc6775: Backfill executors for already-closed items from [closed].by and the reflog
 - [ ] gap-09e478: Dogfood session evidence bundle (existing item)
+- [ ] bug-652bb7: Field capture can snapshot a resumed run twice, and the rollup's by-run table is not in date order
+- [ ] bug-469537: Field snapshots record absolute home-directory paths, so they cannot be published as they are
 - [ ] The epic's `[[verify]]` command (the rollup test, with `DEFINITIONS.md` present) passes on the merged branch.
 
 ## Notes

@@ -2,14 +2,16 @@
 id = "gap-4d516a"
 kind = "gap"
 title = "TL;DR: fix four statements left stale after the 2026-09-29 refresh"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p3"
 goal = "whitepaper"
 size = "S"
 subsystem = ["tldr"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-29
+last_verified_rev = "193ee093c"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (14:48 wk-tldr; 14:58 item e; 15:09 wk-wp-s7)"
 anchors = ["tmp/cybernetic-harness/tldr/00-README.md", "tmp/cybernetic-harness/tldr/research/C1-research-planning-decomposition-cascades.md", "tmp/cybernetic-harness/tldr/research/B7-real-run-evidence.md"]
@@ -19,6 +21,11 @@ links = { depends_on = [], blocks = [], related = ["gap-b64fba", "gap-cdd5f4"], 
 
 [[verify]]
 command = "test -f tmp/cybernetic-harness/tldr/00-README.md && ! grep -q '13 decisions are still open' tmp/cybernetic-harness/tldr/00-README.md && test -f tmp/cybernetic-harness/tldr/research/C1-research-planning-decomposition-cascades.md && ! grep -q 'First fix bug-28becc' tmp/cybernetic-harness/tldr/research/C1-research-planning-decomposition-cascades.md && test -f tmp/cybernetic-harness/tldr/research/B7-real-run-evidence.md && ! grep -q 'to +300 s' tmp/cybernetic-harness/tldr/research/B7-real-run-evidence.md && ! grep -q 'merged three times' tmp/cybernetic-harness/tldr/research/B7-real-run-evidence.md && ! grep -q '3 hand merges' tmp/cybernetic-harness/tldr/research/B7-real-run-evidence.md"
+
+[closed]
+at = 2026-09-29
+by = "coordinator (session 7622b882)"
+evidence = "TL;DR (tmp, wk-tldr2): 00-README item 10 now says 8 of the 13 decisions in 05 §6 are open, with a changelog naming the 5 settled on 09-29 and their sources; research/C1 implication 9 rewritten around ViabilityBench (dec-b78874; bug-28becc named only for roko bench swe); research/B7 join window -30 s..+120 s, TL;DR and table rows say 5 hand merges, 3 with semantic breaks, isolation row ORPHANED per matrix IS2; frozen copy unchanged (SHA256SUMS passes). Verify passes in MAIN. Follow-ups filed as gap-f3be74."
 +++
 
 ## Problem

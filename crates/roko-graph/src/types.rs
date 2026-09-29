@@ -100,6 +100,17 @@ pub struct Node {
     /// outputs can be re-derived from inputs without re-running the external system.
     #[serde(default)]
     pub execution_class: ExecutionClass,
+    /// Files and directories this node writes in a working tree it shares
+    /// with other nodes.
+    ///
+    /// The engine never runs two nodes whose paths overlap at the same time:
+    /// the same path, or a directory and a path inside it. A node that waits
+    /// for an overlapping node holds no concurrency slot. Empty (the default)
+    /// declares nothing, and the node never waits. Plan conversion fills it
+    /// from each task's `files`. It changes when a node may start, never what
+    /// it produces, so it is not part of the Graph fingerprints.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub exclusive: Vec<String>,
 }
 
 /// An edge connecting two nodes in the execution graph.
@@ -687,6 +698,7 @@ mod tests {
             inputs: vec![],
             outputs: vec!["success".to_string()],
             execution_class: ExecutionClass::default(),
+            exclusive: vec![],
         };
         let test_node = Node {
             id: "test".to_string(),
@@ -695,6 +707,7 @@ mod tests {
             inputs: vec!["compile.success".to_string()],
             outputs: vec![],
             execution_class: ExecutionClass::default(),
+            exclusive: vec![],
         };
 
         graph.add_node(compile_node).unwrap();
@@ -724,6 +737,7 @@ mod tests {
             inputs: vec![],
             outputs: vec![],
             execution_class: ExecutionClass::default(),
+            exclusive: vec![],
         };
         graph.add_node(node.clone()).unwrap();
         let result = graph.add_node(node);
@@ -740,6 +754,7 @@ mod tests {
             inputs: vec![],
             outputs: vec![],
             execution_class: ExecutionClass::default(),
+            exclusive: vec![],
         };
         graph.add_node(node).unwrap();
 
@@ -825,6 +840,7 @@ mod tests {
             inputs: vec![],
             outputs: vec![],
             execution_class: ExecutionClass::default(),
+            exclusive: vec![],
         }
     }
 

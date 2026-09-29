@@ -4,29 +4,27 @@
 
 What to work on next: the top checked, open items of each goal, highest-priority goal first. Reorder or change goals in `goals.toml`; pin an item higher with `rank = 1` (lower first).
 
-**Drift:** 50 anchor gone · 115 changed since checked · 5 mentioned in commits. Re-check them before relying on this list: `DRIFT.md`.
+**Drift:** 45 anchor gone · 121 changed since checked · 4 mentioned in commits. Re-check them before relying on this list: `DRIFT.md`.
 
 ## 1. Public release: security, licence, CI, first run
 
 - **P1** [bug-da5b41](items/bug-da5b41-a-running-roko-serve-erases-api-keys.md) A running roko serve erases API keys created by the CLI [bug] · size M · verified 2026-09-29
 - **P1** [bug-0d9ac4](items/bug-0d9ac4-agent-tool-shells-bypass-child-env-run.md) Agent tool shells bypass child_env: run_tests and ACP's bash inherit provider keys, roko-std's bash keeps its own allowlist [bug] · size M · verified 2026-09-29
-- **P1** [bug-09690f](items/bug-09690f-readme-s-quick-start-fails-and-the.md) README's quick start fails, and the README claims 100% completion [bug] · size M · verified 2026-09-29
+- **P1** [gap-5f4852](items/gap-5f4852-tool-t036-secret-canary-persistence-test-never.md) Secret-canary persistence test never run for scrubbers/persistent sinks · size L · verified 2026-09-29
 
-_21 more open · 5 unchecked (`TRIAGE.md`) · `goal = "release"`_
+_20 more open · on hold: gap-8f8544 · 12 unchecked (`TRIAGE.md`) · `goal = "release"`_
 
 ## 2. Whitepaper v1 and the research papers
 
 - **P1** [spec-f8d196](items/spec-f8d196-epic-research-paper-companion-report-and-tl.md) Epic: research paper, companion report and TL;DR upkeep [spec] · size L · verified 2026-09-29
-- **P2** [gap-b409fa](items/gap-b409fa-companion-report-fill-the-re-derived-numbers.md) Companion report: fill the re-derived numbers into the E10 draft and fix the flagged source errors · size M · verified 2026-09-29
-- **P2** [gap-856053](items/gap-856053-research-paper-appendices-a-and-b-match.md) Research paper appendices A and B: match the benchmark and the spec standard as built · size M · verified 2026-09-29
 
-_1 more open · 4 unchecked (`TRIAGE.md`) · `goal = "whitepaper"`_
+_0 more open · on hold: gap-bb619d · 10 unchecked (`TRIAGE.md`) · `goal = "whitepaper"`_
 
 ## 3. Roko tells the truth and is safe (P0)
 
 - nothing checked and open
 
-_0 more open · 11 unchecked (`TRIAGE.md`) · `goal = "truth"`_
+_0 more open · 10 unchecked (`TRIAGE.md`) · `goal = "truth"`_
 
 ## 4. Frontier plans, cheap models execute, the result integrates (P1)
 
@@ -38,7 +36,7 @@ _0 more open · 30 unchecked (`TRIAGE.md`) · `goal = "golden-path"`_
 
 - nothing checked and open
 
-_0 more open · 23 unchecked (`TRIAGE.md`) · `goal = "proof"`_
+_0 more open · 26 unchecked (`TRIAGE.md`) · `goal = "proof"`_
 
 ## 6. Learning from verified outcomes, M1-M4 (P2)
 
@@ -52,7 +50,7 @@ _0 more open · 1 unchecked (`TRIAGE.md`) · `goal = "cybernetic"`_
 - **P0** [gap-4ec59f](items/gap-4ec59f-worktree-isolation-flip-default-and-add-startup.md) Worktree Isolation: Flip Default and Add Startup Repair · size L · verified 2026-09-29
 - **P1** [bug-7c8a57](items/bug-7c8a57-plan-audit-t0-06-100-line-cap.md) 100-line cap on read_files context injection [bug] · size S · verified 2026-09-29
 
-_81 more open · 1 unchecked (`TRIAGE.md`) · `goal = "core"`_
+_77 more open · `goal = "core"`_
 
 ## 8. Live visibility: serve, dashboard, portal
 

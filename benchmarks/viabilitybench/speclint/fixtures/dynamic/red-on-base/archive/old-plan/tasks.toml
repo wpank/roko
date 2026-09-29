@@ -1,0 +1,16 @@
+# speclint dynamic fixture (gap-b3fa0a): an archived plan. Without --base its pre-change commit is
+# unknown, so its step never runs and the task is unknown.
+[meta]
+plan = "dynamic-archived"
+total = 1
+
+[[task]]
+id = "T1"
+title = "Greeting script"
+description = """Add `greet.sh`, which prints `hello, world`."""
+role = "implementer"
+files = ["greet.sh"]
+
+[[task.verify]]
+phase = "test"
+command = "bash greet.sh | grep -qx 'hello, world'"

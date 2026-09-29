@@ -14,7 +14,7 @@ last_verified = 2026-09-29
 last_verified_rev = "a17d9d766"
 source = "tmp/archive/evals-audit/IMPLEMENTATION-CHECKLIST.md#P0 — Close Broken Eval Loops"
 discovered_from = "audit:tmp/archive/evals-audit/IMPLEMENTATION-CHECKLIST.md#P0 — Close Broken Eval Loops"
-anchors = ["crates/roko-gate/src/benchmark_gate.rs::BenchmarkRegressionGate", "crates/roko-gate/src/benchmark_gate.rs::compare_results", "crates/roko-cli/src/task_parser.rs::VerifyStep", "crates/roko-cli/src/graph_task_dispatch.rs:3290", "crates/roko-cli/src/graph_execution/plan_runner.rs:1005"]
+anchors = ["crates/roko-gate/src/benchmark_gate.rs::BenchmarkRegressionGate", "crates/roko-gate/src/benchmark_gate.rs::compare_results", "crates/roko-cli/src/task_parser.rs::VerifyStep", "crates/roko-cli/src/graph_task_dispatch.rs::GraphTaskDispatcher::dispatch", "crates/roko-cli/src/graph_execution/plan_runner.rs:1005"]
 links = { depends_on = [], blocks = [], related = ["gap-6e970b", "bug-017c2d"], supersedes = [], duplicate_of = "" }
 
 [[verify]]

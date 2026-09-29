@@ -2,23 +2,30 @@
 id = "bug-94151f"
 kind = "bug"
 title = "The reflex path credits its rule with a gate pass before any gate runs"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p1"
 goal = "truth"
 size = "S"
 subsystem = ["roko-cli/graph_task_dispatch", "roko-learn/reflex_store"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-29
+last_verified_rev = "584abd414"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e2"
 discovered_from = "tmp/cybernetic-harness/tldr/05-GAPS-AND-PROPOSALS.md (P0 #2; §4 Remove)"
-anchors = ["crates/roko-cli/src/graph_task_dispatch.rs::GraphTaskDispatcher::dispatch", "crates/roko-cli/src/graph_task_dispatch.rs:3408", "crates/roko-learn/src/reflex_store.rs::ReflexStore::record_gate_pass_for"]
+anchors = ["crates/roko-cli/src/graph_task_dispatch.rs::GraphTaskDispatcher::dispatch", "crates/roko-learn/src/reflex_store.rs::ReflexStore::record_gate_pass_for"]
 lane = "rust-hot"
 parent = "spec-e9d7ec"
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "grep -rqw 'fn reflex_match_records_no_gate_pass_before_verify' crates/roko-cli/src/ && cargo test -p roko-cli --lib reflex_match_records_no_gate_pass_before_verify"
+
+[closed]
+at = 2026-09-29
+by = "coordinator (session 7622b882)"
+evidence = "Reflex path no longer credits a gate pass before any gate runs: the early record_gate_pass_for is removed and the T0 reflex path runs only with the new [learning] t0_reflexes flag (default false); test reflex_match_records_no_gate_pass_before_verify (9a4d8db5c, merged 328123077). Crediting after verify waits for gap-96f7ed (filed by wk-filer2). Batch 2 gate (work/rust-batch-2; crates tree identical to MAIN after the merges): cargo check --workspace --tests clean; nightly rustfmt clean; clippy -p roko-cli -p roko-graph -p roko-execution -p roko-core -p roko-acp -p roko-learn --no-deps -D warnings clean; lib tests roko-cli 3060 passed (8 threads; two timing tests flaked only under full parallel load and pass alone), roko-graph 460, roko-execution 252, roko-core 1913, roko-acp 196, roko-learn 1166."
 +++
 
 ## Problem
@@ -72,3 +79,8 @@ Checked at `41c7ffbd6`. The task's own verdict is already honest: the reflex out
 - `graph_task_dispatch.rs` is a hot file. Start only after the portal session's branches have merged and the
   dispatch-file split (plan item E15.4) has landed.
 - Do not change the `Unverified` stamp.
+- 2026-09-29: Implemented on `work/bug-94151f` at `6cfc96d05`; cargo verification deferred to the batch check.
+  Plan step 1: the reflex path runs only with the new `[learning] t0_reflexes` flag, off by default, and the
+  premature `record_gate_pass_for` call is gone, so a rule that fires records no gate outcome (a reflex serves
+  only tasks without verify steps, whose output stays `Unverified`). Step 2 (credit after verify) still waits for
+  E4. `cargo check -p roko-cli --lib --tests` passed with no warnings; the test was not run.

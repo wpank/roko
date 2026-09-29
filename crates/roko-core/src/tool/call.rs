@@ -317,6 +317,13 @@ pub enum ToolError {
     #[error("path outside worktree: {0}")]
     PathOutsideWorktree(PathBuf),
 
+    /// A path argument named a file that holds provider keys or roko
+    /// credentials (`.roko/.env`, `.roko/secrets.toml`, anything in
+    /// `~/.roko`; see [`crate::child_env::is_key_file`]). Refused inside
+    /// the worktree too.
+    #[error("provider key file blocked: {0}")]
+    KeyFileBlocked(PathBuf),
+
     /// A shell command was blocked by the bash allowlist/blocklist.
     #[error("command not allowed: {0}")]
     CommandNotAllowed(String),
@@ -487,6 +494,7 @@ mod tests {
             ToolError::HandlerPanic("unwrap".into()),
             ToolError::Timeout { after_ms: 5_000 },
             ToolError::PathOutsideWorktree(PathBuf::from("/etc/passwd")),
+            ToolError::KeyFileBlocked(PathBuf::from("/repo/.roko/.env")),
             ToolError::CommandNotAllowed("git push".into()),
             ToolError::NetworkBlocked("evil.example.com".into()),
             ToolError::Cancelled,

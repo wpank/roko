@@ -73,9 +73,3 @@ jobs:
             echo "executor.json mentions must be explicitly identified as legacy compatibility." >&2
             exit 1
           fi
-
-          bare_plan='roko plan run plans(/[^[:space:]\\]*)?[[:space:]]*$'
-          if grep -R -nE -- "$bare_plan" "${docs[@]}"; then
-            echo "Plan-run examples must select --engine runner-v2." >&2
-            exit 1
-          fi

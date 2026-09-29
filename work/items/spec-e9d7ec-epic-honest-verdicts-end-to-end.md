@@ -69,7 +69,7 @@ This is the implementation plan.
 
 - [ ] bug-7e1b6b: the dashboard counts unverified and skipped tasks as passed (existing item)
 - [ ] bug-a843d4: tasks whose role is disabled pass without running their verify steps (existing item)
-- [ ] bug-94151f: The reflex path credits its rule with a gate pass before any gate runs
+- [x] bug-94151f: The reflex path credits its rule with a gate pass before any gate runs
 - [ ] bug-7eb27e: Run metrics count every task of a succeeded plan as completed and every task of a failed plan as failed
 - [ ] gap-29a84b: A plan can succeed while some of its tasks never ran a verify step
 - [ ] gap-cd3529: Integration test C1: one fixture run shows the same honest verdicts on every surface

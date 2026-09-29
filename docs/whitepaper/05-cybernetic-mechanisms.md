@@ -1,11 +1,10 @@
-Status: draft · budget 850 words · owner gap-e8cb4d
+Status: reviewed · budget 850 words · owner gap-e8cb4d
 
 # 5 Cybernetic mechanisms
 
 Roko is designed to improve from verified outcomes and to show that it does. Three layers carry the design: essential
 variables that define "better", first-order loops that tune prompts, retries and routing, and second-order mechanisms
-that audit the gates and the loops and guard every change. Tags come from the appendix at `a17d4dadd`, each followed by
-its row.
+that audit the gates and the loops and guard every change. Each tag names its appendix row.
 
 ## 5.1 Essential variables
 
@@ -28,14 +27,13 @@ Each loop senses outcomes and changes a later decision.
 | Prompt experiments | Each prompt variant's outcome | The variant a task gets | PARTIAL@a17d4dadd (LM5): its winner test is invalid under adaptive assignment; spec-6ac537 |
 | Hindsight relabelling | A verify failure that blames an earlier task | That task's recorded success | PARTIAL@a17d4dadd (LM12): nothing reads the corrections; gap-5be28d |
 
-Runner-v2's learning loops lived in its event loop, and most lost their caller or their data when `6b5da8616` deleted
-it.[^5-lost] Merges on 2026-09-29 re-attached several. `ce3bdcbb8` keeps retry feedback across a resume and lets rung
-pass rates set retry budgets. `33e107da1` credits the playbooks a prompt used (reg-3f5969), writes gate-verified
-attempts to the knowledge store (reg-06ae9f), assigns and settles prompt experiments per attempt (gap-fdd27f) and
-relabels a success that a later verify failure blames (gap-5fb9a7); `70820a74c` closed those four items. Two limits
-remain. Most loops still learn from a pass/fail flag that counts unverified outcomes as passes (QA2, PARTIAL@a17d4dadd;
-spec-e9d7ec). And no loop has a measured benefit, under Runner-v2 or since: that learning improves outcomes is
-UNPROVEN@a17d4dadd until M2, a wiring census (gap-1f2661) and frozen-learning runs (gap-644040) exist.
+Runner-v2 had 16 learning loops in its event loop, and most lost their caller or their data when `6b5da8616` deleted
+it. Merges on 2026-09-29 (`ce3bdcbb8`, `33e107da1`) re-attached several (reg-3f5969, reg-06ae9f, gap-fdd27f,
+gap-5fb9a7): of the 16, two are now wired, five partial, seven orphaned, one broken and one built but
+unwired.[^5-lost] Two limits remain. Most loops still learn from a
+pass/fail flag that counts unverified outcomes as passes (QA2, PARTIAL@a17d4dadd; spec-e9d7ec). And no loop has a
+measured benefit, under Runner-v2 or since: that learning improves outcomes is UNPROVEN@a17d4dadd until M2, a wiring
+census (gap-1f2661) and frozen-learning runs (gap-644040) exist.
 
 ## 5.3 Second-order mechanisms and guarded commit
 
@@ -78,9 +76,11 @@ noise and depended on task order [@ye2026fragility], and on a trading benchmark,
 weakened under distribution shift [@lin2026evopath]. None of these measured repository-scale plans.
 
 Subsystems built on analogies are proposals to park (§9), not features: affect (PARTIAL@a17d4dadd, LM8) and offline
-batch consolidation (ORPHANED@a17d4dadd, LM7), both decided by q-6b7cca; HDC similarity (BUILT-UNWIRED@a17d4dadd, LM10);
+batch consolidation (ORPHANED@a17d4dadd, LM7), both pending q-6b7cca; HDC similarity (BUILT-UNWIRED@a17d4dadd, LM10);
 and the conductor (ORPHANED@a17d4dadd, RG2; gap-ebd656).
 
-[^5-lost]: find-34a4b5 lists the learning closures wired into the deleted event loop and their state on the Graph
-    path; the appendix gives each loop's tag at `a17d4dadd`.
+[^5-lost]: Research note B5, frozen as `evidence/learning-loops-B5.md` (sha256 `044ad5c96542`), "Re-check at
+    `98ee1418f`": the 16 loops Runner-v2 had, tagged at `98ee1418f`; at `d9e79e9d8` none was wired, eight were
+    partial, seven orphaned and one built but unwired. find-34a4b5 lists the closures in the deleted event loop. The
+    table above groups the loops by mechanism, with the appendix's tags at `a17d4dadd`.
 [^5-design]: Design values from the specifications that epic spec-6ac537 carries; none is built at `a17d4dadd`.

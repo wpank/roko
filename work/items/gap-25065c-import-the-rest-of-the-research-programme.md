@@ -68,3 +68,4 @@ S02.P1-1 to bug-8da8ba and bug-f68404.
 ## Notes
 
 - Will reviews the dry-run list before the real run. Do not edit `checklist.json`.
+- **From wk-filer (2026-09-29):** the import must also cover open rows no epic took: S01.P0-3, -4, -5, -7, -8, -9 and -10; S08.T8–T10 and T14–T17; S09.E3–E11 (including the E4 pre-registration lock and E11, the full comparison whitepaper §8 cites); companion rows E2–E4, E6, E11 and E13.

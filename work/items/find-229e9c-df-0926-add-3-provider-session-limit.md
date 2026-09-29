@@ -13,7 +13,7 @@ last_verified = 2026-09-29
 last_verified_rev = "d9e79e9d8"
 source = "tmp/dogfood/2026-09-25-portal-programme-run.md#Addendum 3 — 2026-09-26: plan 02, and a hard stop"
 discovered_from = "audit:tmp/dogfood/2026-09-25-portal-programme-run.md#Addendum 3 — 2026-09-26: plan 02, and a hard stop"
-anchors = ["crates/roko-agent/src/provider/error_classify.rs::detect_provider_exhaustion", "crates/roko-cli/src/graph_task_dispatch.rs::run_bridge_with_failover", "crates/roko-cli/src/graph_task_dispatch.rs::no_usable_provider", "crates/roko-graph/src/cells/task_executor.rs:844"]
+anchors = ["crates/roko-agent/src/provider/error_classify.rs::detect_provider_exhaustion", "crates/roko-cli/src/graph_task_dispatch/failover.rs::run_bridge_with_failover", "crates/roko-cli/src/graph_task_dispatch/failover.rs::no_usable_provider", "crates/roko-graph/src/cells/task_executor.rs:844"]
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
 
 [[verify]]

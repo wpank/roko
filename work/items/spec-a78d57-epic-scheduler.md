@@ -82,11 +82,11 @@ This is the implementation plan.
 
 ## Done when
 
-- [ ] gap-4d835d: Graph engine runs a plan wave by wave, so a ready task waits for its whole wave (existing item;
+- [x] gap-4d835d: Graph engine runs a plan wave by wave, so a ready task waits for its whole wave (existing item;
       looks done, close with `445a60d0d`)
 - [x] gap-96d348: FailureStrategy::SkipFailed unreachable; FailFast hardcoded (existing item; looks done, close with
       `3e7552acd`)
-- [ ] gap-439794: File-conflict detection before same-wave task dispatch (existing item)
+- [x] gap-439794: File-conflict detection before same-wave task dispatch (existing item)
 - [ ] gap-272448: max_parallel defaults to the plan's DAG width when task write sets are disjoint
 - [ ] gap-c89b40: Nothing limits concurrent cargo builds across processes that share a target dir (existing item)
 - [ ] gap-987064: Integration test C6: independent tasks still run after a failure, and tasks with overlapping files

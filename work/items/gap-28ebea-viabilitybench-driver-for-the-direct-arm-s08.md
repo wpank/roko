@@ -2,8 +2,10 @@
 id = "gap-28ebea"
 kind = "gap"
 title = "ViabilityBench driver for the direct arm (S08.T6)"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
+last_verified = 2026-09-29
+last_verified_rev = "a60d8fc56"
 severity = "p1"
 goal = "proof"
 size = "M"
@@ -22,6 +24,12 @@ command = "grep -qw 'def test_runaway_agent_is_killed_within_30_calls' benchmark
 
 [[verify]]
 command = "grep -qw 'def test_offline_run_writes_valid_records' benchmarks/viabilitybench/driver/test_driver.py && benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/driver/test_driver.py -k test_offline_run_writes_valid_records -q"
+
+[closed]
+at = 2026-09-29
+commit = "a60d8fc56"
+by = "wk-bench-driver"
+evidence = "Added benchmarks/viabilitybench/driver/ (vb run/estimate/materialize, mini_loop, caps, ledger, archive, census, records, agent_env, provider + stub server, toy family), arms cheap_direct/fd_api and streams/pilot. Both [[verify]] commands pass (test_runaway_agent_is_killed_within_30_calls: killed at exactly 30 calls, 12+12+6 turns, aborted_cap; test_offline_run_writes_valid_records: two toy tasks, schema-valid records with census labels VS=1 and a false green VS=0). Admission refusal is test_vb_run_refuses_network_without_both_flags; 11/11 driver tests and 140/140 viabilitybench tests pass offline, $0 spent."
 +++
 
 ## Problem
@@ -86,3 +94,4 @@ both `--allow-network` and an explicit `--max-cost-usd`; reuse that admission ra
   checklist's circular `budget` gate (W10 rec 2).
 - **No wait for F1 or F4:** the tests use the toy family. mini-swe-agent (S08 decision 3) is out of scope.
 - **If it runs long** (S08 sizes it M–L), split the archive and census into their own item. No hot files.
+- **From gap-2790c5 (2026-09-29):** commit each attempt's result c_i with `families/common/repo.export_tree`, never `git add`/`git commit` in the agent's repo: hooks the agent planted would run in the driver. Keep the task manifest (with `canary`) outside the agent's workdir.

@@ -205,11 +205,12 @@ replan keys are set to a non-default value, `roko config doctor` reports them
 | `replan_on_gate_failure` | bool | true | Graph runs never revise a plan: a failed task is retried up to its `max_retries`. When true and a cheap model is available, each failed verify also gets an LLM reflection, saved to `.roko/learn/post-gate-reflections.json` |
 | `replan_max_per_plan` | u32 | 2 | Maximum gate-failure plan revisions per plan. No effect on Graph runs (gap-7a3527) |
 | `replan_gate_attempts` | u32 | 3 | Consecutive gate failures before a plan revision. No effect on Graph runs (gap-7a3527) |
-| `dream_on_completion` | bool | true | Run dream consolidation on completion |
+| `dream_on_completion` | bool | false | Opt in to dream consolidation on plan completion; otherwise dreams run on demand via `roko knowledge dream run`. No effect on Graph runs: nothing emits the plan-completion event (q-6b7cca) |
 | `use_lookahead_router` | bool | false | Pass the cascade router's pick through `LookaheadRouter`, which may choose a cheaper tier. No effect |
 | `lookahead_threshold` | f64 | 0.7 | Success probability at which the lookahead router accepts a cheaper tier. No effect |
 | `override_learning_dampening` | Option\<f64\> | None | Weight of a manual model override's outcome in router learning. No effect: the router always uses 0.5 (`OVERRIDE_LEARNING_RATE`) |
 | `gate_threshold_flush_interval` | u64 | 10 | Gate observations (a count, not seconds) between writes of `.roko/learn/gate-thresholds.json`; 0 is read as 1. No effect on Graph runs, which save the thresholds after every task (reg-c7ecf6) |
+| `t0_reflexes` | bool | false | Run the T0 reflex path in Graph task dispatch. Off by default until reflex rules are credited after verify (bug-94151f) |
 
 The `dreams` and `knowledge` fields are the two sub-tables below.
 
@@ -217,8 +218,10 @@ The `dreams` and `knowledge` fields are the two sub-tables below.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `trigger_on_plan_complete` | bool | true | Start a dream consolidation when a plan completes; `dream_on_completion` must also be true. No effect on Graph runs: nothing emits the plan-completion event (q-6b7cca) |
-| `max_concurrent` | usize | 1 | Maximum concurrent dream consolidation runs. No effect |
+| `trigger_on_plan_complete` | bool | true | Plan-completion dream trigger; fires only when `learning.dream_on_completion` is also true. No effect on Graph runs: nothing emits the plan-completion event (q-6b7cca) |
+| `max_concurrent` | usize | 1 | Intended cap on concurrent dream runs; no code reads it yet (the plan-completion trigger runs one dream at a time, the ACP trigger has no cap) |
+| `trigger_on_acp_episodes` | bool | false | Opt in to a dream consolidation from ACP sessions once `acp_episode_threshold` episodes accumulate since the last dream report; independent of the plan-completion switches |
+| `acp_episode_threshold` | usize | 10 | Episodes since the last dream report before an ACP session starts a dream (0 is treated as 1) |
 
 ### `[learning.knowledge]` -- KnowledgeProgressionConfig
 

@@ -12,7 +12,7 @@ created = 2026-09-29
 updated = 2026-09-29
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e10"
 discovered_from = "tmp/cybernetic-harness/evidence/field/CASES.md (CASE-004: turn caps and timeouts set by guesswork); tldr/05 P1 #14"
-anchors = ["crates/roko-cli/src/graph_task_dispatch.rs::task_turn_limit", "crates/roko-cli/src/graph_task_dispatch.rs::base_attempt_timeout_ms", "crates/roko-core/src/config/gates.rs::PipelineConfig", "crates/roko-learn/src/tier_limits.rs"]
+anchors = ["crates/roko-cli/src/graph_task_dispatch/turn_policy.rs::task_turn_limit", "crates/roko-cli/src/graph_task_dispatch/turn_policy.rs::base_attempt_timeout_ms", "crates/roko-core/src/config/gates.rs::PipelineConfig", "crates/roko-learn/src/tier_limits.rs"]
 lane = "rust-hot"
 parent = "spec-edda86"
 links = { depends_on = ["gap-96f7ed"], blocks = [], related = ["gap-a791b4", "find-43768e", "gap-8c0a20"], supersedes = [], duplicate_of = "" }

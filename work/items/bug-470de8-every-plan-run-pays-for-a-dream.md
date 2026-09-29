@@ -2,14 +2,16 @@
 id = "bug-470de8"
 kind = "bug"
 title = "Every plan run pays for a dream consolidation nobody reads: dream_on_completion defaults to true"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p1"
 goal = "core"
 size = "S"
 subsystem = ["roko-core/config"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-29
+last_verified_rev = "48d35a67f"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e15"
 discovered_from = "tmp/cybernetic-harness/tldr/05-GAPS-AND-PROPOSALS.md (P0 #6; §3 park dreams; §6 decision 12); tldr/research/B6-cognitive-subsystems.md"
 anchors = ["crates/roko-core/src/config/learning.rs::LearningConfig", "crates/roko-core/src/config/presets.rs::minimal", "crates/roko-core/src/config/presets.rs::thorough", "roko.toml:373"]
@@ -19,6 +21,11 @@ links = { depends_on = [], blocks = [], related = ["dec-e70592"], supersedes = [
 
 [[verify]]
 command = "grep -q '^dream_on_completion = false' roko.toml && grep -rqw 'fn dream_on_completion_defaults_to_false' crates/roko-core/src/ && cargo test -p roko-core --lib dream_on_completion_defaults_to_false"
+
+[closed]
+at = 2026-09-29
+by = "coordinator (session 7622b882)"
+evidence = "dream_on_completion defaults to false in LearningConfig, both presets and roko.toml; docs row updated (698111a61, merged d5b17759b). batch check 1 (work/rust-batch-1 @ a507ce39f = 7c556bc0a + bug-470de8 + gap-528762 + bug-7de5df): cargo check --workspace --tests clean, 0 warnings; cargo test -p roko-core -p roko-learn -p roko-agent --lib: 1912, 1166 and 2237 passed, 0 failed, including dream_on_completion_defaults_to_false and no_preset_dreams_on_completion."
 +++
 
 ## Problem
@@ -68,3 +75,7 @@ needs no change. No doc states the default.
 
 - A user config that says `true` explicitly keeps dreaming. That is intended.
 - Parking the dream items themselves is a separate question: dec-e70592.
+- Premise check at `a17d4dadd`: no production code emits `FeedbackEvent::PlanCompleted` (q-6b7cca), so Graph plan
+  runs do not dream today and the cost is latent. The default change still stands: it keeps dreams opt-in once that
+  event is wired.
+- Implemented on `work/bug-470de8` at `1f312c78c`; cargo verification deferred to the batch check.

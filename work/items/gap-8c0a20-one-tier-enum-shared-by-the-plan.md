@@ -2,16 +2,16 @@
 id = "gap-8c0a20"
 kind = "gap"
 title = "One tier enum shared by the plan parser, router, budget and turn caps"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "golden-path"
 size = "M"
 subsystem = ["roko-core/task", "roko-cli/graph_task_dispatch", "roko-core/config"]
 created = 2026-09-29
-updated = 2026-09-29
-last_verified = 2026-09-29
-last_verified_rev = "ed0c33bd5"
+updated = 2026-09-30
+last_verified = 2026-09-30
+last_verified_rev = "8b26e4839"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e5"
 discovered_from = "tmp/cybernetic-harness/tldr/research/B1-plan-authoring.md (Tier → model routing row); tldr/05 P1 #8"
 anchors = ["crates/roko-core/src/task.rs::TaskComplexityBand", "crates/roko-cli/src/graph_task_dispatch/routing_context.rs::build_routing_context", "crates/roko-cli/src/graph_task_dispatch/turn_policy.rs::is_express_task", "crates/roko-core/src/config/budget.rs::BudgetConfig::task_limit_usd", "crates/roko-core/src/config/gates.rs::PipelineConfig::for_tier", "crates/roko-cli/src/plan_generate.rs::TaskTier", "crates/roko-cli/src/dispatch/model_routing.rs::tier_to_complexity"]
@@ -24,6 +24,11 @@ command = "grep -rqw 'fn task_tier_parses_every_alias' crates/roko-core/src/ && 
 
 [[verify]]
 command = "grep -rqw 'fn plan_tiers_reach_router_budget_and_turn_caps' crates/roko-cli/src/ && cargo test -p roko-cli --lib plan_tiers_reach_router_budget_and_turn_caps"
+
+[closed]
+at = 2026-09-30
+by = "coordinator (session 7622b882)"
+evidence = "Merged in a13873ad2. Batch 11 gate on the merged tree (MAIN 8b26e4839 has the same tree as gated 194658fed): cargo check --workspace --tests, nightly fmt --check and clippy -p (10 crates) --no-deps -D warnings clean; lib tests pass: roko-cli 3126, roko-agent 2257, roko-core 1936, roko-learn 1188, roko-serve 958, roko-gate 688, roko-graph 471, roko-dreams 252, roko-std 223, roko-execution 100. Verify: task_tier_parses_every_alias (roko-core lib) and plan_tiers_reach_router_budget_and_turn_caps (roko-cli lib) pass."
 +++
 
 ## Problem

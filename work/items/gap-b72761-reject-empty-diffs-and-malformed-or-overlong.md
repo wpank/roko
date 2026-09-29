@@ -2,15 +2,16 @@
 id = "gap-b72761"
 kind = "gap"
 title = "Reject empty diffs and malformed or overlong agent output before the gates run"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "golden-path"
 size = "S"
 subsystem = ["roko-cli/graph_task_dispatch"]
 created = 2026-09-29
-updated = 2026-09-29
-last_verified = 2026-09-29
+updated = 2026-09-30
+last_verified = 2026-09-30
+last_verified_rev = "8b26e4839"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e9"
 discovered_from = "tmp/cybernetic-harness/tldr/research/C1-research-planning-decomposition-cascades.md (implication 5: red-flag pre-gates)"
 anchors = ["crates/roko-cli/src/graph_task_dispatch/red_flags.rs", "crates/roko-cli/src/graph_task_dispatch/verification.rs::GraphTaskDispatcher::settle_task_verification"]
@@ -20,6 +21,11 @@ links = { depends_on = [], blocks = [], related = ["gap-abbd22"], supersedes = [
 
 [[verify]]
 command = "grep -rqw 'fn empty_diff_fails_before_verify_runs' crates/roko-cli/src/ && cargo test -p roko-cli --lib empty_diff_fails_before_verify_runs"
+
+[closed]
+at = 2026-09-30
+by = "coordinator (session 7622b882)"
+evidence = "Merged in 7f9d1fcbc (plus the coordinator's schema-tree and DYNAMIC_MAP_SECTIONS fixes for [gates.max_output_tokens], 80dc266ae and 45b5c04ca). Batch 11 gate on the merged tree (MAIN 8b26e4839 has the same tree as gated 194658fed): cargo check --workspace --tests, nightly fmt --check and clippy -p (10 crates) --no-deps -D warnings clean; lib tests pass: roko-cli 3126, roko-agent 2257, roko-core 1936, roko-learn 1188, roko-serve 958, roko-gate 688, roko-graph 471, roko-dreams 252, roko-std 223, roko-execution 100. Verify: empty_diff_fails_before_verify_runs passes (roko-cli lib)."
 +++
 
 ## Problem

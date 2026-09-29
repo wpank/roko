@@ -2,15 +2,16 @@
 id = "bug-3ea1f5"
 kind = "bug"
 title = "LearningRuntime rewards a failed attempt with up to 0.5 through cost and latency, unlike every other router path"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "cybernetic"
 size = "S"
 subsystem = ["roko-learn/runtime-feedback", "roko-learn/cascade-router"]
 created = 2026-09-29
-updated = 2026-09-29
-last_verified = 2026-09-29
+updated = 2026-09-30
+last_verified = 2026-09-30
+last_verified_rev = "8b26e4839"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (16:47, wk-router's report on bug-8da8ba, branch work/bug-8da8ba)"
 anchors = ["crates/roko-learn/src/runtime_feedback/mod.rs::update_cascade_router", "crates/roko-learn/src/runtime_feedback/routing.rs::compute_reward_with_latency", "crates/roko-learn/src/model_router.rs::compute_routing_reward_with_weights"]
@@ -20,6 +21,11 @@ links = { depends_on = ["bug-8da8ba"], blocks = [], related = ["bug-f68404", "bu
 
 [[verify]]
 command = "grep -rqw 'fn a_failed_episode_earns_zero_router_reward' crates/roko-learn/src/ && cargo test -p roko-learn --lib a_failed_episode_earns_zero_router_reward"
+
+[closed]
+at = 2026-09-30
+by = "coordinator (session 7622b882)"
+evidence = "Merged in 8b26e4839. Batch 11 gate on the merged tree (MAIN 8b26e4839 has the same tree as gated 194658fed): cargo check --workspace --tests, nightly fmt --check and clippy -p (10 crates) --no-deps -D warnings clean; lib tests pass: roko-cli 3126, roko-agent 2257, roko-core 1936, roko-learn 1188, roko-serve 958, roko-gate 688, roko-graph 471, roko-dreams 252, roko-std 223, roko-execution 100. Verify: a_failed_episode_earns_zero_router_reward passes (roko-learn lib)."
 +++
 
 ## Problem

@@ -83,9 +83,9 @@ edits hot files: one writer per file at a time.
 
 ## Done when
 
-- [ ] gap-8c0a20: One tier enum shared by the plan parser, router, budget and turn caps
+- [x] gap-8c0a20: One tier enum shared by the plan parser, router, budget and turn caps
 - [ ] gap-0f3980: TaskDef Routing Metadata Wiring (24-field gap) (existing item)
-- [ ] gap-9cbf35: Routing ladder config: role and tier map to a model rung, with the D11 cascade as the default
+- [x] gap-9cbf35: Routing ladder config: role and tier map to a model rung, with the D11 cascade as the default
 - [ ] gap-dbf2a6: Plan hints pin a ladder rung instead of a model name, and generated plans keep their hints
 - [ ] gap-460230: Verify-then-escalate: two failed attempts move a task one rung up the ladder
 - [ ] gap-b62e95: The router's context treats every retry as a first attempt (existing item)

@@ -2,15 +2,15 @@
 id = "gap-3b5361"
 kind = "gap"
 title = "Successful plan attempts are never accepted: accept_attempt has no production caller"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "core"
 subsystem = ["roko-cli/worktree"]
 created = 2026-09-28
-updated = 2026-09-29
-last_verified = 2026-09-29
-last_verified_rev = "d9e79e9d8"
+updated = 2026-09-30
+last_verified = 2026-09-30
+last_verified_rev = "8b26e4839"
 source = "local-audit-2026-09-26"
 discovered_from = "audit:local-defect-review-2026-09-26 (untracked design notes)"
 anchors = ["crates/roko-cli/src/orchestrator/worktree/mod.rs::accept_attempt"]
@@ -18,6 +18,11 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[repro]]
 command = 'grep -rn "\.accept_attempt(" crates --include="*.rs" | grep -v "orchestrator/worktree/tests.rs" | grep -q .'
+
+[closed]
+at = 2026-09-30
+by = "coordinator (session 7622b882)"
+evidence = "Merged in 4787ee6ed. accept_attempt now has its production caller (WorktreeExecutionWorkspaceProvider::accept after the settled verdict; PlanGateCell accepts via CellResources.workspaces). Batch 11 gate on the merged tree (MAIN 8b26e4839 has the same tree as gated 194658fed): cargo check --workspace --tests, nightly fmt --check and clippy -p (10 crates) --no-deps -D warnings clean; lib tests pass: roko-cli 3126, roko-agent 2257, roko-core 1936, roko-learn 1188, roko-serve 958, roko-gate 688, roko-graph 471, roko-dreams 252, roko-std 223, roko-execution 100. The attempt_workspace, orchestrator::worktree, graph_execution::workspaces and gate_adapter lib tests pass in that run."
 +++
 
 `accept_attempt` (`orchestrator/worktree/mod.rs:885`) is the only function that records an accepted commit for an attempt; its only caller is `orchestrator/worktree/tests.rs:1799`.

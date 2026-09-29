@@ -66,10 +66,10 @@ This is the implementation plan.
 
 ## Done when
 
-- [ ] gap-abbd22: Attempt diff check: flag edits to tests, verify scripts, accept/ or gate config, and to files
+- [x] gap-abbd22: Attempt diff check: flag edits to tests, verify scripts, accept/ or gate config, and to files
       outside the task
-- [ ] gap-b72761: Reject empty diffs and malformed or overlong agent output before the gates run
-- [ ] gap-b954ad: Integration test C5: a tampering attempt is flagged and an empty diff is rejected
+- [x] gap-b72761: Reject empty diffs and malformed or overlong agent output before the gates run
+- [x] gap-b954ad: Integration test C5: a tampering attempt is flagged and an empty diff is rejected
 - [ ] The epic's `[[verify]]` command (test C5) passes on the merged branch.
 
 ## Notes

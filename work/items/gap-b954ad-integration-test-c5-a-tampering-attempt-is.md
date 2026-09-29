@@ -2,15 +2,16 @@
 id = "gap-b954ad"
 kind = "gap"
 title = "Integration test C5: a tampering attempt is flagged and an empty diff is rejected"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "golden-path"
 size = "S"
 subsystem = ["roko-cli/tests"]
 created = 2026-09-29
-updated = 2026-09-29
-last_verified = 2026-09-29
+updated = 2026-09-30
+last_verified = 2026-09-30
+last_verified_rev = "8b26e4839"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e9"
 discovered_from = "tmp/cybernetic-harness/workstreams/assessment/W8-roko-as-executor.md (canary C5)"
 anchors = ["crates/roko-cli/tests/attempt_diff_canary.rs"]
@@ -20,6 +21,11 @@ links = { depends_on = ["gap-abbd22", "gap-b72761"], blocks = [], related = ["ga
 
 [[verify]]
 command = "grep -rqw 'fn c5_tampering_attempt_is_flagged' crates/roko-cli/tests/ && grep -rqw 'fn c5_empty_diff_is_rejected_before_verify' crates/roko-cli/tests/ && cargo test -p roko-cli --test attempt_diff_canary"
+
+[closed]
+at = 2026-09-30
+by = "coordinator (session 7622b882)"
+evidence = "Merged in 7f9d1fcbc. Batch 11 gate on the merged tree (MAIN 8b26e4839 has the same tree as gated 194658fed): cargo check --workspace --tests, nightly fmt --check and clippy -p (10 crates) --no-deps -D warnings clean; lib tests pass: roko-cli 3126, roko-agent 2257, roko-core 1936, roko-learn 1188, roko-serve 958, roko-gate 688, roko-graph 471, roko-dreams 252, roko-std 223, roko-execution 100. Verify: cargo test -p roko-cli --test attempt_diff_canary: 2 passed (c5_tampering_attempt_is_flagged, c5_empty_diff_is_rejected_before_verify)."
 +++
 
 ## Problem

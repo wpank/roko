@@ -109,7 +109,7 @@ verify commands that read E4's attempt record, set `triage = "verified"`, add th
 
 ## Done when
 
-- [ ] bug-f68404: Manual --model overrides are always recorded as router successes (existing item)
+- [x] bug-f68404: Manual --model overrides are always recorded as router successes (existing item)
 - [x] bug-8da8ba: Router-chosen failures never update the LinUCB model (existing item)
 - [x] bug-9c88ac: roko serve overwrites router state learned by concurrent CLI runs (existing item)
 - [x] bug-012303: Serve dispatch paths build CascadeRouter instances whose learning is never saved (existing item)
@@ -119,14 +119,14 @@ verify commands that read E4's attempt record, set `triage = "verified"`, add th
 - [x] gap-fdd27f: Prompt experiments are never assigned on the Graph execution path (existing item)
 - [ ] gap-644040: No way to run with learning frozen: prompts and routing change from run to run (existing item)
 - [ ] bug-dfb28f: Graph runs save the cascade router only when the run ends, so a crash loses the run's routing learning
-- [ ] bug-3ea1f5: LearningRuntime rewards a failed attempt with up to 0.5 through cost and latency, unlike every other router path
+- [x] bug-3ea1f5: LearningRuntime rewards a failed attempt with up to 0.5 through cost and latency, unlike every other router path
 - [x] bug-84de98: LearningRuntime::open replays a running writer's unsaved model-call observations, which that writer later saves again
 - [x] bug-7a2630: WAL replay drops entries for models the router doesn't track and then truncates wal.jsonl, and serve never truncates it
 - [x] bug-8b0d0a: One gateway call can be observed up to three times on serve's shared cascade router
 - [x] bug-07bc75: The provider bridge still trains the cascade router on pre-gate provider success for every Graph dispatch
 - [x] gap-eb82c9: Episode readers (dreams, hindsight relabeler, skill library, curriculum) should read the settled learning label
-- [ ] bug-efd2b0: roko-serve template dispatch records a cascade-router outcome on every TurnCompleted, on top of its journaled observation
-- [ ] gap-88c547: The remaining learning consumers still read success instead of the settled learning label
+- [x] bug-efd2b0: roko-serve template dispatch records a cascade-router outcome on every TurnCompleted, on top of its journaled observation
+- [x] gap-88c547: The remaining learning consumers still read success instead of the settled learning label
 - [ ] bug-f81e9b: ProviderModelOutcomeRecord::from_efficiency_event reads the efficiency row's outcome, which carries no learning label
 - [ ] The epic's `[[verify]]` command passes on the merged branch: one named test each for router labels, failure
       memory and frozen learning. Extend it with S02.P1-16's wiring census when the M1–M4 items join.

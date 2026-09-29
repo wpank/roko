@@ -2,15 +2,16 @@
 id = "bug-ceab60"
 kind = "bug"
 title = "The agent command guard lets deletes through find | xargs rm, fd -x rm, and command strings given to ssh or parallel"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "release"
 size = "S"
 subsystem = ["roko-agent/claude_cli_guard"]
 created = 2026-09-29
-updated = 2026-09-29
-last_verified = 2026-09-29
+updated = 2026-09-30
+last_verified = 2026-09-30
+last_verified_rev = "8b26e4839"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-guard2's report)"
 anchors = ["crates/roko-agent/src/claude_cli_guard.py"]
@@ -20,6 +21,11 @@ links = { depends_on = [], blocks = [], related = ["bug-f4e133", "bug-66f5a1", "
 
 [[verify]]
 command = "python3 -c \"import json,subprocess,sys; g='crates/roko-agent/src/claude_cli_guard.py'; cmds=['find . -name x | xargs rm','fd -e rs -x rm','ssh host rm -rf /srv/app','parallel rm -rf ::: a b']; sys.exit(any(subprocess.run(['python3',g],input=json.dumps({'tool_name':'Bash','tool_input':{'command':c}}),text=True,capture_output=True).returncode != 2 for c in cmds))\""
+
+[closed]
+at = 2026-09-30
+by = "coordinator (session 7622b882)"
+evidence = "Merged in 8e7949271. Batch 11 gate on the merged tree (MAIN 8b26e4839 has the same tree as gated 194658fed): cargo check --workspace --tests, nightly fmt --check and clippy -p (10 crates) --no-deps -D warnings clean; lib tests pass: roko-cli 3126, roko-agent 2257, roko-core 1936, roko-learn 1188, roko-serve 958, roko-gate 688, roko-graph 471, roko-dreams 252, roko-std 223, roko-execution 100. Verify: the guard denies find|xargs rm, fd -x rm, ssh and parallel deletes (python verify exit 0 on the merged tree)."
 +++
 
 ## Problem

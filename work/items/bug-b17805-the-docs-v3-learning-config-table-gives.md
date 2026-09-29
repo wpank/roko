@@ -2,7 +2,7 @@
 id = "bug-b17805"
 kind = "bug"
 title = "The docs/v3 [learning] config table gives wrong defaults for eight fields"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "tooling"
@@ -11,6 +11,7 @@ subsystem = ["docs/v3"]
 created = 2026-09-29
 updated = 2026-09-29
 last_verified = 2026-09-29
+last_verified_rev = "1fcc5d810"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (14:32, wk-dream-default's report on bug-470de8)"
 anchors = ["docs/v3/depth/21-config/01-schema-sections.md", "crates/roko-core/src/config/learning.rs::LearningConfig"]
@@ -20,6 +21,12 @@ links = { depends_on = [], blocks = [], related = ["bug-470de8", "gap-7a3527", "
 
 [[verify]]
 command = '''grep -q '^| `auto_playbook_refresh` | bool | true |' docs/v3/depth/21-config/01-schema-sections.md && grep -q '^| `knowledge_file_intel` | bool | true |' docs/v3/depth/21-config/01-schema-sections.md && grep -q '^| `replan_on_gate_failure` | bool | true |' docs/v3/depth/21-config/01-schema-sections.md && grep -q '^| `gate_threshold_flush_interval` | u64 | 10 |' docs/v3/depth/21-config/01-schema-sections.md'''
+
+[closed]
+at = 2026-09-29
+commit = "1fcc5d810"
+by = "wk-docs"
+evidence = "1fcc5d810: the [learning] table in docs/v3/depth/21-config/01-schema-sections.md now matches the serde defaults and Default impl of LearningConfig at 7c556bc0a (crates/roko-core/src/config/learning.rs:47-222): all eight wrong rows are corrected, gate_threshold_flush_interval counts gate observations (10), the six missing fields have rows, and [learning.dreams] and [learning.knowledge] have their own tables. Each key that only config tooling reads says 'No effect'; the keys Graph runs never read name gap-7a3527, reg-c7ecf6 or q-6b7cca. The dream_on_completion row is unchanged for bug-470de8. Check: the item's [[verify]] passes (four grep -q rows)."
 +++
 
 ## Problem
@@ -69,9 +76,9 @@ the same table, together with its code change.
 
 ## Done when
 
-- [ ] Every row in the `[learning]` table matches `LearningConfig`'s default, and every field has a row.
-- [ ] Keys that do nothing on Graph runs say so.
-- [ ] The `[[verify]]` command passes.
+- [x] Every row in the `[learning]` table matches `LearningConfig`'s default, and every field has a row.
+- [x] Keys that do nothing on Graph runs say so.
+- [x] The `[[verify]]` command passes.
 
 ## Notes
 

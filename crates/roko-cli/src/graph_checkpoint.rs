@@ -479,6 +479,25 @@ pub struct GraphCheckpointPaths {
     pub costs: PathBuf,
 }
 
+impl GraphCheckpointPaths {
+    /// Gate feedback pending for the plan's next task attempts, kept beside
+    /// the manifest: `retry-feedback.json` in a checkpoint directory,
+    /// `<stem>.retry-feedback.json` beside a checkpoint file.
+    #[must_use]
+    pub fn retry_feedback(&self) -> PathBuf {
+        let in_directory = self
+            .activities
+            .file_name()
+            .is_some_and(|name| name == "activities.jsonl");
+        let stem = self.manifest.file_stem().and_then(|stem| stem.to_str());
+        let file_name = match stem {
+            Some(stem) if !in_directory => format!("{stem}.retry-feedback.json"),
+            _ => "retry-feedback.json".to_string(),
+        };
+        self.manifest.with_file_name(file_name)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct GraphCostLedgerState {
     schema_version: u32,

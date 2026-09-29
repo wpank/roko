@@ -284,6 +284,7 @@ async fn retry_attempt_includes_gate_feedback_in_assembled_prompt() {
         test_failures: vec!["mod::test_foo failed".into()],
         clippy_warnings: vec![],
         raw_output: "...".into(),
+        diagnosis: None,
     });
 
     let plan = dispatcher.plan(&task, &dctx).expect("plan");

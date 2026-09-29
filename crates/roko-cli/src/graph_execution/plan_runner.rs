@@ -2003,6 +2003,11 @@ async fn run_one_plan(
     let replayed_entries = checkpoint.replayed_entries();
     ctx.graph_task_dispatcher
         .attach_plan_budget_checkpoint(&plan.id, checkpoint.take_cost_ledger())?;
+    ctx.graph_task_dispatcher.attach_retry_feedback(
+        &plan.id,
+        checkpoint.paths().retry_feedback(),
+        &run_id,
+    );
     let mut engine = GraphEngine::new(graph, registry)
         .with_recorder(checkpoint.take_recorder())
         .with_telemetry(Arc::clone(ctx.graph_telemetry))

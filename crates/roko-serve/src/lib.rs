@@ -3942,8 +3942,8 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn shared_cascade_router_persists_gateway_and_feedback_observations() {
         // bug-012303: serve builds one cascade router. The inference gateway
-        // and the model-call feedback service observe into it, and saving
-        // AppState's router persists what both observed.
+        // routes with it, observations through any handle on it land in it,
+        // and saving AppState's router persists them.
         let dir = tempdir().expect("tempdir");
         let model = "claude-sonnet-4-6";
         let mut config = roko_core::config::schema::RokoConfig::default();
@@ -3973,10 +3973,10 @@ mod tests {
         let gateway_router = state.gateway_http.gateway.cascade_router();
         assert!(
             Arc::ptr_eq(gateway_router, &router),
-            "the gateway observes into the shared router"
+            "the gateway routes with the shared router"
         );
 
-        // A failed provider attempt, as the gateway records one.
+        // A failed attempt, observed through the gateway's handle.
         gateway_router.record_observation(&RoutingContext::default(), model, 0.0, false);
         // A successful model call, as the model-call service reports one.
         state

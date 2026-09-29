@@ -10,7 +10,6 @@ use std::sync::Arc;
 
 use chrono::Utc;
 use parking_lot::Mutex;
-use roko_agent::model_call_service::ForceBackendOverrideRecorder;
 use roko_core::Result;
 use roko_core::foundation::{FeedbackEvent, FeedbackSink};
 
@@ -355,31 +354,6 @@ impl ModelCallJournal {
         router.observe_outcome(context_features, model_idx, reward, success);
     }
 
-    /// Journal a forced-model override outcome, then apply it to `router`,
-    /// the update its `ForceBackendOverrideRecorder` impl makes.
-    ///
-    /// Returns whether `router` tracks `model_slug`.
-    pub fn observe_forced_override(
-        &self,
-        router: &CascadeRouter,
-        model_slug: &str,
-        success: bool,
-    ) -> bool {
-        if router.model_index_for_slug(model_slug).is_none() {
-            return false;
-        }
-        let ctx = CascadeRouter::forced_override_context(model_slug, success);
-        let observation = CascadeRouter::override_observation(&ctx, success, None);
-        self.observe(
-            router,
-            model_slug,
-            observation.context_features,
-            observation.reward,
-            observation.success,
-        );
-        true
-    }
-
     /// Save `router` to the snapshot, then truncate the journal's segment:
     /// the snapshot holds its observations now.
     ///
@@ -401,29 +375,6 @@ impl ModelCallJournal {
             );
         }
         Ok(())
-    }
-}
-
-/// Records forced-model override outcomes on a shared cascade router through
-/// its [`ModelCallJournal`], so an override outcome survives a crash before
-/// the router's next save (bug-012303).
-pub struct JournaledOverrideRecorder {
-    router: Arc<CascadeRouter>,
-    journal: Arc<ModelCallJournal>,
-}
-
-impl JournaledOverrideRecorder {
-    /// Record override outcomes on `router`, journaled in `journal`.
-    #[must_use]
-    pub fn new(router: Arc<CascadeRouter>, journal: Arc<ModelCallJournal>) -> Self {
-        Self { router, journal }
-    }
-}
-
-impl ForceBackendOverrideRecorder for JournaledOverrideRecorder {
-    fn record_override_outcome(&self, model_slug: &str, success: bool) -> bool {
-        self.journal
-            .observe_forced_override(&self.router, model_slug, success)
     }
 }
 
@@ -455,13 +406,10 @@ mod tests {
     use std::path::Path;
     use std::sync::Arc;
 
-    use roko_agent::model_call_service::ForceBackendOverrideRecorder;
     use roko_core::foundation::{FeedbackEvent, FeedbackSink};
     use tempfile::tempdir;
 
-    use super::{
-        JournaledOverrideRecorder, ModelCallFeedback, ModelCallFeedbackRecorder, ModelCallJournal,
-    };
+    use super::{ModelCallFeedback, ModelCallFeedbackRecorder, ModelCallJournal};
     use crate::cascade_router::CascadeRouter;
     use crate::feedback_service::FeedbackService;
     use crate::runtime_feedback::LearningRuntime;
@@ -654,32 +602,6 @@ mod tests {
             "the narrower opener kept model-b's entry"
         );
         assert_eq!(wide.cascade_router().total_observations(), 2);
-    }
-
-    #[tokio::test]
-    async fn forced_override_outcome_replayed_from_wal() {
-        // bug-012303: an override outcome recorded through the journal
-        // survives a process that dies before saving, and replays as the
-        // update the router applied.
-        let tmp = tempdir().expect("tempdir");
-        let learn_dir = tmp.path().join("learn");
-        let models = vec!["model-a".to_string()];
-        let router = Arc::new(CascadeRouter::new(models.clone()));
-        let journal = Arc::new(ModelCallJournal::for_learn_dir(&learn_dir));
-        let recorder = JournaledOverrideRecorder::new(Arc::clone(&router), journal);
-
-        assert!(recorder.record_override_outcome("model-a", false));
-        assert!(!recorder.record_override_outcome("model-z", true));
-        assert_eq!(router.total_observations(), 1);
-        // The process dies before it saves.
-        drop(recorder);
-
-        let runtime = reopen(&learn_dir, models).await;
-        assert_eq!(runtime.cascade_router().total_observations(), 1);
-        assert_eq!(
-            runtime.cascade_router().confidence_snapshot(),
-            router.confidence_snapshot()
-        );
     }
 
     #[tokio::test]

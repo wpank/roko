@@ -18,7 +18,7 @@ use roko_daimon::policy::DaimonPolicy;
 use roko_gate::gate_service::GateService;
 use roko_learn::cascade_router::CascadeRouter;
 use roko_learn::feedback_service::FeedbackService;
-use roko_learn::model_call_feedback::{JournaledOverrideRecorder, ModelCallJournal};
+use roko_learn::model_call_feedback::ModelCallJournal;
 use roko_learn::model_router::RoutingContext;
 use roko_learn::playbook::PlaybookStore;
 use roko_learn::provider_health::ProviderHealthRegistry;
@@ -208,9 +208,10 @@ pub struct ServiceBundle {
     /// Optional affect policy shared with the effect driver.
     pub affect_policy: Option<Arc<tokio::sync::Mutex<dyn AffectPolicy>>>,
     /// Cascade router the model-call service routes with, and that its
-    /// feedback and override outcomes are observed into; `None` when cascade
+    /// feedback observes each call's outcome into; `None` when cascade
     /// routing is off. Hand it to every other surface that routes or
-    /// observes, so they share one router (bug-012303).
+    /// observes, so they share one router (bug-012303), and let that feedback
+    /// stay the one observer of a model call (bug-8b0d0a).
     pub cascade_router: Option<Arc<CascadeRouter>>,
     /// Journal for `.roko/learn/cascade-router.json`. Save `cascade_router`
     /// through it, so the journal is truncated once the snapshot holds what
@@ -250,8 +251,8 @@ impl ServiceFactory {
         workspace_config.agent.default_model = model.clone();
         let prompt_token_budget = workspace_config.budget.prompt_token_budget;
         let tool_instructions = tool_instructions_for_config(&workspace_config.tools);
-        // Model-call feedback and override outcomes are journaled before they
-        // reach the router, so a crash before the next save loses none.
+        // Model-call feedback is journaled before it reaches the router, so a
+        // crash before the next save loses none.
         let cascade_journal = Arc::new(ModelCallJournal::for_learn_dir(
             &config.roko_dir.join("learn"),
         ));
@@ -314,22 +315,19 @@ impl ServiceFactory {
             .with_provider_outcome_recorder(Arc::clone(&provider_health_registry))
             .with_rate_limiter(rate_limiter)
             .with_run_id(config.run_id.unwrap_or_else(default_run_id));
+        // The feedback sink observes every call's settled outcome on the
+        // router, so no override recorder records the same call again
+        // (bug-8b0d0a).
         if let Some(cascade_router) = &cascade_router {
             let model_router = Some(Arc::clone(cascade_router));
-            let override_recorder = Arc::new(JournaledOverrideRecorder::new(
-                Arc::clone(cascade_router),
-                Arc::clone(&cascade_journal),
-            ));
-            model_call_service = model_call_service
-                .with_cascade_router(override_recorder)
-                .with_model_router(move |role| {
-                    routed_model_for_role(
-                        &routing_config,
-                        model_router.as_ref(),
-                        Some(routing_health_registry.as_ref()),
-                        agent_role_from_label(role.unwrap_or("implementer")),
-                    )
-                });
+            model_call_service = model_call_service.with_model_router(move |role| {
+                routed_model_for_role(
+                    &routing_config,
+                    model_router.as_ref(),
+                    Some(routing_health_registry.as_ref()),
+                    agent_role_from_label(role.unwrap_or("implementer")),
+                )
+            });
         }
         if let Some(observer) = config.inference_observer {
             model_call_service = model_call_service.with_inference_observer(observer);
@@ -500,18 +498,18 @@ impl ServiceFactory {
             .with_provider_outcome_recorder(Arc::clone(&provider_health_registry))
             .with_rate_limiter(rate_limiter)
             .with_run_id(config.run_id.unwrap_or_else(default_run_id));
+        // As in `build`, the feedback sink is the router's one observer of a
+        // call (bug-8b0d0a).
         if let Some(cascade_router) = &cascade_router {
             let model_router = Some(Arc::clone(cascade_router));
-            model_call_service = model_call_service
-                .with_cascade_router(Arc::clone(cascade_router))
-                .with_model_router(move |role| {
-                    routed_model_for_role(
-                        &routing_config,
-                        model_router.as_ref(),
-                        Some(routing_health_registry.as_ref()),
-                        agent_role_from_label(role.unwrap_or("implementer")),
-                    )
-                });
+            model_call_service = model_call_service.with_model_router(move |role| {
+                routed_model_for_role(
+                    &routing_config,
+                    model_router.as_ref(),
+                    Some(routing_health_registry.as_ref()),
+                    agent_role_from_label(role.unwrap_or("implementer")),
+                )
+            });
         }
         if let Some(observer) = config.inference_observer {
             model_call_service = model_call_service.with_inference_observer(observer);
@@ -967,6 +965,73 @@ printf '%s\n' '{"type":"content_block_delta","delta":{"text":"fallback-ok"}}'
         assert_eq!(fallback_health.total_failures, 0);
         assert!(!snapshot.contains_key("primary_model_v1"));
         assert!(!snapshot.contains_key("fallback_model_v1"));
+    }
+
+    #[tokio::test]
+    async fn a_gateway_call_is_observed_once_on_the_shared_router() {
+        // bug-8b0d0a: serve's gateway calls through the model-call service,
+        // whose feedback observes the call on the shared router. Neither the
+        // gateway nor the forced-backend override records it again.
+        let tmp = TempDir::new().expect("tempdir");
+        let script = write_provider_script(
+            &tmp,
+            "gateway-provider.sh",
+            r#"#!/bin/sh
+set -eu
+cat >/dev/null
+printf '%s\n' '{"type":"content_block_delta","delta":{"text":"gateway-ok"}}'
+"#,
+        );
+        let mut workspace_config = RokoConfig::default();
+        workspace_config.providers.clear();
+        workspace_config.models.clear();
+        workspace_config.agent.default_model = "gateway-model".to_string();
+        workspace_config.agent.fallback_model = None;
+        workspace_config.agent.tier_models.clear();
+        add_cli_model(
+            &mut workspace_config,
+            "gateway-provider",
+            "gateway-model",
+            "gateway-model-v1",
+            script,
+        );
+        let deploy_backend = Arc::from(
+            crate::deploy::create_backend("manual", None, None, None).expect("manual backend"),
+        );
+        let state = crate::state::AppState::new(
+            tmp.path().to_path_buf(),
+            Arc::new(crate::runtime::NoOpRuntime),
+            workspace_config,
+            deploy_backend,
+        )
+        .expect("AppState::new");
+        let router = state
+            .cascade_router
+            .read()
+            .await
+            .clone()
+            .expect("serve's shared cascade router");
+
+        // An explicit model, so the model-call service sees a forced backend.
+        let request = roko_gateway::InferenceRequest {
+            model: "gateway-model-v1".to_string(),
+            messages: vec![ChatMessage {
+                role: MessageRole::User,
+                content: "route this call once".to_string(),
+            }],
+            ..roko_gateway::InferenceRequest::default()
+        };
+        let budget = std::sync::atomic::AtomicU64::new(u64::MAX / 2);
+        let response = state
+            .gateway_http
+            .gateway
+            .process_request(request, "gateway-agent", &budget)
+            .await
+            .expect("the gateway call succeeds");
+        assert_eq!(response.text, "gateway-ok");
+
+        assert_eq!(router.total_observations(), 1);
+        assert_eq!(router.confidence_snapshot()["gateway-model-v1"], (1, 1));
     }
 
     #[test]

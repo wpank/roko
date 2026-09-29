@@ -2,7 +2,7 @@
 id = "gap-e5bbd6"
 kind = "gap"
 title = "No CI job runs the portal: its unit tests, type check, static export and the fake-agent browser check run only inside roko plans"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "release"
@@ -11,7 +11,7 @@ subsystem = ["ci", "apps/portal"]
 created = 2026-09-29
 updated = 2026-09-29
 last_verified = 2026-09-29
-last_verified_rev = "f99e45dba"
+last_verified_rev = "4cbd49d76"
 source = "plan:portal-programme/09-acceptance#T04"
 discovered_from = "plan:portal-programme/09-acceptance#T04"
 anchors = [".github/workflows/ci.yml", "apps/portal/package.json", "plans/portal-programme/09-acceptance/portal-check.sh"]
@@ -19,6 +19,12 @@ links = { depends_on = [], blocks = [], related = ["gap-2122bd", "find-8cc7ac", 
 
 [[verify]]
 command = "grep -q 'apps/portal' .github/workflows/ci.yml && grep -q 'build:export' .github/workflows/ci.yml && grep -rq 'portal-check.sh' .github/workflows/"
+
+[closed]
+at = 2026-09-29
+commit = "4cbd49d76"
+by = "rs-release (roko-b6)"
+evidence = "4cbd49d76: ci.yml gains a portal job (npm ci, typecheck, vitest, scripts/orphans.mjs, build:export, roko-portal marker check) and a portal-browser job (cargo build -p roko-cli, portal export, demo build, Playwright Chromium, plans/portal-programme/09-acceptance/portal-check.sh, evidence artifact; continue-on-error until it has a record on Linux). Local checks on macOS: typecheck, 676 vitest tests, orphans and build:export pass; with this branch's debug build portal-check.sh prints PORTAL-CHECK: PASS (35 checks) in about 100 s, also with no git identity and a fresh HOME; actionlint reports nothing for ci.yml; [[verify]] passes. Only a GitHub Actions run proves the jobs on ubuntu-latest."
 +++
 
 ## Problem

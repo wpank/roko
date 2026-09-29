@@ -218,7 +218,9 @@ impact_max_targets = 8
 compile_concurrency = 1
 rungs = []
 ema_alpha = 0.1
-adaptive_min_retries = 1
+# Floor of the adaptive retry budget for tasks without an authored max_retries;
+# 3 = the task default, so gate history can only add retries.
+adaptive_min_retries = 3
 adaptive_max_retries = 5
 skip_streak_threshold = 20
 convergence_min_observations = 50

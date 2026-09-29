@@ -65,8 +65,11 @@ const fn default_ema_alpha() -> f64 {
     0.1
 }
 
+/// Matches a task's default `max_retries` (3): since adaptive thresholds bound
+/// the retry budget of tasks without an authored `max_retries`, a lower floor
+/// would cut retries for gates that usually pass.
 const fn default_min_retries() -> u32 {
-    1
+    3
 }
 
 const fn default_max_retries() -> u32 {
@@ -181,7 +184,8 @@ pub struct GatesConfig {
     pub ema_alpha: f64,
 
     /// Floor for the adaptive retry suggestion — never suggest fewer than
-    /// this many retries for any rung. Default: 1.
+    /// this many retries for any rung. Default: 3 (a task's default
+    /// `max_retries`).
     #[serde(default = "default_min_retries")]
     pub adaptive_min_retries: u32,
 

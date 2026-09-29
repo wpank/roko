@@ -11,7 +11,7 @@ subsystem = ["roko-core/config"]
 created = 2026-09-25
 updated = 2026-09-29
 last_verified = 2026-09-29
-last_verified_rev = "a17d9d766"
+last_verified_rev = "33e107da1"
 source = "tmp/dogfood/2026-09-25-portal-programme-run.md#P4 — dead config and dead code"
 discovered_from = "audit:tmp/dogfood/2026-09-25-portal-programme-run.md#P4 — dead config and dead code"
 anchors = ["crates/roko-core/src/config/gates.rs::GatesConfig", "crates/roko-core/src/config/learning.rs::LearningConfig", "crates/roko-core/src/config/agent.rs::AgentConfig", "crates/roko-gate/src/adaptive_threshold.rs::AdaptiveThresholds::from_gates_config", "crates/roko-cli/src/runner/persist.rs::GateThresholds::observe", "crates/roko-cli/src/graph_task_dispatch.rs::graph_engine_inert_settings", "crates/roko-cli/src/config.rs::LearningLayer"]
@@ -181,3 +181,5 @@ How to verify: grep each key for read sites; wire or delete.
 Partly fixed (checked 2026-09-28 against 3d0ee4d02): Fixed in 725f21e05: [meta] skip_enrichment is now read by Graph dispatch (plan_skips_enrichment, crates/roko-cli/src/graph_task_dispatch.rs:1311-1330, used at :3061-3074). An uncommitted change also adds it to the plan fingerprint (crates/roko-graph/src/fingerprint.rs:24). Still dead: gates.domain_gates, learning.replan_max_per_plan, learning.replan_gate_attempts and agent.data_llm have no production reader. The same commit only lists them, together with the legacy-only [gates] keys and display-only [routing] keys, in graph_engine_inert_settings (graph_task_dispatch.rs:764-900), which warns once at dispatch (:957, :1161) and in `config doctor` (config_cmd.rs:254). AdaptiveThresholds::from_gates_config (crates/roko-gate/src/adaptive_threshold.rs:322) is still called only from its own tests module (:946 onward). Remaining work: wire or delete these keys; so far they are only warned about.
 
 Re-checked 2026-09-29 at d9e79e9d8: the plan-fingerprint change for skip_enrichment (crates/roko-graph/src/fingerprint.rs:24) is now committed (3d0637232), so skip_enrichment is fully wired. Still remaining: gates.domain_gates (config/gates.rs:165), learning.replan_max_per_plan and learning.replan_gate_attempts (config/learning.rs:81, :84) and agent.data_llm (config/agent.rs:81) have no production reader and are only warned about through graph_engine_inert_settings. AdaptiveThresholds::from_gates_config (roko-gate/src/adaptive_threshold.rs:322) still has no caller outside its tests. Each of these keys still has to be wired or deleted.
+
+Checked 2026-09-29: Partly fixed: adaptive_min_retries/adaptive_max_retries are now live, and the adaptive retry floor defaults to 3 (41c7ffbd6). Still inert: gates.domain_gates, learning.replan_max_per_plan, learning.replan_gate_attempts and agent.data_llm.

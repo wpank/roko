@@ -11,7 +11,7 @@ subsystem = ["roko-cli/commands"]
 created = 2026-09-21
 updated = 2026-09-29
 last_verified = 2026-09-29
-last_verified_rev = "a17d9d766"
+last_verified_rev = "33e107da1"
 source = "tmp/backlog/archive/396-wave-execution-dispatch.md#396 — Wave Execution Dispatch Loop"
 discovered_from = "audit:tmp/backlog/archive/396-wave-execution-dispatch.md#396 — Wave Execution Dispatch Loop"
 anchors = ["crates/roko-cli/src/graph_execution/plan_set.rs::PlanSetScheduler", "crates/roko-cli/src/graph_execution/plan_set.rs::PlanFootprint::of", "crates/roko-cli/src/graph_execution/plan_set.rs::CargoWorkspace::load", "crates/roko-cli/src/graph_execution/plan_runner.rs::run_graph_plan", "crates/roko-core/src/config/schema.rs::default_max_parallel_plans", "roko.toml:343", "crates/roko-cli/tests/graph_plan_callers.rs"]
@@ -165,3 +165,5 @@ Re-verified 2026-09-29: the dispatch loop landed in 725f21e05. It consists of gr
 The [[verify]] command is unsound (see the check notes). Proposed replacement, not yet validated: `cargo test -p roko-cli independent_plans_run_side_by_side && cargo test -p roko-cli independent_plans_share_the_slots. The current `grep -q CrossPlanDag plan_runner.rs` matches the plan_set_entries display helper (plan_runner.rs:95) and passes whether or not plans run concurrently.`.
 
 Removed [[verify]] `grep -q 'CrossPlanDag' crates/roko-cli/src/graph_execution/plan_runner.rs` on 2026-09-29: it passes while the problem still exists.
+
+Checked 2026-09-29: Checked against the ready-queue scheduler (bbf6517fc): it changes scheduling inside a plan (ready tasks no longer wait for their whole wave, and a failure skips only its dependants), not across plans. max_parallel_plans still defaults to 1 and no integration test shows two plans overlapping, so all three points above still stand.

@@ -2,7 +2,7 @@
 id = "gap-5fb9a7"
 kind = "gap"
 title = "Hindsight relabeling module is completely unwired"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 size = "M"
@@ -11,14 +11,20 @@ subsystem = ["roko-learn/hindsight"]
 created = 2026-09-01
 updated = 2026-09-29
 last_verified = 2026-09-29
-last_verified_rev = "a17d9d766"
+last_verified_rev = "33e107da1"
 source = "tmp/archive/provider-audit/29-FINDINGS-REGISTER.md#F035"
 discovered_from = "audit:tmp/archive/provider-audit/29-FINDINGS-REGISTER.md#F035"
 anchors = ["crates/roko-learn/src/hindsight.rs::HindsightRelabeler", "crates/roko-cli/src/runtime_feedback/episodes.rs", "crates/roko-cli/src/runtime_feedback/plan_completion.rs::DreamConsolidationSink", "crates/roko-cli/src/graph_execution/plan_runner.rs::run_graph_plan_body", "crates/roko-learn/src/episode_logger.rs::Episode"]
 links = { depends_on = [], blocks = [], related = ["bug-121c35", "find-34a4b5"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
-command = "grep -rq 'HindsightRelabeler' crates/roko-cli/src/ && grep -rqw 'fn hindsight_sink_writes_regression_adjustment' crates/roko-cli/src/ && cargo test -p roko-cli --lib hindsight_sink_writes_regression_adjustment"
+command = "grep -q 'HindsightSink::new' crates/roko-cli/src/graph_execution/plan_runner.rs && grep -q 'fn blamed_sibling_success_is_relabeled_once' crates/roko-cli/src/runtime_feedback/hindsight.rs && cargo test -p roko-cli --lib blamed_sibling_success_is_relabeled_once"
+
+[closed]
+at = 2026-09-29
+commit = "fb87e3738"
+by = "reconcile of the portal session's merges 2026-09-29 (static check)"
+evidence = "fb87e3738 (merged in 33e107da1): plan_runner.rs:944 installs HindsightSink (runtime_feedback/hindsight.rs), which runs roko_learn's HindsightRelabeler when a later verify failure blames a task and appends durable adjustments. Tests blamed_sibling_success_is_relabeled_once and attributed_failure_relabels_the_blamed_tasks_latest_success."
 +++
 
 ## Problem

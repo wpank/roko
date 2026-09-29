@@ -2,7 +2,7 @@
 id = "reg-06ae9f"
 kind = "regression"
 title = "Graph plan runs only write knowledge seeds; live ingestion and tier progression are not invoked"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "learning"
@@ -10,14 +10,20 @@ subsystem = ["roko-cli/graph-execution", "roko-neuro/tier-progression"]
 created = 2026-09-28
 updated = 2026-09-29
 last_verified = 2026-09-29
-last_verified_rev = "d9e79e9d8"
+last_verified_rev = "33e107da1"
 source = "gaps-md#tier-progression-after-live-knowledge-ingestion----resolved-2026-08-13"
 discovered_from = "doc:tmp/work-management/01-gaps-md-audit.md"
 anchors = ["crates/roko-cli/src/graph_execution/feedback.rs:482", "crates/roko-cli/src/graph_execution/plan_runner.rs:936", "crates/roko-cli/src/runtime_feedback/knowledge.rs"]
 links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate_of = "" }
 
 [[verify]]
-command = '''grep -rq 'NeuroKnowledgeIngestor' crates/roko-cli/src/graph_execution'''
+command = "grep -q 'VerifiedKnowledgeSink' crates/roko-cli/src/graph_execution/plan_runner.rs && grep -q 'fn verified_attempt_becomes_durable_knowledge_and_promotes_context' crates/roko-cli/src/runtime_feedback/verified_knowledge.rs && cargo test -p roko-cli --lib verified_knowledge"
+
+[closed]
+at = 2026-09-29
+commit = "189a14e65"
+by = "reconcile of the portal session's merges 2026-09-29 (static check)"
+evidence = "189a14e65 (merged in 33e107da1): plan_runner.rs:952 installs VerifiedKnowledgeSink (runtime_feedback/verified_knowledge.rs), which turns gate-verified attempts into durable knowledge and confirms entries through roko-neuro's lifecycle. Tests verified_attempt_becomes_durable_knowledge_and_promotes_context and repeated_verified_attempts_confirm_one_entry."
 +++
 
 GAPS.md recorded as RESOLVED (2026-08-13) that the runner's `NeuroKnowledgeIngestor` records gate-backed feedback as confirmations, persists the candidate and runs `TierProgression::evaluate_tier_progression_v2`. On the Graph plan path, the feedback facade (`crates/roko-cli/src/graph_execution/plan_runner.rs:457-478`) has episode, routing-observation, dream-consolidation and daimon sinks but no knowledge ingestor. The knowledge row only appends seeds to `.roko/learn/knowledge-seeds.jsonl` (`crates/roko-cli/src/graph_execution/feedback.rs:482-511`), which `roko-learn` reads back for projections. `NeuroKnowledgeIngestor` is used only by `commands/do_cmd.rs` and `runtime_feedback/`. As a result, plan runs no longer promote knowledge from Transient to Working.

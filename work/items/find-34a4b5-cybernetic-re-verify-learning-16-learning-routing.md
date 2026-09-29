@@ -11,7 +11,7 @@ subsystem = ["roko-learn"]
 created = 2026-09-06
 updated = 2026-09-29
 last_verified = 2026-09-29
-last_verified_rev = "a17d9d766"
+last_verified_rev = "33e107da1"
 source = "tmp/archive/cybernetic-audit/30-master-checklist.md#P0 -- Close Broken Feedback Loops"
 discovered_from = "audit:tmp/archive/cybernetic-audit/30-master-checklist.md#P0 -- Close Broken Feedback Loops"
 anchors = ["crates/roko-cli/src/graph_task_dispatch.rs:1538", "crates/roko-cli/src/knowledge_helpers.rs::apply_neuro_gate_hints", "crates/roko-cli/src/knowledge_helpers.rs::apply_neuro_gate_hints_persist", "crates/roko-cli/src/runtime_feedback/episodes.rs", "crates/roko-cli/src/dispatch/prompt_builder.rs::update_bidders_with_cost", "crates/roko-cli/src/dispatch/factory.rs", "crates/roko-learn/src/cascade_router.rs::select_tier_with_active_inference", "crates/roko-learn/src/efficiency.rs::PromptEfficiencyScore", "crates/roko-learn/src/tool_metrics_store.rs", "crates/roko-learn/src/tool_recommendation.rs", "crates/roko-learn/src/hindsight.rs::HindsightRelabeler", "crates/roko-compose/src/attention.rs::ModelAttentionCurves"]
@@ -128,3 +128,5 @@ Some cited files are gone: `section_bandit.rs/section_effect.rs`.
 How to verify: For each ID, grep the named symbol for call sites under graph_execution/ or roko-graph (not runner/); check .roko/learn artifacts update after a Graph plan run.
 
 Verified 2026-09-28: symbol scan of non-test code. Survived on live paths: section_effect (dispatch/prompt_builder.rs, roko-learn feedback_service.rs), FormatBandit (dispatch/factory.rs), active-inference BeliefState (roko-learn cascade_router.rs), apply_neuro_hints (knowledge_helpers.rs:481/544). Lost or unwired: HindsightRelabeler (only hindsight.rs; see gap-5fb9a7), ModelAttentionCurves (only roko-compose attention.rs), no efe-belief.json persistence anywhere, score_prompt_efficiency and CompoundingMetric no longer exist, and playbook_hit_rate is only computed in roko-learn aggregate.rs. Each lost closure needs its own item or a re-wire.
+
+Checked 2026-09-29: Partly fixed in 33e107da1: knowledge, hindsight, prompt experiments and playbook credit are live on the Graph path. Still missing there: ModelAttentionCurves, EfeRouter and playbook_hit_rate, and apply_neuro_gate_hints still has no caller (the verify's second check).

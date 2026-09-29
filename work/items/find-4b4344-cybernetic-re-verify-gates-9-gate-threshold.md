@@ -11,14 +11,14 @@ subsystem = ["roko-gate"]
 created = 2026-09-06
 updated = 2026-09-29
 last_verified = 2026-09-29
-last_verified_rev = "a17d9d766"
+last_verified_rev = "33e107da1"
 source = "tmp/archive/cybernetic-audit/30-master-checklist.md#P1 -- Wire Existing Code"
 discovered_from = "audit:tmp/archive/cybernetic-audit/30-master-checklist.md#P1 -- Wire Existing Code"
 anchors = ["crates/roko-cli/src/runner/persist.rs::GateThresholds", "crates/roko-gate/src/ratchet.rs::GateRatchet", "crates/roko-gate/src/adaptive_threshold.rs::ThresholdProfile", "crates/roko-cli/src/graph_task_dispatch.rs::GraphFeedbackContext", "crates/roko-cli/src/graph_execution/plan_runner.rs", "crates/roko-learn/src/oracles/coding.rs::CodingOracle::predict_test_pass_rate"]
 links = { depends_on = [], blocks = [], related = ["reg-c7ecf6", "find-34a4b5"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
-command = "for s in observe_residual apply_profile should_skip_rung_for_temperament GateRatchet roko_gate_verdicts_total suggested_max_retries; do grep -rq \"$s\" crates/roko-cli/src/graph_task_dispatch.rs crates/roko-cli/src/graph_execution || exit 1; done && grep -rqw 'fn graph_verify_feeds_gate_thresholds' crates/roko-cli/src/ && cargo test -p roko-cli graph_verify_feeds_gate_thresholds"
+command = "for s in observe_residual apply_profile should_skip_rung_for_temperament GateRatchet roko_gate_verdicts_total suggested_max_retries; do grep -rq \"$s\" crates/roko-cli/src/graph_task_dispatch.rs crates/roko-cli/src/graph_task_dispatch crates/roko-cli/src/graph_execution crates/roko-cli/src/runner/persist.rs || exit 1; done && grep -rqw 'fn graph_verify_feeds_gate_thresholds' crates/roko-cli/src/ && cargo test -p roko-cli graph_verify_feeds_gate_thresholds"
 +++
 
 ## Problem
@@ -185,3 +185,5 @@ Merged 2 mined candidates: m3-031, m3-032.
 Verified 2026-09-28: rung_for_gate_name is used on the Graph path (graph_task_dispatch.rs:2030). But GateThresholds::observe_residual (crates/roko-cli/src/runner/persist.rs:363), apply_profile (:397) and should_skip_rung_for_temperament (:437) have no production callers, and GateRatchet (roko-gate/src/ratchet.rs) is only re-exported. build_rung_execution_inputs and update_gate_threshold no longer exist, though CLAUDE.md still cites the former. suggested_max_retries feeds only displays (tui/dashboard.rs:3154, commands/util.rs:1072), not retry policy. The import warning was wrong: crates/roko-cli/src/runner/gate_dispatch.rs exists.
 
 Checked 2026-09-29 at d9e79e9d8: unchanged. Correction: build_rung_execution_inputs still exists (crates/roko-cli/src/runner/gate_dispatch.rs:1781) but is called only from run_gate_once (:1192, :1335), which only tests reach. A grep of graph_task_dispatch.rs and graph_execution/ found no reference to Prometheus gate metrics, Evolved threshold provenance, symbol-rung oracles or inner-gate thresholds either.
+
+Checked 2026-09-29: Partly fixed in ce3bdcbb8: residual observation (runner/persist.rs:401) and retry budgets (graph_task_dispatch/retry_budget.rs) are live on the Graph path. Still not reached from it: apply_profile, should_skip_rung_for_temperament, GateRatchet and roko_gate_verdicts_total. The verify now also searches runner/persist.rs and the graph_task_dispatch/ directory.

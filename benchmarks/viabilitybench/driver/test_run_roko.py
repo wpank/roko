@@ -88,8 +88,8 @@ def places(tmp_path: Path) -> dict[str, Path]:
 
 
 def toy_task(tmp_path: Path, instance_id: str = "F1-l1-0001") -> materialize.Materialized:
-    return materialize.materialize(family_dir=TOY_FAMILY, instance_id=instance_id,
-                                   workdir=tmp_path / "ws" / instance_id, private_dir=tmp_path / "private" / instance_id)
+    workdir, private = tmp_path / "ws" / instance_id, tmp_path / "private" / instance_id
+    return materialize.materialize(family_dir=TOY_FAMILY, instance_id=instance_id, workdir=workdir, private_dir=private)
 
 
 def plan_spec(task: materialize.Materialized, **changes: object) -> planemit.PlanSpec:
@@ -276,20 +276,33 @@ def test_roko_failures_timeouts_and_missing_records(places, tmp_path):
 
 
 def test_proxy_meters_attempts_and_flags_silent_ones():
-    row = ledger.load_snapshot().row(PIN)
-    usage = {"prompt_tokens": 1000, "completion_tokens": 100, "prompt_tokens_details": {"cached_tokens": 200}}
-    proxied = [{"task": "F1-l1-0001.s1", "ts": "2026-09-29T14:59:59Z", "model": PIN, "usage": usage},
-               {"task": "F1-l1-0001.s1", "ts": "2026-09-29T14:59:59.500Z", "model_reported": PIN, "usage": usage}]
+    # Rows as faultproxy.py writes them: whole-second ts, run-record usage, and usage_source none when unbilled.
+    usage = {"tokens_in": 800, "tokens_cache_read": 200, "tokens_cache_write_5m": 0, "tokens_cache_write_1h": 0,
+             "tokens_out": 100, "tokens_reasoning": 20}
+    base = {"task": "F1-l1-0001.s1", "model_requested": PIN, "model_reported": PIN, "usage": usage,
+            "usage_source": "reported"}
+    proxied = [{**base, "ordinal": 1, "ts": "2026-09-29T14:59:59Z"},
+               {**base, "ordinal": 2, "ts": "2026-09-29T15:00:00Z"},
+               {**base, "ordinal": 3, "ts": "2026-09-29T15:00:00Z", "usage": None, "usage_source": "none",
+                "model_reported": None, "fault_injected": "http_5xx"}]
     attempts, problems = settle(evidence([PIN, PIN], proxy_rows=proxied))
     assert problems == ["no_proxy_traffic: attempt 2: the metering proxy saw no request"]
     first = attempts[0]
     assert (first.calls, first.model_reported, first.usage["tokens_in"], first.usage["tokens_cache_read"]) == (
-        2, PIN, 1600, 400)
-    assert first.cost.api_equiv_usd == pytest.approx(ledger.price(first.usage, row).api_equiv_usd) and \
-        first.cost.source == "provider_usage"
+        3, PIN, 1600, 400)
+    assert first.cost.api_equiv_usd == pytest.approx(
+        ledger.price(first.usage, ledger.load_snapshot().row(PIN)).api_equiv_usd) and first.cost.source == \
+        "provider_usage"
     assert attempts[1].checks == ["no_proxy_traffic"] and attempts[1].cost.api_equiv_usd is None
-    served = [{**proxied[0], "model": "llama-3.3-70b"}]
-    assert "reported 'llama-3.3-70b'" in settle(evidence([PIN], proxy_rows=served))[1][0]
+    # Two attempts that ended in the same second cannot be told apart, so the second's empty window is not flagged.
+    close = evidence([PIN, PIN], proxy_rows=proxied[:2])
+    close.episodes[0]["completed_at"], close.episodes[1]["completed_at"] = (
+        "2026-09-29T15:00:00.100000Z", "2026-09-29T15:00:00.900000Z")
+    assert settle(close)[1] == []
+    assert "no_proxy_traffic" in settle(evidence([PIN], proxy_rows=[]))[1][0]  # routed around the proxy
+    swapped = [{**proxied[0], "model_requested": "llama-3.3-70b", "model_reported": "llama-3.3-70b"}]
+    assert any("model_requested 'llama-3.3-70b'" in problem
+               for problem in settle(evidence([PIN], proxy_rows=swapped))[1])
 
 
 @real_roko

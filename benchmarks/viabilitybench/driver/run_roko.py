@@ -44,14 +44,19 @@ of the agent's reach.
 So `model_reported` is null and the cost is unknown (null) unless S01 verdicts or the metering proxy supply them.
 Roko's own token counts stay in each attempt's `roko_usage`, for diagnosis only. Roko's USD is never used.
 
-**The proxy** (gap-e003ec). When `<run_dir>/proxy.jsonl` exists, its rows for this task (`task` = the task key) are
-the meter:
-- Requests are assigned to attempts by time: an attempt owns the requests up to its episode, and the last attempt
-  owns the rest.
-- An attempt's usage is the sum of its requests, priced from the snapshot by the model the proxy saw.
-- An attempt whose window has no request is `no_proxy_traffic`, which makes the task `infra_error`.
-- Rows name the model as `model_reported` or `model`, and give usage in chat-completions or run-record shape. A row
-  without usage leaves its attempt's cost unknown.
+**The proxy** (gap-e003ec, `faultproxy.py`). Route Roko through it with the proxy's base URL for the provider as
+`--provider-url`. Roko then gets a placeholder key, and the proxy sends the real one. When `<run_dir>/proxy.jsonl`
+exists, its rows for this task are the meter. The driver must set the proxy's active task to the task key
+(`proxy.configure(task=key)`); rows without that key never match, so the attempts fail as `no_proxy_traffic`.
+- Requests are assigned to attempts by `ts`, in whole seconds, in `ordinal` order. An attempt owns the requests up
+  to its episode, so its auxiliary calls, made after that, usually count toward the next attempt; the last attempt
+  owns the rest. An attempt that ended in the same second as the one before cannot be told apart from it. Task
+  totals are exact either way.
+- Every request's `model_requested` and `model_reported` must be the pin.
+- An attempt's usage is the sum of its billed requests (`usage_source` other than `none`), in run-record shape. It
+  is priced from the snapshot by the model the provider reported. A billed request without usage leaves the
+  attempt's cost unknown, never 0.
+- An attempt whose window saw no request is `no_proxy_traffic`, which makes the task `infra_error`.
 
 **Status.**
 - `completed`: the Graph checkpoint says the plan succeeded with a `passed` gate verdict. This is Roko's reported
@@ -340,28 +345,38 @@ def _meter_from_verdict(attempt: RokoAttempt, verdict: dict) -> None:
 
 
 def _meter_from_proxy(attempts: list[RokoAttempt], evidence: Evidence, model: str, flag) -> None:
-    """Assign the proxy's requests to attempts by time and meter each attempt from them (module docstring)."""
-    ends = [_when(episode.get("completed_at") or episode.get("timestamp")) for episode in evidence.episodes]
+    """Assign the proxy's requests to attempts by time and meter each attempt from them (module docstring).
+
+    The proxy stamps whole seconds, so an attempt that ended in the same second as the one before it cannot be told
+    apart from it: its requests count toward the earlier attempt, and its empty window is not flagged.
+    """
+    rows = sorted(evidence.proxy_rows or [], key=lambda row: row.get("ordinal") if isinstance(row.get("ordinal"), int)
+                  else 0)
+    ends = [_second(episode.get("completed_at") or episode.get("timestamp")) for episode in evidence.episodes]
     windows: list[list[dict]] = [[] for _ in attempts]
-    for row in evidence.proxy_rows or []:
-        when = _when(row.get("ts"))
+    for row in rows:
+        when = _second(row.get("ts"))
         index = next((i for i, end in enumerate(ends) if when is not None and end is not None and when <= end),
                      len(attempts) - 1)
         if 0 <= index < len(windows):
             windows[index].append(row)
-    for attempt, rows in zip(attempts, windows):
-        if not rows:
-            flag("no_proxy_traffic", f"attempt {attempt.number}: the metering proxy saw no request",
-                 attempt.number)
+    for position, (attempt, window) in enumerate(zip(attempts, windows)):
+        for row in window:
+            for key in ("model_requested", "model_reported"):
+                if row.get(key) and row[key] != model:
+                    flag("model_mismatch", f"attempt {attempt.number}: the proxy saw {key} {row[key]!r}, not "
+                                           f"{model!r}", attempt.number)
+        if not window:
+            if not rows or position == 0 or ends[position] is None or ends[position] != ends[position - 1]:
+                flag("no_proxy_traffic", f"attempt {attempt.number}: the metering proxy saw no request",
+                     attempt.number)
             continue
-        served = {row.get("model_reported") or row.get("model") for row in rows}
-        for name in sorted(str(item) for item in served if item and item != model):
-            flag("model_mismatch", f"attempt {attempt.number}: the provider reported {name!r}, not {model!r}",
-                 attempt.number)
-        usages = [_proxy_usage(row.get("usage")) for row in rows]
-        attempt.calls, attempt.calls_known = len(rows), True
-        attempt.model_reported = next(iter(served)) if len(served) == 1 and None not in served else None
-        attempt.usage_unknown = any(usage is None for usage in usages)
+        billed = [row for row in window if row.get("usage_source") != "none"]  # none: a fault, refusal or error
+        served = {row.get("model_reported") for row in billed}
+        usages = [_proxy_usage(row.get("usage")) for row in billed]
+        attempt.calls, attempt.calls_known = len(window), True
+        attempt.model_reported = served.pop() if len(served) == 1 else None
+        attempt.usage_unknown = not billed or any(usage is None for usage in usages)
         if not attempt.usage_unknown:
             total = ledger.vb_usage(0, 0)
             for usage in usages:
@@ -370,21 +385,15 @@ def _meter_from_proxy(attempts: list[RokoAttempt], evidence: Evidence, model: st
 
 
 def _proxy_usage(raw: object) -> dict | None:
-    if not isinstance(raw, dict):
+    """A proxy row's usage, which is in run-record shape; null (no usage came back) stays unknown, never 0."""
+    if not isinstance(raw, dict) or not all(isinstance(raw.get(name), int) for name in ("tokens_in", "tokens_out")):
         return None
-    if isinstance(raw.get("tokens_in"), int) and isinstance(raw.get("tokens_out"), int):
-        usage = {"tokens_in": raw["tokens_in"], "tokens_out": raw["tokens_out"],
-                 "tokens_cache_read": raw.get("tokens_cache_read") or 0,
-                 "tokens_reasoning": raw.get("tokens_reasoning") or 0}
-        usage.update({name: raw[name] for name in ("tokens_cache_write_5m", "tokens_cache_write_1h")
-                      if isinstance(raw.get(name), int)})
-        return usage
-    prompt, completion = raw.get("prompt_tokens"), raw.get("completion_tokens")
-    if not (isinstance(prompt, int) and isinstance(completion, int)):
-        return None
-    cached = (raw.get("prompt_tokens_details") or {}).get("cached_tokens") or 0
-    reasoning = (raw.get("completion_tokens_details") or {}).get("reasoning_tokens") or 0
-    return ledger.vb_usage(prompt, completion, min(cached, prompt), reasoning)
+    usage = {"tokens_in": raw["tokens_in"], "tokens_out": raw["tokens_out"],
+             "tokens_cache_read": raw.get("tokens_cache_read") or 0,
+             "tokens_reasoning": raw.get("tokens_reasoning") or 0}
+    usage.update({name: raw[name] for name in ("tokens_cache_write_5m", "tokens_cache_write_1h")
+                  if isinstance(raw.get(name), int)})
+    return usage
 
 
 def _status(ran: Ran, evidence: Evidence, problems: list[str]) -> tuple[str, str]:
@@ -511,15 +520,14 @@ def _attempt_event(attempt: RokoAttempt, episode: dict) -> dict:
             "failure_reason": _clip(str(episode.get("failure_reason") or ""))}
 
 
-def _when(value: object) -> float | None:
-    if isinstance(value, (int, float)) and not isinstance(value, bool):
-        return float(value)
-    if isinstance(value, str) and value:
-        try:
-            return dt.datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
-        except ValueError:
-            return None
-    return None
+def _second(value: object) -> int | None:
+    """An ISO 8601 UTC time as whole Unix seconds, the proxy's resolution."""
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        return int(dt.datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp())
+    except ValueError:
+        return None
 
 
 def _left(ctx: harness.TaskContext, clock: float) -> float:

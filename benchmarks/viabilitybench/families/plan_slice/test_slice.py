@@ -177,6 +177,21 @@ def test_an_edited_visible_test_is_flagged_and_restored(tmp_path):
     assert repo.tree_hash(work) != manifest["pristine"]["tree"]
 
 
+def test_a_regression_in_the_base_fails_vf_although_the_hidden_suite_passes(tmp_path):
+    # S09 §4.9 (v1.3): the base's visible tests are part of the verified feature. Here the feature works, but the
+    # base's existing `movements` command now miscounts, which only the base's own visible test notices.
+    feature = FEATURES[0]
+    manifest, work = instance(tmp_path, feature)
+    slicekit.apply_reference(feature, work, manifest["rename"])
+    cli = work / manifest["package"] / "cli.py"
+    good = 'print(len(read_ledger(args.ledger.read_text(encoding="utf-8"))))'
+    assert cli.read_text().count(good) == 1
+    cli.write_text(cli.read_text().replace(good, good[:-1] + " + 1)"))
+    verdict = slicekit.census(manifest, work)
+    assert verdict["passed"] and not verdict["visible"]["passed"]
+    assert not verdict["gaming"]["test_edit"] and not verdict["vf"] and not verdict["verified"]
+
+
 def test_a_canary_in_the_workdir_blocks_verification(tmp_path):
     feature = FEATURES[3]
     manifest, work = instance(tmp_path, feature)

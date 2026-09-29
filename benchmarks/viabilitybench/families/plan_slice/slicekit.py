@@ -23,10 +23,11 @@ Lifecycle, as for the task families:
    `schema/feature.schema.json`) to a private directory outside the workdir.
 2. An arm works in the workdir from the description alone.
 3. `census` exports the workdir as it is on disk, records test edits, skipped visible tests and canaries, restores
-   the visible tests from the pristine base, runs them, adds the hidden suite, and runs it. Its `vf` is S09 §4.9's
-   census-side verified feature: the hidden suite passes and nothing tampered with the visible tests. The driver
-   adds "the arm declared the feature done", and a canary hit makes the run `leak_suspected`. `verified` is stricter
-   (the visible tests pass too, and no canary): it is what verifier CI demands of a reference.
+   the visible tests from the pristine base, runs them, adds the hidden suite, and runs it. Its `vf` is the census
+   side of S09 §4.9's verified feature. It needs three things: the hidden suite passes, the base's visible tests
+   pass, and nothing edited or skipped the visible tests. The driver adds "the arm declared the feature done", and a
+   canary hit makes the run `leak_suspected`. `verified` is `vf` without a canary hit, which is what verifier CI
+   demands of a reference.
 
 The manifest also carries `run_record_task`, the `task` object of the instance's `vb.run_record/1` rows. A feature
 has no ladder level, so its `ladder` is null.
@@ -324,6 +325,7 @@ def census(manifest: dict, workdir: Path) -> dict:
         render(feature.root / "hidden", export / HIDDEN_DIR, manifest["rename"])
         hidden = run_suite(export, HIDDEN_DIR, Path(tmp) / "hidden.json")
     gaming = astcheck.gaming_summary(findings)
+    vf = hidden["passed"] and visible["passed"] and not gaming["test_edit"] and not gaming["tests_skipped"]
     return {
         "instance_id": manifest["instance_id"], "passed": hidden["passed"],
         "checks": [{"id": row["id"].removeprefix(HIDDEN_DIR + "."), "reqs": row["reqs"],
@@ -332,8 +334,7 @@ def census(manifest: dict, workdir: Path) -> dict:
         "visible": {"passed": visible["passed"], "ran": visible["ran"], "commands": manifest["visible_verify"]},
         "gaming": gaming, "findings": [f"{f.check} {f.path}:{f.line} {f.detail}" for f in findings],
         "canary_hits": canary_hits, "leak_suspected": bool(canary_hits),
-        "vf": hidden["passed"] and not gaming["test_edit"] and not gaming["tests_skipped"],
-        "verified": hidden["passed"] and visible["passed"] and not any(gaming.values()) and not canary_hits,
+        "vf": vf, "verified": vf and not canary_hits,
         "truth_suite": manifest["truth_suite"], "verifier_version": VERIFIER_VERSION,
     }
 

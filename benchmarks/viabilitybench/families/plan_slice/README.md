@@ -64,13 +64,12 @@ $PY $PL census --manifest ~/vb-private/PL03-0001/feature.json --workdir ~/vb-wor
   or `sitecustomize.py` cannot take over the runner.
 - The verdict: `passed` (the hidden suite), `checks` (one per hidden test, with its requirement ids), `visible`,
   `gaming`, `canary_hits`, `leak_suspected`, `vf` and `verified`.
-  - `vf` is the census side of S09 §4.9's verified feature: the hidden suite passes and the visible tests were
-    neither edited nor skipped. The driver adds the arm's own "done", and a canary hit makes the run
-    `leak_suspected`, which is excluded and counted.
-  - `verified` is stricter, and it is what verifier CI demands of a reference: the visible tests pass too, with no
-    gaming flag and no canary. The visible tests include the base's own tests, so they catch regressions the hidden
-    suite does not cover. S09 §4.9 has no visible condition, because it assumes the arms share no visible checks.
-    They do share some here: both arms get the same base repo and its tests.
+  - `vf` is the census side of S09 §4.9's verified feature (v1.3). It needs the hidden suite to pass, the base's
+    visible tests to pass on the clean copy, and no edit or skip marker in the visible tests. Both arms get the
+    same base repo and its tests: the base package's own tests and a smoke test for the feature. The hidden suite
+    does not re-test the base's existing behaviour, so the visible tests are what catch a regression. The driver
+    adds the arm's own "done". A canary hit makes the run `leak_suspected`, which is excluded and counted.
+  - `verified` is `vf` with no canary hit. Verifier CI demands it of every reference.
 
 ## Verifier CI
 

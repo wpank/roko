@@ -96,3 +96,9 @@ Recommended: implement (b) now, and leave (a) with S08 decision 4. Then:
   - A read by agent code while `hidden.py` has the file open (gap-8c3752) stays unseen.
   - So does a debugger reading the driver's memory, or an agent running as root.
   - The tripwire needs sub-second ctimes, and `Tripwire.arm` refuses whole-second filesystems.
+- **Follow-up (same day, wk-bench-fix2).** `secret.tripwire` now:
+  - holds an exclusive `flock` on `<file>.lock`, so a second `vb run` on the same file is refused even when both passed
+    `preflight` at once;
+  - turns SIGTERM and SIGHUP into SystemExit while armed (unless they are ignored, as under `nohup`), so the files get
+    back to 0600. Only a SIGKILL leaves them armed, and `preflight` then says so.
+  - This covers what a `disarm` with an atexit fallback would have: atexit runs on neither signal.

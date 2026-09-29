@@ -17,11 +17,12 @@ For each (task, seed), `run_task`:
    `plans/` and `.roko/` from the workdir, so c_i holds only the agent's tree.
 
 **Environment.** Roko gets the task's agent environment (`agent_env`), plus `ROKO_CONFIG` naming the emitted
-roko.toml (`plan run` ignores `--config`) and the provider key that roko.toml names. The agent environment gives it
-a fresh HOME, so no `~/.roko/.env` loads and no learned state crosses seeds, along with PATH, TMPDIR, locale and a
-git identity. Nothing else of the driver's environment reaches Roko. Roko scrubs the key from its gates' and tools'
-children (bug-7d7200). A loopback `--provider-url` (a stub, later the metering proxy) gets a placeholder key,
-because Roko refuses a provider without one. At 33e107da1, Roko needed nothing under HOME and wrote nothing there.
+roko.toml (`plan run` ignores `--config`) and a placeholder for the key that roko.toml names, because Roko refuses a
+provider without one. The real key never reaches Roko's process tree, whose tools run the agent's commands
+(bug-979a06): Roko reaches the provider only on a loopback URL, the metering proxy's (which sends the key) or a
+stub's, and a network endpoint is refused before Roko starts. The agent environment gives it a fresh HOME, so no
+`~/.roko/.env` loads and no learned state crosses seeds, along with PATH, TMPDIR, locale and a git identity. Nothing
+else of the driver's environment reaches Roko. At 33e107da1, Roko needed nothing under HOME and wrote nothing there.
 
 **The model check** (W10 rec 5, bug-35379d). Every record Roko writes must name the pinned model and the arm's
 provider:
@@ -48,10 +49,11 @@ of the agent's reach.
 So `model_reported` is null and the cost is unknown (null) unless S01 verdicts or the metering proxy supply them.
 Roko's own token counts stay in each attempt's `roko_usage`, for diagnosis only. Roko's USD is never used.
 
-**The proxy** (gap-e003ec, `faultproxy.py`). Route Roko through it with the proxy's base URL for the provider as
-`--provider-url`. Roko then gets a placeholder key, and the proxy sends the real one. When `<run_dir>/proxy.jsonl`
-exists, its rows for this task are the meter. The driver must set the proxy's active task to the task key
-(`proxy.configure(task=key)`); rows without that key never match, so the attempts fail as `no_proxy_traffic`.
+**The proxy** (gap-e003ec, `faultproxy.py`). `vb run` routes Roko through it on every billed network run, and on any
+run with `--proxy`. Roko gets the proxy's loopback URL and a placeholder key, and the proxy sends the real one, from
+the driver's key file. When `<run_dir>/proxy.jsonl` exists, its rows for this task are the meter. The driver sets
+the proxy's active task to the task key before each task (`proxy.configure(task=key)`); rows without that key never
+match, so the attempts fail as `no_proxy_traffic`.
 - Requests are assigned to attempts by `ts`, in whole seconds, in `ordinal` order. An attempt owns the requests up
   to its episode, so its auxiliary calls, made after that, usually count toward the next attempt; the last attempt
   owns the rest. An attempt that ended in the same second as the one before cannot be told apart from it. Task
@@ -430,10 +432,12 @@ def _status(ran: Ran, evidence: Evidence, problems: list[str]) -> tuple[str, str
 
 
 def _roko_env(ctx: harness.TaskContext, api_key_env: str, config_path: Path) -> dict[str, str]:
-    key = OFFLINE_KEY if ctx.endpoint.offline else os.environ.get(api_key_env, "")
-    if not key:
-        raise RunnerError(f"set {api_key_env} for {ctx.endpoint.provider}")
-    return {**ctx.agent_env, "ROKO_CONFIG": str(config_path), api_key_env: key}
+    """The agent environment, ROKO_CONFIG and a placeholder key; a network endpoint is refused (module docstring)."""
+    if not ctx.endpoint.offline:
+        raise RunnerError(f"{ctx.endpoint.provider} is a network provider, which Roko reaches only through the "
+                          "metering proxy, the one holder of its key: run it with `vb run` (which proxies every billed "
+                          "network run, and any run with --proxy) and a key file (--key-file)")
+    return {**ctx.agent_env, "ROKO_CONFIG": str(config_path), api_key_env: OFFLINE_KEY}
 
 
 def _build(binary: Path, env: dict[str, str], pinned: str | None, transcript: list[dict]) -> str | None:

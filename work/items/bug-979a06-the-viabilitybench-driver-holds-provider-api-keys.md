@@ -98,3 +98,8 @@ At BASE (4315add32), the keys come from the driver's environment. The metering p
     the driver's memory. A container per task (S08 decision 4) closes that.
   - `run_roko._roko_env`'s "set CEREBRAS_API_KEY" message is stale. It can only fire for an unproxied network
     endpoint, which a billed Roko run no longer has.
+- **Follow-up (same day, wk-bench-fix2, per the coordinator).**
+  - `run_roko._roko_env` no longer reads a key from the environment. Roko gets the placeholder on a loopback URL (the
+    proxy's or a stub's), and a network endpoint is refused before Roko starts, with a message that points to
+    `vb run`'s proxy and `--key-file`.
+  - The chat client is keyless, rather than taking `key=`, since fix1's wiring makes the proxy the only sender.

@@ -2128,4 +2128,97 @@ context_window = 200000
             );
         }
     }
+
+    /// [`fake_provider_workspace`] whose `[authoring] planner_model` names a
+    /// second model on the same fake provider. Its slug differs from the
+    /// default model's, so a cost row shows which of the two ran.
+    fn planner_workspace() -> tempfile::TempDir {
+        let workspace = fake_provider_workspace();
+        let config_path = workspace.path().join("roko.toml");
+        let mut config = std::fs::read_to_string(&config_path).expect("read roko.toml");
+        config.push_str(
+            r#"
+[models.fake-planner]
+provider = "fake-cli"
+slug = "claude-opus-4-6"
+context_window = 200000
+
+[authoring]
+planner_model = "fake-planner"
+"#,
+        );
+        std::fs::write(&config_path, config).expect("write roko.toml");
+        workspace
+    }
+
+    /// The model slug of each `.roko/learn/costs.jsonl` row that names the plan
+    /// and the pseudo task.
+    fn logged_models(workspace: &Path, task_id: &str) -> Vec<String> {
+        let path = workspace.join(".roko").join("learn").join("costs.jsonl");
+        std::fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("read {}: {error}", path.display()))
+            .lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("JSONL row"))
+            .filter(|row| row["plan_id"] == "demo" && row["task_id"] == task_id)
+            .map(|row| row["model"].as_str().expect("model").to_string())
+            .collect()
+    }
+
+    /// gap-853b31: with `[authoring] planner_model` set, `POST
+    /// /api/plans/generate` plans with that model, not `[agent] default_model`.
+    #[tokio::test]
+    async fn generation_plans_with_the_authoring_planner_model() {
+        let workspace = planner_workspace();
+        let prd_dir = workspace.path().join(".roko").join("prd").join("published");
+        std::fs::create_dir_all(&prd_dir).expect("create PRD dir");
+        let prd_path = prd_dir.join("demo.md");
+        std::fs::write(
+            &prd_path,
+            "---\nid: demo\ntitle: Demo\nstatus: published\n---\n\n# Demo\n\nPrint hello world.\n",
+        )
+        .expect("write PRD");
+        let hub = SharedStateHub::new_in_process();
+
+        let generated = runtime_on(&hub)
+            .generate_plan_from_prd(workspace.path(), "demo", &prd_path)
+            .await
+            .expect("generate plan");
+
+        assert!(
+            generated
+                .plan_targets
+                .iter()
+                .any(|target| target.join("tasks.toml").is_file()),
+            "no generated plan in {:?}",
+            generated.plan_targets
+        );
+        assert_eq!(
+            logged_models(workspace.path(), "generate"),
+            vec!["claude-opus-4-6"]
+        );
+    }
+
+    /// gap-853b31: `POST /api/plans/{id}/revise` revises with the planner model
+    /// too.
+    #[tokio::test]
+    async fn revision_plans_with_the_authoring_planner_model() {
+        let workspace = planner_workspace();
+        let plan_dir = workspace.path().join("plans").join("demo");
+        std::fs::create_dir_all(&plan_dir).expect("create plan dir");
+        std::fs::write(plan_dir.join("tasks.toml"), DEMO_PLAN).expect("write tasks.toml");
+        std::fs::write(plan_dir.join("plan.md"), "# demo\n").expect("write plan.md");
+        let hub = SharedStateHub::new_in_process();
+
+        let revision = runtime_on(&hub)
+            .revise_plan(workspace.path(), "demo", "Keep the plan as it is.")
+            .await
+            .expect("revise plan")
+            .expect("plan exists");
+
+        assert!(revision.revised, "{:?}", revision.validation);
+        assert_eq!(
+            logged_models(workspace.path(), "revise"),
+            vec!["claude-opus-4-6"]
+        );
+    }
 }

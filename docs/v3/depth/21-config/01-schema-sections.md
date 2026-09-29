@@ -67,6 +67,28 @@ Override fields: `model`, `backend`, `effort`, `temperament`, `context_limit_k`,
 
 ---
 
+## `[authoring]` -- AuthoringConfig
+
+Which model writes and revises plans. Frontier models plan and cheap models
+execute, so the planner is chosen apart from the models that run tasks.
+
+```toml
+[authoring]
+planner_model = "claude-opus-4-6"   # a key from [models], or a builtin slug
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `planner_model` | String | `""` (unset) | Model for every plan generate and revise path: `roko prd plan`, `roko plan generate` / `regenerate`, the plan-writing bands of `roko do`, and the serve runtime's generate and revise |
+
+Precedence (`model_selection::resolve_planner_model`): `--model`, then
+`[authoring] planner_model`, then `[agent.roles.strategist] model`, then
+`[agent] model`. An empty value counts as unset. It is a string rather than an
+optional value so the key survives the loader, which drops keys that the
+serialized default config lacks.
+
+---
+
 ## `[runner]` -- CoreRunnerConfig
 
 | Field | Type | Default | Description |

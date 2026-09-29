@@ -819,10 +819,9 @@ pub(crate) async fn cmd_prd(cli: &Cli, cmd: PrdCmd) -> Result<i32> {
             let t_total = Instant::now();
             let t_phase = Instant::now();
             let prd_path = find_prd(&workdir, &slug)?;
-            let model_key = roko_cli::model_selection::resolve_effective_model_key(
+            let model_key = roko_cli::model_selection::resolve_planner_model(
                 &workdir,
                 cli.model.clone(),
-                Some("strategist"),
                 "prd plan",
             )?;
             // Pre-flight: check only the provider for the resolved model.

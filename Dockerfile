@@ -19,6 +19,15 @@ RUN npm ci --prefer-offline
 COPY demo/demo-app/ ./
 RUN npm run build
 
+# ---- Portal (Next.js static export, served at /) ---------------------------
+FROM node:22-bookworm-slim AS portal
+WORKDIR /app/apps/portal
+ENV NEXT_TELEMETRY_DISABLED=1
+COPY apps/portal/package.json apps/portal/package-lock.json ./
+RUN npm ci --prefer-offline
+COPY apps/portal/ ./
+RUN npm run build:export
+
 # ---- Rust binaries --------------------------------------------------------
 FROM rust:1.96.1-slim-bookworm AS builder
 WORKDIR /app
@@ -34,6 +43,10 @@ RUN apt-get update \
 
 COPY . .
 COPY --from=frontend /app/demo/demo-app/dist ./demo/demo-app/dist
+COPY --from=portal /app/apps/portal/out ./apps/portal/out
+
+# Fail instead of embedding the fallback page (crates/roko-serve/build.rs).
+ENV ROKO_REQUIRE_EMBEDDED_UI=1
 
 RUN cargo build --release -p roko-cli --bin roko --features alloy-backend,acp \
     && cargo build --release -p mirage-rs --bin mirage-rs --features "binary,roko" \

@@ -10,7 +10,7 @@ why = "roko goes public for the Nous application, so it must not ship with an op
 
 [[goal]]
 key = "whitepaper"
-title = "Whitepaper v1: how Roko works, with honest status"
+title = "Whitepaper v1 and the research papers"
 now = 3
 why = "The first publication: frontier models plan, cheap models execute, gates and a whole-plan check verify, feedback loops improve it. Drafted in docs/whitepaper/ (2026-09-29)."
 

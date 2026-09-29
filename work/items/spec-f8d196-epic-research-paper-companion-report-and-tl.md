@@ -1,0 +1,77 @@
++++
+id = "spec-f8d196"
+kind = "spec"
+title = "Epic: research paper, companion report and TL;DR upkeep"
+status = "open"
+triage = "verified"
+severity = "p1"
+goal = "whitepaper"
+size = "L"
+subsystem = ["paper", "companion", "tldr"]
+created = 2026-09-29
+updated = 2026-09-29
+last_verified = 2026-09-29
+source = "tmp/cybernetic-harness/workstreams/PLAN.md#e18"
+discovered_from = "tmp/cybernetic-harness/workstreams/assessment/W9-paper-workstream.md"
+anchors = ["tmp/cybernetic-harness/paper/", "tmp/cybernetic-harness/companion-audit/", "tmp/cybernetic-harness/tldr/"]
+doc = "tmp/cybernetic-harness/workstreams/PLAN.md"
+lane = "paper"
+links = { depends_on = ["gap-aad48c", "gap-e08b4d", "gap-ac4ce8", "gap-56a1b4", "gap-04b0ff", "gap-2abf34", "gap-c4d630", "gap-cdd5f4", "gap-652d05", "gap-b64fba"], blocks = [], related = [], supersedes = [], duplicate_of = "" }
+
+[[verify]]
+command = "test -f tools/paperlint.py && python3 tools/paperlint.py --report tmp/cybernetic-harness/paper/sections/*.md"
++++
+
+## Problem
+
+The research paper, the companion report and the tldr all live in untracked `tmp/cybernetic-harness/`, and none of
+them had work items. The research draft (about 65k words) needs aligning with the golden-path thesis, trimming and
+tightening before any data arrives (assessment W9). The companion report needs its E1 re-derivation and its main text.
+The tldr needs refreshing after today's merges.
+
+## Why it matters
+
+Will asked on 2026-09-29 for the whitepaper and the research papers to be written in parallel with the Roko fixes.
+The research paper follows the whitepaper and fills in data as the benchmark lands.
+
+## Where
+
+- `tmp/cybernetic-harness/paper/` (OUTLINE, sections, bibliography, CLAIMS-EVIDENCE);
+- `companion-audit/`;
+- `tldr/`.
+
+## Current state
+
+The draft is 1.9× over budget, with 231 `[[RESULT]]` and 56 `[[AS-BUILT]]` markers. No marker lint exists; the
+whitepaper's paperlint (gap-af0b57) is built to serve both papers.
+
+## Plan
+
+This is the implementation plan.
+
+1. **Align, trim and tag,** one agent per file group: the framing (outline, abstract, introduction, conclusion), §4,
+   §5, §3, §8/§9, and appendices E/F.
+2. **Tooling:** the claims aggregator. paperlint comes from gap-af0b57.
+3. **Companion:** E1 re-derivation, then the E10 draft. Recruit the E2 and E3 raters (Will).
+4. **tldr:** refresh it against today's code.
+5. **Later, when data exists:** the notation table, the figure dry run, pre-registration, and filling results (W9
+   PW08, PW10–PW14).
+
+## Done when
+
+- [ ] gap-aad48c: Research paper: align the outline, abstract, introduction and conclusion with the golden-path thesis
+- [ ] gap-e08b4d: Research paper §4: rebuild §4.1 around the control stack and the golden-path loop, and tag designed identifiers
+- [ ] gap-ac4ce8: Research paper §5: record the decided evaluation scope and trim the protocol to budget
+- [ ] gap-56a1b4: Research paper §3: trim the related work to budget
+- [ ] gap-04b0ff: Research paper §8 and §9: the operator loop, field-evidence threats, and trims
+- [ ] gap-2abf34: Research paper appendices E and F: reproducibility formats and the cost of the supervising sessions
+- [ ] gap-c4d630: Research paper claims aggregator: regenerate CLAIMS-EVIDENCE.md from the section ledgers
+- [ ] gap-cdd5f4: Companion report: re-derive every number at the audit/baseline-2026-09-28 tag
+- [ ] gap-652d05: Companion report: draft the E10 main text with E1 number markers
+- [ ] gap-b64fba: Refresh the TL;DR against the 2026-09-29 merges and fix three known errors
+- [ ] The `[[verify]]` command passes (paperlint reports on every section).
+
+## Notes
+
+- Human raters for companion E2 and E3 are still needed (Will).
+- Status tags carry a commit. Results never replace a `[[RESULT]]` slot without an S09 bundle.

@@ -4,21 +4,23 @@
 
 What to work on next: the top checked, open items of each goal, highest-priority goal first. Reorder or change goals in `goals.toml`; pin an item higher with `rank = 1` (lower first).
 
-**Drift:** 70 anchor gone · 90 changed since checked · 1 mentioned in commits. Re-check them before relying on this list: `DRIFT.md`.
+**Drift:** 71 anchor gone · 99 changed since checked · 1 mentioned in commits. Re-check them before relying on this list: `DRIFT.md`.
 
 ## 1. Public release: security, licence, CI, first run
 
 - **P1** [bug-da5b41](items/bug-da5b41-a-running-roko-serve-erases-api-keys.md) A running roko serve erases API keys created by the CLI [bug] · size M · verified 2026-09-29
+- **P1** [bug-0d9ac4](items/bug-0d9ac4-agent-tool-shells-bypass-child-env-run.md) Agent tool shells bypass child_env: run_tests and ACP's bash inherit provider keys, roko-std's bash keeps its own allowlist [bug] · size M · verified 2026-09-29
 - **P1** [bug-09690f](items/bug-09690f-readme-s-quick-start-fails-and-the.md) README's quick start fails, and the README claims 100% completion [bug] · size M · verified 2026-09-29
-- **P1** [gap-5f4852](items/gap-5f4852-tool-t036-secret-canary-persistence-test-never.md) Secret-canary persistence test never run for scrubbers/persistent sinks · size L · verified 2026-09-29
 
-_21 more open · on hold: bug-7eef96 · 5 unchecked (`TRIAGE.md`) · `goal = "release"`_
+_22 more open · on hold: bug-7eef96 · 5 unchecked (`TRIAGE.md`) · `goal = "release"`_
 
-## 2. Whitepaper v1: how Roko works, with honest status
+## 2. Whitepaper v1 and the research papers
 
-- nothing checked and open
+- **P1** [gap-cdd5f4](items/gap-cdd5f4-companion-report-re-derive-every-number-at.md) Companion report: re-derive every number at the audit/baseline-2026-09-28 tag · size M · verified 2026-09-29
+- **P1** [spec-f8d196](items/spec-f8d196-epic-research-paper-companion-report-and-tl.md) Epic: research paper, companion report and TL;DR upkeep [spec] · size L · verified 2026-09-29
+- **P1** [gap-b64fba](items/gap-b64fba-refresh-the-tl-dr-against-the-2026.md) Refresh the TL;DR against the 2026-09-29 merges and fix three known errors · size M · verified 2026-09-29
 
-_0 more open · 17 unchecked (`TRIAGE.md`) · `goal = "whitepaper"`_
+_8 more open · 17 unchecked (`TRIAGE.md`) · `goal = "whitepaper"`_
 
 ## 3. Roko tells the truth and is safe (P0)
 
@@ -50,7 +52,7 @@ _0 more open · 1 unchecked (`TRIAGE.md`) · `goal = "cybernetic"`_
 - **P0** [gap-4ec59f](items/gap-4ec59f-worktree-isolation-flip-default-and-add-startup.md) Worktree Isolation: Flip Default and Add Startup Repair · size L · verified 2026-09-29
 - **P1** [bug-7c8a57](items/bug-7c8a57-plan-audit-t0-06-100-line-cap.md) 100-line cap on read_files context injection [bug] · size S · verified 2026-09-29
 
-_74 more open · 1 unchecked (`TRIAGE.md`) · `goal = "core"`_
+_78 more open · 1 unchecked (`TRIAGE.md`) · `goal = "core"`_
 
 ## 8. Live visibility: serve, dashboard, portal
 
@@ -58,7 +60,7 @@ _74 more open · 1 unchecked (`TRIAGE.md`) · `goal = "core"`_
 - **P1** [gap-aabeff](items/gap-aabeff-tool-t003-tui-paths-still-consume-string.md) TUI paths still consume string/tail projections that lose semantics (TUI adoption unproven) · size L · verified 2026-09-29
 - **P1** [find-f489db](items/find-f489db-tool-dispatch-observability-gaps-td-003-td.md) Tool Dispatch Observability Gaps (TD-003, TD-004, TD-005) [finding] · size M · verified 2026-09-29
 
-_43 more open · `goal = "visibility"`_
+_29 more open · `goal = "visibility"`_
 
 ## 9. Learning loops on the Graph path
 
@@ -92,4 +94,4 @@ _12 more open · on hold: gap-63055e, gap-8d80d3, gap-ebd656, spec-743a7e, spec-
 
 _14 more open · `goal = "hermes"`_
 
-15 open items have no goal (later); they are listed in `STATUS.md`.
+10 open items have no goal (later); they are listed in `STATUS.md`.

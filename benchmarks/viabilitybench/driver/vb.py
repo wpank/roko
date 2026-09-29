@@ -404,7 +404,9 @@ def _run_one(run: Run, instance_id: str, seed: int, stream_position: dict) -> bo
         agent_env=agent_env.build(home=homes[0]), visible_verify=tuple(task.manifest["visible_verify"]),
         files_in_scope=tuple(task.manifest["files_in_scope"]))
     if run.proxy:  # the proxy's rows for this task carry its key, which is how the Roko arm finds them
-        run.proxy.configure(task=ctx.key)
+        held = getattr(run.runner, "PROXY_CAPS", ())  # the caps a runner's harness cannot hold itself
+        run.proxy.configure(task=ctx.key, attempt_input_cap=plan.caps.input_tokens_per_attempt
+                            if "input_tokens_per_attempt" in held else None)
     try:
         outcome = run.runner.run_task(ctx)
     except Exception as err:  # the runner owns its errors; this catches its bugs

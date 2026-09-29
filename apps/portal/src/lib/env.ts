@@ -45,20 +45,3 @@ export function getRokoServeUrl(): string {
   // Production fallback — assume co-located on same origin (embedded mode)
   return '';
 }
-
-/**
- * Persist a new roko-serve URL into localStorage.
- * Pass `null` to clear the saved profile and fall back to the env var.
- */
-export function setRokoServeUrl(url: string | null): void {
-  if (typeof window === 'undefined') return;
-  try {
-    if (url === null) {
-      localStorage.removeItem(ROKO_CONNECTION_URL_KEY);
-    } else {
-      localStorage.setItem(ROKO_CONNECTION_URL_KEY, url.replace(/\/+$/, ''));
-    }
-  } catch {
-    // Ignore storage errors.
-  }
-}

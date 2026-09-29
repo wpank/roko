@@ -971,7 +971,8 @@ impl KnowledgeSeedRecord {
     /// Build a deterministic knowledge seed from a successful episode.
     #[must_use]
     pub fn from_successful_episode(episode: &Episode) -> Option<Self> {
-        if !episode.success
+        // A pass by its learning label (S01 §4.1), not an unverified success.
+        if episode.learning_success() != Some(true)
             || gate_counts_from_episode(episode).is_some_and(GateCounts::has_only_skipped)
         {
             return None;

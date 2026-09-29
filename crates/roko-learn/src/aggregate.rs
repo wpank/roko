@@ -28,11 +28,13 @@ pub struct AutocatalyticMetrics {
     pub cache_hit_rate: f64,
     /// Initial routes that matched the eventual successful model.
     pub routing_accuracy: f64,
-    /// Tasks passing gates without a replan.
+    /// Attempts with a learning label that passed their gates without a
+    /// replan, over all attempts with a label.
     pub gate_pass_rate: f64,
     /// Failed gate signatures previously observed in the window.
     pub error_dedup_rate: f64,
-    /// Dollar cost divided by successful episodes.
+    /// Dollar cost of every attempt divided by the passes (learning
+    /// label 1).
     pub cost_per_success: f64,
     /// Computation timestamp.
     pub computed_at: DateTime<Utc>,
@@ -91,12 +93,13 @@ pub fn compute_compounding_metrics(episodes: &[Episode]) -> AutocatalyticMetrics
         .iter()
         .filter_map(|episode| {
             let initial = episode.extra.get("initial_model")?.as_str()?;
+            let learned = episode.learning_success()?;
             let successful = episode
                 .extra
                 .get("successful_model")
                 .and_then(serde_json::Value::as_str)
                 .unwrap_or(&episode.model);
-            Some(initial == successful && episode.success)
+            Some(initial == successful && learned)
         })
         .collect::<Vec<_>>();
     let routing_accuracy = if routes.is_empty() {
@@ -104,10 +107,17 @@ pub fn compute_compounding_metrics(episodes: &[Episode]) -> AutocatalyticMetrics
     } else {
         routes.iter().filter(|accurate| **accurate).count() as f64 / routes.len() as f64
     };
+    // Outcomes come from the learning label (S01 §4.1): an unverified
+    // success is no pass, and an attempt without a label is left out of the
+    // pass rate. Cost per success still counts every attempt's spend.
+    let labelled = episodes
+        .iter()
+        .filter(|episode| episode.learning_success().is_some())
+        .count();
     let first_passes = episodes
         .iter()
         .filter(|episode| {
-            episode.success
+            episode.learning_success() == Some(true)
                 && !episode.extra.contains_key("replan")
                 && episode.gate_verdicts.iter().all(|verdict| verdict.passed)
         })
@@ -127,7 +137,10 @@ pub fn compute_compounding_metrics(episodes: &[Episode]) -> AutocatalyticMetrics
             }
         }
     }
-    let successful = episodes.iter().filter(|episode| episode.success).count();
+    let successful = episodes
+        .iter()
+        .filter(|episode| episode.learning_success() == Some(true))
+        .count();
     let total_cost = episodes
         .iter()
         .map(|episode| episode.usage.cost_usd)
@@ -139,7 +152,11 @@ pub fn compute_compounding_metrics(episodes: &[Episode]) -> AutocatalyticMetrics
         playbook_hit_rate: ratio(playbook_hits),
         cache_hit_rate,
         routing_accuracy,
-        gate_pass_rate: ratio(first_passes),
+        gate_pass_rate: if labelled == 0 {
+            0.0
+        } else {
+            first_passes as f64 / labelled as f64
+        },
         error_dedup_rate: if failures == 0 {
             0.0
         } else {

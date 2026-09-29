@@ -375,6 +375,56 @@ async fn skipped_only_gate_runs_are_blocked_not_passed_and_do_not_update_learnin
     assert_eq!(variant_trials, Some(0));
 }
 
+/// gap-88c547: an attempt without a learning label (S01 §4.1), such as an
+/// unverified success, is logged and priced, and provider health hears how
+/// the provider did, but no learner updates from it.
+#[tokio::test]
+async fn unlabelled_attempts_update_no_runtime_learner() {
+    let tmp = TempDir::new().unwrap();
+    let mut runtime = LearningRuntime::open_with_models(
+        LearningPaths::under(tmp.path()),
+        RegressionConfig::default(),
+        vec!["claude-opus-4-6".to_string()],
+    )
+    .await
+    .unwrap();
+    runtime.set_update_frequency(UpdateFrequency {
+        router_every_n_episodes: 1,
+        gate_thresholds_every_n: 1,
+        experiments_every_n: 1,
+        skill_mining_every_n: 1,
+        pattern_discovery_every_n: 1,
+        distiller_every_n: 1,
+    });
+
+    let mut episode = sample_episode(true);
+    episode.gate_verdicts.clear();
+    episode.extra.insert(
+        crate::episode_logger::LEARNING_LABEL_KEY.to_string(),
+        serde_json::Value::Null,
+    );
+    let mut input =
+        CompletedRunInput::from_episode(episode).with_task_metric(sample_metric(1, true, 0.42));
+    input.provider = Some("anthropic".to_string());
+    input.matched_skill_id = Some("skill-unlabelled".to_string());
+
+    let update = runtime.record_completed_run(input).await.unwrap();
+
+    assert_eq!(update.episode_logged, ApplyStatus::Applied);
+    assert_eq!(update.cost_logged, ApplyStatus::Applied);
+    assert_eq!(update.provider_updated, ApplyStatus::Applied);
+    assert_eq!(update.provider_model_outcome_recorded, ApplyStatus::Skipped);
+    assert_eq!(update.matched_skill_updated, ApplyStatus::Skipped);
+    assert_eq!(update.knowledge_seed_recorded, ApplyStatus::Skipped);
+    assert!(!update.router_updated);
+    assert!(update.extracted_skill_id.is_none());
+    assert!(update.regression_report.is_none());
+    assert_eq!(runtime.local_reward_score("router", "claude-opus-4-6"), 0.5);
+    assert_eq!(runtime.cascade_router().total_observations(), 0);
+    assert_eq!(runtime.skill_library().len(), 0);
+    assert!(!runtime.paths().task_metrics_jsonl.exists());
+}
+
 #[tokio::test]
 async fn append_efficiency_event_updates_section_effectiveness_registry() {
     let tmp = TempDir::new().unwrap();

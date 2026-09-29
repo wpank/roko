@@ -1417,6 +1417,10 @@ impl LearningRuntime {
             }
             update.provider_updated = ApplyStatus::Applied;
         }
+        // An attempt without a learning label (S01 §4.1) has told provider
+        // health how the provider did, but, like one whose gates all
+        // skipped, it teaches no learner.
+        let skip_only = skip_only || input.episode.learning_success().is_none();
 
         if let Some(outcome) = ProviderModelOutcomeRecord::from_episode(
             &input.episode,
@@ -1643,8 +1647,9 @@ impl LearningRuntime {
             episode.task_id.clone()
         };
         let mut engine = self.affect_engine.lock();
-        let skip_only =
-            gate_counts_from_episode(episode).is_some_and(GateCountsInner::has_only_skipped);
+        // An attempt without a learning label (S01 §4.1) moves no affect.
+        let skip_only = episode.learning_success().is_none()
+            || gate_counts_from_episode(episode).is_some_and(GateCountsInner::has_only_skipped);
         if !skip_only {
             for (rung, verdict) in episode.gate_verdicts.iter().enumerate() {
                 let _ = engine.appraise(AffectEvent::GateResult {

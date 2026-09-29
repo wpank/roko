@@ -10,12 +10,24 @@
 //! observations. Now there is one path:
 //! `FeedbackEvent::TaskCompleted -> RoutingObservationSink::record(...)`.
 //!
+//! ## Quality evidence only
+//!
+//! The router learns only from the settled attempt's learning label
+//! ([`FeedbackEvent::learning_success`], S01 §4.1): a gate pass is a
+//! success, and a failure of the agent's work (a gate failure, a turn-cap
+//! stop, a timeout after output) is a failure. Unverified, force-accepted,
+//! provider-failed and harness-failed attempts are not quality evidence and
+//! leave the router alone; the failover health registry tracks provider
+//! health.
+//!
 //! ## Override handling
 //!
 //! When [`ModelChoiceSource::Override`] tagged a task, the sink records
 //! it via `record_override_outcome` so manual operator overrides do not
 //! pollute the bandit signal that drives router decisions on
-//! non-overridden tasks.
+//! non-overridden tasks. A `[routing.ladder]` rung
+//! ([`ModelChoiceSource::Ladder`]) is recorded like the router's own pick,
+//! so the learner sees every rung.
 
 use std::sync::Arc;
 
@@ -24,7 +36,7 @@ use roko_core::agent::AgentRole;
 use roko_core::config::RewardWeights;
 use roko_core::task::{TaskCategory, TaskComplexityBand};
 use roko_core::{BehavioralState, DaimonPolicy};
-use roko_learn::cascade_router::CascadeRouter;
+use roko_learn::cascade_router::{CascadeRouter, normalized_cost_and_latency};
 use roko_learn::model_router::RoutingContext;
 
 use super::{FeedbackEvent, FeedbackSink};
@@ -59,19 +71,25 @@ impl FeedbackSink for RoutingObservationSink {
         "routing"
     }
 
+    /// Only a completed attempt with a learning label; the facade counts
+    /// the others as skipped.
     fn interested(&self, event: &FeedbackEvent) -> bool {
-        matches!(event, FeedbackEvent::TaskCompleted { .. })
+        matches!(event, FeedbackEvent::TaskCompleted { .. }) && event.learning_success().is_some()
     }
 
     async fn on_event(&self, event: &FeedbackEvent) -> Result<(), anyhow::Error> {
         let FeedbackEvent::TaskCompleted {
             outcome,
             model_source,
-            succeeded,
             routing_context,
             ..
         } = event
         else {
+            return Ok(());
+        };
+        // Quality evidence only: an attempt without a learning label
+        // updates no counter, override or bandit.
+        let Some(succeeded) = event.learning_success() else {
             return Ok(());
         };
 
@@ -80,21 +98,23 @@ impl FeedbackSink for RoutingObservationSink {
             None => build_fallback_routing_context(&outcome.model),
         };
 
-        // bug-c34782 plugs in here: it replaces `succeeded` with the
-        // settled attempt verdict, so unverified, force-accepted and
-        // provider-failed attempts stop counting as quality evidence.
-
         // Audit #84: always record category-level stats (even for
         // overrides) so confidence_scores can adjust per-category.
         self.router
-            .record_category_outcome(&outcome.model, ctx.task_category, *succeeded);
+            .record_category_outcome(&outcome.model, ctx.task_category, succeeded);
 
         // Audit #90: manual overrides must not pollute the bandit signal.
         // Route them through the dampened `record_override_outcome` path
         // instead of the full router-outcome path.
         if *model_source == ModelChoiceSource::Override {
-            self.router
-                .record_override_outcome(&outcome.model, &ctx, *succeeded, None);
+            self.router.record_override_outcome(
+                &outcome.model,
+                &ctx,
+                succeeded,
+                outcome.cost_usd,
+                outcome.duration_ms,
+                None,
+            );
             return Ok(());
         }
 
@@ -102,7 +122,7 @@ impl FeedbackSink for RoutingObservationSink {
             &self.router,
             &outcome.model,
             &ctx,
-            *succeeded,
+            succeeded,
             outcome.cost_usd,
             outcome.duration_ms,
         );
@@ -131,11 +151,7 @@ pub(crate) fn observe_router_outcome(
     };
 
     // P0-05: Feed real cost from the agent outcome into the bandit.
-    // Normalize against a $1.00 per-task ceiling and latency against a
-    // 5-minute ceiling so both signals stay in [0, 1] for the LinUCB
-    // reward computation.
-    let normalized_cost = (cost_usd / 1.0).clamp(0.0, 1.0);
-    let normalized_latency = (duration_ms as f64 / 300_000.0).clamp(0.0, 1.0);
+    let (normalized_cost, normalized_latency) = normalized_cost_and_latency(cost_usd, duration_ms);
     let weights = RewardWeights::default();
     router.observe_multi_objective_outcome(
         ctx.to_features(),
@@ -180,7 +196,83 @@ pub(crate) fn build_fallback_routing_context(model: &str) -> RoutingContext {
 mod tests {
     use super::*;
     use crate::dispatch::AgentOutcome;
+    use crate::runtime_feedback::settled_as;
     use roko_learn::cascade_router::CascadeRouter;
+    use roko_learn::telemetry::{AttemptOutcome, AttemptVerdictRecord};
+
+    /// A completed attempt whose provider call succeeded, settled as
+    /// `settled`.
+    fn completed(
+        verdict: Option<Arc<AttemptVerdictRecord>>,
+        model_source: ModelChoiceSource,
+    ) -> FeedbackEvent {
+        FeedbackEvent::TaskCompleted {
+            turns: 0,
+            failure_reason: None,
+            settled: verdict,
+            plan_id: "p".into(),
+            task_id: "t".into(),
+            outcome: outcome(true),
+            model_source,
+            succeeded: true,
+            routing_context: Some(test_routing_context()),
+            prompt_text: None,
+            cache_read_tokens: 0,
+            knowledge_ids: vec![],
+            playbook_ids: vec![],
+            initial_model: String::new(),
+        }
+    }
+
+    /// bug-c34782 (S01 §4.1): only a gate verdict or a failure of the
+    /// agent's work moves the router. Unverified, force-accepted,
+    /// provider-failed and harness-failed attempts, and events without a
+    /// settled record, update no counter, override or bandit, although the
+    /// provider call succeeded and `succeeded` is set.
+    #[tokio::test]
+    async fn routing_sink_skips_attempts_without_a_learning_label() {
+        use AttemptOutcome as O;
+        let r = router();
+        let sink = RoutingObservationSink::new(r.clone());
+        let unlabelled = [
+            settled_as(O::Unverified, false),
+            settled_as(O::ForcedAccept, false),
+            settled_as(O::ProviderError, true),
+            settled_as(O::ProviderExhausted, false),
+            settled_as(O::Timeout, false),
+            settled_as(O::HarnessError, false),
+            None,
+        ];
+        for source in [ModelChoiceSource::Router, ModelChoiceSource::Override] {
+            for verdict in unlabelled.clone() {
+                let event = completed(verdict, source);
+                assert!(!sink.interested(&event));
+                sink.on_event(&event).await.unwrap();
+            }
+        }
+        assert!(r.confidence_snapshot().is_empty(), "no confidence trial");
+        assert_eq!(r.total_observations(), 0, "no bandit observation");
+
+        for (outcome, first_token_seen) in [
+            (O::Passed, false),
+            (O::GateFailed, false),
+            (O::TurnCap, false),
+            (O::Timeout, true),
+        ] {
+            let event = completed(
+                settled_as(outcome, first_token_seen),
+                ModelChoiceSource::Router,
+            );
+            assert!(sink.interested(&event), "{outcome:?}");
+            sink.on_event(&event).await.unwrap();
+        }
+        assert_eq!(
+            r.confidence_snapshot().get("claude-sonnet-4-6").copied(),
+            Some((4, 1)),
+            "one pass and three failures of the agent's work"
+        );
+        assert_eq!(r.total_observations(), 4);
+    }
 
     fn outcome(success: bool) -> AgentOutcome {
         AgentOutcome {
@@ -234,7 +326,7 @@ mod tests {
         let event = FeedbackEvent::TaskCompleted {
             turns: 0,
             failure_reason: None,
-            settled: None,
+            settled: settled_as(AttemptOutcome::Passed, false),
             plan_id: "p".into(),
             task_id: "t".into(),
             outcome: outcome(true),
@@ -261,6 +353,37 @@ mod tests {
         );
     }
 
+    /// gap-9cbf35: a ladder rung's settled outcome teaches the router like
+    /// its own pick would, so the learner sees every rung.
+    #[tokio::test]
+    async fn ladder_outcomes_are_recorded_like_router_outcomes() {
+        let r = router();
+        let sink = RoutingObservationSink::new(r.clone());
+        let event = FeedbackEvent::TaskCompleted {
+            turns: 0,
+            failure_reason: None,
+            settled: settled_as(AttemptOutcome::Passed, false),
+            plan_id: "p".into(),
+            task_id: "t".into(),
+            outcome: outcome(true),
+            model_source: ModelChoiceSource::Ladder { rung: 3 },
+            succeeded: true,
+            routing_context: Some(test_routing_context()),
+            prompt_text: None,
+            cache_read_tokens: 0,
+            knowledge_ids: vec![],
+            playbook_ids: vec![],
+            initial_model: String::new(),
+        };
+        sink.on_event(&event).await.unwrap();
+        assert_eq!(
+            r.confidence_snapshot().get("claude-sonnet-4-6").copied(),
+            Some((1, 1)),
+            "a ladder outcome is a full confidence trial, not a dampened override"
+        );
+        assert_eq!(r.total_observations(), 1);
+    }
+
     #[tokio::test]
     async fn routing_sink_updates_linucb_on_failure() {
         // bug-8da8ba: a router-chosen failure reaches the same learners as a
@@ -270,7 +393,7 @@ mod tests {
         let event = FeedbackEvent::TaskCompleted {
             turns: 0,
             failure_reason: None,
-            settled: None,
+            settled: settled_as(AttemptOutcome::GateFailed, false),
             plan_id: "p".into(),
             task_id: "t".into(),
             outcome: outcome(false),
@@ -318,7 +441,7 @@ mod tests {
         let event = FeedbackEvent::TaskCompleted {
             turns: 0,
             failure_reason: None,
-            settled: None,
+            settled: settled_as(AttemptOutcome::Passed, false),
             plan_id: "p".into(),
             task_id: "t".into(),
             outcome: outcome(true),
@@ -332,10 +455,9 @@ mod tests {
             initial_model: String::new(),
         };
         sink.on_event(&event).await.unwrap();
-        // record_override_outcome uses observe_multi_objective with
-        // dampened quality (0.5), so LinUCB observations advance but
-        // the confidence_stats snapshot should NOT be touched by the
-        // override path (it only goes through the LinUCB bandit).
+        // record_override_outcome counts the override as a confidence trial
+        // and gives LinUCB a dampened (half-weight) update, so the bandit's
+        // observation count still advances (bug-f68404).
         assert!(
             r.total_observations() >= 1,
             "override must still advance LinUCB observations via dampened path",
@@ -351,7 +473,7 @@ mod tests {
         let event = FeedbackEvent::TaskCompleted {
             turns: 0,
             failure_reason: None,
-            settled: None,
+            settled: settled_as(AttemptOutcome::Passed, false),
             plan_id: "p".into(),
             task_id: "t".into(),
             outcome: bad_outcome,
@@ -390,7 +512,7 @@ mod tests {
         let event = FeedbackEvent::TaskCompleted {
             turns: 0,
             failure_reason: None,
-            settled: None,
+            settled: settled_as(AttemptOutcome::Passed, false),
             plan_id: "p".into(),
             task_id: "t".into(),
             outcome: outcome(true),
@@ -426,7 +548,7 @@ mod tests {
         let event = FeedbackEvent::TaskCompleted {
             turns: 0,
             failure_reason: None,
-            settled: None,
+            settled: settled_as(AttemptOutcome::Passed, false),
             plan_id: "p".into(),
             task_id: "t".into(),
             outcome: outcome(true),

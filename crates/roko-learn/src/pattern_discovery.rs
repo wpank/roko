@@ -425,6 +425,17 @@ impl CrossEpisodeConsolidator {
     }
 }
 
+/// An episode's outcome from its learning label (S01 §4.1). An attempt
+/// without one (unverified, or failed at the provider) is `unlabelled`, so
+/// it never clusters as a success.
+fn episode_outcome(episode: &Episode) -> &'static str {
+    match episode.learning_success() {
+        Some(true) => "success",
+        Some(false) => "failure",
+        None => "unlabelled",
+    }
+}
+
 fn episode_vector(episode: &Episode) -> HdcVector {
     let kind = field_vector("kind", normalized(&episode.kind));
     let template = field_vector("agent_template", normalized(&episode.agent_template));
@@ -439,14 +450,7 @@ fn episode_vector(episode: &Episode) -> HdcVector {
         "complexity_band",
         episode_extra_string(episode, "complexity_band"),
     );
-    let outcome = field_vector(
-        "outcome",
-        if episode.success {
-            "success"
-        } else {
-            "failure"
-        },
-    );
+    let outcome = field_vector("outcome", episode_outcome(episode));
     let gate_signature = field_vector("gate_signature", gate_signature(episode));
     let failure_reason = field_vector(
         "failure_reason",
@@ -553,11 +557,7 @@ fn summarize_cluster(episodes: &[&Episode]) -> String {
         episode_extra_string(episode, "complexity_band")
     });
     summarize_majority_field(&mut parts, "outcome", episodes, |episode| {
-        if episode.success {
-            "success".to_string()
-        } else {
-            "failure".to_string()
-        }
+        episode_outcome(episode).to_string()
     });
 
     if parts.is_empty() {
@@ -973,5 +973,35 @@ mod tests {
         assert_eq!(report.total_episodes, 1);
         assert_eq!(report.meta_pattern_count, 0);
         assert!(report.meta_patterns.is_empty());
+    }
+
+    /// gap-88c547: an episode's cluster outcome comes from its learning
+    /// label, so an unverified success never clusters as a success.
+    #[test]
+    fn cross_episode_outcomes_come_from_the_learning_label() {
+        use crate::episode_logger::LEARNING_LABEL_KEY;
+
+        let episode = |success: bool, label: Option<serde_json::Value>| {
+            let mut episode = Episode::new("agent", "task");
+            episode.success = success;
+            if let Some(label) = label {
+                episode.extra.insert(LEARNING_LABEL_KEY.into(), label);
+            }
+            episode
+        };
+        let outcomes = [
+            episode(true, Some(serde_json::Value::Null)),
+            episode(false, Some(serde_json::Value::Null)),
+            episode(true, Some(serde_json::json!(1))),
+            episode(false, Some(serde_json::json!(0))),
+            episode(true, None),
+        ]
+        .iter()
+        .map(episode_outcome)
+        .collect::<Vec<_>>();
+        assert_eq!(
+            outcomes,
+            ["unlabelled", "unlabelled", "success", "failure", "success"]
+        );
     }
 }

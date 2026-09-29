@@ -21,7 +21,7 @@ use roko_agent::{Agent, AgentResult, nl_to_format::NlToFormatConverter};
 use roko_core::{Body, Context as RokoContext, Kind, Signal};
 use roko_learn::{
     cfactor::{CFactor, CFactorRegression, detect_cfactor_regression},
-    episode_logger::{Episode, EpisodeGateVerdict, EpisodeLogger, Usage},
+    episode_logger::{Episode, EpisodeGateVerdict, EpisodeLogger, Usage, learnable_episodes},
     pattern_discovery::{CrossEpisodeConsolidationReport, CrossEpisodeConsolidator},
     playbook::{Playbook, PlaybookStep, PlaybookStore},
 };
@@ -536,6 +536,11 @@ impl DreamCycle {
         });
 
         let mut processed_through = batch.iter().map(|episode| episode.timestamp).max();
+        // Dreams learn only from attempts with a learning label (S01 §4.1),
+        // each counted as its label says. An unverified or provider-failed
+        // attempt still counts as processed, so the cursor passes it.
+        let historical = learnable_episodes(historical);
+        let batch = learnable_episodes(batch);
         self.emit_success_rate_regression(&historical, &batch, started_at)?;
         let cfactor_regression = self.emit_cfactor_regression(started_at)?;
         let progression = TierProgression::default();
@@ -3095,6 +3100,74 @@ mod tests {
             .and_then(|value| value.parse().ok())
             .expect("drop fraction tag");
         assert!(drop_fraction > DREAMS_SUCCESS_REGRESSION_THRESHOLD);
+    }
+
+    /// gap-eb82c9: a dream learns only from attempts with a learning label.
+    /// Recent provider failures carry a `null` label, so they are neither
+    /// replayed nor read as a success-rate regression, and the cursor still
+    /// passes them.
+    #[tokio::test]
+    async fn dreams_skip_episodes_without_a_learning_label() {
+        use roko_learn::episode_logger::LEARNING_LABEL_KEY;
+
+        let tmp = TempDir::new().expect("tempdir");
+        let roko = tmp.path().join(".roko");
+        let logger = EpisodeLogger::new(roko.join("episodes.jsonl"));
+        let knowledge_store = Arc::new(KnowledgeStore::new(roko.join("neuro/knowledge.jsonl")));
+        let playbook_store = Arc::new(PlaybookStore::new(roko.join("playbooks")));
+        let dispatcher = Arc::new(MockDispatcher {
+            response: r#"<|json|>{"entries":[]}<|/json|>"#.to_string(),
+        });
+
+        let historical = Utc::now() - chrono::Duration::hours(2);
+        let recent = Utc::now();
+        for idx in 0..5 {
+            // Written before learning labels existed: `success` counts.
+            let ep = episode_at(
+                &format!("hist-{idx}"),
+                "plan-a",
+                "implementation",
+                "claude-haiku-4-5",
+                true,
+                None,
+                historical + chrono::Duration::minutes(i64::from(idx)),
+            );
+            write_episode(&logger, &ep).await;
+        }
+        let latest = recent + chrono::Duration::minutes(4);
+        for idx in 0..5 {
+            let mut ep = episode_at(
+                &format!("recent-{idx}"),
+                "plan-b",
+                "docs",
+                "claude-haiku-4-5",
+                false,
+                Some("provider: exit 1: upstream connect error"),
+                recent + chrono::Duration::minutes(i64::from(idx)),
+            );
+            ep.gate_verdicts.clear();
+            ep.extra.insert(LEARNING_LABEL_KEY.to_string(), Value::Null);
+            write_episode(&logger, &ep).await;
+        }
+
+        let mut cycle = DreamCycle::new(
+            Arc::new(logger),
+            knowledge_store,
+            playbook_store,
+            dispatcher,
+        );
+        cycle.set_last_dream_at(Some(historical + chrono::Duration::minutes(30)));
+        let report = cycle.run().await.expect("run");
+
+        assert_eq!(report.processed_episodes, 0, "unlabelled episodes replayed");
+        assert_eq!(report.processed_through, Some(latest));
+        let signals = read_signals(&roko.join("signals.jsonl"));
+        assert!(
+            signals
+                .iter()
+                .all(|signal| signal.kind.as_str() != "dreams:regression"),
+            "provider failures read as a regression: {signals:?}"
+        );
     }
 
     #[tokio::test]

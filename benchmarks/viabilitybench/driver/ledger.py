@@ -11,8 +11,8 @@ A cost is each class times its rate. Reasoning tokens are added only for a row w
 otherwise they are already inside `tokens_out`. `without_cache_usd` prices cache reads as input.
 
 `Ledger` appends one row per dispatched attempt to `ledger.jsonl`, validated against `schema/ledger.schema.json`,
-and never rewrites the file. Each row names its budget line (S09 §4.6) and the worst-case cost reserved before the
-attempt was dispatched.
+and never rewrites the file. Each row names its budget line (S09 §4.6), the worst-case cost reserved before the
+attempt was dispatched, and whether the account is billed for it (`billed`, false on a subscription).
 
 **The budget** (`experiments/budget.toml`, read by `load_budget`) holds S09's budget lines with their caps, experiment
 caps (the pilot's two experiment ids share $15) and the programme stop. Amounts are billed USD: a subscription run
@@ -279,7 +279,7 @@ class Ledger:
         row = {"ts": _now(), "line": self.line, "experiment_id": self.experiment_id, "run_id": self.run_id,
                "attempt_key": attempt_key, "provider": provider, "model_reported": model_reported, "usage": usage,
                "api_equiv_usd": cost.api_equiv_usd, "billed_usd": billed_usd, "reserved_usd": round(reserved_usd, 6),
-               "price_snapshot_id": self.price_snapshot_id, "source": cost.source}
+               "price_snapshot_id": self.price_snapshot_id, "source": cost.source, "billed": billed}
         errors = validate.validate("ledger", row)
         if errors:
             raise LedgerError(f"refusing to write an invalid ledger row: {errors[0]}")
@@ -755,7 +755,10 @@ def _now() -> str:
 
 
 def _subscription(row: dict) -> bool:
-    """A row that a subscription paid for: it bills $0 while its API-equivalent cost is above $0 or unknown."""
+    """A row that a subscription paid for: marked `billed: false`, or, in a row from before the mark (bug-a49003),
+    one that bills $0 while its API-equivalent cost is above $0 or unknown."""
+    if "billed" in row:
+        return row["billed"] is False
     return row["billed_usd"] == 0 and row["api_equiv_usd"] != 0
 
 

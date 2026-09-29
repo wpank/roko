@@ -38,8 +38,15 @@ use roko_core::foundation::KnowledgeQuery;
 
 /// Records explicit model override outcomes when no routing context is available.
 pub trait ForceBackendOverrideRecorder: Send + Sync {
-    /// Record a confidence-only outcome for a forced model slug.
-    fn record_override_outcome(&self, model_slug: &str, success: bool) -> bool;
+    /// Record the outcome of a call to a forced model slug, with what it cost
+    /// and how long it took.
+    fn record_override_outcome(
+        &self,
+        model_slug: &str,
+        success: bool,
+        cost_usd: f64,
+        latency_ms: u64,
+    ) -> bool;
 }
 
 /// Records real LLM provider outcomes (success / failure) into the shared
@@ -857,6 +864,8 @@ impl ModelCallService {
         requested_model: &str,
         model_used: &str,
         success: bool,
+        cost_usd: f64,
+        latency_ms: u64,
     ) {
         if requested_model.is_empty() {
             return;
@@ -866,7 +875,7 @@ impl ModelCallService {
             return;
         };
 
-        if !router.record_override_outcome(model_used, success) {
+        if !router.record_override_outcome(model_used, success, cost_usd, latency_ms) {
             tracing::debug!(
                 requested_model,
                 model_used,
@@ -2522,7 +2531,13 @@ impl ModelCaller for ModelCallService {
                     false,
                     Some(message.clone()),
                 )?;
-                self.record_force_backend_override(&req.model, &model, false);
+                self.record_force_backend_override(
+                    &req.model,
+                    &model,
+                    false,
+                    usage.cost_usd,
+                    latency_ms,
+                );
                 self.record_feedback(
                     &req,
                     &request_id,
@@ -2568,7 +2583,13 @@ impl ModelCaller for ModelCallService {
                     error: error.to_string(),
                 });
             }
-            self.record_force_backend_override(&req.model, &output.model_used, false);
+            self.record_force_backend_override(
+                &req.model,
+                &output.model_used,
+                false,
+                usage.cost_usd,
+                latency_ms,
+            );
             let output_provider = self.provider_for_model(&output.model_used);
             self.write_gateway_event(
                 &req,
@@ -2629,7 +2650,13 @@ impl ModelCaller for ModelCallService {
                 cost_usd: usage.cost_usd,
             });
         }
-        self.record_force_backend_override(&req.model, &output.model_used, true);
+        self.record_force_backend_override(
+            &req.model,
+            &output.model_used,
+            true,
+            usage.cost_usd,
+            output.latency_ms,
+        );
         let output_provider = self.provider_for_model(&output.model_used);
         self.write_gateway_event(
             &req,
@@ -2690,7 +2717,13 @@ mod tests {
     }
 
     impl ForceBackendOverrideRecorder for TestCascadeRecorder {
-        fn record_override_outcome(&self, model_slug: &str, success: bool) -> bool {
+        fn record_override_outcome(
+            &self,
+            model_slug: &str,
+            success: bool,
+            _cost_usd: f64,
+            _latency_ms: u64,
+        ) -> bool {
             let mut stats = self.confidence_stats.lock();
             let entry = stats.entry(model_slug.to_string()).or_default();
             entry.0 += 1;

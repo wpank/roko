@@ -53,3 +53,4 @@ At BASE all six features are `pending`, and no review has run.
 
 - This costs model calls on a non-Anthropic provider. Confirm the budget line and the provider before running.
 - Keep the reviewer's prompts and outputs with the fixtures' provenance, outside the tree an agent sees.
+- 2026-09-29 (wk-rp-appAB): still pending at d2cc43346 (every `feature.toml` still has `cross_family_review = "pending"`), and the paper's Appendix A now lists the unreviewed plan-slice suites as a threat to validity. Clearing this item also clears that entry.

@@ -2,14 +2,16 @@
 id = "gap-04e8e2"
 kind = "gap"
 title = "ViabilityBench plan-slice records carry no queue waits or per-class costs, so the report prints them as not recorded"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p2"
 goal = "proof"
 size = "M"
 subsystem = ["benchmarks/viabilitybench/driver", "benchmarks/viabilitybench/analysis"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-29
+last_verified_rev = "fb4e50ab6"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (20:01, wk-bench-report's report on gap-b24517)"
 anchors = ["benchmarks/viabilitybench/analysis/metrics.py::_feature_cell", "benchmarks/viabilitybench/analysis/metrics.py::plan_slice", "benchmarks/viabilitybench/schema/run-record.schema.json", "benchmarks/viabilitybench/driver/records.py:104", "benchmarks/viabilitybench/driver/run_roko.py"]
@@ -19,6 +21,12 @@ links = { depends_on = [], blocks = [], related = ["gap-b24517", "gap-1cd676", "
 
 [[verify]]
 command = "grep -q 'queue_wait_s' benchmarks/viabilitybench/schema/run-record.schema.json && grep -qw 'def test_plan_slice_records_carry_queue_waits_and_class_costs' benchmarks/viabilitybench/driver/test_run_roko.py && benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/driver/test_run_roko.py -k test_plan_slice_records_carry_queue_waits_and_class_costs -q"
+
+[closed]
+at = 2026-09-29
+commit = "fb4e50ab6"
+by = "wk-bench-fix3"
+evidence = "run-record schema gains execution.queue_wait_s, attempts[].task_id/cost_class/started_at/finished_at/queue_wait_s and costs.by_class (validate.py holds the classes to api_equiv_usd and the record's wait to its attempts'); records.py sums them, null for runners that do not record them (direct, CLI); run_roko.py classes each attempt (execute/retry/escalate), times it (S01 verdict timing, else episode completed_at - duration_secs) and takes rate-limit waits from the proxy's 429s; metrics.plan_slice and vb report print queue waits and the Roko process measures, listing only what is missing. Slot waits of multi-task plans need the Graph engine to record ready and dispatch times (follow-up reported). Verify: test_plan_slice_records_carry_queue_waits_and_class_costs passes; full bench suite 304 passed, 4 skipped."
 +++
 
 ## Problem

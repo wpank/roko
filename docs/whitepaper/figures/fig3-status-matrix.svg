@@ -1,6 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="880" height="406" viewBox="0 0 880 406" role="img" aria-labelledby="title desc" data-pin="a17d4dadd">
-  <title id="title">Status matrix at a17d4dadd</title>
-  <desc id="desc">71 mechanisms in 9 groups, one square per row of the appendix, sorted by tag: WIRED 21, PARTIAL 23, BROKEN 2, ORPHANED 7, BUILT-UNWIRED 7, MISSING 10, REMOVED 1.</desc>
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="406" viewBox="0 0 880 406" role="img" aria-labelledby="title desc" data-pin="ed0c33bd5">
+  <title id="title">Status matrix at ed0c33bd5</title>
+  <desc id="desc">71 mechanisms in 9 groups, one square per row of the appendix, sorted by tag: WIRED 23, PARTIAL 22, BROKEN 2, ORPHANED 7, BUILT-UNWIRED 7, MISSING 9, REMOVED 1.</desc>
   <defs>
     <pattern id="fill-partial" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
       <rect width="6" height="6" fill="#fde9b8"/>
@@ -33,22 +33,22 @@
   </style>
   <rect width="880" height="406" rx="8" fill="#ffffff"/>
   <text class="note" x="16" y="28" font-size="12">On the production path</text>
-  <g class="wired"><rect class="key" x="258.5" y="16.5" width="22" height="14" rx="2"/><text x="288" y="28" font-size="12">WIRED 21</text></g>
-  <g class="partial"><rect class="key" x="374.1" y="16.5" width="22" height="14" rx="2"/><text x="403.6" y="28" font-size="12">PARTIAL 23</text></g>
+  <g class="wired"><rect class="key" x="258.5" y="16.5" width="22" height="14" rx="2"/><text x="288" y="28" font-size="12">WIRED 23</text></g>
+  <g class="partial"><rect class="key" x="374.1" y="16.5" width="22" height="14" rx="2"/><text x="403.6" y="28" font-size="12">PARTIAL 22</text></g>
   <g class="broken"><rect class="key" x="506.1" y="16.5" width="22" height="14" rx="2"/><text x="535.6" y="28" font-size="12">BROKEN 2</text></g>
   <text class="note" x="16" y="52" font-size="12">Not on the path</text>
   <g class="orphaned"><rect class="key" x="258.5" y="40.5" width="22" height="14" rx="2"/><text x="288" y="52" font-size="12">ORPHANED 7</text></g>
   <g class="built-unwired"><rect class="key" x="390.5" y="40.5" width="22" height="14" rx="2"/><text x="420" y="52" font-size="12">BUILT-UNWIRED 7</text></g>
-  <g class="missing"><rect class="key" x="563.5" y="40.5" width="22" height="14" rx="2"/><text x="593" y="52" font-size="12">MISSING 10</text></g>
-  <g class="removed"><rect class="key" x="695.5" y="40.5" width="22" height="14" rx="2"/><text x="725" y="52" font-size="12">REMOVED 1</text></g>
+  <g class="missing"><rect class="key" x="563.5" y="40.5" width="22" height="14" rx="2"/><text x="593" y="52" font-size="12">MISSING 9</text></g>
+  <g class="removed"><rect class="key" x="687.3" y="40.5" width="22" height="14" rx="2"/><text x="716.8" y="52" font-size="12">REMOVED 1</text></g>
   <text x="16" y="96" font-size="13" font-weight="bold">AU</text><text x="50" y="96" font-size="13">Authoring and specs</text>
   <g class="wired" data-row="AU1" data-tag="WIRED"><title>AU1 Plan generator: WIRED</title><rect class="key" x="258.5" y="78.5" width="45" height="25" rx="3"/><text class="id" x="281" y="95" font-size="11.5" text-anchor="middle">AU1</text></g>
   <g class="wired" data-row="AU2" data-tag="WIRED"><title>AU2 Plan validation: WIRED</title><rect class="key" x="308.5" y="78.5" width="45" height="25" rx="3"/><text class="id" x="331" y="95" font-size="11.5" text-anchor="middle">AU2</text></g>
   <g class="wired" data-row="AU4" data-tag="WIRED"><title>AU4 Context packs: WIRED</title><rect class="key" x="358.5" y="78.5" width="45" height="25" rx="3"/><text class="id" x="381" y="95" font-size="11.5" text-anchor="middle">AU4</text></g>
-  <g class="partial" data-row="AU6" data-tag="PARTIAL"><title>AU6 Acceptance criteria: PARTIAL</title><rect class="key" x="408.5" y="78.5" width="45" height="25" rx="3"/><text class="id" x="431" y="95" font-size="11.5" text-anchor="middle">AU6</text></g>
-  <g class="partial" data-row="AU7" data-tag="PARTIAL"><title>AU7 Pinned acceptance tests: PARTIAL</title><rect class="key" x="458.5" y="78.5" width="45" height="25" rx="3"/><text class="id" x="481" y="95" font-size="11.5" text-anchor="middle">AU7</text></g>
-  <g class="built-unwired" data-row="AU5" data-tag="BUILT-UNWIRED"><title>AU5 Code index: BUILT-UNWIRED</title><rect class="key" x="508.5" y="78.5" width="45" height="25" rx="3"/><text class="id" x="531" y="95" font-size="11.5" text-anchor="middle">AU5</text></g>
-  <g class="missing" data-row="AU3" data-tag="MISSING"><title>AU3 Spec-quality lint and gate: MISSING</title><rect class="key" x="558.5" y="78.5" width="45" height="25" rx="3"/><text class="id" x="581" y="95" font-size="11.5" text-anchor="middle">AU3</text></g>
+  <g class="wired" data-row="AU7" data-tag="WIRED"><title>AU7 Pinned acceptance tests: WIRED</title><rect class="key" x="408.5" y="78.5" width="45" height="25" rx="3"/><text class="id" x="431" y="95" font-size="11.5" text-anchor="middle">AU7</text></g>
+  <g class="partial" data-row="AU3" data-tag="PARTIAL"><title>AU3 Spec-quality lint and gate: PARTIAL</title><rect class="key" x="458.5" y="78.5" width="45" height="25" rx="3"/><text class="id" x="481" y="95" font-size="11.5" text-anchor="middle">AU3</text></g>
+  <g class="partial" data-row="AU6" data-tag="PARTIAL"><title>AU6 Acceptance criteria: PARTIAL</title><rect class="key" x="508.5" y="78.5" width="45" height="25" rx="3"/><text class="id" x="531" y="95" font-size="11.5" text-anchor="middle">AU6</text></g>
+  <g class="built-unwired" data-row="AU5" data-tag="BUILT-UNWIRED"><title>AU5 Code index: BUILT-UNWIRED</title><rect class="key" x="558.5" y="78.5" width="45" height="25" rx="3"/><text class="id" x="581" y="95" font-size="11.5" text-anchor="middle">AU5</text></g>
   <text x="16" y="130" font-size="13" font-weight="bold">EX</text><text x="50" y="130" font-size="13">Execution</text>
   <g class="wired" data-row="EX1" data-tag="WIRED"><title>EX1 Graph engine: WIRED</title><rect class="key" x="258.5" y="112.5" width="45" height="25" rx="3"/><text class="id" x="281" y="129" font-size="11.5" text-anchor="middle">EX1</text></g>
   <g class="wired" data-row="EX2" data-tag="WIRED"><title>EX2 Durable checkpoints and resume: WIRED</title><rect class="key" x="308.5" y="112.5" width="45" height="25" rx="3"/><text class="id" x="331" y="129" font-size="11.5" text-anchor="middle">EX2</text></g>
@@ -60,8 +60,8 @@
   <g class="built-unwired" data-row="EX8" data-tag="BUILT-UNWIRED"><title>EX8 Split or replan on failure: BUILT-UNWIRED</title><rect class="key" x="608.5" y="112.5" width="45" height="25" rx="3"/><text class="id" x="631" y="129" font-size="11.5" text-anchor="middle">EX8</text></g>
   <g class="missing" data-row="EX9" data-tag="MISSING"><title>EX9 Progress watchdog: MISSING</title><rect class="key" x="658.5" y="112.5" width="45" height="25" rx="3"/><text class="id" x="681" y="129" font-size="11.5" text-anchor="middle">EX9</text></g>
   <text x="16" y="164" font-size="13" font-weight="bold">IS</text><text x="50" y="164" font-size="13">Isolation and integration</text>
-  <g class="partial" data-row="IS1" data-tag="PARTIAL"><title>IS1 Worktrees: PARTIAL</title><rect class="key" x="258.5" y="146.5" width="45" height="25" rx="3"/><text class="id" x="281" y="163" font-size="11.5" text-anchor="middle">IS1</text></g>
-  <g class="partial" data-row="IS4" data-tag="PARTIAL"><title>IS4 Git guard hook: PARTIAL</title><rect class="key" x="308.5" y="146.5" width="45" height="25" rx="3"/><text class="id" x="331" y="163" font-size="11.5" text-anchor="middle">IS4</text></g>
+  <g class="wired" data-row="IS4" data-tag="WIRED"><title>IS4 Git guard hook: WIRED</title><rect class="key" x="258.5" y="146.5" width="45" height="25" rx="3"/><text class="id" x="281" y="163" font-size="11.5" text-anchor="middle">IS4</text></g>
+  <g class="partial" data-row="IS1" data-tag="PARTIAL"><title>IS1 Worktrees: PARTIAL</title><rect class="key" x="308.5" y="146.5" width="45" height="25" rx="3"/><text class="id" x="331" y="163" font-size="11.5" text-anchor="middle">IS1</text></g>
   <g class="partial" data-row="IS5" data-tag="PARTIAL"><title>IS5 Environment isolation: PARTIAL</title><rect class="key" x="358.5" y="146.5" width="45" height="25" rx="3"/><text class="id" x="381" y="163" font-size="11.5" text-anchor="middle">IS5</text></g>
   <g class="partial" data-row="IS6" data-tag="PARTIAL"><title>IS6 Sandbox levels: PARTIAL</title><rect class="key" x="408.5" y="146.5" width="45" height="25" rx="3"/><text class="id" x="431" y="163" font-size="11.5" text-anchor="middle">IS6</text></g>
   <g class="orphaned" data-row="IS2" data-tag="ORPHANED"><title>IS2 Merge queue, plan merger and attempt acceptance: ORPHANED</title><rect class="key" x="458.5" y="146.5" width="45" height="25" rx="3"/><text class="id" x="481" y="163" font-size="11.5" text-anchor="middle">IS2</text></g>
@@ -121,5 +121,5 @@
   <g class="built-unwired" data-row="DM8" data-tag="BUILT-UNWIRED"><title>DM8 Messaging channel adapters: BUILT-UNWIRED</title><rect class="key" x="558.5" y="350.5" width="45" height="25" rx="3"/><text class="id" x="581" y="367" font-size="11.5" text-anchor="middle">DM8</text></g>
   <g class="built-unwired" data-row="DM9" data-tag="BUILT-UNWIRED"><title>DM9 Agent groups, coordination markers and relay: BUILT-UNWIRED</title><rect class="key" x="608.5" y="350.5" width="45" height="25" rx="3"/><text class="id" x="631" y="367" font-size="11.5" text-anchor="middle">DM9</text></g>
   <g class="removed" data-row="DM7" data-tag="REMOVED"><title>DM7 WASM plugin hooks: REMOVED</title><rect class="key" x="658.5" y="350.5" width="45" height="25" rx="3"/><text class="id" x="681" y="367" font-size="11.5" text-anchor="middle">DM7</text></g>
-  <text class="note" x="16" y="394" font-size="11">Status tags at a17d4dadd. One square per row of the appendix, sorted by tag within each group.</text>
+  <text class="note" x="16" y="394" font-size="11">Status tags at ed0c33bd5. One square per row of the appendix, sorted by tag within each group.</text>
 </svg>

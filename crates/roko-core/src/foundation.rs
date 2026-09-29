@@ -738,7 +738,8 @@ pub trait GateRunner: Send + Sync {
 pub struct SharedGateRequest {
     /// Task identifier within the plan.
     pub task_id: String,
-    /// Attempt number (0-based).
+    /// Ordinal of the attempt being gated, 1-based like the attempt key the
+    /// Graph plan gate reads it from.
     pub attempt_id: u32,
     /// Which rung to evaluate (canonical name: "compile", "lint", "test", etc.).
     pub rung: String,

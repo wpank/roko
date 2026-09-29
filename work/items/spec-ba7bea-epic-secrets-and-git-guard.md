@@ -15,7 +15,7 @@ discovered_from = "tmp/cybernetic-harness/tldr/05-GAPS-AND-PROPOSALS.md (P0 #3);
 anchors = ["crates/roko-agent/src/claude_cli_agent.rs::build_settings_json", "crates/roko-gate/src/shell.rs::ShellGate", "crates/roko-agent/src/safety/path.rs::canonicalize_with_policy", "crates/roko-cli/tests/secrets_and_git_guard_canary.rs"]
 doc = "tmp/cybernetic-harness/workstreams/PLAN.md"
 lane = "rust-cold"
-links = { depends_on = ["bug-7d7200", "gap-8be530", "gap-5f4852", "bug-7de5df", "bug-a66941", "gap-0e2c40", "gap-8f8544", "bug-f4e133", "bug-66f5a1", "bug-63327d", "find-570af2", "gap-b7a2d5", "bug-6930e6", "gap-a3fc5b", "gap-585bd2", "bug-3f3990", "bug-62e7e6", "bug-0bc728"], blocks = [], related = ["spec-ae5f94"], supersedes = [], duplicate_of = "" }
+links = { depends_on = ["bug-7d7200", "gap-8be530", "gap-5f4852", "bug-7de5df", "bug-a66941", "gap-0e2c40", "gap-8f8544", "bug-f4e133", "bug-66f5a1", "bug-63327d", "find-570af2", "gap-b7a2d5", "bug-6930e6", "gap-a3fc5b", "gap-585bd2", "bug-3f3990", "bug-62e7e6", "bug-0bc728", "bug-ceab60", "bug-34c16c", "bug-a9a251", "gap-e9660f", "bug-c6ad88", "bug-997c6a"], blocks = [], related = ["spec-ae5f94"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "grep -rqw 'fn secrets_and_git_guard_canary' crates/roko-cli/tests/ && cargo test -p roko-cli --test secrets_and_git_guard_canary"
@@ -85,13 +85,19 @@ This is the implementation plan.
 - [x] bug-66f5a1: A git alias such as co = checkout bypasses the agent git guard
 - [x] bug-63327d: roko-std's file tools don't check key files, so a dispatch without SafetyLayer can read .roko/.env
 - [x] find-570af2: When HOME is the workdir, the key-file policy refuses agents the whole .roko directory
-- [ ] gap-b7a2d5: roko chat and dispatch_v2 spawn claude without the Claude Code isolation flags
-- [ ] bug-6930e6: find_mcp_config hands Claude runs an ancestor directory's or $HOME's .mcp.json
-- [ ] gap-a3fc5b: Claude Code isolation doesn't cover shell snapshots, and a managed-mcp.json makes Claude refuse --strict-mcp-config
+- [x] gap-b7a2d5: roko chat and dispatch_v2 spawn claude without the Claude Code isolation flags
+- [x] bug-6930e6: find_mcp_config hands Claude runs an ancestor directory's or $HOME's .mcp.json
+- [x] gap-a3fc5b: Claude Code isolation doesn't cover shell snapshots, and a managed-mcp.json makes Claude refuse --strict-mcp-config
 - [ ] gap-585bd2: Every implementer is offered the 17 chain tools, transfer and swap included, whatever the task domain
 - [ ] bug-3f3990: The Linux firejail plugin sandbox ignores sandbox.allowed_paths and filesystem_write, which macOS Seatbelt enforces
-- [ ] bug-62e7e6: roko-std's bash tool and SafetyLayer's bash policy never check commands for key files
-- [ ] bug-0bc728: The command guard misses command strings passed to wrappers, find -exec and -delete, and busybox rm
+- [x] bug-62e7e6: roko-std's bash tool and SafetyLayer's bash policy never check commands for key files
+- [x] bug-0bc728: The command guard misses command strings passed to wrappers, find -exec and -delete, and busybox rm
+- [ ] bug-ceab60: The agent command guard lets deletes through find | xargs rm, fd -x rm, and command strings given to ssh or parallel
+- [ ] bug-34c16c: The project roko.toml can hold serve.auth.api_key, and agents can read it
+- [ ] bug-a9a251: roko chat's resolve_mcp_config still falls back to ~/.claude/mcp-config.json
+- [ ] gap-e9660f: Whole-project reads such as grep -r, rg or cat * can still show agents a secret stored in roko.toml
+- [ ] bug-c6ad88: ACP's builtin tools don't check for key files
+- [ ] bug-997c6a: ls | xargs rm and xargs rm < list still pass the agent command guard
 - [ ] The epic's `[[verify]]` command (test C2) passes on the merged branch.
 
 ## Notes

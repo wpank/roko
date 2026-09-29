@@ -454,6 +454,9 @@ impl ProductionPlanTopology {
             "task_def_json".to_string(),
             toml::Value::String(task.full_config_json.to_string()),
         );
+        // The task's `plan.gate` judges the attempt's own checkout, so the
+        // executor hands it on instead of releasing it.
+        table.insert("keep_workspace".to_string(), toml::Value::Boolean(true));
 
         toml::Value::Table(table)
     }
@@ -473,6 +476,7 @@ impl ProductionPlanTopology {
             "plan_dir".to_string(),
             toml::Value::String(self.plan_dir.clone()),
         );
+        table.insert("title".to_string(), toml::Value::String(task.title.clone()));
         let files_arr: Vec<toml::Value> = task
             .files
             .iter()
@@ -807,6 +811,22 @@ mod tests {
         let engine = GraphEngine::new(graph, registry).with_allow_test_stubs(true);
         let issues = engine.validate();
         assert!(issues.is_empty(), "validation issues: {issues:?}");
+    }
+
+    /// bug-50caf2: the executor hands its checkout on to the gate, and the
+    /// gate knows the task it judges.
+    #[test]
+    fn executor_keeps_its_workspace_for_the_gate() {
+        let topo = ProductionPlanTopology::new("keep", "/tmp", 1);
+        let (graph, _) = topo.build(&[make_task("T1", &[])]).unwrap();
+
+        let executor = graph.get_node("task.T1.executor").unwrap();
+        let spec = crate::cells::TaskExecutionSpec::from_config(&executor.config);
+        assert!(spec.keep_workspace);
+        let gate = graph.get_node("task.T1.gate").unwrap();
+        let table = gate.config.as_table().unwrap();
+        assert_eq!(table["title"].as_str(), Some("Task T1"));
+        assert_eq!(table["task_id"].as_str(), Some("T1"));
     }
 
     /// gap-439794: a task's executor writes its files and its gate checks

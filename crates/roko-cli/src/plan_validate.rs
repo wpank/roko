@@ -1682,6 +1682,61 @@ depends_on = ["T1"]
         assert_eq!(report.exit_code(true), 1, "--strict rejects it");
     }
 
+    /// gap-8c0a20: a tier that `TaskTier::parse` cannot read is a PLAN_035
+    /// schema error (`plan run` refuses the plan on the same check); a tier
+    /// alias passes.
+    #[test]
+    fn unknown_tier_is_a_schema_error_and_tier_aliases_pass() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path();
+        fs::create_dir_all(root.join("plans/demo")).unwrap();
+        fs::write(
+            root.join("plans/demo/tasks.toml"),
+            r#"
+[meta]
+plan = "demo"
+
+[[task]]
+id = "T1"
+title = "Rename the field"
+role = "implementer"
+tier = "T0"
+files = ["src/lib.rs"]
+depends_on = []
+verify = [{ phase = "compile", command = "cargo check -p roko-cli" }]
+
+[[task]]
+id = "T2"
+title = "Wire the field through"
+role = "implementer"
+tier = "mechancial"
+files = ["src/lib.rs"]
+depends_on = ["T1"]
+verify = [{ phase = "compile", command = "cargo check -p roko-cli" }]
+"#,
+        )
+        .unwrap();
+
+        let report = validate_plans_dir(root.join("plans").as_path(), None).unwrap();
+
+        let tier_errors = report
+            .plans
+            .iter()
+            .flat_map(|plan| &plan.diagnostics)
+            .filter(|diag| diag.message.contains("unknown tier"))
+            .collect::<Vec<_>>();
+        assert_eq!(tier_errors.len(), 1, "{report:?}");
+        assert_eq!(tier_errors[0].rule_id, "PLAN_035");
+        assert_eq!(tier_errors[0].severity, Severity::Error);
+        assert!(
+            tier_errors[0]
+                .message
+                .contains("T2: unknown tier 'mechancial'"),
+            "{report:?}"
+        );
+        assert_eq!(report.exit_code(true), 1, "--strict rejects it");
+    }
+
     /// gap-d14a43: `[task.accept]` problems are PLAN_038 errors, a hand copy
     /// out of `accept/` is a PLAN_038 warning, and a task whose only checks
     /// are pinned acceptance tests counts as verified.

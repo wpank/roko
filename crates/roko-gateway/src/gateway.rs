@@ -93,6 +93,10 @@ pub struct GatewayConfig {
     pub channel_capacity: usize,
     /// Optional durable event sink.
     pub event_writer: Option<Arc<GatewayEventWriter>>,
+    /// Whether the gateway records each provider attempt's outcome on
+    /// `cascade_router`. Off when the providers already report every call to
+    /// the same router, so each call is observed once (bug-8b0d0a).
+    pub observe_outcomes: bool,
 }
 
 impl GatewayConfig {
@@ -112,6 +116,7 @@ impl GatewayConfig {
             max_fallbacks: DEFAULT_MAX_FALLBACKS,
             channel_capacity: DEFAULT_CHANNEL_CAPACITY,
             event_writer: None,
+            observe_outcomes: true,
         }
     }
 
@@ -135,6 +140,14 @@ impl GatewayConfig {
     #[must_use]
     pub fn with_event_writer(mut self, writer: Arc<GatewayEventWriter>) -> Self {
         self.event_writer = Some(writer);
+        self
+    }
+
+    /// Route with `cascade_router` but leave observing call outcomes to the
+    /// providers, which report every call to the same router already.
+    #[must_use]
+    pub fn without_outcome_observation(mut self) -> Self {
+        self.observe_outcomes = false;
         self
     }
 }
@@ -239,6 +252,7 @@ pub struct InferenceGateway {
     provider_timeout: Duration,
     max_fallbacks: usize,
     event_writer: Option<Arc<GatewayEventWriter>>,
+    observe_outcomes: bool,
     sender: mpsc::Sender<InferenceEnvelope>,
     receiver: Mutex<Option<mpsc::Receiver<InferenceEnvelope>>>,
     counters: GatewayCounters,
@@ -264,6 +278,7 @@ impl InferenceGateway {
             provider_timeout: config.provider_timeout,
             max_fallbacks: config.max_fallbacks,
             event_writer: config.event_writer,
+            observe_outcomes: config.observe_outcomes,
             sender,
             receiver: Mutex::new(Some(receiver)),
             counters: GatewayCounters::default(),
@@ -518,7 +533,7 @@ impl InferenceGateway {
         // router learns from gateway-level quality/cost/latency. This is the
         // success's only router observation (bug-8da8ba), so it comes before
         // the event write, which can fail.
-        {
+        if self.observe_outcomes {
             let ctx = routing_context(&request.metadata);
             self.cascade_router.record_observation(
                 &ctx,
@@ -660,12 +675,14 @@ impl InferenceGateway {
                     // with reward 0. bug-c34782 plugs in here if transport
                     // failures (`ProviderFailureKind`) should stop counting as
                     // model-quality evidence.
-                    self.cascade_router.record_observation(
-                        &routing_context(&request.metadata),
-                        model,
-                        0.0,
-                        false,
-                    );
+                    if self.observe_outcomes {
+                        self.cascade_router.record_observation(
+                            &routing_context(&request.metadata),
+                            model,
+                            0.0,
+                            false,
+                        );
+                    }
                     let retryable = match &error {
                         GatewayError::Provider { kind, .. } => {
                             if *kind == ProviderFailureKind::RateLimited {

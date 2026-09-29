@@ -3,13 +3,14 @@ id = "gap-abbd22"
 kind = "gap"
 title = "Attempt diff check: flag edits to tests, verify scripts, accept/ or gate config, and to files outside the task"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p1"
 goal = "golden-path"
 size = "M"
 subsystem = ["roko-gate/attempt_diff", "roko-cli/graph_task_dispatch"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-29
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e9"
 discovered_from = "tmp/cybernetic-harness/specs/S05-deep-audits.md (§4.3, check A1); tldr/05 P1 #13"
 anchors = ["crates/roko-gate/src/attempt_diff.rs", "crates/roko-cli/src/graph_task_dispatch/verification.rs::GraphTaskDispatcher::settle_task_verification", "crates/roko-cli/src/graph_task_dispatch/streaming.rs::dispatch_streaming"]
@@ -76,3 +77,11 @@ Checked at `41c7ffbd6`: no tamper or scope code anywhere (S05 §3). `roko_gate::
 - Reuse gap-b72761's diff snapshot if it has landed. Fail-or-label is the author's call (epic spec-9230a9).
 - **Decided 2026-09-29 (Will):** tampering fails the attempt; scope findings are recorded, and enforced only on opt-in.
 - **From wk-filer (2026-09-29):** reuse `SafetyLayer::post_dispatch_check` (`crates/roko-agent/src/safety/mod.rs`, about line 1107), which today only ACP calls.
+- **wk-tamper (2026-09-29):** Implemented on `work/gap-b72761` at `4d50abd41`, with lint fixes in `5a2b95298`; cargo
+  verification deferred to the batch check. `attempt_diff_flags_each_tamper_kind` (roko-gate) and `tampering_attempt_fails_before_verify`
+  (roko-cli) passed locally. The check is the pure `roko_gate::attempt_diff::check_attempt_diff`, run by the
+  gap-b72761 screen over the same task diff. It passes a task's own declared paths for config, script and tasks.toml
+  edits, but never for test weakening or pinned `accept/` edits. Tampering fails the attempt as `pre_verify:tamper`.
+  Scope findings are logged, and fail it as `pre_verify:scope` only under the new `[gates] diff_scope = "enforce"`.
+  Not done: `changed_files` in `streaming.rs` (wk-model-truth's file). Until E4, findings are carried only by the
+  log, the retry feedback and the rung.

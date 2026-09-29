@@ -1042,7 +1042,14 @@ impl LinUCBRouter {
     /// saved to disk after each update. Save errors are silently ignored so
     /// that a filesystem hiccup never breaks the update flow.
     pub fn update_features(&self, x: &[f64], model_idx: usize, reward: f64) {
-        self.update_features_internal(x, model_idx, reward, None);
+        self.update_features_internal(x, model_idx, reward, None, 1.0);
+    }
+
+    /// Update an arm with an observation that carries only `weight` (0.0 to
+    /// 1.0) of a full one: its outer product enters `A`, and its reward `b`,
+    /// scaled by `weight`, as in importance-weighted least squares.
+    pub fn update_features_weighted(&self, x: &[f64], model_idx: usize, reward: f64, weight: f64) {
+        self.update_features_internal(x, model_idx, reward, None, weight.clamp(0.0, 1.0));
     }
 
     /// Update the router and track the underlying reward vector.
@@ -1066,6 +1073,7 @@ impl LinUCBRouter {
             model_idx,
             reward,
             Some((quality, normalized_cost, normalized_latency)),
+            1.0,
         );
     }
 
@@ -1075,6 +1083,7 @@ impl LinUCBRouter {
         model_idx: usize,
         reward: f64,
         reward_vector: Option<(f64, f64, f64)>,
+        weight: f64,
     ) {
         if x.len() != CONTEXT_DIM {
             return;
@@ -1106,15 +1115,15 @@ impl LinUCBRouter {
                 reward.clamp(0.0, 1.0)
             };
 
-            // A = A + x * x^T
+            // A = A + weight * x * x^T
             for (i, row) in arm.a_matrix.iter_mut().enumerate() {
                 for (j, cell) in row.iter_mut().enumerate() {
-                    *cell += x[i] * x[j];
+                    *cell += weight * x[i] * x[j];
                 }
             }
-            // b = b + reward * x
+            // b = b + weight * reward * x
             for (bi, xi) in arm.b_vector.iter_mut().zip(x) {
-                *bi += reward * xi;
+                *bi += weight * reward * xi;
             }
             if let Some((quality, cost, latency)) = reward_vector {
                 arm.reward_stats.observe(quality, cost, latency);

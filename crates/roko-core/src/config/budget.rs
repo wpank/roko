@@ -15,6 +15,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::task::TaskTier;
+
 // ---- [budget] ------------------------------------------------------------
 
 /// Spend / token budget settings.
@@ -131,36 +133,45 @@ impl Default for BudgetConfig {
     }
 }
 
+impl TaskBudgetMultipliers {
+    /// Multiplier for a task tier.
+    #[must_use]
+    pub const fn for_tier(&self, tier: TaskTier) -> f32 {
+        match tier {
+            TaskTier::Mechanical => self.mechanical,
+            TaskTier::Focused => self.standard,
+            TaskTier::Integrative => self.complex,
+            TaskTier::Architectural => self.expert,
+        }
+    }
+}
+
 impl BudgetConfig {
     /// Return the effective task ceiling for a plan tier/model hint.
     ///
-    /// Unknown or omitted tiers fall back to the model family and then to the
-    /// standard multiplier. A zero base remains unlimited.
+    /// The tier is read by [`TaskTier::parse`]. An omitted tier (empty or
+    /// `"unknown"`) falls back to the model family; any other unknown tier
+    /// uses the focused (standard) multiplier. A zero base remains unlimited.
     #[must_use]
     pub fn task_limit_usd(&self, tier: &str, model_hint: Option<&str>) -> f64 {
         if self.max_task_usd <= 0.0 {
             return 0.0;
         }
-        let normalized = tier.trim().to_ascii_lowercase();
-        let inferred = if normalized.is_empty() || normalized == "unknown" {
+        let tier = TaskTier::parse(tier).unwrap_or_else(|| {
+            let omitted = tier.trim().is_empty() || tier.trim().eq_ignore_ascii_case("unknown");
+            if !omitted {
+                return TaskTier::Focused;
+            }
             let model = model_hint.unwrap_or_default().to_ascii_lowercase();
             if model.contains("haiku") || model.contains("mini") {
-                "mechanical"
+                TaskTier::Mechanical
             } else if model.contains("opus") {
-                "complex"
+                TaskTier::Integrative
             } else {
-                "standard"
+                TaskTier::Focused
             }
-        } else {
-            normalized.as_str()
-        };
-        let multiplier = match inferred {
-            "mechanical" => self.tier_multipliers.mechanical,
-            "integrative" | "complex" => self.tier_multipliers.complex,
-            "architectural" | "expert" => self.tier_multipliers.expert,
-            _ => self.tier_multipliers.standard,
-        };
-        f64::from(self.max_task_usd) * f64::from(multiplier)
+        });
+        f64::from(self.max_task_usd) * f64::from(self.tier_multipliers.for_tier(tier))
     }
 }
 
@@ -186,6 +197,16 @@ mod tests {
         );
         assert_eq!(
             budget.task_limit_usd("unknown", Some("claude-sonnet-4-6")),
+            2.0
+        );
+
+        // Tier aliases read through `TaskTier::parse`; a misspelt tier is
+        // focused, whatever the model hint.
+        assert!((budget.task_limit_usd(" T0 ", None) - 0.4).abs() < 1e-6);
+        assert_eq!(budget.task_limit_usd("complex", None), 6.0);
+        assert_eq!(budget.task_limit_usd("Premium", None), 10.0);
+        assert_eq!(
+            budget.task_limit_usd("mechancial", Some("claude-haiku-4-5")),
             2.0
         );
     }

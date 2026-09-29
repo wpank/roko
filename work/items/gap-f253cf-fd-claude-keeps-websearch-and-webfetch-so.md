@@ -2,8 +2,10 @@
 id = "gap-f253cf"
 kind = "gap"
 title = "fd_claude keeps WebSearch and WebFetch, so once the repo is public an agent can fetch the hidden suites"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
+last_verified = 2026-09-29
+last_verified_rev = "476c72cf4"
 severity = "p2"
 goal = "proof"
 size = "S"
@@ -19,6 +21,12 @@ links = { depends_on = [], blocks = [], related = ["gap-c4f364", "gap-8c3752", "
 
 [[verify]]
 command = "grep -qw 'def test_fd_claude_cannot_fetch_the_hidden_suites' benchmarks/viabilitybench/driver/test_run_cli.py && benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/driver/test_run_cli.py -k test_fd_claude_cannot_fetch_the_hidden_suites -q"
+
+[closed]
+at = 2026-09-29
+commit = "476c72cf4"
+by = "wk-bench-fix2"
+evidence = "run_cli.py passes --disallowed-tools WebFetch,WebSearch and denies both in --settings; a session whose init event offers a Web* tool is killed before its first turn (infra_error, web_tools) and the probe checks no_web_tools; the census marks any web tool call or web-request count in the transcript leak_suspected (place web). The [[verify]] command passes: test_fd_claude_cannot_fetch_the_hidden_suites (3 cases: flags honoured -> completed with no web tool; flags ignored -> killed at init, infra_error, probe fails; a subagent WebFetch whose digest carries no canary -> leak_suspected, place web); test_run_cli.py 13 passed."
 +++
 
 ## Problem
@@ -57,9 +65,21 @@ At e43d3a033 no flag disables the web tools, and no test covers a web fetch.
 
 ## Done when
 
-- [ ] fd_claude can't reach a hidden suite through the web, or such a fetch always makes the run `leak_suspected`.
-- [ ] The `[[verify]]` command passes.
+- [x] fd_claude can't reach a hidden suite through the web, or such a fetch always makes the run `leak_suspected`.
+- [x] The `[[verify]]` command passes.
 
 ## Notes
 
 - Until this lands, don't make the repository public while fd_claude runs are pending, or run them before publishing.
+- **Done 2026-09-29 (wk-bench-fix2): the tools are removed (plan step 1).** S08 §4.9 defines fd_claude by
+  `ClaudeCliAgent`'s flags minus Roko's prompt, and that adapter already supports `--disallowed-tools`. S08 §4.9
+  also sanctions deny rules for isolation, and the tasks need no web (S08 §4.2 (3)). S09 §4.8's "at their defaults"
+  therefore still holds for every other tool.
+  - `run_cli.py` passes `--disallowed-tools WebFetch,WebSearch` and adds deny rules for both to `--settings`, which
+    also bind subagents.
+  - It kills a session whose `init` event still offers a `Web…` tool before the first turn (`infra_error`, reason
+    `web_tools`), and the probe checks `no_web_tools`.
+  - As a backstop, the census marks `leak_suspected` (place `web`) for any web tool call or positive web-request count
+    in the transcript.
+  - Not covered: any arm's shell can still reach the network (`curl`, `git clone`). Only a network sandbox closes
+    that (S08 decision 4).

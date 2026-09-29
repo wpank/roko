@@ -102,3 +102,4 @@ Checked at `33e107da1`:
   test harness, calls `run_tests` or `bash` with `env`, and a canary key from a temporary `~/.roko/.env` is absent.
 - bug-0eb8e2 covers the non-tool spawns (MCP servers, probes, git hooks). Keep the helper shared between the two
   items.
+- 2026-09-29 (wk-guard2): 9b1d46be4 (the merge of bug-62e7e6's guard work) adds a `refuse_key_file_in_command` check to roko-std's `crates/roko-std/src/tool/builtin/bash.rs` (:15, :55, :86), next to the `env_clear` this item is about. Rebase any fix onto 9b1d46be4 or later.

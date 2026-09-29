@@ -59,8 +59,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio::sync::mpsc;
 
-use crate::learning_helpers::capture_runtime_model_slugs;
-
 /// A single tool execution output captured from a dispatch response.
 #[derive(Debug, Clone)]
 pub struct ToolOutput {
@@ -523,6 +521,7 @@ impl CliProviderConfig {
         request: &CliDispatchRequest,
     ) -> Result<CliInvocation, DispatchV2Error> {
         let settings_json = roko_agent::claude_cli_agent::build_settings_json();
+        let isolation = roko_agent::claude_cli_agent::ClaudeIsolation::new(&request.workdir);
         let mut args = vec![
             "--print".to_string(),
             "--output-format".to_string(),
@@ -536,6 +535,10 @@ impl CliProviderConfig {
             settings_json,
         ];
         args.extend(self.provider_args.clone());
+        // The Claude Code isolation (`--add-dir`, `--setting-sources`,
+        // `--strict-mcp-config`), after the provider's own arguments so they
+        // cannot undo it.
+        args.extend(isolation.args());
 
         if request.dangerously_skip_permissions {
             args.push("--dangerously-skip-permissions".to_string());
@@ -553,6 +556,13 @@ impl CliProviderConfig {
             args.push(effort.clone());
         }
         if request.mcp_config.is_some() || request.plugin_mcp.is_some() {
+            if let Some(reason) = isolation.mcp_config_refusal() {
+                tracing::warn!(provider_id = %self.descriptor.provider_id, "{reason}");
+                return Err(DispatchV2Error::McpConfigUnsupported {
+                    provider_id: self.descriptor.provider_id.clone(),
+                    protocol: self.descriptor.protocol,
+                });
+            }
             args.push("--mcp-config".to_string());
             if let Some(mcp_config) = &request.mcp_config {
                 args.push(mcp_config.to_string_lossy().to_string());
@@ -560,7 +570,6 @@ impl CliProviderConfig {
             if let Some(plugin_mcp) = &request.plugin_mcp {
                 args.push(claude_plugin_mcp_json(plugin_mcp));
             }
-            args.push("--strict-mcp-config".to_string());
         }
         if let Some(session) = &request.resume_session {
             args.push("--resume".to_string());
@@ -583,12 +592,20 @@ impl CliProviderConfig {
             }
         }
 
-        Ok(CliInvocation::new(
-            self,
-            request,
-            args,
-            request.prompt.clone(),
-        ))
+        let mut invocation = CliInvocation::new(self, request, args, request.prompt.clone());
+        // The request's own variables win.
+        for &(key, value) in isolation.env() {
+            if !invocation.env.iter().any(|(existing, _)| existing == key) {
+                invocation.env.push((key.to_string(), value.to_string()));
+            }
+        }
+        tracing::debug!(
+            provider_id = %self.descriptor.provider_id,
+            isolation = ?isolation.tags(),
+            mcp_config = ?request.mcp_config,
+            "claude run isolated from the user's Claude Code configuration"
+        );
+        Ok(invocation)
     }
 
     fn build_codex_invocation(
@@ -1610,14 +1627,7 @@ impl AgentDispatcherV2 {
             }
         }
 
-        record_agent_dispatch_feedback(
-            &self.config,
-            &request,
-            &created.target,
-            &result,
-            latency_ms,
-        )
-        .await;
+        record_agent_dispatch_feedback(&request, &created.target, &result, latency_ms).await;
         let events = dispatch_events_from_result(&request, &created.target, &result);
         Ok(AgentResultDispatch {
             target: created.target,
@@ -1715,14 +1725,7 @@ impl AgentDispatcherV2 {
             })
             .await;
 
-        record_agent_dispatch_feedback(
-            &self.config,
-            &request,
-            &created.target,
-            &result,
-            latency_ms,
-        )
-        .await;
+        record_agent_dispatch_feedback(&request, &created.target, &result, latency_ms).await;
 
         Ok(result)
     }
@@ -1833,7 +1836,7 @@ impl AgentDispatcherV2 {
             }
         }
 
-        record_agent_dispatch_feedback(&self.config, &request, &target, &result, latency_ms).await;
+        record_agent_dispatch_feedback(&request, &target, &result, latency_ms).await;
         let events = dispatch_events_from_result(&request, &target, &result);
         Ok(AgentResultDispatch {
             target,
@@ -1953,15 +1956,21 @@ pub(crate) fn classify_provider_error(output_text_lower: &str) -> &'static str {
     }
 }
 
+/// Record one bridge call's model-call feedback: its efficiency row and the
+/// provider's health.
+///
+/// The bridge never teaches the cascade router (bug-07bc75). Its callers are
+/// Graph dispatch's attempts and helper calls: the router learns each
+/// attempt's settled verdict through `RoutingObservationSink`, and a
+/// provider call's own success, before any gate ran, is no quality evidence.
 async fn record_agent_dispatch_feedback(
-    config: &RokoConfig,
     request: &AgentDispatchRequest,
     target: &ProviderDispatchSpec,
     result: &AgentResult,
     latency_ms: u64,
 ) {
-    let cascade_model_slugs = capture_runtime_model_slugs(config, &target.model_slug);
-    let recorder = ModelCallFeedbackRecorder::from_workdir(&request.workdir, cascade_model_slugs);
+    let learn_dir = roko_fs::RokoLayout::for_project(&request.workdir).learn_dir();
+    let recorder = ModelCallFeedbackRecorder::without_cascade_router(learn_dir);
     if let Err(error) = recorder
         .record(ModelCallFeedback {
             run_id: None,
@@ -3259,10 +3268,12 @@ printf '%s\n' '{"type":"content_block_delta","delta":{"text":"dispatch-ok"}}'
         // The registry normalizes provider keys (hyphens to underscores).
         assert!(provider_health.contains("dispatch_cli"));
 
-        let cascade_router =
-            std::fs::read_to_string(tmp.path().join(".roko/learn/cascade-router.json"))
-                .expect("read cascade router");
-        assert!(cascade_router.contains("claude-sonnet-4-6"));
+        // The bridge never teaches the router (bug-07bc75): Graph dispatch
+        // does, from each attempt's settled verdict.
+        assert!(
+            !tmp.path().join(".roko/learn/cascade-router.json").exists(),
+            "the bridge must not observe or save the cascade router"
+        );
     }
 
     /// E04-T06: Verify that the default Claude CLI dispatch path exercises

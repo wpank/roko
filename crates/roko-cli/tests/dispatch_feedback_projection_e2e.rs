@@ -35,6 +35,7 @@ use roko_cli::runtime_feedback::{
 };
 use roko_cli::task_parser::TaskDef;
 use roko_learn::cascade_router::CascadeRouter;
+use roko_learn::telemetry::{AttemptIdentity, AttemptKey, AttemptOutcome, AttemptVerdictRecord};
 use tempfile::tempdir;
 
 fn task() -> TaskDef {
@@ -150,12 +151,19 @@ async fn dispatch_feeds_feedback_facade_and_projection() {
         .with_sink(Arc::new(EpisodeSink::at(&episodes_path)))
         .with_sink(Arc::new(RoutingObservationSink::new(router.clone())))
         .with_sink(Arc::new(KnowledgeIngestionSink::at(&knowledge_path)));
+    // Learners read the settled verdict's learning label: this attempt
+    // passed its gate.
+    let passed = AttemptVerdictRecord::settle(
+        AttemptIdentity::new(&AttemptKey::new("run-e2e", "plan-e2e", "wire-it-up", 1)),
+        AttemptOutcome::Passed,
+        true,
+    );
 
     facade
         .on_event(&FeedbackEvent::TaskCompleted {
             turns: 0,
             failure_reason: None,
-            settled: None,
+            settled: Some(Arc::new(passed)),
             plan_id: "plan-e2e".into(),
             task_id: "wire-it-up".into(),
             outcome: outcome.clone(),

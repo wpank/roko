@@ -20,7 +20,7 @@ use chrono::Utc;
 use parking_lot::{Mutex, RwLock};
 use regex::Regex;
 use roko_agent::chat_types::FinishReason;
-use roko_agent::mcp::{McpConfig, McpServerConfig, find_mcp_config};
+use roko_agent::mcp::{McpConfig, McpServerConfig, workspace_mcp_config};
 use roko_agent::provider::{AgentOptions, create_agent_for_model};
 use roko_agent::{Agent, AgentResult};
 use roko_compose::SystemPromptBuilder;
@@ -406,11 +406,10 @@ async fn apply_pending_anomalies(
                     avg_drop,
                     "quality degradation detected; recording negative router observation"
                 );
-                let mut observation_template = template.clone();
-                observation_template.model = queued.model_slug;
                 record_cascade_router_outcome_with_layout(
                     state,
-                    &observation_template,
+                    config,
+                    &queued.model_slug,
                     false,
                     repo_layout,
                 )
@@ -2377,7 +2376,7 @@ fn resolve_template_mcp_config(
 ) -> Result<Option<PathBuf>> {
     if template.mcp_servers.is_empty() {
         return Ok(base_mcp_config.cloned().or_else(|| {
-            find_mcp_config(workdir).and_then(|result| match result {
+            workspace_mcp_config(workdir).and_then(|result| match result {
                 Ok((path, _)) => Some(path),
                 Err(err) => {
                     warn!(error = %err, "failed to discover MCP config for template");
@@ -2390,7 +2389,7 @@ fn resolve_template_mcp_config(
     let discovered = if let Some(path) = base_mcp_config {
         Some(path.clone())
     } else {
-        match find_mcp_config(workdir) {
+        match workspace_mcp_config(workdir) {
             Some(Ok((path, _))) => Some(path),
             Some(Err(err)) => return Err(err.into()),
             None => None,
@@ -2704,15 +2703,10 @@ async fn drain_dispatch_learning_events(
 ) -> Result<()> {
     loop {
         match rx.try_recv() {
+            // The router observed this dispatch once already, journaled and
+            // keyed by the served model's slug, in
+            // `record_template_dispatch_feedback` (bug-efd2b0).
             Ok(AgentEvent::TurnCompleted { .. }) => {
-                record_cascade_router_outcome_with_layout(
-                    state,
-                    template,
-                    outcome.result.success,
-                    repo_layout,
-                )
-                .await?;
-
                 let efficiency = match repo_layout {
                     Some(layout) => EfficiencyTracker::for_layout(layout),
                     None => EfficiencyTracker::new(&state.workdir),
@@ -2781,27 +2775,32 @@ async fn apply_affect_signature(state: &AppState, episode: &mut Episode) {
     );
 }
 
+/// Record a confidence outcome for `model` on the cascade router.
+///
+/// `model` may be a `[models.*]` key or a slug; the router tracks slugs, so
+/// both it and the templates' models are resolved first (bug-efd2b0).
 async fn record_cascade_router_outcome_with_layout(
     state: &Arc<AppState>,
-    template: &AgentTemplate,
+    config: &RokoConfig,
+    model: &str,
     success: bool,
     repo_layout: Option<&RokoLayout>,
 ) -> Result<()> {
+    let model_slug = resolve_model(config, model).slug;
     let model_slugs = {
         let templates = state.templates.read().await;
         let mut slugs = Vec::new();
         let mut seen = HashSet::new();
 
         for loaded in templates.list() {
-            let model = loaded.model.clone();
-            if seen.insert(model.clone()) {
-                slugs.push(model);
+            let slug = resolve_model(config, &loaded.model).slug;
+            if seen.insert(slug.clone()) {
+                slugs.push(slug);
             }
         }
 
-        let model = template.model.clone();
-        if seen.insert(model.clone()) {
-            slugs.push(model);
+        if seen.insert(model_slug.clone()) {
+            slugs.push(model_slug.clone());
         }
 
         slugs
@@ -2813,7 +2812,7 @@ async fn record_cascade_router_outcome_with_layout(
     if path == state.layout.cascade_router_path() {
         let router_guard = state.cascade_router.read().await;
         if let Some(router) = router_guard.as_ref() {
-            if router.record_confidence_outcome(&template.model, success) {
+            if router.record_confidence_outcome(&model_slug, success) {
                 state
                     .cascade_journal
                     .save(router)
@@ -2822,7 +2821,7 @@ async fn record_cascade_router_outcome_with_layout(
             return Ok(());
         }
     }
-    record_cascade_router_observation_at(&path, model_slugs, &template.model, success)?;
+    record_cascade_router_observation_at(&path, model_slugs, &model_slug, success)?;
     Ok(())
 }
 
@@ -3626,6 +3625,158 @@ printf '%s\n' '{"type":"content_block_delta","delta":{"text":"template-ok"}}'
         assert_eq!(tracker_event.agent_id, "webhook-template");
         assert_eq!(tracker_event.model, "claude-sonnet-4-6");
         assert_eq!(tracker_event.model_used, "claude-sonnet-4-6");
+    }
+
+    #[tokio::test]
+    async fn a_template_dispatch_is_observed_once_on_the_router() {
+        // bug-efd2b0: a dispatch updates the router once, journaled on the
+        // served model's arm, not once more when its turn completes.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let workdir = tmp.path().to_path_buf();
+        let script = write_fake_claude_script(
+            &tmp,
+            r#"#!/bin/sh
+set -eu
+cat >/dev/null
+printf '%s\n' '{"type":"content_block_delta","delta":{"text":"template-ok"}}'
+"#,
+        );
+
+        let mut config = RokoConfig::default();
+        config.providers.clear();
+        config.models.clear();
+        config.agent.default_model = "template-model".to_string();
+        config.providers.insert(
+            "template-cli".to_string(),
+            ProviderConfig {
+                kind: ProviderKind::ClaudeCli,
+                base_url: None,
+                api_key_env: None,
+                command: Some(script.display().to_string()),
+                args: None,
+                timeout_ms: Some(DEFAULT_REQUEST_TIMEOUT_MS),
+                ttft_timeout_ms: Some(DEFAULT_TTFT_TIMEOUT_MS),
+                connect_timeout_ms: Some(DEFAULT_CONNECT_TIMEOUT_MS),
+                extra_headers: None,
+                max_concurrent: None,
+                limits: None,
+                require_confirmation: false,
+            },
+        );
+        config.models.insert(
+            "template-model".to_string(),
+            ModelProfile {
+                provider: "template-cli".to_string(),
+                slug: "claude-sonnet-4-6".to_string(),
+                ..Default::default()
+            },
+        );
+
+        let deploy_backend =
+            Arc::from(create_backend("manual", None, None, None).expect("manual backend"));
+        let mut state = AppState::new(
+            workdir.clone(),
+            Arc::new(NoOpRuntime),
+            config.clone(),
+            deploy_backend,
+        )
+        .expect("AppState::new");
+        // Episode distillation calls a model in the background; a service
+        // without the router keeps that call out of the counts below.
+        state.model_call_service = Arc::new(
+            roko_agent::ModelCallService::new("template-model".to_string())
+                .with_config(config.clone()),
+        );
+        let state = Arc::new(state);
+        *state.cascade_router.write().await = Some(Arc::new(CascadeRouter::load_or_new(
+            &state.layout.cascade_router_path(),
+            config.model_slugs_for_cascade(),
+        )));
+
+        let template = AgentTemplate {
+            name: "once-template".into(),
+            description: "Test template router observation".into(),
+            model: "template-model".into(),
+            role: "implementer".into(),
+            system_prompt: "You are the template role.".into(),
+            max_turns: 4,
+            output_format: crate::templates::TemplateOutputFormat::Markdown,
+            mcp_servers: Vec::new(),
+            allowed_tools: Vec::new(),
+            denied_tools: Vec::new(),
+            experiment: None,
+            provider: None,
+        };
+        state
+            .templates
+            .write()
+            .await
+            .insert(template)
+            .expect("insert template");
+
+        let subscription = Subscription::new("once-template", "prompt");
+        let signal = Signal::builder(Kind::Prompt)
+            .body(Body::text("dispatch this"))
+            .provenance(Provenance::trusted("test"))
+            .build();
+        let dispatcher: Arc<dyn AgentDispatcher> =
+            Arc::new(TemplateAgentDispatcher::new(workdir.clone(), None, config));
+
+        let terminal = dispatch_agent(Arc::clone(&state), subscription, signal, dispatcher, None)
+            .await
+            .expect("dispatch agent");
+        assert!(terminal.success);
+
+        let router = state
+            .cascade_router
+            .read()
+            .await
+            .clone()
+            .expect("shared cascade router");
+        assert_eq!(
+            router.confidence_snapshot().get("claude-sonnet-4-6"),
+            Some(&(1, 1)),
+            "one trial, on the served model's arm"
+        );
+        assert_eq!(router.total_observations(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_quality_anomaly_is_recorded_on_the_models_slug() {
+        // bug-efd2b0: the anomaly path may name a model by its config key;
+        // the router tracks slugs, so the outcome lands on the slug's arm.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut config = RokoConfig::default();
+        config.models.insert(
+            "template-model".to_string(),
+            ModelProfile {
+                provider: "template-cli".to_string(),
+                slug: "claude-sonnet-4-6".to_string(),
+                ..Default::default()
+            },
+        );
+        let deploy_backend =
+            Arc::from(create_backend("manual", None, None, None).expect("manual backend"));
+        let state = Arc::new(
+            AppState::new(
+                tmp.path().to_path_buf(),
+                Arc::new(NoOpRuntime),
+                config.clone(),
+                deploy_backend,
+            )
+            .expect("AppState::new"),
+        );
+        let router = Arc::new(CascadeRouter::new(vec!["claude-sonnet-4-6".to_string()]));
+        *state.cascade_router.write().await = Some(Arc::clone(&router));
+
+        record_cascade_router_outcome_with_layout(&state, &config, "template-model", false, None)
+            .await
+            .expect("record the anomaly's outcome");
+
+        assert_eq!(
+            router.confidence_snapshot().get("claude-sonnet-4-6"),
+            Some(&(1, 0))
+        );
     }
 
     #[test]

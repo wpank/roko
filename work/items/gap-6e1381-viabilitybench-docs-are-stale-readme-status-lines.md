@@ -2,14 +2,16 @@
 id = "gap-6e1381"
 kind = "gap"
 title = "ViabilityBench docs are stale: README status lines, the gap-a8a160 pointer, records' s01_run_dir and S08 decision 8"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p3"
 goal = "proof"
 size = "S"
 subsystem = ["benchmarks/viabilitybench"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-29
+last_verified_rev = "4f3a7aca9"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (20:01, the reports of wk-bench-report, wk-bench-rokoarm and wk-bench-secret on gap-b24517, gap-b7ab99 and gap-a8a160)"
 anchors = ["benchmarks/viabilitybench/README.md", "benchmarks/viabilitybench/driver/records.py:117", "tmp/cybernetic-harness/specs/S08-benchmark-suite.md"]
@@ -19,6 +21,12 @@ links = { depends_on = [], blocks = [], related = ["gap-b24517", "gap-b7ab99", "
 
 [[verify]]
 command = "! grep -q 'Not built yet: the families F1 and F4' benchmarks/viabilitybench/README.md && ! grep -q 'Proving that it never reaches an agent is gap-a8a160' benchmarks/viabilitybench/README.md && ! grep -q '\"s01_run_dir\": None' benchmarks/viabilitybench/driver/records.py"
+
+[closed]
+at = 2026-09-29
+commit = "4f3a7aca9"
+by = "wk-bench-fix3"
+evidence = "README: status block lists what exists and points at epic spec-567e52; layout shows the actual tree (analysis, ledger, proxy, the four arms, secret, verifier CI, families/plan_slice/); the secret bullet says what the driver-only file guarantees and what it does not (gap-308373); the Not-yet-built list is gone. records.py sets provenance.s01_run_dir from TaskOutcome.s01_run_dir (s01/<key> for the Roko arm, null for direct and CLI arms; tests in test_run_roko.py and test_run_cli.py). census.py CACHE_PARTS and F1 _bytecode_cache removed (astcheck handles caches, bug-993e7e). S08 §9 decision 8 edited in place to the driver-only secret file (gap-a8a160). Verify passes; full bench suite 305 passed, 4 skipped."
 +++
 
 ## Problem

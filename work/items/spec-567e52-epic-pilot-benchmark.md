@@ -15,7 +15,7 @@ discovered_from = "tmp/cybernetic-harness/workstreams/assessment/W10-benchmarks-
 anchors = ["benchmarks/viabilitybench/driver/vb.py", "benchmarks/viabilitybench/analysis/report.py", "benchmarks/viabilitybench/reports/pilot/REPORT.md"]
 doc = "tmp/cybernetic-harness/workstreams/PLAN.md"
 lane = "bench"
-links = { depends_on = ["dec-b78874", "gap-0580f7", "gap-2790c5", "gap-4723ff", "gap-9e7079", "gap-7ee7c2", "gap-28ebea", "gap-b24517", "gap-33d54b", "gap-e003ec", "gap-c4f364", "gap-b7ab99", "gap-a8a160", "gap-c33709", "gap-327242", "gap-d9e9fe", "gap-89f393", "gap-1cd676", "q-ab27d3", "gap-419298", "dec-39c781", "bug-993e7e", "gap-204848", "gap-455aef", "gap-db9a26", "gap-8c3752", "gap-04e8e2", "bug-3c1c4a", "bug-2930a8", "bug-979a06", "gap-308373", "gap-6e1381", "gap-154f93", "bug-f62293", "gap-f253cf", "gap-e90ebd", "dec-1089ec", "bug-b70d40"], blocks = [], related = ["bug-7d7200", "bug-35379d", "gap-644040", "bug-28becc", "bug-3a037b", "bug-a22228"], supersedes = [], duplicate_of = "" }
+links = { depends_on = ["dec-b78874", "gap-0580f7", "gap-2790c5", "gap-4723ff", "gap-9e7079", "gap-7ee7c2", "gap-28ebea", "gap-b24517", "gap-33d54b", "gap-e003ec", "gap-c4f364", "gap-b7ab99", "gap-a8a160", "gap-c33709", "gap-327242", "gap-d9e9fe", "gap-89f393", "gap-1cd676", "q-ab27d3", "gap-419298", "dec-39c781", "bug-993e7e", "gap-204848", "gap-455aef", "gap-db9a26", "gap-8c3752", "gap-04e8e2", "bug-3c1c4a", "bug-2930a8", "bug-979a06", "gap-308373", "gap-6e1381", "gap-154f93", "bug-f62293", "gap-f253cf", "gap-e90ebd", "dec-1089ec", "bug-b70d40", "gap-60654d", "bug-a49003", "gap-4667a4", "gap-0bd49a", "bug-32eb77", "gap-bc0640", "bug-09fac4", "bug-c30764", "gap-dad97b", "bug-d34a29", "gap-806e37", "gap-15bb83", "gap-44632a", "gap-a6abd5"], blocks = [], related = ["bug-7d7200", "bug-35379d", "gap-644040", "bug-28becc", "bug-3a037b", "bug-a22228"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "test -f benchmarks/viabilitybench/reports/pilot/REPORT.md && benchmarks/viabilitybench/.venv/bin/python benchmarks/viabilitybench/analysis/report.py --check benchmarks/viabilitybench/reports/pilot"
@@ -124,18 +124,32 @@ providers. This removes the checklist's circular `budget` gate (W10 rec 2).
 - [x] gap-455aef: S09 §4.9 says the plan-slice arms share no visible checks, but both get the same base repo and its tests
 - [ ] gap-db9a26: The plan-slice hidden suites were written by the arms' own model family and need a cross-family review
 - [ ] gap-8c3752: The census runs hidden.py, which executes agent code, without the sandbox agents get
-- [ ] gap-04e8e2: ViabilityBench plan-slice records carry no queue waits or per-class costs, so the report prints them as not recorded
-- [ ] bug-3c1c4a: ViabilityBench metrics group runs by arm only, so an arm that runs two models in one experiment is pooled
-- [ ] bug-2930a8: vb run cannot materialize any F1 or F4 instance: materialize.py expects the .vb/ layout both families dropped
-- [ ] bug-979a06: The ViabilityBench driver holds provider API keys in its own environment, where same-uid agents can read them
-- [ ] gap-308373: A same-uid agent can read the ViabilityBench secret file silently, and nothing detects it
-- [ ] gap-6e1381: ViabilityBench docs are stale: README status lines, the gap-a8a160 pointer, records' s01_run_dir and S08 decision 8
+- [x] gap-04e8e2: ViabilityBench plan-slice records carry no queue waits or per-class costs, so the report prints them as not recorded
+- [x] bug-3c1c4a: ViabilityBench metrics group runs by arm only, so an arm that runs two models in one experiment is pooled
+- [x] bug-2930a8: vb run cannot materialize any F1 or F4 instance: materialize.py expects the .vb/ layout both families dropped
+- [x] bug-979a06: The ViabilityBench driver holds provider API keys in its own environment, where same-uid agents can read them
+- [x] gap-308373: A same-uid agent can read the ViabilityBench secret file silently, and nothing detects it
+- [x] gap-6e1381: ViabilityBench docs are stale: README status lines, the gap-a8a160 pointer, records' s01_run_dir and S08 decision 8
 - [ ] gap-154f93: Run the live fd_claude probe and replace the invented modelUsage fixture with its saved output
-- [ ] bug-f62293: A killed Claude Code session's partial cost is labelled cli_usage, because the schema rejects estimated with $0 billed
-- [ ] gap-f253cf: fd_claude keeps WebSearch and WebFetch, so once the repo is public an agent can fetch the hidden suites
-- [ ] gap-e90ebd: Wiring the metering proxy into vb run must configure each task and keep network admission for a loopback proxy URL
+- [x] bug-f62293: A killed Claude Code session's partial cost is labelled cli_usage, because the schema rejects estimated with $0 billed
+- [x] gap-f253cf: fd_claude keeps WebSearch and WebFetch, so once the repo is public an agent can fetch the hidden suites
+- [x] gap-e90ebd: Wiring the metering proxy into vb run must configure each task and keep network admission for a loopback proxy URL
 - [ ] dec-1089ec: Raise ViabilityBench budget line BL0's cap from $10 to $14 for Pilot B's seeds 2–3
-- [ ] bug-b70d40: The ViabilityBench provider client ignores a top-level cached_tokens and prices that input at the full rate
+- [x] bug-b70d40: The ViabilityBench provider client ignores a top-level cached_tokens and prices that input at the full rate
+- [x] gap-60654d: ViabilityBench: enforce token caps through the proxy, fill the meter cross-check, and bundle proxy.jsonl
+- [x] bug-a49003: A killed subscription session's ledger row still says cli_usage; it needs an estimated cost and a subscription marker
+- [x] gap-4667a4: S08 still describes VB_SECRET as an environment variable at lines 106 and 302
+- [ ] gap-0bd49a: Agent shells in every ViabilityBench arm can reach the network, so an agent can fetch the public repo's hidden suites
+- [x] bug-32eb77: Operator credentials that aren't arm keys, such as ANTHROPIC_API_KEY or GITHUB_TOKEN, stay readable by agents through the driver's environment
+- [x] gap-bc0640: Only one vb run can use a secret file at a time, and S09's run schedule doesn't account for it
+- [x] bug-09fac4: The metering proxy stamps whole seconds, so an attempt that ends in the same second as the one before gets no usage
+- [x] bug-c30764: The metering proxy forwards the call that crosses input_token_cap, so a task can overshoot its input cap by one call
+- [ ] gap-dad97b: run_roko.py must read bug-31438d's new record fields: turns_unknown, model_reported, substitution, attempt_key and helper rows
+- [ ] bug-d34a29: The metering proxy's input-token bound (request bytes + 256) assumes text-only requests; an image by URL can cost more
+- [ ] gap-806e37: The Roko arm doesn't enforce S08's 150K per-attempt input cap, so S08-SC6 can't hold for that arm
+- [ ] gap-15bb83: vb run always uses the proxy's clean profile, and the other disturbance hooks aren't built, so H6 has no disturbance mechanism
+- [ ] gap-44632a: No CI workflow runs the ViabilityBench verifier CI in benchmarks/viabilitybench/ci/
+- [ ] gap-a6abd5: S08 §5.2's heading still gives the task manifest as DIR/.vb/task.json
 - [ ] The epic's `[[verify]]` command passes: the pilot page is committed, and `report.py --check` accepts its
       bundle.
 

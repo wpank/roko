@@ -12,6 +12,10 @@
 use std::fmt::Write as _;
 use std::path::Path;
 
+/// Task tier: minimum model and maximum scope. The one tier enum, shared with
+/// routing, budgets and turn caps.
+pub use roko_core::task::TaskTier;
+
 use crate::task_parser::role_capabilities;
 
 const NAMING_GLOSSARY_RELATIVE_PATH: &str = "docs/00-architecture/01-naming-and-glossary.md";
@@ -110,43 +114,6 @@ pub(crate) fn render_plan_template_guidance(template: PlanTemplateKind) -> Strin
         "- This is a ceiling, not a target. Prefer the fewest cohesive tasks that preserve safe ownership."
     );
     out
-}
-
-/// Task tier determines minimum model and maximum scope.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TaskTier {
-    /// Mechanical: imports, renames, field additions. ≤20 LOC. Haiku-capable.
-    Mechanical,
-    /// Focused: single function, single test. ≤50 LOC. Sonnet-capable.
-    Focused,
-    /// Integrative: multi-module connection. ≤150 LOC. Sonnet/Opus.
-    Integrative,
-    /// Architectural: API design, decomposition. ≤300 LOC. Opus only.
-    Architectural,
-}
-
-impl TaskTier {
-    /// Maximum lines of code change for this tier.
-    #[must_use]
-    pub const fn max_loc(&self) -> u32 {
-        match self {
-            Self::Mechanical => 20,
-            Self::Focused => 50,
-            Self::Integrative => 150,
-            Self::Architectural => 300,
-        }
-    }
-
-    /// Label for TOML output.
-    #[must_use]
-    pub const fn label(&self) -> &'static str {
-        match self {
-            Self::Mechanical => "mechanical",
-            Self::Focused => "focused",
-            Self::Integrative => "integrative",
-            Self::Architectural => "architectural",
-        }
-    }
 }
 
 /// The system prompt for the plan generator agent.
@@ -1011,15 +978,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn tier_labels() {
-        assert_eq!(TaskTier::Mechanical.label(), "mechanical");
-        assert_eq!(TaskTier::Focused.label(), "focused");
-        assert_eq!(TaskTier::Integrative.label(), "integrative");
-        assert_eq!(TaskTier::Architectural.label(), "architectural");
-    }
-
-    #[test]
-    fn tier_max_loc() {
+    fn tier_labels_and_loc_budgets_match_the_generator_prompt() {
+        for tier in TaskTier::ALL {
+            assert!(
+                PLAN_GENERATOR_SYSTEM_PROMPT.contains(tier.label()),
+                "{tier}"
+            );
+        }
         assert_eq!(TaskTier::Mechanical.max_loc(), 20);
         assert_eq!(TaskTier::Focused.max_loc(), 50);
         assert_eq!(TaskTier::Integrative.max_loc(), 150);

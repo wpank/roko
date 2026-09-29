@@ -119,47 +119,27 @@ impl ArtifactOutcome {
     }
 }
 
-fn tier_rank(tier: &str) -> u8 {
-    match tier {
-        "mechanical" => 0,
-        "focused" => 1,
-        "integrative" => 2,
-        "architectural" => 3,
-        _ => 1,
-    }
-}
-
-fn rank_to_complexity(rank: u8) -> &'static str {
-    match rank {
-        0 => "mechanical",
-        1 => "focused",
-        2 => "integrative",
-        3 => "architectural",
-        _ => "focused",
-    }
-}
-
 fn generated_plan_stats(paths: &[PathBuf]) -> Result<(usize, String)> {
     if paths.is_empty() {
         return Ok((0, "unknown".to_string()));
     }
 
     let mut task_count = 0usize;
-    let mut max_rank = 0u8;
+    let mut max_tier = roko_core::task::TaskTier::Mechanical;
 
     for path in paths {
         let tasks_file =
             TasksFile::parse(path).with_context(|| format!("parse {}", path.display()))?;
         task_count = task_count.saturating_add(tasks_file.tasks.len());
         for task in &tasks_file.tasks {
-            max_rank = max_rank.max(tier_rank(task.tier.as_str()));
+            max_tier = max_tier.max(task.tier_class());
         }
     }
 
     let estimated_complexity = if task_count == 0 {
         "unknown".to_string()
     } else {
-        rank_to_complexity(max_rank).to_string()
+        max_tier.label().to_string()
     };
 
     Ok((task_count, estimated_complexity))

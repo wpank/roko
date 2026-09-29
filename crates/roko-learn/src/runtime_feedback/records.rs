@@ -80,8 +80,11 @@ pub struct LearningPaths {
     pub post_gate_reflections_json: PathBuf,
     /// Append-only provider/model outcome telemetry for future bandits.
     pub provider_model_outcomes_jsonl: PathBuf,
-    /// Write-Ahead Log for crash-safe learning state durability.
+    /// Shared Write-Ahead Log that writers used before per-writer segments.
+    /// It is still replayed when a runtime opens.
     pub wal_jsonl: PathBuf,
+    /// Write-Ahead Log segments, one per writer (`crate::wal::WalSegment`).
+    pub wal_segments_dir: PathBuf,
 }
 
 impl LearningPaths {
@@ -112,6 +115,7 @@ impl LearningPaths {
             post_gate_reflections_json: root.join("post-gate-reflections.json"),
             provider_model_outcomes_jsonl: root.join("provider-model-outcomes.jsonl"),
             wal_jsonl: root.join("wal.jsonl"),
+            wal_segments_dir: root.join(crate::wal::SEGMENTS_DIR),
             root,
         }
     }
@@ -967,7 +971,8 @@ impl KnowledgeSeedRecord {
     /// Build a deterministic knowledge seed from a successful episode.
     #[must_use]
     pub fn from_successful_episode(episode: &Episode) -> Option<Self> {
-        if !episode.success
+        // A pass by its learning label (S01 §4.1), not an unverified success.
+        if episode.learning_success() != Some(true)
             || gate_counts_from_episode(episode).is_some_and(GateCounts::has_only_skipped)
         {
             return None;

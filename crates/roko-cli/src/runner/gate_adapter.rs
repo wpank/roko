@@ -341,13 +341,24 @@ impl roko_core::SharedGateEvaluator for RunnerProductionGateAdapter {
         // Restrict to the single requested rung by setting max_rung.
         gates_config.max_rung = Some(rung.as_index() as u8);
 
+        // The request names its plan, run and attempt key in its context (the
+        // Graph plan gate sends them); without them each attempt of a task
+        // still gets an identity of its own.
+        let context = |key: &str| {
+            request
+                .context
+                .get(key)
+                .filter(|value| !value.is_empty())
+                .cloned()
+        };
+        let own_identity = || format!("shared:{}:{}", request.task_id, request.attempt_id);
         let production_request = roko_gate::ProductionGateRequest {
-            run_id: format!("shared:{}:{}", request.task_id, request.attempt_id),
-            plan_id: request.plan_dir.clone(),
+            run_id: context("run_id").unwrap_or_else(own_identity),
+            plan_id: context("plan_id").unwrap_or_else(|| request.plan_dir.clone()),
             task_id: request.task_id.clone(),
             attempt: request.attempt_id,
             workspace: request.worktree_path.clone(),
-            workspace_fingerprint: format!("shared:{}:{}", request.task_id, request.attempt_id),
+            workspace_fingerprint: context("attempt_key").unwrap_or_else(own_identity),
             changed_files: request.changed_files.clone(),
             verify_steps: Vec::new(),
             gates_config,
@@ -420,5 +431,96 @@ impl roko_core::SharedGateEvaluator for RunnerProductionGateAdapter {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use roko_core::{SharedGateEvaluator, SharedGateRequest};
+    use roko_gate::production_service::{ProductionGateRunner, ProgressSink};
+
+    use super::*;
+
+    /// The identity of the one production request it was asked to run.
+    type Recorded = (String, String, u32, PathBuf, String);
+
+    /// Records the identity of each request, then fails it.
+    #[derive(Default)]
+    struct RecordingRunner {
+        requests: parking_lot::Mutex<Vec<Recorded>>,
+    }
+
+    #[async_trait::async_trait]
+    impl ProductionGateRunner for RecordingRunner {
+        async fn run(
+            &self,
+            request: roko_gate::ProductionGateRequest,
+            _progress_sink: Arc<dyn ProgressSink>,
+        ) -> roko_core::Result<roko_gate::ProductionGateVerdictV1> {
+            self.requests.lock().push((
+                request.run_id,
+                request.plan_id,
+                request.attempt,
+                request.workspace,
+                request.workspace_fingerprint,
+            ));
+            Err(roko_core::RokoError::Invalid("recorded".to_string()))
+        }
+    }
+
+    fn shared_request(context: &[(&str, &str)]) -> SharedGateRequest {
+        SharedGateRequest {
+            task_id: "T1".to_string(),
+            attempt_id: 2,
+            rung: "compile".to_string(),
+            plan_dir: "plans/plan-a".to_string(),
+            worktree_path: PathBuf::from("/wt/attempt"),
+            changed_files: Vec::new(),
+            context: context
+                .iter()
+                .map(|(key, value)| ((*key).to_string(), (*value).to_string()))
+                .collect::<HashMap<_, _>>(),
+        }
+    }
+
+    /// bug-50caf2: a Graph plan gate request is run as its plan, its run and
+    /// its exact attempt, in the attempt's checkout.
+    #[tokio::test]
+    async fn shared_request_keeps_the_plan_run_and_attempt_it_names() {
+        let runner = Arc::new(RecordingRunner::default());
+        let adapter = RunnerProductionGateAdapter::new(Arc::clone(&runner) as _);
+        let named = shared_request(&[
+            ("plan_id", "plan-a"),
+            ("run_id", "run-7"),
+            ("attempt_key", "run-7:plan-a:T1:2"),
+        ]);
+        assert!(adapter.verify_rung(&named).await.is_err());
+        // Without context, each attempt of the task still has its own identity.
+        assert!(adapter.verify_rung(&shared_request(&[])).await.is_err());
+
+        let requests = runner.requests.lock();
+        let attempt = PathBuf::from("/wt/attempt");
+        assert_eq!(
+            requests[0],
+            (
+                "run-7".to_string(),
+                "plan-a".to_string(),
+                2,
+                attempt.clone(),
+                "run-7:plan-a:T1:2".to_string()
+            )
+        );
+        assert_eq!(
+            requests[1],
+            (
+                "shared:T1:2".to_string(),
+                "plans/plan-a".to_string(),
+                2,
+                attempt,
+                "shared:T1:2".to_string()
+            )
+        );
     }
 }

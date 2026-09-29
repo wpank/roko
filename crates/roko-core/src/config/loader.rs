@@ -576,6 +576,26 @@ fn parse_from_resolved_path(
         })?;
     }
 
+    // A secret in a config file that is not a key file keeps working, but
+    // agents are refused the whole file while it is there
+    // (`child_env::is_config_with_secrets`), and a command that searches the
+    // project can still read it. Say so once per file.
+    if let (Some(p), Some(text)) = (path, &raw_text)
+        && !crate::child_env::is_key_file(p)
+        && config_text_holds_secrets(text)
+    {
+        let first = emitted_diagnostics()
+            .lock()
+            .insert(format!("secret-in:{}", p.display()));
+        if first {
+            tracing::warn!(
+                path = %p.display(),
+                "config file holds a secret such as serve.auth.api_key, so agents may not read \
+                 it; move secrets to ROKO__* variables in .roko/.env (ROKO__SERVE__AUTH__API_KEY)"
+            );
+        }
+    }
+
     // 3. Parse to a value tree, migrate, then deserialize. Migrations must run
     // before serde so renamed fields are not silently discarded.
     match (&path, raw_text) {
@@ -1388,15 +1408,31 @@ fn invariant_diagnostics(config: &RokoConfig) -> Vec<ConfigDiagnostic> {
 ///
 /// Keys under these dotted paths are treated as dynamic identifiers and are not
 /// validated against the schema tree. Their *values* are validated against the
-/// value schema of the map.
+/// value schema of the map. A `*` segment matches any one user-defined key.
 const DYNAMIC_MAP_SECTIONS: &[&str] = &[
     "providers",
+    "providers.*.extra_headers",
     "models",
     "profiles",
     "agent.roles",
     "agent.tier_models",
+    "gates.domain_gates",
+    "gates.max_output_tokens",
+    "retrieval.role_token_budgets",
     "tools.profiles",
 ];
+
+/// Whether the dotted `path` names a dynamic map section.
+fn is_dynamic_section(path: &str) -> bool {
+    !path.is_empty()
+        && DYNAMIC_MAP_SECTIONS.iter().any(|pattern| {
+            let mut keys = path.split('.');
+            pattern
+                .split('.')
+                .all(|want| keys.next().is_some_and(|key| want == "*" || want == key))
+                && keys.next().is_none()
+        })
+}
 
 /// Sections that were removed from the schema and must produce a targeted
 /// migration/removal diagnostic rather than a generic "unknown field" message.
@@ -1444,7 +1480,7 @@ pub fn schema_value_for_path(path: &str) -> Option<toml::Value> {
     let mut prefix = String::new();
     for segment in path.split('.') {
         let table = node.as_table()?;
-        node = if DYNAMIC_MAP_SECTIONS.contains(&prefix.as_str()) {
+        node = if is_dynamic_section(&prefix) {
             table.values().next()?
         } else {
             table.get(segment)?
@@ -1471,9 +1507,12 @@ pub fn schema_value_for_path(path: &str) -> Option<toml::Value> {
 /// dropped from every roko.toml. `every_optional_config_key_survives_a_load`
 /// covers the fields that have one.
 fn build_schema_tree() -> toml::Value {
-    use super::agent::RoleOverride;
-    use super::provider::{ModelProfile, ProviderConfig};
-    use super::schema::DomainProfile;
+    use super::agent::{AgentBudget, AgentThresholds, RoleOverride, RoutingOverrides};
+    use super::provider::{
+        ModelProfile, ProviderConfig, ProviderLimits, ProviderNetworkPolicy, ProviderRouting,
+    };
+    use super::routing::RewardWeights;
+    use super::schema::{DomainProfile, GateProfileConfig};
     use super::subscriptions::SubscriptionConfig;
 
     let mut config = RokoConfig::default();
@@ -1483,9 +1522,20 @@ fn build_schema_tree() -> toml::Value {
     // Provider sentinel: set Optional fields to Some so they appear in the
     // serialized schema tree. The values are never used at runtime.
     let sentinel_provider = ProviderConfig {
-        extra_headers: Some(HashMap::new()),
+        // `extra_headers` maps header names to values (a dynamic map
+        // section): one entry gives the type of its values.
+        extra_headers: Some(HashMap::from([(
+            "_schema_sentinel".to_string(),
+            String::new(),
+        )])),
         max_concurrent: Some(1),
-        limits: Some(Default::default()),
+        limits: Some(ProviderLimits {
+            max_cpu_seconds: Some(0),
+            max_rss_bytes: Some(0),
+            max_processes: Some(0),
+            network: ProviderNetworkPolicy::Deny,
+            ..ProviderLimits::default()
+        }),
         base_url: Some(String::new()),
         api_key_env: Some(String::new()),
         command: Some(String::new()),
@@ -1513,7 +1563,13 @@ fn build_schema_tree() -> toml::Value {
         supports_citations: true,
         supports_async: true,
         is_embedding_model: true,
-        provider_routing: Some(Default::default()),
+        provider_routing: Some(ProviderRouting {
+            sort: Some(String::new()),
+            order: Some(Vec::new()),
+            allow_fallbacks: Some(true),
+            max_price: Some(0.0),
+            require_parameters: Some(Vec::new()),
+        }),
         cost_input_per_m: Some(0.0),
         cost_output_per_m: Some(0.0),
         cost_input_per_m_high: Some(0.0),
@@ -1526,18 +1582,61 @@ fn build_schema_tree() -> toml::Value {
         max_tool_iterations: Some(0),
         tokenizer_ratio: Some(0.0),
         search_context_size: Some(String::new()),
+        tier: Some(crate::agent::ModelTier::Standard),
+        use_max_completion_tokens: true,
         ..ModelProfile::default()
     };
     config
         .models
         .insert("_schema_sentinel".to_string(), sentinel_model);
+    // Profile and role sentinels: every optional field set, so config set
+    // and validation know each key of a `[profiles.*]` and
+    // `[agent.roles.*]` entry.
+    let sentinel_profile = DomainProfile {
+        base: Some(String::new()),
+        model: Some(String::new()),
+        effort: Some(String::new()),
+        context_limit_k: Some(0),
+        max_iterations: Some(0),
+        tool_profile: Some(String::new()),
+        gate_config: Some(GateProfileConfig {
+            skip_tests: Some(false),
+            clippy_enabled: Some(false),
+            max_rung: Some(0),
+        }),
+        ..DomainProfile::default()
+    };
     config
         .profiles
-        .insert("_schema_sentinel".to_string(), DomainProfile::default());
+        .insert("_schema_sentinel".to_string(), sentinel_profile);
+    let sentinel_role = RoleOverride {
+        role: Some(String::new()),
+        model: Some(String::new()),
+        backend: Some(String::new()),
+        effort: Some(String::new()),
+        temperament: Some(Default::default()),
+        context_limit_k: Some(0),
+        tools: Some(Vec::new()),
+        budget: Some(AgentBudget {
+            max_tokens_per_turn: Some(0),
+            max_cost_usd_cents_per_turn: Some(0),
+        }),
+        thresholds: Some(AgentThresholds {
+            gate_pass_rate_floor: Some(0.0),
+        }),
+        routing_overrides: Some(RoutingOverrides {
+            force_backend: Some(String::new()),
+            force_tier: Some(String::new()),
+        }),
+        turn_budget_usd: Some(0.0),
+        capability_requirements: Some(Vec::new()),
+        default_effort: Some(String::new()),
+        ..RoleOverride::default()
+    };
     config
         .agent
         .roles
-        .insert("_schema_sentinel".to_string(), RoleOverride::default());
+        .insert("_schema_sentinel".to_string(), sentinel_role);
     // Populate Optional/skip_serializing_if agent fields with non-default
     // values so they appear in the serialized schema tree and are not
     // stripped by `strip_unknown_fields`.
@@ -1546,7 +1645,14 @@ fn build_schema_tree() -> toml::Value {
     config.agent.timeout_ms = Some(0);
     config.agent.env = Some(Vec::new());
     config.agent.env_passthrough = vec![String::new()];
-    config.agent.data_llm = Some(Default::default());
+    config.agent.data_llm = Some(super::agent::DataLlmConfig {
+        // `output_schema` is free-form JSON. A scalar placeholder keeps any
+        // value a file sets, because loading never descends into it.
+        output_schema: Some(serde_json::Value::String(String::new())),
+        ..Default::default()
+    });
+    config.agent.defaults.generic_agent_model = Some(String::new());
+    config.agent.defaults.gate_judge_model = Some(String::new());
     config.agent.extensions = vec![String::new()];
     config.agent.mcp_config = Some(std::path::PathBuf::new());
     config.agent.default_agent_id = Some(String::new());
@@ -1572,8 +1678,118 @@ fn build_schema_tree() -> toml::Value {
     config.project.default_domain = Some(crate::task::TaskDomain::Code);
     config.subscriptions.push(SubscriptionConfig::default());
 
+    // Optional keys of the other sections. The test
+    // `every_accepted_config_field_is_in_the_schema_tree` fails when the
+    // tree lacks one.
+    // `domain_gates` maps domains to gate commands (a dynamic map section).
+    config
+        .gates
+        .domain_gates
+        .insert("_schema_sentinel".to_string(), Vec::new());
+    config.gates.max_rung = Some(0);
+    // `max_output_tokens` maps roles to output-token caps (a dynamic map
+    // section).
+    config
+        .gates
+        .max_output_tokens
+        .insert("_schema_sentinel".to_string(), 0);
+    // `weights` flattens its default `RewardWeights` and may override them
+    // per tier.
+    let sentinel_weights = RewardWeights {
+        knowledge_bias: Some(0.0),
+        provider_pass_rate_weight: Some(0.0),
+        ..RewardWeights::default()
+    };
+    let weights = &mut config.routing.weights;
+    weights.default = sentinel_weights;
+    weights.mechanical = Some(sentinel_weights);
+    weights.focused = Some(sentinel_weights);
+    weights.integrative = Some(sentinel_weights);
+    weights.architectural = Some(sentinel_weights);
+    // Every watcher section is unset by default, and every field in it has
+    // a serde default, so an empty table builds each one.
+    let watchers = &mut config.conductor.watchers;
+    watchers.compile_fail_repeat = from_empty_table();
+    watchers.context_window_pressure = from_empty_table();
+    watchers.cost_overrun = from_empty_table();
+    watchers.ghost_turn = from_empty_table();
+    watchers.iteration_loop = from_empty_table();
+    watchers.review_loop = from_empty_table();
+    watchers.spec_drift = from_empty_table();
+    watchers.stuck_pattern = from_empty_table();
+    watchers.test_failure_budget = from_empty_table();
+    watchers.time_overrun = from_empty_table();
+    watchers.worktree_count = from_empty_table();
+    config.learning.override_learning_dampening = Some(0.0);
+    let timeouts = &mut config.timeouts;
+    timeouts.hard_run_secs = Some(0);
+    timeouts.task_attempt_secs = Some(0);
+    timeouts.gate_effect_secs = Some(0);
+    timeouts.agent_silence_secs = Some(0);
+    timeouts.scheduler_no_progress_secs = Some(0);
+    config.serve.event_ingest_allowlist = vec![String::new()];
+    config.serve.tracing.otlp_endpoint = Some(String::new());
+    let auth = &mut config.serve.auth;
+    auth.privy_app_id = Some(String::new());
+    auth.privy_workspace_id = Some(String::new());
+    auth.privy_allowed_roles = vec![String::new()];
+    config.server.auth_token = Some(String::new());
+    let deploy = &mut config.deploy;
+    deploy.railway_api_token = Some(String::new());
+    deploy.project_id = Some(String::new());
+    deploy.environment_id = Some(String::new());
+    deploy.worker_image = Some(String::new());
+    deploy.default_region = Some(String::new());
+    let perplexity = &mut config.perplexity;
+    perplexity.default_search_model = Some(String::new());
+    perplexity.default_research_model = Some(String::new());
+    perplexity.default_reasoning_model = Some(String::new());
+    perplexity.default_embed_model = Some(String::new());
+    perplexity.auto_deep = true;
+    let gemini = &mut config.gemini;
+    gemini.default_model = Some(String::new());
+    gemini.grounding_model = Some(String::new());
+    gemini.code_exec_model = Some(String::new());
+    gemini.embed_model = Some(String::new());
+    let chain = &mut config.chain;
+    chain.rpc_url = Some(String::new());
+    chain.chain_id = Some(0);
+    chain.wallet_key = Some(String::new());
+    chain.identity_registry = Some(String::new());
+    chain.reputation_registry = Some(String::new());
+    chain.validation_registry = Some(String::new());
+    chain.knowledge_registry = Some(String::new());
+    chain.agent_registry = Some(String::new());
+    chain.bounty_market = Some(String::new());
+    chain.deployer = Some(String::new());
+    chain.finality_confirmations = Some(0);
+    let relay = &mut config.relay;
+    relay.url = Some(String::new());
+    relay.workspace_name = Some(String::new());
+    relay.public_url = Some(String::new());
+    config.runner.max_concurrent_tasks = Some(0);
+    config.runner.max_concurrent_plans = Some(0);
+    config.resources.per_plan_disk_budget_mb = Some(0);
+    config.dreams.scheduled_cron = Some(String::new());
+    // `role_token_budgets` maps roles to budgets (a dynamic map section).
+    config
+        .retrieval
+        .role_token_budgets
+        .insert("_schema_sentinel".to_string(), 0);
+
     let mut value =
         toml::Value::try_from(config).expect("sentinel RokoConfig must serialize to toml::Value");
+
+    // `Vec` fields that skip serializing when empty and whose elements have
+    // required fields. An empty schema array accepts every element.
+    for path in [
+        "serve.auth.api_keys",
+        "serve.auth.jwks_providers",
+        "serve.deploy.webhooks",
+        "scheduler.cron",
+    ] {
+        insert_empty_array(&mut value, path);
+    }
 
     // Sections backed by Vec<T> where T lacks Default or conditional
     // structs with `skip_serializing_if` are added to the schema tree so
@@ -1620,6 +1836,31 @@ fn build_schema_tree() -> toml::Value {
     value
 }
 
+/// A config section with every field at its serde default, for a sentinel.
+///
+/// `None` when the type has a field without a serde default; the schema
+/// tree then lacks the section, and the guard test names it.
+fn from_empty_table<T: serde::de::DeserializeOwned>() -> Option<T> {
+    toml::Value::Table(toml::map::Map::new()).try_into().ok()
+}
+
+/// Put an empty array at the dotted `path` of the schema tree unless the
+/// tree already has a value there.
+fn insert_empty_array(tree: &mut toml::Value, path: &str) {
+    let Some((parent, leaf)) = path.rsplit_once('.') else {
+        return;
+    };
+    let table = parent
+        .split('.')
+        .try_fold(tree, |node, key| node.get_mut(key))
+        .and_then(toml::Value::as_table_mut);
+    if let Some(table) = table {
+        table
+            .entry(leaf.to_string())
+            .or_insert_with(|| toml::Value::Array(Vec::new()));
+    }
+}
+
 /// Walk the input TOML tree against the schema tree, collecting diagnostics
 /// for unknown keys at every nesting level.
 fn walk_config_paths(
@@ -1633,9 +1874,7 @@ fn walk_config_paths(
     };
 
     // Check if the current path is a dynamic map section.
-    let is_dynamic = DYNAMIC_MAP_SECTIONS
-        .iter()
-        .any(|section| !prefix.is_empty() && *section == prefix);
+    let is_dynamic = is_dynamic_section(prefix);
 
     if is_dynamic {
         // Keys are user-defined names. Validate each value against the schema
@@ -1702,9 +1941,7 @@ fn walk_config_paths(
                     }
                 }
                 // Empty schema arrays (no template element) accept all entries.
-            } else if is_likely_enum_table(schema_val, val)
-                && !DYNAMIC_MAP_SECTIONS.iter().any(|s| *s == child_path)
-            {
+            } else if is_likely_enum_table(schema_val, val) && !is_dynamic_section(&child_path) {
                 // Serde-tagged enums serialize as single-key tables (e.g.
                 // `{ "Prefix": "..." }`). When the schema has one variant
                 // and the input has a different variant, accept it rather
@@ -1885,19 +2122,52 @@ fn redact_secrets_in_toml(value: &mut toml::Value) {
     }
 }
 
-/// Recursive inner helper that knows the current key name.
-fn redact_secrets_in_toml_keyed(key: &str, value: &mut toml::Value) {
-    let key_lower = key.to_ascii_lowercase();
-    // `*_env` fields contain environment-variable names, not secret values.
-    let is_env_reference = key_lower.ends_with("_env");
-    let is_secret_key = !is_env_reference
+/// Whether a config key names a secret-bearing field: it contains one of
+/// [`SECRET_KEY_FRAGMENTS`] and is not an `*_env` field, which holds an
+/// environment variable's name rather than a secret.
+fn is_secret_key(key: &str) -> bool {
+    let key = key.to_ascii_lowercase();
+    !key.ends_with("_env")
         && SECRET_KEY_FRAGMENTS
             .iter()
-            .any(|frag| key_lower.contains(frag));
-    let is_extra_headers = key_lower == "extra_headers";
+            .any(|fragment| key.contains(fragment))
+}
+
+/// Whether a config tree holds a secret: a value that
+/// `roko config show --effective` would redact.
+#[must_use]
+pub fn holds_secrets(value: &toml::Value) -> bool {
+    let mut redacted = value.clone();
+    redact_secrets_in_toml(&mut redacted);
+    redacted != *value
+}
+
+/// Whether config text holds a secret ([`holds_secrets`]). Text that does
+/// not parse is read line by line instead: a `key = "value"` line whose key
+/// names a secret field counts.
+#[must_use]
+pub fn config_text_holds_secrets(text: &str) -> bool {
+    let Ok(value) = text.parse::<toml::Value>() else {
+        return text.lines().any(|line| {
+            line.split_once('=').is_some_and(|(key, value)| {
+                let key = key.trim().trim_matches(['"', '\'']);
+                let value = value.trim_start();
+                is_secret_key(key.rsplit('.').next().unwrap_or(key))
+                    && (value.starts_with('"') || value.starts_with('\''))
+                    && !(value.starts_with("\"\"") || value.starts_with("''"))
+            })
+        });
+    };
+    holds_secrets(&value)
+}
+
+/// Recursive inner helper that knows the current key name.
+fn redact_secrets_in_toml_keyed(key: &str, value: &mut toml::Value) {
+    let secret_key = is_secret_key(key);
+    let is_extra_headers = key.eq_ignore_ascii_case("extra_headers");
 
     match value {
-        toml::Value::String(secret) if is_secret_key && !secret.is_empty() => {
+        toml::Value::String(secret) if secret_key && !secret.is_empty() => {
             *value = toml::Value::String(REDACTED_MARKER.to_string());
         }
         toml::Value::Table(table) if is_extra_headers => {
@@ -1915,7 +2185,7 @@ fn redact_secrets_in_toml_keyed(key: &str, value: &mut toml::Value) {
         }
         toml::Value::Array(arr) => {
             for item in arr.iter_mut() {
-                if is_secret_key {
+                if secret_key {
                     if item.as_str().is_some_and(|secret| !secret.is_empty()) {
                         *item = toml::Value::String(REDACTED_MARKER.to_string());
                     }
@@ -2099,9 +2369,7 @@ fn strip_unknown_fields(input: &mut toml::Value, schema: &toml::Value, prefix: &
         return;
     };
 
-    let is_dynamic = DYNAMIC_MAP_SECTIONS
-        .iter()
-        .any(|section| !prefix.is_empty() && *section == prefix);
+    let is_dynamic = is_dynamic_section(prefix);
 
     if is_dynamic {
         let value_schema = schema.as_table().and_then(|t| t.values().next()).cloned();
@@ -3480,6 +3748,14 @@ strict_validation = true
             schema_value_for_path("providers.zai.timeout_ms"),
             Some(toml::Value::Integer(_))
         ));
+        assert!(matches!(
+            schema_value_for_path("providers.zai.extra_headers.X-Title"),
+            Some(toml::Value::String(_))
+        ));
+        assert!(matches!(
+            schema_value_for_path("agent.roles.implementer.model"),
+            Some(toml::Value::String(_))
+        ));
         assert_eq!(schema_value_for_path("budget.max_plna_usd"), None);
         // v1 names are not v2 keys.
         assert_eq!(schema_value_for_path("agent.model"), None);
@@ -3582,6 +3858,303 @@ port = 7788
         assert_eq!(config.gates.env_passthrough, vec!["CARGO_*".to_string()]);
         assert_eq!(config.github.owner.as_deref(), Some("nunchi"));
         assert_eq!(config.github.repo.as_deref(), Some("roko"));
+    }
+
+    /// bug-647249: a load keeps the optional keys that `build_schema_tree`
+    /// used to lack, among them the serve auth settings.
+    #[test]
+    fn documented_optional_keys_survive_a_load() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("roko.toml");
+        std::fs::write(
+            &path,
+            r#"
+schema_version = 2
+config_version = 2
+
+[serve.auth]
+privy_app_id = "privy-app"
+
+[[serve.auth.api_keys]]
+name = "ci"
+key_hash = "hash"
+created_at = "2026-09-29T00:00:00Z"
+
+[[serve.auth.jwks_providers]]
+url = "https://issuer.example/jwks"
+expected_issuer = "https://issuer.example"
+
+[[serve.deploy.webhooks]]
+owner = "nunchi"
+repo = "roko"
+
+[server]
+auth_token = "server-token"
+
+[timeouts]
+hard_run_secs = 99
+
+[conductor.watchers.compile_fail_repeat]
+max_repeats = 5
+
+[retrieval.role_token_budgets]
+implementer = 4000
+
+[gates]
+max_rung = 2
+
+[gates.domain_gates]
+docs = ["shell:true"]
+
+[dreams]
+scheduled_cron = "0 0 3 * * * *"
+
+[learning]
+override_learning_dampening = 0.5
+
+[runner]
+max_concurrent_plans = 3
+"#,
+        )
+        .expect("write roko.toml");
+
+        let config = load_config_file(
+            &path,
+            &LoadOptions {
+                merge_global: false,
+                apply_env_overrides: false,
+                apply_hierarchical_env: false,
+                strict_validation: false,
+            },
+        )
+        .expect("load roko.toml");
+
+        let auth = &config.serve.auth;
+        assert_eq!(auth.privy_app_id.as_deref(), Some("privy-app"));
+        let api_key_names = auth
+            .api_keys
+            .iter()
+            .map(|key| key.name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(api_key_names, ["ci"]);
+        assert_eq!(auth.jwks_providers.len(), 1);
+        assert_eq!(config.serve.deploy.webhooks.len(), 1);
+        assert_eq!(config.server.auth_token.as_deref(), Some("server-token"));
+        assert_eq!(config.timeouts.hard_run_secs, Some(99));
+        let repeats = config
+            .conductor
+            .watchers
+            .compile_fail_repeat
+            .as_ref()
+            .map(|watcher| watcher.max_repeats);
+        assert_eq!(repeats, Some(5));
+        let budget = config.retrieval.role_token_budgets.get("implementer");
+        assert_eq!(budget, Some(&4000));
+        assert_eq!(config.gates.max_rung, Some(2));
+        let docs_gates = config.gates.domain_gates.get("docs").cloned();
+        assert_eq!(docs_gates, Some(vec!["shell:true".to_string()]));
+        let cron = config.dreams.scheduled_cron.as_deref();
+        assert_eq!(cron, Some("0 0 3 * * * *"));
+        assert_eq!(config.learning.override_learning_dampening, Some(0.5));
+        assert_eq!(config.runner.max_concurrent_plans, Some(3));
+    }
+
+    /// Dotted paths of every table in `value` below `prefix`.
+    fn collect_table_paths(
+        value: &toml::Value,
+        prefix: &mut Vec<String>,
+        out: &mut Vec<Vec<String>>,
+    ) {
+        let Some(table) = value.as_table() else {
+            return;
+        };
+        for (key, child) in table {
+            if child.is_table() {
+                prefix.push(key.clone());
+                out.push(prefix.clone());
+                collect_table_paths(child, prefix, out);
+                prefix.pop();
+            }
+        }
+    }
+
+    fn table_at<'a>(value: &'a toml::Value, path: &[String]) -> Option<&'a toml::Table> {
+        path.iter()
+            .try_fold(value, |node, key| node.get(key.as_str()))?
+            .as_table()
+    }
+
+    fn table_at_mut<'a>(
+        value: &'a mut toml::Value,
+        path: &[String],
+    ) -> Option<&'a mut toml::Table> {
+        path.iter()
+            .try_fold(value, |node, key| node.get_mut(key.as_str()))?
+            .as_table_mut()
+    }
+
+    /// The keys serde accepts for struct `T`, aliases included: a derived
+    /// `Deserialize` hands them to `deserialize_struct` before it reads.
+    fn struct_fields<T: serde::de::DeserializeOwned>() -> &'static [&'static str] {
+        struct Capture<'a>(&'a mut &'static [&'static str]);
+
+        impl<'de> serde::de::Deserializer<'de> for Capture<'_> {
+            type Error = serde::de::value::Error;
+
+            fn deserialize_any<V: serde::de::Visitor<'de>>(
+                self,
+                _visitor: V,
+            ) -> std::result::Result<V::Value, Self::Error> {
+                Err(serde::de::Error::custom("not a struct"))
+            }
+
+            fn deserialize_struct<V: serde::de::Visitor<'de>>(
+                self,
+                _name: &'static str,
+                fields: &'static [&'static str],
+                _visitor: V,
+            ) -> std::result::Result<V::Value, Self::Error> {
+                *self.0 = fields;
+                Err(serde::de::Error::custom("fields captured"))
+            }
+
+            serde::forward_to_deserialize_any! {
+                bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string
+                bytes byte_buf option unit unit_struct newtype_struct seq tuple
+                tuple_struct map enum identifier ignored_any
+            }
+        }
+
+        let mut fields: &'static [&'static str] = &[];
+        let _ = <T as serde::Deserialize>::deserialize(Capture(&mut fields));
+        fields
+    }
+
+    /// bug-647249: loading strips every key `build_schema_tree` lacks, so a
+    /// field the tree misses is silently dropped from roko.toml. A section
+    /// that rejects unknown keys names every key it accepts, so the test
+    /// plants `__probe__` in each table of the tree and requires each named
+    /// key to be there. A table that keeps an unknown key through a load
+    /// and a save is a map with user-defined keys, so it must be a dynamic
+    /// section. The templates of dynamic maps whose types ignore unknown
+    /// keys are compared with the fields serde reports for them.
+    #[test]
+    fn every_accepted_config_field_is_in_the_schema_tree() {
+        use super::super::agent::RoleOverride;
+        use super::super::provider::{ProviderLimits, ProviderRouting};
+
+        const UNKNOWN_PROBE: &str = "unknown field `__probe__`, expected ";
+        // Aliases serde accepts that the tree leaves out on purpose:
+        // validation asks for the canonical key.
+        const ALIASES: &[&str] = &[
+            "agent.model",
+            "agent.effort",
+            "budget.tier_multipliers.focused",
+            "budget.tier_multipliers.integrative",
+            "budget.tier_multipliers.architectural",
+            "gates.custom_rungs",
+        ];
+        // Tables that take any key but are checked against a fixed key set:
+        // `tui.effects` is free-form TOML, and a profile collects unknown
+        // keys in its flattened `extra` map.
+        const FIXED_KEY_TABLES: &[&str] = &["tui.effects", "profiles._schema_sentinel"];
+
+        let schema = build_schema_tree();
+        let parsed = schema.clone().try_into::<RokoConfig>();
+        assert!(
+            parsed.is_ok(),
+            "the schema tree must load as a config: {parsed:?}"
+        );
+
+        let mut tables = vec![Vec::new()];
+        collect_table_paths(&schema, &mut Vec::new(), &mut tables);
+        let mut missing = Vec::new();
+        let mut unregistered_maps = Vec::new();
+        for path in &tables {
+            let dotted = path.join(".");
+            let known = table_at(&schema, path).expect("a table of the tree");
+
+            let mut probe = schema.clone();
+            let table = table_at_mut(&mut probe, path).expect("a table of the tree");
+            table.insert("__probe__".to_string(), toml::Value::Integer(0));
+            if let Err(err) = probe.try_into::<RokoConfig>()
+                && let Some(expected) = err.message().strip_prefix(UNKNOWN_PROBE)
+            {
+                for field in expected.split('`').skip(1).step_by(2) {
+                    let key = if dotted.is_empty() {
+                        field.to_string()
+                    } else {
+                        format!("{dotted}.{field}")
+                    };
+                    if !known.contains_key(field) && !ALIASES.contains(&key.as_str()) {
+                        missing.push(key);
+                    }
+                }
+                continue;
+            }
+
+            if is_dynamic_section(&dotted) || FIXED_KEY_TABLES.contains(&dotted.as_str()) {
+                continue;
+            }
+            let samples = [
+                toml::Value::String(String::new()),
+                toml::Value::Integer(0),
+                toml::Value::Array(Vec::new()),
+                toml::Value::Table(toml::Table::new()),
+            ];
+            for sample in samples {
+                let mut probe = schema.clone();
+                let table = table_at_mut(&mut probe, path).expect("a table of the tree");
+                table.insert("__probe__".to_string(), sample);
+                let saved = probe
+                    .try_into::<RokoConfig>()
+                    .ok()
+                    .and_then(|config| toml::Value::try_from(config).ok());
+                if saved
+                    .as_ref()
+                    .and_then(|saved| table_at(saved, path))
+                    .is_some_and(|table| table.contains_key("__probe__"))
+                {
+                    unregistered_maps.push(dotted.clone());
+                    break;
+                }
+            }
+        }
+
+        // Dynamic-map templates whose types ignore unknown keys.
+        let templates = [
+            (
+                "agent.roles._schema_sentinel",
+                struct_fields::<RoleOverride>(),
+            ),
+            (
+                "providers._schema_sentinel.limits",
+                struct_fields::<ProviderLimits>(),
+            ),
+            (
+                "models._schema_sentinel.provider_routing",
+                struct_fields::<ProviderRouting>(),
+            ),
+        ];
+        for (template, fields) in templates {
+            assert!(!fields.is_empty(), "no serde fields for {template}");
+            let path: Vec<String> = template.split('.').map(str::to_string).collect();
+            let known = table_at(&schema, &path).expect("a template of the tree");
+            for field in fields {
+                if !known.contains_key(*field) {
+                    missing.push(format!("{template}.{field}"));
+                }
+            }
+        }
+
+        assert!(
+            missing.is_empty(),
+            "keys serde accepts that build_schema_tree() lacks: {missing:?}"
+        );
+        assert!(
+            unregistered_maps.is_empty(),
+            "map tables missing from DYNAMIC_MAP_SECTIONS: {unregistered_maps:?}"
+        );
     }
 
     #[test]

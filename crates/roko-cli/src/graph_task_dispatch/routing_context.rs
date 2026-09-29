@@ -336,7 +336,7 @@ pub(super) fn build_routing_context(
     daimon_state: &Option<Arc<std::sync::Mutex<roko_daimon::DaimonState>>>,
 ) -> roko_learn::model_router::RoutingContext {
     use roko_core::agent::AgentRole;
-    use roko_core::task::{TaskCategory, TaskComplexityBand};
+    use roko_core::task::TaskCategory;
     use roko_learn::model_router::RoutingContext;
 
     let role_enum = match role.trim().to_ascii_lowercase().as_str() {
@@ -359,12 +359,9 @@ pub(super) fn build_routing_context(
         _ => TaskCategory::Implementation,
     };
 
-    // Infer complexity from the task tier field, or default to Standard.
-    let complexity = match task.tier.trim().to_ascii_lowercase().as_str() {
-        "fast" | "t0" | "0" => TaskComplexityBand::Fast,
-        "complex" | "t2" | "2" | "premium" => TaskComplexityBand::Complex,
-        _ => TaskComplexityBand::Standard,
-    };
+    // The tier's band: mechanical is Fast, focused (and any unknown tier)
+    // Standard, integrative and architectural Complex.
+    let complexity = task.tier_class().complexity_band();
 
     // Extract daimon policy if the affect state is loaded.
     let daimon_policy = daimon_state
@@ -405,7 +402,128 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
-    use crate::graph_task_dispatch::tests::{cli_provider, make_bare_dispatcher, model};
+    use crate::graph_task_dispatch::tests::{
+        batch_ctx, cli_provider, make_bare_dispatcher, make_batch_dispatcher, make_spec,
+        make_task_def, model,
+    };
+
+    /// gap-9cbf35: a plan task without a `model_hint` runs on the model of
+    /// its `[routing.ladder]` start rung.
+    #[tokio::test]
+    async fn an_unhinted_task_runs_on_its_ladder_start_rung() {
+        use roko_core::config::routing::LadderRung;
+
+        let rung = |name: &str, model: &str| LadderRung {
+            name: name.to_string(),
+            model: model.to_string(),
+        };
+        for (tier, slug) in [
+            ("mechanical", "claude-haiku-4-5"),
+            ("architectural", "claude-sonnet-4-6"),
+        ] {
+            let temp = tempdir().expect("tempdir");
+            let (dispatcher, mut task) = make_batch_dispatcher(&temp, 0.01, |config| {
+                config.models.insert(
+                    "cheap-model".to_string(),
+                    model("batch-cli", "claude-haiku-4-5", None),
+                );
+                config.routing.ladder.rungs =
+                    vec![rung("cheap", "cheap-model"), rung("top", "batch-model")];
+            })
+            .await;
+            task.model_hint = None;
+            task.tier = tier.to_string();
+            dispatcher
+                .dispatch(&make_spec(&task), Vec::new(), &batch_ctx())
+                .await
+                .expect("dispatch");
+            let args = std::fs::read_to_string(temp.path().join("provider-args"))
+                .expect("the provider recorded its arguments");
+            assert!(
+                args.contains(&format!("--model {slug}")),
+                "{tier}: provider args: {args}"
+            );
+        }
+    }
+
+    /// gap-8c0a20: every consumer reads a plan tier through `TaskTier`, so
+    /// for each spelling of a tier the routing band, budget multiplier, turn
+    /// cap and express eligibility agree.
+    #[test]
+    fn plan_tiers_reach_router_budget_and_turn_caps() {
+        use roko_core::task::{TaskComplexityBand, TaskTier};
+
+        let mut config = RokoConfig::default();
+        config.conductor.express_mode = true;
+        config.budget.max_task_usd = 1.0;
+        config.budget.max_task_retry_usd = 0.0;
+        let expected = [
+            (
+                &["mechanical", "trivial", "fast", " T0 "][..],
+                TaskTier::Mechanical,
+                TaskComplexityBand::Fast,
+                0.2,
+                40,
+                true,
+            ),
+            (
+                &["focused", "standard", "t1"][..],
+                TaskTier::Focused,
+                TaskComplexityBand::Standard,
+                1.0,
+                60,
+                false,
+            ),
+            (
+                &["integrative", "Complex", "2"][..],
+                TaskTier::Integrative,
+                TaskComplexityBand::Complex,
+                3.0,
+                90,
+                false,
+            ),
+            (
+                &["architectural", "premium", "deep"][..],
+                TaskTier::Architectural,
+                TaskComplexityBand::Complex,
+                5.0,
+                120,
+                false,
+            ),
+            // A missing or misspelt tier reads as focused everywhere.
+            (
+                &["", "mechancial"][..],
+                TaskTier::Focused,
+                TaskComplexityBand::Standard,
+                1.0,
+                60,
+                false,
+            ),
+        ];
+        for (spellings, tier, band, budget_multiplier, turn_cap, express) in expected {
+            for spelling in spellings {
+                let task = make_task_def(spelling);
+                assert_eq!(task.tier_class(), tier, "{spelling:?}");
+                let routing = build_routing_context("implementer", &task, &None);
+                assert_eq!(routing.complexity, band, "router band of {spelling:?}");
+                let ceiling = task_budget_ceiling_usd(&config.budget, &task);
+                assert!(
+                    (ceiling - budget_multiplier).abs() < 1e-6,
+                    "budget of {spelling:?}: {ceiling}"
+                );
+                assert_eq!(
+                    task_turn_limit(&config, &task, false),
+                    turn_cap,
+                    "turn cap of {spelling:?}"
+                );
+                assert_eq!(
+                    is_express_task(&config, &task),
+                    express,
+                    "express eligibility of {spelling:?}"
+                );
+            }
+        }
+    }
 
     fn config_with_models(models: Vec<(&str, ModelProfile)>) -> RokoConfig {
         let mut config = RokoConfig::default();

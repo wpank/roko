@@ -2,14 +2,16 @@
 id = "gap-4ec886"
 kind = "gap"
 title = "Companion report leftovers: stale review and outline notes, bibliography gloss and fields, and E10 at 1.28x budget"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p3"
 goal = "whitepaper"
 size = "S"
 subsystem = ["companion"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-29
+last_verified_rev = "b88ea1150"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (20:01, wk-companion-strict's report on gap-cb86e4)"
 anchors = ["tmp/cybernetic-harness/companion-audit/E10-DRAFT.md", "tmp/cybernetic-harness/companion-audit/06-REVIEW.md", "tmp/cybernetic-harness/companion-audit/03-OUTLINE.md", "tmp/cybernetic-harness/companion-audit/BIBLIOGRAPHY.md", "tmp/cybernetic-harness/companion-audit/references.bib"]
@@ -19,6 +21,11 @@ links = { depends_on = [], blocks = [], related = ["gap-cb86e4", "gap-5d95a5", "
 
 [[verify]]
 command = "python3 tools/paperlint.py --budget 1.0 tmp/cybernetic-harness/companion-audit/E10-DRAFT.md && ! grep -q 'Token-level blame robust to moved code' tmp/cybernetic-harness/companion-audit/BIBLIOGRAPHY.md && ! grep -q 'Roko research paper: 400 verified references' tmp/cybernetic-harness/companion-audit/references.bib"
+
+[closed]
+at = 2026-09-29
+by = "coordinator (session 7622b882)"
+evidence = "Companion leftovers (tmp, wk-companion-tidy): the 1.28x came from appendix drafts and number sources counted against the page budget; moved to a new E10-APPENDICES.md (budget none) and the main text trimmed 7,918 -> 7,672 words with detail in new appendix blocks, every section within budget, no number, anchor, claim id or footnote source lost (script check); paperlint --strict: only the 16 rater/author markers; 03-OUTLINE note and 06-REVIEW §6 rewritten (items 2 and 7 stay open); bibliography fixes in build_bibliography.py (headers, howpublished for non-arXiv @misc) and bib-overrides.json (cregit gloss). Verify passes; README file table gains E10-APPENDICES.md."
 +++
 
 ## Problem

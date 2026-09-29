@@ -140,6 +140,33 @@ plan and run context. It fails closed when the worktree or attempt is unknown, o
 - The severity is p1, but the path is only reachable with `--rich-topology` plus an injected evaluator, which no
   production code provides today. Fix it before wiring `resources.gates`, not after.
 - Keep `CANONICAL_RUNGS` as they are. Which rungs to run is out of scope.
+- 2026-09-29 (wk-integrate): Implemented on `work/bug-50caf2` at `72d3c9823` (acceptance after the gate in
+  `671df37dc`, gap-3b5361); cargo verification deferred to the batch check. In the worktree: `cargo check -p
+  roko-cli -p roko-graph --lib --tests` and `cargo clippy -p roko-cli -p roko-graph -p roko-core --no-deps -D
+  warnings` clean; `cargo test -p roko-graph --lib` 471 passed; the targeted roko-cli lib tests below pass.
+  - The executor stamps its output with `roko_graph::cells::TaskAttempt`: tags `plan_id`, `task_id`, `run_id`,
+    `attempt.key`, `workspace.attempt` (the 1-based ordinal of the gap-96f7ed attempt key) and `workspace.path`.
+    `workspace.path` is set only for an isolated worktree: an attempt in the shared tree (the operator's own
+    checkout) names none, so the gate fails closed there. The rich topology needs `--worktree-per-task`.
+  - `ProductionPlanTopology` sets `keep_workspace = true` on the executor node (`TaskExecutionSpec` field): the
+    executor then hands the lease on (`workspace.lease`) instead of releasing it. The gate node config gains
+    `title`.
+  - `PlanGateCell` has no `current_dir()` and no hard-coded attempt. It errors when the input names no attempt,
+    when the attempt names no worktree, when the worktree is gone, or when the handed-on lease is for another
+    path. Zero rungs run gives `passed = false`, score 0 and a `gate.evidence` tag. The request context carries
+    `plan_id`, `run_id`, `attempt_key` and `title`; `RunnerProductionGateAdapter` uses them for `plan_id` (not
+    `plan_dir`), `run_id` and the workspace fingerprint.
+  - The dispatcher's worktree lease stays the task's checkout (`WorkspaceAttemptId.attempt` is the checkout
+    generation, 0 until a plan-branch conflict), so a retry still resumes its predecessor's partial work.
+  - Tests: `plan_gate_uses_worktree_from_executor_output`, `plan_gate_fails_closed_without_worktree`,
+    `all_skipped_fails_closed`, `task_attempt_stamp_round_trips_and_refreshes_ids`,
+    `executor_keeps_its_workspace_for_the_gate`, `shared_request_keeps_the_plan_run_and_attempt_it_names`, and
+    `graph_output_hands_the_attempt_worktree_on_to_the_gate` (a real git repo: the plan gate, fed the executor's
+    output, sees the agent's change in the attempt worktree and accepts it; the operator's checkout never moves).
+  - Not fixed, found on the way: `PlanGateCell` returns `Ok` with `gate.passed = false` on a failed gate, and
+    the gate → success-boundary edge is `EdgeCondition::Success`, so a failed rich-topology gate does not fail
+    its task and dependants still run. `plan_runner.rs` still injects no `CellResources` (`gates`,
+    `workspaces`), so `--rich-topology` stops at every gate.
 
 ## Original notes
 

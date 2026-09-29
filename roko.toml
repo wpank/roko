@@ -138,6 +138,15 @@ context_window = 200000
 max_output = 100000
 tool_format = "openai_json"
 
+[models.glm-4-7]
+provider = "zai"
+slug = "glm-4.7"
+context_window = 128000
+max_output = 16384
+tool_format = "openai_json"
+cost_input_per_m = 0.6
+cost_output_per_m = 2.2
+
 [models.glm51]
 provider = "zai"
 slug = "glm-5v-turbo"
@@ -168,6 +177,15 @@ supports_vision = true
 tool_format = "openai_json"
 cost_input_per_m = 0.15
 cost_output_per_m = 0.6
+
+[models.gpt-5-4-mini]
+provider = "openai"
+slug = "gpt-5.4-mini"
+context_window = 200000
+max_output = 16384
+tool_format = "openai_json"
+cost_input_per_m = 0.4
+cost_output_per_m = 1.6
 
 [models.groq-llama70b]
 provider = "groq"
@@ -274,6 +292,9 @@ Prefix = "heartbeat."
 mode = "auto_override"
 algorithm = "linucb"
 discount_factor = 0.99
+# Deprecated for plan tasks: [routing.ladder] below picks their models. fast_task_model is still
+# the express-mode model and the preferred model for one-shot helper calls; nothing reads
+# standard_task_model or complex_task_model.
 fast_task_model = "gpt-4o-mini"
 standard_task_model = "gpt-4o"
 complex_task_model = "claude-sonnet"
@@ -287,6 +308,21 @@ fallback_models = ["kimi-k2-5", "glm51", "gpt-4o"]
 quality = 0.5
 cost = 0.3
 latency = 0.2
+
+# Executor ladder (DECISIONS D11; on by default, decided 2026-09-29). A plan task without a
+# model_hint starts on the rung its tier names, unless --model pins a model. Rungs whose model has
+# no usable provider (API key or CLI on PATH) are skipped, so a workspace with only the Claude CLI
+# runs every task on claude-sonnet, as before. [[routing.ladder.roles]] entries (role = "...")
+# override rungs or start for one role. Planning uses [authoring] planner_model, not a rung.
+[routing.ladder]
+enabled = true
+rungs = [
+  { name = "cheap", model = "cerebras-gptoss" },
+  { name = "mid", model = "glm-4-7" },
+  { name = "strong", model = "gpt-5-4-mini" },
+  { name = "top", model = "claude-sonnet" },
+]
+start = { mechanical = "cheap", focused = "cheap", integrative = "mid", architectural = "top" }
 
 [pipeline]
 default_template = "standard"

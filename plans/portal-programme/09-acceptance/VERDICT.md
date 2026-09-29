@@ -10,8 +10,9 @@ is `apps/portal/out`, built at 10:37.
 **PASS.** The test that defines done holds in a real browser:
 
 - **Fake agent:** `PORTAL-CHECK: PASS (35 checks)`.
-- **Real model, on the user's own `roko init` path:** `HELLO-WORLD-REAL: PASS (18 checks)`. A fresh
-  folder produced a program that prints `Hello, world!` after two browser actions in 55 s.
+- **Real model, on the user's own `roko init` path:** `HELLO-WORLD-REAL: PASS (18 checks)`, twice.
+  Each time a fresh folder produced a program that prints `Hello, world!` after two browser actions,
+  in 55 s and 54 s.
 
 The portal meets five of the seven budget lines (routes, navigation systems, runtime dependencies,
 actions, clicks to the live transcript) and misses both size lines: 122 files and 22,684 lines
@@ -49,7 +50,8 @@ The checks did not catch this; T04 found it. T04 filed 20 new work items (see Ga
   - the fake agent's working window, raised from 8 s to 20 s.
 
   The supervisor then wrote and ran T03. T04 (this file) was done by an agent in the main tree, not
-  by roko.
+  by roko. With the lead's approval, T04 re-ran T03's check once, at 11:40, to read the patched
+  cost lookup.
 - Sources: `tmp/dogfood/2026-09-28-portal-programme-continuation.md` (09:40 and 10:55 entries), and
   the supervisor's run logs.
 
@@ -123,11 +125,13 @@ PORTAL-CHECK: PASS (35 checks)
 
 ## Check 2: HELLO-WORLD-REAL (real model, the user's path)
 
-The supervisor ran `bash plans/portal-programme/09-acceptance/hello-world-real.sh` from 10:54:06 to
-10:55:01 CEST (the log file's times): **55 s, `HWR-EXIT rc=0`**. It used a fresh `git init` and
-`roko init --profile rust` folder (`/private/tmp/roko-hello-JdC7dN`, removed on pass), no fixtures,
-no `ROKO_SPA_DIR`, and auth left as `roko init` sets it. No second run had started by the time this
-file was written (11:36).
+The check ran twice, and passed both times. The supervisor ran it first. T04 ran it once more, with
+the lead's approval, to read the patched cost lookup. **This section quotes the re-run.**
+
+**The re-run** (`bash plans/portal-programme/09-acceptance/hello-world-real.sh`) ran from 11:40:17
+to 11:41:11 CEST: **54 s, exit 0**. It used the same binary and portal export, and a fresh `git init`
+and `roko init --profile rust` folder (`/private/tmp/roko-hello-emvj2b`, removed on pass). There
+were no fixtures, no `ROKO_SPA_DIR`, and auth was left as `roko init` sets it.
 
 ```
 PASS serve.log prints the portal link with a launch token
@@ -148,41 +152,57 @@ PASS sse: agent_output for a-rust-app-that-prints-hello-world
 PASS sse: task_completed outcome=passed for a-rust-app-that-prints-hello-world
 PASS sse: run_completed outcome=succeeded
 PASS the program the plan built prints hello world
-HELLO-WORLD-REAL cost_usd_total=unknown
+HELLO-WORLD-REAL cost_usd_total=0.061694398522377014
 HELLO-WORLD-REAL: PASS (18 checks)
 ```
 
 - **Browser actions: 2** (`BROWSER-ACTIONS 2` in `browser-real.out`).
 - **Model:** claude-sonnet-4-6 via `claude_cli`, for both generation and the task.
-- **Wall time:** 55 s end to end.
-  - Generation took 29.4 s (`plan_generate.started` → `.completed`; `serve.log`: `agent=29341ms`)
-    and produced a one-task plan in `.roko/plans/a-rust-app-that-prints-hello-world/` (the folder has
-    no `plans/`).
-  - The run took 16.6 s (`run_completed duration_ms 16611`).
-  - The task's verify, `cargo run 2>/dev/null | grep -qF 'Hello, world!' && echo PASS`, passed.
-    `program.out` holds `Hello, world!`.
-- **Cost:** the task cost **$0.0587**. That is `efficiency_event cost_usd 0.058735501021146774`, for 33
-  input, 1,018 output, 17,315 cache-read and 6,362 cache-write tokens.
-  - **Generation cost is unknown.** roko publishes no usage for generation (gap-a6e2c3), and the
-    workspace was deleted on pass.
-  - The script's `cost_usd_total=unknown` is a script bug: it read `stats` at the top level of
-    `GET /api/statehub/snapshot`, which wraps the dashboard in a state frame. The supervisor patched
-    the lookup at 10:56, after this run; the patched script has not been run.
-  - Total real spend of this check: $0.0587 plus an unmeasured generation turn.
+- **Wall time:** 54 s end to end.
+  - Generation took 20.7 s (`plan_generate.started` at 1790674822582 ms → `.completed` at
+    1790674843290 ms; `serve.log`: `agent=20528ms`). It produced a one-task plan, 1,113 bytes, in
+    `.roko/plans/a-rust-app-that-prints-hello-world/` (the folder has no `plans/`).
+  - The run took 18.7 s (`run_completed duration_ms 18701`).
+  - `program.out` holds `Hello, world!`.
+- **Cost:** the patched lookup read **`cost_usd_total` = $0.0617** from `GET /api/statehub/snapshot`.
+  - That is exactly the task's one `efficiency_event cost_usd` (0.061694398522377014), for 25 input,
+    820 output, 13,578 cache-read and 7,541 cache-write tokens.
+  - So the snapshot total leaves out the 20.5 s generation turn, which roko reports nowhere
+    (gap-a6e2c3).
+  - Real spend of this run: $0.0617 plus an unmeasured generation turn.
 - **Screenshots:**
   [1-generated](../../../tmp/portal-audit/evidence/hello-world-real/1-generated.png) ·
   [2-running](../../../tmp/portal-audit/evidence/hello-world-real/2-running.png) ·
   [3-done](../../../tmp/portal-audit/evidence/hello-world-real/3-done.png).
   The rest of the evidence is in `tmp/portal-audit/evidence/hello-world-real/`: `events.sse`,
   `serve.log`, `browser-real.json`, `browser-real.out`, `tasks.toml`, `program/` and `summary.txt`.
-- **Browser console:** 30 × 404, one per second of generation (bug-64fb48), and 3 × 400 (validate,
+- **Browser console:** 22 × 404, one per second of generation (bug-64fb48), and 3 × 400 (validate,
   bug-48494b).
-- **Also seen in this run:**
-  - The screened transcript runs messages together ("…of the repository.No `Cargo.toml` exists
-    yet…"; bug-2116ec).
-  - Live tool-step targets are absolute paths (gap-fa61f8).
-  - `plan_completed` is published twice (bug-08d912).
-  - The first plan was written to the legacy `.roko/plans/` (q-4299a9).
+
+**The first run** (supervisor) ran from 10:54:06 to 10:55:01 CEST: 55 s, `HWR-EXIT rc=0`, in
+`/private/tmp/roko-hello-JdC7dN`.
+
+- It printed the same 18 PASS lines and `HELLO-WORLD-REAL: PASS (18 checks)`, with
+  `BROWSER-ACTIONS 2`.
+- Generation took 29.4 s (`agent=29341ms`) and the run 16.6 s (`run_completed duration_ms 16611`).
+  `cargo run` printed `Hello, world!`.
+- The task cost $0.0587: 33 input, 1,018 output, 17,315 cache-read and 6,362 cache-write tokens.
+- Its `cost_usd_total=unknown` came from the pre-patch lookup, which read `stats` at the top level of
+  a response that wraps the dashboard in a state frame.
+- Browser console: 30 × 404 and 3 × 400.
+- T04 copied its evidence, with the run's log, to `tmp/portal-audit/evidence/hello-world-real-run1/`
+  before the re-run overwrote `hello-world-real/`:
+  [1-generated](../../../tmp/portal-audit/evidence/hello-world-real-run1/1-generated.png) ·
+  [2-running](../../../tmp/portal-audit/evidence/hello-world-real-run1/2-running.png) ·
+  [3-done](../../../tmp/portal-audit/evidence/hello-world-real-run1/3-done.png).
+
+**Seen in both runs:**
+
+- The screened transcript runs messages together. First run: "…of the repository.No `Cargo.toml`
+  exists yet…"; re-run: "…the workspace state.No `Cargo.toml` exists yet…" (bug-2116ec).
+- Live tool-step targets are absolute paths (gap-fa61f8).
+- `plan_completed` is published twice (bug-08d912).
+- The first plan was written to the legacy `.roko/plans/` (q-4299a9).
 
 ## Programme cost and time
 
@@ -211,7 +231,8 @@ claude-sonnet-4-6):
 | 09-acceptance | failed | 1 | 1.77 | 3 | 2 | 22 |
 | **total** | | | **172.79** | **220** | **32** | **1,583** |
 
-Not included: the supervisor's and helper agents' direct work (fixes, reviews, this verdict), which
+The two real-model checks spent $0.0587 and $0.0617 on their tasks, plus two unmeasured generation
+turns. Not included: the supervisor's and helper agents' direct work (fixes, reviews, this verdict), which
 roko does not meter.
 
 ## Portal against the budget (`tmp/portal-audit/02-DESIGN.md` §14)
@@ -331,7 +352,8 @@ gap-655d19, gap-082a14, bug-9f340c. Also cited: the parked find-6a5b62 and spec-
 
 - The fake flow's exact `BROWSER-ACTIONS` line is not kept in the evidence. It is derived as 2 from
   the script.
-- The real run's generation cost is unknown (gap-a6e2c3).
+- The real runs' generation cost is unknown. The re-run's snapshot total equals its task cost alone
+  (gap-a6e2c3).
 - The one 404 in the parallel flow is unexplained.
 - Where the screened text is joined (bug-2116ec) was narrowed to the Claude CLI deltas and the path
   to `agent_output`, but not pinned down.

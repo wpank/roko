@@ -1,0 +1,16 @@
+# Stream pilot (S08 §0 first slice; S09 E1a/E1b): F1 and F4 at levels 1-5, two instances each, 20 tasks.
+# The instance seeds are 1 and 2, which are also verifier-CI cells (gap-7ee7c2), so every pilot instance is one whose
+# reference, stub and gaming solutions CI has checked. `vb run` shuffles the list per run seed (order-<seed>.json).
+schema_version = "vb.stream/1"
+
+[stream]
+id = "pilot"
+spec_variant = "precise"
+families = { F1 = "families/f1_pyconv", F4 = "families/f4_kvtool" }
+instances = [
+  "F1-l1-0001", "F1-l1-0002", "F1-l2-0001", "F1-l2-0002",
+  "F1-l3-0001", "F1-l3-0002", "F1-l4-0001", "F1-l4-0002",
+  "F1-l5-0001", "F1-l5-0002", "F4-l1-0001", "F4-l1-0002",
+  "F4-l2-0001", "F4-l2-0002", "F4-l3-0001", "F4-l3-0002",
+  "F4-l4-0001", "F4-l4-0002", "F4-l5-0001", "F4-l5-0002",
+]

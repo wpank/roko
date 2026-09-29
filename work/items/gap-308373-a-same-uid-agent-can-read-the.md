@@ -2,9 +2,10 @@
 id = "gap-308373"
 kind = "gap"
 title = "A same-uid agent can read the ViabilityBench secret file silently, and nothing detects it"
-status = "open"
+status = "done"
 triage = "verified"
 last_verified = 2026-09-29
+last_verified_rev = "161f29dda"
 severity = "p2"
 goal = "proof"
 size = "M"
@@ -20,6 +21,12 @@ links = { depends_on = [], blocks = [], related = ["gap-a8a160", "gap-8c3752", "
 
 [[verify]]
 command = "grep -qw 'def test_a_silent_read_of_the_secret_file_is_detected' benchmarks/viabilitybench/driver/test_secret.py && benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/driver/test_secret.py -k test_a_silent_read_of_the_secret_file_is_detected -q"
+
+[closed]
+at = 2026-09-29
+commit = "161f29dda"
+by = "wk-bench-fix2"
+evidence = "Option (b), the tripwire: secret.tripwire holds the secret file (and the key file) at mode 000 while vb run's tasks run; the census compares device, inode, mode and ctime with the driver's last stamp after the agent's run and at its own end (places secret-file:*, key-file:*, census:*, label vb-tripwire -> leak_suspected), opens the file 0400 only while hidden.py runs, and never hands a changed file to hidden.py; preflight refuses a secret file not at rest (0600). The [[verify]] command passes: test_a_silent_read_of_the_secret_file_is_detected (a read that never prints the secret or names the file, with mode 000 put back, is leak_suspected at secret-file:ctime only; a plain cat is refused and its run stands; left-armed and open files are refused with reasons; a replaced file is seen and never chmod'ed). benchmarks/viabilitybench: 309 passed, 4 skipped."
 +++
 
 ## Problem

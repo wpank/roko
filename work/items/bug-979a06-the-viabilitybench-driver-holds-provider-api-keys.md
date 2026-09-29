@@ -2,9 +2,10 @@
 id = "bug-979a06"
 kind = "bug"
 title = "The ViabilityBench driver holds provider API keys in its own environment, where same-uid agents can read them"
-status = "open"
+status = "done"
 triage = "verified"
 last_verified = 2026-09-29
+last_verified_rev = "161f29dda"
 severity = "p1"
 goal = "proof"
 size = "M"
@@ -20,6 +21,12 @@ links = { depends_on = [], blocks = [], related = ["gap-e003ec", "gap-a8a160", "
 
 [[verify]]
 command = "grep -qw 'def test_no_provider_key_in_the_driver_environment' benchmarks/viabilitybench/driver/test_secret.py && benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/driver/test_secret.py -k test_no_provider_key_in_the_driver_environment -q"
+
+[closed]
+at = 2026-09-29
+commit = "161f29dda"
+by = "wk-bench-fix2"
+evidence = "Provider keys now live in a driver-only key file (--key-file, $VB_KEY_FILE, ~/.config/viabilitybench/keys; secret.load_keys, secret.py keys) and reach only the driver's memory: vb run hands them to the in-process metering proxy (FaultProxy(keys=...)), the chat client never reads a key, and os.environ is never read for one. secret.preflight refuses a run whose environment holds any arm's api_key_env or a key value, and forbids the keys in agent environments (escape hatch KEYS_IN_ENV_OK for tests). The [[verify]] command passes: test_no_provider_key_in_the_driver_environment runs vb.py as a process through the proxy; the stub sees the key file's key on every request while ps -E and /proc on the driver show the probe marker and no key; the refusals exit 2 before any request or directory; a silent read of the key file is leak_suspected (key-file:ctime). benchmarks/viabilitybench: 309 passed, 4 skipped."
 +++
 
 ## Problem

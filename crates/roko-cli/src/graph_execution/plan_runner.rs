@@ -1081,6 +1081,9 @@ async fn run_graph_plan_body(
     // ── Per-task worktree isolation (opt-in via --worktree-per-task) ──
     let mut workspace_provider: Option<Arc<dyn roko_graph::workspace::ExecutionWorkspaceProvider>> =
         None;
+    // The attempt checkouts' manager, which each plan tells its run
+    // (bug-056b40).
+    let mut worktrees: Option<crate::orchestrator::worktree::WorktreeManager> = None;
     if worktree_per_task {
         use crate::orchestrator::worktree::{WorktreeConfig, WorktreeManager};
         let worktree_manager = WorktreeManager::new(WorktreeConfig {
@@ -1092,6 +1095,7 @@ async fn run_graph_plan_body(
             max_live: None,
             idle_ttl: std::time::Duration::from_hours(1),
         });
+        worktrees = Some(worktree_manager.clone());
         let provider = Arc::new(
             crate::graph_execution::WorktreeExecutionWorkspaceProvider::new(worktree_manager),
         );
@@ -1266,6 +1270,7 @@ async fn run_graph_plan_body(
         cell_resources: &cell_resources,
         batch: batch.as_ref(),
         plan_checks: &plan_checks,
+        worktrees: worktrees.as_ref(),
         quiet,
         json,
         launch_tui,
@@ -1920,6 +1925,8 @@ struct PlanRunContext<'a> {
     batch: Option<&'a super::batch::BatchIntegration>,
     /// Each plan's whole-plan check (gap-60233f), by plan id.
     plan_checks: &'a HashMap<String, Vec<crate::task_parser::VerifyStep>>,
+    /// The attempt checkouts' manager, under `--worktree-per-task`.
+    worktrees: Option<&'a crate::orchestrator::worktree::WorktreeManager>,
     quiet: bool,
     json: bool,
     launch_tui: bool,
@@ -2295,6 +2302,25 @@ async fn run_one_plan(
     let run_id = checkpoint.run_id().to_string();
     // A new run's manifest, or one more invocation of a resumed run.
     ctx.run_manifests.open(&run_id, &plan.id);
+    // A resumed run's attempts continue from the plan branch its earlier
+    // process accepted work onto, and re-attach the checkouts it kept
+    // (bug-056b40).
+    if let Some(worktrees) = ctx.worktrees {
+        match worktrees.begin_plan_run(&plan.id, &run_id).await {
+            Ok(Some(tip)) => tracing::info!(
+                plan_id = %plan.id,
+                %run_id,
+                %tip,
+                "resumed run: the plan's attempts start from its plan branch"
+            ),
+            Ok(None) => {}
+            Err(error) => tracing::warn!(
+                plan_id = %plan.id,
+                %error,
+                "could not read the plan branch; the plan's attempts start from the run's base"
+            ),
+        }
+    }
     let replayed_entries = checkpoint.replayed_entries();
     ctx.graph_task_dispatcher
         .attach_plan_budget_checkpoint(&plan.id, checkpoint.take_cost_ledger())?;

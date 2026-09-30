@@ -1834,6 +1834,79 @@ async fn accepted_attempt_is_the_immutable_base_for_the_next_task() {
     assert_ne!(first.path, next.path);
 }
 
+/// bug-056b40: a resumed run's attempts start from the plan branch its
+/// earlier process accepted work onto, and re-attach the checkouts that
+/// process kept. Another run continues neither.
+#[tokio::test]
+async fn a_resumed_run_starts_attempts_from_the_plan_branch() {
+    let Some((_tmp, first_process)) = make_manager() else {
+        return;
+    };
+    let worktrees_root = first_process.config.worktrees_root.clone();
+    let repo = first_process.config.repo_root.clone();
+    let base = git_in(&repo, &["rev-parse", "main"]);
+    assert_eq!(
+        first_process.begin_plan_run("plan", "run-1").await.unwrap(),
+        None
+    );
+    let first = first_process
+        .create_for_attempt("plan", "first", 0)
+        .await
+        .unwrap();
+    std::fs::write(first.path.join("accepted.txt"), b"first\n").unwrap();
+    let tip = first_process
+        .accept_attempt("plan", "first", 0, &acceptance_in("run-1"))
+        .await
+        .unwrap()
+        .commit_oid;
+    let kept = first_process
+        .create_for_attempt("plan", "second", 0)
+        .await
+        .unwrap();
+    std::fs::write(kept.path.join("half-done.txt"), b"in progress\n").unwrap();
+
+    // A new process of the same run.
+    let resumed = manager_with_worktrees_root(&first_process, worktrees_root.clone());
+    assert_eq!(
+        resumed.begin_plan_run("plan", "run-1").await.unwrap(),
+        Some(tip.clone())
+    );
+    let next = resumed
+        .create_for_attempt("plan", "third", 0)
+        .await
+        .unwrap();
+    assert_eq!(git_in(&next.path, &["rev-parse", "HEAD"]), tip);
+    assert!(next.path.join("accepted.txt").exists());
+    let reattached = resumed
+        .create_for_attempt("plan", "second", 0)
+        .await
+        .expect("the run's kept checkout is re-attached");
+    assert_eq!(reattached.path, kept.path);
+    assert_eq!(
+        std::fs::read_to_string(reattached.path.join("half-done.txt")).unwrap(),
+        "in progress\n"
+    );
+
+    // Another run starts from the configured base and does not take over
+    // the checkouts run-1 kept.
+    let other_run = manager_with_worktrees_root(&first_process, worktrees_root);
+    assert_eq!(
+        other_run.begin_plan_run("plan", "run-2").await.unwrap(),
+        None
+    );
+    let fresh = other_run
+        .create_for_attempt("plan", "fourth", 0)
+        .await
+        .unwrap();
+    assert_eq!(git_in(&fresh.path, &["rev-parse", "HEAD"]), base);
+    assert!(
+        other_run
+            .create_for_attempt("plan", "second", 0)
+            .await
+            .is_err()
+    );
+}
+
 fn acceptance_in(run_id: &str) -> AttemptAcceptance {
     AttemptAcceptance {
         run_id: run_id.to_string(),

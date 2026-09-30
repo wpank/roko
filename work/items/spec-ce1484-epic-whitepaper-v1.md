@@ -111,7 +111,7 @@ This is the implementation plan, in order.
 - [x] gap-daa246: Whitepaper figures README still says pandoc converts the SVGs, which build.sh now does
 - [x] gap-4471d1: Re-check the 16 learning loops at a post-merge commit and refreeze B5 for whitepaper §5.2
 - [ ] gap-08d9b2: Whitepaper: final matrix re-pin right before the whitepaper-v1 tag
-- [ ] bug-1f098f: Whitepaper PDF drops the space before the status tag in figure 2's step-9 chips
+- [x] bug-1f098f: Whitepaper PDF drops the space before the status tag in figure 2's step-9 chips
 - [ ] The epic's `[[verify]]` command passes: strict paperlint over `docs/whitepaper/` with every section reviewed,
       and a review verdict of "accept".
 

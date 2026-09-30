@@ -3,13 +3,14 @@ id = "bug-aaa924"
 kind = "bug"
 title = "The delivery regression check builds the workspace from a cold target dir on every delivery"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p2"
 goal = "golden-path"
 size = "S"
 subsystem = ["roko-cli/graph-execution"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-09-30
+last_verified = 2026-09-30
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (16:10, wk-merge-safety's report on bug-a3760a)"
 anchors = ["crates/roko-cli/src/graph_execution/delivery.rs::regression_output", "crates/roko-cli/src/runner/gate_dispatch.rs::gate_signal"]
@@ -55,3 +56,8 @@ On `work/bug-a3760a` (`809ae920d`, part of Rust batch 2), `regression_output` sp
 
 - Depends on bug-a3760a, which adds this code. It is not on BASE yet.
 - Concurrent cargo builds on one target dir queue on cargo's lock (gap-c89b40).
+- 2026-09-30 (wk-integrate): Implemented on `work/bug-453481` at `883de180f`; cargo verification deferred to the batch check.
+  - In the worktree: `cargo check -p roko-cli -p roko-graph --lib --tests` and `cargo clippy -p roko-cli -p roko-graph -p roko-execution --no-deps -D warnings` clean; nightly rustfmt clean. `cargo test -p roko-cli --lib graph_execution::delivery`: 27 passed.
+  - The regression command gets `CARGO_TARGET_DIR` = the dir gates use: the process's `CARGO_TARGET_DIR` when set (a relative value is resolved from the repository, not the temporary checkout), else `<workdir>/target`. `with_regression_target_dir` replaces it. The temporary checkout stays; only the build output is shared.
+  - Left for later: each delivery's checkout has a new path, and cargo keys workspace members by source path, so the workspace's own crates still rebuild each delivery (dependencies are reused) and leave a set of stale artifacts in the shared dir each time. A stable per-repository checkout path would reuse them too.
+  - Test: `regression_checkout_reuses_a_warm_target_dir`.

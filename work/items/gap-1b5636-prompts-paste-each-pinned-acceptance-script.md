@@ -3,13 +3,14 @@ id = "gap-1b5636"
 kind = "gap"
 title = "Prompts paste each pinned acceptance script verbatim; show pinned steps by their header line only"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p3"
 goal = "golden-path"
 size = "S"
 subsystem = ["roko-cli/dispatch"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-09-30
+last_verified = 2026-09-30
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-accept's report on gap-d14a43, branch work/gap-d14a43 at 37b6d7c95)"
 anchors = ["crates/roko-cli/src/dispatch/prompt_builder.rs", "crates/roko-cli/src/task_parser.rs::TaskDef"]
@@ -57,3 +58,10 @@ The behaviour exists only on the unmerged branch. This item depends on gap-d14a4
 ## Notes
 
 - Merge gap-d14a43 first. The anchors are files that exist at BASE; the accept code arrives with that merge.
+- Implemented on `work/bug-019f02` at `97c383cab`; cargo verification deferred to the batch check.
+- 2026-09-30: `prompt_builder.rs` renders verify steps in two places, the runner context's `# Verify` (through
+  `PromptContext::verify_commands`) and the user prompt's `## Verification Commands`, and both now use
+  `task_accept::prompt_command`. `TaskDef::build_prompt` has no callers at BASE, so no prompt goes through it,
+  and it was left alone (wk-taskdef owns `task_parser.rs`). Still open, not in this item:
+  `graph_task_dispatch/verification.rs` quotes `step.command` in full in skipped-step lists, progress events
+  and published gate output, so a failing pinned step still repeats its script in retry feedback.

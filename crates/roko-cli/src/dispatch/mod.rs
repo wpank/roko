@@ -116,6 +116,10 @@ pub struct DispatchContext {
     pub budget_remaining_usd: f64,
     /// Attempt number for this task (0 = first try, > 0 = retry).
     pub attempt: u32,
+    /// Rungs above its start rung on `[routing.ladder]` this attempt
+    /// climbs, after the task's agent-blamed failures (gap-460230). `0`
+    /// routes on the start rung; pinned models never move.
+    pub ladder_step: u32,
     /// Attempt-scoped durable prompt experiment context, when experiments are
     /// enabled for this dispatch.
     pub prompt_experiment: Option<PromptExperimentContext>,
@@ -524,6 +528,7 @@ mod tests {
             force_backend: None,
             budget_remaining_usd: 5.0,
             attempt: 0,
+            ladder_step: 0,
             prompt_experiment: None,
             gate_feedback: None,
             routing_context: None,

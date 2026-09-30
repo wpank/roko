@@ -60,6 +60,7 @@ mod failover;
 mod feedback;
 mod helper_calls;
 mod inert_settings;
+mod ladder;
 mod prompt_experiment;
 mod red_flags;
 mod retry_budget;
@@ -410,6 +411,7 @@ impl GraphTaskDispatcher {
             &self.config.gates,
             &tasks_toml,
         )
+        .with_ladder_min_retries(self.ladder_min_retries())
     }
 
     /// This process's index of the attempt of `task_key` that
@@ -944,6 +946,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
             .experiment_store_path
             .as_deref()
             .and_then(|store| prompt_experiment::context(store, &attempt.key));
+        let ladder_step = self.ladder_step(spec, &task);
         let mut dispatch_ctx = DispatchContext {
             plan_id: spec.plan_id.clone(),
             role: role.to_string(),
@@ -960,6 +963,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
                 budget_reservation.routing_budget_usd(),
             ),
             attempt: attempt_number,
+            ladder_step,
             prompt_experiment: prompt_experiment.clone(),
             gate_feedback: prior_gate_feedback,
             routing_context: Some(routing_ctx),
@@ -977,6 +981,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
         };
         let prompt_assembly_latency_ms = prompt_assembly_started.elapsed().as_millis() as u64;
         attempt.prompt_assembled();
+        self.record_attempt_ladder(&mut attempt, spec, &task, &dispatch_plan, ladder_step);
 
         // ── RAG-10/11: Retrieval outcome telemetry (pre-gate) ────────────
         //

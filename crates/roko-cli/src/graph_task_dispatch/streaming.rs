@@ -145,6 +145,7 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
             .experiment_store_path
             .as_deref()
             .and_then(|store| prompt_experiment::context(store, &attempt.key));
+        let ladder_step = self.ladder_step(spec, &task);
         let mut dispatch_ctx = DispatchContext {
             plan_id: spec.plan_id.clone(),
             role: role.to_string(),
@@ -159,6 +160,7 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
                 budget_reservation.routing_budget_usd(),
             ),
             attempt: 0,
+            ladder_step,
             prompt_experiment: prompt_experiment.clone(),
             gate_feedback: None,
             routing_context: Some(routing_ctx),
@@ -174,6 +176,7 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
             Err(error) => return Err(self.fail_attempt(spec, &task, attempt, None, error).await),
         };
         attempt.prompt_assembled();
+        self.record_attempt_ladder(&mut attempt, spec, &task, &dispatch_plan, ladder_step);
         let contract = effective_agent_contract(role, &task);
         let timeout_ms =
             base_attempt_timeout_ms_with(&self.config, Some(self.learned_tier_limits()), spec);

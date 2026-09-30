@@ -415,6 +415,13 @@ impl LadderConfig {
             .or_else(|| self.start.get(tier))
             .unwrap_or_else(|| d11_start_rung(tier))
     }
+
+    /// The rungs a task in `role` climbs, cheapest first: its role's own
+    /// rungs, else the ladder's. Escalation (gap-460230) walks them upward.
+    #[must_use]
+    pub fn role_rungs(&self, role: &str) -> &[LadderRung] {
+        self.rungs_for(self.role_entry(role))
+    }
 }
 
 /// Model routing configuration.

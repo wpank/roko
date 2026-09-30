@@ -546,13 +546,15 @@ impl GraphTaskDispatcher {
 
     /// Publish an attempt's settlement through the feedback facade as
     /// [`FeedbackEvent::AttemptSettled`]. The facade delivers one settlement
-    /// per attempt.
+    /// per attempt. Every settlement also counts toward the task's standing
+    /// on the model ladder (gap-460230).
     pub(super) async fn publish_settlement(
         &self,
         spec: &TaskExecutionSpec,
         task: &TaskDef,
         settled: &SettledAttempt,
     ) {
+        self.note_ladder_outcome(spec, task, settled);
         let Some(facade) = &self.feedback.feedback_facade else {
             return;
         };

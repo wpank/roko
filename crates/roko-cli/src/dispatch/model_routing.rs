@@ -84,6 +84,9 @@ pub struct RoutingInputs {
     pub budget_remaining_usd: f64,
     /// Attempt number (0 = first try).
     pub attempt: u32,
+    /// Rungs above its start rung the task climbs after agent-blamed
+    /// failures (gap-460230); `0` routes on the start rung.
+    pub ladder_step: u32,
     /// Role label.
     pub role: String,
     /// Full routing context for the CascadeRouter. When `Some`, the router
@@ -110,6 +113,7 @@ impl RoutingInputs {
             force_backend: ctx.force_backend.clone(),
             budget_remaining_usd: ctx.budget_remaining_usd,
             attempt: ctx.attempt,
+            ladder_step: ctx.ladder_step,
             role: ctx.role.clone(),
             routing_context: ctx.routing_context.clone(),
             routing_bias: ctx.routing_bias.clone(),
@@ -520,17 +524,23 @@ impl ModelRouter {
             .as_ref()
             .zip(inputs.routing_context.as_ref())
             .map(|(router, ctx)| self.cascade_pick(router, ctx, inputs).primary.slug);
+        // A task that failed on its rung climbs from its start (gap-460230).
+        let rung = self
+            .ladder
+            .as_ref()?
+            .climb(&inputs.role, start, inputs.ladder_step);
         tracing::info!(
             role = %inputs.role,
             tier = %inputs.task_tier,
-            rung = %start.name,
-            model = %start.model,
+            rung = %rung.name,
+            step = inputs.ladder_step,
+            model = %rung.model,
             router_pick = shadow.as_deref().unwrap_or("none"),
             "model routed by the ladder"
         );
         Some(ModelChoice {
-            model: ModelSpec::from_slug(start.model),
-            source: ModelChoiceSource::Ladder { rung: start.index },
+            model: ModelSpec::from_slug(rung.model),
+            source: ModelChoiceSource::Ladder { rung: rung.index },
         })
     }
 
@@ -688,6 +698,48 @@ impl RoutingLadder {
     }
 }
 
+impl RoutingLadder {
+    /// The rung `steps` runnable rungs above `start` on `role`'s ladder,
+    /// capped at the highest runnable rung; `start` itself when `steps` is
+    /// `0` or no rung above it can run (gap-460230).
+    #[must_use]
+    pub fn climb(&self, role: &str, start: LadderStartRung, steps: u32) -> LadderStartRung {
+        let rungs = self.config.role_rungs(role);
+        let above = rungs
+            .iter()
+            .enumerate()
+            .skip(start.index.saturating_add(1))
+            .filter_map(|(index, rung)| Some((index, rung, self.runnable.get(&rung.model)?)));
+        let steps = usize::try_from(steps).unwrap_or(usize::MAX);
+        match above.take(steps).last() {
+            Some((index, rung, model)) => LadderStartRung {
+                index,
+                name: rung.name.clone(),
+                model: model.clone(),
+            },
+            None => start,
+        }
+    }
+
+    /// How many runnable rungs sit above rung `index` on `role`'s ladder.
+    #[must_use]
+    pub fn runnable_above(&self, role: &str, index: usize) -> usize {
+        let rungs = self.config.role_rungs(role);
+        rungs
+            .iter()
+            .skip(index.saturating_add(1))
+            .filter(|rung| self.runnable.contains_key(&rung.model))
+            .count()
+    }
+
+    /// Name of rung `index` on `role`'s ladder.
+    #[must_use]
+    pub fn rung_name(&self, role: &str, index: usize) -> Option<&str> {
+        let rungs = self.config.role_rungs(role);
+        rungs.get(index).map(|rung| rung.name.as_str())
+    }
+}
+
 /// The model name dispatch runs for a rung's model, or why the rung cannot
 /// run. The model must name a `[models.*]` entry (by key, else by slug)
 /// that can call tools, whose provider is not in
@@ -778,6 +830,7 @@ mod tests {
             force_backend: None,
             budget_remaining_usd: 5.0,
             attempt: 0,
+            ladder_step: 0,
             prompt_experiment: None,
             gate_feedback: None,
             routing_context: None,
@@ -1072,6 +1125,43 @@ mod tests {
         forced.force_backend = Some("gpt-5".into());
         let choice = ladder_route(everywhere, &t, &forced);
         assert_eq!(routed(&choice), ("gpt-5", ModelChoiceSource::Override));
+    }
+
+    /// gap-460230: each ladder step climbs one runnable rung above the
+    /// task's start rung, skipping rungs that cannot run, and stops at the
+    /// top. A pinned model never climbs.
+    #[test]
+    fn ladder_steps_climb_runnable_rungs_to_the_top() {
+        let no_glm = ladder(&ladder_config(), |key| key != "glm-4-7");
+        let mut t = task();
+        t.tier = "mechanical".into();
+        for (step, slug, rung) in [
+            (0, "gpt-oss-120b", 0),
+            (1, "gpt-5.4-mini", 2),
+            (2, "claude-sonnet-4-6", 3),
+            (3, "claude-sonnet-4-6", 3),
+        ] {
+            let mut climbing = ctx();
+            climbing.ladder_step = step;
+            let choice = ladder_route(no_glm.clone(), &t, &climbing);
+            assert_eq!(
+                routed(&choice),
+                (slug, ModelChoiceSource::Ladder { rung }),
+                "step {step}"
+            );
+        }
+        assert_eq!(no_glm.runnable_above("implementer", 0), 2);
+        assert_eq!(no_glm.runnable_above("implementer", 3), 0);
+        assert_eq!(no_glm.rung_name("implementer", 2), Some("strong"));
+
+        t.model_hint = Some("claude-haiku-4-5".into());
+        let mut climbing = ctx();
+        climbing.ladder_step = 2;
+        let choice = ladder_route(no_glm, &t, &climbing);
+        assert_eq!(
+            routed(&choice),
+            ("claude-haiku-4-5", ModelChoiceSource::TaskHint)
+        );
     }
 
     // ── Conductor routing bias tests (E08-T07) ─────────────────────────

@@ -833,8 +833,7 @@ impl GradingSnapshot {
                         .with_context(|| format!("reset {}", path.display()))?;
                 }
                 None => {
-                    fs::remove_file(&path)
-                        .with_context(|| format!("remove {}", path.display()))?;
+                    fs::remove_file(&path).with_context(|| format!("remove {}", path.display()))?;
                 }
             }
         }
@@ -1385,7 +1384,9 @@ mod tests {
             // Nobody measured what the agent spent: its 0 is a placeholder.
             assert!(!episode.cost_known(), "{} claims a cost", episode.task_id);
             assert_eq!(
-                episode.extra.get(roko_learn::episode_logger::COST_KNOWN_KEY),
+                episode
+                    .extra
+                    .get(roko_learn::episode_logger::COST_KNOWN_KEY),
                 Some(&json!(false))
             );
         }
@@ -1571,7 +1572,8 @@ mod tests {
         );
         let err = run(json!(["../calc.py"])).await.unwrap_err();
         assert!(
-            err.to_string().contains("not a relative path inside the repo"),
+            err.to_string()
+                .contains("not a relative path inside the repo"),
             "unexpected error: {err:#}"
         );
     }

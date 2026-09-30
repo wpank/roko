@@ -3,13 +3,15 @@ id = "bug-a6b433"
 kind = "bug"
 title = "roko-learn's complexity_bucket reads complex as architectural, while TaskTier reads it as integrative"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p2"
 goal = "golden-path"
 size = "S"
 subsystem = ["roko-learn/conductor", "roko-core/task"]
 created = 2026-09-30
 updated = 2026-09-30
+last_verified = 2026-09-30
+last_verified_rev = "8a88c6267"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-tiers's report, branch work/gap-8c0a20 at dca6042b1)"
 anchors = ["crates/roko-learn/src/conductor.rs", "crates/roko-core/src/task.rs"]
@@ -46,3 +48,5 @@ Tier ladder and escalation (epic spec-98f76d): one label, two tiers. The conduct
 ## Notes
 
 - Build on gap-8c0a20's branch.
+- 2026-09-30 (wk-tiers): implemented on `work/gap-1d1fa6` at `612544409`; cargo verification deferred to the batch check (no cargo was allowed for this item).
+- The conductor's own `low`, `medium` and `high` labels now read as `Other`; no caller sends them. `TaskTier::LABELS` is the single alias table that `TaskTier::parse` reads.

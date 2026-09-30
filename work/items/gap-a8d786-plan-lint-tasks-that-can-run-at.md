@@ -82,3 +82,6 @@ Checked at `41c7ffbd6`: no overlap rule in `plan_policy.rs` or `plan_validate.rs
     "can run together" once it lands.
   - Offenders at `8a88c6267`, all archived plans: architecture-core-queue (8 pairs),
     architecture-production-residuals (1), self-dev-extras (1), self-dev-ux (217).
+  - `ff47a28ab`: `roko plan run`'s pre-flight (`validate_before_run`) also treats the finding as advisory; it refused
+    such plans before. `plan_policy::is_advisory_code` holds the list. Since gap-272448 the finding also applies
+    when `max_parallel` is omitted and the resolved width is above 1.

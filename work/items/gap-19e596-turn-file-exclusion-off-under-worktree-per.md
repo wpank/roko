@@ -3,13 +3,15 @@ id = "gap-19e596"
 kind = "gap"
 title = "Turn file exclusion off under --worktree-per-task, where tasks do not share a tree"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p3"
 goal = "golden-path"
 size = "S"
 subsystem = ["roko-cli/graph-execution"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-09-30
+last_verified = 2026-09-30
+last_verified_rev = "4d79f0016"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (16:10, wk-scheduler's report on gap-439794 (plan step 3), branch work/gap-4d835d)"
 anchors = ["crates/roko-cli/src/graph_execution/plan_runner.rs::PlanRunContext", "crates/roko-cli/src/graph_execution/plan_runner.rs::run_one_plan"]
@@ -54,3 +56,6 @@ gap-439794 skipped its plan step 3 because another worker owned `plan_runner.rs`
 ## Notes
 
 - Depends on gap-439794, which adds `Node.exclusive`. It is not on BASE yet.
+- Implemented on `work/gap-a8d786` at `ae4377be0`; cargo verification deferred to the batch check.
+  `PlanRunContext.worktree_per_task` is set from the run's flag. `run_one_plan` calls `drop_exclusion_for_worktrees`
+  once the graph is built on either topology path. `exclusive` is not in any fingerprint.

@@ -1826,6 +1826,9 @@ mod tests {
             "ssh -o ProxyCommand='rm -rf x' host",
             "parallel rm -rf ::: a b",
             "parallel 'rm -rf {}' ::: a b",
+            // A delete that parallel runs, like one xargs runs.
+            "parallel rm ::: a b c",
+            "ls | parallel rm",
             // Multi-call binaries.
             "busybox rm -rf x",
             "/bin/busybox sh -c 'rm -rf x'",
@@ -1855,6 +1858,9 @@ mod tests {
             "ssh host ls -la",
             "ssh -l git host uptime",
             "parallel echo ::: a b",
+            // git rm removes tracked files, which git can restore.
+            "sudo git -C dir rm -r x",
+            "parallel git rm --cached ::: a",
             "busybox ls",
             "ionice -c 3 cargo build",
             "git commit -m \"watch 'rm -rf x'\"",
@@ -2114,12 +2120,39 @@ mod tests {
         assert_eq!(file_code("Grep", rust_only), Some(0));
         assert_eq!(bash_code("cat roko.toml"), Some(2));
         assert_eq!(bash_code("cargo test"), Some(0));
+        // A glob or a recursive search reads it too, unless a filter
+        // leaves it out.
+        fs::create_dir(workdir.path().join("src")).unwrap();
+        for read_all in [
+            "cat *",
+            "grep -r api_key .",
+            "rg api_key",
+            "grep -rn key src/..",
+        ] {
+            assert_eq!(
+                bash_code(read_all),
+                Some(2),
+                "`{read_all}` should be denied"
+            );
+        }
+        for filtered in [
+            "rg -g '*.rs' api_key",
+            "grep -r --include='*.rs' key .",
+            "grep -r key src",
+        ] {
+            assert_eq!(
+                bash_code(filtered),
+                Some(0),
+                "`{filtered}` should be allowed"
+            );
+        }
 
         // Without the secret, roko.toml is an ordinary file.
         fs::write(&config, "[serve.auth]\nenabled = true\n").unwrap();
         assert_eq!(file_code("Read", read), Some(0));
         assert_eq!(file_code("Grep", grep), Some(0));
         assert_eq!(bash_code("cat roko.toml"), Some(0));
+        assert_eq!(bash_code("grep -r api_key ."), Some(0));
     }
 
     #[test]

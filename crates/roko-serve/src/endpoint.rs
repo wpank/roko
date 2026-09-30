@@ -99,9 +99,9 @@ pub fn token_path(workdir: &Path) -> PathBuf {
 
 /// Write the launch token to `.roko/runtime/serve.token` with mode 0600.
 ///
-/// The token is written atomically: a temp file is written next to the
-/// destination and restricted to owner-read/write before being renamed so
-/// it is never world-readable, even transiently.
+/// The token is written atomically to a sibling temp file that is created
+/// with mode 0600, so neither file is ever readable by other users, not even
+/// between creation and rename. The temp file is synced before the rename.
 ///
 /// The token **never** goes into `serve.json`; it is a separate file so
 /// endpoint payloads remain free of secrets.
@@ -109,26 +109,41 @@ pub fn token_path(workdir: &Path) -> PathBuf {
 /// # Errors
 ///
 /// Returns an error if the directory cannot be created, the file cannot be
-/// written, permissions cannot be set, or the rename fails.
+/// created or written, or the rename fails.
 pub fn write_token(workdir: &Path, token: &str) -> anyhow::Result<()> {
+    use std::io::Write as _;
+
     let dest = token_path(workdir);
     if let Some(parent) = dest.parent() {
         std::fs::create_dir_all(parent)?;
     }
 
-    // Write to a sibling temp file, restrict permissions, then rename for atomicity.
     let tmp = dest.with_extension("token.tmp");
-    std::fs::write(&tmp, token)?;
-
-    // Restrict to owner-read/write only before renaming.
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))?;
-    }
-
+    // A leftover from a crashed start, possibly with wider permissions:
+    // `create_owner_only` refuses to reuse it, so remove it first.
+    let _ = std::fs::remove_file(&tmp);
+    let mut file = create_owner_only(&tmp)?;
+    file.write_all(token.as_bytes())?;
+    file.sync_all()?;
+    drop(file);
     std::fs::rename(&tmp, &dest)?;
     Ok(())
+}
+
+/// Create `path` for writing, readable and writable only by its owner from
+/// the moment it exists (mode 0600 on Unix, narrowed further by the umask).
+///
+/// Fails if `path` already exists, so it never reuses a file, or follows a
+/// link, that someone else put there.
+fn create_owner_only(path: &Path) -> std::io::Result<std::fs::File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    options.open(path)
 }
 
 /// Remove the workspace token file when the current process owns the endpoint.
@@ -257,6 +272,50 @@ mod tests {
                 "token file must have mode 0600 (owner read/write only)"
             );
         }
+    }
+
+    /// The token's temp file is owner-only from creation, and a readable
+    /// leftover temp file is replaced rather than reused (bug-af3cf4).
+    #[cfg(unix)]
+    #[test]
+    fn write_token_never_leaves_a_readable_temp_file() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = temp_workdir();
+        let runtime = dir.path().join(".roko").join("runtime");
+        std::fs::create_dir_all(&runtime).expect("create runtime dir");
+
+        // Owner-only from the moment the file exists, before any chmod.
+        let probe = runtime.join("probe.tmp");
+        drop(create_owner_only(&probe).expect("create probe"));
+        let mode = std::fs::metadata(&probe)
+            .expect("probe metadata")
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o077, 0, "group and other bits set: {mode:o}");
+        assert!(
+            create_owner_only(&probe).is_err(),
+            "an existing file must never be reused"
+        );
+
+        // A world-readable leftover from a crashed start.
+        let tmp = token_path(dir.path()).with_extension("token.tmp");
+        std::fs::write(&tmp, "stale").expect("write stale temp file");
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o644))
+            .expect("widen stale temp file");
+
+        write_token(dir.path(), "tok-secret").expect("write token");
+        let path = token_path(dir.path());
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read token"),
+            "tok-secret"
+        );
+        let mode = std::fs::metadata(&path)
+            .expect("token metadata")
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o077, 0, "group and other bits set: {mode:o}");
+        assert!(!tmp.exists(), "the temp file must be renamed into place");
     }
 
     #[test]

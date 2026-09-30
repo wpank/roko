@@ -193,7 +193,10 @@ pub mod obs {
         STANDARD_METRICS, register_standard_metrics,
     };
     pub use schema::{CanonicalMetricSchema, MetricDescriptor, MetricSchema, SCHEMA_VERSION};
-    pub use scrub::{LogScrubber, REDACTED};
+    pub use scrub::{
+        LogScrubber, REDACTED, add_secret_env_values, install_secret_scrubber, scrub_secrets,
+        scrub_secrets_in_json, scrub_secrets_in_jsonl, secret_scrubber,
+    };
     pub use telemetry_observe::{PeriodicObserver, TelemetryObservation, TelemetryObserve};
 }
 /// Canonical shared event taxonomy: [`CoreEvent`] type alias, producer/consumer

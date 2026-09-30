@@ -62,6 +62,7 @@ mod helper_calls;
 mod inert_settings;
 mod prompt_experiment;
 mod red_flags;
+mod reflex_credit;
 mod retry_budget;
 mod retry_feedback;
 mod routing_context;
@@ -187,10 +188,11 @@ pub struct GraphTaskDispatcher {
     /// (filesystem reads + `git` subprocess spawns) on the Tokio reactor.
     static_prompt_cache: std::sync::OnceLock<(String, String, String)>,
     /// T0 reflex store. When set and `[learning] t0_reflexes` is on, each
-    /// dispatch of a task without verify steps checks for a matching reflex
-    /// rule before invoking the LLM. A match bypasses the agent call entirely
-    /// and returns the rule's cached output (zero-cost repeated decisions),
-    /// stamped unverified. No gate runs, so the rule earns no gate pass.
+    /// dispatch of a task that no verify step checks (neither its own nor a
+    /// workspace rung) looks for a matching reflex rule before invoking the
+    /// LLM. A match bypasses the agent call entirely and returns the rule's
+    /// cached output (zero-cost repeated decisions), stamped unverified. No
+    /// gate runs, so the rule earns no gate pass.
     reflex_store: Option<ReflexStore>,
     /// Per-task spend across attempts, enforcing `budget.max_task_usd` and
     /// `budget.max_task_retry_usd`.
@@ -198,6 +200,10 @@ pub struct GraphTaskDispatcher {
     /// `[meta] skip_enrichment` per plan id, read once from the plan's
     /// `tasks.toml`.
     skip_enrichment_plans: parking_lot::Mutex<HashMap<String, bool>>,
+    /// Whether each plan's tasks run the workspace's `[[gates.rungs]]`
+    /// (`[meta] workspace_rungs`), per plan id, read once from the plan's
+    /// `tasks.toml`.
+    workspace_rung_plans: parking_lot::Mutex<HashMap<String, bool>>,
     /// Tasks (`"{plan_id}/{task_id}"`) whose last attempt stopped at its turn
     /// cap; the next attempt raises the cap and resumes the partial work.
     turn_cap_retries: parking_lot::Mutex<HashMap<String, TurnCapRetry>>,
@@ -263,6 +269,7 @@ impl GraphTaskDispatcher {
             retrieval_ctx: parking_lot::Mutex::new(HashMap::new()),
             task_spend: GraphTaskSpendLedger::default(),
             skip_enrichment_plans: parking_lot::Mutex::new(HashMap::new()),
+            workspace_rung_plans: parking_lot::Mutex::new(HashMap::new()),
             turn_cap_retries: parking_lot::Mutex::new(HashMap::new()),
             timeout_retries: parking_lot::Mutex::new(HashMap::new()),
             task_attempts: parking_lot::Mutex::new(HashMap::new()),
@@ -349,11 +356,11 @@ impl GraphTaskDispatcher {
     /// Attach the T0 reflex store for pre-dispatch reflex checks.
     ///
     /// With `[learning] t0_reflexes` on (off by default), each `dispatch` of
-    /// a task without verify steps checks whether any rule matches the task's
-    /// role, file extensions, and title before invoking the LLM. A match
-    /// bypasses the agent call and returns the rule's cached output
-    /// (`action.args`), stamped unverified. No gate runs, so the rule is not
-    /// credited with a gate pass.
+    /// a task that no verify step checks (neither its own nor a workspace
+    /// rung) looks for a rule that matches the task's role, file extensions,
+    /// and title before invoking the LLM. A match bypasses the agent call and
+    /// returns the rule's cached output (`action.args`), stamped unverified.
+    /// No gate runs, so the rule is not credited with a gate pass.
     #[must_use]
     pub fn with_reflex_store(mut self, store: ReflexStore) -> Self {
         self.reflex_store = Some(store);
@@ -485,6 +492,19 @@ impl GraphTaskDispatcher {
         Some(HelperAgent::new(agent, target))
     }
 
+    /// The `[meta]` of `spec`'s plan, from `<plan_dir>/tasks.toml`; `None`
+    /// when the file is missing or unreadable.
+    fn read_plan_meta(&self, spec: &TaskExecutionSpec) -> Option<crate::task_parser::TaskMeta> {
+        let plan_dir = Path::new(&spec.plan_dir);
+        [plan_dir.to_path_buf(), self.workdir.join(plan_dir)]
+            .into_iter()
+            .filter(|_| !spec.plan_dir.trim().is_empty())
+            .map(|dir| dir.join("tasks.toml"))
+            .find(|path| path.is_file())
+            .and_then(|path| crate::task_parser::TasksFile::parse(&path).ok())
+            .map(|tasks| tasks.meta)
+    }
+
     /// Whether the plan's `[meta] skip_enrichment` is set, read once per plan
     /// from `<plan_dir>/tasks.toml`. An unreadable file counts as `false`.
     fn plan_skips_enrichment(&self, spec: &TaskExecutionSpec) -> bool {
@@ -492,14 +512,9 @@ impl GraphTaskDispatcher {
         if let Some(skip) = plans.get(&spec.plan_id) {
             return *skip;
         }
-        let plan_dir = Path::new(&spec.plan_dir);
-        let skip = [plan_dir.to_path_buf(), self.workdir.join(plan_dir)]
-            .into_iter()
-            .filter(|_| !spec.plan_dir.trim().is_empty())
-            .map(|dir| dir.join("tasks.toml"))
-            .find(|path| path.is_file())
-            .and_then(|path| crate::task_parser::TasksFile::parse(&path).ok())
-            .is_some_and(|tasks| tasks.meta.skip_enrichment);
+        let skip = self
+            .read_plan_meta(spec)
+            .is_some_and(|meta| meta.skip_enrichment);
         if skip {
             tracing::info!(
                 plan_id = %spec.plan_id,
@@ -565,6 +580,9 @@ impl GraphTaskDispatcher {
         task: &TaskDef,
         dispatch_ctx: &mut DispatchContext,
     ) -> Result<crate::dispatch::RunnerDispatchPlan> {
+        // The prompt shows every check that will judge the task: its own
+        // verify steps, then the workspace rungs it faces.
+        let task = &self.prompt_task(spec, task);
         match self.factory.dispatcher().plan(task, dispatch_ctx) {
             Err(error) if dispatch_ctx.prompt_experiment.is_some() => {
                 tracing::warn!(
@@ -641,13 +659,11 @@ impl TaskDispatcher for GraphTaskDispatcher {
         // served from the T0 store without an LLM round-trip.
         //
         // Reflexes skip the provider *and* the verify steps, so they only
-        // serve tasks that author no verification: a verify-bearing task must
-        // earn its pass from its own gates.
-        if let Some(reflex_store) = self
-            .reflex_store
-            .as_ref()
-            .filter(|_| self.config.learning.t0_reflexes && task.verify.is_empty())
-        {
+        // serve tasks that no verify step checks: a task with its own steps,
+        // or one the workspace rungs check, must earn its pass from them.
+        if let Some(reflex_store) = self.reflex_store.as_ref().filter(|_| {
+            self.config.learning.t0_reflexes && self.verify_steps(spec, &task).is_empty()
+        }) {
             let file_exts: Vec<String> = task
                 .files
                 .iter()
@@ -680,6 +696,14 @@ impl TaskDispatcher for GraphTaskDispatcher {
                 );
                 // Settle the budget reservation at zero cost (no LLM call).
                 budget_reservation.settle(0.0)?;
+                // The rule serves this attempt, and only the attempt's settled
+                // record credits or demotes it (`reflex_credit`). Unverified,
+                // it teaches the rule nothing.
+                let mut attempt = self.open_attempt(spec, &task, ctx);
+                attempt.served_by_reflex(rule_id);
+                let settlement = Settlement::verified(&Ok(TaskGateVerdict::Unverified));
+                let settled = attempt.settle(settlement, "", None);
+                self.publish_settlement(spec, &task, &settled).await;
                 let output_signal = Signal::builder(Kind::AgentOutput)
                     .body(Body::text(cached_output))
                     .build();
@@ -1044,7 +1068,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
             }
         }
 
-        let contract = effective_agent_contract(role, &task);
+        let contract = effective_agent_contract(role, &task, &self.config);
         let base_timeout_ms = base_attempt_timeout_ms(&self.config, spec);
         // The last attempt ran out of time with partial work on disk: give
         // this one half again as long (bounded) and tell it to resume, never
@@ -1073,7 +1097,10 @@ impl TaskDispatcher for GraphTaskDispatcher {
             prompt,
             system_prompt: dispatch_plan.prompt.system_prompt.clone(),
             workdir: effective_workdir.clone(),
-            immune_root: Some(effective_workdir.clone()),
+            // Immune state (tool controls, evidence, the quarantine vault)
+            // belongs to the workspace, not the attempt checkout, so it
+            // survives checkout cleanup and the safety routes see it.
+            immune_root: Some(self.workdir.clone()),
             agent_id: format!(
                 "{}/{}",
                 spec.plan_id,
@@ -1094,6 +1121,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
             // stop. Never unbounded.
             max_turns: Some(max_turns),
             live_output: None,
+            attempt_key: Some(attempt.key.attempt_key()),
         };
 
         // Bind the prompt treatments to the exact final prompt before launch;
@@ -1167,7 +1195,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
         // and retries under `max_retries`.
         let dispatch_result = self
             .run_watched(
-                self.run_bridge_with_failover(spec, &task.id, request),
+                self.run_bridge_with_failover(spec, &task.id, attempt.key.attempt_key(), request),
                 stall_watch,
                 supervised.as_ref(),
                 &watched,

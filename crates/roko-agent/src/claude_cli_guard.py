@@ -14,8 +14,9 @@
 #   directly in a .roko directory (.roko/*);
 # - a word names a .roko directory itself (cd ~/.roko) and another ends in
 #   a key file's name (.env) or is a bare glob (*);
-# - a word, resolved against the working directory with symlinks followed,
-#   is a key file, or a roko config file that holds a secret (see below).
+# - a word, resolved against the working directory with symlinks followed
+#   and a glob expanded (cat *), is a key file, or a roko config file that
+#   holds a secret (see below).
 #
 # The destructive commands are:
 #
@@ -28,13 +29,14 @@
 # - find -delete, and any rm run on what find or fd lists: by find -exec,
 #   fd -x, a pipe (find . | xargs rm, find . | while read f; do rm ...) or a
 #   substitution (rm $(find ...));
-# - rm, unlink or shred run by xargs, whatever feeds it (ls | xargs rm,
-#   xargs rm < list, xargs -a list rm).
+# - rm, unlink or shred run by xargs or parallel, whatever feeds them
+#   (ls | xargs rm, xargs rm < list, xargs -a list rm, parallel rm ::: a b).
 #
 # Every command in a chain is checked (;, &&, ||, |, & and newlines), after
 # assignments, shell keywords and wrappers such as sudo, env and xargs, and
-# past git's global options (-C, -c, --git-dir, --work-tree). Commands run by
-# subshells, sh -c, eval, $(...), backquotes, find -exec, fd -x, busybox
+# past git's global options (-C, -c, --git-dir, --work-tree), after which
+# comes git's subcommand (sudo git -C dir rm -r x runs git rm). Commands run
+# by subshells, sh -c, eval, $(...), backquotes, find -exec, fd -x, busybox
 # applets, ssh (remotely) and command strings handed to wrappers (watch
 # '...', flock -c '...', parallel '...') are checked too.
 #
@@ -54,11 +56,12 @@
 #
 # A roko config file outside .roko (roko.toml, the file ROKO_CONFIG names,
 # the legacy ~/.config/roko/config.toml) is denied while it holds a secret
-# such as serve.auth.api_key, and so is a Grep of the directory that holds
-# such a roko.toml, unless its glob or type leaves the file out. roko itself
-# refuses to load such a file (the secret belongs in .roko/.env), so this
-# matters for a secret added while roko runs; a command that reads the whole
-# project (grep -r, rg) is not caught.
+# such as serve.auth.api_key, and so is a recursive search of a tree that
+# holds one (a Grep, grep -r, rg), unless the search's glob or type leaves
+# the file out. roko itself refuses to load such a file (the secret belongs
+# in .roko/.env), so this matters for a secret added while roko runs. A
+# search after cd is judged from the call's directory, and a read through
+# find, xargs, git grep or a script is not caught.
 #
 # Exit 0 lets the call run. Exit 2 blocks it, and Claude Code shows stderr
 # to the model. Claude Code treats any other exit code as a non-blocking
@@ -68,8 +71,10 @@
 # This is best effort, not a sandbox: a script file or a variable can still
 # hide a command or a path from it.
 
+import contextlib
 import fnmatch
 import functools
+import glob
 import json
 import os
 import re
@@ -111,6 +116,27 @@ MULTICALL = {"busybox", "toybox"}
 FINDERS = {"find", "fd", "fdfind"}
 FIND_EXEC = {"-exec", "-execdir", "-ok", "-okdir"}
 FD_EXEC = {"-x", "--exec", "-X", "--exec-batch"}
+# Programs that search file contents: grep and its variants, which recurse
+# with -r (rgrep always does), and ripgrep, which always does. The options
+# of each that take a value, given in the same word or the next.
+GREPS = {"grep", "egrep", "fgrep", "rgrep"}
+RIPGREPS = {"rg"}
+GREP_SHORT_VALUES = set("efmABCdD")
+GREP_LONG_VALUES = {
+    "--regexp", "--file", "--max-count", "--after-context", "--before-context", "--context",
+    "--directories", "--devices", "--include", "--exclude", "--exclude-dir", "--exclude-from",
+    "--label", "--binary-files", "--group-separator",
+}
+RG_SHORT_VALUES = set("efgtTmABCjMdEr")
+RG_LONG_VALUES = {
+    "--regexp", "--file", "--glob", "--iglob", "--type", "--type-not", "--type-add",
+    "--type-clear", "--max-count", "--after-context", "--before-context", "--context",
+    "--threads", "--max-columns", "--max-depth", "--maxdepth", "--encoding", "--engine", "--sort",
+    "--sortr", "--pre", "--pre-glob", "--color", "--colors", "--context-separator",
+    "--field-context-separator", "--field-match-separator", "--path-separator", "--replace",
+    "--max-filesize", "--dfa-size-limit", "--regex-size-limit", "--ignore-file",
+    "--hostname-bin", "--hyperlink-format",
+}
 # Words that open and close a compound command, to follow a pipe into a loop
 # (find . | while read f; do rm "$f"; done).
 BLOCK_OPENERS = {"while", "until", "for", "select", "if", "case", "{"}
@@ -124,7 +150,9 @@ SSH_COMMAND_OPTION = re.compile(
 # Programs that run their arguments as shell commands.
 SHELLS = {"sh", "bash", "zsh", "dash", "ksh", "fish"}
 # Programs whose arguments this guard checks.
-CHECKED_PROGRAMS = {"git", "rm", "unlink", "shred", "eval", "ssh"} | FINDERS | SHELLS | MULTICALL
+CHECKED_PROGRAMS = (
+    {"git", "rm", "unlink", "shred", "eval", "ssh"} | FINDERS | SHELLS | MULTICALL | GREPS | RIPGREPS
+)
 # git global options whose value is the next argument.
 GIT_VALUE_OPTIONS = {
     "-C", "-c", "--git-dir", "--work-tree", "--namespace", "--super-prefix", "--config-env",
@@ -169,6 +197,9 @@ FIND_BULK = "rm on what find or fd lists is forbidden: it deletes files across a
 XARGS_BULK = (
     "a delete run by xargs is forbidden: it deletes every file in a list the guard cannot see"
 )
+PARALLEL_BULK = "a delete run by parallel is forbidden: it deletes every file in its list"
+# Wrappers that run their command on each item of a list.
+BULK_RUNNERS = {"xargs": XARGS_BULK, "parallel": PARALLEL_BULK}
 
 
 def tokens(text):
@@ -283,6 +314,8 @@ def check_words(words, depth, maybe_argument=False):
         check_fd(words[1:], depth)
     elif program == "ssh":
         check_ssh(words[1:], depth)
+    elif program in GREPS or program in RIPGREPS:
+        check_search(program, words[1:])
     elif program in SHELLS:
         for argument in words[1:]:
             if not argument.startswith("-"):
@@ -297,44 +330,75 @@ def check_wrapped(program, words, depth, maybe_argument=False):
     Its own options come first, and an option's value can name a program too
     (xargs -a git rm -rf x), so every later word that names a program this
     guard checks, or another wrapper, starts a command to check. A user or
-    group is skipped (sudo -u git whoami), and so is git's subcommand (xargs
-    git rm --cached), which git checks. After a word that is not an
-    option, an assignment, a number (timeout's duration), a user or another
-    wrapper, the word may be an argument instead (timeout 5 grep git src). A
-    command handed over as one string (watch 'rm -rf x', flock l -c '...') is
-    checked as a command line."""
-    after_argument = maybe_argument
-    for index in range(1, len(words)):
-        word, previous = words[index], words[index - 1]
-        is_user = previous in USER_OPTIONS
-        name = program_name(word)
-        # The word after git is git's subcommand (xargs git rm --cached),
-        # unless git is an option's value (xargs -a git rm -rf x).
-        is_subcommand = program_name(previous) == "git" and words[index - 2] not in VALUE_OPTIONS
-        if (name in CHECKED_PROGRAMS or name in WRAPPERS) and not (is_user or is_subcommand):
-            if program == "xargs":
-                check_found(words[index:], depth, XARGS_BULK, after_argument)
-            else:
+    group is skipped (sudo -u git whoami), and so are the words git itself
+    reads: its global options' values and its subcommand (sudo git -C dir
+    rm -r x, xargs git rm --cached), which git checks. After a word that is
+    not an option, an assignment, a number (timeout's duration), a user or
+    another wrapper, the word may be an argument instead (timeout 5 grep git
+    src). A command handed over as one string (watch 'rm -rf x', flock l -c
+    '...') is checked as a command line. xargs and parallel run their command
+    on each item of a list, so a delete in it is denied."""
+    with bulk(BULK_RUNNERS.get(program)):
+        after_argument = maybe_argument
+        git_words = set()
+        for index in range(1, len(words)):
+            if index in git_words:
+                continue
+            word, previous = words[index], words[index - 1]
+            is_user = previous in USER_OPTIONS
+            name = program_name(word)
+            # A git that is not an option's value (xargs -a git rm -rf x)
+            # reads the words after it up to its subcommand.
+            if name == "git" and previous not in VALUE_OPTIONS:
+                git_words |= git_argument_indices(words, index)
+            if (name in CHECKED_PROGRAMS or name in WRAPPERS) and not is_user:
                 check_words(words[index:], depth, after_argument)
-        option, _, value = word.partition("=")
-        if program in STRING_WRAPPERS or previous in COMMAND_OPTIONS:
-            check_command(word, depth + 1)
-        elif option in COMMAND_OPTIONS and value:
-            check_command(value, depth + 1)
-        if not (
-            word.startswith("-") or ASSIGNMENT.match(word) or DURATION.match(word) or is_user
-            or program_name(word) in WRAPPERS
-        ):
-            after_argument = True
+            option, _, value = word.partition("=")
+            if program in STRING_WRAPPERS or previous in COMMAND_OPTIONS:
+                check_command(word, depth + 1)
+            elif option in COMMAND_OPTIONS and value:
+                check_command(value, depth + 1)
+            if not (
+                word.startswith("-") or ASSIGNMENT.match(word) or DURATION.match(word) or is_user
+                or program_name(word) in WRAPPERS
+            ):
+                after_argument = True
+
+
+def git_argument_indices(words, index):
+    """The indices of the words that the git at words[index] reads before its
+    subcommand's arguments: its global options' values (-C dir) and the
+    subcommand itself."""
+    indices = set()
+    index += 1
+    while index < len(words) and words[index].startswith("-"):
+        if words[index] in GIT_VALUE_OPTIONS:
+            indices.add(index + 1)
+            index += 2
+        else:
+            index += 1
+    indices.add(index)
+    return indices
+
+
+@contextlib.contextmanager
+def bulk(reason):
+    """While the block checks a command that runs on a list the guard cannot
+    see, deny any delete in it, for `reason`; None changes nothing."""
+    previous = BASH_CALL["bulk"]
+    BASH_CALL["bulk"] = previous or reason
+    try:
+        yield
+    finally:
+        BASH_CALL["bulk"] = previous
 
 
 def check_found(command, depth, reason=FIND_BULK, maybe_argument=False):
     """Check a command that runs on a list the guard cannot see: what find
-    or fd lists (find -exec, fd -x, find . | xargs), or what xargs reads.
-    Any delete in it is denied, for `reason`."""
-    bulk, BASH_CALL["bulk"] = BASH_CALL["bulk"], BASH_CALL["bulk"] or reason
-    check_words(command, depth, maybe_argument)
-    BASH_CALL["bulk"] = bulk
+    or fd lists (find -exec, fd -x, find . | xargs). Any delete in it is
+    denied, for `reason`."""
+    with bulk(reason):
+        check_words(command, depth, maybe_argument)
 
 
 def check_find(arguments, depth):
@@ -376,6 +440,105 @@ def check_ssh(arguments, depth):
             check_command(command.group(1), depth + 1)
     if index + 1 < len(arguments):
         check_command(" ".join(arguments[index + 1:]), depth + 1)
+
+
+def check_search(program, arguments):
+    """Deny a recursive search (grep -r, rg) that would read a roko config
+    file holding a secret, unless its filters leave the file out."""
+    ripgrep = program in RIPGREPS
+    options, operands = search_arguments(
+        arguments,
+        RG_SHORT_VALUES if ripgrep else GREP_SHORT_VALUES,
+        RG_LONG_VALUES if ripgrep else GREP_LONG_VALUES,
+    )
+    names = {name for name, _ in options}
+    if ripgrep:
+        if names & {"--files", "--type-list"}:
+            return  # lists names, reads no file
+    elif program != "rgrep" and not (
+        names & {"-r", "-R", "--recursive", "--dereference-recursive"}
+        or any(name in ("-d", "--directories") and value == "recurse" for name, value in options)
+    ):
+        return  # a file it names is checked with the other words
+    if not names & {"-e", "-f", "--regexp", "--file"}:
+        operands = operands[1:]  # the first is the pattern
+    if search_skips_config(options, ripgrep):
+        return
+    cwd = BASH_CALL["cwd"] or os.getcwd()
+    for operand in operands or ["."]:
+        if re.search(r"[$`{]", operand):
+            continue
+        if any(reads_secret_config(path, cwd) for path in expand(operand, cwd)):
+            block(CONFIG_SECRET_REASON)
+
+
+def search_arguments(arguments, short_values, long_values):
+    """A search command's options, as (name, value) pairs, and its operands.
+    `short_values` and `long_values` are the options that take a value."""
+    options, operands = [], []
+    index = 0
+    while index < len(arguments):
+        word = arguments[index]
+        index += 1
+        if word == "--":
+            operands += arguments[index:]
+            break
+        if word.startswith("--"):
+            name, equals, value = word.partition("=")
+            if not equals and name in long_values and index < len(arguments):
+                value, index = arguments[index], index + 1
+            options.append((name, value))
+        elif word.startswith("-") and len(word) > 1:
+            # A cluster of short options; one that takes a value ends it
+            # (-rnm1, -re PATTERN).
+            for position, letter in enumerate(word[1:], 2):
+                value = ""
+                if letter in short_values:
+                    value = word[position:]
+                    if not value and index < len(arguments):
+                        value, index = arguments[index], index + 1
+                options.append(("-" + letter, value))
+                if letter in short_values:
+                    break
+        else:
+            operands.append(word)
+    return options, operands
+
+
+def search_skips_config(options, ripgrep):
+    """Whether a search's filters leave roko.toml out: grep's --include and
+    --exclude, rg's -g (! excludes), -t and -T."""
+    includes, excludes, types, skipped_types = [], [], set(), set()
+    for name, value in options:
+        if name == "--include":
+            includes.append(value)
+        elif name == "--exclude":
+            excludes.append(value)
+        elif ripgrep and name in ("-g", "--glob", "--iglob"):
+            if value.startswith("!"):
+                excludes.append(value[1:])
+            else:
+                includes.append(value)
+        elif ripgrep and name in ("-t", "--type"):
+            types.add(value)
+        elif ripgrep and name in ("-T", "--type-not"):
+            skipped_types.add(value)
+    return bool(
+        (includes and not any(glob_matches_config(pattern, False) for pattern in includes))
+        or any(glob_matches_config(pattern, True) for pattern in excludes)
+        or (types and not types & {"toml", "all"})
+        or "toml" in skipped_types
+    )
+
+
+def glob_matches_config(pattern, strict):
+    """Whether a file glob (grep --include, rg -g) matches roko.toml. Unless
+    `strict`, a glob that names toml counts too, as a brace glob may
+    (*.{rs,toml})."""
+    pattern = pattern.lower().lstrip("/")
+    while pattern.startswith("**/"):
+        pattern = pattern[3:]
+    return fnmatch.fnmatch("roko.toml", pattern) or (not strict and "toml" in pattern)
 
 
 def short_flags(arguments):
@@ -573,15 +736,26 @@ def names_key_file(command, cwd):
     ):
         return KEY_FILE_REASON
     for word in words:
-        # The word, and an option's or assignment's value (--env-file=x).
-        for value in {word, word.split("=", 1)[-1]}:
-            if not value or re.search(r"[$`*?\[{]", value):
-                continue
-            if is_key_path(value, cwd, False):
+        # The word, a glob's matches as the shell would expand it (cat *),
+        # and an option's or assignment's value (--env-file=x).
+        paths = [] if not word or re.search(r"[$`{]", word) else expand(word, cwd)
+        value = word.split("=", 1)[-1]
+        if value != word and value and not re.search(r"[$`*?\[{]", value):
+            paths.append(value)
+        for path in paths:
+            if is_key_path(path, cwd, False):
                 return KEY_FILE_REASON
-            if is_secret_config_path(value, cwd):
+            if is_secret_config_path(path, cwd):
                 return CONFIG_SECRET_REASON
     return None
+
+
+def expand(word, cwd):
+    """The paths a word names, resolved against cwd: a glob's matches (the
+    shell expands a whole word, so --exclude=*.toml matches nothing), or the
+    word itself."""
+    path = os.path.join(cwd, os.path.expanduser(word))
+    return glob.glob(path) if re.search(r"[*?\[]", word) else [path]
 
 
 def is_key_path(path, cwd, search_root):
@@ -603,6 +777,40 @@ def is_secret_config_path(path, cwd):
     as given or with symlinks resolved."""
     path = os.path.join(cwd, os.path.expanduser(path))
     return any(config_holds_secret(candidate) for candidate in {path, os.path.realpath(path)})
+
+
+def reads_secret_config(path, cwd):
+    """Whether a recursive search of `path` reads a roko config file that
+    holds a secret: path itself, or one in the tree under it, of those roko
+    reads: the roko.toml in path, the workspace's (in cwd or above it, as
+    roko finds it), the file ROKO_CONFIG names and the legacy
+    ~/.config/roko/config.toml."""
+    if not os.path.isdir(path):
+        return is_secret_config_path(path, cwd)
+    root = os.path.realpath(path)
+    xdg = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
+    configs = {
+        os.path.join(root, "roko.toml"), workspace_config(cwd), os.environ.get("ROKO_CONFIG"),
+        os.path.join(xdg, "roko", "config.toml"),
+    }
+    return any(
+        config and os.path.commonpath([os.path.realpath(os.path.dirname(config)), root]) == root
+        and config_holds_secret(config)
+        for config in configs
+    )
+
+
+def workspace_config(cwd):
+    """The roko.toml that roko loads in cwd: the first in cwd or above it."""
+    directory = os.path.realpath(cwd)
+    while True:
+        config = os.path.join(directory, "roko.toml")
+        if os.path.isfile(config):
+            return config
+        parent = os.path.dirname(directory)
+        if parent == directory:
+            return None
+        directory = parent
 
 
 def config_holds_secret(path):
@@ -669,15 +877,16 @@ def literal_secret(value):
 
 
 def greps_secret_config(tool_input, cwd):
-    """Whether a Grep reads a roko.toml that holds a secret: the one in the
-    directory it searches, unless its glob or type leaves that file out."""
+    """Whether a Grep reads a roko config file that holds a secret, in the
+    tree it searches (reads_secret_config), unless its glob or type leaves
+    the file out."""
     root = os.path.join(cwd, os.path.expanduser(tool_input.get("path") or "."))
-    kind, glob = tool_input.get("type"), tool_input.get("glob")
+    kind, pattern = tool_input.get("type"), tool_input.get("glob")
     if kind and kind != "toml":
         return False
-    if isinstance(glob, str) and "toml" not in glob and not fnmatch.fnmatch("roko.toml", glob):
+    if isinstance(pattern, str) and not glob_matches_config(pattern, False):
         return False
-    return os.path.isdir(root) and config_holds_secret(os.path.join(root, "roko.toml"))
+    return os.path.isdir(root) and reads_secret_config(root, cwd)
 
 
 def hook_cwd(data):

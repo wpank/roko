@@ -174,7 +174,8 @@ fn compute_regression_report(
 // ── WAL recovery + experiment merging ─────────────────────────────────
 
 /// Save what the learning WAL holds but no snapshot does yet. Call it before
-/// the runtime loads its snapshots.
+/// the runtime loads its snapshots, as a Graph run does before it loads its
+/// router ([`crate::model_call_feedback::load_recovered_router`]).
 ///
 /// The WAL is the shared `wal.jsonl` and the segments whose writers are gone.
 /// A live writer's segment is left to that writer, which saves its entries
@@ -184,7 +185,7 @@ fn compute_regression_report(
 /// with a narrower model list keeps the other models' entries (bug-7a2630);
 /// the snapshot merge leaves the models it does not track alone. The WAL is
 /// emptied only once the snapshots that hold its entries are saved.
-fn recover_wal(paths: &LearningPaths) {
+pub(crate) fn recover_wal(paths: &LearningPaths) {
     let mut entries = wal::replay_wal(&paths.wal_jsonl).unwrap_or_else(|e| {
         tracing::warn!(error = %e, "[wal] shared WAL unreadable -- leaving it");
         Vec::new()
@@ -228,6 +229,8 @@ struct RecoveredObservation<'a> {
     context_features: &'a [f64],
     reward: f64,
     success: bool,
+    /// Share of a full observation its `LinUCB` update carried.
+    weight: f64,
 }
 
 /// The cascade observation `entry` journals, unless a saved snapshot already
@@ -248,21 +251,24 @@ fn recovered_observation<'a>(
             context_features,
             reward: *reward,
             success: *success,
+            weight: 1.0,
         }),
-        // A model-call surface journaled this observation, but no saved
-        // snapshot contains it (find-0dc1d5).
+        // A model-call surface or a Graph run journaled this observation,
+        // but no saved snapshot contains it (find-0dc1d5, bug-dfb28f).
         WalEntry::ModelCallObservation {
             id,
             model_slug,
             context_features,
             reward,
             success,
+            weight,
             ..
         } if !folded.contains(id.as_str()) => Some(RecoveredObservation {
             model_slug,
             context_features,
             reward: *reward,
             success: *success,
+            weight: *weight,
         }),
         _ => None,
     }
@@ -294,12 +300,13 @@ fn save_recovered_observations(snapshot_path: &Path, entries: &[WalEntry]) -> bo
         let Some(model_idx) = router.model_index_for_slug(observation.model_slug) else {
             continue;
         };
-        router.replay_observation(
+        router.replay_weighted_observation(
             observation.model_slug,
             observation.context_features,
             model_idx,
             observation.reward,
             observation.success,
+            observation.weight,
         );
     }
     match router.save(snapshot_path) {

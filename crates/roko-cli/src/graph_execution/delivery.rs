@@ -116,7 +116,9 @@ pub trait DeliveryBackend: Send + Sync + std::fmt::Debug {
 #[derive(Debug)]
 pub struct GitDeliveryBackend {
     workdir: PathBuf,
-    regression_command: Vec<String>,
+    /// The regression check: commands (program and arguments) run in order.
+    /// Empty when no check is configured.
+    regression: Vec<Vec<String>>,
     /// Where the regression's cargo builds (`CARGO_TARGET_DIR`): outside its
     /// temporary checkout, so the build output outlives it and the next
     /// delivery starts warm.
@@ -134,19 +136,34 @@ impl GitDeliveryBackend {
             shared_target_dir(&workdir, std::env::var_os("CARGO_TARGET_DIR"));
         Self {
             workdir,
-            regression_command: ["cargo", "check", "--workspace", "--quiet"]
-                .map(String::from)
-                .into(),
+            regression: vec![
+                ["cargo", "check", "--workspace", "--quiet"]
+                    .map(String::from)
+                    .into(),
+            ],
             regression_target_dir,
         }
     }
 
-    /// Replace the post-merge regression command (by default
+    /// Replace the post-merge regression with one command (by default
     /// `cargo check --workspace --quiet`). It runs in a temporary checkout of
     /// the merge commit.
     #[must_use]
     pub fn with_regression_command(mut self, command: Vec<String>) -> Self {
-        self.regression_command = command;
+        self.regression = vec![command];
+        self
+    }
+
+    /// Replace the post-merge regression with shell commands (`sh -c`) run in
+    /// order in one temporary checkout of the merge commit, such as a plan's
+    /// `[meta] verify` steps. With none, the delivery runs no regression
+    /// check, and its summary says so.
+    #[must_use]
+    pub fn with_regression_steps(mut self, steps: Vec<String>) -> Self {
+        self.regression = steps
+            .into_iter()
+            .map(|step| vec!["sh".to_string(), "-c".to_string(), step])
+            .collect();
         self
     }
 
@@ -252,13 +269,14 @@ impl GitDeliveryBackend {
         })
     }
 
-    /// Run the regression command in a temporary detached checkout of
-    /// `commit`, never in `workdir`, and remove that checkout afterwards.
-    async fn regression_output(&self, commit: &str) -> Result<std::process::Output, String> {
-        let (program, args) = self
-            .regression_command
-            .split_first()
-            .ok_or("the regression command is empty")?;
+    /// Run the regression commands, in order, in a temporary detached checkout
+    /// of `commit`, never in `workdir`, and remove that checkout afterwards.
+    /// Stops at the first command that fails and returns it, as a command
+    /// line, with its output; `None` when every command passed.
+    async fn regression_output(
+        &self,
+        commit: &str,
+    ) -> Result<Option<(String, std::process::Output)>, String> {
         let parent = tempfile::Builder::new()
             .prefix("roko-delivery-regression-")
             .tempdir()
@@ -279,15 +297,32 @@ impl GitDeliveryBackend {
         }
         scratch.cleanup_required = true;
 
-        // Only the build output is shared: the sources are the checkout's.
-        let output = tokio::process::Command::new(program)
-            .args(args)
-            .current_dir(&scratch.checkout)
-            .env("CARGO_TARGET_DIR", &self.regression_target_dir)
-            .kill_on_drop(true)
-            .output()
-            .await
-            .map_err(|e| format!("failed to spawn regression gate: {e}"));
+        let mut failed = Ok(None);
+        for command in &self.regression {
+            let Some((program, args)) = command.split_first() else {
+                failed = Err("the regression command is empty".to_string());
+                break;
+            };
+            // Only the build output is shared: the sources are the checkout's.
+            let output = tokio::process::Command::new(program)
+                .args(args)
+                .current_dir(&scratch.checkout)
+                .env("CARGO_TARGET_DIR", &self.regression_target_dir)
+                .kill_on_drop(true)
+                .output()
+                .await;
+            match output {
+                Ok(output) if output.status.success() => {}
+                Ok(output) => {
+                    failed = Ok(Some((command.join(" "), output)));
+                    break;
+                }
+                Err(e) => {
+                    failed = Err(format!("failed to spawn regression gate: {e}"));
+                    break;
+                }
+            }
+        }
         let removed = git_command(&self.workdir)
             .args(["worktree", "remove", "--force"])
             .arg(&scratch.checkout)
@@ -296,7 +331,7 @@ impl GitDeliveryBackend {
         if removed.is_ok_and(|out| out.status.success()) {
             scratch.cleanup_required = false;
         }
-        output
+        failed
     }
 }
 
@@ -309,6 +344,22 @@ async fn resolve_commit(workdir: &Path, rev: &str) -> Result<String, String> {
     )
     .await
     .map(|oid| oid.trim().to_string())
+}
+
+/// The last lines a failed command wrote: its stderr, else its stdout.
+fn output_tail(output: &std::process::Output) -> String {
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let text = if stderr.trim().is_empty() {
+        stdout
+    } else {
+        stderr
+    };
+    let lines: Vec<&str> = text
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .collect();
+    lines[lines.len().saturating_sub(5)..].join(" | ")
 }
 
 /// The target dir a build of `workdir` shares with gates and earlier
@@ -441,23 +492,27 @@ impl DeliveryBackend for GitDeliveryBackend {
         merge_commit: &str,
     ) -> DeliveryRegressionOutcome {
         let plan_id = &request.plan_id;
+        if self.regression.is_empty() {
+            return DeliveryRegressionOutcome {
+                passed: true,
+                summary: format!("no post-merge regression check is configured for {plan_id}"),
+                evidence_ref: None,
+            };
+        }
         match self.regression_output(merge_commit).await {
-            Ok(output) if output.status.success() => DeliveryRegressionOutcome {
+            Ok(None) => DeliveryRegressionOutcome {
                 passed: true,
                 summary: format!("post-merge regression passed for {plan_id}"),
                 evidence_ref: None,
             },
-            Ok(output) => {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                DeliveryRegressionOutcome {
-                    passed: false,
-                    summary: format!(
-                        "post-merge regression failed for {plan_id}: {}",
-                        stderr.lines().take(3).collect::<Vec<_>>().join(" | ")
-                    ),
-                    evidence_ref: None,
-                }
-            }
+            Ok(Some((command, output))) => DeliveryRegressionOutcome {
+                passed: false,
+                summary: format!(
+                    "post-merge regression failed for {plan_id}: `{command}`: {}",
+                    output_tail(&output)
+                ),
+                evidence_ref: None,
+            },
             Err(summary) => DeliveryRegressionOutcome {
                 passed: false,
                 summary,

@@ -1540,7 +1540,7 @@ Run a native SWE-bench-style proxy batch.
 
 ```
 roko bench swe [--dataset <path>] [--batch-size <n>] [--offset <n>]
-               [--agent-mode gold|prediction-file|command]
+               --agent-mode gold|empty|prediction-file|command
                [--predictions <path>] [--agent-command <cmd>]
                [--report <path>] [--export-predictions <path>]
                [--no-learning] [--keep-workdirs] [--workdir <path>]
@@ -1554,7 +1554,7 @@ roko bench swe [--dataset <path>] [--batch-size <n>] [--offset <n>]
 | `--dataset <path>` | built-in smoke | Local JSONL dataset. If omitted, a built-in two-task smoke dataset is generated. |
 | `--batch-size <n>` | `2` | Number of instances to run. |
 | `--offset <n>` | `0` | Offset into the dataset. |
-| `--agent-mode <mode>` | `gold` | Agent adapter: `gold`, `prediction-file`, `command`. |
+| `--agent-mode <mode>` | required | Agent adapter: `prediction-file` or `command` measure an agent; `gold` and `empty` are controls that check the harness and are never recorded as learning. |
 | `--predictions <path>` | — | Predictions JSONL for `--agent-mode prediction-file`. |
 | `--agent-command <cmd>` | — | Command for `--agent-mode command`. Receives instance JSON on stdin, prints a unified diff. |
 | `--report <path>` | — | Scores JSONL output path. |

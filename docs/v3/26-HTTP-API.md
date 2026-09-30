@@ -146,7 +146,9 @@ cors_origins = []
 
 [serve.auth]
 enabled = false
-api_key = ""
+# The legacy single key never goes here: roko.toml is readable by agents, and
+# roko refuses to load it with a secret. Set ROKO__SERVE__AUTH__API_KEY in
+# .roko/.env (`roko config set serve.auth.api_key <key>` does).
 privy_app_id = ""
 
 [[serve.auth.api_keys]]
@@ -842,8 +844,8 @@ Supervised HTTP JSON connectors.
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/api/safety/quarantine` | Quarantine vault entries |
-| GET | `/api/safety/incidents` | Incident log from immune system |
+| GET | `/api/safety/quarantine` | Tool results the immune boundary withheld, from the workspace vault (plan runs included) plus any older plan-run vault left in a `.roko/worktrees/` checkout; each entry names its `vault` |
+| GET | `/api/safety/incidents` | Links between quarantined results, from the same vaults |
 
 ### 8.28 Affect (Daimon)
 
@@ -979,9 +981,10 @@ Always public (no `/api/` prefix, no auth).
 ### 8.39 Terminal
 
 Disabled by default (`serve.terminal_enabled = false`). When enabled, the
-routes require auth even on a loopback bind, and creating, deleting or writing
-to a session over REST also needs the `terminal:write` scope and the
-`agent:spawn` permission.
+routes require auth even on a loopback bind. Creating, deleting or writing to a
+session, and opening `/ws/terminal/{id}`, also need the `terminal:write` scope
+and the `agent:spawn` permission: the WebSocket upgrade is a GET, but it starts
+a shell, so it is not treated as a read.
 
 The defaults are the safe choice, and each opt-out is an explicit `[serve]` key:
 
@@ -993,6 +996,9 @@ The defaults are the safe choice, and each opt-out is an explicit `[serve]` key:
   refused (429 over REST, a closed socket over WebSocket). `0` lifts the cap.
 - A session is closed `terminal_session_ttl_secs` (8 hours) after it started,
   attached or not; a background reaper checks every minute. `0` lifts it.
+- A session id is 1-128 ASCII letters, digits, `-` or `_`, because it names a
+  directory under `.roko/workspaces/`. Every route that takes an id answers any
+  other id (for example one with an encoded `/`) with 400.
 
 | Method | Path | Description |
 |--------|------|-------------|

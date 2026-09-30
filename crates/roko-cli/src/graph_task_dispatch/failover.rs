@@ -1,6 +1,7 @@
 //! Provider failover: a planned model whose provider cannot take the task hands
 //! it to the next usable candidate within the same attempt.
 
+use super::helper_calls::SideCall;
 use super::*;
 
 // ─── Provider failover ──────────────────────────────────────────────────────
@@ -10,6 +11,9 @@ use super::*;
 /// The error is non-retryable, so `TaskExecutorCell` fails the attempt at once
 /// instead of re-running a dispatch that would be refused again.
 const PROVIDER_EXHAUSTED_CATEGORY: &str = "provider_exhausted";
+
+/// `role` of the cost and efficiency rows of a call failover refused.
+const FAILOVER_REFUSED_ROLE: &str = "failover_refused";
 
 /// A model to dispatch: the key sent to the bridge and the config resolving it.
 #[derive(Clone)]
@@ -36,6 +40,12 @@ struct ProviderRefusal {
     /// credentials, out of usage, billing), unlike an open circuit that may
     /// already have recovered.
     definitive: bool,
+    /// Why, as a class ([`roko_learn::telemetry::FailoverRefusal::class`]).
+    class: &'static str,
+    /// Whether a call reached the provider before it refused.
+    called: bool,
+    /// When the refusal happened (unix ms).
+    at_ms: i64,
 }
 
 /// The models failover passed over before the one that ran (bug-35379d).
@@ -46,6 +56,9 @@ pub(super) struct FailoverChain {
     pub(super) models: Vec<String>,
     /// Why the planned model did not run.
     pub(super) reason: Option<String>,
+    /// Every refusal, with its class and whether a call was made
+    /// (bug-220385).
+    pub(super) refusals: Vec<roko_learn::telemetry::FailoverRefusal>,
 }
 
 impl FailoverChain {
@@ -61,6 +74,18 @@ impl FailoverChain {
                     refusal.model_key, refusal.provider_id, refusal.reason
                 )
             }),
+            refusals: refusals
+                .iter()
+                .map(|refusal| roko_learn::telemetry::FailoverRefusal {
+                    model: refusal.model_key.clone(),
+                    provider: refusal.provider_id.clone(),
+                    class: refusal.class.to_string(),
+                    reason: refusal.reason.clone(),
+                    called: refusal.called,
+                    at: Some(refusal.at_ms),
+                    until: refusal.until_ms,
+                })
+                .collect(),
         }
     }
 }
@@ -124,11 +149,14 @@ impl GraphTaskDispatcher {
     /// non-retryable error that says how to recover.
     ///
     /// Returns the dispatch with the models failover passed over, which the
-    /// attempt's records carry beside the one that ran.
+    /// attempt's records carry beside the one that ran. A call a provider
+    /// refused gets cost and efficiency rows of its own, keyed by
+    /// `attempt_key` (role `failover_refused`, bug-220385).
     pub(super) async fn run_bridge_with_failover(
         &self,
         spec: &TaskExecutionSpec,
         task_id: &str,
+        attempt_key: String,
         mut request: AgentDispatchRequest,
     ) -> Result<(crate::dispatch_v2::AgentResultDispatch, FailoverChain)> {
         let pinned = self.cli_model_override.is_some();
@@ -156,6 +184,7 @@ impl GraphTaskDispatcher {
             }
 
             request.model_key = candidate.model_key.clone();
+            let call_started = Instant::now();
             let dispatch = match &candidate.config {
                 Some(config) => {
                     self.factory
@@ -205,6 +234,19 @@ impl GraphTaskDispatcher {
                 .record(&format!("{}/{task_id}", spec.plan_id), refused_cost_usd);
             self.budget_ledger
                 .settle(&spec.plan_id, 0, refused_cost_usd)?;
+            let refused_calls = refusals.iter().filter(|refusal| refusal.called).count();
+            self.write_side_call_rows(
+                spec,
+                task_id,
+                &attempt_key,
+                &format!("{attempt_key}/refused-{}", refused_calls + 1),
+                FAILOVER_REFUSED_ROLE,
+                &SideCall::of(
+                    &dispatch,
+                    u64::try_from(call_started.elapsed().as_millis()).unwrap_or(u64::MAX),
+                ),
+            )
+            .await;
             tracing::warn!(
                 plan_id = %spec.plan_id,
                 task_id,
@@ -222,6 +264,9 @@ impl GraphTaskDispatcher {
                 reason: exhaustion.message,
                 until_ms: Some(until_ms),
                 definitive: true,
+                class: "provider_exhausted",
+                called: true,
+                at_ms: chrono::Utc::now().timestamp_millis(),
             });
             if pinned {
                 return Err(self.no_usable_provider(&refusals, &[], true));
@@ -248,7 +293,11 @@ impl GraphTaskDispatcher {
 
         let target = self.resolve_candidate(candidate);
         let provider_id = target.provider_id.clone();
-        let refusal = |reason: String, until_ms: Option<i64>, definitive: bool| ProviderRefusal {
+        // Skipped before any call.
+        let refusal = |class: &'static str,
+                       reason: String,
+                       until_ms: Option<i64>,
+                       definitive: bool| ProviderRefusal {
             model_key: candidate.model_key.clone(),
             model_slug: target.model_slug.clone(),
             provider_id: provider_id.clone(),
@@ -256,9 +305,13 @@ impl GraphTaskDispatcher {
             reason,
             until_ms,
             definitive,
+            class,
+            called: false,
+            at_ms: chrono::Utc::now().timestamp_millis(),
         };
         let Some(provider) = target.provider_config.as_ref() else {
             return Some(refusal(
+                "not_configured",
                 format!("provider `{provider_id}` is not configured"),
                 None,
                 true,
@@ -266,6 +319,7 @@ impl GraphTaskDispatcher {
         };
         if let ProviderRuntime::Unsupported(unsupported) = &target.runtime {
             return Some(refusal(
+                "not_dispatchable",
                 format!(
                     "provider `{provider_id}` is not dispatchable: {}",
                     unsupported.detail
@@ -281,6 +335,7 @@ impl GraphTaskDispatcher {
             .contains(&provider_id)
         {
             return Some(refusal(
+                "disabled",
                 "listed in routing.disabled_providers".to_string(),
                 None,
                 false,
@@ -289,6 +344,7 @@ impl GraphTaskDispatcher {
         let config = candidate.config.as_ref().unwrap_or(&self.config);
         if !config.provider_available_for_model_key(&candidate.model_key) {
             return Some(refusal(
+                "no_credentials",
                 missing_credentials_reason(provider, &provider_id),
                 None,
                 true,
@@ -299,12 +355,18 @@ impl GraphTaskDispatcher {
             return None;
         }
         let health = registry.get(&provider_id);
-        let (reason, definitive) = match health.failure_window.back().map(|r| r.error_class) {
-            Some(ErrorClass::Exhausted) => ("out of usage", true),
-            Some(ErrorClass::Billing) => ("billing failure", true),
-            _ => ("circuit open after repeated failures", false),
+        let (class, reason, definitive) = match health.failure_window.back().map(|r| r.error_class)
+        {
+            Some(ErrorClass::Exhausted) => ("provider_exhausted", "out of usage", true),
+            Some(ErrorClass::Billing) => ("billing", "billing failure", true),
+            _ => (
+                "circuit_open",
+                "circuit open after repeated failures",
+                false,
+            ),
         };
         Some(refusal(
+            class,
             reason.to_string(),
             health.cooldown_until,
             definitive,
@@ -830,12 +892,11 @@ exit 1
         );
     }
 
-    /// A task planned for an exhausted provider runs on a fallback: the
-    /// attempt's verdict, episode, cost and efficiency rows name the planned
-    /// model, why it did not run, and the model that did.
-    #[tokio::test]
-    async fn failover_records_planned_and_substitute_model() {
-        let temp = tempdir().expect("tempdir");
+    /// One attempt of a task planned for `claude-sonnet-4-6` on a Claude CLI
+    /// that refuses with its session limit, which fails over to
+    /// `api-model`, answering as `api-model-1`, with every record written
+    /// under the returned workdir's `.roko` for the returned run.
+    async fn fail_over_from_an_exhausted_cli(temp: &tempfile::TempDir) -> (PathBuf, &'static str) {
         let workdir = temp.path().join("work");
         std::fs::create_dir_all(&workdir).expect("workdir");
         let calls = temp.path().join("claude-calls.log");
@@ -864,11 +925,10 @@ exit 1
             timeout_secs: 30,
             ..make_task_def("focused")
         };
-        let spec = make_spec(&task);
         let run = "graph-failover-run";
         dispatcher
             .dispatch(
-                &spec,
+                &make_spec(&task),
                 Vec::new(),
                 &CellContext::new().with_run_id(run.to_string()),
             )
@@ -876,6 +936,76 @@ exit 1
             .expect("the fallback runs the task");
         drop(dispatcher);
         assert_eq!(invocations(&calls), 1);
+        (workdir, run)
+    }
+
+    /// A call a provider refused for its usage limit is on the attempt's
+    /// records (bug-220385): the verdict and episode list the refusal with
+    /// its class, and the refused call has its own cost and efficiency rows.
+    #[tokio::test]
+    async fn an_exhaustion_refusal_during_failover_is_recorded() {
+        let temp = tempdir().expect("tempdir");
+        let (workdir, run) = fail_over_from_an_exhausted_cli(&temp).await;
+
+        let verdicts = jsonl_rows_where(
+            &workdir.join(".roko/runs").join(run).join("attempts.jsonl"),
+            1,
+            |row| row["schema_version"] == "roko.verdict/1",
+        )
+        .await;
+        let verdict = &verdicts[0];
+        let key = verdict["attempt_key"].as_str().expect("attempt key");
+        let planned = verdict["executed"]["model_requested"]
+            .as_str()
+            .expect("planned model");
+        let refusals = verdict["executed"]["failover_refusals"]
+            .as_array()
+            .expect("failover refusals");
+        assert_eq!(refusals.len(), 1, "{verdict}");
+        let refusal = &refusals[0];
+        assert_eq!(refusal["model"], planned);
+        assert_eq!(refusal["provider"], "claude_cli");
+        assert_eq!(refusal["class"], "provider_exhausted");
+        assert_eq!(refusal["called"], true);
+        assert!(
+            refusal["at"].is_i64() && refusal["until"].is_i64(),
+            "{refusal}"
+        );
+        let reason = refusal["reason"].as_str().unwrap_or_default();
+        assert!(reason.contains("session limit"), "{reason}");
+
+        let episodes = roko_learn::episode_logger::EpisodeLogger::read_all(
+            &workdir.join(".roko/episodes.jsonl"),
+        )
+        .await
+        .expect("episodes");
+        assert_eq!(
+            episodes[0].extra["failover_refusals"][0]["class"],
+            "provider_exhausted"
+        );
+
+        let refused = |row: &serde_json::Value| row["role"] == FAILOVER_REFUSED_ROLE;
+        let costs = jsonl_rows_where(&workdir.join(".roko/learn/costs.jsonl"), 1, refused).await;
+        assert_eq!(costs.len(), 1);
+        assert_eq!(costs[0]["attempt_key"], key);
+        assert_eq!(costs[0]["provider"], "claude_cli");
+        assert_eq!(costs[0]["success"], false);
+        let efficiency =
+            jsonl_rows_where(&workdir.join(".roko/learn/efficiency.jsonl"), 1, |row| {
+                row["schema"] == roko_learn::efficiency::AGENT_EFFICIENCY_EVENT_SCHEMA
+                    && refused(row)
+            })
+            .await;
+        assert_eq!(efficiency[0]["attempt_id"], format!("{key}/refused-1"));
+    }
+
+    /// A task planned for an exhausted provider runs on a fallback: the
+    /// attempt's verdict, episode, cost and efficiency rows name the planned
+    /// model, why it did not run, and the model that did.
+    #[tokio::test]
+    async fn failover_records_planned_and_substitute_model() {
+        let temp = tempdir().expect("tempdir");
+        let (workdir, run) = fail_over_from_an_exhausted_cli(&temp).await;
 
         let verdicts = jsonl_rows_where(
             &workdir.join(".roko/runs").join(run).join("attempts.jsonl"),
@@ -905,13 +1035,15 @@ exit 1
         assert_eq!(episodes[0].model, "api-model-1");
         assert_eq!(episodes[0].extra["substituted_from"], planned);
         assert_eq!(episodes[0].extra["failover_reason"], reason);
-        let costs = jsonl_rows_where(&workdir.join(".roko/learn/costs.jsonl"), 1, |_| true).await;
+        // The refused call has rows of its own; these are the call that ran.
+        let ran = |row: &serde_json::Value| row["role"] != FAILOVER_REFUSED_ROLE;
+        let costs = jsonl_rows_where(&workdir.join(".roko/learn/costs.jsonl"), 1, ran).await;
         assert_eq!(costs[0]["model"], "api-model-1");
         assert_eq!(costs[0]["substituted_from"], planned);
         assert_eq!(costs[0]["substitution_reason"], reason);
         let efficiency =
             jsonl_rows_where(&workdir.join(".roko/learn/efficiency.jsonl"), 1, |row| {
-                row["schema"] == roko_learn::efficiency::AGENT_EFFICIENCY_EVENT_SCHEMA
+                row["schema"] == roko_learn::efficiency::AGENT_EFFICIENCY_EVENT_SCHEMA && ran(row)
             })
             .await;
         assert_eq!(efficiency[0]["model"], "api-model-1");

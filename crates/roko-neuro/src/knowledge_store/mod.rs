@@ -354,13 +354,15 @@ impl KnowledgeStore {
     }
 
     pub(crate) fn rewrite_all(&self, entries: &[KnowledgeEntry]) -> Result<()> {
-        let mut bytes = Vec::new();
+        let mut text = String::new();
         for entry in entries {
             let entry = normalize_entry_security(entry.clone());
-            serde_json::to_writer(&mut bytes, &entry).context("serialize knowledge entry")?;
-            bytes.push(b'\n');
+            text.push_str(&serde_json::to_string(&entry).context("serialize knowledge entry")?);
+            text.push('\n');
         }
-        roko_fs::atomic_write_bytes(&self.path, &bytes).with_context(|| {
+        // Entries distilled from agent output can quote a secret.
+        let text = roko_core::obs::scrub_secrets_in_jsonl(&text);
+        roko_fs::atomic_write_bytes(&self.path, text.as_bytes()).with_context(|| {
             format!("atomically rewrite knowledge store {}", self.path.display())
         })?;
         Ok(())

@@ -6,6 +6,7 @@ use anyhow::{Context as _, Result, bail};
 use indexmap::IndexMap;
 use roko_cli::orchestrator::detect_cycle_nodes;
 use roko_core::AgentRole;
+use roko_core::config::GatesConfig;
 use roko_core::config::schema::ModelProfile;
 use roko_gate::AcceptanceContract;
 use serde::Serialize;
@@ -255,6 +256,75 @@ pub fn render_text(report: &ValidationReport) -> String {
         "{diagnostic_count} diagnostics in {} {plan_word}",
         report.totals.plans_checked
     );
+    out
+}
+
+/// A workspace gate rung (`[[gates.rungs]]`) as `plan validate` lists it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RungSummary {
+    pub name: String,
+    pub command: String,
+    pub required: bool,
+    /// Whether plan tasks run it: it is required and has a command.
+    pub runs: bool,
+}
+
+/// The workspace's gate rungs for the plans `plan validate` checked. Every
+/// task of a plan runs the rungs that run after its own verify steps,
+/// unless the plan opts out with `[meta] workspace_rungs = false`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct WorkspaceRungs {
+    /// Every declared rung, in `roko.toml` order.
+    pub rungs: Vec<RungSummary>,
+    /// The `tasks.toml` of each plan that opts out.
+    pub opted_out: Vec<String>,
+}
+
+/// The rungs `gates` declares, and the plans under `dir` that opt out of
+/// them.
+pub fn workspace_rungs(dir: &Path, gates: &GatesConfig) -> Result<WorkspaceRungs> {
+    let rungs = gates
+        .custom_rungs
+        .iter()
+        .map(|rung| RungSummary {
+            name: rung.name.clone(),
+            command: rung.command.clone(),
+            required: rung.required,
+            runs: gates.required_rungs().any(|running| running == rung),
+        })
+        .collect();
+    let opted_out = collect_tasks_files(dir)?
+        .into_iter()
+        .filter(|path| {
+            roko_cli::task_parser::TasksFile::parse(path)
+                .is_ok_and(|tasks| !tasks.meta.runs_workspace_rungs())
+        })
+        .map(|path| path.display().to_string())
+        .collect();
+    Ok(WorkspaceRungs { rungs, opted_out })
+}
+
+/// `rungs` as `plan validate` prints them; empty when the workspace
+/// declares none.
+pub fn render_rungs_text(rungs: &WorkspaceRungs) -> String {
+    if rungs.rungs.is_empty() {
+        return String::new();
+    }
+    let mut out = String::from("workspace rungs, run after each task's own verify steps:");
+    for rung in &rungs.rungs {
+        let note = match (rung.runs, rung.required) {
+            (true, _) => "",
+            (false, false) => " (optional: does not run)",
+            (false, true) => " (no command: does not run)",
+        };
+        let _ = write!(out, "\n  {:<12} {}{note}", rung.name, rung.command);
+    }
+    if !rungs.opted_out.is_empty() {
+        out.push_str("\nplans that opt out with [meta] workspace_rungs = false:");
+        for path in &rungs.opted_out {
+            let _ = write!(out, "\n  {path}");
+        }
+    }
     out
 }
 
@@ -2104,5 +2174,63 @@ verify = [{ phase = "compile", command = "cargo check -p roko-cli" }]
                 .iter()
                 .all(|diag| diag.rule_id != "PLAN_032" && diag.rule_id != "PLAN_033")
         }));
+    }
+
+    #[test]
+    fn plan_validate_lists_the_rungs_that_will_run() {
+        let temp = TempDir::new().expect("tempdir");
+        for (plan, meta) in [("default", ""), ("opted-out", "workspace_rungs = false")] {
+            let dir = temp.path().join(plan);
+            fs::create_dir_all(&dir).expect("plan dir");
+            let text = format!(
+                r#"
+[meta]
+plan = "{plan}"
+{meta}
+
+[[task]]
+id = "T1"
+title = "One task"
+"#
+            );
+            fs::write(dir.join("tasks.toml"), text).expect("tasks.toml");
+        }
+        let rung = |name: &str, command: &str, required| roko_core::config::GateRungConfig {
+            name: name.to_string(),
+            command: command.to_string(),
+            timeout_secs: 60,
+            required,
+            parallel_with: Vec::new(),
+        };
+        let gates = GatesConfig {
+            custom_rungs: vec![
+                rung("lint", "cargo clippy", true),
+                rung("bench", "cargo bench", false),
+            ],
+            ..GatesConfig::default()
+        };
+
+        let rungs = workspace_rungs(temp.path(), &gates).expect("rungs");
+        let runs: Vec<(&str, bool)> = rungs
+            .rungs
+            .iter()
+            .map(|rung| (rung.name.as_str(), rung.runs))
+            .collect();
+        assert_eq!(runs, [("lint", true), ("bench", false)]);
+        assert_eq!(rungs.opted_out.len(), 1);
+        assert!(
+            rungs.opted_out[0].ends_with("opted-out/tasks.toml"),
+            "{:?}",
+            rungs.opted_out
+        );
+
+        let text = render_rungs_text(&rungs);
+        assert!(text.contains("cargo clippy\n"), "{text}");
+        assert!(
+            text.contains("cargo bench (optional: does not run)"),
+            "{text}"
+        );
+        assert!(text.contains("opted-out/tasks.toml"), "{text}");
+        assert_eq!(render_rungs_text(&WorkspaceRungs::default()), "");
     }
 }

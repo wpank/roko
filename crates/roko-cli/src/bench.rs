@@ -13,14 +13,13 @@
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::Write as _;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context as _, Result, anyhow, bail};
 use chrono::Utc;
 use clap::ValueEnum;
-use roko_core::{ConfigHash, TaskMetric};
 use roko_learn::cfactor::CFactor;
 use roko_learn::efficiency::AgentEfficiencyEvent;
 use roko_learn::episode_logger::{Episode, EpisodeGateVerdict, Usage};
@@ -118,6 +117,10 @@ pub struct SweBenchReport {
     pub apply_check: usize,
     /// Number of instances whose test command passed after patch application.
     pub tests_passed: usize,
+    /// Number of instances whose patch changed a grading file. Those edits
+    /// were reset before grading.
+    #[serde(default)]
+    pub touched_tests: usize,
     /// Per-instance rows.
     pub instances: Vec<SweBenchInstanceResult>,
     /// Summary JSONL path. Unless `--report` names one, agent runs append to
@@ -169,6 +172,7 @@ resolved: {resolved}/{total} ({pass_rate:.1}%)
 format_valid: {format_valid}/{total}
 apply_check: {apply_check}/{total}
 tests_passed: {tests_passed}/{total}
+touched_tests: {touched_tests}/{total} (reset before grading)
 c-factor: {before} -> {after}{delta}
 report: {report}
 details: {details}",
@@ -181,6 +185,7 @@ details: {details}",
             format_valid = self.format_valid,
             apply_check = self.apply_check,
             tests_passed = self.tests_passed,
+            touched_tests = self.touched_tests,
             report = self.report_path.display(),
             details = self.run_path.display(),
         )
@@ -210,6 +215,10 @@ pub struct SweBenchInstanceResult {
     pub duration_ms: u64,
     /// Short failure reason.
     pub failure_reason: Option<String>,
+    /// Grading files the patch changed, created or deleted. They were reset
+    /// before the tests ran, so those edits did not count.
+    #[serde(default)]
+    pub touched_tests: Vec<String>,
 }
 
 /// One dataset row. Deliberately not `Serialize`: it holds the gold patch and
@@ -229,6 +238,15 @@ struct SweBenchInstance {
     patch: String,
     #[serde(default, alias = "test_command")]
     test_cmd: String,
+    /// Diff that adds or updates the tests that grade the instance. As in
+    /// SWE-bench, it is applied over the agent's patch after the files it
+    /// touches are reset.
+    #[serde(default)]
+    test_patch: String,
+    /// Files, relative to the repo, that grade the instance. They are reset
+    /// over the agent's patch before the tests run.
+    #[serde(default)]
+    test_files: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -310,6 +328,17 @@ pub async fn run_swe_bench(options: SweBenchOptions) -> Result<SweBenchReport> {
             instance.instance_id
         );
     }
+    // The proxy cannot tell tests from code, so every instance names the
+    // files that grade it; they are reset over the agent's patch.
+    for instance in &selected {
+        if grading_files(instance)?.is_empty() {
+            bail!(
+                "instance {} names no grading tests (test_files or test_patch); \
+                 a patch could rewrite the tests that grade it",
+                instance.instance_id
+            );
+        }
+    }
 
     // Controls check the harness, not a model: they never write episodes,
     // efficiency events, C-factor snapshots or knowledge.
@@ -354,6 +383,8 @@ pub async fn run_swe_bench(options: SweBenchOptions) -> Result<SweBenchReport> {
         init_git_repo(&instance_workdir).with_context(|| {
             format!("initialize isolated git repo for {}", instance.instance_id)
         })?;
+        // Keep the grading files as they are before the agent's patch.
+        let grading = GradingSnapshot::take(&instance_workdir, &grading_files(&instance)?)?;
 
         let patch = produce_patch(&options, &instance, &predictions)?;
         let format_ok = format_valid(&patch);
@@ -367,6 +398,23 @@ pub async fn run_swe_bench(options: SweBenchOptions) -> Result<SweBenchReport> {
         } else {
             (false, apply_check_error.clone())
         };
+        // As in SWE-bench, grade with the task's own tests: reset the grading
+        // files over the patch, then apply the test patch.
+        let touched_tests = if apply_ok {
+            grading.restore(&instance_workdir)?
+        } else {
+            Vec::new()
+        };
+        if apply_ok && !instance.test_patch.trim().is_empty() {
+            let (applied, error) = git_apply(&instance_workdir, &instance.test_patch, false)?;
+            if !applied {
+                bail!(
+                    "instance {}: test_patch does not apply over the reset grading files: {}",
+                    instance.instance_id,
+                    error.unwrap_or_default()
+                );
+            }
+        }
         // Every selected instance has a test command (checked above), so a
         // resolved patch always comes from a test run that could fail.
         let (tests_ok, test_error) = if apply_ok {
@@ -393,6 +441,7 @@ pub async fn run_swe_bench(options: SweBenchOptions) -> Result<SweBenchReport> {
             patch_bytes: patch.len(),
             duration_ms,
             failure_reason,
+            touched_tests,
         };
 
         if let Some(runtime) = &runtime {
@@ -448,6 +497,10 @@ pub async fn run_swe_bench(options: SweBenchOptions) -> Result<SweBenchReport> {
         format_valid: rows.iter().filter(|row| row.format_valid).count(),
         apply_check: rows.iter().filter(|row| row.apply_check).count(),
         tests_passed: rows.iter().filter(|row| row.tests_passed).count(),
+        touched_tests: rows
+            .iter()
+            .filter(|row| !row.touched_tests.is_empty())
+            .count(),
         instances: rows,
         report_path,
         run_path,
@@ -544,6 +597,8 @@ diff --git a/calc.py b/calc.py
 "
             .to_string(),
             test_cmd: "python3 -m unittest test_calc.py".to_string(),
+            test_patch: String::new(),
+            test_files: vec!["test_calc.py".to_string()],
         },
         SweBenchInstance {
             instance_id: "roko-smoke__slugify".to_string(),
@@ -563,6 +618,8 @@ diff --git a/slug.py b/slug.py
 "
             .to_string(),
             test_cmd: "python3 -m unittest test_slug.py".to_string(),
+            test_patch: String::new(),
+            test_files: vec!["test_slug.py".to_string()],
         },
     ])
 }
@@ -695,6 +752,104 @@ fn run_shell(workdir: &Path, command: &str) -> Result<(bool, Option<String>)> {
     }
 }
 
+/// The files that grade `instance`: its `test_files`, then every file its
+/// `test_patch` touches. Each must be a relative path inside the repo.
+fn grading_files(instance: &SweBenchInstance) -> Result<Vec<String>> {
+    let mut files: Vec<String> = Vec::new();
+    for file in instance
+        .test_files
+        .iter()
+        .cloned()
+        .chain(diff_paths(&instance.test_patch))
+    {
+        let inside_repo = !file.is_empty()
+            && Path::new(&file)
+                .components()
+                .all(|part| matches!(part, Component::Normal(_)));
+        if !inside_repo {
+            bail!(
+                "instance {}: grading file `{file}` is not a relative path inside the repo",
+                instance.instance_id
+            );
+        }
+        if !files.contains(&file) {
+            files.push(file);
+        }
+    }
+    Ok(files)
+}
+
+/// The files a unified diff touches, from its `--- a/` and `+++ b/` headers.
+fn diff_paths(diff: &str) -> Vec<String> {
+    let mut paths = Vec::new();
+    for line in diff.lines() {
+        let Some(path) = line
+            .strip_prefix("--- a/")
+            .or_else(|| line.strip_prefix("+++ b/"))
+        else {
+            continue;
+        };
+        // A non-git diff may follow the path with a tab and a timestamp.
+        let path = path.split('\t').next().unwrap_or(path).trim_end();
+        if !path.is_empty() && !paths.iter().any(|known| known == path) {
+            paths.push(path.to_string());
+        }
+    }
+    paths
+}
+
+/// The grading files as they were before the agent's patch, so they can be
+/// put back over it. `None` marks a file that did not exist.
+struct GradingSnapshot {
+    files: Vec<(String, Option<Vec<u8>>)>,
+}
+
+impl GradingSnapshot {
+    /// Read `files`, relative to `workdir`, before any patch is applied.
+    fn take(workdir: &Path, files: &[String]) -> Result<Self> {
+        let mut snapshot = Vec::with_capacity(files.len());
+        for file in files {
+            snapshot.push((file.clone(), read_if_present(&workdir.join(file))?));
+        }
+        Ok(Self { files: snapshot })
+    }
+
+    /// Put every grading file back as it was. Returns the files the patch
+    /// had changed, created or deleted.
+    fn restore(&self, workdir: &Path) -> Result<Vec<String>> {
+        let mut touched = Vec::new();
+        for (file, original) in &self.files {
+            let path = workdir.join(file);
+            if read_if_present(&path)? == *original {
+                continue;
+            }
+            touched.push(file.clone());
+            match original {
+                Some(contents) => {
+                    if let Some(parent) = path.parent() {
+                        fs::create_dir_all(parent)?;
+                    }
+                    fs::write(&path, contents)
+                        .with_context(|| format!("reset {}", path.display()))?;
+                }
+                None => {
+                    fs::remove_file(&path).with_context(|| format!("remove {}", path.display()))?;
+                }
+            }
+        }
+        Ok(touched)
+    }
+}
+
+/// A file's bytes, or `None` when it does not exist.
+fn read_if_present(path: &Path) -> Result<Option<Vec<u8>>> {
+    match fs::read(path) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(err).with_context(|| format!("read {}", path.display())),
+    }
+}
+
 async fn record_learning(
     runtime: &LearningRuntime,
     options: &SweBenchOptions,
@@ -723,11 +878,12 @@ async fn record_learning(
     episode.usage = Usage {
         input_tokens: estimate_tokens(&instance.problem_statement),
         output_tokens: estimate_tokens(patch),
-        cost_usd: 0.0,
-        cost_usd_without_cache: 0.0,
         wall_ms: row.duration_ms,
         ..Usage::default()
     };
+    // The harness never sees what the agent under test spent. `Usage` has no
+    // null, so its cost stays a 0 placeholder that readers must skip.
+    episode.mark_cost_unknown();
     episode.gate_verdicts = vec![
         EpisodeGateVerdict::new("bench:format", row.format_valid),
         EpisodeGateVerdict::new("bench:git_apply_check", row.apply_check),
@@ -747,38 +903,20 @@ async fn record_learning(
     episode
         .extra
         .insert("patch_bytes".to_string(), json!(row.patch_bytes));
-
-    let mut metric = TaskMetric {
-        timestamp: Utc::now().to_rfc3339(),
-        run_id: "roko-bench".to_string(),
-        config_hash: ConfigHash("roko-bench".to_string()),
-        plan_id: "swe-bench-proxy".to_string(),
-        task_id: task_id.clone(),
-        iteration: 1,
-        role: "BenchAgent".to_string(),
-        backend: "roko-bench".to_string(),
-        model: format!("roko-bench/{}", options.agent_mode.label()),
-        complexity_band: "standard".to_string(),
-        gate: "swe-proxy".to_string(),
-        gate_passed: row.resolved,
-        wall_time_ms: row.duration_ms,
-        input_tokens: episode.usage.input_tokens,
-        output_tokens: episode.usage.output_tokens,
-        cached_tokens: 0,
-        cost_usd: 0.0,
-        sections_included: 1,
-        sections_dropped: 0,
-        context_tokens: episode.usage.input_tokens,
-        cache_hit_rate: 0.0,
-    };
-    if metric.timestamp.is_empty() {
-        metric.timestamp = Utc::now().to_rfc3339();
+    if !row.touched_tests.is_empty() {
+        episode
+            .extra
+            .insert("touched_tests".to_string(), json!(row.touched_tests));
     }
 
+    // No TaskMetric: its cost_usd cannot say "unknown", and a $0 would drag
+    // down the cost baseline that the regression check compares against.
     runtime
-        .record_completed_run(CompletedRunInput::from_episode(episode).with_task_metric(metric))
+        .record_completed_run(CompletedRunInput::from_episode(episode))
         .await?;
 
+    // The efficiency event keeps cost_usd at 0 with non-zero tokens, which the
+    // dashboard already reads as an unknown cost rather than a free one.
     let mut event = AgentEfficiencyEvent::default_event();
     event.agent_id = format!("swe-bench-{}", options.agent_mode.label());
     event.role = "BenchAgent".to_string();
@@ -824,6 +962,7 @@ fn write_report_artifacts(report: &SweBenchReport, predictions: &[Value]) -> Res
         "format_valid": report.format_valid,
         "apply_check": report.apply_check,
         "tests_passed": report.tests_passed,
+        "touched_tests": report.touched_tests,
         "cfactor_before": report.cfactor_before.as_ref().map(|cf| cf.overall),
         "cfactor_after": report.cfactor_after.as_ref().map(|cf| cf.overall),
         "run_path": report.run_path,
@@ -1157,6 +1296,8 @@ mod tests {
         let fields: Value = serde_json::from_str(&payload).unwrap();
         assert!(fields.get("patch").is_none());
         assert!(fields.get("test_cmd").is_none());
+        assert!(fields.get("test_patch").is_none());
+        assert!(fields.get("test_files").is_none());
 
         // The agent printed no patch, so nothing resolved.
         assert_eq!(report.resolved, 0);
@@ -1206,5 +1347,234 @@ mod tests {
         );
         assert!(!tmp.path().join(".roko/bench/scores.jsonl").exists());
         assert!(!tmp.path().join(".roko/episodes.jsonl").exists());
+    }
+
+    fn write_jsonl(path: &Path, rows: &[Value]) {
+        let lines: Vec<String> = rows.iter().map(Value::to_string).collect();
+        fs::write(path, lines.join("\n")).unwrap();
+    }
+
+    #[tokio::test]
+    async fn swe_episodes_record_unmeasured_cost_as_unknown() {
+        let tmp = TempDir::new().unwrap();
+        let predictions = tmp.path().join("predictions.jsonl");
+        let rows: Vec<Value> = create_builtin_smoke_dataset(tmp.path())
+            .unwrap()
+            .into_iter()
+            .map(|instance| {
+                json!({ "instance_id": instance.instance_id, "model_patch": instance.patch })
+            })
+            .collect();
+        write_jsonl(&predictions, &rows);
+
+        run_swe_bench(SweBenchOptions {
+            predictions: Some(predictions),
+            ..smoke_options(tmp.path(), SweAgentMode::PredictionFile)
+        })
+        .await
+        .unwrap();
+
+        let episodes = roko_learn::episode_logger::EpisodeLogger::read_all_lossy(
+            tmp.path().join(".roko/episodes.jsonl"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(episodes.len(), 2);
+        for episode in &episodes {
+            // Nobody measured what the agent spent: its 0 is a placeholder.
+            assert!(!episode.cost_known(), "{} claims a cost", episode.task_id);
+            assert_eq!(
+                episode
+                    .extra
+                    .get(roko_learn::episode_logger::COST_KNOWN_KEY),
+                Some(&json!(false))
+            );
+        }
+        // A TaskMetric cannot say "unknown", so none is written, and the cost
+        // ledger gets no $0 rows either.
+        for file in ["task-metrics.jsonl", "costs.jsonl"] {
+            let path = tmp.path().join(".roko/learn").join(file);
+            let records = fs::read_to_string(&path).unwrap_or_default();
+            assert!(records.trim().is_empty(), "{file} has records: {records}");
+        }
+    }
+
+    /// A repo whose `add` subtracts, graded by `test_calc.py`.
+    fn calc_repo(root: &Path) {
+        let repo = root.join("repo");
+        fs::create_dir_all(&repo).unwrap();
+        fs::write(repo.join("calc.py"), "def add(a, b):\n    return a - b\n").unwrap();
+        fs::write(repo.join("test_calc.py"), CALC_TEST).unwrap();
+    }
+
+    /// The calc repo's grading test: `add(2, 3)` must be 5.
+    const CALC_TEST: &str = concat!(
+        "import unittest\n",
+        "from calc import add\n",
+        "\n",
+        "class CalcTest(unittest.TestCase):\n",
+        "    def test_adds(self):\n",
+        "        self.assertEqual(add(2, 3), 5)\n",
+    );
+
+    /// Leaves the bug alone and rewrites the test so that it cannot fail.
+    const REWRITES_TEST: &str = concat!(
+        "diff --git a/test_calc.py b/test_calc.py\n",
+        "--- a/test_calc.py\n",
+        "+++ b/test_calc.py\n",
+        "@@ -5,2 +5,2 @@\n",
+        "     def test_adds(self):\n",
+        "-        self.assertEqual(add(2, 3), 5)\n",
+        "+        self.assertEqual(add(2, 3), add(2, 3))\n",
+    );
+
+    /// Fixes the bug and also edits the test file.
+    const FIXES_AND_TOUCHES_TEST: &str = concat!(
+        "diff --git a/calc.py b/calc.py\n",
+        "--- a/calc.py\n",
+        "+++ b/calc.py\n",
+        "@@ -1,2 +1,2 @@\n",
+        " def add(a, b):\n",
+        "-    return a - b\n",
+        "+    return a + b\n",
+        "diff --git a/test_calc.py b/test_calc.py\n",
+        "--- a/test_calc.py\n",
+        "+++ b/test_calc.py\n",
+        "@@ -1,2 +1,3 @@\n",
+        "+# checked by the agent\n",
+        " import unittest\n",
+        " from calc import add\n",
+    );
+
+    /// The dataset's hidden test patch: adds the test that grades the task.
+    const EXTRA_TEST_PATCH: &str = concat!(
+        "diff --git a/test_extra.py b/test_extra.py\n",
+        "new file mode 100644\n",
+        "--- /dev/null\n",
+        "+++ b/test_extra.py\n",
+        "@@ -0,0 +1,6 @@\n",
+        "+import unittest\n",
+        "+from calc import add\n",
+        "+\n",
+        "+class ExtraTest(unittest.TestCase):\n",
+        "+    def test_adds_ones(self):\n",
+        "+        self.assertEqual(add(1, 1), 2)\n",
+    );
+
+    /// Leaves the bug alone and writes its own passing copy of that test.
+    const SHADOWS_TEST_PATCH: &str = concat!(
+        "diff --git a/test_extra.py b/test_extra.py\n",
+        "new file mode 100644\n",
+        "--- /dev/null\n",
+        "+++ b/test_extra.py\n",
+        "@@ -0,0 +1,5 @@\n",
+        "+import unittest\n",
+        "+\n",
+        "+class ExtraTest(unittest.TestCase):\n",
+        "+    def test_adds_ones(self):\n",
+        "+        self.assertTrue(True)\n",
+    );
+
+    #[tokio::test]
+    async fn swe_scoring_restores_the_grading_tests() {
+        let tmp = TempDir::new().unwrap();
+        calc_repo(tmp.path());
+        let calc_row = |instance_id: &str| {
+            json!({
+                "instance_id": instance_id,
+                "repo_path": "repo",
+                "test_cmd": "python3 -m unittest test_calc.py",
+                "test_files": ["test_calc.py"]
+            })
+        };
+        let dataset = tmp.path().join("dataset.jsonl");
+        write_jsonl(
+            &dataset,
+            &[
+                calc_row("rewrites-test"),
+                calc_row("fixes-code"),
+                json!({
+                    "instance_id": "shadows-test",
+                    "repo_path": "repo",
+                    "test_cmd": "python3 -m unittest test_extra.py",
+                    "test_patch": EXTRA_TEST_PATCH
+                }),
+            ],
+        );
+        let predictions = tmp.path().join("predictions.jsonl");
+        write_jsonl(
+            &predictions,
+            &[
+                json!({ "instance_id": "rewrites-test", "model_patch": REWRITES_TEST }),
+                json!({ "instance_id": "fixes-code", "model_patch": FIXES_AND_TOUCHES_TEST }),
+                json!({ "instance_id": "shadows-test", "model_patch": SHADOWS_TEST_PATCH }),
+            ],
+        );
+
+        let report = run_swe_bench(SweBenchOptions {
+            dataset: Some(dataset),
+            batch_size: 3,
+            predictions: Some(predictions),
+            record_learning: false,
+            ..smoke_options(tmp.path(), SweAgentMode::PredictionFile)
+        })
+        .await
+        .unwrap();
+
+        let row = |id: &str| {
+            report
+                .instances
+                .iter()
+                .find(|candidate| candidate.instance_id == id)
+                .unwrap()
+        };
+        // Graded by its own rewritten test, this patch used to resolve.
+        let rewrites = row("rewrites-test");
+        assert!(rewrites.apply && !rewrites.resolved);
+        assert_eq!(rewrites.touched_tests, ["test_calc.py"]);
+        // A real fix still resolves, and its edit to the test is recorded.
+        let fixes = row("fixes-code");
+        assert!(fixes.resolved);
+        assert_eq!(fixes.touched_tests, ["test_calc.py"]);
+        // The hidden test patch replaces the agent's own copy of the test.
+        let shadows = row("shadows-test");
+        assert!(shadows.apply && !shadows.resolved);
+        assert_eq!(shadows.touched_tests, ["test_extra.py"]);
+
+        assert_eq!(report.resolved, 1);
+        assert_eq!(report.touched_tests, 3);
+    }
+
+    #[tokio::test]
+    async fn swe_instances_must_name_their_grading_tests() {
+        let tmp = TempDir::new().unwrap();
+        calc_repo(tmp.path());
+        let dataset = tmp.path().join("dataset.jsonl");
+        let run = |test_files: Value| {
+            let row = json!({
+                "instance_id": "calc",
+                "repo_path": "repo",
+                "test_cmd": "python3 -m unittest test_calc.py",
+                "test_files": test_files
+            });
+            write_jsonl(&dataset, &[row]);
+            run_swe_bench(SweBenchOptions {
+                dataset: Some(dataset.clone()),
+                batch_size: 1,
+                ..smoke_options(tmp.path(), SweAgentMode::Empty)
+            })
+        };
+
+        let err = run(json!([])).await.unwrap_err();
+        assert!(
+            err.to_string().contains("names no grading tests"),
+            "unexpected error: {err:#}"
+        );
+        let err = run(json!(["../calc.py"])).await.unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("not a relative path inside the repo"),
+            "unexpected error: {err:#}"
+        );
     }
 }

@@ -304,9 +304,10 @@ impl CodexAgent {
             .tag("agent", &self.name)
             .tag("failed", "true")
             .build();
+        // No response named a served model (bug-2379dc).
         AgentResult::fail(output).with_usage_obs(UsageObservation {
             source: UsageSource::Unknown,
-            model: Some(self.model.clone()),
+            model: None,
             wall_ms,
             ..Default::default()
         })
@@ -525,14 +526,9 @@ impl Agent for CodexAgent {
             // from the model profile's pricing (`fill_cost_from_profile`).
             cost_usd: None,
             source: UsageSource::ProviderReported,
-            // Prefer the provider-reported model over the configured slug.
-            model: Some(
-                parsed
-                    .model
-                    .clone()
-                    .filter(|model| !model.is_empty())
-                    .unwrap_or_else(|| self.model.clone()),
-            ),
+            // The model the provider reported; `None` when the response
+            // named none, never the configured slug (bug-2379dc).
+            model: parsed.model.clone().filter(|model| !model.is_empty()),
             wall_ms,
         };
 
@@ -780,7 +776,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn usage_obs_falls_back_to_configured_model() {
+    async fn usage_obs_leaves_an_unnamed_model_unknown() {
         // Response without a top-level `model` field.
         let body = serde_json::json!({
             "id": "chatcmpl-nomodel",
@@ -797,7 +793,7 @@ mod tests {
         let result = agent.run(&prompt("hi"), &Context::now()).await;
         assert!(result.success);
         let usage_obs = result.usage_obs.expect("usage_obs populated");
-        assert_eq!(usage_obs.model.as_deref(), Some("gpt-5-codex"));
+        assert_eq!(usage_obs.model, None, "the configured slug is not a report");
     }
 
     #[tokio::test]

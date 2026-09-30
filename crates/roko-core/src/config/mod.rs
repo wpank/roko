@@ -161,6 +161,15 @@ pub enum LoadConfigError {
         /// Each secret field, with where it belongs instead.
         fields: String,
     },
+    /// A secret field's `${VAR}` reference cannot be expanded, as when the
+    /// variable is not set.
+    #[error("{field}: {reason}")]
+    SecretReference {
+        /// The secret field, such as `serve.auth.api_key`.
+        field: String,
+        /// Why the reference cannot be expanded.
+        reason: String,
+    },
     /// A versioned config migration could not reach the current schema.
     #[error("migrate {path}: {message}")]
     Migration {

@@ -408,6 +408,29 @@ impl BackendResponse {
         }
     }
 
+    /// Whether the provider reported this response's usage: an OpenAI-style
+    /// `usage` block ([`Self::extract_usage`] reads it), or a stream-json
+    /// `result` or `assistant` event carrying usage. `Unknown` otherwise:
+    /// its [`Self::extract_usage`] zeros are no measurement (bug-c65bfe).
+    #[must_use]
+    pub fn usage_source(&self) -> crate::usage::UsageSource {
+        let reported = match self {
+            Self::Json(v) => v.get("usage").is_some_and(|usage| !usage.is_null()),
+            Self::StreamJson(events) => events.iter().any(|event| {
+                event.get("usage").is_some_and(|usage| !usage.is_null())
+                    || event
+                        .pointer("/message/usage")
+                        .is_some_and(|usage| !usage.is_null())
+            }),
+            Self::Text(_) => false,
+        };
+        if reported {
+            crate::usage::UsageSource::ProviderReported
+        } else {
+            crate::usage::UsageSource::Unknown
+        }
+    }
+
     /// The model the provider reported serving this response, when it named
     /// one: the top-level `model` of an OpenAI-style, Anthropic or Ollama
     /// response (Gemini's `modelVersion`), or the last model a stream-json

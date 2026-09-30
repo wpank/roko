@@ -81,6 +81,7 @@ fn gemini_tool_loop_agent(
     let mut agent = ToolLoopAgent::new(tool_loop)
         .with_tools(tools)
         .with_name(name)
+        .with_env_passthrough(options.env_passthrough.clone())
         .with_input_messages(options.input_messages.clone())
         .with_multimodal_input_format(MultimodalInputFormat::OpenAi);
     if let Some(prompt) = &options.system_prompt {
@@ -128,6 +129,7 @@ fn gemini_native_tool_loop_agent(
     let mut agent = ToolLoopAgent::new(tool_loop)
         .with_tools(tools)
         .with_name(name)
+        .with_env_passthrough(options.env_passthrough.clone())
         .with_input_messages(options.input_messages.clone())
         .with_multimodal_input_format(MultimodalInputFormat::Gemini);
     if let Some(prompt) = &options.system_prompt {

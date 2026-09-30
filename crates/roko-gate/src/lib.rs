@@ -158,7 +158,7 @@ pub use compile_errors::{
     CompileError, CompileErrorSummary, ErrorCategory, FailureClass, GateFailureAction,
     GateFailureClassification, GateFailureKind, GateFailureRecord, GateRetryPolicy,
     classify_error_code, classify_gate_failure, parse_cargo_json, parse_plain_stderr,
-    render_failure_classification, structured_gate_failure,
+    render_failure_classification, structured_gate_failure, verdict_timed_out,
 };
 pub use composition::{FallbackGate, ParallelGate, VotingGate};
 pub use diff_gate::{DiffAnalysis, DiffGate, DiffPayload, analyze_diff};

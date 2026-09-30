@@ -19,8 +19,9 @@ impl GraphTaskDispatcher {
     /// run fail-fast; the rest are reported as skipped. A step that fails
     /// while sibling tasks edit the same working tree waits for them to
     /// settle and re-runs once; only that result counts (`sibling_settle`).
-    /// The caller releases any worktree lease and settles episode feedback
-    /// with the result.
+    /// A step that ran out of time is recorded as a timeout. The caller
+    /// releases any worktree lease and settles episode feedback with the
+    /// result.
     #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
     pub(super) async fn settle_task_verification(
         &self,
@@ -58,6 +59,9 @@ impl GraphTaskDispatcher {
             let gate_ctx = Context::now();
 
             let mut failures: Vec<String> = Vec::new();
+            // Whether a failed step ran out of time. Its verdict says so even
+            // when the step's authored `fail_msg` hides it in `failures`.
+            let mut timed_out = false;
             // P2-LRN-6 Loop 1: Collect (phase, passed) for each verify step so
             // we can feed outcomes into GateThresholds::observe after all steps
             // complete (including any post-auto-fix re-run).
@@ -278,6 +282,7 @@ impl GraphTaskDispatcher {
                         })
                         .unwrap_or_default();
 
+                    timed_out |= roko_gate::verdict_timed_out(&verdict);
                     failures.push(format!(
                         "{step_label} (`{cmd}`): {fail_msg}\n{detail_snippet}",
                         cmd = step.command,
@@ -327,6 +332,7 @@ impl GraphTaskDispatcher {
                         let mut retry_failures: Vec<String> = Vec::new();
                         let mut retry_step_outcomes: Vec<(String, bool)> = Vec::new();
                         let mut retry_skipped: Vec<String> = Vec::new();
+                        let mut retry_timed_out = false;
                         for (i, step) in task.verify.iter().enumerate() {
                             let step_label = verify_step_label(i, &step.phase);
                             if !retry_failures.is_empty() {
@@ -383,6 +389,7 @@ impl GraphTaskDispatcher {
                                         lines[start..].join("\n")
                                     })
                                     .unwrap_or_default();
+                                retry_timed_out |= roko_gate::verdict_timed_out(&retry_verdict);
                                 retry_failures.push(format!(
                                     "{step_label} (`{cmd}`): {fail_msg}\n{detail_snippet}",
                                     cmd = step.command,
@@ -393,6 +400,7 @@ impl GraphTaskDispatcher {
                         // the post-fix results. The retry outcomes are the ground
                         // truth for gate threshold EMA updates (P2-LRN-6 Loop 1).
                         failures = retry_failures;
+                        timed_out = retry_timed_out;
                         step_outcomes = retry_step_outcomes;
                         skipped_steps = retry_skipped;
                         blocked_by_sibling = None;
@@ -815,6 +823,13 @@ impl GraphTaskDispatcher {
                     let raw_for_classification = failures.join("\n---\n");
                     let classification =
                         roko_gate::classify_gate_failure("graph-verify", &raw_for_classification);
+                    // The failed step's verdict, not the failure text, says
+                    // whether it ran out of time.
+                    let classification = if timed_out {
+                        classification.timed_out()
+                    } else {
+                        classification
+                    };
                     let record = roko_gate::GateFailureRecord::from_classification(
                         &spec.plan_id,
                         &task.id,
@@ -1703,5 +1718,59 @@ printf '%s\n' '{"type":"result","session_id":"s","model":"claude-sonnet-4-6","to
         );
         assert_eq!(verify_step_label(2, ""), "verify[2]");
         assert_eq!(verify_step_label(0, "compile"), "verify[0:compile]");
+    }
+
+    /// Every record of the gate-failure log at `path`, once `expected` have
+    /// landed from the background writer.
+    async fn gate_failure_records(
+        path: &Path,
+        expected: usize,
+    ) -> Vec<roko_gate::GateFailureRecord> {
+        for _ in 0..600 {
+            let records: Vec<roko_gate::GateFailureRecord> = std::fs::read_to_string(path)
+                .unwrap_or_default()
+                .lines()
+                .filter_map(|line| serde_json::from_str(line).ok())
+                .collect();
+            if records.len() >= expected {
+                return records;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        panic!("no gate-failure record reached {}", path.display());
+    }
+
+    /// A verify step cut off at its `timeout_ms` is recorded as a timeout in
+    /// `gate-failures.jsonl`, though its authored `fail_msg` stands in for
+    /// the step's own "timed out" reason in the failure text. `roko diagnose`
+    /// counts the attempt as timed out from that record (its test of the same
+    /// name).
+    #[tokio::test]
+    async fn a_verify_step_timeout_is_recorded_as_a_timeout() {
+        let temp = tempdir().expect("tempdir");
+        let gate_failures = temp.path().join(".roko/learn/gate-failures.jsonl");
+        let feedback = GraphFeedbackContext {
+            gate_failures_path: Some(gate_failures.clone()),
+            ..GraphFeedbackContext::default()
+        };
+        let (dispatcher, mut task) =
+            make_test_dispatcher(&temp, VERIFY_PROVIDER, no_auto_fix, feedback).await;
+        task.verify = vec![crate::task_parser::VerifyStep {
+            fail_msg: Some("the check failed".to_string()),
+            timeout_ms: 200,
+            ..verify_step("structural", "sleep 30")
+        }];
+
+        let error = dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &CellContext::new())
+            .await
+            .expect_err("the step runs out of time");
+        assert!(matches!(error, RokoError::Verify { .. }), "{error}");
+
+        let records = gate_failure_records(&gate_failures, 1).await;
+        assert_eq!(records.len(), 1);
+        let record = &records[0];
+        assert_eq!(record.task_id, task.id);
+        assert_eq!(record.failure_kind, roko_gate::GateFailureKind::Timeout);
     }
 }

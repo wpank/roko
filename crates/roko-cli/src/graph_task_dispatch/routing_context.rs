@@ -1,6 +1,11 @@
 //! Model routing inputs of a Graph task dispatch: the cheap helper model, cross-cut
 //! and dream routing bias, the agent contract, and the routing context.
 
+use roko_core::TaskDomain;
+use roko_core::tool::ToolRegistry;
+use roko_std::StaticToolRegistry;
+use roko_std::roles::domain_profile;
+
 use super::*;
 
 /// Thin `Agent` adapter that forwards a one-shot prompt through the shared
@@ -291,9 +296,34 @@ pub(super) fn effective_agent_contract(task_role: &str, task: &TaskDef) -> Agent
         .allowed_tools
         .as_deref()
         .filter(|tools| !tools.is_empty());
+    let denied = task_denied_tools(task, task_allowed_tools);
     AgentContract::load_for_role_with_mode(task_role, ContractLoadMode::RestrictedFallback)
         .unwrap_or_else(|_| AgentContract::restricted(task_role))
-        .with_tool_restrictions(task_allowed_tools, task.denied_tools.as_deref())
+        .with_tool_restrictions(task_allowed_tools, Some(denied.as_slice()))
+}
+
+/// The tools a task is denied: its own `denied_tools`, and the built-in tools
+/// that belong to a domain other than the task's
+/// ([`roko_std::roles::DomainToolProfile::offers`]) unless it names them in
+/// `allowed_tools`. A task without a `domain` counts as coding, so it is not
+/// offered `chain.transfer`, `chain.swap` or any other `chain.*` tool.
+fn task_denied_tools(task: &TaskDef, task_allowed: Option<&[String]>) -> Vec<String> {
+    let domain = task.domain.as_ref().map_or("coding", TaskDomain::label);
+    let profile = domain_profile(domain);
+    let named = task_allowed.unwrap_or_default();
+    let registry = StaticToolRegistry::new();
+    let other_domains = registry
+        .all()
+        .iter()
+        .map(|tool| tool.name.as_str())
+        .filter(|&tool| !profile.offers(tool) && !named.iter().any(|name| name == tool))
+        .map(str::to_string);
+    task.denied_tools
+        .iter()
+        .flatten()
+        .cloned()
+        .chain(other_domains)
+        .collect()
 }
 
 pub(super) fn upstream_outputs(input: &[Signal]) -> Vec<(String, Vec<String>)> {
@@ -475,6 +505,54 @@ mod tests {
         batch_ctx, cli_provider, make_bare_dispatcher, make_batch_dispatcher, make_spec,
         make_task_def, model,
     };
+
+    /// The built-in tools `task`'s agent contract lets its agent use.
+    fn offered_tools(task: &TaskDef) -> Vec<String> {
+        let contract = effective_agent_contract("implementer", task);
+        let registry = StaticToolRegistry::new();
+        registry
+            .all()
+            .iter()
+            .map(|tool| tool.name.clone())
+            .filter(|name| contract.permits_tool(name))
+            .collect()
+    }
+
+    /// gap-585bd2: the task's domain decides whether the `chain.*` tools,
+    /// `chain.transfer` and `chain.swap` among them, are offered.
+    #[test]
+    fn a_coding_task_is_offered_no_chain_tools() {
+        let mut task = make_task_def("focused");
+        for domain in [None, Some(TaskDomain::Code), Some(TaskDomain::Research)] {
+            task.domain = domain;
+            let tools = offered_tools(&task);
+            let chain: Vec<&String> = tools
+                .iter()
+                .filter(|name| name.starts_with("chain."))
+                .collect();
+            assert!(chain.is_empty(), "{:?} is offered {chain:?}", task.domain);
+            assert!(tools.iter().any(|name| name == "read_file"), "{tools:?}");
+        }
+
+        // A chain-domain task keeps them, and a coding task gets the one it
+        // names. The catalog holds them when roko-std's `chain` feature is on.
+        if cfg!(feature = "chain") {
+            task.domain = Some(TaskDomain::Chain);
+            let tools = offered_tools(&task);
+            for tool in ["chain.balance", "chain.get_pool_info", "chain.transfer"] {
+                assert!(
+                    tools.iter().any(|name| name == tool),
+                    "{tool} missing: {tools:?}"
+                );
+            }
+
+            task.domain = Some(TaskDomain::Code);
+            task.allowed_tools = Some(vec!["read_file".to_string(), "chain.balance".to_string()]);
+            let mut tools = offered_tools(&task);
+            tools.sort();
+            assert_eq!(tools, ["chain.balance", "read_file"]);
+        }
+    }
 
     /// gap-9cbf35: a plan task without a `model_hint` runs on the model of
     /// its `[routing.ladder]` start rung.

@@ -134,6 +134,8 @@ pub mod shadow;
 pub mod skill_library;
 pub mod task_metric;
 pub mod telemetry;
+/// Turn caps and attempt timeouts per task tier, learned from settled attempts.
+pub mod tier_limits;
 /// P3-24: Timeout auto-adjustment tracker and EMA-based suggestions.
 pub mod timeout_tracker;
 /// Verdict-aware scoring and routing history for gate-verdict re-entry (GATE-05).

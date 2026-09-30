@@ -367,8 +367,16 @@ url = "https://example.com/.well-known/jwks.json"
 expected_issuer = "example.com"
 ```
 
-An empty `jwks_providers` list uses Privy's built-in endpoint for backwards
-compatibility.
+An empty `jwks_providers` list uses Privy's per-app endpoint for
+`privy_app_id`, `https://auth.privy.io/api/v1/apps/<privy_app_id>/jwks.json`
+(`jwks::privy_jwks_url`). Privy's generic `/.well-known/jwks.json` returns 404.
+A non-empty list replaces that default, so list the Privy endpoint as well when
+you add another provider.
+
+Missing or stale keys stop JWT sign-in, but they do not make the server
+unhealthy: `GET /api/health` reports them in its `jwks` section and returns
+`degraded` with HTTP 200, so a liveness probe does not restart the server during
+an identity-provider outage.
 
 ---
 
@@ -527,9 +535,10 @@ key_hash = "..."
 scope = "plan:write"
 created_at = "2026-09-01T00:00:00Z"
 
-# Additional JWKS providers.
+# JWKS providers. When set, they replace the default Privy endpoint for
+# privy_app_id, so keep it in the list.
 [[serve.auth.jwks_providers]]
-url = "https://auth.privy.io/.well-known/jwks.json"
+url = "https://auth.privy.io/api/v1/apps/cmhw01vut003tjx0d5lmqc8zs/jwks.json"
 expected_issuer = "privy.io"
 ```
 

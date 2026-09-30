@@ -19,7 +19,9 @@
 //! - the executor handed the checkout on for the gate to settle, and no
 //!   workspace provider is injected (`resources.workspaces` is `None`).
 //!
-//! A pipeline in which no rung ran (every rung skipped) fails.
+//! A pipeline in which no rung ran (every rung skipped) fails. A failed gate
+//! is an error, as every cell that fails reports it, so the task fails: the
+//! gate's `Success` edge fires only for a gate that passed.
 //!
 //! A checkout handed on is the gate's to settle (gap-3b5361): an attempt that
 //! passes, and whose settled verdict lets its work land, is accepted onto its
@@ -39,7 +41,7 @@ use roko_core::{
 use tracing::{info, warn};
 
 use crate::cell::{Cell, CellContext, CellVersion};
-use crate::cells::task_executor::{TaskAttempt, TaskGateVerdict};
+use crate::cells::task_executor::{TaskAttempt, TaskGateVerdict, truncate_utf8};
 use crate::workspace::{
     ExecutionWorkspaceProvider, WorkspaceAcceptRequest, WorkspaceAcceptance, WorkspaceLease,
     WorkspaceReleasePolicy,
@@ -53,8 +55,8 @@ use crate::workspace::{
 /// must pass.
 const CANONICAL_RUNGS: &[&str] = &["compile", "lint", "test"];
 
-/// Output tag explaining a verdict that no rung produced.
-const GATE_EVIDENCE_TAG: &str = "gate.evidence";
+/// Bytes of each failed rung's evidence kept in a failed gate's error.
+const FAILURE_EVIDENCE_MAX_BYTES: usize = 400;
 
 /// Plan-topology gate Cell.
 ///
@@ -290,11 +292,16 @@ impl PlanGateCell {
                         info!(rung, "PlanGateCell: rung passed");
                     }
 
+                    // A failed rung without evidence keeps its reasons.
+                    let evidence = verdict.evidence.or_else(|| {
+                        (!verdict.failed_reasons.is_empty())
+                            .then(|| verdict.failed_reasons.join("; "))
+                    });
                     rung_results.push(RungResult {
                         rung_name: verdict.rung,
                         passed: verdict.passed,
                         score: if verdict.passed { 1.0 } else { 0.0 },
-                        evidence: verdict.evidence,
+                        evidence,
                     });
                 }
                 Err(err) => {
@@ -329,6 +336,36 @@ impl PlanGateCell {
             rung_results,
             overall_score,
         }
+    }
+
+    /// Why `attempt` failed the gate `result` describes: the failed rungs and
+    /// their evidence, or that no rung ran.
+    fn failure_summary(&self, attempt: &TaskAttempt, result: &GateResult) -> String {
+        let reasons = if result.rung_results.is_empty() {
+            format!(
+                "no gate rung ran: all {} rungs were skipped",
+                CANONICAL_RUNGS.len()
+            )
+        } else {
+            result
+                .rung_results
+                .iter()
+                .filter(|rung| !rung.passed)
+                .map(|rung| match rung.evidence.as_deref() {
+                    Some(evidence) => format!(
+                        "{}: {}",
+                        rung.rung_name,
+                        truncate_utf8(evidence, FAILURE_EVIDENCE_MAX_BYTES)
+                    ),
+                    None => rung.rung_name.clone(),
+                })
+                .collect::<Vec<_>>()
+                .join("; ")
+        };
+        format!(
+            "attempt {} of task `{}` failed the plan gate: {reasons}",
+            attempt.attempt, self.task_id
+        )
     }
 
     /// Convert a `SharedGateError` into a failed `RungResult` with diagnostic
@@ -407,15 +444,32 @@ impl Cell for PlanGateCell {
         let gate_result = self
             .run_rungs(evaluator.as_ref(), &attempt, worktree, run_id)
             .await;
-        let all_passed = gate_result.passed;
-        let nothing_ran = gate_result.rung_results.is_empty();
+        let passed = gate_result.passed;
 
         info!(
             task_id = %self.task_id,
-            passed = gate_result.passed,
+            passed,
             score = gate_result.overall_score,
             "PlanGateCell: gate pipeline complete"
         );
+
+        // A handed-on checkout is settled either way: accepted after a pass,
+        // kept for post-mortem after a failure.
+        let accepted = match handed_on {
+            Some((lease, workspaces)) => {
+                self.settle_handed_on(&attempt, lease, workspaces, passed, &input, run_id)
+                    .await?
+            }
+            None => None,
+        };
+        // A failed gate fails its task: the cell errors, as every cell that
+        // fails does, so the gate's `Success` edge does not fire (bug-8835bc).
+        if !passed {
+            return Err(RokoError::Verify {
+                gate: self.cell_id().to_owned(),
+                message: self.failure_summary(&attempt, &gate_result),
+            });
+        }
 
         let body = Body::from_json(&gate_result).map_err(|e| {
             RokoError::Invalid(format!("PlanGateCell: failed to serialize GateResult: {e}"))
@@ -431,12 +485,9 @@ impl Cell for PlanGateCell {
             }
         }
 
-        // The attempt as settled here: a handed-on checkout is accepted or
-        // kept, and no longer handed on.
-        if let Some((lease, workspaces)) = handed_on {
-            let accepted = self
-                .settle_handed_on(&attempt, lease, workspaces, all_passed, &input, run_id)
-                .await?;
+        // The attempt as settled here: a handed-on checkout is accepted, and
+        // no longer handed on.
+        if attempt.lease.is_some() {
             TaskAttempt {
                 lease: None,
                 accepted,
@@ -445,19 +496,9 @@ impl Cell for PlanGateCell {
             .stamp(std::slice::from_mut(&mut output));
         }
 
-        // Tag with gate outcome for conditional edges.
         output
             .tags
-            .insert("gate.passed".to_owned(), all_passed.to_string());
-        if nothing_ran {
-            output.tags.insert(
-                GATE_EVIDENCE_TAG.to_owned(),
-                format!(
-                    "no gate rung ran: all {} rungs were skipped",
-                    CANONICAL_RUNGS.len()
-                ),
-            );
-        }
+            .insert("gate.passed".to_owned(), passed.to_string());
         output.id = output.content_hash();
 
         Ok(vec![output])
@@ -703,23 +744,23 @@ mod tests {
         assert_eq!(output[0].tag("workspace.attempt"), Some("2"));
     }
 
+    /// bug-8835bc: a failed rung fails the gate with an error that names
+    /// the rung and its reasons.
     #[tokio::test]
     async fn test_rung_fails() {
         let cell = make_cell();
         let ctx = ctx_with_gates(FailTestEvaluator);
         let (_worktree, input) = gated_attempt();
-        let output = cell.execute(input, &ctx).await.unwrap();
+        let error = cell.execute(input, &ctx).await.unwrap_err();
 
-        let result = decode_gate_result(&output[0]);
-        assert!(!result.passed);
-        assert_eq!(result.failed_rung_names(), vec!["test"]);
-        assert_eq!(result.passed_count(), 2);
-        assert_eq!(result.failed_count(), 1);
-
-        assert_eq!(
-            output[0].tags.get("gate.passed").map(String::as_str),
-            Some("false")
+        assert!(
+            matches!(&error, RokoError::Verify { gate, .. } if gate == "plan.gate"),
+            "{error:?}"
         );
+        let message = error.to_string();
+        assert!(message.contains("attempt 2 of task `task-1`"), "{message}");
+        assert!(message.contains("test: 3 test failures"), "{message}");
+        assert!(!message.contains("compile"), "{message}");
     }
 
     #[tokio::test]
@@ -727,19 +768,13 @@ mod tests {
         let cell = make_cell();
         let ctx = ctx_with_gates(ErrorEvaluator);
         let (_worktree, input) = gated_attempt();
-        let output = cell.execute(input, &ctx).await.unwrap();
+        let message = cell.execute(input, &ctx).await.unwrap_err().to_string();
 
-        let result = decode_gate_result(&output[0]);
-        assert!(!result.passed);
-        // All 3 rungs should have error evidence.
-        assert_eq!(result.rung_results.len(), 3);
-        assert!(result.rung_results.iter().all(|r| !r.passed));
-        assert!(result.rung_results.iter().all(|r| {
-            r.evidence
-                .as_deref()
-                .unwrap_or("")
-                .contains("evaluator crash")
-        }));
+        // All 3 rungs failed with the evaluator's error as evidence.
+        for rung in CANONICAL_RUNGS {
+            let evidence = format!("{rung}: gate evaluation error: evaluator crash");
+            assert!(message.contains(&evidence), "{message}");
+        }
     }
 
     #[tokio::test]
@@ -760,18 +795,9 @@ mod tests {
         let cell = make_cell();
         let ctx = ctx_with_gates(SkipAllEvaluator);
         let (_worktree, input) = gated_attempt();
-        let output = cell.execute(input, &ctx).await.unwrap();
+        let message = cell.execute(input, &ctx).await.unwrap_err().to_string();
 
-        let result = decode_gate_result(&output[0]);
-        assert!(!result.passed);
-        assert!(result.rung_results.is_empty()); // skipped rungs excluded
-        assert_eq!(result.overall_score, 0.0);
-        assert_eq!(
-            output[0].tags.get("gate.passed").map(String::as_str),
-            Some("false")
-        );
-        let evidence = output[0].tag("gate.evidence").unwrap_or_default();
-        assert!(evidence.contains("no gate rung ran"), "{evidence}");
+        assert!(message.contains("no gate rung ran"), "{message}");
     }
 
     /// bug-50caf2: every rung runs in the checkout the executor named, as
@@ -855,11 +881,12 @@ mod tests {
         let (provider, lease, input) = handed_on_attempt(worktrees.path()).await;
         let ctx = ctx_with_gates_and_workspaces(FailTestEvaluator, &provider);
 
-        let output = make_cell().execute(input, &ctx).await.unwrap();
+        let error = make_cell().execute(input, &ctx).await.unwrap_err();
 
-        assert_eq!(output[0].tag("gate.passed"), Some("false"));
-        let settled = TaskAttempt::from_signals(&output).expect("attempt");
-        assert_eq!((settled.lease, settled.accepted), (None, None));
+        assert!(
+            error.to_string().contains("failed the plan gate"),
+            "{error}"
+        );
         assert!(provider.active_leases().is_empty());
         assert!(matches!(
             provider.reconcile(&lease).await.unwrap(),

@@ -3,13 +3,15 @@ id = "gap-5a6e01"
 kind = "gap"
 title = "Turn caps and timeouts set from each tier's p95 over successful tasks"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p2"
 goal = "golden-path"
 size = "M"
 subsystem = ["roko-learn/tier_limits", "roko-cli/graph_task_dispatch", "roko-core/config"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-30
+last_verified_rev = "8a88c6267"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e10"
 discovered_from = "tmp/cybernetic-harness/evidence/field/CASES.md (CASE-004: turn caps and timeouts set by guesswork); tldr/05 P1 #14"
 anchors = ["crates/roko-cli/src/graph_task_dispatch/turn_policy.rs::task_turn_limit", "crates/roko-cli/src/graph_task_dispatch/turn_policy.rs::base_attempt_timeout_ms", "crates/roko-core/src/config/gates.rs::PipelineConfig", "crates/roko-learn/src/tier_limits.rs"]
@@ -80,3 +82,5 @@ carry turns and wall time but not the tier.
 - Turn caps bind non-Claude providers only once gap-a791b4 lands; timeouts bind every provider.
 - Shadow first, as D8 (DECISIONS.md) sets for controllers.
 - **Hot file:** `graph_task_dispatch.rs` (two small functions).
+- 2026-09-30 (wk-tiers): implemented on `work/gap-1d1fa6` at `a9661848c`; cargo verification deferred to the batch check (no cargo was allowed for this item).
+- Not wired yet, so the first Done-when box holds only at the function level: dispatch builds no `LearnedTierLimits`. The calls to `task_turn_limit` and `base_attempt_timeout_ms` are in `graph_task_dispatch.rs` and `streaming.rs`, and `attempt.rs` does not fill `AttemptOpenRecord.tier`; batch 12 owns all three. Until then, tiers come from `learn/costs.jsonl` by attempt key, and config doctor lists `pipeline.learned_limits` as inert. The wiring is planned with gap-460230, after batch 12 merges.

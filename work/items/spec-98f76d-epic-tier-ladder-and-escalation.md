@@ -90,7 +90,7 @@ edits hot files: one writer per file at a time.
 - [ ] gap-460230: Verify-then-escalate: two failed attempts move a task one rung up the ladder
 - [ ] gap-b62e95: The router's context treats every retry as a first attempt (existing item)
 - [ ] gap-e21595: Integration test C8: the ladder routes by tier and escalates after two failures
-- [ ] bug-a6b433: roko-learn's complexity_bucket reads complex as architectural, while TaskTier reads it as integrative
+- [x] bug-a6b433: roko-learn's complexity_bucket reads complex as architectural, while TaskTier reads it as integrative
 - [ ] The epic's `[[verify]]` command (test C8) passes on the merged branch.
 
 ## Notes

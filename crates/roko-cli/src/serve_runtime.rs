@@ -1089,12 +1089,14 @@ fn ensure_git_repo_for_runner(workdir: &Path) {
             "--allow-empty",
         ][..],
     ] {
-        let _ = std::process::Command::new("git")
-            .args(args)
+        let mut git = std::process::Command::new("git");
+        git.args(args)
             .current_dir(workdir)
             .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status();
+            .stderr(std::process::Stdio::null());
+        // The commit runs global git hooks: no provider key reaches them.
+        roko_core::child_env::CredentialScrub::default().apply(&mut git);
+        let _ = git.status();
     }
 }
 

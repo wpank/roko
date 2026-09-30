@@ -2536,6 +2536,7 @@ const KNOWN_META_FIELDS: &[&str] = &[
     "max_parallel",
     "estimated_total_minutes",
     "skip_enrichment",
+    "workspace_rungs",
 ];
 
 /// Required field names for the `[meta]` section.

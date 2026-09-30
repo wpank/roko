@@ -148,6 +148,19 @@ pub enum LoadConfigError {
         /// Human-readable validation failure.
         message: String,
     },
+    /// A config file that agents may read holds a secret, which belongs in
+    /// the environment instead, such as `ROKO__SERVE__AUTH__API_KEY` in
+    /// `.roko/.env`.
+    #[error(
+        "{path} holds secrets that agents could read: {fields}. \
+         `roko config set <field> <value>` stores one in .roko/.env and removes it from {path}"
+    )]
+    SecretInConfig {
+        /// Config file path.
+        path: std::path::PathBuf,
+        /// Each secret field, with where it belongs instead.
+        fields: String,
+    },
     /// A versioned config migration could not reach the current schema.
     #[error("migrate {path}: {message}")]
     Migration {

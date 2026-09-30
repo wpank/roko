@@ -10,6 +10,8 @@ use std::time::Duration;
 
 use crate::harness::{HarnessProbe, ProbeError};
 use crate::process::ResourceLimits;
+use roko_core::agent::ProviderKind;
+use roko_core::child_env::CredentialScrub;
 use roko_core::config::provider::ProviderNetworkPolicy;
 
 use crate::harness::probe_runner::run_probe_command;
@@ -56,7 +58,8 @@ async fn probe_hermes_inner(
     timeout: Duration,
 ) -> Result<HarnessProbe, ProbeError> {
     // Step 1: Check binary exists via `<binary> --version`.
-    let output = run_probe_command(binary, ["--version"], limits, timeout)
+    let scrub = CredentialScrub::for_kind(ProviderKind::Hermes);
+    let output = run_probe_command(binary, ["--version"], limits, timeout, &scrub)
         .await
         .map_err(|error| match error {
             ProbeError::Io(error) => ProbeError::Io(std::io::Error::new(
@@ -130,7 +133,8 @@ async fn resolve_binary_path(
     limits: Option<&ResourceLimits>,
     timeout: Duration,
 ) -> Option<PathBuf> {
-    let output = run_probe_command("which", [binary], limits, timeout)
+    let scrub = CredentialScrub::for_kind(ProviderKind::Hermes);
+    let output = run_probe_command("which", [binary], limits, timeout, &scrub)
         .await
         .ok()?;
 

@@ -18,6 +18,10 @@ attempt; a runner that classes its attempts accounts for all of the run's spend 
 costs $0, and a class holding an attempt of unknown cost is null. The direct and CLI runners record neither, so
 their records carry nulls.
 
+`visible` is the census's clean rerun of the visible checks, which never meets a flake. In a run with `flaky_verify`
+it also carries what the visible-verify wrapper logged of the arm's own visible checks (`vb_verify`): `verify_runs`
+(null when no wrapper ran), `flakes` (each injected failure's run number and time) and `flake_injected`.
+
 `config_hash` and `record_id` are `sha256:` digests of canonical JSON (sorted keys, no whitespace). S01 §4.7 wants
 BLAKE3 `b3:` digests from `driver/fingerprint.py` with its golden vectors; neither exists yet, and the stdlib has
 no BLAKE3, so the prefix says which algorithm made each value. The config holds no secret values (API keys are
@@ -25,7 +29,7 @@ named by their environment variable), so nothing needs redacting.
 
 API:
     build(*, experiment_id, run_id, arm_id, seed, head, billed, config_hash, snapshot_id, suite, stream,
-          materialized, outcome, result, final, archived, transcript_ref, meter_usd=None) -> dict
+          materialized, outcome, result, final, archived, transcript_ref, meter_usd=None, verify_log=None) -> dict
     append(path: Path, record: dict) -> None           # raises RecordError on an invalid record
     canonical_hash(value) -> str; harness_state() -> (sha, dirty); final_status(outcome, census) -> str
     same_model(requested, reported) -> bool
@@ -90,8 +94,10 @@ def final_status(outcome: harness.TaskOutcome, result: census.CensusResult) -> s
 def build(*, experiment_id: str, run_id: str, arm_id: str, seed: int, head: tuple[str, bool], billed: bool,
           config_hash: str, snapshot_id: str, suite: dict, stream: dict, materialized: materialize.Materialized,
           outcome: harness.TaskOutcome, result: census.CensusResult, final: archive.Final | None,
-          archived: archive.Archive | None, transcript_ref: str | None, meter_usd: float | None = None) -> dict:
+          archived: archive.Archive | None, transcript_ref: str | None, meter_usd: float | None = None,
+          verify_log: list[dict] | None = None) -> dict:
     manifest = materialized.manifest
+    runs = verify_log or []  # the visible-verify wrapper's log of the arm's visible check runs (vb_verify)
     task = {"family": manifest["family"], "instance_id": manifest["instance_id"], "ladder": manifest["ladder"],
             "latent_version": manifest["latent_version"], "spec_variant": materialized.spec_variant,
             "is_honeypot": manifest["is_honeypot"]}
@@ -114,8 +120,10 @@ def build(*, experiment_id: str, run_id: str, arm_id: str, seed: int, head: tupl
                       "finished_at": outcome.finished_at, "queue_wait_s": _queue_wait(attempts),
                       "attempts": attempts},
         "visible": {"passed": result.visible_clean == 1, "clean_rerun": result.visible_clean is not None,
-                    "flake_injected": False, "commands": result.visible_commands,
-                    "exit_codes": result.visible_exit_codes},
+                    "flake_injected": any(row["flake"] for row in runs), "commands": result.visible_commands,
+                    "exit_codes": result.visible_exit_codes,
+                    "verify_runs": None if verify_log is None else len(runs),
+                    "flakes": [{"run": row["run"], "at": row.get("at")} for row in runs if row["flake"]]},
         "vs": {"label": result.label, "unknown": result.unknown, "checks": result.checks,
                "truth_suite_version": manifest["truth_suite"]["version"], "failed": failed,
                "verifier_version": (result.hidden_output or {}).get("verifier_version"),

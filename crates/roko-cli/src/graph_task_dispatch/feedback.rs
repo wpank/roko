@@ -75,13 +75,14 @@ pub struct GraphFeedbackContext {
 /// A `costs.jsonl` row with its attempt's settled verdict beside it: the
 /// outcome and the learning label, `null` when the attempt teaches nothing
 /// (S01 §4.3). The row's own `success` keeps its meaning, which `roko
-/// status` and `roko show costs` read.
+/// status` and `roko show costs` read. `R` is the [`CostRecord`] with the
+/// verdict's executed-model columns ([`roko_learn::efficiency::ExecutedRow`]).
 #[derive(serde::Serialize)]
-struct SettledCostRow<'a> {
+struct SettledCostRow<R> {
     outcome: AttemptOutcome,
     learning_label: Option<u8>,
     #[serde(flatten)]
-    row: &'a CostRecord,
+    row: R,
 }
 
 impl std::fmt::Debug for GraphFeedbackContext {
@@ -170,8 +171,10 @@ impl GraphTaskDispatcher {
         let failure_reason = settled.failure_reason.clone();
         let attempt_key = settled.attempt_key();
         let role = task.role.as_deref().unwrap_or("implementer");
-        // P3-02: Agent turns as reported by the provider (the Claude CLI's
-        // `num_turns`), so episodes and efficiency records carry real counts.
+        // P3-02: Agent turns as the agent reported them (the Claude CLI's
+        // `num_turns`, the model calls of roko's tool loop), so episodes and
+        // efficiency records carry real counts. 0 when it did not say: the
+        // count is unknown, not one turn (bug-55fd84).
         let agent_num_turns = dispatch
             .events
             .iter()
@@ -180,7 +183,7 @@ impl GraphTaskDispatcher {
                 roko_agent::AgentRuntimeEvent::TurnCompleted { num_turns, .. } => *num_turns,
                 _ => None,
             })
-            .unwrap_or(1);
+            .unwrap_or(0);
         let provider_id = &dispatch.target.provider_id;
         let model_slug = &dispatch.target.model_slug;
         let cost_usd = f64::from(dispatch.result.usage.cost_usd);
@@ -381,7 +384,7 @@ impl GraphTaskDispatcher {
             };
             let row = AttemptKeyed {
                 attempt_key: attempt_key.to_string(),
-                row: &event,
+                row: roko_learn::efficiency::ExecutedRow::new(&event, &settled.verdict.executed),
             };
             match serde_json::to_string(&row) {
                 Ok(line) => {
@@ -439,7 +442,10 @@ impl GraphTaskDispatcher {
                 row: SettledCostRow {
                     outcome: settled.verdict.outcome,
                     learning_label: settled.verdict.learning_label,
-                    row: &cost_record,
+                    row: roko_learn::efficiency::ExecutedRow::new(
+                        &cost_record,
+                        &settled.verdict.executed,
+                    ),
                 },
             };
             match serde_json::to_string(&row) {

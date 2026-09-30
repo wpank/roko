@@ -646,6 +646,7 @@ mod tests {
                     skip_enrichment: false,
                     source_prd: None,
                     failure_policy: None,
+                    workspace_rungs: None,
                 },
                 tasks,
             },

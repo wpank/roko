@@ -5,8 +5,10 @@
 - `plans/<slug>/tasks.toml`: `meta.total = 1`, `max_parallel = 1` and an explicit `skip_enrichment`; one implementer
   task whose description is the spec text every arm gets, with `files` = the manifest's `files_in_scope`,
   `max_retries` (2: Roko's ≤ 3 attempts), `model_hint` = the pinned model, and exactly one `[[task.verify]]`: the
-  manifest's visible check (several are joined with `&&`). The slug is opaque (`vb-<sha256(key)[:10]>`) and the
-  title is the spec's first heading, so Roko's prompt holds nothing the direct arm's task message does not.
+  manifest's visible check (several are joined with `&&`). In a run with `flaky_verify` the check runs through the
+  visible-verify wrapper, as `'<vb-verify>' '<check>'` (`PlanSpec.verify_wrapper`, `vb_verify`), in the verify step
+  and the gate rung alike. The slug is opaque (`vb-<sha256(key)[:10]>`) and the title is the spec's first heading,
+  so Roko's prompt holds nothing the direct arm's task message does not.
 - `roko.toml`: one provider and one model, the pinned one (its key equals its slug), with no fallback models, so
   nothing can fail over (bug-35379d); explicit `[[gates.rungs]]` holding only the visible check, so no path that
   reads rungs falls back to `cargo check` (bug-1410e8); the per-attempt turn cap in `[pipeline.<tier>]`; a budget at
@@ -38,6 +40,7 @@ from __future__ import annotations
 import hashlib
 import math
 import re
+import shlex
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -165,6 +168,7 @@ class PlanSpec:
     tier: str = "focused"
     skip_enrichment: bool = True
     verify_timeout_s: int = 120
+    verify_wrapper: str | None = None  # the visible-verify wrapper's path, in a run with flaky_verify (vb_verify)
 
 
 @dataclass(frozen=True)
@@ -190,6 +194,8 @@ def emit(spec: PlanSpec, workspace: Path) -> Emitted:
         raise PlanEmitError(f"the task tree already has {', '.join(taken)}; Roko's files would mix with the agent's")
     files = _files(spec.files)
     visible = _visible(spec.visible)
+    if spec.verify_wrapper:
+        visible = f"{shlex.quote(spec.verify_wrapper)} {shlex.quote(visible)}"
     for name, value in (("model", spec.model), ("provider", spec.provider), ("tier", spec.tier)):
         if not MODEL_KEY.fullmatch(value):
             raise PlanEmitError(f"{name} {value!r} cannot be a roko.toml key")

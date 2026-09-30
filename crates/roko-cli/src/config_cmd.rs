@@ -394,8 +394,8 @@ pub fn cmd_check_secrets(workdir: &Path) -> Result<()> {
     Err(anyhow!(message))
 }
 
-/// Validate the active `roko.toml` in phases: syntax, config paths, schema,
-/// the core loader's invariants, and semantics.
+/// Validate the active `roko.toml` in phases: syntax, config paths, secrets,
+/// schema, the core loader's invariants, and semantics.
 pub async fn cmd_validate(workdir: &Path) -> Result<()> {
     let paths = resolve_paths(workdir);
     let config_path = validate_config_path(&paths, workdir)?;
@@ -436,6 +436,18 @@ pub async fn cmd_validate(workdir: &Path) -> Result<()> {
         return Err(anyhow!("config validation failed"));
     }
     print_phase_status("Phase 1b: Config path validation", true);
+
+    // Phase 1c: the loader refuses a config file agents can read while it
+    // holds a secret, so validation does too.
+    let secrets = roko_core::config::loader::refuse_readable_secrets(&config_path, &parsed_value);
+    if let Err(err) = secrets {
+        print_phase_status("Phase 1c: Secrets", false);
+        println!("  ✗ {err}");
+        println!();
+        println!("Result: 0 warnings, 1 error");
+        return Err(anyhow!("config validation failed"));
+    }
+    print_phase_status("Phase 1c: Secrets", true);
 
     let config = match toml::from_str::<RokoConfig>(&text) {
         Ok(config) => config,
@@ -505,13 +517,15 @@ pub async fn cmd_validate(workdir: &Path) -> Result<()> {
 
 /// Check prospective `roko.toml` text before a command writes it to `path`.
 ///
-/// Runs every offline check of [`cmd_validate`]: TOML syntax, known config
-/// paths, the schema, the core loader (global config merge, env overrides
-/// and its cross-section invariants) and the provider/model semantic errors.
-/// Only the network probes, which can only warn, are left out. Text that
-/// passes loads in every command and passes `roko config validate`.
+/// Runs every offline check of [`cmd_validate`]: TOML syntax, no secret in a
+/// file agents can read, known config paths, the schema, the core loader
+/// (global config merge, env overrides and its cross-section invariants) and
+/// the provider/model semantic errors. Only the network probes, which can
+/// only warn, are left out. Text that passes loads in every command and
+/// passes `roko config validate`.
 pub fn check_config_text(path: &Path, text: &str) -> Result<()> {
     let value = toml::from_str::<toml::Value>(text).context("invalid TOML")?;
+    roko_core::config::loader::refuse_readable_secrets(path, &value)?;
     let unknown_paths = roko_core::config::loader::validate_known_config_paths(&value);
     if !unknown_paths.is_empty() {
         let messages = unknown_paths
@@ -681,6 +695,9 @@ pub fn cmd_set_secret(name: &str, value: &str) -> Result<()> {
 }
 
 fn write_secret_env_file(path: &Path, name: &str, value: &str) -> Result<()> {
+    if value.contains(['\n', '\r']) {
+        return Err(anyhow!("the value of {name} must fit on one line"));
+    }
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
     }
@@ -690,9 +707,23 @@ fn write_secret_env_file(path: &Path, name: &str, value: &str) -> Result<()> {
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::new(),
         Err(err) => return Err(err).with_context(|| format!("read {}", path.display())),
     };
-    let rendered = upsert_env_assignment(&existing, name, value);
+    let rendered = upsert_env_assignment(&existing, name, &env_file_value(value));
     write_atomic_restricted(path, &rendered)?;
     Ok(())
+}
+
+/// `value` as a `.env` value that dotenv reads back unchanged: bare when it
+/// is plain, else in single quotes, inside which dotenv expands no `$` and
+/// no escape.
+fn env_file_value(value: &str) -> String {
+    if value
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || "-_.:/+=@,".contains(c))
+    {
+        value.to_string()
+    } else {
+        format!("'{}'", value.replace('\'', r"'\''"))
+    }
 }
 
 fn upsert_env_assignment(existing: &str, name: &str, value: &str) -> String {
@@ -821,11 +852,30 @@ pub fn cmd_edit(workdir: &Path, which: EditTarget) -> Result<()> {
 ///
 /// See [`set_config_key`]: the key is written under its v2 name, and a
 /// project `roko.toml` edit that `roko config validate` would reject is
-/// refused.
+/// refused. A secret such as `serve.auth.api_key` goes to `.roko/.env`
+/// instead, whatever the target ([`set_secret_config_key`]).
 pub fn cmd_set(workdir: &Path, target: EditTarget, key: &str, value: &str) -> Result<()> {
     // Only the paths are needed. Loading the config would stop `config set`
     // from repairing a file that no longer loads.
     let paths = resolve_paths(workdir);
+    if let Some(stored) = set_secret_config_key(workdir, &paths, key, value)? {
+        let StoredSecret {
+            key,
+            variable,
+            env_file,
+            removed_from,
+        } = stored;
+        println!(
+            "stored {key} as {variable} in {}, which agents cannot read",
+            env_file.display()
+        );
+        for path in removed_from {
+            println!("removed {key} from {}", path.display());
+        }
+        let summary = format!("config set {key} (stored as {variable} in .roko/.env)");
+        journal_config_set(workdir, &key, summary);
+        return Ok(());
+    }
     let path = match target {
         EditTarget::Global | EditTarget::Auto => paths
             .global
@@ -835,18 +885,119 @@ pub fn cmd_set(workdir: &Path, target: EditTarget, key: &str, value: &str) -> Re
 
     let key = set_config_key(&path, target, key, value)?;
     println!("set {key} = {value} in {}", path.display());
+    journal_config_set(workdir, &key, format!("config set {key} = {value}"));
 
-    // Append an audit entry to the config journal so changes can be traced.
+    Ok(())
+}
+
+/// Append a `config set` entry to the config journal so changes can be traced.
+fn journal_config_set(workdir: &Path, key: &str, summary: String) {
     let journal_path = workdir.join(".roko").join("config-journal.jsonl");
     let change = ConfigChange {
-        section: ConfigSection::Other(key.split('.').next().unwrap_or(&key).to_string()),
-        summary: format!("config set {key} = {value}"),
+        section: ConfigSection::Other(key.split('.').next().unwrap_or(key).to_string()),
+        summary,
     };
     if let Err(err) = hot_reload::append_config_journal(&journal_path, &[change], "config-set") {
         tracing::warn!(error = %err, "failed to append config journal entry");
     }
+}
 
-    Ok(())
+/// A secret that [`set_secret_config_key`] stored in `.roko/.env`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StoredSecret {
+    /// The field, under its v2 name (`serve.auth.api_key`).
+    pub key: String,
+    /// The variable that now sets it (`ROKO__SERVE__AUTH__API_KEY`).
+    pub variable: String,
+    /// The `.roko/.env` file written.
+    pub env_file: PathBuf,
+    /// The config files agents can read that set the field, which no longer do.
+    pub removed_from: Vec<PathBuf>,
+}
+
+/// Store a secret config field in the project's `.roko/.env`, as its `ROKO__`
+/// variable, and remove the field from the config files agents can read.
+///
+/// roko loads `.roko/.env` at startup, and agents cannot read it; the loader
+/// refuses a readable config file that holds a secret. `paths` are the config
+/// files of `workdir`: `roko.toml`, the file `ROKO_CONFIG` names and the
+/// legacy `~/.config/roko/config.toml`. A key file such as
+/// `~/.roko/config.toml` is left as it is. The project is the directory of
+/// its `roko.toml`, or `workdir` when there is none.
+///
+/// Returns `None` when `key = value` is no secret, for example an empty value
+/// or a `${VAR}` reference, so the caller writes it to a config file.
+///
+/// # Errors
+///
+/// A secret that no `ROKO__` variable can set, such as a provider header, a
+/// value that spans lines, or a file that cannot be read or written.
+pub fn set_secret_config_key(
+    workdir: &Path,
+    paths: &ConfigPaths,
+    key: &str,
+    value: &str,
+) -> Result<Option<StoredSecret>> {
+    let key = v2_config_key(key);
+    let mut probe = toml::Value::Table(toml::map::Map::new());
+    set_toml_dotted_key(&mut probe, &key, value).with_context(|| format!("set {key}"))?;
+    let fields = roko_core::config::loader::secret_fields(&probe);
+    let Some(field) = fields.first() else {
+        return Ok(None);
+    };
+    let variable = roko_core::config::loader::env_override_name(field)
+        .filter(|_| *field == key)
+        .ok_or_else(|| {
+            anyhow!(
+                "{field} is a secret, which roko keeps out of the config files agents can \
+                 read: set it in .roko/.env instead, and give a provider header a ${{VAR}} \
+                 reference to it"
+            )
+        })?;
+    let project = paths.project.as_deref().and_then(Path::parent);
+    let env_file = project.unwrap_or(workdir).join(".roko").join(".env");
+    write_secret_env_file(&env_file, &variable, value)?;
+
+    let mut removed_from = Vec::new();
+    for path in [&paths.env_override, &paths.project, &paths.global]
+        .into_iter()
+        .flatten()
+    {
+        if roko_core::child_env::is_key_file(path) || !path.is_file() {
+            continue;
+        }
+        let text = fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
+        if let Some(rest) = remove_toml_key(&text, &key) {
+            roko_fs::atomic_write_bytes(path, rest.as_bytes())
+                .with_context(|| format!("write {}", path.display()))?;
+            removed_from.push(path.clone());
+        }
+    }
+    Ok(Some(StoredSecret {
+        key,
+        variable,
+        env_file,
+        removed_from,
+    }))
+}
+
+/// The TOML document `text` without the dotted `key`, the rest kept as
+/// written. `None` when `text` does not parse or does not set `key`.
+fn remove_toml_key(text: &str, key: &str) -> Option<String> {
+    let mut document = text.parse::<toml_edit::DocumentMut>().ok()?;
+    let segments = key.split('.').collect::<Vec<_>>();
+    remove_table_key(document.as_table_mut(), &segments).then(|| document.to_string())
+}
+
+fn remove_table_key(table: &mut dyn toml_edit::TableLike, segments: &[&str]) -> bool {
+    match segments {
+        [] => false,
+        [leaf] => table.remove(leaf).is_some(),
+        [parent, rest @ ..] => table
+            .get_mut(parent)
+            .and_then(toml_edit::Item::as_table_like_mut)
+            .is_some_and(|child| remove_table_key(child, rest)),
+    }
 }
 
 /// Set `key` to `value` in the config file at `path`, the `target` layer,
@@ -2279,6 +2430,95 @@ scheduled_cron = "invalid cron"
         let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600);
         assert_eq!(fs::read_to_string(&path).unwrap(), "TOKEN=abc123");
+    }
+
+    /// bug-524a3b: `roko config set serve.auth.api_key` wrote the key to a
+    /// config file, `roko.toml` with `--project`, which agents read and the
+    /// loader now refuses. The key goes to `.roko/.env` as the `ROKO__`
+    /// variable that sets it, whatever the target, and leaves the readable
+    /// config files; a key file keeps what it holds.
+    #[test]
+    fn config_set_writes_a_serve_secret_to_the_env_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let workdir = dir.path();
+        let write = |path: &Path, text: &str| {
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, text).unwrap();
+        };
+        let project = workdir.join("roko.toml");
+        write(
+            &project,
+            "# serve settings\n[serve.auth]\nenabled = true\napi_key = \"sk-old\"\n",
+        );
+        let legacy = workdir.join("home/.config/roko/config.toml");
+        write(&legacy, "[serve.auth]\napi_key = \"sk-old\"\n");
+        let key_file = workdir.join("home/.roko/config.toml");
+        write(&key_file, "[serve.auth]\napi_key = \"sk-kept\"\n");
+        let opts = roko_core::config::loader::LoadOptions {
+            merge_global: false,
+            apply_env_overrides: false,
+            apply_hierarchical_env: false,
+            strict_validation: false,
+        };
+        let load = |path: &Path| roko_core::config::loader::load_config_file(path, &opts);
+        assert!(matches!(
+            load(&project),
+            Err(roko_core::config::LoadConfigError::SecretInConfig { .. })
+        ));
+
+        let paths = ConfigPaths {
+            global: Some(legacy.clone()),
+            project: Some(project.clone()),
+            env_override: Some(key_file.clone()),
+        };
+        let stored = set_secret_config_key(workdir, &paths, "serve.auth.api_key", "sk-new $1")
+            .unwrap()
+            .expect("serve.auth.api_key is a secret");
+        assert_eq!(stored.variable, "ROKO__SERVE__AUTH__API_KEY");
+        assert_eq!(stored.env_file, workdir.join(".roko").join(".env"));
+        assert_eq!(stored.removed_from, [project.clone(), legacy.clone()]);
+
+        // roko reads the value back from .roko/.env as it was given.
+        let vars = dotenvy::from_path_iter(&stored.env_file)
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        let expected = (
+            "ROKO__SERVE__AUTH__API_KEY".to_string(),
+            "sk-new $1".to_string(),
+        );
+        assert_eq!(vars, [expected]);
+
+        // roko.toml keeps the rest as written and loads again, and a checked
+        // write does not put the key back.
+        assert_eq!(
+            fs::read_to_string(&project).unwrap(),
+            "# serve settings\n[serve.auth]\nenabled = true\n"
+        );
+        assert!(load(&project).unwrap().serve.auth.enabled);
+        let secret_text = "[serve.auth]\napi_key = \"sk-new\"\n";
+        assert!(check_config_text(&project, secret_text).is_err());
+        assert!(!fs::read_to_string(&legacy).unwrap().contains("sk-old"));
+        assert!(fs::read_to_string(&key_file).unwrap().contains("sk-kept"));
+
+        // No secret: an empty value, a reference, or another field.
+        for (key, value) in [
+            ("serve.auth.api_key", ""),
+            ("serve.auth.api_key", "${SERVE_KEY}"),
+            ("agent.default_model", "sk-looking-model"),
+            ("prompt.token_budget", "5000"),
+        ] {
+            let outcome = set_secret_config_key(workdir, &paths, key, value).unwrap();
+            assert_eq!(outcome, None, "{key} = {value}");
+        }
+
+        // A secret that no variable can set is refused and written nowhere.
+        let header = r#"{"Authorization": "Bearer sk-header"}"#;
+        let error = set_secret_config_key(workdir, &paths, "providers.x.extra_headers", header)
+            .expect_err("a provider header");
+        assert!(format!("{error:#}").contains("${VAR}"), "{error:#}");
+        let env_text = fs::read_to_string(&stored.env_file).unwrap();
+        assert!(!env_text.contains("sk-header"), "{env_text}");
     }
 
     #[test]

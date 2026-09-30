@@ -623,22 +623,14 @@ pub async fn run_prompt(run: PromptRun<'_>) -> Result<WorkflowRunReport> {
     Ok(report)
 }
 
-/// Verify steps for a prompt run: the workspace's declared gate rungs
+/// Verify steps for a prompt run: the workspace's required gate rungs
 /// (`[[gates.rungs]]`, which legacy `[[gate]]` entries migrate into), else
 /// the compile check of a Cargo or Go workspace. Empty when neither exists.
+/// Plan tasks run the workspace's rungs after their own steps, skipping any
+/// whose command a step already runs, so these rungs run once.
 fn prompt_verify_steps(workdir: &Path, gates: &roko_core::config::GatesConfig) -> Vec<VerifyStep> {
     if gates.has_custom_rungs() {
-        return gates
-            .effective_rungs()
-            .into_iter()
-            .filter(|rung| rung.required && !rung.command.trim().is_empty())
-            .map(|rung| VerifyStep {
-                phase: rung.name,
-                command: rung.command,
-                fail_msg: None,
-                timeout_ms: rung.timeout_secs.saturating_mul(1_000),
-            })
-            .collect();
+        return gates.required_rungs().map(VerifyStep::from).collect();
     }
     let compile = if workdir.join("Cargo.toml").is_file() {
         "cargo check --workspace"
@@ -682,6 +674,7 @@ fn prompt_tasks_file(
             skip_enrichment: true,
             source_prd: None,
             failure_policy: None,
+            workspace_rungs: None,
         },
         tasks: vec![TaskDef {
             id: "T1".to_string(),

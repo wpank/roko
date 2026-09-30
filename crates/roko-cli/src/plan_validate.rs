@@ -485,6 +485,20 @@ fn validate_tasks_file(
                     });
                 }
             }
+            // gap-1d1fa6: a task too big for its tier's executor is a warning,
+            // so `--strict` rejects it.
+            for issue in roko_cli::plan_policy::validate_tier_sizes(
+                &tasks_file,
+                roko_cli::plan_policy::PlanExecutionPolicy::for_environment(),
+            ) {
+                diagnostics.push(Diagnostic {
+                    severity: Severity::Warning,
+                    rule_id: issue.code.to_string(),
+                    plan_id: Some(plan_id.clone()),
+                    task_id: issue.task_id,
+                    message: issue.message,
+                });
+            }
         }
         Err(runtime_err) => {
             diagnostics.push(Diagnostic {
@@ -1770,6 +1784,61 @@ depends_on = ["T1"]
         assert_eq!(report.totals.errors, 0, "{report:?}");
         assert_eq!(report.exit_code(false), 0, "a warning without --strict");
         assert_eq!(report.exit_code(true), 1, "--strict rejects it");
+    }
+
+    /// gap-1d1fa6: a task over its tier's size limits is a PLAN_TIER_SIZE
+    /// warning, which `--strict` rejects; the same task as integrative passes.
+    #[test]
+    fn task_over_its_tier_size_is_a_warning() {
+        for (tier, flagged) in [("mechanical", true), ("integrative", false)] {
+            let temp = TempDir::new().unwrap();
+            let root = temp.path();
+            fs::create_dir_all(root.join("plans/demo")).unwrap();
+            fs::write(
+                root.join("plans/demo/tasks.toml"),
+                format!(
+                    r#"
+[meta]
+plan = "demo"
+
+[[task]]
+id = "T1"
+title = "Rename the setting everywhere"
+role = "implementer"
+tier = "{tier}"
+files = ["src/a.rs", "src/b.rs", "src/c.rs", "src/d.rs", "src/e.rs", "src/f.rs"]
+max_loc = 150
+depends_on = []
+verify = [{{ phase = "compile", command = "cargo check -p roko-cli" }}]
+"#
+                ),
+            )
+            .unwrap();
+
+            let report = validate_plans_dir(root.join("plans").as_path(), None).unwrap();
+
+            let oversized = report
+                .plans
+                .iter()
+                .flat_map(|plan| &plan.diagnostics)
+                .filter(|diag| diag.rule_id == "PLAN_TIER_SIZE")
+                .collect::<Vec<_>>();
+            assert_eq!(oversized.len(), usize::from(flagged), "{tier}: {report:?}");
+            assert_eq!(report.totals.errors, 0, "{report:?}");
+            assert_eq!(report.exit_code(false), 0, "{tier}");
+            assert_eq!(report.exit_code(true), i32::from(flagged), "{tier}");
+            if flagged {
+                assert_eq!(oversized[0].severity, Severity::Warning);
+                assert_eq!(oversized[0].task_id.as_deref(), Some("T1"));
+                assert!(
+                    oversized[0]
+                        .message
+                        .contains("raise its tier to integrative"),
+                    "{}",
+                    oversized[0].message
+                );
+            }
+        }
     }
 
     /// gap-8c0a20: a tier that `TaskTier::parse` cannot read is a PLAN_035

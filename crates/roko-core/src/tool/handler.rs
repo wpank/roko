@@ -285,6 +285,11 @@ pub struct ToolContext {
     pub allowed_tools: Option<Vec<String>>,
     /// Optional denylist of tool names for the current task.
     pub denied_tools: Option<Vec<String>>,
+    /// Variables the commands this call runs (`bash`, `run_tests`) inherit
+    /// from roko's environment besides what the gate policy admits: exact
+    /// names or `PREFIX*` patterns, from `[agent] env_passthrough`. See
+    /// [`crate::child_env::apply_gate_env`].
+    pub env_passthrough: Vec<String>,
     /// Where to publish audit signals (coarse-grained orchestration events).
     pub audit_sink: Arc<dyn AuditSink>,
     /// Where to publish execution trace events (fine-grained per-call timelines).
@@ -324,6 +329,7 @@ impl ToolContext {
             capabilities,
             allowed_tools: None,
             denied_tools: None,
+            env_passthrough: Vec::new(),
             audit_sink,
             trace_sink,
             metrics_sink,
@@ -359,6 +365,7 @@ impl ToolContext {
             capabilities,
             allowed_tools: None,
             denied_tools: None,
+            env_passthrough: Vec::new(),
             audit_sink,
             trace_sink,
             metrics_sink,
@@ -387,6 +394,7 @@ impl ToolContext {
             },
             allowed_tools: None,
             denied_tools: None,
+            env_passthrough: Vec::new(),
             audit_sink: Arc::new(NoopAuditSink),
             trace_sink: Arc::new(NoopTraceSink),
             metrics_sink: Arc::new(NoopMetricsSink),
@@ -416,6 +424,7 @@ impl ToolContext {
             capabilities: ToolPermission::read_only(),
             allowed_tools: None,
             denied_tools: None,
+            env_passthrough: Vec::new(),
             audit_sink: Arc::new(NoopAuditSink),
             trace_sink: Arc::new(NoopTraceSink),
             metrics_sink: Arc::new(NoopMetricsSink),
@@ -475,6 +484,14 @@ impl ToolContext {
     #[must_use]
     pub fn with_denied_tools(mut self, denied_tools: Option<Vec<String>>) -> Self {
         self.denied_tools = denied_tools;
+        self
+    }
+
+    /// Let the commands this call runs inherit the variables matching
+    /// `patterns` (`[agent] env_passthrough`).
+    #[must_use]
+    pub fn with_env_passthrough(mut self, patterns: Vec<String>) -> Self {
+        self.env_passthrough = patterns;
         self
     }
 
@@ -553,6 +570,7 @@ impl std::fmt::Debug for ToolContext {
             .field("capabilities", &self.capabilities)
             .field("allowed_tools", &self.allowed_tools)
             .field("denied_tools", &self.denied_tools)
+            .field("env_passthrough", &self.env_passthrough)
             .field("audit_sink", &"Arc<dyn AuditSink>")
             .field("trace_sink", &"Arc<dyn TraceSink>")
             .field("metrics_sink", &"Arc<dyn MetricsSink>")

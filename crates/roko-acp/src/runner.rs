@@ -10,9 +10,11 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use roko_agent::claude_cli_agent::build_settings_json;
+use roko_agent::process::apply_credential_scrub;
 use roko_agent::safety::contract::AgentContract;
 use roko_agent::safety::{DispatchSafetyContext, SafetyLayer, SafetyViolation, ViolationSeverity};
 use roko_agent::{Agent as RokoAgent, ClaudeCliAgent};
+use roko_core::child_env::CredentialScrub;
 use roko_core::config::schema::RunnerSandboxLevel;
 use roko_core::{Body, Context, Kind, Signal, Verify};
 use roko_gate::{
@@ -1895,8 +1897,13 @@ async fn run_claude_cli_via_agent(
         return Err(anyhow::anyhow!("cancelled"));
     }
 
+    // Claude's permission checks stay on unless the workspace opts out with
+    // `runner.dangerously_skip_permissions`.
+    let skip_permissions = roko_core::config::loader::load_config_unified(workdir)
+        .is_ok_and(|config| config.runner.dangerously_skip_permissions);
     let mut agent = ClaudeCliAgent::new(CLAUDE_CLI_BIN, workdir, model_slug)
-        .with_settings_json(build_settings_json());
+        .with_settings_json(build_settings_json())
+        .with_dangerously_skip_permissions(skip_permissions);
     if let Some(mcp_path) = mcp_config {
         agent = agent.with_mcp_config(mcp_path);
     }
@@ -1924,6 +1931,17 @@ async fn run_claude_cli_via_agent(
     }
 }
 
+/// A `git` command in `workdir` for roko's own commit. `git commit` runs the
+/// repository's hooks, which the agent could have written, so the command
+/// inherits no provider key, `.env`-loaded name or roko credential
+/// ([`CredentialScrub`]).
+fn commit_git(workdir: &Path) -> Command {
+    let mut git = Command::new("git");
+    git.current_dir(workdir);
+    apply_credential_scrub(&mut git, &CredentialScrub::default());
+    git
+}
+
 /// Create a commit for the workflow output.
 async fn run_commit(
     _session_id: &str,
@@ -1947,11 +1965,7 @@ async fn run_commit(
         .await;
 
     // Stage all changes.
-    let add_output = Command::new("git")
-        .args(["add", "-A"])
-        .current_dir(workdir)
-        .output()
-        .await?;
+    let add_output = commit_git(workdir).args(["add", "-A"]).output().await?;
 
     if !add_output.status.success() {
         let err = String::from_utf8_lossy(&add_output.stderr).to_string();
@@ -1974,9 +1988,8 @@ async fn run_commit(
         format!("feat: {original_prompt}")
     };
 
-    let commit_output = Command::new("git")
+    let commit_output = commit_git(workdir)
         .args(["commit", "-m", &msg])
-        .current_dir(workdir)
         .output()
         .await?;
 

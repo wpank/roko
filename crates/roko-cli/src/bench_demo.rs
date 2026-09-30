@@ -1,23 +1,34 @@
-//! `roko bench demo` — benchmark comparison showing roko-optimized vs naive.
+//! `roko bench demo` — naive vs roko-optimized comparison.
 //!
 //! Runs a set of tasks twice:
 //! 1. **Naive mode**: single model (opus), no caching, no routing, no knowledge
-//! 2. **Optimized mode**: full roko stack (CascadeRouter, caching, gates, knowledge)
+//! 2. **Optimized mode**: the configured model routing
 //!
-//! Displays live progress and a final comparison table using inline primitives.
+//! Without `--real` no model is called: [`simulate_task`] makes up every
+//! figure from fixed per-difficulty constants, and the output says
+//! "simulated" wherever such a figure is shown. Simulated figures are only
+//! printed; the demo writes no result files.
+//!
+//! With `--real` each task is one model call. Tokens and latency are
+//! measured; cost and cache hits are not, and no gate checks the output, so
+//! no task is reported as passed or failed. A failed call is reported as an
+//! error, never replaced with simulated figures.
 
 use std::path::Path;
 use std::time::{Duration, Instant};
 
 use crate::config::load_resolved_config;
-use crate::inline::primitives::*;
 use crate::inline::styled;
 use crate::inline::symbols;
 use crate::inline::terminal::{InlineTerminal, should_use_inline};
+use crate::serve_runtime::BenchDispatchResult;
 use crate::tui::Theme;
 use anyhow::Result;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
+
+/// Model the naive mode forces in real dispatch.
+const NAIVE_MODEL: &str = "claude-opus-4-5";
 
 /// A single benchmark task.
 #[derive(Debug, Clone)]
@@ -37,37 +48,46 @@ pub struct BenchResult {
     pub task_id: String,
     /// Mode label ("naive" or "optimized").
     pub mode: String,
-    /// Whether the task passed all gates.
-    pub passed: bool,
-    /// Cost in USD.
-    pub cost_usd: f64,
+    /// Whether every figure was made up by [`simulate_task`].
+    pub simulated: bool,
+    /// Whether the task passed all gates, or `None` when no gate ran.
+    pub passed: Option<bool>,
+    /// Cost in USD, or `None` when it was not measured.
+    pub cost_usd: Option<f64>,
     /// Input tokens.
     pub input_tokens: u64,
     /// Output tokens.
     pub output_tokens: u64,
-    /// Cache hit rate (0.0 for naive).
-    pub cache_hit_rate: f64,
+    /// Cache hit rate, or `None` when it was not measured.
+    pub cache_hit_rate: Option<f64>,
     /// Wall time in seconds.
     pub duration_s: f64,
     /// Model used.
     pub model: String,
-    /// Gate pass count.
-    pub gates_passed: u32,
-    /// Gate total count.
-    pub gates_total: u32,
+    /// Why the model call failed, when it did.
+    pub error: Option<String>,
 }
 
 /// Aggregated benchmark summary for one mode.
 #[derive(Debug, Clone)]
 pub struct ModeSummary {
     pub mode: String,
-    pub total_cost: f64,
+    /// Whether every result in the mode was simulated.
+    pub simulated: bool,
+    /// Total cost, or `None` when any task's cost was not measured.
+    pub total_cost: Option<f64>,
     pub total_tokens: u64,
-    pub pass_rate: f64,
-    pub avg_cache_hit: f64,
+    /// Share of verified tasks that passed, or `None` when no task was verified.
+    pub pass_rate: Option<f64>,
+    /// Mean cache hit rate, or `None` when any task's was not measured.
+    pub avg_cache_hit: Option<f64>,
     pub avg_duration_s: f64,
     pub tasks_run: u32,
+    /// Tasks whose gates ran, so they passed or failed.
+    pub tasks_verified: u32,
     pub tasks_passed: u32,
+    /// Tasks whose model call failed.
+    pub tasks_errored: u32,
     pub primary_model: String,
 }
 
@@ -105,7 +125,7 @@ pub fn default_tasks() -> Vec<BenchTask> {
 /// Run the benchmark demo.
 ///
 /// This runs tasks in two modes and displays a comparison. When `real_dispatch`
-/// is false, it simulates realistic results for demo purposes.
+/// is false, every figure is simulated and labeled as simulated.
 pub async fn run_bench_demo(workdir: &Path, real_dispatch: bool) -> Result<()> {
     let tasks = default_tasks();
 
@@ -127,13 +147,18 @@ async fn run_bench_inline(workdir: &Path, tasks: &[BenchTask], real_dispatch: bo
                 &theme,
                 "bench",
                 &format!("{} tasks", tasks.len()),
-                Some("naive vs optimized"),
+                Some(source_banner(real_dispatch)),
             ),
-            styled::continuation(&theme, "mode 1", "naive (opus, no cache, no routing)", None),
+            styled::continuation(
+                &theme,
+                "mode 1",
+                &mode_description("naive", real_dispatch),
+                None,
+            ),
             styled::continuation(
                 &theme,
                 "mode 2",
-                "optimized (cascade, cache, gates, knowledge)",
+                &mode_description("optimized", real_dispatch),
                 None,
             ),
         ],
@@ -141,169 +166,26 @@ async fn run_bench_inline(workdir: &Path, tasks: &[BenchTask], real_dispatch: bo
     )?;
     term.push_blank()?;
 
-    // Run naive mode
-    term.push_separator()?;
-    term.push_lines(&[styled::section_start(
+    let naive = run_mode_inline(&mut term, &theme, workdir, tasks, "naive", real_dispatch).await?;
+    let optimized = run_mode_inline(
+        &mut term,
         &theme,
-        "naive",
-        "single model, no optimizations",
-        None,
-    )])?;
-
-    let mut naive_results = Vec::new();
-    for task in tasks {
-        let result = if real_dispatch {
-            run_task_real(workdir, task, "naive").await?
-        } else {
-            simulate_task(task, "naive")
-        };
-        let icon = if result.passed {
-            symbols::PASS
-        } else {
-            symbols::FAIL
-        };
-        let icon_style = if result.passed {
-            theme.success()
-        } else {
-            theme.danger()
-        };
-
-        term.push_lines(&[Line::from(vec![
-            Span::styled(symbols::BAR.to_string(), theme.muted()),
-            Span::raw(" "),
-            Span::styled(icon.to_string(), icon_style),
-            Span::raw(" "),
-            Span::styled(
-                format!("{:<4}", task.id),
-                Style::default().fg(Theme::TEXT_DIM),
-            ),
-            Span::styled(format!("{:<40}", task.description), theme.text()),
-            Span::styled(
-                format!("${:.3}", result.cost_usd),
-                Style::default().fg(Theme::SAGE),
-            ),
-            Span::raw("  "),
-            Span::styled(
-                format!("{}tok", result.input_tokens + result.output_tokens),
-                Style::default().fg(Theme::TEXT_DIM),
-            ),
-            Span::raw("  "),
-            Span::styled(
-                format!("{:.1}s", result.duration_s),
-                Style::default().fg(Theme::TEXT_DIM),
-            ),
-            Span::raw("  "),
-            Span::styled(result.model.clone(), Style::default().fg(Theme::DREAM)),
-        ])])?;
-
-        naive_results.push(result);
-        tokio::time::sleep(Duration::from_millis(if real_dispatch { 0 } else { 200 })).await;
-    }
-
-    let naive_summary = summarize(&naive_results);
-    term.push_lines(&[styled::section_end(
-        &theme,
-        "total",
-        &format!(
-            "${:.3}  {}  {}/{} passed",
-            naive_summary.total_cost,
-            symbols::SEP,
-            naive_summary.tasks_passed,
-            naive_summary.tasks_run,
-        ),
-    )])?;
-    term.push_blank()?;
-
-    // Run optimized mode
-    term.push_separator()?;
-    term.push_lines(&[styled::section_start(
-        &theme,
+        workdir,
+        tasks,
         "optimized",
-        "cascade router + cache + gates + knowledge",
-        None,
-    )])?;
-
-    let mut opt_results = Vec::new();
-    for task in tasks {
-        let result = if real_dispatch {
-            run_task_real(workdir, task, "optimized").await?
-        } else {
-            simulate_task(task, "optimized")
-        };
-        let icon = if result.passed {
-            symbols::PASS
-        } else {
-            symbols::FAIL
-        };
-        let icon_style = if result.passed {
-            theme.success()
-        } else {
-            theme.danger()
-        };
-
-        term.push_lines(&[Line::from(vec![
-            Span::styled(symbols::BAR.to_string(), theme.muted()),
-            Span::raw(" "),
-            Span::styled(icon.to_string(), icon_style),
-            Span::raw(" "),
-            Span::styled(
-                format!("{:<4}", task.id),
-                Style::default().fg(Theme::TEXT_DIM),
-            ),
-            Span::styled(format!("{:<40}", task.description), theme.text()),
-            Span::styled(
-                format!("${:.4}", result.cost_usd),
-                Style::default().fg(Theme::SAGE),
-            ),
-            Span::raw("  "),
-            Span::styled(
-                format!("{}tok", result.input_tokens + result.output_tokens),
-                Style::default().fg(Theme::TEXT_DIM),
-            ),
-            Span::raw("  "),
-            Span::styled(
-                format!("{:.1}s", result.duration_s),
-                Style::default().fg(Theme::TEXT_DIM),
-            ),
-            Span::raw("  "),
-            Span::styled(result.model.clone(), Style::default().fg(Theme::DREAM)),
-            Span::raw("  "),
-            Span::styled(
-                format!("cache:{:.0}%", result.cache_hit_rate * 100.0),
-                Style::default().fg(Theme::TEXT_DIM),
-            ),
-        ])])?;
-
-        opt_results.push(result);
-        tokio::time::sleep(Duration::from_millis(if real_dispatch { 0 } else { 200 })).await;
-    }
-
-    let opt_summary = summarize(&opt_results);
-    term.push_lines(&[styled::section_end(
-        &theme,
-        "total",
-        &format!(
-            "${:.4}  {}  {}/{} passed  {}  cache: {:.0}%",
-            opt_summary.total_cost,
-            symbols::SEP,
-            opt_summary.tasks_passed,
-            opt_summary.tasks_run,
-            symbols::SEP,
-            opt_summary.avg_cache_hit * 100.0,
-        ),
-    )])?;
-    term.push_blank()?;
+        real_dispatch,
+    )
+    .await?;
 
     // Comparison table
     term.push_separator()?;
-    let savings = if opt_summary.total_cost > 0.0 {
-        naive_summary.total_cost / opt_summary.total_cost
+    let figures = if real_dispatch {
+        "measured tokens and latency"
     } else {
-        1.0
+        "simulated figures"
     };
-
     let comparison_lines = vec![
-        styled::section_start(&theme, "comparison", "naive vs optimized", None),
+        styled::section_start(&theme, "comparison", "naive vs optimized", Some(figures)),
         Line::from(vec![
             Span::styled(symbols::BAR.to_string(), theme.muted()),
             Span::raw("  "),
@@ -330,123 +212,131 @@ async fn run_bench_inline(workdir: &Path, tasks: &[BenchTask], real_dispatch: bo
         comparison_row(
             &theme,
             "total cost",
-            &format!("${:.3}", naive_summary.total_cost),
-            &format!("${:.4}", opt_summary.total_cost),
-            &format!("{:.1}x", savings),
+            &fmt_usd(naive.total_cost),
+            &fmt_usd(optimized.total_cost),
+            &cost_ratio(naive.total_cost, optimized.total_cost),
         ),
         comparison_row(
             &theme,
             "total tokens",
-            &format!("{}", naive_summary.total_tokens),
-            &format!("{}", opt_summary.total_tokens),
-            &format!(
-                "-{:.0}%",
-                (1.0 - opt_summary.total_tokens as f64 / naive_summary.total_tokens.max(1) as f64)
-                    * 100.0
-            ),
+            &naive.total_tokens.to_string(),
+            &optimized.total_tokens.to_string(),
+            &pct_change(naive.total_tokens as f64, optimized.total_tokens as f64),
         ),
         comparison_row(
             &theme,
             "pass rate",
-            &format!("{:.0}%", naive_summary.pass_rate * 100.0),
-            &format!("{:.0}%", opt_summary.pass_rate * 100.0),
-            &format!(
-                "+{:.0}pp",
-                (opt_summary.pass_rate - naive_summary.pass_rate) * 100.0
-            ),
+            &fmt_pct(naive.pass_rate),
+            &fmt_pct(optimized.pass_rate),
+            &pp_change(naive.pass_rate, optimized.pass_rate),
         ),
         comparison_row(
             &theme,
             "avg latency",
-            &format!("{:.1}s", naive_summary.avg_duration_s),
-            &format!("{:.1}s", opt_summary.avg_duration_s),
-            &format!(
-                "-{:.0}%",
-                (1.0 - opt_summary.avg_duration_s / naive_summary.avg_duration_s.max(0.01)) * 100.0
-            ),
+            &format!("{:.1}s", naive.avg_duration_s),
+            &format!("{:.1}s", optimized.avg_duration_s),
+            &pct_change(naive.avg_duration_s, optimized.avg_duration_s),
         ),
         comparison_row(
             &theme,
             "cache hit",
-            "0%",
-            &format!("{:.0}%", opt_summary.avg_cache_hit * 100.0),
-            &format!("+{:.0}pp", opt_summary.avg_cache_hit * 100.0),
+            &fmt_pct(naive.avg_cache_hit),
+            &fmt_pct(optimized.avg_cache_hit),
+            &pp_change(naive.avg_cache_hit, optimized.avg_cache_hit),
         ),
         comparison_row(
             &theme,
             "primary model",
-            &naive_summary.primary_model,
-            &opt_summary.primary_model,
-            "routing",
+            &naive.primary_model,
+            &optimized.primary_model,
+            "-",
         ),
     ];
     term.push_lines_revealed(&comparison_lines, Duration::from_millis(40))?;
-    term.push_blank()?;
-
-    // Cost waterfall
-    let waterfall = CostWaterfallData {
-        baseline_usd: naive_summary.total_cost,
-        entries: vec![
-            WaterfallEntry {
-                label: "prompt caching".into(),
-                savings_usd: naive_summary.total_cost * 0.35,
-                factor: 1.0 / 0.65,
-            },
-            WaterfallEntry {
-                label: "cascade routing".into(),
-                savings_usd: naive_summary.total_cost * 0.25,
-                factor: 1.0 / 0.75,
-            },
-            WaterfallEntry {
-                label: "knowledge pre-load".into(),
-                savings_usd: naive_summary.total_cost * 0.08,
-                factor: 1.0 / 0.92,
-            },
-            WaterfallEntry {
-                label: "gate early-exit".into(),
-                savings_usd: naive_summary.total_cost * 0.04,
-                factor: 1.0 / 0.96,
-            },
-        ],
-        actual_usd: opt_summary.total_cost,
-    };
-    term.push_lines_revealed(&waterfall.to_lines(&theme), Duration::from_millis(50))?;
-    term.push_blank()?;
-
-    // Session summary
-    let mut meter = CostMeter::new();
-    for r in &opt_results {
-        meter.record_run(r.cost_usd, r.input_tokens, r.output_tokens, &r.model, 0.0);
-    }
-    let session = SessionSummaryData {
-        cost: meter,
-        gates_total: opt_results.iter().map(|r| r.gates_total).sum(),
-        gates_passed: opt_results.iter().map(|r| r.gates_passed).sum(),
-        replans: 1,
-        elapsed_s: opt_results.iter().map(|r| r.duration_s).sum(),
-    };
-    term.push_lines_revealed(&session.to_lines(&theme), Duration::from_millis(40))?;
 
     // Final result
+    let (icon, style) = if real_dispatch {
+        (symbols::INFO, theme.text())
+    } else {
+        (symbols::WARN, theme.warning())
+    };
     term.push_blank()?;
     term.push_lines(&[Line::from(vec![
-        Span::styled(format!("{} ", symbols::PASS), theme.success()),
-        Span::styled(
-            format!(
-                "benchmark complete  {}  {:.1}x cost reduction  {}  {}/{} tasks pass",
-                symbols::SEP,
-                savings,
-                symbols::SEP,
-                opt_summary.tasks_passed,
-                opt_summary.tasks_run,
-            ),
-            theme.success(),
-        ),
+        Span::styled(format!("{icon} "), style),
+        Span::styled(closing_line(&naive, &optimized, real_dispatch), style),
     ])])?;
     term.push_blank()?;
 
     drop(term);
     Ok(())
+}
+
+/// Run every task in one mode, printing a line per task and the mode's total.
+async fn run_mode_inline(
+    term: &mut InlineTerminal,
+    theme: &Theme,
+    workdir: &Path,
+    tasks: &[BenchTask],
+    mode: &str,
+    real_dispatch: bool,
+) -> Result<ModeSummary> {
+    term.push_separator()?;
+    term.push_lines(&[styled::section_start(
+        theme,
+        mode,
+        &mode_description(mode, real_dispatch),
+        None,
+    )])?;
+
+    let mut results = Vec::with_capacity(tasks.len());
+    for task in tasks {
+        let result = run_task(workdir, task, mode, real_dispatch).await;
+
+        term.push_lines(&[Line::from(vec![
+            Span::styled(symbols::BAR.to_string(), theme.muted()),
+            Span::raw(" "),
+            Span::styled(
+                verdict_icon(&result).to_string(),
+                verdict_style(theme, &result),
+            ),
+            Span::raw(" "),
+            Span::styled(
+                format!("{:<4}", task.id),
+                Style::default().fg(Theme::TEXT_DIM),
+            ),
+            Span::styled(format!("{:<40}", task.description), theme.text()),
+            Span::styled(fmt_usd(result.cost_usd), Style::default().fg(Theme::SAGE)),
+            Span::raw("  "),
+            Span::styled(
+                format!("{}tok", result.input_tokens + result.output_tokens),
+                Style::default().fg(Theme::TEXT_DIM),
+            ),
+            Span::raw("  "),
+            Span::styled(
+                format!("{:.1}s", result.duration_s),
+                Style::default().fg(Theme::TEXT_DIM),
+            ),
+            Span::raw("  "),
+            Span::styled(result.model.clone(), Style::default().fg(Theme::DREAM)),
+            Span::raw("  "),
+            Span::styled(
+                format!("cache:{}", fmt_pct(result.cache_hit_rate)),
+                Style::default().fg(Theme::TEXT_DIM),
+            ),
+            Span::raw("  "),
+            Span::styled(verdict_note(&result), theme.muted()),
+        ])])?;
+
+        results.push(result);
+        if !real_dispatch {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    }
+
+    let summary = summarize(&results);
+    term.push_lines(&[styled::section_end(theme, "total", &mode_total(&summary))])?;
+    term.push_blank()?;
+    Ok(summary)
 }
 
 fn comparison_row(
@@ -471,24 +361,197 @@ fn comparison_row(
 
 fn summarize(results: &[BenchResult]) -> ModeSummary {
     let n = results.len() as u32;
-    let passed = results.iter().filter(|r| r.passed).count() as u32;
+    let verified = results.iter().filter(|r| r.passed.is_some()).count() as u32;
+    let passed = results.iter().filter(|r| r.passed == Some(true)).count() as u32;
     ModeSummary {
         mode: results.first().map(|r| r.mode.clone()).unwrap_or_default(),
-        total_cost: results.iter().map(|r| r.cost_usd).sum(),
+        simulated: !results.is_empty() && results.iter().all(|r| r.simulated),
+        total_cost: results.iter().map(|r| r.cost_usd).sum::<Option<f64>>(),
         total_tokens: results
             .iter()
             .map(|r| r.input_tokens + r.output_tokens)
             .sum(),
-        pass_rate: if n > 0 { passed as f64 / n as f64 } else { 0.0 },
-        avg_cache_hit: results.iter().map(|r| r.cache_hit_rate).sum::<f64>() / n.max(1) as f64,
+        pass_rate: if verified > 0 {
+            Some(passed as f64 / verified as f64)
+        } else {
+            None
+        },
+        avg_cache_hit: results
+            .iter()
+            .map(|r| r.cache_hit_rate)
+            .sum::<Option<f64>>()
+            .map(|total| total / n.max(1) as f64),
         avg_duration_s: results.iter().map(|r| r.duration_s).sum::<f64>() / n.max(1) as f64,
         tasks_run: n,
+        tasks_verified: verified,
         tasks_passed: passed,
+        tasks_errored: results.iter().filter(|r| r.error.is_some()).count() as u32,
         primary_model: results.first().map(|r| r.model.clone()).unwrap_or_default(),
     }
 }
 
-/// Simulate a benchmark result with realistic numbers.
+/// Where the figures come from, shown at the top of every run.
+fn source_banner(real_dispatch: bool) -> &'static str {
+    if real_dispatch {
+        "real dispatch: tokens and latency are measured; cost is not, and no gate runs"
+    } else {
+        "SIMULATED: no model is called; every figure comes from fixed constants"
+    }
+}
+
+/// What a mode stands for. A simulated mode names the premise of its
+/// constants; a real mode names only what the dispatch does.
+fn mode_description(mode: &str, real_dispatch: bool) -> String {
+    match (mode, real_dispatch) {
+        ("naive", false) => "simulated: opus, no cache, no routing".to_string(),
+        (_, false) => "simulated: cascade router, cache, gates, knowledge".to_string(),
+        ("naive", true) => format!("{NAIVE_MODEL}, one model call per task"),
+        (_, true) => "configured model routing, one model call per task".to_string(),
+    }
+}
+
+/// The icon for a result's verdict. A task no gate checked gets a neutral
+/// icon, never the pass mark.
+fn verdict_icon(result: &BenchResult) -> &'static str {
+    match (result.passed, result.error.is_some()) {
+        (Some(true), _) => symbols::PASS,
+        (Some(false), _) => symbols::FAIL,
+        (None, true) => symbols::WARN,
+        (None, false) => symbols::PENDING,
+    }
+}
+
+/// The style for a result's verdict icon.
+fn verdict_style(theme: &Theme, result: &BenchResult) -> Style {
+    match (result.passed, result.error.is_some()) {
+        (Some(true), _) => theme.success(),
+        (Some(false), _) => theme.danger(),
+        (None, true) => theme.warning(),
+        (None, false) => theme.muted(),
+    }
+}
+
+/// A result's verdict in words; a simulated verdict says so.
+fn verdict_note(result: &BenchResult) -> String {
+    if let Some(error) = &result.error {
+        return format!("error: {error}");
+    }
+    let verdict = match result.passed {
+        Some(true) => "pass",
+        Some(false) => "fail",
+        None => "not verified: no gate ran",
+    };
+    if result.simulated {
+        format!("{verdict} (simulated)")
+    } else {
+        verdict.to_string()
+    }
+}
+
+/// A mode's totals: cost, tokens, and verdicts; simulated totals say so.
+fn mode_total(summary: &ModeSummary) -> String {
+    let sep = symbols::SEP;
+    let cost = fmt_usd(summary.total_cost);
+    let tokens = summary.total_tokens;
+    let mut total = if summary.tasks_verified > 0 {
+        let (passed, verified) = (summary.tasks_passed, summary.tasks_verified);
+        format!("{cost}  {sep}  {tokens}tok  {sep}  {passed}/{verified} passed")
+    } else {
+        let run = summary.tasks_run;
+        format!("{cost}  {sep}  {tokens}tok  {sep}  {run} not verified")
+    };
+    if summary.tasks_errored > 0 {
+        let errored = summary.tasks_errored;
+        total.push_str(&format!("  {sep}  {errored} failed calls"));
+    }
+    if summary.simulated {
+        total.push_str("  (simulated)");
+    }
+    total
+}
+
+/// The closing line. A simulated run says it is a simulation and never calls
+/// itself a benchmark; a real run says what it did not measure.
+fn closing_line(naive: &ModeSummary, optimized: &ModeSummary, real_dispatch: bool) -> String {
+    let sep = symbols::SEP;
+    if real_dispatch {
+        format!(
+            "real dispatch complete  {sep}  {} model calls, {} failed  {sep}  \
+             tokens and latency measured; cost not measured; \
+             no gate ran, so no task passed or failed",
+            naive.tasks_run + optimized.tasks_run,
+            naive.tasks_errored + optimized.tasks_errored,
+        )
+    } else {
+        format!(
+            "simulation complete  {sep}  {} simulated cost reduction  {sep}  \
+             {}/{} simulated passes  {sep}  no model was called; not a benchmark result",
+            cost_ratio(naive.total_cost, optimized.total_cost),
+            optimized.tasks_passed,
+            optimized.tasks_run,
+        )
+    }
+}
+
+/// Dollars, or "cost n/a" when the cost was not measured.
+fn fmt_usd(cost: Option<f64>) -> String {
+    match cost {
+        Some(cost) => format!("${cost:.4}"),
+        None => "cost n/a".to_string(),
+    }
+}
+
+/// A 0-1 rate as a percentage, or "n/a" when it was not measured.
+fn fmt_pct(rate: Option<f64>) -> String {
+    match rate {
+        Some(rate) => format!("{:.0}%", rate * 100.0),
+        None => "n/a".to_string(),
+    }
+}
+
+/// How many times cheaper optimized was, or "n/a" without both costs.
+fn cost_ratio(naive: Option<f64>, optimized: Option<f64>) -> String {
+    match (naive, optimized) {
+        (Some(naive), Some(optimized)) if optimized > 0.0 => format!("{:.1}x", naive / optimized),
+        _ => "n/a".to_string(),
+    }
+}
+
+/// Relative change from naive to optimized, such as "-57%".
+fn pct_change(naive: f64, optimized: f64) -> String {
+    if naive > 0.0 {
+        format!("{:+.0}%", (optimized / naive - 1.0) * 100.0)
+    } else {
+        "n/a".to_string()
+    }
+}
+
+/// Change in percentage points, or "n/a" without both rates.
+fn pp_change(naive: Option<f64>, optimized: Option<f64>) -> String {
+    match (naive, optimized) {
+        (Some(naive), Some(optimized)) => format!("{:+.0}pp", (optimized - naive) * 100.0),
+        _ => "n/a".to_string(),
+    }
+}
+
+/// Run one task: simulated, or one real model call.
+async fn run_task(
+    workdir: &Path,
+    task: &BenchTask,
+    mode: &str,
+    real_dispatch: bool,
+) -> BenchResult {
+    if real_dispatch {
+        run_task_real(workdir, task, mode).await
+    } else {
+        simulate_task(task, mode)
+    }
+}
+
+/// Simulate a result from fixed per-difficulty constants.
+///
+/// Every figure is made up. The result is marked `simulated`, so the output
+/// labels it wherever it is shown.
 fn simulate_task(task: &BenchTask, mode: &str) -> BenchResult {
     let is_naive = mode == "naive";
     let difficulty_factor = match task.difficulty.as_str() {
@@ -531,24 +594,23 @@ fn simulate_task(task: &BenchTask, mode: &str) -> BenchResult {
     BenchResult {
         task_id: task.id.clone(),
         mode: mode.to_string(),
-        passed,
-        cost_usd: cost,
+        simulated: true,
+        passed: Some(passed),
+        cost_usd: Some(cost),
         input_tokens: tokens_in,
         output_tokens: tokens_out,
-        cache_hit_rate: cache_hit,
+        cache_hit_rate: Some(cache_hit),
         duration_s: duration,
         model,
-        gates_passed: if passed { 4 } else { 3 },
-        gates_total: 4,
+        error: None,
     }
 }
 
 /// Run a task for real via `dispatch_bench_prompt`.
 ///
-/// Naive mode: forces opus model. Optimized mode: uses configured routing.
-/// On dispatch failure, falls back to [`simulate_task`] so the benchmark
-/// loop always completes.
-async fn run_task_real(workdir: &Path, task: &BenchTask, mode: &str) -> Result<BenchResult> {
+/// Naive mode forces [`NAIVE_MODEL`]. Optimized mode uses configured routing.
+/// See [`real_result`] for what the result reports.
+async fn run_task_real(workdir: &Path, task: &BenchTask, mode: &str) -> BenchResult {
     let started = Instant::now();
 
     let mut config = load_resolved_config(workdir)
@@ -560,7 +622,7 @@ async fn run_task_real(workdir: &Path, task: &BenchTask, mode: &str) -> Result<B
         });
 
     let model_label = if mode == "naive" {
-        config.agent.model = Some("claude-opus-4-5".to_string());
+        config.agent.model = Some(NAIVE_MODEL.to_string());
         "opus".to_string()
     } else {
         config
@@ -576,33 +638,55 @@ async fn run_task_real(workdir: &Path, task: &BenchTask, mode: &str) -> Result<B
     );
 
     let model_override = config.agent.model.clone();
-    let result = crate::serve_runtime::dispatch_bench_prompt(
+    let dispatch = crate::serve_runtime::dispatch_bench_prompt(
         workdir,
         &config,
         &prompt,
         model_override.as_deref(),
     )
     .await;
-    let duration_s = started.elapsed().as_secs_f64();
+    real_result(
+        task,
+        mode,
+        model_label,
+        started.elapsed().as_secs_f64(),
+        dispatch,
+    )
+}
 
-    match result {
-        Ok(dispatch) => Ok(BenchResult {
-            task_id: task.id.clone(),
-            mode: mode.to_string(),
-            passed: true,
-            cost_usd: 0.0,
-            input_tokens: dispatch.input_tokens,
-            output_tokens: dispatch.output_tokens,
-            cache_hit_rate: 0.0,
-            duration_s,
-            model: model_label,
-            gates_passed: 4,
-            gates_total: 4,
-        }),
-        Err(e) => {
-            tracing::warn!(task = %task.id, mode, error = %e, "real dispatch failed, falling back to simulation");
-            Ok(simulate_task(task, mode))
+/// The result of one real model call.
+///
+/// It reports only what the call measured: tokens and wall time. No gate
+/// checks these tasks, so the verdict is "not verified", never a pass, and
+/// cost and cache hits stay unmeasured. A failed call is an error; it never
+/// falls back to simulated figures.
+fn real_result(
+    task: &BenchTask,
+    mode: &str,
+    model: String,
+    duration_s: f64,
+    dispatch: Result<BenchDispatchResult>,
+) -> BenchResult {
+    let (input_tokens, output_tokens, error) = match dispatch {
+        Ok(dispatch) => (dispatch.input_tokens, dispatch.output_tokens, None),
+        Err(err) => {
+            tracing::warn!(task = %task.id, mode, error = %err, "real dispatch failed");
+            (0, 0, Some(format!("{err:#}")))
         }
+    };
+
+    BenchResult {
+        task_id: task.id.clone(),
+        mode: mode.to_string(),
+        simulated: false,
+        passed: None,
+        cost_usd: None,
+        input_tokens,
+        output_tokens,
+        cache_hit_rate: None,
+        duration_s,
+        model,
+        error,
     }
 }
 
@@ -611,33 +695,47 @@ async fn run_bench_plain(workdir: &Path, tasks: &[BenchTask], real_dispatch: boo
         "roko bench demo — {} tasks, naive vs optimized",
         tasks.len()
     );
+    println!("{}", source_banner(real_dispatch));
     println!();
 
-    for mode in ["naive", "optimized"] {
-        println!("--- {mode} ---");
-        for task in tasks {
-            let result = if real_dispatch {
-                run_task_real(workdir, task, mode).await?
-            } else {
-                simulate_task(task, mode)
-            };
-            let icon = if result.passed {
-                symbols::PASS
-            } else {
-                symbols::FAIL
-            };
-            println!(
-                "  {icon} {}  ${:.4}  {}tok  {:.1}s  {}",
-                task.id,
-                result.cost_usd,
-                result.input_tokens + result.output_tokens,
-                result.duration_s,
-                result.model
-            );
-        }
-        println!();
-    }
+    let naive = run_mode_plain(workdir, tasks, "naive", real_dispatch).await;
+    let optimized = run_mode_plain(workdir, tasks, "optimized", real_dispatch).await;
+    println!("{}", closing_line(&naive, &optimized, real_dispatch));
     Ok(())
+}
+
+async fn run_mode_plain(
+    workdir: &Path,
+    tasks: &[BenchTask],
+    mode: &str,
+    real_dispatch: bool,
+) -> ModeSummary {
+    println!("--- {mode}: {} ---", mode_description(mode, real_dispatch));
+    let mut results = Vec::with_capacity(tasks.len());
+    for task in tasks {
+        let result = run_task(workdir, task, mode, real_dispatch).await;
+        println!("{}", plain_task_line(&result));
+        results.push(result);
+    }
+    let summary = summarize(&results);
+    println!("  total: {}", mode_total(&summary));
+    println!();
+    summary
+}
+
+/// One task's line in plain output.
+fn plain_task_line(result: &BenchResult) -> String {
+    format!(
+        "  {} {}  {}  {}tok  {:.1}s  {}  cache:{}  {}",
+        verdict_icon(result),
+        result.task_id,
+        fmt_usd(result.cost_usd),
+        result.input_tokens + result.output_tokens,
+        result.duration_s,
+        result.model,
+        fmt_pct(result.cache_hit_rate),
+        verdict_note(result),
+    )
 }
 
 #[cfg(test)]
@@ -650,50 +748,134 @@ mod tests {
         for task in &tasks {
             let naive = simulate_task(task, "naive");
             let opt = simulate_task(task, "optimized");
-            assert!(naive.cost_usd > opt.cost_usd, "optimized should be cheaper");
+            assert!(naive.simulated && opt.simulated);
+            assert!(
+                naive.cost_usd.expect("simulated cost") > opt.cost_usd.expect("simulated cost"),
+                "optimized should be cheaper"
+            );
             assert!(
                 naive.duration_s > opt.duration_s,
                 "optimized should be faster"
             );
-            assert_eq!(naive.cache_hit_rate, 0.0, "naive should have no cache");
-            assert!(opt.cache_hit_rate > 0.0, "optimized should have cache hits");
+            assert_eq!(
+                naive.cache_hit_rate,
+                Some(0.0),
+                "naive should have no cache"
+            );
+            assert!(
+                opt.cache_hit_rate.is_some_and(|rate| rate > 0.0),
+                "optimized should have cache hits"
+            );
         }
     }
 
     #[test]
     fn summarize_works() {
-        let results = vec![
-            BenchResult {
-                task_id: "T01".into(),
-                mode: "naive".into(),
-                passed: true,
-                cost_usd: 1.0,
-                input_tokens: 1000,
-                output_tokens: 500,
-                cache_hit_rate: 0.0,
-                duration_s: 10.0,
-                model: "opus".into(),
-                gates_passed: 4,
-                gates_total: 4,
-            },
-            BenchResult {
-                task_id: "T02".into(),
-                mode: "naive".into(),
-                passed: false,
-                cost_usd: 2.0,
-                input_tokens: 2000,
-                output_tokens: 800,
-                cache_hit_rate: 0.0,
-                duration_s: 15.0,
-                model: "opus".into(),
-                gates_passed: 3,
-                gates_total: 4,
-            },
-        ];
-        let summary = summarize(&results);
+        let result = |task_id: &str, passed: bool, cost_usd: f64| BenchResult {
+            task_id: task_id.into(),
+            mode: "naive".into(),
+            simulated: true,
+            passed: Some(passed),
+            cost_usd: Some(cost_usd),
+            input_tokens: 1000,
+            output_tokens: 500,
+            cache_hit_rate: Some(0.0),
+            duration_s: 10.0,
+            model: "opus".into(),
+            error: None,
+        };
+        let summary = summarize(&[result("T01", true, 1.0), result("T02", false, 2.0)]);
         assert_eq!(summary.tasks_run, 2);
+        assert_eq!(summary.tasks_verified, 2);
         assert_eq!(summary.tasks_passed, 1);
-        assert!((summary.pass_rate - 0.5).abs() < f64::EPSILON);
-        assert!((summary.total_cost - 3.0).abs() < f64::EPSILON);
+        assert!(summary.simulated);
+        assert!((summary.pass_rate.expect("verified") - 0.5).abs() < f64::EPSILON);
+        assert!((summary.total_cost.expect("costed") - 3.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn real_mode_does_not_fabricate_passes() {
+        let task = &default_tasks()[0];
+
+        // A successful call ran no gate: it neither passed nor failed, and its
+        // cost was not measured.
+        let answered = real_result(
+            task,
+            "optimized",
+            "routed".to_string(),
+            1.5,
+            Ok(BenchDispatchResult {
+                text: "done".to_string(),
+                input_tokens: 120,
+                output_tokens: 40,
+            }),
+        );
+        assert!(!answered.simulated);
+        assert_eq!(
+            answered.passed, None,
+            "no gate ran, so the task did not pass"
+        );
+        assert_eq!(answered.cost_usd, None, "cost was not measured");
+        assert_eq!(answered.cache_hit_rate, None);
+        assert_eq!((answered.input_tokens, answered.output_tokens), (120, 40));
+        assert!(answered.error.is_none());
+        assert_eq!(verdict_icon(&answered), symbols::PENDING);
+        assert_eq!(verdict_note(&answered), "not verified: no gate ran");
+
+        // A failed call is an error, never replaced with simulated figures.
+        let failed = real_result(
+            task,
+            "naive",
+            "opus".to_string(),
+            0.2,
+            Err(anyhow::anyhow!("provider down")),
+        );
+        assert!(!failed.simulated);
+        assert_eq!(failed.passed, None);
+        assert_eq!(failed.cost_usd, None);
+        assert_eq!((failed.input_tokens, failed.output_tokens), (0, 0));
+        assert!(
+            failed
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("provider down"))
+        );
+
+        // Together they claim no pass rate and no cost.
+        let summary = summarize(&[answered, failed]);
+        assert!(!summary.simulated);
+        assert_eq!(summary.tasks_verified, 0);
+        assert_eq!(summary.tasks_passed, 0);
+        assert_eq!(summary.tasks_errored, 1);
+        assert_eq!(summary.pass_rate, None);
+        assert_eq!(summary.total_cost, None);
+        assert!(closing_line(&summary, &summary, true).contains("no gate ran"));
+    }
+
+    #[test]
+    fn simulated_output_is_labeled_as_simulated() {
+        let tasks = default_tasks();
+        let naive: Vec<_> = tasks
+            .iter()
+            .map(|task| simulate_task(task, "naive"))
+            .collect();
+        let optimized: Vec<_> = tasks
+            .iter()
+            .map(|task| simulate_task(task, "optimized"))
+            .collect();
+        for result in naive.iter().chain(&optimized) {
+            let line = plain_task_line(result);
+            assert!(line.contains("(simulated)"), "unlabeled line: {line}");
+        }
+
+        let naive = summarize(&naive);
+        let optimized = summarize(&optimized);
+        assert!(mode_total(&naive).contains("(simulated)"));
+        let closing = closing_line(&naive, &optimized, false);
+        assert!(closing.contains("simulated cost reduction"), "{closing}");
+        assert!(!closing.contains("benchmark complete"), "{closing}");
+        assert!(source_banner(false).contains("SIMULATED"));
+        assert!(mode_description("optimized", false).starts_with("simulated"));
+        assert!(!mode_description("optimized", true).contains("gates"));
     }
 }

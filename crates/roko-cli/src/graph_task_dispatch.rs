@@ -1064,7 +1064,10 @@ impl TaskDispatcher for GraphTaskDispatcher {
             prompt,
             system_prompt: dispatch_plan.prompt.system_prompt.clone(),
             workdir: effective_workdir.clone(),
-            immune_root: Some(effective_workdir.clone()),
+            // Immune state (tool controls, evidence, the quarantine vault)
+            // belongs to the workspace, not the attempt checkout, so it
+            // survives checkout cleanup and the safety routes see it.
+            immune_root: Some(self.workdir.clone()),
             agent_id: format!(
                 "{}/{}",
                 spec.plan_id,

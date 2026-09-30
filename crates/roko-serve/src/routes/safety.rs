@@ -5,12 +5,12 @@
 //!
 //! Both read the review vaults the tool immune boundary writes when it
 //! withholds a tool result (`roko_agent::quarantine_vault_path` under an
-//! immune root). Serve, chat and CLI dispatch root the vault at the workspace.
-//! Graph plan runs root it at the task's lease, which under
-//! `--worktree-per-task` is an attempt checkout in `.roko/worktrees/`, so the
-//! routes also read one vault per checkout found there. A checkout's vault is
-//! gone once the checkout is cleaned up. Until the boundary quarantines its
-//! first result no vault exists, and the responses say so instead of
+//! immune root). Dispatch roots the vault at the workspace it runs in, and
+//! Graph plan runs root it at the plan's workspace rather than the attempt
+//! checkout. Plan runs from before that change left it in the attempt checkout
+//! in `.roko/worktrees/` under `--worktree-per-task`, so the routes also read
+//! one vault per checkout still found there. Until the boundary quarantines
+//! its first result no vault exists, and the responses say so instead of
 //! reporting a silent zero.
 
 use std::io;
@@ -50,7 +50,8 @@ struct LoadedVault {
 /// workspace's own vault.
 ///
 /// The workspace vault comes first, then one per plan-run attempt checkout
-/// in `.roko/worktrees/`, in path order. Missing vaults are skipped. A vault
+/// in `.roko/worktrees/` (vaults written before Graph dispatch rooted plan
+/// runs at the workspace), in path order. Missing vaults are skipped. A vault
 /// that exists but cannot be read or fails validation is an error, never an
 /// empty vault.
 fn load_vaults(workdir: &Path) -> Result<(Vec<LoadedVault>, String), ApiError> {
@@ -373,9 +374,10 @@ mod tests {
         );
     }
 
-    /// Graph plan runs root the vault at the attempt checkout in
-    /// `.roko/worktrees/`; the routes list those entries beside the
-    /// workspace's own, each tagged with its vault (bug-633b68).
+    /// Plan runs from before the workspace-rooted vault left theirs in the
+    /// attempt checkout in `.roko/worktrees/`; the routes still list those
+    /// entries beside the workspace's own, each tagged with its vault
+    /// (bug-633b68).
     #[tokio::test]
     async fn quarantine_route_lists_plan_run_vaults() {
         let workdir = tempfile::tempdir().expect("tempdir");

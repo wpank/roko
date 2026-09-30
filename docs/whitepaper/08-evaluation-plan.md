@@ -5,7 +5,7 @@ Status: reviewed · budget 550 words · owner gap-2aad7d
 ## 8.1 The claim
 
 Roko is designed to match Claude Code on Opus 5.5 in quality at a lower cost per verified task, on
-decomposable, checkable work (spec-567e52). The claim is UNPROVEN@ed0c33bd5 (appendix row V7). A task is verified
+decomposable, checkable work (spec-567e52). The claim is UNPROVEN@41228d7b2 (appendix row V7). A task is verified
 only when its final output passes hidden tests the agent never sees. Its cost counts every attempt,
 retry, escalation, planner call and model-based check at API list price from one dated snapshot (gap-0580f7),
 with subscription cash reported separately.
@@ -38,8 +38,8 @@ makespan.
 
 Safeguards: the hidden-test secret sits in a driver-only file, read only after the agent exits (gap-a8a160); Claude
 Code runs with an isolated config, free of the user's memory, hooks and plugins (gap-c4f364); and each run starts
-fresh, with every attempt's model checked, because failover can switch it silently (PARTIAL@ed0c33bd5, row RC4;
-gap-b7ab99).
+fresh, with every attempt's model checked, because failover can switch it; Roko records a switch since `6f8286d48` (WIRED@41228d7b2,
+row RC4; gap-b7ab99).
 
 ## 8.4 Falsifiers
 
@@ -62,8 +62,8 @@ planner's cost enters only in the plan slice, charged to Roko. The families are 
 is Claude Code as shipped, not a tuned frontier harness.
 
 Later Roko arms need honest verdicts end to end (spec-e9d7ec; typed verdicts are
-PARTIAL@ed0c33bd5, row QA2) and a ladder that escalates (spec-98f76d; escalation is ORPHANED@ed0c33bd5, row EX7).
-The plan slice also needs a whole-plan gate, MISSING@ed0c33bd5 (row IS3, gap-60233f). The benchmark's driver
+PARTIAL@41228d7b2, row QA2) and a ladder that escalates, WIRED@41228d7b2 but not yet tested end to end (row EX7,
+gap-e21595). The plan slice's whole-plan gate is WIRED@41228d7b2 (row IS3). The benchmark's driver
 replaces `roko bench`, which leaks the SWE-bench gold patch (bug-28becc).
 
 No arm has run: the pilot's results are pending gap-d9e9fe (`vb report --pilot`), and the plan slice's

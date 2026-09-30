@@ -9,6 +9,8 @@
 #
 # Re-pinned from a17d4dadd to ed0c33bd5 by gap-fcea53 (2026-09-29): every row re-checked against the code there.
 # AU3 moved from MISSING to PARTIAL, and AU7 and IS4 from PARTIAL to WIRED; the other rows kept their tags.
+# Re-pinned from ed0c33bd5 to 41228d7b2 by gap-08d9b2's interim pass (2026-09-30), every row re-checked again: EX3,
+# EX7, EX9, IS2, IS3, IS5, QA4 and RC4 moved to WIRED, LM4 and RG2 to PARTIAL.
 #
 # Row fields:
 #   id, group    row id = group id + number (the paper cites rows by id, such as EX3)
@@ -28,7 +30,7 @@ title = "Appendix: status matrix"
 status = "reviewed"
 budget = "none"
 owner = "gap-35a614"
-pinned = "ed0c33bd5"
+pinned = "41228d7b2"
 intro = """
 The status of every mechanism in this paper at commit {pin} ({date}), each tag re-checked against the code at that
 commit. The matrix is a dated snapshot: the work graph in work/items stays the live status, and the matrix is
@@ -107,11 +109,11 @@ name = "Plan validation"
 tag = "WIRED"
 verdict = "keep"
 note = """
-About fifty deterministic lint codes check schema, dependency graph, context and budget before a run. Plans started
-through the server skip them.
+Nearly sixty deterministic lint codes check schema, dependency graph, context, budget, task size per tier and
+overlapping writes before a run. Plans started through the server skip them.
 """
 anchors = ["crates/roko-cli/src/plan_validate.rs::validate_plans_dir", "crates/roko-cli/src/plan_policy.rs::PlanExecutionPolicy"]
-evidence = ["gap-655d19"]
+evidence = ["gap-655d19", "gap-1d1fa6", "gap-a8d786"]
 item = "gap-655d19"
 
 [[row]]
@@ -218,16 +220,16 @@ evidence = ["abc1f4b27", "gap-7147bb"]
 id = "EX3"
 group = "EX"
 name = "Parallel task scheduling"
-tag = "PARTIAL"
-verdict = "fix"
+tag = "WIRED"
+verdict = "keep"
 note = """
-A ready queue starts each task once its own dependencies settle, and a failed task skips only its dependants (the
-default failure policy since `abc1f4b27`). Since `1697fea53` tasks whose declared files overlap never run at the same
-time (gap-439794). But `max_parallel` still defaults to 1.
+A ready queue starts each task once its own dependencies settle, a failed task skips only its dependants, and tasks
+whose declared files overlap never run at the same time (`1697fea53`). Since `626e182a9` a plan that omits
+`max_parallel` runs as wide as its graph when every task that writes declares its files, and a verify step and a
+sibling's edit of what it reads wait for each other. An authored value still wins, and most tracked plans set 1.
 """
-anchors = ["crates/roko-graph/src/engine.rs::execute_ready_queue", "crates/roko-graph/src/exclusion.rs::first_overlap", "crates/roko-cli/src/task_parser.rs::default_max_parallel"]
-evidence = ["445a60d0d", "3e7552acd", "abc1f4b27", "crates/roko-graph/src/engine.rs::a_failed_node_blocks_only_its_dependants", "1697fea53", "gap-439794", "crates/roko-graph/src/convert.rs::task_files_become_exclusive_paths"]
-item = "gap-272448"
+anchors = ["crates/roko-graph/src/engine.rs::execute_ready_queue", "crates/roko-graph/src/exclusion.rs::first_overlap", "crates/roko-cli/src/plan_policy.rs::plan_max_parallel"]
+evidence = ["abc1f4b27", "1697fea53", "626e182a9", "gap-272448", "gap-1920ba", "crates/roko-cli/tests/scheduler_canary.rs::scheduler_canary", "gap-987064"]
 
 [[row]]
 id = "EX4"
@@ -250,11 +252,12 @@ name = "Sibling settle"
 tag = "WIRED"
 verdict = "keep"
 note = """
-In the shared checkout, a verify step that failed while a sibling task was mid-edit waits for the sibling and re-runs
-once. It is a narrow mitigation until isolation lands.
+In a shared checkout, a verify step waits, within a bound, until no sibling task is mid-edit on what it reads, and a
+sibling waits to edit while it runs (since `626e182a9`, gap-1920ba); a step that failed during a sibling's edit
+re-runs once. It matters less once tasks run in their own worktrees.
 """
 anchors = ["crates/roko-cli/src/graph_task_dispatch/sibling_settle.rs::InFlightTasks"]
-evidence = ["3049b7fcf"]
+evidence = ["3049b7fcf", "626e182a9", "gap-1920ba"]
 
 [[row]]
 id = "EX6"
@@ -263,8 +266,9 @@ name = "Retry with gate feedback"
 tag = "WIRED"
 verdict = "keep"
 note = """
-A failed task is re-dispatched with its parsed gate output, up to `max_retries` (3 by default). Since `ce3bdcbb8` the
-retry feedback survives a resume and the failing step names its rung.
+A failed task is re-dispatched with its parsed gate output, up to `max_retries` (3 by default, at least 5 while the
+routing ladder places the task). Since `ce3bdcbb8` the retry feedback survives a resume and the failing step names its
+rung.
 """
 anchors = ["crates/roko-cli/src/task_parser.rs::default_max_retries", "crates/roko-graph/src/cells/task_executor.rs::TaskExecutorCell"]
 evidence = ["ce3bdcbb8", "41c7ffbd6"]
@@ -273,15 +277,17 @@ evidence = ["ce3bdcbb8", "41c7ffbd6"]
 id = "EX7"
 group = "EX"
 name = "Escalation to a stronger model"
-tag = "ORPHANED"
-verdict = "wire"
+tag = "WIRED"
+verdict = "keep"
 note = """
-Runner-v2 moved a failing task up a model ladder. On the Graph path a retry reruns the same model, and the ladder
-constant and the complexity-band escalation have no caller.
+Since `ce12e86d8`, two failures blamed on the agent move a ladder-routed task one rung up, at most twice and never
+past its top rung; provider and harness failures don't count, and a pinned model never moves. The standing survives a
+resume, and a task that fails on its top rung gets a diagnosis suggesting a split. The end-to-end test is pending
+(gap-e21595).
 """
-anchors = ["crates/roko-core/src/defaults.rs::MODEL_ESCALATION_LADDER", "crates/roko-core/src/task.rs::TaskComplexityBand"]
-evidence = ["6b5da8616", "gap-b62e95"]
-item = "gap-460230"
+anchors = ["crates/roko-cli/src/graph_task_dispatch/ladder.rs::note_ladder_outcome", "crates/roko-core/src/config/routing.rs::LadderConfig"]
+evidence = ["a13873ad2", "ce12e86d8", "gap-9cbf35", "gap-460230", "crates/roko-cli/src/graph_task_dispatch/ladder.rs::two_failed_attempts_escalate_one_rung", "gap-e21595"]
+item = "gap-e21595"
 
 [[row]]
 id = "EX8"
@@ -301,15 +307,16 @@ item = "gap-3b170b"
 id = "EX9"
 group = "EX"
 name = "Progress watchdog"
-tag = "MISSING"
-verdict = "build"
+tag = "WIRED"
+verdict = "keep"
 note = """
-Only a wall-clock timeout per attempt and per-tier turn caps, enforced beyond the Claude CLI since `3e35aca4a`, stop
-a hung agent; nothing detects an agent that has stopped making progress.
+Since `dd192cb82` a per-attempt stall watchdog warns after 180 seconds of silence and cancels and retries the attempt
+after 300, counting silence only after the attempt has shown progress and while none of its tool calls runs. A
+conductor tick every 5 seconds can also restart an attempt or stop the run (RG2).
 """
-anchors = []
-evidence = ["spec-a0403b", "spec-edda86", "gap-a791b4"]
-item = "spec-a0403b"
+anchors = ["crates/roko-cli/src/graph_task_dispatch/watchdog.rs::StallWatch", "crates/roko-cli/src/graph_task_dispatch/supervision.rs::ConductorTicker"]
+evidence = ["dd192cb82", "spec-a0403b", "crates/roko-cli/src/graph_task_dispatch/watchdog.rs::graph_watchdog_intervenes_on_stalled_task", "gap-a791b4"]
+item = "spec-edda86"
 
 # ── IS · Isolation and integration ──────────────────────────────────────────────
 
@@ -320,71 +327,74 @@ name = "Worktrees"
 tag = "PARTIAL"
 verdict = "redesign"
 note = """
-Tasks edit the operator's checkout by default. The opt-in per-task worktree forks from HEAD, and its successful edits
-are never merged back.
+Tasks edit the operator's checkout by default. Under the opt-in per-task worktree, each attempt starts from its plan's
+branch, and a passed attempt is committed onto that branch (IS2).
 """
 anchors = ["crates/roko-cli/src/graph_execution/plan_runner.rs::worktree_per_task", "crates/roko-cli/src/orchestrator/worktree/mod.rs::WorktreeManager"]
-evidence = ["gap-4ec59f"]
+evidence = ["gap-4ec59f", "4787ee6ed", "9c0b9aed0"]
 item = "gap-4ec59f"
 
 [[row]]
 id = "IS2"
 group = "IS"
 name = "Merge queue, plan merger and attempt acceptance"
-tag = "ORPHANED"
-verdict = "wire"
+tag = "WIRED"
+verdict = "keep"
 note = """
-Runner-v2 integrated task results through these. On the Graph path nothing merges or commits a result, and
-`accept_attempt` has no production caller.
+Since `4787ee6ed` and `9c0b9aed0`, under per-task worktrees a passed attempt is committed and folded onto its plan's
+branch, and each plan whose tasks all passed is merged by git plumbing into a batch branch, one plan at a time, then
+checked (IS3) before an optional promotion. Runner-v2's merge queue stays unused, and in the default shared checkout
+there is nothing to merge.
 """
-anchors = ["crates/roko-cli/src/orchestrator/merge_queue.rs::MergeQueue", "crates/roko-cli/src/runner/merge.rs::PlanMerger", "crates/roko-cli/src/orchestrator/worktree/mod.rs::accept_attempt"]
-evidence = ["6b5da8616", "gap-3b5361", "bug-a3760a"]
-item = "gap-3b5361"
+anchors = ["crates/roko-cli/src/orchestrator/worktree/mod.rs::accept_attempt", "crates/roko-cli/src/graph_execution/batch.rs::BatchIntegration", "crates/roko-cli/src/graph_execution/delivery.rs::CliCompletionDeliveryService"]
+evidence = ["4787ee6ed", "9c0b9aed0", "gap-3b5361", "spec-f830c4", "crates/roko-cli/tests/plan_branch_integration.rs::c3_each_passed_task_commits_once_on_the_plan_branch"]
 
 [[row]]
 id = "IS3"
 group = "IS"
 name = "Whole-plan verify on the integrated result"
-tag = "MISSING"
-verdict = "build"
+tag = "WIRED"
+verdict = "keep"
 note = """
-Verify steps are per task. No plan-level gate checks that the parts work together.
+Since `207f91da2`, a plan whose tasks all passed succeeds only once its whole-plan check passes: its authored
+plan-level verify steps, or by default in a Cargo workspace fmt, clippy and the tests of the crates it touched. Under
+per-task worktrees it runs on the plan's merge into the batch branch, and a failure takes the merge back out. Other
+projects get no default.
 """
-anchors = []
-evidence = ["gap-60233f", "gap-af00b1"]
-item = "gap-60233f"
+anchors = ["crates/roko-cli/src/graph_execution/plan_verify.rs::plan_verify_steps", "crates/roko-cli/src/graph_execution/plan_verify.rs::default_plan_verify"]
+evidence = ["207f91da2", "gap-60233f", "gap-af00b1", "crates/roko-cli/tests/plan_branch_integration.rs::c4_meta_verify_catches_tasks_that_break_together"]
 
 [[row]]
 id = "IS4"
 group = "IS"
 name = "Git guard hook"
 tag = "WIRED"
-verdict = "fix"
+verdict = "keep"
 note = """
-Since `0728a2817` and `abc655b5e`, the Claude CLI hook checks every command in a chain, past wrappers, subshells and
-git aliases, and blocks git checkout, switch, restore and push, hard resets, stash, clean and recursive deletes; it
-also blocks when python3 is missing. It is best effort: a script file can hide a command, a few wrapper forms still
-pass (bug-0bc728), and other provider CLIs have no hook.
+Since `0728a2817`, the Claude CLI hook checks every command in a chain, past wrappers, subshells, command strings and
+git aliases. It blocks git checkout, switch, restore and push, hard resets, stash and clean, recursive deletes
+(through find, xargs, fd, parallel and busybox too since `9b1d46be4` and `8e7949271`) and reads of key files, and it
+blocks when python3 is missing. It is best effort: a script file or a variable can still hide a command, and other
+provider CLIs have no hook.
 """
 anchors = ["crates/roko-agent/src/claude_cli_agent.rs::build_settings_json", "crates/roko-agent/src/claude_cli_guard.py"]
-evidence = ["0728a2817", "abc655b5e", "bug-7de5df", "bug-66f5a1", "bug-f4e133", "crates/roko-agent/src/claude_cli_agent.rs::settings_hook_fails_closed_without_python3", "bug-0bc728"]
-item = "bug-0bc728"
+evidence = ["0728a2817", "abc655b5e", "9b1d46be4", "8e7949271", "bug-7de5df", "bug-0bc728", "bug-ceab60", "crates/roko-cli/tests/secrets_and_git_guard_canary.rs::secrets_and_git_guard_canary"]
 
 [[row]]
 id = "IS5"
 group = "IS"
 name = "Environment isolation"
-tag = "PARTIAL"
-verdict = "fix"
+tag = "WIRED"
+verdict = "keep"
 note = """
-Since `dc99a9e81` (bug-7d7200), gates start from an allowlisted environment, and provider CLIs have the key variables
-they recognise scrubbed, so a key under an unrecognised name still reaches the agent. Since `0728a2817` and
-`abc655b5e`, Claude CLI agents and roko-std's file tools refuse the provider key files, but roko-std's bash tool can
-still read them (bug-62e7e6), and agent tool shells, MCP servers and provider probes inherit everything.
+Gates, agent tool shells, MCP servers and probes start from environments without roko's provider keys, provider CLIs
+lose the keys roko loaded, and one scrubber redacts secrets from logs and records (`ca834b178`, `04b3793a6`). Bash and
+file tools refuse the key files on every provider (`9b1d46be4`), and Claude Code runs load none of the user's own
+settings (`546d90ae1`). Canary C2 finds no key in an agent's or a gate's environment, the prompt, a file or the
+output. By design a provider CLI keeps a key of its own that the user exported, and no OS sandbox exists (IS6).
 """
-anchors = ["crates/roko-core/src/child_env.rs::gate_env", "crates/roko-core/src/child_env.rs::is_key_file", "crates/roko-gate/src/gate_env.rs", "crates/roko-agent/src/process/env.rs::apply_credential_scrub"]
-evidence = ["dc99a9e81", "bug-7d7200", "crates/roko-core/src/child_env.rs::gate_env_drops_secret_looking_names_even_under_allowed_prefixes", "0728a2817", "bug-a66941", "bug-63327d", "crates/roko-agent/src/safety/path.rs::path_policy_denies_provider_key_files", "bug-62e7e6", "bug-0d9ac4", "bug-0eb8e2"]
-item = "spec-ba7bea"
+anchors = ["crates/roko-core/src/child_env.rs::gate_env", "crates/roko-core/src/child_env.rs::CredentialScrub", "crates/roko-core/src/child_env.rs::is_key_file", "crates/roko-gate/src/gate_env.rs"]
+evidence = ["dc99a9e81", "ca834b178", "9b1d46be4", "546d90ae1", "04b3793a6", "bug-0d9ac4", "bug-0eb8e2", "bug-62e7e6", "gap-b7a2d5", "gap-0e2c40", "crates/roko-cli/tests/secrets_and_git_guard_canary.rs::agent_tool_shells_exclude_provider_keys"]
 
 [[row]]
 id = "IS6"
@@ -393,11 +403,12 @@ name = "Sandbox levels"
 tag = "PARTIAL"
 verdict = "fix"
 note = """
-A sandbox-level setting and resource limits exist, but no OS sandbox. The pre- and post-dispatch safety checks run
-in the ACP server, not on plan runs.
+A sandbox-level setting and resource limits exist, but no OS sandbox confines an agent. Since `77809b4b4` the
+post-dispatch safety check runs before the verify steps on plan runs; the pre-dispatch check runs only in the ACP
+server.
 """
 anchors = ["crates/roko-agent/src/safety/sandbox.rs::SandboxLevel", "crates/roko-agent/src/safety/mod.rs::pre_dispatch_check"]
-evidence = ["bug-7debad", "gap-8f8544"]
+evidence = ["bug-7debad", "77809b4b4", "gap-6d172d", "gap-8f8544"]
 item = "gap-8f8544"
 
 # ── QA · Verification and QA ────────────────────────────────────────────────────
@@ -422,12 +433,13 @@ name = "Typed verdicts"
 tag = "PARTIAL"
 verdict = "fix"
 note = """
-Passed, Unverified and ForcedAccept are stamped on every outcome and checkpointed, and since `3383bd8c0` a plan
-succeeds only when every task passed its verify steps (gap-29a84b). But learning receives a bool in which Unverified
-counts as a pass (bug-c34782), and the dashboard counts unverified and skipped tasks as passed.
+Passed, Unverified and ForcedAccept are stamped on every outcome and checkpointed; a plan succeeds only when every
+task passed its verify steps (`3383bd8c0`), and since `74eaf5c8f` and `8a0fac0a8` every learner reads the settled
+verdict's learning label, so an unverified attempt teaches nothing. The dashboard still counts unverified and skipped
+tasks as passed.
 """
 anchors = ["crates/roko-graph/src/cells/task_executor.rs::TaskGateVerdict", "crates/roko-cli/src/graph_execution/plan_runner.rs::TaskVerdictCounts"]
-evidence = ["725f21e05", "3383bd8c0", "gap-29a84b", "bug-7eb27e", "crates/roko-cli/src/graph_execution/plan_runner.rs::plan_outcome_follows_task_verdicts", "bug-c34782", "bug-7e1b6b"]
+evidence = ["725f21e05", "3383bd8c0", "74eaf5c8f", "8a0fac0a8", "gap-29a84b", "gap-8f6206", "gap-88c547", "bug-7e1b6b", "gap-cd3529"]
 item = "spec-e9d7ec"
 
 [[row]]
@@ -438,25 +450,27 @@ tag = "ORPHANED"
 verdict = "redesign"
 note = """
 Compile, lint, test, symbol, generated-test, property-test and integration rungs exist, but plan tasks run only their
-authored verify steps; the pipeline's entry point is reachable only from tests.
+authored verify steps and, since `1d563748e`, the workspace's own rungs; the pipeline's entry point is reachable only
+from tests.
 """
 anchors = ["crates/roko-cli/src/runner/gate_dispatch.rs::run_gate_once", "crates/roko-cli/src/runner/gate_dispatch.rs::spawn_gate"]
-evidence = ["6b5da8616", "gap-85f102"]
+evidence = ["6b5da8616", "gap-85f102", "1d563748e", "gap-3506f1"]
 item = "spec-6ac537"
 
 [[row]]
 id = "QA4"
 group = "QA"
 name = "Tamper and scope diff"
-tag = "MISSING"
-verdict = "build"
+tag = "WIRED"
+verdict = "keep"
 note = """
-Nothing flags an attempt that edits tests, verify scripts or gate config, or that edits files outside its task. Only
-acceptance tests pinned by the harness (AU7) run unchanged whatever the agent edits.
+Since `7f9d1fcbc` a screen before the verify steps diffs each attempt. Deleted, emptied or skipped tests, fewer
+asserts, and edits to verify scripts, the plan, CI or gate config, or pinned acceptance tests fail the attempt as
+tampering; paths outside the task's files are recorded, and fail it only under the enforcing setting. An implementer's
+attempt that changed nothing is rejected as well.
 """
-anchors = []
-evidence = ["spec-9230a9", "gap-d14a43"]
-item = "gap-abbd22"
+anchors = ["crates/roko-gate/src/attempt_diff.rs::check_attempt_diff", "crates/roko-cli/src/graph_task_dispatch/red_flags.rs"]
+evidence = ["7f9d1fcbc", "gap-abbd22", "gap-b72761", "crates/roko-cli/tests/attempt_diff_canary.rs::c5_tampering_attempt_is_flagged", "gap-b954ad"]
 
 [[row]]
 id = "QA5"
@@ -535,14 +549,14 @@ name = "Learned model router"
 tag = "PARTIAL"
 verdict = "fix"
 note = """
-Picks a model only when neither the task nor the run pins one. Since `91cfe0467` router-chosen failures update its
-learned stage as successes do (bug-8da8ba), and since `b11ca807d` concurrent processes merge their learning instead of
-overwriting it. But it learns from the provider call's success flag before gates run, and manual overrides count as
-successes.
+Since `a13873ad2` the routing ladder places every task that no override or hint pins, and the router's own pick is
+only logged beside it; the router chooses only when no rung can run. It learns from every rung's outcome, and since
+`74eaf5c8f` only from settled verdicts: a failover substitute earns no credit, a manual override only its real
+outcome, and its state is journaled during runs.
 """
 anchors = ["crates/roko-learn/src/cascade_router.rs::CascadeRouter", "crates/roko-cli/src/dispatch/model_routing.rs::ModelRouter"]
-evidence = ["91cfe0467", "bug-8da8ba", "b11ca807d", "bug-9c88ac", "crates/roko-cli/src/runtime_feedback/routing.rs::routing_sink_updates_linucb_on_failure", "bug-c34782", "bug-f68404"]
-item = "bug-c34782"
+evidence = ["a13873ad2", "74eaf5c8f", "4c0722281", "bug-c34782", "bug-f68404", "bug-dfb28f", "crates/roko-cli/src/runtime_feedback/routing.rs::routing_sink_updates_linucb_on_failure"]
+item = "spec-6ac537"
 
 [[row]]
 id = "RC3"
@@ -561,15 +575,15 @@ evidence = ["bug-7cdce7"]
 id = "RC4"
 group = "RC"
 name = "Provider failover"
-tag = "PARTIAL"
-verdict = "fix"
+tag = "WIRED"
+verdict = "keep"
 note = """
-On a refusal or an exhausted quota the call moves to other keys and fallback models, sideways rather than up. The
-records name the model that ran but never mark it as a substitute, so the router credits it as its own pick.
+On a refusal or an exhausted quota the call moves to other keys and fallback models, sideways rather than up. Since
+`6f8286d48` the attempt's records name the substitute, the models passed over and why, and the router takes no credit
+for a substitute.
 """
 anchors = ["crates/roko-cli/src/graph_task_dispatch/failover.rs::run_bridge_with_failover", "crates/roko-cli/src/graph_task_dispatch/failover.rs::failover_candidates"]
-evidence = ["bug-35379d"]
-item = "bug-35379d"
+evidence = ["6f8286d48", "bug-35379d", "bug-31438d"]
 
 [[row]]
 id = "RC5"
@@ -592,11 +606,12 @@ tag = "PARTIAL"
 verdict = "fix"
 note = """
 Since `d4be4e872`, timed-out and failed attempts are priced from the usage they streamed and marked as estimates
-(bug-690dc6), and since `98ee1418f` plan generation and revision spend is recorded. Cost rows still carry no source,
-the attempt record names its usage source but no amount, and prices come from undated tables.
+(bug-690dc6); plan generation and revision spend is recorded (`98ee1418f`), and cached input is priced once
+(`f16908be6`). Cost rows still carry no source, the attempt record names its usage source but no amount, and prices
+come from undated tables.
 """
 anchors = ["crates/roko-core/src/usage.rs::UsageSource", "crates/roko-cli/src/dispatch_v2.rs::fill_cost_from_profile"]
-evidence = ["d4be4e872", "bug-690dc6", "98ee1418f", "gap-288e38", "gap-ad0d39"]
+evidence = ["d4be4e872", "bug-690dc6", "98ee1418f", "f16908be6", "gap-288e38", "gap-ad0d39"]
 item = "gap-288e38"
 
 [[row]]
@@ -621,12 +636,14 @@ name = "Episode and efficiency records"
 tag = "PARTIAL"
 verdict = "fix"
 note = """
-Since `42349d8ee` each Graph attempt opens under a durable key and settles once, into a verdict record that names the
-model that ran; its efficiency, cost and episode rows carry the key (gap-96f7ed). The record's tokens, cost and
-first-token time stay empty, as do many efficiency fields, and tool events are counted as tool calls.
+Since `42349d8ee` each Graph attempt opens under a durable key and settles once into a verdict record. Since
+`6f8286d48` the record and the attempt's cost and efficiency rows name the model the provider reports serving, any
+failover substitute and unknown turn counts, and since `9313e49f0` each run writes a manifest with a config
+fingerprint. The record's tokens, cost and first-token time stay empty, as do many efficiency fields, and tool events
+count as tool calls.
 """
 anchors = ["crates/roko-cli/src/graph_task_dispatch/attempt.rs::open_attempt", "crates/roko-cli/src/runtime_feedback/episodes.rs", "crates/roko-learn/src/efficiency.rs::AgentEfficiencyEvent"]
-evidence = ["e39b5519a", "d4be4e872", "42349d8ee", "gap-528762", "gap-96f7ed", "gap-7a8474", "bug-f9ae3e"]
+evidence = ["42349d8ee", "6f8286d48", "9313e49f0", "gap-96f7ed", "bug-31438d", "gap-8cb382", "gap-7a8474", "bug-f9ae3e"]
 item = "spec-b7303f"
 
 [[row]]
@@ -662,15 +679,16 @@ item = "bug-86117a"
 id = "LM4"
 group = "LM"
 name = "Error patterns and post-gate lessons"
-tag = "ORPHANED"
-verdict = "wire"
+tag = "PARTIAL"
+verdict = "fix"
 note = """
-Runner-v2 fed discovered error patterns and retry lessons back into prompts. On the Graph path the pattern reader
-loads a file that nothing writes, and each gate failure pays for a lesson that no retry prompt reads.
+Since `ed471a8c1` each failure of the agent's work on the Graph path becomes an error pattern, and dispatch puts the
+top patterns into later prompts, in the same run and the next. The post-gate lesson each gate failure pays for is
+stored, but no retry prompt reads it.
 """
-anchors = ["crates/roko-learn/src/error_pattern_store.rs::ErrorPatternStore", "crates/roko-learn/src/post_gate_reflection.rs::PostGateReflectionStore"]
-evidence = ["6b5da8616", "gap-e483e7"]
-item = "spec-6ac537"
+anchors = ["crates/roko-cli/src/runtime_feedback/error_patterns.rs::ErrorPatternSink", "crates/roko-learn/src/error_pattern_store.rs::ErrorPatternStore", "crates/roko-learn/src/post_gate_reflection.rs::PostGateReflectionStore"]
+evidence = ["ed471a8c1", "gap-2ce86f", "gap-e483e7"]
+item = "gap-e483e7"
 
 [[row]]
 id = "LM5"
@@ -737,11 +755,12 @@ name = "Reflex shortcut"
 tag = "ORPHANED"
 verdict = "remove"
 note = """
-Nothing on the plan path promotes reflex rules. Since `328123077` plan dispatch consults them only for tasks without
-verify steps and only when `t0_reflexes` is on, which it is not by default, and a rule hit credits no gate pass.
+Nothing on the plan path promotes reflex rules. Plan dispatch consults them only when `t0_reflexes` is on, which it is
+not by default, and only for tasks that no verify step or workspace rung checks. Since `4c0722281` a settled attempt
+credits or demotes the rule that served it, but such attempts settle unverified, so no rule earns credit.
 """
 anchors = ["crates/roko-learn/src/reflex_store.rs::ReflexStore", "crates/roko-cli/src/graph_task_dispatch.rs::with_reflex_store"]
-evidence = ["328123077", "bug-94151f", "crates/roko-cli/src/graph_task_dispatch.rs::reflex_match_records_no_gate_pass_before_verify", "gap-4468bd"]
+evidence = ["328123077", "4c0722281", "bug-94151f", "gap-4468bd", "bug-b4c565"]
 
 [[row]]
 id = "LM10"
@@ -803,14 +822,15 @@ evidence = ["5c62bf0d4", "gap-8a1fb3"]
 id = "RG2"
 group = "RG"
 name = "Conductor watchers and circuit breaker"
-tag = "ORPHANED"
-verdict = "park"
+tag = "PARTIAL"
+verdict = "fix"
 note = """
-The watcher engine has no caller on the plan path since Runner-v2's supervisor tick was deleted; that tick had
-caused restart storms. The ultrastable controller (RG3) is meant to replace it.
+Since `dd192cb82` the default watchers evaluate each running attempt on a 5-second tick and can restart the attempt or
+stop the run. They are fed only the attempt's phases, text, tool calls and cost, so the watchers for test and compile
+failures get no signal.
 """
-anchors = ["crates/roko-conductor/src/conductor.rs::Conductor", "crates/roko-cli/src/runner/conductor_adapter.rs::ConductorRingSink"]
-evidence = ["6b5da8616", "gap-ebd656"]
+anchors = ["crates/roko-conductor/src/conductor.rs::Conductor", "crates/roko-cli/src/graph_task_dispatch/supervision.rs::GraphConductor", "crates/roko-cli/src/runner/conductor_adapter.rs::graph_task_event_to_signal"]
+evidence = ["dd192cb82", "spec-a0403b", "crates/roko-cli/src/graph_task_dispatch/watchdog.rs::conductor_restart_retries_a_looping_task", "gap-ebd656"]
 item = "gap-ebd656"
 
 [[row]]
@@ -835,7 +855,8 @@ tag = "MISSING"
 verdict = "build"
 note = """
 No learning loop shows its exposure, influence and benefit: there is no decision log, no withhold arm and no way to
-freeze learning for a comparison. The keyed assignment such an arm would use exists since `1c5371f9a`, with no caller.
+freeze learning for a comparison. A census test checks which learners a plan run builds (`9313e49f0`), and the keyed
+assignment a withhold arm would use exists since `1c5371f9a`, with no caller.
 """
 anchors = []
 evidence = ["gap-1f2661", "gap-644040", "gap-528762"]
@@ -889,15 +910,13 @@ id = "SS1"
 group = "SS"
 name = "Auth, roles and API keys on the control plane"
 tag = "WIRED"
-verdict = "fix"
+verdict = "keep"
 note = """
 Role-based permissions and API keys protect roko serve. Since `9dc966af1` a Privy sign-in grants nothing without an
-explicit filter (bug-7eef96), and since `c651ddc57` serve keeps the API keys the CLI creates. The runtime socket is
-protected by file permissions alone.
+explicit filter (bug-7eef96), and since `b6906c9f8` the runtime socket requires a per-run token (find-95ef81).
 """
 anchors = ["crates/roko-serve/src/rbac.rs::Role", "crates/roko-serve/src/rbac.rs::Permission"]
-evidence = ["9dc966af1", "bug-7eef96", "c651ddc57", "bug-da5b41", "find-95ef81"]
-item = "find-95ef81"
+evidence = ["9dc966af1", "bug-7eef96", "b6906c9f8", "find-95ef81"]
 
 [[row]]
 id = "SS2"
@@ -920,11 +939,11 @@ name = "Output screening and operator deference"
 tag = "PARTIAL"
 verdict = "fix"
 note = """
-Outputs and memory writes are screened before they are stored, but nothing measures how often the screen wrongly
-denies, and the quarantine routes read a file the runtime never writes.
+Outputs and memory writes are screened before they are stored, and since `b6906c9f8` the quarantine routes read the
+vault the runtime writes (bug-4cb029). Nothing measures how often the screen wrongly denies.
 """
 anchors = ["crates/roko-core/src/immune.rs::ImmunePipeline", "crates/roko-core/src/corrigibility.rs::CorrigibilityHead"]
-evidence = ["bug-4cb029", "gap-2f69e9"]
+evidence = ["b6906c9f8", "bug-4cb029", "gap-2f69e9"]
 item = "gap-f75dc8"
 
 [[row]]
@@ -965,7 +984,7 @@ There is no approval hold before integration and no budget threshold event. The 
 names that Graph runs never create, so it finds nothing.
 """
 anchors = ["crates/roko-serve/src/routes/plans.rs::find_agent_branch", "crates/roko-cli/src/graph_execution/control_adapter.rs::GraphExecutionControlAdapter"]
-evidence = ["ed0c33bd5"]
+evidence = ["41228d7b2"]
 item = "gap-0d64d5"
 
 # ── DM · Domains and automation ─────────────────────────────────────────────────
@@ -977,11 +996,12 @@ name = "Shell-command verifiers"
 tag = "WIRED"
 verdict = "keep"
 note = """
-Any command can be a gate, as a custom rung in roko.toml or a task's verify step. It is the only verifier not tied to
-code, and roko run refuses to start without one in a workspace it cannot build.
+Any command can be a gate, as a custom rung in roko.toml or a task's verify step; since `1d563748e` the workspace's
+rungs also run on plan tasks. It is the only verifier not tied to code, and roko run refuses to start without one in a
+workspace it cannot build.
 """
 anchors = ["crates/roko-core/src/config/gates.rs::effective_rungs", "crates/roko-cli/src/runner/gate_dispatch.rs::has_custom_rungs"]
-evidence = ["bug-1410e8"]
+evidence = ["bug-1410e8", "1d563748e", "gap-3506f1"]
 
 [[row]]
 id = "DM2"
@@ -993,7 +1013,7 @@ note = """
 A task can be labelled code, research or docs. Routing reads the label; gate selection does not.
 """
 anchors = ["crates/roko-core/src/task.rs::TaskDomain", "crates/roko-cli/src/dispatch/model_routing.rs::task_domain"]
-evidence = ["ed0c33bd5"]
+evidence = ["41228d7b2"]
 item = "gap-7a3527"
 
 [[row]]
@@ -1007,7 +1027,7 @@ Cron, webhook and file-watch events start a graph through roko serve. The graph 
 cell, so a trigger cannot start agent work.
 """
 anchors = ["crates/roko-serve/src/trigger_runtime.rs::ensure_trigger_runtime", "crates/roko-graph/src/engine.rs::default_registry"]
-evidence = ["ed0c33bd5"]
+evidence = ["41228d7b2"]
 
 [[row]]
 id = "DM4"
@@ -1029,11 +1049,11 @@ name = "MCP client and built-in tools"
 tag = "WIRED"
 verdict = "keep"
 note = """
-Every dispatch gets the built-in tools and the configured MCP servers. MCP servers still inherit the full
-environment, provider keys included.
+Every dispatch gets the built-in tools and the configured MCP servers. Since `ca834b178` MCP servers start without
+roko's provider keys (bug-0eb8e2).
 """
 anchors = ["crates/roko-agent/src/mcp/client.rs::McpClient"]
-evidence = ["bug-0eb8e2"]
+evidence = ["ca834b178", "bug-0eb8e2"]
 
 [[row]]
 id = "DM6"
@@ -1045,7 +1065,7 @@ note = """
 Signed install, admission and dependency resolution for plugin manifests work.
 """
 anchors = ["crates/roko-plugin/src/lib.rs::PluginManifest"]
-evidence = ["ed0c33bd5"]
+evidence = ["41228d7b2"]
 
 [[row]]
 id = "DM7"
@@ -1085,7 +1105,7 @@ Group membership, coordination markers and cross-machine relay have storage and 
 join groups nor leave markers; they belong to a separate multi-user product.
 """
 anchors = ["crates/roko-core/src/groups.rs::PheromoneDeposit", "crates/roko-serve/src/group_runtime.rs", "crates/roko-runtime/src/connector_runtime.rs::HttpJsonConnector"]
-evidence = ["ed0c33bd5"]
+evidence = ["41228d7b2"]
 
 # ── Vision claims ───────────────────────────────────────────────────────────────
 
@@ -1106,51 +1126,51 @@ blocker = "The spec-quality lint is opt-in and blocks nothing before dispatch, a
 [[claim]]
 id = "V3"
 name = "Granular tasks executed by the cheapest capable models"
-tag = "MISSING"
+tag = "PARTIAL"
 rows = ["AU1", "EX7", "RC2"]
-blocker = "Nothing routes by task difficulty, and generated plans are coarse and lose their model hints."
+blocker = "The ladder routes each task by role and tier and escalates on failure, but its end-to-end test (gap-e21595) and a run on real cheap models are pending."
 
 [[claim]]
 id = "V4"
 name = "Parallel execution of the task graph"
-tag = "PARTIAL"
+tag = "WIRED"
 rows = ["EX3", "EX4", "EX5"]
-blocker = "The ready queue runs independent tasks and keeps tasks with overlapping files apart, but `max_parallel` defaults to 1."
+blocker = "Most tracked plans still set `max_parallel` to 1, and an authored value wins."
 
 [[claim]]
 id = "V5"
 name = "Safe isolation and correct integration"
 tag = "PARTIAL"
 rows = ["IS1", "IS2", "IS3", "IS4", "IS5", "IS6"]
-blocker = "The shared checkout is the default, nothing merges, no whole-plan check exists, and agent tool shells still see provider keys."
+blocker = "The shared checkout is still the default, and no OS sandbox confines agents."
 
 [[claim]]
 id = "V6"
 name = "Trust from gates and acceptance criteria"
 tag = "PARTIAL"
 rows = ["QA1", "QA2", "QA3", "QA4", "QA5", "QA6", "AU6", "AU7"]
-blocker = "Acceptance criteria are prompt text, only pinned acceptance tests resist tampering, and there are no hidden, scope or whole-plan checks."
+blocker = "Acceptance criteria are prompt text, and there are no hidden tests or random audits."
 
 [[claim]]
 id = "V7"
 name = "Cheaper and faster than top models"
 tag = "UNPROVEN"
 rows = ["RC2", "RC6", "EX7"]
-blocker = "No head-to-head run exists, escalation is not wired, and cost rows carry no source."
+blocker = "No head-to-head run exists, and cost rows carry no source."
 
 [[claim]]
 id = "V8"
 name = "Improves over time"
 tag = "PARTIAL"
 rows = ["LM1", "LM2", "LM3", "LM4", "LM5", "LM6", "LM11", "LM12", "RC2"]
-blocker = "Several loops were re-wired on 2026-09-29, but no loop has a measured benefit, and the knowledge read path injects nothing."
+blocker = "Learners read settled verdicts, but no loop has a measured benefit, and the knowledge read path injects nothing."
 
 [[claim]]
 id = "V9"
 name = "Cybernetic throughout"
 tag = "PARTIAL"
 rows = ["RG1", "RG2", "RG3", "RG4", "RG5", "RG6", "RC3", "RC5", "QA7"]
-blocker = "Provider health, the plan budget and adaptive retry budgets close loops, but nothing audits the gates or the regulators."
+blocker = "Provider health, budgets, retry budgets and the stall watchdog close loops, but nothing audits the gates or the regulators."
 
 [[claim]]
 id = "V10"

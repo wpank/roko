@@ -524,10 +524,12 @@ fn mask_secret_fields(value: &mut Value) {
     mask_secret_field(value, &["webhooks", "github"], "secret");
     // An agent variable named like a credential: the loader expands a
     // ${VAR} reference there into the secret itself.
-    if let Some(pairs) = value.pointer_mut("/agent/env").and_then(Value::as_array_mut) {
+    if let Some(pairs) = value
+        .pointer_mut("/agent/env")
+        .and_then(Value::as_array_mut)
+    {
         for pair in pairs {
-            if let Some([Value::String(name), secret]) =
-                pair.as_array_mut().map(Vec::as_mut_slice)
+            if let Some([Value::String(name), secret]) = pair.as_array_mut().map(Vec::as_mut_slice)
                 && roko_core::child_env::is_secret_env_name(name)
             {
                 *secret = Value::String("***".to_string());

@@ -1601,8 +1601,8 @@ async fn run_graph_plan_body(
     // Collect task counts and cost from the just-completed plan loop and
     // append a structured RunMetricsRecord to `.roko/learn/run-metrics.jsonl`.
     // Each task counts under its own verdict (bug-7eb27e), not its plan's.
-    // The write is fire-and-forget on a background task so it never blocks
-    // the TUI exit path.
+    // The write is one appended line, made before the run returns: a write
+    // spawned onto the runtime could be dropped when the process exits.
     {
         let duration_ms = run_start.elapsed().as_millis() as u64;
         let per_plan: Vec<roko_learn::run_metrics::PlanMetrics> = plan_outcomes
@@ -1657,11 +1657,9 @@ async fn run_graph_plan_body(
             plans: per_plan,
         };
         let metrics_path = graph_learn_dir.join("run-metrics.jsonl");
-        tokio::spawn(async move {
-            if let Err(err) = roko_learn::run_metrics::append_run_metrics(&metrics_path, &record) {
-                tracing::warn!(error = %err, "failed to persist run metrics (non-fatal)");
-            }
-        });
+        if let Err(err) = roko_learn::run_metrics::append_run_metrics(&metrics_path, &record) {
+            tracing::warn!(error = %err, "failed to persist run metrics (non-fatal)");
+        }
     }
 
     // Restores the terminal (and stderr) before the summary is printed.

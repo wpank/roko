@@ -197,7 +197,9 @@ fn append_jsonl_line(path: &std::path::Path, value: &impl serde::Serialize) -> s
 ///
 /// Serializes `value` on the calling async task (cheap), then offloads the
 /// blocking file I/O to a `spawn_blocking` thread so the Tokio reactor is
-/// not stalled on disk writes inside `async fn emit_feedback`.
+/// not stalled on disk writes inside `async fn emit_feedback`. The process's
+/// secrets are redacted from the record first: efficiency and gate-failure
+/// records carry agent and verify output.
 pub(super) async fn append_jsonl_line_async(
     path: std::path::PathBuf,
     line: String,
@@ -207,6 +209,7 @@ pub(super) async fn append_jsonl_line_async(
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
+        let line = roko_core::obs::scrub_secrets_in_jsonl(&line);
         let mut file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)

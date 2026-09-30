@@ -33,8 +33,20 @@ request's bytes plus `PREAMBLE_TOKENS`, since a token is never shorter than a by
 its own before the first message (as `mini_loop` bounds its calls). When the request extends one the task sent
 before, with the same settings and that request's messages first, the bound is that request's reported input plus
 the bytes of the messages it adds, so a long conversation's bound stays close to its real size. A call whose usage is
-missing counts its bound. The bound holds for text: an image a request only links to can cost more tokens than its
-URL has bytes.
+missing counts its bound. The bound holds for text only: an image, audio or a file costs tokens that are no function
+of its bytes (an image a request only links to can cost more tokens than its URL has bytes). So while a cap is set,
+a request with a part that is not text is refused with a 403 (`vb_unbounded_input`) before it is forwarded
+(bug-d34a29): the pilot's arms send text only, and a cap that such a request could cross would be no cap.
+
+**Attempts.** A harness that has no per-attempt input cap of its own (Roko) gets one from the proxy:
+`attempt_input_cap` holds each of the task's conversations to it the same way (gap-806e37). The proxy sees no
+attempts, so it draws the conversations from the requests. A request that strictly extends an earlier prompt of the
+task (the same settings, that prompt's messages first) continues the conversation of the longest such prompt's latest
+call. Otherwise, a repeat of a prompt whose latest call got no complete answer (refused, failed, cut or dropped) is a
+retry and continues that call's conversation, and anything else starts a new one: a first prompt, or a first prompt
+sent again after it was answered, which is how a harness starts its next attempt. A harness's attempt is one such
+conversation, since its calls extend each other until it gives up and starts over. Single-call prompts beside it,
+such as Roko's error diagnosis and quality rating, are conversations of their own.
 
 **Faults.** One profile is active at a time (`Profile`; the names and parameters are S08 §4.11's):
 - `clean`: no faults;
@@ -57,7 +69,8 @@ still has probability p, but the rate over n requests stays close to p. Independ
 1,000 requests one time in seven at p = 0.3 (S08 T13's acceptance).
 
 **Control.** `POST /_vb/control` with `Authorization: Bearer <proxy.token>` and a JSON object sets any of `task` (the
-active task id), `profile` (a name, or a table with `name` and parameters) and `input_token_cap` (null for none).
+active task id), `profile` (a name, or a table with `name` and parameters), `input_token_cap` and
+`attempt_input_cap` (null for none).
 `GET` returns the state with each task's meter totals. In the driver's own process, `configure` and `state` do the
 same. The token is random per proxy, so an agent that finds the port can neither switch faults off nor move its calls
 to another task.
@@ -69,16 +82,19 @@ end within one second: bug-09fac4), `task`, `ordinal`, `profile`, `fault_injecte
 fired, else null), `fault` (the fault's detail), `upstream`, `path`, `model_requested`, `model_reported`, `stream`,
 `status` (what the client got; null when it got none), `forwarded`, `usage_source`, `usage` (the classes; null when
 none came back), `api_equiv_usd`, `without_cache_usd`, `cost_source` (`provider_usage`, `unknown` or `not_billed`),
-`price_snapshot_id`, `refused`, `input_bound` (the most input the call could have been billed for) and `elapsed_ms`.
+`price_snapshot_id`, `refused` (`input_token_cap`, `attempt_input_cap` or `unbounded_input` when the proxy refused
+the call, else null), `input_bound` (the most input the call could have been billed for; null for one that is not
+text only), `conversation` (its conversation in the task, from 1) and `elapsed_ms`.
 
 API:
     Upstream(name, base_url, api_key_env=None, stream_usage=True); Upstream.from_endpoint(endpoint) -> Upstream
     Profile(name="clean", p=0.0, seed=0, ...); Profile.parse(spec: str | Mapping | Profile) -> Profile
     Profile.draw(task, ordinal) -> dict | None; Profile.as_json() -> dict
-    FaultProxy(upstreams, *, log_path, snapshot=None, allowed_hosts=None, input_token_cap=None, token=None, keys=None)
+    FaultProxy(upstreams, *, log_path, snapshot=None, allowed_hosts=None, input_token_cap=None, token=None, keys=None,
+               attempt_input_cap=None)
     FaultProxy: a context manager (.start(), .close()); .url, .token, .base_url(name) -> str
     FaultProxy.endpoint(endpoint: provider.Endpoint) -> provider.Endpoint      # the same provider, through the proxy
-    FaultProxy.configure(*, task=..., profile=..., input_token_cap=...) -> dict; .state() -> dict
+    FaultProxy.configure(*, task=..., profile=..., input_token_cap=..., attempt_input_cap=...) -> dict; .state()
     usage_classes(raw) -> dict | None; arm_hosts() -> frozenset[str]
     ProxyError
 """
@@ -126,6 +142,10 @@ NOT_RELAYED = frozenset({"connection", "keep-alive", "proxy-authenticate", "prox
                          "transfer-encoding", "upgrade", "content-length", "date", "server"})
 EVENT_END = re.compile(rb"\r\n\r\n|\n\n|\r\r")
 PREAMBLE_TOKENS = 256  # what a provider may put before the first message (a harmony system header), as in mini_loop
+TEXT_PARTS = frozenset({"text", "refusal", "input_text", "output_text"})  # content parts whose tokens bytes bound
+# Keys that carry an image, audio or a file in any request shape (chat content parts, the Responses API's input).
+MEDIA_KEYS = frozenset({"image_url", "input_image", "input_audio", "file", "input_file", "file_data", "file_id",
+                        "file_url", "video_url"})
 # Request fields that set how a model samples, not what its prompt holds: a change to one keeps a conversation's prefix.
 NOT_PROMPT = frozenset({"stream", "stream_options", "max_tokens", "max_completion_tokens", "temperature", "top_p",
                         "seed", "n", "stop", "user", "metadata", "logprobs", "top_logprobs", "presence_penalty",
@@ -289,7 +309,9 @@ class _Meter:
     requests: int = 0
     forwarded: int = 0
     faults: int = 0
-    refused: int = 0
+    refused: int = 0  # calls refused at the task's input cap
+    refused_attempt: int = 0  # calls refused at their conversation's input cap (`attempt_input_cap`)
+    unbounded: int = 0  # calls refused because the proxy cannot bound their input
     usage_missing: int = 0
     cost_unknown: int = 0
     input_tokens: int = 0  # every input class, plus the input bound of each call whose usage is missing
@@ -298,11 +320,26 @@ class _Meter:
     api_equiv_usd: float = 0.0
 
 
+@dataclass
+class _Prompt:
+    """The latest call of one prompt in a task: its conversation, its reported input, and whether it was answered."""
+
+    conversation: int
+    input: int | None = None  # the input its latest reporting call billed
+    answered: bool = False  # the client got a complete answer to its latest call; false while it is in flight
+
+
+@dataclass
+class _Conversation:
+    counted: int = 0  # as a meter's input_tokens
+    reserved: int = 0  # the input bounds of its calls in flight
+
+
 class FaultProxy:
     def __init__(self, upstreams: Iterable[Upstream], *, log_path: Path, snapshot: ledger.Snapshot | None = None,
                  allowed_hosts: Iterable[str] | None = None, input_token_cap: int | None = None,
                  token: str | None = None, upstream_timeout_s: float = UPSTREAM_TIMEOUT_S,
-                 keys: Mapping[str, str] | None = None) -> None:
+                 keys: Mapping[str, str] | None = None, attempt_input_cap: int | None = None) -> None:
         allowed = frozenset(host.lower() for host in (arm_hosts() if allowed_hosts is None else allowed_hosts))
         self.upstreams: dict[str, Upstream] = {}
         for upstream in upstreams:
@@ -324,8 +361,10 @@ class FaultProxy:
         self._task: str | None = None
         self._profile = Profile()
         self._cap = _cap(input_token_cap)
+        self._attempt_cap = _cap(attempt_input_cap)
         self._meters: dict[str | None, _Meter] = {}
-        self._prompts: dict[str | None, dict[str, int]] = {}  # per task: a prompt's digest -> its reported input
+        self._prompts: dict[str | None, dict[str, _Prompt]] = {}  # per task: a prompt's digest -> its latest call
+        self._conversations: dict[str | None, list[_Conversation]] = {}  # per task, numbered from 1
         self._idle: dict[str, list[http.client.HTTPConnection]] = {}
         self._closed = False
         self._log = os.fdopen(os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600), "a", encoding="utf-8")
@@ -369,50 +408,70 @@ class FaultProxy:
         self.close()
 
     def configure(self, *, task: str | None = _UNSET, profile: str | Mapping | Profile = _UNSET,
-                  input_token_cap: int | None = _UNSET) -> dict:
-        """Set the active task id, the fault profile and the input-token cap; returns the new state."""
+                  input_token_cap: int | None = _UNSET, attempt_input_cap: int | None = _UNSET) -> dict:
+        """Set the active task id, the fault profile and the input-token caps; returns the new state."""
         if task is not _UNSET and task is not None and not isinstance(task, str):
             raise ProxyError(f"task must be a string or null, not {task!r}")
         profile = profile if profile is _UNSET else Profile.parse(profile)
         cap = input_token_cap if input_token_cap is _UNSET else _cap(input_token_cap)
+        attempt_cap = attempt_input_cap if attempt_input_cap is _UNSET else _cap(attempt_input_cap)
         with self._lock:
             self._task = self._task if task is _UNSET else task
             self._profile = self._profile if profile is _UNSET else profile
             self._cap = self._cap if cap is _UNSET else cap
+            self._attempt_cap = self._attempt_cap if attempt_cap is _UNSET else attempt_cap
         return self.state()
 
     def state(self) -> dict:
+        """The active settings, and each task's meter with its conversations' counted input."""
         with self._lock:
             return {"task": self._task, "profile": self._profile.as_json(), "input_token_cap": self._cap,
-                    "price_snapshot_id": self.snapshot.id,
-                    "tasks": [{"task": task, **asdict(meter)} for task, meter in self._meters.items()]}
+                    "attempt_input_cap": self._attempt_cap, "price_snapshot_id": self.snapshot.id,
+                    "tasks": [{"task": task, **asdict(meter), "conversations": [
+                        talk.counted for talk in self._conversations.get(task, [])]}
+                        for task, meter in self._meters.items()]}
 
     def _serve(self, handler: _Handler, upstream: Upstream, path: str, body: bytes) -> None:
         """One call to an upstream: refuse it, fault it or forward it; it is metered and logged before it ends."""
         started = time.monotonic()
         request = _json_object(body)
         digests, sizes = _prompt_digests(request)
+        media = _unbounded_part(request)
         with self._lock:
-            task, profile, cap = self._task, self._profile, self._cap
+            task, profile, cap, attempt_cap = self._task, self._profile, self._cap, self._attempt_cap
             meter = self._meters.setdefault(task, _Meter())
             meter.requests += 1
             ordinal = meter.requests
-            bound = self._input_bound(task, digests, sizes, len(body))
-            counted = meter.input_tokens + meter.reserved
-            refused = cap is not None and counted + bound > cap
-            if not refused:
+            bound = self._input_bound(task, digests, sizes, len(body))  # a text bound: none holds for media
+            conversation = self._join(task, digests)
+            talk = self._conversations[task][conversation - 1]
+            counted, talked = meter.input_tokens + meter.reserved, talk.counted + talk.reserved
+            refusal = ("unbounded_input" if media and (cap, attempt_cap) != (None, None) else
+                       "input_token_cap" if cap is not None and counted + bound > cap else
+                       "attempt_input_cap" if attempt_cap is not None and talked + bound > attempt_cap else None)
+            if refusal is None:
                 meter.reserved += bound
-        call = _Call(self, handler, meter, bound, None if refused else digests[-1], started, {
+                talk.reserved += bound
+        call = _Call(self, handler, meter, bound, digests[-1], talk if refusal is None else None, started, {
             "ts": _now(), "task": task, "ordinal": ordinal, "profile": profile.as_json(),
             "fault_injected": None, "fault": None, "upstream": upstream.name, "path": path,
             "model_requested": _text(request.get("model")), "model_reported": None,
             "stream": request.get("stream") is True, "status": None, "forwarded": False, "usage_source": "none",
-            "usage": None, "refused": None, "input_bound": bound})
+            "usage": None, "refused": refusal, "input_bound": None if media else bound, "conversation": conversation})
         try:
-            if refused:
-                call.entry["refused"] = "input_token_cap"
+            if refusal == "unbounded_input":
+                call.answer(403, _error("vb_unbounded_input", f"task {task!r} has an input-token cap, and the proxy "
+                                        f"cannot bound this request's input: it holds a {media!r} part",
+                                        "unbounded_input"))
+                return
+            if refusal == "input_token_cap":
                 call.answer(403, _error("vb_cap_exceeded", f"task {task!r} could pass its input-token cap of {cap}: "
                                         f"{counted} counted, and this call may add up to {bound}", "input_token_cap"))
+                return
+            if refusal:
+                call.answer(403, _error("vb_cap_exceeded", f"conversation {conversation} of task {task!r} could pass "
+                                        f"its attempt's input-token cap of {attempt_cap}: {talked} counted, and this "
+                                        f"call may add up to {bound}", "attempt_input_cap"))
                 return
             detail = profile.draw(task, ordinal)
             fault = None if detail is None else profile.name
@@ -554,9 +613,28 @@ class FaultProxy:
         bound = body_bytes + PREAMBLE_TOKENS
         seen = self._prompts.get(task, {})
         for index in range(len(digests) - 1, -1, -1):  # the longest earlier prompt this one extends
-            if digests[index] in seen:
-                return min(bound, seen[digests[index]] + sum(sizes[index:]))
+            known = seen.get(digests[index])
+            if known is not None and known.input is not None:
+                return min(bound, known.input + sum(sizes[index:]))
         return bound
+
+    def _join(self, task: str | None, digests: list[str]) -> int:
+        """The conversation a request belongs to, from 1 (module docstring, "Attempts"), which it now holds as its
+        prompt's latest call; call it holding the lock."""
+        seen = self._prompts.setdefault(task, {})
+        talks = self._conversations.setdefault(task, [])
+        extended = next((seen[digest] for digest in reversed(digests[:-1]) if digest in seen), None)
+        repeated = seen.get(digests[-1])
+        if extended is not None:
+            conversation = extended.conversation
+        elif repeated is not None and not repeated.answered:  # a retry of a call that got no answer
+            conversation = repeated.conversation
+        else:
+            talks.append(_Conversation())
+            conversation = len(talks)
+        prompt = seen.setdefault(digests[-1], _Prompt(conversation))
+        prompt.conversation, prompt.answered = conversation, False
+        return conversation
 
     def _settle(self, call: _Call) -> None:
         entry, meter, started = call.entry, call.meter, call.started
@@ -576,14 +654,22 @@ class FaultProxy:
         else:
             counted = call.bound if source == "missing" else 0
         line = json.dumps(entry, sort_keys=True) + "\n"
+        answered = entry["status"] == 200 and entry["fault_injected"] not in ("truncate", "hang")
         with self._lock:
-            if call.digest is not None:  # it held a reservation, and a reported input makes its prompt a known prefix
+            prompt = self._prompts.get(entry["task"], {}).get(call.digest)
+            if prompt is not None and prompt.conversation == entry["conversation"]:  # still its prompt's latest call
+                prompt.answered = answered
+                if usage:  # a reported input makes the prompt a known prefix
+                    prompt.input = counted
+            if call.talk is not None:  # it held reservations on the meter and its conversation
                 meter.reserved -= call.bound
-                if usage:
-                    self._prompts.setdefault(entry["task"], {})[call.digest] = counted
+                call.talk.reserved -= call.bound
+                call.talk.counted += counted
             meter.forwarded += entry["forwarded"]
             meter.faults += entry["fault_injected"] is not None
-            meter.refused += entry["refused"] is not None
+            meter.refused += entry["refused"] == "input_token_cap"
+            meter.refused_attempt += entry["refused"] == "attempt_input_cap"
+            meter.unbounded += entry["refused"] == "unbounded_input"
             meter.usage_missing += source == "missing"
             meter.cost_unknown += api_equiv is None
             meter.input_tokens += counted
@@ -608,9 +694,9 @@ class FaultProxy:
             table = json.loads(body)
         except ValueError:
             table = None
-        if not isinstance(table, dict) or set(table) - {"task", "profile", "input_token_cap"}:
-            handler.send_json(400, _error("invalid_request",
-                                          "send a JSON object with task, profile or input_token_cap"))
+        if not isinstance(table, dict) or set(table) - {"task", "profile", "input_token_cap", "attempt_input_cap"}:
+            handler.send_json(400, _error("invalid_request", "send a JSON object with task, profile, "
+                                          "input_token_cap or attempt_input_cap"))
             return
         try:
             handler.send_json(200, self.configure(**table))
@@ -622,13 +708,14 @@ class _Call:
     """One call's log entry. It is metered and logged once, just before the client can see the end of its response,
     so a caller that got its response finds the call in the log and in `state`."""
 
-    def __init__(self, proxy: FaultProxy, handler: _Handler, meter: _Meter, bound: int, digest: str | None,
-                 started: float, entry: dict) -> None:
+    def __init__(self, proxy: FaultProxy, handler: _Handler, meter: _Meter, bound: int, digest: str,
+                 talk: _Conversation | None, started: float, entry: dict) -> None:
         self.proxy = proxy
         self.handler = handler
         self.meter = meter
-        self.bound = bound  # the call's input bound, reserved on the meter until it settles
-        self.digest = digest  # its prompt's digest; None for a refused call, which reserved nothing
+        self.bound = bound  # the call's input bound, reserved on the meter and its conversation until it settles
+        self.digest = digest  # its prompt's digest
+        self.talk = talk  # its conversation; None for a refused call, which reserved nothing
         self.started = started
         self.entry = entry
         self.settled = False
@@ -837,6 +924,30 @@ def _prompt_digests(request: dict) -> tuple[list[str], list[int]]:
         digests.append(digest.hexdigest())
         sizes.append(len(data))
     return digests, sizes
+
+
+def _unbounded_part(request: dict) -> str | None:
+    """What makes a request's input unboundable by its bytes: the type of a message's first content part that is not
+    text, or a key that carries media anywhere in the messages or a Responses API `input` (`MEDIA_KEYS`; tool schemas
+    are not searched, where `file` can name a parameter); None for a text-only request."""
+    messages = request.get("messages")
+    for message in messages if isinstance(messages, list) else []:
+        content = message.get("content") if isinstance(message, dict) else None
+        for part in content if isinstance(content, list) else []:
+            kind = part.get("type") if isinstance(part, dict) else None
+            if kind not in TEXT_PARTS:
+                return str(kind)
+    pending: list[object] = [messages, request.get("input")]
+    while pending:
+        value = pending.pop()
+        if isinstance(value, dict):
+            found = next((key for key in value if key in MEDIA_KEYS), None)
+            if found:
+                return found
+            pending.extend(value.values())
+        elif isinstance(value, list):
+            pending.extend(value)
+    return None
 
 
 def _now() -> str:

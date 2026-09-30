@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""speclint: the static spec-quality score (SQS v1, linter id ``sq-1``) for roko task specs.
+"""speclint: the static spec-quality score (SQS v1, linter id ``sq-2``) for roko task specs.
 
 Scores every ``[[task]]`` of ``plans/**/tasks.toml`` against rules SQ01-SQ12 and the static hard
 fails of S07 section 4.2 (``tmp/cybernetic-harness/specs/S07-spec-quality.md``), writes one
@@ -19,9 +19,15 @@ steps on a clean checkout of the base commit and passes the task's ``red_on_base
 
     python3 benchmarks/viabilitybench/speclint/speclint.py plans/ --dynamic [--base REV]
 
-The rule definitions below are frozen as ``sq-1``: the Rust port (``roko plan validate
+The rule definitions below are frozen as ``sq-2``: the Rust port (``roko plan validate
 --spec-quality``, gap-46ab3f) must match them within 0.5 points on the golden fixtures in
 ``fixtures/``. Change a definition only together with the linter id.
+
+Linter ids:
+
+- ``sq-1``: SQ01-SQ12 and the static hard fails as S07 section 4.2 defines them.
+- ``sq-2``: well-formed ``[task.accept]`` entries count as scoped test verify steps and as observable
+  acceptance (bug-019f02).
 """
 
 from __future__ import annotations
@@ -39,7 +45,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 
-LINTER = "sq-1"
+LINTER = "sq-2"
 
 WEIGHTS = {
     "SQ01": 10,
@@ -893,13 +899,29 @@ def read_file_entries(task: dict) -> list[dict]:
     return entries
 
 
+def accept_tests(task: dict) -> list[dict]:
+    """The `[task.accept]` tests that compile into a verify step when a plan loads (gap-d14a43).
+
+    An entry counts when it names a `src`, a `dest` and a `runner` and has a positive `count`: the
+    loader turns it into a step that runs the pinned test and requires exactly `count` passing tests.
+    """
+    tests = []
+    for entry in _tables(_table(task.get("accept")).get("files")):
+        count = entry.get("count")
+        named = all(_str(entry.get(key)).strip() for key in ("src", "dest", "runner"))
+        if named and isinstance(count, int) and not isinstance(count, bool) and count > 0:
+            tests.append(entry)
+    return tests
+
+
 def acceptance_criteria(task: dict) -> tuple[list[tuple[str, bool]], bool]:
     """(criterion, observable) pairs for SQ02, and the S07 section 3.3 has-acceptance flag."""
     criteria: list[tuple[str, bool]] = []
     for item in _strings(task.get("acceptance")):
         criteria.append((item, bool(_OBSERVABLE_RE.search(item))))
     contract = _table(task.get("acceptance_contract"))
-    # Contract entries are machine-checked, so they are observable by construction.
+    # Contract entries and pinned acceptance tests are machine-checked, so they are observable by
+    # construction.
     for gate in _tables(contract.get("gates")):
         criteria.append(("gate " + _str(gate.get("id")), True))
     for key in ("no_stub", "agent_output", "review_verdict"):
@@ -907,6 +929,9 @@ def acceptance_criteria(task: dict) -> tuple[list[tuple[str, bool]], bool]:
             criteria.append((key, True))
     for row in _tables(_table(contract.get("parity_ledger")).get("rows")):
         criteria.append(("parity " + _str(row.get("requirement_id")), True))
+    accept = accept_tests(task)
+    for test in accept:
+        criteria.append(("accept " + _str(test.get("src")).strip(), True))
     text = "\n".join(t for t in (_str(task.get("goal")), _str(task.get("description"))) if t)
     lines = text.splitlines()
     i = 0
@@ -920,7 +945,7 @@ def acceptance_criteria(task: dict) -> tuple[list[tuple[str, bool]], bool]:
         while i < len(lines) and (bullet := _BULLET_RE.match(lines[i])):
             criteria.append((bullet.group(1), bool(_OBSERVABLE_RE.search(bullet.group(1)))))
             i += 1
-    has_fields = bool(_strings(task.get("acceptance"))) or bool(contract)
+    has_fields = bool(_strings(task.get("acceptance"))) or bool(contract) or bool(accept)
     return criteria, has_fields or bool(_ACCEPTANCE_PHRASE_RE.search(text))
 
 
@@ -1085,14 +1110,17 @@ def score_task(task: dict, ctx: PlanContext, red_on_base: str = "unknown") -> di
     covered = {c for step in steps for c in _strings(step.get("covers"))}
     rules["SQ03"] = sum(1 for ac in ac_ids if ac in covered) / len(ac_ids) if ac_ids else 0.0
 
-    # SQ04 verify strength: the value of the strongest step.
+    # SQ04 verify strength: the value of the strongest step. A `[task.accept]` test becomes a step
+    # that runs its pinned test and requires exactly `count` passing tests: a scoped test run,
+    # listed after the task's own steps.
     analyses = [analyze_step(_str(step.get("command")), files) for step in steps]
-    classes = [a.cls for a in analyses]
+    accept = accept_tests(task)
+    classes = [a.cls for a in analyses] + ["test"] * len(accept)
     max_class = min(classes, key=CLASS_ORDER.index) if classes else "none"
     rules["SQ04"] = CLASS_VALUE.get(max_class, 0.0)
 
     # SQ05 specificity: test and compile runs scoped to a package, file or test name.
-    scopes = [scope for a in analyses for scope in a.scopes]
+    scopes = [scope for a in analyses for scope in a.scopes] + ["scoped"] * len(accept)
     n_scoped = scopes.count("scoped")
     rules["SQ05"] = 0.0 if not n_scoped else 1.0 if n_scoped == len(scopes) else 0.5
 
@@ -1147,7 +1175,7 @@ def score_task(task: dict, ctx: PlanContext, red_on_base: str = "unknown") -> di
     rules["SQ12"] = 1.0 if _strings(_table(hidden).get("interface")) else 0.0
 
     hard: list[str] = []
-    if role == "implementer" and not steps:
+    if role == "implementer" and not steps and not accept:
         hard.append("HF1")
     vacuous = [f"step {i + 1}: {a.vacuous}" for i, a in enumerate(analyses) if a.vacuous]
     if vacuous:
@@ -1196,12 +1224,13 @@ def score_task(task: dict, ctx: PlanContext, red_on_base: str = "unknown") -> di
         "red_on_base": red_on_base,
         "features": {
             "verify_max_class": max_class,
-            "n_verify": len(steps),
+            "n_verify": len(steps) + len(accept),
+            "n_accept": len(accept),
             "n_no_run": sum(1 for a in analyses if a.no_run),
             "n_self_exit": sum(1 for a in analyses if a.self_exit),
             "has_test_verify": "test" in classes,
             "has_acceptance": has_acceptance,
-            "has_acceptance_fields": bool(acceptance) or bool(_table(task.get("acceptance_contract"))),
+            "has_acceptance_fields": bool(acceptance) or bool(_table(task.get("acceptance_contract"))) or bool(accept),
             "n_acceptance": len(criteria),
             "n_observable": n_observable,
             "ac_coverage": round(rules["SQ03"], 4),
@@ -1368,6 +1397,7 @@ def summarize(records: list[dict], files: int, errors: list[tuple[str, str]], wo
     lines.append(row("has a test-runner verify step", rate(lambda r: r["features"]["has_test_verify"])))
     lines.append(row("no read_files", rate(lambda r: r["features"]["n_read_files"] == 0)))
     lines.append(row("hidden-test hook (tasks)", [str(sum(1 for r in g if r["features"]["has_hidden_hook"])) for g in groups.values()]))
+    lines.append(row("pinned acceptance tests (tasks)", [str(sum(1 for r in g if r["features"]["n_accept"])) for g in groups.values()]))
 
     lines += ["", row("Verify steps by class", names)]
     for cls in CLASS_ORDER:

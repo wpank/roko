@@ -4,7 +4,7 @@
 
 What to work on next: the top checked, open items of each goal, highest-priority goal first. Reorder or change goals in `goals.toml`; pin an item higher with `rank = 1` (lower first).
 
-**Drift:** 32 anchor gone · 156 changed since checked · 7 mentioned in commits. Re-check them before relying on this list: `DRIFT.md`.
+**Drift:** 26 anchor gone · 164 changed since checked · 8 mentioned in commits. Re-check them before relying on this list: `DRIFT.md`.
 
 ## 1. Public release: security, licence, CI, first run
 
@@ -19,31 +19,31 @@ _19 more open · on hold: gap-8f8544 · 11 unchecked (`TRIAGE.md`) · `goal = "r
 - **P1** [spec-f8d196](items/spec-f8d196-epic-research-paper-companion-report-and-tl.md) Epic: research paper, companion report and TL;DR upkeep [spec] · size L · verified 2026-09-29
 - **P1** [gap-8117a8](items/gap-8117a8-publish-the-whitepaper-pdf-build-release-tag.md) Publish the whitepaper: PDF build, release tag and venue · size S · verified 2026-09-29
 
-_0 more open · on hold: gap-85f86a · 5 unchecked (`TRIAGE.md`) · `goal = "whitepaper"`_
+_0 more open · on hold: gap-85f86a · 3 unchecked (`TRIAGE.md`) · `goal = "whitepaper"`_
 
 ## 3. Roko tells the truth and is safe (P0)
 
-- nothing checked and open
+- **P2** [gap-c7c946](items/gap-c7c946-roko-learn-telemetry-check-and-route-report.md) roko learn telemetry: check and route-report over the attempt records (S01.P0-13) · size S · verified 2026-09-29
 
-_0 more open · 23 unchecked (`TRIAGE.md`) · `goal = "truth"`_
+_0 more open · 19 unchecked (`TRIAGE.md`) · `goal = "truth"`_
 
 ## 4. Frontier plans, cheap models execute, the result integrates (P1)
 
 - nothing checked and open
 
-_0 more open · 39 unchecked (`TRIAGE.md`) · `goal = "golden-path"`_
+_0 more open · 36 unchecked (`TRIAGE.md`) · `goal = "golden-path"`_
 
 ## 5. Proof: the pilot benchmark and a record of the work
 
 - nothing checked and open
 
-_0 more open · 26 unchecked (`TRIAGE.md`) · `goal = "proof"`_
+_0 more open · 20 unchecked (`TRIAGE.md`) · `goal = "proof"`_
 
 ## 6. Learning from verified outcomes, M1-M4 (P2)
 
-- nothing checked and open
+- **P2** [gap-2ce86f](items/gap-2ce86f-nothing-on-the-graph-path-writes-learn-error.md) Nothing on the Graph path writes learn/error-patterns.json: build_settler, which holds the ErrorPatternSink, has no production caller · size S · verified 2026-09-30
 
-_0 more open · 6 unchecked (`TRIAGE.md`) · `goal = "cybernetic"`_
+_0 more open · 3 unchecked (`TRIAGE.md`) · `goal = "cybernetic"`_
 
 ## 7. Plan runs work reliably
 
@@ -75,7 +75,7 @@ _15 more open · on hold: bug-429315, bug-8c5d32, bug-b9be1d, bug-dd5dca, bug-de
 - **P2** [bug-97c2dc](items/bug-97c2dc-async-runtime-anti-patterns-drop-spawn-unbounded.md) Async Runtime Anti-Patterns (Drop+Spawn, Unbounded Channels, Mutex Across Await) [bug] · size M · verified 2026-09-29
 - **P2** [gap-8921a3](items/gap-8921a3-df-0925-p4-dead-code-paths-graphexecutionevent.md) Dead code paths (GraphExecutionEvent sink, duplicate streaming verify path, build_fix_prompt) · size S · verified 2026-09-29
 
-_37 more open · 23 unchecked (`TRIAGE.md`) · `goal = "tooling"`_
+_37 more open · 22 unchecked (`TRIAGE.md`) · `goal = "tooling"`_
 
 ## 11. Feature ideas
 

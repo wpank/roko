@@ -9,7 +9,7 @@ goal = "release"
 size = "M"
 subsystem = ["roko-std/tools", "roko-cli/graph_task_dispatch"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-09-30
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (20:01, wk-bench-rokoarm's report on gap-b7ab99)"
 anchors = ["crates/roko-std/src/roles.rs::compose_profile", "crates/roko-std/src/roles.rs::domain_profile", "crates/roko-std/src/tool/handlers.rs::chain_handler_for", "crates/roko-cli/src/task_parser.rs::TaskDef", "crates/roko-cli/Cargo.toml"]
@@ -70,3 +70,4 @@ At BASE (4315add32), the role-based deny lists (`denied_tools_for_role`) are the
 
 - `project.default_domain` is currently dropped when roko.toml is loaded (bug-12153c). A default taken from it depends on that fix.
 - Don't turn off the `chain` feature as the fix: the profile decides exposure, not the build.
+- 2026-09-30 (wk-guard2): `compose_profile`'s allowlist is deliberately not applied wholesale. It lists builtins only, and its exclusions would deny `write_file` to smart-contract and report tasks. Only domain tool ownership (the chain tools) is enforced, and plan step 3 (counting the offered tools in the dispatch record) is skipped.

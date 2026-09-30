@@ -7,7 +7,7 @@
 //! compile runs (SQ05).
 //!
 //! This is a port of the shell analysis in `benchmarks/viabilitybench/speclint/speclint.py`
-//! (linter `sq-1`). The two must class every step alike, so change them together.
+//! (linter `sq-2`). The two must class every step alike, so change them together.
 
 use std::collections::BTreeSet;
 use std::sync::LazyLock;

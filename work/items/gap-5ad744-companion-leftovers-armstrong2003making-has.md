@@ -2,14 +2,16 @@
 id = "gap-5ad744"
 kind = "gap"
 title = "Companion leftovers: armstrong2003making has no institution, ledger_classify_commits.py misreads --json OUT, and E10 has 28 words of headroom"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p3"
 goal = "whitepaper"
 size = "S"
 subsystem = ["companion"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-09-30
+last_verified = 2026-09-30
+last_verified_rev = "4d79f0016"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-companion-tidy's report)"
 anchors = ["tmp/cybernetic-harness/companion-audit/references.bib", "tmp/cybernetic-harness/companion-audit/telemetry/scripts/ledger_classify_commits.py", "tmp/cybernetic-harness/companion-audit/E10-DRAFT.md"]
@@ -19,6 +21,11 @@ links = { depends_on = [], blocks = [], related = ["gap-4ec886", "gap-cb86e4"], 
 
 [[verify]]
 command = "awk '/@[a-z]+\\{armstrong2003making,/,/^\\}/' tmp/cybernetic-harness/companion-audit/references.bib | grep -qE 'school|institution' && grep -q 'argparse' tmp/cybernetic-harness/companion-audit/telemetry/scripts/ledger_classify_commits.py && python3 tools/paperlint.py --budget 0.97 tmp/cybernetic-harness/companion-audit/E10-DRAFT.md"
+
+[closed]
+at = 2026-09-30
+by = "coordinator (session 7622b882)"
+evidence = "Edited in place by wk-companion-fin (companion files are untracked). armstrong2003making is @phdthesis with school = {Royal Institute of Technology (KTH), Stockholm}, made durable through companion-audit/data/bib-overrides.json and build_bibliography.py's @phdthesis support; ledger_classify_commits.py parses its arguments with argparse (--json OUT without REPO exits 2); E10 is at 7,441 of 7,700 words (0.966x) with all 16 markers and 73 footnotes unchanged, and 03-OUTLINE.md's length note matches. Verify: exit 0 (paperlint clean)."
 +++
 
 ## Problem

@@ -1,0 +1,109 @@
+{
+  "description": "Golden vectors for the config fingerprint (S01 section 4.7): \"b3:\" + hex(blake3(canon(redact(config)))). canon is RFC 8785 JSON canonicalization: object keys sorted by UTF-16 code units, no insignificant whitespace, ECMAScript number form (5.0 is 5, 1e21 is 1e+21), integers written exactly, and only quote, backslash and control characters escaped. redact replaces the value of every key that is `secrets`, ends with `_key` or contains `token` (ASCII case-insensitive) with \"<redacted>\", unless the value is a number or a boolean, which cannot be a secret (`max_tokens` stays in the hash); redacted_keys counts the replaced values. Every implementation (roko_core::config::fingerprint, the S08 driver) must reproduce each case.",
+  "cases": [
+    {
+      "name": "empty object",
+      "input": {},
+      "canonical": "{}",
+      "redacted_keys": 0,
+      "hash": "b3:6e46dd10defc9b56c29a6ec56b508c21f54c08192194e4df25bf36f0c9c3c279"
+    },
+    {
+      "name": "key order and nesting",
+      "input": {
+        "b": 1,
+        "a": {
+          "d": [
+            3,
+            {
+              "f": true,
+              "e": null
+            }
+          ],
+          "c": "x"
+        }
+      },
+      "canonical": "{\"a\":{\"c\":\"x\",\"d\":[3,{\"e\":null,\"f\":true}]},\"b\":1}",
+      "redacted_keys": 0,
+      "hash": "b3:0310124cefdd11664ae9d703a6084bdb78fcdaf3e25e7f951a84511a7319fba1"
+    },
+    {
+      "name": "secrets are redacted, limits are not",
+      "input": {
+        "serve": {
+          "auth": {
+            "enabled": true,
+            "api_key": "sk-live-123"
+          }
+        },
+        "providers": {
+          "zai": {
+            "api_key_env": "ZAI_API_KEY",
+            "base_url": "https://api.z.ai/v1"
+          }
+        },
+        "chain": {
+          "wallet_key": "0xabc"
+        },
+        "platforms": {
+          "slack": {
+            "token": {
+              "env": "SLACK_TOKEN"
+            }
+          }
+        },
+        "deploy": {
+          "railway_api_token": null
+        },
+        "agent": {
+          "max_tokens": 4096,
+          "use_max_completion_tokens": true
+        },
+        "secrets": {
+          "anthropic": "sk-ant-1"
+        },
+        "mcp": {
+          "github": {
+            "env": {
+              "GITHUB_TOKEN": "ghp_x",
+              "LOG_LEVEL": "info"
+            }
+          }
+        }
+      },
+      "canonical": "{\"agent\":{\"max_tokens\":4096,\"use_max_completion_tokens\":true},\"chain\":{\"wallet_key\":\"<redacted>\"},\"deploy\":{\"railway_api_token\":\"<redacted>\"},\"mcp\":{\"github\":{\"env\":{\"GITHUB_TOKEN\":\"<redacted>\",\"LOG_LEVEL\":\"info\"}}},\"platforms\":{\"slack\":{\"token\":\"<redacted>\"}},\"providers\":{\"zai\":{\"api_key_env\":\"ZAI_API_KEY\",\"base_url\":\"https://api.z.ai/v1\"}},\"secrets\":\"<redacted>\",\"serve\":{\"auth\":{\"api_key\":\"<redacted>\",\"enabled\":true}}}",
+      "redacted_keys": 6,
+      "hash": "b3:646d76930e8b395ee60c0c14c36b9b3a401c578fe463831393830f5a74a141f7"
+    },
+    {
+      "name": "numbers in ECMAScript form",
+      "input": {
+        "float": 1.5,
+        "whole_float": 5.0,
+        "big": 1e+21,
+        "small": 1e-07,
+        "tenth": 0.1,
+        "neg": -2.25,
+        "int": 42,
+        "neg_int": -7,
+        "zero": 0.0,
+        "micro": 1e-06
+      },
+      "canonical": "{\"big\":1e+21,\"float\":1.5,\"int\":42,\"micro\":0.000001,\"neg\":-2.25,\"neg_int\":-7,\"small\":1e-7,\"tenth\":0.1,\"whole_float\":5,\"zero\":0}",
+      "redacted_keys": 0,
+      "hash": "b3:91af32e1b44af143ab12e10c3e580e0628e0bc9260c5807158cc4ce90bcf2260"
+    },
+    {
+      "name": "strings and non-ASCII keys",
+      "input": {
+        "é": 1,
+        "z": 2,
+        "a": 3,
+        "s": "line\nbreak \"quoted\" \\ tab\t ctrl\u0001 é ✓ 😀 /"
+      },
+      "canonical": "{\"a\":3,\"s\":\"line\\nbreak \\\"quoted\\\" \\\\ tab\\t ctrl\\u0001 é ✓ 😀 /\",\"z\":2,\"é\":1}",
+      "redacted_keys": 0,
+      "hash": "b3:760cd081edc77a3b9feba7dcbd0ddbdd6f26a5cfac76a3c81c0d13ba083c4fad"
+    }
+  ]
+}

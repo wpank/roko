@@ -31,6 +31,10 @@ struct Pattern {
     /// `None` → replace the whole match. `Some(n)` → replace group `n`
     /// only (leaving the rest of the match in-place).
     replace_group: Option<usize>,
+    /// Whether a match is a secret by its exact format (a vendor key
+    /// prefix, a JWT, a private-key block) rather than by the name it is
+    /// assigned to. See [`high_confidence_secret`].
+    exact_format: bool,
 }
 
 /// Lazy-initialised default pattern set. Compiled exactly once per process.
@@ -51,72 +55,84 @@ fn default_patterns() -> &'static Vec<Pattern> {
                 re: Regex::new(r"\bsk-ant-api\d{2}-[A-Za-z0-9_-]{80,}\b")
                     .expect("Anthropic key regex compiles"),
                 replace_group: None,
+                exact_format: true,
             },
             // 2. OpenAI API keys (sk-proj-… and bare sk-…)
             Pattern {
                 re: Regex::new(r"\bsk-(?:proj-)?[A-Za-z0-9_-]{20,}\b")
                     .expect("OpenAI key regex compiles"),
                 replace_group: None,
+                exact_format: true,
             },
             // 3a. AWS access key AKIA
             Pattern {
                 re: Regex::new(r"\bAKIA[0-9A-Z]{16}\b")
                     .expect("AWS AKIA regex compiles"),
                 replace_group: None,
+                exact_format: true,
             },
             // 3b. AWS access key ASIA (STS temporary)
             Pattern {
                 re: Regex::new(r"\bASIA[0-9A-Z]{16}\b")
                     .expect("AWS ASIA regex compiles"),
                 replace_group: None,
+                exact_format: true,
             },
             // 4a. GitHub PAT ghp_
             Pattern {
                 re: Regex::new(r"\bghp_[A-Za-z0-9]{36}\b")
                     .expect("GitHub ghp_ regex compiles"),
                 replace_group: None,
+                exact_format: true,
             },
             // 4b. GitHub PAT ghs_
             Pattern {
                 re: Regex::new(r"\bghs_[A-Za-z0-9]{36}\b")
                     .expect("GitHub ghs_ regex compiles"),
                 replace_group: None,
+                exact_format: true,
             },
             // 4c. GitHub PAT gho_
             Pattern {
                 re: Regex::new(r"\bgho_[A-Za-z0-9]{36}\b")
                     .expect("GitHub gho_ regex compiles"),
                 replace_group: None,
+                exact_format: true,
             },
             // 4d. GitHub PAT ghu_
             Pattern {
                 re: Regex::new(r"\bghu_[A-Za-z0-9]{36}\b")
                     .expect("GitHub ghu_ regex compiles"),
                 replace_group: None,
+                exact_format: true,
             },
             // 4e. GitHub PAT ghr_
             Pattern {
                 re: Regex::new(r"\bghr_[A-Za-z0-9]{36}\b")
                     .expect("GitHub ghr_ regex compiles"),
                 replace_group: None,
+                exact_format: true,
             },
             // 5. GitLab PAT
             Pattern {
                 re: Regex::new(r"\bglpat-[A-Za-z0-9_-]{20,}\b")
                     .expect("GitLab PAT regex compiles"),
                 replace_group: None,
+                exact_format: true,
             },
             // 6. Slack tokens
             Pattern {
                 re: Regex::new(r"\bxox[abpsr]-[A-Za-z0-9-]{10,}\b")
                     .expect("Slack token regex compiles"),
                 replace_group: None,
+                exact_format: true,
             },
             // 7. JWTs (three base64url segments starting with eyJ)
             Pattern {
                 re: Regex::new(r"\beyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b")
                     .expect("JWT regex compiles"),
                 replace_group: None,
+                exact_format: true,
             },
             // 8. Generic private key blocks (multiline)
             Pattern {
@@ -128,6 +144,7 @@ fn default_patterns() -> &'static Vec<Pattern> {
                 .build()
                 .expect("private key block regex compiles"),
                 replace_group: None,
+                exact_format: true,
             },
             // 9. Env-file assignments for high-risk keys (replace value only)
             // Group 1: key  Group 2: value
@@ -140,6 +157,7 @@ fn default_patterns() -> &'static Vec<Pattern> {
                 .build()
                 .expect("env assignment regex compiles"),
                 replace_group: Some(2),
+                exact_format: false,
             },
         ]
     })
@@ -185,11 +203,26 @@ pub fn scrub_secrets(content: &str, policy: &ScrubPolicy) -> String {
         let extra = Pattern {
             re,
             replace_group: None,
+            exact_format: false,
         };
         result = apply_pattern(&result, &extra);
     }
 
     result
+}
+
+/// Whether `content` holds a secret by its exact format: an API key with a
+/// vendor prefix, a JWT or a private-key block (default patterns 1-8).
+///
+/// Unlike [`scrub_secrets`], it leaves out the `NAME = value` rule (pattern
+/// 9), which also matches code such as `let token = next()` or
+/// `api_key: Option<String>`. A match here is worth blocking on.
+#[must_use]
+pub fn high_confidence_secret(content: &str) -> bool {
+    default_patterns()
+        .iter()
+        .filter(|pattern| pattern.exact_format)
+        .any(|pattern| pattern.re.is_match(content))
 }
 
 /// Apply a single `Pattern` to `text`, returning the result.
@@ -484,6 +517,23 @@ mod tests {
         assert!(
             p.extra_patterns.is_empty(),
             "extra_patterns must be empty by default"
+        );
+    }
+
+    #[test]
+    fn high_confidence_secrets_leave_out_name_value_code() {
+        let anthropic = "sk-ant-api03-".to_string() + &"A".repeat(80);
+        let github = "ghp_".to_string() + &"a".repeat(36);
+        assert!(high_confidence_secret(&anthropic));
+        assert!(high_confidence_secret(&github));
+
+        let code = "The config gains api_key: Option<String>, and the client does \
+                    let token = next();";
+        assert!(!high_confidence_secret(code));
+        assert_ne!(
+            scrub_secrets(code, &default_policy()),
+            code,
+            "the full policy still scrubs the NAME = value matches"
         );
     }
 }

@@ -2,14 +2,16 @@
 id = "gap-8cb382"
 kind = "gap"
 title = "Run manifest with a config fingerprint for every plan run (S01.P0-2)"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p2"
 goal = "truth"
 size = "S"
 subsystem = ["roko-core/config", "roko-cli/build", "roko-cli/graph_execution"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-09-30
+last_verified = 2026-09-30
+last_verified_rev = "a8159e1ec"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e4"
 discovered_from = "tmp/cybernetic-harness/specs/S01-instrumentation.md (P0-2, §4.7 config hash, §5.1 RunManifest)"
 anchors = ["crates/roko-core/src/config/fingerprint.rs", "crates/roko-core/src/metric.rs::ConfigHash", "crates/roko-cli/build.rs", "crates/roko-cli/src/graph_execution/plan_runner.rs::run_graph_plan_body"]
@@ -22,6 +24,11 @@ command = "grep -rqw 'fn config_fingerprint_is_order_independent_and_redacts_sec
 
 [[verify]]
 command = "grep -rqw 'fn graph_plan_run_writes_run_manifest' crates/roko-cli/src/ && cargo test -p roko-cli --lib graph_plan_run_writes_run_manifest"
+
+[closed]
+at = 2026-09-30
+by = "coordinator (session 7622b882)"
+evidence = "Merged in 9313e49f0. Batch 12a gate on the merged tree (MAIN a8159e1ec has the same tree as gated 265acb18b): cargo check --workspace --tests, nightly fmt --check (after the coordinator's rustfmt commits a3509fc46 and 6144df24b) and clippy -p roko-cli -p roko-learn -p roko-core -p roko-agent -p roko-gate -p roko-serve --no-deps -D warnings clean; lib tests pass: roko-cli 3133, roko-core 1938, roko-learn 1196, roko-serve 958, roko-gate 689, roko-agent 2257 (its one failure, a_timed_out_attempt_reports_the_usage_it_streamed, is a load flake at load 77 that passes alone). Verify: config_fingerprint_is_order_independent_and_redacts_secrets (roko-core lib) and graph_plan_run_writes_run_manifest (roko-cli lib) pass."
 +++
 
 ## Problem
@@ -75,3 +82,5 @@ At `41c7ffbd6` there is no config fingerprint and no manifest. The rerun half of
 - Steps 1 and 2 are cold and can land now.
 - Step 3 adds two calls in the hot `run_graph_plan_body`. Land it after the portal branches merge, together with
   gap-96f7ed if convenient.
+- Implemented on `work/gap-8cb382` at `aa1d5eb7f`; cargo verification deferred to the batch check. On the branch, both verify tests pass.
+- The redaction rule departs from S01 §4.7's letter in two ways. Key matching is ASCII case-insensitive (`GITHUB_TOKEN` in an env map is a secret), and a number or boolean under a secret key is kept, so `max_tokens` stays in the hash. `crates/roko-core/src/config/config_fingerprint_golden.json` pins the rule; its canonical forms match the `rfc8785` Python package and its hashes the `blake3` one. S01 and S08's `driver/fingerprint.py` should follow it.

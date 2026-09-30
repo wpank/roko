@@ -4,6 +4,8 @@
 //!
 //! - [`schema`] -- The unified `RokoConfig` type with hierarchical sections.
 //! - [`presets`] -- Named presets (minimal / balanced / thorough).
+//! - [`fingerprint`](mod@fingerprint) -- The secret-redacted config hash
+//!   run manifests record.
 
 use thiserror::Error;
 
@@ -14,6 +16,7 @@ pub mod cache;
 pub mod chain;
 pub mod env_registry;
 pub mod execution;
+pub mod fingerprint;
 pub mod gates;
 pub mod graduation;
 pub mod hot_reload;
@@ -37,6 +40,7 @@ pub mod validation;
 // Re-exports for ergonomic use.
 pub use crate::temperament::Temperament;
 pub use cache::ConfigCache;
+pub use fingerprint::{ConfigFingerprint, fingerprint};
 pub use presets::Preset;
 pub use provenance::{
     ConfigDiagnostic, ConfigProvenance, ConfigSource, FieldProvenance, MergeContext,

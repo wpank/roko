@@ -24,20 +24,32 @@ use tokio::sync::watch;
 /// sibling editing the same working tree may have caused it.
 pub(crate) struct InFlightTasks {
     attempts: parking_lot::Mutex<BTreeMap<u64, InFlightAttempt>>,
-    /// Attempts that have ended, by id, so the siblings that overlapped a
-    /// task's attempts can still be named afterwards
-    /// ([`Self::sibling_files_since`]).
+    /// Attempts that have ended, by id, in the order they ended, so the
+    /// siblings that overlapped a task's attempts can still be named
+    /// afterwards ([`Self::sibling_files_since`]). Only those an open window
+    /// overlaps are kept, at most [`MAX_ENDED`] of them.
     ended: parking_lot::Mutex<Vec<(u64, InFlightAttempt)>>,
+    /// Windows [`Self::mark`] opened and [`Self::release`] has not closed,
+    /// by window id.
+    marks: parking_lot::Mutex<BTreeMap<u64, WriterMark>>,
     next_id: AtomicU64,
+    next_mark: AtomicU64,
     /// Bumped whenever an attempt ends or starts settling.
     changed: watch::Sender<u64>,
 }
 
+/// Most ended attempts kept, whatever windows are open: a window whose task
+/// never passes is never released, and would otherwise keep every attempt
+/// that ends after it.
+const MAX_ENDED: usize = 4096;
+
 /// Where a task's window of edits to its working tree starts: the attempts
 /// in flight then, and the id the next attempt to register gets. The
 /// siblings that overlap the window are those attempts and every later one.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub(crate) struct WriterMark {
+    /// The window's id, for [`InFlightTasks::release`].
+    id: u64,
     next_id: u64,
     in_flight: BTreeSet<u64>,
 }
@@ -85,7 +97,9 @@ impl Default for InFlightTasks {
         Self {
             attempts: parking_lot::Mutex::default(),
             ended: parking_lot::Mutex::default(),
+            marks: parking_lot::Mutex::default(),
             next_id: AtomicU64::new(0),
+            next_mark: AtomicU64::new(0),
             changed: watch::channel(0).0,
         }
     }
@@ -96,6 +110,7 @@ impl Drop for InFlightGuard<'_> {
         let ended = self.tasks.attempts.lock().remove(&self.id);
         if let Some(attempt) = ended {
             self.tasks.ended.lock().push((self.id, attempt));
+            self.tasks.forget_settled();
         }
         self.tasks.bump();
     }
@@ -126,14 +141,46 @@ impl InFlightTasks {
         InFlightGuard { tasks: self, id }
     }
 
-    /// Start a window from which [`Self::sibling_files_since`] names the
-    /// sibling attempts that may edit a task's working tree.
+    /// Open a window from which [`Self::sibling_files_since`] names the
+    /// sibling attempts that may edit a task's working tree. It keeps the
+    /// attempts it overlaps after they end, until [`Self::release`] closes
+    /// it.
     pub(crate) fn mark(&self) -> WriterMark {
         let attempts = self.attempts.lock();
-        WriterMark {
+        let mark = WriterMark {
+            id: self.next_mark.fetch_add(1, Ordering::Relaxed),
             next_id: self.next_id.load(Ordering::Relaxed),
             in_flight: attempts.keys().copied().collect(),
-        }
+        };
+        // Opened under the attempts lock, so an attempt the window holds
+        // cannot end, and be forgotten, before the window is open.
+        self.marks.lock().insert(mark.id, mark.clone());
+        mark
+    }
+
+    /// Close a window [`Self::mark`] opened, once its task needs no more
+    /// sibling names, and forget the ended attempts only it kept.
+    pub(crate) fn release(&self, mark: &WriterMark) {
+        self.marks.lock().remove(&mark.id);
+        self.forget_settled();
+    }
+
+    /// Forget the ended attempts no open window overlaps, then keep at most
+    /// [`MAX_ENDED`] of the rest, the last to end.
+    fn forget_settled(&self) {
+        let (floor, pinned) = {
+            let marks = self.marks.lock();
+            let floor = marks.values().map(|mark| mark.next_id).min();
+            let pinned: BTreeSet<u64> = marks
+                .values()
+                .flat_map(|mark| mark.in_flight.iter().copied())
+                .collect();
+            (floor, pinned)
+        };
+        let mut ended = self.ended.lock();
+        ended.retain(|(id, _)| floor.is_some_and(|floor| *id >= floor) || pinned.contains(id));
+        let excess = ended.len().saturating_sub(MAX_ENDED);
+        ended.drain(..excess);
     }
 
     /// The `files` declared by attempts of tasks other than `key` in
@@ -842,5 +889,52 @@ mod tests {
             ["brief.rs", "running.rs"]
         );
         drop(own);
+    }
+
+    #[test]
+    fn in_flight_tasks_forget_settled_attempts() {
+        let tasks = InFlightTasks::default();
+        let workdir = Path::new(WORKDIR);
+        let ended = |tasks: &InFlightTasks| -> Vec<String> {
+            tasks
+                .ended
+                .lock()
+                .iter()
+                .map(|(_, attempt)| attempt.key.clone())
+                .collect()
+        };
+
+        // With no window open, an attempt is forgotten as it ends.
+        for n in 0..100 {
+            drop(tasks.register(&format!("plan/T{n}"), workdir, &files(&["t.rs"])));
+        }
+        assert!(ended(&tasks).is_empty());
+
+        // An open window keeps the attempts it overlaps until it closes.
+        drop(tasks.register("plan/BEFORE", workdir, &files(&["before.rs"])));
+        let running = tasks.register("plan/RUNNING", workdir, &files(&["running.rs"]));
+        let mark = tasks.mark();
+        drop(tasks.register("plan/LATER", workdir, &files(&["later.rs"])));
+        drop(running);
+        assert_eq!(ended(&tasks), ["plan/LATER", "plan/RUNNING"]);
+        assert_eq!(
+            tasks.sibling_files_since(&mark, "plan/OWN", workdir),
+            ["later.rs", "running.rs"]
+        );
+        tasks.release(&mark);
+        assert!(ended(&tasks).is_empty());
+
+        // A window that is never closed keeps only the last MAX_ENDED.
+        let _never_closed = tasks.mark();
+        for n in 0..MAX_ENDED + 10 {
+            drop(tasks.register(&format!("plan/B{n}"), workdir, &files(&["b.rs"])));
+        }
+        let kept = ended(&tasks);
+        assert_eq!(kept.len(), MAX_ENDED);
+        assert_eq!(kept.first().map(String::as_str), Some("plan/B10"));
+        assert_eq!(
+            kept.last().cloned(),
+            Some(format!("plan/B{}", MAX_ENDED + 9))
+        );
     }
 }

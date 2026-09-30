@@ -1,0 +1,855 @@
+//! Read-only checks and reports over a run's attempt records (S01 P0-13,
+//! §5.9, §7): what `roko learn telemetry check` and `route-report` print.
+//!
+//! Everything here reads files alone and writes nothing.
+//! [`RunRecords::load`] parses one run directory's `attempts.jsonl` and
+//! `decisions.jsonl`, and [`LegacyRows::load`] finds the run's attempt keys
+//! in the logs that predate S01 (`learn/efficiency.jsonl`,
+//! `learn/costs.jsonl`, `episodes.jsonl`). [`check`] validates one run;
+//! [`route_report`] counts routing outcomes per decision source over any
+//! number of runs.
+
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::fs::File;
+use std::io::{self, BufRead, BufReader};
+use std::path::Path;
+
+use chrono::{DateTime, Utc};
+use roko_fs::layout::RokoLayout;
+use serde::Serialize;
+use serde_json::Value;
+
+use super::manifest::AttemptTally;
+use super::records::{
+    ATTEMPT_OPEN_SCHEMA, AttemptKey, AttemptOpenRecord, AttemptVerdictRecord, DECISION_SCHEMA,
+    RunFile, Stamped, VERDICT_SCHEMA,
+};
+use crate::error::LearnError;
+use crate::routing_log::RoutingDecisionLog;
+
+/// The source [`route_report`] files an attempt under when no route
+/// decision names one. Graph dispatch writes no route decisions yet (S01
+/// P0-8), so today every attempt is `unknown`.
+pub const UNKNOWN_SOURCE: &str = "unknown";
+
+// ── Reading a run ─────────────────────────────────────────────────────
+
+/// The records of one run directory, `.roko/runs/<run_id>/`.
+#[derive(Debug, Clone, Default)]
+pub struct RunRecords {
+    /// The run id: the directory's name.
+    pub run_id: String,
+    /// Attempt-open lines, in file order.
+    pub opens: Vec<Stamped<AttemptOpenRecord>>,
+    /// Verdict lines, in file order.
+    pub verdicts: Vec<Stamped<AttemptVerdictRecord>>,
+    /// Route decision rows, in file order.
+    pub decisions: Vec<Stamped<RoutingDecisionLog>>,
+    /// Lines that are not a valid record of their file, as
+    /// `file:line: reason`.
+    pub invalid: Vec<String>,
+    /// The `seq` of every line that has one, with its file, in file order.
+    pub seqs: Vec<(RunFile, u64)>,
+}
+
+impl RunRecords {
+    /// Parse the run files in `run_dir`. Missing files hold no lines; a line
+    /// that does not parse as a record of its file is kept in
+    /// [`Self::invalid`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a run file exists but cannot be read.
+    pub fn load(run_dir: &Path) -> Result<Self, LearnError> {
+        let run_id = run_dir
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or_default()
+            .to_string();
+        let mut records = Self {
+            run_id,
+            ..Self::default()
+        };
+        for file in RunFile::ALL {
+            for (index, line) in read_lines(&file.path_in(run_dir))?.iter().enumerate() {
+                if !line.trim().is_empty() {
+                    records.add_line(file, index + 1, line);
+                }
+            }
+        }
+        Ok(records)
+    }
+
+    fn add_line(&mut self, file: RunFile, number: usize, line: &str) {
+        let at = format!("{}:{number}", file.file_name());
+        let value: Value = match serde_json::from_str(line) {
+            Ok(value) => value,
+            Err(error) => {
+                self.invalid.push(format!("{at}: not JSON: {error}"));
+                return;
+            }
+        };
+        if let Some(seq) = value.get("seq").and_then(Value::as_u64) {
+            self.seqs.push((file, seq));
+        }
+        let schema = value
+            .get("schema_version")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let parsed = match (file, schema.as_str()) {
+            (RunFile::Attempts, ATTEMPT_OPEN_SCHEMA) => {
+                serde_json::from_value(value).map(|record| self.opens.push(record))
+            }
+            (RunFile::Attempts, VERDICT_SCHEMA) => {
+                serde_json::from_value(value).map(|record| self.verdicts.push(record))
+            }
+            (RunFile::Decisions, DECISION_SCHEMA) => {
+                serde_json::from_value(value).map(|record| self.decisions.push(record))
+            }
+            _ => {
+                self.invalid
+                    .push(format!("{at}: unexpected schema_version {schema:?}"));
+                return;
+            }
+        };
+        if let Err(error) = parsed {
+            self.invalid
+                .push(format!("{at}: invalid {schema}: {error}"));
+        }
+    }
+
+    /// The attempts the run's `attempts.jsonl` opened, settled and abandoned.
+    #[must_use]
+    pub fn tally(&self) -> AttemptTally {
+        let opens = self.opens.iter().map(|line| {
+            let key = line.record.identity.attempt_key.as_str();
+            (ATTEMPT_OPEN_SCHEMA, key)
+        });
+        let verdicts = self.verdicts.iter().map(|line| {
+            let key = line.record.identity.attempt_key.as_str();
+            (VERDICT_SCHEMA, key)
+        });
+        AttemptTally::from_lines(opens.chain(verdicts))
+    }
+}
+
+/// One run's attempt keys in the logs that predate S01, which gained an
+/// `attempt_key` (S01 §5): rows whose key names another run, or that have
+/// none, are left out.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LegacyRows {
+    /// Keys of the `learn/efficiency.jsonl` rows (a dispatch row, and a
+    /// gate-pass row when the gate passed).
+    pub efficiency: Vec<String>,
+    /// Keys of the `learn/costs.jsonl` rows.
+    pub costs: Vec<String>,
+    /// Keys of the `episodes.jsonl` rows (`extra.attempt_key`).
+    pub episodes: Vec<String>,
+}
+
+impl LegacyRows {
+    /// Find run `run_id`'s rows in the logs of `layout`. A missing log holds
+    /// none.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a log exists but cannot be read.
+    pub fn load(layout: &RokoLayout, run_id: &str) -> Result<Self, LearnError> {
+        let learn_dir = layout.learn_dir();
+        Ok(Self {
+            efficiency: run_keys(
+                &learn_dir.join("efficiency.jsonl"),
+                run_id,
+                &["attempt_key"],
+            )?,
+            costs: run_keys(&learn_dir.join("costs.jsonl"), run_id, &["attempt_key"])?,
+            episodes: run_keys(
+                &layout.root_episodes_path(),
+                run_id,
+                &["extra", "attempt_key"],
+            )?,
+        })
+    }
+}
+
+/// The attempt keys at `field_path` of the rows of `path` whose key names
+/// run `run_id`.
+fn run_keys(path: &Path, run_id: &str, field_path: &[&str]) -> Result<Vec<String>, LearnError> {
+    let needle = format!("\"{run_id}:");
+    let mut keys = Vec::new();
+    for line in read_lines(path)? {
+        if !line.contains(&needle) {
+            continue;
+        }
+        let Ok(row) = serde_json::from_str::<Value>(&line) else {
+            continue;
+        };
+        let key = field_path
+            .iter()
+            .try_fold(&row, |value, field| value.get(*field))
+            .and_then(Value::as_str);
+        if let Some(key) = key
+            && AttemptKey::parse(key).is_some_and(|key| key.run_id == run_id)
+        {
+            keys.push(key.to_string());
+        }
+    }
+    Ok(keys)
+}
+
+/// The lines of `path`; none when it does not exist.
+fn read_lines(path: &Path) -> Result<Vec<String>, LearnError> {
+    let io_error = |source: io::Error| LearnError::Io {
+        path: path.display().to_string(),
+        source,
+    };
+    let file = match File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(io_error(error)),
+    };
+    BufReader::new(file)
+        .lines()
+        .collect::<Result<_, _>>()
+        .map_err(io_error)
+}
+
+// ── check ─────────────────────────────────────────────────────────────
+
+/// How one legacy log joins a run's verdicts (S01 SC2 wants 100%).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct JoinCoverage {
+    /// The log, e.g. `learn/costs.jsonl`.
+    pub file: &'static str,
+    /// Settled attempts of the run.
+    pub verdicts: usize,
+    /// Settled attempts with at least one row in the log.
+    pub joined: usize,
+    /// Settled attempts with no row in the log.
+    pub missing: Vec<String>,
+    /// Keys of rows that name the run but no settled attempt of it.
+    pub orphans: Vec<String>,
+}
+
+/// What `roko learn telemetry check` found in one run.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct CheckReport {
+    /// The run checked.
+    pub run_id: String,
+    /// Attempts opened, settled and abandoned (S01 SC1).
+    pub attempts_opened: u64,
+    /// See [`AttemptTally::settled`].
+    pub attempts_settled: u64,
+    /// See [`AttemptTally::abandoned`].
+    pub attempts_abandoned: u64,
+    /// Route decision rows.
+    pub decisions: usize,
+    /// Lines that are not valid records of their file.
+    pub invalid_lines: Vec<String>,
+    /// `settlement_id`s that settle more than once.
+    pub duplicate_settlements: Vec<String>,
+    /// Attempts with a verdict but no attempt-open line.
+    pub unopened_verdicts: Vec<String>,
+    /// `seq` ordering violations: repeated or decreasing `seq`, and a verdict
+    /// that precedes its own attempt's open line or route decision.
+    pub seq_violations: Vec<String>,
+    /// Join coverage of the efficiency, cost and episode logs.
+    pub coverage: Vec<JoinCoverage>,
+    /// Settled attempts per `cost.source`.
+    pub cost_sources: BTreeMap<String, usize>,
+}
+
+impl CheckReport {
+    /// Every failure the check found; empty when the run passes.
+    #[must_use]
+    pub fn failures(&self) -> Vec<String> {
+        let mut failures: Vec<String> = self
+            .invalid_lines
+            .iter()
+            .map(|line| format!("invalid line {line}"))
+            .collect();
+        failures.extend(
+            self.duplicate_settlements
+                .iter()
+                .map(|id| format!("settled more than once: {id}")),
+        );
+        failures.extend(
+            self.unopened_verdicts
+                .iter()
+                .map(|key| format!("verdict without an attempt-open line: {key}")),
+        );
+        failures.extend(self.seq_violations.iter().cloned());
+        for coverage in &self.coverage {
+            if !coverage.missing.is_empty() {
+                failures.push(format!(
+                    "{}: {} of {} settled attempts have no row",
+                    coverage.file,
+                    coverage.missing.len(),
+                    coverage.verdicts
+                ));
+            }
+            if !coverage.orphans.is_empty() {
+                failures.push(format!(
+                    "{}: {} row(s) name no settled attempt of the run",
+                    coverage.file,
+                    coverage.orphans.len()
+                ));
+            }
+        }
+        failures
+    }
+
+    /// Whether the run passed every check.
+    #[must_use]
+    pub fn passed(&self) -> bool {
+        self.failures().is_empty()
+    }
+}
+
+/// Check one run's records: schema validity, one settlement per attempt,
+/// `seq` ordering, join coverage of the legacy logs and the cost-source mix
+/// (S01 §7 criterion 2).
+#[must_use]
+pub fn check(records: &RunRecords, legacy: &LegacyRows) -> CheckReport {
+    let tally = records.tally();
+    let opened: BTreeSet<&str> = records
+        .opens
+        .iter()
+        .map(|line| line.record.identity.attempt_key.as_str())
+        .collect();
+    let settled: BTreeSet<&str> = records
+        .verdicts
+        .iter()
+        .map(|line| line.record.identity.attempt_key.as_str())
+        .collect();
+
+    let mut settlements: BTreeMap<&str, usize> = BTreeMap::new();
+    for line in &records.verdicts {
+        *settlements
+            .entry(line.record.settlement_id.as_str())
+            .or_default() += 1;
+    }
+    let duplicate_settlements = settlements
+        .into_iter()
+        .filter(|(_, count)| *count > 1)
+        .map(|(id, _)| id.to_string())
+        .collect();
+    let unopened_verdicts = settled
+        .difference(&opened)
+        .map(|key| (*key).to_string())
+        .collect();
+
+    let mut cost_sources = BTreeMap::new();
+    for line in &records.verdicts {
+        let source = serde_json::to_value(line.record.cost.source)
+            .ok()
+            .and_then(|source| source.as_str().map(str::to_string))
+            .unwrap_or_else(|| UNKNOWN_SOURCE.to_string());
+        *cost_sources.entry(source).or_default() += 1;
+    }
+
+    let coverage = [
+        ("learn/efficiency.jsonl", &legacy.efficiency),
+        ("learn/costs.jsonl", &legacy.costs),
+        ("episodes.jsonl", &legacy.episodes),
+    ]
+    .into_iter()
+    .map(|(file, keys)| join_coverage(file, &settled, keys))
+    .collect();
+
+    CheckReport {
+        run_id: records.run_id.clone(),
+        attempts_opened: tally.opened,
+        attempts_settled: tally.settled,
+        attempts_abandoned: tally.abandoned,
+        decisions: records.decisions.len(),
+        invalid_lines: records.invalid.clone(),
+        duplicate_settlements,
+        unopened_verdicts,
+        seq_violations: seq_violations(records),
+        coverage,
+        cost_sources,
+    }
+}
+
+fn join_coverage(file: &'static str, settled: &BTreeSet<&str>, keys: &[String]) -> JoinCoverage {
+    let rows: BTreeSet<&str> = keys.iter().map(String::as_str).collect();
+    JoinCoverage {
+        file,
+        verdicts: settled.len(),
+        joined: settled.intersection(&rows).count(),
+        missing: settled
+            .difference(&rows)
+            .map(|key| (*key).to_string())
+            .collect(),
+        orphans: rows
+            .difference(settled)
+            .map(|key| (*key).to_string())
+            .collect(),
+    }
+}
+
+/// Repeated `seq`s across the run's files, a `seq` that does not grow along
+/// its file, and a verdict whose `seq` does not follow its attempt's open
+/// line and route decision.
+fn seq_violations(records: &RunRecords) -> Vec<String> {
+    let mut violations = Vec::new();
+    let mut seen = BTreeSet::new();
+    let mut last: HashMap<RunFile, u64> = HashMap::new();
+    for (file, seq) in &records.seqs {
+        if !seen.insert(*seq) {
+            violations.push(format!("seq {seq} appears more than once"));
+        }
+        if let Some(previous) = last.insert(*file, *seq)
+            && *seq <= previous
+        {
+            violations.push(format!(
+                "{}: seq {seq} follows seq {previous}",
+                file.file_name()
+            ));
+        }
+    }
+    let mut preceding: HashMap<&str, Vec<(&str, u64)>> = HashMap::new();
+    for line in &records.opens {
+        let key = line.record.identity.attempt_key.as_str();
+        preceding
+            .entry(key)
+            .or_default()
+            .push(("attempt-open line", line.seq));
+    }
+    for line in &records.decisions {
+        if let Some(key) = &line.record.attempt_key {
+            preceding
+                .entry(key)
+                .or_default()
+                .push(("route decision", line.seq));
+        }
+    }
+    for line in &records.verdicts {
+        let key = line.record.identity.attempt_key.as_str();
+        for (what, seq) in preceding.get(key).into_iter().flatten() {
+            if *seq >= line.seq {
+                violations.push(format!(
+                    "{key}: verdict (seq {}) does not follow its {what} (seq {seq})",
+                    line.seq
+                ));
+            }
+        }
+    }
+    violations
+}
+
+// ── route-report ──────────────────────────────────────────────────────
+
+/// Routing outcomes of the attempts of one decision source (S01 §7
+/// criterion 4). Each list holds attempt keys, so every number traces to
+/// its records (`--explain`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct RouteRow {
+    /// The route decision's `source` (`router`, `task_hint`, `fallback`,
+    /// ...), or [`UNKNOWN_SOURCE`].
+    pub source: String,
+    /// Settled attempts.
+    pub attempts: Vec<String>,
+    /// Attempts with learning label 1.
+    pub passed: Vec<String>,
+    /// Attempts with learning label 0.
+    pub failed: Vec<String>,
+    /// Attempts with a null learning label (unverified, infra and harness
+    /// outcomes).
+    pub unlabeled: Vec<String>,
+    /// Attempts whose served model differs from the one requested, date
+    /// suffixes aside.
+    pub model_mismatch: Vec<String>,
+    /// Attempts whose route decision names the default model.
+    pub with_default: Vec<String>,
+    /// Those of them whose pick differs from the default (ι).
+    pub pick_not_default: Vec<String>,
+    /// Masked routes (`source = router` while the pick differs from the
+    /// router's own proposal): `None` until route decisions record that
+    /// proposal (S01 P0-8).
+    pub masked: Option<Vec<String>>,
+}
+
+impl RouteRow {
+    /// Share of the attempts with learning label 1; `None` without attempts.
+    #[must_use]
+    pub fn pass_rate(&self) -> Option<f64> {
+        ratio(self.passed.len(), self.attempts.len())
+    }
+
+    /// ι: share of the attempts whose decision names a default that picked
+    /// another model; `None` when no decision names one.
+    #[must_use]
+    pub fn iota(&self) -> Option<f64> {
+        ratio(self.pick_not_default.len(), self.with_default.len())
+    }
+}
+
+/// `part / whole`, or `None` when `whole` is 0.
+fn ratio(part: usize, whole: usize) -> Option<f64> {
+    (whole > 0).then(|| part as f64 / whole as f64)
+}
+
+/// What `roko learn telemetry route-report` prints.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct RouteReport {
+    /// The runs read.
+    pub runs: Vec<String>,
+    /// Route decision rows joined to a counted attempt.
+    pub decisions: usize,
+    /// One row per decision source, by source name.
+    pub rows: Vec<RouteRow>,
+}
+
+impl RouteReport {
+    /// Settled attempts counted over every source.
+    #[must_use]
+    pub fn attempts(&self) -> usize {
+        self.rows.iter().map(|row| row.attempts.len()).sum()
+    }
+}
+
+/// Count the settled attempts of `runs` per route decision source: how many
+/// passed, failed or carry no label, how often the served model differed
+/// from the requested one, and ι where decisions name a default. With
+/// `since`, only verdicts written at or after it count.
+#[must_use]
+pub fn route_report(runs: &[RunRecords], since: Option<DateTime<Utc>>) -> RouteReport {
+    let decisions: HashMap<&str, &RoutingDecisionLog> = runs
+        .iter()
+        .flat_map(|run| &run.decisions)
+        .filter_map(|line| Some((line.record.attempt_key.as_deref()?, &line.record)))
+        .collect();
+    let mut rows: BTreeMap<String, RouteRow> = BTreeMap::new();
+    let mut joined_decisions = 0;
+    for line in runs.iter().flat_map(|run| &run.verdicts) {
+        if let Some(since) = since
+            && !DateTime::parse_from_rfc3339(&line.ts).is_ok_and(|ts| ts >= since)
+        {
+            continue;
+        }
+        let verdict = &line.record;
+        let key = verdict.identity.attempt_key.clone();
+        let decision = decisions.get(key.as_str()).copied();
+        joined_decisions += usize::from(decision.is_some());
+        let source = decision
+            .and_then(|decision| decision.source)
+            .and_then(|source| serde_json::to_value(source).ok())
+            .and_then(|source| source.as_str().map(str::to_string))
+            .unwrap_or_else(|| UNKNOWN_SOURCE.to_string());
+        let row = rows.entry(source.clone()).or_insert_with(|| RouteRow {
+            source,
+            ..RouteRow::default()
+        });
+        match verdict.learning_label {
+            Some(1) => row.passed.push(key.clone()),
+            Some(_) => row.failed.push(key.clone()),
+            None => row.unlabeled.push(key.clone()),
+        }
+        let executed = &verdict.executed;
+        if let (Some(requested), Some(reported)) =
+            (&executed.model_requested, &executed.model_reported)
+            && undated(requested) != undated(reported)
+        {
+            row.model_mismatch.push(key.clone());
+        }
+        if let Some(decision) = decision
+            && let Some(default) = &decision.default_model
+        {
+            row.with_default.push(key.clone());
+            if decision.selected_model != *default {
+                row.pick_not_default.push(key.clone());
+            }
+        }
+        row.attempts.push(key);
+    }
+    RouteReport {
+        runs: runs.iter().map(|run| run.run_id.clone()).collect(),
+        decisions: joined_decisions,
+        rows: rows.into_values().collect(),
+    }
+}
+
+/// `model` without a trailing `-YYYYMMDD` release date.
+fn undated(model: &str) -> &str {
+    match model.rsplit_once('-') {
+        Some((base, date)) if date.len() == 8 && date.bytes().all(|b| b.is_ascii_digit()) => base,
+        _ => model,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Write as _;
+
+    use tempfile::TempDir;
+
+    use super::*;
+    use crate::telemetry::records::{
+        AttemptIdentity, AttemptOutcome, CostSource, DecisionSource, TelemetryRecord,
+    };
+    use crate::telemetry::writer::{TelemetryWriter, TelemetryWriterConfig};
+
+    const RUN: &str = "gr-7f3c2a91";
+
+    /// A route decision row with no attempt key yet.
+    const ROUTE_DECISION: &str = r#"{
+        "timestamp": "2026-10-02T14:03:11.402Z",
+        "trace_id": "trace-1",
+        "task_id": "T1",
+        "requested_model": "gpt-oss-120b",
+        "role": "implementer",
+        "task_complexity": "focused",
+        "selected_provider": "cerebras",
+        "selected_model": "gpt-oss-120b",
+        "routing_stage": "ucb",
+        "routing_reason": "highest_ucb_score",
+        "candidates": []
+    }"#;
+
+    fn identity(task: &str, attempt: u32) -> AttemptIdentity {
+        AttemptIdentity::new(&AttemptKey::new(RUN, "loop-census", task, attempt))
+    }
+
+    fn open(task: &str, attempt: u32) -> AttemptOpenRecord {
+        AttemptOpenRecord::new(identity(task, attempt), 0)
+    }
+
+    fn verdict(task: &str, attempt: u32, outcome: AttemptOutcome) -> AttemptVerdictRecord {
+        let mut verdict = AttemptVerdictRecord::settle(identity(task, attempt), outcome, true);
+        verdict.executed.model_requested = Some("gpt-oss-120b".to_string());
+        verdict.executed.model_reported = Some("gpt-oss-120b".to_string());
+        verdict.cost.source = CostSource::ProviderUsage;
+        verdict
+    }
+
+    fn decision(
+        task: &str,
+        attempt: u32,
+        source: DecisionSource,
+        selected: &str,
+    ) -> RoutingDecisionLog {
+        let mut decision: RoutingDecisionLog =
+            serde_json::from_str(ROUTE_DECISION).expect("parse decision");
+        decision.attempt_key = Some(identity(task, attempt).attempt_key);
+        decision.source = Some(source);
+        decision.default_model = Some("gpt-oss-120b".to_string());
+        decision.selected_model = selected.to_string();
+        decision
+    }
+
+    /// The loop-census fixture's shape: T1 passes, T2 fails twice, T3 is
+    /// unverified, T4's pinned model is replaced by a guard.
+    fn census_run(dir: &TempDir) -> RunRecords {
+        let writer = TelemetryWriter::spawn(dir.path(), TelemetryWriterConfig::default())
+            .expect("spawn writer");
+        let attempts = [
+            ("T1", 1, AttemptOutcome::Passed),
+            ("T2", 1, AttemptOutcome::GateFailed),
+            ("T2", 2, AttemptOutcome::GateFailed),
+            ("T3", 1, AttemptOutcome::Unverified),
+            ("T4", 1, AttemptOutcome::Passed),
+        ];
+        for (task, attempt, outcome) in attempts {
+            assert!(writer.submit(open(task, attempt)));
+            let source = match task {
+                "T1" | "T2" => Some((DecisionSource::Router, "gpt-oss-120b")),
+                "T4" => Some((DecisionSource::Fallback, "glm-4.6")),
+                _ => None,
+            };
+            if let Some((source, selected)) = source {
+                assert!(writer.submit(decision(task, attempt, source, selected)));
+            }
+            let mut verdict = verdict(task, attempt, outcome);
+            if task == "T4" {
+                verdict.executed.model_requested = Some("glm-4.6".to_string());
+                verdict.executed.model_reported = Some("glm-4.6-20250101".to_string());
+            }
+            if task == "T3" {
+                verdict.executed.model_reported = Some("gpt-oss-20b".to_string());
+            }
+            assert!(writer.submit(verdict));
+        }
+        assert_eq!(writer.close().written, 14);
+        RunRecords::load(dir.path()).expect("load the run")
+    }
+
+    #[test]
+    fn route_report_counts_labels_by_source() {
+        let dir = TempDir::new().expect("tempdir");
+        let run = census_run(&dir);
+        assert!(run.invalid.is_empty(), "{:?}", run.invalid);
+
+        let report = route_report(std::slice::from_ref(&run), None);
+        assert_eq!(report.attempts(), 5);
+        assert_eq!(report.decisions, 4);
+        let key = |task: &str, attempt: u32| identity(task, attempt).attempt_key;
+        let sources: Vec<&str> = report.rows.iter().map(|row| row.source.as_str()).collect();
+        assert_eq!(sources, ["fallback", "router", UNKNOWN_SOURCE]);
+
+        let fallback = &report.rows[0];
+        assert_eq!(fallback.passed, [key("T4", 1)]);
+        assert_eq!(fallback.pick_not_default, [key("T4", 1)]);
+        assert_eq!(fallback.iota(), Some(1.0));
+        assert!(
+            fallback.model_mismatch.is_empty(),
+            "a date suffix is no mismatch"
+        );
+
+        let router = &report.rows[1];
+        assert_eq!(router.attempts.len(), 3);
+        assert_eq!(router.passed, [key("T1", 1)]);
+        assert_eq!(router.failed, [key("T2", 1), key("T2", 2)]);
+        assert!(router.unlabeled.is_empty());
+        assert_eq!(router.pass_rate(), Some(1.0 / 3.0));
+        assert_eq!(router.iota(), Some(0.0));
+        assert_eq!(
+            router.masked, None,
+            "masked needs the router's own proposal"
+        );
+
+        let unknown = &report.rows[2];
+        assert_eq!(unknown.unlabeled, [key("T3", 1)], "T3 is unverified");
+        assert_eq!(unknown.model_mismatch, [key("T3", 1)]);
+        assert_eq!(unknown.iota(), None, "no decision names a default");
+
+        // Verdicts written before `since` do not count.
+        let later = Utc::now() + chrono::Duration::hours(1);
+        assert_eq!(route_report(&[run], Some(later)).attempts(), 0);
+    }
+
+    #[test]
+    fn check_passes_a_joined_run_and_flags_a_duplicate_settlement() {
+        let dir = TempDir::new().expect("tempdir");
+        let run = census_run(&dir);
+        let keys: Vec<String> = run
+            .verdicts
+            .iter()
+            .map(|line| line.record.identity.attempt_key.clone())
+            .collect();
+        let legacy = LegacyRows {
+            efficiency: keys.clone(),
+            costs: keys.clone(),
+            episodes: keys,
+        };
+        let report = check(&run, &legacy);
+        assert_eq!(report.failures(), Vec::<String>::new());
+        assert_eq!(
+            (
+                report.attempts_opened,
+                report.attempts_settled,
+                report.attempts_abandoned
+            ),
+            (5, 5, 0)
+        );
+        assert_eq!(report.cost_sources["provider_usage"], 5);
+
+        // A second process settles T1 again: the writer's dedupe cannot see
+        // it, so check must.
+        let mut again = run.verdicts[0].clone();
+        again.seq = 15;
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(RunFile::Attempts.path_in(dir.path()))
+            .expect("open attempts.jsonl");
+        let line = serde_json::to_string(&again).expect("serialize");
+        writeln!(file, "{line}").expect("append");
+        let run = RunRecords::load(dir.path()).expect("reload");
+        let mut legacy = legacy;
+        legacy.costs.pop();
+        let report = check(&run, &legacy);
+        assert_eq!(
+            report.duplicate_settlements,
+            [again.record.settlement_id.clone()]
+        );
+        assert!(!report.passed());
+        let costs = &report.coverage[1];
+        assert_eq!(
+            (costs.file, costs.joined, costs.verdicts),
+            ("learn/costs.jsonl", 4, 5)
+        );
+        assert_eq!(costs.missing.len(), 1);
+        assert!(
+            report.seq_violations.is_empty(),
+            "{:?}",
+            report.seq_violations
+        );
+        assert_eq!(again.record.record_id(), run.verdicts[0].record_id);
+    }
+
+    #[test]
+    fn check_flags_invalid_lines_and_seq_disorder() {
+        let dir = TempDir::new().expect("tempdir");
+        let path = RunFile::Attempts.path_in(dir.path());
+        let open_line = |seq: u64| {
+            let record = open("T1", 1);
+            serde_json::json!({
+                "schema_version": ATTEMPT_OPEN_SCHEMA,
+                "record_id": record.record_id(),
+                "seq": seq,
+                "ts": "2026-10-02T14:03:11.402Z",
+                "run_id": RUN,
+                "plan_id": "loop-census",
+                "task_id": "T1",
+                "attempt": 1,
+                "attempt_key": record.identity.attempt_key,
+                "chain_key": record.identity.chain_key,
+            })
+            .to_string()
+        };
+        let text = format!(
+            "{}\n{}\nnot json\n{{\"schema_version\":\"roko.other/1\",\"seq\":1}}\n",
+            open_line(3),
+            open_line(2)
+        );
+        std::fs::write(&path, text).expect("write attempts.jsonl");
+
+        let report = check(
+            &RunRecords::load(dir.path()).expect("load"),
+            &LegacyRows::default(),
+        );
+        assert_eq!(report.invalid_lines.len(), 2, "{:?}", report.invalid_lines);
+        assert!(report.invalid_lines[0].starts_with("attempts.jsonl:3: not JSON"));
+        assert!(report.invalid_lines[1].contains("unexpected schema_version"));
+        let violations = &report.seq_violations;
+        assert!(
+            violations.iter().any(|v| v.contains("seq 2 follows seq 3")),
+            "{violations:?}"
+        );
+        assert!(
+            violations.iter().any(|v| v.contains("seq 1 follows seq 2")),
+            "{violations:?}"
+        );
+        assert_eq!(report.attempts_abandoned, 1);
+        assert!(!report.passed());
+    }
+
+    #[test]
+    fn legacy_rows_keep_only_the_runs_keys() {
+        let dir = TempDir::new().expect("tempdir");
+        let layout = RokoLayout::new(dir.path().join(".roko"));
+        let learn = layout.learn_dir();
+        std::fs::create_dir_all(&learn).expect("learn dir");
+        let ours = identity("T1", 1).attempt_key;
+        let theirs = AttemptKey::new("other-run", "p", "T1", 1).attempt_key();
+        std::fs::write(
+            learn.join("costs.jsonl"),
+            format!(
+                "{{\"attempt_key\":\"{ours}\",\"model\":\"m\"}}\n{{\"attempt_key\":\"{theirs}\"}}\n{{\"model\":\"pre-s01\"}}\n"
+            ),
+        )
+        .expect("write costs");
+        std::fs::write(
+            layout.root_episodes_path(),
+            format!("{{\"extra\":{{\"attempt_key\":\"{ours}\"}}}}\n"),
+        )
+        .expect("write episodes");
+
+        let rows = LegacyRows::load(&layout, RUN).expect("load legacy rows");
+        assert_eq!(rows.costs, [ours.clone()]);
+        assert_eq!(rows.episodes, [ours]);
+        assert!(rows.efficiency.is_empty());
+    }
+}

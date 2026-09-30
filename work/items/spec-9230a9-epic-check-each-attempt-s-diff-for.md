@@ -71,7 +71,7 @@ This is the implementation plan.
 - [x] gap-b72761: Reject empty diffs and malformed or overlong agent output before the gates run
 - [x] gap-b954ad: Integration test C5: a tampering attempt is flagged and an empty diff is rejected
 - [ ] bug-809e22: The streaming dispatch path records no diff base, so its attempts' changed_files stay empty
-- [ ] gap-6d172d: The Graph pre-verify screen doesn't run SafetyLayer::post_dispatch_check
+- [x] gap-6d172d: The Graph pre-verify screen doesn't run SafetyLayer::post_dispatch_check
 - [ ] The epic's `[[verify]]` command (test C5) passes on the merged branch.
 
 ## Notes

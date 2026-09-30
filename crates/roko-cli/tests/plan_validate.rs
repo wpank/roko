@@ -832,7 +832,7 @@ verify = [{ phase = "test", command = "cargo test -p fixture --lib config" }]
     let stdout = String::from_utf8_lossy(&scored.get_output().stdout);
     assert!(stdout.starts_with(&plain_stdout), "{stdout}");
     assert!(
-        stdout.contains("spec quality (sq-1, static: HF3 and SQ06 not evaluated)\n"),
+        stdout.contains("spec quality (sq-2, static: HF3 and SQ06 not evaluated)\n"),
         "{stdout}"
     );
     assert!(stdout.contains("\nplans/spec/tasks.toml\n"), "{stdout}");
@@ -863,7 +863,7 @@ verify = [{ phase = "test", command = "cargo test -p fixture --lib config" }]
     assert_eq!(json["plans"], plain_json["plans"]);
     assert_eq!(json["totals"], plain_json["totals"]);
     let spec = &json["spec_quality"];
-    assert_eq!(spec["linter"], "sq-1");
+    assert_eq!(spec["linter"], "sq-2");
     let tasks = spec["tasks"].as_array().unwrap();
     assert_eq!(tasks.len(), 2);
     let t1 = &tasks[0];

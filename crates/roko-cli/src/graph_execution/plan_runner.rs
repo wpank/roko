@@ -2035,12 +2035,29 @@ fn plan_cell_resources(
     gates: &roko_core::config::GatesConfig,
     workspaces: Option<Arc<dyn roko_graph::workspace::ExecutionWorkspaceProvider>>,
 ) -> roko_graph::cell::CellResources {
+    plan_cell_resources_with(
+        rich_topology,
+        gates,
+        workspaces,
+        Arc::new(roko_gate::production_service::ProductionGateService::new()),
+    )
+}
+
+/// [`plan_cell_resources`], with the gate pipeline `service` the rich
+/// topology's gates run on.
+fn plan_cell_resources_with(
+    rich_topology: bool,
+    gates: &roko_core::config::GatesConfig,
+    workspaces: Option<Arc<dyn roko_graph::workspace::ExecutionWorkspaceProvider>>,
+    service: Arc<dyn roko_gate::production_service::ProductionGateRunner>,
+) -> roko_graph::cell::CellResources {
     if !rich_topology {
         return roko_graph::cell::CellResources::default();
     }
     roko_graph::cell::CellResources {
         gates: Some(Arc::new(
-            crate::runner::gate_adapter::default_gate_adapter().with_gates_config(gates.clone()),
+            crate::runner::gate_adapter::RunnerProductionGateAdapter::new(service)
+                .with_gates_config(gates.clone()),
         )),
         workspaces,
     }
@@ -4337,6 +4354,56 @@ max_retries = 0
     /// manifest cargo cannot parse), fails its task, and keeps that worktree
     /// for post-mortem instead of accepting it. The default topology gets
     /// neither service.
+    /// Records the `[gates]` config of each gate pipeline it is asked to
+    /// run, and fails it.
+    #[derive(Default)]
+    struct GatesConfigRecorder(parking_lot::Mutex<Vec<roko_core::config::GatesConfig>>);
+
+    #[async_trait::async_trait]
+    impl roko_gate::production_service::ProductionGateRunner for GatesConfigRecorder {
+        async fn run(
+            &self,
+            request: roko_gate::ProductionGateRequest,
+            _progress_sink: Arc<dyn roko_gate::production_service::ProgressSink>,
+        ) -> roko_core::Result<roko_gate::ProductionGateVerdictV1> {
+            self.0.lock().push(request.gates_config);
+            Err(roko_core::RokoError::Invalid("recorded".to_string()))
+        }
+    }
+
+    /// bug-4862cf: the rich topology's gates run with the run's `[gates]`,
+    /// not `GatesConfig::default()`; the run's `max_rung` bounds each
+    /// pipeline.
+    #[tokio::test]
+    async fn rich_topology_gates_use_the_runs_gates_config() {
+        let mut gates = roko_core::config::GatesConfig::default();
+        gates.env_passthrough = vec!["FROM_THE_RUN".to_string()];
+        gates.max_rung = Some(1);
+        let recorder = Arc::new(GatesConfigRecorder::default());
+        let resources = plan_cell_resources_with(true, &gates, None, Arc::clone(&recorder) as _);
+        let evaluator = resources.gates.expect("the rich topology runs gates");
+        let request = roko_core::SharedGateRequest {
+            task_id: "T1".to_string(),
+            attempt_id: 1,
+            rung: "compile".to_string(),
+            plan_dir: "plans/p".to_string(),
+            worktree_path: PathBuf::from("/wt/attempt"),
+            changed_files: Vec::new(),
+            context: HashMap::new(),
+        };
+        assert!(evaluator.verify_rung(&request).await.is_err());
+
+        let configs = recorder.0.lock();
+        assert_eq!(configs.len(), 1);
+        assert_eq!(configs[0].env_passthrough, ["FROM_THE_RUN"]);
+        assert_eq!(configs[0].max_rung, Some(1));
+        assert!(
+            plan_cell_resources_with(false, &gates, None, Arc::clone(&recorder) as _)
+                .gates
+                .is_none()
+        );
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn rich_topology_gates_run_with_cell_resources() {
         use roko_graph::engine::{GraphEngine, NodeStatus};

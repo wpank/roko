@@ -2153,6 +2153,64 @@ mod tests {
         assert_eq!(bash_code("grep -r api_key ."), Some(0));
     }
 
+    /// bug-69a002: the secret-read check missed git grep, ag and ack, reads
+    /// of what find or xargs lists, brace globs, and judged a search after a
+    /// cd from the call's directory.
+    #[test]
+    fn settings_hook_refuses_every_search_that_reaches_a_secret() {
+        let workdir = tempdir().unwrap();
+        let src = workdir.path().join("src");
+        fs::create_dir(&src).unwrap();
+        fs::write(src.join("a.rs"), "fn main() {}\n").unwrap();
+        fs::write(
+            workdir.path().join("roko.toml"),
+            "[serve.auth]\nenabled = true\napi_key = \"sk-serve-test\"\n",
+        )
+        .unwrap();
+        let bash_hook = bash_hook_command();
+        let bash_code = |command: &str, cwd: &std::path::Path| {
+            let payload = serde_json::json!({
+                "cwd": cwd,
+                "tool_input": { "command": command },
+            });
+            run_hook(&bash_hook, &payload.to_string(), &[])
+                .status
+                .code()
+        };
+
+        for denied in [
+            "git grep api_key",
+            "ag api_key",
+            "ack api_key",
+            "find . -exec cat {} +",
+            "find . -type f | xargs cat",
+            "ls | xargs cat",
+            "cat roko.{toml,lock}",
+            "cd src && grep -r key ..",
+        ] {
+            assert_eq!(
+                bash_code(denied, workdir.path()),
+                Some(2),
+                "`{denied}` should be denied"
+            );
+        }
+        for allowed in [
+            "git grep key -- '*.rs'",
+            "find . -name '*.rs' -exec cat {} +",
+            "ls | xargs wc -l",
+            "cd src && grep -r key .",
+        ] {
+            assert_eq!(
+                bash_code(allowed, workdir.path()),
+                Some(0),
+                "`{allowed}` should be allowed"
+            );
+        }
+        // From a subdirectory, a search above it reaches the config.
+        assert_eq!(bash_code("rg key ..", &src), Some(2));
+        assert_eq!(bash_code("rg key", &src), Some(0));
+    }
+
     #[test]
     fn settings_hooks_key_file_policy_when_home_is_workdir() {
         // With HOME set to the project, as in many containers, ~/.roko is

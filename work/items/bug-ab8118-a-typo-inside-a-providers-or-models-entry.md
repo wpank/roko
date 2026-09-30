@@ -2,14 +2,16 @@
 id = "bug-ab8118"
 kind = "bug"
 title = "A typo inside a [providers.*] or [models.*] entry fails the whole config load, where a typo elsewhere is stripped with a warning"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p3"
 goal = "release"
 size = "S"
 subsystem = ["roko-core/config"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-09-30
+last_verified = 2026-09-30
+last_verified_rev = "90307ad5e"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-onboard's report)"
 anchors = ["crates/roko-core/src/config/provider.rs::ProviderConfig", "crates/roko-core/src/config/provider.rs::ModelProfile", "crates/roko-core/src/config/loader.rs::strip_unknown_fields"]
@@ -19,6 +21,11 @@ links = { depends_on = [], blocks = [], related = ["bug-647249", "bug-12153c"], 
 
 [[verify]]
 command = "grep -rqw 'fn a_typo_inside_a_provider_or_model_entry_is_handled_like_any_other' crates/roko-core/src/ && cargo test -p roko-core --lib a_typo_inside_a_provider_or_model_entry_is_handled_like_any_other"
+
+[closed]
+at = 2026-09-30
+by = "coordinator (session 7622b882)"
+evidence = "Merged in 2cb2fc282. A typo inside a [providers.*] or [models.*] entry is warned about and stripped like elsewhere. Batch 17 gate: first run on 2c4abe35b (check clean; lib tests roko-agent 2271, roko-cli 3244 (gate_rows writer flake, fixed by bug-779ae7), roko-core 1955, roko-fs 260, roko-learn 1204, roko-serve 988), then re-gated on 53feea92e (same code as MAIN 90307ad5e) after the coordinator's doc-paragraph and rustfmt fix on guard2's branch (3f3a7be84): nightly fmt clean; clippy -p roko-agent -p roko-cli -p roko-core -p roko-fs -p roko-learn -p roko-serve --keep-going -D warnings clean; roko-fs lib 260; --test secret_canary 11 passed; --test secrets_and_git_guard_canary 2 passed. Verify: its test passes in that run and its static checks pass on MAIN."
 +++
 
 ## Problem
@@ -51,3 +58,11 @@ Stripping matches the rest of the loader. Then add `a_typo_inside_a_provider_or_
 
 - [ ] A typo inside a provider or model entry is handled like a typo anywhere else.
 - [ ] The `[[verify]]` command passes.
+
+## Notes
+
+- 2026-09-30 (wk-childenv): Implemented on `work/bug-17f0e4` at `3b6af343f`; cargo verification deferred to the batch
+  check. Cause: `strip_unknown_fields` recursed into each dynamic-map entry with the section's own prefix, so no key
+  inside an entry was checked. Only `providers` and `models` entries are now stripped (their structs deny unknown
+  fields); profiles, roles and tool profiles are left alone because serde collects or ignores their extra keys. The
+  `--config <path>` path in roko-cli (`Config::from_file`) parses with serde directly and still fails on such a typo.

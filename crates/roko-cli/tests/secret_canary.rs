@@ -1,10 +1,11 @@
 //! RG-3 / T036: secret canary testing.
 //!
 //! A canary secret in a workspace `.env` file must stay out of everything
-//! roko writes. roko builds one scrubber per process from its `.env` values
-//! and provider keys (`roko_fs::observability::RunScrubber::install`); its
-//! log layers scrub with it, and its persistence writers redact its secrets
-//! from what they write.
+//! roko writes. roko builds one scrubber per process from the secrets in its
+//! `.env` files (those named like credentials, as `CANARY_SECRET` is) and
+//! provider keys (`roko_fs::observability::RunScrubber::install`); its log
+//! layers scrub with it, and its persistence writers redact its secrets from
+//! what they write.
 //!
 //! - `canary_absent_from_every_file_after_plan_run` is the end-to-end check:
 //!   a real `roko plan run` whose agent and verify command print the canary
@@ -71,14 +72,9 @@ fn env_file_entries(env_path: &Path) -> Vec<(String, String)> {
 }
 
 /// The scrubber roko builds from the given `.env` file
-/// (`RunScrubber::build`), without installing it.
+/// (`RunScrubber::build_from_env_file`), without installing it.
 fn build_scrubber_from_env_file(env_path: &Path) -> Arc<LogScrubber> {
-    let entries = env_file_entries(env_path);
-    let secrets: Vec<(&str, &str)> = entries
-        .iter()
-        .map(|(name, value)| (name.as_str(), value.as_str()))
-        .collect();
-    RunScrubber::build(&secrets)
+    RunScrubber::build_from_env_file(&env_file_entries(env_path))
 }
 
 /// Install the process's scrubber the way roko does at startup, from a
@@ -313,12 +309,18 @@ fn share_transcript_scrubber_redacts_canary_multiline() {
 // ── Test: scrubber skips short values (anti-regression) ──────────────────────
 
 /// Verify the short-value guard: `.env` values shorter than 8 characters are
-/// NOT registered as scrub patterns to avoid false-positive redactions.
+/// NOT registered as scrub patterns to avoid false-positive redactions, and
+/// neither is a setting whose name is no secret's (bug-cef888).
 #[test]
 fn env_file_short_values_are_not_registered() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let env_path = tmp.path().join(".env");
-    std::fs::write(&env_path, "SHORT=hi\nLONG=long-enough-secret-value\n").expect("write .env");
+    std::fs::write(
+        &env_path,
+        "SHORT_TOKEN=hi\nLONG_TOKEN=long-enough-secret-value\n\
+         LONG_SETTING=long-enough-plain-value\n",
+    )
+    .expect("write .env");
 
     let scrubber = build_scrubber_from_env_file(&env_path);
 
@@ -336,6 +338,14 @@ fn env_file_short_values_are_not_registered() {
     assert!(
         !scrubbed_long.contains("long-enough-secret-value"),
         "long env value must be redacted; got: {scrubbed_long}"
+    );
+
+    // A setting stays readable.
+    let text_with_setting = "long-enough-plain-value appeared in output";
+    let scrubbed_setting = scrubber.scrub(text_with_setting);
+    assert!(
+        scrubbed_setting.contains("long-enough-plain-value"),
+        "a setting must not be redacted; got: {scrubbed_setting}"
     );
 }
 

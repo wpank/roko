@@ -99,9 +99,9 @@ This is the implementation plan.
 - [x] bug-c6ad88: ACP's builtin tools don't check for key files
 - [x] bug-997c6a: ls | xargs rm and xargs rm < list still pass the agent command guard
 - [x] bug-41bea4: Guard gaps: the roko.toml content check misses grep -r, parallel isn't treated as a bulk delete, and sudo git -C dir rm -r is a false positive
-- [ ] bug-5a6636: Config secrets other than provider api_key_env (extra_headers, file secrets, serve.auth.api_key) aren't added to the log scrubber
-- [ ] bug-69a002: The guard's secret-read check misses git grep, ag/ack, reads through find or xargs and brace globs, and judges a search after cd from the wrong directory
-- [ ] bug-cef888: Every .env value of 8 or more characters counts as a secret, so non-secret settings kept in .env are redacted from records
+- [x] bug-5a6636: Config secrets other than provider api_key_env (extra_headers, file secrets, serve.auth.api_key) aren't added to the log scrubber
+- [x] bug-69a002: The guard's secret-read check misses git grep, ag/ack, reads through find or xargs and brace globs, and judges a search after cd from the wrong directory
+- [x] bug-cef888: Every .env value of 8 or more characters counts as a secret, so non-secret settings kept in .env are redacted from records
 - [ ] The epic's `[[verify]]` command (test C2) passes on the merged branch.
 
 ## Notes

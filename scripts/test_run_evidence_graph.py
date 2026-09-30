@@ -186,9 +186,9 @@ class GraphRunCase(unittest.TestCase):
         self.assertEqual([row["outcome"] for row in terminals], [outcome])
 
     def assert_derived_only(self, bundle: pathlib.Path) -> None:
-        """Graph evidence holds no agent output and the metadata no home path."""
+        """Graph evidence and the event log hold no agent output, and the metadata no home path."""
         home = str(pathlib.Path.home())
-        for path in sorted((bundle / "graph").rglob("*")):
+        for path in [bundle / "events.jsonl", *sorted((bundle / "graph").rglob("*"))]:
             if path.is_file():
                 self.assertNotIn(AGENT_TEXT, path.read_text(encoding="utf-8"), path.name)
         for name in ("manifest.json", "command.txt", "summary.json", "commands.jsonl", "graph/index.json"):
@@ -373,6 +373,31 @@ class CollectorUnits(unittest.TestCase):
         [signal_row] = row["signals"]
         self.assertEqual(signal_row["tags"], {"model": "m", "roko.gate.verdict": "passed"})
         self.assertEqual((signal_row["body_format"], signal_row["body_bytes"]), ("text", 23))
+
+    def test_gate_timeouts_are_read_from_the_logged_excerpt(self) -> None:
+        """The --log-file keeps a gate's redacted output tail, not its output (bug-4c4eea)."""
+
+        def gate_result(task_id: str, **output: object) -> dict:
+            event = {"type": "gate_result", "plan_id": "p", "task_id": task_id, "gate": "verify[0]", "passed": False}
+            return {"type": "dashboard.gate_result", "run_id": "r", "seq": 1, "ts_millis": 1, "event": {**event, **output}}
+
+        rows = [
+            gate_result(
+                "T01",
+                output_text_bytes=900,
+                output_text_lines=40,
+                output_text_sha256="0" * 64,
+                output_text_excerpt="\u2026line 40\n\u2717 timed out after 1500 ms",
+            ),
+            # A log written before the fix holds the whole output.
+            gate_result("T02", output_text="$ sleep 9\n\u2717 timed out after 2500 ms"),
+        ]
+        with tempfile.TemporaryDirectory() as raw:
+            events = pathlib.Path(raw) / "events.jsonl"
+            events.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+            metrics = run_evidence.event_metrics(events)
+        self.assertEqual([gate["timeout_ms"] for gate in metrics["graph_gates"]], [1500, 2500])
+        self.assertEqual((metrics["gate_failed"], metrics["timeouts"]), (2, 2))
 
     def test_fresh_run_of_equal_size_is_sliced_from_the_start(self) -> None:
         """A byte offset alone would skip a fresh log that regrew to the old size."""

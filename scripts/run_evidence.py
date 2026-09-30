@@ -87,7 +87,9 @@ MAX_GRAPH_PLANS = 16
 MAX_DIAGNOSE_BYTES = 1024 * 1024
 GRAPH_FAILED_STATUSES = {"failed", "cancelled", "canceled", "aborted", "budget_exhausted"}
 PASSED_OUTCOMES = {"passed", "succeeded", "success", "completed"}
-# How a Graph verify step reports its own timeout in `dashboard.gate_result`.
+# How a Graph verify step reports its own timeout in `dashboard.gate_result`: in
+# `output_text_excerpt`, the redacted tail the --log-file keeps in place of the
+# output (bug-4c4eea), or in `output_text` in logs written before it.
 GATE_TIMEOUT_RE = re.compile(r"timed out after (\d+)\s*ms")
 DEFAULT_SAFE_GET_PATHS = (
     "/health",
@@ -2401,7 +2403,7 @@ def event_metrics(events_path: pathlib.Path) -> dict[str, Any]:
             gate_started_ms[task_key] = event["ts_millis"]
         elif event_type == "dashboard.gate_result":
             passed = payload.get("passed") is True
-            timeout = GATE_TIMEOUT_RE.search(str(payload.get("output_text") or ""))
+            timeout = GATE_TIMEOUT_RE.search(str(payload.get("output_text_excerpt") or payload.get("output_text") or ""))
             gate = {
                 "plan_id": payload.get("plan_id"),
                 "task_id": payload.get("task_id"),

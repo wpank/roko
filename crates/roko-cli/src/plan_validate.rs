@@ -283,7 +283,10 @@ pub fn drop_unknown_rung(task: &mut toml::Table, ladder: &LadderConfig) -> Optio
         .get("role")
         .and_then(Value::as_str)
         .unwrap_or("implementer");
-    if rung.as_str().is_some_and(|name| ladder.has_rung(role, name)) {
+    if rung
+        .as_str()
+        .is_some_and(|name| ladder.has_rung(role, name))
+    {
         return None;
     }
     task.remove("rung")

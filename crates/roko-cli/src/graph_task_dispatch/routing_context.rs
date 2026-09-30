@@ -142,11 +142,7 @@ fn select_cheap_model_key_with(
 /// of a task whose `preferred_provider` is `provider`, a `[providers.*]` id:
 /// the key of that provider's entry for the same slug when it has a usable
 /// one, else `model` as routed.
-fn preferred_provider_model(
-    config: &RokoConfig,
-    model: &str,
-    provider: Option<&str>,
-) -> String {
+fn preferred_provider_model(config: &RokoConfig, model: &str, provider: Option<&str>) -> String {
     preferred_provider_model_with(config, model, provider, |key| {
         config.provider_available_for_model_key(key)
     })

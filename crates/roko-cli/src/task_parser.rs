@@ -821,6 +821,19 @@ pub(crate) fn default_verify_timeout() -> u64 {
         .saturating_mul(1000)
 }
 
+/// A workspace gate rung (`[[gates.rungs]]`) as a verify step whose phase is
+/// the rung's name.
+impl From<&roko_core::config::GateRungConfig> for VerifyStep {
+    fn from(rung: &roko_core::config::GateRungConfig) -> Self {
+        Self {
+            phase: rung.name.clone(),
+            command: rung.command.clone(),
+            fail_msg: None,
+            timeout_ms: rung.timeout_secs.saturating_mul(1_000),
+        }
+    }
+}
+
 /// The full parsed tasks.toml.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TasksFile {

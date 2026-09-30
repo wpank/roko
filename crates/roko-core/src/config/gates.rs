@@ -213,6 +213,8 @@ pub struct GatesConfig {
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub domain_gates: HashMap<String, Vec<String>>,
     /// Custom gate rungs. When non-empty, these replace the built-in defaults.
+    /// `roko run` and every `roko plan run` task run the required ones as
+    /// verify steps ([`Self::required_rungs`]).
     #[serde(default, rename = "rungs", alias = "custom_rungs")]
     pub custom_rungs: Vec<GateRungConfig>,
     /// Optional ceiling rung index. Rungs above this index are skipped.
@@ -318,6 +320,16 @@ impl GatesConfig {
     #[must_use]
     pub fn has_custom_rungs(&self) -> bool {
         !self.custom_rungs.is_empty()
+    }
+
+    /// The declared rungs every change must pass: `[[gates.rungs]]` entries
+    /// that are `required` and have a command. Empty when the workspace
+    /// declares none; the built-in defaults of [`Self::effective_rungs`] are
+    /// not declared rungs.
+    pub fn required_rungs(&self) -> impl Iterator<Item = &GateRungConfig> {
+        self.custom_rungs
+            .iter()
+            .filter(|rung| rung.required && !rung.command.trim().is_empty())
     }
 
     /// Returns custom rungs if configured, otherwise built-in defaults (compile, lint, test).
@@ -665,6 +677,41 @@ required = true
         assert_eq!(cfg.gates.effective_rungs().len(), 2);
         assert_eq!(cfg.gates.effective_rungs()[0].name, "compile");
         assert_eq!(cfg.gates.effective_rungs()[1].timeout_secs, 300);
+    }
+
+    #[test]
+    fn required_rungs_are_the_declared_required_rungs_with_a_command() {
+        let default = RokoConfig::default();
+        assert_eq!(default.gates.effective_rungs().len(), 3);
+        assert_eq!(
+            default.gates.required_rungs().count(),
+            0,
+            "built-in defaults are not declared rungs"
+        );
+
+        let cfg = RokoConfig::from_toml(
+            r#"
+[[gates.rungs]]
+name = "compile"
+command = "cargo check --workspace"
+
+[[gates.rungs]]
+name = "bench"
+command = "cargo bench"
+required = false
+
+[[gates.rungs]]
+name = "blank"
+command = "  "
+"#,
+        )
+        .expect("config parses");
+        let names: Vec<&str> = cfg
+            .gates
+            .required_rungs()
+            .map(|rung| rung.name.as_str())
+            .collect();
+        assert_eq!(names, ["compile"]);
     }
 
     #[test]

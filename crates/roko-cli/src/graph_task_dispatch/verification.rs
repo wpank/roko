@@ -5,15 +5,17 @@ use super::tui_forward::append_jsonl_line_async;
 use super::*;
 
 impl GraphTaskDispatcher {
-    /// Run a task's authored `[[task.verify]]` steps and settle every
-    /// gate-dependent learning record for this attempt.
+    /// Run a task's verify steps, its authored `[[task.verify]]` steps and
+    /// then the workspace's required `[[gates.rungs]]`
+    /// ([`attempt_verify_steps`]), and settle every gate-dependent learning
+    /// record for this attempt.
     ///
     /// Shared by the batch and streaming dispatch paths so both reach the same
     /// verdict. The pre-verify screen (`red_flags`) goes first: an attempt
     /// with runaway or malformed output, or an implementer attempt that
     /// changed nothing, is rejected before any step runs, as a
     /// `RokoError::Verify` of gate `pre_verify:<check>`, whether or not the
-    /// task has verify steps. Authored verify steps are deterministic: any
+    /// task has verify steps. Verify steps are deterministic: any
     /// failure returns `RokoError::Verify` (the Graph engine retries up to the task's
     /// `max_retries`, then fails the task) and is never force-accepted. Steps
     /// run fail-fast; the rest are reported as skipped. A step that fails
@@ -46,7 +48,8 @@ impl GraphTaskDispatcher {
             progress_tx,
         )
         .await?;
-        if !task.verify.is_empty() {
+        let steps = attempt_verify_steps(task, &self.config.gates);
+        if !steps.is_empty() {
             let payload = GatePayload::in_dir(&effective_workdir)
                 .with_label(format!("{}/{}", spec.plan_id, task.id))
                 .with_env_passthrough(self.config.gates.env_passthrough.iter().cloned());
@@ -81,11 +84,9 @@ impl GraphTaskDispatcher {
             // Siblings whose files hold every error of a failure that
             // persisted after they settled.
             let mut blocked_by_sibling: Option<String> = None;
-            let total_steps = u32::try_from(task.verify.len()).unwrap_or(u32::MAX);
+            let total_steps = u32::try_from(steps.len()).unwrap_or(u32::MAX);
 
-            for (i, step) in task.verify.iter().enumerate() {
-                let step_label = verify_step_label(i, &step.phase);
-
+            for (i, (step_label, step)) in steps.iter().enumerate() {
                 // Fail fast: once a step has failed (or P4-03 declared the
                 // attempt doomed), report later steps as skipped instead of
                 // paying for, say, a full compile after a cheap grep failed.
@@ -117,7 +118,7 @@ impl GraphTaskDispatcher {
                 // P2-TUI-4: Notify the TUI that a gate rung is starting so it
                 // can show the active rung name and a spinner.
                 if let Some(tui) = &self.tui_bridge {
-                    tui.gate_rung_started(&spec.plan_id, &task.id, &step_label);
+                    tui.gate_rung_started(&spec.plan_id, &task.id, step_label);
                 }
 
                 let gate = ShellGate::new(
@@ -130,7 +131,7 @@ impl GraphTaskDispatcher {
                     ],
                 )
                 .with_timeout_ms(step.timeout_ms)
-                .with_name(&step_label);
+                .with_name(step_label);
 
                 let compile_permit = verify_compile_permit(
                     &effective_workdir,
@@ -151,7 +152,7 @@ impl GraphTaskDispatcher {
                         plan_id: &spec.plan_id,
                         task_id: &task.id,
                         files: &task.files,
-                        label: &step_label,
+                        label: step_label,
                         workdir: &effective_workdir,
                         settle_limit: std::time::Duration::from_secs(
                             self.config.gates.sibling_settle_secs,
@@ -194,7 +195,7 @@ impl GraphTaskDispatcher {
                     tui.gate_result_with_output(
                         &spec.plan_id,
                         &task.id,
-                        &step_label,
+                        step_label,
                         verdict.passed,
                         Some(&published_gate_output(&step.command, &verdict)),
                     );
@@ -236,9 +237,9 @@ impl GraphTaskDispatcher {
                 // whether the attempt should be terminated early.
                 {
                     let core_verdict = if verdict.passed {
-                        roko_core::Verdict::pass(&step_label)
+                        roko_core::Verdict::pass(step_label)
                     } else {
-                        roko_core::Verdict::fail(&step_label, &verdict.reason)
+                        roko_core::Verdict::fail(step_label, &verdict.reason)
                     };
                     let snapshot = TurnSnapshot {
                         rung: i as u32,
@@ -333,15 +334,14 @@ impl GraphTaskDispatcher {
                         let mut retry_step_outcomes: Vec<(String, bool)> = Vec::new();
                         let mut retry_skipped: Vec<String> = Vec::new();
                         let mut retry_timed_out = false;
-                        for (i, step) in task.verify.iter().enumerate() {
-                            let step_label = verify_step_label(i, &step.phase);
+                        for (i, (step_label, step)) in steps.iter().enumerate() {
                             if !retry_failures.is_empty() {
                                 retry_skipped.push(format!("{step_label} (`{}`)", step.command));
                                 continue;
                             }
                             // P2-TUI-4: Notify the TUI of the post-fix re-run.
                             if let Some(tui) = &self.tui_bridge {
-                                tui.gate_rung_started(&spec.plan_id, &task.id, &step_label);
+                                tui.gate_rung_started(&spec.plan_id, &task.id, step_label);
                             }
                             let retry_gate = ShellGate::new(
                                 "bash",
@@ -353,7 +353,7 @@ impl GraphTaskDispatcher {
                                 ],
                             )
                             .with_timeout_ms(step.timeout_ms)
-                            .with_name(&step_label);
+                            .with_name(step_label);
                             let retry_verdict = retry_gate.verify(&gate_signal, &gate_ctx).await;
                             tracing::info!(
                                 plan_id = %spec.plan_id,
@@ -372,7 +372,7 @@ impl GraphTaskDispatcher {
                                 tui.gate_result_with_output(
                                     &spec.plan_id,
                                     &task.id,
-                                    &step_label,
+                                    step_label,
                                     retry_verdict.passed,
                                     Some(&published_gate_output(&step.command, &retry_verdict)),
                                 );
@@ -629,17 +629,13 @@ impl GraphTaskDispatcher {
             }
 
             if !failures.is_empty() {
-                // Authored verify steps are deterministic, so a failure is never
+                // Verify steps are deterministic, so a failure is never
                 // force-accepted: the Graph engine retries up to the task's
                 // `max_retries` and then fails the task. (`gates.max_review_cycles`
                 // may only bound non-deterministic review/judge verdicts, and
                 // the Graph dispatcher gates on none.)
-                let mut summary = verify_failure_summary(
-                    &spec.title,
-                    task.verify.len(),
-                    &failures,
-                    &skipped_steps,
-                );
+                let mut summary =
+                    verify_failure_summary(&spec.title, steps.len(), &failures, &skipped_steps);
                 // Lead with the blamed sibling so one-line failure reasons,
                 // such as the episode's, keep it.
                 if let Some(sibling) = &blocked_by_sibling {
@@ -650,7 +646,7 @@ impl GraphTaskDispatcher {
                     task_id = %task.id,
                     failed_count = failures.len(),
                     skipped_count = skipped_steps.len(),
-                    total_count = task.verify.len(),
+                    total_count = steps.len(),
                     attempt = attempt_number,
                     "graph verify steps failed"
                 );
@@ -965,7 +961,7 @@ impl GraphTaskDispatcher {
             tracing::info!(
                 plan_id = %spec.plan_id,
                 task_id = %task.id,
-                step_count = task.verify.len(),
+                step_count = steps.len(),
                 "all graph verify steps passed"
             );
             // ── P0-GA-1: Emit gate-pass efficiency event ──────────────────
@@ -1094,7 +1090,7 @@ impl GraphTaskDispatcher {
         }
 
         self.forget_diff_base(attempt_key);
-        Ok(if task.verify.is_empty() {
+        Ok(if steps.is_empty() {
             TaskGateVerdict::Unverified
         } else {
             TaskGateVerdict::Passed
@@ -1134,6 +1130,30 @@ async fn verify_compile_permit(
     .ok()
 }
 
+/// The verify steps an attempt at `task` runs, each with its label: the
+/// task's authored `[[task.verify]]` steps (`verify[i]` or `verify[i:phase]`),
+/// then every required workspace rung from `[[gates.rungs]]` (`rung[name]`)
+/// whose command no authored step already runs. `roko run` authors its task's
+/// steps from the same rungs, so they never run twice there either.
+fn attempt_verify_steps(
+    task: &TaskDef,
+    gates: &roko_core::config::GatesConfig,
+) -> Vec<(String, crate::task_parser::VerifyStep)> {
+    let mut steps: Vec<_> = task
+        .verify
+        .iter()
+        .enumerate()
+        .map(|(index, step)| (verify_step_label(index, &step.phase), step.clone()))
+        .collect();
+    for rung in gates.required_rungs() {
+        let command = rung.command.trim();
+        if !task.verify.iter().any(|s| s.command.trim() == command) {
+            steps.push((rung_step_label(&rung.name), rung.into()));
+        }
+    }
+    steps
+}
+
 /// Stable label for the `index`-th verify step (`verify[i]` or `verify[i:phase]`).
 pub(super) fn verify_step_label(index: usize, phase: &str) -> String {
     if phase.is_empty() {
@@ -1141,6 +1161,11 @@ pub(super) fn verify_step_label(index: usize, phase: &str) -> String {
     } else {
         format!("verify[{index}:{phase}]")
     }
+}
+
+/// Stable label for the workspace gate rung `name` (`rung[name]`).
+fn rung_step_label(name: &str) -> String {
+    format!("rung[{name}]")
 }
 
 /// Maximum number of output lines kept from a gate's detail for dashboard
@@ -1772,5 +1797,74 @@ printf '%s\n' '{"type":"result","session_id":"s","model":"claude-sonnet-4-6","to
         let record = &records[0];
         assert_eq!(record.task_id, task.id);
         assert_eq!(record.failure_kind, roko_gate::GateFailureKind::Timeout);
+    }
+
+    fn rung(name: &str, command: &str, required: bool) -> roko_core::config::GateRungConfig {
+        roko_core::config::GateRungConfig {
+            name: name.to_string(),
+            command: command.to_string(),
+            timeout_secs: 10,
+            required,
+            parallel_with: Vec::new(),
+        }
+    }
+
+    /// `[[gates.rungs]]` guard every plan task: once a task's authored steps
+    /// pass, a failing required workspace rung fails the attempt. A rung an
+    /// authored step already runs does not run twice, an optional rung never
+    /// runs, and a task without authored steps is verified by the rungs.
+    #[tokio::test]
+    async fn plan_run_task_runs_the_workspace_gate_rungs() {
+        let temp = tempdir().expect("tempdir");
+        let lint_clean = temp.path().join("lint-clean");
+        let docs_ran = temp.path().join("docs-ran");
+        let rungs = vec![
+            rung("same", "true", true),
+            rung("lint", &format!("test -f {}", lint_clean.display()), true),
+            rung("docs", &format!("touch {}", docs_ran.display()), false),
+        ];
+        let (dispatcher, mut task) = make_test_dispatcher(
+            &temp,
+            VERIFY_PROVIDER,
+            |config| {
+                no_auto_fix(config);
+                config.gates.custom_rungs = rungs;
+            },
+            GraphFeedbackContext::default(),
+        )
+        .await;
+        task.verify = vec![verify_step("structural", "true")];
+
+        let error = dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &CellContext::new())
+            .await
+            .expect_err("the failing workspace rung fails the task");
+        let RokoError::Verify { message, .. } = error else {
+            panic!("expected a verify failure, got {error}");
+        };
+        // The authored step and `lint`: `same` repeats the authored command.
+        assert!(message.contains("1/2 verify step(s) failed"), "{message}");
+        assert!(message.contains("rung[lint] (`test -f"), "{message}");
+
+        std::fs::write(&lint_clean, "").expect("lint passes");
+        let passed = dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &CellContext::new())
+            .await
+            .expect("the authored step and the rungs pass");
+        assert_eq!(
+            TaskGateVerdict::from_signals(&passed),
+            Some(TaskGateVerdict::Passed)
+        );
+
+        task.verify.clear();
+        let verified = dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &CellContext::new())
+            .await
+            .expect("the rungs verify a task without authored steps");
+        assert_eq!(
+            TaskGateVerdict::from_signals(&verified),
+            Some(TaskGateVerdict::Passed)
+        );
+        assert!(!docs_ran.exists(), "an optional rung never runs");
     }
 }

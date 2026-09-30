@@ -93,7 +93,7 @@ and state digests). The census lists them in `EXPECTED_MISSING`, and E17 files t
 - [x] bug-690dc6: Timed-out and errored agent runs are recorded at $0 with no tokens (existing item; fix merged in `d4be4e872`)
 - [x] gap-8cb382: Run manifest with a config fingerprint for every plan run (S01.P0-2)
 - [x] gap-1f2661: Wiring census: a fixture proves every learning loop reads the settled attempt record (S01.P0-11, S01.P0-12)
-- [ ] gap-c7c946: roko learn telemetry: check and route-report over the attempt records (S01.P0-13)
+- [x] gap-c7c946: roko learn telemetry: check and route-report over the attempt records (S01.P0-13)
 - [x] gap-3c430e: Specs S01, S05, S06 and S08 disagree on token classes, the audit hash, a decision-point name and a budget-line name
 - [ ] bug-b72a37: OpenAI-compatible providers price cached input tokens twice
 - [ ] gap-4468bd: Credit or demote a T0 reflex rule only from the settled attempt record, after verify

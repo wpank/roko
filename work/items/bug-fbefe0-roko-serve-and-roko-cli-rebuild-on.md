@@ -2,14 +2,16 @@
 id = "bug-fbefe0"
 kind = "bug"
 title = "roko-serve and roko-cli rebuild on every cargo command in a worktree: their build scripts watch files that don't exist there"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p1"
 goal = "golden-path"
 size = "S"
 subsystem = ["roko-serve/build", "roko-cli/build"]
 created = 2026-09-30
 updated = 2026-09-30
+last_verified = 2026-09-30
+last_verified_rev = "fe7caa774"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "coordinator, batch-15a gate: `cargo check -v` reports roko-serve dirty because apps/portal/out/index.html is missing (2026-09-30)"
 anchors = ["crates/roko-serve/build.rs", "crates/roko-cli/build.rs"]
@@ -19,6 +21,12 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "! grep -q 'rerun-if-changed=../../apps/portal/out/index.html\");$' crates/roko-serve/build.rs && ! grep -q 'rerun-if-changed=../../.git/HEAD' crates/roko-cli/build.rs"
+
+[closed]
+at = 2026-09-30
+commit = "fe7caa774"
+by = "wk-serve-sec"
+evidence = "fe7caa774: roko-serve and roko-cli build scripts watch only paths that exist and resolve the real git dirs in worktrees. The static verify passes. In a git worktree, a second 'cargo check -v -p roko-cli --lib' took 1 s and reported Fresh roko-serve and Fresh roko-cli (the first took 93 s after touching all sources); touching the worktree index made only roko-cli dirty."
 +++
 
 ## Problem
@@ -48,5 +56,10 @@ Both scripts emit paths that are missing in worktrees.
 
 ## Done when
 
-- [ ] A second `cargo check -p roko-cli` in a worktree rebuilds nothing.
-- [ ] The `[[verify]]` command passes.
+- [x] A second `cargo check -p roko-cli` in a worktree rebuilds nothing.
+- [x] The `[[verify]]` command passes.
+
+## Notes
+
+- 2026-09-30 (wk-serve-sec): Fixed on `work/bug-fbefe0` at `fe7caa774`. roko-serve's build script watches each frontend path only when it exists; the portal export is missing in worktrees, so it is not watched there. The README says to `touch crates/roko-serve/build.rs` after exporting the portal into a tree built without it (there is no `apps/portal/README.md`; the root README documents the export). `apps/portal` is not watched. roko-cli's build script resolves `git rev-parse --git-dir --git-common-dir` and watches the worktree's `HEAD`, `index` and `logs/HEAD` plus the loose ref `HEAD` points at, each only if it exists, and nothing without git. It no longer watches all of `refs/`, so commits in other worktrees do not rebuild this one.
+- 2026-09-30 (wk-serve-sec): Proof, in the git worktree `roko-work-bug-fbefe0`, with an APFS clone of the idle `roko-batch-target` (61 GB free, `CARGO_BUILD_JOBS=4`, `CARGO_INCREMENTAL=0`, `nice -n 10`). After touching every `crates/**/*.rs` and `Cargo.toml`, the first `cargo check -p roko-cli --lib` took 93 s (29 crates checked). The second, `cargo check -v -p roko-cli --lib`, took 1 s (cargo: `Finished ... in 0.31s`), reported `Fresh roko-serve` and `Fresh roko-cli`, and ran nothing. Control: after `touch <git-dir>/index`, the next check reported `Dirty roko-cli: the file .../.git/worktrees/roko-work-bug-fbefe0/index has changed`, reran only roko-cli's build script and lib check (22 s), and kept `Fresh roko-serve`. The emitted watch lists were confirmed in `target/debug/build/roko-{cli,serve}-*/output`. The clone (38 GB) was deleted afterwards.

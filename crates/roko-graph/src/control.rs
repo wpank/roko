@@ -803,7 +803,7 @@ impl std::fmt::Display for ControlCommandKind {
 // ---------------------------------------------------------------------------
 
 /// Milliseconds since UNIX epoch.
-fn now_ms() -> u64 {
+pub(crate) fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or(Duration::ZERO)

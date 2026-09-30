@@ -1253,6 +1253,7 @@ async fn run_graph_plan_body(
         max_retries,
         max_tasks,
         rich_topology,
+        worktree_per_task,
         cell_resources: &cell_resources,
         batch: batch.as_ref(),
         quiet,
@@ -1923,6 +1924,8 @@ struct PlanRunContext<'a> {
     max_retries: Option<u32>,
     max_tasks: usize,
     rich_topology: bool,
+    /// `--worktree-per-task`: each task writes its own checkout.
+    worktree_per_task: bool,
     /// Services the cells of each plan's graph run with (see
     /// [`plan_cell_resources`]).
     cell_resources: &'a roko_graph::cell::CellResources,
@@ -2156,6 +2159,19 @@ async fn run_admitted_plan(
 /// A plan that cannot be converted or validated still gets a terminal
 /// PlanCompleted. `Err` is reserved for checkpoint and budget-ledger
 /// failures, which stop the whole run.
+/// With `--worktree-per-task` each task writes its own checkout, so no two
+/// tasks share a tree: drop the exclusive paths that keep tasks writing the
+/// same files apart, and let them run together (gap-19e596). The paths are
+/// not part of the checkpoint identity.
+fn drop_exclusion_for_worktrees(graph: &mut roko_graph::Graph, worktree_per_task: bool) {
+    if !worktree_per_task {
+        return;
+    }
+    for node in graph.inner.node_weights_mut() {
+        node.exclusive.clear();
+    }
+}
+
 async fn run_one_plan(
     ctx: &PlanRunContext<'_>,
     plan: &crate::runner::plan_loader::Plan,
@@ -2204,10 +2220,14 @@ async fn run_one_plan(
         })
         .collect();
 
+    // An omitted `max_parallel` converts as 1, as it did before it meant "as
+    // wide as the DAG allows" (gap-272448): the checkpoint identity hashes
+    // the converted concurrency. The width is applied once the identity is
+    // taken, below.
     let max_parallel = if ctx.max_tasks > 0 {
         u32::try_from(ctx.max_tasks).unwrap_or(u32::MAX)
     } else {
-        plan.tasks.meta.max_parallel
+        plan.tasks.meta.max_parallel.unwrap_or(1)
     };
     let max_parallel_usize = usize::try_from(max_parallel.max(1)).unwrap_or(usize::MAX);
     let plan_dir_str = plan.dir.display().to_string();
@@ -2290,6 +2310,7 @@ async fn run_one_plan(
             }
         }
     };
+    drop_exclusion_for_worktrees(&mut graph, ctx.worktree_per_task);
     let mut checkpoint = crate::graph_checkpoint::prepare_graph_checkpoint_for_run(
         ctx.workdir,
         ctx.resume_plan,
@@ -2327,6 +2348,28 @@ async fn run_one_plan(
         roko_core::config::PlanFailurePolicy::SkipFailed => roko_graph::FailureStrategy::SkipFailed,
         roko_core::config::PlanFailurePolicy::FailFast => roko_graph::FailureStrategy::FailFast,
     };
+    // A plan that omits `max_parallel` runs as wide as its DAG allows when
+    // every task that can write declares its files: the engine keeps tasks
+    // whose files overlap apart. Set after the identity is taken, like the
+    // failure strategy, so checkpoints of such plans keep resuming.
+    if ctx.max_tasks == 0 && plan.tasks.meta.max_parallel.is_none() {
+        let width = crate::plan_policy::plan_max_parallel(&plan.tasks);
+        if let Some(task) = crate::plan_policy::task_with_unknown_writes(&plan.tasks) {
+            tracing::info!(
+                plan_id = %plan.id,
+                task_id = %task.id,
+                "max_parallel is omitted and this task declares no files: one task at a time"
+            );
+        } else {
+            tracing::info!(
+                plan_id = %plan.id,
+                width,
+                "max_parallel is omitted and every writing task declares its files; running tasks \
+                 as wide as the DAG allows"
+            );
+        }
+        graph.policy.max_concurrent_nodes = usize::try_from(width.max(1)).unwrap_or(usize::MAX);
+    }
     ctx.graph_task_dispatcher.attach_retry_feedback(
         &plan.id,
         checkpoint.paths().retry_feedback(),
@@ -3457,6 +3500,123 @@ max_retries = 0
         }
     }
 
+    /// The identity a checkpoint records for plan `plan_id` in `dir` when its
+    /// graph is converted with `max_parallel`.
+    #[cfg(unix)]
+    fn plan_identity(dir: &Path, plan_id: &str, max_parallel: u32) -> String {
+        let plan_dir = dir.join("plans").join(plan_id);
+        let content = std::fs::read_to_string(plan_dir.join("tasks.toml")).expect("tasks.toml");
+        let tasks_file = crate::task_parser::TasksFile::parse_str(&content).expect("parse plan");
+        let tasks: Vec<(String, roko_graph::convert::PlanTaskInfo)> = tasks_file
+            .tasks
+            .iter()
+            .map(|task| {
+                let info = roko_graph::convert::PlanTaskInfo {
+                    title: task.title.clone(),
+                    description: None,
+                    role: task.role.clone(),
+                    tier: task.tier.clone(),
+                    model_hint: None,
+                    files: task.files.clone(),
+                    depends_on: task.depends_on.clone(),
+                    depends_on_plan: Vec::new(),
+                    timeout_secs: task.timeout_secs,
+                    max_retries: task.max_retries,
+                    domain: None,
+                    sequence: task.sequence,
+                    full_config_json: serde_json::Value::Null,
+                };
+                (task.id.clone(), info)
+            })
+            .collect();
+        let graph = roko_graph::convert::plan_to_graph(
+            plan_id,
+            &plan_dir.display().to_string(),
+            &tasks,
+            max_parallel,
+        )
+        .expect("convert plan");
+        let authored = roko_graph::AuthoredPlan::from_tasks_toml(&content).expect("authored");
+        roko_graph::plan_graph_fingerprint(&graph, &authored).expect("fingerprint")
+    }
+
+    /// gap-272448: a plan that omits `max_parallel` runs its independent
+    /// tasks together when every task declares its files. Each verify step
+    /// here waits until all three tasks have started, so it passes only when
+    /// they run at the same time. When a task that can write declares no
+    /// files, the plan runs one task at a time: a `mkdir` lock fails whenever
+    /// two verify steps overlap. The checkpoint records the identity the plan
+    /// had when an omitted `max_parallel` meant 1, so older checkpoints still
+    /// resume.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn omitted_max_parallel_runs_disjoint_tasks_together() {
+        const IDS: [&str; 3] = ["T1", "T2", "T3"];
+        let no_dependencies: &[&str] = &[];
+        let verified = |dir: &Path, id: &str| dir.join(format!("{id}.verified")).exists();
+
+        let wide = tempfile::tempdir().expect("tempdir");
+        fake_provider_workspace(wide.path(), 0.0, "");
+        let barrier = IDS.map(|id| {
+            format!(
+                "touch {id}.started; for _ in $(seq 100); do test -f T1.started && \
+                 test -f T2.started && test -f T3.started && touch {id}.verified && exit 0; \
+                 sleep 0.1; done; exit 1"
+            )
+        });
+        let tasks: Vec<(&str, &[&str], &str)> = IDS
+            .iter()
+            .zip(&barrier)
+            .map(|(id, verify)| (*id, no_dependencies, verify.as_str()))
+            .collect();
+        write_verify_plan(wide.path(), "wide", "", &tasks);
+
+        let (exit_code, _, _) = run_plan_set(wide.path(), Some(1), None).await;
+
+        assert_eq!(exit_code, EXIT_SUCCESS, "the tasks ran together");
+        for id in IDS {
+            assert!(verified(wide.path(), id), "{id}");
+        }
+        let manifest = std::fs::read(wide.path().join(".roko/state/graph/wide/checkpoint.json"))
+            .expect("checkpoint manifest");
+        let manifest: crate::graph_checkpoint::GraphCheckpointManifest =
+            serde_json::from_slice(&manifest).expect("parse checkpoint manifest");
+        assert_eq!(
+            manifest.graph_fingerprint,
+            plan_identity(wide.path(), "wide", 1)
+        );
+        assert_ne!(
+            manifest.graph_fingerprint,
+            plan_identity(wide.path(), "wide", 3)
+        );
+
+        let narrow = tempfile::tempdir().expect("tempdir");
+        fake_provider_workspace(narrow.path(), 0.0, "");
+        let lock = IDS
+            .map(|id| format!("mkdir lock.d && sleep 0.5 && rmdir lock.d && touch {id}.verified"));
+        let tasks: Vec<(&str, &[&str], &str)> = IDS
+            .iter()
+            .zip(&lock)
+            .map(|(id, verify)| (*id, no_dependencies, verify.as_str()))
+            .collect();
+        write_verify_plan(narrow.path(), "narrow", "", &tasks);
+        // T3 becomes a scribe that declares no files: what it writes is unknown.
+        let tasks_toml = narrow.path().join("plans/narrow/tasks.toml");
+        let content = std::fs::read_to_string(&tasks_toml).expect("tasks.toml");
+        let (head, task_t3) = content.split_at(content.find("id = \"T3\"").expect("T3"));
+        let task_t3 = task_t3
+            .replacen("role = \"implementer\"", "role = \"scribe\"", 1)
+            .replace("files = [\"T3.txt\"]", "files = []");
+        std::fs::write(&tasks_toml, format!("{head}{task_t3}")).expect("rewrite tasks.toml");
+
+        let (exit_code, _, _) = run_plan_set(narrow.path(), Some(1), None).await;
+
+        assert_eq!(exit_code, EXIT_SUCCESS, "no two verify steps overlapped");
+        for id in IDS {
+            assert!(verified(narrow.path(), id), "{id}");
+        }
+    }
+
     /// Once a plan's settled spend reaches `[budget] max_plan_usd`, no further
     /// task starts, even under the default `skip_failed` policy: the tasks
     /// waiting on the spent one are recorded as not started, not failed.
@@ -3800,6 +3960,7 @@ max_retries = 0
             output_count: 0,
             is_stub: false,
             blocked_by: None,
+            timing: roko_graph::NodeTiming::default(),
         };
         let output = roko_graph::GraphOutput {
             graph_name: "verdicts".to_string(),
@@ -3896,6 +4057,71 @@ max_retries = 0
         stopped_rx
             .try_recv()
             .expect("TUI thread joined before drop returned");
+    }
+
+    /// gap-19e596: with per-task worktrees no two tasks share a tree, so the
+    /// plan graph keeps no exclusive paths, in the simple and in the rich
+    /// topology. In a shared tree each task keeps the files it declares.
+    #[test]
+    fn worktree_per_task_clears_exclusive_paths() {
+        let plan_task = |id: &str| roko_graph::convert::PlanTaskInfo {
+            title: format!("Task {id}"),
+            description: None,
+            role: Some("implementer".to_string()),
+            tier: "focused".to_string(),
+            model_hint: None,
+            files: vec!["src/lib.rs".to_string()],
+            depends_on: Vec::new(),
+            depends_on_plan: Vec::new(),
+            timeout_secs: 60,
+            max_retries: 0,
+            domain: None,
+            sequence: 0,
+            full_config_json: serde_json::Value::Null,
+        };
+        let topology_task = |id: &str| roko_graph::TopologyTaskInfo {
+            task_id: id.to_string(),
+            title: format!("Task {id}"),
+            description: None,
+            role: Some("implementer".to_string()),
+            tier: "focused".to_string(),
+            model_hint: None,
+            files: vec!["src/lib.rs".to_string()],
+            depends_on: Vec::new(),
+            timeout_secs: 60,
+            max_retries: 0,
+            domain: None,
+            sequence: 0,
+            full_config_json: serde_json::Value::Null,
+        };
+        let simple = roko_graph::convert::plan_to_graph(
+            "p",
+            "plans/p",
+            &[
+                ("T1".to_string(), plan_task("T1")),
+                ("T2".to_string(), plan_task("T2")),
+            ],
+            2,
+        )
+        .expect("simple topology");
+        let (rich, _) = roko_graph::ProductionPlanTopology::new("p", "plans/p", 2)
+            .build(&[topology_task("T1"), topology_task("T2")])
+            .expect("rich topology");
+
+        let holds_paths = |graph: &roko_graph::Graph| {
+            graph
+                .inner
+                .node_weights()
+                .any(|node| !node.exclusive.is_empty())
+        };
+        for graph in [simple, rich] {
+            let mut shared = graph.clone();
+            drop_exclusion_for_worktrees(&mut shared, false);
+            assert!(holds_paths(&shared));
+            let mut isolated = graph;
+            drop_exclusion_for_worktrees(&mut isolated, true);
+            assert!(!holds_paths(&isolated));
+        }
     }
 
     /// Stands in for a rich-topology task executor under

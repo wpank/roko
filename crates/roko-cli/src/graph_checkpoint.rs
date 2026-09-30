@@ -1824,10 +1824,12 @@ fn convert_plan(plan: &Plan, options: &ResumeOptions<'_>) -> Result<Graph> {
             (task.id.clone(), info)
         })
         .collect();
+    // An omitted `max_parallel` converts as 1, as `run_one_plan` does; the
+    // run widens the graph only after its identity is taken.
     let max_parallel = if options.max_tasks > 0 {
         u32::try_from(options.max_tasks).unwrap_or(u32::MAX)
     } else {
-        plan.tasks.meta.max_parallel
+        plan.tasks.meta.max_parallel.unwrap_or(1)
     };
     plan_to_graph(
         &plan.id,

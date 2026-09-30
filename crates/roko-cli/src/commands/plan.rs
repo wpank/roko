@@ -2005,12 +2005,28 @@ fn validate_before_run(plans_dir: &Path, workdir: &Path) -> Option<i32> {
         return None;
     }
 
-    let code = report.exit_code(false);
-    if code != 0 {
+    // An advisory finding does not stop the run: tasks that could run
+    // together but write overlapping files only cost parallelism, since the
+    // engine runs them one after the other.
+    let (advisory, blocking): (Vec<_>, Vec<_>) = report
+        .plans
+        .iter()
+        .flat_map(|plan| &plan.diagnostics)
+        .filter(|diagnostic| diagnostic.severity == plan_validate::Severity::Error)
+        .partition(|diagnostic| roko_cli::plan_policy::is_advisory_code(&diagnostic.rule_id));
+    for diagnostic in advisory {
+        tracing::warn!(
+            rule = %diagnostic.rule_id,
+            plan_id = diagnostic.plan_id.as_deref().unwrap_or_default(),
+            message = %diagnostic.message,
+            "plan validation finding; the plan still runs"
+        );
+    }
+    if blocking.is_empty() {
+        None
+    } else {
         tracing::error!(report = %plan_validate::render_text(&report), "plan validation failed — fix the errors above before running");
         Some(1)
-    } else {
-        None
     }
 }
 

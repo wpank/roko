@@ -356,7 +356,7 @@ pub struct StatusSummary {
 mod tests {
     use std::time::Duration;
 
-    use roko_graph::engine::NodeResult;
+    use roko_graph::engine::{NodeResult, NodeTiming};
 
     use super::*;
     use crate::state_hub::StateHub;
@@ -378,6 +378,7 @@ mod tests {
             output_count: 1,
             is_stub: false,
             blocked_by: None,
+            timing: NodeTiming::default(),
         }
     }
 

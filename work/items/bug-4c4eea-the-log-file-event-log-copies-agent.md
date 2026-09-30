@@ -3,13 +3,15 @@ id = "bug-4c4eea"
 kind = "bug"
 title = "The --log-file event log copies agent output verbatim, so evidence bundles hold raw agent text"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p2"
 goal = "proof"
 size = "S"
 subsystem = ["roko-cli/graph-execution"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-09-30
+last_verified = 2026-09-30
+last_verified_rev = "a7a70f5fe"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (16:47, wk-evidence's report on gap-09e478)"
 anchors = ["crates/roko-cli/src/graph_execution/event_log.rs::record", "crates/roko-core/src/dashboard_snapshot.rs::DashboardEvent", "scripts/run_evidence.py"]
@@ -50,3 +52,17 @@ At BASE the writer does no per-event filtering. The collector's metrics need eve
 
 - [ ] No `--log-file` line contains agent output text.
 - [ ] The `[[verify]]` command passes.
+
+## Notes
+
+- Implemented on `work/bug-4c4eea` at `a7a70f5fe`; cargo verification deferred to the batch check.
+- Decisions: `agent_output`, `gate_output_line` and `task_output_appended` keep only `<field>_bytes`, `<field>_lines`
+  and `<field>_sha256` (plus `stream_kind` for a TUI stream record). `gate_result` gives the same digest of
+  `output_text` plus `output_text_excerpt`: the last 240 bytes after redaction by `LogScrubber`'s built-in patterns,
+  `<secret name>=<value>` assignments and the values of secret-named environment variables. The excerpt keeps the
+  closing `✗ timed out after N ms` line that `scripts/run_evidence.py` reads (it now reads `output_text_excerpt`,
+  falling back to `output_text` for older logs).
+- Plan step 3 (a private raw-transcript file behind a flag) was not built: nothing needs a raw transcript yet.
+- Python: `python3 scripts/test_run_evidence_graph.py CollectorUnits` passes, including the new
+  `test_gate_timeouts_are_read_from_the_logged_excerpt`. The Graph bundle scenarios, which need a built `roko`, now
+  also check that `events.jsonl` holds no agent text.

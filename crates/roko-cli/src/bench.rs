@@ -3,6 +3,12 @@
 //! The first runner is a SWE-bench-style proxy harness. It is intentionally
 //! local and deterministic by default so CI and developer machines can verify
 //! the benchmark plumbing without Docker, Python, HuggingFace, or a live LLM.
+//!
+//! The `gold` and `empty` agent modes are controls: they check the harness,
+//! not a model, so they are labeled as controls and never written into
+//! learning state. An agent under test never sees an instance's gold patch or
+//! test command, and an instance without a test command is an error, never a
+//! pass.
 
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
@@ -26,13 +32,14 @@ use serde_json::{Value, json};
 /// Agent adapter used by the SWE-bench proxy runner.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum SweAgentMode {
-    /// Use the dataset gold patch. This validates harness plumbing, not model skill.
+    /// Use the dataset gold patch. A control: it validates harness plumbing, not model skill.
     Gold,
-    /// Submit an empty patch. Useful as a negative control.
+    /// Submit an empty patch. A negative control.
     Empty,
     /// Read patches from a SWE-bench predictions JSONL file.
     PredictionFile,
-    /// Run a caller-provided command that receives instance JSON on stdin and prints a patch.
+    /// Run a caller-provided command that receives the instance (without its gold patch or
+    /// test command) as JSON on stdin and prints a patch.
     Command,
 }
 
@@ -44,6 +51,15 @@ impl SweAgentMode {
             Self::PredictionFile => "prediction-file",
             Self::Command => "command",
         }
+    }
+
+    /// Whether this mode is a control rather than an agent under test.
+    ///
+    /// A gold patch always resolves and an empty one never does, so neither
+    /// says anything about a model: control runs never write learning state.
+    #[must_use]
+    pub fn is_control(self) -> bool {
+        matches!(self, Self::Gold | Self::Empty)
     }
 }
 
@@ -68,7 +84,8 @@ pub struct SweBenchOptions {
     pub report: Option<PathBuf>,
     /// Optional SWE-bench-style predictions JSONL export path.
     pub export_predictions: Option<PathBuf>,
-    /// Whether to write learning episodes and C-factor snapshots.
+    /// Whether to write learning episodes and C-factor snapshots. Control
+    /// modes ([`SweAgentMode::is_control`]) never write them.
     pub record_learning: bool,
     /// Keep per-instance workdirs after the run.
     pub keep_workdirs: bool,
@@ -85,6 +102,10 @@ pub struct SweBenchReport {
     pub dataset: String,
     /// Agent adapter label.
     pub agent_mode: String,
+    /// Whether the run was a control (`gold` or `empty`) that measures the
+    /// harness, not a model. Control runs never write learning state.
+    #[serde(default)]
+    pub control: bool,
     /// Number of instances evaluated.
     pub total: usize,
     /// Number of instances resolved by the proxy scorer.
@@ -99,7 +120,8 @@ pub struct SweBenchReport {
     pub tests_passed: usize,
     /// Per-instance rows.
     pub instances: Vec<SweBenchInstanceResult>,
-    /// Scores JSONL path.
+    /// Summary JSONL path. Unless `--report` names one, agent runs append to
+    /// `.roko/bench/scores.jsonl` and control runs to `.roko/bench/controls.jsonl`.
     pub report_path: PathBuf,
     /// Detailed run JSON path.
     pub run_path: PathBuf,
@@ -129,6 +151,14 @@ impl SweBenchReport {
             (Some(before), Some(after)) => format!(" ({:+.3})", after.overall - before.overall),
             _ => String::new(),
         };
+        let agent_label = if self.control {
+            format!(
+                "{} (control run: checks the harness, not a model; not recorded as learning)",
+                self.agent_mode
+            )
+        } else {
+            self.agent_mode.clone()
+        };
 
         format!(
             "\
@@ -144,7 +174,7 @@ report: {report}
 details: {details}",
             run_id = self.run_id,
             dataset = self.dataset,
-            agent = self.agent_mode,
+            agent = agent_label,
             resolved = self.resolved,
             total = self.total,
             pass_rate = self.pass_rate * 100.0,
@@ -182,7 +212,9 @@ pub struct SweBenchInstanceResult {
     pub failure_reason: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// One dataset row. Deliberately not `Serialize`: it holds the gold patch and
+/// the test command, and an agent only ever gets a [`SweAgentPayload`].
+#[derive(Debug, Clone, Deserialize)]
 struct SweBenchInstance {
     instance_id: String,
     #[serde(default)]
@@ -204,6 +236,31 @@ struct PredictionRow {
     instance_id: String,
     #[serde(default, alias = "patch")]
     model_patch: String,
+}
+
+/// The part of an instance an agent under test may see.
+///
+/// It leaves out the gold `patch` and the `test_cmd` that grades the agent's
+/// patch: an agent that reads either can pass without solving the problem.
+#[derive(Debug, Serialize)]
+struct SweAgentPayload<'a> {
+    instance_id: &'a str,
+    repo: &'a str,
+    repo_path: Option<&'a Path>,
+    base_commit: &'a str,
+    problem_statement: &'a str,
+}
+
+impl<'a> SweAgentPayload<'a> {
+    fn for_instance(instance: &'a SweBenchInstance) -> Self {
+        Self {
+            instance_id: &instance.instance_id,
+            repo: &instance.repo,
+            repo_path: instance.repo_path.as_deref(),
+            base_commit: &instance.base_commit,
+            problem_statement: &instance.problem_statement,
+        }
+    }
 }
 
 /// Run the native SWE-bench-style proxy harness.
@@ -242,6 +299,22 @@ pub async fn run_swe_bench(options: SweBenchOptions) -> Result<SweBenchReport> {
             options.batch_size
         );
     }
+    // Without a test command nothing can check a patch, and a check that
+    // cannot fail is not a pass. Refuse before anything is scored or learned.
+    if let Some(instance) = selected
+        .iter()
+        .find(|instance| instance.test_cmd.trim().is_empty())
+    {
+        bail!(
+            "instance {} has no test command; the proxy cannot verify a patch without one",
+            instance.instance_id
+        );
+    }
+
+    // Controls check the harness, not a model: they never write episodes,
+    // efficiency events, C-factor snapshots or knowledge.
+    let control = options.agent_mode.is_control();
+    let learning_enabled = options.record_learning && !control;
 
     let predictions = load_predictions(options.predictions.as_deref())?;
     let run_root = options
@@ -254,12 +327,12 @@ pub async fn run_swe_bench(options: SweBenchOptions) -> Result<SweBenchReport> {
 
     let learn_root = options.workdir.join(".roko").join("learn");
     let canonical_episodes = options.workdir.join(".roko").join("episodes.jsonl");
-    let cfactor_before = if options.record_learning && canonical_episodes.exists() {
+    let cfactor_before = if learning_enabled && canonical_episodes.exists() {
         refresh_cfactor_snapshot(&learn_root).await.ok()
     } else {
         None
     };
-    let runtime = if options.record_learning {
+    let runtime = if learning_enabled {
         Some(LearningRuntime::open_for_project(&options.workdir).await?)
     } else {
         None
@@ -294,10 +367,10 @@ pub async fn run_swe_bench(options: SweBenchOptions) -> Result<SweBenchReport> {
         } else {
             (false, apply_check_error.clone())
         };
-        let (tests_ok, test_error) = if apply_ok && !instance.test_cmd.trim().is_empty() {
+        // Every selected instance has a test command (checked above), so a
+        // resolved patch always comes from a test run that could fail.
+        let (tests_ok, test_error) = if apply_ok {
             run_shell(&instance_workdir, &instance.test_cmd)?
-        } else if apply_ok {
-            (true, None)
         } else {
             (false, apply_error.clone())
         };
@@ -334,18 +407,24 @@ pub async fn run_swe_bench(options: SweBenchOptions) -> Result<SweBenchReport> {
         rows.push(row);
     }
 
-    let cfactor_after = if options.record_learning {
+    let cfactor_after = if learning_enabled {
         Some(refresh_cfactor_snapshot(&learn_root).await?)
     } else {
         None
     };
 
+    // A control's always-100% or always-0% row never goes among agent scores.
+    let default_report = if control {
+        "controls.jsonl"
+    } else {
+        "scores.jsonl"
+    };
     let report_path = options.report.clone().unwrap_or_else(|| {
         options
             .workdir
             .join(".roko")
             .join("bench")
-            .join("scores.jsonl")
+            .join(default_report)
     });
     let run_path = options
         .workdir
@@ -362,6 +441,7 @@ pub async fn run_swe_bench(options: SweBenchOptions) -> Result<SweBenchReport> {
         arena: "swe-bench-proxy".to_string(),
         dataset: dataset_label,
         agent_mode: options.agent_mode.label().to_string(),
+        control,
         total,
         resolved,
         pass_rate: resolved as f64 / total as f64,
@@ -377,7 +457,7 @@ pub async fn run_swe_bench(options: SweBenchOptions) -> Result<SweBenchReport> {
     };
 
     write_report_artifacts(&report, &prediction_exports)?;
-    if options.record_learning {
+    if learning_enabled {
         write_neuro_benchmark_insights(&options, &report)?;
     }
     if !options.keep_workdirs {
@@ -531,7 +611,7 @@ fn produce_patch(
                 .agent_command
                 .as_deref()
                 .ok_or_else(|| anyhow!("missing agent command"))?;
-            let payload = serde_json::to_string(instance)?;
+            let payload = serde_json::to_string(&SweAgentPayload::for_instance(instance))?;
             run_agent_command(command, &payload)
         }
     }
@@ -737,6 +817,7 @@ fn write_report_artifacts(report: &SweBenchReport, predictions: &[Value]) -> Res
         "arena": report.arena,
         "dataset": report.dataset,
         "agent_mode": report.agent_mode,
+        "control": report.control,
         "total": report.total,
         "resolved": report.resolved,
         "pass_rate": report.pass_rate,
@@ -959,36 +1040,50 @@ mod tests {
         ));
     }
 
-    #[tokio::test]
-    async fn built_in_smoke_gold_agent_resolves() {
-        let tmp = TempDir::new().unwrap();
-        let report = run_swe_bench(SweBenchOptions {
-            workdir: tmp.path().to_path_buf(),
+    fn smoke_options(workdir: &Path, agent_mode: SweAgentMode) -> SweBenchOptions {
+        SweBenchOptions {
+            workdir: workdir.to_path_buf(),
             dataset: None,
             batch_size: 2,
             offset: 0,
-            agent_mode: SweAgentMode::Gold,
+            agent_mode,
             predictions: None,
             agent_command: None,
             report: None,
-            export_predictions: Some(tmp.path().join("predictions.jsonl")),
+            export_predictions: None,
             record_learning: true,
             keep_workdirs: false,
+        }
+    }
+
+    #[tokio::test]
+    async fn swe_gold_control_resolves_but_is_never_recorded_as_learning() {
+        let tmp = TempDir::new().unwrap();
+        let report = run_swe_bench(SweBenchOptions {
+            export_predictions: Some(tmp.path().join("predictions.jsonl")),
+            ..smoke_options(tmp.path(), SweAgentMode::Gold)
         })
         .await
         .unwrap();
 
+        // The gold patch checks the harness: it applies and passes the tests.
+        assert!(report.control);
         assert_eq!(report.total, 2);
         assert_eq!(report.resolved, 2);
         assert_eq!(report.format_valid, 2);
         assert_eq!(report.apply_check, 2);
         assert_eq!(report.tests_passed, 2);
+        assert!(report.render_text().contains("control run"));
+
+        // Its row is kept apart from agent scores, even with learning requested.
+        assert!(report.report_path.ends_with("controls.jsonl"));
         assert!(report.report_path.exists());
         assert!(report.run_path.exists());
-        assert!(tmp.path().join(".roko/episodes.jsonl").exists());
-        assert!(!tmp.path().join(".roko/learn/episodes.jsonl").exists());
-        assert!(!tmp.path().join(".roko/memory/episodes.jsonl").exists());
-        assert!(tmp.path().join(".roko/learn/c-factor.jsonl").exists());
+        assert!(!tmp.path().join(".roko/bench/scores.jsonl").exists());
+        assert!(report.cfactor_after.is_none());
+        assert!(!tmp.path().join(".roko/episodes.jsonl").exists());
+        assert!(!tmp.path().join(".roko/learn/c-factor.jsonl").exists());
+        assert!(!KnowledgeStore::for_workdir(tmp.path()).path().exists());
 
         let mut predictions = String::new();
         File::open(tmp.path().join("predictions.jsonl"))
@@ -996,5 +1091,111 @@ mod tests {
             .read_to_string(&mut predictions)
             .unwrap();
         assert_eq!(predictions.lines().count(), 2);
+    }
+
+    #[tokio::test]
+    async fn swe_prediction_file_run_records_learning() {
+        let tmp = TempDir::new().unwrap();
+        let predictions = tmp.path().join("predictions.jsonl");
+        let rows: Vec<String> = create_builtin_smoke_dataset(tmp.path())
+            .unwrap()
+            .into_iter()
+            .map(|instance| {
+                json!({ "instance_id": instance.instance_id, "model_patch": instance.patch })
+                    .to_string()
+            })
+            .collect();
+        fs::write(&predictions, rows.join("\n")).unwrap();
+
+        let report = run_swe_bench(SweBenchOptions {
+            predictions: Some(predictions),
+            ..smoke_options(tmp.path(), SweAgentMode::PredictionFile)
+        })
+        .await
+        .unwrap();
+
+        assert!(!report.control);
+        assert_eq!(report.total, 2);
+        assert_eq!(report.resolved, 2);
+        assert!(report.report_path.ends_with("scores.jsonl"));
+        assert!(report.report_path.exists());
+        assert!(tmp.path().join(".roko/episodes.jsonl").exists());
+        assert!(!tmp.path().join(".roko/learn/episodes.jsonl").exists());
+        assert!(!tmp.path().join(".roko/memory/episodes.jsonl").exists());
+        assert!(tmp.path().join(".roko/learn/c-factor.jsonl").exists());
+    }
+
+    #[tokio::test]
+    async fn swe_command_payload_has_no_gold_patch() {
+        let tmp = TempDir::new().unwrap();
+        let stdin_copy = tmp.path().join("agent-stdin.json");
+        let report = run_swe_bench(SweBenchOptions {
+            batch_size: 1,
+            agent_command: Some(format!("cat > '{}'", stdin_copy.display())),
+            record_learning: false,
+            ..smoke_options(tmp.path(), SweAgentMode::Command)
+        })
+        .await
+        .unwrap();
+
+        let payload = fs::read_to_string(&stdin_copy).unwrap();
+        let instance = create_builtin_smoke_dataset(tmp.path()).unwrap().remove(0);
+        assert!(payload.contains(&instance.instance_id));
+        assert!(payload.contains(&instance.problem_statement));
+        assert!(!payload.contains("diff --git"), "gold patch leaked: {payload}");
+        assert!(!payload.contains("return a + b"), "gold patch leaked: {payload}");
+        assert!(!payload.contains(&instance.test_cmd), "test command leaked: {payload}");
+        let fields: Value = serde_json::from_str(&payload).unwrap();
+        assert!(fields.get("patch").is_none());
+        assert!(fields.get("test_cmd").is_none());
+
+        // The agent printed no patch, so nothing resolved.
+        assert_eq!(report.resolved, 0);
+    }
+
+    #[tokio::test]
+    async fn swe_empty_test_command_is_an_error() {
+        let tmp = TempDir::new().unwrap();
+        let repo = tmp.path().join("repo");
+        fs::create_dir_all(&repo).unwrap();
+        fs::write(repo.join("calc.py"), "def add(a, b):\n    return a - b\n").unwrap();
+        let patch = concat!(
+            "diff --git a/calc.py b/calc.py\n",
+            "--- a/calc.py\n",
+            "+++ b/calc.py\n",
+            "@@ -1,2 +1,2 @@\n",
+            " def add(a, b):\n",
+            "-    return a - b\n",
+            "+    return a + b\n",
+        );
+        let dataset = tmp.path().join("dataset.jsonl");
+        let row = json!({
+            "instance_id": "no-tests",
+            "repo_path": "repo",
+            "problem_statement": "add subtracts",
+            "patch": patch,
+            "test_cmd": "  "
+        });
+        fs::write(&dataset, format!("{row}\n")).unwrap();
+        let predictions = tmp.path().join("predictions.jsonl");
+        let prediction = json!({ "instance_id": "no-tests", "model_patch": patch });
+        fs::write(&predictions, format!("{prediction}\n")).unwrap();
+
+        // Before the fix this patch applied, no test ran, and it counted as resolved.
+        let err = run_swe_bench(SweBenchOptions {
+            dataset: Some(dataset),
+            batch_size: 1,
+            predictions: Some(predictions),
+            ..smoke_options(tmp.path(), SweAgentMode::PredictionFile)
+        })
+        .await
+        .unwrap_err();
+
+        assert!(
+            err.to_string().contains("no test command"),
+            "unexpected error: {err:#}"
+        );
+        assert!(!tmp.path().join(".roko/bench/scores.jsonl").exists());
+        assert!(!tmp.path().join(".roko/episodes.jsonl").exists());
     }
 }

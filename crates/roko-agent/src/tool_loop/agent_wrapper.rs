@@ -312,6 +312,7 @@ impl ToolLoopAgent {
         // has no reported model: the configured slug is only the request.
         if let Some(usage_obs) = result.usage_obs.as_mut() {
             usage_obs.model = last_reported_model(output);
+            usage_obs.source = loop_usage_source(output);
         }
         result
     }
@@ -481,6 +482,28 @@ fn reported_models(output: &ToolLoopOutput) -> Vec<String> {
         }
     }
     models
+}
+
+/// Where the loop's summed usage came from (bug-c65bfe): the provider's
+/// report when every turn's response reported usage, an estimate when any
+/// turn's usage was estimated or only some turns reported theirs (the sum
+/// is then a lower bound), and unknown when none did.
+fn loop_usage_source(output: &ToolLoopOutput) -> crate::usage::UsageSource {
+    use crate::usage::UsageSource;
+
+    let sources = || output.turn_traces.iter().map(|trace| &trace.usage_source);
+    let reported = sources()
+        .filter(|source| **source == UsageSource::ProviderReported)
+        .count();
+    if sources().any(|source| *source == UsageSource::Estimated) {
+        UsageSource::Estimated
+    } else if reported == 0 {
+        UsageSource::Unknown
+    } else if reported == output.turn_traces.len() {
+        UsageSource::ProviderReported
+    } else {
+        UsageSource::Estimated
+    }
 }
 
 /// The model the provider named on the last turn that named one.
@@ -851,6 +874,81 @@ mod tests {
             None,
             "a provider that names no model has no reported model"
         );
+    }
+
+    /// Calls the echo tool on every turn but the last, and reports usage on
+    /// the turns `reported` marks.
+    struct UsageReportingBackend {
+        reported: Vec<bool>,
+        call_count: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl LlmBackend for UsageReportingBackend {
+        async fn send_turn(
+            &self,
+            _messages: &[serde_json::Value],
+            _tools: &RenderedTools,
+            _session: &crate::translate::SessionState,
+        ) -> Result<BackendResponse, LlmError> {
+            let call = self.call_count.fetch_add(1, Ordering::SeqCst);
+            let mut response = if call + 1 < self.reported.len() {
+                serde_json::json!({
+                    "tool_calls": [{
+                        "id": format!("call-{call}"),
+                        "name": "echo",
+                        "arguments": { "value": call }
+                    }]
+                })
+            } else {
+                serde_json::json!({"message": {"content": "final answer"}})
+            };
+            if self.reported.get(call).copied().unwrap_or(false) {
+                response["usage"] =
+                    serde_json::json!({"prompt_tokens": 10, "completion_tokens": 5});
+            }
+            Ok(BackendResponse::Json(response))
+        }
+    }
+
+    /// The loop's usage names its source (bug-c65bfe): provider-reported
+    /// when every call reported usage, an estimate when only some did, and
+    /// unknown when none did.
+    #[tokio::test]
+    async fn tool_loop_usage_names_its_source() {
+        use crate::usage::UsageSource;
+
+        let input = Signal::builder(Kind::Prompt)
+            .body(Body::text("call the tool"))
+            .build();
+        let source_of = |reported: Vec<bool>| {
+            let backend = UsageReportingBackend {
+                reported,
+                call_count: AtomicUsize::new(0),
+            };
+            let agent = ToolLoopAgent::new(make_tool_loop(Arc::new(backend)))
+                .with_tools(test_tools())
+                .with_worktree_path("/tmp");
+            let input = input.clone();
+            async move {
+                agent
+                    .run(&input, &Context::now())
+                    .await
+                    .usage_obs
+                    .expect("usage_obs populated")
+                    .source
+            }
+        };
+
+        assert_eq!(
+            source_of(vec![true, true, true]).await,
+            UsageSource::ProviderReported
+        );
+        assert_eq!(
+            source_of(vec![true, false, true]).await,
+            UsageSource::Estimated
+        );
+        assert_eq!(source_of(vec![false, false]).await, UsageSource::Unknown);
     }
 
     #[tokio::test]

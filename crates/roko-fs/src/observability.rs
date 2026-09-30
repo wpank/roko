@@ -276,11 +276,12 @@ impl RunScrubber {
     }
 }
 
-/// Whether a `.env` entry holds a secret: its name looks like a credential's
-/// (`OPENAI_API_KEY`, `GITHUB_TOKEN`; see
-/// [`roko_core::child_env::is_secret_env_name`]), or its value is a URL that
-/// carries credentials (`postgres://user:pass@host/db`,
-/// `https://token@host/repo`).
+/// Whether a `.env` entry holds a secret.
+///
+/// It does when its name looks like a credential's (`OPENAI_API_KEY`,
+/// `GITHUB_TOKEN`; see [`roko_core::child_env::is_secret_env_name`]), or when
+/// its value is a URL that carries credentials
+/// (`postgres://user:pass@host/db`, `https://token@host/repo`).
 #[must_use]
 pub fn is_env_file_secret(name: &str, value: &str) -> bool {
     roko_core::child_env::is_secret_env_name(name)

@@ -545,10 +545,7 @@ fn mask_secret_fields(value: &mut Value) {
                 // Header values carry credentials (Authorization, API-key
                 // headers), resolved from ${VAR} references and *_file
                 // secrets, so none is shown; an empty one stays empty.
-                if let Some(headers) = obj
-                    .get_mut("extra_headers")
-                    .and_then(Value::as_object_mut)
-                {
+                if let Some(headers) = obj.get_mut("extra_headers").and_then(Value::as_object_mut) {
                     for header in headers.values_mut() {
                         if header.as_str().is_some_and(|text| !text.is_empty()) {
                             *header = Value::String("***".to_string());

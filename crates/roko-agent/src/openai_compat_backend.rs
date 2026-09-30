@@ -1631,7 +1631,11 @@ mod tests {
 
         for mut usage in [non_streaming, streamed] {
             assert_eq!(
-                (usage.input_tokens, usage.cache_read_tokens, usage.output_tokens),
+                (
+                    usage.input_tokens,
+                    usage.cache_read_tokens,
+                    usage.output_tokens
+                ),
                 (200, 800, 100)
             );
             usage.fill_cost_from_pricing(Some(1.0), Some(2.0), Some(0.10), None);

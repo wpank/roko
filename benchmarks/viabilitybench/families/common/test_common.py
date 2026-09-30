@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from common import astcheck, canary, hmac_seed, knobs, mutate, repo  # noqa: E402
+from common import astcheck, canary, hmac_seed, knobs, mutate, repo, sandbox  # noqa: E402
 
 GIT_ENV = {"GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull, "GIT_AUTHOR_NAME": "agent",
            "GIT_AUTHOR_EMAIL": "agent@example.invalid", "GIT_COMMITTER_NAME": "agent",
@@ -597,3 +597,27 @@ def test_surface_renames_vary_instances(tmp_path):
     assert (root / "app/payments/logo.bin").read_bytes() == b"\0billing\xff"
     assert not (root / "app/billing").exists()
     assert (root / "tests/visible/test_refunds.py").exists()  # whole identifiers only: test_refunds stays
+
+
+def test_sandbox_denies_the_agents_code_the_private_paths(tmp_path):
+    secret_file = hmac_seed.write_secret_file(tmp_path / "private-config" / "secret")
+    task_file = tmp_path / "private" / ".vb" / "task.json"
+    task_file.parent.mkdir(parents=True)
+    task_file.write_text('{"instance_id": "F4-l1-0001"}')
+    deny = sandbox.denied(secret_file, task_file)
+    assert deny == (secret_file, task_file.parent)
+    # The sandbox matches resolved paths, and a quote in a path cannot end the profile's string.
+    quoted = tmp_path / 'odd "dir"'
+    profile = sandbox.profile([*deny, quoted])
+    assert f'(subpath "{os.path.realpath(secret_file)}")' in profile and 'odd \\"dir\\"' in profile
+    assert profile.startswith("(version 1) (allow default)")
+    assert sandbox.command(["cat", "x"], deny=()) == ["cat", "x"] and sandbox.kind(()) == "none"
+    argv = ["sh", "-c", f"cat {secret_file} {task_file}; ls {task_file.parent}; echo done"]
+    run = subprocess.run(sandbox.command(argv, deny=deny), capture_output=True, text=True, check=False)
+    assert sandbox.kind(deny) == sandbox.KIND and "done" in run.stdout
+    value = next(line for line in secret_file.read_text().splitlines() if not line.startswith("#"))
+    if sandbox.KIND == "none":  # no confinement on this host: the command runs as given
+        assert sandbox.command(argv, deny=deny) == argv and value in run.stdout
+    else:
+        assert value not in run.stdout and "F4-l1-0001" not in run.stdout
+        assert run.stderr.count("Operation not permitted") == 3

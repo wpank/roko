@@ -123,7 +123,7 @@ providers. This removes the checklist's circular `budget` gate (W10 rec 2).
 - [x] gap-204848: ViabilityBench schemas can't hold a plan-slice run record without a placeholder ladder, or a PL task
 - [x] gap-455aef: S09 §4.9 says the plan-slice arms share no visible checks, but both get the same base repo and its tests
 - [ ] gap-db9a26: The plan-slice hidden suites were written by the arms' own model family and need a cross-family review
-- [ ] gap-8c3752: The census runs hidden.py, which executes agent code, without the sandbox agents get
+- [x] gap-8c3752: The census runs hidden.py, which executes agent code, without the sandbox agents get
 - [x] gap-04e8e2: ViabilityBench plan-slice records carry no queue waits or per-class costs, so the report prints them as not recorded
 - [x] bug-3c1c4a: ViabilityBench metrics group runs by arm only, so an arm that runs two models in one experiment is pooled
 - [x] bug-2930a8: vb run cannot materialize any F1 or F4 instance: materialize.py expects the .vb/ layout both families dropped
@@ -145,11 +145,11 @@ providers. This removes the checklist's circular `budget` gate (W10 rec 2).
 - [x] bug-09fac4: The metering proxy stamps whole seconds, so an attempt that ends in the same second as the one before gets no usage
 - [x] bug-c30764: The metering proxy forwards the call that crosses input_token_cap, so a task can overshoot its input cap by one call
 - [ ] gap-dad97b: run_roko.py must read bug-31438d's new record fields: turns_unknown, model_reported, substitution, attempt_key and helper rows
-- [ ] bug-d34a29: The metering proxy's input-token bound (request bytes + 256) assumes text-only requests; an image by URL can cost more
-- [ ] gap-806e37: The Roko arm doesn't enforce S08's 150K per-attempt input cap, so S08-SC6 can't hold for that arm
-- [ ] gap-15bb83: vb run always uses the proxy's clean profile, and the other disturbance hooks aren't built, so H6 has no disturbance mechanism
-- [ ] gap-44632a: No CI workflow runs the ViabilityBench verifier CI in benchmarks/viabilitybench/ci/
-- [ ] gap-a6abd5: S08 §5.2's heading still gives the task manifest as DIR/.vb/task.json
+- [x] bug-d34a29: The metering proxy's input-token bound (request bytes + 256) assumes text-only requests; an image by URL can cost more
+- [x] gap-806e37: The Roko arm doesn't enforce S08's 150K per-attempt input cap, so S08-SC6 can't hold for that arm
+- [x] gap-15bb83: vb run always uses the proxy's clean profile, and the other disturbance hooks aren't built, so H6 has no disturbance mechanism
+- [x] gap-44632a: No CI workflow runs the ViabilityBench verifier CI in benchmarks/viabilitybench/ci/
+- [x] gap-a6abd5: S08 §5.2's heading still gives the task manifest as DIR/.vb/task.json
 - [ ] The epic's `[[verify]]` command passes: the pilot page is committed, and `report.py --check` accepts its
       bundle.
 

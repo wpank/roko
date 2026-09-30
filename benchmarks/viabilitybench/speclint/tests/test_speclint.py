@@ -61,7 +61,25 @@ def test_golden_fixture_per_rule(fixture):
 
 def test_golden_fixtures_cover_every_rule_and_static_hard_fail():
     focused = [json.loads((p / "expected.json").read_text())["focus"]["rule"] for p in FIXTURE_DIRS]
-    assert sorted(focused) == sorted([*speclint.WEIGHTS, "HF1", "HF2", "HF4", "HF5"])
+    assert set(focused) == {*speclint.WEIGHTS, "HF1", "HF2", "HF4", "HF5"}
+
+
+def test_accept_tests_count_as_verify_steps_and_acceptance():
+    """A `[task.accept]` test is a scoped test-run verify step and an observable criterion (bug-019f02)."""
+    fixture = FIXTURES / "accept-tests"
+    got = lint(fixture / "tasks.toml", fixture)
+    pinned, by_hand, with_own_step, malformed = got["T1"], got["T2"], got["T3"], got["T4"]
+    assert pinned["verify_classes"] == ["test"]
+    assert pinned["features"]["n_verify"] == pinned["features"]["n_accept"] == 1
+    assert pinned["rules"]["SQ02"] == pinned["rules"]["SQ04"] == pinned["rules"]["SQ05"] == 1.0
+    assert pinned["features"]["has_acceptance_fields"]
+    assert pinned["hard_fail"] == []
+    # The same test copied into a verify step by hand scores no better.
+    assert pinned["score"] >= by_hand["score"]
+    assert with_own_step["verify_classes"] == ["compile", "test"]
+    # An entry the loader would reject (count = 0) compiles to no step.
+    assert malformed["features"]["n_accept"] == 0
+    assert malformed["hard_fail"] == ["HF1"]
 
 
 def test_red_on_base_scores_sq06_and_hf3_when_supplied():
@@ -112,7 +130,7 @@ def test_corpus_one_record_per_task_and_runs_differ_only_in_ts(tmp_path):
     files = speclint.discover([ROOT / "plans"])
     tasks = sum(len(tomllib.loads(path.read_text()).get("task", [])) for path in files)
     assert len(runs[0]) == tasks
-    assert all(r["ev"] == "spec.quality" and r["linter"] == "sq-1" and r["ts"] for r in runs[0])
+    assert all(r["ev"] == "spec.quality" and r["linter"] == "sq-2" and r["ts"] for r in runs[0])
 
     def without_ts(records):
         return [{key: value for key, value in record.items() if key != "ts"} for record in records]

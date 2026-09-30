@@ -42,7 +42,8 @@ struct DiffBase {
     workdir: PathBuf,
     tree: String,
     /// Where the window of sibling edits in a shared tree starts; `None` for
-    /// a worktree lease base, which no sibling edits.
+    /// a worktree lease base, which no sibling edits. The window is released
+    /// when the base is forgotten or replaced.
     siblings: Option<WriterMark>,
     /// The attempt that snapshotted the base; `None` for a lease base.
     snapshot_by: Option<String>,
@@ -128,6 +129,7 @@ impl GraphTaskDispatcher {
             // may already be editing the tree.
             let siblings = self.in_flight.mark();
             let Some(tree) = snapshot_tree(workdir).await else {
+                self.in_flight.release(&siblings);
                 tracing::debug!(
                     workdir = %workdir.display(),
                     "no git snapshot of the working tree; the pre-verify screen skips its diff checks"
@@ -141,15 +143,23 @@ impl GraphTaskDispatcher {
                 snapshot_by: Some(attempt_key.to_string()),
             }
         };
-        self.diff_bases.bases.lock().insert(chain, base);
+        let replaced = self.diff_bases.bases.lock().insert(chain, base);
+        if let Some(window) = replaced.and_then(|base| base.siblings) {
+            self.in_flight.release(&window);
+        }
     }
 
-    /// Forget the base of `attempt_key`'s task, once the task has passed.
+    /// Forget the base of `attempt_key`'s task, once the task has passed,
+    /// and close its window of sibling edits.
     pub(super) fn forget_diff_base(&self, attempt_key: &str) {
-        self.diff_bases
+        let forgotten = self
+            .diff_bases
             .bases
             .lock()
             .remove(attempt_chain(attempt_key));
+        if let Some(window) = forgotten.and_then(|base| base.siblings) {
+            self.in_flight.release(&window);
+        }
     }
 
     /// What the task of `attempt_key` changed in `workdir` since its base.

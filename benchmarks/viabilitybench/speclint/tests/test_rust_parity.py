@@ -86,7 +86,7 @@ def _workspace_with_stub_roko(tmp_path: Path, edit=None) -> tuple[Path, Path]:
     assert errors == []
     if edit:
         edit(records)
-    payload = {"plans": [], "totals": {}, "spec_quality": {"linter": "sq-1", "tasks": records, "parse_errors": []}}
+    payload = {"plans": [], "totals": {}, "spec_quality": {"linter": speclint.LINTER, "tasks": records, "parse_errors": []}}
     stub = root / "roko"
     stub.write_text(f"#!/bin/sh\ncat <<'JSON'\n{json.dumps(payload)}\nJSON\n")
     stub.chmod(stub.stat().st_mode | stat.S_IEXEC)

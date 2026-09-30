@@ -3,13 +3,14 @@ id = "gap-c7c946"
 kind = "gap"
 title = "roko learn telemetry: check and route-report over the attempt records (S01.P0-13)"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p2"
 goal = "truth"
 size = "S"
 subsystem = ["roko-learn/telemetry", "roko-cli/commands"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-29
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e4"
 discovered_from = "tmp/cybernetic-harness/specs/S01-instrumentation.md (P0-13, P0-13b, §5.9, §7 criteria 2 and 4)"
 anchors = ["crates/roko-learn/src/telemetry/report.rs", "crates/roko-cli/src/commands/learn.rs::dispatch_learn", "crates/roko-cli/src/main.rs::LearnCmd"]
@@ -79,3 +80,5 @@ Nothing exists at `41c7ffbd6`.
 
 - Registering the variant in `main.rs` (S01.P0-13b) touches a hot file, so batch it with other `main.rs` edits.
 - If gap-0d0e81 has already moved `LearnCmd` into `commands/learn.rs`, this item touches no hot file.
+- Implemented on `work/gap-8cb382` at `2fe908bfc`; cargo verification deferred to the batch check. On the branch, both verify tests pass.
+- Graph dispatch records no routing source per attempt: route decisions have no writer yet (S01 P0-8). Until then route-report files every attempt under `unknown`. ι appears once decisions name a default, and masked stays n/a until they record the router's own proposal.

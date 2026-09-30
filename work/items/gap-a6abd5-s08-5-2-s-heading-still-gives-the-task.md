@@ -2,14 +2,16 @@
 id = "gap-a6abd5"
 kind = "gap"
 title = "S08 §5.2's heading still gives the task manifest as DIR/.vb/task.json"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p3"
 goal = "proof"
 size = "S"
 subsystem = ["cybernetic-harness/specs"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-09-30
+last_verified = 2026-09-30
+last_verified_rev = "06dba73aa"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-bench-fix3's report on bug-2930a8)"
 anchors = ["tmp/cybernetic-harness/specs/S08-benchmark-suite.md"]
@@ -19,6 +21,11 @@ links = { depends_on = [], blocks = [], related = ["bug-2930a8", "gap-4667a4", "
 
 [[verify]]
 command = "! grep -q 'DIR/.vb/task.json' tmp/cybernetic-harness/specs/S08-benchmark-suite.md"
+
+[closed]
+at = 2026-09-30
+by = "coordinator (session 7622b882)"
+evidence = "S08 §5.2's heading now gives the manifest as DIR/task.json (gen.py --out DIR, repo to --workdir), and the example's two .vb/spec.*.md paths are fixed. Edited in place by wk-bench-fix2 (tmp/cybernetic-harness/specs/S08-benchmark-suite.md is untracked). Verify: no 'DIR/.vb/task.json' left (exit 0)."
 +++
 
 ## Problem

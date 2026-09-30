@@ -83,6 +83,7 @@ class Attempt:
     ended_by: str = ""
     tree: str | None = None  # the tree hash of the workdir when the attempt ended
     cost: ledger.Cost | None = None
+    fault_injected: str | None = None  # the fault the metering proxy injected into its calls, if any (S08 §4.6)
 
     def reported_usage(self) -> dict | None:
         return None if self.usage_unknown else self.usage
@@ -91,7 +92,7 @@ class Attempt:
         cost = self.cost or ledger.Cost(None, None, "unknown")
         return {"emitter": "vb-driver", "attempt_key": self.attempt_key, "model_requested": self.model_requested,
                 "model_reported": self.model_reported, "provider": self.provider, "turns": self.turns,
-                "usage": self.reported_usage(), "fault_injected": None, "calls": self.calls,
+                "usage": self.reported_usage(), "fault_injected": self.fault_injected, "calls": self.calls,
                 "ended_by": self.ended_by, "tree": self.tree, "api_equiv_usd": cost.api_equiv_usd,
                 "reserved_usd": round(self.reserved_usd, 6)}
 

@@ -1819,7 +1819,9 @@ impl CascadeRouter {
     /// `LinUCB` arm for `model_idx`. A success earns the multi-objective
     /// reward for `quality`, cost and latency. A failure earns a reward of 0,
     /// because the cost and latency of a failed attempt bought nothing
-    /// (bug-8da8ba); `quality` applies to successes only.
+    /// (bug-8da8ba); `quality` applies to successes only. Like every other
+    /// observation path, it then refreshes the Pareto frontier and advances
+    /// the cascade stage, so routing follows without a reload (bug-9ab6b8).
     pub fn observe_multi_objective_outcome(
         &self,
         context_vec: Vec<f64>,
@@ -1854,6 +1856,9 @@ impl CascadeRouter {
         } else {
             self.linucb.update_features(&context_vec, model_idx, 0.0);
         }
+
+        self.refresh_pareto_frontier_if_needed();
+        self.check_stage_transition();
     }
 
     /// Apply one observation: a confidence trial (a success only when

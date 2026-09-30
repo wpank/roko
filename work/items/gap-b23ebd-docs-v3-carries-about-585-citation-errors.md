@@ -2,7 +2,7 @@
 id = "gap-b23ebd"
 kind = "gap"
 title = "docs/v3 carries about 585 citation errors; fix them before publishing the docs"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "release"
@@ -10,7 +10,7 @@ subsystem = ["docs"]
 created = 2026-09-28
 updated = 2026-09-30
 last_verified = 2026-09-30
-last_verified_rev = "4cf2e329b"
+last_verified_rev = "d46b59275"
 source = "tmp/cybernetic-harness/assessment-2026-09-28/publication-readiness.md"
 discovered_from = "audit:tmp/cybernetic-harness/assessment-2026-09-28/publication-readiness.md"
 anchors = ["docs/v3/", "tools/docs_integrity/check_citation_errata.py", "tools/docs_integrity/citation_errata.json"]
@@ -18,6 +18,11 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "python3 tools/docs_integrity/check_citation_errata.py && python3 -m unittest tools.docs_integrity.test_check_citation_errata"
+
+[closed]
+at = 2026-09-30
+commit = "d46b59275"
+evidence = "tools/docs_integrity/check_citation_errata.py checks docs/v3 against the audit's 241 adjudicated errata (citation_errata.json): 649 found at 4cf2e329b, 0 after; 24 fabricated works' 47 mentions removed or replaced, wrong IDs/authors/titles/years corrected; verify = checker + test_check_citation_errata (9 tests) passes"
 +++
 The companion audit checked the design docs' citations. An estimated 3.0% are fabricated (CI 1.2–5.1%), 12.0% have major errors and 38.7% have some error. 585 errata locations are in `docs/v3`, the tree the Nous plan would publish on GitHub Pages (NB2-006). The errata list is `tmp/cybernetic-harness/companion-audit/CITATION-ERRATA.md`, in the gitignored workspace.
 

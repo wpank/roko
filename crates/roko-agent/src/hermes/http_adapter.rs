@@ -234,20 +234,12 @@ impl HermesHttpAgent {
     ///
     /// The `OpenAiCompatLlmBackend` already does this via `parse_sse_line()`
     /// producing `StreamEvent::Usage(Usage)`. This method extracts usage
-    /// from a non-streaming JSON response.
+    /// from a non-streaming JSON response with the same OpenAI usage parser,
+    /// which counts cached prompt tokens once, as cache reads (bug-b72a37).
     fn extract_usage_from_response(response: &BackendResponse) -> Option<Usage> {
         match response {
-            BackendResponse::Json(json) => {
-                let usage = json.get("usage")?;
-                Some(Usage {
-                    input_tokens: usage["prompt_tokens"].as_u64().unwrap_or(0) as u32,
-                    output_tokens: usage["completion_tokens"].as_u64().unwrap_or(0) as u32,
-                    cache_read_tokens: usage
-                        .pointer("/prompt_tokens_details/cached_tokens")
-                        .and_then(Value::as_u64)
-                        .unwrap_or(0) as u32,
-                    ..Default::default()
-                })
+            BackendResponse::Json(json) if json.get("usage").is_some() => {
+                Some(crate::translate::openai::parse_usage(json))
             }
             _ => None,
         }
@@ -282,16 +274,8 @@ impl HermesHttpAgent {
         }
 
         let json: Value = resp.json().await.ok()?;
-        let usage = json.get("usage")?;
-        Some(Usage {
-            input_tokens: usage["prompt_tokens"].as_u64().unwrap_or(0) as u32,
-            output_tokens: usage["completion_tokens"].as_u64().unwrap_or(0) as u32,
-            cache_read_tokens: usage
-                .pointer("/prompt_tokens_details/cached_tokens")
-                .and_then(Value::as_u64)
-                .unwrap_or(0) as u32,
-            ..Default::default()
-        })
+        json.get("usage")?;
+        Some(crate::translate::openai::parse_usage(&json))
     }
 
     /// Level 3: Estimate from accumulated content character count.
@@ -647,7 +631,8 @@ mod tests {
         });
         let response = BackendResponse::Json(json);
         let usage = HermesHttpAgent::extract_usage_from_response(&response).unwrap();
-        assert_eq!(usage.input_tokens, 10);
+        // 3 of the 10 prompt tokens were cached (bug-b72a37).
+        assert_eq!(usage.input_tokens, 7);
         assert_eq!(usage.output_tokens, 5);
         assert_eq!(usage.cache_read_tokens, 3);
     }

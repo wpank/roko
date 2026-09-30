@@ -2,16 +2,16 @@
 id = "gap-0f3980"
 kind = "gap"
 title = "TaskDef Routing Metadata Wiring (24-field gap)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 size = "L"
 goal = "core"
 subsystem = ["roko-cli/dispatch"]
 created = 2026-09-21
-updated = 2026-09-29
-last_verified = 2026-09-29
-last_verified_rev = "a17d9d766"
+updated = 2026-09-30
+last_verified = 2026-09-30
+last_verified_rev = "27deb61d8"
 source = "tmp/backlog/archive/403-taskdef-routing-metadata-wiring.md#403 — TaskDef Routing Metadata Wiring (24-field gap)"
 discovered_from = "audit:tmp/backlog/archive/403-taskdef-routing-metadata-wiring.md#403 — TaskDef Routing Metadata Wiring (24-field gap)"
 anchors = ["crates/roko-cli/src/task_parser.rs::TaskDefSerde", "crates/roko-cli/src/task_parser.rs::TaskDef", "crates/roko-cli/src/task_parser.rs::TaskDef::build_prompt", "crates/roko-core/src/task.rs::Task", "crates/roko-cli/src/graph_task_dispatch/routing_context.rs::build_routing_context", "crates/roko-cli/src/dispatch/model_routing.rs::RoutingInputs::from_task", "crates/roko-compose/src/templates/mod.rs::format_enhancements"]
@@ -19,6 +19,11 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqw 'fn parses_every_task_routing_field' crates/roko-cli/src/ && grep -rqw 'fn routing_context_uses_authored_task_metadata' crates/roko-cli/src/ && cargo test -p roko-cli --lib parses_every_task_routing_field && cargo test -p roko-cli --lib routing_context_uses_authored_task_metadata"
+
+[closed]
+at = 2026-09-30
+by = "coordinator (session 7622b882)"
+evidence = "Merged in 27deb61d8. roko_core::TaskHints (Task's 25 routing, gate, prompt and scheduling hints plus rung) is flattened into TaskDef and read by routing, the prompt, context_files, preferred_model/provider, the latency bias and plan validate PLAN_039-041. Batch 16a gate on 4169ecaba, re-assembled as 22f4a8791 with only runstate's rustfmt commit (MAIN 27deb61d8 has the same code): cargo check --workspace --tests clean; nightly fmt clean; clippy -p roko-agent -p roko-cli -p roko-core --keep-going -D warnings clean; lib tests pass: roko-agent 2270, roko-cli 3204 (one background-writer wait flake, gate_rows_carry_the_attempts_turns_or_unknown, passes alone in 1.2 s), roko-core 1953. Verify: its test passes in that run and its static checks pass on MAIN."
 +++
 
 ## Problem
@@ -172,3 +177,18 @@ How to verify: Check: `cargo build --workspace` compiles with all 24 new fields 
 Verified 2026-09-28: roko_core::Task (crates/roko-core/src/task.rs) has 34 fields, crates/roko-cli/src/task_parser.rs TaskDef 27 and TaskDefSerde 26; 25 Task field names are absent from TaskDef, among them preferred_model, preferred_provider, reasoning_level, speed_priority, quality_profile, escalate_on_retry, complexity_band, category, tags, skills, parallel_group, exclusive_files, context_files, test_invariants.
 
 2026-09-29: re-verified at d9e79e9d8. Unchanged: Task 34 fields, TaskDef 27, TaskDefSerde 26, and 25 Task fields are still missing from TaskDef.
+
+- Implemented on `work/gap-0f3980` at `abab08a23`; cargo verification deferred to the batch check. Its verify tests pass
+  there in a targeted run.
+- Option B: `roko_core::TaskHints` (with gap-dbf2a6's `rung`) is flattened into `TaskDefSerde` and `TaskDef`; unset
+  hints serialize nothing, so Graph node JSON is unchanged for existing plans. `exclusive_files` is `Option<bool>`
+  there (unset means `true`), so an authored value can be told from the default.
+- `TaskDef::build_prompt` has no callers; the prompt agents get is built by `PromptAssembler::assemble`, and both render
+  the `## Specification` section. `context_files` join `context.read_files`, and `plan validate`'s file-reference pass
+  checks them like read files.
+- `preferred_provider` names a `[providers.*]` id: when that provider has a usable `[models.*]` entry for the routed
+  model's slug, dispatch runs that entry (not for `--model` or express). The streaming path (`streaming.rs`) does not
+  apply it.
+- `plan validate` warns PLAN_039 for hints `plan run` ignores (`TaskDef::unused_hints`). Follow-ups to file: gate
+  profile (`quality_profile`, `test_invariants` → rung selection) and context depth (`context_weight`, `plan_section`,
+  `skills`, `research_before_edit`).

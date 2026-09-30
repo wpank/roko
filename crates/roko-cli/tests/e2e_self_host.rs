@@ -54,6 +54,7 @@ fn td(id: &str, deps: &[&str]) -> TaskDef {
         estimated_minutes: None,
         crates_touched: None,
         sequence: 0,
+        hints: Default::default(),
     }
 }
 fn ar(p: &str, t: &str, n: u32) -> TaskAttemptRef {

@@ -2002,7 +2002,7 @@ fn is_likely_enum_table(schema: &toml::Value, input: &toml::Value) -> bool {
 ///
 /// Returns `Some(key)` when the distance is at most 2 edits and the key is
 /// at least 3 characters long (to avoid spurious suggestions for short keys).
-fn find_nearest_key<'a>(input: &str, candidates: &[&'a str]) -> Option<&'a str> {
+pub fn find_nearest_key<'a>(input: &str, candidates: &[&'a str]) -> Option<&'a str> {
     if input.len() < 3 {
         return None;
     }

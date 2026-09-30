@@ -6,9 +6,9 @@
 //! spend on them. Every command a gate spawns starts from an empty
 //! environment plus the inherited variables
 //! [`roko_core::child_env::gate_env`] admits, plus the variables the gate
-//! sets explicitly.
+//! sets explicitly ([`roko_core::child_env::apply_gate_env`]).
 
-use std::ffi::{OsStr, OsString};
+use std::ffi::OsString;
 
 use roko_core::child_env;
 use tokio::process::Command;
@@ -18,9 +18,7 @@ use tokio::process::Command;
 /// `passthrough` holds extra names or `PREFIX*` patterns
 /// (`[gates] env_passthrough`). Variables already set on `cmd` stay.
 pub fn inherit_gate_env(cmd: &mut Command, passthrough: &[String]) {
-    let inherited =
-        std::env::vars_os().filter_map(|(name, value)| Some((name.into_string().ok()?, value)));
-    inherit_gate_env_from(cmd, inherited, passthrough);
+    inherit_gate_env_from(cmd, child_env::process_env(), passthrough);
 }
 
 /// [`inherit_gate_env`] with `inherited` standing in for roko's own
@@ -30,24 +28,7 @@ pub fn inherit_gate_env_from(
     inherited: impl IntoIterator<Item = (String, OsString)>,
     passthrough: &[String],
 ) {
-    // `env_clear` also forgets what the caller set on `cmd`; restore it.
-    let explicit: Vec<(OsString, Option<OsString>)> = cmd
-        .as_std()
-        .get_envs()
-        .map(|(name, value)| (name.to_os_string(), value.map(OsStr::to_os_string)))
-        .collect();
-    cmd.env_clear();
-    cmd.envs(child_env::gate_env(
-        inherited,
-        passthrough,
-        child_env::startup_dotenv(),
-    ));
-    for (name, value) in explicit {
-        match value {
-            Some(value) => cmd.env(name, value),
-            None => cmd.env_remove(name),
-        };
-    }
+    child_env::apply_gate_env(cmd.as_std_mut(), inherited, passthrough);
 }
 
 #[cfg(test)]

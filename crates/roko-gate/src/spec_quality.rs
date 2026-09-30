@@ -1,13 +1,14 @@
-//! Static spec-quality score for roko task specs: SQS v1, linter id `sq-1` (S07.7).
+//! Static spec-quality score for roko task specs: SQS v1, linter id `sq-2` (S07.7).
 //!
 //! [`lint_files`] scores every `[[task]]` of a set of `tasks.toml` files against rules SQ01–SQ12
 //! and the hard fails HF1–HF5 of S07 §4.2 (`tmp/cybernetic-harness/specs/S07-spec-quality.md`),
 //! one [`SpecQualityRecord`] per task. `roko plan validate --spec-quality` prints the records.
 //!
 //! The rules are a port of speclint (`benchmarks/viabilitybench/speclint/speclint.py`), whose
-//! definitions are frozen as `sq-1`. The test `spec_quality_matches_speclint_golden_fixtures`
+//! definitions are frozen as `sq-2`. The test `spec_quality_matches_speclint_golden_fixtures`
 //! holds this port to speclint's golden fixtures, vendored under `tests/fixtures/speclint/`.
-//! Change a rule only together with speclint and the linter id.
+//! Change a rule only together with speclint and the linter id; speclint's docstring lists what
+//! each id changed.
 //!
 //! Static mode runs nothing, so SQ06 (red on base) scores 0 and HF3 is not evaluated; every
 //! static record lists both under `unknown`. A caller that ran the verify steps on the unchanged
@@ -28,7 +29,7 @@ use toml::{Table, Value};
 pub use shell::{Scope, StepAnalysis, VerifyClass, analyze_step, vacuous_reason};
 
 /// The linter id. The rule definitions in this module are frozen under it.
-pub const LINTER: &str = "sq-1";
+pub const LINTER: &str = "sq-2";
 
 /// One weighted rule of the score.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -229,6 +230,10 @@ pub struct SpecTask {
     pub contract_criteria: usize,
     /// The `verify` steps.
     pub verify: Vec<SpecVerifyStep>,
+    /// The `[task.accept]` tests, each of which becomes a verify step when the plan loads
+    /// (gap-d14a43): entries that name a `src`, a `dest` and a `runner` and have a positive
+    /// `count`.
+    pub accept_tests: usize,
     /// The files the task writes: `files` and `write_files`.
     pub outputs: BTreeSet<String>,
     /// `context.read_files`.
@@ -289,6 +294,7 @@ impl SpecTask {
             verify: tables(task.get("verify"))
                 .map(SpecVerifyStep::from_toml)
                 .collect(),
+            accept_tests: accept_tests(task),
             outputs: strings(task.get("files"))
                 .into_iter()
                 .chain(strings(task.get("write_files")))
@@ -363,6 +369,23 @@ fn truthy(value: Option<&Value>) -> bool {
         Some(Value::Array(items)) => !items.is_empty(),
         Some(Value::Table(table)) => !table.is_empty(),
     }
+}
+
+/// The `[task.accept]` entries the loader turns into a verify step that runs the pinned test and
+/// requires exactly `count` passing tests.
+fn accept_tests(task: &Table) -> usize {
+    let accept = task.get("accept").and_then(Value::as_table);
+    tables(accept.and_then(|accept| accept.get("files")))
+        .filter(|entry| {
+            ["src", "dest", "runner"]
+                .iter()
+                .all(|key| !text(entry.get(*key)).trim().is_empty())
+                && entry
+                    .get("count")
+                    .and_then(Value::as_integer)
+                    .is_some_and(|count| count > 0)
+        })
+        .count()
 }
 
 fn contract_criteria(contract: &Table) -> usize {
@@ -578,8 +601,10 @@ pub struct SpecQualityRecord {
 pub struct SpecFeatures {
     /// The strongest verify step's class, or `none` without steps.
     pub verify_max_class: &'static str,
-    /// The number of verify steps.
+    /// The number of verify steps, the `[task.accept]` tests included.
     pub n_verify: usize,
+    /// The number of `[task.accept]` tests.
+    pub n_accept: usize,
     /// Steps classed compile because of `cargo test --no-run`.
     pub n_no_run: usize,
     /// Steps that run a program and check only its exit code.
@@ -671,13 +696,19 @@ pub fn score_task(
         .count();
     let sq03 = share(n_covered, task.acceptance.len());
 
-    // SQ04 verify strength: the value of the strongest step.
+    // SQ04 verify strength: the value of the strongest step. A `[task.accept]` test becomes a step
+    // that runs its pinned test and requires exactly `count` passing tests: a scoped test run,
+    // listed after the task's own steps.
     let analyses: Vec<StepAnalysis> = task
         .verify
         .iter()
         .map(|step| analyze_step(&step.command, &task.outputs))
         .collect();
-    let classes: Vec<VerifyClass> = analyses.iter().map(|analysis| analysis.class).collect();
+    let classes: Vec<VerifyClass> = analyses
+        .iter()
+        .map(|analysis| analysis.class)
+        .chain(std::iter::repeat_n(VerifyClass::Test, task.accept_tests))
+        .collect();
     let max_class = classes.iter().min().copied();
     let sq04 = max_class.map_or(0.0, VerifyClass::value);
 
@@ -685,6 +716,7 @@ pub fn score_task(
     let scopes: Vec<Scope> = analyses
         .iter()
         .flat_map(|analysis| analysis.scopes.iter().copied())
+        .chain(std::iter::repeat_n(Scope::Scoped, task.accept_tests))
         .collect();
     let n_scoped = scopes
         .iter()
@@ -831,7 +863,8 @@ pub fn score_task(
         red_on_base,
         features: SpecFeatures {
             verify_max_class: max_class.map_or("none", VerifyClass::as_str),
-            n_verify: task.verify.len(),
+            n_verify: task.verify.len() + task.accept_tests,
+            n_accept: task.accept_tests,
             n_no_run: analyses.iter().filter(|analysis| analysis.no_run).count(),
             n_self_exit: analyses
                 .iter()
@@ -839,7 +872,9 @@ pub fn score_task(
                 .count(),
             has_test_verify: classes.contains(&VerifyClass::Test),
             has_acceptance,
-            has_acceptance_fields: !task.acceptance.is_empty() || task.has_contract,
+            has_acceptance_fields: !task.acceptance.is_empty()
+                || task.has_contract
+                || task.accept_tests > 0,
             n_acceptance: criteria.len(),
             n_observable,
             ac_coverage: round_to(sq03, 4),
@@ -871,8 +906,8 @@ fn hard_fails(
     let mut detail = BTreeMap::new();
     let implementer = task.role == "implementer";
 
-    // HF1: an implementer task without verify steps.
-    if implementer && task.verify.is_empty() {
+    // HF1: an implementer task without verify steps; a pinned acceptance test is one.
+    if implementer && task.verify.is_empty() && task.accept_tests == 0 {
         hard.push("HF1");
     }
 
@@ -1037,8 +1072,10 @@ fn acceptance_criteria(task: &SpecTask) -> (Vec<bool>, bool) {
         .iter()
         .map(|item| OBSERVABLE.is_match(item))
         .collect();
-    // Contract entries are machine-checked, so they are observable by construction.
-    criteria.extend(std::iter::repeat_n(true, task.contract_criteria));
+    // Contract entries and pinned acceptance tests are machine-checked, so they are observable by
+    // construction.
+    let machine_checked = task.contract_criteria + task.accept_tests;
+    criteria.extend(std::iter::repeat_n(true, machine_checked));
     let text = [task.goal.as_str(), task.description.as_str()]
         .into_iter()
         .filter(|part| !part.is_empty())
@@ -1062,7 +1099,7 @@ fn acceptance_criteria(task: &SpecTask) -> (Vec<bool>, bool) {
             i += 1;
         }
     }
-    let has_fields = !task.acceptance.is_empty() || task.has_contract;
+    let has_fields = !task.acceptance.is_empty() || task.has_contract || task.accept_tests > 0;
     (criteria, has_fields || ACCEPTANCE_PHRASE.is_match(&text))
 }
 
@@ -1348,7 +1385,11 @@ mod tests {
     #[test]
     fn spec_quality_matches_speclint_golden_fixtures() {
         let dirs = fixture_dirs();
-        assert_eq!(dirs.len(), 16, "one fixture per rule and static hard fail");
+        assert_eq!(
+            dirs.len(),
+            17,
+            "one fixture per rule and static hard fail, plus [task.accept]"
+        );
         let mut focused = Vec::new();
         for dir in &dirs {
             let name = dir.display().to_string();
@@ -1440,14 +1481,61 @@ mod tests {
             }
         }
 
-        focused.sort();
-        let mut all: Vec<String> = RULES.iter().map(|rule| rule.id.to_string()).collect();
+        let focused: BTreeSet<String> = focused.into_iter().collect();
+        let mut all: BTreeSet<String> = RULES.iter().map(|rule| rule.id.to_string()).collect();
         all.extend(["HF1", "HF2", "HF4", "HF5"].map(String::from));
-        all.sort();
         assert_eq!(
             focused, all,
             "the fixtures cover every rule and static hard fail"
         );
+    }
+
+    fn record<'a>(report: &'a SpecQualityReport, task_id: &str) -> &'a SpecQualityRecord {
+        report
+            .tasks
+            .iter()
+            .find(|record| record.task_id == task_id)
+            .expect("a fixture task")
+    }
+
+    /// bug-019f02: a `[task.accept]` test counts as a scoped test-run verify step and as an
+    /// observable acceptance criterion, so an accept task scores at least as well as the same task
+    /// with the test copied into a verify step by hand.
+    #[test]
+    fn task_accept_counts_as_verify_steps_and_acceptance() {
+        let dir = fixture_dirs()
+            .into_iter()
+            .find(|dir| dir.ends_with("accept-tests"))
+            .expect("the accept fixture");
+        let report = lint_files(&[dir.join("tasks.toml")], &dir);
+        let pinned = record(&report, "T1");
+        assert_eq!(pinned.verify_classes, [VerifyClass::Test]);
+        assert_eq!(pinned.features.n_verify, 1);
+        assert_eq!(pinned.features.n_accept, 1);
+        for rule in ["SQ02", "SQ04", "SQ05"] {
+            assert_eq!(pinned.rules[rule], 1.0, "{rule}");
+        }
+        assert!(pinned.features.has_acceptance_fields);
+        assert!(pinned.hard_fail.is_empty());
+
+        let by_hand = record(&report, "T2");
+        assert!(
+            pinned.score >= by_hand.score,
+            "{} < {}",
+            pinned.score,
+            by_hand.score
+        );
+
+        let with_own_step = record(&report, "T3");
+        assert_eq!(
+            with_own_step.verify_classes,
+            [VerifyClass::Compile, VerifyClass::Test]
+        );
+
+        // An entry the loader would reject (count = 0) compiles to no step.
+        let malformed = record(&report, "T4");
+        assert_eq!(malformed.features.n_accept, 0);
+        assert_eq!(malformed.hard_fail, ["HF1"]);
     }
 
     #[test]
@@ -1524,7 +1612,7 @@ mod tests {
             .expect("the hf2 fixture");
         let report = lint_files(&[dir.join("tasks.toml")], &dir);
         let text = render_text(&report);
-        assert!(text.starts_with("spec quality (sq-1, static: HF3 and SQ06 not evaluated)\n"));
+        assert!(text.starts_with("spec quality (sq-2, static: HF3 and SQ06 not evaluated)\n"));
         assert!(text.contains("\ntasks.toml\n"), "{text}");
         assert!(
             text.contains("T3  17.00 D  SQ01=0 SQ02=0 SQ03=0 SQ04=0 SQ05=0 SQ06=0 SQ07=0 SQ08=1"),

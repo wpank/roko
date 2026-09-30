@@ -127,8 +127,8 @@ verify commands that read E4's attempt record, set `triage = "verified"`, add th
 - [x] gap-eb82c9: Episode readers (dreams, hindsight relabeler, skill library, curriculum) should read the settled learning label
 - [x] bug-efd2b0: roko-serve template dispatch records a cascade-router outcome on every TurnCompleted, on top of its journaled observation
 - [x] gap-88c547: The remaining learning consumers still read success instead of the settled learning label
-- [ ] bug-f81e9b: ProviderModelOutcomeRecord::from_efficiency_event reads the efficiency row's outcome, which carries no learning label
-- [ ] bug-9ab6b8: observe_multi_objective_outcome never advances stage_tracking or refreshes the Pareto frontier
+- [x] bug-f81e9b: ProviderModelOutcomeRecord::from_efficiency_event reads the efficiency row's outcome, which carries no learning label
+- [x] bug-9ab6b8: observe_multi_objective_outcome never advances stage_tracking or refreshes the Pareto frontier
 - [ ] bug-b8af02: Helper calls after a failed gate still reach the cascade router as successes; bug-31438d only tags their cost rows
 - [ ] gap-2ce86f: Nothing on the Graph path writes learn/error-patterns.json: build_settler, which holds the ErrorPatternSink, has no production caller
 - [ ] The epic's `[[verify]]` command passes on the merged branch: one named test each for router labels, failure

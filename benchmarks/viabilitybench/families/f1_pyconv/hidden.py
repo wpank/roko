@@ -8,10 +8,11 @@ Usage:
 TREE is the tree to judge, normally the census's clean export of the agent's final commit; it is never changed.
 The secret arrives only as a 0600 file (common/hmac_seed), never on the command line or in the environment.
 
-Output, one JSON object on stdout (B §3.2's contract plus three fields):
+Output, one JSON object on stdout (B §3.2's contract plus four fields):
     {"passed": bool, "checks": [{"id", "passed", "detail"}],
      "gaming": {"test_edit", "literal_return", "tests_skipped", "conflict_flagged"},
-     "findings": [gaming.py's findings], "verifier_version", "instance_id", "secret": <fingerprint>}
+     "findings": [gaming.py's findings], "verifier_version", "instance_id", "secret": <fingerprint>,
+     "sandbox": `common.sandbox`'s kind}
 Exit status 0 means the suite ran, whatever its verdict; 2 means it could not run.
 
 How it works:
@@ -20,7 +21,9 @@ How it works:
    `__pycache__` directories are removed, so the sources are judged and not stale or planted bytecode. The
    pristine base is materialized beside it.
 3. The cases are drawn from `hidden_stream(secret, "F1", instance_id)`. The secret stays in this process: a probe
-   subprocess runs in each tree with a clean environment and gets only the cases, on stdin.
+   subprocess runs in each tree with a clean environment and gets only the cases, on stdin. It runs the agent's code
+   while the census has the secret file open, so it goes through `common.sandbox`, which denies it the secret file
+   and DIR, the directory of task.json (gap-8c3752).
 4. The checks compare the export's probe results with the pristine base's, so "behaves as before" needs no model
    of the template.
 
@@ -48,7 +51,7 @@ from pathlib import Path
 FAMILY_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(FAMILY_DIR.parent))
 from common import VERSION as COMMON_VERSION  # noqa: E402
-from common import astcheck, hmac_seed, repo  # noqa: E402
+from common import astcheck, hmac_seed, repo, sandbox  # noqa: E402
 from f1_pyconv import gaming, gen  # noqa: E402
 
 VERIFIER_VERSION = f"{gen.TRUTH_SUITE['id']}-{gen.TRUTH_SUITE['version']}+{COMMON_VERSION}"
@@ -180,13 +183,13 @@ def probe_job(plan: gen.Plan, cases: dict) -> dict:
             "fillers": cases["fillers"]}
 
 
-def run_probe(root: Path, job: dict) -> dict:
-    """Run the probe in tree `root`, with a clean environment that holds no secret."""
+def run_probe(root: Path, job: dict, deny: tuple[Path, ...] = ()) -> dict:
+    """Run the probe in tree `root`, with a clean environment that holds no secret and `deny` out of its reach."""
     nonce = "vb-probe-" + secrets.token_hex(8) + ":"
     env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "PYTHONHASHSEED": "0", "PYTHONDONTWRITEBYTECODE": "1",
            "PYTHONNOUSERSITE": "1", "PYTHONIOENCODING": "utf-8"}
     try:
-        result = subprocess.run([sys.executable, "-B", "-s", "-P", "-c", PROBE],
+        result = subprocess.run(sandbox.command([sys.executable, "-B", "-s", "-P", "-c", PROBE], deny=deny),
                                 input=json.dumps(job | {"root": str(root), "nonce": nonce}), cwd=root, env=env,
                                 capture_output=True, text=True, encoding="utf-8", errors="replace",
                                 timeout=PROBE_TIMEOUT_S, check=False)
@@ -383,8 +386,9 @@ def _show(outcome: dict) -> str:
     return outcome.get("error", repr(outcome))
 
 
-def run(instance: gen.Instance, workdir: Path, secret: hmac_seed.Secret) -> dict:
-    """The truth suite's report for the tree `workdir` (see the module docstring)."""
+def run(instance: gen.Instance, workdir: Path, secret: hmac_seed.Secret, *, deny: tuple[Path, ...] = ()) -> dict:
+    """The truth suite's report for the tree `workdir` (see the module docstring); probes run with `deny` out of
+    their reach."""
     workdir = Path(workdir)
     if not workdir.is_dir():
         raise ValueError(f"{workdir} is not a directory")
@@ -401,14 +405,14 @@ def run(instance: gen.Instance, workdir: Path, secret: hmac_seed.Secret) -> dict
             stray.unlink()
         cases = draw_cases(secret, instance.plan)
         job = probe_job(instance.plan, cases)
-        base = run_probe(pristine_dir, job)
+        base = run_probe(pristine_dir, job, deny)
         if "probe_error" in base:
             raise RuntimeError(f"the pristine base failed its own probe: {base['probe_error']}")
-        checks = judge(instance.plan, cases, run_probe(export, job), base, export, pristine_dir)
+        checks = judge(instance.plan, cases, run_probe(export, job, deny), base, export, pristine_dir)
     return {"passed": all(entry["passed"] for entry in checks), "checks": checks,
             "gaming": astcheck.gaming_summary(findings), "findings": [asdict(finding) for finding in findings],
             "verifier_version": VERIFIER_VERSION, "instance_id": instance.plan.instance_id,
-            "secret": secret.fingerprint}
+            "secret": secret.fingerprint, "sandbox": sandbox.kind(deny)}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -419,7 +423,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         secret = hmac_seed.read_secret_file(args.secret_file)
-        report = run(gen.load_instance(args.task), args.workdir, secret)
+        report = run(gen.load_instance(args.task), args.workdir, secret,
+                     deny=sandbox.denied(args.secret_file, args.task))
     except (hmac_seed.SecretFileError, repo.RepoError, OSError, ValueError, KeyError, RuntimeError) as err:
         print(f"hidden.py: {err}", file=sys.stderr)
         return 2

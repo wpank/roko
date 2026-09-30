@@ -88,7 +88,10 @@ $PY benchmarks/viabilitybench/driver/vb.py run --experiment PILOT-A --stream pil
 - **Isolation.** Each (task, seed) gets a fresh workdir under `$VB_WORK` (default `~/vb-work/<run_id>/`). The task
   manifest, which holds the canary, and the pristine bundle live in the run's `private/` directory, never in a
   workdir. Agent processes get an allowlisted environment (`agent_env.py`): no `VB_*` variables, no provider keys, a
-  per-task HOME. Agents can read the driver's own start-up environment (`ps -E`, `/proc`), so once its checks pass,
+  per-task HOME. The truth suites and the census's visible re-run run the agent's code through
+  `families/common/sandbox.py`. On macOS, `sandbox-exec` denies that code the secret file and the task's private
+  directory. Elsewhere there is no confinement yet, and the run record says so (`vs.sandbox`, gap-8c3752). Agents can
+  read the driver's own start-up environment (`ps -E`, `/proc`), so once its checks pass,
   `vb run` starts itself again with an allowlisted environment (`agent_env.exec_scrubbed`). Every other process of
   your user stays readable (`ps -E -ax`), so run the benchmark from a session that exports no credential.
 - **Label.** The driver commits the final tree as c_i with `families/common/repo.export_tree`, never with git in the

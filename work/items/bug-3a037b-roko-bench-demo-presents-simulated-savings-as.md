@@ -23,3 +23,10 @@ command = "grep -rqw 'fn real_mode_does_not_fabricate_passes' crates/roko-cli/ &
 Without `--real`, `run_bench_demo` (`bench_demo.rs:109`) computes every figure with `simulate_task` (`:492`: fixed per-difficulty costs and pass rates) and prints "{x}x cost reduction" (`:436`) plus a cost waterfall from constant percentages; nothing says the numbers are simulated.
 Per a local audit, `--real` marks each task passed without running a gate and falls back to simulated numbers when dispatch fails.
 Fix: label simulated output, never fabricate `--real` results (run the gates or report "not run"), and drop the constant waterfall.
+
+## Notes
+
+- **wk-honestbench (2026-09-30):** Implemented on `work/bug-28becc` at `7a5b388ca`; cargo verification deferred to the
+  batch check.
+- `--real` cost stays "n/a": `dispatch_bench_prompt` returns tokens but no cost, so nothing measures it. The
+  `bench demo` help text in `main.rs` still says "comparative benchmark" (out of scope here).

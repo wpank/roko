@@ -25,3 +25,14 @@ command = "! grep -q 'text.contains(expected.as_str())' crates/roko-serve/src/ro
 - `estimate_cost_usd` prices models by substring and is out of date.
 
 Fix: grade with executed checks (tests that fail before the change), not output substrings, and give each task its own workspace.
+
+## Notes
+
+- **wk-honestbench (2026-09-30):** Implemented on `work/bug-28becc` at `de59c1d1d`; cargo verification deferred to the
+  batch check. `unedited_learnable_scaffold_fails_grading` and `learnable_reference_solutions_pass_grading` run
+  `cargo test` on the scaffold (5 tasks at once, each with its own target dir) and take a few seconds each.
+- Only learnable-rust has checks. Every other built-in or uploaded suite now grades as `skipped`. Letting uploaded
+  suites define their own check commands would run commands from an API request on the host, which needs an authz
+  decision first.
+- Not done here: `estimate_cost_usd` (substring pricing) has no callers; the bench prices with `CostTable`. The
+  `Demo` strategy still writes simulated tokens and cost into `.roko/bench` runs and the index.

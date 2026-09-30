@@ -1683,7 +1683,7 @@ Examples:
     /// Run a native SWE-bench-style proxy batch.
     #[command(after_help = "\
 Examples:
-  roko bench swe --batch-size 2 --agent-mode gold
+  roko bench swe --batch-size 2 --agent-mode gold      (control: checks the harness)
   roko bench swe --dataset ./swe-smoke.jsonl --predictions ./predictions.jsonl --agent-mode prediction-file
   roko bench swe --agent-mode command --agent-command './my-agent.sh'")]
     Swe {
@@ -1696,8 +1696,9 @@ Examples:
         /// Offset into the dataset.
         #[arg(long, default_value_t = 0)]
         offset: usize,
-        /// Agent adapter to use.
-        #[arg(long, value_enum, default_value_t = roko_cli::bench::SweAgentMode::Gold)]
+        /// Agent adapter to use (required). `gold` and `empty` are controls: they check the
+        /// harness, not a model, and are never recorded as learning.
+        #[arg(long, value_enum)]
         agent_mode: roko_cli::bench::SweAgentMode,
         /// Predictions JSONL path for --agent-mode prediction-file.
         #[arg(long)]
@@ -4696,6 +4697,26 @@ mod tests {
             Some(Command::Learn {
                 cmd: LearnCmd::Inspect {
                     subsystem: InspectSubsystem::Budget { workdir: None },
+                },
+            })
+        ));
+    }
+
+    #[test]
+    fn cli_bench_swe_requires_agent_mode() {
+        // A forgotten flag must not silently run the gold control.
+        let err = Cli::try_parse_from(["roko", "bench", "swe"])
+            .expect_err("bench swe without --agent-mode should not parse");
+        assert_eq!(err.kind(), clap::error::ErrorKind::MissingRequiredArgument);
+
+        let cli = Cli::try_parse_from(["roko", "bench", "swe", "--agent-mode", "command"])
+            .expect("parse bench swe --agent-mode command");
+        assert!(matches!(
+            cli.command,
+            Some(Command::Bench {
+                cmd: BenchCmd::Swe {
+                    agent_mode: roko_cli::bench::SweAgentMode::Command,
+                    ..
                 },
             })
         ));

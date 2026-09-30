@@ -193,10 +193,13 @@ pub fn detect_auth_from_env() -> AuthMethod {
 /// Probe whether the `claude` CLI binary is available on PATH.
 /// Runs `claude --version` — does not perform any LLM inference.
 pub fn claude_cli_available() -> bool {
-    version_probe("claude", &CredentialScrub::for_kind(ProviderKind::ClaudeCli))
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+    version_probe(
+        "claude",
+        &CredentialScrub::for_kind(ProviderKind::ClaudeCli),
+    )
+    .output()
+    .map(|o| o.status.success())
+    .unwrap_or(false)
 }
 
 /// `program --version`, set up to run as a probe: it inherits roko's

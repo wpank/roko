@@ -210,7 +210,10 @@ impl DomainToolProfile {
     /// `chain.transfer` or `chain.swap`; a chain task is offered all of them.
     #[must_use]
     pub fn offers(&self, tool: &str) -> bool {
-        self.owns(tool) || !DOMAIN_TOOL_PROFILES.iter().any(|profile| profile.owns(tool))
+        self.owns(tool)
+            || !DOMAIN_TOOL_PROFILES
+                .iter()
+                .any(|profile| profile.owns(tool))
     }
 }
 
@@ -645,7 +648,11 @@ mod tests {
         }
         for profile in &DOMAIN_TOOL_PROFILES {
             assert!(profile.offers(read_file::NAME), "{}", profile.domain);
-            assert!(profile.offers("mcp__github__create_pr"), "{}", profile.domain);
+            assert!(
+                profile.offers("mcp__github__create_pr"),
+                "{}",
+                profile.domain
+            );
         }
     }
 }

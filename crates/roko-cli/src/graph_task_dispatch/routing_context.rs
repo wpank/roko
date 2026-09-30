@@ -471,7 +471,10 @@ mod tests {
             task.domain = Some(TaskDomain::Chain);
             let tools = offered_tools(&task);
             for tool in ["chain.balance", "chain.get_pool_info", "chain.transfer"] {
-                assert!(tools.iter().any(|name| name == tool), "{tool} missing: {tools:?}");
+                assert!(
+                    tools.iter().any(|name| name == tool),
+                    "{tool} missing: {tools:?}"
+                );
             }
 
             task.domain = Some(TaskDomain::Code);

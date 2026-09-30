@@ -3,13 +3,15 @@ id = "bug-ba8d42"
 kind = "bug"
 title = "A [serve.auth] table without `enabled` turns serve auth off: the field's serde default is false while the struct default is true"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p1"
 goal = "release"
 size = "S"
 subsystem = ["roko-core/config", "roko-serve/auth"]
 created = 2026-09-30
 updated = 2026-09-30
+last_verified = 2026-09-30
+last_verified_rev = "669fc7274"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "wk-guard2 report (2026-09-30); confirmed by the coordinator at 7490cb94b"
 anchors = ["crates/roko-core/src/config/serve.rs::ServeAuthConfig"]
@@ -52,3 +54,9 @@ Confirmed by reading the code at 7490cb94b. Not yet shown by a test.
 
 - [ ] A partial `[serve.auth]` table, and the env-only key, both keep auth on.
 - [ ] The `[[verify]]` command passes.
+
+## Notes
+
+- 2026-09-30 (wk-serve-sec): Implemented on `work/bug-ba8d42` at `669fc7274`: `ServeAuthConfig.enabled` is `#[serde(default = "default_true")]`, so auth stays on unless a config says `enabled = false`. Test `config::loader::tests::serve_auth_table_without_enabled_keeps_auth_on` covers serde alone, a `.roko/config.toml` key file holding only `api_key`, three partial `roko.toml` tables (an `api_key` reference, `privy_app_id`, `enforcement_mode`), `ROKO__SERVE__AUTH__API_KEY` with no table and over a partial table (a real process-env run through `load_config_file`), and `enabled = false`.
+- 2026-09-30 (wk-serve-sec): Cargo, in the worktree's own APFS clone of `roko-batch-target` (cloned once `GATE-BUSY` was absent, 32 GB free, `CARGO_BUILD_JOBS=4`, `CARGO_INCREMENTAL=0`; deleted afterwards). `cargo test -p roko-core --lib serve_auth_table_without_enabled_keeps_auth_on` passes (118 s including the rebuild). Negative control: with the old bare `#[serde(default)]` the same test fails at the serde assertion (a table with only `api_key`). `cargo test -p roko-core --lib`: 1954 passed, 0 failed (187 s). The env-only key was already safe before the fix, because the hierarchical overlay serializes the loaded config, `enabled` included, before setting the key. The env key over a partial table was not.
+- 2026-09-30 (wk-serve-sec): Scan of every config struct with a manual `Default` (roko-core `config/` and roko-cli `config.rs`) for bare `#[serde(default)]` fields whose `Default` value differs: no other security-relevant boolean. `GatesConfig.mode` and `diff_scope` agree with their enum defaults. Two non-security mismatches remain, not fixed here: `DeployConfig.worker_image` (serde `None`, `Default` `Some("ghcr.io/nunchi-trade/roko-worker:latest")`) and roko-cli `Config.gates` (serde empty, `Default` one `shell:true` gate).

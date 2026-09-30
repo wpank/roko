@@ -130,7 +130,7 @@ verify commands that read E4's attempt record, set `triage = "verified"`, add th
 - [x] bug-f81e9b: ProviderModelOutcomeRecord::from_efficiency_event reads the efficiency row's outcome, which carries no learning label
 - [x] bug-9ab6b8: observe_multi_objective_outcome never advances stage_tracking or refreshes the Pareto frontier
 - [ ] bug-b8af02: Helper calls after a failed gate still reach the cascade router as successes; bug-31438d only tags their cost rows
-- [ ] gap-2ce86f: Nothing on the Graph path writes learn/error-patterns.json: build_settler, which holds the ErrorPatternSink, has no production caller
+- [x] gap-2ce86f: Nothing on the Graph path writes learn/error-patterns.json: build_settler, which holds the ErrorPatternSink, has no production caller
 - [ ] The epic's `[[verify]]` command passes on the merged branch: one named test each for router labels, failure
       memory and frozen learning. Extend it with S02.P1-16's wiring census when the M1–M4 items join.
 

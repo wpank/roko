@@ -110,7 +110,7 @@ and state digests). The census lists them in `EXPECTED_MISSING`, and E17 files t
 - [ ] bug-c65bfe: The tool loop leaves usage_obs.source as Unknown
 - [ ] gap-751ac9: Graph attempts keep no durable record of their Claude Code isolation settings; the invocation is only debug-logged
 - [ ] bug-0ba3d9: Attempt records leave inv null: with_inv is called only in tests
-- [ ] bug-d5fb74: A run resumed under a different build keeps the first invocation's harness and config in its manifest
+- [x] bug-d5fb74: A run resumed under a different build keeps the first invocation's harness and config in its manifest
 - [ ] bug-aa2044: Stalled attempts record no cost: the watchdog drops the provider before it reports usage
 - [ ] The epic's `[[verify]]` command passes on the merged branch: the census fixture shows, for every attempt, a row
       with the attempt key, verdict, executed model and cost source.

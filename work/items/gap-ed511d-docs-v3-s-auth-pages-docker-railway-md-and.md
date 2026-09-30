@@ -2,7 +2,7 @@
 id = "gap-ed511d"
 kind = "gap"
 title = "docs/v3's auth pages, docker/RAILWAY.md and config set --help still put secrets in roko.toml, which roko now refuses"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "release"
@@ -11,7 +11,7 @@ subsystem = ["docs/v3", "docker", "roko-cli/main"]
 created = 2026-09-30
 updated = 2026-09-30
 last_verified = 2026-09-30
-last_verified_rev = "0b84bc9fa"
+last_verified_rev = "2ae9d2a7f"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-guard2's report, checked on work/gap-e9660f at 6820f1c2d)"
 anchors = ["docs/v3/24-AUTH.md", "docs/v3/26-HTTP-API.md", "docs/v3/depth/24-auth/cli-credentials.md", "docker/RAILWAY.md", "crates/roko-cli/src/main.rs"]
@@ -21,6 +21,11 @@ links = { depends_on = ["gap-e9660f"], blocks = [], related = ["gap-e9660f", "bu
 
 [[verify]]
 command = "! grep -qE 'api_key *= *\"' docs/v3/24-AUTH.md docs/v3/26-HTTP-API.md docs/v3/depth/24-auth/cli-credentials.md docker/RAILWAY.md && ! grep -q 'in the chosen layer' crates/roko-cli/src/main.rs"
+
+[closed]
+at = 2026-09-30
+by = "coordinator (session 7622b882)"
+evidence = "Merged in 2ae9d2a7f. 24-AUTH, 26-HTTP-API, cli-credentials, RAILWAY.md, 28-CLI.md and config set --help no longer put secrets in roko.toml. Batch 14 gate: first run on 4e030ab47 (check, clippy clean; tests pass: roko-cli 3171, roko-agent 2263, roko-core 1952, roko-learn 1203, roko-serve 986, roko-graph 472, roko-fs 259, roko-neuro 239), then re-gated on 8ce3bb131 (same code as MAIN 2ae9d2a7f) after the coordinator's rustfmt commits and serve-sec's bug-633b68 root fix: check, nightly fmt, clippy -p roko-cli -p roko-serve -p roko-core -p roko-agent -p roko-learn --keep-going -D warnings clean; roko-cli lib 3172 passed (one sibling-settle race flake passes alone, bug-779ae7); --test secret_canary 11 passed; --test secrets_and_git_guard_canary 1 passed, 1 ignored (bug-0d9ac4). Verify: static checks pass on MAIN."
 +++
 
 ## Problem

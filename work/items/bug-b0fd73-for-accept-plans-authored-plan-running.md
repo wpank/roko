@@ -2,7 +2,7 @@
 id = "bug-b0fd73"
 kind = "bug"
 title = "For accept plans, authored_plan_running reports that tasks.toml no longer matches on every run"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "golden-path"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/graph_checkpoint"]
 created = 2026-09-29
 updated = 2026-09-30
 last_verified = 2026-09-30
+last_verified_rev = "2ae9d2a7f"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-accept's report on gap-d14a43, branch work/gap-d14a43 at 37b6d7c95)"
 anchors = ["crates/roko-cli/src/graph_checkpoint.rs"]
@@ -20,6 +21,11 @@ links = { depends_on = ["gap-d14a43"], blocks = [], related = ["gap-1b5636", "ga
 
 [[verify]]
 command = "grep -rqw 'fn an_accept_plan_matches_its_own_tasks_toml' crates/roko-cli/src/ && cargo test -p roko-cli --lib an_accept_plan_matches_its_own_tasks_toml"
+
+[closed]
+at = 2026-09-30
+by = "coordinator (session 7622b882)"
+evidence = "Merged in 23f666920. authored_plan_running sets generated '# roko accept:' steps aside and records each pinned sha256 on its [task.accept] entry, so accept plans match their tasks.toml. Batch 14 gate: first run on 4e030ab47 (check, clippy clean; tests pass: roko-cli 3171, roko-agent 2263, roko-core 1952, roko-learn 1203, roko-serve 986, roko-graph 472, roko-fs 259, roko-neuro 239), then re-gated on 8ce3bb131 (same code as MAIN 2ae9d2a7f) after the coordinator's rustfmt commits and serve-sec's bug-633b68 root fix: check, nightly fmt, clippy -p roko-cli -p roko-serve -p roko-core -p roko-agent -p roko-learn --keep-going -D warnings clean; roko-cli lib 3172 passed (one sibling-settle race flake passes alone, bug-779ae7); --test secret_canary 11 passed; --test secrets_and_git_guard_canary 1 passed, 1 ignored (bug-0d9ac4). Verify: its test passes in that run and its static checks pass on MAIN."
 +++
 
 ## Problem

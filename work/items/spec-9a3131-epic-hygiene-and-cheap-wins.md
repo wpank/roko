@@ -109,7 +109,7 @@ This is the implementation plan.
 - [ ] bug-a70def: The Claude MCP isolation tests assume the host has no managed-mcp.json
 - [x] bug-f3969d: InFlightTasks keeps every ended attempt for the life of the process
 - [ ] gap-3505fb: PlanMerger and the roko-execution workflow templates' gate builders have no production caller
-- [ ] gap-603aa4: roko-serve's estimate_cost_usd has no callers
+- [x] gap-603aa4: roko-serve's estimate_cost_usd has no callers
 - [ ] Both of the epic's `[[verify]]` commands pass.
 
 ## Notes

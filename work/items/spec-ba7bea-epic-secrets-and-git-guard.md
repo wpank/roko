@@ -76,7 +76,7 @@ This is the implementation plan.
 
 - [x] bug-7d7200: Agents and verify commands inherit roko's whole environment, including provider API keys (existing item)
 - [x] gap-8be530: Claude Code runs load the user's own ~/.claude settings, hooks and plugins (existing item)
-- [ ] gap-5f4852: Secret-canary persistence test never run for scrubbers/persistent sinks (existing item)
+- [x] gap-5f4852: Secret-canary persistence test never run for scrubbers/persistent sinks (existing item)
 - [x] bug-7de5df: The agent git guard misses reset, stash and clean, and commands after the first in a chain
 - [x] bug-a66941: Agents can read the provider key files, such as ~/.roko/.env
 - [ ] gap-0e2c40: Integration test C2: no provider key reaches an agent, a gate or a log, and the git guard denies destructive commands
@@ -98,7 +98,7 @@ This is the implementation plan.
 - [x] gap-e9660f: Whole-project reads such as grep -r, rg or cat * can still show agents a secret stored in roko.toml
 - [x] bug-c6ad88: ACP's builtin tools don't check for key files
 - [x] bug-997c6a: ls | xargs rm and xargs rm < list still pass the agent command guard
-- [ ] bug-41bea4: Guard gaps: the roko.toml content check misses grep -r, parallel isn't treated as a bulk delete, and sudo git -C dir rm -r is a false positive
+- [x] bug-41bea4: Guard gaps: the roko.toml content check misses grep -r, parallel isn't treated as a bulk delete, and sudo git -C dir rm -r is a false positive
 - [ ] The epic's `[[verify]]` command (test C2) passes on the merged branch.
 
 ## Notes

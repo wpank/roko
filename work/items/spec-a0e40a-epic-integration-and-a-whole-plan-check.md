@@ -111,7 +111,7 @@ Order: 1 and 2 now. Then 3 → 4 → 5 → 6 → 7, one at a time, because they 
 - [x] bug-207f35: GitMergeBackend still merges in, and auto-commits, the checkout it is given
 - [ ] bug-056b40: On resume, attempts start from HEAD instead of the plan branch, and retained attempt worktrees aren't re-attached
 - [x] bug-8835bc: A failed rich-topology plan gate never fails its task: PlanGateCell returns Ok, and the gate's success edge is EdgeCondition::Success
-- [ ] gap-6daad9: plan_runner injects no CellResources, so --rich-topology still stops at every gate
+- [x] gap-6daad9: plan_runner injects no CellResources, so --rich-topology still stops at every gate
 - [ ] bug-8cf581: Each delivery's regression checkout gets a new temporary path, so workspace crates rebuild every delivery and leave stale artifacts
       tasks that break together
 - [ ] The epic's `[[verify]]` command (tests C3 and C4) passes on the merged branch.

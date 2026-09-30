@@ -105,7 +105,7 @@ This is the implementation plan.
 - [x] bug-477ede: prd plan escalation drops a planner model outside the haiku/sonnet/opus chain to the cheapest model
 - [x] gap-1b5636: Prompts paste each pinned acceptance script verbatim; show pinned steps by their header line only
 - [ ] gap-ba4d01: Portal plans 08b–08e and 08g still hand-copy their acceptance tests instead of pinning them with [task.accept]
-- [ ] bug-b0fd73: For accept plans, authored_plan_running reports that tasks.toml no longer matches on every run
+- [x] bug-b0fd73: For accept plans, authored_plan_running reports that tasks.toml no longer matches on every run
 - [x] bug-019f02: speclint and roko_gate::spec_quality ignore [task.accept], so plans that pin acceptance tests lose verify steps and acceptance credit
 - [ ] bug-05d1ac: verification.rs quotes each step's full command in skipped-step lists, progress events and gate output, so a pinned step repeats its script in retry feedback
 - [x] bug-c1b845: speclint --dynamic runs only authored verify steps on the base, so SQ06 and HF3 ignore pinned acceptance tests

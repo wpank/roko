@@ -2,7 +2,7 @@
 id = "bug-41bea4"
 kind = "bug"
 title = "Guard gaps: the roko.toml content check misses grep -r, parallel isn't treated as a bulk delete, and sudo git -C dir rm -r is a false positive"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "release"
@@ -11,7 +11,7 @@ subsystem = ["roko-agent/claude_cli_guard"]
 created = 2026-09-30
 updated = 2026-09-30
 last_verified = 2026-09-30
-last_verified_rev = "0b84bc9fa"
+last_verified_rev = "2ae9d2a7f"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-guard2's report, checked on work/gap-e9660f at 6820f1c2d)"
 anchors = ["crates/roko-agent/src/claude_cli_guard.py"]
@@ -21,6 +21,11 @@ links = { depends_on = ["gap-e9660f"], blocks = [], related = ["gap-e9660f", "bu
 
 [[verify]]
 command = "python3 -c \"import json,subprocess,sys; g='crates/roko-agent/src/claude_cli_guard.py'; run=lambda c: subprocess.run(['python3',g],input=json.dumps({'tool_name':'Bash','tool_input':{'command':c}}),text=True,capture_output=True).returncode; sys.exit(0 if run('parallel rm ::: a b c') == 2 and run('sudo git -C dir rm -r x') == 0 else 1)\""
+
+[closed]
+at = 2026-09-30
+by = "coordinator (session 7622b882)"
+evidence = "Merged in 2ae9d2a7f. The guard denies recursive searches over a tree whose roko config holds a secret, expands globs, treats parallel like xargs, and passes sudo git -C dir rm -r x. Batch 14 gate: first run on 4e030ab47 (check, clippy clean; tests pass: roko-cli 3171, roko-agent 2263, roko-core 1952, roko-learn 1203, roko-serve 986, roko-graph 472, roko-fs 259, roko-neuro 239), then re-gated on 8ce3bb131 (same code as MAIN 2ae9d2a7f) after the coordinator's rustfmt commits and serve-sec's bug-633b68 root fix: check, nightly fmt, clippy -p roko-cli -p roko-serve -p roko-core -p roko-agent -p roko-learn --keep-going -D warnings clean; roko-cli lib 3172 passed (one sibling-settle race flake passes alone, bug-779ae7); --test secret_canary 11 passed; --test secrets_and_git_guard_canary 1 passed, 1 ignored (bug-0d9ac4). Verify: static checks pass on MAIN."
 +++
 
 ## Problem

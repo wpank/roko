@@ -107,7 +107,7 @@ This is the implementation plan.
 - [ ] bug-ccfa0d: config validate flags [profiles.<name>] keys that DomainProfile collects into extra, and tools.profiles has no schema template
 - [ ] gap-d0f52f: LearningRuntime::discover_cross_episode_patterns has no caller, so EpisodeView::succeeded has no production reader
 - [ ] bug-a70def: The Claude MCP isolation tests assume the host has no managed-mcp.json
-- [ ] bug-f3969d: InFlightTasks keeps every ended attempt for the life of the process
+- [x] bug-f3969d: InFlightTasks keeps every ended attempt for the life of the process
 - [ ] Both of the epic's `[[verify]]` commands pass.
 
 ## Notes

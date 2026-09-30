@@ -23,6 +23,10 @@ $PY benchmarks/viabilitybench/ci/verify_verifiers.py --families pl --seeds 3    
 $PY -m pytest benchmarks/viabilitybench/ci/test_ci.py -q
 ```
 
+The workflow `.github/workflows/viabilitybench-ci.yml` runs the first, third and fourth of these on every change
+under `benchmarks/viabilitybench/` (gap-44632a), offline and with no repository secret. The 100-cell run stays
+manual, before a pilot.
+
 Without `--families`, every family found under `families/` is checked, and without `--seeds`, seeds 1 to 10 are
 checked. Without `--secret-file`, the CI uses a throwaway secret in a private temporary directory. `--scratch DIR`
 keeps every tree for inspection, and `--json PATH` writes every judgement. `vb ci` (S08 §5.7) is meant to wrap this.

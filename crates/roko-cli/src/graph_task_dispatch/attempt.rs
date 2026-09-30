@@ -25,7 +25,7 @@ use roko_learn::telemetry::records::b3_digest;
 use roko_learn::telemetry::{
     AttemptFailureClass, AttemptIdentity, AttemptKey, AttemptOpenRecord, AttemptOrdinals,
     AttemptTiming, AttemptVerdictRecord, CostSource, ExecutedModel, GateVerdictTag, TelemetryEvent,
-    TelemetryWriter, TelemetryWriterConfig,
+    TelemetryWriter, TelemetryWriterConfig, TelemetryWriterStats,
 };
 use sha2::Digest;
 
@@ -80,16 +80,11 @@ impl RunAttempts {
             tracing::debug!("attempt telemetry record dropped: the writer's channel is full");
         }
     }
-}
 
-impl Drop for RunAttempts {
-    /// Close the writer and wait for its queued lines, so a run's last
-    /// verdicts reach disk before the process exits.
-    fn drop(&mut self) {
-        let Some(writer) = self.writer.take() else {
-            return;
-        };
-        let stats = writer.close();
+    /// Close the writer, wait for its queued lines, and return its final
+    /// counters; `None` when it never started or is already closed.
+    fn close(&mut self) -> Option<TelemetryWriterStats> {
+        let stats = self.writer.take()?.close();
         if stats.dropped > 0 || stats.write_errors > 0 {
             tracing::warn!(
                 dropped = stats.dropped,
@@ -97,6 +92,15 @@ impl Drop for RunAttempts {
                 "attempt telemetry lost records"
             );
         }
+        Some(stats)
+    }
+}
+
+impl Drop for RunAttempts {
+    /// Close the writer and wait for its queued lines, so a run's last
+    /// verdicts reach disk before the process exits.
+    fn drop(&mut self) {
+        let _ = self.close();
     }
 }
 
@@ -140,6 +144,25 @@ impl AttemptBook {
             .entry(run_id.to_string())
             .or_insert_with(|| Arc::new(RunAttempts::open(runs_dir, run_id)));
         Arc::clone(run)
+    }
+
+    /// Close run `run_id`'s writer once no attempt of the run is open, and
+    /// return its final counters. `None` when this process opened no attempt
+    /// of the run, or one is still open: that attempt keeps the writer until
+    /// it settles, and dropping the last of them closes it.
+    fn close(&self, run_id: &str) -> Option<TelemetryWriterStats> {
+        let mut run = {
+            let mut runs = self.runs.lock();
+            let run = runs.remove(run_id)?;
+            match Arc::try_unwrap(run) {
+                Ok(run) => run,
+                Err(run) => {
+                    runs.insert(run_id.to_string(), run);
+                    return None;
+                }
+            }
+        };
+        run.close()
     }
 
     /// Open the next attempt of `task` in run `run_id`: mint its key and
@@ -385,6 +408,16 @@ impl GraphTaskDispatcher {
             task,
             ctx.cell_id.as_deref(),
         )
+    }
+
+    /// Close run `run_id`'s attempt log once its plan has finished: wait
+    /// until every queued line is on disk, so the run's `attempts.jsonl` is
+    /// complete, and return the writer's final counters (the run manifest
+    /// records what it dropped). `None` when this process opened no attempt
+    /// of the run, or an attempt of it is still in flight. A later attempt
+    /// of the run reopens the log where it left off.
+    pub fn close_run_attempts(&self, run_id: &str) -> Option<TelemetryWriterStats> {
+        self.attempts.close(run_id)
     }
 
     /// Settle `attempt`, which the harness failed after its open line with

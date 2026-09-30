@@ -11,6 +11,12 @@
 //!   cut off or does not parse. The provider adapters already fail a
 //!   non-zero exit, a turn cap hit and, for the Claude CLI, an empty
 //!   response;
+//! - its role's post-dispatch safety check, the one ACP runs
+//!   ([`SafetyLayer::post_dispatch_check`]), blocks it: a secret in an exact
+//!   format in the output ([`scrub::high_confidence_secret`]), a changed path
+//!   outside the working tree, or a changed file under a role whose contract
+//!   forbids file writes. A `NAME = value` match alone, which code such as
+//!   `let token = next()` also produces, is logged, not blocking;
 //! - the task's changes tamper with what checks it
 //!   ([`roko_gate::attempt_diff`], S05 check A1): a weakened, deleted or
 //!   skipped test, an edited verify script, `tasks.toml`, pinned acceptance
@@ -28,6 +34,7 @@
 
 use std::path::Component;
 
+use roko_agent::safety::{SafetyLayer, SafetyViolation, ViolationSeverity, ViolationType, scrub};
 use roko_core::config::gates::DiffScope;
 use roko_gate::attempt_diff::{
     AttemptChange, AttemptDiffPolicy, ChangeKind, DiffFinding, PinnedTest, check_attempt_diff,
@@ -76,22 +83,38 @@ impl GraphTaskDispatcher {
     ) -> Result<()> {
         let role = task.role.as_deref().unwrap_or("implementer");
         let mut rejection = output_red_flag(&self.config, role, dispatch);
+        let diff = if rejection.is_none() {
+            self.attempt_diff(spec, task, attempt_key, workdir).await
+        } else {
+            None
+        };
+        // Findings recorded without blocking, carried into the feedback of a
+        // rejection by a later check.
+        let mut notes = Vec::new();
+        if rejection.is_none() {
+            rejection =
+                self.post_dispatch_red_flag(spec, task, role, dispatch, diff.as_ref(), &mut notes);
+        }
         if rejection.is_none()
-            && let Some(diff) = self.attempt_diff(spec, task, attempt_key, workdir).await
+            && let Some(diff) = &diff
         {
             rejection = match self
-                .attempt_diff_red_flag(spec, task, workdir, attempt_number, &diff)
+                .attempt_diff_red_flag(spec, task, workdir, attempt_number, diff)
                 .await
             {
                 Some(rejection) => Some(rejection),
-                None => no_changes_red_flag(task, role, &diff, attempt_number).await,
+                None => no_changes_red_flag(task, role, diff, attempt_number).await,
             };
         }
         let Some(Rejection { check, message }) = rejection else {
             return Ok(());
         };
         let gate = format!("{PRE_VERIFY_GATE_PREFIX}{check}");
-        let message = format!("Rejected before its verify steps ran ({gate}). {message}");
+        let mut message = format!("Rejected before its verify steps ran ({gate}). {message}");
+        if !notes.is_empty() {
+            message.push_str("\n\nAlso recorded, not blocking:\n");
+            message.push_str(&notes.join("\n"));
+        }
         tracing::warn!(
             plan_id = %spec.plan_id,
             task_id = %task.id,
@@ -121,6 +144,82 @@ impl GraphTaskDispatcher {
             );
         }
         Err(RokoError::Verify { gate, message })
+    }
+
+    /// The role's post-dispatch safety check, the one ACP runs
+    /// ([`SafetyLayer::post_dispatch_check`]), over the attempt's output and
+    /// the paths its task changed.
+    ///
+    /// A blocking violation rejects the attempt: a changed path outside the
+    /// working tree, a changed file under a role whose contract forbids file
+    /// writes, or a secret in the output. The check scrubs the output with
+    /// the whole default policy, whose `NAME = value` rule also matches code a
+    /// summary quotes (`let token = next()`, `api_key: Option<String>`), so a
+    /// secret blocks only when [`scrub::high_confidence_secret`] finds one in
+    /// an exact format. Other findings are logged and pushed to `notes`.
+    /// Without a diff (a working tree git cannot snapshot), only the output is
+    /// checked.
+    fn post_dispatch_red_flag(
+        &self,
+        spec: &TaskExecutionSpec,
+        task: &TaskDef,
+        role: &str,
+        dispatch: &crate::dispatch_v2::AgentResultDispatch,
+        diff: Option<&AttemptDiff>,
+        notes: &mut Vec<String>,
+    ) -> Option<Rejection> {
+        let changed_files: Vec<String> = diff
+            .map(|diff| {
+                diff.changes
+                    .iter()
+                    .map(|change| change.path.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+        let output = dispatch.result.output.body.as_text().unwrap_or_default();
+        let exact_secret = scrub::high_confidence_secret(output);
+        let (blocks, recorded): (Vec<SafetyViolation>, Vec<SafetyViolation>) =
+            SafetyLayer::from_config(&self.config)
+                .with_contract(effective_agent_contract(role, task))
+                .post_dispatch_check(&spec.plan_id, &task.id, role, output, &changed_files)
+                .into_iter()
+                .partition(|violation| {
+                    violation.severity == ViolationSeverity::Block
+                        && (violation.violation_type != ViolationType::SecretLeak || exact_secret)
+                });
+        for finding in &recorded {
+            let why = if finding.violation_type == ViolationType::SecretLeak {
+                "a NAME = value match only, which code also produces"
+            } else {
+                "a warning"
+            };
+            tracing::warn!(
+                plan_id = %spec.plan_id,
+                task_id = %task.id,
+                violation = %finding.violation_type,
+                message = %finding.message,
+                why,
+                "post-dispatch safety finding recorded, not blocking"
+            );
+            let note = format!("- {}: {} ({why})", finding.violation_type, finding.message);
+            notes.push(note);
+        }
+        if blocks.is_empty() {
+            return None;
+        }
+        let violations = blocks
+            .iter()
+            .map(|violation| format!("- {}: {}", violation.violation_type, violation.message))
+            .collect::<Vec<_>>()
+            .join("\n");
+        Some(Rejection {
+            check: "safety",
+            message: format!(
+                "Safety: the attempt broke its role's post-dispatch contract:\n{violations}\n\
+                 Keep credentials out of the output, and change only what the `{role}` role \
+                 may change."
+            ),
+        })
     }
 
     /// The attempt diff check (S05 check A1) over the task's changes: a
@@ -697,6 +796,79 @@ printf '%s\n' '{{"type":"result","session_id":"s","model":"claude-sonnet-4-6","t
                 assert!(message.contains("outside_scope `README.md`"), "{message}");
             }
         }
+    }
+
+    #[tokio::test]
+    async fn the_pre_verify_screen_runs_post_dispatch_check() {
+        // A reviewer, whose contract forbids file writes, changes a file.
+        let temp = tempdir().expect("tempdir");
+        commit_repo(
+            temp.path(),
+            &[("src/lib.rs", "pub fn one() -> u8 {\n    1\n}\n")],
+        );
+        let writes = provider("printf '// reviewed\\n' >> src/lib.rs", "Looks right.", 10);
+        let (dispatcher, mut task) =
+            make_test_dispatcher(&temp, &writes, no_auto_fix, GraphFeedbackContext::default())
+                .await;
+        let marker = temp.path().join("verify-ran");
+        task.role = Some("reviewer".to_string());
+        task.verify = vec![verify_step(
+            "structural",
+            &format!("touch {}", marker.display()),
+        )];
+        let (gate, message) = rejected(&dispatcher, &task, &marker).await;
+        assert_eq!(gate, "pre_verify:safety");
+        assert!(message.contains("contract_violation"), "{message}");
+        assert!(message.contains("forbids file writes"), "{message}");
+
+        // An implementer's output carries a credential in an exact format.
+        // Git cannot snapshot this tree, so the output alone is checked.
+        let temp = tempdir().expect("tempdir");
+        let credential = format!("ghp_{}", "a".repeat(36));
+        let leaks = provider(":", &format!("Pushed with {credential}."), 10);
+        let (dispatcher, mut task) =
+            make_test_dispatcher(&temp, &leaks, no_auto_fix, GraphFeedbackContext::default()).await;
+        let marker = temp.path().join("verify-ran");
+        task.verify = vec![verify_step(
+            "structural",
+            &format!("touch {}", marker.display()),
+        )];
+        let (gate, message) = rejected(&dispatcher, &task, &marker).await;
+        assert_eq!(gate, "pre_verify:safety");
+        assert!(message.contains("secret_leak"), "{message}");
+        assert!(
+            !message.contains(&credential),
+            "the rejection must not repeat the secret: {message}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_name_value_secret_match_is_recorded_without_blocking() {
+        // Code a summary quotes matches the scrubber's `NAME = value` rule,
+        // but is no credential: the attempt goes on to its verify steps.
+        let temp = tempdir().expect("tempdir");
+        let quotes = provider(
+            ":",
+            "Added api_key: Option<String> to the config, and the client does let token = next();",
+            10,
+        );
+        let (dispatcher, mut task) =
+            make_test_dispatcher(&temp, &quotes, no_auto_fix, GraphFeedbackContext::default())
+                .await;
+        let marker = temp.path().join("verify-ran");
+        task.verify = vec![verify_step(
+            "structural",
+            &format!("touch {}", marker.display()),
+        )];
+        let outputs = dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &CellContext::new())
+            .await
+            .expect("a NAME = value match does not block");
+        assert_eq!(
+            TaskGateVerdict::from_signals(&outputs),
+            Some(TaskGateVerdict::Passed)
+        );
+        assert!(marker.exists(), "its verify step ran");
     }
 
     #[tokio::test]

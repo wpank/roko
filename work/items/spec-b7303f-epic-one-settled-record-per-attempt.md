@@ -91,14 +91,14 @@ and state digests). The census lists them in `EXPECTED_MISSING`, and E17 files t
 - [ ] bug-35379d: Provider failover silently runs a different model and records it as if it had been chosen (existing item)
 - [ ] gap-ad0d39: Cost records miss Claude per-model usage and reasoning tokens, and price unknown models as Sonnet (existing item)
 - [x] bug-690dc6: Timed-out and errored agent runs are recorded at $0 with no tokens (existing item; fix merged in `d4be4e872`)
-- [ ] gap-8cb382: Run manifest with a config fingerprint for every plan run (S01.P0-2)
-- [ ] gap-1f2661: Wiring census: a fixture proves every learning loop reads the settled attempt record (S01.P0-11, S01.P0-12)
+- [x] gap-8cb382: Run manifest with a config fingerprint for every plan run (S01.P0-2)
+- [x] gap-1f2661: Wiring census: a fixture proves every learning loop reads the settled attempt record (S01.P0-11, S01.P0-12)
 - [ ] gap-c7c946: roko learn telemetry: check and route-report over the attempt records (S01.P0-13)
 - [x] gap-3c430e: Specs S01, S05, S06 and S08 disagree on token classes, the audit hash, a decision-point name and a budget-line name
 - [ ] bug-b72a37: OpenAI-compatible providers price cached input tokens twice
 - [ ] gap-4468bd: Credit or demote a T0 reflex rule only from the settled attempt record, after verify
 - [x] gap-8f6206: Learning consumers read the settled verdict's learning label instead of succeeded (S01.P0-3)
-- [ ] bug-ccc7c4: roko run now writes a second run directory under .roko/runs beside its own
+- [x] bug-ccc7c4: roko run now writes a second run directory under .roko/runs beside its own
 - [ ] bug-55fd84: Episodes record turns = 1 for dispatches on providers that report no turn count
 - [ ] bug-31438d: Roko records the model it dispatched, never the model the provider reports serving
 - [ ] bug-62e3f4: Episodes, costs.json and efficiency.jsonl leave out the three helper calls after each failed gate

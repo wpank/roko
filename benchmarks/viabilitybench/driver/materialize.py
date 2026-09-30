@@ -11,7 +11,9 @@
    S08's name, `.vb`, but lives under `private_dir`, in the run's results and outside every workdir: an agent that
    read the manifest would trip the canary (gap-2790c5);
 2. checks the manifest against `schema/task.schema.json` and the requested instance id, the chosen spec's sha256,
-   the visible test hashes against the rendered files, and that no canary is left anywhere in the agent's tree;
+   the visible test hashes against the rendered files, and that no canary is left anywhere in the agent's tree. With
+   `latent`, it asked the generator for that latent version (`--latent`, S08 §4.6's `convention_flip`), and it checks
+   that the manifest names it;
 3. checks the pristine base without re-making it: the bundle lies in DIR, and the workdir's files and HEAD are the
    recorded tree and commit. The census restores test files from that bundle, and `hidden.py` reads `pristine.json`
    next to the manifest.
@@ -22,7 +24,8 @@ variant cannot read another.
 API:
     Materialized(instance_id, family_dir, workdir, private_dir, manifest, manifest_path, pristine, spec_variant,
                  spec_text)
-    materialize(*, family_dir, instance_id, workdir, private_dir, spec_variant="precise", timeout_s=300.0)
+    materialize(*, family_dir, instance_id, workdir, private_dir, spec_variant="precise", timeout_s=300.0,
+                latent=None)
     MaterializeError
 """
 
@@ -63,7 +66,7 @@ class Materialized:
 
 
 def materialize(*, family_dir: Path, instance_id: str, workdir: Path, private_dir: Path,
-                spec_variant: str = "precise", timeout_s: float = 300.0) -> Materialized:
+                spec_variant: str = "precise", timeout_s: float = 300.0, latent: str | None = None) -> Materialized:
     family, level, seed = knobs.parse_instance_id(instance_id)
     family_dir = Path(family_dir).resolve()
     workdir, private_dir = Path(workdir).absolute(), Path(private_dir).absolute()
@@ -75,7 +78,7 @@ def materialize(*, family_dir: Path, instance_id: str, workdir: Path, private_di
     private_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     workdir.parent.mkdir(parents=True, exist_ok=True)
     command = [sys.executable, str(family_dir / "gen.py"), "--level", str(level), "--seed", str(seed),
-               "--out", str(task_dir), "--workdir", str(workdir)]
+               "--out", str(task_dir), "--workdir", str(workdir), *(["--latent", latent] if latent else [])]
     env = {"PATH": os.environ.get("PATH", os.defpath), "PYTHONDONTWRITEBYTECODE": "1", "LC_ALL": "C.UTF-8",
            "HOME": str(private_dir)}
     try:
@@ -96,6 +99,8 @@ def materialize(*, family_dir: Path, instance_id: str, workdir: Path, private_di
         raise MaterializeError(f"{instance_id}: invalid manifest: {errors[0]}")
     if manifest["instance_id"] != instance_id or manifest["family"] != family or manifest["ladder"] != level:
         raise MaterializeError(f"{family} gen.py rendered {manifest['instance_id']} for {instance_id}")
+    if latent and manifest["latent_version"] != latent:
+        raise MaterializeError(f"{family} gen.py rendered latent {manifest['latent_version']} for {latent}")
 
     spec = manifest["spec"].get(spec_variant)
     if spec is None:

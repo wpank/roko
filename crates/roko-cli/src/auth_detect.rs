@@ -9,6 +9,7 @@ use std::path::Path;
 use std::process::Command;
 
 use roko_core::agent::ProviderKind;
+use roko_core::child_env::CredentialScrub;
 
 /// Detected authentication method for agent dispatch.
 #[derive(Debug, Clone)]
@@ -95,8 +96,7 @@ fn detect_from_config(config: &roko_core::config::schema::RokoConfig) -> Option<
                 ProviderKind::CodexCli => "codex",
                 _ => default_cmd,
             });
-            if Command::new(cmd)
-                .arg("--version")
+            if version_probe(cmd, &CredentialScrub::for_kind(provider.kind))
                 .output()
                 .map(|o| o.status.success())
                 .unwrap_or(false)
@@ -147,7 +147,8 @@ fn detect_from_config(config: &roko_core::config::schema::RokoConfig) -> Option<
 /// what dispatch will actually use.
 pub fn detect_auth_from_env() -> AuthMethod {
     // 1. Claude CLI — lightweight probe via `claude --version`
-    if let Ok(output) = Command::new("claude").arg("--version").output() {
+    let claude_scrub = CredentialScrub::for_kind(ProviderKind::ClaudeCli);
+    if let Ok(output) = version_probe("claude", &claude_scrub).output() {
         if output.status.success() {
             return AuthMethod::ClaudeCli;
         }
@@ -192,11 +193,22 @@ pub fn detect_auth_from_env() -> AuthMethod {
 /// Probe whether the `claude` CLI binary is available on PATH.
 /// Runs `claude --version` — does not perform any LLM inference.
 pub fn claude_cli_available() -> bool {
-    std::process::Command::new("claude")
-        .arg("--version")
+    version_probe("claude", &CredentialScrub::for_kind(ProviderKind::ClaudeCli))
         .output()
         .map(|o| o.status.success())
         .unwrap_or(false)
+}
+
+/// `program --version`, set up to run as a probe: it inherits roko's
+/// environment minus what `scrub` strips, as the provider's own processes do
+/// ([`CredentialScrub::for_kind`]), so a probed binary never sees the keys
+/// its provider does not own.
+#[must_use]
+pub fn version_probe(program: &str, scrub: &CredentialScrub) -> Command {
+    let mut probe = Command::new(program);
+    probe.arg("--version");
+    scrub.apply(&mut probe);
+    probe
 }
 
 /// Print setup instructions when no auth is detected.

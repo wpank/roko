@@ -9,6 +9,8 @@ use std::process::Output;
 
 use anyhow::{Context, Result, anyhow, bail};
 use roko_agent::mcp::{McpClient, StdioTransport};
+use roko_agent::process::apply_credential_scrub;
+use roko_core::child_env::CredentialScrub;
 use serde::Deserialize;
 use serde_json::json;
 
@@ -351,16 +353,27 @@ fn is_excluded(path: &str) -> bool {
     })
 }
 
+/// A `git` command in `workspace` that never prompts.
+///
+/// The agent could write `.git/hooks` in the workspace, and roko's commit and
+/// push run those hooks, so the command inherits roko's environment minus
+/// provider keys, `.env`-loaded names and roko's own credentials
+/// ([`CredentialScrub`]). The hooks still run; signing and SSH still work.
+fn git_command(workspace: &Path) -> tokio::process::Command {
+    let mut git = tokio::process::Command::new("git");
+    git.current_dir(workspace).env("GIT_TERMINAL_PROMPT", "0");
+    apply_credential_scrub(&mut git, &CredentialScrub::default());
+    git
+}
+
 /// Stage and commit the current workspace state.
 ///
 /// Queries `git diff` for exact changed pathspecs and stages only those,
 /// skipping any paths that match [`EXCLUDED_PATTERNS`] (#373).
 pub async fn git_commit(workspace: &Path, message: &str) -> Result<()> {
     // Collect modified/deleted tracked files.
-    let tracked_output = tokio::process::Command::new("git")
+    let tracked_output = git_command(workspace)
         .args(["diff", "--name-only", "HEAD"])
-        .current_dir(workspace)
-        .env("GIT_TERMINAL_PROMPT", "0")
         .output()
         .await
         .context("spawn git diff --name-only HEAD")?;
@@ -374,10 +387,8 @@ pub async fn git_commit(workspace: &Path, message: &str) -> Result<()> {
     }
 
     // Collect untracked files (new files not yet known to git).
-    let untracked_output = tokio::process::Command::new("git")
+    let untracked_output = git_command(workspace)
         .args(["ls-files", "--others", "--exclude-standard"])
-        .current_dir(workspace)
-        .env("GIT_TERMINAL_PROMPT", "0")
         .output()
         .await
         .context("spawn git ls-files --others")?;
@@ -404,10 +415,8 @@ pub async fn git_commit(workspace: &Path, message: &str) -> Result<()> {
     let mut add_args = vec!["add", "--"];
     add_args.extend(paths);
 
-    let add_output = tokio::process::Command::new("git")
+    let add_output = git_command(workspace)
         .args(&add_args)
-        .current_dir(workspace)
-        .env("GIT_TERMINAL_PROMPT", "0")
         .output()
         .await
         .context("spawn git add -- <paths>")?;
@@ -416,10 +425,8 @@ pub async fn git_commit(workspace: &Path, message: &str) -> Result<()> {
         return Err(git_error("git add -- <paths>", &add_output, None));
     }
 
-    let diff_output = tokio::process::Command::new("git")
+    let diff_output = git_command(workspace)
         .args(["diff", "--cached", "--quiet"])
-        .current_dir(workspace)
-        .env("GIT_TERMINAL_PROMPT", "0")
         .output()
         .await
         .context("spawn git diff --cached")?;
@@ -428,10 +435,8 @@ pub async fn git_commit(workspace: &Path, message: &str) -> Result<()> {
         bail!("nothing to commit (working tree clean)");
     }
 
-    let output = tokio::process::Command::new("git")
+    let output = git_command(workspace)
         .args(["commit", "-m", message])
-        .current_dir(workspace)
-        .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_AUTHOR_NAME", "roko")
         .env("GIT_AUTHOR_EMAIL", "roko@nunchi.dev")
         .env("GIT_COMMITTER_NAME", "roko")
@@ -454,10 +459,8 @@ pub async fn git_commit(workspace: &Path, message: &str) -> Result<()> {
 /// from cloud workers.
 pub async fn git_push(workspace: &Path, branch: &str, token: &str) -> Result<()> {
     validate_worker_branch(branch)?;
-    let origin_output = tokio::process::Command::new("git")
+    let origin_output = git_command(workspace)
         .args(["remote", "get-url", "origin"])
-        .current_dir(workspace)
-        .env("GIT_TERMINAL_PROMPT", "0")
         .output()
         .await
         .context("spawn git remote get-url origin")?;
@@ -470,10 +473,8 @@ pub async fn git_push(workspace: &Path, branch: &str, token: &str) -> Result<()>
         .trim()
         .to_string();
     let push_url = rewrite_git_https_url(&origin, token);
-    let output = tokio::process::Command::new("git")
+    let output = git_command(workspace)
         .args(["push", &push_url, branch])
-        .current_dir(workspace)
-        .env("GIT_TERMINAL_PROMPT", "0")
         .output()
         .await
         .context("spawn git push")?;

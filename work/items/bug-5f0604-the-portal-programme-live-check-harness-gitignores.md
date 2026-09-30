@@ -18,7 +18,7 @@ parent = "spec-9230a9"
 links = { depends_on = [], blocks = [], related = ["gap-b72761"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
-command = "! grep -q \"printf '.roko/\\\\nout/\" plans/portal-programme/_harness/lib.sh"
+command = "! grep -qF '\\nout/' plans/portal-programme/_harness/lib.sh"
 +++
 
 ## Problem

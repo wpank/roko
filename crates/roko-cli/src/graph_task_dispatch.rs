@@ -791,10 +791,17 @@ impl TaskDispatcher for GraphTaskDispatcher {
             .as_ref()
             .map_or_else(|| self.workdir.clone(), |l| l.path.clone());
         // Until this attempt ends, a sibling's failed verify step in the same
-        // working tree may wait for it to settle.
+        // working tree may wait for it to settle. It starts editing once no
+        // sibling runs a verify step that reads its files (gap-1920ba).
         let _in_flight = self
             .in_flight
-            .register(&task_spend_key, &effective_workdir, &task.files);
+            .register_when_unread(
+                &task_spend_key,
+                &effective_workdir,
+                &task.files,
+                std::time::Duration::from_secs(self.config.gates.sibling_settle_secs),
+            )
+            .await;
 
         let role = task.role.as_deref().unwrap_or("implementer");
 
@@ -1649,6 +1656,7 @@ printf '%s\n' '{"type":"result","session_id":"sess-v1","model":"claude-sonnet-4-
             command: command.to_string(),
             fail_msg: None,
             timeout_ms: 10_000,
+            scope: Vec::new(),
         }
     }
 

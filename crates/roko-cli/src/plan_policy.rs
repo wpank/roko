@@ -1104,6 +1104,7 @@ mod tests {
                 command: "grep -q Widget src/lib.rs".into(),
                 fail_msg: None,
                 timeout_ms: 1_000,
+                scope: Vec::new(),
             }],
             timeout_secs: 60,
             max_retries: 0,

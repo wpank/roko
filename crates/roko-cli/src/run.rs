@@ -647,6 +647,7 @@ fn prompt_verify_steps(workdir: &Path, gates: &roko_core::config::GatesConfig) -
             .gate_test()
             .as_secs()
             .saturating_mul(1_000),
+        scope: Vec::new(),
     }]
 }
 
@@ -1155,6 +1156,7 @@ command = "true"
             command: "true".to_string(),
             fail_msg: None,
             timeout_ms: 5_000,
+            scope: Vec::new(),
         }];
         prompt_tasks_file(
             "run-1",

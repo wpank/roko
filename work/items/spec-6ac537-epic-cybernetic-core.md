@@ -118,7 +118,7 @@ verify commands that read E4's attempt record, set `triage = "verified"`, add th
 - [x] reg-3f5969: Graph dispatch drops selected playbook IDs; outcomes are recorded under synthetic task IDs (existing item)
 - [x] gap-fdd27f: Prompt experiments are never assigned on the Graph execution path (existing item)
 - [ ] gap-644040: No way to run with learning frozen: prompts and routing change from run to run (existing item)
-- [ ] bug-dfb28f: Graph runs save the cascade router only when the run ends, so a crash loses the run's routing learning
+- [x] bug-dfb28f: Graph runs save the cascade router only when the run ends, so a crash loses the run's routing learning
 - [x] bug-3ea1f5: LearningRuntime rewards a failed attempt with up to 0.5 through cost and latency, unlike every other router path
 - [x] bug-84de98: LearningRuntime::open replays a running writer's unsaved model-call observations, which that writer later saves again
 - [x] bug-7a2630: WAL replay drops entries for models the router doesn't track and then truncates wal.jsonl, and serve never truncates it
@@ -129,7 +129,7 @@ verify commands that read E4's attempt record, set `triage = "verified"`, add th
 - [x] gap-88c547: The remaining learning consumers still read success instead of the settled learning label
 - [x] bug-f81e9b: ProviderModelOutcomeRecord::from_efficiency_event reads the efficiency row's outcome, which carries no learning label
 - [x] bug-9ab6b8: observe_multi_objective_outcome never advances stage_tracking or refreshes the Pareto frontier
-- [ ] bug-b8af02: Helper calls after a failed gate still reach the cascade router as successes; bug-31438d only tags their cost rows
+- [x] bug-b8af02: Helper calls after a failed gate still reach the cascade router as successes; bug-31438d only tags their cost rows
 - [x] gap-2ce86f: Nothing on the Graph path writes learn/error-patterns.json: build_settler, which holds the ErrorPatternSink, has no production caller
 - [ ] The epic's `[[verify]]` command passes on the merged branch: one named test each for router labels, failure
       memory and frozen learning. Extend it with S02.P1-16's wiring census when the M1–M4 items join.

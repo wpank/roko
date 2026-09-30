@@ -74,10 +74,10 @@ This is the implementation plan.
 - [x] gap-29a84b: A plan can succeed while some of its tasks never ran a verify step
 - [ ] gap-cd3529: Integration test C1: one fixture run shows the same honest verdicts on every surface
 - [x] bug-5b43a9: A verify-step timeout is recorded as a permanent failure, and roko diagnose counts no timed-out attempt
-- [ ] gap-3506f1: [[gates.rungs]] is inert on roko plan run, so workspace gate rungs guard only roko run and roko do
-- [ ] bug-b4c565: The T0 reflex shortcut can pass a task without running the workspace rungs
-- [ ] gap-191ecd: The task prompt's Verification Commands list only the task's own steps, not the workspace rungs that will also run
-- [ ] gap-a0f18a: planemit.py still says the workspace rungs are inert, and plan validate doesn't list which rungs will run
+- [x] gap-3506f1: [[gates.rungs]] is inert on roko plan run, so workspace gate rungs guard only roko run and roko do
+- [x] bug-b4c565: The T0 reflex shortcut can pass a task without running the workspace rungs
+- [x] gap-191ecd: The task prompt's Verification Commands list only the task's own steps, not the workspace rungs that will also run
+- [x] gap-a0f18a: planemit.py still says the workspace rungs are inert, and plan validate doesn't list which rungs will run
 - [ ] The epic's `[[verify]]` command (test C1) passes on the merged branch.
 
 ## Notes

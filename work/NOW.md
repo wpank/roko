@@ -4,15 +4,15 @@
 
 What to work on next: the top checked, open items of each goal, highest-priority goal first. Reorder or change goals in `goals.toml`; pin an item higher with `rank = 1` (lower first).
 
-**Drift:** 23 anchor gone · 199 changed since checked · 4 mentioned in commits. Re-check them before relying on this list: `DRIFT.md`.
+**Drift:** 23 anchor gone · 198 changed since checked · 3 mentioned in commits. Re-check them before relying on this list: `DRIFT.md`.
 
 ## 1. Public release: security, licence, CI, first run
 
-- **P1** [bug-0d9ac4](items/bug-0d9ac4-agent-tool-shells-bypass-child-env-run.md) Agent tool shells bypass child_env: run_tests and ACP's bash inherit provider keys, roko-std's bash keeps its own allowlist [bug] · size M · verified 2026-09-29
 - **P1** [gap-0e2c40](items/gap-0e2c40-integration-test-c2-no-provider-key-reaches.md) Integration test C2: no provider key reaches an agent, a gate or a log, and the git guard denies destructive commands · size S · verified 2026-09-30
 - **P1** [find-8cc7ac](items/find-8cc7ac-some-github-workflows-fail-on-main-and.md) Some GitHub workflows fail on main and required checks are undefined [finding] · size M · verified 2026-09-29
+- **P2** [bug-911361](items/bug-911361-cargo-toml-s-repository-and-homepage-point.md) Cargo.toml's repository and homepage point at an unrelated GitHub account [bug] · size S · verified 2026-09-29
 
-_10 more open · on hold: gap-8f8544 · 6 unchecked (`TRIAGE.md`) · `goal = "release"`_
+_9 more open · on hold: gap-8f8544 · 5 unchecked (`TRIAGE.md`) · `goal = "release"`_
 
 ## 2. Whitepaper v1 and the research papers
 
@@ -23,15 +23,15 @@ _0 more open · on hold: gap-85f86a · 3 unchecked (`TRIAGE.md`) · `goal = "whi
 
 ## 3. Roko tells the truth and is safe (P0)
 
-- **P2** [gap-3506f1](items/gap-3506f1-gates-rungs-is-inert-on-roko-plan.md) [[gates.rungs]] is inert on roko plan run, so workspace gate rungs guard only roko run and roko do · size M · verified 2026-09-30
+- nothing checked and open
 
-_0 more open · 17 unchecked (`TRIAGE.md`) · `goal = "truth"`_
+_0 more open · 6 unchecked (`TRIAGE.md`) · `goal = "truth"`_
 
 ## 4. Frontier plans, cheap models execute, the result integrates (P1)
 
 - **P2** [gap-5a6e01](items/gap-5a6e01-turn-caps-and-timeouts-set-from-each.md) Turn caps and timeouts set from each tier's p95 over successful tasks · size M · verified 2026-09-30
 
-_0 more open · 34 unchecked (`TRIAGE.md`) · `goal = "golden-path"`_
+_0 more open · 31 unchecked (`TRIAGE.md`) · `goal = "golden-path"`_
 
 ## 5. Proof: the pilot benchmark and a record of the work
 
@@ -43,7 +43,7 @@ _0 more open · 18 unchecked (`TRIAGE.md`) · `goal = "proof"`_
 
 - nothing checked and open
 
-_0 more open · 3 unchecked (`TRIAGE.md`) · `goal = "cybernetic"`_
+_0 more open · 1 unchecked (`TRIAGE.md`) · `goal = "cybernetic"`_
 
 ## 7. Plan runs work reliably
 

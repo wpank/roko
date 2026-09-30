@@ -2,7 +2,7 @@
 id = "gap-585bd2"
 kind = "gap"
 title = "Every implementer is offered the 17 chain tools, transfer and swap included, whatever the task domain"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "release"
@@ -11,7 +11,7 @@ subsystem = ["roko-std/tools", "roko-cli/graph_task_dispatch"]
 created = 2026-09-29
 updated = 2026-09-30
 last_verified = 2026-09-30
-last_verified_rev = "2ba58d8f4"
+last_verified_rev = "9c0b9aed0"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (20:01, wk-bench-rokoarm's report on gap-b7ab99)"
 anchors = ["crates/roko-std/src/roles.rs::compose_profile", "crates/roko-std/src/roles.rs::domain_profile", "crates/roko-std/src/tool/handlers.rs::chain_handler_for", "crates/roko-cli/src/task_parser.rs::TaskDef", "crates/roko-cli/Cargo.toml"]
@@ -21,6 +21,11 @@ links = { depends_on = [], blocks = [], related = ["gap-7a3527", "bug-12153c", "
 
 [[verify]]
 command = "grep -rqw 'fn a_coding_task_is_offered_no_chain_tools' crates/roko-cli/src/ && cargo test -p roko-cli --lib a_coding_task_is_offered_no_chain_tools"
+
+[closed]
+at = 2026-09-30
+by = "coordinator (session 7622b882)"
+evidence = "Merged in batch 13 (ca834b178: chain tools offered only to chain-domain tasks by domain tool ownership) and batch 15a (1e54497e4: effective_agent_contract resolves the project default domain at all three call sites). Batch 15a gate on 9005da604, re-assembled as 8a2ee8bca with only settle's rustfmt commit changing two files' formatting (MAIN 9c0b9aed0 has the same code): cargo check --workspace --tests clean; nightly fmt clean; clippy -p roko-agent -p roko-cli -p roko-compose -p roko-core -p roko-learn -p roko-serve --keep-going -D warnings clean; lib tests pass: roko-cli 3190 (two flakes, the turn_policy escalated-timeout test and graph_run_routing_observations_survive_a_crash, pass alone and in their module), roko-agent 2268, roko-core 1952, roko-learn 1204, roko-serve 986, roko-compose 560; cargo test -p roko-cli --test learning_wiring_census: 2 passed. Verify: its test passes in that run and its static checks pass on MAIN."
 +++
 
 ## Problem

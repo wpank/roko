@@ -91,7 +91,12 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
 
         // ── P3-AGT-2: Express mode check (streaming) ─────────────────────
         let express_active = is_express_task(&self.config, &task);
-        let max_turns = task_turn_limit(&self.config, &task, express_active);
+        let max_turns = task_turn_limit_with(
+            &self.config,
+            Some(self.learned_tier_limits()),
+            &task,
+            express_active,
+        );
         if express_active {
             tracing::info!(
                 plan_id = %spec.plan_id,
@@ -170,7 +175,8 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
         };
         attempt.prompt_assembled();
         let contract = effective_agent_contract(role, &task);
-        let timeout_ms = base_attempt_timeout_ms(&self.config, spec);
+        let timeout_ms =
+            base_attempt_timeout_ms_with(&self.config, Some(self.learned_tier_limits()), spec);
         let request = AgentDispatchRequest {
             model_key: dispatch_plan.model.slug.clone(),
             prompt: dispatch_plan.prompt.user_prompt.clone(),

@@ -192,6 +192,8 @@ impl AttemptBook {
         open.task_spec_hash = Some(task_spec_hash.clone());
         open.role = Some(task.role.as_deref().unwrap_or("implementer").to_string());
         open.max_retries = Some(spec.max_retries);
+        // Learned tier limits group attempts by it (gap-5a6e01).
+        open.tier = Some(task.tier_class().label().to_string());
         run.submit(open);
         AttemptContext {
             key,

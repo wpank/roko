@@ -9,7 +9,7 @@ goal = "truth"
 size = "M"
 subsystem = ["roko-cli/graph-task-dispatch", "roko-learn"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-09-30
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (16:10, wk-gtd-split's report on bug-94151f)"
 anchors = ["crates/roko-cli/src/graph_task_dispatch.rs", "crates/roko-learn/src/reflex_store.rs::record_gate_pass_for", "crates/roko-learn/src/reflex_store.rs::record_gate_fail_for"]
@@ -68,3 +68,4 @@ Steps:
 
 - Keep the path behind `t0_reflexes`.
 - `graph_task_dispatch.rs` is a hot file. Start after the dispatch-file split (gap-c8e1f1) has merged.
+- 2026-09-30 (wk-gates, wk-settle): since bug-b4c565, T0 reflexes serve only tasks that nothing verifies, so this item's credit hook never fires in live runs. Whether reflexes should serve checked tasks, with verification run on their cached output and first attempts only, is dec-af63cc (recommended: keep them narrow until there's evidence; revisit with M1–M4).

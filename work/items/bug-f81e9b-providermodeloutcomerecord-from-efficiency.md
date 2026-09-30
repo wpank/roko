@@ -3,13 +3,14 @@ id = "bug-f81e9b"
 kind = "bug"
 title = "ProviderModelOutcomeRecord::from_efficiency_event reads the efficiency row's outcome, which carries no learning label"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p3"
 goal = "cybernetic"
 size = "S"
 subsystem = ["roko-learn/provider_model_outcome"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-30
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-settle's report on gap-88c547, branch work/gap-88c547 at 24b23580d)"
 anchors = ["crates/roko-learn/src/provider_model_outcome.rs"]
@@ -47,3 +48,14 @@ Cybernetic core (epic spec-6ac537): provider and model outcome statistics feed r
 ## Notes
 
 - Build on gap-88c547's branch.
+- Implemented on `work/bug-f81e9b` at `1086064d7`; cargo verification deferred to the batch check.
+- The premise was partly off. `from_efficiency_event` keyed its status on `gate_passed == Some(true)`, and read
+  `outcome` only as `task_type`. So an unverified Graph attempt counted as a failure, not a success. So did every
+  other Graph dispatch row, including a verified pass, whose pass sits on its own gate row. roko-serve's
+  projection derives provider outcomes from every efficiency row whenever no outcome file exists, and Graph runs
+  never write one.
+- **Decision (2026-09-30):** a label can't ride on `AgentEfficiencyEvent` without touching its roughly 32
+  struct-literal constructors, several of them in batch-12 files. So a row now counts only through its own gate
+  verdict: `gate_passed: None` records no outcome, while gate rows and bench rows (`gate_passed` from the SWE-bench
+  resolution) keep counting. The settled label reaches provider outcomes through `from_episode` (gap-88c547).
+- Left open: `from_efficiency_event` still copies `outcome` into `task_type`.

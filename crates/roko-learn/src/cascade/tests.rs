@@ -1582,6 +1582,43 @@ fn pareto_frontier_refreshes_every_50_observations() {
     assert!(frontier.contains(&"claude-haiku-4-5".to_string()));
 }
 
+/// bug-9ab6b8: the Graph feedback sinks record through
+/// `observe_multi_objective_outcome`, which advances the stage and refreshes
+/// the Pareto frontier as every other observation path does, with no reload.
+#[test]
+fn multi_objective_observations_advance_the_stage_and_the_frontier() {
+    use roko_core::config::schema::RewardWeights;
+
+    let cascade = CascadeRouter::new(vec![
+        "claude-haiku-4-5".to_string(),
+        "claude-sonnet-4-5".to_string(),
+    ]);
+    let features = default_ctx().to_features();
+    let weights = RewardWeights::default();
+    for index in 0..50 {
+        let success = index % 5 != 0;
+        cascade.observe_multi_objective_outcome(
+            features.clone(),
+            1,
+            1.0,
+            0.1,
+            0.1,
+            &weights,
+            success,
+        );
+    }
+
+    assert_eq!(cascade.total_observations(), 50);
+    assert_eq!(cascade.current_stage(), CascadeStage::Confidence);
+    let transitions = cascade.stage_transitions();
+    assert_eq!(transitions.len(), 1, "{transitions:?}");
+    assert_eq!(transitions[0].from, CascadeStage::Static);
+    assert_eq!(transitions[0].to, CascadeStage::Confidence);
+    assert_eq!(cascade.pareto_frontier_bucket(), 1);
+    let frontier = cascade.pareto_frontier_slugs();
+    assert!(frontier.contains(&"claude-sonnet-4-5".to_string()));
+}
+
 #[test]
 fn filter_unhealthy_retains_least_unhealthy_candidate() {
     let cascade = CascadeRouter::new(vec![

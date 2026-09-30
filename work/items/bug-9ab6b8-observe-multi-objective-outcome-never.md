@@ -3,13 +3,14 @@ id = "bug-9ab6b8"
 kind = "bug"
 title = "observe_multi_objective_outcome never advances stage_tracking or refreshes the Pareto frontier"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p2"
 goal = "cybernetic"
 size = "S"
 subsystem = ["roko-learn/cascade_router"]
 created = 2026-09-30
 updated = 2026-09-30
+last_verified = 2026-09-30
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-router2's report, branch work/bug-f68404 at 732728ee8)"
 anchors = ["crates/roko-learn/src/cascade_router.rs"]
@@ -42,3 +43,9 @@ Cybernetic core (epic spec-6ac537): the stage decides how the router explores. I
 
 - [ ] Observations made through the Graph sinks advance the stage and refresh the frontier without a reload.
 - [ ] The `[[verify]]` command passes.
+
+## Notes
+
+- Implemented on `work/bug-f81e9b` at `9d39ea2d7`; cargo verification deferred to the batch check.
+  `observe_multi_objective_outcome` now ends as `observe_internal` does, with `refresh_pareto_frontier_if_needed`
+  and `check_stage_transition`. `record_override_outcome` already went through `observe_internal`.

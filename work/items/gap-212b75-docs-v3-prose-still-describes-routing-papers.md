@@ -2,7 +2,7 @@
 id = "gap-212b75"
 kind = "gap"
 title = "docs/v3 prose still describes routing papers (BEST-Route, xRouter, Router-R1) under invented titles, and the CLEAR-framework sections cite a fabricated work"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "release"
@@ -11,6 +11,7 @@ subsystem = ["docs/v3"]
 created = 2026-09-30
 updated = 2026-09-30
 last_verified = 2026-09-30
+last_verified_rev = "1637ff138"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-rp-cite's report)"
 anchors = ["docs/v3/20-GATEWAY.md", "docs/v3/depth/20-gateway/06-routing-research.md", "docs/v3/depth/06-composition/distributed-context-engineering.md", "docs/v3/depth/06-composition/token-budget-management.md", "tools/docs_integrity/citation_errata.json"]
@@ -19,6 +20,11 @@ links = { depends_on = [], blocks = [], related = ["gap-b23ebd", "gap-052646", "
 
 [[verify]]
 command = "python3 tools/docs_integrity/check_citation_errata.py --prose docs/v3/20-GATEWAY.md docs/v3/depth/20-gateway/06-routing-research.md docs/v3/depth/06-composition/distributed-context-engineering.md docs/v3/depth/06-composition/token-budget-management.md"
+
+[closed]
+at = 2026-09-30
+commit = "1637ff138"
+evidence = "check_citation_errata.py --prose (new) is clean on the four verify files and all of docs/v3 (73 errata at 286c5e53a, 20 in the verify files); routing prose rewritten from the real abstracts; CLEAR re-attributed to Mehta 2025 (arXiv:2511.14136); 13 unit tests pass"
 +++
 
 ## Problem

@@ -4,7 +4,7 @@
 
 What to work on next: the top checked, open items of each goal, highest-priority goal first. Reorder or change goals in `goals.toml`; pin an item higher with `rank = 1` (lower first).
 
-**Drift:** 23 anchor gone · 197 changed since checked · 3 mentioned in commits. Re-check them before relying on this list: `DRIFT.md`.
+**Drift:** 1 likely done · 23 anchor gone · 192 changed since checked · 3 mentioned in commits. Re-check them before relying on this list: `DRIFT.md`.
 
 ## 1. Public release: security, licence, CI, first run
 
@@ -29,9 +29,10 @@ _0 more open · 11 unchecked (`TRIAGE.md`) · `goal = "truth"`_
 
 ## 4. Frontier plans, cheap models execute, the result integrates (P1)
 
+- **P2** [gap-51deff](items/gap-51deff-in-the-rich-topology-a-task-s.md) In the rich topology a task's files are free between its executor and its gate, so an overlapping task can run in between · size M · verified 2026-09-30
 - **P2** [gap-5a6e01](items/gap-5a6e01-turn-caps-and-timeouts-set-from-each.md) Turn caps and timeouts set from each tier's p95 over successful tasks · size M · verified 2026-09-30
 
-_0 more open · 34 unchecked (`TRIAGE.md`) · `goal = "golden-path"`_
+_0 more open · 27 unchecked (`TRIAGE.md`) · `goal = "golden-path"`_
 
 ## 5. Proof: the pilot benchmark and a record of the work
 

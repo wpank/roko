@@ -119,7 +119,8 @@ fn load_tasks_file(fixture_name: &str) -> roko_cli::task_parser::TasksFile {
 fn tasks_file_to_graph(fixture_name: &str) -> roko_graph::Graph {
     let tasks_file = load_tasks_file(fixture_name);
     let plan_id = &tasks_file.meta.plan;
-    let max_parallel = tasks_file.meta.max_parallel;
+    // An omitted `max_parallel` converts as 1, as a plan run does.
+    let max_parallel = tasks_file.meta.max_parallel.unwrap_or(1);
 
     let plan_tasks: Vec<(String, roko_graph::convert::PlanTaskInfo)> = tasks_file
         .tasks

@@ -2,14 +2,16 @@
 id = "gap-19e596"
 kind = "gap"
 title = "Turn file exclusion off under --worktree-per-task, where tasks do not share a tree"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p3"
 goal = "golden-path"
 size = "S"
 subsystem = ["roko-cli/graph-execution"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-09-30
+last_verified = 2026-09-30
+last_verified_rev = "626e182a9"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (16:10, wk-scheduler's report on gap-439794 (plan step 3), branch work/gap-4d835d)"
 anchors = ["crates/roko-cli/src/graph_execution/plan_runner.rs::PlanRunContext", "crates/roko-cli/src/graph_execution/plan_runner.rs::run_one_plan"]
@@ -19,6 +21,11 @@ links = { depends_on = ["gap-439794"], blocks = [], related = ["gap-4ec59f", "sp
 
 [[verify]]
 command = "grep -rqw 'fn worktree_per_task_clears_exclusive_paths' crates/roko-cli/src/ && cargo test -p roko-cli --lib worktree_per_task_clears_exclusive_paths"
+
+[closed]
+at = 2026-09-30
+by = "coordinator (session 7622b882)"
+evidence = "Merged in 626e182a9. Under --worktree-per-task, tasks that share files run together, since each writes its own checkout. Batch 16c gate on 7902e44a3 (MAIN 626e182a9 has the same code): cargo check --workspace --tests, nightly fmt and clippy -p roko-cli -p roko-core -p roko-graph --keep-going -D warnings clean; lib tests pass: roko-cli 3221 (three known flakes: the turn_policy 1 s test and the verification efficiency wait pass alone; the routing crash-recovery test is a separate WAL-lock flake handed to wk-settle), roko-core 1953, roko-graph 474. Verify: its test passes in that run and its static checks pass on MAIN."
 +++
 
 ## Problem
@@ -54,3 +61,6 @@ gap-439794 skipped its plan step 3 because another worker owned `plan_runner.rs`
 ## Notes
 
 - Depends on gap-439794, which adds `Node.exclusive`. It is not on BASE yet.
+- Implemented on `work/gap-a8d786` at `ae4377be0`; cargo verification deferred to the batch check.
+  `PlanRunContext.worktree_per_task` is set from the run's flag. `run_one_plan` calls `drop_exclusion_for_worktrees`
+  once the graph is built on either topology path. `exclusive` is not in any fingerprint.

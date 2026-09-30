@@ -303,6 +303,22 @@ impl PlanPolicyViolation {
             message: message.into(),
         }
     }
+
+    /// Whether the plan may still run with this finding; see
+    /// [`is_advisory_code`].
+    #[must_use]
+    pub fn is_advisory(&self) -> bool {
+        is_advisory_code(self.code)
+    }
+}
+
+/// Whether a finding with this code leaves the plan runnable. Tasks that
+/// could run together but write overlapping files (`PLAN_CONCURRENT_OVERLAP`)
+/// run safely one after the other, so that finding is for the plan's author,
+/// not a reason to refuse the run.
+#[must_use]
+pub fn is_advisory_code(code: &str) -> bool {
+    code == "PLAN_CONCURRENT_OVERLAP"
 }
 
 impl fmt::Display for PlanPolicyViolation {
@@ -344,18 +360,19 @@ pub fn validate_plan_budgets(
             ),
         ));
     }
-    if tasks.meta.max_parallel == 0 {
+    if tasks.meta.max_parallel == Some(0) {
         issues.push(PlanPolicyViolation::plan(
             "PLAN_BUDGET_PARALLEL",
             "meta.max_parallel must be at least 1",
         ));
     }
-    if tasks.meta.max_parallel as usize > tasks.tasks.len().max(1) {
+    if let Some(max_parallel) = tasks.meta.max_parallel
+        && max_parallel as usize > tasks.tasks.len().max(1)
+    {
         issues.push(PlanPolicyViolation::plan(
             "PLAN_BUDGET_PARALLEL",
             format!(
-                "meta.max_parallel is {} but only {} tasks exist",
-                tasks.meta.max_parallel,
+                "meta.max_parallel is {max_parallel} but only {} tasks exist",
                 tasks.tasks.len()
             ),
         ));
@@ -518,7 +535,81 @@ pub fn validate_plan_budgets(
         }
     }
 
+    // With one task at a time no two tasks run together, whatever they write.
+    if plan_max_parallel(tasks) > 1 {
+        issues.extend(concurrent_overlaps(tasks));
+    }
+
     issues
+}
+
+/// `PLAN_CONCURRENT_OVERLAP`: two tasks that can run at the same time, because
+/// neither depends on the other, declare overlapping `files`.
+///
+/// Overlap is the Graph engine's own rule (`roko_graph::exclusion`): the same
+/// path, or a directory and a path inside it. The engine runs such tasks one
+/// after the other, so the plan gives up parallelism its author meant to have.
+/// A task without `files` declares nothing and is never flagged.
+fn concurrent_overlaps(tasks: &TasksFile) -> Vec<PlanPolicyViolation> {
+    let dependency_map = tasks
+        .tasks
+        .iter()
+        .map(|task| (task.id.as_str(), task.depends_on.as_slice()))
+        .collect::<HashMap<_, _>>();
+    let mut issues = Vec::new();
+    for (index, first) in tasks.tasks.iter().enumerate() {
+        for second in &tasks.tasks[index + 1..] {
+            let overlap = roko_graph::exclusion::first_overlap(&first.files, &second.files);
+            let Some((first_path, second_path)) = overlap else {
+                continue;
+            };
+            if depends_on_transitively(&dependency_map, &first.id, &second.id)
+                || depends_on_transitively(&dependency_map, &second.id, &first.id)
+            {
+                continue;
+            }
+            let (first_id, second_id) = (&first.id, &second.id);
+            let paths = if first_path == second_path {
+                format!("both write `{first_path}`")
+            } else {
+                format!("write the overlapping paths `{first_path}` and `{second_path}`")
+            };
+            issues.push(PlanPolicyViolation::plan(
+                "PLAN_CONCURRENT_OVERLAP",
+                format!(
+                    "tasks {first_id} and {second_id} can run at the same time and {paths}; \
+                     make one depend on the other, or give them disjoint files"
+                ),
+            ));
+        }
+    }
+    issues
+}
+
+/// How many of a plan's tasks may run at the same time.
+///
+/// `[meta] max_parallel` when the plan sets it. Omitted, as many as the plan
+/// has tasks when every task that can write declares its `files`: the Graph
+/// engine keeps tasks whose files overlap apart, and the DAG and
+/// `[conductor] max_agents` bound the rest. Otherwise one, since what the
+/// task [`task_with_unknown_writes`] names writes is unknown.
+#[must_use]
+pub fn plan_max_parallel(tasks: &TasksFile) -> u32 {
+    match tasks.meta.max_parallel {
+        Some(max_parallel) => max_parallel,
+        None if task_with_unknown_writes(tasks).is_some() => 1,
+        None => u32::try_from(tasks.tasks.len().max(1)).unwrap_or(u32::MAX),
+    }
+}
+
+/// The first task whose role can write files but that declares none. No
+/// other task may run beside it, since what it writes is unknown.
+#[must_use]
+pub fn task_with_unknown_writes(tasks: &TasksFile) -> Option<&TaskDef> {
+    tasks.tasks.iter().find(|task| {
+        let role = task.role.as_deref().unwrap_or("implementer");
+        task.files.is_empty() && crate::task_parser::role_capabilities(role).write
+    })
 }
 
 fn check_count(
@@ -1104,6 +1195,7 @@ mod tests {
                 command: "grep -q Widget src/lib.rs".into(),
                 fail_msg: None,
                 timeout_ms: 1_000,
+                scope: Vec::new(),
             }],
             timeout_secs: 60,
             max_retries: 0,
@@ -1127,7 +1219,7 @@ mod tests {
                 done: 0,
                 status: "ready".into(),
                 superseded_by: None,
-                max_parallel: 1,
+                max_parallel: Some(1),
                 estimated_total_minutes: 1,
                 skip_enrichment: false,
                 source_prd: None,
@@ -1280,5 +1372,95 @@ mod tests {
                 .iter()
                 .any(|issue| issue.code == "PLAN_FRAGMENTED_OWNERSHIP")
         );
+    }
+
+    /// Two tasks, T1 and T2, that both write `src/lib.rs`, in a plan that
+    /// runs two tasks at a time.
+    fn two_writers_of_one_file() -> TasksFile {
+        let mut second = task();
+        second.id = "T2".into();
+        let mut plan = tasks(task());
+        plan.meta.total = 2;
+        plan.meta.max_parallel = Some(2);
+        plan.tasks.push(second);
+        plan
+    }
+
+    fn flags_concurrent_overlap(plan: &TasksFile) -> bool {
+        validate_plan_budgets(plan, PlanExecutionPolicy::normal())
+            .iter()
+            .any(|issue| issue.code == "PLAN_CONCURRENT_OVERLAP")
+    }
+
+    /// gap-a8d786: tasks that neither depends on can run at the same time.
+    /// When their files overlap, the finding names both tasks and the path,
+    /// and it leaves the plan runnable.
+    #[test]
+    fn concurrent_tasks_sharing_a_file_are_flagged() {
+        let mut plan = two_writers_of_one_file();
+        let issues = validate_plan_budgets(&plan, PlanExecutionPolicy::normal());
+        let overlaps = issues
+            .iter()
+            .filter(|issue| issue.code == "PLAN_CONCURRENT_OVERLAP")
+            .collect::<Vec<_>>();
+        assert_eq!(overlaps.len(), 1, "{issues:?}");
+        let message = &overlaps[0].message;
+        assert!(message.contains("T1 and T2"), "{message}");
+        assert!(message.contains("`src/lib.rs`"), "{message}");
+        assert!(overlaps[0].is_advisory());
+
+        // A directory covers the files below it, as in the Graph engine.
+        plan.tasks[1].files = vec!["src".into()];
+        assert!(flags_concurrent_overlap(&plan));
+        plan.tasks[1].files = vec!["src/lib".into()];
+        assert!(!flags_concurrent_overlap(&plan));
+    }
+
+    /// The same two tasks are not flagged once one depends on the other, or
+    /// when the plan runs one task at a time.
+    #[test]
+    fn serial_tasks_sharing_a_file_are_not_flagged() {
+        let mut plan = two_writers_of_one_file();
+        assert!(flags_concurrent_overlap(&plan));
+
+        plan.tasks[1].depends_on = vec!["T1".into()];
+        assert!(!flags_concurrent_overlap(&plan), "T2 runs after T1");
+
+        plan.tasks[1].depends_on.clear();
+        plan.meta.max_parallel = Some(1);
+        assert!(!flags_concurrent_overlap(&plan), "one task at a time");
+    }
+
+    /// gap-272448: an omitted `max_parallel` lets as many tasks run at once
+    /// as the plan has, when every task that can write declares its files,
+    /// and one otherwise. An authored value wins.
+    #[test]
+    fn omitted_max_parallel_resolves_from_declared_files() {
+        let mut plan = two_writers_of_one_file();
+        plan.meta.max_parallel = None;
+        assert_eq!(plan_max_parallel(&plan), 2);
+        // Now the two tasks can run together, so their shared file counts.
+        assert!(flags_concurrent_overlap(&plan));
+
+        // A researcher cannot write, so it declares no files and changes
+        // nothing.
+        let mut researcher = task();
+        researcher.id = "T3".into();
+        researcher.role = Some("researcher".into());
+        researcher.files.clear();
+        plan.tasks.push(researcher);
+        assert_eq!(task_with_unknown_writes(&plan).map(|task| &task.id), None);
+        assert_eq!(plan_max_parallel(&plan), 3);
+
+        // An implementer that declares no files writes something unknown.
+        plan.tasks[1].files.clear();
+        assert_eq!(
+            task_with_unknown_writes(&plan).map(|task| task.id.as_str()),
+            Some("T2")
+        );
+        assert_eq!(plan_max_parallel(&plan), 1);
+
+        plan.meta.max_parallel = Some(2);
+        assert_eq!(plan_max_parallel(&plan), 2);
     }
 }

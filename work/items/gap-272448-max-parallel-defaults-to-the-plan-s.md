@@ -2,14 +2,16 @@
 id = "gap-272448"
 kind = "gap"
 title = "max_parallel defaults to the plan's DAG width when task write sets are disjoint"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p1"
 goal = "golden-path"
 size = "S"
 subsystem = ["roko-cli/task_parser", "roko-cli/graph_execution"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-09-30
+last_verified = 2026-09-30
+last_verified_rev = "626e182a9"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e7"
 discovered_from = "tmp/cybernetic-harness/tldr/research/B2-dag-worktrees-merge.md (Per-plan task concurrency row); tldr/05 P1 #11"
 anchors = ["crates/roko-cli/src/task_parser.rs::default_max_parallel", "crates/roko-cli/src/graph_execution/plan_runner.rs::run_one_plan", "crates/roko-cli/src/plan_policy.rs::validate_plan_budgets", "crates/roko-cli/src/plan_generate.rs::PLAN_GENERATOR_SYSTEM_PROMPT"]
@@ -19,6 +21,11 @@ links = { depends_on = ["gap-439794"], blocks = [], related = ["gap-7147bb", "ga
 
 [[verify]]
 command = "grep -rqw 'fn omitted_max_parallel_runs_disjoint_tasks_together' crates/roko-cli/src/ && cargo test -p roko-cli --lib omitted_max_parallel_runs_disjoint_tasks_together"
+
+[closed]
+at = 2026-09-30
+by = "coordinator (session 7622b882)"
+evidence = "Merged in 626e182a9. A plan that omits max_parallel runs as wide as its DAG when every writing task declares its files, otherwise one task at a time with a log naming the unknown writers; plan run lets PLAN_CONCURRENT_OVERLAP through since write-set admission serialises overlaps. Batch 16c gate on 7902e44a3 (MAIN 626e182a9 has the same code): cargo check --workspace --tests, nightly fmt and clippy -p roko-cli -p roko-core -p roko-graph --keep-going -D warnings clean; lib tests pass: roko-cli 3221 (three known flakes: the turn_policy 1 s test and the verification efficiency wait pass alone; the routing crash-recovery test is a separate WAL-lock flake handed to wk-settle), roko-core 1953, roko-graph 474. Verify: its test passes in that run and its static checks pass on MAIN."
 +++
 
 ## Problem
@@ -75,3 +82,14 @@ and an authored `max_parallel` (gap-7147bb).
 - E8.2 (gap-2623b2) rewrites the generator prompts. If it lands first, change the `max_parallel` guidance there.
 - **Hot file:** `plan_runner.rs`.
 - **Decided 2026-09-29 (Will):** use `Option<u32>` (an omitted value means as wide as the DAG allows) rather than a 0 sentinel.
+- Implemented on `work/gap-a8d786` at `c5b3930a7`; cargo verification deferred to the batch check.
+  - `TaskMeta.max_parallel` is `Option<u32>`. `plan_policy::plan_max_parallel` resolves an omitted value. If every
+    task that can write declares `files`, it is the task count. Otherwise it is 1, and
+    `task_with_unknown_writes` names the task. Roles that cannot write, such as researchers, don't count.
+  - `run_one_plan` converts an omitted value as 1, then raises `max_concurrent_nodes` after
+    `prepare_graph_checkpoint`, so checkpoint identities are unchanged. The test compares the recorded fingerprint
+    with the one for 1.
+  - `PLAN_CONCURRENT_OVERLAP` now also applies under auto. `roko plan run` doesn't refuse it (`ff47a28ab`). The
+    generated-plan budget still rejects it, so the generator's retry asks the planner to fix the overlap.
+  - No plan under `plans/` omits `max_parallel` today. One test fixture (`plan_validate_warns_on_known_model_aliases`)
+    now pins `max_parallel = 1`.

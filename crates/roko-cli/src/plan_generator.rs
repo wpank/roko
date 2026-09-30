@@ -281,7 +281,7 @@ const KNOWN_TASK_FIELDS: &[&str] = &[
 const REQUIRED_TASK_FIELDS: &[&str] = &["id", "title", "status", "role", "tier"];
 
 #[allow(dead_code)]
-const KNOWN_VERIFY_FIELDS: &[&str] = &["phase", "command", "fail_msg", "timeout_ms"];
+const KNOWN_VERIFY_FIELDS: &[&str] = &["phase", "command", "fail_msg", "timeout_ms", "scope"];
 #[allow(dead_code)]
 const REQUIRED_VERIFY_FIELDS: &[&str] = &["phase", "command"];
 

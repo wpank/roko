@@ -56,7 +56,9 @@ Specs a cheap model can execute (epic spec-e57870): the linter penalises exactly
 - 2026-09-30: an accept entry counts when it names `src`, `dest` and `runner` and has `count > 0` (what the
   loader turns into a step). It scores as a scoped test-class step listed after the task's own steps, and
   as an observable criterion. Fixture `accept-tests`: the accept task scores 52, the same test copied by
-  hand 37. Corpus delta: only `08f-final-polish` changes; T06 goes from 51.67 (C) to 66.67 (B). The
-  linter id stays `sq-1`.
+  hand 37. Corpus delta: only `08f-final-polish` changes; T06 goes from 51.67 (C) to 66.67 (B).
+- 2026-09-30: the linter id is now `sq-2` in both linters (`406330713`, the lead's decision), because counting
+  `[task.accept]` changes what the scores mean. speclint's docstring lists what each id changed. Figures cited
+  from before this commit are `sq-1`.
 - Not done: `speclint/dynamic.py` still runs only authored verify steps on the base, so in `--dynamic`
   mode an accept task's SQ06 and HF3 ignore its pinned tests.

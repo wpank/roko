@@ -18,6 +18,10 @@ pub(crate) struct RoutePermission {
 }
 
 /// Explicit rules for security-sensitive and commonly mutated route groups.
+///
+/// Prefixes are externally visible paths. A row outside `/api` (such as
+/// `/relay`) belongs to a router merged at the root and matches the path its
+/// middleware sees unchanged.
 pub(crate) const ROUTE_PERMISSION_MANIFEST: &[RoutePermission] = &[
     RoutePermission {
         prefix: "/api/auth/audit",
@@ -194,9 +198,11 @@ pub(crate) const ROUTE_PERMISSION_MANIFEST: &[RoutePermission] = &[
 pub(crate) fn required_permission_for(method: &Method, path: &str) -> Option<Permission> {
     // Axum strips the `/api` nest prefix before invoking middleware attached
     // to the nested router. Accept both that runtime form and the canonical
-    // externally visible path used by tests, logs, and documentation.
+    // externally visible path used by tests, logs, and documentation. Routers
+    // merged at the root keep their own prefix, so a path in one of their
+    // families is matched as it arrives instead of being moved under `/api`.
     let nested_path;
-    let path = if path.starts_with("/api/") {
+    let path = if path.starts_with("/api/") || is_root_mounted(path) {
         path
     } else {
         nested_path = format!("/api{path}");
@@ -231,6 +237,21 @@ pub(crate) fn required_permission_for(method: &Method, path: &str) -> Option<Per
         .find(|entry| path.starts_with(entry.prefix))
         .map(|entry| entry.permission)
         .or(Some(Permission::ConfigEdit))
+}
+
+/// Whether `path` falls under a manifest row declared outside `/api`.
+///
+/// The match is per path segment, so `/relay-tokens` (the nest-stripped form
+/// of `/api/relay-tokens`) is not mistaken for the root-mounted `/relay`
+/// family and keeps its own row.
+fn is_root_mounted(path: &str) -> bool {
+    ROUTE_PERMISSION_MANIFEST
+        .iter()
+        .filter(|entry| !entry.prefix.starts_with("/api/"))
+        .any(|entry| {
+            path.strip_prefix(entry.prefix)
+                .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+        })
 }
 
 #[cfg(test)]
@@ -383,6 +404,36 @@ mod tests {
         assert_eq!(
             required_permission_for(&Method::POST, "/api/team/invite"),
             Some(Permission::TeamManage)
+        );
+    }
+
+    #[test]
+    fn relay_path_requires_agent_spawn() {
+        // The relay proxy is merged at the root, so its middleware sees
+        // `/relay/...` itself; that path must hit the `/relay` row rather
+        // than fall through to the `ConfigEdit` catch-all.
+        for path in ["/relay", "/relay/agents", "/relay/agents/123"] {
+            for method in [Method::POST, Method::PUT, Method::DELETE] {
+                assert_eq!(
+                    required_permission_for(&method, path),
+                    Some(Permission::AgentSpawn),
+                    "{method} {path}"
+                );
+            }
+        }
+        assert_eq!(required_permission_for(&Method::GET, "/relay/agents"), None);
+        // `/relay-tokens` is the nest-stripped form of `/api/relay-tokens`;
+        // sharing the `/relay` spelling must not move it off its own row.
+        for path in ["/relay-tokens", "/api/relay-tokens", "/relay-tokens/tok-1"] {
+            assert_eq!(
+                required_permission_for(&Method::POST, path),
+                Some(Permission::TokenIssue),
+                "{path}"
+            );
+        }
+        assert_eq!(
+            required_permission_for(&Method::POST, "/relayed"),
+            Some(Permission::ConfigEdit)
         );
     }
 

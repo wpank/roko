@@ -47,12 +47,16 @@ Check each attempt's diff for tampering and scope (epic spec-9230a9): the Graph 
 ## Notes
 
 - Build on gap-b72761's branch.
-- **wk-tamper (2026-09-30):** Implemented on `work/gap-6d172d` at `523d1c393`; cargo verification deferred to the
-  batch check. `screen_attempt` runs `post_dispatch_check` under the contract the attempt ran with
-  (`effective_agent_contract`). It sees the output and the task's changed paths from the pre-verify diff, after the
-  output checks and before the tamper, scope and no-changes checks. A blocking violation rejects the attempt as
-  `pre_verify:safety`, with the violations in the retry feedback; warnings are logged. Caveats: the check flags any
-  changed file, new ones included, for roles that forbid only `edit_file` (researcher, strategist); no plan in
-  `plans/` uses them. Its default secret patterns include a broad `NAME = value` rule for names ending in TOKEN,
-  SECRET, PASSWORD or API_KEY, so code like `token = x` in a summary now fails an attempt. None of the 85 distinct
-  agent outputs in the main tree's Graph checkpoints matches that rule or any credential pattern.
+- **wk-tamper (2026-09-30):** Implemented on `work/gap-6d172d` at `523d1c393`, narrowed at `d9b524daa`; cargo
+  verification deferred to the batch check. `screen_attempt` runs `post_dispatch_check` under the contract the
+  attempt ran with (`effective_agent_contract`). It sees the output and the task's changed paths from the pre-verify
+  diff, after the output checks and before the tamper, scope and no-changes checks. It rejects an attempt as
+  `pre_verify:safety` for a changed path outside the tree, or a changed file under a role that forbids writes. A
+  secret rejects it only in an exact format: the new `scrub::high_confidence_secret`, default patterns 1-8 (vendor
+  key prefixes, JWTs, private-key blocks). A match of the `NAME = value` rule alone is logged and added to the
+  feedback of any later rejection, and does not block; code such as `let token = next()` or
+  `api_key: Option<String>` produces such matches. ACP's `post_dispatch_check` and `scrub_secrets` are unchanged.
+  Tests: `the_pre_verify_screen_runs_post_dispatch_check` (a reviewer that writes a file; a `ghp_` token),
+  `a_name_value_secret_match_is_recorded_without_blocking`, and `high_confidence_secrets_leave_out_name_value_code`
+  in scrub.rs. Caveat: the check flags any changed file, new ones included, for roles that forbid only `edit_file`
+  (researcher, strategist); no plan in `plans/` uses them.

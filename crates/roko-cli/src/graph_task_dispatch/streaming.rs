@@ -135,6 +135,9 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
         // The attempt opens before prompt assembly (S01 §4.2).
         let mut attempt = self.open_attempt(spec, &task, ctx);
         let attempt_key = attempt.key.attempt_key();
+        // The tree the task starts from, before its agent runs, for the
+        // pre-verify screen's diff (`red_flags`).
+        self.record_diff_base(&attempt_key, &lease.path, None).await;
         let prompt_experiment = self
             .feedback
             .experiment_store_path
@@ -419,7 +422,7 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
                     input_tokens: Some(u64::from(dispatch.result.usage.input_tokens)),
                     output_tokens: Some(u64::from(dispatch.result.usage.output_tokens)),
                     cost_usd: actual_cost,
-                    changed_files: Vec::new(), // Changed files computed relative to lease base.
+                    changed_files: self.take_changed_files(&attempt_key),
                     wall_duration,
                     output: output_signals.clone(),
                 };

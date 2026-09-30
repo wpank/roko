@@ -1,7 +1,7 @@
 # 31-01 -- RSI Taxonomy and Loop Closure Spectrum
 
 > **Parent:** [31-SELF-HOSTING.md](../../31-SELF-HOSTING.md) section 2
-> **Primary source:** RSI Survey (Teixeira et al. 2025, arXiv:2607.07663)
+> **Primary source:** RSI Survey (Chen et al. 2025, arXiv:2607.07663)
 > **Additional sources:** Schmidhuber 2003 (Godel Machine), Nivel et al. 2013
 > (AERA), Argyris & Schon 1978 (double/triple-loop learning)
 

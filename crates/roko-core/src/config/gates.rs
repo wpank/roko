@@ -177,6 +177,11 @@ pub struct GatesConfig {
     /// editing the same working tree waits for them to finish their current
     /// attempt before re-running once; only the re-run counts. `0` disables
     /// the wait, so every failure counts at once. Default: 600.
+    ///
+    /// It also bounds two waits in a shared working tree. A verify step
+    /// waits for siblings mid-edit on what it reads before it runs. An
+    /// attempt waits for a sibling's verify step that reads its files before
+    /// it starts editing.
     #[serde(default = "default_sibling_settle_secs")]
     pub sibling_settle_secs: u64,
     /// Runaway-output guard for Graph task attempts: the most output tokens

@@ -84,7 +84,7 @@ stateful/stateless, input cardinality, output type, and layer assignment.
 | **CoALA** (Sumers et al. 2023) | 5 stores + 3 action types | 12 traits subsume CoALA's decomposition |
 | **LIDA** (Franklin et al. 2016, IEEE Trans. AMD 6(1)) | Codelets (perception, attention, action, learning) | Each codelet type maps to a trait implementation |
 | **Google multi-agent patterns** (2025) | 3 execution primitives (sequential, loop, parallel) | Graph engine composes trait calls in these patterns |
-| **Agent Design Pattern Catalogue** (Koopmans et al. 2024, arXiv:2405.10467) | 18 patterns | Patterns compose from trait implementations |
+| **Agent Design Pattern Catalogue** (Liu et al. 2024, arXiv:2405.10467) | 18 patterns | Patterns compose from trait implementations |
 
 The 12-trait level is the right granularity for a Rust trait system: fine enough for
 meaningful composition, coarse enough for human reasoning.
@@ -391,7 +391,7 @@ from multiplicative to additive.
 | Laird 2012, "The Soar Cognitive Architecture", MIT Press | SOAR decision cycle and impasse resolution |
 | Anderson 2007, "How Can the Human Mind Occur?", OUP | ACT-R production system |
 | Sumers et al. 2023 | CoALA: Cognitive Architectures for Language Agents |
-| Koopmans et al. 2024, arXiv:2405.10467 | Agent Design Pattern Catalogue: 18 patterns |
+| Liu et al. 2024, arXiv:2405.10467 | Agent Design Pattern Catalogue: 18 patterns |
 | Kleyko et al. 2022, Artificial Intelligence Review 56 | Survey of HDC applications |
 | Kanerva 2009, Cognitive Computation 1(2) | Hyperdimensional computing |
 | Mac Lane 1971, "Categories for the Working Mathematician", Springer | Categorical foundations |

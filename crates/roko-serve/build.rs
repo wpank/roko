@@ -7,20 +7,38 @@ use std::process::Command;
 const DEMO_NOT_BUILT: &str = "demo/demo-app/dist/index.html is missing, so `/demo` serves the \
                               fallback page; run `npm ci && npm run build` in demo/demo-app first";
 
+/// Frontend inputs whose changes rerun this script, relative to this package
+/// (Cargo runs build scripts there).
+///
+/// Cargo treats a watched path that does not exist as always stale: it reruns
+/// the script and rebuilds roko-serve, and every crate that depends on it, on
+/// every build. So only the paths that exist are watched. The portal export
+/// is a gitignored build product, missing in fresh checkouts and git
+/// worktrees. After exporting it into a tree that was built without it,
+/// rebuild roko-serve once, for example with `touch crates/roko-serve/build.rs`.
+/// `apps/portal` itself is not watched: it holds `node_modules`.
+const WATCHED_PATHS: &[&str] = &[
+    "../../demo/demo-app/src",
+    "../../demo/demo-app/index.html",
+    "../../demo/demo-app/package.json",
+    "../../demo/demo-app/vite.config.ts",
+    "../../demo/demo-app/tsconfig.json",
+    // The portal export (no npm is invoked for it).
+    "../../apps/portal/out/index.html",
+    "assets/frontend-fallback/index.html",
+];
+
 fn main() {
     println!("cargo:rustc-check-cfg=cfg(roko_frontend_fallback)");
     println!("cargo:rustc-check-cfg=cfg(roko_portal_fallback)");
     println!("cargo:rerun-if-env-changed=SKIP_FRONTEND_BUILD");
     println!("cargo:rerun-if-env-changed=ROKO_BUILD_FRONTEND");
     println!("cargo:rerun-if-env-changed=ROKO_REQUIRE_EMBEDDED_UI");
-    println!("cargo:rerun-if-changed=../../demo/demo-app/src");
-    println!("cargo:rerun-if-changed=../../demo/demo-app/index.html");
-    println!("cargo:rerun-if-changed=../../demo/demo-app/package.json");
-    println!("cargo:rerun-if-changed=../../demo/demo-app/vite.config.ts");
-    println!("cargo:rerun-if-changed=../../demo/demo-app/tsconfig.json");
-    // Rerun when the portal export appears or changes (no npm invoked for it).
-    println!("cargo:rerun-if-changed=../../apps/portal/out/index.html");
-    println!("cargo:rerun-if-changed=assets/frontend-fallback/index.html");
+    for path in WATCHED_PATHS {
+        if Path::new(path).exists() {
+            println!("cargo:rerun-if-changed={path}");
+        }
+    }
 
     let Ok(manifest_dir) = env::var("CARGO_MANIFEST_DIR") else {
         embed_fallback(

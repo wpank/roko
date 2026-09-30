@@ -2,9 +2,9 @@
 //!
 //! The conductor watchers consume typed [`Signal`] streams (ghost-turn
 //! signals, gate verdicts, cost metrics, plan phases). This module provides
-//! pure mapping functions that convert [`RunnerEvent`] and [`AgentEvent`]
-//! instances into the `Option<Signal>` that watchers expect, without
-//! performing any IO or mutating runner state.
+//! pure mapping functions that convert [`RunnerEvent`], [`AgentEvent`] and
+//! Graph [`GraphTaskEvent`] instances into the `Option<Signal>` that watchers
+//! expect, without performing any IO or mutating runner state.
 //!
 //! Only events that at least one conductor watcher consumes are mapped;
 //! everything else returns `None` to avoid ring buffer churn.
@@ -14,6 +14,7 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use roko_core::{Body, Kind, Signal};
+use roko_graph::cells::{GraphTaskEvent, TaskDispatchOutcomeKind};
 
 use super::types::{AgentEvent, RunnerEvent};
 use crate::runtime_feedback::{FeedbackEvent, FeedbackSink};
@@ -250,6 +251,119 @@ pub fn agent_event_to_signal(
     }
 }
 
+// ─── GraphTaskEvent -> Signal ───────────────────────────────────────────
+
+/// Tag key naming the attempt a Graph task signal belongs to.
+pub const ATTEMPT_TAG: &str = "attempt";
+
+/// Map a Graph [`GraphTaskEvent`] of `plan_id`/`task_id` to a [`Signal`] the
+/// conductor can consume, the Graph counterpart of [`runner_event_to_signal`].
+///
+/// - `AttemptStarted` becomes a `dispatch` plan phase, which also names the
+///   plan for the circuit breaker;
+/// - `Text` becomes a turn in the ghost-turn watcher's schema, meaningful
+///   unless it is empty ([`graph_text_turn_signal`] also marks repeats);
+/// - `ToolCall` becomes a meaningful turn: acting ends a run of ghost turns.
+///   It is not mapped to an agent action: carrying only the tool name, a few
+///   reads in a row would look like a loop to the stuck-pattern watcher;
+/// - `Usage` with a cost becomes a `plan_cost` metric of that cost, as
+///   `AgentCompleted` does on the Runner path;
+/// - `AttemptTerminal` becomes a plan phase naming the outcome.
+///
+/// Gate verdicts are not Graph task events: the dispatcher feeds them from
+/// its gate settlement as [`feedback_event_to_signal`] maps `GateOutcome`.
+/// `ToolOutput`, `Progress` and `Usage` without a cost map to `None`.
+#[must_use]
+pub fn graph_task_event_to_signal(
+    plan_id: &str,
+    task_id: &str,
+    event: &GraphTaskEvent,
+) -> Option<Signal> {
+    match event {
+        GraphTaskEvent::AttemptStarted { attempt_id } => Some(
+            Signal::builder(Kind::PlanPhase)
+                .body(Body::text("dispatch"))
+                .tag(PLAN_ID_TAG, plan_id)
+                .tag(TASK_TAG, task_id)
+                .tag("phase", "dispatch")
+                .tag(ATTEMPT_TAG, attempt_id.as_str())
+                .build(),
+        ),
+        GraphTaskEvent::Text { text } => {
+            graph_text_turn_signal(plan_id, task_id, !text.trim().is_empty())
+        }
+        GraphTaskEvent::ToolCall { .. } => graph_text_turn_signal(plan_id, task_id, true),
+        GraphTaskEvent::Usage {
+            cost_usd: Some(cost),
+            ..
+        } if cost.is_finite() && *cost > 0.0 => Some(
+            Signal::builder(Kind::Metric)
+                .body(Body::text(format!("plan_cost={cost:.4}")))
+                .tag(METRIC_NAME_TAG, "plan_cost")
+                .tag(METRIC_VALUE_TAG, format!("{cost:.4}"))
+                .tag(PLAN_ID_TAG, plan_id)
+                .tag(TASK_TAG, task_id)
+                .build(),
+        ),
+        GraphTaskEvent::AttemptTerminal {
+            attempt_id,
+            outcome,
+        } => {
+            let outcome = attempt_outcome_label(*outcome);
+            Some(
+                Signal::builder(Kind::PlanPhase)
+                    .body(Body::text(outcome))
+                    .tag(PLAN_ID_TAG, plan_id)
+                    .tag(TASK_TAG, task_id)
+                    .tag("phase", "attempt_terminal")
+                    .tag("outcome", outcome)
+                    .tag(ATTEMPT_TAG, attempt_id.as_str())
+                    .build(),
+            )
+        }
+        GraphTaskEvent::Usage { .. }
+        | GraphTaskEvent::ToolOutput { .. }
+        | GraphTaskEvent::Progress { .. } => None,
+    }
+}
+
+/// A Graph agent turn in the ghost-turn watcher's schema: `meaningful`
+/// is false for an empty message, and for one that repeats the attempt's
+/// previous message, which only the caller can tell.
+#[must_use]
+pub fn graph_text_turn_signal(plan_id: &str, task_id: &str, meaningful: bool) -> Option<Signal> {
+    let body = Body::from_json(&serde_json::json!({
+        "plan_id": plan_id,
+        "task": task_id,
+        "role": "Agent",
+        "model": "",
+        "cost_usd": 0.0,
+        "duration_ms": 0,
+        "changed_files_before": [],
+        "changed_files_after": [],
+        "net_new_changes": 0,
+        "output_meaningful": meaningful,
+        "wasted_cost": !meaningful,
+    }))
+    .ok()?;
+    Some(
+        Signal::builder(Kind::Custom(GHOST_TURN_KIND.into()))
+            .body(body)
+            .tag(PLAN_ID_TAG, plan_id)
+            .tag(TASK_TAG, task_id)
+            .build(),
+    )
+}
+
+const fn attempt_outcome_label(outcome: TaskDispatchOutcomeKind) -> &'static str {
+    match outcome {
+        TaskDispatchOutcomeKind::Succeeded => "succeeded",
+        TaskDispatchOutcomeKind::Failed => "failed",
+        TaskDispatchOutcomeKind::Cancelled => "cancelled",
+        TaskDispatchOutcomeKind::TimedOut => "timed_out",
+    }
+}
+
 // ─── Bounded conductor ring ─────────────────────────────────────────────
 
 /// Default capacity for the conductor ring buffer.
@@ -317,6 +431,16 @@ impl ConductorRing {
             return Vec::new();
         };
         ring.iter().cloned().collect()
+    }
+
+    /// Keep only the signals `keep` accepts, e.g. to drop the evidence an
+    /// intervention has acted on so the same signals do not trigger it again.
+    pub fn retain(&self, keep: impl FnMut(&Signal) -> bool) {
+        let Ok(mut ring) = self.inner.lock() else {
+            tracing::warn!("conductor ring lock poisoned; nothing dropped");
+            return;
+        };
+        ring.retain(keep);
     }
 
     /// Number of signals currently in the ring.
@@ -1276,5 +1400,150 @@ mod tests {
             "5 error turns must not continue; got {:?}",
             eval.decision
         );
+    }
+
+    // ── GraphTaskEvent mapping tests ────────────────────────────────────
+
+    fn graph_signal(event: GraphTaskEvent) -> Option<Signal> {
+        graph_task_event_to_signal("plan-1", "task-1", &event)
+    }
+
+    fn graph_text(text: &str) -> Signal {
+        graph_signal(GraphTaskEvent::Text { text: text.into() }).expect("text maps to a turn")
+    }
+
+    #[test]
+    fn graph_attempt_started_maps_to_a_dispatch_phase_naming_the_plan() {
+        let signal = graph_signal(GraphTaskEvent::AttemptStarted {
+            attempt_id: "run-1/plan-1/task-1/1".into(),
+        })
+        .expect("should map");
+        assert_eq!(signal.kind, Kind::PlanPhase);
+        assert_eq!(signal.tag(PLAN_ID_TAG), Some("plan-1"));
+        assert_eq!(signal.tag(TASK_TAG), Some("task-1"));
+        assert_eq!(signal.tag(ATTEMPT_TAG), Some("run-1/plan-1/task-1/1"));
+    }
+
+    #[test]
+    fn graph_text_maps_to_a_turn_that_is_meaningful_unless_empty() {
+        let meaningful = |signal: Signal| {
+            assert!(matches!(signal.kind, Kind::Custom(ref k) if k == GHOST_TURN_KIND));
+            signal
+                .body
+                .as_json::<serde_json::Value>()
+                .expect("json body")["output_meaningful"]
+                .as_bool()
+                .expect("output_meaningful")
+        };
+        assert!(meaningful(graph_text("editing src/lib.rs")));
+        assert!(!meaningful(graph_text(" \n")));
+        let tool_call = graph_signal(GraphTaskEvent::ToolCall {
+            id: "toolu_1".into(),
+            name: "Read".into(),
+        })
+        .expect("a tool call maps to a turn");
+        assert!(meaningful(tool_call));
+    }
+
+    #[test]
+    fn graph_usage_with_a_cost_maps_to_a_cost_metric() {
+        let usage = |cost_usd| GraphTaskEvent::Usage {
+            input_tokens: 10,
+            output_tokens: 20,
+            cost_usd,
+        };
+        let signal = graph_signal(usage(Some(0.42))).expect("a cost maps");
+        assert_eq!(signal.kind, Kind::Metric);
+        assert_eq!(signal.tag(METRIC_NAME_TAG), Some("plan_cost"));
+        assert_eq!(signal.tag(METRIC_VALUE_TAG), Some("0.4200"));
+        assert!(graph_signal(usage(None)).is_none());
+        assert!(graph_signal(usage(Some(0.0))).is_none());
+    }
+
+    #[test]
+    fn graph_attempt_terminal_names_the_outcome() {
+        let signal = graph_signal(GraphTaskEvent::AttemptTerminal {
+            attempt_id: "run-1/plan-1/task-1/1".into(),
+            outcome: TaskDispatchOutcomeKind::TimedOut,
+        })
+        .expect("should map");
+        assert_eq!(signal.kind, Kind::PlanPhase);
+        assert_eq!(signal.tag("outcome"), Some("timed_out"));
+        assert_eq!(signal.tag(ATTEMPT_TAG), Some("run-1/plan-1/task-1/1"));
+    }
+
+    #[test]
+    fn graph_tool_output_and_progress_map_to_nothing() {
+        assert!(
+            graph_signal(GraphTaskEvent::ToolOutput {
+                id: "toolu_1".into(),
+                output: "ok".into(),
+            })
+            .is_none()
+        );
+        assert!(
+            graph_signal(GraphTaskEvent::Progress {
+                message: "50%".into(),
+                completed: Some(1),
+                total: Some(2),
+            })
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn graph_ghost_turns_drive_a_restart_until_the_agent_acts() {
+        use roko_conductor::Conductor;
+        use roko_core::ConductorDecision;
+
+        let started = graph_signal(GraphTaskEvent::AttemptStarted {
+            attempt_id: "run-1/plan-1/task-1/1".into(),
+        })
+        .expect("should map");
+        let ghost_run = vec![
+            started.clone(),
+            graph_text(""),
+            graph_text(""),
+            graph_text(""),
+        ];
+        let eval = Conductor::default().evaluate_full(&ghost_run, &Context::now());
+        assert!(
+            matches!(eval.decision, ConductorDecision::Restart { ref watcher, .. } if watcher == "ghost-turn"),
+            "{:?}",
+            eval.decision
+        );
+
+        let tool_call = graph_signal(GraphTaskEvent::ToolCall {
+            id: "toolu_1".into(),
+            name: "Edit".into(),
+        })
+        .expect("should map");
+        let broken_run = vec![
+            started,
+            graph_text(""),
+            graph_text(""),
+            tool_call,
+            graph_text(""),
+            graph_text(""),
+        ];
+        let eval = Conductor::default().evaluate_full(&broken_run, &Context::now());
+        assert!(eval.decision.is_continue(), "{:?}", eval.decision);
+    }
+
+    #[test]
+    fn conductor_ring_retain_drops_what_the_predicate_rejects() {
+        let ring = ConductorRing::with_capacity(8);
+        for attempt in ["a-1", "a-2", "a-1"] {
+            ring.push(
+                Signal::builder(Kind::PlanPhase)
+                    .body(Body::text("dispatch"))
+                    .tag(ATTEMPT_TAG, attempt)
+                    .build(),
+            );
+        }
+        ring.retain(|signal| signal.tag(ATTEMPT_TAG) != Some("a-1"));
+        let kept = ring.snapshot();
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].tag(ATTEMPT_TAG), Some("a-2"));
     }
 }

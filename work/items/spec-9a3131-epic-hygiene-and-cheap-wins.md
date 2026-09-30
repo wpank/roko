@@ -95,7 +95,7 @@ This is the implementation plan.
 - [x] gap-cdf3fc: Correct the 13 docs claims that the code or the literature contradicts
 - [x] bug-b16d55: ACP starts a paid dream consolidation every 10 episodes, and no config flag turns it off
 - [x] bug-b17805: The docs/v3 [learning] config table gives wrong defaults for eight fields
-- [ ] bug-91af0e: The graph_execution module doc still says delivery is backed by MergeQueue and GitHubWorkflow
+- [x] bug-91af0e: The graph_execution module doc still says delivery is backed by MergeQueue and GitHubWorkflow
 - [ ] bug-31bca6: Nothing reads learning.dreams.max_concurrent, so the ACP trigger starts another dream on every turn while one runs
 - [ ] bug-9434c4: roko config set rejects learning.t0_reflexes and every learning.dreams key
 - [ ] bug-919fe8: roko redirects any workdir under a .roko directory to the outer project, including per-task worktrees in .roko/worktrees
@@ -108,9 +108,9 @@ This is the implementation plan.
 - [ ] gap-d0f52f: LearningRuntime::discover_cross_episode_patterns has no caller, so EpisodeView::succeeded has no production reader
 - [ ] bug-a70def: The Claude MCP isolation tests assume the host has no managed-mcp.json
 - [x] bug-f3969d: InFlightTasks keeps every ended attempt for the life of the process
-- [ ] gap-3505fb: PlanMerger and the roko-execution workflow templates' gate builders have no production caller
+- [x] gap-3505fb: PlanMerger and the roko-execution workflow templates' gate builders have no production caller
 - [x] gap-603aa4: roko-serve's estimate_cost_usd has no callers
-- [ ] bug-fbefe0: roko-serve and roko-cli rebuild on every cargo command in a worktree: their build scripts watch files that don't exist there
+- [x] bug-fbefe0: roko-serve and roko-cli rebuild on every cargo command in a worktree: their build scripts watch files that don't exist there
 - [ ] Both of the epic's `[[verify]]` commands pass.
 
 ## Notes

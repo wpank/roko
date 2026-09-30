@@ -234,7 +234,7 @@ High-priority section in Middle.
 
 - **Liu et al. (2023)**, TACL 2024, arXiv:2307.03172. The foundational paper.
 - **"Lost in the Middle at Birth"**, arXiv:2603.10123, 2025. Algebraic proof.
-- **"Found in the Middle"**, He et al., ACL Findings 2024, arXiv:2406.16008.
+- **"Found in the Middle"**, Hsieh et al., ACL Findings 2024, arXiv:2406.16008.
   Calibration without retraining. Up to 15pp improvement.
 - **LLMLingua / LongLLMLingua**, Jiang et al., ACL 2024, arXiv:2310.06839.
   Semantic density ranking. Up to 21.4% improvement at 4x compression.

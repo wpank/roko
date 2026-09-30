@@ -58,16 +58,16 @@ Selective forgetting is computationally preferable to accumulation.
 
 ## TDA Advances (2024--2025)
 
-**[Anonymous, 2025]** *TDA and Topological Deep Learning Beyond Persistent Homology.* Artificial Intelligence Review, Springer.
+**[Su et al., 2025]** *Topological data analysis and topological deep learning beyond persistent homology: a review.* Artificial Intelligence Review, Springer. doi:10.1007/s10462-025-11462-w.
 Persistent topological Laplacians capture shape evolution. Advances anomaly detection.
 
 **[Anonymous, 2025]** *Persistent Homology-Based Unsupervised Anomaly Detection in Time Series.* OpenReview.
 Delay embeddings + distance-to-measure Rips filtration for anomaly detection.
 
-**[Anonymous, 2024]** *Multivariate Time-Series Anomaly Detection with Topological Analysis.* arXiv:2408.13082.
+**[Liu et al., 2024]** *Multivariate Time-Series Anomaly Detection based on Enhancing Graph Attention Networks with Topological Analysis.* arXiv:2408.13082.
 Enhanced GAT with persistent homology for inter-feature dependencies.
 
-**[Anonymous, 2025]** *Change Point Detection in Financial Time Series Using TDA.* Systems, 13(10), 875.
+**[Yao et al., 2025]** *Change Point Detection in Financial Market Using Topological Data Analysis.* Systems, 13(10), 875.
 Takens embedding + sliding window for topological change detection.
 
 **[Anonymous, 2025]** *Machine Learning of Time Series Using Persistent Homology.* Scientific Reports, Nature.
@@ -90,7 +90,7 @@ Prediction errors at different frequency bands encode different levels of abstra
 **[Berger, 1971]** *Rate Distortion Theory: A Mathematical Basis for Data Compression.* Prentice-Hall.
 Minimum bits to represent a source within a given distortion level. Provides the theoretical basis for knowledge compression during tier promotion -- how much information can be lost while preserving utility.
 
-**[Tishby, Pereira & Bialek, 1999]** *The Information Bottleneck Method.* Proceedings of the 37th Allerton Conference.
+**[Tishby, Pereira & Bialek, 1999]** *The Information Bottleneck Method.* Proceedings of the 37th Allerton Conference. arXiv:physics/0004057.
 Optimal compression preserving relevant information. The information bottleneck principle grounds tier promotion: compress Episode to Insight to Heuristic while preserving task-relevant information.
 
 ---

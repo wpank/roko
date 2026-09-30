@@ -273,6 +273,7 @@ command = "true"
             command: "true".to_string(),
             fail_msg: None,
             timeout_ms: 1_000,
+            scope: Vec::new(),
         }];
 
         // The default floor is a task's default max_retries (3).

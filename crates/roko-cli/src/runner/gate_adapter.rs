@@ -4,6 +4,7 @@
 //! Extracted from `gate_dispatch.rs` to keep the adapter layer separate from
 //! the inline gate execution pipeline.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -42,6 +43,27 @@ use super::types::{GateCompletion, GateEffectRef, GateVerdictSummary, RunnerFail
 pub struct RunnerProductionGateAdapter {
     /// The injected shared gate service.
     service: Arc<dyn roko_gate::production_service::ProductionGateRunner>,
+    /// The `[gates]` config shared-gate requests run with
+    /// ([`Self::with_gates_config`]).
+    gates_config: GatesConfig,
+    /// Pipeline verdicts shared-gate requests of an attempt read after its
+    /// first, by attempt (see [`SHARED_GATE_LOOKAHEAD`]).
+    shared_runs: parking_lot::Mutex<HashMap<String, SharedPipelineRun>>,
+}
+
+/// The rung a shared-gate request runs the pipeline up to, at least: the
+/// last of the rungs the Graph plan gate asks about in turn (compile, lint,
+/// test). Its first request of an attempt runs them all, and the others
+/// read that verdict instead of compiling again.
+const SHARED_GATE_LOOKAHEAD: roko_gate::rung_selector::Rung = roko_gate::rung_selector::Rung::Test;
+
+/// Attempts whose pipeline verdicts are kept at most.
+const SHARED_RUNS_MAX: usize = 64;
+
+/// An attempt's pipeline run: the rung it ran up to, and its verdict.
+struct SharedPipelineRun {
+    ceiling: u32,
+    verdict: Arc<roko_gate::ProductionGateVerdictV1>,
 }
 
 impl std::fmt::Debug for RunnerProductionGateAdapter {
@@ -54,7 +76,19 @@ impl std::fmt::Debug for RunnerProductionGateAdapter {
 impl RunnerProductionGateAdapter {
     /// Create an adapter wrapping the given shared service.
     pub fn new(service: Arc<dyn roko_gate::production_service::ProductionGateRunner>) -> Self {
-        Self { service }
+        Self {
+            service,
+            gates_config: GatesConfig::default(),
+            shared_runs: parking_lot::Mutex::default(),
+        }
+    }
+
+    /// Run shared-gate requests with the run's `[gates]` config instead of
+    /// the defaults.
+    #[must_use]
+    pub fn with_gates_config(mut self, gates_config: GatesConfig) -> Self {
+        self.gates_config = gates_config;
+        self
     }
 
     /// Convert Runner-v2 parameters into a `ProductionGateRequest`.
@@ -335,11 +369,16 @@ impl roko_core::SharedGateEvaluator for RunnerProductionGateAdapter {
             }
         })?;
 
-        // Build a minimal ProductionGateRequest from the shared request.
+        // Build a minimal ProductionGateRequest from the shared request, with
+        // the run's `[gates]`. The pipeline runs up to the requested rung or
+        // the lookahead, whichever is higher, within the run's `max_rung`.
         let cancel = tokio_util::sync::CancellationToken::new();
-        let mut gates_config = roko_core::config::GatesConfig::default();
-        // Restrict to the single requested rung by setting max_rung.
-        gates_config.max_rung = Some(rung.as_index() as u8);
+        let mut gates_config = self.gates_config.clone();
+        let ceiling = rung.as_index().max(SHARED_GATE_LOOKAHEAD.as_index());
+        let ceiling = gates_config
+            .max_rung
+            .map_or(ceiling, |max| ceiling.min(u32::from(max)));
+        gates_config.max_rung = Some(u8::try_from(ceiling).unwrap_or(u8::MAX));
 
         // The request names its plan, run and attempt key in its context (the
         // Graph plan gate sends them); without them each attempt of a task
@@ -374,14 +413,59 @@ impl roko_core::SharedGateEvaluator for RunnerProductionGateAdapter {
             adaptive_thresholds: None,
         };
 
-        let progress = Arc::new(roko_gate::production_service::NoopProgressSink);
-        let verdict_v1 = self
-            .service
-            .run(production_request, progress)
-            .await
-            .map_err(|err| SharedGateError::Internal {
-                reason: err.to_string(),
-            })?;
+        // A later request of the attempt reads the verdict of its first.
+        let key = format!(
+            "{}\0{}\0{}\0{}\0{}\0{}",
+            production_request.run_id,
+            production_request.plan_id,
+            production_request.task_id,
+            production_request.attempt,
+            production_request.workspace_fingerprint,
+            production_request.workspace.display()
+        );
+        let cached = {
+            let mut runs = self.shared_runs.lock();
+            match runs.get(&key) {
+                Some(run) if run.ceiling >= rung.as_index() => {
+                    let verdict = Arc::clone(&run.verdict);
+                    if rung.as_index() >= run.ceiling {
+                        runs.remove(&key);
+                    }
+                    Some(verdict)
+                }
+                _ => None,
+            }
+        };
+        let verdict_v1 = match cached {
+            Some(verdict) => verdict,
+            None => {
+                let progress = Arc::new(roko_gate::production_service::NoopProgressSink);
+                let verdict = Arc::new(
+                    self.service
+                        .run(production_request, progress)
+                        .await
+                        .map_err(|err| SharedGateError::Internal {
+                            reason: err.to_string(),
+                        })?,
+                );
+                // A pipeline that ran no rung is not kept: a later request
+                // tries again.
+                if rung.as_index() < ceiling && !verdict.rung_verdicts.is_empty() {
+                    let mut runs = self.shared_runs.lock();
+                    if runs.len() >= SHARED_RUNS_MAX {
+                        runs.clear();
+                    }
+                    runs.insert(
+                        key,
+                        SharedPipelineRun {
+                            ceiling,
+                            verdict: Arc::clone(&verdict),
+                        },
+                    );
+                }
+                verdict
+            }
+        };
 
         // Convert the production verdict into a SharedGateVerdict.
         // Find the verdict for the specific requested rung.
@@ -470,6 +554,57 @@ mod tests {
         }
     }
 
+    /// Passes every rung up to the request's `max_rung`, and records the
+    /// `[gates]` config of each request.
+    #[derive(Default)]
+    struct PassingRunner {
+        configs: parking_lot::Mutex<Vec<GatesConfig>>,
+    }
+
+    #[async_trait::async_trait]
+    impl ProductionGateRunner for PassingRunner {
+        async fn run(
+            &self,
+            request: roko_gate::ProductionGateRequest,
+            _progress_sink: Arc<dyn ProgressSink>,
+        ) -> roko_core::Result<roko_gate::ProductionGateVerdictV1> {
+            use roko_gate::production_verdict::{
+                EvidenceRef, PipelineOutcome, ProductionGateRungVerdict, RungState,
+                VERDICT_SCHEMA_VERSION,
+            };
+            use roko_gate::rung_selector::Rung;
+
+            let max = request.gates_config.max_rung.map_or(u32::MAX, u32::from);
+            self.configs.lock().push(request.gates_config.clone());
+            let rung_verdicts = [Rung::Compile, Rung::Lint, Rung::Test]
+                .into_iter()
+                .filter(|rung| rung.as_index() <= max)
+                .map(|rung| ProductionGateRungVerdict {
+                    rung,
+                    gate_name: rung.label().to_string(),
+                    state: RungState::Passed,
+                    failure_classification: None,
+                    diagnostic: String::new(),
+                    evidence: EvidenceRef::default(),
+                    duration: std::time::Duration::ZERO,
+                    test_counts: None,
+                    input_fingerprint: String::new(),
+                    skip_reason: None,
+                })
+                .collect();
+            Ok(roko_gate::ProductionGateVerdictV1 {
+                schema_version: VERDICT_SCHEMA_VERSION,
+                request_fingerprint: request.workspace_fingerprint.clone(),
+                workspace_fingerprint: request.workspace_fingerprint,
+                rung_verdicts,
+                outcome: PipelineOutcome::Passed,
+                mostly_passing: false,
+                total_duration: std::time::Duration::ZERO,
+                adaptive_snapshot: None,
+            })
+        }
+    }
+
     fn shared_request(context: &[(&str, &str)]) -> SharedGateRequest {
         SharedGateRequest {
             task_id: "T1".to_string(),
@@ -482,6 +617,39 @@ mod tests {
                 .iter()
                 .map(|(key, value)| ((*key).to_string(), (*value).to_string()))
                 .collect::<HashMap<_, _>>(),
+        }
+    }
+
+    /// gap-6daad9 follow-up: the Graph plan gate's rung requests for one
+    /// attempt run the gate pipeline once, and with the run's `[gates]`
+    /// config, not the defaults.
+    #[tokio::test]
+    async fn an_attempts_rung_requests_run_the_pipeline_once_with_the_runs_gates() {
+        let runner = Arc::new(PassingRunner::default());
+        let mut gates = GatesConfig::default();
+        gates.env_passthrough = vec!["FROM_THE_RUN".to_string()];
+        let adapter =
+            RunnerProductionGateAdapter::new(Arc::clone(&runner) as _).with_gates_config(gates);
+        for rung in ["compile", "lint", "test"] {
+            let request = SharedGateRequest {
+                rung: rung.to_string(),
+                ..shared_request(&[("attempt_key", "run-1:plan-a:T1:2")])
+            };
+            let verdict = adapter.verify_rung(&request).await.expect("verdict");
+            assert!(verdict.passed && !verdict.skipped, "{rung}: {verdict:?}");
+        }
+        // The next attempt runs a pipeline of its own.
+        let next = SharedGateRequest {
+            attempt_id: 3,
+            ..shared_request(&[("attempt_key", "run-1:plan-a:T1:3")])
+        };
+        assert!(adapter.verify_rung(&next).await.expect("verdict").passed);
+
+        let configs = runner.configs.lock();
+        assert_eq!(configs.len(), 2, "one pipeline run per attempt");
+        for config in configs.iter() {
+            assert_eq!(config.env_passthrough, ["FROM_THE_RUN"]);
+            assert_eq!(config.max_rung, Some(2));
         }
     }
 

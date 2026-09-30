@@ -233,6 +233,9 @@ fn plan_validate_warns_on_known_model_aliases() {
         r#"
 [meta]
 plan = "aliases"
+# One task at a time: the three tasks share a file, and this test is about
+# model aliases, not about tasks that could run together.
+max_parallel = 1
 
 [[task]]
 id = "T1"

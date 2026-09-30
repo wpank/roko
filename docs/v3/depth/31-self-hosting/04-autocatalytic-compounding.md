@@ -4,7 +4,7 @@
 > **Primary source:** Kauffman 1993, "The Origins of Order: Self-Organization
 > and Selection in Evolution"
 > **Additional sources:** Argyris & Schon 1978 (triple-loop learning),
-> Loreto & Tria 2014 (Polya urn model), Reed's Law, Metcalfe's Law
+> Tria et al. 2014 (Polya urn model), Reed's Law, Metcalfe's Law
 > **Implementation:** `crates/roko-learn/src/cfactor.rs`,
 > `crates/roko-learn/src/aggregate.rs`
 >
@@ -237,7 +237,7 @@ it and surfaces a governance recommendation.
 
 ---
 
-## 7. Polya Urn Model (Loreto & Tria 2014)
+## 7. Polya Urn Model (Tria et al. 2014)
 
 The Polya urn model provides a mathematical framework for the "adjacent
 possible" -- the set of things that become achievable once a new capability
@@ -262,8 +262,8 @@ is sparse), and each addition disproportionately expands the adjacent possible.
   Evolution." Oxford University Press, 1993.
 - Argyris, C. & Schon, D.A. "Organizational Learning: A Theory of Action
   Perspective." Addison-Wesley, 1978.
-- Loreto, V. & Tria, F. "The Dynamics of Innovation and the Polya Urn."
-  arXiv:1404.0133, 2014.
+- Tria, F., Loreto, V., Servedio, V.D.P. & Strogatz, S.H. "The Dynamics of Correlated
+  Novelties." Scientific Reports 4, 5890, 2014. doi:10.1038/srep05890.
 - Friston, K. "A free energy principle for the brain." Journal of Physiology -
   Paris, 100(1-3):70-87, 2006.
 - Gesell, S. "The Natural Economic Order." 1916.

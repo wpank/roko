@@ -2539,6 +2539,7 @@ const KNOWN_META_FIELDS: &[&str] = &[
     "skip_enrichment",
     "failure_policy",
     "workspace_rungs",
+    "verify",
 ];
 
 /// Required field names for the `[meta]` section.
@@ -2606,7 +2607,7 @@ const KNOWN_TASK_FIELDS: &[&str] = &[
 const REQUIRED_TASK_FIELDS: &[&str] = &["id", "title", "status", "role", "tier"];
 
 /// Known field names for each `[[task.verify]]` entry.
-const KNOWN_VERIFY_FIELDS: &[&str] = &["phase", "command", "fail_msg", "timeout_ms"];
+const KNOWN_VERIFY_FIELDS: &[&str] = &["phase", "command", "fail_msg", "timeout_ms", "scope"];
 
 /// Required field names for each `[[task.verify]]` entry.
 const REQUIRED_VERIFY_FIELDS: &[&str] = &["phase", "command"];

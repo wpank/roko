@@ -3,13 +3,15 @@ id = "bug-cae1e1"
 kind = "bug"
 title = "The streaming dispatch path doesn't mark retries in the routing context and ignores preferred_provider"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p2"
 goal = "golden-path"
 size = "S"
 subsystem = ["roko-cli/graph_task_dispatch/streaming"]
 created = 2026-09-30
 updated = 2026-09-30
+last_verified = 2026-09-30
+last_verified_rev = "7490cb94b"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-taskdef's report, checked on work/gap-0f3980 at b27c02717)"
 anchors = ["crates/roko-cli/src/graph_task_dispatch/streaming.rs", "crates/roko-cli/src/graph_task_dispatch/routing_context.rs"]
@@ -46,3 +48,12 @@ The routing-context construction in `streaming.rs`, compared with the batch path
 ## Notes
 
 - Build on gap-0f3980's branch.
+- Implemented on `work/bug-cae1e1` at `05fc821cc`; cargo verification deferred to the batch check.
+- `dispatch_streaming` marks its routing context, and the feedback copy, with `mark_attempt` right after the attempt
+  opens (`next_retry_attempt` only reads the retry book). Both paths pick the model to dispatch with
+  `GraphTaskDispatcher::dispatch_model_key` (routing_context.rs).
+- The streaming `DispatchContext.attempt` stays 0: nothing in routing reads it, and gap-460230 adds its ladder step on
+  that line.
+- The test checks the provider named by each attempt's terminal receipt, not a log the fake providers write: after the
+  failed gate, the helper calls (bug-62e3f4) run on the cheap helper model (`select_cheap_model_key`), which here is the
+  other provider. Helpers are their own cost line, so they don't follow the task's `preferred_provider`.

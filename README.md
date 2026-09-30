@@ -36,7 +36,8 @@ cargo install --path crates/roko-cli
 
 The web portal is embedded only if it was exported before the build (`npm ci && npm run build:export`
 in `apps/portal`). Without it, `roko serve` shows a placeholder page at `/`, and the API works as
-usual.
+usual. The build watches the export only once it exists, so if you export the portal after a build
+without it, force one rebuild with `touch crates/roko-serve/build.rs`.
 
 ### 2. Set up a workspace
 

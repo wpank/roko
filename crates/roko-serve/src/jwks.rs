@@ -53,9 +53,11 @@ pub fn privy_jwks_provider(app_id: &str) -> JwksProvider {
     JwksProvider::new(privy_jwks_url(app_id), PRIVY_ISSUER)
 }
 
-/// The JWKS providers `roko serve` verifies JWTs against: the operator's
-/// `serve.auth.jwks_providers` when it lists any, otherwise Privy's endpoint
-/// for `serve.auth.privy_app_id`, and none while Privy JWT auth is off.
+/// The JWKS providers `roko serve` verifies JWTs against.
+///
+/// These are the operator's `serve.auth.jwks_providers` when it lists any,
+/// otherwise Privy's endpoint for `serve.auth.privy_app_id`, and none while
+/// Privy JWT auth is off.
 pub fn jwks_providers_for(auth: &ServeAuthConfig) -> Vec<JwksProvider> {
     if !auth.jwks_providers.is_empty() {
         return auth.jwks_providers.clone();

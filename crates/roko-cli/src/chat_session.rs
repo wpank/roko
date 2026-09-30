@@ -1215,6 +1215,7 @@ impl ChatAgentSession {
             timeout: self.timeout,
             provider_base_url: self.provider_base_url.clone(),
             provider_api_key_env: self.provider_api_key_env.clone(),
+            dangerously_skip_permissions: self.dangerously_skip_permissions,
         }
     }
 }

@@ -2065,10 +2065,16 @@ mod tests {
         assert!(manager.state_file_path(escaping).is_none());
         assert!(manager.read_state_file(escaping).is_none());
         manager.remove_state_file(escaping);
-        assert!(planted.exists(), "an invalid id must not delete outside files");
+        assert!(
+            planted.exists(),
+            "an invalid id must not delete outside files"
+        );
         std::fs::remove_file(&planted).expect("remove planted state");
         manager.write_state_file(escaping, &state_file);
-        assert!(!planted.exists(), "an invalid id must not write outside files");
+        assert!(
+            !planted.exists(),
+            "an invalid id must not write outside files"
+        );
         assert!(matches!(
             manager.attach_session(escaping, 80, 24, None, None),
             AttachResult::Failed(_)
@@ -2105,7 +2111,11 @@ mod tests {
         for request in requests {
             let label = format!("{} {}", request.method(), request.uri());
             let (status, body) = send_request(&state, request).await;
-            assert_eq!(status, axum::http::StatusCode::BAD_REQUEST, "{label}: {body}");
+            assert_eq!(
+                status,
+                axum::http::StatusCode::BAD_REQUEST,
+                "{label}: {body}"
+            );
             assert_eq!(body["error"], INVALID_SESSION_ID_ERROR, "{label}");
         }
         assert!(!outside.join("terminal.state").exists());

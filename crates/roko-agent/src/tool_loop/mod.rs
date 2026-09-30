@@ -436,19 +436,14 @@ pub async fn collect_stream_to_response(
         message["tool_calls"] = serde_json::Value::Array(tool_calls_json);
     }
 
+    // The usage block reads back through `extract_usage` unchanged: the
+    // wire's `prompt_tokens` include the cached tokens (bug-b72a37).
     let mut json = serde_json::json!({
         "choices": [{
             "message": message,
             "finish_reason": finish_reason,
         }],
-        "usage": {
-            "prompt_tokens": usage.input_tokens,
-            "completion_tokens": usage.output_tokens,
-            "total_tokens": usage.input_tokens + usage.output_tokens,
-            "prompt_tokens_details": {
-                "cached_tokens": usage.cache_read_tokens,
-            },
-        },
+        "usage": crate::translate::openai::usage_to_wire(&usage),
     });
 
     // Mirror tool calls at the top level for translators that read
@@ -3064,16 +3059,19 @@ mod tests {
         let BackendResponse::Json(ref json) = response else {
             panic!("expected Json response");
         };
+        // The wire's prompt tokens include the cached ones (bug-b72a37).
         assert_eq!(
             json.pointer("/usage/prompt_tokens")
                 .and_then(|v| v.as_u64()),
-            Some(100)
+            Some(110)
         );
         assert_eq!(
             json.pointer("/usage/completion_tokens")
                 .and_then(|v| v.as_u64()),
             Some(50)
         );
+        // The tool loop prices what reads back: the usage the stream reported.
+        assert_eq!(response.extract_usage(), usage);
     }
 
     #[tokio::test]

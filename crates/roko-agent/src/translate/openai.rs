@@ -286,9 +286,12 @@ fn render_tool_with_source(source: &ToolSource, _t: &ToolDef) -> serde_json::Val
 /// Parse the OpenAI-compatible `usage` block into canonical [`UsageObservation`].
 ///
 /// GLM-5.1 reports cached tokens under `prompt_tokens_details.cached_tokens`,
-/// while Kimi-K2.5 uses a top-level `cached_tokens` field. The provider-reported
-/// top-level `model` is carried through so downstream attribution does not have
-/// to rely on the configured slug alone.
+/// while Kimi-K2.5 uses a top-level `cached_tokens` field. The wire's
+/// `prompt_tokens` include the cached tokens, but the canonical classes are
+/// disjoint: `input_tokens` holds uncached input only, so pricing charges
+/// each cached token once, at the cache-read rate (bug-b72a37). The
+/// provider-reported top-level `model` is carried through so downstream
+/// attribution does not have to rely on the configured slug alone.
 #[must_use]
 pub(crate) fn parse_usage_observation(response: &serde_json::Value) -> UsageObservation {
     let model = response
@@ -304,17 +307,18 @@ pub(crate) fn parse_usage_observation(response: &serde_json::Value) -> UsageObse
         };
     };
 
-    let input_tokens = usage
-        .get("prompt_tokens")
-        .or_else(|| usage.get("input_tokens"))
-        .and_then(serde_json::Value::as_u64);
-    let output_tokens = usage
-        .get("completion_tokens")
-        .or_else(|| usage.get("output_tokens"))
-        .and_then(serde_json::Value::as_u64);
     let cache_read_tokens = usage
         .pointer("/prompt_tokens_details/cached_tokens")
         .or_else(|| usage.get("cached_tokens"))
+        .and_then(serde_json::Value::as_u64);
+    let input_tokens = usage
+        .get("prompt_tokens")
+        .or_else(|| usage.get("input_tokens"))
+        .and_then(serde_json::Value::as_u64)
+        .map(|prompt| prompt.saturating_sub(cache_read_tokens.unwrap_or(0)));
+    let output_tokens = usage
+        .get("completion_tokens")
+        .or_else(|| usage.get("output_tokens"))
         .and_then(serde_json::Value::as_u64);
     let cache_creation_tokens = usage
         .get("cache_creation_tokens")
@@ -339,6 +343,26 @@ pub(crate) fn parse_usage_observation(response: &serde_json::Value) -> UsageObse
 #[must_use]
 pub(crate) fn parse_usage(response: &serde_json::Value) -> Usage {
     parse_usage_observation(response).into()
+}
+
+/// The OpenAI-compatible `usage` block for `usage`, which [`parse_usage`]
+/// reads back unchanged. `prompt_tokens` counts the cached input too, as the
+/// wire's do.
+#[must_use]
+pub(crate) fn usage_to_wire(usage: &Usage) -> serde_json::Value {
+    let prompt_tokens = u64::from(usage.input_tokens) + u64::from(usage.cache_read_tokens);
+    serde_json::json!({
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": usage.output_tokens,
+        "total_tokens": prompt_tokens + u64::from(usage.output_tokens),
+        "prompt_tokens_details": {
+            "cached_tokens": usage.cache_read_tokens,
+        },
+        "completion_tokens_details": {
+            "reasoning_tokens": usage.reasoning_tokens,
+        },
+        "cache_creation_tokens": usage.cache_create_tokens,
+    })
 }
 
 #[must_use]
@@ -944,6 +968,25 @@ mod tests {
 
         assert_eq!(parse_usage(&glm).cache_read_tokens, 800);
         assert_eq!(parse_usage(&kimi).cache_read_tokens, 800);
+        // The 800 cached tokens are part of the 1,200 prompt tokens.
+        assert_eq!(parse_usage(&glm).input_tokens, 400);
+        assert_eq!(parse_usage(&kimi).input_tokens, 400);
+    }
+
+    #[test]
+    fn usage_to_wire_reads_back_unchanged() {
+        let usage = Usage {
+            input_tokens: 400,
+            output_tokens: 300,
+            cache_read_tokens: 800,
+            cache_create_tokens: 50,
+            reasoning_tokens: 120,
+            ..Default::default()
+        };
+        let wire = usage_to_wire(&usage);
+        assert_eq!(wire["prompt_tokens"], 1_200);
+        assert_eq!(wire["total_tokens"], 1_500);
+        assert_eq!(parse_usage(&serde_json::json!({ "usage": wire })), usage);
     }
 
     #[test]

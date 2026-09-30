@@ -515,11 +515,15 @@ impl Agent for CodexAgent {
         }
 
         let wall_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+        // `prompt_tokens` include the cached tokens; the canonical input class
+        // holds uncached input only, so each token is priced once (bug-b72a37).
+        let cache_read_tokens = parsed.usage.cache_read_tokens();
+        let input_tokens = parsed.usage.prompt_tokens.saturating_sub(cache_read_tokens);
         let usage_obs = UsageObservation {
-            input_tokens: Some(u64::from(parsed.usage.prompt_tokens)),
+            input_tokens: Some(u64::from(input_tokens)),
             output_tokens: Some(u64::from(parsed.usage.completion_tokens)),
             cache_creation_tokens: Some(0),
-            cache_read_tokens: Some(u64::from(parsed.usage.cache_read_tokens())),
+            cache_read_tokens: Some(u64::from(cache_read_tokens)),
             reasoning_tokens: None,
             // Cost is not reported by the provider; dispatch back-fills it
             // from the model profile's pricing (`fill_cost_from_profile`).
@@ -841,6 +845,8 @@ mod tests {
             let result = agent.run(&prompt("hi"), &Context::now()).await;
             assert!(result.success);
             assert_eq!(result.usage.cache_read_tokens, 8);
+            // 8 of the 12 prompt tokens were cached (bug-b72a37).
+            assert_eq!(result.usage.input_tokens, 4);
         }
     }
 

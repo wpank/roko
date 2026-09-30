@@ -17,7 +17,6 @@ use crate::streaming::parse_sse_line;
 use crate::tool_loop::{LlmBackend, LlmError};
 use crate::translate::FinishReason;
 use crate::translate::{BackendResponse, RenderedTools, SessionState, convert_images_for_openai};
-use crate::usage::Usage;
 use roko_core::agent::ProviderKind;
 use roko_core::defaults::{DEFAULT_PROVIDER_RPM, DEFAULT_REQUEST_TIMEOUT_MS};
 use roko_core::sse::extract_sse_data;
@@ -480,7 +479,7 @@ impl OpenAiCompatLlmBackend {
                 "message": message,
                 "finish_reason": finish_reason_to_wire(&response.finish_reason),
             }],
-            "usage": usage_to_wire(&response.usage),
+            "usage": crate::translate::openai::usage_to_wire(&response.usage),
         });
         if let Some(body) = json.as_object_mut() {
             if let Some(response_id) = metadata.response_id {
@@ -820,17 +819,6 @@ fn finish_reason_to_wire(finish_reason: &FinishReason) -> String {
         FinishReason::ContentFilter => "content_filter".to_string(),
         FinishReason::Error(reason) => reason.clone(),
     }
-}
-
-fn usage_to_wire(usage: &Usage) -> Value {
-    serde_json::json!({
-        "prompt_tokens": usage.input_tokens,
-        "completion_tokens": usage.output_tokens,
-        "total_tokens": usage.input_tokens + usage.output_tokens,
-        "prompt_tokens_details": {
-            "cached_tokens": usage.cache_read_tokens,
-        },
-    })
 }
 
 impl std::fmt::Debug for OpenAiCompatLlmBackend {
@@ -1576,7 +1564,8 @@ mod tests {
         assert_eq!(result.tool_calls[0].id, "call-1");
         assert_eq!(result.tool_calls[0].name, "echo");
         assert_eq!(result.final_text, "final answer");
-        assert_eq!(result.total_usage.input_tokens, 20);
+        // 11 + 9 prompt tokens, 3 of them cached: 17 uncached (bug-b72a37).
+        assert_eq!(result.total_usage.input_tokens, 17);
         assert_eq!(result.total_usage.output_tokens, 11);
         assert_eq!(result.total_usage.cache_read_tokens, 3);
 
@@ -1603,6 +1592,55 @@ mod tests {
         assert!(requests[1].contains("\"arguments\":\"{\\\"value\\\":1}\""));
 
         server.join().expect("server thread");
+    }
+
+    /// bug-b72a37: 800 of an answer's 1,000 prompt tokens were cached. The
+    /// non-streaming and the streaming path both price 200 uncached input
+    /// tokens and 800 cache-read tokens, each once.
+    #[tokio::test]
+    async fn openai_compat_usage_prices_cached_input_once() {
+        use crate::tool_loop::{StreamEvent, collect_stream_to_response};
+
+        let usage_block = serde_json::json!({
+            "prompt_tokens": 1_000,
+            "completion_tokens": 100,
+            "total_tokens": 1_100,
+            "prompt_tokens_details": {"cached_tokens": 800}
+        });
+        // $1/M input, $2/M output, $0.10/M cache read.
+        let expected_cost = (200.0 + 100.0 * 2.0 + 800.0 * 0.10) / 1_000_000.0;
+
+        // Non-streaming: the tool loop prices the JSON response's usage.
+        let response = BackendResponse::Json(serde_json::json!({ "usage": usage_block.clone() }));
+        let non_streaming = response.extract_usage();
+
+        // Streaming: the final chunk's usage, collected into the response the
+        // tool loop prices.
+        let chunk = serde_json::json!({ "choices": [], "usage": usage_block });
+        let usage_event = parse_sse_line(&format!("data: {chunk}")).expect("a usage chunk");
+        assert!(matches!(usage_event.kind, StreamEventKind::Usage(_)));
+        let events = vec![
+            Ok(usage_event),
+            Ok(StreamEvent::now(StreamEventKind::Done {
+                finish_reason: "stop".to_string(),
+            })),
+        ];
+        let stream = Box::pin(futures::stream::iter(events));
+        let collected = collect_stream_to_response(stream, Instant::now()).await;
+        let streamed = collected.expect("the stream collects").extract_usage();
+
+        for mut usage in [non_streaming, streamed] {
+            assert_eq!(
+                (usage.input_tokens, usage.cache_read_tokens, usage.output_tokens),
+                (200, 800, 100)
+            );
+            usage.fill_cost_from_pricing(Some(1.0), Some(2.0), Some(0.10), None);
+            assert!(
+                (f64::from(usage.cost_usd) - expected_cost).abs() < 1e-9,
+                "cost {} != {expected_cost}",
+                usage.cost_usd
+            );
+        }
     }
 
     #[tokio::test]

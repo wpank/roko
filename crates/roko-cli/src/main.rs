@@ -451,14 +451,13 @@ impl clap::builder::TypedValueParser for OneShotPromptParser {
 fn unknown_command_error(cmd: &clap::Command, word: &str) -> clap::Error {
     use clap::error::ErrorKind;
 
-    let mut tips = Vec::new();
-    if let Some(command) = suggested_command(cmd, word) {
-        tips.push(format!("  tip: a similar subcommand exists: 'roko {command}'"));
-    }
-    tips.push(format!("  tip: to send a one-word prompt, use 'roko run {word}'"));
+    let similar = match suggested_command(cmd, word) {
+        Some(command) => format!("  tip: a similar subcommand exists: 'roko {command}'\n"),
+        None => String::new(),
+    };
     let message = format!(
-        "unrecognized subcommand '{word}'\n\n{}\n\nFor more information, try '--help'.\n",
-        tips.join("\n")
+        "unrecognized subcommand '{word}'\n\n{similar}  tip: to send a one-word prompt, use \
+         'roko run {word}'\n\nFor more information, try '--help'.\n"
     );
     clap::Error::raw(ErrorKind::InvalidSubcommand, message).with_cmd(cmd)
 }

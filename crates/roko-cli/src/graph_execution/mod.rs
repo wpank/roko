@@ -9,6 +9,7 @@
 //! | Module | Responsibility |
 //! |---|---|
 //! | [`agent_slots`] | Run-wide cap on concurrently executing tasks (`max_agents`) |
+//! | [`batch`] | The run's batch branch, and delivery of finished plans into it |
 //! | [`control_adapter`] | CLI/TUI command transport to graph-layer control service |
 //! | [`delivery`] | Post-execution merge, regression, and publication pipeline |
 //! | [`event_log`] | `--log-file` JSONL recorder and StateHub event taps |
@@ -24,6 +25,7 @@
 //! | [`workspaces`] | Worktree-backed execution workspace provider |
 
 pub mod agent_slots;
+pub mod batch;
 pub mod control_adapter;
 pub mod delivery;
 pub mod event_log;

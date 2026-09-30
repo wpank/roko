@@ -588,6 +588,7 @@ pub async fn run_code_implementer_cloud(
                 log_file: None,
                 worktree_per_task: false,
                 rich_topology: false,
+                promote: None,
                 no_tui: true,
                 state_hub: Some(state_hub),
                 interrupt: None,

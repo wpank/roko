@@ -1031,13 +1031,15 @@ exit 1
         assert_eq!(episodes[0].model, "api-model-1");
         assert_eq!(episodes[0].extra["substituted_from"], planned);
         assert_eq!(episodes[0].extra["failover_reason"], reason);
-        let costs = jsonl_rows_where(&workdir.join(".roko/learn/costs.jsonl"), 1, |_| true).await;
+        // The refused call has rows of its own; these are the call that ran.
+        let ran = |row: &serde_json::Value| row["role"] != FAILOVER_REFUSED_ROLE;
+        let costs = jsonl_rows_where(&workdir.join(".roko/learn/costs.jsonl"), 1, ran).await;
         assert_eq!(costs[0]["model"], "api-model-1");
         assert_eq!(costs[0]["substituted_from"], planned);
         assert_eq!(costs[0]["substitution_reason"], reason);
         let efficiency =
             jsonl_rows_where(&workdir.join(".roko/learn/efficiency.jsonl"), 1, |row| {
-                row["schema"] == roko_learn::efficiency::AGENT_EFFICIENCY_EVENT_SCHEMA
+                row["schema"] == roko_learn::efficiency::AGENT_EFFICIENCY_EVENT_SCHEMA && ran(row)
             })
             .await;
         assert_eq!(efficiency[0]["model"], "api-model-1");

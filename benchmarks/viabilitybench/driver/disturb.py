@@ -24,8 +24,9 @@ disturbances of one kind may not cover the same position. The hooks:
 - `harder_mix`: from `start_at` on, the stream serves its instances at `params.levels` (default ℓ4–ℓ5) first, in
   their seeded order, then the rest. It permutes the seed's order, so each (task, seed) still runs once, and
   `order-<seed>.json` holds the disturbed order.
-- `convention_flip`: the tasks it covers are rendered with `gen.py --latent <params.latent>` (default v2). `vb run`
-  refuses a spec whose latent some family of the run cannot render.
+- `convention_flip`: the tasks it covers are rendered with `gen.py --latent <params.latent>` (default v2), which F1
+  and F4 build (gap-98516b). `vb run` refuses a spec whose latent some family of the run cannot render. Ground
+  truth: each record's `task.latent_version`.
 
 Two hooks are not built yet, and a spec that names either is refused:
 - `model_swap`: the proxy could rewrite a request's model, but the driver's model checks would then make every

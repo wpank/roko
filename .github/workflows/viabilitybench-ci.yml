@@ -32,7 +32,7 @@ jobs:
           python -m venv benchmarks/viabilitybench/.venv
           benchmarks/viabilitybench/.venv/bin/python -m pip install --require-hashes \
             -r benchmarks/viabilitybench/requirements.lock
-      - name: Judge the known solutions of F1 and F4, levels 1-5, seeds 1-2 (20 cells)
+      - name: Judge the known solutions of F1 and F4, latents v1 and v2, levels 1-5, seeds 1-2 (40 cells)
         run: benchmarks/viabilitybench/.venv/bin/python benchmarks/viabilitybench/ci/verify_verifiers.py --families f1,f4 --levels 1-5 --seeds 2
       - name: Judge the plan-level slice
         run: benchmarks/viabilitybench/.venv/bin/python benchmarks/viabilitybench/ci/verify_verifiers.py --families pl --seeds 3

@@ -366,10 +366,11 @@ mod tests {
             r#"data: {"choices":[],"usage":{"prompt_tokens":21,"completion_tokens":9,"prompt_tokens_details":{"cached_tokens":4}}}"#,
         );
 
+        // 4 of the 21 prompt tokens were cached (bug-b72a37).
         assert!(matches!(
             event.map(|e| e.kind),
             Some(StreamEventKind::Usage(usage))
-                if usage.input_tokens == 21
+                if usage.input_tokens == 17
                     && usage.output_tokens == 9
                     && usage.cache_read_tokens == 4
         ));

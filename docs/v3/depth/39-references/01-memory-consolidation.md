@@ -15,7 +15,7 @@ CLS theory: fast hippocampal learning consolidates into slow neocortical memory.
 **[Kumaran, Hassabis & McClelland, 2016]** *What Learning Systems do Intelligent Agents Need?* Trends in Cognitive Sciences, 20(7), 512--534.
 Updated CLS: replay scheduling matters. High-surprise episodes replayed more often. Grounds prioritized consolidation in Dreams.
 
-**[O'Reilly, Bhatt & Russin, 2014]** *Complementary Learning Systems.* Cognitive Science, 38(Suppl 1).
+**[O'Reilly et al., 2014]** *Complementary Learning Systems.* Cognitive Science, 38(Suppl 1).
 Pattern separation and completion as complementary operations. Grounds the episodic/semantic store duality.
 
 **[McCloskey & Cohen, 1989]** *Catastrophic Interference in Connectionist Networks.* Psychology of Learning and Motivation, 24, 109--165.
@@ -98,7 +98,7 @@ Structured memory blocks improve reasoning 30--60%. Grounds the typed ContextBlo
 **[Zhong et al., 2024]** *MemoryBank: Enhancing Large Language Models with Long-Term Memory.* AAAI 2024.
 Long-term memory augmentation with Ebbinghaus-inspired forgetting. Validates decay-based memory.
 
-**[Anonymous, 2025]** *On the Self-Degradation of Agent Memory.* arXiv:2505.16067.
+**[Xiong et al., 2025]** *How Memory Management Impacts LLM Agents: An Empirical Study of Experience-Following Behavior.* arXiv:2505.16067.
 Naive add-all memory degrades performance. Grounds the `mark_verified` quality gate.
 
 ---
@@ -114,7 +114,7 @@ Six memory operations: Consolidation, Updating, Indexing, Forgetting, Retrieval,
 **[Anonymous, 2026]** *Memory for Autonomous LLM Agents: Mechanisms, Evaluation, and Emerging Frontiers.* arXiv:2603.07670.
 Write-manage-read formalization with five mechanism families. Validates separation of memory management from inference.
 
-**[Yehudai et al., 2025]** *Human-Like Remembering and Forgetting in LLM Agents: An ACT-R-Inspired Memory Architecture.* HAI 2025.
+**[Honda et al., 2025]** *Human-Like Remembering and Forgetting in LLM Agents: An ACT-R-Inspired Memory Architecture.* HAI 2025.
 ACT-R-inspired decay validates Ebbinghaus-based knowledge half-lives.
 
 **[Anonymous, 2025]** *Position: Episodic Memory is the Missing Piece for Long-Term LLM Agents.* arXiv:2502.06975.
@@ -127,13 +127,13 @@ Memory architecture for extended execution. Validates tiered persistence.
 
 ## 2026 Additions: Auto-Dreamer, FadeMem, MemPro
 
-**[Auto-Dreamer, 2026]** *Auto-Dreamer.* arXiv:2605.20616.
+**[Ye et al., 2026]** *Auto-Dreamer.* arXiv:2605.20616.
 Learned consolidator using CLS-inspired fast/slow separation. Target architecture for upgrading the dream cycle's automatic consolidation policy.
 
 **[FadeMem, 2026]** *FadeMem: Validates Ebbinghaus-Based Decay.* arXiv:2601.18642.
 Empirical validation of Ebbinghaus-based decay curves for LLM agents. Directly supports `roko-neuro`'s existing half-life approach with independent experimental evidence.
 
-**[MemPro, 2026]** *MemPro: Evolvable Memory Pipelines.* arXiv:2606.00619.
+**[Liu et al., 2026]** *MemPro: Agentic Memory Systems as Evolvable Programs.* arXiv:2606.00619.
 Self-improving memory pipelines that evolve their own consolidation strategies. Aspirational target for memory system auto-improvement via the meta-learning loop.
 
 ---

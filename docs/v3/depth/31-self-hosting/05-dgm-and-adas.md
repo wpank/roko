@@ -167,7 +167,7 @@ ADAS-level modification is deliberately not automated in Roko because:
 
 ## 4. AI4AI-Bench: Can AI Improve Its Own Learning Algorithms?
 
-AI4AI-Bench (Clancy et al. 2026, arXiv:2608.20318) provides the first
+AI4AI-Bench (Chi et al. 2026, arXiv:2608.20318) provides the first
 systematic benchmark for evaluating whether AI systems can improve their own
 learning algorithms. This directly measures the capability that ADAS and DGM
 require but leave implicit.

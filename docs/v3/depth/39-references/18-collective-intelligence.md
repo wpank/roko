@@ -44,7 +44,7 @@ Information as public good: non-rivalrous, non-excludable. Grounds knowledge sha
 
 ## Representation Engineering
 
-**[Turner et al., 2024]** *Activation Addition: Steering Language Models Without Optimization.* arXiv:2308.10248.
+**[Turner et al., 2024]** *Steering Language Models With Activation Engineering.* arXiv:2308.10248.
 Steering vectors modify model behavior without fine-tuning by adding activation patterns. Informs representation-level collective influence.
 
 **[Zou et al., 2023]** *Representation Engineering: A Top-Down Approach to AI Transparency.* arXiv:2310.01405.
@@ -70,10 +70,10 @@ Information-theoretic framework measuring dynamical emergence in multi-agent LLM
 **[Anonymous, 2025]** *Large Language Models Miss the Multi-Agent Mark.* arXiv:2505.21298.
 LLMs fail at implicit coordination. Explicit coordination mechanisms (Pheromone Field, Agent Mesh) are necessary. Motivates the architectural investment in explicit coordination infrastructure.
 
-**[Anonymous, 2025]** *AgentsNet: Coordination and Collaborative Reasoning in Multi-Agent LLMs.* arXiv:2507.08616.
+**[Groetschla et al., 2025]** *AgentsNet: Coordination and Collaborative Reasoning in Multi-Agent LLMs.* arXiv:2507.08616.
 Distributed coordination benchmark probing up to 100 agents with problems from distributed computing theory. Provides evaluation methodology for Roko's Collective coordination at scale.
 
-**[Anonymous, 2025]** *LLM-Coordination: Evaluating Multi-agent Coordination Abilities.* NAACL 2025.
+**[Agashe et al., 2025]** *LLM-Coordination: Evaluating Multi-agent Coordination Abilities.* NAACL 2025.
 Benchmark and evaluation framework for multi-agent LLM coordination abilities. Complements AgentsNet with different coordination challenge types.
 
 ---

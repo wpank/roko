@@ -62,33 +62,30 @@ CLARION: dual-level architecture combining explicit and implicit knowledge. Vali
 **[Baars, 1988]** *A Cognitive Theory of Consciousness.* Cambridge University Press.
 Global Workspace Theory: information becomes "conscious" when broadcast to multiple specialized processors. Informs broadcast-style information sharing in the Bus/Event system.
 
-**[Franklin et al., 2016]** *LIDA: A Systems-level Architecture for Cognition, Emotion, and Learning.* IEEE Trans. Autonomous Mental Development, 6(1).
+**[Franklin et al., 2014]** *LIDA: A Systems-level Architecture for Cognition, Emotion, and Learning.* IEEE Trans. Autonomous Mental Development, 6(1).
 LIDA cognitive architecture integrating cognition, emotion, and learning in a Global Workspace framework. Validates the Daimon + NeuroStore + Learning integration.
 
-**[Dehaene et al., 2025]** *GW-Dreamer: Multimodal Global Workspace + Dreamer.* arXiv:2502.21142.
+**[Maytié et al., 2025]** *Multimodal Dreaming: A Global Workspace Approach to World Model-Based Reinforcement Learning.* arXiv:2502.21142.
 Global Workspace Theory combined with world models (DreamerV3). Bridges GWT with offline learning. Validates the architectural intersection of Dreams and broadcast coordination.
 
-**[VanRullen & Bhatt, 2025]** *Functional Advantages of the Selection-Broadcast Cycle.* arXiv:2505.13969.
+**[Nakanishi et al., 2025]** *Hypothesis on the Functional Advantages of the Selection-Broadcast Cycle Structure: Global Workspace Theory and Dealing with a Real-Time World.* arXiv:2505.13969.
 Functional advantages of the GWT-style selection-broadcast cycle. Validates broadcast mechanisms in multi-agent coordination.
 
 ---
 
 ## 2025--2026 Additions: Mechanism-Level Review, Missing Knowledge Layer
 
-**[Anonymous, 2025]** *Mechanism-Level Review of Cognitive Architectures for LLM Agents.* arXiv:2510.14842.
-Systematic mechanism-level comparison of cognitive architectures (ACT-R, SOAR, CLARION, LIDA, CoALA) as applied to LLM agent design. Identifies which cognitive mechanisms transfer productively and which require re-engineering. Validates Roko's selective adoption of cognitive architecture principles.
-
-**[Anonymous, 2025]** *The Missing Knowledge Layer in LLM Agent Architectures.* arXiv:2512.08791.
+**[Roynard, 2025]** *The Missing Knowledge Layer in Cognitive Architectures for AI Agents.* arXiv:2604.11364.
 Identifies a persistent gap in agent architectures: lack of a dedicated knowledge management layer between working memory (context window) and long-term storage (embeddings/databases). Validates NeuroStore as the architectural response to this gap -- a structured, tiered, actively managed knowledge layer.
 
 ---
 
 ## Cognitive Workspace and Episodic Memory
 
-**[Anonymous, 2025]** *Cognitive Workspace: Active Memory Management for LLMs.* arXiv:2508.13171.
+**[An, 2025]** *Cognitive Workspace: Active Memory Management for LLMs.* arXiv:2508.13171.
 Context window as cognitive workspace with explicit read/write/evict operations. Mirrors NeuroStore's approach to context as a managed resource, not a passive buffer.
 
-**[Fountas et al., 2025]** *EM-LLM: Human-Inspired Episodic Memory for Infinite Context LLMs.* ICLR 2025.
+**[Fountas et al., 2025]** *EM-LLM: Human-Inspired Episodic Memory for Infinite Context LLMs.* ICLR 2025. arXiv:2407.09450.
 Episodic memory enabling infinite effective context through retrieval. Provides practical techniques for the NeuroStore's episodic retrieval.
 
 ---
@@ -98,10 +95,10 @@ Episodic memory enabling infinite effective context through retrieval. Provides 
 **[Anonymous, 2025]** *Agentic AI: A Comprehensive Survey.* Artificial Intelligence Review, Springer.
 Six-module taxonomy validates Roko's modular architecture. Identifies paradigm shift from symbolic to neural orchestration post-2022.
 
-**[Wu et al., 2025]** *Cognitive LLMs: Integrating Cognitive Architectures and LLMs.* SAGE Journals.
+**[Wu et al., 2025]** *Cognitive LLMs: Toward Human-Like Artificial Intelligence by Integrating Cognitive Architectures and Large Language Models for Manufacturing Decision-Making.* Neurosymbolic Artificial Intelligence (SAGE Publications).
 ACT-R/SOAR + LLM integration validates layering cognitive principles onto LLMs.
 
-**[Anonymous, 2025]** *Agentic AI: Architectures, Taxonomies, and Evaluation.* arXiv:2601.12560.
+**[Arunkumar V et al., 2025]** *Agentic Artificial Intelligence (AI): Architectures, Taxonomies, and Evaluation of Large Language Model Agents.* arXiv:2601.12560.
 Post-2022 paradigm shift from symbolic to neural orchestration. Validates neural-first design with structured cognitive overlays.
 
 ---

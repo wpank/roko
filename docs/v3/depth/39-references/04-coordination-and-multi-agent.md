@@ -24,9 +24,6 @@ Formalizes pheromone deposit/evaporation. Confirmed entries gain weight; unconfi
 **[Xuan et al., 2026]** *Dual-Trail Stigmergic Coordination.* Journal of Marine Science and Engineering, 14(2).
 Dual-trail extension validates separate pheromone types (Threat/Opportunity/Wisdom) with distinct decay profiles.
 
-**[Xu et al., 2024]** *Stigmergy + Independent RL + Conflict-Avoidance.* Working paper.
-Combining stigmergy with RL produces emergent coordination without central control.
-
 ---
 
 ## Cooperation and Game Theory
@@ -76,38 +73,38 @@ PDE-based framework treating swarms as fluids. Rigorous foundation for Pheromone
 **[Anonymous, 2024]** *Automatic Design of Stigmergy-Based Behaviours.* Communications Engineering, Nature.
 Automatic design validated in simulation and hardware. Validates automatic pheromone-type design.
 
-**[Anonymous, 2025]** *Stigmergy Facilitates Emergent Patterns in Academic Communication.* Research Square.
+**[Starominski-Uehara, 2025]** *Stigmergy Facilitates Emergent Patterns in Academic Communication.* Research Square.
 Human citation patterns follow stigmergic dynamics. Validates digital stigmergy beyond biology.
 
 **[Anonymous, 2025]** *Emergent Convergence in Multi-Agent LLM Annotation.* arXiv:2512.00047.
 LLM groups develop asymmetric influence patterns without explicit role prompting.
 
-**[Anonymous, 2025]** *Multi-Agent Language Models: Advancing Cooperation.* arXiv:2506.09331.
+**[Sudhakar, 2025]** *Multi-Agent Language Models: Advancing Cooperation.* arXiv:2506.09331.
 Comprehensive multi-agent LLM cooperation survey.
 
 **[Anonymous, 2025]** *Large Language Models Miss the Multi-Agent Mark.* arXiv:2505.21298.
 Systematic failures in implicit LLM coordination. Motivates explicit Pheromone Field and Agent Mesh.
 
-**[Anonymous, 2025]** *AgentsNet: Coordination and Collaborative Reasoning.* arXiv:2507.08616.
+**[Groetschla et al., 2025]** *AgentsNet: Coordination and Collaborative Reasoning.* arXiv:2507.08616.
 Distributed coordination benchmark probing up to 100 agents. Evaluation methodology for Collectives.
 
-**[Anonymous, 2025]** *LLM-Coordination: Evaluating Multi-agent Coordination.* NAACL 2025.
+**[Agashe et al., 2025]** *LLM-Coordination: Evaluating Multi-agent Coordination.* NAACL 2025.
 Benchmark for multi-agent LLM coordination abilities.
 
-**[Anonymous, 2025]** *Agentic LLMs in the Supply Chain: Multi-Agent Consensus-Seeking.* International Journal of Production Research.
+**[Jannelli et al., 2025]** *Agentic LLMs in the supply chain: towards autonomous multi-agent consensus-seeking.* International Journal of Production Research.
 Multi-agent consensus with transactive reasoning.
 
 ---
 
 ## 2025--2026 Additions: LatentMAS, FederatedSkill
 
-**[LatentMAS, 2025]** *LatentMAS: Latent-Space Agent Communication.* arXiv:2511.20639. ICML 2026 Spotlight.
+**[Zou et al., 2025]** *Latent Collaboration in Multi-Agent Systems.* arXiv:2511.20639. ICML 2026 Spotlight.
 Latent-space communication achieves 4x speed, 14.6% accuracy gain. Frontier architecture for pheromone communication beyond natural language.
 
-**[FederatedSkill, 2026]** *FederatedSkill: Semantic Skill Diffs for Federated Learning.* arXiv:2606.03143.
+**[Yang et al., 2026]** *FederatedSkill: Federated Learning for Agentic Skill Evolution.* arXiv:2606.03143.
 44.4% improvement via semantic skill diffs. Informs cross-workspace knowledge transfer and federated collective learning.
 
-**[Anonymous, 2026]** *Coordination as Architectural Layer.* arXiv:2605.03310.
+**[Nechepurenko & Shuvalov, 2026]** *Coordination as Architectural Layer.* arXiv:2605.03310.
 41--87% of failures are coordination, not capability. Validates explicit coordination architecture.
 
 ---

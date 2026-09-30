@@ -1211,7 +1211,7 @@ cargo run -p roko-cli -- doctor
 3. Lee, S. Y. et al. (2026). "Meta-Harness: Harness Engineering for LLM
    Agents." arXiv:2603.28052. -- Harness quality as dominant performance
    factor.
-4. Lee, S. Y. et al. (2026). "HarnessX." arXiv:2606.14249. -- Extended
+4. Chen et al. (2026). "HarnessX." arXiv:2606.14249. -- Extended
    harness engineering framework.
 5. arXiv:2605.27922. "Harness-Bench." -- Standardized harness quality
    evaluation.

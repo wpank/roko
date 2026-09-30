@@ -18,7 +18,7 @@ Dutch auction order protocol for MEV-protected swap execution.
 **[Adams et al., 2025]** *am-AMM: Auction-Managed Automated Market Maker.* Uniswap Research.
 Winning bidder controls pool fees and captures arbitrage.
 
-**[Hasbrouck, Rivera & Saleh, 2025]** *Economic Model of DEX with Concentrated Liquidity.* Management Science.
+**[Hasbrouck, Rivera & Saleh, 2025]** *An Economic Model of a Decentralized Exchange with Concentrated Liquidity.* Management Science.
 Formal economic model of concentrated liquidity provision.
 
 ---
@@ -69,9 +69,6 @@ Transparency infrastructure for MEV measurement. Informs agent execution quality
 
 **[Chainlink, 2021]** *Chainlink 2.0: Next Steps in the Evolution of Decentralized Oracle Networks.* Whitepaper.
 Decentralized oracle networks providing price feeds to smart contracts. Informs the data feed design for DeFi agent price signals.
-
-**[Zhang et al., 2025]** *TWAP and VWAP Oracle Manipulation: Attack Vectors and Defenses.* Working paper.
-Time-weighted and volume-weighted average price oracle manipulation. Grounds defensive price feed validation in agent strategies.
 
 ---
 

@@ -44,7 +44,7 @@ Bayesian surprise as KL divergence between prior and posterior. Formally identic
 
 ## Active Inference for LLM Agents
 
-**[Koudahl et al., 2024]** *Active Inference for Self-Organizing Multi-LLM Systems.* arXiv:2412.10425.
+**[Prakki, 2024]** *Active Inference for Self-Organizing Multi-LLM Systems: A Bayesian Thermodynamic Approach to Adaptation.* arXiv:2412.10425.
 Active inference as cognitive layer above LLM agents, dynamically adjusting prompts through information-seeking behavior. Validates EFE-driven context assembly as practical, not just theoretical.
 
 **[Shafiei et al., 2025]** *Distributionally Robust Free Energy Principle for Decision-Making.* Nature Communications, 17, 707.
@@ -54,7 +54,7 @@ DR-FREE model: robust active inference under model uncertainty. Agents complete 
 
 ## Bayesian Experimental Design
 
-**[BED-LLM, 2025]** *Bayesian Experimental Design for LLMs.* Oxford. arXiv.
+**[Choudhury et al., 2025]** *BED-LLM: Intelligent Information Gathering with LLMs and Bayesian Experimental Design.* Oxford. arXiv.
 Sequential information gathering framed as Bayesian experimental design. Informs the research agent's query strategy and provides principled exploration sequencing.
 
 ---
@@ -88,7 +88,7 @@ Prediction error learning: learning occurs proportionally to surprise. The simpl
 **[Anonymous, 2024]** *Synthetic Active Inference Agents, Part II: Variational Message Updates.* arXiv:2306.02733.
 Message passing on Forney-style Factor Graphs for generalized free energy minimization. Scalable path for Roko's EFE tier routing beyond discrete state spaces.
 
-**[Anonymous, 2024]** *Free Energy Principle and Active Inference in Neural Language Models.* CEUR-WS Vol-3923.
+**[Raffa & Acciai, 2024]** *Free Energy Principle and Active Inference in Neural Language Models.* CEUR-WS Vol-3923.
 Direct application of FEP to neural language model behavior. Shows language generation can be understood as free energy minimization. Validates the conceptual bridge.
 
 ---

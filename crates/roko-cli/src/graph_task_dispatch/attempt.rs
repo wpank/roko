@@ -430,13 +430,16 @@ impl SettledAttempt {
     }
 
     /// The success flag the analysis rows record: the provider call
-    /// succeeded and no verify step failed. It counts an unverified attempt
-    /// as a success, so no learner reads it; learners read
-    /// [`Self::learning_success`].
+    /// succeeded and no verify step failed. It counts an unverified or
+    /// already-satisfied attempt as a success, so no learner reads it;
+    /// learners read [`Self::learning_success`].
     pub(super) fn succeeded(&self) -> bool {
         matches!(
             self.verdict.outcome,
-            AttemptOutcome::Passed | AttemptOutcome::Unverified | AttemptOutcome::ForcedAccept
+            AttemptOutcome::Passed
+                | AttemptOutcome::AlreadySatisfied
+                | AttemptOutcome::Unverified
+                | AttemptOutcome::ForcedAccept
         )
     }
 
@@ -532,13 +535,14 @@ pub(super) fn first_token_seen(dispatch: &crate::dispatch_v2::AgentResultDispatc
 const fn gate_verdict_tag(verdict: TaskGateVerdict) -> GateVerdictTag {
     match verdict {
         TaskGateVerdict::Passed => GateVerdictTag::Passed,
+        TaskGateVerdict::AlreadySatisfied => GateVerdictTag::AlreadySatisfied,
         TaskGateVerdict::Unverified => GateVerdictTag::Unverified,
         TaskGateVerdict::ForcedAccept => GateVerdictTag::ForcedAccept,
     }
 }
 
-/// Detail of an outcome other than a pass or an unverified attempt. Only the
-/// digest of the failure text is kept.
+/// Detail of an outcome other than a pass, an already-satisfied or an
+/// unverified attempt. Only the digest of the failure text is kept.
 fn failure_class(
     outcome: AttemptOutcome,
     failure_reason: Option<&str>,
@@ -546,7 +550,10 @@ fn failure_class(
 ) -> Option<AttemptFailureClass> {
     if matches!(
         outcome,
-        AttemptOutcome::Passed | AttemptOutcome::Unverified | AttemptOutcome::ForcedAccept
+        AttemptOutcome::Passed
+            | AttemptOutcome::AlreadySatisfied
+            | AttemptOutcome::Unverified
+            | AttemptOutcome::ForcedAccept
     ) {
         return None;
     }

@@ -19,6 +19,10 @@ pub struct RunMetricsRecord {
     pub total_tasks: usize,
     /// Number of tasks that passed every verify step.
     pub tasks_completed: usize,
+    /// Number of tasks whose work was already there: the attempt changed
+    /// nothing and every verify step passed on the tree as it was.
+    #[serde(default)]
+    pub tasks_already_satisfied: usize,
     /// Number of tasks that failed.
     pub tasks_failed: usize,
     /// Number of tasks that completed without running a verify step.
@@ -50,6 +54,11 @@ pub struct PlanMetrics {
     pub completed: bool,
     /// Number of tasks in this plan that passed every verify step.
     pub tasks_completed: usize,
+    /// Number of tasks in this plan whose work was already there: the
+    /// attempt changed nothing and every verify step passed on the tree as it
+    /// was.
+    #[serde(default)]
+    pub tasks_already_satisfied: usize,
     /// Number of tasks that failed in this plan.
     pub tasks_failed: usize,
     /// Number of tasks in this plan that completed without running a verify
@@ -91,6 +100,7 @@ mod tests {
             duration_ms: 45_000,
             total_tasks: 5,
             tasks_completed: 4,
+            tasks_already_satisfied: 0,
             tasks_failed: 1,
             tasks_unverified: 0,
             tasks_skipped: 0,
@@ -103,6 +113,7 @@ mod tests {
                 plan_id: "plan-1".into(),
                 completed: true,
                 tasks_completed: 4,
+                tasks_already_satisfied: 0,
                 tasks_failed: 1,
                 tasks_unverified: 0,
                 tasks_skipped: 0,
@@ -135,6 +146,7 @@ mod tests {
             duration_ms: 1_000,
             total_tasks: 1,
             tasks_completed: 1,
+            tasks_already_satisfied: 0,
             tasks_failed: 0,
             tasks_unverified: 0,
             tasks_skipped: 0,
@@ -170,5 +182,7 @@ mod tests {
         assert_eq!(parsed.tasks_skipped, 0);
         assert_eq!(parsed.plans[0].tasks_unverified, 0);
         assert_eq!(parsed.plans[0].tasks_skipped, 0);
+        assert_eq!(parsed.tasks_already_satisfied, 0);
+        assert_eq!(parsed.plans[0].tasks_already_satisfied, 0);
     }
 }

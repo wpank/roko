@@ -1632,6 +1632,8 @@ async fn run_graph_plan_body(
         }
         .unwrap_or_else(|| format!("graph-run-{}", chrono::Utc::now().timestamp_millis().max(0)));
         let tasks_completed: usize = per_plan.iter().map(|p| p.tasks_completed).sum();
+        let tasks_already_satisfied: usize =
+            per_plan.iter().map(|p| p.tasks_already_satisfied).sum();
         let tasks_failed: usize = per_plan.iter().map(|p| p.tasks_failed).sum();
         let tasks_unverified: usize = per_plan.iter().map(|p| p.tasks_unverified).sum();
         let tasks_skipped: usize = per_plan.iter().map(|p| p.tasks_skipped).sum();
@@ -1646,6 +1648,7 @@ async fn run_graph_plan_body(
             duration_ms,
             total_tasks,
             tasks_completed,
+            tasks_already_satisfied,
             tasks_failed,
             tasks_unverified,
             tasks_skipped,
@@ -2993,6 +2996,10 @@ const TASK_EXECUTOR_CELL_TYPE: &str = "task-executor";
 struct TaskVerdictCounts {
     /// Completed with a `passed` gate verdict: every verify step passed.
     passed: usize,
+    /// Completed with an `already_satisfied` gate verdict: the attempt
+    /// changed nothing, and every verify step passed on the tree as it was
+    /// (gap-9eb1e1). Verified, but not counted as passed.
+    already_satisfied: usize,
     /// Completed without a verify step running: the task declares none, its
     /// role is disabled, or its output carries no gate verdict.
     unverified: usize,
@@ -3017,6 +3024,9 @@ impl TaskVerdictCounts {
             let verdict = output.gate_verdicts.get(&result.node_id).copied();
             match (result.status, verdict) {
                 (NodeStatus::Complete, Some(TaskGateVerdict::Passed)) => counts.passed += 1,
+                (NodeStatus::Complete, Some(TaskGateVerdict::AlreadySatisfied)) => {
+                    counts.already_satisfied += 1;
+                }
                 (NodeStatus::Complete, Some(TaskGateVerdict::ForcedAccept))
                 | (NodeStatus::Failed, _) => counts.failed += 1,
                 (NodeStatus::Complete, _) => counts.unverified += 1,
@@ -3031,6 +3041,7 @@ impl TaskVerdictCounts {
     const fn not_run(task_count: usize) -> Self {
         Self {
             passed: 0,
+            already_satisfied: 0,
             unverified: 0,
             skipped: task_count,
             failed: 0,
@@ -3038,9 +3049,9 @@ impl TaskVerdictCounts {
     }
 
     /// Outcome of a plan whose graph ran to completion (gap-29a84b): it
-    /// succeeded only when every task passed its verify steps, and is
-    /// unverified when the rest passed but some ran no verify step. Anything
-    /// else failed.
+    /// succeeded only when every task passed its verify steps (an
+    /// already-satisfied task did), and is unverified when the rest passed but
+    /// some ran no verify step. Anything else failed.
     const fn outcome(self) -> PlanOutcome {
         if self.failed > 0 || self.skipped > 0 {
             PlanOutcome::Failed
@@ -3063,6 +3074,7 @@ fn plan_metrics(
         plan_id: plan_id.to_string(),
         completed: succeeded,
         tasks_completed: tasks.passed,
+        tasks_already_satisfied: tasks.already_satisfied,
         tasks_failed: tasks.failed,
         tasks_unverified: tasks.unverified,
         tasks_skipped: tasks.skipped,
@@ -4087,6 +4099,7 @@ max_retries = 0
     fn plan_outcome_follows_task_verdicts() {
         let counts = |passed, unverified, skipped, failed| TaskVerdictCounts {
             passed,
+            already_satisfied: 0,
             unverified,
             skipped,
             failed,
@@ -4097,6 +4110,13 @@ max_retries = 0
         assert_eq!(counts(0, 1, 0, 0).outcome(), PlanOutcome::Unverified);
         assert_eq!(counts(2, 1, 1, 0).outcome(), PlanOutcome::Failed);
         assert_eq!(counts(2, 1, 0, 1).outcome(), PlanOutcome::Failed);
+
+        // gap-9eb1e1: a task whose work was already there was verified.
+        let rerun = TaskVerdictCounts {
+            already_satisfied: 2,
+            ..counts(1, 0, 0, 0)
+        };
+        assert_eq!(rerun.outcome(), PlanOutcome::Succeeded);
     }
 
     /// bug-7eb27e: run metrics count each task under its own verdict, not
@@ -4128,6 +4148,7 @@ max_retries = 0
                     blocked_by: Some("T3".to_string()),
                     ..node("T4", TASK_EXECUTOR_CELL_TYPE, NodeStatus::Skipped)
                 },
+                node("T5", TASK_EXECUTOR_CELL_TYPE, NodeStatus::Complete),
                 // A helper node of the rich topology is not a task.
                 node("task.T1.gate", "passthrough", NodeStatus::Complete),
             ],
@@ -4135,6 +4156,7 @@ max_retries = 0
             gate_verdicts: BTreeMap::from([
                 ("T1".to_string(), TaskGateVerdict::Passed),
                 ("T2".to_string(), TaskGateVerdict::Unverified),
+                ("T5".to_string(), TaskGateVerdict::AlreadySatisfied),
                 ("task.T1.gate".to_string(), TaskGateVerdict::Passed),
             ]),
         };
@@ -4144,11 +4166,16 @@ max_retries = 0
         assert!(!metrics.completed);
         let counts = [
             metrics.tasks_completed,
+            metrics.tasks_already_satisfied,
             metrics.tasks_unverified,
             metrics.tasks_skipped,
             metrics.tasks_failed,
         ];
-        assert_eq!(counts, [1, 1, 1, 1], "passed, unverified, skipped, failed");
+        assert_eq!(
+            counts,
+            [1, 1, 1, 1, 1],
+            "passed, already satisfied, unverified, skipped, failed"
+        );
     }
 
     fn wait_until_finished(session: &TuiSession) {

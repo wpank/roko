@@ -546,13 +546,15 @@ impl GraphTaskDispatcher {
 
     /// Publish an attempt's settlement through the feedback facade as
     /// [`FeedbackEvent::AttemptSettled`]. The facade delivers one settlement
-    /// per attempt.
+    /// per attempt. First, the T0 reflex rule that served the attempt, if
+    /// one did, learns from it ([`Self::credit_reflex_rule`]).
     pub(super) async fn publish_settlement(
         &self,
         spec: &TaskExecutionSpec,
         task: &TaskDef,
         settled: &SettledAttempt,
     ) {
+        self.credit_reflex_rule(spec, task, settled).await;
         let Some(facade) = &self.feedback.feedback_facade else {
             return;
         };

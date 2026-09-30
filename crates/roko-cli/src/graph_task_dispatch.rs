@@ -1172,7 +1172,8 @@ impl TaskDispatcher for GraphTaskDispatcher {
             heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             // Consume the immediate first tick so we don't fire at t=0.
             heartbeat.tick().await;
-            let dispatch_future = self.run_bridge_with_failover(spec, &task.id, request);
+            let dispatch_future =
+                self.run_bridge_with_failover(spec, &task.id, attempt.key.attempt_key(), request);
             tokio::pin!(dispatch_future);
             loop {
                 tokio::select! {

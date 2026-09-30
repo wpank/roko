@@ -514,6 +514,7 @@ fn executed_model(
         model_requested: (!model_requested.is_empty()).then(|| model_requested.to_string()),
         failover_chain: failover.models,
         failover_reason: failover.reason,
+        failover_refusals: failover.refusals,
         ..ExecutedModel::default()
     };
     if let Some(dispatch) = dispatch {

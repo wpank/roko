@@ -29,22 +29,58 @@ tokio::task_local! {
     static HELPER_CALLS: HelperCalls;
 }
 
-/// One helper call that reached a provider.
+/// One provider call an attempt made beside its agent run's result: a
+/// helper call after a failed gate, or a call provider failover refused
+/// (bug-220385). Each gets its own cost and efficiency rows
+/// ([`GraphTaskDispatcher::write_side_call_rows`]).
 #[derive(Debug, Clone)]
-struct HelperCall {
+pub(super) struct SideCall {
     provider_id: String,
     /// Slug the bridge launched.
     model_slug: String,
     /// Model the provider reported serving, when it named one.
     model_reported: Option<String>,
     usage: roko_core::Usage,
-    /// Model calls the helper agent reported, when it reported a count.
+    /// Model calls the agent reported, when it reported a count.
     turns: Option<u32>,
     duration_ms: u64,
     success: bool,
 }
 
-impl HelperCall {
+impl SideCall {
+    /// The call behind `dispatch`, which took `duration_ms`.
+    pub(super) fn of(dispatch: &crate::dispatch_v2::AgentResultDispatch, duration_ms: u64) -> Self {
+        Self::from_result(
+            &dispatch.target.provider_id,
+            &dispatch.target.model_slug,
+            &dispatch.result,
+            duration_ms,
+        )
+    }
+
+    fn from_result(
+        provider_id: &str,
+        model_slug: &str,
+        result: &roko_agent::AgentResult,
+        duration_ms: u64,
+    ) -> Self {
+        Self {
+            provider_id: provider_id.to_string(),
+            model_slug: model_slug.to_string(),
+            model_reported: result
+                .usage_obs
+                .as_ref()
+                .and_then(|usage| usage.model.clone()),
+            usage: result.usage,
+            turns: result
+                .output
+                .tag("num_turns")
+                .and_then(|turns| turns.parse().ok()),
+            duration_ms,
+            success: result.success,
+        }
+    }
+
     /// `row` with the model this call's provider reported serving.
     fn served_row<T>(&self, row: T) -> ExecutedRow<T> {
         ExecutedRow {
@@ -77,7 +113,7 @@ struct HelperCallsState {
 #[derive(Default)]
 struct HelperLedger {
     agents_out: usize,
-    completed: Vec<HelperCall>,
+    completed: Vec<SideCall>,
 }
 
 impl HelperCalls {
@@ -104,14 +140,14 @@ impl HelperCalls {
         }
     }
 
-    fn record(&self, call: HelperCall) {
+    fn record(&self, call: SideCall) {
         self.0.ledger.lock().completed.push(call);
     }
 
     /// Wait up to `limit` for the helper agents still out, then take the
     /// calls completed so far. A call still running at `limit` is not
     /// counted: roko never saw its usage.
-    async fn settle(&self, limit: std::time::Duration) -> Vec<HelperCall> {
+    async fn settle(&self, limit: std::time::Duration) -> Vec<SideCall> {
         let idle = async {
             loop {
                 let agents_out = self.0.ledger.lock().agents_out;
@@ -185,21 +221,12 @@ impl roko_agent::Agent for HelperAgent {
         if let Some(calls) = &self.calls
             && result.usage_obs.is_some()
         {
-            calls.record(HelperCall {
-                provider_id: self.provider_id.clone(),
-                model_slug: self.model_slug.clone(),
-                model_reported: result
-                    .usage_obs
-                    .as_ref()
-                    .and_then(|usage| usage.model.clone()),
-                usage: result.usage,
-                turns: result
-                    .output
-                    .tag("num_turns")
-                    .and_then(|turns| turns.parse().ok()),
-                duration_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
-                success: result.success,
-            });
+            calls.record(SideCall::from_result(
+                &self.provider_id,
+                &self.model_slug,
+                &result,
+                u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+            ));
         }
         result
     }
@@ -251,20 +278,30 @@ impl GraphTaskDispatcher {
                     "helper call spend not recorded on the plan's cost ledger"
                 );
             }
-            self.write_helper_rows(spec, task, attempt_key, index, call)
-                .await;
+            self.write_side_call_rows(
+                spec,
+                &task.id,
+                attempt_key,
+                &format!("{attempt_key}/helper-{}", index + 1),
+                HELPER_ROLE,
+                call,
+            )
+            .await;
         }
         totals
     }
 
-    /// The cost row and efficiency row of one helper call.
-    async fn write_helper_rows(
+    /// The cost row and efficiency row of one side call of task `task_id`'s
+    /// attempt `attempt_key`, with `role`. `attempt_id` names the efficiency
+    /// row uniquely and joins it to the attempt's dispatch row.
+    pub(super) async fn write_side_call_rows(
         &self,
         spec: &TaskExecutionSpec,
-        task: &TaskDef,
+        task_id: &str,
         attempt_key: &str,
-        index: usize,
-        call: &HelperCall,
+        attempt_id: &str,
+        role: &str,
+        call: &SideCall,
     ) {
         let timestamp = chrono::Utc::now().to_rfc3339();
         let (input_tokens, output_tokens) = (
@@ -278,10 +315,10 @@ impl GraphTaskDispatcher {
                 timestamp: timestamp.clone(),
                 model: call.model_slug.clone(),
                 provider: call.provider_id.clone(),
-                role: HELPER_ROLE.to_string(),
+                role: role.to_string(),
                 plan_id: spec.plan_id.clone(),
-                task_id: task.id.clone(),
-                complexity_band: task.tier.clone(),
+                task_id: task_id.to_string(),
+                complexity_band: spec.tier.clone(),
                 input_tokens,
                 output_tokens,
                 cached_tokens: u64::from(call.usage.cache_read_tokens),
@@ -298,14 +335,13 @@ impl GraphTaskDispatcher {
         }
         if let Some(path) = &self.feedback.efficiency_path {
             let event = roko_learn::efficiency::AgentEfficiencyEvent {
-                agent_id: format!("{}/{}", spec.plan_id, task.id),
-                role: HELPER_ROLE.to_string(),
+                agent_id: format!("{}/{task_id}", spec.plan_id),
+                role: role.to_string(),
                 backend: call.provider_id.clone(),
                 model: call.model_slug.clone(),
                 plan_id: spec.plan_id.clone(),
-                task_id: task.id.clone(),
-                // Unique per row, and joins the attempt's dispatch row.
-                attempt_id: format!("{attempt_key}/helper-{}", index + 1),
+                task_id: task_id.to_string(),
+                attempt_id: attempt_id.to_string(),
                 input_tokens,
                 output_tokens,
                 cache_read_tokens: u64::from(call.usage.cache_read_tokens),
@@ -339,10 +375,11 @@ impl GraphTaskDispatcher {
             if let Err(error) = written {
                 tracing::warn!(
                     plan_id = %spec.plan_id,
-                    task_id = %task.id,
+                    task_id,
+                    role,
                     path = %path.display(),
                     %error,
-                    "helper call row not written (best-effort)"
+                    "side call row not written (best-effort)"
                 );
             }
         }

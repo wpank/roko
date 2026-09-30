@@ -251,6 +251,12 @@ fn attach_settled_attempt(episode: &mut Episode, settled: &AttemptVerdictRecord)
                 serde_json::Value::String(reason.clone()),
             );
         }
+        if !executed.failover_refusals.is_empty() {
+            episode.extra.insert(
+                "failover_refusals".into(),
+                serde_json::json!(executed.failover_refusals),
+            );
+        }
     }
     // An unreported count is unknown, not one turn.
     match executed.turns {

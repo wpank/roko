@@ -128,7 +128,10 @@ impl FeedbackSink for RoutingObservationSink {
 
         let ctx = match routing_context {
             Some(ctx) => ctx.clone(),
-            None => build_fallback_routing_context(&outcome.model),
+            None => build_fallback_routing_context(
+                &outcome.model,
+                settled.as_ref().map(|settled| settled.identity.attempt),
+            ),
         };
 
         // Audit #84: always record category-level stats (even for
@@ -238,14 +241,17 @@ pub(crate) fn observe_router_outcome(
 /// Used when `routing_context` is `None` (backward compat with older
 /// code paths that don't carry context through `FeedbackEvent`), and by
 /// the Graph settlement routing sink, whose receipts carry no context.
-pub(crate) fn build_fallback_routing_context(model: &str) -> RoutingContext {
+/// `attempt` is the attempt's 1-based ordinal, when known: a later attempt
+/// is a retry after a failed one (gap-b62e95).
+pub(crate) fn build_fallback_routing_context(model: &str, attempt: Option<u32>) -> RoutingContext {
+    let iteration = attempt.map_or(0, |attempt| attempt.saturating_sub(1));
     RoutingContext {
         task_category: TaskCategory::Implementation,
         complexity: TaskComplexityBand::Standard,
-        iteration: 0,
+        iteration,
         role: AgentRole::Implementer,
         crate_familiarity: 0.5,
-        has_prior_failure: false,
+        has_prior_failure: iteration > 0,
         conductor_load: compute_conductor_load(0, 0, 0.0),
         active_agents: 0,
         ready_queue_depth: 0,
@@ -267,6 +273,19 @@ mod tests {
     use crate::runtime_feedback::settled_as;
     use roko_learn::cascade_router::CascadeRouter;
     use roko_learn::telemetry::{AttemptOutcome, AttemptVerdictRecord};
+
+    /// gap-b62e95: a fallback context for a later attempt is a retry after a
+    /// failure; one for a first or unknown attempt is not.
+    #[test]
+    fn fallback_routing_context_marks_retries() {
+        let marks = |attempt| {
+            let ctx = build_fallback_routing_context("claude-sonnet-4-6", attempt);
+            (ctx.iteration, ctx.has_prior_failure)
+        };
+        assert_eq!(marks(None), (0, false));
+        assert_eq!(marks(Some(1)), (0, false));
+        assert_eq!(marks(Some(3)), (2, true));
+    }
 
     /// A completed attempt whose provider call succeeded, settled as
     /// `settled`.

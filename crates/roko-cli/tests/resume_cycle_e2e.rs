@@ -62,6 +62,7 @@ fn task(id: &str, title: &str) -> TaskDef {
         estimated_minutes: None,
         crates_touched: None,
         sequence: 0,
+        hints: Default::default(),
     }
 }
 

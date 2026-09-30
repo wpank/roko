@@ -396,9 +396,10 @@ impl SettlementSink for RoutingSink {
             return Ok(());
         };
         // The receipt carries no dispatch-time routing context, so LinUCB sees
-        // the fallback context.
+        // the fallback context, marked with the receipt's attempt.
         let ctx = crate::runtime_feedback::routing::build_fallback_routing_context(
             &receipt.resolved_model,
+            Some(receipt.attempt),
         );
         if receipt.choice_source == ChoiceSource::ManualOverride {
             // Manual override: use the dampened path so the learned policy is

@@ -23,6 +23,7 @@ use assert_cmd::cargo::cargo_bin;
 use roko_cli::graph_execution::plan_runner::build_graph_feedback_context;
 use roko_cli::graph_task_dispatch::{GraphTaskDispatcher, WiringReport};
 use roko_learn::cascade_router::CascadeRouter;
+use roko_learn::model_call_feedback::ModelCallJournal;
 use serde_json::Value;
 
 /// Every learning component of S01 §5.8, in census order.
@@ -169,7 +170,8 @@ max_retries = 0
 "#;
 
 /// The dispatcher a Graph plan run builds, with the production feedback
-/// wiring for `workdir` and `cascade_router`, as the census sees it.
+/// wiring for `workdir` and `cascade_router` (journaled, as a run journals
+/// it), as the census sees it.
 async fn production_census(
     workdir: &Path,
     config: &roko_core::config::schema::RokoConfig,
@@ -183,10 +185,13 @@ async fn production_census(
         None,
     )
     .await;
+    let journal = cascade_router
+        .map(|_| Arc::new(ModelCallJournal::for_learn_dir(&workdir.join(".roko/learn"))));
     let feedback = build_graph_feedback_context(
         workdir,
         config,
         cascade_router,
+        journal.as_ref(),
         factory.error_pattern_store(),
     );
     GraphTaskDispatcher::new(Arc::new(factory), shared_config, workdir.to_path_buf())

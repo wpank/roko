@@ -28,6 +28,13 @@
 //! non-overridden tasks. A `[routing.ladder]` rung
 //! ([`ModelChoiceSource::Ladder`]) is recorded like the router's own pick,
 //! so the learner sees every rung.
+//!
+//! ## Durability
+//!
+//! A Graph run saves its router when it ends. Its sink journals each outcome
+//! in the learning WAL first ([`RoutingObservationSink::with_journal`]), so
+//! a run that dies before that save keeps them: the router the next run
+//! loads replays the journal (bug-dfb28f).
 
 use std::sync::Arc;
 
@@ -37,6 +44,7 @@ use roko_core::config::RewardWeights;
 use roko_core::task::{TaskCategory, TaskComplexityBand};
 use roko_core::{BehavioralState, DaimonPolicy};
 use roko_learn::cascade_router::{CascadeRouter, normalized_cost_and_latency};
+use roko_learn::model_call_feedback::ModelCallJournal;
 use roko_learn::model_router::RoutingContext;
 
 use super::{FeedbackEvent, FeedbackSink};
@@ -47,13 +55,28 @@ use crate::runner::conductor_adapter::compute_conductor_load;
 #[derive(Clone)]
 pub struct RoutingObservationSink {
     router: Arc<CascadeRouter>,
+    /// The journal the router's owner saves the router through, when it has
+    /// one: each outcome is journaled before it is applied.
+    journal: Option<Arc<ModelCallJournal>>,
 }
 
 impl RoutingObservationSink {
     /// Construct a routing sink wrapping a shared router.
     #[must_use]
     pub fn new(router: Arc<CascadeRouter>) -> Self {
-        Self { router }
+        Self {
+            router,
+            journal: None,
+        }
+    }
+
+    /// Journal each outcome in `journal` before applying it, so the outcomes
+    /// survive a crash before the router's owner saves the router through
+    /// `journal` (bug-dfb28f).
+    #[must_use]
+    pub fn with_journal(mut self, journal: Arc<ModelCallJournal>) -> Self {
+        self.journal = Some(journal);
+        self
     }
 }
 
@@ -61,6 +84,7 @@ impl std::fmt::Debug for RoutingObservationSink {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RoutingObservationSink")
             .field("router", &"..")
+            .field("journal", &self.journal.is_some())
             .finish()
     }
 }
@@ -111,6 +135,41 @@ impl FeedbackSink for RoutingObservationSink {
         // overrides) so confidence_scores can adjust per-category.
         self.router
             .record_category_outcome(&outcome.model, ctx.task_category, succeeded);
+
+        if let Some(journal) = &self.journal {
+            // Journaled, then applied, with the reward and weight the paths
+            // below give it (an override's weight is dampened), so a replay
+            // repeats it exactly. The WAL write syncs to disk, so it runs
+            // off the reactor.
+            let journal = Arc::clone(journal);
+            let router = Arc::clone(&self.router);
+            let model = outcome.model.clone();
+            let (cost_usd, duration_ms) = (outcome.cost_usd, outcome.duration_ms);
+            let overridden = *model_source == ModelChoiceSource::Override;
+            tokio::task::spawn_blocking(move || {
+                if overridden {
+                    journal.observe_override_outcome(
+                        &router,
+                        &model,
+                        &ctx,
+                        succeeded,
+                        cost_usd,
+                        duration_ms,
+                    );
+                } else {
+                    journal.observe_task_outcome(
+                        &router,
+                        &model,
+                        &ctx,
+                        succeeded,
+                        cost_usd,
+                        duration_ms,
+                    );
+                }
+            })
+            .await?;
+            return Ok(());
+        }
 
         // Audit #90: manual overrides must not pollute the bandit signal.
         // Route them through the dampened `record_override_outcome` path
@@ -614,6 +673,78 @@ mod tests {
         assert!(
             r.total_observations() >= 1,
             "fallback context must still drive observe_multi_objective",
+        );
+    }
+
+    /// bug-dfb28f: a Graph run journals each routing outcome before it
+    /// applies it. A run that dies before it saves its router keeps them:
+    /// the router the next run loads replays the journal, an override at
+    /// its dampened weight, and a later load does not replay it again.
+    #[tokio::test]
+    async fn graph_run_routing_observations_survive_a_crash() {
+        use roko_learn::model_call_feedback::load_recovered_router;
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let snapshot = temp.path().join("learn").join("cascade-router.json");
+        let models = || vec!["claude-sonnet-4-6".to_string(), "gpt-5".to_string()];
+        let live = Arc::new(CascadeRouter::new(models()));
+        let sink = RoutingObservationSink::new(live.clone())
+            .with_journal(Arc::new(ModelCallJournal::for_snapshot(&snapshot)));
+        let passed = completed(
+            settled_as(AttemptOutcome::Passed, false),
+            ModelChoiceSource::Router,
+        );
+        let overridden = completed(
+            settled_as(AttemptOutcome::GateFailed, false),
+            ModelChoiceSource::Override,
+        );
+        sink.on_event(&passed).await.unwrap();
+        sink.on_event(&overridden).await.unwrap();
+        let sonnet = |router: &CascadeRouter| {
+            router
+                .linucb()
+                .arm_stats()
+                .into_iter()
+                .find(|arm| arm.slug == "claude-sonnet-4-6")
+                .expect("the sonnet arm")
+        };
+        let applied = sonnet(live.as_ref());
+        assert_eq!(applied.observations, 2);
+
+        // The run dies before it saves the router.
+        drop(sink);
+        drop(live);
+        assert!(!snapshot.exists(), "nothing saved the router");
+
+        let recovered = load_recovered_router(&snapshot, models());
+        assert_eq!(
+            recovered
+                .confidence_snapshot()
+                .get("claude-sonnet-4-6")
+                .copied(),
+            Some((2, 1)),
+            "a pass and an overridden failure"
+        );
+        let replayed = sonnet(&recovered);
+        assert_eq!(replayed.observations, applied.observations);
+        let rows = replayed.a_matrix.iter().zip(&applied.a_matrix);
+        for (replayed_row, applied_row) in rows {
+            for (r, a) in replayed_row.iter().zip(applied_row) {
+                assert!((r - a).abs() < 1e-9, "A replayed {r}, applied {a}");
+            }
+        }
+        for (r, a) in replayed.b_vector.iter().zip(&applied.b_vector) {
+            assert!((r - a).abs() < 1e-9, "b replayed {r}, applied {a}");
+        }
+
+        // The snapshot holds them now, and the journal is gone.
+        let reloaded = load_recovered_router(&snapshot, models());
+        assert_eq!(
+            reloaded
+                .confidence_snapshot()
+                .get("claude-sonnet-4-6")
+                .copied(),
+            Some((2, 1))
         );
     }
 }

@@ -725,8 +725,9 @@ mod tests {
             Some((2, 1)),
             "a pass and an overridden failure"
         );
+        assert_eq!(recovered.total_observations(), 2);
+        // A snapshot keeps an arm's `A` and `b`, not its own counter.
         let replayed = sonnet(&recovered);
-        assert_eq!(replayed.observations, applied.observations);
         let rows = replayed.a_matrix.iter().zip(&applied.a_matrix);
         for (replayed_row, applied_row) in rows {
             for (r, a) in replayed_row.iter().zip(applied_row) {

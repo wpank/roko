@@ -2,7 +2,7 @@
 id = "gap-0d64d5"
 kind = "gap"
 title = "Golden-path step 10: an opt-in hold that shows each task's diff and waits for approval before it merges"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "golden-path"
@@ -11,6 +11,7 @@ subsystem = ["roko-serve/plans", "roko-cli/graph_execution"]
 created = 2026-09-29
 updated = 2026-09-30
 last_verified = 2026-09-30
+last_verified_rev = "1288aeb35"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (15:04); docs/whitepaper/data/mechanisms.toml (row SS6)"
 anchors = ["crates/roko-serve/src/routes/plans.rs::find_agent_branch", "crates/roko-serve/src/routes/plans.rs::list_reviews", "crates/roko-serve/src/routes/plans.rs::task_diff", "crates/roko-cli/src/graph_execution/control_adapter.rs::GraphExecutionControlAdapter", "crates/roko-cli/src/graph_execution/delivery.rs::GitDeliveryBackend"]
@@ -23,6 +24,11 @@ command = "grep -rqw 'fn approval_hold_blocks_merge_until_approved' crates/roko-
 
 [[verify]]
 command = "grep -rqw 'fn task_diff_reads_the_graph_task_result' crates/roko-serve/ && cargo test -p roko-serve task_diff_reads_the_graph_task_result"
+
+[closed]
+at = 2026-09-30
+by = "coordinator (session 7622b882)"
+evidence = "Merged in e3267be54. [meta] approval = \"per_task\" holds each verified attempt before it joins the plan branch, writing its diff to .roko/state/review-holds/<plan>/<task>.json and waiting on a decision in reviews.jsonl; roko plan review <plan> <task> --approve|--reject [--note] and serve's submit_review record decisions, task_diff serves the held or accepted diff, list_reviews shows awaiting_approval. Batch 19 gate on 1ce6526f8, re-assembled as 65ce6d506 with only a rustfmt commit on bug-ba8d42's test (b3ccce141, made on a separate branch; MAIN 1288aeb35 has the same code): cargo check --workspace --tests and clippy -p roko-agent -p roko-cli -p roko-core -p roko-fs -p roko-gate -p roko-learn -p roko-serve --keep-going -D warnings clean; nightly fmt clean; lib tests: roko-cli 3254 passed with 0 failed (the first full run with no load flakes, after bug-779ae7), roko-agent 2271, roko-core 1956, roko-fs 260, roko-gate 690, roko-serve 989, roko-learn 1204 (one pre-existing sub-millisecond timestamp test, append_preserves_first_seen_timestamp, passes alone); --test tier_ladder_canary 1 passed; --test plan_branch_integration 2 passed. Verify: both of the item's verify commands pass (with the three new roko-cli tests)."
 +++
 
 ## Problem

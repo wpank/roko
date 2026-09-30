@@ -96,7 +96,7 @@ This is the implementation plan.
 - [x] bug-8f8704: ${VAR} is expanded only in provider fields, so serve.auth.api_key = "${X}" loads as a literal key
 - [ ] dec-648cce: Should roko deploy railway forward ROKO__SERVE__AUTH__API_KEY to the services it deploys?
 - [x] gap-ed511d: docs/v3's auth pages, docker/RAILWAY.md and config set --help still put secrets in roko.toml, which roko now refuses
-- [ ] bug-ba8d42: A [serve.auth] table without `enabled` turns serve auth off: the field's serde default is false while the struct default is true
+- [x] bug-ba8d42: A [serve.auth] table without `enabled` turns serve auth off: the field's serde default is false while the struct default is true
 - [ ] bug-02e264: After roko init, roko config providers add anthropic appends a duplicate [models."claude-sonnet-4-6"] table, and the file stops parsing
 - [ ] Both of the epic's `[[verify]]` commands pass.
 

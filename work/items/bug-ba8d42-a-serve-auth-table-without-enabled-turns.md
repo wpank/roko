@@ -2,7 +2,7 @@
 id = "bug-ba8d42"
 kind = "bug"
 title = "A [serve.auth] table without `enabled` turns serve auth off: the field's serde default is false while the struct default is true"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "release"
@@ -11,7 +11,7 @@ subsystem = ["roko-core/config", "roko-serve/auth"]
 created = 2026-09-30
 updated = 2026-09-30
 last_verified = 2026-09-30
-last_verified_rev = "669fc7274"
+last_verified_rev = "1288aeb35"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "wk-guard2 report (2026-09-30); confirmed by the coordinator at 7490cb94b"
 anchors = ["crates/roko-core/src/config/serve.rs::ServeAuthConfig"]
@@ -21,6 +21,11 @@ links = { depends_on = [], blocks = [], related = ["bug-524a3b", "bug-8f8704", "
 
 [[verify]]
 command = "grep -rqw 'fn serve_auth_table_without_enabled_keeps_auth_on' crates/roko-core/src/ && cargo test -p roko-core --lib serve_auth_table_without_enabled_keeps_auth_on"
+
+[closed]
+at = 2026-09-30
+by = "coordinator (session 7622b882)"
+evidence = "Merged in 2c748b348. ServeAuthConfig.enabled uses serde default = default_true, so a [serve.auth] table without enabled (and an env key over a partial table) keeps auth on; enabled = false still turns it off. The negative control (the old bare default) fails the new test. Batch 19 gate on 1ce6526f8, re-assembled as 65ce6d506 with only a rustfmt commit on bug-ba8d42's test (b3ccce141, made on a separate branch; MAIN 1288aeb35 has the same code): cargo check --workspace --tests and clippy -p roko-agent -p roko-cli -p roko-core -p roko-fs -p roko-gate -p roko-learn -p roko-serve --keep-going -D warnings clean; nightly fmt clean; lib tests: roko-cli 3254 passed with 0 failed (the first full run with no load flakes, after bug-779ae7), roko-agent 2271, roko-core 1956, roko-fs 260, roko-gate 690, roko-serve 989, roko-learn 1204 (one pre-existing sub-millisecond timestamp test, append_preserves_first_seen_timestamp, passes alone); --test tier_ladder_canary 1 passed; --test plan_branch_integration 2 passed. Verify: serve_auth_table_without_enabled_keeps_auth_on passes; roko-core config:: 392 passed on the merged branch."
 +++
 
 ## Problem

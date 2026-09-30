@@ -1086,8 +1086,12 @@ error[E0308]: mismatched types
         // A timeout the output only mentions is not the gate's own.
         let mentioned = classify_gate_failure("graph-verify", "timed out after 1500 ms");
         assert_eq!(mentioned.failure_kind, GateFailureKind::Transient);
-        assert!(!verdict_timed_out(&failed(render_failure_classification(&mentioned))));
-        assert!(!verdict_timed_out(&failed("not a classification".to_string())));
+        assert!(!verdict_timed_out(&failed(render_failure_classification(
+            &mentioned
+        ))));
+        assert!(!verdict_timed_out(&failed(
+            "not a classification".to_string()
+        )));
         let passed = Verdict::pass("verify[0]").with_error_digest(timed_out_digest);
         assert!(!verdict_timed_out(&passed));
     }

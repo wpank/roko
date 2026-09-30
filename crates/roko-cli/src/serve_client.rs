@@ -46,8 +46,8 @@ pub enum ServeClientError {
     /// (HTTP 401 or 403).
     #[error(
         "the workspace server rejected the request ({status}): {detail}\n\
-         hint: supply a key with ROKO_API_KEY, [serve.auth] api_key in roko.toml, \
-         or `roko login`"
+         hint: supply a key with ROKO_API_KEY, ROKO__SERVE__AUTH__API_KEY in .roko/.env \
+         (`roko config set serve.auth.api_key <key>`), or `roko login`"
     )]
     Unauthorized {
         /// HTTP status code (401 or 403).
@@ -218,7 +218,8 @@ impl WorkspaceServerClient {
     ///
     /// Auth is resolved in this order:
     /// 1. [`crate::auth::resolve_api_key`] — tries `ROKO_API_KEY`, then
-    ///    `[serve.auth].api_key`, then stored `roko login` credentials.
+    ///    `serve.auth.api_key` (from `ROKO__SERVE__AUTH__API_KEY`), then stored
+    ///    `roko login` credentials.
     /// 2. `.roko/runtime/serve.token` in `workdir` — the launch token written
     ///    by `roko serve` at startup (0600, same trust boundary as `hub.sock`).
     ///    Sent as `Authorization: Bearer <token>`.

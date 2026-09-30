@@ -218,7 +218,9 @@ pub mod cell_types {
     pub const COMPOSE: &str = "workflow.compose";
     /// Implementation agent cell.
     pub const IMPLEMENT: &str = "workflow.implement";
-    /// Gate pipeline cell.
+    /// Gate pipeline cell. A gate whose checks fail must fail (return an
+    /// error), as `plan.gate` does: the edges out of a gate are
+    /// `EdgeCondition::Success`, which fires for any cell that returned `Ok`.
     pub const GATE: &str = "workflow.gate";
     /// Review agent cell.
     pub const REVIEW: &str = "workflow.review";

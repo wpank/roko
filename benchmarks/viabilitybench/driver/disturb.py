@@ -24,15 +24,20 @@ disturbances of one kind may not cover the same position. The hooks:
 - `harder_mix`: from `start_at` on, the stream serves its instances at `params.levels` (default ℓ4–ℓ5) first, in
   their seeded order, then the rest. It permutes the seed's order, so each (task, seed) still runs once, and
   `order-<seed>.json` holds the disturbed order.
-- `convention_flip`: the tasks it covers are rendered with `gen.py --latent <params.latent>` (default v2). `vb run`
-  refuses a spec whose latent some family of the run cannot render.
-
-Two hooks are not built yet, and a spec that names either is refused:
-- `model_swap`: the proxy could rewrite a request's model, but the driver's model checks would then make every
-  swapped task `infra_error` (records' served-model check, and run_roko's, which gap-dad97b owns). They must first
-  learn to expect the swap on the tasks it covers.
-- `flaky_verify` (`VB_FLAKE_P`): it needs a visible-verify wrapper in each arm, and no arm has one. The direct and
-  CLI arms' agents run their checks themselves, and Roko's gates run the commands planemit emits.
+- `convention_flip`: the tasks it covers are rendered with `gen.py --latent <params.latent>` (default v2), which F1
+  and F4 build (gap-98516b). `vb run` refuses a spec whose latent some family of the run cannot render. Ground
+  truth: each record's `task.latent_version`.
+- `flaky_verify` (S08's `VB_FLAKE_P`, gap-4e8795): each run of a covered task's visible check through the
+  visible-verify wrapper (`vb_verify.py`) fails with probability `params.p` (default 0.25, S06 §4.9), drawn from the
+  spec's seed. A run that names it gives every task the wrapper, with p = 0 outside the positions it covers, so the
+  arms see the same thing throughout. Ground truth: each record's `visible.flake_injected` and `visible.flakes`.
+- `model_swap` (gap-8bdf5e): for the tasks it covers, the metering proxy sends `params.to` upstream in place of the
+  pinned model, so the provider serves that model and says so: S06's silent swap. The spec declares it, so the model
+  checks (`records.final_status`, and `run_roko`'s) accept exactly that served model on those tasks and mark each
+  attempt it served `model_swapped`; any other model is still a mismatch, and so is the swap outside its positions.
+  It needs the proxy, as `provider_fault` does, so the Claude Code arm, whose CLI signs in by itself and cannot go
+  through the proxy, cannot run it; and `params.to` needs a row in the run's price snapshot. Ground truth: the proxy
+  log's `model_swap`, and each attempt's `model_reported` and `model_swapped`.
 
 API:
     Disturbance(kind, start_at=1, end_at=None, seed=0, params={}); .covers(position) -> bool; .as_json() -> dict
@@ -42,6 +47,8 @@ API:
     scaled(limits: caps.Caps, disturbances, position) -> caps.Caps
     profile(disturbances, position) -> faultproxy.Profile
     latent(disturbances, position) -> str | None                      # None: the family's default
+    flake(disturbances, position) -> tuple[float, int]                # flaky_verify's (p, seed); (0.0, 0) if none
+    swap(disturbances, position) -> str | None                        # model_swap's model; None if none
 """
 
 from __future__ import annotations
@@ -58,11 +65,8 @@ import faultproxy
 
 SCHEMA = "vb.disturbance/1"
 KINDS = ("provider_fault", "model_swap", "harder_mix", "budget_cut", "convention_flip", "flaky_verify")
-NOT_BUILT = {
-    "model_swap": "the driver's model checks would make every swapped task infra_error (module docstring)",
-    "flaky_verify": "no arm has a visible-verify wrapper to inject it into (module docstring)",
-}
-DEFAULTS = {"budget_cut": {"factor": 0.5}, "harder_mix": {"levels": [4, 5]}, "convention_flip": {"latent": "v2"}}
+DEFAULTS = {"budget_cut": {"factor": 0.5}, "harder_mix": {"levels": [4, 5]}, "convention_flip": {"latent": "v2"},
+            "flaky_verify": {"p": 0.25}, "model_swap": {"to": None}}  # model_swap's `to` has no default
 LEVELS = range(1, 6)
 
 
@@ -139,14 +143,24 @@ def latent(disturbances: Sequence[Disturbance], position: int) -> str | None:
     return flip[0].params["latent"] if flip else None
 
 
+def flake(disturbances: Sequence[Disturbance], position: int) -> tuple[float, int]:
+    """The flake probability and seed of the task at `position`: the covering `flaky_verify`'s, else (0.0, 0)."""
+    flaky = [one for one in disturbances if one.kind == "flaky_verify" and one.covers(position)]
+    return (float(flaky[0].params["p"]), flaky[0].seed) if flaky else (0.0, 0)
+
+
+def swap(disturbances: Sequence[Disturbance], position: int) -> str | None:
+    """The model the proxy serves in place of the pin for the task at `position`: the covering `model_swap`'s."""
+    swapped = [one for one in disturbances if one.kind == "model_swap" and one.covers(position)]
+    return swapped[0].params["to"] if swapped else None
+
+
 def _parse(table: object, where: str) -> Disturbance:
     if not isinstance(table, dict) or set(table) - {"kind", "start_at", "end_at", "seed", "params"}:
         raise DisturbanceError(f"{where}: a disturbance has only kind, start_at, end_at, seed and params")
     kind = table.get("kind")
     if kind not in KINDS:
         raise DisturbanceError(f"{where}: kind must be one of {', '.join(KINDS)}, not {kind!r}")
-    if kind in NOT_BUILT:
-        raise DisturbanceError(f"{where}: {kind} is not built: {NOT_BUILT[kind]}")
     start, end, seed = table.get("start_at", 1), table.get("end_at"), table.get("seed", 0)
     if not (_whole(start) and start >= 1 and (end is None or (_whole(end) and end >= start)) and _whole(seed)):
         raise DisturbanceError(f"{where}: start_at must be a position from 1, end_at none before it, and seed an "
@@ -169,6 +183,11 @@ def _parse(table: object, where: str) -> Disturbance:
         raise DisturbanceError(f"{where}: harder_mix's levels must be ladder levels from 1 to 5")
     elif kind == "convention_flip" and not (isinstance(params["latent"], str) and params["latent"]):
         raise DisturbanceError(f"{where}: convention_flip's latent must name a latent version, such as v2")
+    elif kind == "flaky_verify" and not (isinstance(params["p"], (int, float)) and not isinstance(
+            params["p"], bool) and 0 <= params["p"] <= 1):
+        raise DisturbanceError(f"{where}: flaky_verify's p must be a probability from 0 to 1")
+    elif kind == "model_swap" and not (isinstance(params["to"], str) and params["to"]):
+        raise DisturbanceError(f"{where}: model_swap's to must name the model the proxy serves instead")
     return Disturbance(kind=kind, start_at=start, end_at=end, seed=seed, params=params)
 
 

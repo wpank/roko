@@ -18,6 +18,10 @@ pub(crate) struct RoutePermission {
 }
 
 /// Explicit rules for security-sensitive and commonly mutated route groups.
+///
+/// Prefixes are externally visible paths. A row outside `/api` (such as
+/// `/relay`) belongs to a router merged at the root and matches the path its
+/// middleware sees unchanged.
 pub(crate) const ROUTE_PERMISSION_MANIFEST: &[RoutePermission] = &[
     RoutePermission {
         prefix: "/api/auth/audit",
@@ -183,20 +187,50 @@ pub(crate) const ROUTE_PERMISSION_MANIFEST: &[RoutePermission] = &[
         prefix: "/relay",
         permission: Permission::AgentSpawn,
     },
+    RoutePermission {
+        prefix: "/ws/terminal",
+        permission: Permission::AgentSpawn,
+    },
 ];
+
+/// Routes whose GET opens an interactive session: a WebSocket upgrade into a
+/// shell. A GET there is not a read, so it takes the route's write scope and
+/// RBAC permission like a mutation.
+const SESSION_OPENING_ROUTES: &[&str] = &["/ws/terminal"];
+
+/// Whether a request to `path` opens an interactive session (see
+/// [`SESSION_OPENING_ROUTES`]).
+pub(crate) fn opens_interactive_session(path: &str) -> bool {
+    SESSION_OPENING_ROUTES
+        .iter()
+        .any(|prefix| path_has_segment_prefix(path, prefix))
+}
+
+/// Whether `path` is `prefix` itself or lies below it.
+///
+/// A prefix matches only at a path-segment boundary, so `/relay` covers
+/// `/relay/agents` but not `/relay-tokens`. A prefix that ends in `/` is
+/// already at a boundary.
+pub(crate) fn path_has_segment_prefix(path: &str, prefix: &str) -> bool {
+    path.strip_prefix(prefix)
+        .is_some_and(|rest| rest.is_empty() || rest.starts_with('/') || prefix.ends_with('/'))
+}
 
 /// Resolve the typed permission required for a request.
 ///
 /// Read-only requests normally rely on authentication plus their route's
-/// existing scope. Audit and secret reads are intentionally stronger. Every
+/// existing scope. Audit and secret reads are intentionally stronger, and a
+/// GET that opens an interactive session is treated as a mutation. Every
 /// mutation receives a typed permission: unmatched mutations fail closed to
 /// [`Permission::ConfigEdit`] rather than bypassing RBAC.
 pub(crate) fn required_permission_for(method: &Method, path: &str) -> Option<Permission> {
     // Axum strips the `/api` nest prefix before invoking middleware attached
     // to the nested router. Accept both that runtime form and the canonical
-    // externally visible path used by tests, logs, and documentation.
+    // externally visible path used by tests, logs, and documentation. Routers
+    // merged at the root keep their own prefix, so a path in one of their
+    // families is matched as it arrives instead of being moved under `/api`.
     let nested_path;
-    let path = if path.starts_with("/api/") {
+    let path = if path.starts_with("/api/") || is_root_mounted(path) {
         path
     } else {
         nested_path = format!("/api{path}");
@@ -210,7 +244,9 @@ pub(crate) fn required_permission_for(method: &Method, path: &str) -> Option<Per
         return Some(Permission::SecretsRead);
     }
 
-    if matches!(*method, Method::GET | Method::HEAD | Method::OPTIONS) {
+    if matches!(*method, Method::GET | Method::HEAD | Method::OPTIONS)
+        && !opens_interactive_session(path)
+    {
         return None;
     }
 
@@ -231,6 +267,18 @@ pub(crate) fn required_permission_for(method: &Method, path: &str) -> Option<Per
         .find(|entry| path.starts_with(entry.prefix))
         .map(|entry| entry.permission)
         .or(Some(Permission::ConfigEdit))
+}
+
+/// Whether `path` falls under a manifest row declared outside `/api`.
+///
+/// The match is per path segment, so `/relay-tokens` (the nest-stripped form
+/// of `/api/relay-tokens`) is not mistaken for the root-mounted `/relay`
+/// family and keeps its own row.
+fn is_root_mounted(path: &str) -> bool {
+    ROUTE_PERMISSION_MANIFEST
+        .iter()
+        .filter(|entry| !entry.prefix.starts_with("/api/"))
+        .any(|entry| path_has_segment_prefix(path, entry.prefix))
 }
 
 #[cfg(test)]
@@ -384,6 +432,60 @@ mod tests {
             required_permission_for(&Method::POST, "/api/team/invite"),
             Some(Permission::TeamManage)
         );
+    }
+
+    #[test]
+    fn relay_path_requires_agent_spawn() {
+        // The relay proxy is merged at the root, so its middleware sees
+        // `/relay/...` itself; that path must hit the `/relay` row rather
+        // than fall through to the `ConfigEdit` catch-all.
+        for path in ["/relay", "/relay/agents", "/relay/agents/123"] {
+            for method in [Method::POST, Method::PUT, Method::DELETE] {
+                assert_eq!(
+                    required_permission_for(&method, path),
+                    Some(Permission::AgentSpawn),
+                    "{method} {path}"
+                );
+            }
+        }
+        assert_eq!(required_permission_for(&Method::GET, "/relay/agents"), None);
+        // `/relay-tokens` is the nest-stripped form of `/api/relay-tokens`;
+        // sharing the `/relay` spelling must not move it off its own row.
+        for path in ["/relay-tokens", "/api/relay-tokens", "/relay-tokens/tok-1"] {
+            assert_eq!(
+                required_permission_for(&Method::POST, path),
+                Some(Permission::TokenIssue),
+                "{path}"
+            );
+        }
+        assert_eq!(
+            required_permission_for(&Method::POST, "/relayed"),
+            Some(Permission::ConfigEdit)
+        );
+    }
+
+    #[test]
+    fn opening_a_terminal_websocket_requires_agent_spawn() {
+        for method in [Method::GET, Method::HEAD, Method::OPTIONS] {
+            assert_eq!(
+                required_permission_for(&method, "/ws/terminal/abc-123"),
+                Some(Permission::AgentSpawn),
+                "{method}"
+            );
+        }
+        // Only the session-opening route changes; other reads stay open.
+        assert_eq!(required_permission_for(&Method::GET, "/ws/events"), None);
+        assert_eq!(required_permission_for(&Method::GET, "/ws/terminals"), None);
+    }
+
+    #[test]
+    fn segment_prefixes_stop_at_path_boundaries() {
+        assert!(path_has_segment_prefix("/relay", "/relay"));
+        assert!(path_has_segment_prefix("/relay/agents", "/relay"));
+        assert!(!path_has_segment_prefix("/relay-tokens", "/relay"));
+        assert!(!path_has_segment_prefix("/relayed/x", "/relay"));
+        assert!(path_has_segment_prefix("/hooks/plugin/x", "/hooks/"));
+        assert!(!path_has_segment_prefix("/api", "/api/"));
     }
 
     #[test]

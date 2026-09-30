@@ -1149,6 +1149,7 @@ async fn run_generated_plans(workdir: &Path, plans_root: &Path) -> Result<()> {
             log_file: None,
             worktree_per_task: false,
             rich_topology: false,
+            promote: None,
             no_tui: true,
             state_hub: None,
             interrupt: None,
@@ -2529,6 +2530,8 @@ const KNOWN_META_FIELDS: &[&str] = &[
     "max_parallel",
     "estimated_total_minutes",
     "skip_enrichment",
+    "failure_policy",
+    "workspace_rungs",
 ];
 
 /// Required field names for the `[meta]` section.

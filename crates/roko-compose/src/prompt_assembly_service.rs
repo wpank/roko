@@ -1077,6 +1077,8 @@ mod tests {
                 latency_ms: 1500,
                 success: true,
                 error_class: None,
+                model_reported: None,
+                attempt_key: None,
             })
             .await
             .unwrap();

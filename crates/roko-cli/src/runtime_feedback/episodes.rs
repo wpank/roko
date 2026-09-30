@@ -16,6 +16,7 @@ use roko_learn::episode_logger::{
 };
 use roko_learn::hdc_fingerprint::{encode as encode_hdc_fingerprint, fingerprint_episode};
 use roko_learn::hindsight::BLAMED_TASKS_KEY;
+use roko_learn::telemetry::AttemptVerdictRecord;
 
 use super::{FeedbackEvent, FeedbackSink};
 
@@ -190,6 +191,9 @@ impl FeedbackSink for EpisodeSink {
             "successful_model".into(),
             serde_json::Value::String(outcome.model.clone()),
         );
+        if let Some(settled) = settled {
+            attach_settled_attempt(&mut episode, settled);
+        }
 
         attach_episode_hdc_fingerprint(
             &mut episode,
@@ -205,6 +209,87 @@ impl FeedbackSink for EpisodeSink {
             .await
             .map_err(|err| anyhow::anyhow!("episode append failed: {err}"))?;
         Ok(())
+    }
+}
+
+/// What the attempt's verdict records that the event's legacy fields cannot
+/// say: the model the provider reported serving (bug-31438d), the failover
+/// that replaced the planned model (bug-35379d), a turn count the agent
+/// never reported (bug-55fd84), and the helper model calls made for the
+/// attempt (bug-62e3f4), which stay out of `usage`: that is the agent run's.
+fn attach_settled_attempt(episode: &mut Episode, settled: &AttemptVerdictRecord) {
+    let executed = &settled.executed;
+    episode.extra.insert(
+        "model_reported".into(),
+        executed
+            .model_reported
+            .clone()
+            .map_or(serde_json::Value::Null, serde_json::Value::String),
+    );
+    episode.extra.insert(
+        "model_mismatch".into(),
+        serde_json::Value::Bool(executed.model_mismatch),
+    );
+    if !executed.models_reported.is_empty() {
+        episode.extra.insert(
+            "models_reported".into(),
+            serde_json::json!(executed.models_reported),
+        );
+    }
+    if let Some(planned) = executed.failover_chain.first() {
+        episode.extra.insert(
+            "substituted_from".into(),
+            serde_json::Value::String(planned.clone()),
+        );
+        episode.extra.insert(
+            "failover_chain".into(),
+            serde_json::json!(executed.failover_chain),
+        );
+        if let Some(reason) = &executed.failover_reason {
+            episode.extra.insert(
+                "failover_reason".into(),
+                serde_json::Value::String(reason.clone()),
+            );
+        }
+        if !executed.failover_refusals.is_empty() {
+            episode.extra.insert(
+                "failover_refusals".into(),
+                serde_json::json!(executed.failover_refusals),
+            );
+        }
+    }
+    // An unreported count is unknown, not one turn.
+    match executed.turns {
+        Some(turns) => episode.turns = u64::from(turns),
+        None => {
+            episode.turns = 0;
+            episode
+                .extra
+                .insert("turns_unknown".into(), serde_json::Value::Bool(true));
+        }
+    }
+    if let Some(helpers) = &settled.helpers {
+        episode
+            .extra
+            .insert("helper_calls".into(), serde_json::json!(helpers.calls));
+        episode.extra.insert(
+            "helper_cost_usd".into(),
+            serde_json::json!(helpers.cost_usd),
+        );
+        episode.extra.insert(
+            "helper_tokens_in".into(),
+            serde_json::json!(helpers.tokens_in),
+        );
+        episode.extra.insert(
+            "helper_tokens_out".into(),
+            serde_json::json!(helpers.tokens_out),
+        );
+        if helpers.unpriced_calls > 0 {
+            episode.extra.insert(
+                "helper_unpriced_calls".into(),
+                serde_json::json!(helpers.unpriced_calls),
+            );
+        }
     }
 }
 
@@ -346,6 +431,75 @@ mod tests {
             [EpisodeGateVerdict::new("verify", false)]
         );
         assert!(!episode.extra.contains_key(BLAMED_TASKS_KEY));
+    }
+
+    /// The settled verdict says what the event's legacy fields cannot: the
+    /// model the provider reported, the failover, the helper calls, and a
+    /// turn count the agent never reported, which is unknown rather than
+    /// the event's fallback of one.
+    #[tokio::test]
+    async fn settled_attempt_records_served_model_turns_and_helpers() {
+        use roko_learn::telemetry::{
+            AttemptIdentity, AttemptKey, AttemptOutcome, HelperCallsUsage,
+        };
+
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("episodes.jsonl");
+        let sink = EpisodeSink::at(&path);
+        let key = AttemptKey::new("run-1", "plan-1", "task-1", 1);
+        let mut verdict = AttemptVerdictRecord::settle(
+            AttemptIdentity::new(&key),
+            AttemptOutcome::Unverified,
+            true,
+        );
+        verdict.executed.model_reported = Some("glm-4.7".into());
+        verdict.executed.model_mismatch = true;
+        verdict.executed.failover_chain = vec!["claude-sonnet".into()];
+        verdict.executed.failover_reason =
+            Some("`claude-sonnet` on `claude_cli`: out of usage".into());
+        verdict.helpers = Some(HelperCallsUsage {
+            calls: 2,
+            tokens_in: 40,
+            tokens_out: 8,
+            cost_usd: 0.25,
+            ..HelperCallsUsage::default()
+        });
+        sink.on_event(&FeedbackEvent::TaskCompleted {
+            turns: 1,
+            failure_reason: None,
+            settled: Some(Arc::new(verdict)),
+            plan_id: "plan-1".into(),
+            task_id: "task-1".into(),
+            outcome: outcome(),
+            model_source: ModelChoiceSource::Router,
+            succeeded: true,
+            routing_context: None,
+            prompt_text: None,
+            cache_read_tokens: 0,
+            knowledge_ids: vec![],
+            playbook_ids: vec![],
+            initial_model: "claude-sonnet-4-6".into(),
+        })
+        .await
+        .unwrap();
+
+        let episode = EpisodeLogger::read_all(&path).await.unwrap().remove(0);
+        assert_eq!(episode.turns, 0);
+        assert_eq!(episode.extra["turns_unknown"], true);
+        assert_eq!(episode.model, "claude-sonnet-4-6");
+        assert_eq!(episode.extra["model_reported"], "glm-4.7");
+        assert_eq!(episode.extra["model_mismatch"], true);
+        assert_eq!(episode.extra["substituted_from"], "claude-sonnet");
+        assert_eq!(
+            episode.extra["failover_reason"],
+            "`claude-sonnet` on `claude_cli`: out of usage"
+        );
+        assert_eq!(episode.extra["helper_calls"], 2);
+        assert_eq!(episode.extra["helper_cost_usd"], 0.25);
+        assert!(
+            (episode.usage.cost_usd - 0.003).abs() < 1e-9,
+            "helper cost stays out of the agent run's usage"
+        );
     }
 
     /// Every attempt still gets its episode, but a learner reading episodes

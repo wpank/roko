@@ -89,6 +89,7 @@ Call one tool at a time. After each tool result, decide your next action.\n\n";
             let mut agent = ToolLoopAgent::new(tool_loop)
                 .with_tools(tools)
                 .with_name(agent_name)
+                .with_env_passthrough(options.env_passthrough.clone())
                 .with_system_prompt(system_prompt);
             if let Some(ref dir) = options.working_dir {
                 agent = agent.with_worktree_path(dir.clone());

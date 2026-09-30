@@ -5,10 +5,12 @@
 //! Idempotent: no.
 
 use async_trait::async_trait;
+use roko_core::child_env;
 use roko_core::tool::{
     ToolCall, ToolCategory, ToolConcurrency, ToolContext, ToolDef, ToolError, ToolHandler,
     ToolPermission, ToolResult, ToolSchema,
 };
+use std::ffi::OsString;
 use std::time::Duration;
 
 /// Canonical `snake_case` name.
@@ -64,6 +66,11 @@ pub fn tool_def() -> ToolDef {
 /// ```
 ///
 /// Full stdout is included when the tests fail.
+///
+/// The tests run with the environment verify steps get
+/// ([`child_env::apply_gate_env`]): agent-written tests see no provider key,
+/// secret-looking name or `.env`-loaded name unless
+/// [`ToolContext::env_passthrough`] names it.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Handler;
 
@@ -74,79 +81,94 @@ impl ToolHandler for Handler {
     }
 
     async fn execute(&self, call: ToolCall, ctx: &ToolContext) -> ToolResult {
-        if !ctx.capabilities.exec {
-            return ToolResult::Err(ToolError::PermissionDenied(
-                "run_tests requires exec capability".into(),
-            ));
+        run(call, ctx, None).await
+    }
+}
+
+/// Run `call`. The tests inherit `parent_env` in place of roko's own
+/// environment when given, filtered by the same policy.
+async fn run(
+    call: ToolCall,
+    ctx: &ToolContext,
+    parent_env: Option<Vec<(String, OsString)>>,
+) -> ToolResult {
+    if !ctx.capabilities.exec {
+        return ToolResult::Err(ToolError::PermissionDenied(
+            "run_tests requires exec capability".into(),
+        ));
+    }
+    let build = call
+        .arguments
+        .get("build")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("cargo");
+    let filter = call
+        .arguments
+        .get("filter")
+        .and_then(serde_json::Value::as_str);
+    let (program, args) = match build {
+        "cargo" => ("cargo", vec!["test", "--workspace"]),
+        "npm" => ("npm", vec!["test"]),
+        "go" => ("go", vec!["test", "./..."]),
+        "pytest" => ("python3", vec!["-m", "pytest"]),
+        "forge" => ("forge", vec!["test"]),
+        "make" => ("make", vec!["test"]),
+        other => {
+            return ToolResult::Err(ToolError::Other(format!(
+                "run_tests: unknown build system `{other}`"
+            )));
         }
-        let build = call
-            .arguments
-            .get("build")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("cargo");
-        let filter = call
-            .arguments
-            .get("filter")
-            .and_then(serde_json::Value::as_str);
-        let (program, args) = match build {
-            "cargo" => ("cargo", vec!["test", "--workspace"]),
-            "npm" => ("npm", vec!["test"]),
-            "go" => ("go", vec!["test", "./..."]),
-            "pytest" => ("python3", vec!["-m", "pytest"]),
-            "forge" => ("forge", vec!["test"]),
-            "make" => ("make", vec!["test"]),
-            other => {
-                return ToolResult::Err(ToolError::Other(format!(
-                    "run_tests: unknown build system `{other}`"
-                )));
-            }
-        };
-        let mut cmd = tokio::process::Command::new(program);
-        for arg in &args {
-            cmd.arg(arg);
+    };
+    let mut cmd = tokio::process::Command::new(program);
+    for arg in &args {
+        cmd.arg(arg);
+    }
+    if let Some(f) = filter {
+        cmd.arg(f);
+    }
+    cmd.current_dir(ctx.worktree());
+    cmd.kill_on_drop(true);
+    child_env::apply_gate_env(
+        cmd.as_std_mut(),
+        parent_env.unwrap_or_else(child_env::process_env),
+        &ctx.env_passthrough,
+    );
+    let effective_timeout = if ctx.timeout.is_zero() {
+        Duration::from_mins(10)
+    } else {
+        ctx.timeout
+    };
+    let output = match tokio::time::timeout(effective_timeout, cmd.output()).await {
+        Ok(Ok(o)) => o,
+        Ok(Err(e)) => {
+            return ToolResult::Err(ToolError::Other(format!("run_tests: spawn failed: {e}")));
         }
-        if let Some(f) = filter {
-            cmd.arg(f);
+        Err(_) => {
+            return ToolResult::Err(ToolError::Timeout {
+                after_ms: u64::try_from(effective_timeout.as_millis()).unwrap_or(u64::MAX),
+            });
         }
-        cmd.current_dir(ctx.worktree());
-        cmd.kill_on_drop(true);
-        let effective_timeout = if ctx.timeout.is_zero() {
-            Duration::from_mins(10)
-        } else {
-            ctx.timeout
-        };
-        let output = match tokio::time::timeout(effective_timeout, cmd.output()).await {
-            Ok(Ok(o)) => o,
-            Ok(Err(e)) => {
-                return ToolResult::Err(ToolError::Other(format!("run_tests: spawn failed: {e}")));
-            }
-            Err(_) => {
-                return ToolResult::Err(ToolError::Timeout {
-                    after_ms: u64::try_from(effective_timeout.as_millis()).unwrap_or(u64::MAX),
-                });
-            }
-        };
-        let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-        let combined = format!("{stdout}\n{stderr}");
-        let counts = parse_counts(&combined);
-        let payload = serde_json::json!({
-            "build": build,
-            "status": if output.status.success() { "ok" } else { "failed" },
-            "passed": counts.passed,
-            "failed": counts.failed,
-            "ignored": counts.ignored,
-            "output": if output.status.success() { serde_json::Value::Null } else { serde_json::Value::String(combined.clone()) },
-        });
-        if output.status.success() {
-            ToolResult::structured(payload.to_string())
-        } else {
-            ToolResult::Err(ToolError::Other(format!(
-                "run_tests: {} tests failed — {}",
-                counts.failed,
-                truncate(&combined, 400)
-            )))
-        }
+    };
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    let combined = format!("{stdout}\n{stderr}");
+    let counts = parse_counts(&combined);
+    let payload = serde_json::json!({
+        "build": build,
+        "status": if output.status.success() { "ok" } else { "failed" },
+        "passed": counts.passed,
+        "failed": counts.failed,
+        "ignored": counts.ignored,
+        "output": if output.status.success() { serde_json::Value::Null } else { serde_json::Value::String(combined.clone()) },
+    });
+    if output.status.success() {
+        ToolResult::structured(payload.to_string())
+    } else {
+        ToolResult::Err(ToolError::Other(format!(
+            "run_tests: {} tests failed — {}",
+            counts.failed,
+            truncate(&combined, 400)
+        )))
     }
 }
 
@@ -235,5 +257,51 @@ mod tests {
     #[test]
     fn truncate_passthrough_when_short() {
         assert_eq!(truncate("short", 400), "short");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn run_tests_env_excludes_provider_keys() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        // The test target records the environment it runs with.
+        std::fs::write(
+            dir.path().join("Makefile"),
+            "test:\n\tenv > child-env.txt\n",
+        )
+        .expect("write Makefile");
+        let path = std::env::var_os("PATH")
+            .filter(|path| !path.is_empty())
+            .unwrap_or_else(|| "/usr/bin:/bin".into());
+        let mut parent = vec![("PATH".to_string(), path)];
+        for (name, value) in [
+            ("CARGO_HOME", "/tmp/tests-cargo"),
+            ("OPENAI_API_KEY", "sk-test-not-real"),
+            ("ANTHROPIC_API_KEY", "sk-ant-test-not-real"),
+            ("MY_SECRET_TOKEN", "tok-test-not-real"),
+        ] {
+            parent.push((name.to_string(), OsString::from(value)));
+        }
+        let call = ToolCall::new("c", NAME, serde_json::json!({"build": "make"}));
+        let ctx = ToolContext::testing(dir.path());
+
+        let result = run(call, &ctx, Some(parent)).await;
+
+        assert!(
+            matches!(result, ToolResult::Ok { .. }),
+            "make test failed: {result:?}"
+        );
+        let env = std::fs::read_to_string(dir.path().join("child-env.txt"))
+            .expect("make test records its env");
+        for leaked in [
+            "sk-test-not-real",
+            "sk-ant-test-not-real",
+            "tok-test-not-real",
+        ] {
+            assert!(!env.contains(leaked), "{leaked} leaked:\n{env}");
+        }
+        assert!(
+            env.contains("CARGO_HOME=/tmp/tests-cargo"),
+            "toolchain env missing:\n{env}"
+        );
     }
 }

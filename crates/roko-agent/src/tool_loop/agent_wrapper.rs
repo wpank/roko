@@ -47,6 +47,8 @@ pub struct ToolLoopAgent {
     metrics_sink: Arc<dyn MetricsSink>,
     cancel_token: Arc<dyn CancelToken>,
     correlation: CorrelationEnvelope,
+    /// `[agent] env_passthrough`: variables tool commands may inherit.
+    env_passthrough: Vec<String>,
 }
 
 /// Provider-facing format used for the initial structured message history.
@@ -89,6 +91,7 @@ impl ToolLoopAgent {
             metrics_sink: Arc::new(NoopMetricsSink),
             cancel_token: Arc::new(NeverCancel),
             correlation: CorrelationEnvelope::empty(),
+            env_passthrough: Vec::new(),
         }
     }
 
@@ -206,6 +209,15 @@ impl ToolLoopAgent {
         self
     }
 
+    /// Let the commands the agent's tool calls run (`bash`, `run_tests`)
+    /// inherit the variables matching `patterns` (`[agent] env_passthrough`)
+    /// besides what the gate policy admits.
+    #[must_use]
+    pub fn with_env_passthrough(mut self, patterns: Vec<String>) -> Self {
+        self.env_passthrough = patterns;
+        self
+    }
+
     /// Build a [`ToolExecutionContextFactory`] from the agent's configured
     /// sinks, cancel token, capabilities, and correlation data.
     fn context_factory(&self) -> ToolExecutionContextFactory {
@@ -217,7 +229,8 @@ impl ToolLoopAgent {
             .with_metrics_sink(Arc::clone(&self.metrics_sink))
             .with_cancel_token(Arc::clone(&self.cancel_token))
             .with_correlation(self.correlation.clone())
-            .with_taint_level(CamelTaintLevel::External);
+            .with_taint_level(CamelTaintLevel::External)
+            .with_env_passthrough(self.env_passthrough.clone());
         if let Some(ref root) = self.immune_root_path {
             factory = factory.with_immune_root(root);
         }
@@ -247,28 +260,39 @@ impl ToolLoopAgent {
         messages
     }
 
+    /// The output signal of a run that stopped with `stop_reason`. `output`
+    /// is the finished loop, `None` when the run failed before the loop.
+    ///
+    /// Tags: `iterations` (tool-call iterations), `num_turns` (model calls
+    /// the loop made, which dispatch records as the agent's turns), `model`
+    /// (the configured slug), and `models_reported` when the provider named
+    /// more than one model across the turns.
     fn output_signal(
         &self,
         input: &Signal,
         text: &str,
         stop_reason: &str,
-        iterations: usize,
+        output: Option<&ToolLoopOutput>,
     ) -> Signal {
-        let builder = derived_output(input, Kind::AgentOutput, Body::text(text))
+        let (iterations, turns) = output.map_or((0, 0), |output| {
+            (output.iterations, output.turn_traces.len())
+        });
+        let mut builder = derived_output(input, Kind::AgentOutput, Body::text(text))
             .tag("stop_reason", stop_reason)
-            .tag("iterations", iterations.to_string());
+            .tag("iterations", iterations.to_string())
+            .tag("num_turns", turns.to_string());
+        let reported = output.map(reported_models).unwrap_or_default();
+        if reported.len() > 1 {
+            builder = builder.tag("models_reported", reported.join(","));
+        }
         match self.model_slug() {
             Some(slug) => builder.tag("model", slug).build(),
             None => builder.build(),
         }
     }
 
-    /// Model slug configured on the tool loop's model profile, if any.
-    ///
-    /// The tool loop aggregates legacy [`crate::usage::Usage`] per turn, which
-    /// has no model field; the profile attached via
-    /// [`ToolLoop::with_model_profile`] is the only model identity available
-    /// at this layer.
+    /// Model slug configured on the tool loop's model profile, if any: the
+    /// model dispatch asked for, not necessarily the one that served.
     fn model_slug(&self) -> Option<&str> {
         self.tool_loop
             .model_profile
@@ -277,13 +301,31 @@ impl ToolLoopAgent {
             .filter(|slug| !slug.is_empty())
     }
 
-    /// Stamp the configured model slug onto the usage observation so model
-    /// attribution survives the legacy `Usage` conversion.
-    fn attach_model(&self, mut result: AgentResult) -> AgentResult {
-        if let Some(slug) = self.model_slug()
-            && let Some(usage_obs) = result.usage_obs.as_mut()
-        {
-            usage_obs.model = Some(slug.to_string());
+    /// The agent result of a finished loop: its outcome, usage and per-turn
+    /// trace, with the served model on the usage observation.
+    fn loop_result(&self, input: &Signal, output: &ToolLoopOutput) -> AgentResult {
+        let signal = |text: &str, stop_reason: &str| {
+            self.output_signal(input, text, stop_reason, Some(output))
+        };
+        let result = match &output.stop_reason {
+            StopReason::Stop => AgentResult::ok(signal(&output.final_text, "stop")),
+            StopReason::MaxIterations => AgentResult::fail(signal(
+                &exhausted_message(output.iterations, self.turn_cap),
+                "max_iterations",
+            )),
+            StopReason::Cancelled => AgentResult::fail(signal("Tool loop cancelled", "cancelled")),
+            StopReason::BackendError(err) => AgentResult::fail(signal(err, "backend_error")),
+            StopReason::BudgetExhausted => {
+                AgentResult::fail(signal("Budget exhausted", "budget_exhausted"))
+            }
+        }
+        .with_usage(output.total_usage);
+        let mut result = Self::attach_trace_metadata(result, input, output);
+        // The last model a response named. A loop whose responses named none
+        // has no reported model: the configured slug is only the request.
+        if let Some(usage_obs) = result.usage_obs.as_mut() {
+            usage_obs.model = last_reported_model(output);
+            usage_obs.source = loop_usage_source(output);
         }
         result
     }
@@ -334,6 +376,7 @@ impl ToolLoopAgent {
             Kind::Custom("agent.trace".to_string()),
             Body::Json(serde_json::json!({
                 "turn": trace.turn,
+                "model": trace.model.clone(),
                 "tool_calls": tool_calls,
                 "reasoning": trace.reasoning.clone(),
                 "usage": {
@@ -373,54 +416,14 @@ impl Agent for ToolLoopAgent {
                 input,
                 &format!("invalid image input: {error}"),
                 "backend_error",
-                0,
+                None,
             ));
         } else {
             tool_loop
                 .run_messages(self.structured_messages(), &self.tools, &tool_ctx)
                 .await
         };
-
-        let result = match &output.stop_reason {
-            StopReason::Stop => AgentResult::ok(self.output_signal(
-                input,
-                &output.final_text,
-                "stop",
-                output.iterations,
-            ))
-            .with_usage(output.total_usage),
-            StopReason::MaxIterations => AgentResult::fail(self.output_signal(
-                input,
-                &exhausted_message(output.iterations, self.turn_cap),
-                "max_iterations",
-                output.iterations,
-            ))
-            .with_usage(output.total_usage),
-            StopReason::Cancelled => AgentResult::fail(self.output_signal(
-                input,
-                "Tool loop cancelled",
-                "cancelled",
-                output.iterations,
-            ))
-            .with_usage(output.total_usage),
-            StopReason::BackendError(err) => AgentResult::fail(self.output_signal(
-                input,
-                err,
-                "backend_error",
-                output.iterations,
-            ))
-            .with_usage(output.total_usage),
-            StopReason::BudgetExhausted => AgentResult::fail(self.output_signal(
-                input,
-                "Budget exhausted",
-                "budget_exhausted",
-                output.iterations,
-            ))
-            .with_usage(output.total_usage),
-        };
-
-        let result = Self::attach_trace_metadata(result, input, &output);
-        self.attach_model(result)
+        self.loop_result(input, &output)
     }
 
     fn name(&self) -> &str {
@@ -462,7 +465,7 @@ impl Agent for ToolLoopAgent {
                 input,
                 &format!("invalid image input: {error}"),
                 "backend_error",
-                0,
+                None,
             ));
         } else {
             tool_loop
@@ -474,48 +477,55 @@ impl Agent for ToolLoopAgent {
                 )
                 .await
         };
-
-        let result = match &output.stop_reason {
-            StopReason::Stop => AgentResult::ok(self.output_signal(
-                input,
-                &output.final_text,
-                "stop",
-                output.iterations,
-            ))
-            .with_usage(output.total_usage),
-            StopReason::MaxIterations => AgentResult::fail(self.output_signal(
-                input,
-                &exhausted_message(output.iterations, self.turn_cap),
-                "max_iterations",
-                output.iterations,
-            ))
-            .with_usage(output.total_usage),
-            StopReason::Cancelled => AgentResult::fail(self.output_signal(
-                input,
-                "Tool loop cancelled",
-                "cancelled",
-                output.iterations,
-            ))
-            .with_usage(output.total_usage),
-            StopReason::BackendError(err) => AgentResult::fail(self.output_signal(
-                input,
-                err,
-                "backend_error",
-                output.iterations,
-            ))
-            .with_usage(output.total_usage),
-            StopReason::BudgetExhausted => AgentResult::fail(self.output_signal(
-                input,
-                "Budget exhausted",
-                "budget_exhausted",
-                output.iterations,
-            ))
-            .with_usage(output.total_usage),
-        };
-
-        let result = Self::attach_trace_metadata(result, input, &output);
-        self.attach_model(result)
+        self.loop_result(input, &output)
     }
+}
+
+/// Every model the provider named across the loop's turns, in order of
+/// first appearance.
+fn reported_models(output: &ToolLoopOutput) -> Vec<String> {
+    let mut models: Vec<String> = Vec::new();
+    for model in output
+        .turn_traces
+        .iter()
+        .filter_map(|trace| trace.model.as_ref())
+    {
+        if !models.contains(model) {
+            models.push(model.clone());
+        }
+    }
+    models
+}
+
+/// Where the loop's summed usage came from (bug-c65bfe): the provider's
+/// report when every turn's response reported usage, an estimate when any
+/// turn's usage was estimated or only some turns reported theirs (the sum
+/// is then a lower bound), and unknown when none did.
+fn loop_usage_source(output: &ToolLoopOutput) -> crate::usage::UsageSource {
+    use crate::usage::UsageSource;
+
+    let sources = || output.turn_traces.iter().map(|trace| &trace.usage_source);
+    let reported = sources()
+        .filter(|source| **source == UsageSource::ProviderReported)
+        .count();
+    if sources().any(|source| *source == UsageSource::Estimated) {
+        UsageSource::Estimated
+    } else if reported == 0 {
+        UsageSource::Unknown
+    } else if reported == output.turn_traces.len() {
+        UsageSource::ProviderReported
+    } else {
+        UsageSource::Estimated
+    }
+}
+
+/// The model the provider named on the last turn that named one.
+fn last_reported_model(output: &ToolLoopOutput) -> Option<String> {
+    output
+        .turn_traces
+        .iter()
+        .rev()
+        .find_map(|trace| trace.model.clone())
 }
 
 #[cfg(test)]
@@ -790,31 +800,178 @@ mod tests {
         assert_eq!(result.output.tag("stop_reason"), Some("backend_error"));
     }
 
+    #[test]
+    fn tool_loop_agent_hands_env_passthrough_to_its_tool_context() {
+        let agent = ToolLoopAgent::new(make_tool_loop(Arc::new(ErrorBackend)))
+            .with_env_passthrough(vec!["DATABASE_URL".to_string()]);
+
+        let ctx = agent.build_tool_context();
+
+        assert_eq!(ctx.env_passthrough, ["DATABASE_URL"]);
+    }
+
+    /// Calls the echo tool on every turn but the last, and names
+    /// `models[turn]` as the served model on each response (`None`: that
+    /// response names no model).
+    struct ServedModelBackend {
+        models: Vec<Option<&'static str>>,
+        call_count: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl LlmBackend for ServedModelBackend {
+        async fn send_turn(
+            &self,
+            _messages: &[serde_json::Value],
+            _tools: &RenderedTools,
+            _session: &crate::translate::SessionState,
+        ) -> Result<BackendResponse, LlmError> {
+            let call = self.call_count.fetch_add(1, Ordering::SeqCst);
+            let mut response = if call + 1 < self.models.len() {
+                serde_json::json!({
+                    "tool_calls": [{
+                        "id": format!("call-{call}"),
+                        "name": "echo",
+                        "arguments": { "value": call }
+                    }]
+                })
+            } else {
+                serde_json::json!({"message": {"content": "final answer"}})
+            };
+            if let Some(model) = self.models.get(call).copied().flatten() {
+                response["model"] = serde_json::json!(model);
+            }
+            Ok(BackendResponse::Json(response))
+        }
+    }
+
+    /// The configured slug is the model asked for; the result reports the
+    /// model the provider named, counts every model call as a turn, and
+    /// lists the models when the responses disagree.
     #[tokio::test]
-    async fn tool_loop_agent_stamps_configured_model_on_result() {
-        let profile = roko_core::config::schema::ModelProfile {
-            provider: "openai_compat".to_string(),
-            slug: "gpt-5.6-sol".to_string(),
-            ..Default::default()
-        };
-        let tool_loop = make_tool_loop(Arc::new(TwoStepBackend::new())).with_model_profile(profile);
-        let agent = ToolLoopAgent::new(tool_loop)
-            .with_tools(test_tools())
-            .with_worktree_path("/tmp");
+    async fn tool_loop_agent_reports_the_served_model_and_counts_its_calls() {
         let input = Signal::builder(Kind::Prompt)
             .body(Body::text("call the tool"))
             .build();
+        let run = |models: Vec<Option<&'static str>>| {
+            let profile = roko_core::config::schema::ModelProfile {
+                provider: "openai_compat".to_string(),
+                slug: "gpt-oss-120b".to_string(),
+                ..Default::default()
+            };
+            let backend = ServedModelBackend {
+                models,
+                call_count: AtomicUsize::new(0),
+            };
+            let agent =
+                ToolLoopAgent::new(make_tool_loop(Arc::new(backend)).with_model_profile(profile))
+                    .with_tools(test_tools())
+                    .with_worktree_path("/tmp");
+            let input = input.clone();
+            async move { agent.run(&input, &Context::now()).await }
+        };
 
-        let result = agent.run(&input, &Context::now()).await;
+        let substituted = run(vec![Some("glm-4.7"); 3]).await;
+        assert!(substituted.success);
+        assert_eq!(substituted.output.tag("model"), Some("gpt-oss-120b"));
+        assert_eq!(substituted.output.tag("num_turns"), Some("3"));
+        assert_eq!(substituted.output.tag("models_reported"), None);
+        let usage_obs = substituted.usage_obs.expect("usage_obs populated");
+        assert_eq!(usage_obs.model.as_deref(), Some("glm-4.7"));
 
-        assert!(result.success);
-        assert_eq!(result.output.tag("model"), Some("gpt-5.6-sol"));
-        let usage_obs = result.usage_obs.expect("usage_obs populated");
+        let mixed = run(vec![Some("gpt-oss-120b"), None, Some("glm-4.7")]).await;
         assert_eq!(
-            usage_obs.model.as_deref(),
-            Some("gpt-5.6-sol"),
-            "usage_obs must carry the configured model slug"
+            mixed.usage_obs.and_then(|usage| usage.model).as_deref(),
+            Some("glm-4.7"),
+            "the last response's model"
         );
+        assert_eq!(
+            mixed.output.tag("models_reported"),
+            Some("gpt-oss-120b,glm-4.7")
+        );
+
+        let silent = run(vec![None, None]).await;
+        assert_eq!(silent.output.tag("num_turns"), Some("2"));
+        assert_eq!(
+            silent.usage_obs.expect("usage_obs populated").model,
+            None,
+            "a provider that names no model has no reported model"
+        );
+    }
+
+    /// Calls the echo tool on every turn but the last, and reports usage on
+    /// the turns `reported` marks.
+    struct UsageReportingBackend {
+        reported: Vec<bool>,
+        call_count: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl LlmBackend for UsageReportingBackend {
+        async fn send_turn(
+            &self,
+            _messages: &[serde_json::Value],
+            _tools: &RenderedTools,
+            _session: &crate::translate::SessionState,
+        ) -> Result<BackendResponse, LlmError> {
+            let call = self.call_count.fetch_add(1, Ordering::SeqCst);
+            let mut response = if call + 1 < self.reported.len() {
+                serde_json::json!({
+                    "tool_calls": [{
+                        "id": format!("call-{call}"),
+                        "name": "echo",
+                        "arguments": { "value": call }
+                    }]
+                })
+            } else {
+                serde_json::json!({"message": {"content": "final answer"}})
+            };
+            if self.reported.get(call).copied().unwrap_or(false) {
+                response["usage"] =
+                    serde_json::json!({"prompt_tokens": 10, "completion_tokens": 5});
+            }
+            Ok(BackendResponse::Json(response))
+        }
+    }
+
+    /// The loop's usage names its source (bug-c65bfe): provider-reported
+    /// when every call reported usage, an estimate when only some did, and
+    /// unknown when none did.
+    #[tokio::test]
+    async fn tool_loop_usage_names_its_source() {
+        use crate::usage::UsageSource;
+
+        let input = Signal::builder(Kind::Prompt)
+            .body(Body::text("call the tool"))
+            .build();
+        let source_of = |reported: Vec<bool>| {
+            let backend = UsageReportingBackend {
+                reported,
+                call_count: AtomicUsize::new(0),
+            };
+            let agent = ToolLoopAgent::new(make_tool_loop(Arc::new(backend)))
+                .with_tools(test_tools())
+                .with_worktree_path("/tmp");
+            let input = input.clone();
+            async move {
+                agent
+                    .run(&input, &Context::now())
+                    .await
+                    .usage_obs
+                    .expect("usage_obs populated")
+                    .source
+            }
+        };
+
+        assert_eq!(
+            source_of(vec![true, true, true]).await,
+            UsageSource::ProviderReported
+        );
+        assert_eq!(
+            source_of(vec![true, false, true]).await,
+            UsageSource::Estimated
+        );
+        assert_eq!(source_of(vec![false, false]).await, UsageSource::Unknown);
     }
 
     #[tokio::test]

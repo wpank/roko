@@ -6,6 +6,7 @@ use anyhow::{Context as _, Result, bail};
 use indexmap::IndexMap;
 use roko_cli::orchestrator::detect_cycle_nodes;
 use roko_core::AgentRole;
+use roko_core::config::GatesConfig;
 use roko_core::config::schema::ModelProfile;
 use roko_gate::AcceptanceContract;
 use serde::Serialize;
@@ -258,6 +259,75 @@ pub fn render_text(report: &ValidationReport) -> String {
     out
 }
 
+/// A workspace gate rung (`[[gates.rungs]]`) as `plan validate` lists it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RungSummary {
+    pub name: String,
+    pub command: String,
+    pub required: bool,
+    /// Whether plan tasks run it: it is required and has a command.
+    pub runs: bool,
+}
+
+/// The workspace's gate rungs for the plans `plan validate` checked. Every
+/// task of a plan runs the rungs that run after its own verify steps,
+/// unless the plan opts out with `[meta] workspace_rungs = false`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct WorkspaceRungs {
+    /// Every declared rung, in `roko.toml` order.
+    pub rungs: Vec<RungSummary>,
+    /// The `tasks.toml` of each plan that opts out.
+    pub opted_out: Vec<String>,
+}
+
+/// The rungs `gates` declares, and the plans under `dir` that opt out of
+/// them.
+pub fn workspace_rungs(dir: &Path, gates: &GatesConfig) -> Result<WorkspaceRungs> {
+    let rungs = gates
+        .custom_rungs
+        .iter()
+        .map(|rung| RungSummary {
+            name: rung.name.clone(),
+            command: rung.command.clone(),
+            required: rung.required,
+            runs: gates.required_rungs().any(|running| running == rung),
+        })
+        .collect();
+    let opted_out = collect_tasks_files(dir)?
+        .into_iter()
+        .filter(|path| {
+            roko_cli::task_parser::TasksFile::parse(path)
+                .is_ok_and(|tasks| !tasks.meta.runs_workspace_rungs())
+        })
+        .map(|path| path.display().to_string())
+        .collect();
+    Ok(WorkspaceRungs { rungs, opted_out })
+}
+
+/// `rungs` as `plan validate` prints them; empty when the workspace
+/// declares none.
+pub fn render_rungs_text(rungs: &WorkspaceRungs) -> String {
+    if rungs.rungs.is_empty() {
+        return String::new();
+    }
+    let mut out = String::from("workspace rungs, run after each task's own verify steps:");
+    for rung in &rungs.rungs {
+        let note = match (rung.runs, rung.required) {
+            (true, _) => "",
+            (false, false) => " (optional: does not run)",
+            (false, true) => " (no command: does not run)",
+        };
+        let _ = write!(out, "\n  {:<12} {}{note}", rung.name, rung.command);
+    }
+    if !rungs.opted_out.is_empty() {
+        out.push_str("\nplans that opt out with [meta] workspace_rungs = false:");
+        for path in &rungs.opted_out {
+            let _ = write!(out, "\n  {path}");
+        }
+    }
+    out
+}
+
 fn collect_tasks_files(dir: &Path) -> Result<Vec<PathBuf>> {
     if dir.is_file() {
         if dir.file_name().is_some_and(|name| name == "tasks.toml") {
@@ -398,6 +468,20 @@ fn validate_tasks_file(
                         message: issue.message,
                     });
                 }
+            }
+            // gap-1d1fa6: a task too big for its tier's executor is a warning,
+            // so `--strict` rejects it.
+            for issue in roko_cli::plan_policy::validate_tier_sizes(
+                &tasks_file,
+                roko_cli::plan_policy::PlanExecutionPolicy::for_environment(),
+            ) {
+                diagnostics.push(Diagnostic {
+                    severity: Severity::Warning,
+                    rule_id: issue.code.to_string(),
+                    plan_id: Some(plan_id.clone()),
+                    task_id: issue.task_id,
+                    message: issue.message,
+                });
             }
         }
         Err(runtime_err) => {
@@ -1682,6 +1766,61 @@ depends_on = ["T1"]
         assert_eq!(report.exit_code(true), 1, "--strict rejects it");
     }
 
+    /// gap-1d1fa6: a task over its tier's size limits is a PLAN_TIER_SIZE
+    /// warning, which `--strict` rejects; the same task as integrative passes.
+    #[test]
+    fn task_over_its_tier_size_is_a_warning() {
+        for (tier, flagged) in [("mechanical", true), ("integrative", false)] {
+            let temp = TempDir::new().unwrap();
+            let root = temp.path();
+            fs::create_dir_all(root.join("plans/demo")).unwrap();
+            fs::write(
+                root.join("plans/demo/tasks.toml"),
+                format!(
+                    r#"
+[meta]
+plan = "demo"
+
+[[task]]
+id = "T1"
+title = "Rename the setting everywhere"
+role = "implementer"
+tier = "{tier}"
+files = ["src/a.rs", "src/b.rs", "src/c.rs", "src/d.rs", "src/e.rs", "src/f.rs"]
+max_loc = 150
+depends_on = []
+verify = [{{ phase = "compile", command = "cargo check -p roko-cli" }}]
+"#
+                ),
+            )
+            .unwrap();
+
+            let report = validate_plans_dir(root.join("plans").as_path(), None).unwrap();
+
+            let oversized = report
+                .plans
+                .iter()
+                .flat_map(|plan| &plan.diagnostics)
+                .filter(|diag| diag.rule_id == "PLAN_TIER_SIZE")
+                .collect::<Vec<_>>();
+            assert_eq!(oversized.len(), usize::from(flagged), "{tier}: {report:?}");
+            assert_eq!(report.totals.errors, 0, "{report:?}");
+            assert_eq!(report.exit_code(false), 0, "{tier}");
+            assert_eq!(report.exit_code(true), i32::from(flagged), "{tier}");
+            if flagged {
+                assert_eq!(oversized[0].severity, Severity::Warning);
+                assert_eq!(oversized[0].task_id.as_deref(), Some("T1"));
+                assert!(
+                    oversized[0]
+                        .message
+                        .contains("raise its tier to integrative"),
+                    "{}",
+                    oversized[0].message
+                );
+            }
+        }
+    }
+
     /// gap-8c0a20: a tier that `TaskTier::parse` cannot read is a PLAN_035
     /// schema error (`plan run` refuses the plan on the same check); a tier
     /// alias passes.
@@ -2035,5 +2174,63 @@ verify = [{ phase = "compile", command = "cargo check -p roko-cli" }]
                 .iter()
                 .all(|diag| diag.rule_id != "PLAN_032" && diag.rule_id != "PLAN_033")
         }));
+    }
+
+    #[test]
+    fn plan_validate_lists_the_rungs_that_will_run() {
+        let temp = TempDir::new().expect("tempdir");
+        for (plan, meta) in [("default", ""), ("opted-out", "workspace_rungs = false")] {
+            let dir = temp.path().join(plan);
+            fs::create_dir_all(&dir).expect("plan dir");
+            let text = format!(
+                r#"
+[meta]
+plan = "{plan}"
+{meta}
+
+[[task]]
+id = "T1"
+title = "One task"
+"#
+            );
+            fs::write(dir.join("tasks.toml"), text).expect("tasks.toml");
+        }
+        let rung = |name: &str, command: &str, required| roko_core::config::GateRungConfig {
+            name: name.to_string(),
+            command: command.to_string(),
+            timeout_secs: 60,
+            required,
+            parallel_with: Vec::new(),
+        };
+        let gates = GatesConfig {
+            custom_rungs: vec![
+                rung("lint", "cargo clippy", true),
+                rung("bench", "cargo bench", false),
+            ],
+            ..GatesConfig::default()
+        };
+
+        let rungs = workspace_rungs(temp.path(), &gates).expect("rungs");
+        let runs: Vec<(&str, bool)> = rungs
+            .rungs
+            .iter()
+            .map(|rung| (rung.name.as_str(), rung.runs))
+            .collect();
+        assert_eq!(runs, [("lint", true), ("bench", false)]);
+        assert_eq!(rungs.opted_out.len(), 1);
+        assert!(
+            rungs.opted_out[0].ends_with("opted-out/tasks.toml"),
+            "{:?}",
+            rungs.opted_out
+        );
+
+        let text = render_rungs_text(&rungs);
+        assert!(text.contains("cargo clippy\n"), "{text}");
+        assert!(
+            text.contains("cargo bench (optional: does not run)"),
+            "{text}"
+        );
+        assert!(text.contains("opted-out/tasks.toml"), "{text}");
+        assert_eq!(render_rungs_text(&WorkspaceRungs::default()), "");
     }
 }

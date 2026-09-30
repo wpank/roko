@@ -2,7 +2,13 @@
 //!
 //! Returns [`ToolDef`] entries for the 8 core tools exposed to ACP sessions,
 //! plus [`execute_acp_builtin_tool`] which dispatches tool calls to async handlers.
+//!
+//! The tools keep agents away from provider keys as roko-std's tools do: the
+//! file tools, `grep` and `bash` refuse key files such as `.roko/.env`
+//! ([`refuse_key_file`], [`refuse_key_file_in_command`]), and `bash` runs with
+//! the environment verify steps get ([`roko_gate::inherit_gate_env`]).
 
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 use tokio::sync::mpsc;
@@ -11,6 +17,7 @@ use uuid::Uuid;
 
 use roko_agent::safety::bash::check_command;
 use roko_agent::safety::network::check_url;
+use roko_std::tool::builtin::sandbox::{refuse_key_file, refuse_key_file_in_command};
 
 use crate::bridge_events::CognitiveEvent;
 use crate::types::{ContentBlock, PermissionAction, ToolCallKind, ToolCallStatus};
@@ -362,10 +369,14 @@ fn resolve_path_for_write(workdir: &Path, raw: &str) -> Result<PathBuf, String> 
 /// Needs permission: `write_file`, `edit_file`, `bash` — the emitted
 /// `ToolCallStart` carries `needs_permission` info via the [`ToolCallKind`]
 /// so the ACP layer can gate on it.
+///
+/// `env_passthrough` (`[agent] env_passthrough`) names the variables `bash`
+/// inherits besides what the gate policy admits.
 pub async fn execute_acp_builtin_tool(
     name: &str,
     args: &serde_json::Value,
     workdir: &Path,
+    env_passthrough: &[String],
     event_sender: &mpsc::Sender<CognitiveEvent>,
 ) -> String {
     let tool_call_id = Uuid::new_v4().to_string();
@@ -390,7 +401,7 @@ pub async fn execute_acp_builtin_tool(
         "edit_file" => exec_edit_file(args, workdir).await,
         "glob" => exec_glob(args, workdir).await,
         "grep" => exec_grep(args, workdir).await,
-        "bash" => exec_bash(args, workdir).await,
+        "bash" => exec_bash(args, workdir, env_passthrough, None).await,
         "ls" => exec_ls(args, workdir).await,
         "web_fetch" => exec_web_fetch(args).await,
         "retrieve" => exec_retrieve(args, workdir).await,
@@ -603,6 +614,7 @@ fn format_tool_title(name: &str, args: &serde_json::Value) -> String {
 async fn exec_read_file(args: &serde_json::Value, workdir: &Path) -> Result<String, String> {
     let raw_path = require_str(args, "path")?;
     let path = resolve_path(workdir, &raw_path)?;
+    refuse_key_file(&path).map_err(|e| format!("read_file: {e}"))?;
     let lines_limit = opt_u64(args, "lines");
 
     let content = tokio::fs::read_to_string(&path)
@@ -622,6 +634,7 @@ async fn exec_write_file(args: &serde_json::Value, workdir: &Path) -> Result<Str
     let raw_path = require_str(args, "path")?;
     let content = require_str(args, "content")?;
     let path = resolve_path_for_write(workdir, &raw_path)?;
+    refuse_key_file(&path).map_err(|e| format!("write_file: {e}"))?;
 
     // Ensure parent directory exists.
     if let Some(parent) = path.parent() {
@@ -642,6 +655,7 @@ async fn exec_edit_file(args: &serde_json::Value, workdir: &Path) -> Result<Stri
     let old_string = require_str(args, "old_string")?;
     let new_string = require_str(args, "new_string")?;
     let path = resolve_path(workdir, &raw_path)?;
+    refuse_key_file(&path).map_err(|e| format!("edit_file: {e}"))?;
 
     let content = tokio::fs::read_to_string(&path)
         .await
@@ -815,6 +829,7 @@ async fn exec_grep(args: &serde_json::Value, workdir: &Path) -> Result<String, S
         Some(p) => resolve_path(workdir, &p)?,
         None => workdir.to_path_buf(),
     };
+    refuse_key_file(&search_path).map_err(|e| format!("grep: {e}"))?;
     let file_type = opt_str(args, "type");
 
     // Try ripgrep first, fall back to manual search.
@@ -823,6 +838,8 @@ async fn exec_grep(args: &serde_json::Value, workdir: &Path) -> Result<String, S
         .arg("--line-number")
         .arg("--color=never")
         .arg("--max-count=200")
+        // A NUL after each path, so matches in key files can be dropped.
+        .arg("--null")
         .arg(&pattern)
         .arg(&search_path)
         .current_dir(workdir);
@@ -833,13 +850,13 @@ async fn exec_grep(args: &serde_json::Value, workdir: &Path) -> Result<String, S
 
     match cmd.output().await {
         Ok(output) => {
-            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stdout = without_key_file_matches(&String::from_utf8_lossy(&output.stdout));
             let stderr = String::from_utf8_lossy(&output.stderr);
             if output.status.success() || !stdout.is_empty() {
                 if stdout.is_empty() {
                     Ok("No matches found".into())
                 } else {
-                    Ok(stdout.into_owned())
+                    Ok(stdout)
                 }
             } else if stderr.contains("not found") || stderr.contains("No such file") {
                 // rg not installed — fall back to manual search.
@@ -861,7 +878,35 @@ async fn exec_grep(args: &serde_json::Value, workdir: &Path) -> Result<String, S
     }
 }
 
-/// Fallback grep: walk files and do line-by-line search.
+/// `rg --null` output without the matches in provider key files, and with
+/// the NUL after each path turned back into `:`. rg skips hidden files such as
+/// `.roko/.env`, but not `.roko/secrets.toml` or `.roko/credentials.json`.
+fn without_key_file_matches(stdout: &str) -> String {
+    let mut kept = String::new();
+    let mut last: Option<(&str, bool)> = None;
+    for line in stdout.lines() {
+        let Some((path, rest)) = line.split_once('\0') else {
+            kept.push_str(line);
+            kept.push('\n');
+            continue;
+        };
+        let readable = match last {
+            Some((last_path, readable)) if last_path == path => readable,
+            _ => refuse_key_file(Path::new(path)).is_ok(),
+        };
+        last = Some((path, readable));
+        if readable {
+            kept.push_str(path);
+            kept.push(':');
+            kept.push_str(rest);
+            kept.push('\n');
+        }
+    }
+    kept
+}
+
+/// Fallback grep: walk files and do line-by-line search. Provider key files
+/// are skipped unread.
 async fn manual_grep(path: &Path, pattern: &str) -> Result<String, String> {
     let path = path.to_path_buf();
     let pattern = pattern.to_string();
@@ -885,7 +930,9 @@ async fn manual_grep(path: &Path, pattern: &str) -> Result<String, String> {
                         }
                     }
                 }
-            } else if let Ok(content) = std::fs::read_to_string(&p) {
+            } else if refuse_key_file(&p).is_ok()
+                && let Ok(content) = std::fs::read_to_string(&p)
+            {
                 for (i, line) in content.lines().enumerate() {
                     if re.is_match(line) {
                         results.push(format!("{}:{}:{}", p.display(), i + 1, line));
@@ -906,7 +953,14 @@ async fn manual_grep(path: &Path, pattern: &str) -> Result<String, String> {
     .map_err(|e| format!("grep: join: {e}"))?
 }
 
-async fn exec_bash(args: &serde_json::Value, workdir: &Path) -> Result<String, String> {
+/// Run the `bash` tool. The command inherits `parent_env` in place of the
+/// ACP server's own environment when given, filtered by the same policy.
+async fn exec_bash(
+    args: &serde_json::Value,
+    workdir: &Path,
+    env_passthrough: &[String],
+    parent_env: Option<Vec<(String, OsString)>>,
+) -> Result<String, String> {
     let command = require_str(args, "command")?;
     let timeout_ms = opt_u64(args, "timeout").unwrap_or(DEFAULT_REQUEST_TIMEOUT_MS);
 
@@ -914,16 +968,23 @@ async fn exec_bash(args: &serde_json::Value, workdir: &Path) -> Result<String, S
     // spawning. This ensures ACP sessions honor the same policy as the
     // agent tool dispatcher (rm -rf /, sudo, curl|sh, fork bombs, etc.).
     check_command(&command).map_err(|e| format!("bash: blocked by safety policy: {e}"))?;
+    refuse_key_file_in_command(&command, workdir)
+        .map_err(|e| format!("bash: blocked by safety policy: {e}"))?;
 
-    let mut child = tokio::process::Command::new("bash")
-        .arg("-c")
+    let mut cmd = tokio::process::Command::new("bash");
+    cmd.arg("-c")
         .arg(&command)
         .current_dir(workdir)
         .kill_on_drop(true)
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("bash: spawn: {e}"))?;
+        .stderr(std::process::Stdio::piped());
+    // No provider key, secret-looking name or `.env`-loaded name reaches the
+    // command unless `env_passthrough` names it.
+    match parent_env {
+        Some(vars) => roko_gate::inherit_gate_env_from(&mut cmd, vars, env_passthrough),
+        None => roko_gate::inherit_gate_env(&mut cmd, env_passthrough),
+    }
+    let mut child = cmd.spawn().map_err(|e| format!("bash: spawn: {e}"))?;
 
     // Read stdout/stderr concurrently with wait to avoid pipe deadlocks.
     let stdout_pipe = child.stdout.take();
@@ -1147,7 +1208,7 @@ mod tests {
         let args = serde_json::json!({ "command": command });
         tokio::runtime::Runtime::new()
             .unwrap()
-            .block_on(exec_bash(&args, workdir))
+            .block_on(exec_bash(&args, workdir, &[], None))
     }
 
     // ── web_fetch safety ─────────────────────────────────────────────────
@@ -1244,6 +1305,125 @@ mod tests {
             result.is_ok(),
             "expected echo hello to pass safety check, got: {result:?}"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn exec_bash_env_excludes_provider_keys() {
+        let path = std::env::var_os("PATH")
+            .filter(|path| !path.is_empty())
+            .unwrap_or_else(|| "/usr/bin:/bin".into());
+        let mut parent = vec![("PATH".to_string(), path)];
+        for (name, value) in [
+            ("CARGO_HOME", "/tmp/acp-cargo"),
+            ("DATABASE_URL", "postgres://acp-db"),
+            ("OPENAI_API_KEY", "sk-test-not-real"),
+            ("ANTHROPIC_API_KEY", "sk-ant-test-not-real"),
+            ("MY_SECRET_TOKEN", "tok-test-not-real"),
+            ("UNRELATED_SETTING", "not-inherited"),
+        ] {
+            parent.push((name.to_string(), OsString::from(value)));
+        }
+        let args = serde_json::json!({ "command": "env" });
+        let workdir = std::env::temp_dir();
+        let passthrough = vec!["DATABASE_URL".to_string()];
+        let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
+
+        let output = runtime
+            .block_on(exec_bash(&args, &workdir, &passthrough, Some(parent)))
+            .expect("env runs");
+
+        for leaked in [
+            "sk-test-not-real",
+            "sk-ant-test-not-real",
+            "tok-test-not-real",
+            "not-inherited",
+        ] {
+            assert!(!output.contains(leaked), "{leaked} leaked:\n{output}");
+        }
+        for kept in [
+            "CARGO_HOME=/tmp/acp-cargo",
+            "DATABASE_URL=postgres://acp-db",
+        ] {
+            assert!(output.contains(kept), "{kept} missing:\n{output}");
+        }
+    }
+
+    // ── key files ────────────────────────────────────────────────────────
+
+    #[test]
+    fn acp_builtin_tools_refuse_key_files() {
+        const CANARY: &str = "sk-key-file-canary";
+        let dir = tempfile::tempdir().expect("tempdir");
+        let workdir = dir.path();
+        std::fs::create_dir_all(workdir.join(".roko")).expect("create .roko");
+        let env_file = workdir.join(".roko").join(".env");
+        std::fs::write(&env_file, format!("OPENAI_API_KEY={CANARY}\n")).expect("write .env");
+        let secrets = workdir.join(".roko").join("secrets.toml");
+        std::fs::write(&secrets, format!("token = \"{CANARY}\"\n")).expect("write secrets");
+        std::fs::write(workdir.join("notes.txt"), "canary notes\n").expect("write notes");
+        let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
+
+        let read = |path: &str| {
+            let args = serde_json::json!({ "path": path });
+            runtime.block_on(exec_read_file(&args, workdir))
+        };
+        for path in [".roko/.env", ".roko/secrets.toml"] {
+            let err = read(path).expect_err("key file read refused");
+            assert!(err.contains("provider key file blocked"), "{path}: {err}");
+        }
+        assert_eq!(read("notes.txt").expect("ordinary file"), "canary notes\n");
+
+        let write = serde_json::json!({ "path": ".roko/.env", "content": "X=1\n" });
+        let err = runtime
+            .block_on(exec_write_file(&write, workdir))
+            .expect_err("key file write refused");
+        assert!(err.contains("provider key file blocked"), "{err}");
+        let edit = serde_json::json!({
+            "path": ".roko/secrets.toml",
+            "old_string": CANARY,
+            "new_string": "x",
+        });
+        let err = runtime
+            .block_on(exec_edit_file(&edit, workdir))
+            .expect_err("key file edit refused");
+        assert!(err.contains("provider key file blocked"), "{err}");
+        let env_text = std::fs::read_to_string(&env_file).expect("read .env");
+        assert!(env_text.contains(CANARY), "the key file was changed");
+
+        // bash refuses a command that names a key file.
+        let cat = serde_json::json!({ "command": "cat .roko/.env" });
+        let err = runtime
+            .block_on(exec_bash(&cat, workdir, &[], None))
+            .expect_err("cat .roko/.env refused");
+        assert!(err.contains("provider key file blocked"), "{err}");
+
+        // grep refuses a key file and skips the key files in a directory.
+        let grep = |path: &str| {
+            let args = serde_json::json!({ "pattern": "canary", "path": path });
+            runtime.block_on(exec_grep(&args, workdir))
+        };
+        let err = grep(".roko/secrets.toml").expect_err("key file grep refused");
+        assert!(err.contains("provider key file blocked"), "{err}");
+        for path in [".roko", "."] {
+            let output = grep(path).expect("grep runs");
+            assert!(!output.contains(CANARY), "{path}: {output}");
+        }
+        // rg output: a NUL after each path.
+        let raw = format!(
+            "{}\u{0}1:{CANARY}\nnotes.txt\u{0}1:canary notes\n",
+            secrets.display()
+        );
+        assert_eq!(without_key_file_matches(&raw), "notes.txt:1:canary notes\n");
+
+        // A symlink to a key file is refused too.
+        #[cfg(unix)]
+        {
+            let link = workdir.join("innocent.txt");
+            std::os::unix::fs::symlink(&env_file, &link).expect("symlink");
+            let err = read("innocent.txt").expect_err("symlinked key file refused");
+            assert!(err.contains("provider key file blocked"), "{err}");
+        }
     }
 
     // ── derive_tool_permissions ──────────────────────────────────────────

@@ -15,7 +15,7 @@ discovered_from = "tmp/cybernetic-harness/tldr/05-GAPS-AND-PROPOSALS.md (P0 #3);
 anchors = ["crates/roko-agent/src/claude_cli_agent.rs::build_settings_json", "crates/roko-gate/src/shell.rs::ShellGate", "crates/roko-agent/src/safety/path.rs::canonicalize_with_policy", "crates/roko-cli/tests/secrets_and_git_guard_canary.rs"]
 doc = "tmp/cybernetic-harness/workstreams/PLAN.md"
 lane = "rust-cold"
-links = { depends_on = ["bug-7d7200", "gap-8be530", "gap-5f4852", "bug-7de5df", "bug-a66941", "gap-0e2c40", "gap-8f8544", "bug-f4e133", "bug-66f5a1", "bug-63327d", "find-570af2", "gap-b7a2d5", "bug-6930e6", "gap-a3fc5b", "gap-585bd2", "bug-3f3990", "bug-62e7e6", "bug-0bc728", "bug-ceab60", "bug-34c16c", "bug-a9a251", "gap-e9660f", "bug-c6ad88", "bug-997c6a"], blocks = [], related = ["spec-ae5f94"], supersedes = [], duplicate_of = "" }
+links = { depends_on = ["bug-7d7200", "gap-8be530", "gap-5f4852", "bug-7de5df", "bug-a66941", "gap-0e2c40", "gap-8f8544", "bug-f4e133", "bug-66f5a1", "bug-63327d", "find-570af2", "gap-b7a2d5", "bug-6930e6", "gap-a3fc5b", "gap-585bd2", "bug-3f3990", "bug-62e7e6", "bug-0bc728", "bug-ceab60", "bug-34c16c", "bug-a9a251", "gap-e9660f", "bug-c6ad88", "bug-997c6a", "bug-41bea4", "bug-5a6636", "bug-69a002", "bug-cef888"], blocks = [], related = ["spec-ae5f94"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "grep -rqw 'fn secrets_and_git_guard_canary' crates/roko-cli/tests/ && cargo test -p roko-cli --test secrets_and_git_guard_canary"
@@ -76,7 +76,7 @@ This is the implementation plan.
 
 - [x] bug-7d7200: Agents and verify commands inherit roko's whole environment, including provider API keys (existing item)
 - [x] gap-8be530: Claude Code runs load the user's own ~/.claude settings, hooks and plugins (existing item)
-- [ ] gap-5f4852: Secret-canary persistence test never run for scrubbers/persistent sinks (existing item)
+- [x] gap-5f4852: Secret-canary persistence test never run for scrubbers/persistent sinks (existing item)
 - [x] bug-7de5df: The agent git guard misses reset, stash and clean, and commands after the first in a chain
 - [x] bug-a66941: Agents can read the provider key files, such as ~/.roko/.env
 - [ ] gap-0e2c40: Integration test C2: no provider key reaches an agent, a gate or a log, and the git guard denies destructive commands
@@ -88,16 +88,20 @@ This is the implementation plan.
 - [x] gap-b7a2d5: roko chat and dispatch_v2 spawn claude without the Claude Code isolation flags
 - [x] bug-6930e6: find_mcp_config hands Claude runs an ancestor directory's or $HOME's .mcp.json
 - [x] gap-a3fc5b: Claude Code isolation doesn't cover shell snapshots, and a managed-mcp.json makes Claude refuse --strict-mcp-config
-- [ ] gap-585bd2: Every implementer is offered the 17 chain tools, transfer and swap included, whatever the task domain
+- [x] gap-585bd2: Every implementer is offered the 17 chain tools, transfer and swap included, whatever the task domain
 - [ ] bug-3f3990: The Linux firejail plugin sandbox ignores sandbox.allowed_paths and filesystem_write, which macOS Seatbelt enforces
 - [x] bug-62e7e6: roko-std's bash tool and SafetyLayer's bash policy never check commands for key files
 - [x] bug-0bc728: The command guard misses command strings passed to wrappers, find -exec and -delete, and busybox rm
 - [x] bug-ceab60: The agent command guard lets deletes through find | xargs rm, fd -x rm, and command strings given to ssh or parallel
 - [x] bug-34c16c: The project roko.toml can hold serve.auth.api_key, and agents can read it
-- [ ] bug-a9a251: roko chat's resolve_mcp_config still falls back to ~/.claude/mcp-config.json
-- [ ] gap-e9660f: Whole-project reads such as grep -r, rg or cat * can still show agents a secret stored in roko.toml
-- [ ] bug-c6ad88: ACP's builtin tools don't check for key files
-- [ ] bug-997c6a: ls | xargs rm and xargs rm < list still pass the agent command guard
+- [x] bug-a9a251: roko chat's resolve_mcp_config still falls back to ~/.claude/mcp-config.json
+- [x] gap-e9660f: Whole-project reads such as grep -r, rg or cat * can still show agents a secret stored in roko.toml
+- [x] bug-c6ad88: ACP's builtin tools don't check for key files
+- [x] bug-997c6a: ls | xargs rm and xargs rm < list still pass the agent command guard
+- [x] bug-41bea4: Guard gaps: the roko.toml content check misses grep -r, parallel isn't treated as a bulk delete, and sudo git -C dir rm -r is a false positive
+- [ ] bug-5a6636: Config secrets other than provider api_key_env (extra_headers, file secrets, serve.auth.api_key) aren't added to the log scrubber
+- [ ] bug-69a002: The guard's secret-read check misses git grep, ag/ack, reads through find or xargs and brace globs, and judges a search after cd from the wrong directory
+- [ ] bug-cef888: Every .env value of 8 or more characters counts as a secret, so non-secret settings kept in .env are redacted from records
 - [ ] The epic's `[[verify]]` command (test C2) passes on the merged branch.
 
 ## Notes

@@ -576,26 +576,6 @@ fn parse_from_resolved_path(
         })?;
     }
 
-    // A secret in a config file that is not a key file keeps working, but
-    // agents are refused the whole file while it is there
-    // (`child_env::is_config_with_secrets`), and a command that searches the
-    // project can still read it. Say so once per file.
-    if let (Some(p), Some(text)) = (path, &raw_text)
-        && !crate::child_env::is_key_file(p)
-        && config_text_holds_secrets(text)
-    {
-        let first = emitted_diagnostics()
-            .lock()
-            .insert(format!("secret-in:{}", p.display()));
-        if first {
-            tracing::warn!(
-                path = %p.display(),
-                "config file holds a secret such as serve.auth.api_key, so agents may not read \
-                 it; move secrets to ROKO__* variables in .roko/.env (ROKO__SERVE__AUTH__API_KEY)"
-            );
-        }
-    }
-
     // 3. Parse to a value tree, migrate, then deserialize. Migrations must run
     // before serde so renamed fields are not silently discarded.
     match (&path, raw_text) {
@@ -606,6 +586,7 @@ fn parse_from_resolved_path(
                         path: p.clone(),
                         source,
                     })?;
+            refuse_readable_secrets(p, &value)?;
             let diagnostics = unknown_field_diagnostics(&value);
             for diagnostic in &diagnostics {
                 tracing::warn!(
@@ -776,8 +757,17 @@ fn resolve_runtime_layers_with_context(
             "hierarchical ROKO__* environment override",
         );
     }
+    expand_secret_references(&mut config)?;
     config.interpolate_env_vars();
     config.resolve_file_secrets();
+    // The process's secret scrubber (when one is installed) also redacts the
+    // keys this config's providers read.
+    crate::obs::add_secret_env_values(
+        config
+            .providers
+            .values()
+            .filter_map(|provider| provider.api_key_env.as_deref()),
+    );
 
     // Post-merge provider reference validation.
     // When strict_validation is enabled in config, dangling model->provider
@@ -1157,6 +1147,21 @@ fn hierarchical_env_to_path(key: &str) -> Option<String> {
     Some(suffix.to_ascii_lowercase().replace("__", "."))
 }
 
+/// The `ROKO__` variable that sets config field `path`, if one can.
+///
+/// `serve.auth.api_key` is set by `ROKO__SERVE__AUTH__API_KEY`. A variable
+/// name holds only ASCII letters, digits and underscores, and the loader
+/// reads it back in lowercase, so a field such as `providers.My-Key.api_key`
+/// has no variable.
+#[must_use]
+pub fn env_override_name(path: &str) -> Option<String> {
+    let name = format!("ROKO__{}", path.to_ascii_uppercase().replace('.', "__"));
+    let valid = name
+        .bytes()
+        .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'_');
+    (valid && hierarchical_env_to_path(&name).as_deref() == Some(path)).then_some(name)
+}
+
 /// Collect all `ROKO__*` env vars that represent hierarchical config paths.
 ///
 /// Returns the list of dotted config paths that were found in the environment.
@@ -1228,7 +1233,9 @@ where
 /// Set a value in a TOML value tree at a dotted path.
 ///
 /// Creates intermediate tables as needed. The value is parsed as a TOML
-/// literal (bool, integer, float) or stored as a string.
+/// literal (bool, integer, float) or stored as a string. A field that holds
+/// a string keeps the value as a string, so a key such as `12345` does not
+/// become a number that fails to load.
 fn set_toml_value_at_path(root: &mut toml::Value, path: &str, raw_value: &str) {
     let segments: Vec<&str> = path.split('.').collect();
     if segments.is_empty() {
@@ -1250,7 +1257,10 @@ fn set_toml_value_at_path(root: &mut toml::Value, path: &str, raw_value: &str) {
     // Set the leaf value.
     let leaf_key = segments[segments.len() - 1];
     if let Some(table) = current.as_table_mut() {
-        let parsed_value = parse_env_value_to_toml(raw_value);
+        let parsed_value = match table.get(leaf_key) {
+            Some(toml::Value::String(_)) => toml::Value::String(raw_value.to_string()),
+            _ => parse_env_value_to_toml(raw_value),
+        };
         table.insert(leaf_key.to_string(), parsed_value);
     }
 }
@@ -2133,13 +2143,121 @@ fn is_secret_key(key: &str) -> bool {
             .any(|fragment| key.contains(fragment))
 }
 
-/// Whether a config tree holds a secret: a value that
-/// `roko config show --effective` would redact.
+/// The dotted paths of the secrets in a config tree.
+///
+/// A secret is a non-empty string in a secret-named field ([`is_secret_key`])
+/// or in provider `extra_headers`, or an `agent.env` value whose name looks
+/// like a credential. A `${VAR}` reference is not a secret, and the loader
+/// expands it in each of those places; nor is an `extra_headers` `*_file`
+/// path.
+#[must_use]
+pub fn secret_fields(value: &toml::Value) -> Vec<String> {
+    let mut fields = Vec::new();
+    collect_secret_fields(value, "", &mut fields);
+    fields
+}
+
+fn collect_secret_fields(value: &toml::Value, path: &str, fields: &mut Vec<String>) {
+    let Some(table) = value.as_table() else {
+        return;
+    };
+    for (key, child) in table {
+        let child_path = if path.is_empty() {
+            key.clone()
+        } else {
+            format!("{path}.{key}")
+        };
+        match child {
+            toml::Value::String(text) if is_secret_key(key) && is_literal_secret(text) => {
+                fields.push(child_path);
+            }
+            // An array of strings under a secret name; tables in it, such as
+            // the hashed `serve.auth.api_keys`, hold no secret.
+            toml::Value::Array(items) if is_secret_key(key) => {
+                if items
+                    .iter()
+                    .any(|item| item.as_str().is_some_and(is_literal_secret))
+                {
+                    fields.push(child_path);
+                }
+            }
+            toml::Value::Table(headers) if key.eq_ignore_ascii_case("extra_headers") => {
+                for (name, header) in headers {
+                    if !name.to_ascii_lowercase().ends_with("_file")
+                        && header.as_str().is_some_and(is_literal_secret)
+                    {
+                        fields.push(format!("{child_path}.{name}"));
+                    }
+                }
+            }
+            toml::Value::Array(pairs) if child_path == "agent.env" => {
+                for pair in pairs {
+                    if let Some([toml::Value::String(name), toml::Value::String(text)]) =
+                        pair.as_array().map(Vec::as_slice)
+                        && crate::child_env::is_secret_env_name(name)
+                        && is_literal_secret(text)
+                    {
+                        fields.push(format!("{child_path}.{name}"));
+                    }
+                }
+            }
+            toml::Value::Table(_) => collect_secret_fields(child, &child_path, fields),
+            toml::Value::Array(items) => {
+                for item in items {
+                    collect_secret_fields(item, &child_path, fields);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Whether a config string is a literal secret: not empty, and not an
+/// environment reference such as `${OPENAI_API_KEY}`.
+fn is_literal_secret(text: &str) -> bool {
+    !text.is_empty() && !text.contains("${")
+}
+
+/// Whether a config tree holds a secret ([`secret_fields`]).
 #[must_use]
 pub fn holds_secrets(value: &toml::Value) -> bool {
-    let mut redacted = value.clone();
-    redact_secrets_in_toml(&mut redacted);
-    redacted != *value
+    !secret_fields(value).is_empty()
+}
+
+/// Refuse a config file that agents may read when it holds a secret.
+///
+/// Any file but a key file such as `~/.roko/config.toml` counts: a grep of
+/// the project would show the secret to agents. The error names each field
+/// and where it belongs instead.
+///
+/// # Errors
+///
+/// [`LoadConfigError::SecretInConfig`] when `value`, the contents of
+/// `path`, holds a secret ([`secret_fields`]).
+pub fn refuse_readable_secrets(path: &Path, value: &toml::Value) -> Result<(), LoadConfigError> {
+    if crate::child_env::is_key_file(path) {
+        return Ok(());
+    }
+    let fields = secret_fields(value);
+    if fields.is_empty() {
+        return Ok(());
+    }
+    let fields = fields
+        .iter()
+        .map(|field| match env_override_name(field) {
+            Some(variable)
+                if !field.contains(".extra_headers.") && !field.starts_with("agent.env.") =>
+            {
+                format!("{field} (set {variable} in .roko/.env, or give a ${{VAR}} reference)")
+            }
+            _ => format!("{field} (give a ${{VAR}} reference or set it in the environment)"),
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    Err(LoadConfigError::SecretInConfig {
+        path: path.to_path_buf(),
+        fields,
+    })
 }
 
 /// Whether config text holds a secret ([`holds_secrets`]). Text that does
@@ -2155,10 +2273,155 @@ pub fn config_text_holds_secrets(text: &str) -> bool {
                 is_secret_key(key.rsplit('.').next().unwrap_or(key))
                     && (value.starts_with('"') || value.starts_with('\''))
                     && !(value.starts_with("\"\"") || value.starts_with("''"))
+                    && !value.contains("${")
             })
         });
     };
     holds_secrets(&value)
+}
+
+/// Expand the `${VAR}` references in a config's secret fields from the
+/// process environment.
+///
+/// A secret field may name the variable that holds its secret instead of
+/// holding it (`serve.auth.api_key = "${ROKO_SERVE_KEY}"`), which is how a
+/// file agents can read keeps a secret out ([`secret_fields`] exempts such a
+/// reference). Provider fields, headers included, are expanded with
+/// [`RokoConfig::interpolate_env_vars`].
+///
+/// # Errors
+///
+/// [`LoadConfigError::SecretReference`] when a reference names a variable
+/// that is not set.
+fn expand_secret_references(config: &mut RokoConfig) -> Result<(), LoadConfigError> {
+    expand_secret_references_with(config, &|name| std::env::var(name).ok())
+}
+
+fn expand_secret_references_with(
+    config: &mut RokoConfig,
+    env: &dyn Fn(&str) -> Option<String>,
+) -> Result<(), LoadConfigError> {
+    let mut tree = match toml::Value::try_from(&*config) {
+        Ok(tree) => tree,
+        Err(error) => {
+            tracing::warn!(%error, "cannot serialize the config to expand secret references");
+            return Ok(());
+        }
+    };
+    let mut expanded = Vec::new();
+    expand_references_in(&mut tree, "", env, &mut expanded)?;
+    if expanded.is_empty() {
+        return Ok(());
+    }
+    *config = tree
+        .try_into()
+        .map_err(|error| LoadConfigError::SecretReference {
+            field: expanded.join(", "),
+            reason: format!("the expanded config does not load: {error}"),
+        })?;
+    Ok(())
+}
+
+/// Expand the references in the secret fields under `value`, at dotted
+/// `path`, the fields [`secret_fields`] reads, and add each to `expanded`.
+fn expand_references_in(
+    value: &mut toml::Value,
+    path: &str,
+    env: &dyn Fn(&str) -> Option<String>,
+    expanded: &mut Vec<String>,
+) -> Result<(), LoadConfigError> {
+    let Some(table) = value.as_table_mut() else {
+        return Ok(());
+    };
+    for (key, child) in table.iter_mut() {
+        let child_path = if path.is_empty() {
+            key.clone()
+        } else {
+            format!("{path}.{key}")
+        };
+        match child {
+            toml::Value::String(text) if is_secret_key(key) => {
+                expand_reference(text, &child_path, env, expanded)?;
+            }
+            toml::Value::Array(items) if is_secret_key(key) => {
+                for item in items {
+                    if let toml::Value::String(text) = item {
+                        expand_reference(text, &child_path, env, expanded)?;
+                    }
+                }
+            }
+            // Expanded with the other provider fields.
+            toml::Value::Table(_) if key.eq_ignore_ascii_case("extra_headers") => {}
+            toml::Value::Array(pairs) if child_path == "agent.env" => {
+                for pair in pairs {
+                    if let Some([toml::Value::String(name), toml::Value::String(text)]) =
+                        pair.as_array_mut().map(Vec::as_mut_slice)
+                        && crate::child_env::is_secret_env_name(name)
+                    {
+                        let field = format!("{child_path}.{name}");
+                        expand_reference(text, &field, env, expanded)?;
+                    }
+                }
+            }
+            toml::Value::Table(_) => expand_references_in(child, &child_path, env, expanded)?,
+            toml::Value::Array(items) => {
+                for item in items {
+                    expand_references_in(item, &child_path, env, expanded)?;
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+/// Replace each `${VAR}` in `text`, secret field `field`, with the value of
+/// `VAR`, and add the field to `expanded`. A `${` that starts no reference
+/// fails without showing the text, which may be a secret.
+fn expand_reference(
+    text: &mut String,
+    field: &str,
+    env: &dyn Fn(&str) -> Option<String>,
+    expanded: &mut Vec<String>,
+) -> Result<(), LoadConfigError> {
+    if !text.contains("${") {
+        return Ok(());
+    }
+    let unexpandable = |reason: String| LoadConfigError::SecretReference {
+        field: field.to_string(),
+        reason,
+    };
+    let mut value = String::with_capacity(text.len());
+    let mut rest = text.as_str();
+    while let Some(start) = rest.find("${") {
+        value.push_str(&rest[..start]);
+        let Some((name, after)) = rest[start + 2..]
+            .split_once('}')
+            .filter(|(name, _)| is_env_name(name))
+        else {
+            return Err(unexpandable(
+                "holds a `${` that starts no `${VAR}` reference".to_string(),
+            ));
+        };
+        let resolved = env(name).ok_or_else(|| {
+            unexpandable(format!(
+                "`${{{name}}}` is not set; set {name}, for example in .roko/.env"
+            ))
+        })?;
+        value.push_str(&resolved);
+        rest = after;
+    }
+    value.push_str(rest);
+    *text = value;
+    expanded.push(field.to_string());
+    Ok(())
+}
+
+/// Whether `name` can name an environment variable in a `${VAR}` reference:
+/// ASCII letters, digits and underscores, not starting with a digit.
+fn is_env_name(name: &str) -> bool {
+    name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        && name.chars().next().is_some_and(|c| !c.is_ascii_digit())
 }
 
 /// Recursive inner helper that knows the current key name.
@@ -2189,13 +2452,28 @@ fn redact_secrets_in_toml_keyed(key: &str, value: &mut toml::Value) {
                     if item.as_str().is_some_and(|secret| !secret.is_empty()) {
                         *item = toml::Value::String(REDACTED_MARKER.to_string());
                     }
-                } else {
+                } else if !(key == "env" && redact_env_pair(item)) {
                     redact_secrets_in_toml(item);
                 }
             }
         }
         _ => {}
     }
+}
+
+/// Redact an `agent.env` pair `[NAME, value]` whose name looks like a
+/// credential: its value is a secret, or a `${VAR}` reference expanded to
+/// one. False when `item` is not such a pair.
+fn redact_env_pair(item: &mut toml::Value) -> bool {
+    let Some([toml::Value::String(name), toml::Value::String(value)]) =
+        item.as_array_mut().map(Vec::as_mut_slice)
+    else {
+        return false;
+    };
+    if crate::child_env::is_secret_env_name(name) && !value.is_empty() {
+        *value = REDACTED_MARKER.to_string();
+    }
+    true
 }
 
 // ─── Path discovery ─────────────────────────────────────────────────────
@@ -2319,6 +2597,12 @@ pub fn merge_global_into(config: &mut RokoConfig) -> Result<(), super::LoadConfi
             });
         }
     };
+
+    // The legacy ~/.config/roko/config.toml is no key file, so it may not
+    // hold a secret any more than roko.toml may.
+    if let Ok(value) = text.parse::<toml::Value>() {
+        refuse_readable_secrets(&global_path, &value)?;
+    }
 
     let global = match deserialize_migrated_toml(&text) {
         Ok(g) => g,
@@ -3473,6 +3757,33 @@ x-api-key = "live-header-key"
         assert_eq!(config.agent.default_model, "from-hierarchical");
     }
 
+    /// bug-524a3b: `roko config set` stores a secret in its `ROKO__`
+    /// variable, which must set the field it names, digits and all.
+    #[test]
+    fn env_override_names_set_their_field() {
+        assert_eq!(
+            super::env_override_name("serve.auth.api_key").as_deref(),
+            Some("ROKO__SERVE__AUTH__API_KEY")
+        );
+        assert_eq!(
+            super::env_override_name("server.auth_token").as_deref(),
+            Some("ROKO__SERVER__AUTH_TOKEN")
+        );
+        for unnamed in ["providers.My-Key.api_key", "providers.MyKey.api_key"] {
+            assert_eq!(super::env_override_name(unnamed), None, "{unnamed}");
+        }
+
+        let mut config = RokoConfig::default();
+        let vars = [
+            ("ROKO__SERVE__AUTH__API_KEY", "12345"),
+            ("ROKO__CONDUCTOR__MAX_AGENTS", "16"),
+        ]
+        .map(|(name, value)| (name.to_string(), value.to_string()));
+        super::apply_hierarchical_env_overrides_from(&mut config, vars);
+        assert_eq!(config.serve.auth.api_key, "12345");
+        assert_eq!(config.conductor.max_agents, 16);
+    }
+
     #[test]
     fn validated_loader_records_hierarchical_env_provenance() {
         let _env_guard = super::TEST_ENV_LOCK.lock();
@@ -3865,7 +4176,10 @@ port = 7788
     #[test]
     fn documented_optional_keys_survive_a_load() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("roko.toml");
+        // A key file, as ~/.roko/config.toml is, since it holds a secret
+        // (server.auth_token) that roko.toml may not.
+        std::fs::create_dir_all(dir.path().join(".roko")).expect("create .roko");
+        let path = dir.path().join(".roko").join("config.toml");
         std::fs::write(
             &path,
             r#"
@@ -3916,7 +4230,7 @@ override_learning_dampening = 0.5
 max_concurrent_plans = 3
 "#,
         )
-        .expect("write roko.toml");
+        .expect("write config");
 
         let config = load_config_file(
             &path,
@@ -3927,7 +4241,7 @@ max_concurrent_plans = 3
                 strict_validation: false,
             },
         )
-        .expect("load roko.toml");
+        .expect("load config");
 
         let auth = &config.serve.auth;
         assert_eq!(auth.privy_app_id.as_deref(), Some("privy-app"));
@@ -3957,6 +4271,130 @@ max_concurrent_plans = 3
         assert_eq!(cron, Some("0 0 3 * * * *"));
         assert_eq!(config.learning.override_learning_dampening, Some(0.5));
         assert_eq!(config.runner.max_concurrent_plans, Some(3));
+    }
+
+    /// gap-e9660f: agents can read roko.toml, so a grep of the project would
+    /// show them a secret in it. The loader refuses the file and names where
+    /// each secret belongs; from there it still reaches the config.
+    #[test]
+    fn a_secret_in_the_project_roko_toml_is_moved_or_refused() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("roko.toml");
+        let opts = LoadOptions {
+            merge_global: false,
+            apply_env_overrides: false,
+            apply_hierarchical_env: false,
+            strict_validation: false,
+        };
+        let write = |path: &Path, text: &str| std::fs::write(path, text).expect("write config");
+
+        write(
+            &path,
+            "[serve.auth]\nenabled = true\napi_key = \"sk-serve-test\"\n",
+        );
+        let error = load_config_file(&path, &opts).expect_err("a secret in roko.toml");
+        assert!(
+            matches!(error, LoadConfigError::SecretInConfig { .. }),
+            "{error}"
+        );
+        let message = error.to_string();
+        assert!(message.contains("serve.auth.api_key"), "{message}");
+        assert!(message.contains("ROKO__SERVE__AUTH__API_KEY"), "{message}");
+        assert!(!message.contains("sk-serve-test"), "{message}");
+
+        // Moved to the environment, where roko loads .roko/.env, the key
+        // still reaches the config.
+        write(&path, "[serve.auth]\nenabled = true\n");
+        let mut config = load_config_file(&path, &opts).expect("load roko.toml");
+        let moved = ("ROKO__SERVE__AUTH__API_KEY", "sk-serve-test");
+        apply_hierarchical_env_overrides_from(
+            &mut config,
+            [(moved.0.to_string(), moved.1.to_string())],
+        );
+        assert_eq!(config.serve.auth.api_key, "sk-serve-test");
+
+        // Every secret field is named, an agent variable too.
+        write(
+            &path,
+            "[server]\nauth_token = \"t\"\n\n[agent]\nenv = [[\"OPENAI_API_KEY\", \"sk-x\"], [\"RUST_LOG\", \"debug\"]]\n",
+        );
+        let message = load_config_file(&path, &opts)
+            .expect_err("secrets in roko.toml")
+            .to_string();
+        assert!(message.contains("server.auth_token"), "{message}");
+        assert!(message.contains("agent.env.OPENAI_API_KEY"), "{message}");
+        assert!(!message.contains("RUST_LOG"), "{message}");
+
+        // A reference is no secret, and a key file may hold one.
+        write(
+            &path,
+            "[providers.x]\nkind = \"openai_compat\"\nbase_url = \"https://x.invalid/v1\"\n\n\
+             [providers.x.extra_headers]\nAuthorization = \"Bearer ${X_API_KEY}\"\n\
+             token_file = \"/run/secrets/x\"\n",
+        );
+        load_config_file(&path, &opts).expect("references are not secrets");
+        std::fs::create_dir_all(dir.path().join(".roko")).expect("create .roko");
+        let key_file = dir.path().join(".roko").join("config.toml");
+        write(&key_file, "[serve.auth]\napi_key = \"sk-serve-test\"\n");
+        load_config_file(&key_file, &opts).expect("a key file may hold a secret");
+    }
+
+    /// bug-8f8704: `${VAR}` was expanded only in provider fields, so a
+    /// reference in `serve.auth.api_key` loaded as a literal key. A secret
+    /// field that holds a reference, which the loader accepts in a readable
+    /// file, now gets the variable's value, and an unset variable fails the
+    /// load.
+    #[test]
+    fn serve_auth_api_key_expands_env_references() {
+        let _env_guard = super::TEST_ENV_LOCK.lock();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("roko.toml");
+        let opts = LoadOptions {
+            merge_global: false,
+            apply_env_overrides: false,
+            apply_hierarchical_env: false,
+            strict_validation: false,
+        };
+        let (set, unset) = ("ROKO_TEST_SERVE_KEY_8F8704", "ROKO_TEST_UNSET_8F8704");
+        // SAFETY: serialized by TEST_ENV_LOCK; no other test reads these.
+        unsafe { std::env::set_var(set, "sk-serve-test") };
+        let reference =
+            |name: &str| format!("[serve.auth]\nenabled = true\napi_key = \"${{{name}}}\"\n");
+        std::fs::write(&path, reference(set)).expect("write config");
+        let loaded = load_config_file(&path, &opts);
+        std::fs::write(&path, reference(unset)).expect("write config");
+        let refused = load_config_file(&path, &opts);
+        // SAFETY: serialized by TEST_ENV_LOCK.
+        unsafe { std::env::remove_var(set) };
+        assert_eq!(
+            loaded.expect("a reference is no secret").serve.auth.api_key,
+            "sk-serve-test"
+        );
+        let message = refused.expect_err("an unset variable").to_string();
+        assert!(message.contains("serve.auth.api_key"), "{message}");
+        assert!(message.contains(unset), "{message}");
+
+        // Every secret field and secret agent variable is expanded; other
+        // fields keep their text, and the effective config shows no secret.
+        let env = |name: &str| (name == "KEY").then(|| "sk-test".to_string());
+        let mut config = RokoConfig::from_toml(
+            "[server]\nauth_token = \"Bearer ${KEY}\"\n\n\
+             [webhooks.github]\nsecret = \"${KEY}\"\n\n\
+             [agent]\ndefault_model = \"${KEY}\"\n\
+             env = [[\"OPENAI_API_KEY\", \"${KEY}\"], [\"RUST_LOG\", \"${KEY}\"]]\n",
+        )
+        .expect("parse config");
+        expand_secret_references_with(&mut config, &env).expect("expand");
+        assert_eq!(config.server.auth_token.as_deref(), Some("Bearer sk-test"));
+        assert_eq!(config.webhooks.github.secret, "sk-test");
+        assert_eq!(config.agent.default_model, "${KEY}");
+        let agent_env = config.agent.env.clone().expect("agent.env");
+        let openai = ("OPENAI_API_KEY".to_string(), "sk-test".to_string());
+        let rust_log = ("RUST_LOG".to_string(), "${KEY}".to_string());
+        assert!(agent_env.contains(&openai), "{agent_env:?}");
+        assert!(agent_env.contains(&rust_log), "{agent_env:?}");
+        let shown = serialize_effective_redacted(&config).expect("serialize");
+        assert!(!shown.contains("sk-test"), "{shown}");
     }
 
     /// Dotted paths of every table in `value` below `prefix`.

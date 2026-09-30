@@ -43,10 +43,14 @@ through the proxy, which drops a client's own credentials.
 
 **Disturbances** (`--disturbance SPEC.toml`, `disturb.py`, gap-15bb83). A `vb.disturbance/1` spec applies S08 §4.6's
 hooks for H6 to stream positions: `provider_fault` (a proxy fault profile), `budget_cut` (the task's caps scaled),
-`harder_mix` (the harder instances first from a position on) and `convention_flip` (a family's other latent). A spec
-the run cannot apply is refused before anything runs, and so are the two hooks not built yet, `model_swap` and
-`flaky_verify`. The config and so `config_hash` carry the spec, each record's `stream.perturbations_active` names the
-hooks that covered its task, and each attempt's `fault_injected` names the fault the proxy injected into its calls.
+`harder_mix` (the harder instances first from a position on), `convention_flip` (a family's other latent),
+`flaky_verify` (the arm's visible checks fail at random) and `model_swap` (the proxy serves another model than the
+pin, which the model checks then accept as a declared swap). A spec the run cannot apply is refused before anything
+runs. The config and so `config_hash` carry the spec, each record's `stream.perturbations_active` names the hooks
+that covered its task, each attempt's `fault_injected` names the fault the proxy injected into its calls, and its
+`model_swapped` says whether the swap's model served it. In a run with `flaky_verify`, every task gets the
+visible-verify wrapper (`vb_verify`) in its agent's `.vb-bin/`, and the arm's visible checks go through it: each
+record's `visible` says how many ran (`verify_runs`) and which ones the wrapper failed (`flakes`, `flake_injected`).
 
 The benchmark secret reaches only `hidden.py`, in the census, as a file path: `--secret-file`, else
 `$VB_SECRET_FILE`, else `~/.config/viabilitybench/secret` (mode 0600; `driver/secret.py init` makes one). Before the
@@ -77,6 +81,7 @@ import json
 import os
 import re
 import secrets
+import shutil
 import stat
 import sys
 import tempfile
@@ -99,6 +104,7 @@ import materialize
 import provider
 import records
 import secret
+import vb_verify
 from common import hmac_seed, knobs, repo
 
 DRIVER_VERSION = "vb-driver-1.0.0"
@@ -417,23 +423,29 @@ def _run_one(run: Run, instance_id: str, seed: int, stream_position: dict) -> bo
         _log_error(run_dir, key, "materialize", err)
         _cleanup(args, [workdir])
         return False
+    env = agent_env.build(home=homes[0])
+    wrapper = _verify_wrapper(run, key, task.manifest, env, position)
+    swap = disturb.swap(run.disturbances, position)  # the model the proxy serves in place of the pin, if any
     ctx = harness.TaskContext(
         experiment_id=args.experiment, run_id=run.run_id, arm=plan.arm, model=plan.model, endpoint=run.endpoint,
         provider=run.chat, snapshot=plan.snapshot, caps=limits, ledger=run.book, billed=plan.arm["arm"]["billed"],
-        instance_id=instance_id, seed=seed, key=key, workdir=workdir, spec_text=task.spec_text,
-        agent_env=agent_env.build(home=homes[0]), visible_verify=tuple(task.manifest["visible_verify"]),
-        files_in_scope=tuple(task.manifest["files_in_scope"]))
+        instance_id=instance_id, seed=seed, key=key, workdir=workdir, spec_text=task.spec_text, agent_env=env,
+        visible_verify=tuple(task.manifest["visible_verify"]), files_in_scope=tuple(task.manifest["files_in_scope"]),
+        verify_wrapper=wrapper, model_swap=swap)
     if run.proxy:  # the proxy's rows for this task carry its key, which is how the Roko arm finds them
         held = getattr(run.runner, "PROXY_CAPS", ())  # the caps a runner's harness cannot hold itself
         run.proxy.configure(task=ctx.key, profile=disturb.profile(run.disturbances, position),
                             input_token_cap=limits.input_tokens_per_task,
                             attempt_input_cap=limits.input_tokens_per_attempt if "input_tokens_per_attempt" in held
-                            else None)
+                            else None, model_swap=swap)
     try:
         outcome = run.runner.run_task(ctx)
     except Exception as err:  # the runner owns its errors; this catches its bugs
         now = harness.utc_now()
         outcome = harness.TaskOutcome("infra_error", f"runner crashed: {type(err).__name__}: {err}", [], [], now, now)
+    verify_log = vb_verify.read_log(wrapper) if wrapper else None
+    if wrapper and verify_log is None:
+        _log_error(run_dir, key, "verify wrapper", "its log is gone, so the record cannot count the visible checks")
     meter = _task_meter(run.proxy, key)
     _end_on_proxy_cap(outcome, meter)
     if run.proxy:
@@ -463,7 +475,8 @@ def _run_one(run: Run, instance_id: str, seed: int, stream_position: dict) -> bo
                            suite={**run.suite, "generator_versions": {task.manifest["family"]:
                                                                   task.manifest["generator_version"]}},
                            stream=stream_position, materialized=task, outcome=outcome, result=result, final=final,
-                           archived=archived, transcript_ref=transcript_ref, meter_usd=meter_usd)
+                           archived=archived, transcript_ref=transcript_ref, meter_usd=meter_usd,
+                           verify_log=verify_log, model_swap=swap)
     if meter_usd is not None and record["costs"]["api_equiv_usd"] is not None:  # as `vb ledger reconcile` flags drift
         check = ledger._compare(record["costs"]["api_equiv_usd"], meter_usd, ledger.TOLERANCE)
         if check["flagged"]:
@@ -476,11 +489,23 @@ def _run_one(run: Run, instance_id: str, seed: int, stream_position: dict) -> bo
         return False
     finally:
         _cleanup(args, [workdir, *homes, private / "final", private / "census"])
-    cost = record["costs"]["api_equiv_usd"]
+    cost, flakes = record["costs"]["api_equiv_usd"], record["visible"]["flakes"]
     print(f"vb: {key} {record['execution']['status']} ({outcome.reason}) VS={record['vs']['label']} "
           f"turns={sum(a.turns for a in outcome.attempts)} cost={'unknown' if cost is None else f'${cost:.4f}'}"
-          + ("" if meter_usd is None else f" meter=${meter_usd:.4f}"), file=sys.stderr)
+          + ("" if meter_usd is None else f" meter=${meter_usd:.4f}") + (f" flakes={len(flakes)}" if flakes else ""),
+          file=sys.stderr)
     return True
+
+
+def _verify_wrapper(run: Run, key: str, manifest: dict, env: dict[str, str], position: int) -> Path | None:
+    """In a run with `flaky_verify`, the task's visible-verify wrapper, installed in the agent's `.vb-bin/` with the
+    covering disturbance's p and seed (p = 0 at the positions it does not cover); None in any other run."""
+    if not any(one.kind == "flaky_verify" for one in run.disturbances):
+        return None
+    p, seed = disturb.flake(run.disturbances, position)
+    bin_dir = Path(env["PATH"].split(os.pathsep, 1)[0])  # agent_env's per-task .vb-bin/, which PATH starts with
+    shell = shutil.which("bash", path=env["PATH"]) or "/bin/bash"  # the shell the direct loop would use
+    return vb_verify.install(bin_dir, key=key, visible=manifest["visible_verify"], p=p, seed=seed, shell=shell)
 
 
 def load_runner(arm: dict) -> ModuleType:
@@ -575,8 +600,13 @@ def _disturbances(path: Path | None, plan: Plan, proxied: bool) -> tuple[disturb
         found = disturb.load(path)
     except disturb.DisturbanceError as err:
         raise DriverError(str(err)) from None
-    if not proxied and any(one.kind == "provider_fault" for one in found):
-        raise DriverError("provider_fault injects its faults through the metering proxy: pass --proxy")
+    for kind, what in (("provider_fault", "injects its faults"), ("model_swap", "swaps the model")):
+        if not proxied and any(one.kind == kind for one in found):
+            raise DriverError(f"{kind} {what} through the metering proxy: pass --proxy")
+    for to in sorted({one.params["to"] for one in found if one.kind == "model_swap"}):
+        if plan.snapshot.row(to) is None:
+            raise DriverError(f"model_swap: the price snapshot {plan.snapshot.id} has no row for {to!r}, so the "
+                              "swapped calls could not be priced")
     for latent in sorted({one.params["latent"] for one in found if one.kind == "convention_flip"}):
         for family, directory in sorted(plan.stream.families.items()):  # render one instance of each family
             instance = next((i for i in plan.instances if knobs.parse_instance_id(i)[0] == family), None)

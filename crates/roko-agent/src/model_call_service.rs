@@ -705,6 +705,7 @@ impl ModelCallService {
         latency_ms: u64,
         success: bool,
         error_class: Option<&str>,
+        model_reported: Option<&str>,
     ) -> Result<()> {
         let Some(sink) = &self.feedback_sink else {
             tracing::debug!("feedback sink not configured for model call service; skipping");
@@ -727,6 +728,10 @@ impl ModelCallService {
             latency_ms,
             success,
             error_class: error_class.map(ToOwned::to_owned),
+            model_reported: model_reported.map(ToOwned::to_owned),
+            // The service serves callers outside Graph attempts (serve,
+            // chat, CLI), so no call it makes belongs to one.
+            attempt_key: None,
         })
         .await
     }
@@ -2087,6 +2092,10 @@ impl ProviderCallCell {
                 return Ok(CellOutput {
                     content: output_text(&result.output),
                     model_used: attempt_model.to_string(),
+                    model_reported: result
+                        .usage_obs
+                        .as_ref()
+                        .and_then(|usage| usage.model.clone()),
                     usage: result.usage,
                     cost_usd,
                     latency_ms: (total_start.elapsed().as_millis() as u64).max(1),
@@ -2189,6 +2198,8 @@ pub(crate) fn provider_error_kind(message: &str) -> &'static str {
 struct CellOutput {
     content: String,
     model_used: String,
+    /// Model the provider reported serving, when its response named one.
+    model_reported: Option<String>,
     usage: Usage,
     cost_usd: f64,
     latency_ms: u64,
@@ -2326,6 +2337,7 @@ impl ModelCaller for ModelCallService {
                         &cached.usage,
                         latency_ms,
                         true,
+                        None,
                         None,
                     )
                     .await?;
@@ -2547,6 +2559,7 @@ impl ModelCaller for ModelCallService {
                     latency_ms,
                     false,
                     Some(provider_error_kind(&message)),
+                    None,
                 )
                 .await?;
                 let prov = provider.as_deref().unwrap_or("unknown");
@@ -2609,6 +2622,7 @@ impl ModelCaller for ModelCallService {
                 latency_ms,
                 false,
                 Some("convergence_failure"),
+                output.model_reported.as_deref(),
             )
             .await?;
             let convergence_err = RokoError::from(error);
@@ -2676,6 +2690,7 @@ impl ModelCaller for ModelCallService {
             output.latency_ms,
             true,
             None,
+            output.model_reported.as_deref(),
         )
         .await?;
         self.emit_call_metrics(
@@ -3089,6 +3104,102 @@ mod tests {
         };
 
         assert_eq!(svc.resolve_model(&req), "router-selected-model");
+    }
+
+    /// A feedback sink that keeps every event it is given.
+    #[derive(Default)]
+    struct RecordingFeedbackSink {
+        events: Mutex<Vec<FeedbackEvent>>,
+    }
+
+    #[async_trait]
+    impl FeedbackSink for RecordingFeedbackSink {
+        async fn record(&self, event: FeedbackEvent) -> Result<()> {
+            self.events.lock().push(event);
+            Ok(())
+        }
+
+        async fn flush(&self) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    /// The service's `model_call` row names the model the provider reported
+    /// serving beside the one the call asked for (bug-92f655). The service
+    /// serves no Graph attempt, so the row's attempt key stays unset; the
+    /// Graph bridge's rows carry theirs.
+    #[tokio::test]
+    async fn model_call_rows_carry_the_reported_model_and_the_attempt_key() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let script = tmp.path().join("claude-fake.sh");
+        std::fs::write(
+            &script,
+            r#"#!/bin/sh
+set -eu
+cat >/dev/null
+printf '%s\n' '{"type":"content_block_delta","delta":{"text":"hello"}}'
+printf '%s\n' '{"type":"result","session_id":"s","model":"glm-4.7","total_cost_usd":0.01,"usage":{"input_tokens":3,"output_tokens":4}}'
+"#,
+        )
+        .expect("write script");
+        let mut permissions = std::fs::metadata(&script).expect("metadata").permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&script, permissions).expect("chmod");
+
+        let mut config = RokoConfig::default();
+        config.providers.clear();
+        config.models.clear();
+        config.agent.bare_mode = false;
+        config.providers.insert(
+            "fake_cli".to_string(),
+            roko_core::config::schema::ProviderConfig {
+                kind: roko_core::agent::ProviderKind::ClaudeCli,
+                base_url: None,
+                api_key_env: None,
+                command: Some(script.display().to_string()),
+                args: None,
+                timeout_ms: Some(10_000),
+                ttft_timeout_ms: Some(10_000),
+                connect_timeout_ms: Some(5_000),
+                extra_headers: None,
+                max_concurrent: None,
+                limits: None,
+                require_confirmation: false,
+            },
+        );
+        config.models.insert(
+            "pinned".to_string(),
+            roko_core::config::schema::ModelProfile {
+                provider: "fake_cli".to_string(),
+                slug: "claude-sonnet-4-6".to_string(),
+                ..Default::default()
+            },
+        );
+        let sink = Arc::new(RecordingFeedbackSink::default());
+        let svc = ModelCallService::new("pinned".into())
+            .with_config(config)
+            .with_working_dir(tmp.path())
+            .with_feedback_sink(Arc::clone(&sink) as Arc<dyn FeedbackSink>);
+
+        svc.call(user_request("pinned", "hello"))
+            .await
+            .expect("the fake CLI answers");
+
+        let events = sink.events.lock();
+        let Some(FeedbackEvent::ModelCall {
+            model_reported,
+            attempt_key,
+            success,
+            ..
+        }) = events.first()
+        else {
+            panic!("expected a model_call event, got {events:?}");
+        };
+        assert!(*success);
+        assert_eq!(model_reported.as_deref(), Some("glm-4.7"));
+        assert_eq!(attempt_key, &None, "the service serves no attempt");
     }
 
     #[tokio::test]

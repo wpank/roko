@@ -2,7 +2,9 @@
 
 One model, one bash tool, no Roko prompt. Each reply must hold a short THOUGHT and exactly one ```bash block. The
 loop runs the command in the task's workdir, in a new shell with the agent environment and a time limit, and sends
-back its exit code and output; long output keeps its head and tail. The agent ends its session by printing
+back its exit code and output; long output keeps its head and tail. In a run with `flaky_verify`, the shell is the
+visible-verify wrapper (`ctx.verify_wrapper`, `vb_verify`), which runs the command as bash would, so a command that
+runs the task's visible check can meet an injected flake. The agent ends its session by printing
 `VB_SUBMIT` as the first line of a command's output (the prompt tells it to run `echo VB_SUBMIT`). A reply without
 exactly one bash block gets a format reminder, which costs a turn. The shape follows mini-swe-agent (S08 decision 3)
 with the standard library only; running pinned mini-swe-agent itself is out of this module's scope.
@@ -20,7 +22,7 @@ usage never came back has an unknown cost.
 API:
     run_task(ctx: harness.TaskContext) -> harness.TaskOutcome
     parse_command(reply: str) -> str | None
-    run_command(command, *, cwd, env, timeout_s, observation_chars) -> CommandResult
+    run_command(command, *, cwd, env, timeout_s, observation_chars, wrapper=None) -> CommandResult
     PROMPT_VERSION, PROMPT_SHA256, SUBMIT
 """
 
@@ -132,11 +134,13 @@ def parse_command(reply: str) -> str | None:
 
 
 def run_command(command: str, *, cwd: Path, env: dict[str, str], timeout_s: float,
-                observation_chars: int) -> CommandResult:
-    """Run `command` with bash in its own session; kill the whole session when it ends or times out."""
+                observation_chars: int, wrapper: Path | None = None) -> CommandResult:
+    """Run `command` with bash, or with the visible-verify `wrapper`, in its own session; kill the whole session when
+    it ends or times out."""
     bash = shutil.which("bash", path=env.get("PATH")) or "/bin/bash"
+    argv = [str(wrapper), command] if wrapper else [bash, "-c", command]
     try:
-        process = subprocess.Popen([bash, "-c", command], cwd=cwd, env=env, stdin=subprocess.DEVNULL,
+        process = subprocess.Popen(argv, cwd=cwd, env=env, stdin=subprocess.DEVNULL,
                                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True)
     except OSError as err:
         text = f"could not start bash: {err}"
@@ -260,7 +264,7 @@ def _run_attempt(ctx: harness.TaskContext, governor: caps.Governor, attempt: har
             return stop.kind, stop.reason
         result = run_command(command, cwd=ctx.workdir, env=ctx.agent_env,
                              timeout_s=min(ctx.caps.command_timeout_s, max(governor.remaining_s(), 0.0)),
-                             observation_chars=ctx.caps.observation_chars)
+                             observation_chars=ctx.caps.observation_chars, wrapper=ctx.verify_wrapper)
         if result.submitted:
             attempt.ended_by = "submitted"
             transcript.append({"attempt": attempt.number, "event": "submitted", "command": command})

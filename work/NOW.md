@@ -4,32 +4,32 @@
 
 What to work on next: the top checked, open items of each goal, highest-priority goal first. Reorder or change goals in `goals.toml`; pin an item higher with `rank = 1` (lower first).
 
-**Drift:** 26 anchor gone · 164 changed since checked · 7 mentioned in commits. Re-check them before relying on this list: `DRIFT.md`.
+**Drift:** 23 anchor gone · 198 changed since checked · 4 mentioned in commits. Re-check them before relying on this list: `DRIFT.md`.
 
 ## 1. Public release: security, licence, CI, first run
 
-- **P1** [bug-0d9ac4](items/bug-0d9ac4-agent-tool-shells-bypass-child-env-run.md) Agent tool shells bypass child_env: run_tests and ACP's bash inherit provider keys, roko-std's bash keeps its own allowlist [bug] · size M · verified 2026-09-29
-- **P1** [gap-5f4852](items/gap-5f4852-tool-t036-secret-canary-persistence-test-never.md) Secret-canary persistence test never run for scrubbers/persistent sinks · size L · verified 2026-09-29
+- **P1** [gap-0e2c40](items/gap-0e2c40-integration-test-c2-no-provider-key-reaches.md) Integration test C2: no provider key reaches an agent, a gate or a log, and the git guard denies destructive commands · size S · verified 2026-09-30
 - **P1** [find-8cc7ac](items/find-8cc7ac-some-github-workflows-fail-on-main-and.md) Some GitHub workflows fail on main and required checks are undefined [finding] · size M · verified 2026-09-29
+- **P2** [bug-911361](items/bug-911361-cargo-toml-s-repository-and-homepage-point.md) Cargo.toml's repository and homepage point at an unrelated GitHub account [bug] · size S · verified 2026-09-29
 
-_19 more open · on hold: gap-8f8544 · 11 unchecked (`TRIAGE.md`) · `goal = "release"`_
+_9 more open · on hold: gap-8f8544 · 12 unchecked (`TRIAGE.md`) · `goal = "release"`_
 
 ## 2. Whitepaper v1 and the research papers
 
 - **P1** [spec-f8d196](items/spec-f8d196-epic-research-paper-companion-report-and-tl.md) Epic: research paper, companion report and TL;DR upkeep [spec] · size L · verified 2026-09-29
 - **P1** [gap-8117a8](items/gap-8117a8-publish-the-whitepaper-pdf-build-release-tag.md) Publish the whitepaper: PDF build, release tag and venue · size S · verified 2026-09-29
 
-_0 more open · on hold: gap-85f86a · 4 unchecked (`TRIAGE.md`) · `goal = "whitepaper"`_
+_0 more open · on hold: gap-85f86a · 3 unchecked (`TRIAGE.md`) · `goal = "whitepaper"`_
 
 ## 3. Roko tells the truth and is safe (P0)
 
-- **P2** [gap-c7c946](items/gap-c7c946-roko-learn-telemetry-check-and-route-report.md) roko learn telemetry: check and route-report over the attempt records (S01.P0-13) · size S · verified 2026-09-29
+- nothing checked and open
 
-_0 more open · 19 unchecked (`TRIAGE.md`) · `goal = "truth"`_
+_0 more open · 12 unchecked (`TRIAGE.md`) · `goal = "truth"`_
 
 ## 4. Frontier plans, cheap models execute, the result integrates (P1)
 
-- nothing checked and open
+- **P2** [gap-5a6e01](items/gap-5a6e01-turn-caps-and-timeouts-set-from-each.md) Turn caps and timeouts set from each tier's p95 over successful tasks · size M · verified 2026-09-30
 
 _0 more open · 36 unchecked (`TRIAGE.md`) · `goal = "golden-path"`_
 
@@ -37,13 +37,13 @@ _0 more open · 36 unchecked (`TRIAGE.md`) · `goal = "golden-path"`_
 
 - nothing checked and open
 
-_0 more open · 20 unchecked (`TRIAGE.md`) · `goal = "proof"`_
+_0 more open · 19 unchecked (`TRIAGE.md`) · `goal = "proof"`_
 
 ## 6. Learning from verified outcomes, M1-M4 (P2)
 
-- **P2** [gap-2ce86f](items/gap-2ce86f-nothing-on-the-graph-path-writes-learn-error.md) Nothing on the Graph path writes learn/error-patterns.json: build_settler, which holds the ErrorPatternSink, has no production caller · size S · verified 2026-09-30
+- nothing checked and open
 
-_0 more open · 3 unchecked (`TRIAGE.md`) · `goal = "cybernetic"`_
+_0 more open · 4 unchecked (`TRIAGE.md`) · `goal = "cybernetic"`_
 
 ## 7. Plan runs work reliably
 
@@ -51,7 +51,7 @@ _0 more open · 3 unchecked (`TRIAGE.md`) · `goal = "cybernetic"`_
 - **P0** [gap-4ec59f](items/gap-4ec59f-worktree-isolation-flip-default-and-add-startup.md) Worktree Isolation: Flip Default and Add Startup Repair · size L · verified 2026-09-29
 - **P1** [bug-7c8a57](items/bug-7c8a57-plan-audit-t0-06-100-line-cap.md) 100-line cap on read_files context injection [bug] · size S · verified 2026-09-29
 
-_73 more open · `goal = "core"`_
+_72 more open · 2 unchecked (`TRIAGE.md`) · `goal = "core"`_
 
 ## 8. Live visibility: serve, dashboard, portal
 
@@ -75,7 +75,7 @@ _15 more open · on hold: bug-429315, bug-8c5d32, bug-b9be1d, bug-dd5dca, bug-de
 - **P2** [bug-97c2dc](items/bug-97c2dc-async-runtime-anti-patterns-drop-spawn-unbounded.md) Async Runtime Anti-Patterns (Drop+Spawn, Unbounded Channels, Mutex Across Await) [bug] · size M · verified 2026-09-29
 - **P2** [gap-8921a3](items/gap-8921a3-df-0925-p4-dead-code-paths-graphexecutionevent.md) Dead code paths (GraphExecutionEvent sink, duplicate streaming verify path, build_fix_prompt) · size S · verified 2026-09-29
 
-_37 more open · 22 unchecked (`TRIAGE.md`) · `goal = "tooling"`_
+_37 more open · 23 unchecked (`TRIAGE.md`) · `goal = "tooling"`_
 
 ## 11. Feature ideas
 

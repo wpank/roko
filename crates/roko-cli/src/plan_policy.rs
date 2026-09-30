@@ -8,6 +8,8 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt;
 use std::path::{Component, Path, PathBuf};
 
+use roko_core::task::TaskTier;
+
 use crate::task_parser::{TaskDef, TasksFile};
 
 /// Conservative absolute limits for ordinary plans. These are safety bounds,
@@ -145,6 +147,135 @@ pub fn effective_generated_task_limit(max_tasks: usize) -> usize {
     } else {
         max_tasks
     }
+}
+
+// ---- Size limits per executor tier ---------------------------------------
+
+/// How big a task of one tier may be: the work a model on that tier's rung
+/// can be expected to finish. `plan validate` warns about a task over them
+/// (`PLAN_TIER_SIZE`); `plan run` does not check them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TierSizeLimits {
+    /// Output `files` a task may declare.
+    pub max_files: usize,
+    /// Largest `max_loc` a task may declare: the tier's line budget.
+    pub max_loc: u32,
+    /// Words in the task's `description`.
+    pub max_description_words: usize,
+    /// Authored `verify` steps.
+    pub max_verify_steps: usize,
+}
+
+impl TierSizeLimits {
+    /// Default limits for `tier`. The line budget is [`TaskTier::max_loc`];
+    /// files, description words and verify steps sit at or above what the
+    /// tier's tasks in `plans/` used at p95 on 2026-09-30 (mechanical: 3
+    /// files, 3 verify steps), and the top tier gets the normal policy's
+    /// bounds.
+    #[must_use]
+    pub const fn for_tier(tier: TaskTier) -> Self {
+        let (max_files, max_description_words, max_verify_steps) = match tier {
+            TaskTier::Mechanical => (3, 300, 3),
+            TaskTier::Focused => (5, 350, 4),
+            TaskTier::Integrative => (10, 500, 6),
+            TaskTier::Architectural => (NORMAL_MAX_FILES_PER_TASK, 800, NORMAL_MAX_VERIFY_STEPS),
+        };
+        Self {
+            max_files,
+            max_loc: tier.max_loc(),
+            max_description_words,
+            max_verify_steps,
+        }
+    }
+
+    /// Each limit `task` exceeds, as `"6 files (limit 3)"`.
+    fn exceeded_by(self, task: &TaskDef) -> Vec<String> {
+        let mut over = Vec::new();
+        if task.files.len() > self.max_files {
+            over.push(format!(
+                "{} files (limit {})",
+                task.files.len(),
+                self.max_files
+            ));
+        }
+        if let Some(max_loc) = task.max_loc.filter(|&max_loc| max_loc > self.max_loc) {
+            over.push(format!("max_loc = {max_loc} (limit {})", self.max_loc));
+        }
+        let words = task
+            .description
+            .as_deref()
+            .map_or(0, |description| description.split_whitespace().count());
+        if words > self.max_description_words {
+            over.push(format!(
+                "{words}-word description (limit {})",
+                self.max_description_words
+            ));
+        }
+        if task.verify.len() > self.max_verify_steps {
+            over.push(format!(
+                "{} verify steps (limit {})",
+                task.verify.len(),
+                self.max_verify_steps
+            ));
+        }
+        over
+    }
+}
+
+impl PlanExecutionPolicy {
+    /// Size limits for `tier` in this lane: the tier's defaults, never above
+    /// the lane's own per-task bounds.
+    #[must_use]
+    pub fn tier_size_limits(&self, tier: TaskTier) -> TierSizeLimits {
+        let limits = TierSizeLimits::for_tier(tier);
+        TierSizeLimits {
+            max_files: limits.max_files.min(self.max_files_per_task),
+            max_verify_steps: limits.max_verify_steps.min(self.max_verify_steps_per_task),
+            ..limits
+        }
+    }
+}
+
+/// Tasks over their tier's size limits (`PLAN_TIER_SIZE`), one violation per
+/// task naming each limit it exceeds and the smallest higher tier it fits, if
+/// any. The tier is read by [`TaskDef::tier_class`].
+#[must_use]
+pub fn validate_tier_sizes(
+    tasks: &TasksFile,
+    policy: PlanExecutionPolicy,
+) -> Vec<PlanPolicyViolation> {
+    tasks
+        .tasks
+        .iter()
+        .filter_map(|task| {
+            let tier = task.tier_class();
+            let over = policy.tier_size_limits(tier).exceeded_by(task);
+            if over.is_empty() {
+                return None;
+            }
+            let hint = TaskTier::ALL
+                .into_iter()
+                .filter(|candidate| *candidate > tier)
+                .find(|candidate| {
+                    policy
+                        .tier_size_limits(*candidate)
+                        .exceeded_by(task)
+                        .is_empty()
+                })
+                .map_or_else(
+                    || "split it into smaller tasks".to_string(),
+                    |fits| format!("split it into smaller tasks, or raise its tier to {fits}"),
+                );
+            Some(PlanPolicyViolation::task(
+                task,
+                "PLAN_TIER_SIZE",
+                format!(
+                    "{tier} task is over its tier's size limits: {}; {hint}",
+                    over.join(", ")
+                ),
+            ))
+        })
+        .collect()
 }
 
 /// One actionable contract failure. These failures are deterministic and do
@@ -1091,6 +1222,7 @@ mod tests {
                 skip_enrichment: false,
                 source_prd: None,
                 failure_policy: None,
+                workspace_rungs: None,
             },
             tasks: vec![task],
         }
@@ -1143,6 +1275,75 @@ mod tests {
         assert!(rendered.contains("path=\"src/lib.rs\""));
         assert!(rendered.contains("2 | pub struct Widget;"));
         assert!(rendered.contains("Do not search home directories"));
+    }
+
+    /// gap-1d1fa6: a task bigger than its tier allows is flagged, with the
+    /// smallest tier it fits; the same task one tier up is not.
+    #[test]
+    fn task_over_its_tier_limits_is_flagged() {
+        let policy = PlanExecutionPolicy::normal();
+        let flagged = |task: &TaskDef| {
+            validate_tier_sizes(&tasks(task.clone()), policy)
+                .into_iter()
+                .map(|issue| {
+                    assert_eq!(issue.code, "PLAN_TIER_SIZE");
+                    assert_eq!(issue.task_id.as_deref(), Some("T1"));
+                    issue.message
+                })
+                .collect::<Vec<_>>()
+        };
+        assert!(flagged(&task()).is_empty(), "a small focused task fits");
+
+        // The item's example task declares max_loc = 200, above even
+        // integrative's 150-line budget, so this one declares 150.
+        let mut wide = task();
+        wide.tier = "mechanical".into();
+        wide.files = (1..=6).map(|n| format!("src/part_{n}.rs")).collect();
+        wide.max_loc = Some(150);
+        assert_eq!(
+            flagged(&wide),
+            [
+                "mechanical task is over its tier's size limits: 6 files (limit 3), \
+                 max_loc = 150 (limit 20); split it into smaller tasks, or raise its tier \
+                 to integrative"
+            ]
+        );
+        wide.tier = "integrative".into();
+        assert!(flagged(&wide).is_empty(), "the same task fits integrative");
+        wide.max_loc = Some(200);
+        assert_eq!(
+            flagged(&wide),
+            [
+                "integrative task is over its tier's size limits: max_loc = 200 (limit 150); \
+                 split it into smaller tasks, or raise its tier to architectural"
+            ]
+        );
+
+        // Description words and verify steps count too, and a top-tier task
+        // can only be split.
+        let mut sprawling = task();
+        sprawling.tier = "Architectural".into();
+        sprawling.description = Some("word ".repeat(801));
+        sprawling.verify = vec![sprawling.verify[0].clone(); 9];
+        assert_eq!(
+            flagged(&sprawling),
+            [
+                "architectural task is over its tier's size limits: 801-word description \
+                 (limit 800), 9 verify steps (limit 8); split it into smaller tasks"
+            ]
+        );
+
+        // The line budgets are the generator's, and a lane's own per-task
+        // bounds cap every tier.
+        for tier in TaskTier::ALL {
+            assert_eq!(TierSizeLimits::for_tier(tier).max_loc, tier.max_loc());
+        }
+        let fast = PlanExecutionPolicy::fast();
+        let architectural = fast.tier_size_limits(TaskTier::Architectural);
+        assert_eq!(
+            (architectural.max_files, architectural.max_verify_steps),
+            (8, 1)
+        );
     }
 
     #[test]

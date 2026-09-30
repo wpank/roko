@@ -846,4 +846,120 @@ mod tests {
             assert_eq!(node.exclusive, expected, "{}", node.id);
         }
     }
+
+    /// Stands in for the host's task executor: records that it ran, and
+    /// names its attempt and the worktree that attempt ran in.
+    struct RecordingExecutor {
+        task_id: String,
+        worktree: std::path::PathBuf,
+        ran: std::sync::Arc<parking_lot::Mutex<Vec<String>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::cell::Cell for RecordingExecutor {
+        fn cell_id(&self) -> &'static str {
+            "task-executor"
+        }
+
+        fn cell_name(&self) -> &'static str {
+            "RecordingExecutor"
+        }
+
+        async fn execute(
+            &self,
+            _input: Vec<roko_core::Signal>,
+            _ctx: &crate::cell::CellContext,
+        ) -> roko_core::error::Result<Vec<roko_core::Signal>> {
+            self.ran.lock().push(self.task_id.clone());
+            let mut output = vec![
+                roko_core::Signal::builder(roko_core::Kind::AgentOutput)
+                    .body(roko_core::Body::text("done"))
+                    .build(),
+            ];
+            crate::cells::TaskAttempt {
+                plan_id: "gated".to_string(),
+                task_id: self.task_id.clone(),
+                attempt: 1,
+                workspace: Some(self.worktree.clone()),
+                ..crate::cells::TaskAttempt::default()
+            }
+            .stamp(&mut output);
+            crate::cells::task_executor::TaskGateVerdict::Passed.stamp(&mut output);
+            Ok(output)
+        }
+    }
+
+    /// Fails the `test` rung, passes the others.
+    struct TestRungFails;
+
+    #[async_trait::async_trait]
+    impl roko_core::SharedGateEvaluator for TestRungFails {
+        async fn verify_rung(
+            &self,
+            request: &roko_core::SharedGateRequest,
+        ) -> std::result::Result<roko_core::SharedGateVerdict, roko_core::SharedGateError> {
+            Ok(if request.rung == "test" {
+                roko_core::SharedGateVerdict::fail("test", vec!["1 test failed".into()])
+            } else {
+                roko_core::SharedGateVerdict::pass(&request.rung)
+            })
+        }
+    }
+
+    /// bug-8835bc: in the rich topology, a task whose gate fails fails: its
+    /// success boundary never completes, the graph fails, and no task that
+    /// depends on it runs.
+    #[tokio::test]
+    async fn a_failed_plan_gate_fails_its_task() {
+        use std::sync::Arc;
+
+        use crate::engine::{GraphEngine, NodeStatus};
+
+        let worktree = tempfile::tempdir().expect("worktree");
+        let topo = ProductionPlanTopology::new("gated", "/tmp", 1);
+        let (graph, _) = topo
+            .build(&[make_task("T1", &[]), make_task("T2", &["T1"])])
+            .unwrap();
+        let mut registry = crate::engine::default_registry();
+        register_topology_cells(&mut registry);
+        let ran = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let (executor_ran, worktree_path) = (Arc::clone(&ran), worktree.path().to_path_buf());
+        registry.register("task-executor", move |config| {
+            let task_id = config
+                .get("task_def_json")
+                .and_then(toml::Value::as_str)
+                .and_then(|json| serde_json::from_str::<serde_json::Value>(json).ok())
+                .and_then(|task| task["id"].as_str().map(ToOwned::to_owned))
+                .unwrap_or_default();
+            Box::new(RecordingExecutor {
+                task_id,
+                worktree: worktree_path.clone(),
+                ran: Arc::clone(&executor_ran),
+            })
+        });
+        let engine = GraphEngine::new(graph, registry).with_allow_test_stubs(true);
+        assert!(engine.validate().is_empty(), "{:?}", engine.validate());
+        let ctx = crate::cell::CellContext::new().with_resources(crate::cell::CellResources {
+            gates: Some(Arc::new(TestRungFails)),
+            workspaces: None,
+        });
+
+        let output = engine.execute(&ctx).await.expect("the graph runs");
+
+        let status = |node: &str| {
+            output
+                .node_results
+                .iter()
+                .find(|result| result.node_id == node)
+                .map(|result| (result.status, result.error.clone().unwrap_or_default()))
+                .unwrap_or_else(|| panic!("{node} has no result"))
+        };
+        let (gate, error) = status("task.T1.gate");
+        assert_eq!(gate, NodeStatus::Failed, "{error}");
+        assert!(error.contains("test: 1 test failed"), "{error}");
+        assert_ne!(status("task.T1.success").0, NodeStatus::Complete);
+        assert_ne!(status("task.T2.executor").0, NodeStatus::Complete);
+        assert!(!output.success, "{}", output.summary());
+        assert_eq!(*ran.lock(), ["T1"], "only T1's executor may run");
+    }
 }

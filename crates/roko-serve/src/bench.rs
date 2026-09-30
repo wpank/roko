@@ -117,7 +117,10 @@ pub struct BenchTask {
     pub name: String,
     /// The prompt to send to `run_once()`.
     pub prompt: String,
-    /// Optional expected substring in successful output.
+    /// What a finished run is expected to print (for example `test result: ok`).
+    ///
+    /// A hint only, never scored: a build or an empty test run prints such
+    /// text without any edit. Only an executed check grades a task.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expected_output: Option<String>,
     /// Per-task timeout override in seconds.
@@ -158,6 +161,14 @@ pub enum BenchStrategy {
     FullCascade,
     /// Simulated results for demo — no LLM dispatch required.
     Demo,
+}
+
+impl BenchStrategy {
+    /// Whether runs with this strategy report simulated tokens and cost
+    /// rather than measured ones. Only [`BenchStrategy::Demo`] does.
+    pub const fn is_simulated(self) -> bool {
+        matches!(self, Self::Demo)
+    }
 }
 
 #[allow(clippy::trivially_copy_pass_by_ref)]
@@ -237,6 +248,9 @@ pub struct BenchTaskResult {
     pub task_name: String,
     /// Task status: "pass", "fail", or "skipped".
     /// Frontend expects `status: TaskStatus` not a boolean.
+    ///
+    /// Only an executed check decides "pass" or "fail". A task that no check
+    /// could grade is "skipped", whatever the agent reported.
     pub status: String,
     /// Execution duration in milliseconds.
     pub duration_ms: u64,
@@ -264,12 +278,20 @@ pub struct BenchTaskResult {
     /// Error message if the task failed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// Why the task was not graded, when its status is "skipped".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skip_reason: Option<String>,
 }
 
 impl BenchTaskResult {
     /// Whether this task passed.
     pub fn passed(&self) -> bool {
         self.status == "pass"
+    }
+
+    /// Whether no check graded this task, so it neither passed nor failed.
+    pub fn skipped(&self) -> bool {
+        self.status == "skipped"
     }
 }
 
@@ -288,10 +310,13 @@ pub struct BenchRunSummary {
     pub passed: usize,
     /// Number of tasks that failed.
     pub failed: usize,
-    /// Number of tasks skipped.
+    /// Number of tasks no check could grade.
     #[serde(default)]
     pub skipped: usize,
-    /// Pass rate as a fraction (0.0 - 1.0).
+    /// Share of graded tasks (`passed + failed`) that passed, 0.0 - 1.0.
+    ///
+    /// 0.0 when no task was graded; `passed + failed == 0` tells that case
+    /// apart from a run where every graded task failed.
     pub pass_rate: f64,
     /// Total execution time in milliseconds.
     pub total_duration_ms: u64,
@@ -312,9 +337,11 @@ impl BenchRunSummary {
     pub fn from_results(results: &[BenchTaskResult]) -> Self {
         let total_tasks = results.len();
         let passed = results.iter().filter(|r| r.passed()).count();
-        let failed = total_tasks - passed;
-        let pass_rate = if total_tasks > 0 {
-            passed as f64 / total_tasks as f64
+        let skipped = results.iter().filter(|r| r.skipped()).count();
+        let failed = total_tasks - passed - skipped;
+        let graded = passed + failed;
+        let pass_rate = if graded > 0 {
+            passed as f64 / graded as f64
         } else {
             0.0
         };
@@ -338,7 +365,7 @@ impl BenchRunSummary {
             total_tasks,
             passed,
             failed,
-            skipped: 0,
+            skipped,
             pass_rate,
             total_duration_ms,
             total_cost_usd,
@@ -383,6 +410,12 @@ pub struct BenchRun {
     /// Optional label.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
+    /// Whether the run's tokens and cost were simulated (the Demo strategy).
+    /// A simulated run is stored so it can be read by id, but it never
+    /// enters the index, so the run list, the pareto frontier, the cost
+    /// summary and regression baselines leave it out.
+    #[serde(default)]
+    pub simulated: bool,
     /// Run status.
     pub status: BenchRunStatus,
     /// When the run started — serialized as ISO 8601.
@@ -522,6 +555,28 @@ pub async fn load_bench_run(workdir: &Path, run_id: &str) -> anyhow::Result<Opti
     };
     let run: BenchRun = serde_json::from_str(&data)?;
     Ok(Some(run))
+}
+
+/// Load every stored bench run, from the directory [`save_bench_run`] writes
+/// to. Files that are not bench runs are skipped.
+pub async fn load_bench_runs(workdir: &Path) -> Vec<BenchRun> {
+    let mut runs = Vec::new();
+    let Ok(mut entries) = tokio::fs::read_dir(runs_dir(workdir)).await else {
+        return runs;
+    };
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        let path = entry.path();
+        if !path.extension().is_some_and(|ext| ext == "json") {
+            continue;
+        }
+        let Ok(data) = tokio::fs::read_to_string(&path).await else {
+            continue;
+        };
+        if let Ok(run) = serde_json::from_str::<BenchRun>(&data) {
+            runs.push(run);
+        }
+    }
+    runs
 }
 
 /// Delete a bench run from disk.
@@ -695,25 +750,6 @@ pub fn list_models_from_config(config: &roko_core::config::schema::RokoConfig) -
         models.push("claude-sonnet-4-6".to_string());
     }
     models
-}
-
-/// Estimate cost in USD from token counts and model slug.
-///
-/// Uses approximate per-1K-token pricing. Falls back to Sonnet pricing
-/// when the model is unknown.
-pub fn estimate_cost_usd(model: Option<&str>, input_tokens: u64, output_tokens: u64) -> f64 {
-    let (input_rate, output_rate) = match model.unwrap_or("") {
-        m if m.contains("haiku") => (0.00025, 0.00125),
-        m if m.contains("sonnet") => (0.003, 0.015),
-        m if m.contains("opus") => (0.015, 0.075),
-        m if m.contains("gpt-5.4-mini") || m.contains("gpt-4o-mini") => (0.00015, 0.0006),
-        m if m.contains("gpt-5") || m.contains("gpt-4o") => (0.005, 0.015),
-        m if m.contains("o3-mini") => (0.0011, 0.0044),
-        m if m.contains("gemini") => (0.00125, 0.01),
-        m if m.contains("llama") || m.contains("cerebras") => (0.0001, 0.0001),
-        _ => (0.003, 0.015),
-    };
-    (input_tokens as f64 * input_rate / 1000.0) + (output_tokens as f64 * output_rate / 1000.0)
 }
 
 use tokio::io::AsyncWriteExt;
@@ -1507,4 +1543,47 @@ pub async fn list_matrix_runs(workdir: &Path) -> Vec<MatrixRun> {
     }
     runs.sort_by_key(|r| std::cmp::Reverse(r.started_at));
     runs
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn result(task_id: &str, status: &str) -> BenchTaskResult {
+        BenchTaskResult {
+            task_id: task_id.to_string(),
+            task_name: task_id.to_string(),
+            status: status.to_string(),
+            duration_ms: 10,
+            model: "test-model".to_string(),
+            tokens_in: 1,
+            tokens_out: 1,
+            cost_usd: 0.0,
+            gate_verdicts: Vec::new(),
+            retries_used: 0,
+            output_preview: None,
+            error: None,
+            skip_reason: None,
+        }
+    }
+
+    #[test]
+    fn summary_keeps_ungraded_tasks_out_of_pass_and_fail() {
+        let summary = BenchRunSummary::from_results(&[
+            result("a", "pass"),
+            result("b", "fail"),
+            result("c", "skipped"),
+            result("d", "skipped"),
+        ]);
+        assert_eq!(summary.total_tasks, 4);
+        assert_eq!(summary.passed, 1);
+        assert_eq!(summary.failed, 1);
+        assert_eq!(summary.skipped, 2);
+        assert!((summary.pass_rate - 0.5).abs() < f64::EPSILON);
+
+        let ungraded = BenchRunSummary::from_results(&[result("a", "skipped")]);
+        assert_eq!(ungraded.passed + ungraded.failed, 0);
+        assert_eq!(ungraded.skipped, 1);
+        assert!(ungraded.pass_rate.abs() < f64::EPSILON);
+    }
 }

@@ -2,14 +2,16 @@
 id = "gap-1d1fa6"
 kind = "gap"
 title = "Task size limits per executor tier in plan validate"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p2"
 goal = "golden-path"
 size = "S"
 subsystem = ["roko-cli/plan_policy"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-09-30
+last_verified = 2026-09-30
+last_verified_rev = "39cd18049"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e8"
 discovered_from = "tmp/cybernetic-harness/tldr/04-FRONTIER-PLANS-CHEAP-EXECUTES.md (step 3); tldr/research/B1-plan-authoring.md (tier LOC budgets)"
 anchors = ["crates/roko-cli/src/plan_policy.rs::PlanExecutionPolicy", "crates/roko-cli/src/plan_generate.rs::TaskTier"]
@@ -19,6 +21,11 @@ links = { depends_on = ["gap-8c0a20"], blocks = [], related = ["gap-9cbf35"], su
 
 [[verify]]
 command = "grep -rqw 'fn task_over_its_tier_limits_is_flagged' crates/roko-cli/src/ && cargo test -p roko-cli --lib task_over_its_tier_limits_is_flagged"
+
+[closed]
+at = 2026-09-30
+by = "coordinator (session 7622b882)"
+evidence = "Merged in 455ad815d. PLAN_TIER_SIZE warns in plan validate (rejects under --strict; CI does not use --strict) and the generator prompt gets the limits; it flags 107 of 551 existing tasks. Batch 13 gate (MAIN 39cd18049 has the same crates and Cargo.lock as gated 172f3683a/d76f9faf8): cargo check --workspace --tests clean; nightly fmt clean after the coordinator's rustfmt commits on 7 branches; clippy -p (10 crates) --keep-going -D warnings clean after two doc-paragraph fixes (8b8ec4f25, e3deb0c37); lib tests pass: roko-cli 3160, roko-agent 2262, roko-core 1945, roko-learn 1199, roko-serve 977, roko-gate 689, roko-graph 472, roko-execution 252, roko-std 226, roko-acp 199. Three load flakes (turn_policy escalated-timeout, roko-gate tautology, verification efficiency-record wait) pass alone and are noted on bug-779ae7. Verify: its test passes in that run and its static checks pass on MAIN."
 +++
 
 ## Problem
@@ -69,3 +76,6 @@ Checked at `41c7ffbd6`: no tier-aware rule in `plan_policy.rs` or `plan_validate
 - Waits for gap-8c0a20, the shared tier enum. Do not key the limits on raw tier strings.
 - Keep the check static. Measuring each attempt's actual diff size belongs with the diff check (epic E9).
 - Refitting the defaults from per-tier pass rates needs the attempt records (epic E4) and is later work.
+- 2026-09-30 (wk-tiers): implemented on `work/gap-1d1fa6` at `afd17b79e`; cargo verification deferred to the batch check (no cargo was allowed for this item).
+- The Done-when example conflicts with plan step 1: its `max_loc = 200` is over integrative's 150-line budget, so the task is flagged as integrative too (it fits architectural). `task_over_its_tier_limits_is_flagged` uses `max_loc = 150`, which only a lower tier flags.
+- Default limits (files, description words, verify steps): mechanical 3/300/3, focused 5/350/4, integrative 10/500/6, architectural 32/800/8; the line budgets are 20/50/150/300. On 2026-09-30 they flag 107 of the 551 tasks in `plans/` (56 of 132 plans), 73 of them for a declared `max_loc` over the tier's budget, so `plan validate --strict` now fails those plans.

@@ -415,6 +415,73 @@ impl Default for AgentEfficiencyEvent {
     }
 }
 
+// ─── ExecutedRow ────────────────────────────────────────────────────────────
+
+/// A Graph attempt's efficiency or cost row, with the columns of its
+/// `roko.verdict/1` `executed` block that the row type lacks, beside the
+/// row's own fields. The row's `model` names the model the provider bridge
+/// launched; these name the model the provider reported serving
+/// (bug-31438d) and the planned model a failover replaced (bug-35379d), and
+/// mark a turn count the agent never reported (bug-55fd84). Like
+/// [`crate::telemetry::AttemptKeyed`], a reader that parses the row type
+/// alone still reads the line.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ExecutedRow<T> {
+    /// The row.
+    #[serde(flatten)]
+    pub row: T,
+    /// The model the provider reported serving; `None` when it named none.
+    #[serde(default)]
+    pub model_reported: Option<String>,
+    /// The provider reported serving another model than the one launched.
+    #[serde(default)]
+    pub model_mismatch: bool,
+    /// Every model the provider named, when its responses disagreed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub models_reported: Vec<String>,
+    /// The planned model a failover replaced; absent when the planned model
+    /// ran.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub substituted_from: Option<String>,
+    /// Why the planned model did not run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub substitution_reason: Option<String>,
+    /// The agent reported no turn count, so the row's turn fields are 0 for
+    /// unknown.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub turns_unknown: bool,
+}
+
+impl<T> ExecutedRow<T> {
+    /// `row` with the columns of `executed`, its attempt's verdict block.
+    #[must_use]
+    pub fn new(row: T, executed: &crate::telemetry::ExecutedModel) -> Self {
+        Self {
+            row,
+            model_reported: executed.model_reported.clone(),
+            model_mismatch: executed.model_mismatch,
+            models_reported: executed.models_reported.clone(),
+            substituted_from: executed.failover_chain.first().cloned(),
+            substitution_reason: executed.failover_reason.clone(),
+            turns_unknown: executed.turns.is_none(),
+        }
+    }
+}
+
+/// An efficiency row whose turn fields may be unknown. `turns_unknown`
+/// marks a row whose `iteration` and `turn_number` are 0 because the agent
+/// reported no count (bug-ad5487); [`ExecutedRow`] carries the same marker
+/// on an attempt's dispatch row.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TurnsRow<T> {
+    /// The row.
+    #[serde(flatten)]
+    pub row: T,
+    /// The agent reported no turn count.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub turns_unknown: bool,
+}
+
 // ─── Grade ──────────────────────────────────────────────────────────────────
 
 /// Letter grade for prompt efficiency.
@@ -1197,6 +1264,45 @@ mod tests {
         let json = serde_json::to_string(&e).expect("serialize");
         let e2: AgentEfficiencyEvent = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(e, e2);
+    }
+
+    #[test]
+    fn executed_row_sits_beside_the_row_it_extends() {
+        let event = AgentEfficiencyEvent {
+            model: "gpt-oss-120b".to_string(),
+            ..Default::default()
+        };
+        let executed = crate::telemetry::ExecutedModel {
+            model_reported: Some("glm-4.7".to_string()),
+            model_mismatch: true,
+            failover_chain: vec!["claude-sonnet".to_string()],
+            failover_reason: Some("`claude-sonnet` on `claude_cli`: out of usage".to_string()),
+            turns: Some(3),
+            ..Default::default()
+        };
+        let row = ExecutedRow::new(&event, &executed);
+
+        let json = serde_json::to_value(&row).expect("serialize");
+        assert_eq!(json["schema"], AGENT_EFFICIENCY_EVENT_SCHEMA);
+        assert_eq!(json["model"], "gpt-oss-120b");
+        assert_eq!(json["model_reported"], "glm-4.7");
+        assert_eq!(json["model_mismatch"], true);
+        assert_eq!(json["substituted_from"], "claude-sonnet");
+        assert!(json.get("models_reported").is_none());
+        assert!(json.get("turns_unknown").is_none());
+        let alone: AgentEfficiencyEvent =
+            serde_json::from_value(json.clone()).expect("parse the row alone");
+        assert_eq!(alone, event);
+        let back: ExecutedRow<AgentEfficiencyEvent> =
+            serde_json::from_value(json).expect("parse the served row");
+        assert_eq!(back.model_reported.as_deref(), Some("glm-4.7"));
+        assert_eq!(back.row, event);
+
+        let unreported = ExecutedRow::new(&event, &crate::telemetry::ExecutedModel::default());
+        let json = serde_json::to_value(&unreported).expect("serialize");
+        assert!(json["model_reported"].is_null(), "unknown is null: {json}");
+        assert!(json.get("substituted_from").is_none());
+        assert_eq!(json["turns_unknown"], true);
     }
 
     #[test]

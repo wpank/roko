@@ -897,6 +897,7 @@ fn run_plan_on_local_runtime(
                 log_file: None,
                 worktree_per_task: false,
                 rich_topology: false,
+                promote: None,
                 // Never launch an interactive TUI from an HTTP handler.
                 no_tui: true,
                 // Publish into the server's hub so API/SSE clients see the run.
@@ -1097,12 +1098,14 @@ fn ensure_git_repo_for_runner(workdir: &Path) {
             "--allow-empty",
         ][..],
     ] {
-        let _ = std::process::Command::new("git")
-            .args(args)
+        let mut git = std::process::Command::new("git");
+        git.args(args)
             .current_dir(workdir)
             .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status();
+            .stderr(std::process::Stdio::null());
+        // The commit runs global git hooks: no provider key reaches them.
+        roko_core::child_env::CredentialScrub::default().apply(&mut git);
+        let _ = git.status();
     }
 }
 

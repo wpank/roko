@@ -135,6 +135,9 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
         // The attempt opens before prompt assembly (S01 §4.2).
         let mut attempt = self.open_attempt(spec, &task, ctx);
         let attempt_key = attempt.key.attempt_key();
+        // The tree the task starts from, before its agent runs, for the
+        // pre-verify screen's diff (`red_flags`).
+        self.record_diff_base(&attempt_key, &lease.path, None).await;
         let prompt_experiment = self
             .feedback
             .experiment_store_path
@@ -169,14 +172,15 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
             Err(error) => return Err(self.fail_attempt(spec, &task, attempt, None, error).await),
         };
         attempt.prompt_assembled();
-        let contract = effective_agent_contract(role, &task);
+        let contract = effective_agent_contract(role, &task, &self.config);
         let timeout_ms = base_attempt_timeout_ms(&self.config, spec);
         let request = AgentDispatchRequest {
             model_key: dispatch_plan.model.slug.clone(),
             prompt: dispatch_plan.prompt.user_prompt.clone(),
             system_prompt: dispatch_plan.prompt.system_prompt.clone(),
             workdir: lease.path.clone(),
-            immune_root: Some(lease.path.clone()),
+            // Immune state belongs to the workspace, not the attempt checkout.
+            immune_root: Some(self.workdir.clone()),
             agent_id: format!(
                 "{}/{}",
                 spec.plan_id,
@@ -194,6 +198,7 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
             dangerously_skip_permissions: self.dangerously_skip_permissions,
             max_turns: Some(max_turns),
             live_output: None,
+            attempt_key: Some(attempt_key.clone()),
         };
         let _launched_treatments = prompt_experiment::LaunchedTreatments::bind(
             prompt_experiment,
@@ -239,8 +244,15 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
 
         // ── Provider invocation ──────────────────────────────────────────
         attempt.dispatch_started();
-        let dispatch_result = self.factory.run_shared_agent_bridge(request).await;
+        let mut dispatch_result = self.factory.run_shared_agent_bridge(request).await;
         attempt.dispatch_ended();
+        // A model the provider substituted is priced by the model that
+        // served (bug-31438d). Under a `--model` pin it fails the attempt,
+        // as on the batch path (bug-b2dd44); this path runs no failover.
+        let pinned_model_substituted = match dispatch_result.as_mut() {
+            Ok(dispatch) => self.check_served_model(spec, &task.id, dispatch),
+            Err(_) => None,
+        };
 
         let wall_duration = started_at.elapsed();
 
@@ -324,32 +336,43 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
                 //
                 // Same verdict logic as the batch path; gates run in the lease
                 // path and progress streams through the event channel.
-                let verification = if dispatch.result.success {
+                let helper_calls = HelperCalls::default();
+                let verification = if dispatch.result.success && pinned_model_substituted.is_none()
+                {
                     let attempt_number = self.next_retry_attempt(&spec.plan_id, &task.id).attempt;
                     Some(
-                        self.settle_task_verification(
-                            spec,
-                            &task,
-                            &dispatch,
-                            &lease.path,
-                            &retry_key,
-                            attempt_number,
-                            &attempt_key,
-                            Some(&event_tx),
-                        )
-                        .await,
+                        helper_calls
+                            .scope(self.settle_task_verification(
+                                spec,
+                                &task,
+                                &dispatch,
+                                &lease.path,
+                                &retry_key,
+                                attempt_number,
+                                &attempt_key,
+                                Some(&event_tx),
+                            ))
+                            .await,
                     )
                 } else {
                     None
                 };
+                attempt.record_helper_calls(
+                    self.settle_helper_calls(spec, &task, &attempt_key, &helper_calls)
+                        .await,
+                );
                 let verified = matches!(verification, Some(Ok(_)));
 
                 // ── Learning/feedback pipeline (streaming) ───────────────
                 //
                 // Settled after the gate so learning sees the verified outcome.
-                let settlement = match &verification {
-                    Some(verification) => Settlement::verified(verification),
-                    None => Settlement::provider_failure(
+                let settlement = match (&verification, &pinned_model_substituted) {
+                    (Some(verification), _) => Settlement::verified(verification),
+                    (None, Some(error)) => Settlement::provider_failure(
+                        &error.to_string(),
+                        first_token_seen(&dispatch),
+                    ),
+                    (None, None) => Settlement::provider_failure(
                         dispatch.result.output.body.as_text().unwrap_or_default(),
                         first_token_seen(&dispatch),
                     ),
@@ -399,7 +422,7 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
                     input_tokens: Some(u64::from(dispatch.result.usage.input_tokens)),
                     output_tokens: Some(u64::from(dispatch.result.usage.output_tokens)),
                     cost_usd: actual_cost,
-                    changed_files: Vec::new(), // Changed files computed relative to lease base.
+                    changed_files: self.take_changed_files(&attempt_key),
                     wall_duration,
                     output: output_signals.clone(),
                 };
@@ -456,9 +479,13 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
             })
             .await;
 
-        // A verify failure is reported as such; otherwise an unsuccessful
-        // provider result fails the task even though cost was settled
-        // (callers still incur the charge).
+        // A substituted pin fails without a retry; a verify failure is
+        // reported as such; otherwise an unsuccessful provider result fails
+        // the task even though cost was settled (callers still incur the
+        // charge).
+        if let Some(error) = pinned_model_substituted {
+            return Err(error);
+        }
         if let Some(Err(error)) = verification {
             return Err(error);
         }
@@ -658,6 +685,87 @@ printf '%s\n' '{"type":"result","session_id":"sess-s1","model":"claude-sonnet-4-
             )
         });
         assert!(usage, "must emit Usage event with actual cost");
+    }
+
+    /// Under a `--model` pin, a streamed attempt the provider served with
+    /// another model fails as it does on the batch path: a non-retryable
+    /// `model_substituted` error and a failed terminal event (bug-b2dd44).
+    #[tokio::test]
+    async fn streaming_dispatch_fails_a_substituted_pinned_model() {
+        use std::os::unix::fs::PermissionsExt;
+
+        use crate::graph_task_dispatch::tests::{cli_provider, make_bare_dispatcher, model};
+
+        let temp = tempdir().expect("tempdir");
+        let script = temp.path().join("fake-claude.sh");
+        std::fs::write(
+            &script,
+            r#"#!/bin/sh
+set -eu
+cat >/dev/null
+printf '%s\n' '{"type":"content_block_delta","delta":{"text":"done"}}'
+printf '%s\n' '{"type":"result","session_id":"s","model":"claude-opus-4-6","total_cost_usd":0.01,"usage":{"input_tokens":5,"output_tokens":10}}'
+"#,
+        )
+        .expect("write script");
+        let mut permissions = std::fs::metadata(&script).expect("metadata").permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&script, permissions).expect("chmod");
+        let mut config = RokoConfig::default();
+        config.providers.clear();
+        config.models.clear();
+        config.agent.default_model = "pinned".to_string();
+        config.agent.bare_mode = false;
+        config.providers.insert(
+            "stream-cli".to_string(),
+            cli_provider(&script.display().to_string()),
+        );
+        config.models.insert(
+            "pinned".to_string(),
+            model("stream-cli", "claude-sonnet-4-6", None),
+        );
+        let dispatcher = make_bare_dispatcher(config, temp.path())
+            .await
+            .with_cli_model_override(Some("pinned".to_string()));
+        let mut task = crate::graph_task_dispatch::tests::make_task_def("focused");
+        task.model_hint = Some("pinned".to_string());
+        let lease = TaskLease {
+            path: temp.path().to_path_buf(),
+            fingerprint: "fp".to_string(),
+        };
+        let (event_tx, mut event_rx) =
+            tokio::sync::mpsc::channel(streaming_event_channel_capacity());
+
+        let error = dispatcher
+            .dispatch_streaming(
+                &make_spec(&task),
+                Vec::new(),
+                &CellContext::new().with_cell_id("T-PIN".to_string()),
+                &lease,
+                event_tx,
+                &NoopAttemptRecorder,
+            )
+            .await
+            .expect_err("a substituted pinned model fails the attempt");
+        let RokoError::Gateway {
+            category,
+            retryable,
+            message,
+        } = &error
+        else {
+            panic!("expected a non-retryable gateway error, got {error:?}");
+        };
+        assert_eq!(*category, "model_substituted");
+        assert!(!retryable);
+        assert!(message.contains("claude-opus-4-6"), "{message}");
+
+        let mut terminal = Vec::new();
+        while let Ok(event) = event_rx.try_recv() {
+            if let GraphTaskEvent::AttemptTerminal { outcome, .. } = event {
+                terminal.push(outcome);
+            }
+        }
+        assert_eq!(terminal, vec![TaskDispatchOutcomeKind::Failed]);
     }
 
     #[tokio::test]

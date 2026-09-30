@@ -25,7 +25,9 @@
 //! - it is an implementer attempt at a task that names `files`, and the task
 //!   has changed nothing, or added only stub lines
 //!   ([`roko_gate::analyze_diff`]): "no changes". Other roles, refactors
-//!   (role `refactorer`) and tasks without `files` are exempt.
+//!   (role `refactorer`) and tasks without `files` are exempt. When a
+//!   declared file that git ignores exists on disk, the rejection says so:
+//!   no diff can show a change to it.
 //!
 //! A rejection costs no compile or test run. It settles like a failed verify
 //! step, `gate_failed` and blamed on the agent, so no learner credits it; the
@@ -82,12 +84,10 @@ impl GraphTaskDispatcher {
         progress_tx: Option<&tokio::sync::mpsc::Sender<GraphTaskEvent>>,
     ) -> Result<()> {
         let role = task.role.as_deref().unwrap_or("implementer");
+        // First, so the attempt's changed files are kept whatever the screen
+        // decides (`take_changed_files`).
+        let diff = self.attempt_diff(spec, task, attempt_key, workdir).await;
         let mut rejection = output_red_flag(&self.config, role, dispatch);
-        let diff = if rejection.is_none() {
-            self.attempt_diff(spec, task, attempt_key, workdir).await
-        } else {
-            None
-        };
         // Findings recorded without blocking, carried into the feedback of a
         // rejection by a later check.
         let mut notes = Vec::new();
@@ -180,7 +180,7 @@ impl GraphTaskDispatcher {
         let exact_secret = scrub::high_confidence_secret(output);
         let (blocks, recorded): (Vec<SafetyViolation>, Vec<SafetyViolation>) =
             SafetyLayer::from_config(&self.config)
-                .with_contract(effective_agent_contract(role, task))
+                .with_contract(effective_agent_contract(role, task, &self.config))
                 .post_dispatch_check(&spec.plan_id, &task.id, role, output, &changed_files)
                 .into_iter()
                 .partition(|violation| {
@@ -328,13 +328,19 @@ impl GraphTaskDispatcher {
                 text: std::fs::read_to_string(plan_dir_on_disk.join(&entry.src)).ok(),
             })
             .collect();
+        // The task's own verify steps, then the workspace rungs that run
+        // after them unless its plan opts out
+        // (`verification::attempt_verify_steps`).
+        let rungs = self.plan_rungs(spec);
         AttemptDiffPolicy {
             task_files: task.files.clone(),
             verify_scripts: task
                 .verify
                 .iter()
                 .filter(|step| !crate::task_accept::is_pinned_step(step))
-                .flat_map(|step| scripts_run_by(&step.command))
+                .map(|step| step.command.as_str())
+                .chain(rungs.map(|rung| rung.command.as_str()))
+                .flat_map(scripts_run_by)
                 .collect(),
             pinned_tests,
             accept_dirs: plan_dir_in_tree
@@ -521,6 +527,25 @@ async fn no_changes_red_flag(
         if diff.base_is_this_attempts && attempt_number > 0 {
             return None;
         }
+        // A declared file git ignores may well have changed on disk: no diff
+        // shows it, and the rejection must not claim the tree is untouched.
+        let ignored = diff.ignored_on_disk(&task.files).await;
+        if !ignored.is_empty() {
+            let (which, them) = if ignored.len() == 1 {
+                ("is", "it")
+            } else {
+                ("are", "them")
+            };
+            return Some(Rejection {
+                check: "no_changes",
+                message: format!(
+                    "Red flag, no changes: the task names {}, which {which} gitignored, so \
+                     roko's diff and delivery cannot see changes to {them}. The task's work must \
+                     land in files git tracks.",
+                    named_files(&ignored)
+                ),
+            });
+        }
         return Some(Rejection {
             check: "no_changes",
             message: format!(
@@ -645,6 +670,44 @@ printf '%s\n' '{{"type":"result","session_id":"s","model":"claude-sonnet-4-6","t
     }
 
     #[tokio::test]
+    async fn no_changes_names_gitignored_declared_files() {
+        let temp = tempdir().expect("tempdir");
+        commit_repo(
+            temp.path(),
+            &[
+                (".gitignore", "out/\n"),
+                ("src/lib.rs", "pub fn one() -> u8 {\n    1\n}\n"),
+            ],
+        );
+        let writes_ignored = provider("mkdir -p out && printf 'one\\n' > out/one.txt", "done", 10);
+        let (dispatcher, mut task) = make_test_dispatcher(
+            &temp,
+            &writes_ignored,
+            no_auto_fix,
+            GraphFeedbackContext::default(),
+        )
+        .await;
+        let marker = temp.path().join("verify-ran");
+        task.files = vec!["out/one.txt".to_string()];
+        task.verify = vec![verify_step(
+            "structural",
+            &format!("touch {}", marker.display()),
+        )];
+
+        let (gate, message) = rejected(&dispatcher, &task, &marker).await;
+        assert_eq!(gate, "pre_verify:no_changes");
+        assert!(
+            message.contains("the task names `out/one.txt`, which is gitignored"),
+            "{message}"
+        );
+        assert!(
+            message.contains("roko's diff and delivery cannot see changes to it"),
+            "{message}"
+        );
+        assert!(!message.contains("as they found it"), "{message}");
+    }
+
+    #[tokio::test]
     async fn a_real_change_passes_and_stub_only_changes_do_not() {
         let temp = tempdir().expect("tempdir");
         commit_repo(
@@ -747,6 +810,55 @@ printf '%s\n' '{{"type":"result","session_id":"s","model":"claude-sonnet-4-6","t
         assert!(
             !message.contains("src/lib.rs"),
             "the task's own change is not a finding: {message}"
+        );
+    }
+
+    /// A workspace rung checks the task as its own verify steps do, so
+    /// editing a script the rung runs is tampering too.
+    #[tokio::test]
+    async fn editing_a_workspace_rung_script_is_tampering() {
+        let temp = tempdir().expect("tempdir");
+        commit_repo(
+            temp.path(),
+            &[
+                ("src/lib.rs", "pub fn one() -> u8 {\n    1\n}\n"),
+                ("scripts/lint.sh", "exit 1\n"),
+            ],
+        );
+        let tamper = provider(
+            "printf 'pub fn two() -> u8 {\\n    one() + one()\\n}\\n' >> src/lib.rs\n\
+             printf 'exit 0\\n' > scripts/lint.sh",
+            "done",
+            10,
+        );
+        let (dispatcher, mut task) = make_test_dispatcher(
+            &temp,
+            &tamper,
+            |config| {
+                no_auto_fix(config);
+                config.gates.custom_rungs = vec![roko_core::config::GateRungConfig {
+                    name: "lint".to_string(),
+                    command: "sh scripts/lint.sh".to_string(),
+                    timeout_secs: 10,
+                    required: true,
+                    parallel_with: Vec::new(),
+                }];
+            },
+            GraphFeedbackContext::default(),
+        )
+        .await;
+        let marker = temp.path().join("verify-ran");
+        task.files = vec!["src/lib.rs".to_string()];
+        task.verify = vec![verify_step(
+            "structural",
+            &format!("touch {}", marker.display()),
+        )];
+
+        let (gate, message) = rejected(&dispatcher, &task, &marker).await;
+        assert_eq!(gate, "pre_verify:tamper");
+        assert!(
+            message.contains("verify_script_edited `scripts/lint.sh`"),
+            "{message}"
         );
     }
 

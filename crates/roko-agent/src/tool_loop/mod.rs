@@ -68,6 +68,12 @@ pub struct ToolLoopTurnTrace {
     pub reasoning: Option<String>,
     /// Token usage reported for this backend turn.
     pub usage: Usage,
+    /// Model the provider reported serving this turn, when the response
+    /// named one ([`BackendResponse::extract_model`]).
+    pub model: Option<String>,
+    /// Whether the provider reported this turn's usage
+    /// ([`BackendResponse::usage_source`]).
+    pub usage_source: crate::usage::UsageSource,
 }
 
 pub mod agent_wrapper;
@@ -328,6 +334,9 @@ pub async fn collect_stream_to_response(
     let mut reasoning = String::new();
     let mut tool_calls: Vec<roko_core::tool::ToolCall> = vec![];
     let mut usage = Usage::default();
+    // Only a stream that reported usage gets a `usage` block, so the
+    // response's usage source stays honest (bug-c65bfe).
+    let mut usage_reported = false;
     let mut finish_reason = "stop".to_string();
     let mut ttft_ms: Option<u64> = None;
     // Track in-progress tool calls: key -> (real_id, name, accumulated_args).
@@ -388,7 +397,10 @@ pub async fn collect_stream_to_response(
                 // results are injected into the conversation by the ToolLoop
                 // dispatcher, not synthesised from stream events.
             }
-            StreamEventKind::Usage(u) => usage = u,
+            StreamEventKind::Usage(u) => {
+                usage = u;
+                usage_reported = true;
+            }
             StreamEventKind::Done { finish_reason: fr } => {
                 finish_reason = fr;
             }
@@ -438,15 +450,17 @@ pub async fn collect_stream_to_response(
             "message": message,
             "finish_reason": finish_reason,
         }],
-        "usage": {
+    });
+    if usage_reported {
+        json["usage"] = serde_json::json!({
             "prompt_tokens": usage.input_tokens,
             "completion_tokens": usage.output_tokens,
             "total_tokens": usage.input_tokens + usage.output_tokens,
             "prompt_tokens_details": {
                 "cached_tokens": usage.cache_read_tokens,
             },
-        },
-    });
+        });
+    }
 
     // Mirror tool calls at the top level for translators that read
     // `v.get("tool_calls")` rather than `choices[0].message.tool_calls`.
@@ -483,6 +497,7 @@ pub fn response_to_synthetic_stream(
 
     let text = response.extract_text();
     let usage = response.extract_usage();
+    let usage_reported = response.usage_source() == crate::usage::UsageSource::ProviderReported;
     let finish_reason = response
         .extract_finish_reason_raw()
         .unwrap_or_else(|| "stop".to_string());
@@ -532,7 +547,10 @@ pub fn response_to_synthetic_stream(
         }
     }
 
-    events.push(Ok(StreamEvent::now(StreamEventKind::Usage(usage))));
+    // A response that reported no usage passes none on (bug-c65bfe).
+    if usage_reported {
+        events.push(Ok(StreamEvent::now(StreamEventKind::Usage(usage))));
+    }
     events.push(Ok(StreamEvent::now(StreamEventKind::Done {
         finish_reason,
     })));
@@ -1104,6 +1122,8 @@ impl ToolLoop {
             };
             merge_session_state(&mut session, self.backend.extract_session(&response));
             let turn_reasoning = response.extract_reasoning();
+            let turn_model = response.extract_model();
+            let turn_usage_source = response.usage_source();
             let mut turn_usage = response.extract_usage();
 
             // Compute cost from model profile pricing when the provider did not
@@ -1216,6 +1236,8 @@ impl ToolLoop {
                     tool_results: Vec::new(),
                     reasoning: turn_reasoning,
                     usage: turn_usage,
+                    model: turn_model,
+                    usage_source: turn_usage_source,
                 });
                 let finish_reason_raw = response.extract_finish_reason_raw();
                 let hit_length_limit = finish_reason_raw
@@ -1295,6 +1317,8 @@ impl ToolLoop {
                 tool_results: tool_results.clone(),
                 reasoning: turn_reasoning.clone(),
                 usage: turn_usage,
+                model: turn_model,
+                usage_source: turn_usage_source,
             });
 
             // Fire on_turn callback with a snapshot of this iteration.

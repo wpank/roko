@@ -17,11 +17,11 @@
 use anyhow::Result;
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
-use std::process::Command as StdCommand;
 
 use crate::Cli;
-use roko_cli::auth_detect::{AuthMethod, detect_auth_from_env};
+use roko_cli::auth_detect::{AuthMethod, detect_auth_from_env, version_probe};
 use roko_cli::doctor::{DoctorOptions, run_doctor};
+use roko_core::child_env::CredentialScrub;
 use roko_core::provider_catalog::{ProviderAvailability, catalog, check_provider_availability};
 
 use super::util::cmd_init;
@@ -284,11 +284,13 @@ fn detect_installed_clis() -> Vec<(String, String)> {
         ("aichat", "aichat"),
     ];
 
+    // A probed binary inherits no provider key, `.env`-loaded name or roko
+    // credential.
+    let scrub = CredentialScrub::default();
     candidates
         .iter()
         .filter(|(cmd, _)| {
-            StdCommand::new(cmd)
-                .arg("--version")
+            version_probe(cmd, &scrub)
                 .output()
                 .map(|o| o.status.success())
                 .unwrap_or(false)

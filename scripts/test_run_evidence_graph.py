@@ -128,7 +128,10 @@ class GraphRunCase(unittest.TestCase):
         (self.ws / "fake-claude").chmod(0o755)
         (self.ws / ".roko").mkdir()
         (self.ws / "README.md").write_text("# evidence fixture\n", encoding="utf-8")
-        (self.ws / ".gitignore").write_text(".roko/\nout/\n", encoding="utf-8")
+        # The artifacts under out/ stay visible to git: the pre-verify screen
+        # rejects an implementer attempt that leaves the git-visible tree
+        # unchanged (gap-b72761).
+        (self.ws / ".gitignore").write_text(".roko/\n", encoding="utf-8")
         (self.ws / "roko.toml").write_text(ROKO_TOML.format(fake=self.ws / "fake-claude"), encoding="utf-8")
         write_plan(self.ws, "one", "Write the artifact.", "test -f out/one.txt")
         write_plan(self.ws, "early", "Crash before any output. EXIT_EARLY 3", "test -f out/early.txt")
@@ -186,9 +189,9 @@ class GraphRunCase(unittest.TestCase):
         self.assertEqual([row["outcome"] for row in terminals], [outcome])
 
     def assert_derived_only(self, bundle: pathlib.Path) -> None:
-        """Graph evidence holds no agent output and the metadata no home path."""
+        """Graph evidence and the event log hold no agent output, and the metadata no home path."""
         home = str(pathlib.Path.home())
-        for path in sorted((bundle / "graph").rglob("*")):
+        for path in [bundle / "events.jsonl", *sorted((bundle / "graph").rglob("*"))]:
             if path.is_file():
                 self.assertNotIn(AGENT_TEXT, path.read_text(encoding="utf-8"), path.name)
         for name in ("manifest.json", "command.txt", "summary.json", "commands.jsonl", "graph/index.json"):
@@ -281,6 +284,10 @@ class GraphBundleScenarios(GraphRunCase):
 
         first_result, first = self.collect("one")
         resumed_result, resumed = self.collect("one")
+        # --fresh redoes the task from the start. Without the first run's
+        # artifact its attempt changes the tree, as the pre-verify screen
+        # requires; the fake agent would rewrite identical bytes.
+        (self.ws / "out" / "one.txt").unlink()
         fresh_result, fresh = self.collect("one", "--fresh")
         for result in (first_result, resumed_result, fresh_result):
             self.assertEqual(result.returncode, 0, result.stderr[-3000:])
@@ -309,12 +316,18 @@ class GraphBundleScenarios(GraphRunCase):
         for bundle in (first, resumed, fresh):
             self.assert_validates(bundle)
             self.assert_one_lifecycle(bundle, "succeeded")
-            self.assertEqual(read_jsonl(bundle / "status-samples.jsonl"), [])
+            # The run's own status.json revisions are sampled (gap-568056),
+            # never the stale file of the old run.
+            run_id = read_json(bundle / "manifest.json")["run_id"]
+            samples = read_jsonl(bundle / "status-samples.jsonl")
+            self.assertTrue(samples, "the Graph run wrote no status.json revision")
+            self.assertEqual({sample["source_run_id"] for sample in samples}, {run_id})
+            self.assertEqual(samples[-1]["status"]["phase"], "completed")
             sources = read_json(bundle / "filtered-logs" / "index.json")["sources"]
             events_log = [source for source in sources if source["source"].endswith(".roko/events.jsonl")]
             self.assertEqual([source["lines_selected"] for source in events_log], [0])
             sampling = read_json(bundle / "summary.json")["collection"]["status_sampling"]
-            self.assertEqual(sampling["state"], "skipped")
+            self.assertEqual(sampling["state"], "sampled")
 
 
 class FastWrapper(GraphRunCase):
@@ -373,6 +386,31 @@ class CollectorUnits(unittest.TestCase):
         [signal_row] = row["signals"]
         self.assertEqual(signal_row["tags"], {"model": "m", "roko.gate.verdict": "passed"})
         self.assertEqual((signal_row["body_format"], signal_row["body_bytes"]), ("text", 23))
+
+    def test_gate_timeouts_are_read_from_the_logged_excerpt(self) -> None:
+        """The --log-file keeps a gate's redacted output tail, not its output (bug-4c4eea)."""
+
+        def gate_result(task_id: str, **output: object) -> dict:
+            event = {"type": "gate_result", "plan_id": "p", "task_id": task_id, "gate": "verify[0]", "passed": False}
+            return {"type": "dashboard.gate_result", "run_id": "r", "seq": 1, "ts_millis": 1, "event": {**event, **output}}
+
+        rows = [
+            gate_result(
+                "T01",
+                output_text_bytes=900,
+                output_text_lines=40,
+                output_text_sha256="0" * 64,
+                output_text_excerpt="\u2026line 40\n\u2717 timed out after 1500 ms",
+            ),
+            # A log written before the fix holds the whole output.
+            gate_result("T02", output_text="$ sleep 9\n\u2717 timed out after 2500 ms"),
+        ]
+        with tempfile.TemporaryDirectory() as raw:
+            events = pathlib.Path(raw) / "events.jsonl"
+            events.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+            metrics = run_evidence.event_metrics(events)
+        self.assertEqual([gate["timeout_ms"] for gate in metrics["graph_gates"]], [1500, 2500])
+        self.assertEqual((metrics["gate_failed"], metrics["timeouts"]), (2, 2))
 
     def test_fresh_run_of_equal_size_is_sliced_from_the_start(self) -> None:
         """A byte offset alone would skip a fresh log that regrew to the old size."""

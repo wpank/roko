@@ -275,9 +275,13 @@ checks, and complex tasks run all of them.
 | 6 | Integration | A full integration scenario |
 
 Rungs declared under `[[gates.rungs]]` in `roko.toml` replace the built-in compile, lint and test
-checks for that workspace. Other gates include `DiffGate`, `LlmJudgeGate`, `FactCheckGate`,
-`CodeExecutionGate` and `SecurityScanGate`. Gate thresholds adapt from recorded outcomes and
-persist to `.roko/learn/gate-thresholds.json`, and `roko learn gates` shows them.
+checks for that workspace. `roko plan run` runs the required ones after each task's own
+`[[task.verify]]` steps, except a rung whose command one of those steps already runs, and a failing
+rung fails the task. Task prompts list the rungs, and `roko plan validate` shows which will run. A
+plan opts out with `workspace_rungs = false` in its `[meta]`. Other gates include `DiffGate`,
+`LlmJudgeGate`, `FactCheckGate`, `CodeExecutionGate` and `SecurityScanGate`. Gate thresholds adapt
+from recorded outcomes and persist to `.roko/learn/gate-thresholds.json`, and `roko learn gates`
+shows them.
 
 ## Learning
 

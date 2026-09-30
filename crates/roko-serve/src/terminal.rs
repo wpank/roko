@@ -7,6 +7,15 @@
 //! WebSocket closes, the PTY keeps running and output accumulates in a
 //! per-session scrollback ring buffer. A reconnecting client receives the
 //! buffered scrollback before live data resumes.
+//!
+//! Safe by default (`[serve]` in `roko.toml`):
+//! - a session runs the login shell; a request's `command` is refused unless
+//!   `terminal_commands` lists it;
+//! - a request's `workdir` must resolve inside the workspace root;
+//! - at most `terminal_max_sessions` PTYs (8) are open at once, and each is
+//!   closed after `terminal_session_ttl_secs` (8 hours). `0` lifts either;
+//! - a session id is 1-128 ASCII letters, digits, `-` or `_`, because it names
+//!   a directory under `.roko/workspaces/`; every route refuses any other id.
 
 use std::collections::{HashMap, VecDeque};
 use std::io::{Read, Write};
@@ -20,7 +29,7 @@ use axum::{
     Json,
     extract::{
         DefaultBodyLimit, Path, State,
-        ws::{Message, WebSocket, WebSocketUpgrade},
+        ws::{Message, WebSocket, WebSocketUpgrade, rejection::WebSocketUpgradeRejection},
     },
     response::IntoResponse,
 };
@@ -33,6 +42,7 @@ use uuid::Uuid;
 
 use crate::command_events::{CommandEvent, CommandOutputStream};
 use crate::state::AppState;
+use roko_core::config::ServeConfig;
 use roko_core::config::schema::RokoConfig;
 use roko_core::obs::LogScrubber;
 
@@ -45,6 +55,12 @@ const TERMINAL_GRACE_PERIOD: Duration = Duration::from_secs(60);
 
 /// Maximum number of output chunks kept in the per-session scrollback ring.
 const SCROLLBACK_CHUNKS: usize = 512;
+
+/// How often the background reaper closes expired sessions.
+const SESSION_REAP_INTERVAL: Duration = Duration::from_secs(60);
+
+/// Longest terminal session id accepted.
+const MAX_SESSION_ID_LEN: usize = 128;
 
 /// Body size cap for the terminal session input endpoint.
 ///
@@ -71,6 +87,8 @@ pub(crate) struct PtySession {
     zdotdir: Option<std::path::PathBuf>,
     /// When the last WebSocket client disconnected (None = currently attached).
     disconnected_at: Option<Instant>,
+    /// When the PTY was spawned; `serve.terminal_session_ttl_secs` counts from here.
+    created_at: Instant,
     /// Per-session scrollback ring buffer — shared with the PTY reader thread.
     scrollback: Arc<Mutex<VecDeque<Vec<u8>>>>,
     /// Live output subscribers (WebSocket bridge tasks subscribe here).
@@ -83,6 +101,21 @@ pub(crate) struct PtySession {
     /// Terminal dimensions at creation. Stored for future resize logic.
     #[allow(dead_code)]
     spawn_rows: u16,
+}
+
+impl PtySession {
+    /// Why this session is due to be reaped, if it is: its grace period after
+    /// a disconnect ran out, or it outlived `ttl`.
+    fn expiry(&self, ttl: Option<Duration>) -> Option<&'static str> {
+        let detached = self.disconnected_at.map(|at| at.elapsed());
+        if detached.is_some_and(|idle| idle > TERMINAL_GRACE_PERIOD) {
+            Some("grace period expired")
+        } else if ttl.is_some_and(|ttl| self.created_at.elapsed() > ttl) {
+            Some("session lifetime expired")
+        } else {
+            None
+        }
+    }
 }
 
 /// Persisted terminal state written to `.roko/workspaces/{id}/terminal.state`.
@@ -128,7 +161,11 @@ pub struct CreateSessionRequest {
     pub cols: u16,
     #[serde(default = "default_rows")]
     pub rows: u16,
+    /// Command line to run instead of the login shell. Refused unless
+    /// `serve.terminal_commands` lists it.
     pub command: Option<String>,
+    /// Starting directory. It must resolve inside the workspace root; a
+    /// relative path is taken from the root.
     pub workdir: Option<String>,
 }
 
@@ -147,6 +184,61 @@ pub struct SendInputRequest {
 
 const TERMINAL_DISABLED_ERROR: &str = "Terminal disabled";
 const TERMINAL_DISABLED_HINT: &str = "Set serve.terminal_enabled=true or use --enable-terminal";
+const TERMINAL_COMMAND_HINT: &str = "Omit `command` to run the login shell, or list the exact \
+     command line in serve.terminal_commands";
+const INVALID_SESSION_ID_ERROR: &str = "invalid terminal session id";
+const INVALID_SESSION_ID_HINT: &str = "Use 1-128 ASCII letters, digits, '-' or '_'";
+
+/// Whether `id` can name a terminal session: 1-128 ASCII letters, digits,
+/// `-` or `_`.
+///
+/// The id becomes a directory name under `.roko/workspaces/` (see
+/// `SessionManager::state_file_path`), so nothing else is accepted, in
+/// particular no `/`, `\` or `.` that could lead out of that directory. Axum
+/// decodes path parameters, so `%2F` in a URL arrives here as `/`.
+pub(crate) fn is_valid_session_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= MAX_SESSION_ID_LEN
+        && id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+}
+
+/// Session limits from `[serve]`: how many PTYs may be open at once and how
+/// long each may live. `None` means no limit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct TerminalLimits {
+    max_sessions: Option<usize>,
+    ttl: Option<Duration>,
+}
+
+impl TerminalLimits {
+    fn from_serve_config(serve: &ServeConfig) -> Self {
+        Self {
+            max_sessions: (serve.terminal_max_sessions > 0).then_some(serve.terminal_max_sessions),
+            ttl: (serve.terminal_session_ttl_secs > 0)
+                .then(|| Duration::from_secs(serve.terminal_session_ttl_secs)),
+        }
+    }
+}
+
+/// A new PTY was refused because `serve.terminal_max_sessions` are open.
+#[derive(Debug)]
+pub(crate) struct SessionLimitReached {
+    max: usize,
+}
+
+impl std::fmt::Display for SessionLimitReached {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "terminal session limit reached: {} sessions are open (serve.terminal_max_sessions)",
+            self.max
+        )
+    }
+}
+
+impl std::error::Error for SessionLimitReached {}
 
 #[derive(Clone, Debug, Default)]
 struct PtyServerEnv {
@@ -302,6 +394,7 @@ pub struct SessionManager {
     sess_generation: AtomicU64,
     command_event_emitter: TerminalCommandEventEmitter,
     server_env: Mutex<PtyServerEnv>,
+    limits: Mutex<TerminalLimits>,
 }
 
 impl SessionManager {
@@ -313,7 +406,27 @@ impl SessionManager {
             sess_generation: AtomicU64::new(0),
             command_event_emitter: TerminalCommandEventEmitter::new(),
             server_env: Mutex::new(PtyServerEnv::default()),
+            limits: Mutex::new(TerminalLimits::from_serve_config(&ServeConfig::default())),
         }
+    }
+
+    /// Apply the session cap and lifetime from `config.serve`.
+    pub(crate) fn configure_limits_from_config(&self, config: &RokoConfig) {
+        *self.limits.lock() = TerminalLimits::from_serve_config(&config.serve);
+    }
+
+    /// Refuse a new PTY while `serve.terminal_max_sessions` are open.
+    ///
+    /// Expired sessions are reaped first so they do not hold a slot.
+    fn ensure_session_capacity(&self) -> anyhow::Result<()> {
+        self.reap_expired();
+        let Some(max) = self.limits.lock().max_sessions else {
+            return Ok(());
+        };
+        if self.sessions.lock().len() >= max {
+            return Err(SessionLimitReached { max }.into());
+        }
+        Ok(())
     }
 
     /// Mark a session as disconnected (WebSocket closed). The PTY remains alive
@@ -340,25 +453,24 @@ impl SessionManager {
         }
     }
 
-    /// Reap sessions whose grace period has expired. Called lazily from
-    /// `attach_session` and `list_sessions`.
+    /// Reap sessions whose grace period has expired, and sessions older than
+    /// `serve.terminal_session_ttl_secs` whether attached or not. Called
+    /// lazily from `attach_session`, `list_sessions` and session creation,
+    /// and every minute by the reaper that `start_session_reaper` starts.
     pub fn reap_expired(&self) {
-        let expired_ids: Vec<String> = {
+        let ttl = self.limits.lock().ttl;
+        let expired: Vec<(String, &'static str)> = {
             let sessions = self.sessions.lock();
             sessions
                 .iter()
-                .filter_map(|(id, s)| {
-                    s.disconnected_at
-                        .filter(|t| t.elapsed() > TERMINAL_GRACE_PERIOD)
-                        .map(|_| id.clone())
-                })
+                .filter_map(|(id, s)| s.expiry(ttl).map(|reason| (id.clone(), reason)))
                 .collect()
         };
 
-        for id in &expired_ids {
+        for (id, reason) in &expired {
             let removed = self.sessions.lock().remove(id);
             if let Some(session) = removed {
-                self.finish_session(id, session, "grace period expired");
+                self.finish_session(id, session, reason);
             }
             self.session_info.lock().remove(id);
         }
@@ -374,6 +486,10 @@ impl SessionManager {
         command: Option<&str>,
         workdir: Option<&str>,
     ) -> AttachResult {
+        if !is_valid_session_id(id) {
+            return AttachResult::Failed(INVALID_SESSION_ID_ERROR.to_string());
+        }
+
         // First, reap any expired sessions
         self.reap_expired();
 
@@ -447,12 +563,16 @@ impl SessionManager {
 
     /// Write terminal state file to disk.
     fn write_state_file(&self, id: &str, state: &TerminalStateFile) {
-        let dir = self.workdir.join(".roko/workspaces").join(id);
-        if let Err(e) = std::fs::create_dir_all(&dir) {
+        let Some(path) = self.state_file_path(id) else {
+            tracing::warn!("refusing to write terminal state for an invalid session id");
+            return;
+        };
+        if let Some(dir) = path.parent()
+            && let Err(e) = std::fs::create_dir_all(dir)
+        {
             tracing::warn!("failed to create terminal state dir: {e}");
             return;
         }
-        let path = dir.join("terminal.state");
         match serde_json::to_string_pretty(state) {
             Ok(json) => {
                 if let Err(e) = std::fs::write(&path, json) {
@@ -465,23 +585,28 @@ impl SessionManager {
 
     /// Read terminal state file from disk.
     fn read_state_file(&self, id: &str) -> Option<TerminalStateFile> {
-        let path = self
-            .workdir
-            .join(".roko/workspaces")
-            .join(id)
-            .join("terminal.state");
+        let path = self.state_file_path(id)?;
         let content = std::fs::read_to_string(&path).ok()?;
         serde_json::from_str(&content).ok()
     }
 
     /// Remove terminal state file from disk.
     fn remove_state_file(&self, id: &str) {
-        let path = self
-            .workdir
-            .join(".roko/workspaces")
-            .join(id)
-            .join("terminal.state");
-        let _ = std::fs::remove_file(&path);
+        if let Some(path) = self.state_file_path(id) {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+
+    /// `.roko/workspaces/{id}/terminal.state`, or `None` when `id` cannot
+    /// name a session. The joined path is also checked to stay under
+    /// `.roko/workspaces/`, so no id reaches a file outside it.
+    fn state_file_path(&self, id: &str) -> Option<std::path::PathBuf> {
+        if !is_valid_session_id(id) {
+            return None;
+        }
+        let workspaces = self.workdir.join(".roko").join("workspaces");
+        let path = workspaces.join(id).join("terminal.state");
+        path.starts_with(&workspaces).then_some(path)
     }
 
     /// Create a session with a session-owned PTY reader thread that fans output
@@ -495,6 +620,7 @@ impl SessionManager {
         command: Option<&str>,
         workdir: Option<&str>,
     ) -> anyhow::Result<(u64, mpsc::Receiver<Vec<u8>>)> {
+        self.ensure_session_capacity()?;
         let pty_system = NativePtySystem::default();
         let size = PtySize {
             rows,
@@ -607,6 +733,7 @@ impl SessionManager {
                 sess_generation: sess_gen,
                 zdotdir: zdotdir_path,
                 disconnected_at: None,
+                created_at: Instant::now(),
                 scrollback: scrollback.clone(),
                 subscribers: subscribers.clone(),
                 spawn_workdir: wd.clone(),
@@ -710,6 +837,12 @@ impl SessionManager {
         command: Option<&str>,
         workdir: Option<&str>,
     ) -> anyhow::Result<(String, Box<dyn Read + Send>, u64)> {
+        if let Some(id) = &requested_id
+            && !is_valid_session_id(id)
+        {
+            anyhow::bail!(INVALID_SESSION_ID_ERROR);
+        }
+        self.ensure_session_capacity()?;
         let pty_system = NativePtySystem::default();
         let size = PtySize {
             rows,
@@ -818,6 +951,7 @@ impl SessionManager {
                 sess_generation: sess_gen,
                 zdotdir: zdotdir_path,
                 disconnected_at: None,
+                created_at: Instant::now(),
                 scrollback: Arc::new(Mutex::new(VecDeque::new())),
                 subscribers: Arc::new(Mutex::new(Vec::new())),
                 spawn_workdir: wd.clone(),
@@ -956,11 +1090,32 @@ pub async fn create_session(
     State(state): State<Arc<AppState>>,
     Json(req): Json<CreateSessionRequest>,
 ) -> impl IntoResponse {
+    let config = state.load_roko_config();
+    let command = match allowed_command(req.command.as_deref(), &config.serve.terminal_commands) {
+        Ok(command) => command,
+        Err(error) => {
+            return (
+                axum::http::StatusCode::FORBIDDEN,
+                Json(serde_json::json!({ "error": error, "hint": TERMINAL_COMMAND_HINT })),
+            )
+                .into_response();
+        }
+    };
+    let workdir = match resolve_session_workdir(&state.workdir, req.workdir.as_deref()) {
+        Ok(workdir) => workdir,
+        Err(error) => {
+            return (
+                axum::http::StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": error })),
+            )
+                .into_response();
+        }
+    };
     match state.terminal_sessions.create_session(
         req.cols,
         req.rows,
-        req.command.as_deref(),
-        req.workdir.as_deref(),
+        command.as_deref(),
+        workdir.as_deref(),
     ) {
         Ok((id, _reader, _sess_gen)) => {
             let info = state
@@ -971,12 +1126,93 @@ pub async fn create_session(
                 .cloned();
             Json(serde_json::json!({ "id": id, "session": info })).into_response()
         }
-        Err(e) => (
-            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": e.to_string()})),
-        )
-            .into_response(),
+        Err(e) => {
+            let status = if e.is::<SessionLimitReached>() {
+                axum::http::StatusCode::TOO_MANY_REQUESTS
+            } else {
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR
+            };
+            (status, Json(serde_json::json!({"error": e.to_string()}))).into_response()
+        }
     }
+}
+
+/// The command a session request may run: `None` (the login shell) when the
+/// request names none, or the request's command line with whitespace
+/// collapsed when `allowed` (`serve.terminal_commands`) lists it exactly.
+fn allowed_command(requested: Option<&str>, allowed: &[String]) -> Result<Option<String>, String> {
+    let Some(requested) = requested else {
+        return Ok(None);
+    };
+    let requested = collapse_whitespace(requested);
+    let listed = allowed
+        .iter()
+        .any(|entry| collapse_whitespace(entry) == requested);
+    if listed && !requested.is_empty() {
+        Ok(Some(requested))
+    } else {
+        Err(format!("{requested:?} is not in serve.terminal_commands"))
+    }
+}
+
+/// `command` with each run of whitespace collapsed to one space, the way the
+/// PTY spawn splits it into a program and arguments.
+fn collapse_whitespace(command: &str) -> String {
+    command.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Resolve a session's starting directory, which must stay inside `root`.
+///
+/// `None` or a blank value keeps the default, the workspace root. A relative
+/// path is taken from `root`. The directory must exist and, with symlinks
+/// resolved, be `root` or lie below it.
+fn resolve_session_workdir(
+    root: &std::path::Path,
+    requested: Option<&str>,
+) -> Result<Option<String>, String> {
+    let Some(requested) = requested.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    let root = root
+        .canonicalize()
+        .map_err(|error| format!("resolve the workspace root: {error}"))?;
+    let resolved = root
+        .join(requested)
+        .canonicalize()
+        .map_err(|error| format!("workdir {requested:?} does not resolve: {error}"))?;
+    if !resolved.starts_with(&root) {
+        return Err(format!("workdir {requested:?} is outside the workspace"));
+    }
+    if !resolved.is_dir() {
+        return Err(format!("workdir {requested:?} is not a directory"));
+    }
+    Ok(Some(resolved.to_string_lossy().into_owned()))
+}
+
+/// Start a background task that reaps expired sessions every minute, so a
+/// session past its grace period or `serve.terminal_session_ttl_secs` is
+/// closed even when no request arrives to reap it lazily.
+///
+/// The task holds only a weak reference to the state and stops when the
+/// state is dropped or the server is cancelled.
+pub(crate) fn start_session_reaper(state: &Arc<AppState>) {
+    let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+        return;
+    };
+    let state = Arc::downgrade(state);
+    runtime.spawn(async move {
+        let mut tick = tokio::time::interval(SESSION_REAP_INTERVAL);
+        loop {
+            tick.tick().await;
+            let Some(state) = state.upgrade() else {
+                break;
+            };
+            if state.cancel.is_cancelled() {
+                break;
+            }
+            state.terminal_sessions.reap_expired();
+        }
+    });
 }
 
 pub async fn list_sessions(State(state): State<Arc<AppState>>) -> impl IntoResponse {
@@ -986,9 +1222,12 @@ pub async fn list_sessions(State(state): State<Arc<AppState>>) -> impl IntoRespo
 pub async fn destroy_session(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
-) -> impl IntoResponse {
+) -> axum::response::Response {
+    if !is_valid_session_id(&id) {
+        return invalid_session_id_response();
+    }
     state.terminal_sessions.destroy_session(&id);
-    Json(serde_json::json!({"ok": true}))
+    Json(serde_json::json!({"ok": true})).into_response()
 }
 
 pub async fn send_input(
@@ -996,6 +1235,9 @@ pub async fn send_input(
     Path(id): Path<String>,
     Json(req): Json<SendInputRequest>,
 ) -> impl IntoResponse {
+    if !is_valid_session_id(&id) {
+        return invalid_session_id_response();
+    }
     match state
         .terminal_sessions
         .send_input(&id, req.input.as_bytes())
@@ -1011,17 +1253,39 @@ pub async fn send_input(
 
 /// WebSocket bridge to a PTY session. Reattaches to an existing session
 /// within the grace period, or creates a new one if none exists.
+///
+/// The id is checked before the upgrade, so an invalid one gets a plain 400
+/// whether or not the request could have been upgraded.
 pub async fn ws_terminal(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
-    ws: WebSocketUpgrade,
-) -> impl IntoResponse {
+    ws: Result<WebSocketUpgrade, WebSocketUpgradeRejection>,
+) -> axum::response::Response {
+    if !is_valid_session_id(&id) {
+        return invalid_session_id_response();
+    }
+    let ws = match ws {
+        Ok(ws) => ws,
+        Err(rejection) => return rejection.into_response(),
+    };
     let attach_result = state
         .terminal_sessions
         .attach_session(&id, 80, 24, None, None);
 
     crate::routes::ws_size_limits(ws)
         .on_upgrade(move |socket| handle_ws(socket, id, state, attach_result))
+}
+
+/// The 400 every route returns for an id that cannot name a session.
+fn invalid_session_id_response() -> axum::response::Response {
+    (
+        axum::http::StatusCode::BAD_REQUEST,
+        Json(serde_json::json!({
+            "error": INVALID_SESSION_ID_ERROR,
+            "hint": INVALID_SESSION_ID_HINT,
+        })),
+    )
+        .into_response()
 }
 
 /// Scrub secrets from PTY output bytes. Only scrubs valid UTF-8 data to avoid
@@ -1433,6 +1697,7 @@ mod tests {
                     sess_generation: 0,
                     zdotdir: Some(zdotdir.clone()),
                     disconnected_at: Some(Instant::now() - Duration::from_secs(120)),
+                    created_at: Instant::now() - Duration::from_secs(120),
                     scrollback: scrollback.clone(),
                     subscribers: subscribers.clone(),
                     spawn_workdir: tempdir.path().to_path_buf(),
@@ -1553,5 +1818,307 @@ mod tests {
 
         // Clean up
         manager.destroy_session(test_id);
+    }
+
+    #[test]
+    fn allowed_command_refuses_commands_not_listed() {
+        assert_eq!(allowed_command(None, &[]), Ok(None));
+        assert!(allowed_command(Some("/bin/sh"), &[]).is_err());
+        assert!(allowed_command(Some("htop -d 5"), &["htop".to_string()]).is_err());
+        assert!(allowed_command(Some("   "), &[String::new()]).is_err());
+        assert_eq!(
+            allowed_command(Some("  htop   -d 5 "), &["htop -d 5".to_string()]),
+            Ok(Some("htop -d 5".to_string()))
+        );
+    }
+
+    #[test]
+    fn session_workdir_must_stay_inside_the_workspace() {
+        let workspace = tempfile::tempdir().expect("create tempdir");
+        let root = workspace.path().canonicalize().expect("canonical root");
+        std::fs::create_dir_all(root.join("sub").join("dir")).expect("create subdir");
+        std::fs::write(root.join("file.txt"), "x").expect("write file");
+
+        assert_eq!(resolve_session_workdir(&root, None), Ok(None));
+        assert_eq!(resolve_session_workdir(&root, Some("  ")), Ok(None));
+        let nested = root.join("sub").join("dir");
+        assert_eq!(
+            resolve_session_workdir(&root, Some("sub/dir")),
+            Ok(Some(nested.to_string_lossy().into_owned()))
+        );
+        assert_eq!(
+            resolve_session_workdir(&root, nested.to_str()),
+            Ok(Some(nested.to_string_lossy().into_owned()))
+        );
+        for refused in ["..", "sub/../..", "/", "missing", "file.txt"] {
+            assert!(
+                resolve_session_workdir(&root, Some(refused)).is_err(),
+                "{refused} must be refused"
+            );
+        }
+
+        #[cfg(unix)]
+        {
+            let elsewhere = tempfile::tempdir().expect("create second tempdir");
+            std::os::unix::fs::symlink(elsewhere.path(), root.join("escape")).expect("symlink");
+            assert!(resolve_session_workdir(&root, Some("escape")).is_err());
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn session_cap_refuses_new_sessions_until_one_closes() -> anyhow::Result<()> {
+        let tempdir = tempfile::tempdir()?;
+        let manager = SessionManager::new(tempdir.path().to_path_buf());
+        *manager.limits.lock() = TerminalLimits {
+            max_sessions: Some(1),
+            ttl: None,
+        };
+
+        let (first, _first_reader, _) =
+            manager.create_session(80, 24, Some("/bin/sleep 5"), None)?;
+        let Err(refused) = manager.create_session(80, 24, Some("/bin/sleep 5"), None) else {
+            panic!("a second session must be refused while the cap is reached");
+        };
+        assert!(refused.is::<SessionLimitReached>(), "{refused}");
+        let attach = manager.attach_session("ws-over-cap", 80, 24, Some("/bin/sleep 5"), None);
+        assert!(
+            matches!(attach, AttachResult::Failed(_)),
+            "a WebSocket attach must not create a session past the cap"
+        );
+
+        manager.destroy_session(&first);
+        let (second, _second_reader, _) =
+            manager.create_session(80, 24, Some("/bin/sleep 5"), None)?;
+        manager.destroy_session(&second);
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sessions_past_their_lifetime_are_reaped_even_when_attached() -> anyhow::Result<()> {
+        let tempdir = tempfile::tempdir()?;
+        let manager = SessionManager::new(tempdir.path().to_path_buf());
+        *manager.limits.lock() = TerminalLimits {
+            max_sessions: None,
+            ttl: Some(Duration::from_secs(60)),
+        };
+
+        let (id, _reader, _) = manager.create_session(80, 24, Some("/bin/sleep 5"), None)?;
+        manager.reap_expired();
+        assert!(
+            manager.sessions.lock().contains_key(&id),
+            "a session younger than its lifetime must survive a reap"
+        );
+
+        if let Some(session) = manager.sessions.lock().get_mut(&id) {
+            session.created_at = Instant::now() - Duration::from_secs(120);
+        }
+        manager.reap_expired();
+        assert!(
+            !manager.sessions.lock().contains_key(&id),
+            "a session older than its lifetime must be reaped"
+        );
+        let events = manager.command_events(&id);
+        assert!(
+            events.iter().any(|event| matches!(
+                event,
+                CommandEvent::Cancelled {
+                    reason: Some(reason),
+                    ..
+                } if reason == "session lifetime expired"
+            )),
+            "cancelled event missing from {events:?}"
+        );
+        Ok(())
+    }
+
+    async fn post_session(
+        state: &Arc<AppState>,
+        body: serde_json::Value,
+    ) -> (axum::http::StatusCode, serde_json::Value) {
+        use http_body_util::BodyExt as _;
+        use tower::ServiceExt as _;
+
+        let request = axum::http::Request::post("/api/terminal/sessions")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(body.to_string()))
+            .expect("build request");
+        let response = routes()
+            .with_state(Arc::clone(state))
+            .oneshot(request)
+            .await
+            .expect("response");
+        let status = response.status();
+        let bytes = response
+            .into_body()
+            .collect()
+            .await
+            .expect("collect body")
+            .to_bytes();
+        let body = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+        (status, body)
+    }
+
+    #[tokio::test]
+    async fn create_route_refuses_unlisted_commands_and_outside_workdirs() {
+        let workspace = tempfile::tempdir().expect("create tempdir");
+        let state = Arc::new(
+            AppState::new(
+                workspace.path().to_path_buf(),
+                Arc::new(crate::runtime::NoOpRuntime),
+                RokoConfig::default(),
+                Arc::new(crate::deploy::manual::ManualBackend::default()),
+            )
+            .expect("create state"),
+        );
+
+        let (status, body) =
+            post_session(&state, serde_json::json!({ "command": "/bin/sh -c id" })).await;
+        assert_eq!(status, axum::http::StatusCode::FORBIDDEN, "{body}");
+        assert_eq!(body["hint"], TERMINAL_COMMAND_HINT);
+
+        let (status, body) = post_session(&state, serde_json::json!({ "workdir": "/" })).await;
+        assert_eq!(status, axum::http::StatusCode::BAD_REQUEST, "{body}");
+
+        assert!(
+            state.terminal_sessions.list_sessions().is_empty(),
+            "a refused request must not leave a session behind"
+        );
+    }
+
+    async fn send_request(
+        state: &Arc<AppState>,
+        request: axum::http::Request<axum::body::Body>,
+    ) -> (axum::http::StatusCode, serde_json::Value) {
+        use http_body_util::BodyExt as _;
+        use tower::ServiceExt as _;
+
+        let response = routes()
+            .with_state(Arc::clone(state))
+            .oneshot(request)
+            .await
+            .expect("response");
+        let status = response.status();
+        let bytes = response
+            .into_body()
+            .collect()
+            .await
+            .expect("collect body")
+            .to_bytes();
+        let body = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+        (status, body)
+    }
+
+    /// No terminal id reaches a file outside `.roko/workspaces/`: the id
+    /// check refuses separators and dots, the state-file helpers ignore an
+    /// invalid id, and every route answers 400 before touching a session.
+    #[tokio::test]
+    async fn terminal_ids_cannot_escape_the_workspaces_dir() {
+        for id in [
+            "t-lk3j9zq-abc",
+            "builder-pty",
+            "demo-alpha-build-0-1759200000000",
+            "bottom-mg7x2k",
+            "3f2a9c1e",
+            "session_1",
+        ] {
+            assert!(is_valid_session_id(id), "{id} must be accepted");
+        }
+        let too_long = "a".repeat(MAX_SESSION_ID_LEN + 1);
+        for id in [
+            "",
+            ".",
+            "..",
+            "../outside",
+            "../../outside",
+            "a/b",
+            "a\\b",
+            "a.b",
+            "%2F",
+            "caf\u{e9}",
+            too_long.as_str(),
+        ] {
+            assert!(!is_valid_session_id(id), "{id:?} must be refused");
+        }
+
+        // `../../outside` from `.roko/workspaces/` would be `<workdir>/outside`.
+        let workspace = tempfile::tempdir().expect("create tempdir");
+        let outside = workspace.path().join("outside");
+        std::fs::create_dir_all(&outside).expect("create outside dir");
+        let planted = outside.join("terminal.state");
+        let state_file = TerminalStateFile {
+            session_id: "planted".to_string(),
+            workspace_id: "planted".to_string(),
+            cwd: "/".to_string(),
+            scrollback_lines: 0,
+            disconnected_at_unix: 0,
+        };
+        std::fs::write(
+            &planted,
+            serde_json::to_string(&state_file).expect("serialize state"),
+        )
+        .expect("plant state file");
+
+        let manager = SessionManager::new(workspace.path().to_path_buf());
+        let escaping = "../../outside";
+        assert!(manager.state_file_path(escaping).is_none());
+        assert!(manager.read_state_file(escaping).is_none());
+        manager.remove_state_file(escaping);
+        assert!(
+            planted.exists(),
+            "an invalid id must not delete outside files"
+        );
+        std::fs::remove_file(&planted).expect("remove planted state");
+        manager.write_state_file(escaping, &state_file);
+        assert!(
+            !planted.exists(),
+            "an invalid id must not write outside files"
+        );
+        assert!(matches!(
+            manager.attach_session(escaping, 80, 24, None, None),
+            AttachResult::Failed(_)
+        ));
+        assert!(manager.list_sessions().is_empty());
+        let valid = manager
+            .state_file_path("builder-pty")
+            .expect("valid id has a state file");
+        assert!(valid.starts_with(workspace.path().join(".roko").join("workspaces")));
+
+        // Every route that takes an id refuses the encoded traversal with 400.
+        let state = Arc::new(
+            AppState::new(
+                workspace.path().to_path_buf(),
+                Arc::new(crate::runtime::NoOpRuntime),
+                RokoConfig::default(),
+                Arc::new(crate::deploy::manual::ManualBackend::default()),
+            )
+            .expect("create state"),
+        );
+        let encoded = "..%2F..%2Foutside";
+        let requests = [
+            axum::http::Request::get(format!("/ws/terminal/{encoded}"))
+                .body(axum::body::Body::empty())
+                .expect("build request"),
+            axum::http::Request::delete(format!("/api/terminal/sessions/{encoded}"))
+                .body(axum::body::Body::empty())
+                .expect("build request"),
+            axum::http::Request::post(format!("/api/terminal/sessions/{encoded}/input"))
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(r#"{"input":"id\n"}"#))
+                .expect("build request"),
+        ];
+        for request in requests {
+            let label = format!("{} {}", request.method(), request.uri());
+            let (status, body) = send_request(&state, request).await;
+            assert_eq!(
+                status,
+                axum::http::StatusCode::BAD_REQUEST,
+                "{label}: {body}"
+            );
+            assert_eq!(body["error"], INVALID_SESSION_ID_ERROR, "{label}");
+        }
+        assert!(!outside.join("terminal.state").exists());
+        assert!(state.terminal_sessions.list_sessions().is_empty());
     }
 }

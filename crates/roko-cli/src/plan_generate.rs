@@ -16,6 +16,7 @@ use std::path::Path;
 /// routing, budgets and turn caps.
 pub use roko_core::task::TaskTier;
 
+use crate::plan_policy::{DEFAULT_GENERATED_TASK_LIMIT, PlanExecutionPolicy};
 use crate::task_parser::role_capabilities;
 
 const NAMING_GLOSSARY_RELATIVE_PATH: &str = "docs/00-architecture/01-naming-and-glossary.md";
@@ -122,7 +123,8 @@ pub(crate) fn render_plan_template_guidance(template: PlanTemplateKind) -> Strin
 /// and model-adaptive tier hints. It's designed to produce tasks that even
 /// the smallest models can execute successfully.
 ///
-/// `{ROLE_TOOL_TABLE}` is replaced by [`render_role_tool_table`].
+/// `{ROLE_TOOL_TABLE}` is replaced by [`render_role_tool_table`], and
+/// `{TIER_SIZE_LIMITS}` by [`render_tier_size_limits`].
 const PLAN_GENERATOR_SYSTEM_PROMPT: &str = r#"## CRITICAL: Output format
 
 Your entire response MUST be a single ```toml fenced code block containing ONLY valid TOML.
@@ -190,6 +192,8 @@ You are a task decomposition engine for software projects. Your job is to take a
 | 1 | Focused | 50 | Implement function body, write single test |
 | 2 | Integrative | 150 | Wire module A→B, implement trait for type |
 | 3 | Architectural | 300 | Design new API, decompose complex feature |
+
+{TIER_SIZE_LIMITS}
 
 ## Output format
 
@@ -449,6 +453,27 @@ pub fn render_role_tool_table() -> String {
     table
 }
 
+/// One prompt line with each tier's size limits for generated plans: the
+/// limits `roko plan validate` checks (`PLAN_TIER_SIZE`), capped by the
+/// generated-plan lane.
+#[must_use]
+pub fn render_tier_size_limits() -> String {
+    let policy = PlanExecutionPolicy::generated(DEFAULT_GENERATED_TASK_LIMIT);
+    let limits = TaskTier::ALL
+        .map(|tier| {
+            let limits = policy.tier_size_limits(tier);
+            format!(
+                "{tier} at most {} files, max_loc {} and {} description words",
+                limits.max_files, limits.max_loc, limits.max_description_words
+            )
+        })
+        .join("; ");
+    format!(
+        "Size each task for its tier ({limits}). `roko plan validate` warns about a larger \
+         task (PLAN_TIER_SIZE): split it, or give it a higher tier."
+    )
+}
+
 /// Build the shared system prompt for plan generation and regeneration.
 #[must_use]
 pub fn build_generator_system_prompt(workdir: &Path) -> String {
@@ -456,7 +481,9 @@ pub fn build_generator_system_prompt(workdir: &Path) -> String {
     let _ = writeln!(
         prompt,
         "{}",
-        PLAN_GENERATOR_SYSTEM_PROMPT.replace("{ROLE_TOOL_TABLE}", &render_role_tool_table())
+        PLAN_GENERATOR_SYSTEM_PROMPT
+            .replace("{ROLE_TOOL_TABLE}", &render_role_tool_table())
+            .replace("{TIER_SIZE_LIMITS}", &render_tier_size_limits())
     );
     append_naming_glossary_prompt(&mut prompt, workdir);
     append_claude_md_prompt(&mut prompt, workdir);
@@ -1041,6 +1068,24 @@ mod tests {
         assert!(prompt.contains(&table));
         assert!(!prompt.contains("{ROLE_TOOL_TABLE}"));
         assert!(!prompt.contains("Same as implementer"));
+    }
+
+    /// gap-1d1fa6: the generator is told the size limits `plan validate`
+    /// checks, capped by the generated-plan lane.
+    #[test]
+    fn generator_prompt_states_the_tier_size_limits() {
+        let line = render_tier_size_limits();
+        assert!(
+            line.contains("mechanical at most 3 files, max_loc 20 and 300 description words"),
+            "{line}"
+        );
+        assert!(
+            line.contains("architectural at most 8 files, max_loc 300"),
+            "{line}"
+        );
+        let prompt = build_generator_system_prompt(std::path::Path::new("/test"));
+        assert!(prompt.contains(&line));
+        assert!(!prompt.contains("{TIER_SIZE_LIMITS}"));
     }
 
     // ── Backlog resolution tests (#227) ───────────────────────────────────

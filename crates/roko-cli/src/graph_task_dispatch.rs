@@ -58,12 +58,15 @@ mod budget;
 mod diff_snapshot;
 mod failover;
 mod feedback;
+mod helper_calls;
 mod inert_settings;
 mod prompt_experiment;
 mod red_flags;
+mod reflex_credit;
 mod retry_budget;
 mod retry_feedback;
 mod routing_context;
+mod served_model;
 mod sibling_settle;
 mod streaming;
 mod tui_forward;
@@ -82,6 +85,7 @@ use attempt::{AttemptBook, SettledAttempt, Settlement, first_token_seen};
 use budget::{
     GraphPlanBudgetLedger, GraphTaskSpendLedger, effective_routing_budget, task_budget_ceiling_usd,
 };
+use helper_calls::{HelperAgent, HelperCalls};
 use inert_settings::warn_inert_graph_settings_once;
 use routing_context::{
     CheapFactoryAgent, arbitrate_cross_cut_routing_bias, assign_retrieval_strategy_arm,
@@ -179,10 +183,11 @@ pub struct GraphTaskDispatcher {
     /// (filesystem reads + `git` subprocess spawns) on the Tokio reactor.
     static_prompt_cache: std::sync::OnceLock<(String, String, String)>,
     /// T0 reflex store. When set and `[learning] t0_reflexes` is on, each
-    /// dispatch of a task without verify steps checks for a matching reflex
-    /// rule before invoking the LLM. A match bypasses the agent call entirely
-    /// and returns the rule's cached output (zero-cost repeated decisions),
-    /// stamped unverified. No gate runs, so the rule earns no gate pass.
+    /// dispatch of a task that no verify step checks (neither its own nor a
+    /// workspace rung) looks for a matching reflex rule before invoking the
+    /// LLM. A match bypasses the agent call entirely and returns the rule's
+    /// cached output (zero-cost repeated decisions), stamped unverified. No
+    /// gate runs, so the rule earns no gate pass.
     reflex_store: Option<ReflexStore>,
     /// Per-task spend across attempts, enforcing `budget.max_task_usd` and
     /// `budget.max_task_retry_usd`.
@@ -190,6 +195,10 @@ pub struct GraphTaskDispatcher {
     /// `[meta] skip_enrichment` per plan id, read once from the plan's
     /// `tasks.toml`.
     skip_enrichment_plans: parking_lot::Mutex<HashMap<String, bool>>,
+    /// Whether each plan's tasks run the workspace's `[[gates.rungs]]`
+    /// (`[meta] workspace_rungs`), per plan id, read once from the plan's
+    /// `tasks.toml`.
+    workspace_rung_plans: parking_lot::Mutex<HashMap<String, bool>>,
     /// Tasks (`"{plan_id}/{task_id}"`) whose last attempt stopped at its turn
     /// cap; the next attempt raises the cap and resumes the partial work.
     turn_cap_retries: parking_lot::Mutex<HashMap<String, TurnCapRetry>>,
@@ -252,6 +261,7 @@ impl GraphTaskDispatcher {
             retrieval_ctx: parking_lot::Mutex::new(HashMap::new()),
             task_spend: GraphTaskSpendLedger::default(),
             skip_enrichment_plans: parking_lot::Mutex::new(HashMap::new()),
+            workspace_rung_plans: parking_lot::Mutex::new(HashMap::new()),
             turn_cap_retries: parking_lot::Mutex::new(HashMap::new()),
             timeout_retries: parking_lot::Mutex::new(HashMap::new()),
             task_attempts: parking_lot::Mutex::new(HashMap::new()),
@@ -337,11 +347,11 @@ impl GraphTaskDispatcher {
     /// Attach the T0 reflex store for pre-dispatch reflex checks.
     ///
     /// With `[learning] t0_reflexes` on (off by default), each `dispatch` of
-    /// a task without verify steps checks whether any rule matches the task's
-    /// role, file extensions, and title before invoking the LLM. A match
-    /// bypasses the agent call and returns the rule's cached output
-    /// (`action.args`), stamped unverified. No gate runs, so the rule is not
-    /// credited with a gate pass.
+    /// a task that no verify step checks (neither its own nor a workspace
+    /// rung) looks for a rule that matches the task's role, file extensions,
+    /// and title before invoking the LLM. A match bypasses the agent call and
+    /// returns the rule's cached output (`action.args`), stamped unverified.
+    /// No gate runs, so the rule is not credited with a gate pass.
     #[must_use]
     pub fn with_reflex_store(mut self, store: ReflexStore) -> Self {
         self.reflex_store = Some(store);
@@ -450,12 +460,16 @@ impl GraphTaskDispatcher {
         )
     }
 
-    /// Return a `CheapFactoryAgent` wired to the model chosen by
+    /// Return a helper agent wired to the model chosen by
     /// [`select_cheap_model_key`], or `None` when no model is dispatchable.
-    /// Used for best-effort error enrichment and quality judgment calls.
-    fn cheap_agent(&self) -> Option<CheapFactoryAgent> {
+    /// Used for best-effort error enrichment, quality judgment and gate
+    /// reflection calls, which count toward the attempt being verified
+    /// ([`HelperAgent`]).
+    fn cheap_agent(&self) -> Option<HelperAgent> {
         let model_key = select_cheap_model_key(&self.config)?;
-        Some(CheapFactoryAgent {
+        let target = crate::dispatch_v2::ProviderDispatchResolver::new(Arc::clone(&self.config))
+            .resolve(&model_key);
+        let agent = CheapFactoryAgent {
             factory: Arc::clone(&self.factory),
             model_key,
             workdir: self.workdir.clone(),
@@ -465,7 +479,21 @@ impl GraphTaskDispatcher {
                 .llm_call_secs
                 .max(1)
                 .saturating_mul(1_000),
-        })
+        };
+        Some(HelperAgent::new(agent, target))
+    }
+
+    /// The `[meta]` of `spec`'s plan, from `<plan_dir>/tasks.toml`; `None`
+    /// when the file is missing or unreadable.
+    fn read_plan_meta(&self, spec: &TaskExecutionSpec) -> Option<crate::task_parser::TaskMeta> {
+        let plan_dir = Path::new(&spec.plan_dir);
+        [plan_dir.to_path_buf(), self.workdir.join(plan_dir)]
+            .into_iter()
+            .filter(|_| !spec.plan_dir.trim().is_empty())
+            .map(|dir| dir.join("tasks.toml"))
+            .find(|path| path.is_file())
+            .and_then(|path| crate::task_parser::TasksFile::parse(&path).ok())
+            .map(|tasks| tasks.meta)
     }
 
     /// Whether the plan's `[meta] skip_enrichment` is set, read once per plan
@@ -475,14 +503,9 @@ impl GraphTaskDispatcher {
         if let Some(skip) = plans.get(&spec.plan_id) {
             return *skip;
         }
-        let plan_dir = Path::new(&spec.plan_dir);
-        let skip = [plan_dir.to_path_buf(), self.workdir.join(plan_dir)]
-            .into_iter()
-            .filter(|_| !spec.plan_dir.trim().is_empty())
-            .map(|dir| dir.join("tasks.toml"))
-            .find(|path| path.is_file())
-            .and_then(|path| crate::task_parser::TasksFile::parse(&path).ok())
-            .is_some_and(|tasks| tasks.meta.skip_enrichment);
+        let skip = self
+            .read_plan_meta(spec)
+            .is_some_and(|meta| meta.skip_enrichment);
         if skip {
             tracing::info!(
                 plan_id = %spec.plan_id,
@@ -548,6 +571,9 @@ impl GraphTaskDispatcher {
         task: &TaskDef,
         dispatch_ctx: &mut DispatchContext,
     ) -> Result<crate::dispatch::RunnerDispatchPlan> {
+        // The prompt shows every check that will judge the task: its own
+        // verify steps, then the workspace rungs it faces.
+        let task = &self.prompt_task(spec, task);
         match self.factory.dispatcher().plan(task, dispatch_ctx) {
             Err(error) if dispatch_ctx.prompt_experiment.is_some() => {
                 tracing::warn!(
@@ -624,13 +650,11 @@ impl TaskDispatcher for GraphTaskDispatcher {
         // served from the T0 store without an LLM round-trip.
         //
         // Reflexes skip the provider *and* the verify steps, so they only
-        // serve tasks that author no verification: a verify-bearing task must
-        // earn its pass from its own gates.
-        if let Some(reflex_store) = self
-            .reflex_store
-            .as_ref()
-            .filter(|_| self.config.learning.t0_reflexes && task.verify.is_empty())
-        {
+        // serve tasks that no verify step checks: a task with its own steps,
+        // or one the workspace rungs check, must earn its pass from them.
+        if let Some(reflex_store) = self.reflex_store.as_ref().filter(|_| {
+            self.config.learning.t0_reflexes && self.verify_steps(spec, &task).is_empty()
+        }) {
             let file_exts: Vec<String> = task
                 .files
                 .iter()
@@ -663,6 +687,14 @@ impl TaskDispatcher for GraphTaskDispatcher {
                 );
                 // Settle the budget reservation at zero cost (no LLM call).
                 budget_reservation.settle(0.0)?;
+                // The rule serves this attempt, and only the attempt's settled
+                // record credits or demotes it (`reflex_credit`). Unverified,
+                // it teaches the rule nothing.
+                let mut attempt = self.open_attempt(spec, &task, ctx);
+                attempt.served_by_reflex(rule_id);
+                let settlement = Settlement::verified(&Ok(TaskGateVerdict::Unverified));
+                let settled = attempt.settle(settlement, "", None);
+                self.publish_settlement(spec, &task, &settled).await;
                 let output_signal = Signal::builder(Kind::AgentOutput)
                     .body(Body::text(cached_output))
                     .build();
@@ -1027,7 +1059,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
             }
         }
 
-        let contract = effective_agent_contract(role, &task);
+        let contract = effective_agent_contract(role, &task, &self.config);
         let base_timeout_ms = base_attempt_timeout_ms(&self.config, spec);
         // The last attempt ran out of time with partial work on disk: give
         // this one half again as long (bounded) and tell it to resume, never
@@ -1056,7 +1088,10 @@ impl TaskDispatcher for GraphTaskDispatcher {
             prompt,
             system_prompt: dispatch_plan.prompt.system_prompt.clone(),
             workdir: effective_workdir.clone(),
-            immune_root: Some(effective_workdir.clone()),
+            // Immune state (tool controls, evidence, the quarantine vault)
+            // belongs to the workspace, not the attempt checkout, so it
+            // survives checkout cleanup and the safety routes see it.
+            immune_root: Some(self.workdir.clone()),
             agent_id: format!(
                 "{}/{}",
                 spec.plan_id,
@@ -1077,6 +1112,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
             // stop. Never unbounded.
             max_turns: Some(max_turns),
             live_output: None,
+            attempt_key: Some(attempt.key.attempt_key()),
         };
 
         // Bind the prompt treatments to the exact final prompt before launch;
@@ -1164,7 +1200,8 @@ impl TaskDispatcher for GraphTaskDispatcher {
             heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             // Consume the immediate first tick so we don't fire at t=0.
             heartbeat.tick().await;
-            let dispatch_future = self.run_bridge_with_failover(spec, &task.id, request);
+            let dispatch_future =
+                self.run_bridge_with_failover(spec, &task.id, attempt.key.attempt_key(), request);
             tokio::pin!(dispatch_future);
             loop {
                 tokio::select! {
@@ -1184,8 +1221,8 @@ impl TaskDispatcher for GraphTaskDispatcher {
             }
         };
         attempt.dispatch_ended();
-        let dispatch = match dispatch_result {
-            Ok(dispatch) => dispatch,
+        let (mut dispatch, failover) = match dispatch_result {
+            Ok(dispatched) => dispatched,
             Err(error) => {
                 // Best-effort release on dispatch failure when worktree isolation is active.
                 if let Some((provider, lease)) =
@@ -1215,7 +1252,14 @@ impl TaskDispatcher for GraphTaskDispatcher {
                 return Err(error);
             }
         };
+        // The attempt's records name the planned model beside the one that
+        // ran (bug-35379d).
+        attempt.record_failover(failover);
         let wall_duration = started_at.elapsed();
+        // The model the provider reported serving (bug-31438d). A
+        // substitution is priced by the model that served, and fails a
+        // `--model` pin once the call is accounted and recorded.
+        let pinned_model_substituted = self.check_served_model(spec, &task.id, &mut dispatch);
 
         // Account for every completed provider call, including unsuccessful
         // results: callers may still have incurred the reported cost.
@@ -1232,6 +1276,31 @@ impl TaskDispatcher for GraphTaskDispatcher {
         // outputs) to the TUI bridge so the dashboard shows what the agent
         // produced. This runs for both successful and failed dispatches.
         self.forward_dispatch_events_to_tui(spec, &task, &dispatch, ctx);
+
+        if let Some(error) = pinned_model_substituted {
+            let settlement =
+                Settlement::provider_failure(&error.to_string(), first_token_seen(&dispatch));
+            let settled = attempt.settle(settlement, &dispatch_plan.model.slug, Some(&dispatch));
+            self.emit_feedback(
+                spec,
+                &task,
+                &settled,
+                &dispatch,
+                wall_duration,
+                &dispatch_plan,
+                Some(routing_ctx_for_feedback),
+            )
+            .await;
+            if let Some((provider, lease)) = self.workspace_provider.as_ref().zip(lease.as_ref()) {
+                let _ = provider
+                    .release(
+                        lease,
+                        roko_graph::workspace::WorkspaceReleasePolicy::RetainForFailure,
+                    )
+                    .await;
+            }
+            return Err(error);
+        }
 
         if !dispatch.result.success {
             let message = dispatch
@@ -1316,8 +1385,9 @@ impl TaskDispatcher for GraphTaskDispatcher {
         // workdir (worktree if isolated). A failure fails this attempt so the
         // Graph engine can retry or abort; it is never force-accepted.
         let attempt_key = attempt.key.attempt_key();
-        let verification = self
-            .settle_task_verification(
+        let helper_calls = HelperCalls::default();
+        let verification = helper_calls
+            .scope(self.settle_task_verification(
                 spec,
                 &task,
                 &dispatch,
@@ -1326,8 +1396,14 @@ impl TaskDispatcher for GraphTaskDispatcher {
                 attempt_number,
                 &attempt_key,
                 None,
-            )
+            ))
             .await;
+        // The helper model calls verification made count toward this
+        // attempt, the background ones included (bug-62e3f4).
+        attempt.record_helper_calls(
+            self.settle_helper_calls(spec, &task, &attempt_key, &helper_calls)
+                .await,
+        );
 
         // ── Learning/feedback pipeline ───────────────────────────────────
         //
@@ -1994,6 +2070,137 @@ printf '%s\n' '{{"type":"result","session_id":"sess-b","model":"claude-sonnet-4-
                 assert_eq!(counts(), (3, 3), "no rule is consulted by default");
             }
         }
+    }
+
+    /// Every record file a Graph attempt writes, under `workdir/.roko`.
+    pub(super) fn recording_feedback(workdir: &Path) -> GraphFeedbackContext {
+        let roko = workdir.join(".roko");
+        let facade = crate::runtime_feedback::FeedbackFacade::new().with_sink(Arc::new(
+            crate::runtime_feedback::EpisodeSink::at(roko.join("episodes.jsonl")),
+        ));
+        GraphFeedbackContext {
+            feedback_facade: Some(Arc::new(facade)),
+            efficiency_path: Some(roko.join("learn/efficiency.jsonl")),
+            costs_path: Some(roko.join("learn/costs.jsonl")),
+            runs_dir: Some(roko.join("runs")),
+            ..GraphFeedbackContext::default()
+        }
+    }
+
+    /// The rows of the JSONL file at `path` that `keep` accepts, once at
+    /// least `expected` of them landed from the background writers.
+    pub(super) async fn jsonl_rows_where(
+        path: &Path,
+        expected: usize,
+        keep: impl Fn(&serde_json::Value) -> bool,
+    ) -> Vec<serde_json::Value> {
+        for _ in 0..600 {
+            let rows: Vec<serde_json::Value> = std::fs::read_to_string(path)
+                .unwrap_or_default()
+                .lines()
+                .filter_map(|line| serde_json::from_str(line).ok())
+                .filter(|row| keep(row))
+                .collect();
+            if rows.len() >= expected {
+                return rows;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        panic!("{expected} rows were not written to {}", path.display());
+    }
+
+    /// Serve canned OpenAI-compatible chat responses, one per connection,
+    /// capturing each request body.
+    pub(super) fn spawn_openai_mock(
+        responses: Vec<serde_json::Value>,
+    ) -> (String, Arc<parking_lot::Mutex<Vec<serde_json::Value>>>) {
+        use std::io::{Read, Write};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind mock server");
+        let base_url = format!("http://{}/v1", listener.local_addr().expect("mock addr"));
+        let captured = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let requests = Arc::clone(&captured);
+        std::thread::spawn(move || {
+            for response in responses {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    return;
+                };
+                let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(10)));
+                let mut buf = Vec::new();
+                let mut chunk = [0_u8; 8192];
+                let body_start = loop {
+                    let n = stream.read(&mut chunk).unwrap_or(0);
+                    if n == 0 {
+                        return;
+                    }
+                    buf.extend_from_slice(&chunk[..n]);
+                    if let Some(pos) = buf.windows(4).position(|window| window == b"\r\n\r\n") {
+                        break pos + 4;
+                    }
+                };
+                let headers = String::from_utf8_lossy(&buf[..body_start]).to_ascii_lowercase();
+                let length = headers
+                    .lines()
+                    .find_map(|line| line.strip_prefix("content-length:"))
+                    .and_then(|value| value.trim().parse::<usize>().ok())
+                    .unwrap_or(0);
+                while buf.len() < body_start + length {
+                    let n = stream.read(&mut chunk).unwrap_or(0);
+                    if n == 0 {
+                        break;
+                    }
+                    buf.extend_from_slice(&chunk[..n]);
+                }
+                let end = buf.len().min(body_start + length);
+                requests.lock().push(
+                    serde_json::from_slice(&buf[body_start..end])
+                        .unwrap_or(serde_json::Value::Null),
+                );
+                let body = response.to_string();
+                let wire = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = stream.write_all(wire.as_bytes());
+            }
+        });
+        (base_url, captured)
+    }
+
+    pub(super) fn tool_call_turn(
+        id: &str,
+        name: &str,
+        arguments: serde_json::Value,
+    ) -> serde_json::Value {
+        serde_json::json!({
+            "id": format!("chatcmpl-{id}"),
+            "choices": [{
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [{
+                        "id": id,
+                        "type": "function",
+                        "function": { "name": name, "arguments": arguments.to_string() }
+                    }]
+                },
+                "finish_reason": "tool_calls"
+            }],
+            "usage": { "prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15 }
+        })
+    }
+
+    pub(super) fn final_turn(text: &str) -> serde_json::Value {
+        serde_json::json!({
+            "id": "chatcmpl-final",
+            "choices": [{
+                "index": 0,
+                "message": { "role": "assistant", "content": text },
+                "finish_reason": "stop"
+            }],
+            "usage": { "prompt_tokens": 12, "completion_tokens": 3, "total_tokens": 15 }
+        })
     }
 
     /// A fake Claude CLI that streams one API message, then works past its

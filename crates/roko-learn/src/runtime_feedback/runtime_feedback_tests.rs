@@ -198,6 +198,25 @@ fn sample_pattern_episode(success: bool, suffix: &str) -> Episode {
 }
 
 #[tokio::test]
+async fn completed_run_with_unmeasured_cost_writes_no_cost_record() {
+    let tmp = TempDir::new().unwrap();
+    let runtime = LearningRuntime::open_under(tmp.path()).await.unwrap();
+
+    let mut episode = sample_episode(true);
+    episode.usage.cost_usd = 0.0;
+    episode.mark_cost_unknown();
+    let update = runtime
+        .record_completed_run(CompletedRunInput::from_episode(episode))
+        .await
+        .unwrap();
+
+    // The episode is kept, but a $0 cost row would read as a free run.
+    assert_eq!(update.episode_logged, ApplyStatus::Applied);
+    assert_ne!(update.cost_logged, ApplyStatus::Applied);
+    assert_eq!(runtime.costs_db().len(), 0);
+}
+
+#[tokio::test]
 async fn completed_run_updates_episode_cost_provider_and_skill() {
     let tmp = TempDir::new().unwrap();
     let mut runtime = LearningRuntime::open_under(tmp.path()).await.unwrap();

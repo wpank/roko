@@ -37,6 +37,7 @@ use roko_graph::{
 use serde::{Deserialize, Serialize};
 
 use crate::runner::plan_loader::Plan;
+use crate::task_accept;
 use crate::task_parser::TasksFile;
 
 /// Current host checkpoint schema version. V2 manifests are migrated in-memory
@@ -66,6 +67,10 @@ pub const DELIVERY_EXTENSION: &str = roko_graph::delivery::DELIVERY_EXTENSION_KE
 
 /// Known extension namespace for the tasks the last run did not complete.
 pub const TASK_OUTCOME_EXTENSION: &str = "roko.task.outcome@1";
+
+/// Known extension namespace for the plan's delivery into its run's batch
+/// branch (spec-f830c4).
+pub const BATCH_EXTENSION: &str = "roko.batch@1";
 
 /// Lifecycle state persisted beside a Graph Activity recording.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -445,22 +450,83 @@ fn authored_plan(workdir: &Path, graph: &Graph) -> Option<AuthoredPlan> {
 }
 
 /// The authored plan in `content`, when its tasks are exactly those `specs` run.
+///
+/// A run's tasks carry the verify steps [`task_accept`] generated for their `[task.accept]` tests
+/// in front of their own; the file does not. Those steps are set aside for the comparison, and
+/// the sha256 each one pinned is recorded on its `[task.accept]` entry. The identity then changes
+/// when a test is re-pinned with other content, but not with the store's place on disk.
 fn authored_plan_running(content: &str, specs: &[TaskExecutionSpec]) -> Option<AuthoredPlan> {
-    let authored = AuthoredPlan::from_tasks_toml(content).ok()?;
+    let mut authored = AuthoredPlan::from_tasks_toml(content).ok()?;
     let loaded = TasksFile::parse_str(content)
         .ok()?
         .tasks
         .iter()
         .map(|task| Some((task.id.clone(), serde_json::to_value(task).ok()?)))
         .collect::<Option<BTreeMap<_, _>>>()?;
+    let mut pinned = BTreeMap::new();
     let running = specs
         .iter()
         .map(|spec| {
-            let task: serde_json::Value = serde_json::from_str(&spec.task_def_json).ok()?;
-            Some((task.get("id")?.as_str()?.to_string(), task))
+            let mut task: serde_json::Value = serde_json::from_str(&spec.task_def_json).ok()?;
+            let id = task.get("id")?.as_str()?.to_string();
+            let hashes = set_aside_pinned_steps(&mut task)?;
+            if !hashes.is_empty() {
+                pinned.insert(id.clone(), hashes);
+            }
+            Some((id, task))
         })
         .collect::<Option<BTreeMap<_, _>>>()?;
-    (running == loaded && authored.tasks.keys().eq(loaded.keys())).then_some(authored)
+    if running != loaded || !authored.tasks.keys().eq(loaded.keys()) {
+        return None;
+    }
+    for (id, hashes) in &pinned {
+        record_pinned_hashes(authored.tasks.get_mut(id)?, hashes)?;
+    }
+    Some(authored)
+}
+
+/// Remove the generated acceptance steps from a converted task's `verify`, and return the sha256
+/// each one pinned, in order. `None` when a step's hash cannot be read.
+fn set_aside_pinned_steps(task: &mut serde_json::Value) -> Option<Vec<String>> {
+    let Some(steps) = task
+        .get_mut("verify")
+        .and_then(serde_json::Value::as_array_mut)
+    else {
+        return Some(Vec::new());
+    };
+    let mut hashes = Vec::new();
+    let mut readable = true;
+    steps.retain(|step| {
+        let command = step
+            .get("command")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default();
+        if !task_accept::is_pinned_command(command) {
+            return true;
+        }
+        match task_accept::pinned_sha256(command) {
+            Some(hash) => hashes.push(hash.to_string()),
+            None => readable = false,
+        }
+        false
+    });
+    readable.then_some(hashes)
+}
+
+/// Record `hashes` on an authored task's `[task.accept]` entries, one per entry in order. The
+/// entries deny unknown fields, so no authored entry has a `sha256` of its own.
+fn record_pinned_hashes(task: &mut serde_json::Value, hashes: &[String]) -> Option<()> {
+    let entries = task.pointer_mut("/accept/files")?.as_array_mut()?;
+    if entries.len() != hashes.len() {
+        return None;
+    }
+    for (entry, hash) in entries.iter_mut().zip(hashes) {
+        entry.as_object_mut()?.insert(
+            "sha256".to_string(),
+            serde_json::Value::String(hash.clone()),
+        );
+    }
+    Some(())
 }
 
 // ---------------------------------------------------------------------------
@@ -688,6 +754,39 @@ impl PreparedGraphCheckpoint {
             host_extension(TASK_OUTCOME_EXTENSION, value)?,
         );
         Ok(())
+    }
+
+    /// Record how the plan was delivered into its run's batch branch
+    /// (spec-f830c4): `batch` under [`BATCH_EXTENSION`], and the whole
+    /// `receipt` under [`DELIVERY_EXTENSION`] so a resume can continue that
+    /// delivery. The next terminal write persists them.
+    pub fn record_batch_delivery(
+        &mut self,
+        batch: serde_json::Value,
+        receipt: &roko_graph::delivery::CompletionDeliveryReceiptV1,
+    ) -> Result<()> {
+        let mut delivery = roko_graph::delivery::delivery_extension_value(receipt);
+        delivery["receipt"] =
+            serde_json::to_value(receipt).context("serialize delivery receipt")?;
+        for (key, value) in [(DELIVERY_EXTENSION, delivery), (BATCH_EXTENSION, batch)] {
+            self.manifest
+                .extensions
+                .insert(key.to_string(), host_extension(key, value)?);
+        }
+        Ok(())
+    }
+
+    /// The delivery receipt an earlier process of this checkpoint recorded
+    /// with [`Self::record_batch_delivery`], if any.
+    #[must_use]
+    pub fn recorded_delivery(&self) -> Option<roko_graph::delivery::CompletionDeliveryReceiptV1> {
+        let receipt = self
+            .manifest
+            .extensions
+            .get(DELIVERY_EXTENSION)?
+            .value
+            .get("receipt")?;
+        serde_json::from_value(receipt.clone()).ok()
     }
 
     /// Decode the persisted [`GATE_VERDICT_EXTENSION`] summary, if any.
@@ -1353,6 +1452,21 @@ fn write_manifest_atomic(path: &Path, manifest: &GraphCheckpointManifest) -> Res
         .with_context(|| format!("write Graph checkpoint {}", temporary.display()))?;
     std::fs::rename(&temporary, path)
         .with_context(|| format!("commit Graph checkpoint {}", path.display()))
+}
+
+/// The batch branch recorded in plan `plan_id`'s checkpoint under
+/// [`BATCH_EXTENSION`] (spec-f830c4), if any.
+#[must_use]
+pub fn recorded_batch_branch(workdir: &Path, plan_id: &str) -> Option<String> {
+    let manifest = workdir
+        .join(".roko/state/graph")
+        .join(safe_plan_component(plan_id))
+        .join("checkpoint.json");
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(manifest).ok()?).ok()?;
+    manifest["extensions"][BATCH_EXTENSION]["value"]["branch"]
+        .as_str()
+        .map(ToOwned::to_owned)
 }
 
 /// Last status recorded in `plan_id`'s canonical checkpoint under
@@ -2175,6 +2289,89 @@ depends_on = ["T1"]
 
         let identity = GraphIdentity::of(dir.path(), &graph).expect("identity");
         assert_eq!(identity.current, identity.legacy);
+    }
+
+    const ACCEPT_PLAN_TOML: &str = r#"
+[meta]
+plan = "p"
+
+[[task]]
+id = "T1"
+title = "First"
+
+[task.accept]
+files = [
+    { src = "accept/t1.test.txt", dest = "src/t1.test.txt", runner = "cat {dest}", count = 1 },
+]
+
+[[task.verify]]
+phase = "compile"
+command = "true"
+
+[[task]]
+id = "T2"
+title = "Second"
+depends_on = ["T1"]
+"#;
+
+    /// Write plan `p` with the pinned acceptance test `test` and pin it in the store at `store`.
+    fn pinned_accept_plan(workdir: &Path, store: &Path, test: &str) -> Plan {
+        let mut plan = write_plan(workdir, ACCEPT_PLAN_TOML);
+        std::fs::create_dir_all(plan.dir.join("accept")).expect("accept dir");
+        std::fs::write(plan.dir.join("accept").join("t1.test.txt"), test).expect("accept test");
+        task_accept::pin_plans_in(
+            &task_accept::AcceptStore::at(store),
+            std::slice::from_mut(&mut plan),
+            workdir,
+        )
+        .expect("pin acceptance tests");
+        plan
+    }
+
+    /// bug-b0fd73: a run's tasks carry the steps pinning their `[task.accept]` tests, which the
+    /// file does not. An unchanged accept plan still matches its tasks.toml, its identity covers
+    /// the pinned hash but not the store's place, and an edited tasks.toml still mismatches.
+    #[test]
+    fn an_accept_plan_matches_its_own_tasks_toml() {
+        let dir = tempdir().expect("tempdir");
+        let test = "test result: ok. 1 passed\n";
+        let plan = pinned_accept_plan(dir.path(), &dir.path().join("store-a"), test);
+        assert!(task_accept::is_pinned_step(&plan.tasks.tasks[0].verify[0]));
+        let graph = plan_graph(&plan, &ResumeOptions::default());
+        let identity = GraphIdentity::of(dir.path(), &graph).expect("identity");
+        assert_ne!(identity.current, identity.legacy, "matches its tasks.toml");
+
+        let elsewhere = pinned_accept_plan(dir.path(), &dir.path().join("store-b"), test);
+        let elsewhere_graph = plan_graph(&elsewhere, &ResumeOptions::default());
+        let elsewhere = GraphIdentity::of(dir.path(), &elsewhere_graph).expect("identity");
+        assert_eq!(
+            elsewhere.current, identity.current,
+            "the store's place is not identity"
+        );
+        assert_ne!(elsewhere.legacy, identity.legacy);
+
+        let changed = pinned_accept_plan(
+            dir.path(),
+            &dir.path().join("store-c"),
+            "test result: ok. 2 passed\n",
+        );
+        let changed_graph = plan_graph(&changed, &ResumeOptions::default());
+        let changed = GraphIdentity::of(dir.path(), &changed_graph).expect("identity");
+        assert_ne!(
+            changed.current, identity.current,
+            "the pinned hash is identity"
+        );
+
+        std::fs::write(
+            plan.dir.join("tasks.toml"),
+            ACCEPT_PLAN_TOML.replace("Second", "Edited"),
+        )
+        .expect("edit tasks.toml");
+        let edited = GraphIdentity::of(dir.path(), &graph).expect("identity");
+        assert_eq!(
+            edited.current, edited.legacy,
+            "an edited tasks.toml mismatches"
+        );
     }
 
     #[test]

@@ -57,6 +57,20 @@ pub struct TaskMeta {
     /// `[conductor] plan_failure_policy`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failure_policy: Option<roko_core::config::PlanFailurePolicy>,
+    /// Whether this plan's tasks run the workspace's required
+    /// `[[gates.rungs]]` after their own verify steps. `false` opts the plan
+    /// out; unset runs them ([`Self::runs_workspace_rungs`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_rungs: Option<bool>,
+}
+
+impl TaskMeta {
+    /// Whether this plan's tasks run the workspace's required
+    /// `[[gates.rungs]]`: yes unless `[meta] workspace_rungs = false`.
+    #[must_use]
+    pub fn runs_workspace_rungs(&self) -> bool {
+        self.workspace_rungs != Some(false)
+    }
 }
 
 /// A single task definition.
@@ -819,6 +833,19 @@ pub(crate) fn default_verify_timeout() -> u64 {
         .gate_test()
         .as_secs()
         .saturating_mul(1000)
+}
+
+/// A workspace gate rung (`[[gates.rungs]]`) as a verify step whose phase is
+/// the rung's name.
+impl From<&roko_core::config::GateRungConfig> for VerifyStep {
+    fn from(rung: &roko_core::config::GateRungConfig) -> Self {
+        Self {
+            phase: rung.name.clone(),
+            command: rung.command.clone(),
+            fail_msg: None,
+            timeout_ms: rung.timeout_secs.saturating_mul(1_000),
+        }
+    }
 }
 
 /// The full parsed tasks.toml.
@@ -2421,6 +2448,7 @@ depends_on = []
                 skip_enrichment: false,
                 source_prd: None,
                 failure_policy: None,
+                workspace_rungs: None,
             },
             tasks: Vec::new(),
         };
@@ -3023,6 +3051,35 @@ And that's the plan.
         let tasks = parsed.unwrap();
         assert_eq!(tasks.meta.plan, "wire-prompt");
         assert_eq!(tasks.tasks[0].id, "T1");
+    }
+
+    #[test]
+    fn a_plan_runs_the_workspace_rungs_unless_it_opts_out() {
+        let parse = |meta: &str| {
+            let text = format!(
+                r#"
+[meta]
+plan = "p"
+{meta}
+
+[[task]]
+id = "T1"
+title = "One task"
+"#
+            );
+            TasksFile::parse_str(&text).expect("tasks.toml").meta
+        };
+        let unset = parse("");
+        assert!(unset.runs_workspace_rungs());
+        assert!(parse("workspace_rungs = true").runs_workspace_rungs());
+        let opted_out = parse("workspace_rungs = false");
+        assert!(!opted_out.runs_workspace_rungs());
+
+        // A written plan keeps an explicit choice and adds none.
+        let written = toml::to_string(&unset).expect("serialize meta");
+        assert!(!written.contains("workspace_rungs"), "{written}");
+        let written = toml::to_string(&opted_out).expect("serialize meta");
+        assert!(written.contains("workspace_rungs = false"), "{written}");
     }
 
     // ─── fix_meta_name_field tests ────────────────────────────────────────

@@ -3,11 +3,12 @@
 //! Each dispatch that reaches prompt assembly opens one attempt
 //! ([`GraphTaskDispatcher::open_attempt`]): it mints the attempt's durable
 //! [`AttemptKey`] and writes the `roko.attempt_open/1` line before the prompt
-//! is assembled. The attempt then settles once ([`AttemptContext::settle`]
-//! consumes it): its `roko.verdict/1` record goes to the run's
-//! `attempts.jsonl`, and dispatch publishes it through the feedback facade as
-//! [`FeedbackEvent::AttemptSettled`]. The attempt's efficiency, cost and
-//! episode rows carry the same key.
+//! is assembled. A dispatch that a T0 reflex rule serves in place of the
+//! provider opens one as well. The attempt then settles once
+//! ([`AttemptContext::settle`] consumes it): its `roko.verdict/1` record goes
+//! to the run's `attempts.jsonl`, and dispatch publishes it through the
+//! feedback facade as [`FeedbackEvent::AttemptSettled`]. The attempt's
+//! efficiency, cost and episode rows carry the same key.
 //!
 //! Ordinals are 1-based and durable. A run's attempts of a task continue from
 //! the highest ordinal its `attempts.jsonl` holds, so a resumed run never
@@ -19,16 +20,19 @@
 //!
 //! Learners read only the verdict's learning label
 //! ([`SettledAttempt::learning_success`]): an attempt without one updates no
-//! learner.
+//! learner. That includes the T0 reflex rule that served an attempt
+//! (`reflex_credit`).
 
 use roko_learn::telemetry::records::b3_digest;
 use roko_learn::telemetry::{
     AttemptFailureClass, AttemptIdentity, AttemptKey, AttemptOpenRecord, AttemptOrdinals,
-    AttemptTiming, AttemptVerdictRecord, CostSource, ExecutedModel, GateVerdictTag, TelemetryEvent,
-    TelemetryWriter, TelemetryWriterConfig, TelemetryWriterStats,
+    AttemptTiming, AttemptVerdictRecord, CostSource, ExecutedModel, GateVerdictTag,
+    HelperCallsUsage, TelemetryEvent, TelemetryWriter, TelemetryWriterConfig, TelemetryWriterStats,
 };
 use sha2::Digest;
 
+use super::failover::FailoverChain;
+use super::served_model::{ServedModel, is_cli_backend};
 use super::*;
 
 /// Attempt state of one run: its durable ordinals and its telemetry writer.
@@ -111,6 +115,10 @@ pub(super) struct AttemptBook {
     /// dispatcher, so keys stay unique across processes.
     fallback_run_id: String,
     runs: parking_lot::Mutex<HashMap<String, Arc<RunAttempts>>>,
+    /// This process's invocation ordinal of each run, from the run's
+    /// manifest ([`GraphTaskDispatcher::attach_run_invocation`]). Attempt
+    /// records carry it as `inv`.
+    invocations: parking_lot::Mutex<HashMap<String, u32>>,
 }
 
 impl Default for AttemptBook {
@@ -118,6 +126,7 @@ impl Default for AttemptBook {
         Self {
             fallback_run_id: format!("graph-{}", uuid::Uuid::new_v4().simple()),
             runs: parking_lot::Mutex::new(HashMap::new()),
+            invocations: parking_lot::Mutex::new(HashMap::new()),
         }
     }
 }
@@ -144,6 +153,11 @@ impl AttemptBook {
             .entry(run_id.to_string())
             .or_insert_with(|| Arc::new(RunAttempts::open(runs_dir, run_id)));
         Arc::clone(run)
+    }
+
+    /// Record that this process is invocation `inv` of run `run_id`.
+    fn attach_invocation(&self, run_id: &str, inv: u32) {
+        self.invocations.lock().insert(run_id.to_string(), inv);
     }
 
     /// Close run `run_id`'s writer once no attempt of the run is open, and
@@ -184,6 +198,7 @@ impl AttemptBook {
         let key = run.ordinals.mint(run_id, plan_id, &task.id);
         let mut identity = AttemptIdentity::new(&key);
         identity.node_id = node_id.map(str::to_string);
+        identity.inv = self.invocations.lock().get(run_id).copied();
         let task_spec_hash = b3_digest(spec.task_def_json.as_bytes());
         let started_at = now_ms();
         let mut open = AttemptOpenRecord::new(identity.clone(), started_at);
@@ -199,6 +214,9 @@ impl AttemptBook {
                 attempt_started_at: Some(started_at),
                 ..AttemptTiming::default()
             },
+            failover: FailoverChain::default(),
+            helpers: None,
+            reflex_rule: None,
             run,
         }
     }
@@ -212,6 +230,12 @@ pub(super) struct AttemptContext {
     identity: AttemptIdentity,
     task_spec_hash: String,
     timing: AttemptTiming,
+    /// The models provider failover passed over.
+    failover: FailoverChain,
+    /// The attempt's helper model calls, once they settled.
+    helpers: Option<HelperCallsUsage>,
+    /// The T0 reflex rule that served the attempt in place of the provider.
+    reflex_rule: Option<uuid::Uuid>,
     run: Arc<RunAttempts>,
 }
 
@@ -229,6 +253,24 @@ impl AttemptContext {
     /// The provider call returned.
     pub(super) fn dispatch_ended(&mut self) {
         self.timing.dispatch_ended_at = Some(now_ms());
+    }
+
+    /// Provider failover passed over `failover`'s models before the one
+    /// that ran (bug-35379d).
+    pub(super) fn record_failover(&mut self, failover: FailoverChain) {
+        self.failover = failover;
+    }
+
+    /// The attempt's helper model calls settled with `usage` (bug-62e3f4).
+    pub(super) fn record_helper_calls(&mut self, usage: HelperCallsUsage) {
+        self.helpers = (usage.calls > 0).then_some(usage);
+    }
+
+    /// The T0 reflex rule `rule_id` served the attempt in place of the
+    /// provider. The attempt's learning label alone credits or demotes the
+    /// rule once it settles (gap-4468bd).
+    pub(super) fn served_by_reflex(&mut self, rule_id: uuid::Uuid) {
+        self.reflex_rule = Some(rule_id);
     }
 
     /// Settle the attempt: build its verdict record, queue it for the run's
@@ -258,8 +300,9 @@ impl AttemptContext {
         // Neither path sees the first token's time yet (S01 P0-5).
         verdict.timing.ttft_source = Some("unavailable".to_string());
         verdict.timing.settled_at = Some(now_ms());
-        verdict.executed = executed_model(model_requested, dispatch);
+        verdict.executed = executed_model(model_requested, dispatch, self.failover);
         verdict.cost.source = cost_source(dispatch);
+        verdict.helpers = self.helpers;
         verdict.output_sha256 = dispatch
             .and_then(|dispatch| dispatch.result.output.body.as_text().ok())
             .map(sha256_hex);
@@ -267,6 +310,7 @@ impl AttemptContext {
         SettledAttempt {
             verdict: Arc::new(verdict),
             failure_reason,
+            reflex_rule: self.reflex_rule,
         }
     }
 }
@@ -350,6 +394,9 @@ pub(super) struct SettledAttempt {
     /// Class-prefixed failure reason (`"verify: …"`) for episodes and
     /// prompt-experiment settlement.
     pub(super) failure_reason: Option<String>,
+    /// The T0 reflex rule that served the attempt, which its learning label
+    /// credits or demotes ([`GraphTaskDispatcher::credit_reflex_rule`]).
+    pub(super) reflex_rule: Option<uuid::Uuid>,
 }
 
 impl SettledAttempt {
@@ -420,6 +467,15 @@ impl GraphTaskDispatcher {
         self.attempts.close(run_id)
     }
 
+    /// Record that this process is invocation `inv` of run `run_id`: the
+    /// ordinal the run's manifest gave it. The run's attempt-open lines and
+    /// verdicts then carry it as `inv` (S01 §4.2: carried, not part of the
+    /// key), so a resumed run's attempts say which invocation, and so which
+    /// build and config, they ran under.
+    pub fn attach_run_invocation(&self, run_id: &str, inv: u32) {
+        self.attempts.attach_invocation(run_id, inv);
+    }
+
     /// Settle `attempt`, which the harness failed after its open line with
     /// `error` (S01 §4.3), and publish its verdict, so the attempt does not
     /// read as abandoned. `routed` is the model dispatch asked for and the
@@ -481,32 +537,42 @@ fn failure_class(
     Some(class)
 }
 
-/// The model that ran: the provider's own report of it, else the model the
-/// bridge launched, which after failover is not the requested one.
-/// bug-35379d records the failover chain.
+/// The model that ran: the one the bridge launched, which after failover
+/// is not the requested one, and the one the provider reported serving,
+/// which is `None` when it named none (bug-31438d). `failover` lists the
+/// models passed over first (bug-35379d).
 fn executed_model(
     model_requested: &str,
     dispatch: Option<&crate::dispatch_v2::AgentResultDispatch>,
+    failover: FailoverChain,
 ) -> ExecutedModel {
     let mut executed = ExecutedModel {
         model_requested: (!model_requested.is_empty()).then(|| model_requested.to_string()),
+        failover_chain: failover.models,
+        failover_reason: failover.reason,
+        failover_refusals: failover.refusals,
         ..ExecutedModel::default()
     };
     if let Some(dispatch) = dispatch {
-        let reported = dispatch
-            .result
-            .usage_obs
-            .as_ref()
-            .and_then(|usage| usage.model.clone());
+        let served = ServedModel::of(dispatch);
         executed.provider = Some(dispatch.target.provider_id.clone());
-        executed.model_reported =
-            Some(reported.unwrap_or_else(|| dispatch.target.model_slug.clone()));
-        executed.turns = dispatch.events.iter().rev().find_map(|event| match event {
-            roko_agent::AgentRuntimeEvent::TurnCompleted { num_turns, .. } => *num_turns,
-            _ => None,
-        });
+        executed.model_dispatched = Some(dispatch.target.model_slug.clone());
+        executed.model_reported = served.reported;
+        executed.models_reported = served.all_reported;
+        executed.model_mismatch = served.mismatch;
+        executed.turns = reported_turns(dispatch);
     }
     executed
+}
+
+/// The agent turns `dispatch` reported: the Claude CLI's `num_turns`, or
+/// the model calls of roko's tool loop. `None` when the agent reported no
+/// count, which records read as unknown (bug-55fd84, bug-ad5487).
+pub(super) fn reported_turns(dispatch: &crate::dispatch_v2::AgentResultDispatch) -> Option<u32> {
+    dispatch.events.iter().rev().find_map(|event| match event {
+        roko_agent::AgentRuntimeEvent::TurnCompleted { num_turns, .. } => *num_turns,
+        _ => None,
+    })
 }
 
 /// Where the attempt's priced usage came from (S01 §4.4); gap-ad0d39 prices
@@ -518,15 +584,7 @@ fn cost_source(dispatch: Option<&crate::dispatch_v2::AgentResultDispatch>) -> Co
     let Some(usage) = dispatch.result.usage_obs.as_ref() else {
         return CostSource::Unknown;
     };
-    let cli_backend = matches!(
-        dispatch.target.provider_kind,
-        roko_core::ProviderKind::ClaudeCli
-            | roko_core::ProviderKind::CodexCli
-            | roko_core::ProviderKind::GeminiCli
-            | roko_core::ProviderKind::CursorCli
-            | roko_core::ProviderKind::CursorAcp
-    );
-    CostSource::from_usage_source(&usage.source, cli_backend)
+    CostSource::from_usage_source(&usage.source, is_cli_backend(dispatch.target.provider_kind))
 }
 
 fn sha256_hex(text: &str) -> String {
@@ -631,7 +689,7 @@ mod tests {
 
         // The dispatch row's id is the key; the gate-pass row extends it. The
         // provider bridge logs its own `model_call` rows to the same file,
-        // under the feedback schema and with no attempt key.
+        // under the feedback schema.
         let efficiency = jsonl_rows_where(&roko.join("learn/efficiency.jsonl"), 2, |row| {
             row["schema"] == roko_learn::efficiency::AGENT_EFFICIENCY_EVENT_SCHEMA
         })
@@ -643,6 +701,14 @@ mod tests {
             field(&efficiency, "attempt_key"),
             [key.as_str(), key.as_str()]
         );
+        // The bridge's own `model_call` row names the attempt and the model
+        // the provider reported (bug-92f655).
+        let model_calls = jsonl_rows_where(&roko.join("learn/efficiency.jsonl"), 1, |row| {
+            row["kind"] == "model_call"
+        })
+        .await;
+        assert_eq!(field(&model_calls, "attempt_key"), [key.as_str()]);
+        assert_eq!(model_calls[0]["model_reported"], "claude-sonnet-4-6");
         let costs = jsonl_rows(&roko.join("learn/costs.jsonl"), 1).await;
         assert_eq!(field(&costs, "attempt_key"), [key.as_str()]);
         let episodes = roko_learn::episode_logger::EpisodeLogger::read_all(&episodes_path)
@@ -650,6 +716,51 @@ mod tests {
             .expect("episodes");
         assert_eq!(episodes.len(), 1);
         assert_eq!(episodes[0].extra["attempt_key"], key.as_str());
+    }
+
+    /// The gate row agrees with the attempt's dispatch row on the turns
+    /// (bug-ad5487): the reported count when the agent gave one, and 0
+    /// marked `turns_unknown` when it gave none.
+    #[tokio::test]
+    async fn gate_rows_carry_the_attempts_turns_or_unknown() {
+        const FOUR_TURNS_PROVIDER: &str = r#"#!/bin/sh
+set -eu
+cat >/dev/null
+printf '%s\n' '{"type":"content_block_delta","delta":{"text":"verify-output"}}'
+printf '%s\n' '{"type":"result","session_id":"sess-v4","model":"claude-sonnet-4-6","num_turns":4,"total_cost_usd":0.01,"usage":{"input_tokens":5,"output_tokens":10}}'
+"#;
+        for (provider, turns) in [(VERIFY_PROVIDER, None), (FOUR_TURNS_PROVIDER, Some(4))] {
+            let temp = tempdir().expect("tempdir");
+            let efficiency_path = temp.path().join(".roko/learn/efficiency.jsonl");
+            let feedback = GraphFeedbackContext {
+                efficiency_path: Some(efficiency_path.clone()),
+                ..GraphFeedbackContext::default()
+            };
+            let (dispatcher, mut task) =
+                make_test_dispatcher(&temp, provider, no_auto_fix, feedback).await;
+            task.verify = vec![verify_step("structural", "true")];
+            dispatcher
+                .dispatch(&make_spec(&task), Vec::new(), &CellContext::new())
+                .await
+                .expect("the verify step passes");
+
+            let rows = jsonl_rows_where(&efficiency_path, 2, |row| {
+                row["schema"] == roko_learn::efficiency::AGENT_EFFICIENCY_EVENT_SCHEMA
+            })
+            .await;
+            assert_eq!(rows.len(), 2, "the dispatch row and the gate-pass row");
+            for row in &rows {
+                let id = row["attempt_id"].as_str().unwrap_or_default();
+                assert_eq!(row["turn_number"], turns.unwrap_or(0), "{id}");
+                assert_eq!(row["iteration"], turns.unwrap_or(0), "{id}");
+                assert_eq!(
+                    row.get("turns_unknown")
+                        .and_then(serde_json::Value::as_bool),
+                    turns.is_none().then_some(true),
+                    "{id}: {row}"
+                );
+            }
+        }
     }
 
     /// Provider whose first call hangs until the attempt is killed; later

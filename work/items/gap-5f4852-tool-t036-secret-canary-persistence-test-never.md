@@ -2,16 +2,16 @@
 id = "gap-5f4852"
 kind = "gap"
 title = "Secret-canary persistence test never run for scrubbers/persistent sinks"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 size = "L"
 goal = "release"
 subsystem = ["roko-fs/observability"]
 created = 2026-09-14
-updated = 2026-09-29
-last_verified = 2026-09-29
-last_verified_rev = "a17d9d766"
+updated = 2026-09-30
+last_verified = 2026-09-30
+last_verified_rev = "2ae9d2a7f"
 source = "tmp/archive/tool-audit-2026-09-21/10-FINDINGS-REGISTER.md#register"
 discovered_from = "audit:tmp/archive/tool-audit-2026-09-21/10-FINDINGS-REGISTER.md#register"
 anchors = ["crates/roko-fs/src/observability.rs::RunScrubber", "crates/roko-cli/src/main.rs::build_log_scrubber", "crates/roko-cli/src/main.rs::load_startup_env_files", "crates/roko-cli/tests/secret_canary.rs", "crates/roko-cli/tests/common/mod.rs::setup_sample_plan_workspace"]
@@ -19,6 +19,11 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rn --include='*.rs' 'RunScrubber' crates/ | grep -v 'crates/roko-fs/src/observability.rs' | grep -v 'crates/roko-fs/src/lib.rs' | grep -q . && grep -qw 'fn canary_absent_from_every_file_after_plan_run' crates/roko-cli/tests/secret_canary.rs && cargo test -p roko-cli --test secret_canary"
+
+[closed]
+at = 2026-09-30
+by = "coordinator (session 7622b882)"
+evidence = "Merged in 04b3793a6. One RunScrubber per process (RunScrubber::install) for both log layers and every leaking writer; at BASE the canary reached 8 files, now none. Batch 14 gate: first run on 4e030ab47 (check, clippy clean; tests pass: roko-cli 3171, roko-agent 2263, roko-core 1952, roko-learn 1203, roko-serve 986, roko-graph 472, roko-fs 259, roko-neuro 239), then re-gated on 8ce3bb131 (same code as MAIN 2ae9d2a7f) after the coordinator's rustfmt commits and serve-sec's bug-633b68 root fix: check, nightly fmt, clippy -p roko-cli -p roko-serve -p roko-core -p roko-agent -p roko-learn --keep-going -D warnings clean; roko-cli lib 3172 passed (one sibling-settle race flake passes alone, bug-779ae7); --test secret_canary 11 passed; --test secrets_and_git_guard_canary 1 passed, 1 ignored (bug-0d9ac4). Verify: its test passes in that run and its static checks pass on MAIN."
 +++
 
 ## Problem
@@ -150,6 +155,8 @@ through a scrubber (`crates/roko-cli/src/share.rs::scrub_share_text`,
 - The test must be hermetic: a temp `HOME`, the mock provider only, and no network.
 - It overlaps with any item that changes the Graph persistence writers (`runner/persist.rs`,
   `graph_task_dispatch.rs` feedback writes), so avoid running it in parallel with those.
+
+- 2026-09-30 (wk-canary): Implemented on `work/gap-5f4852` at `551a339e1`. `cargo test -p roko-cli --test secret_canary` passes in the worktree (11 tests); the new plan-run test found the canary in 8 files at `8a88c6267` (episodes, efficiency, gate-failures, post-gate-reflections, neuro/knowledge.jsonl, the file log `roko.log.*`, activities.jsonl, retry-feedback.json) and finds none now. Option B: `roko_core::obs::install_secret_scrubber`, installed once by `RunScrubber::install` in `main`. Persistence scrubs literal secrets only, from JSON strings (`scrub_secrets_in_json[l]`), since the built-in heuristics also match ids such as `mask-the-...`. Every `.env` value of 8+ characters counts as a secret, so a non-secret setting kept in a `.env` file is redacted from records too. Not covered: config secrets other than provider `api_key_env` (provider `extra_headers`, file secrets, `serve.auth.api_key`). Batch check pending. Re-run after merging batch 12a (telemetry2) at `09e0a93ff`: still passes; batch 12b (model-truth) not yet covered.
 
 ## Original notes
 

@@ -8,7 +8,8 @@ The honesty rules, all enforced here or by `schema/validate.py` before a row rea
 
 The status is the runner's, overridden in this order: `leak_suspected` when the census found a canary, then
 `infra_error` when a verifier failed or an attempt was served by a model other than the one requested (compared
-without a date suffix).
+without a date suffix). A task that a `model_swap` disturbance covers (gap-8bdf5e) declares the model the proxy served
+in place of the pin: that one model passes the check too, and each attempt it served is marked `model_swapped`.
 
 S09 §4.9's process measures come from what a runner's attempts carry, beside their usage: `queue_wait_s` (the
 seconds the attempt's work waited for a dispatch slot or a provider rate limit) and `cost_class` (plan, execute,
@@ -18,6 +19,10 @@ attempt; a runner that classes its attempts accounts for all of the run's spend 
 costs $0, and a class holding an attempt of unknown cost is null. The direct and CLI runners record neither, so
 their records carry nulls.
 
+`visible` is the census's clean rerun of the visible checks, which never meets a flake. In a run with `flaky_verify`
+it also carries what the visible-verify wrapper logged of the arm's own visible checks (`vb_verify`): `verify_runs`
+(null when no wrapper ran), `flakes` (each injected failure's run number and time) and `flake_injected`.
+
 `config_hash` and `record_id` are `sha256:` digests of canonical JSON (sorted keys, no whitespace). S01 §4.7 wants
 BLAKE3 `b3:` digests from `driver/fingerprint.py` with its golden vectors; neither exists yet, and the stdlib has
 no BLAKE3, so the prefix says which algorithm made each value. The config holds no secret values (API keys are
@@ -25,10 +30,11 @@ named by their environment variable), so nothing needs redacting.
 
 API:
     build(*, experiment_id, run_id, arm_id, seed, head, billed, config_hash, snapshot_id, suite, stream,
-          materialized, outcome, result, final, archived, transcript_ref, meter_usd=None) -> dict
+          materialized, outcome, result, final, archived, transcript_ref, meter_usd=None, verify_log=None,
+          model_swap=None) -> dict
     append(path: Path, record: dict) -> None           # raises RecordError on an invalid record
-    canonical_hash(value) -> str; harness_state() -> (sha, dirty); final_status(outcome, census) -> str
-    same_model(requested, reported) -> bool
+    canonical_hash(value) -> str; harness_state() -> (sha, dirty); final_status(outcome, census, model_swap=None) -> str
+    same_model(requested, reported) -> bool; swapped(attempt, model_swap) -> bool
 """
 
 from __future__ import annotations
@@ -79,19 +85,29 @@ def same_model(requested: str, reported: str | None) -> bool:
                                                                      requested)
 
 
-def final_status(outcome: harness.TaskOutcome, result: census.CensusResult) -> str:
+def final_status(outcome: harness.TaskOutcome, result: census.CensusResult, model_swap: str | None = None) -> str:
     if result.canary_hits:
         return "leak_suspected"
-    if result.infra_error or any(not same_model(a.model_requested, a.model_reported) for a in outcome.attempts):
+    if result.infra_error or any(not (same_model(a.model_requested, a.model_reported) or swapped(a, model_swap))
+                                 for a in outcome.attempts):
         return "infra_error"
     return outcome.status
+
+
+def swapped(attempt: harness.Attempt, model_swap: str | None) -> bool:
+    """Whether the declared swap's model, and not the requested one, served the attempt."""
+    reported = attempt.model_reported
+    return bool(model_swap and reported and same_model(model_swap, reported)
+                and not same_model(attempt.model_requested, reported))
 
 
 def build(*, experiment_id: str, run_id: str, arm_id: str, seed: int, head: tuple[str, bool], billed: bool,
           config_hash: str, snapshot_id: str, suite: dict, stream: dict, materialized: materialize.Materialized,
           outcome: harness.TaskOutcome, result: census.CensusResult, final: archive.Final | None,
-          archived: archive.Archive | None, transcript_ref: str | None, meter_usd: float | None = None) -> dict:
+          archived: archive.Archive | None, transcript_ref: str | None, meter_usd: float | None = None,
+          verify_log: list[dict] | None = None, model_swap: str | None = None) -> dict:
     manifest = materialized.manifest
+    runs = verify_log or []  # the visible-verify wrapper's log of the arm's visible check runs (vb_verify)
     task = {"family": manifest["family"], "instance_id": manifest["instance_id"], "ladder": manifest["ladder"],
             "latent_version": manifest["latent_version"], "spec_variant": materialized.spec_variant,
             "is_honeypot": manifest["is_honeypot"]}
@@ -100,7 +116,10 @@ def build(*, experiment_id: str, run_id: str, arm_id: str, seed: int, head: tupl
         if key in variant:
             task[key] = variant[key]
     attempts = [attempt.as_record() for attempt in outcome.attempts]
-    status = final_status(outcome, result)
+    if model_swap:  # the served-model check accepted the declared swap: say which attempts it served
+        for attempt, row in zip(outcome.attempts, attempts):
+            row["model_swapped"] = bool(row.get("model_swapped")) or swapped(attempt, model_swap)
+    status = final_status(outcome, result, model_swap)
     failed = list(result.failed)
     if result.infra_error:
         failed.append(f"infra:{result.infra_error[:200]}")
@@ -114,8 +133,10 @@ def build(*, experiment_id: str, run_id: str, arm_id: str, seed: int, head: tupl
                       "finished_at": outcome.finished_at, "queue_wait_s": _queue_wait(attempts),
                       "attempts": attempts},
         "visible": {"passed": result.visible_clean == 1, "clean_rerun": result.visible_clean is not None,
-                    "flake_injected": False, "commands": result.visible_commands,
-                    "exit_codes": result.visible_exit_codes},
+                    "flake_injected": any(row["flake"] for row in runs), "commands": result.visible_commands,
+                    "exit_codes": result.visible_exit_codes,
+                    "verify_runs": None if verify_log is None else len(runs),
+                    "flakes": [{"run": row["run"], "at": row.get("at")} for row in runs if row["flake"]]},
         "vs": {"label": result.label, "unknown": result.unknown, "checks": result.checks,
                "truth_suite_version": manifest["truth_suite"]["version"], "failed": failed,
                "verifier_version": (result.hidden_output or {}).get("verifier_version"),

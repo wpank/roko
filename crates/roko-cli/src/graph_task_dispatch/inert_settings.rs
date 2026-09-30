@@ -29,6 +29,7 @@ pub fn graph_engine_inert_settings(config: &RokoConfig) -> Vec<InertGraphSetting
                           plan-task models";
     const NO_WARM_POOL: &str = "no dispatch path pre-spawns or reuses agents";
     const PIPELINE_BAND: &str = "only `max_turns` in [pipeline.<tier>] affects plan run";
+    const NOT_WIRED: &str = "dispatch does not read the learned tier limits yet (gap-5a6e01)";
 
     let defaults = RokoConfig::default();
     let (gates, default_gates) = (&config.gates, &defaults.gates);
@@ -63,11 +64,6 @@ pub fn graph_engine_inert_settings(config: &RokoConfig) -> Vec<InertGraphSetting
         (
             gates.impact_max_targets != default_gates.impact_max_targets,
             "gates.impact_max_targets",
-            LEGACY_GATES,
-        ),
-        (
-            gates.custom_rungs != default_gates.custom_rungs,
-            "gates.rungs",
             LEGACY_GATES,
         ),
         (
@@ -158,6 +154,11 @@ pub fn graph_engine_inert_settings(config: &RokoConfig) -> Vec<InertGraphSetting
             "runner.warm_pool_idle_timeout_secs",
             NO_WARM_POOL,
         ),
+        (
+            config.pipeline.learned_limits != defaults.pipeline.learned_limits,
+            "pipeline.learned_limits",
+            NOT_WIRED,
+        ),
     ];
     for (key, band, default_band) in [
         (
@@ -242,6 +243,14 @@ mod tests {
         config.budget.max_task_usd = 2.0;
         config.gates.write_eval_artifacts = true;
         config.gates.adaptive_max_retries = 8;
+        // Every plan task runs the workspace's required rungs.
+        config.gates.custom_rungs = vec![roko_core::config::GateRungConfig {
+            name: "test".to_string(),
+            command: "cargo test".to_string(),
+            timeout_secs: 300,
+            required: true,
+            parallel_with: Vec::new(),
+        }];
         let keys = graph_engine_inert_settings(&config)
             .iter()
             .map(|setting| setting.key)

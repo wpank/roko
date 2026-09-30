@@ -68,11 +68,32 @@ impl RunProvenanceManifest {
     /// Record the invocation starting now and return its 1-based ordinal.
     ///
     /// The ordinal follows the recorded ones, and the invocation counts as a
-    /// resume when the run has earlier invocations. A closed run is open
+    /// resume when the run has earlier invocations. The invocation keeps its
+    /// own harness build and config. The first invocation's become the
+    /// run's; a resume under another build or config marks the run
+    /// [`mixed_provenance`](Self::mixed_provenance). A closed run is open
     /// again, so its `closed` section is cleared until the run closes anew.
     pub fn begin_invocation(&mut self, mut invocation: RunInvocation) -> u32 {
         invocation.inv = self.next_inv();
         invocation.resumed = !self.invocations.is_empty();
+        if invocation.resumed {
+            let other_build = invocation
+                .harness
+                .as_ref()
+                .is_some_and(|harness| *harness != self.harness);
+            let other_config = invocation
+                .config
+                .as_ref()
+                .is_some_and(|config| *config != self.config);
+            self.mixed_provenance |= other_build || other_config;
+        } else {
+            if let Some(harness) = &invocation.harness {
+                self.harness = harness.clone();
+            }
+            if let Some(config) = &invocation.config {
+                self.config = config.clone();
+            }
+        }
         let inv = invocation.inv;
         self.invocations.push(invocation);
         self.closed = None;
@@ -161,7 +182,7 @@ mod tests {
     use super::*;
     use crate::telemetry::records::{
         AttemptIdentity, AttemptKey, AttemptOpenRecord, AttemptOutcome, AttemptVerdictRecord,
-        RUN_MANIFEST_SCHEMA, RunClosed,
+        ConfigHashProvenance, HarnessProvenance, RUN_MANIFEST_SCHEMA, RunClosed,
     };
     use crate::telemetry::writer::{TelemetryWriter, TelemetryWriterConfig};
 
@@ -197,6 +218,90 @@ mod tests {
         assert_eq!(resumes, [false, true]);
         assert_eq!(resumed.closed, None, "a resumed run is open again");
         assert_eq!(resumed.schema_version, RUN_MANIFEST_SCHEMA);
+    }
+
+    /// An invocation that ran `sha` with config `hash`.
+    fn build(sha: &str, hash: &str) -> RunInvocation {
+        RunInvocation {
+            harness: Some(HarnessProvenance {
+                sha: sha.to_string(),
+                ..HarnessProvenance::default()
+            }),
+            config: Some(ConfigHashProvenance {
+                hash: hash.to_string(),
+                ..ConfigHashProvenance::default()
+            }),
+            ..RunInvocation::default()
+        }
+    }
+
+    #[test]
+    fn a_resume_under_another_build_records_its_own_harness_and_config() {
+        let dir = TempDir::new().expect("tempdir");
+        let mut manifest = RunProvenanceManifest::new(RUN, "plan_run");
+        manifest.begin_invocation(build("aaa1111", "b3:one"));
+        assert_eq!(
+            manifest.harness.sha, "aaa1111",
+            "the first build is the run's"
+        );
+        assert_eq!(manifest.config.hash, "b3:one");
+        manifest.begin_invocation(build("aaa1111", "b3:one"));
+        assert!(
+            !manifest.mixed_provenance,
+            "the same build and config resumed"
+        );
+        manifest.store(dir.path()).expect("store");
+
+        let mut resumed = RunProvenanceManifest::load(dir.path())
+            .expect("load")
+            .expect("the stored manifest");
+        assert_eq!(resumed.begin_invocation(build("bbb2222", "b3:one")), 3);
+        assert!(resumed.mixed_provenance, "another build resumed the run");
+        assert_eq!(
+            resumed.harness.sha, "aaa1111",
+            "the run keeps its first build"
+        );
+        resumed.store(dir.path()).expect("store");
+
+        // The file says which build and config each invocation ran under.
+        let stored = std::fs::read_to_string(RunProvenanceManifest::path_in(dir.path()))
+            .expect("read manifest.json");
+        let json: serde_json::Value = serde_json::from_str(&stored).expect("manifest JSON");
+        assert_eq!(json["mixed_provenance"], true);
+        let invocations: Vec<(u64, &str, &str)> = json["invocations"]
+            .as_array()
+            .expect("invocations")
+            .iter()
+            .map(|invocation| {
+                (
+                    invocation["inv"].as_u64().unwrap_or(0),
+                    invocation["harness"]["sha"].as_str().unwrap_or_default(),
+                    invocation["config"]["hash"].as_str().unwrap_or_default(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            invocations,
+            [
+                (1, "aaa1111", "b3:one"),
+                (2, "aaa1111", "b3:one"),
+                (3, "bbb2222", "b3:one"),
+            ]
+        );
+
+        // A config change alone mixes a run too, including one whose earlier
+        // invocations predate per-invocation provenance.
+        let mut legacy = RunProvenanceManifest::new(RUN, "plan_run");
+        legacy.harness.sha = "aaa1111".to_string();
+        legacy.config.hash = "b3:one".to_string();
+        legacy.invocations.push(RunInvocation {
+            inv: 1,
+            ..RunInvocation::default()
+        });
+        legacy.begin_invocation(build("aaa1111", "b3:one"));
+        assert!(!legacy.mixed_provenance);
+        legacy.begin_invocation(build("aaa1111", "b3:two"));
+        assert!(legacy.mixed_provenance, "another config resumed the run");
     }
 
     #[test]

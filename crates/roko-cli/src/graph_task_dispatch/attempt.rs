@@ -641,6 +641,7 @@ mod tests {
         expected: usize,
         keep: impl Fn(&serde_json::Value) -> bool,
     ) -> Vec<serde_json::Value> {
+        crate::background_writes::settled(path.parent().unwrap_or(path)).await;
         for _ in 0..600 {
             let rows: Vec<serde_json::Value> = std::fs::read_to_string(path)
                 .unwrap_or_default()

@@ -1080,7 +1080,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
                     results_count,
                 )
                 .with_latency_ms(prompt_assembly_latency_ms);
-                tokio::spawn(async move {
+                crate::background_writes::spawn(&path.clone(), async move {
                     if let Err(error) =
                         roko_learn::retrieval_outcome::RetrievalOutcomeStore::at(&path)
                             .without_fsync()
@@ -1609,7 +1609,7 @@ printf '%s\n' '{"type":"result","session_id":"sess-1","model":"claude-sonnet-4-6
             split_into: None,
             context: None,
             verify: Vec::new(),
-            timeout_secs: 5,
+            timeout_secs: FIXTURE_HANG_GUARD_SECS,
             max_retries: 0,
             acceptance: Vec::new(),
             acceptance_contract: None,
@@ -1623,7 +1623,10 @@ printf '%s\n' '{"type":"result","session_id":"sess-1","model":"claude-sonnet-4-6
         let config = toml::Value::Table(toml::map::Map::from_iter([
             ("plan_id".to_string(), toml::Value::String("p1".to_string())),
             ("title".to_string(), toml::Value::String(task.title.clone())),
-            ("timeout_secs".to_string(), toml::Value::Integer(5)),
+            (
+                "timeout_secs".to_string(),
+                toml::Value::Integer(FIXTURE_HANG_GUARD_SECS as i64),
+            ),
             (
                 "task_def_json".to_string(),
                 toml::Value::String(serde_json::to_string(&task).expect("serialize task")),
@@ -1698,12 +1701,17 @@ printf '%s\n' '{"type":"content_block_delta","delta":{"text":"verify-output"}}'
 printf '%s\n' '{"type":"result","session_id":"sess-v1","model":"claude-sonnet-4-6","total_cost_usd":0.01,"usage":{"input_tokens":5,"output_tokens":10}}'
 "#;
 
+    /// Time limit, in seconds, of a fixture's attempts and verify steps,
+    /// which finish at once. It only guards against a hang: a loaded machine
+    /// can hold up a fake provider or a step for seconds (bug-779ae7).
+    pub(super) const FIXTURE_HANG_GUARD_SECS: u64 = 120;
+
     pub(super) fn verify_step(phase: &str, command: &str) -> crate::task_parser::VerifyStep {
         crate::task_parser::VerifyStep {
             phase: phase.to_string(),
             command: command.to_string(),
             fail_msg: None,
-            timeout_ms: 10_000,
+            timeout_ms: FIXTURE_HANG_GUARD_SECS * 1_000,
             scope: Vec::new(),
         }
     }
@@ -1801,7 +1809,7 @@ printf '%s\n' '{"type":"result","session_id":"sess-v1","model":"claude-sonnet-4-
             split_into: None,
             context: None,
             verify: Vec::new(),
-            timeout_secs: 5,
+            timeout_secs: FIXTURE_HANG_GUARD_SECS,
             max_retries: 0,
             acceptance: Vec::new(),
             acceptance_contract: None,
@@ -1958,7 +1966,7 @@ printf '%s\n' '{{"type":"result","session_id":"sess-b","model":"claude-sonnet-4-
         let mut task = make_task_def("focused");
         task.title = "Wire the batch fixture".to_string();
         task.model_hint = Some("batch-model".to_string());
-        task.timeout_secs = 5;
+        task.timeout_secs = FIXTURE_HANG_GUARD_SECS;
         (make_bare_dispatcher(config, temp.path()).await, task)
     }
 
@@ -2180,6 +2188,7 @@ printf '%s\n' '{{"type":"result","session_id":"sess-b","model":"claude-sonnet-4-
         expected: usize,
         keep: impl Fn(&serde_json::Value) -> bool,
     ) -> Vec<serde_json::Value> {
+        crate::background_writes::settled(path.parent().unwrap_or(path)).await;
         for _ in 0..600 {
             let rows: Vec<serde_json::Value> = std::fs::read_to_string(path)
                 .unwrap_or_default()
@@ -2289,13 +2298,20 @@ printf '%s\n' '{{"type":"result","session_id":"sess-b","model":"claude-sonnet-4-
         })
     }
 
+    /// Attempt time limits, in seconds, for a test whose scripted provider
+    /// must reach some point before its attempt runs out of time. The test
+    /// tries the next limit when the provider did not get there, as on a
+    /// loaded machine, instead of failing on a clock (bug-779ae7).
+    pub(super) const TIMEOUT_SECS_UNDER_LOAD: [u64; 5] = [1, 2, 4, 8, 16];
+
     /// A fake Claude CLI that streams one API message, then works past its
-    /// timeout without reaching its `result` event, recording each prompt.
+    /// timeout without reaching its `result` event. It records each prompt
+    /// as `prompt-<call>` once it has read all of it.
     pub(super) const STREAMS_THEN_TIMES_OUT_PROVIDER: &str = r#"#!/bin/sh
 dir=$(dirname -- "$0")
 n=$(( $(cat "$dir/calls" 2>/dev/null || echo 0) + 1 ))
 echo "$n" > "$dir/calls"
-cat > "$dir/prompt-$n"
+cat > "$dir/prompt-$n.part" && mv "$dir/prompt-$n.part" "$dir/prompt-$n"
 printf '%s\n' '{"type":"assistant","message":{"id":"msg_1","model":"claude-sonnet-4-6","content":[{"type":"tool_use","id":"tu_1","name":"Bash","input":{"command":"cargo build"}}],"usage":{"input_tokens":1000,"output_tokens":200}},"parent_tool_use_id":null}'
 sleep 30
 "#;

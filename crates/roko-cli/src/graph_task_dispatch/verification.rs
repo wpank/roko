@@ -821,7 +821,7 @@ impl GraphTaskDispatcher {
                         };
                         if let Ok(line) = serde_json::to_string(&row) {
                             let path = eff_path.clone();
-                            tokio::spawn(async move {
+                            crate::background_writes::spawn(&eff_path, async move {
                                 if let Err(error) = append_jsonl_line_async(path, line).await {
                                     tracing::warn!(
                                         %error,
@@ -941,7 +941,7 @@ impl GraphTaskDispatcher {
                     );
                     if let Ok(line) = serde_json::to_string(&record) {
                         let path = gf_path.clone();
-                        tokio::spawn(async move {
+                        crate::background_writes::spawn(&gf_path, async move {
                             if let Err(error) = append_jsonl_line_async(path, line).await {
                                 tracing::warn!(
                                     %error,
@@ -1042,7 +1042,7 @@ impl GraphTaskDispatcher {
                                     false,
                                 )
                                 .with_latency_ms(latency_ms);
-                            tokio::spawn(async move {
+                            crate::background_writes::spawn(&path.clone(), async move {
                                 if let Err(error) =
                                     roko_learn::retrieval_outcome::RetrievalOutcomeStore::at(&path)
                                         .without_fsync()
@@ -1131,7 +1131,7 @@ impl GraphTaskDispatcher {
                     let path = eff_path.clone();
                     let plan_id = spec.plan_id.clone();
                     let task_id = task.id.clone();
-                    tokio::spawn(async move {
+                    crate::background_writes::spawn(&eff_path, async move {
                         if let Err(error) = append_jsonl_line_async(path, line).await {
                             tracing::warn!(
                                 plan_id = %plan_id,
@@ -1170,7 +1170,7 @@ impl GraphTaskDispatcher {
                                 true,
                             )
                             .with_latency_ms(latency_ms);
-                        tokio::spawn(async move {
+                        crate::background_writes::spawn(&path.clone(), async move {
                             if let Err(error) =
                                 roko_learn::retrieval_outcome::RetrievalOutcomeStore::at(&path)
                                     .without_fsync()
@@ -1466,8 +1466,7 @@ mod tests {
     /// Sorted `(attempt_id, outcome)` of every efficiency record, once
     /// `expected` records have landed from the background writers.
     async fn efficiency_records(path: &Path, expected: usize) -> Vec<(String, String)> {
-        // Generous deadline: the writers are background tasks, and a loaded
-        // test run can starve them for seconds. Returns as soon as they land.
+        crate::background_writes::settled(path.parent().unwrap_or(path)).await;
         for _ in 0..600 {
             let mut records: Vec<(String, String)> = std::fs::read_to_string(path)
                 .unwrap_or_default()
@@ -1717,7 +1716,8 @@ printf '%s\n' '{"type":"result","session_id":"s","model":"claude-sonnet-4-6","to
 
     /// Dispatches `task` beside a fake sibling `T12` of the same plan that
     /// edits `web/src/PlanView.tsx` in the same working tree and finishes its
-    /// attempt once `failed_once` exists, first creating `sibling_done`.
+    /// attempt, first creating `sibling_done`, once the dispatcher has begun
+    /// to settle the step that failed beside it (it created `failed_once`).
     async fn dispatch_beside_editing_sibling(
         dispatcher: &GraphTaskDispatcher,
         task: &TaskDef,
@@ -1730,15 +1730,22 @@ printf '%s\n' '{"type":"result","session_id":"s","model":"claude-sonnet-4-6","to
             &dispatcher.workdir,
             &["web/src/PlanView.tsx".to_string()],
         );
+        let key = format!("{}/{}", spec.plan_id, task.id);
         let finish_sibling = async {
-            while !failed_once.exists() {
-                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-            }
+            // The failing step creates `failed_once` before the dispatcher
+            // sees it fail: ending the sibling then could leave the settle no
+            // writer to wait for (bug-779ae7).
+            dispatcher.in_flight.settling_began(&key).await;
+            assert!(
+                failed_once.exists(),
+                "the settled step failed beside the sibling"
+            );
             std::fs::write(sibling_done, "").expect("sibling edit");
             drop(sibling);
         };
         let ctx = CellContext::new();
-        let (outcome, ()) = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        // Only a hang guard: the sibling ends on the settle signal, not a clock.
+        let (outcome, ()) = tokio::time::timeout(std::time::Duration::from_secs(300), async {
             tokio::join!(dispatcher.dispatch(&spec, Vec::new(), &ctx), finish_sibling)
         })
         .await
@@ -2017,6 +2024,7 @@ printf '%s\n' '{"type":"result","session_id":"s","model":"claude-sonnet-4-6","to
         path: &Path,
         expected: usize,
     ) -> Vec<roko_gate::GateFailureRecord> {
+        crate::background_writes::settled(path.parent().unwrap_or(path)).await;
         for _ in 0..600 {
             let records: Vec<roko_gate::GateFailureRecord> = std::fs::read_to_string(path)
                 .unwrap_or_default()

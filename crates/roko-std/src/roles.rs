@@ -183,6 +183,35 @@ pub struct DomainToolProfile {
     pub extra_tools: &'static [&'static str],
     /// Tools removed for this domain (even if the role allows them).
     pub excluded_tools: &'static [&'static str],
+    /// Name prefixes of the tools that belong to this domain, such as
+    /// [`CHAIN_TOOL_PREFIX`]. Tasks in other domains are not offered them
+    /// unless they name them; see [`DomainToolProfile::offers`].
+    pub owned_tool_prefixes: &'static [&'static str],
+}
+
+/// Name prefix of the chain domain's own tools (`chain.transfer`,
+/// `chain.swap`, `chain.wallet_create` and the rest), which roko-std
+/// advertises when built with its `chain` feature.
+pub const CHAIN_TOOL_PREFIX: &str = "chain.";
+
+impl DomainToolProfile {
+    /// Whether `tool` belongs to this domain: its name starts with one of
+    /// [`Self::owned_tool_prefixes`].
+    #[must_use]
+    pub fn owns(&self, tool: &str) -> bool {
+        self.owned_tool_prefixes
+            .iter()
+            .any(|prefix| tool.starts_with(prefix))
+    }
+
+    /// Whether a task in this domain is offered `tool` without naming it in
+    /// its own `allowed_tools`: every tool except those that belong to
+    /// another domain. A coding task is offered no `chain.*` tool, so no
+    /// `chain.transfer` or `chain.swap`; a chain task is offered all of them.
+    #[must_use]
+    pub fn offers(&self, tool: &str) -> bool {
+        self.owns(tool) || !DOMAIN_TOOL_PROFILES.iter().any(|profile| profile.owns(tool))
+    }
 }
 
 /// Coding domain: all 16 builtins enabled, no exclusions.
@@ -206,6 +235,7 @@ pub const CODING_DOMAIN_PROFILE: DomainToolProfile = DomainToolProfile {
         web_fetch::NAME,
     ],
     excluded_tools: &[],
+    owned_tool_prefixes: &[],
 };
 
 /// Chain domain: read-only file tools + web tools for on-chain data.
@@ -228,6 +258,7 @@ pub const CHAIN_DOMAIN_PROFILE: DomainToolProfile = DomainToolProfile {
         apply_patch::NAME,
         notebook_edit::NAME,
     ],
+    owned_tool_prefixes: &[CHAIN_TOOL_PREFIX],
 };
 
 /// Research domain: read-only tools plus web tools. No code mutation, no exec.
@@ -250,6 +281,7 @@ pub const RESEARCH_DOMAIN_PROFILE: DomainToolProfile = DomainToolProfile {
         bash::NAME,
         run_tests::NAME,
     ],
+    owned_tool_prefixes: &[],
 };
 
 /// General domain: no extra restrictions or additions beyond the role profile.
@@ -257,6 +289,7 @@ pub const GENERAL_DOMAIN_PROFILE: DomainToolProfile = DomainToolProfile {
     domain: "general",
     extra_tools: &[],
     excluded_tools: &[],
+    owned_tool_prefixes: &[],
 };
 
 /// All built-in domain profiles in declaration order.
@@ -598,5 +631,21 @@ mod tests {
                 .contains(&read_file::NAME.to_string())
         );
         assert!(effective.allowed_tools.contains(&grep::NAME.to_string()));
+    }
+
+    #[test]
+    fn chain_tools_are_offered_only_to_the_chain_domain() {
+        for tool in ["chain.transfer", "chain.swap", "chain.balance"] {
+            for domain in ["chain", "defi", "onchain"] {
+                assert!(domain_profile(domain).offers(tool), "{domain}: {tool}");
+            }
+            for domain in ["coding", "code", "research", "docs", "general"] {
+                assert!(!domain_profile(domain).offers(tool), "{domain}: {tool}");
+            }
+        }
+        for profile in &DOMAIN_TOOL_PROFILES {
+            assert!(profile.offers(read_file::NAME), "{}", profile.domain);
+            assert!(profile.offers("mcp__github__create_pr"), "{}", profile.domain);
+        }
     }
 }

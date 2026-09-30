@@ -542,6 +542,19 @@ fn mask_secret_fields(value: &mut Value) {
                 if obj.contains_key("api_key") {
                     obj.insert("api_key".to_string(), Value::String("****".to_string()));
                 }
+                // Header values carry credentials (Authorization, API-key
+                // headers), resolved from ${VAR} references and *_file
+                // secrets, so none is shown; an empty one stays empty.
+                if let Some(headers) = obj
+                    .get_mut("extra_headers")
+                    .and_then(Value::as_object_mut)
+                {
+                    for header in headers.values_mut() {
+                        if header.as_str().is_some_and(|text| !text.is_empty()) {
+                            *header = Value::String("***".to_string());
+                        }
+                    }
+                }
             }
         }
     }
@@ -939,6 +952,51 @@ mod tests {
         assert_eq!(value["providers"]["anthropic"]["api_key"], "****");
         assert_eq!(value["agent"]["env"][0][1], "***");
         assert_eq!(value["agent"]["env"][1][1], "debug");
+    }
+
+    /// bug-7830f5: the config routes returned each provider's resolved
+    /// `extra_headers`, credentials included.
+    #[tokio::test]
+    async fn config_route_redacts_provider_extra_headers() {
+        use axum::body::{Body, to_bytes};
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = RokoConfig::from_toml(
+            "[providers.x]\nkind = \"openai_compat\"\nbase_url = \"https://x.invalid/v1\"\n\n\
+             [providers.x.extra_headers]\nAuthorization = \"Bearer sk-header-secret\"\n\
+             X-Unset = \"\"\n",
+        )
+        .expect("parse config");
+        let state = test_state(dir.path().to_path_buf(), config);
+        for uri in ["/config", "/config/toml"] {
+            let response = routes()
+                .with_state(Arc::clone(&state))
+                .oneshot(
+                    Request::builder()
+                        .method("GET")
+                        .uri(uri)
+                        .body(Body::empty())
+                        .expect("request"),
+                )
+                .await
+                .expect("response");
+            assert_eq!(response.status(), StatusCode::OK, "{uri}");
+            let body = to_bytes(response.into_body(), usize::MAX)
+                .await
+                .expect("body");
+            let text = String::from_utf8(body.to_vec()).expect("utf8");
+            assert!(!text.contains("sk-header-secret"), "{uri} leaked: {text}");
+            assert!(text.contains("Authorization"), "{uri}: {text}");
+        }
+
+        // The PUT response goes through the same masking.
+        let mut value = serde_json::to_value(&*state.load_roko_config()).expect("serialize");
+        mask_secret_fields(&mut value);
+        let headers = &value["providers"]["x"]["extra_headers"];
+        assert_eq!(headers["Authorization"], "***");
+        assert_eq!(headers["X-Unset"], "");
     }
 
     #[tokio::test]

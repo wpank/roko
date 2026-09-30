@@ -1464,7 +1464,10 @@ roko config edit [--global] [--project] [--workdir <path>]
 
 #### `roko config set`
 
-Set a dotted key in the chosen config layer.
+Set a dotted key in the global config, or in the project's `roko.toml` with
+`--project`. A secret key such as `serve.auth.api_key` goes to the project's
+`.roko/.env` instead, as its `ROKO__` variable (`ROKO__SERVE__AUTH__API_KEY`),
+whatever the flags, and is removed from the config files agents can read.
 
 ```
 roko config set <key> <value> [--global] [--project] [--workdir <path>]
@@ -1473,6 +1476,7 @@ roko config set <key> <value> [--global] [--project] [--workdir <path>]
 ```bash
 roko config set agent.command claude
 roko config set agent.model claude-opus-4-5 --project
+roko config set serve.auth.api_key <key>   # stored in .roko/.env
 ```
 
 #### `roko config set-secret`

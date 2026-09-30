@@ -146,7 +146,9 @@ cors_origins = []
 
 [serve.auth]
 enabled = false
-api_key = ""
+# The legacy single key never goes here: roko.toml is readable by agents, and
+# roko refuses to load it with a secret. Set ROKO__SERVE__AUTH__API_KEY in
+# .roko/.env (`roko config set serve.auth.api_key <key>` does).
 privy_app_id = ""
 
 [[serve.auth.api_keys]]

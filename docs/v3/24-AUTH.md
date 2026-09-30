@@ -130,6 +130,14 @@ still supported. If a token does not match any named key, it falls back to
 constant-time comparison against this legacy value. Matched tokens receive
 `"admin"` scope. New deployments should use named keys instead.
 
+Keep the key out of `roko.toml`: agents can read that file, and roko refuses to
+load a readable config file that holds a secret. Set it in the
+`ROKO__SERVE__AUTH__API_KEY` variable instead:
+`roko config set serve.auth.api_key <key>` stores it in `.roko/.env`, which roko
+loads at startup and agents cannot read. The field may also hold a `${VAR}`
+reference to another variable, such as `"${ROKO_SERVE_KEY}"`, which roko expands
+when it loads the config; an unset variable stops the load.
+
 ---
 
 ## 3. Agent and Relay Tokens
@@ -447,7 +455,8 @@ The CLI resolves credentials from four sources in strict order:
 
 1. `--api-key` CLI flag
 2. `ROKO_API_KEY` environment variable
-3. `serve.auth.api_key` in `roko.toml`
+3. `serve.auth.api_key` in the loaded config, which `ROKO__SERVE__AUTH__API_KEY`
+   sets (for example in `.roko/.env`)
 4. Stored credential from `~/.roko/credentials.json` (`roko login`)
 
 The first non-empty source wins. This chain is implemented in `resolve_api_key`
@@ -509,8 +518,9 @@ endpoint to prevent unbounded growth.
 # Whether /api/* routes require credentials (default: true).
 enabled = true
 
-# Legacy single API key (prefer named api_keys below).
-api_key = ""
+# Legacy single API key (prefer named api_keys below). Never write it in
+# roko.toml, which agents can read: set ROKO__SERVE__AUTH__API_KEY in .roko/.env,
+# as `roko config set serve.auth.api_key <key>` does.
 
 # Privy application ID for JWT validation.
 privy_app_id = "cmhw01vut003tjx0d5lmqc8zs"

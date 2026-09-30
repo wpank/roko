@@ -610,10 +610,13 @@ async fn emit_accumulated_usage(
     if input == 0 && output == 0 {
         return;
     }
+    // `promptTokenCount` includes the cached content; input is the uncached
+    // part, so each cached token counts once (bug-afcf63).
+    let cache_read = cache_read.unwrap_or(0);
     let usage = Usage {
-        input_tokens: input as u32,
+        input_tokens: input.saturating_sub(cache_read) as u32,
         output_tokens: output as u32,
-        cache_read_tokens: cache_read.unwrap_or(0) as u32,
+        cache_read_tokens: cache_read as u32,
         cache_create_tokens: 0,
         ..Default::default()
     };
@@ -630,6 +633,26 @@ mod tests {
     use crate::translate::RenderedTools;
     use serde_json::json;
     use std::sync::{Arc, Mutex};
+
+    /// A streamed call's input and cache reads are disjoint and sum to
+    /// `promptTokenCount` (bug-afcf63).
+    #[tokio::test]
+    async fn streamed_gemini_usage_counts_cached_tokens_once() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+        emit_accumulated_usage(1_000, 50, Some(600), None, &tx).await;
+        let event = rx.recv().await.expect("a usage event").expect("no error");
+        let StreamEventKind::Usage(usage) = event.kind else {
+            panic!("expected usage, got {:?}", event.kind);
+        };
+        assert_eq!(
+            (
+                usage.input_tokens,
+                usage.cache_read_tokens,
+                usage.output_tokens
+            ),
+            (400, 600, 50)
+        );
+    }
 
     #[derive(Debug)]
     struct CapturedRequest {

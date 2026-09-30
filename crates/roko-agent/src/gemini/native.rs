@@ -557,10 +557,12 @@ fn saturating_u64_to_u32(value: u64) -> u32 {
 ///
 /// `None` for `usage_metadata` means the API did not report usage at all
 /// — every token field is left as `None` instead of collapsing to `0`.
-/// When `usage_metadata` is present, `prompt_token_count` and
-/// `candidates_token_count` are surfaced as `Some(n)` (preserving an
-/// explicit `0`); `cached_content_token_count` is already optional in
-/// the wire shape and flows through unchanged.
+/// When `usage_metadata` is present, input and `candidates_token_count` are
+/// surfaced as `Some(n)` (preserving an explicit `0`);
+/// `cached_content_token_count` is already optional in the wire shape and
+/// becomes the cache reads. `prompt_token_count` includes the cached
+/// content, while the canonical classes are disjoint, so input is only its
+/// uncached part and each cached token is priced once (bug-afcf63).
 fn gemini_observation(
     usage_metadata: Option<&super::types::UsageMetadata>,
     wall_ms: u64,
@@ -568,7 +570,11 @@ fn gemini_observation(
 ) -> UsageObservation {
     let (input_tokens, output_tokens, cache_read_tokens, source) = match usage_metadata {
         Some(usage) => (
-            Some(usage.prompt_token_count),
+            Some(
+                usage
+                    .prompt_token_count
+                    .saturating_sub(usage.cached_content_token_count.unwrap_or(0)),
+            ),
             usage.candidates_token_count,
             usage.cached_content_token_count,
             UsageSource::ProviderReported,
@@ -894,7 +900,8 @@ mod tests {
             .expect("parse chat response");
 
         assert_eq!(parsed.content, "Grounded answer. Done.");
-        assert_eq!(parsed.usage.input_tokens, 21);
+        // 5 of the 21 prompt tokens were cached (bug-afcf63).
+        assert_eq!(parsed.usage.input_tokens, 16);
         assert_eq!(parsed.usage.output_tokens, 8);
         assert_eq!(parsed.usage.cache_read_tokens, 5);
         assert_eq!(parsed.finish_reason, FinishReason::Stop);
@@ -1167,6 +1174,45 @@ mod tests {
         assert!(
             output.contains("blocked by safety layer"),
             "unexpected output: {output}"
+        );
+    }
+
+    /// `promptTokenCount` includes the cached content: a cached call's input
+    /// and cache reads are disjoint and sum to it (bug-afcf63).
+    #[tokio::test]
+    async fn gemini_native_usage_counts_cached_tokens_once() {
+        let poster = Arc::new(MockPoster::ok(
+            Arc::new(Mutex::new(Captured::default())),
+            json!({
+                "candidates": [{
+                    "content": { "role": "model", "parts": [{ "text": "ok" }] },
+                    "finishReason": "STOP"
+                }],
+                "usageMetadata": {
+                    "promptTokenCount": 1_000,
+                    "candidatesTokenCount": 50,
+                    "totalTokenCount": 1_050,
+                    "cachedContentTokenCount": 600
+                }
+            }),
+        ));
+        let agent = GeminiNativeAgent::new(
+            "test-key".to_string(),
+            "https://generativelanguage.googleapis.com".to_string(),
+            base_model(),
+            &AgentOptions::default(),
+            SafetyLayer::with_defaults(),
+        )
+        .with_http_poster(poster);
+
+        let result = agent.run(&prompt("hi"), &Context::now()).await;
+        let observation = result.usage_obs.expect("usage observation");
+        assert_eq!(observation.input_tokens, Some(400));
+        assert_eq!(observation.cache_read_tokens, Some(600));
+        assert_eq!(observation.output_tokens, Some(50));
+        assert_eq!(
+            result.usage.input_tokens + result.usage.cache_read_tokens,
+            1_000
         );
     }
 

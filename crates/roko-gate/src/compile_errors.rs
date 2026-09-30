@@ -91,8 +91,9 @@ pub enum GateFailureKind {
     Resource,
     /// The verification contract/script/plan shape needs repair before retrying.
     Structural,
-    /// The gate ran out of time before its check finished. A re-run with more
-    /// time, or a faster check, may pass.
+    /// The gate ran out of time before its check finished.
+    ///
+    /// A re-run with more time, or a faster check, may pass.
     Timeout,
 }
 
@@ -241,8 +242,9 @@ impl GateFailureClassification {
         self
     }
 
-    /// Record that the gate ran out of time: the failure is a
-    /// [`GateFailureKind::Timeout`], whatever its output says.
+    /// Record that the gate ran out of time.
+    ///
+    /// The failure is a [`GateFailureKind::Timeout`], whatever its output says.
     #[must_use]
     pub fn timed_out(mut self) -> Self {
         self.failure_kind = GateFailureKind::Timeout;
@@ -251,9 +253,11 @@ impl GateFailureClassification {
     }
 }
 
-/// Whether `verdict` failed because its gate ran out of time: its error
-/// digest is a failure classification of kind [`GateFailureKind::Timeout`],
-/// as [`crate::ShellGate`] records a command it stopped at its timeout.
+/// Whether `verdict` failed because its gate ran out of time.
+///
+/// Its error digest is a failure classification of kind
+/// [`GateFailureKind::Timeout`], as [`crate::ShellGate`] records a command it
+/// stopped at its timeout.
 #[must_use]
 pub fn verdict_timed_out(verdict: &Verdict) -> bool {
     !verdict.passed

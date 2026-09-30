@@ -52,7 +52,9 @@ pub fn plan_to_graph(
      one after the other even when both are ready. The task that waits holds
      no `max_concurrent_nodes` slot, and the engine logs which running task
      it waits for. A task with no `files` never waits. The paths are left
-     out of the plan fingerprint, so checkpoints still resume.
+     out of the plan fingerprint, so checkpoints still resume. Under
+     `--worktree-per-task` each task writes its own checkout, so the run
+     clears every node's `exclusive` paths.
 
 3. **Add edges.** For each task's `depends_on` list, a directed `Edge` is
    created from the dependency to the dependent. Unknown dependency IDs
@@ -64,7 +66,14 @@ pub fn plan_to_graph(
    `unified-task-dag.md`).
 
 5. **Set policy.** `graph.policy.max_concurrent_nodes` is set from the
-   `max_parallel` argument (minimum 1).
+   `max_parallel` argument (minimum 1). A plan run passes `--max-tasks`, else
+   the plan's `[meta] max_parallel`. A plan that omits `max_parallel` converts
+   with 1, as it did before an omitted value meant "as wide as the DAG
+   allows", so its checkpoint identity is unchanged. Once the identity is
+   taken, the run raises the limit to the plan's task count if every task
+   that can write declares its `files` (`plan_policy::plan_max_parallel`).
+   Otherwise, it logs the task whose writes are unknown and runs one task at a
+   time.
 
 6. **Cycle check.** The graph validates that no cycles exist via
    `petgraph::algo::toposort` inside `Graph::validate()`.
@@ -138,6 +147,9 @@ The executor and the gate both take the task's `files` as their `exclusive`
 paths: the executor writes them and the gate checks them. No other node of
 the subgraph holds any paths. Each node holds the paths only while it runs,
 so an overlapping task can still run between a task's executor and its gate.
+That cannot change what the gate checks. The gate judges the attempt's own
+isolated checkout, never the shared working tree, and fails closed when the
+attempt ran in the shared tree (run the plan with `--worktree-per-task`).
 
 ### Why the Workflow/Activity distinction matters
 

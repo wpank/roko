@@ -494,7 +494,7 @@ impl CliRuntime for RokoCliRuntime {
             task_count,
             tasks,
             title,
-            max_parallel: tasks_file.meta.max_parallel,
+            max_parallel: crate::plan_policy::plan_max_parallel(&tasks_file),
         }))
     }
 

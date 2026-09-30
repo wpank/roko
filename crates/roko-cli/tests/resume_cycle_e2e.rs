@@ -52,6 +52,7 @@ fn task(id: &str, title: &str) -> TaskDef {
             command: "cargo check".into(),
             fail_msg: None,
             timeout_ms: 60_000,
+            scope: Vec::new(),
         }],
         timeout_secs: 60,
         max_retries: 1,

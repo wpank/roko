@@ -641,7 +641,7 @@ mod tests {
                     done: 0,
                     status: String::new(),
                     superseded_by: None,
-                    max_parallel: 1,
+                    max_parallel: Some(1),
                     estimated_total_minutes: 10,
                     skip_enrichment: false,
                     source_prd: None,

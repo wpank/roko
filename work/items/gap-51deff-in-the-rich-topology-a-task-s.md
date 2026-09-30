@@ -3,13 +3,15 @@ id = "gap-51deff"
 kind = "gap"
 title = "In the rich topology a task's files are free between its executor and its gate, so an overlapping task can run in between"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p2"
 goal = "golden-path"
 size = "M"
 subsystem = ["roko-graph"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-09-30
+last_verified = 2026-09-30
+last_verified_rev = "8a88c6267"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (16:10, wk-scheduler's report on gap-439794, branch work/gap-4d835d)"
 anchors = ["crates/roko-graph/src/topology.rs::ProductionPlanTopology", "crates/roko-graph/src/engine.rs::execute_ready_queue", "crates/roko-graph/src/engine.rs::exclusion_conflict"]
@@ -56,3 +58,15 @@ On `work/gap-4d835d` (`c5466b5cb`). The test `executor_and_gate_hold_the_task_fi
 ## Notes
 
 - Depends on gap-439794, which adds `Node.exclusive`. It is not on BASE yet.
+- 2026-09-30, checked at `8a88c6267` (wk-scheduler): the premise no longer holds, so no lease was built.
+  - Since `72d3c9823` (bug-50caf2), the gate judges the attempt's own isolated checkout.
+    `PlanGateCell::attempt_checkout` (`cells/plan_gate.rs`) fails closed when `TaskAttempt.workspace` is `None`.
+    `GraphTaskDispatcher` sets `workspace` only from a workspace-provider lease (`graph_task_dispatch.rs`, the
+    `TaskAttempt` stamp), which exists only under `--worktree-per-task`.
+  - So a rich-topology gate never reads the shared tree. In the shared tree it refuses, and with per-task worktrees no
+    other task edits the checkout it judges. A task that runs between a task's executor and its gate cannot put a
+    second task's edits into the verdict.
+  - Change made: the `topology.rs` comment the item calls untrue now says this, and so does the conversion doc.
+    The window itself is harmless, and gap-19e596 clears `exclusive` under `--worktree-per-task` anyway.
+  - Suggest closing as `wontfix` (superseded by bug-50caf2). The `[[verify]]` test was not written, because it would
+    assert a lease that is no longer needed.

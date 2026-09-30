@@ -60,6 +60,12 @@ impl GraphTaskDispatcher {
                 )
                 .build();
             let gate_ctx = Context::now();
+            // While this attempt runs its verify steps it edits nothing, so
+            // its siblings' verify steps do not wait for it (gap-1920ba).
+            let verify_key = format!("{}/{}", spec.plan_id, task.id);
+            let verifying = self.in_flight.begin_verify(&verify_key);
+            let sibling_wait =
+                std::time::Duration::from_secs(self.config.gates.sibling_settle_secs);
 
             let mut failures: Vec<String> = Vec::new();
             // Whether a failed step ran out of time. Its verdict says so even
@@ -136,6 +142,21 @@ impl GraphTaskDispatcher {
                 .with_timeout_ms(step.timeout_ms)
                 .with_name(step_label);
 
+                // Wait until no sibling is mid-edit on what this step reads,
+                // and keep siblings from starting to edit it while the step
+                // runs (gap-1920ba).
+                let step_scope = sibling_settle::StepScope::of(step, &effective_workdir);
+                let _reading = self
+                    .in_flight
+                    .begin_step(&sibling_settle::StepRead {
+                        plan_id: &spec.plan_id,
+                        task_id: &task.id,
+                        label: step_label,
+                        workdir: &effective_workdir,
+                        scope: &step_scope,
+                        limit: sibling_wait,
+                    })
+                    .await;
                 let compile_permit = verify_compile_permit(
                     &effective_workdir,
                     self.config.gates.compile_concurrency,
@@ -310,6 +331,8 @@ impl GraphTaskDispatcher {
                     .find(|(phase, passed)| !passed && !phase.is_empty())
                     .map_or("compile", |(phase, _)| phase.as_str());
                 let raw_failures = failures.join("\n---\n");
+                // `cargo fix` writes files: meanwhile this attempt is editing.
+                drop(verifying);
                 match crate::runner::gate_dispatch::attempt_auto_fix(
                     &effective_workdir,
                     first_fail_phase,
@@ -336,6 +359,7 @@ impl GraphTaskDispatcher {
                         let mut retry_step_outcomes: Vec<(String, bool)> = Vec::new();
                         let mut retry_skipped: Vec<String> = Vec::new();
                         let mut retry_timed_out = false;
+                        let _verifying = self.in_flight.begin_verify(&verify_key);
                         for (i, (step_label, step)) in steps.iter().enumerate() {
                             let shown = crate::task_accept::prompt_command(&step.command);
                             if !retry_failures.is_empty() {
@@ -357,6 +381,19 @@ impl GraphTaskDispatcher {
                             )
                             .with_timeout_ms(step.timeout_ms)
                             .with_name(step_label);
+                            let step_scope =
+                                sibling_settle::StepScope::of(step, &effective_workdir);
+                            let _reading = self
+                                .in_flight
+                                .begin_step(&sibling_settle::StepRead {
+                                    plan_id: &spec.plan_id,
+                                    task_id: &task.id,
+                                    label: step_label,
+                                    workdir: &effective_workdir,
+                                    scope: &step_scope,
+                                    limit: sibling_wait,
+                                })
+                                .await;
                             let retry_verdict = retry_gate.verify(&gate_signal, &gate_ctx).await;
                             tracing::info!(
                                 plan_id = %spec.plan_id,
@@ -1714,6 +1751,113 @@ printf '%s\n' '{"type":"result","session_id":"s","model":"claude-sonnet-4-6","to
         assert!(
             message.contains("first at src/PlanView.tsx:448:24"),
             "{message}"
+        );
+    }
+
+    /// Dispatch `task` while a sibling `T12` edits `web/src/PlanView.tsx` in
+    /// the same working tree; the sibling ends its attempt after `edit_for`,
+    /// first creating `sibling_done`.
+    async fn dispatch_while_sibling_edits(
+        dispatcher: &GraphTaskDispatcher,
+        task: &TaskDef,
+        sibling_done: &Path,
+        edit_for: std::time::Duration,
+    ) -> Result<Vec<Signal>> {
+        let spec = make_spec(task);
+        let sibling = dispatcher.in_flight.register(
+            &format!("{}/T12", spec.plan_id),
+            &dispatcher.workdir,
+            &["web/src/PlanView.tsx".to_string()],
+        );
+        let finish_sibling = async {
+            tokio::time::sleep(edit_for).await;
+            std::fs::write(sibling_done, "").expect("sibling edit");
+            drop(sibling);
+        };
+        let ctx = CellContext::new();
+        let (outcome, ()) = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+            tokio::join!(dispatcher.dispatch(&spec, Vec::new(), &ctx), finish_sibling)
+        })
+        .await
+        .expect("the attempt ends within the settle limit");
+        outcome
+    }
+
+    /// gap-1920ba: a verify step that reads the whole project (here hidden
+    /// behind `bash -c`) waits until a sibling sharing the working tree has
+    /// finished editing, so it never checks a half-written file. It runs
+    /// once, after the sibling, and passes; without the wait it would fail
+    /// first and pass only on the settle re-run.
+    #[tokio::test]
+    async fn a_whole_project_verify_never_runs_while_a_sibling_edits() {
+        let temp = tempdir().expect("tempdir");
+        let (dispatcher, mut task) = make_test_dispatcher(
+            &temp,
+            VERIFY_PROVIDER,
+            settle_quickly,
+            GraphFeedbackContext::default(),
+        )
+        .await;
+        let sibling_done = temp.path().join("sibling-done");
+        let runs = temp.path().join("verify-runs");
+        task.verify = vec![verify_step(
+            "typecheck",
+            &format!(
+                "bash -c 'echo run >> {}; test -f {}'",
+                runs.display(),
+                sibling_done.display()
+            ),
+        )];
+
+        let outputs = dispatch_while_sibling_edits(
+            &dispatcher,
+            &task,
+            &sibling_done,
+            std::time::Duration::from_millis(500),
+        )
+        .await
+        .expect("the step ran after the sibling's edit");
+
+        assert_eq!(
+            TaskGateVerdict::from_signals(&outputs),
+            Some(TaskGateVerdict::Passed)
+        );
+        let runs = std::fs::read_to_string(&runs).expect("verify runs");
+        assert_eq!(runs.lines().count(), 1, "the step ran once: {runs:?}");
+    }
+
+    /// A verify step whose scope the sibling does not write runs at once,
+    /// while the sibling is still editing.
+    #[tokio::test]
+    async fn a_scoped_verify_runs_beside_a_sibling_editing_elsewhere() {
+        let temp = tempdir().expect("tempdir");
+        let (dispatcher, mut task) = make_test_dispatcher(
+            &temp,
+            VERIFY_PROVIDER,
+            settle_quickly,
+            GraphFeedbackContext::default(),
+        )
+        .await;
+        let sibling_done = temp.path().join("sibling-done");
+        let mut step = verify_step(
+            "typecheck",
+            &format!("bash -c 'test ! -f {}'", sibling_done.display()),
+        );
+        step.scope = vec!["crates/own".to_string()];
+        task.verify = vec![step];
+
+        let outputs = dispatch_while_sibling_edits(
+            &dispatcher,
+            &task,
+            &sibling_done,
+            std::time::Duration::from_secs(3),
+        )
+        .await
+        .expect("the step ran while the sibling was still editing");
+
+        assert_eq!(
+            TaskGateVerdict::from_signals(&outputs),
+            Some(TaskGateVerdict::Passed)
         );
     }
 

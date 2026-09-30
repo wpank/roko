@@ -3,13 +3,15 @@ id = "gap-987064"
 kind = "gap"
 title = "Integration test C6: independent tasks still run after a failure, and tasks with overlapping files never run together"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p1"
 goal = "golden-path"
 size = "S"
 subsystem = ["roko-cli/tests"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-09-30
+last_verified = 2026-09-30
+last_verified_rev = "4d79f0016"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e7"
 discovered_from = "tmp/cybernetic-harness/workstreams/assessment/W8-roko-as-executor.md (gate G6, canary C6)"
 anchors = ["crates/roko-cli/tests/scheduler_canary.rs"]
@@ -71,3 +73,12 @@ No such test at `41c7ffbd6`. The ready queue and `SkipFailed` are merged (`bbf65
 
 - The test edits no hot file. Write it while gap-439794 and gap-272448 are in progress, and merge it last.
 - Compare the provider's own timestamps, and give each task at least 500 ms of work so that overlap is visible.
+- Implemented on `work/gap-a8d786` at `13f136915`; cargo verification deferred to the batch check.
+  - The fake CLI logs `start`/`end` lines in the order they happen, not timestamps. The order is the timeline and
+    stays portable: macOS `date` has no `%N`.
+  - Running this fixture through `roko plan run` needed `ff47a28ab`. Without it, the CLI pre-flight refuses the plan
+    on T5/T6's `PLAN_CONCURRENT_OVERLAP` finding.
+  - Passes: `cargo test -p roko-cli --test scheduler_canary`, 1 passed in 6.2 s (`be4e3567f`; the fake agent now reads
+    the id from the prompt's `Task: <id>:` line, because every prompt quotes all sibling tasks).
+  - Checked by hand on 2026-09-30: with `exclusion_conflict` forced to `None`, the canary fails with "T5 and T6 ran
+    together" (`start T6` … `start T5` … `end T6`). The change was reverted and not committed.

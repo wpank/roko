@@ -3,13 +3,15 @@ id = "gap-3006e9"
 kind = "gap"
 title = "The Graph engine records no task-ready or dispatch time, so the slot waits of multi-task plans can't be measured"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p2"
 goal = "golden-path"
 size = "M"
 subsystem = ["roko-graph/engine", "roko-cli/graph_execution"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-09-30
+last_verified = 2026-09-30
+last_verified_rev = "8a88c6267"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-bench-fix3's report)"
 anchors = ["crates/roko-graph/src/engine.rs", "crates/roko-cli/src/graph_execution/"]
@@ -48,3 +50,15 @@ At 7fa54b873, tasks carry start and end times, but no ready or dispatch time.
 
 - [ ] Every task of a Graph run has ready and dispatch times, and its slot wait can be computed from the records.
 - [ ] The `[[verify]]` command passes.
+
+## Notes
+
+- Implemented on `work/gap-a8d786` at `417ec17b7`; cargo verification deferred to the batch check. This is the engine
+  and activity-log side only.
+  - `NodeResult.timing` (`NodeTiming`: `ready_at_ms`, `dispatched_at_ms`, and `slot_wait_ms()`) is set on every
+    execution path: the ready queue, and the sequential `execute`, `start` and `resume_from` loops.
+  - Activity records (`RecordEntry`) carry both times through `ActivityRecorder::record_timed`.
+  - The times are per node. A node holds its slot across the engine's own retries, and the dispatcher's attempt
+    records keep their own times.
+  - Still to do: plan step 2 (the slot wait in the run stats and the benchmark runner) and the checkpoint side.
+    Both are in `plan_runner.rs` and `graph_checkpoint.rs`, and wait for batch 12.

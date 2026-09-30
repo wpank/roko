@@ -3,7 +3,8 @@
 > **Implementation status (corrected 2026-09-29 at `7c556bc0a`):** WIRED -- The
 > plan-execute-verify-persist pipeline works end-to-end through the Graph engine. Plan
 > directories load as Graph topologies, each task starts as soon as its dependencies
-> finish (up to the plan's `max_parallel`, which defaults to 1), each task's authored
+> finish (up to the plan's `max_parallel`; omitted, as wide as the DAG allows when every
+> writing task declares its `files`, else 1), each task's authored
 > `verify` commands check it, and durable checkpoints allow resume after crash. Three
 > parts of the design are not on this path. Tasks run in the operator's working tree:
 > `--worktree-per-task` is opt-in, and its worktrees are never merged back (section 10).
@@ -649,6 +650,36 @@ first attempts `reclaim_idle()`. If still over budget, it returns
 
 ---
 
+### Tasks that share the operator's tree
+
+Without `--worktree-per-task`, the tasks of a plan run side by side in one
+working tree. Two rules keep them from reading or writing each other's
+half-finished edits:
+
+- Tasks whose `files` overlap never run at the same time (the Graph engine's
+  exclusive paths, [03-GRAPH](03-GRAPH.md)).
+- Before a verify step runs, it waits until no sibling that writes where it
+  reads is mid-edit. While it runs, a sibling that would write there waits
+  before it starts editing. A task running its verify steps edits nothing,
+  so it never counts as a sibling mid-edit.
+
+A step reads its `scope` in `tasks.toml`, for example
+`verify = [{ command = "cargo test -p roko-graph", scope = ["crates/roko-graph"] }]`.
+Without one, the scope is inferred from the command, erring toward the whole
+project:
+
+- `cargo ... -p X` reads `crates/X`;
+- a tool run after `cd dir` reads `dir`;
+- file tools such as `test`, `grep` and `cat` read the paths they name;
+- any other command reads the whole project.
+
+Both waits are bounded by `[gates] sibling_settle_secs` (`0` turns them off).
+A failure that a sibling's edit still causes, through a read nobody declared
+for example, is re-run once the sibling settles.
+
+**Source:** `crates/roko-cli/src/graph_task_dispatch/sibling_settle/`
+(`verify_scope.rs`, `verify_lease.rs`)
+
 ## 11. Merge Queue
 
 > **Status (2026-09-29, at `7c556bc0a`): ORPHANED.** The merge queue served Runner-v2,
@@ -781,8 +812,14 @@ pub struct RecordEntry {
     pub node_id:  String,
     pub tick:     u64,
     pub signals:  Vec<Signal>,
+    pub ready_at_ms:      Option<u64>,  // every dependency had settled
+    pub dispatched_at_ms: Option<u64>,  // the node got a slot and started
 }
 ```
+
+The two times (Unix ms) are also on each node's `NodeResult.timing`. Their
+difference is the time the node waited for a slot. Older records have
+neither.
 
 The file is flushed after every write. On resume, the `ActivityReplayer`
 loads recorded entries and substitutes them for re-execution, avoiding

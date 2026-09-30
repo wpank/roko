@@ -303,8 +303,10 @@ impl ProductionPlanTopology {
             inputs: vec![],
             outputs: vec![],
             execution_class: ExecutionClass::Activity,
-            // The executor writes the task's files and the gate checks them:
-            // both hold the files, so no overlapping task edits them meanwhile.
+            // The executor and the gate each hold the task's files while they
+            // run. An overlapping task may run between the two, but it cannot
+            // change what the gate checks: the gate judges the attempt's own
+            // isolated checkout (bug-50caf2), which no other task edits.
             exclusive: task.files.clone(),
         })?;
 

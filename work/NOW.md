@@ -4,7 +4,7 @@
 
 What to work on next: the top checked, open items of each goal, highest-priority goal first. Reorder or change goals in `goals.toml`; pin an item higher with `rank = 1` (lower first).
 
-**Drift:** 1 likely done · 20 anchor gone · 189 changed since checked · 3 mentioned in commits. Re-check them before relying on this list: `DRIFT.md`.
+**Drift:** 1 likely done · 20 anchor gone · 184 changed since checked · 3 mentioned in commits. Re-check them before relying on this list: `DRIFT.md`.
 
 ## 1. Public release: security, licence, CI, first run
 
@@ -12,7 +12,7 @@ What to work on next: the top checked, open items of each goal, highest-priority
 - **P2** [bug-911361](items/bug-911361-cargo-toml-s-repository-and-homepage-point.md) Cargo.toml's repository and homepage point at an unrelated GitHub account [bug] · size S · verified 2026-09-29
 - **P2** [q-bc6cc5](items/q-bc6cc5-confirm-licence-coverage-for-another-contributor-s.md) Confirm licence coverage for another contributor's code in apps/mirage-rs [question] · size S · verified 2026-09-29
 
-_7 more open · on hold: gap-8f8544 · 13 unchecked (`TRIAGE.md`) · `goal = "release"`_
+_4 more open · on hold: gap-8f8544 · 5 unchecked (`TRIAGE.md`) · `goal = "release"`_
 
 ## 2. Whitepaper v1 and the research papers
 
@@ -30,15 +30,14 @@ _0 more open · 11 unchecked (`TRIAGE.md`) · `goal = "truth"`_
 ## 4. Frontier plans, cheap models execute, the result integrates (P1)
 
 - **P2** [gap-51deff](items/gap-51deff-in-the-rich-topology-a-task-s.md) In the rich topology a task's files are free between its executor and its gate, so an overlapping task can run in between · size M · verified 2026-09-30
-- **P2** [gap-5a6e01](items/gap-5a6e01-turn-caps-and-timeouts-set-from-each.md) Turn caps and timeouts set from each tier's p95 over successful tasks · size M · verified 2026-09-30
 
-_0 more open · 23 unchecked (`TRIAGE.md`) · `goal = "golden-path"`_
+_0 more open · 21 unchecked (`TRIAGE.md`) · `goal = "golden-path"`_
 
 ## 5. Proof: the pilot benchmark and a record of the work
 
 - nothing checked and open
 
-_0 more open · 19 unchecked (`TRIAGE.md`) · `goal = "proof"`_
+_0 more open · 18 unchecked (`TRIAGE.md`) · `goal = "proof"`_
 
 ## 6. Learning from verified outcomes, M1-M4 (P2)
 

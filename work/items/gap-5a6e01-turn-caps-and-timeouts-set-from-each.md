@@ -2,7 +2,7 @@
 id = "gap-5a6e01"
 kind = "gap"
 title = "Turn caps and timeouts set from each tier's p95 over successful tasks"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "golden-path"
@@ -11,7 +11,7 @@ subsystem = ["roko-learn/tier_limits", "roko-cli/graph_task_dispatch", "roko-cor
 created = 2026-09-29
 updated = 2026-09-30
 last_verified = 2026-09-30
-last_verified_rev = "8a88c6267"
+last_verified_rev = "90307ad5e"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e10"
 discovered_from = "tmp/cybernetic-harness/evidence/field/CASES.md (CASE-004: turn caps and timeouts set by guesswork); tldr/05 P1 #14"
 anchors = ["crates/roko-cli/src/graph_task_dispatch/turn_policy.rs::task_turn_limit", "crates/roko-cli/src/graph_task_dispatch/turn_policy.rs::base_attempt_timeout_ms", "crates/roko-core/src/config/gates.rs::PipelineConfig", "crates/roko-learn/src/tier_limits.rs"]
@@ -24,6 +24,11 @@ command = "grep -rqw 'fn tier_limits_follow_p95_of_passed_attempts' crates/roko-
 
 [[verify]]
 command = "grep -rqw 'fn learned_tier_limits_reach_turn_cap_and_timeout' crates/roko-cli/src/ && cargo test -p roko-cli --lib learned_tier_limits_reach_turn_cap_and_timeout"
+
+[closed]
+at = 2026-09-30
+by = "coordinator (session 7622b882)"
+evidence = "Merged in ce12e86d8. roko-learn tier_limits computes each tier's p95 turns and wall time over passed attempts (min 20, last 100, x1.25, bounds [0.5x, 2x], never lowers a cap >10% of attempts hit); [pipeline] learned_limits = shadow by default; both dispatch paths read the table, and attempt-open lines record the tier. Batch 17 gate: first run on 2c4abe35b (check clean; lib tests roko-agent 2271, roko-cli 3244 (gate_rows writer flake, fixed by bug-779ae7), roko-core 1955, roko-fs 260, roko-learn 1204, roko-serve 988), then re-gated on 53feea92e (same code as MAIN 90307ad5e) after the coordinator's doc-paragraph and rustfmt fix on guard2's branch (3f3a7be84): nightly fmt clean; clippy -p roko-agent -p roko-cli -p roko-core -p roko-fs -p roko-learn -p roko-serve --keep-going -D warnings clean; roko-fs lib 260; --test secret_canary 11 passed; --test secrets_and_git_guard_canary 2 passed. Verify: its test passes in that run and its static checks pass on MAIN."
 +++
 
 ## Problem

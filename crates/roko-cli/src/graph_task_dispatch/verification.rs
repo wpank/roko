@@ -87,18 +87,21 @@ impl GraphTaskDispatcher {
             let total_steps = u32::try_from(steps.len()).unwrap_or(u32::MAX);
 
             for (i, (step_label, step)) in steps.iter().enumerate() {
+                // How feedback and events quote the step: a pinned acceptance
+                // step by its header line, not its generated script.
+                let shown = crate::task_accept::prompt_command(&step.command);
                 // Fail fast: once a step has failed (or P4-03 declared the
                 // attempt doomed), report later steps as skipped instead of
                 // paying for, say, a full compile after a cheap grep failed.
                 if promise_terminated || !failures.is_empty() {
-                    skipped_steps.push(format!("{step_label} (`{}`)", step.command));
+                    skipped_steps.push(format!("{step_label} (`{shown}`)"));
                     continue;
                 }
 
                 if let Some(progress_tx) = progress_tx {
                     let _ = progress_tx
                         .send(GraphTaskEvent::Progress {
-                            message: format!("verify: {}", step.command),
+                            message: format!("verify: {shown}"),
                             completed: Some(u32::try_from(i).unwrap_or(u32::MAX)),
                             total: Some(total_steps),
                         })
@@ -197,7 +200,7 @@ impl GraphTaskDispatcher {
                         &task.id,
                         step_label,
                         verdict.passed,
-                        Some(&published_gate_output(&step.command, &verdict)),
+                        Some(&published_gate_output(shown, &verdict)),
                     );
                 }
 
@@ -285,8 +288,7 @@ impl GraphTaskDispatcher {
 
                     timed_out |= roko_gate::verdict_timed_out(&verdict);
                     failures.push(format!(
-                        "{step_label} (`{cmd}`): {fail_msg}\n{detail_snippet}",
-                        cmd = step.command,
+                        "{step_label} (`{shown}`): {fail_msg}\n{detail_snippet}"
                     ));
                 }
             }
@@ -335,8 +337,9 @@ impl GraphTaskDispatcher {
                         let mut retry_skipped: Vec<String> = Vec::new();
                         let mut retry_timed_out = false;
                         for (i, (step_label, step)) in steps.iter().enumerate() {
+                            let shown = crate::task_accept::prompt_command(&step.command);
                             if !retry_failures.is_empty() {
-                                retry_skipped.push(format!("{step_label} (`{}`)", step.command));
+                                retry_skipped.push(format!("{step_label} (`{shown}`)"));
                                 continue;
                             }
                             // P2-TUI-4: Notify the TUI of the post-fix re-run.
@@ -374,7 +377,7 @@ impl GraphTaskDispatcher {
                                     &task.id,
                                     step_label,
                                     retry_verdict.passed,
-                                    Some(&published_gate_output(&step.command, &retry_verdict)),
+                                    Some(&published_gate_output(shown, &retry_verdict)),
                                 );
                             }
                             if !retry_verdict.passed {
@@ -391,8 +394,7 @@ impl GraphTaskDispatcher {
                                     .unwrap_or_default();
                                 retry_timed_out |= roko_gate::verdict_timed_out(&retry_verdict);
                                 retry_failures.push(format!(
-                                    "{step_label} (`{cmd}`): {fail_msg}\n{detail_snippet}",
-                                    cmd = step.command,
+                                    "{step_label} (`{shown}`): {fail_msg}\n{detail_snippet}"
                                 ));
                             }
                         }
@@ -2084,4 +2086,45 @@ printf '%s\n' '{"type":"result","session_id":"s","model":"claude-sonnet-4-6","to
         assert!(!text.contains("the lint rung"), "opted out:\n{text}");
     }
 
+    /// A pinned acceptance step is quoted by its header line, not its
+    /// generated script, in the failure and skipped-step lines that become
+    /// retry feedback.
+    #[tokio::test]
+    async fn pinned_steps_are_quoted_by_their_header_in_feedback() {
+        let temp = tempdir().expect("tempdir");
+        let (dispatcher, mut task) = make_test_dispatcher(
+            &temp,
+            VERIFY_PROVIDER,
+            no_auto_fix,
+            GraphFeedbackContext::default(),
+        )
+        .await;
+        let pinned = |name: &str, script: &str| crate::task_parser::VerifyStep {
+            fail_msg: Some(format!("the pinned acceptance test {name} failed")),
+            ..verify_step("test", &format!("# roko accept: {name}\n{script}"))
+        };
+        task.verify = vec![
+            pinned("one.sh", "roko_first_script_line=1\nexit 1"),
+            pinned("two.sh", "roko_second_script_line=1\nexit 0"),
+        ];
+
+        let error = dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &CellContext::new())
+            .await
+            .expect_err("the first pinned step fails");
+        let RokoError::Verify { message, .. } = error else {
+            panic!("expected a verify failure, got {error}");
+        };
+        assert!(
+            message.contains("verify[0:test] (`# roko accept: one.sh`): the pinned"),
+            "{message}"
+        );
+        assert!(
+            message.contains("verify[1:test] (`# roko accept: two.sh`)"),
+            "{message}"
+        );
+        for script in ["roko_first_script_line", "roko_second_script_line"] {
+            assert!(!message.contains(script), "{script}:\n{message}");
+        }
+    }
 }

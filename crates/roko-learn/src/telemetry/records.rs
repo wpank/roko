@@ -850,12 +850,18 @@ pub struct RunProvenanceManifest {
     /// One entry per process that worked on the run; a resume appends one.
     #[serde(default)]
     pub invocations: Vec<RunInvocation>,
-    /// The harness build.
+    /// The harness build of the run's first invocation. Each invocation
+    /// records its own ([`RunInvocation::harness`]).
     #[serde(default)]
     pub harness: HarnessProvenance,
-    /// The configuration fingerprint.
+    /// The configuration fingerprint of the run's first invocation. Each
+    /// invocation records its own ([`RunInvocation::config`]).
     #[serde(default)]
     pub config: ConfigHashProvenance,
+    /// Whether a later invocation ran under another harness build or
+    /// config than the first, so the run's records come from more than one.
+    #[serde(default)]
+    pub mixed_provenance: bool,
     /// The price snapshot.
     #[serde(default)]
     pub prices: PriceProvenance,
@@ -881,6 +887,7 @@ impl RunProvenanceManifest {
             invocations: Vec::new(),
             harness: HarnessProvenance::default(),
             config: ConfigHashProvenance::default(),
+            mixed_provenance: false,
             prices: PriceProvenance::default(),
             experiment: ExperimentProvenance::default(),
             workspace: WorkspaceProvenance::default(),
@@ -912,6 +919,12 @@ pub struct RunInvocation {
     pub host: String,
     /// `sha256` of the command-line arguments.
     pub args_sha256: Option<String>,
+    /// The harness build this invocation ran; `None` in manifests written
+    /// before invocations recorded their own.
+    pub harness: Option<HarnessProvenance>,
+    /// The configuration fingerprint this invocation ran with; `None` in
+    /// manifests written before invocations recorded their own.
+    pub config: Option<ConfigHashProvenance>,
 }
 
 /// The harness build behind a run.

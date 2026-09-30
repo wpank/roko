@@ -132,6 +132,47 @@ fn select_cheap_model_key_with(
         .map(|(key, _)| key.clone())
 }
 
+/// The model to dispatch for the routed `model` (a `[models.*]` key or slug)
+/// of a task whose `preferred_provider` is `provider`, a `[providers.*]` id:
+/// the key of that provider's entry for the same slug when it has a usable
+/// one, else `model` as routed.
+pub(super) fn preferred_provider_model(
+    config: &RokoConfig,
+    model: &str,
+    provider: Option<&str>,
+) -> String {
+    preferred_provider_model_with(config, model, provider, |key| {
+        config.provider_available_for_model_key(key)
+    })
+}
+
+/// [`preferred_provider_model`] with an injectable provider-availability
+/// check on a `[models.*]` key.
+fn preferred_provider_model_with(
+    config: &RokoConfig,
+    model: &str,
+    provider: Option<&str>,
+    available: impl Fn(&str) -> bool,
+) -> String {
+    let Some(provider) = provider.map(str::trim).filter(|provider| !provider.is_empty()) else {
+        return model.to_string();
+    };
+    let models = config.effective_models();
+    let slug = models
+        .get(model)
+        .map_or(model, |profile| profile.slug.as_str());
+    models
+        .iter()
+        .find(|(key, profile)| {
+            profile.slug == slug
+                && profile.provider == provider
+                && profile.supports_tools
+                && !config.routing.disabled_providers.contains(&profile.provider)
+                && available(key)
+        })
+        .map_or_else(|| model.to_string(), |(key, _)| key.clone())
+}
+
 /// Order prices ascending, with unknown or non-finite prices last.
 fn cmp_price(a: Option<f64>, b: Option<f64>) -> std::cmp::Ordering {
     let rank = |price: Option<f64>| {
@@ -330,6 +371,10 @@ pub(super) fn assign_retrieval_strategy_arm(exp_path: &Path) -> String {
 /// requiring the full runner-v2 internal state. The Graph engine has less
 /// runtime state than the event loop, so fields like `active_agents` and
 /// `ready_queue_depth` are set to sane defaults.
+///
+/// The task's authored `category`, `complexity_band` and `reasoning_level`
+/// win over what its role and tier suggest. The context is a first
+/// attempt's until [`mark_attempt`] says otherwise.
 pub(super) fn build_routing_context(
     role: &str,
     task: &TaskDef,
@@ -349,19 +394,23 @@ pub(super) fn build_routing_context(
         _ => AgentRole::Implementer,
     };
 
-    // Derive task category from the role or task type, defaulting to
-    // Implementation for most Graph engine work.
-    let task_category = match role_enum {
+    // An authored category wins; otherwise derive it from the role,
+    // defaulting to Implementation for most Graph engine work.
+    let task_category = task.hints.category.unwrap_or(match role_enum {
         AgentRole::Researcher => TaskCategory::Research,
         AgentRole::Auditor => TaskCategory::Verification,
         AgentRole::Refactorer => TaskCategory::Refactor,
         AgentRole::Architect => TaskCategory::Scaffolding,
         _ => TaskCategory::Implementation,
-    };
+    });
 
-    // The tier's band: mechanical is Fast, focused (and any unknown tier)
-    // Standard, integrative and architectural Complex.
-    let complexity = task.tier_class().complexity_band();
+    // An authored band wins; otherwise the tier's band: mechanical is Fast,
+    // focused (and any unknown tier) Standard, integrative and architectural
+    // Complex.
+    let complexity = task
+        .hints
+        .complexity_band
+        .unwrap_or_else(|| task.tier_class().complexity_band());
 
     // Extract daimon policy if the affect state is loaded.
     let daimon_policy = daimon_state
@@ -387,12 +436,32 @@ pub(super) fn build_routing_context(
         ready_queue_depth: 0,
         max_queue_wait_hours: 0.0,
         daimon_policy,
-        thinking_level: None,
+        thinking_level: task
+            .hints
+            .reasoning_level
+            .map(|level| level.label().to_string()),
         temperament: None,
         previous_model: None,
         plan_context_tokens: None,
         tier_thresholds: None,
         cfactor: None,
+    }
+}
+
+/// Make `routing` the context of `attempt` of `task` (0 is the first try).
+///
+/// The Graph engine retries a task only after an attempt failed, so a retry
+/// has a prior failure. A task with `escalate_on_retry = true` asks the
+/// router for the next complexity band on its retries.
+pub(super) fn mark_attempt(
+    routing: &mut roko_learn::model_router::RoutingContext,
+    task: &TaskDef,
+    attempt: u32,
+) {
+    routing.iteration = attempt;
+    routing.has_prior_failure = attempt > 0;
+    if attempt > 0 && task.hints.escalate_on_retry == Some(true) {
+        routing.complexity = routing.complexity.escalate();
     }
 }
 
@@ -525,6 +594,72 @@ mod tests {
         }
     }
 
+    fn parse_task(extra_keys: &str) -> TaskDef {
+        crate::task_parser::TasksFile::parse_str(&format!(
+            "[meta]\nplan = \"p\"\n\n[[task]]\nid = \"T01\"\ntitle = \"Check the parser\"\n\
+             role = \"implementer\"\n{extra_keys}"
+        ))
+        .expect("parse the task")
+        .tasks
+        .remove(0)
+    }
+
+    /// gap-0f3980: a task's authored category, complexity band and reasoning
+    /// level beat what its role and tier suggest.
+    #[test]
+    fn routing_context_uses_authored_task_metadata() {
+        use roko_core::task::{TaskCategory, TaskComplexityBand};
+
+        let hinted = parse_task(
+            "category = \"verification\"\ncomplexity_band = \"complex\"\n\
+             reasoning_level = \"high\"\n",
+        );
+        let routing = build_routing_context("implementer", &hinted, &None);
+        assert_eq!(routing.task_category, TaskCategory::Verification);
+        assert_eq!(routing.complexity, TaskComplexityBand::Complex);
+        assert_eq!(routing.thinking_level.as_deref(), Some("high"));
+
+        // Without hints the role and the (focused) tier decide, as before.
+        let routing = build_routing_context("implementer", &parse_task(""), &None);
+        assert_eq!(routing.task_category, TaskCategory::Implementation);
+        assert_eq!(routing.complexity, TaskComplexityBand::Standard);
+        assert_eq!(routing.thinking_level, None);
+    }
+
+    /// gap-b62e95: a retry's context says so, and `escalate_on_retry` asks
+    /// for the next complexity band on retries only.
+    #[test]
+    fn mark_attempt_flags_retries_and_escalates_on_request() {
+        use roko_core::task::TaskComplexityBand;
+
+        let task = parse_task("tier = \"mechanical\"\n");
+        let mut routing = build_routing_context("implementer", &task, &None);
+        mark_attempt(&mut routing, &task, 0);
+        assert_eq!(
+            (routing.iteration, routing.has_prior_failure),
+            (0, false)
+        );
+        mark_attempt(&mut routing, &task, 2);
+        assert_eq!((routing.iteration, routing.has_prior_failure), (2, true));
+        assert_eq!(routing.complexity, TaskComplexityBand::Fast);
+
+        let escalating = parse_task("tier = \"mechanical\"\nescalate_on_retry = true\n");
+        let first = {
+            let mut routing = build_routing_context("implementer", &escalating, &None);
+            mark_attempt(&mut routing, &escalating, 0);
+            routing.complexity
+        };
+        let retry = {
+            let mut routing = build_routing_context("implementer", &escalating, &None);
+            mark_attempt(&mut routing, &escalating, 1);
+            routing.complexity
+        };
+        assert_eq!(
+            (first, retry),
+            (TaskComplexityBand::Fast, TaskComplexityBand::Standard)
+        );
+    }
+
     fn config_with_models(models: Vec<(&str, ModelProfile)>) -> RokoConfig {
         let mut config = RokoConfig::default();
         config.models.clear();
@@ -533,6 +668,37 @@ mod tests {
             config.models.insert(key.to_string(), profile);
         }
         config
+    }
+
+    /// gap-0f3980: `preferred_provider` picks which provider's entry runs the
+    /// routed model, when it has a usable one.
+    #[test]
+    fn preferred_provider_picks_that_providers_entry_for_the_model() {
+        let mut config = config_with_models(vec![
+            ("sonnet-cli", model("claude_cli", "claude-sonnet-4-6", None)),
+            ("sonnet-api", model("anthropic", "claude-sonnet-4-6", None)),
+            ("mini", model("openai", "gpt-4o-mini", None)),
+        ]);
+        let pick = |config: &RokoConfig, routed: &str, provider: Option<&str>| {
+            preferred_provider_model_with(config, routed, provider, |key| key != "offline")
+        };
+        // By slug or by key, the preferred provider's entry runs the model.
+        assert_eq!(pick(&config, "claude-sonnet-4-6", Some("anthropic")), "sonnet-api");
+        assert_eq!(pick(&config, "sonnet-cli", Some("anthropic")), "sonnet-api");
+        // No preference, or a provider without that model: as routed.
+        assert_eq!(pick(&config, "claude-sonnet-4-6", None), "claude-sonnet-4-6");
+        assert_eq!(pick(&config, "gpt-4o-mini", Some("anthropic")), "gpt-4o-mini");
+        // An unusable entry is never picked.
+        config.routing.disabled_providers = vec!["anthropic".to_string()];
+        assert_eq!(pick(&config, "sonnet-cli", Some("anthropic")), "sonnet-cli");
+        config.routing.disabled_providers.clear();
+        config.models.get_mut("sonnet-api").expect("entry").supports_tools = false;
+        assert_eq!(pick(&config, "sonnet-cli", Some("anthropic")), "sonnet-cli");
+        config.models.get_mut("sonnet-api").expect("entry").supports_tools = true;
+        assert_eq!(
+            preferred_provider_model_with(&config, "sonnet-cli", Some("anthropic"), |_| false),
+            "sonnet-cli"
+        );
     }
 
     #[test]

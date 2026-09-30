@@ -633,6 +633,118 @@ const fn default_exclusive_files() -> bool {
     true
 }
 
+// ─── TaskHints (optional per-task hints) ──────────────────────────────────
+
+/// The optional routing, gate, prompt and scheduling hints of a `tasks.toml`
+/// task: the fields of [`Task`] beyond its core ones, with the same keys and
+/// value types, plus `rung`.
+///
+/// `roko-cli` flattens it into its task definition, so each field is a
+/// top-level `[[task]]` key. A default `TaskHints` sets none of them, and
+/// unset hints are not serialized.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskHints {
+    // ── Routing ────────────────────────────────────────────────────
+    /// Broad task class used for playbook recall and routing summaries.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub category: Option<TaskCategory>,
+    /// Optional complexity override for task-aware model routing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub complexity_band: Option<TaskComplexityBand>,
+    /// How much multi-step reasoning this task needs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_level: Option<TaskReasoningLevel>,
+    /// Whether to optimize for latency or correctness depth.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub speed_priority: Option<TaskSpeedPriority>,
+    /// Explicit model override for this task.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preferred_model: Option<String>,
+    /// Optional backend/provider preference (`codex`, `cursor`, `claude`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preferred_provider: Option<String>,
+    /// Whether this task should escalate to a stronger band on retry.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_optional_boolish",
+        serialize_with = "serialize_optional_boolish"
+    )]
+    pub escalate_on_retry: Option<bool>,
+    /// `[routing.ladder]` rung the task starts on (`"strong"`), in place of
+    /// the start rung of its role and tier. Unlike a model slug, a rung name
+    /// is portable across workspaces.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rung: Option<String>,
+
+    // ── Gates ──────────────────────────────────────────────────────
+    /// Expected implementation rigor.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quality_profile: Option<TaskQualityProfile>,
+    /// Invariant IDs this task must test (from `## Verification`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub test_invariants: Option<Vec<String>>,
+
+    // ── Prompt and context ─────────────────────────────────────────
+    /// How much inline/file context the prompt should preload.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_weight: Option<TaskContextWeight>,
+    /// Skills to inject into prompts for this task (additive to role defaults).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skills: Option<Vec<String>>,
+    /// Path to similar existing code to follow as pattern.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub example_pattern: Option<String>,
+    /// Context files to read before implementing (injected into prompt).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_files: Option<Vec<String>>,
+    /// Specific section of plan to focus on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan_section: Option<String>,
+    /// Type signatures this task must define (from plan Quick Reference).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub types_to_define: Option<Vec<String>>,
+    /// Formulas to implement verbatim (from PRD2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub formulas: Option<Vec<String>>,
+    /// Imports needed from other crates/modules.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub imports: Option<Vec<String>>,
+    /// Whether the agent should research patterns before editing code.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_optional_boolish",
+        serialize_with = "serialize_optional_boolish"
+    )]
+    pub research_before_edit: Option<bool>,
+
+    // ── Scheduling and infrastructure ──────────────────────────────
+    /// Tasks sharing a `parallel_group` value can run simultaneously.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parallel_group: Option<String>,
+    /// When true, no other task should touch this task's files. Unset means
+    /// `true`, as in [`Task`]; it is optional here only so that an authored
+    /// value can be told from the default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exclusive_files: Option<bool>,
+    /// Free-form routing and memory tags used by playbook recall.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tags: Option<Vec<String>>,
+    /// Reusable dependency labels that this task relies on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dependency_tags: Option<Vec<String>>,
+    /// Fixture keys available while executing this task.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fixture_keys: Option<Vec<String>>,
+    /// Sidecars or local services this task expects.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sidecar_requirements: Option<Vec<String>>,
+    /// High-level integration surfaces touched.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub integration_surfaces: Option<Vec<String>>,
+}
+
 // ─── TaskMeta (plan-level state) ──────────────────────────────────────────
 
 /// Plan-level metadata stored in `[meta]` header of `tasks.toml`.

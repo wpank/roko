@@ -6,6 +6,7 @@ use anyhow::{Context as _, Result, bail};
 use indexmap::IndexMap;
 use roko_cli::orchestrator::detect_cycle_nodes;
 use roko_core::AgentRole;
+use roko_core::config::routing::LadderConfig;
 use roko_core::config::schema::ModelProfile;
 use roko_gate::AcceptanceContract;
 use serde::Serialize;
@@ -134,6 +135,7 @@ fn validate_plans_dir_impl(
 ) -> Result<ValidationReport> {
     let tasks_files = collect_tasks_files(dir)?;
     let plan_output_paths = collect_plan_output_paths(&tasks_files);
+    let ladder = workdir.map(workspace_ladder);
     let mut plans = Vec::with_capacity(tasks_files.len());
     let mut totals = Totals {
         plans_checked: tasks_files.len(),
@@ -175,6 +177,10 @@ fn validate_plans_dir_impl(
                         task_id: issue.task_id,
                         message: issue.message,
                     });
+                }
+                if let Some(ladder) = &ladder {
+                    let diagnostics = ladder_diagnostics(&tasks_file, &plan.plan_id, ladder);
+                    plan.diagnostics.extend(diagnostics);
                 }
             }
 
@@ -256,6 +262,68 @@ pub fn render_text(report: &ValidationReport) -> String {
         report.totals.plans_checked
     );
     out
+}
+
+/// The `[routing.ladder]` of the workspace at `workdir`, whose rungs task
+/// `rung` hints must name. A workspace whose config does not load has the
+/// default ladder.
+pub fn workspace_ladder(workdir: &Path) -> LadderConfig {
+    roko_core::config::loader::load_config_unified(workdir)
+        .map(|config| config.routing.ladder)
+        .unwrap_or_default()
+}
+
+/// gap-dbf2a6: a `rung` hint must name one of its task's ladder rungs, and a
+/// task on the ladder that pins a model bypasses it.
+fn ladder_diagnostics(
+    tasks_file: &roko_cli::task_parser::TasksFile,
+    plan_id: &str,
+    ladder: &LadderConfig,
+) -> Vec<Diagnostic> {
+    let mut diagnostics = Vec::new();
+    for task in &tasks_file.tasks {
+        let role = task.role.as_deref().unwrap_or("implementer");
+        if let Some(rung) = task.hints.rung.as_deref()
+            && !ladder.has_rung(role, rung)
+        {
+            diagnostics.push(Diagnostic {
+                severity: Severity::Error,
+                rule_id: "PLAN_040".to_string(),
+                plan_id: Some(plan_id.to_string()),
+                task_id: Some(task.id.clone()),
+                message: format!(
+                    "task '{}' names rung '{rung}', which is not a rung of its routing ladder",
+                    task.id
+                ),
+            });
+        }
+        if ladder
+            .resolve(role, task.tier_class(), None, |_| true)
+            .is_none()
+        {
+            continue;
+        }
+        let pins = [
+            ("model_hint", task.model_hint.as_deref()),
+            ("preferred_model", task.hints.preferred_model.as_deref()),
+        ];
+        for (key, model) in pins {
+            if let Some(model) = model.map(str::trim).filter(|model| !model.is_empty()) {
+                diagnostics.push(Diagnostic {
+                    severity: Severity::Warning,
+                    rule_id: "PLAN_041".to_string(),
+                    plan_id: Some(plan_id.to_string()),
+                    task_id: Some(task.id.clone()),
+                    message: format!(
+                        "task '{}' sets {key} = '{model}', which pins a model and bypasses the \
+                         routing ladder; use `rung`",
+                        task.id
+                    ),
+                });
+            }
+        }
+    }
+    diagnostics
 }
 
 fn collect_tasks_files(dir: &Path) -> Result<Vec<PathBuf>> {
@@ -368,6 +436,24 @@ fn validate_tasks_file(
                     task_id: None,
                     message: format!("schema validation failed: {schema_issue}"),
                 });
+            }
+            // gap-0f3980: a hint that `plan run` ignores should not look like
+            // it steers the task.
+            for task in &tasks_file.tasks {
+                let fields = task.unused_hints();
+                if !fields.is_empty() {
+                    diagnostics.push(Diagnostic {
+                        severity: Severity::Warning,
+                        rule_id: "PLAN_039".to_string(),
+                        plan_id: Some(plan_id.clone()),
+                        task_id: Some(task.id.clone()),
+                        message: format!(
+                            "task '{}' sets {}, which plan run parses but does not act on yet",
+                            task.id,
+                            fields.join(", ")
+                        ),
+                    });
+                }
             }
             // A role whose safety contract denies write tools cannot produce
             // the task's declared `files`; the task would fail at runtime.
@@ -1131,7 +1217,7 @@ fn collect_task_path_references(parsed: &Value) -> Vec<TaskPathReferences> {
             outputs.extend(string_array(table, field));
         }
 
-        let prerequisites = table
+        let mut prerequisites: BTreeSet<String> = table
             .get("context")
             .and_then(Value::as_table)
             .and_then(|context| context.get("read_files"))
@@ -1150,6 +1236,8 @@ fn collect_task_path_references(parsed: &Value) -> Vec<TaskPathReferences> {
                     .collect()
             })
             .unwrap_or_default();
+        // A task's `context_files` join its `read_files` when it is parsed.
+        prerequisites.extend(string_array(table, "context_files"));
 
         out.push(TaskPathReferences {
             task_id,
@@ -1485,6 +1573,7 @@ id = "T1"
 files = ["src/lib.rs", "docs/guide.md"]
 write_files = ["crates/roko-cli/src/plan_validate.rs", " "]
 depends_on = []
+context_files = ["Cargo.lock", "Cargo.toml"]
 
 [task.context]
 read_files = [
@@ -1511,9 +1600,10 @@ depends_on_plan = ["foundation"]
                 "src/lib.rs".to_string(),
             ])
         );
+        // `context_files` are read files too (gap-0f3980).
         assert_eq!(
             refs[0].prerequisites,
-            BTreeSet::from(["Cargo.toml".to_string()])
+            BTreeSet::from(["Cargo.lock".to_string(), "Cargo.toml".to_string()])
         );
         assert_eq!(refs[1].depends_on, vec!["T1"]);
         assert_eq!(refs[1].depends_on_plan, vec!["foundation"]);
@@ -1735,6 +1825,117 @@ verify = [{ phase = "compile", command = "cargo check -p roko-cli" }]
             "{report:?}"
         );
         assert_eq!(report.exit_code(true), 1, "--strict rejects it");
+    }
+
+    /// gap-0f3980: a hint that `plan run` parses but ignores is a PLAN_039
+    /// warning naming it; a hint it acts on is not.
+    #[test]
+    fn unused_task_hints_are_a_plan_039_warning() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path();
+        fs::create_dir_all(root.join("plans/demo")).unwrap();
+        fs::write(
+            root.join("plans/demo/tasks.toml"),
+            r#"
+[meta]
+plan = "demo"
+
+[[task]]
+id = "T1"
+title = "Write the code"
+role = "implementer"
+files = ["src/lib.rs"]
+depends_on = []
+category = "verification"
+quality_profile = "hardened"
+tags = ["parser"]
+verify = [{ phase = "compile", command = "cargo check -p roko-cli" }]
+"#,
+        )
+        .unwrap();
+
+        let report = validate_plans_dir(root.join("plans").as_path(), None).unwrap();
+
+        let unused = report
+            .plans
+            .iter()
+            .flat_map(|plan| &plan.diagnostics)
+            .filter(|diag| diag.rule_id == "PLAN_039")
+            .collect::<Vec<_>>();
+        assert_eq!(unused.len(), 1, "{report:?}");
+        assert_eq!(unused[0].severity, Severity::Warning);
+        assert_eq!(unused[0].task_id.as_deref(), Some("T1"));
+        assert!(
+            unused[0].message.contains(
+                "sets quality_profile, tags, which plan run parses but does not act on yet"
+            ),
+            "{report:?}"
+        );
+        assert_eq!(report.totals.errors, 0, "{report:?}");
+    }
+
+    /// gap-dbf2a6: a `rung` hint must name one of its task's ladder rungs
+    /// (PLAN_040), and a task on the ladder that pins a model gets a PLAN_041
+    /// warning.
+    #[test]
+    fn rung_hints_and_model_pins_are_checked_against_the_ladder() {
+        let tasks = roko_cli::task_parser::TasksFile::parse_str(
+            r#"
+[meta]
+plan = "demo"
+
+[[task]]
+id = "T1"
+title = "Rework error recovery"
+role = "implementer"
+tier = "mechanical"
+rung = "strong"
+
+[[task]]
+id = "T2"
+title = "Misspelt rung"
+role = "implementer"
+rung = "stronk"
+
+[[task]]
+id = "T3"
+title = "Pinned model"
+role = "implementer"
+model_hint = "claude-sonnet-4-6"
+"#,
+        )
+        .unwrap();
+
+        let diagnostics = ladder_diagnostics(&tasks, "demo", &LadderConfig::default());
+        let found: Vec<(&str, Severity, Option<&str>)> = diagnostics
+            .iter()
+            .map(|diag| (diag.rule_id.as_str(), diag.severity, diag.task_id.as_deref()))
+            .collect();
+        assert_eq!(
+            found,
+            [
+                ("PLAN_040", Severity::Error, Some("T2")),
+                ("PLAN_041", Severity::Warning, Some("T3")),
+            ]
+        );
+        assert!(diagnostics[0].message.contains("rung 'stronk'"));
+        assert!(
+            diagnostics[1]
+                .message
+                .contains("model_hint = 'claude-sonnet-4-6'")
+        );
+
+        // With the ladder off a pin bypasses nothing, but an unknown rung is
+        // still an error.
+        let off = LadderConfig {
+            enabled: false,
+            ..LadderConfig::default()
+        };
+        let rules: Vec<String> = ladder_diagnostics(&tasks, "demo", &off)
+            .into_iter()
+            .map(|diag| diag.rule_id)
+            .collect();
+        assert_eq!(rules, ["PLAN_040"]);
     }
 
     /// gap-d14a43: `[task.accept]` problems are PLAN_038 errors, a hand copy

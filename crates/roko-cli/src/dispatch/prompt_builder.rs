@@ -1947,6 +1947,7 @@ impl PromptAssembler {
                 }
             }
         }
+        user_prompt.push_str(&task.specification_section());
         if !task.acceptance.is_empty() {
             user_prompt.push_str("\n## Acceptance\n");
             for item in &task.acceptance {
@@ -2904,6 +2905,7 @@ mod tests {
             estimated_minutes: None,
             crates_touched: None,
             sequence: 0,
+            hints: Default::default(),
         }
     }
 
@@ -3446,6 +3448,55 @@ mod tests {
         assert!(!p.system_prompt.contains("# Verify"));
         assert!(!p.system_prompt.contains("# Allowed tools"));
         assert_eq!(p.tool_allowlist, None);
+    }
+
+    /// gap-0f3980: a task's specification hints and `context_files` reach
+    /// the prompt its agent gets.
+    #[test]
+    fn task_hints_reach_the_user_prompt() {
+        let assembler = PromptAssembler::minimal();
+        let t = crate::task_parser::TasksFile::parse_str(
+            r#"
+[meta]
+plan = "p"
+
+[[task]]
+id = "t"
+title = "Wire it up"
+role = "implementer"
+context_files = ["src/hints.rs"]
+formulas = ["retries = 2 * (k + 1) - 1"]
+"#,
+        )
+        .expect("parse")
+        .tasks
+        .remove(0);
+        // Dispatch refuses a context file that does not exist.
+        let workdir = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(workdir.path().join("src")).expect("src dir");
+        std::fs::write(workdir.path().join("src/hints.rs"), "// hints\n").expect("context file");
+        let mut dispatch_ctx = ctx();
+        dispatch_ctx.workdir = workdir.path().to_path_buf();
+        let p = assembler
+            .assemble(&t, &PromptContext::from_task(&t, &dispatch_ctx))
+            .unwrap();
+        assert!(
+            p.user_prompt
+                .contains("## Task Context\n- Read `src/hints.rs`: context\n"),
+            "{}",
+            p.user_prompt
+        );
+        assert!(
+            p.user_prompt
+                .contains("## Specification\n### Formulas\n- retries = 2 * (k + 1) - 1\n"),
+            "{}",
+            p.user_prompt
+        );
+
+        let plain = assembler
+            .assemble(&task(), &PromptContext::from_task(&task(), &ctx()))
+            .unwrap();
+        assert!(!plain.user_prompt.contains("## Specification"));
     }
 
     #[test]

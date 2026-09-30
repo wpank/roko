@@ -9,7 +9,7 @@ goal = "truth"
 size = "M"
 subsystem = ["roko-cli/graph_task_dispatch"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-09-30
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (20:01, wk-bench-rokoarm's report on gap-b7ab99)"
 anchors = ["crates/roko-cli/src/graph_task_dispatch/inert_settings.rs::graph_engine_inert_settings", "crates/roko-cli/src/graph_task_dispatch/verification.rs::settle_task_verification", "crates/roko-cli/src/run.rs::prompt_verify_steps", "crates/roko-core/src/config/gates.rs::GatesConfig"]
@@ -72,3 +72,4 @@ There are two options:
 
 - Watch the cost: rungs run per task and attempt. Consider running them once per task after the authored steps pass.
 - gap-1426e4 (adaptive verify-command scoping) and bug-50caf2 (PlanGateCell gates the process cwd) touch the same verify path.
+- 2026-09-30 (wk-gates): the fix adds a per-plan opt-out, `[meta] workspace_rungs = false`, because a rung that already fails on the base would otherwise fail every task (gap-161be1).

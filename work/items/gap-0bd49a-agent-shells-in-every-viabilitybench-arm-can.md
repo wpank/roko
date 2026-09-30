@@ -9,7 +9,7 @@ goal = "proof"
 size = "L"
 subsystem = ["benchmarks/viabilitybench/driver"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-09-30
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-bench-fix2's report)"
 anchors = ["benchmarks/viabilitybench/driver/harness.py", "benchmarks/viabilitybench/driver/agent_env.py", "benchmarks/viabilitybench/driver/mini_loop.py", "benchmarks/viabilitybench/driver/run_cli.py", "benchmarks/viabilitybench/driver/run_roko.py"]
@@ -60,3 +60,4 @@ At 7fa54b873 agent processes have an allowlisted environment and no network rest
 
 - Decide with gap-8c3752. One sandbox should serve both the agent run and the census.
 - 2026-09-29 (wk-bench-fix2): the same isolation decision covers the environment. Any process of the same user exposes the environment it started with (`ps -E -ax` on macOS lists every such process's), so an agent can read the credentials of the driver, the proxy or any other process of that user, however well the driver scrubs its own. Only a separate uid or a container per task closes this. Decide it together with the network sandbox (and gap-8c3752's census sandbox).
+- 2026-09-30: on Linux the benchmark has no sandbox at all yet (gap-29ac83): bubblewrap needs user namespaces, which Ubuntu runners restrict, and records there say `sandbox: none`. The network sandbox here needs the same Linux mechanism.

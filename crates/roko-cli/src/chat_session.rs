@@ -15,6 +15,7 @@ use futures::StreamExt;
 use roko_agent::AgentRuntimeEvent;
 use roko_agent::agent::{Agent, AgentResult};
 use roko_agent::claude_cli_agent::{ClaudeCliAgent, ClaudeIsolation};
+use roko_agent::mcp::workspace_mcp_config;
 use roko_agent::model_call_service::ModelCallService;
 use roko_agent::process::{
     GRACE_STDIN_CLOSE_MS, apply_credential_scrub, config_file_env_names, kill_tree,
@@ -1897,9 +1898,12 @@ fn is_skipped_dir_name(name: &str) -> bool {
 /// Priority:
 /// 1. Explicit path in `config.agent.mcp_config`
 /// 2. Workspace `.roko/mcp.json`
-/// 3. Global `~/.claude/mcp-config.json`
+/// 3. The workspace's own `.mcp.json`, as agent runs use
+///    ([`workspace_mcp_config`])
 ///
-/// Returns `None` if no MCP config is found.
+/// Nothing from the user's Claude home: its MCP servers, and the tokens in
+/// their environment, are the user's, and chat sessions run isolated from
+/// them. Returns `None` if no MCP config is found.
 fn resolve_mcp_config(workdir: &Path, config: &Config) -> Option<PathBuf> {
     if let Some(ref path) = config.agent.mcp_config {
         let resolved = if path.is_absolute() {
@@ -1923,20 +1927,20 @@ fn resolve_mcp_config(workdir: &Path, config: &Config) -> Option<PathBuf> {
         return Some(workspace_mcp);
     }
 
-    if let Some(home) = home_dir() {
-        let global_mcp = home.join(".claude/mcp-config.json");
-        if global_mcp.exists() {
-            tracing::debug!("MCP config from global: {}", global_mcp.display());
-            return Some(global_mcp);
+    match workspace_mcp_config(workdir) {
+        Some(Ok((path, _))) => {
+            tracing::debug!("MCP config from the workspace's .mcp.json: {}", path.display());
+            Some(path)
+        }
+        Some(Err(err)) => {
+            tracing::warn!("ignoring invalid MCP config: {err}");
+            None
+        }
+        None => {
+            tracing::debug!("no MCP config found");
+            None
         }
     }
-
-    tracing::debug!("no MCP config found");
-    None
-}
-
-fn home_dir() -> Option<PathBuf> {
-    std::env::var_os("HOME").map(PathBuf::from)
 }
 
 fn preview_text(value: &str, max_chars: usize) -> String {
@@ -2038,6 +2042,45 @@ mod tests {
             source: crate::model_selection::SelectionSource::ProjectDefault,
             reason: "test selection".to_string(),
         }
+    }
+
+    /// bug-a9a251: a chat session takes the workspace's MCP config or roko's
+    /// own, never the user's Claude one. HOME is process-wide, so the check
+    /// runs in a child test whose HOME holds that config.
+    #[test]
+    fn chat_mcp_config_ignores_the_users_claude_home() {
+        let root = tempdir().unwrap();
+        let claude_home = root.path().join("home").join(".claude");
+        std::fs::create_dir_all(&claude_home).unwrap();
+        std::fs::write(claude_home.join("mcp-config.json"), r#"{"mcpServers":{}}"#).unwrap();
+        let workdir = root.path().join("project");
+        std::fs::create_dir_all(&workdir).unwrap();
+
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "chat_session::tests::chat_mcp_config_child"])
+            .arg("--nocapture")
+            .env("HOME", root.path().join("home"))
+            .env("ROKO_CHAT_MCP_CHILD_WORKDIR", &workdir)
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.success(), "{stdout}\n{stderr}");
+        assert!(stdout.contains("1 passed"), "the child test did not run: {stdout}");
+    }
+
+    #[test]
+    fn chat_mcp_config_child() {
+        let Some(workdir) = std::env::var_os("ROKO_CHAT_MCP_CHILD_WORKDIR") else {
+            return;
+        };
+        let workdir = PathBuf::from(workdir);
+        let config = Config::default();
+        assert_eq!(resolve_mcp_config(&workdir, &config), None);
+
+        let project = workdir.join(".mcp.json");
+        std::fs::write(&project, r#"{"servers":[]}"#).unwrap();
+        assert_eq!(resolve_mcp_config(&workdir, &config), Some(project));
     }
 
     /// Construct a minimal session for testing `build_agent()` and slash commands.

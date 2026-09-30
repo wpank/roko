@@ -1951,8 +1951,8 @@ mod tests {
         let (_dir, state, app) = build_test_state_and_router(config);
 
         // No upgrade headers: the auth layers decide before the handler, and
-        // without them the handler's WebSocket extractor refuses the request,
-        // so no shell can start in this test.
+        // without them the handler returns the WebSocket rejection before it
+        // attaches a session, so no shell can start in this test.
         let open_terminal = |api_key: &str| {
             Request::builder()
                 .method(Method::GET)

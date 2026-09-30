@@ -994,6 +994,9 @@ The defaults are the safe choice, and each opt-out is an explicit `[serve]` key:
   refused (429 over REST, a closed socket over WebSocket). `0` lifts the cap.
 - A session is closed `terminal_session_ttl_secs` (8 hours) after it started,
   attached or not; a background reaper checks every minute. `0` lifts it.
+- A session id is 1-128 ASCII letters, digits, `-` or `_`, because it names a
+  directory under `.roko/workspaces/`. Every route that takes an id answers any
+  other id (for example one with an encoded `/`) with 400.
 
 | Method | Path | Description |
 |--------|------|-------------|

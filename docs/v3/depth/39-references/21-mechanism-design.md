@@ -50,7 +50,7 @@ Computational aspects of game theory. Provides efficient VCG algorithms and anal
 **[Glickman, 1999]** *Parameter Estimation in Large Dynamic Paired Comparison Experiments.* J. Royal Statistical Society C, 48(3), 377--394.
 Glicko-2 dynamic rating with reliability intervals. Grounds reputation tracking in the Korai identity system -- each agent has a time-varying rating with confidence bounds.
 
-**[Meritrank, 2022]** *MeritRank: Sybil Tolerant Reputation.* arXiv:2207.09950.
+**[Nasrulin et al., 2022]** *MeritRank: Sybil Tolerant Reputation.* arXiv:2207.09950.
 Sybil-tolerant reputation system using network structure to resist fake identity attacks. Informs on-chain reputation design.
 
 ---
@@ -91,13 +91,13 @@ RTB-inspired auction engine for agent task allocation with User-Side Platform, A
 
 ## Neural Mechanism Design
 
-**[Anonymous, 2024]** *Deep Mechanism Design.* PNAS 2024.
+**[Tacchetti et al., 2024]** *Deep mechanism design: Learning social and economic policies for human benefit.* PNAS 2024.
 RL-trained neural networks create desirable mechanisms. Validates learned allocation mechanisms as alternatives to hand-designed VCG.
 
 **[Anonymous, 2024]** *Automated Mechanism Design Survey.* ACM SIGecom Exchanges, 22(2).
 Comprehensive survey of differentiable economics and neural auction design. Maps the landscape of automated mechanism design.
 
-**[Zhu et al., 2025]** *Regularized Proportional Fairness.* ICLR 2025. arXiv:2501.01111.
+**[Zeng et al., 2025]** *Regularized Proportional Fairness Mechanism for Resource Allocation Without Money.* ICLR 2025. arXiv:2501.01111.
 Fair allocation mechanisms. Informs fair context budget allocation across competing subsystems.
 
 ---

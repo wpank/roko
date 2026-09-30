@@ -58,7 +58,10 @@ RUN cargo build --release -p roko-cli --bin roko --features alloy-backend,acp \
 
 # ---- Distroless (minimal roko-cli only) ------------------------------------
 # Binary-only image: no shell, no package manager, no source.
-# Port: ROKO_PORT env var (default 6677).
+# roko reads no ROKO_BIND or ROKO_PORT variable (only docker/start-railway.sh
+# does, in the runtime image), so `roko serve` takes its bind and port from
+# /workspace/roko.toml: docker/roko.toml listens on 0.0.0.0:6677 and
+# acknowledges the public bind. A platform's PORT variable replaces the port.
 FROM gcr.io/distroless/cc-debian12 AS distroless
 
 LABEL org.opencontainers.image.title="roko-serve (distroless)" \
@@ -66,11 +69,11 @@ LABEL org.opencontainers.image.title="roko-serve (distroless)" \
       org.opencontainers.image.source="https://github.com/nunchi/roko"
 
 COPY --from=builder /tmp/roko /usr/local/bin/roko
+COPY docker/roko.toml /workspace/roko.toml
+WORKDIR /workspace
 
 # Runtime environment
 ENV RUST_LOG=info
-ENV ROKO_BIND=0.0.0.0
-ENV ROKO_PORT=6677
 
 EXPOSE 6677
 

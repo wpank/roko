@@ -25,7 +25,7 @@ Deep ensembles provide well-calibrated uncertainty. Informs multi-model confiden
 **[Vovk, Gammerman & Shafer, 2005]** *Algorithmic Learning in a Random World.* Springer.
 Conformal prediction: distribution-free intervals with guaranteed coverage. Grounds prediction confidence bounds.
 
-**[Farquhar et al., 2024]** *Detecting Hallucinations Using Semantic Entropy.* Nature, 630.
+**[Farquhar et al., 2024]** *Detecting hallucinations in large language models using semantic entropy.* Nature, 630.
 Semantic entropy for hallucination detection. Informs confidence estimation in Gates.
 
 **[Xiong et al., 2023]** *Can LLMs Express Their Uncertainty?* arXiv:2306.13063.
@@ -35,7 +35,7 @@ Empirical LLM confidence evaluation. Informs 7-axis Score confidence.
 
 ## Distributional RL
 
-**[Dabney et al., 2018]** *Distributional RL with Quantile Regression.* AAAI 2018.
+**[Dabney et al., 2018]** *Distributional Reinforcement Learning With Quantile Regression.* AAAI 2018.
 Learning full return distributions. Provides richer learning signals.
 
 **[Dabney et al., 2020]** *A Distributional Code for Value in Dopamine-Based RL.* Nature, 577.

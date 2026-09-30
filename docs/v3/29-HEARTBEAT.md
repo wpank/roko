@@ -1051,8 +1051,8 @@ heuristic threshold with EFE tiebreaker. Ticks 200+ use the full ActiveInference
 
 ## 13. Active Inference State Space
 
-The factorized discrete POMDP that makes active inference tractable. Following Koudahl
-et al. (2024, arXiv:2412.10425): **do not model the world -- model the agent's epistemic
+The factorized discrete POMDP that makes active inference tractable. Following Prakki
+(2024, arXiv:2412.10425): **do not model the world -- model the agent's epistemic
 situation.**
 
 ```
@@ -1677,7 +1677,7 @@ invoke_agent {roko-agent}                          [CLIENT span]
   architectures for cost-optimal routing.
 - **Zhang et al. 2025** -- DPT-Agent (arXiv:2502.11882). Dual-process theory for LLM
   agents.
-- **Cognitive Workspace 2025** -- arXiv:2508.13171. Active memory management validation.
+- **Cognitive Workspace (An 2025)** -- arXiv:2508.13171. Active memory management validation.
 - **Lee et al. 2026** -- Meta-Harness (arXiv:2603.28052). Scaffold optimization.
 
 ### Active inference and attention
@@ -1686,7 +1686,7 @@ invoke_agent {roko-agent}                          [CLIENT span]
   Inference" (Scientific Reports 7).
 - **Sims 2003** -- "Implications of Rational Inattention" (Journal of Monetary
   Economics 50(3)).
-- **Koudahl et al. 2024** -- Factorized Discrete POMDP (arXiv:2412.10425).
+- **Prakki 2024** -- Factorized Discrete POMDP (arXiv:2412.10425).
 - **Heins et al. 2022** -- pymdp (Journal of Open Source Software).
 - **Li et al. 2010** -- LinUCB (WWW 2010).
 

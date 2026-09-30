@@ -18,10 +18,10 @@ Comprehensive framework for optimal information gathering under cost constraints
 **[Pirolli & Card, 1999]** *Information Foraging.* Psychological Review, 106(4), 643--675.
 "Information scent" maps to HDC similarity scores guiding knowledge retrieval.
 
-**[Lacosse et al., 2026]** *LLMs Exhibit Same Foraging Patterns as Humans.* arXiv:2603.01822.
+**[Lacosse et al., 2026]** *Emerging Human-like Strategies for Semantic Memory Foraging in Large Language Models.* arXiv:2603.01822.
 LLMs exhibit the same information foraging patterns as humans. Validates the MVT-based approach.
 
-**[Anonymous, 2025]** *Foraging in Modern Semantic Spaces.* arXiv:2511.12759.
+**[Moore, 2025]** *Optimal Foraging in Memory Retrieval: Evaluating Random Walks and Metropolis-Hastings Sampling in Modern Semantic Spaces.* arXiv:2511.12759.
 Information foraging theory applied to modern LLM semantic spaces.
 
 ---
@@ -91,7 +91,7 @@ Lotka-Volterra equations: competing strategies oscillate between exploration and
 
 ## Quorum Sensing
 
-**[Nealson, Platt & Hastings, 1970]** *Cellular Control of the Bacterial Luminescent System.* Journal of Bacteriology, 104(1), 313--322.
+**[Nealson, Platt & Hastings, 1970]** *Cellular Control of the Synthesis and Activity of the Bacterial Luminescent System.* Journal of Bacteriology, 104(1), 313--322.
 First description of quorum sensing. When enough agents produce signals above threshold, collective actions trigger.
 
 **[Miller & Bassler, 2001]** *Quorum Sensing in Bacteria.* Annual Review of Microbiology, 55, 165--199.

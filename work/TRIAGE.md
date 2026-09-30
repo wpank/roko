@@ -17,9 +17,8 @@
 ### roko-agent/claude_cli_agent (1)
 - **P0** [spec-ba7bea](items/spec-ba7bea-epic-secrets-and-git-guard.md) Epic: secrets and git guard [spec] · size L
 
-### roko-core/config (3)
+### roko-core/config (2)
 - **P1** [bug-ba8d42](items/bug-ba8d42-a-serve-auth-table-without-enabled-turns.md) A [serve.auth] table without `enabled` turns serve auth off: the field's serde default is false while the struct default is true [bug] · size S
-- **P3** [bug-ab8118](items/bug-ab8118-a-typo-inside-a-providers-or-models-entry.md) A typo inside a [providers.*] or [models.*] entry fails the whole config load, where a typo elsewhere is stripped with a warning [bug] · size S
 - **P3** [bug-ccfa0d](items/bug-ccfa0d-config-validate-flags-profiles-name-keys-that.md) config validate flags [profiles.<name>] keys that DomainProfile collects into extra, and tools.profiles has no schema template [bug] · size S
 
 ### benchmarks/viabilitybench/driver (3)
@@ -67,9 +66,8 @@
 ### roko-cli/dispatch (1)
 - **P1** [spec-98f76d](items/spec-98f76d-epic-tier-ladder-and-escalation.md) Epic: tier ladder and escalation [spec] · size L
 
-### roko-cli/graph_task_dispatch (6)
+### roko-cli/graph_task_dispatch (5)
 - **P1** [spec-edda86](items/spec-edda86-epic-watchdog-and-supervision.md) Epic: watchdog and supervision [spec] · size L
-- **P1** [gap-460230](items/gap-460230-verify-then-escalate-two-failed-attempts-move.md) Verify-then-escalate: two failed attempts move a task one rung up the ladder · size M
 - **P2** [gap-9eb1e1](items/gap-9eb1e1-a-fresh-rerun-of-a-task-whose.md) A --fresh rerun of a task whose correct output is already in the tree fails as pre_verify:no_changes · size M
 - **P2** [spec-9a3131](items/spec-9a3131-epic-hygiene-and-cheap-wins.md) Epic: hygiene and cheap wins [spec] · size L
 - **P2** [gap-751ac9](items/gap-751ac9-graph-attempts-keep-no-durable-record-of.md) Graph attempts keep no durable record of their Claude Code isolation settings; the invocation is only debug-logged · size S
@@ -89,9 +87,8 @@
 ### benchmarks/viabilitybench/analysis (1)
 - **P1** [gap-d9e9fe](items/gap-d9e9fe-vb-report-pilot-a-one-page-pilot.md) vb report --pilot: a one-page pilot result with confidence intervals and run ids · size S
 
-### roko-agent/safety/scrub (2)
-- **P2** [bug-5a6636](items/bug-5a6636-config-secrets-other-than-provider-api-key.md) Config secrets other than provider api_key_env (extra_headers, file secrets, serve.auth.api_key) aren't added to the log scrubber [bug] · size S
-- **P3** [bug-cef888](items/bug-cef888-every-env-value-of-8-or-more-characters.md) Every .env value of 8 or more characters counts as a secret, so non-secret settings kept in .env are redacted from records [bug] · size S
+### roko-cli/commands/config_cmd (1)
+- **P2** [bug-02e264](items/bug-02e264-after-roko-init-roko-config-providers-add.md) After roko init, roko config providers add anthropic appends a duplicate [models."claude-sonnet-4-6"] table, and the file stops parsing [bug] · size S
 
 ### cybernetic-harness/specs (1)
 - **P2** [dec-39c781](items/dec-39c781-confirm-decisions-d28-d36-before-the-pre.md) Confirm decisions D28–D36 before the pre-registration lock [decision] · size S
@@ -114,9 +111,6 @@
 ### roko-learn/cascade-router (1)
 - **P2** [spec-6ac537](items/spec-6ac537-epic-cybernetic-core.md) Epic: cybernetic core [spec] · size L
 
-### roko-serve/routes/config (1)
-- **P2** [bug-7830f5](items/bug-7830f5-get-api-config-returns-provider-extra-headers.md) GET /api/config returns provider extra_headers in the clear [bug] · size S
-
 ### roko-serve/plans (1)
 - **P2** [gap-0d64d5](items/gap-0d64d5-golden-path-step-10-an-opt-in.md) Golden-path step 10: an opt-in hold that shows each task's diff and waits for approval before it merges · size L
 
@@ -137,8 +131,9 @@
 ### roko-cli/deployment (1)
 - **P2** [dec-648cce](items/dec-648cce-should-roko-deploy-railway-forward-roko-serve.md) Should roko deploy railway forward ROKO__SERVE__AUTH__API_KEY to the services it deploys? [decision] · size S
 
-### roko-cli/main (2)
+### roko-cli/main (3)
 - **P2** [gap-0d0e81](items/gap-0d0e81-split-main-rs-move-the-clap-command.md) Split main.rs: move the clap command enums into their command modules · size M
+- **P3** [bug-8589fc](items/bug-8589fc-roko-dream-run-fails-with-run-s-missing.md) roko dream run fails with run's missing-prompt error instead of the unknown-command message [bug] · size S
 - **P3** [bug-919fe8](items/bug-919fe8-roko-redirects-any-workdir-under-a-roko.md) roko redirects any workdir under a .roko directory to the outer project, including per-task worktrees in .roko/worktrees [bug] · size S
 
 ### roko-serve/routes (1)
@@ -158,11 +153,11 @@
 - **P2** [bug-bfd241](items/bug-bfd241-the-agent-run-s-streamed-calls-leave-model.md) The agent run's streamed calls leave model_reported null although the provider's chunks name the model; only helper rows name it [bug] · size S
 - **P2** [bug-cae1e1](items/bug-cae1e1-the-streaming-dispatch-path-doesn-t-mark.md) The streaming dispatch path doesn't mark retries in the routing context and ignores preferred_provider [bug] · size S
 
-### plans/portal-programme/_harness (1)
-- **P2** [bug-5f0604](items/bug-5f0604-the-portal-programme-live-check-harness-gitignores.md) The portal-programme live-check harness gitignores the artifacts its implementer tasks write, so live checks fail as pre_verify:no_changes [bug] · size S
-
 ### roko-cli/runner/gate_adapter (1)
 - **P2** [bug-4862cf](items/bug-4862cf-the-rich-topology-gate-adapter-uses.md) The rich-topology gate adapter uses GatesConfig::default(), not the run's [gates] [bug] · size S
+
+### roko-learn (1)
+- **P2** [bug-8417d9](items/bug-8417d9-thirteen-jsonl-appenders-write-each-row-and.md) Thirteen JSONL appenders write each row and its newline in two writes, so concurrent appends interleave and lose rows [bug] · size M
 
 ### tests (1)
 - **P2** [bug-779ae7](items/bug-779ae7-three-lib-tests-fail-only-under-heavy.md) Three lib tests fail only under heavy load: a roko-gate tautology-filter test and two dispatcher timing tests [bug] · size S
@@ -170,14 +165,15 @@
 ### roko-cli/chat (1)
 - **P2** [bug-8a78e1](items/bug-8a78e1-chat-dispatch-v2-and-serve-load-the-cascade.md) chat, dispatch_v2 and serve load the cascade router with load_or_new, so a crashed run's journal replays only when a LearningRuntime opens [bug] · size S
 
-### demo/demo-resources (1)
-- **P2** [bug-960ab1](items/bug-960ab1-demo-benchmark-sh-has-been-broken-since-bug.md) demo-benchmark.sh has been broken since bug-28becc: its oracle reads the gold patch from the agent payload, and it expects control rows and learning writes [bug] · size S
+### docs/v3 (2)
+- **P2** [gap-212b75](items/gap-212b75-docs-v3-prose-still-describes-routing-papers.md) docs/v3 prose still describes routing papers (BEST-Route, xRouter, Router-R1) under invented titles, and the CLEAR-framework sections cite a fabricated work · size M
+- **P3** [gap-d4466f](items/gap-d4466f-the-config-schema-doc-says-gates-clippy.md) The config schema doc says gates.clippy_enabled defaults to false; the code defaults it to true · size S
 
-### docs/v1 (1)
-- **P3** [gap-93fdf4](items/gap-93fdf4-26-http-api-says-serve-auth-is-off-by-default.md) 26-HTTP-API says serve auth is off by default, though serve.auth.enabled defaults to true, and docs/v1 and docs/v2 still put secrets in roko.toml · size S
+### roko-std/sandbox (1)
+- **P2** [bug-77413c](items/bug-77413c-roko-std-s-refuse-key-file-in-command-has.md) roko-std's refuse_key_file_in_command has none of the guard's search checks (grep -r, rg, git grep, ag/ack, find/xargs reads, brace globs, cd) [bug] · size M
 
-### roko-serve/routes/middleware (1)
-- **P3** [bug-d6b0d9](items/bug-d6b0d9-a-cookie-authenticated-websocket-upgrade-isn.md) A cookie-authenticated WebSocket upgrade isn't Origin-checked, because check_cookie_same_origin skips GETs [bug] · size S
+### ci/workflows (1)
+- **P3** [gap-052646](items/gap-052646-ci-doesn-t-run-tools-docs-integrity-check.md) CI doesn't run tools/docs_integrity/check_citation_errata.py · size S
 
 ### workspace/Cargo.lock (1)
 - **P3** [bug-7df50d](items/bug-7df50d-every-cargo-update-flips-tempfile-s-getrandom.md) Every cargo update flips tempfile's getrandom dependency between 0.4.3 and 0.3.4 in Cargo.lock [bug] · size S
@@ -188,18 +184,15 @@
 ### roko-gate/spec_quality (1)
 - **P3** [gap-f7ebd4](items/gap-f7ebd4-the-rust-spec-quality-port-s-hard-fails-needs.md) The Rust spec-quality port's hard_fails needs HF3's accept_tests == 0 condition to stay in parity with speclint · size S
 
-### docs/v3 (1)
-- **P3** [gap-d4466f](items/gap-d4466f-the-config-schema-doc-says-gates-clippy.md) The config schema doc says gates.clippy_enabled defaults to false; the code defaults it to true · size S
+### docs/v1 (1)
+- **P3** [gap-fc5d3d](items/gap-fc5d3d-the-companion-audit-adjudicated-483-of-873.md) The companion audit adjudicated 483 of 873 cited works, leaving 390 unchecked, and docs/v1's 103 known errata locations are untouched · size L
 
 ### roko-cli/task_parser (2)
 - **P3** [gap-404fdb](items/gap-404fdb-the-context-depth-hints-context-weight-plan.md) The context-depth hints context_weight, plan_section, skills and research_before_edit are parsed but unused · size S
 - **P3** [gap-69a56e](items/gap-69a56e-the-gate-profile-hints-quality-profile-and.md) The gate profile hints quality_profile and test_invariants are parsed but don't choose gate rungs · size S
 
-### roko-agent/claude_cli_guard (1)
-- **P3** [bug-69a002](items/bug-69a002-the-guard-s-secret-read-check-misses-git-grep.md) The guard's secret-read check misses git grep, ag/ack, reads through find or xargs and brace globs, and judges a search after cd from the wrong directory [bug] · size S
-
-### roko-cli/runner/status_file (1)
-- **P3** [bug-f7f3bb](items/bug-f7f3bb-under-roko-serve-status-json-keeps-showing-a.md) Under roko serve, status.json keeps showing a finished run as active, because the serve PID is still alive [bug] · size S
+### plans/portal-programme/_harness (1)
+- **P3** [bug-21687a](items/bug-21687a-three-portal-programme-live-checks-fail-the.md) Three portal-programme live checks fail: the plan scaffold no longer writes model_hint, and serve looks for /demo at a compile-time path [bug] · size S
 
 ### roko-cli/graph_execution/feedback (1)
 - **P3** [gap-d65a17](items/gap-d65a17-build-settler-s-routingsink-updates-the.md) build_settler's RoutingSink updates the router without journaling, and build_settler still has no production caller · size S
@@ -210,8 +203,15 @@
 ### roko-cli/plan_generator (1)
 - **P3** [gap-9ca898](items/gap-9ca898-plan-generator-rs-s-defaultplangenerator.md) plan_generator.rs's DefaultPlanGenerator doesn't know rung · size S
 
-### roko-cli/config (1)
+### roko-cli/config (2)
 - **P3** [bug-9434c4](items/bug-9434c4-roko-config-set-rejects-learning-t0-reflexes.md) roko config set rejects learning.t0_reflexes and every learning.dreams key [bug] · size S
+- **P3** [bug-9bb0be](items/bug-9bb0be-roko-cli-s-config-path-path-config-from-file.md) roko-cli's --config <path> path (Config::from_file) still hard-fails on a provider or model typo, unlike the loader after bug-ab8118 [bug] · size S
+
+### roko-cli/commands/util (1)
+- **P3** [bug-9bffe2](items/bug-9bffe2-roko-status-cfactor-prints-avg-cost-0-0000.md) roko status --cfactor prints avg_cost=$0.0000 for bench efficiency events whose cost is unknown [bug] · size S
+
+### demo/demo-resources (1)
+- **P3** [bug-0320da](items/bug-0320da-roko-ollama-patch-agent-py-reads-test-cmd.md) roko-ollama-patch-agent.py reads test_cmd from the payload, which is now hidden, so its self-check falls back to true [bug] · size S
 
 ### roko-agent/testutil (1)
 - **P3** [bug-25d24e](items/bug-25d24e-testutil-response-from-stream-events-encodes.md) testutil::response_from_stream_events encodes cache reads under a key the parser never reads, so three streaming parity tests are ignored [bug] · size S

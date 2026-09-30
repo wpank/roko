@@ -9,16 +9,16 @@
 
 ## Hypnagogia and Creative Insight
 
-**[Lacaux et al., 2021]** *Sleeping on a Problem: Catching the Creative Spark During Sleep Onset.* Science Advances, 7(50), eabj5866.
+**[Lacaux et al., 2021]** *Sleep onset is a creative sweet spot.* Science Advances, 7(50), eabj5866.
 83% discovered hidden rules during N1 vs 30% awake. Foundational for the hypnagogia engine. Solves the Alpha Convergence Problem.
 
-**[Lacaux et al., 2024]** *Sleep Onset Is Not a One-Way Trip.* Trends in Neurosciences, 47(4), 273--288.
+**[Lacaux et al., 2024]** *Embracing sleep-onset complexity.* Trends in Neurosciences, 47(4), 273--288.
 N1 as a unique cognitive state with creativity-enhancing properties distinct from wakefulness and deeper sleep.
 
 **[Haar Horowitz et al., 2020]** *Dormio: A Targeted Dream Incubation Device.* Consciousness and Cognition, 83, 102938.
 Targeted dream incubation at sleep onset. 43% creativity boost. Grounds the Dormio-inspired prompt injection.
 
-**[Haar Horowitz et al., 2023]** *Targeted Dream Incubation at Sleep Onset Increases Post-Sleep Creativity.* Scientific Reports, 13, 7319.
+**[Horowitz et al., 2023]** *Targeted Dream Incubation at Sleep Onset Increases Post-Sleep Creativity.* Scientific Reports, 13, 7319.
 Controlled study confirms 43% creativity boost. Validates targeted knowledge recombination.
 
 ---
@@ -48,7 +48,7 @@ CLS three-phase cycle (wake/NREM/REM): 38% forgetting reduction, 17.6% zero-shot
 **[Wagner et al., 2004]** *Sleep Inspires Insight.* Nature, 427, 352--355.
 Sleep is 2.6x more likely to produce insight. Dream cycles produce genuine insight, not just consolidation.
 
-**[Zhao et al., 2024]** *BTP: Towards Efficient and Reliable Experience Replay for LLM-Based Agents.* arXiv:2410.12236.
+**[Chen et al., 2024]** *Enhancing LLM Agents for Code Generation with Possibility and Pass-rate Prioritized Experience Replay.* arXiv:2410.12236.
 P2Value for prioritized experience replay. Dream replay prioritizes informative failures.
 
 **[Wang et al., 2024]** *Prioritized Generative Replay.* arXiv:2410.18082.
@@ -97,19 +97,19 @@ Learned active forgetting resolves proactive interference. Validates the Curator
 **[Anonymous, 2025]** *CosmoCore: Affective Dream-Replay RL for Code Generation.* arXiv:2510.18895.
 Combines affective states with dream-replay RL. Validates the Daimon-Dreams intersection.
 
-**[Auto-Dreamer, 2026]** *Auto-Dreamer.* arXiv:2605.20616.
+**[Ye et al., 2026]** *Auto-Dreamer.* arXiv:2605.20616.
 Learned consolidator using CLS-inspired fast/slow separation. Target architecture for dream cycle upgrade.
 
-**[Anonymous, 2026]** *Language Models Need Sleep (parametric distillation).* arXiv:2606.03979.
+**[Behrouz et al., 2026]** *Language Models Need Sleep: Learning to Self-Modify and Consolidate Memories.* arXiv:2606.03979.
 Parametric distillation during offline phases. Informs schema extraction.
 
-**[Anonymous, 2026]** *Do LMs Need Sleep? (offline recurrence).* arXiv:2605.26099.
+**[Lee et al., 2026]** *Do Language Models Need Sleep? Offline Recurrence for Improved Online Inference.* arXiv:2605.26099.
 Offline recurrence improves knowledge integration. Further validates the dream approach.
 
 **[TiMem, 2026]** *TiMem: Temporal Hierarchical Memory for Agent Consolidation.* arXiv:2601.02845.
 Temporal hierarchical consolidation architecture. Informs tiered dream scheduling.
 
-**[Phasor Agents, 2026]** *Phasor Agents: Oscillatory Sleep-Staged Learning.* arXiv:2601.04362.
+**[Phasor Agents, 2026]** *Phasor Agents: Oscillatory Graphs with Three-Factor Plasticity and Sleep-Staged Learning.* arXiv:2601.04362.
 Oscillatory sleep-staged learning. Provides phase-timing design input for dream cycles.
 
 ---

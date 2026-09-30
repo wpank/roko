@@ -12,7 +12,7 @@
 **[Lee et al., 2026]** *Meta-Harness: End-to-End Optimization of Model Harnesses.* arXiv:2603.28052.
 "The scaffold IS the product." 6x performance gap from scaffold changes alone. +7.7 points text classification, +4.7 IMO math, 4x fewer tokens. Core thesis for Roko's approach: improving the harness matters more than switching models.
 
-**[Pan & Hashimoto, 2026]** *Natural-Language Agent Harnesses.* arXiv:2603.25723.
+**[Pan et al., 2026]** *Natural-Language Agent Harnesses.* arXiv:2603.25723.
 Scaffold logic written as natural language specifications interpreted by an intelligent runtime. Makes scaffold design inspectable and portable across providers.
 
 **[Kapoor et al., 2026]** *HAL: A Holistic Agent Leaderboard.* ICLR 2026.
@@ -22,14 +22,8 @@ Scaffold logic written as natural language specifications interpreted by an inte
 
 ## 2026 Additions: HarnessX, AHE, Harness-Bench
 
-**[HarnessX, 2026]** *HarnessX: Crossover Scaffold Optimization.* arXiv:2607.14201.
+**[Chen et al., 2026]** *HarnessX: A Composable, Adaptive, and Evolvable Agent Harness Foundry.* arXiv:2606.14249.
 Crossover optimization of scaffold components from heterogeneous agent architectures. Discovers productive combinations of prompt structure, tool sets, and verification strategies that no single agent design would explore. Validates Roko's composable trait system as a scaffold search space.
-
-**[AHE, 2026]** *AHE: Adaptive Harness Evolution.* arXiv:2606.18332.
-Evolutionary scaffold adaptation during execution. Harness components mutate based on per-task gate outcomes. Grounds the prompt experiment system's adaptive prompt selection and validates closed-loop scaffold improvement.
-
-**[Harness-Bench, 2026]** *Harness-Bench: Benchmarking Agent Scaffolds Independent of Models.* arXiv:2608.09741.
-Controlled evaluation separating scaffold quality from model quality. Establishes that scaffold improvements transfer across model families. Validates Roko's model-agnostic scaffold design with 12 provider kinds.
 
 ---
 
@@ -41,7 +35,7 @@ ACI design: how agents interact with environments matters as much as reasoning c
 **[Gauthier, 2024]** *Aider: AI Pair Programming in Your Terminal.* aider.chat.
 Repository map construction, edit format negotiation, diff-based output parsing. Practical reference for code-editing agent interfaces.
 
-**[Anthropic, 2024]** *Building Effective Agents.* anthropic.com.
+**[Schluntz & Zhang, 2024]** *Building Effective Agents.* anthropic.com.
 Composition over complexity: keep individual agents simple, compose through a controller. Direct design input for Roko's Graph-of-Cells execution model.
 
 ---
@@ -51,13 +45,10 @@ Composition over complexity: keep individual agents simple, compose through a co
 **[Chen, Zaharia & Zou, 2023]** *FrugalGPT: How to Use LLMs While Reducing Cost and Improving Performance.* arXiv:2305.05176.
 Cascade architectures achieve up to 98% cost reduction. Grounds the T0/T1/T2 cascade in `CascadeRouter`.
 
-**[Ong, Almahairi & Manning, 2024]** *RouteLLM: Learning to Route LLMs with Preference Data.* arXiv:2406.18665.
+**[Ong et al., 2024]** *RouteLLM: Learning to Route LLMs with Preference Data.* arXiv:2406.18665.
 Preference-based routing. Informs CascadeRouter training on task outcomes.
 
-**[Yoshida, Nishida & Okazaki, 2024]** *System 1 to System 2 Distillation for Efficient Tool-Using Agents.* arXiv:2407.
-Dual-process distillation. Grounds the T0/T1/T2 dual-process architecture.
-
-**[Patel et al., 2024]** *BudgetMLAgent: Multi-Agent Cascade for Cost-Efficient LLM Task Execution.* AIMLSystems 2024.
+**[Gandhi et al., 2024]** *BudgetMLAgent: A Cost-Effective LLM Multi-Agent system for Automating Machine Learning Tasks.* AIMLSystems 2024.
 94.2% cost reduction via three-tier model cascade. Validates the cascade approach at production scale.
 
 ---
@@ -80,14 +71,11 @@ Tree-structured deliberate reasoning for complex problems. Extends CoT with bran
 
 ## Tool Use Optimization
 
-**[Anonymous, 2025]** *AutoTool: Efficient Tool Selection for LLM Agents.* AAAI 2026. arXiv:2511.14650.
+**[Jia & Li, 2025]** *AutoTool: Efficient Tool Selection for Large Language Model Agents.* AAAI 2026. arXiv:2511.14650.
 Efficient tool selection from large toolsets. Grounds tool filtering in `roko-std`.
 
-**[Anonymous, 2025]** *PASTE: Pattern-Aware Speculative Tool Execution.* Microsoft Research. arXiv:2603.18897.
+**[Anonymous, 2025]** *Parallelizing Tool Execution and LLM Generation for Low-Latency Agent Serving.* Microsoft Research. arXiv:2603.18897.
 48.5% latency reduction via speculative tool execution. Informs parallel tool dispatch.
-
-**[ToolCacheAgent, 2025]** *ToolCacheAgent.* ICLR 2026 submission.
-1.69x speedup via tool result caching. Grounds tool cache in the inference gateway.
 
 **[Anonymous, 2025]** *Agentic Plan Caching.* arXiv:2506.14852.
 50.31% cost reduction via plan-level caching. Informs plan execution optimization.
@@ -108,7 +96,7 @@ Multi-environment agent evaluation. Performance varies dramatically across envir
 **[Shahul Es et al., 2024]** *RAGAS: Automated Evaluation of Retrieval Augmented Generation.* EACL 2024.
 Three automated RAG evaluation metrics. Applicable to NeuroStore retrieval quality.
 
-**[Saad-Falcon et al., 2024]** *ARES: An Automated Evaluation Framework for RAG Systems.* NAACL 2024.
+**[Saad-Falcon et al., 2024]** *ARES: An Automated Evaluation Framework for Retrieval-Augmented Generation Systems.* NAACL 2024.
 Statistically valid RAG evaluation from ~300 human labels with confidence intervals.
 
 ---

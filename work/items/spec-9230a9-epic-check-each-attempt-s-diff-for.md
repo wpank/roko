@@ -15,7 +15,7 @@ discovered_from = "tmp/cybernetic-harness/tldr/05-GAPS-AND-PROPOSALS.md (P1 #13;
 anchors = ["crates/roko-gate/src/diff_gate.rs::analyze_diff", "crates/roko-cli/src/graph_task_dispatch/verification.rs::GraphTaskDispatcher::settle_task_verification"]
 doc = "tmp/cybernetic-harness/workstreams/PLAN.md"
 lane = "rust-cold"
-links = { depends_on = ["gap-abbd22", "gap-b72761", "gap-b954ad", "bug-809e22", "gap-6d172d", "bug-b38546", "gap-9eb1e1", "bug-5f0604"], blocks = [], related = ["gap-d14a43"], supersedes = [], duplicate_of = "" }
+links = { depends_on = ["gap-abbd22", "gap-b72761", "gap-b954ad", "bug-809e22", "gap-6d172d", "bug-b38546", "gap-9eb1e1", "bug-5f0604", "bug-21687a"], blocks = [], related = ["gap-d14a43"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "grep -rqw 'fn c5_tampering_attempt_is_flagged' crates/roko-cli/tests/ && grep -rqw 'fn c5_empty_diff_is_rejected_before_verify' crates/roko-cli/tests/ && cargo test -p roko-cli --test attempt_diff_canary"
@@ -74,7 +74,8 @@ This is the implementation plan.
 - [x] gap-6d172d: The Graph pre-verify screen doesn't run SafetyLayer::post_dispatch_check
 - [x] bug-b38546: pre_verify:no_changes says the attempt left the tree unchanged when the task's declared files are gitignored
 - [ ] gap-9eb1e1: A --fresh rerun of a task whose correct output is already in the tree fails as pre_verify:no_changes
-- [ ] bug-5f0604: The portal-programme live-check harness gitignores the artifacts its implementer tasks write, so live checks fail as pre_verify:no_changes
+- [x] bug-5f0604: The portal-programme live-check harness gitignores the artifacts its implementer tasks write, so live checks fail as pre_verify:no_changes
+- [ ] bug-21687a: Three portal-programme live checks fail: the plan scaffold no longer writes model_hint, and serve looks for /demo at a compile-time path
 - [ ] The epic's `[[verify]]` command (test C5) passes on the merged branch.
 
 ## Notes

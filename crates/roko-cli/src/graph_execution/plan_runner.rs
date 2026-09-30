@@ -3206,7 +3206,8 @@ files = ["README.md"]
 
         let state_dir = RokoLayout::for_project(dir.path()).state_dir();
         let read = crate::runner::status_file::read_runner_status(&state_dir);
-        assert!(read.is_live(), "{read:?}");
+        // Finished, though this process, its writer, still runs (bug-f7f3bb).
+        assert!(read.is_finished(), "{read:?}");
         let status = read.status().expect("status.json after a Graph run");
         let expected_phase = if exit_code == EXIT_SUCCESS {
             "completed"

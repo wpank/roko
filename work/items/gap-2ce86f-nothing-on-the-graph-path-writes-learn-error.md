@@ -51,7 +51,9 @@ Cybernetic core (epic spec-6ac537): error patterns feed prompt enrichment and di
   dispatch factory's shared `ErrorPatternStore`, the one `plan_runner.rs` loads from disk and prompts read, and
   saves it to `learn/error-patterns.json`. The key is the failure class plus the normalized first failing step, so
   a recurring failure merges into one pattern.
-- **Still to do:** register the sink in `plan_runner.rs`'s facade block, after batch 12 merges. That wiring is
-  `ErrorPatternSink::new(Arc::clone(shared_factory.error_pattern_store()), graph_learn_dir.join("error-patterns.json"))`.
+- Wired on `work/bug-f81e9b` at `55c2e6b48`; cargo verification deferred to the batch check.
+  `build_graph_feedback_context` and `build_graph_feedback_facade` now take the factory's store, and the facade
+  registers the sink over it. The wiring census detects the `error_patterns` sink (`sink.error_pattern` is
+  wired) and drops it from `EXPECTED_MISSING`.
 - The receipt settler's `error_pattern` row stays: `FeedbackSettler::new` asserts all 12 `SINK_KEYS`, and
   `build_settler` has no production caller, so the facade holds the one writer that runs.

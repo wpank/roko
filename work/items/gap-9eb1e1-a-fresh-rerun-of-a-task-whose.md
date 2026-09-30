@@ -3,13 +3,14 @@ id = "gap-9eb1e1"
 kind = "gap"
 title = "A --fresh rerun of a task whose correct output is already in the tree fails as pre_verify:no_changes"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p2"
 goal = "golden-path"
 size = "M"
 subsystem = ["roko-cli/graph_task_dispatch"]
 created = 2026-09-30
 updated = 2026-09-30
+last_verified = 2026-09-30
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "wk-runstate report on gap-568056 (2026-09-30)"
 anchors = ["crates/roko-cli/src/graph_task_dispatch/red_flags.rs"]
@@ -48,3 +49,18 @@ Found by wk-runstate: the evidence fixture's `--fresh` rerun was rejected until 
 
 - [ ] A fresh rerun of a satisfied task completes without an agent change and is recorded as already satisfied.
 - [ ] The `[[verify]]` command passes.
+
+## Notes
+
+- **wk-tamper (2026-09-30):** Implemented on `work/gap-9eb1e1` at `0c71c240e`; cargo verification deferred to the
+  batch check. New verdict `already_satisfied` (`TaskGateVerdict`, `GateVerdictTag`, `AttemptOutcome`): no blame, a
+  null learning label, replayed on resume, counted as `tasks_already_satisfied` and not as passed; the plan can still
+  succeed. It applies only to tasks with authored verify steps (pinned acceptance steps count). Tasks without them,
+  gitignored declared files and resumed runs keep the old handling. The verify run on the unchanged tree is a probe:
+  no auto-fix and no learning records (gate thresholds, gaming detector, holdout, gate-pass efficiency, retrieval);
+  CodingOracle observations and the TUI's gate events still happen. Tests: the lib test named in `[[verify]]`, the
+  C5 canary's new `--fresh` rerun, and `already_satisfied_verdict_is_not_reported_as_passed`.
+- A vacuous verify step (`true`) lets a do-nothing attempt settle as already satisfied. The label keeps that visible.
+- Still open elsewhere: `classify_task_outcome` and the portal's `runState.ts` classify `already_satisfied` by
+  fallback (wk-gates, bug-7e1b6b), and viabilitybench's `run-record.schema.json` `gate_verdict` enum and
+  `analysis/metrics.py` `NOT_PASSED` do not list it.

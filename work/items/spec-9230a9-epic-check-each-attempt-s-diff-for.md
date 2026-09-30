@@ -70,9 +70,9 @@ This is the implementation plan.
       outside the task
 - [x] gap-b72761: Reject empty diffs and malformed or overlong agent output before the gates run
 - [x] gap-b954ad: Integration test C5: a tampering attempt is flagged and an empty diff is rejected
-- [ ] bug-809e22: The streaming dispatch path records no diff base, so its attempts' changed_files stay empty
+- [x] bug-809e22: The streaming dispatch path records no diff base, so its attempts' changed_files stay empty
 - [x] gap-6d172d: The Graph pre-verify screen doesn't run SafetyLayer::post_dispatch_check
-- [ ] bug-b38546: pre_verify:no_changes says the attempt left the tree unchanged when the task's declared files are gitignored
+- [x] bug-b38546: pre_verify:no_changes says the attempt left the tree unchanged when the task's declared files are gitignored
 - [ ] gap-9eb1e1: A --fresh rerun of a task whose correct output is already in the tree fails as pre_verify:no_changes
 - [ ] bug-5f0604: The portal-programme live-check harness gitignores the artifacts its implementer tasks write, so live checks fail as pre_verify:no_changes
 - [ ] The epic's `[[verify]]` command (test C5) passes on the merged branch.

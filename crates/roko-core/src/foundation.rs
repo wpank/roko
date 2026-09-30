@@ -597,6 +597,14 @@ pub enum FeedbackEvent {
         /// `"auth_failure"`). `None` on success.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error_class: Option<String>,
+        /// Model the provider reported serving the call; `None` when its
+        /// response named none. `model` is the model the call asked for.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model_reported: Option<String>,
+        /// Key of the attempt the call belongs to
+        /// (`"{run}:{plan}:{task}:{attempt}"`), when the caller has one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        attempt_key: Option<String>,
     },
     /// Feedback from a gate execution.
     GateResult {

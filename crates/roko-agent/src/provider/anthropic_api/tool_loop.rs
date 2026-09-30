@@ -71,6 +71,7 @@ pub(super) fn create_tool_loop_agent(
     let mut agent = ToolLoopAgent::new(tool_loop)
         .with_tools(tools)
         .with_name(name)
+        .with_env_passthrough(options.env_passthrough.clone())
         .with_input_messages(options.input_messages.clone())
         .with_multimodal_input_format(MultimodalInputFormat::Anthropic);
     if let Some(prompt) = &options.system_prompt {

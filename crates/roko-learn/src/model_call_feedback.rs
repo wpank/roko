@@ -13,11 +13,15 @@ use parking_lot::Mutex;
 use roko_core::Result;
 use roko_core::foundation::{FeedbackEvent, FeedbackSink};
 
-use crate::cascade_router::CascadeRouter;
+use crate::cascade::types::OVERRIDE_LEARNING_RATE;
+use crate::cascade_router::{CascadeRouter, normalized_cost_and_latency, outcome_reward};
 use crate::error::LearnError;
 use crate::feedback_service::FeedbackService;
-use crate::model_router::CONTEXT_DIM;
+use crate::model_router::{
+    CONTEXT_DIM, RewardWeights, RoutingContext, compute_routing_reward_with_weights,
+};
 use crate::provider_health::{ErrorClass, ProviderHealthRegistry};
+use crate::runtime_feedback::LearningPaths;
 use crate::wal::{self, WalEntry, WalSegment};
 
 /// Metrics and identity for one model call.
@@ -52,6 +56,11 @@ pub struct ModelCallFeedback {
     /// Classified error kind (e.g. `"rate_limit"`, `"timeout"`).
     /// `None` on success.
     pub error_class: Option<String>,
+    /// Model the provider reported serving the call; `None` when it named
+    /// none.
+    pub model_reported: Option<String>,
+    /// Key of the attempt the call belongs to, when the caller has one.
+    pub attempt_key: Option<String>,
 }
 
 impl ModelCallFeedback {
@@ -161,6 +170,8 @@ impl ModelCallFeedbackRecorder {
                 latency_ms: feedback.latency_ms,
                 success: feedback.success,
                 error_class: feedback.error_class.clone(),
+                model_reported: feedback.model_reported,
+                attempt_key: feedback.attempt_key,
             })
             .await?;
         feedback_service.flush_async().await?;
@@ -248,7 +259,8 @@ pub fn observe_model_call_on_router(
 }
 
 /// Write-ahead journal for the cascade observations of model-call surfaces
-/// (feedback Path B: chat, direct dispatch, ACP, the vision loop, serve).
+/// (feedback Path B: chat, direct dispatch, ACP, the vision loop, serve), and
+/// of a Graph run's routing outcomes (bug-dfb28f).
 ///
 /// Those surfaces load `cascade-router.json`, observe calls and save the
 /// snapshot again. An observation applied but not yet saved used to be lost
@@ -256,9 +268,9 @@ pub fn observe_model_call_on_router(
 /// observation to its own WAL segment beside the snapshot before applying
 /// it, and truncates the segment once a saved snapshot holds its
 /// observations. The segment stays locked while the journal lives, so
-/// `LearningRuntime` replays it only once its writer is gone: each
-/// observation is saved by its writer or replayed after a crash, never both
-/// (bug-84de98).
+/// `LearningRuntime` and [`load_recovered_router`] replay it only once its
+/// writer is gone: each observation is saved by its writer or replayed after
+/// a crash, never both (bug-84de98).
 #[derive(Debug)]
 pub struct ModelCallJournal {
     snapshot_path: PathBuf,
@@ -325,10 +337,72 @@ impl ModelCallJournal {
         reward: f64,
         success: bool,
     ) {
+        self.observe_weighted(router, model_slug, context_features, reward, success, 1.0);
+    }
+
+    /// Journal the settled outcome of a task that ran on the model the
+    /// router picked, then apply it to `router`. A success earns the
+    /// multi-objective reward at its cost and latency, and a failure 0,
+    /// since its cost and latency bought nothing (bug-8da8ba). A Graph run
+    /// records its routing outcomes through it (bug-dfb28f).
+    pub fn observe_task_outcome(
+        &self,
+        router: &CascadeRouter,
+        model_slug: &str,
+        ctx: &RoutingContext,
+        success: bool,
+        cost_usd: f64,
+        duration_ms: u64,
+    ) {
+        let reward = task_outcome_reward(success, cost_usd, duration_ms);
+        self.observe_weighted(router, model_slug, ctx.to_features(), reward, success, 1.0);
+    }
+
+    /// Journal the settled outcome of a task that ran on an operator's
+    /// override, then apply it to `router` as
+    /// [`CascadeRouter::record_override_outcome`] does: the reward of
+    /// [`Self::observe_task_outcome`], at an override's dampened weight
+    /// (bug-f68404).
+    pub fn observe_override_outcome(
+        &self,
+        router: &CascadeRouter,
+        model_slug: &str,
+        ctx: &RoutingContext,
+        success: bool,
+        cost_usd: f64,
+        duration_ms: u64,
+    ) {
+        let reward = task_outcome_reward(success, cost_usd, duration_ms);
+        self.observe_weighted(
+            router,
+            model_slug,
+            ctx.to_features(),
+            reward,
+            success,
+            OVERRIDE_LEARNING_RATE,
+        );
+    }
+
+    /// Journal an observation that carries `weight` (0.0 to 1.0) of a full
+    /// one, then apply it to `router`
+    /// ([`CascadeRouter::observe_weighted_outcome`]).
+    ///
+    /// When the WAL cannot be written the observation is still applied, and
+    /// is then only as durable as the next snapshot save.
+    pub fn observe_weighted(
+        &self,
+        router: &CascadeRouter,
+        model_slug: &str,
+        context_features: Vec<f64>,
+        reward: f64,
+        success: bool,
+        weight: f64,
+    ) {
         let Some(model_idx) = router.model_index_for_slug(model_slug) else {
             tracing::debug!("model {model_slug} not in cascade router slug list, skipping observe");
             return;
         };
+        let weight = weight.clamp(0.0, 1.0);
 
         let entry = WalEntry::ModelCallObservation {
             id: uuid::Uuid::new_v4().to_string(),
@@ -337,12 +411,14 @@ impl ModelCallJournal {
             model_idx,
             reward,
             success,
+            weight,
             ts_ms: Utc::now().timestamp_millis(),
         };
 
         // Journal and apply under the lock, so `save` never truncates an
         // observation that the snapshot it writes does not hold. This is the
-        // update `CascadeRouter::replay_observation` repeats on replay.
+        // update `CascadeRouter::replay_weighted_observation` repeats on
+        // replay.
         let mut segment = self.segment.lock();
         if let Err(error) = wal::append_to_segment(&mut segment, &self.segments_dir, &entry) {
             tracing::warn!(
@@ -351,7 +427,7 @@ impl ModelCallJournal {
                 "[wal] model-call observation not journaled -- learning not durable this entry"
             );
         }
-        router.observe_outcome(context_features, model_idx, reward, success);
+        router.observe_weighted_outcome(&context_features, model_idx, reward, success, weight);
     }
 
     /// Save `router` to the snapshot, then truncate the journal's segment:
@@ -360,8 +436,9 @@ impl ModelCallJournal {
     /// # Errors
     ///
     /// Returns an error when the snapshot cannot be written. The segment then
-    /// keeps the observations, and `LearningRuntime` replays them if this
-    /// writer is gone before a later save holds them.
+    /// keeps the observations, and `LearningRuntime` or
+    /// [`load_recovered_router`] replays them if this writer is gone before a
+    /// later save holds them.
     pub fn save(&self, router: &CascadeRouter) -> std::result::Result<(), LearnError> {
         let mut segment = self.segment.lock();
         router.save(&self.snapshot_path)?;
@@ -376,6 +453,32 @@ impl ModelCallJournal {
         }
         Ok(())
     }
+}
+
+/// Load the router saved at `snapshot_path` for `model_slugs`, once the
+/// snapshot holds what the learning WAL beside it journaled but no snapshot
+/// saved: the observations of writers that are gone, such as a Graph run
+/// that crashed before it saved its router (bug-dfb28f). A live writer's
+/// segment is left to that writer, as [`LearningRuntime`] leaves it.
+///
+/// [`LearningRuntime`]: crate::runtime_feedback::LearningRuntime
+#[must_use]
+pub fn load_recovered_router(snapshot_path: &Path, model_slugs: Vec<String>) -> CascadeRouter {
+    if let Some(learn_dir) = snapshot_path.parent() {
+        let mut paths = LearningPaths::under(learn_dir);
+        paths.cascade_router_json = snapshot_path.to_path_buf();
+        crate::runtime_feedback::recover_wal(&paths);
+    }
+    CascadeRouter::load_or_new(snapshot_path, model_slugs)
+}
+
+/// A settled task's routing reward: the multi-objective reward of a success
+/// at its cost and latency, and 0 for a failure, whose cost and latency
+/// bought nothing (bug-8da8ba).
+fn task_outcome_reward(success: bool, cost_usd: f64, duration_ms: u64) -> f64 {
+    let (cost, latency) = normalized_cost_and_latency(cost_usd, duration_ms);
+    let reward = compute_routing_reward_with_weights(1.0, cost, latency, &RewardWeights::default());
+    outcome_reward(success, reward)
 }
 
 fn model_call_reward(success: bool) -> f64 {
@@ -432,6 +535,8 @@ mod tests {
             latency_ms: 1_500,
             success,
             error_class: None,
+            model_reported: None,
+            attempt_key: None,
         }
     }
 
@@ -627,6 +732,8 @@ mod tests {
                 success: true,
                 provider_success: None,
                 error_class: None,
+                model_reported: None,
+                attempt_key: None,
             })
             .await
             .expect("record feedback");

@@ -1987,6 +1987,11 @@ async fn record_agent_dispatch_feedback(
             success: result.success,
             provider_success: Some(result.success),
             error_class: None,
+            model_reported: result
+                .usage_obs
+                .as_ref()
+                .and_then(|usage| usage.model.clone()),
+            attempt_key: request.attempt_key.clone(),
         })
         .await
     {
@@ -2056,6 +2061,11 @@ pub struct AgentDispatchRequest {
     /// `LiveOutput` is not serializable.
     #[serde(skip)]
     pub live_output: Option<roko_agent::live_output::LiveOutput>,
+    /// Key of the attempt this dispatch serves
+    /// (`"{run}:{plan}:{task}:{attempt}"`), when the caller has one. The
+    /// bridge's `model_call` row carries it (bug-92f655).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attempt_key: Option<String>,
 }
 
 impl AgentDispatchRequest {
@@ -2699,6 +2709,7 @@ mod tests {
                 dangerously_skip_permissions: false,
                 max_turns: None,
                 live_output: None,
+                attempt_key: None,
             };
             let error = request.validate().expect_err("invalid identity must fail");
             assert_eq!(error, DispatchV2Error::InvalidAgentId);
@@ -3165,6 +3176,7 @@ mod tests {
             dangerously_skip_permissions: false,
             max_turns: None,
             live_output: None,
+            attempt_key: None,
         };
         // All provider kinds are now in the contract support whitelist,
         // so OpenClaw with a contract should pass validation.
@@ -3232,6 +3244,7 @@ printf '%s\n' '{"type":"content_block_delta","delta":{"text":"dispatch-ok"}}'
             dangerously_skip_permissions: false,
             max_turns: None,
             live_output: None,
+            attempt_key: None,
         };
         let health_path = tmp.path().join(".roko/learn/provider-health.json");
         let registry = Arc::new(ProviderHealthRegistry::new());

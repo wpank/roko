@@ -88,7 +88,7 @@ This is the implementation plan.
 - [x] gap-b7a2d5: roko chat and dispatch_v2 spawn claude without the Claude Code isolation flags
 - [x] bug-6930e6: find_mcp_config hands Claude runs an ancestor directory's or $HOME's .mcp.json
 - [x] gap-a3fc5b: Claude Code isolation doesn't cover shell snapshots, and a managed-mcp.json makes Claude refuse --strict-mcp-config
-- [ ] gap-585bd2: Every implementer is offered the 17 chain tools, transfer and swap included, whatever the task domain
+- [x] gap-585bd2: Every implementer is offered the 17 chain tools, transfer and swap included, whatever the task domain
 - [ ] bug-3f3990: The Linux firejail plugin sandbox ignores sandbox.allowed_paths and filesystem_write, which macOS Seatbelt enforces
 - [x] bug-62e7e6: roko-std's bash tool and SafetyLayer's bash policy never check commands for key files
 - [x] bug-0bc728: The command guard misses command strings passed to wrappers, find -exec and -delete, and busybox rm

@@ -96,20 +96,20 @@ and state digests). The census lists them in `EXPECTED_MISSING`, and E17 files t
 - [x] gap-c7c946: roko learn telemetry: check and route-report over the attempt records (S01.P0-13)
 - [x] gap-3c430e: Specs S01, S05, S06 and S08 disagree on token classes, the audit hash, a decision-point name and a budget-line name
 - [ ] bug-b72a37: OpenAI-compatible providers price cached input tokens twice
-- [ ] gap-4468bd: Credit or demote a T0 reflex rule only from the settled attempt record, after verify
+- [x] gap-4468bd: Credit or demote a T0 reflex rule only from the settled attempt record, after verify
 - [x] gap-8f6206: Learning consumers read the settled verdict's learning label instead of succeeded (S01.P0-3)
 - [x] bug-ccc7c4: roko run now writes a second run directory under .roko/runs beside its own
 - [x] bug-55fd84: Episodes record turns = 1 for dispatches on providers that report no turn count
 - [x] bug-31438d: Roko records the model it dispatched, never the model the provider reports serving
 - [x] bug-62e3f4: Episodes, costs.json and efficiency.jsonl leave out the three helper calls after each failed gate
-- [ ] bug-2379dc: When a CLI names no model, the CLI adapters still record the configured slug as the served model
-- [ ] bug-92f655: ModelCallService's model_call rows carry no model_reported and no attempt key
-- [ ] bug-220385: Calls refused for provider exhaustion during failover leave no record
-- [ ] bug-ad5487: Gate rows in verification.rs still record turn 1 when the attempt's turn count is unknown
-- [ ] bug-b2dd44: The streaming dispatch path ignores a substituted pinned model, which the batch path fails as model_substituted
-- [ ] bug-c65bfe: The tool loop leaves usage_obs.source as Unknown
+- [x] bug-2379dc: When a CLI names no model, the CLI adapters still record the configured slug as the served model
+- [x] bug-92f655: ModelCallService's model_call rows carry no model_reported and no attempt key
+- [x] bug-220385: Calls refused for provider exhaustion during failover leave no record
+- [x] bug-ad5487: Gate rows in verification.rs still record turn 1 when the attempt's turn count is unknown
+- [x] bug-b2dd44: The streaming dispatch path ignores a substituted pinned model, which the batch path fails as model_substituted
+- [x] bug-c65bfe: The tool loop leaves usage_obs.source as Unknown
 - [ ] gap-751ac9: Graph attempts keep no durable record of their Claude Code isolation settings; the invocation is only debug-logged
-- [ ] bug-0ba3d9: Attempt records leave inv null: with_inv is called only in tests
+- [x] bug-0ba3d9: Attempt records leave inv null: with_inv is called only in tests
 - [x] bug-d5fb74: A run resumed under a different build keeps the first invocation's harness and config in its manifest
 - [ ] bug-aa2044: Stalled attempts record no cost: the watchdog drops the provider before it reports usage
 - [ ] The epic's `[[verify]]` command passes on the merged branch: the census fixture shows, for every attempt, a row

@@ -27,7 +27,9 @@
 # - recursive rm (-r, -R or --recursive, anywhere before --);
 # - find -delete, and any rm run on what find or fd lists: by find -exec,
 #   fd -x, a pipe (find . | xargs rm, find . | while read f; do rm ...) or a
-#   substitution (rm $(find ...)).
+#   substitution (rm $(find ...));
+# - rm, unlink or shred run by xargs, whatever feeds it (ls | xargs rm,
+#   xargs rm < list, xargs -a list rm).
 #
 # Every command in a chain is checked (;, &&, ||, |, & and newlines), after
 # assignments, shell keywords and wrappers such as sudo, env and xargs, and
@@ -95,6 +97,13 @@ STRING_WRAPPERS = {"watch", "sg", "parallel"}
 COMMAND_OPTIONS = {"-c", "--command", "-S", "--split-string"}
 # Wrapper options whose value is a user or group, never the program (sudo -u git).
 USER_OPTIONS = {"-u", "-g", "-U", "--user", "--group", "--other-user"}
+# Wrapper options whose value is the next word (sudo -u git, xargs -a list),
+# so a git there is no program and the word after it no git subcommand.
+VALUE_OPTIONS = USER_OPTIONS | {
+    "-a", "--arg-file", "-d", "--delimiter", "-E", "-I", "-L", "-n", "--max-args", "-P",
+    "--max-procs", "-s", "--max-chars", "-C", "--chdir", "-D", "-h", "-p", "-r", "-t", "-T",
+    "-k", "--kill-after", "--signal", "-w", "--timeout",
+}
 # Multi-call binaries whose first argument names the program (busybox rm).
 MULTICALL = {"busybox", "toybox"}
 # Programs that list a tree's files; find's actions and fd's options that run
@@ -115,7 +124,7 @@ SSH_COMMAND_OPTION = re.compile(
 # Programs that run their arguments as shell commands.
 SHELLS = {"sh", "bash", "zsh", "dash", "ksh", "fish"}
 # Programs whose arguments this guard checks.
-CHECKED_PROGRAMS = {"git", "rm", "eval", "ssh"} | FINDERS | SHELLS | MULTICALL
+CHECKED_PROGRAMS = {"git", "rm", "unlink", "shred", "eval", "ssh"} | FINDERS | SHELLS | MULTICALL
 # git global options whose value is the next argument.
 GIT_VALUE_OPTIONS = {
     "-C", "-c", "--git-dir", "--work-tree", "--namespace", "--super-prefix", "--config-env",
@@ -152,9 +161,14 @@ FALLBACK_TOKEN = re.compile(r"[;&|()<>\n]+|[^\s;&|()<>]+")
 MAX_DEPTH = 8
 
 # The Bash call being checked (check_bash sets it): the directory git
-# aliases are looked up in, and the whole command. under_find is set while a
-# command that runs on what find or fd lists is checked.
-BASH_CALL = {"cwd": None, "command": "", "under_find": False}
+# aliases are looked up in, and the whole command. bulk is set, to why a
+# delete may not run, while a command that runs on a list the guard cannot
+# see is checked: what find or fd lists, or what xargs reads.
+BASH_CALL = {"cwd": None, "command": "", "bulk": None}
+FIND_BULK = "rm on what find or fd lists is forbidden: it deletes files across a whole tree"
+XARGS_BULK = (
+    "a delete run by xargs is forbidden: it deletes every file in a list the guard cannot see"
+)
 
 
 def tokens(text):
@@ -261,6 +275,8 @@ def check_words(words, depth, maybe_argument=False):
         check_git(words[1:], depth, maybe_argument)
     elif program == "rm":
         check_rm(words[1:])
+    elif program in ("unlink", "shred") and BASH_CALL["bulk"]:
+        block(BASH_CALL["bulk"])
     elif program == "find":
         check_find(words[1:], depth)
     elif program in FINDERS:
@@ -281,7 +297,8 @@ def check_wrapped(program, words, depth, maybe_argument=False):
     Its own options come first, and an option's value can name a program too
     (xargs -a git rm -rf x), so every later word that names a program this
     guard checks, or another wrapper, starts a command to check. A user or
-    group is skipped (sudo -u git whoami). After a word that is not an
+    group is skipped (sudo -u git whoami), and so is git's subcommand (xargs
+    git rm --cached), which git checks. After a word that is not an
     option, an assignment, a number (timeout's duration), a user or another
     wrapper, the word may be an argument instead (timeout 5 grep git src). A
     command handed over as one string (watch 'rm -rf x', flock l -c '...') is
@@ -291,8 +308,14 @@ def check_wrapped(program, words, depth, maybe_argument=False):
         word, previous = words[index], words[index - 1]
         is_user = previous in USER_OPTIONS
         name = program_name(word)
-        if (name in CHECKED_PROGRAMS or name in WRAPPERS) and not is_user:
-            check_words(words[index:], depth, after_argument)
+        # The word after git is git's subcommand (xargs git rm --cached),
+        # unless git is an option's value (xargs -a git rm -rf x).
+        is_subcommand = program_name(previous) == "git" and words[index - 2] not in VALUE_OPTIONS
+        if (name in CHECKED_PROGRAMS or name in WRAPPERS) and not (is_user or is_subcommand):
+            if program == "xargs":
+                check_found(words[index:], depth, XARGS_BULK, after_argument)
+            else:
+                check_words(words[index:], depth, after_argument)
         option, _, value = word.partition("=")
         if program in STRING_WRAPPERS or previous in COMMAND_OPTIONS:
             check_command(word, depth + 1)
@@ -305,12 +328,13 @@ def check_wrapped(program, words, depth, maybe_argument=False):
             after_argument = True
 
 
-def check_found(command, depth):
-    """Check a command that runs on what find or fd lists (find -exec,
-    fd -x, find . | xargs): any rm in it deletes across the tree."""
-    under_find, BASH_CALL["under_find"] = BASH_CALL["under_find"], True
-    check_words(command, depth)
-    BASH_CALL["under_find"] = under_find
+def check_found(command, depth, reason=FIND_BULK, maybe_argument=False):
+    """Check a command that runs on a list the guard cannot see: what find
+    or fd lists (find -exec, fd -x, find . | xargs), or what xargs reads.
+    Any delete in it is denied, for `reason`."""
+    bulk, BASH_CALL["bulk"] = BASH_CALL["bulk"], BASH_CALL["bulk"] or reason
+    check_words(command, depth, maybe_argument)
+    BASH_CALL["bulk"] = bulk
 
 
 def check_find(arguments, depth):
@@ -366,8 +390,8 @@ def short_flags(arguments):
 
 
 def check_rm(arguments):
-    if BASH_CALL["under_find"]:
-        block("rm on what find or fd lists is forbidden: it deletes files across a whole tree")
+    if BASH_CALL["bulk"]:
+        block(BASH_CALL["bulk"])
     # GNU rm reads options anywhere before --, and accepts a long option
     # shortened to any unambiguous prefix (--rec).
     options = arguments[:arguments.index("--")] if "--" in arguments else arguments

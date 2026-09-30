@@ -10,8 +10,8 @@ fragments that are wrong, and the correct work where the audit established it. I
 adjudication records (gitignored, under tmp/cybernetic-harness/companion-audit/data/adjudication/); its "notes" list
 the entries changed by hand. To retire a false positive, edit the work's "bad" fragments.
 
-A line is about a work when it, or the line before it (citations wrap), holds one of the work's anchors. On such a line
-the checker reports:
+A line is about a work when it, or the line before or after it (citations wrap), holds one of the work's anchors. On
+such a line the checker reports:
 - any mention of a fabricated work (I1);
 - a wrong arXiv ID;
 - a wrong author label. A label naming no author list (a placeholder such as "Anonymous" or a system name such as
@@ -23,8 +23,13 @@ the checker reports:
 In a citations.json file it checks each record's fields instead. The audit adjudicated a sample, so a clean run means
 that no known erratum remains, not that every citation is right.
 
+With --prose it also reads Markdown prose one section at a time (the text from one heading to the next). A section
+that mentions a work, by an anchor or by a name in the work's "prose" field, may not describe it anywhere with a wrong
+title, a wrong author list or a phrase that field lists; a section that mentions a fabricated work is reported at each
+mention.
+
 Usage:
-  python3 tools/docs_integrity/check_citation_errata.py [--summary] [--manifest FILE] [PATH ...]
+  python3 tools/docs_integrity/check_citation_errata.py [--prose] [--summary] [--manifest FILE] [PATH ...]
 
 PATH is a file or a directory (default docs/v3). Exit status: 0 clean, 1 errata found, 2 bad input.
 """
@@ -47,6 +52,13 @@ TITLE_OPEN = r"(?:\*\*|\*|\"|“|')"
 TITLE_END = r"(?=\s*(?:[.*\"”,)\]!?]|$))"  # the whole title, not the start of a longer one
 ENTRY = re.compile(r"^\s*(?:[-*]\s+)?\*\*\[")
 HAS_ID = re.compile(r"arxiv|doi\.org|\bdoi\b|10\.\d{4,9}/", re.I)
+HEADING = re.compile(r"^#{1,6}\s")
+FENCE = re.compile(r"^\s*(```|~~~)")
+
+
+def loose(text: str) -> str:
+    """A literal that may wrap: any run of whitespace matches any other."""
+    return r"\s+".join(re.escape(part) for part in text.split())
 
 
 def trie_regex(words: list[str]) -> re.Pattern | None:
@@ -110,7 +122,7 @@ class Work:
                 rx = re.compile(rf"(?<![\w-]){esc}(?:\s*,\s*|\s+|\s*\(\s*)(?:19|20)\d\d(?!\d)")
             self.rules.append((rx, f'wrong author "{a}": {self.cite_as()}'))
         for t in bad.get("titles") or []:
-            rx = re.compile(TITLE_OPEN + re.escape(t) + TITLE_END, re.I)
+            rx = re.compile(TITLE_OPEN + loose(t) + TITLE_END, re.I)
             self.rules.append((rx, f'wrong title "{t}": use "{(self.correct or {}).get("title") or "the real title"}"'
                                    if self.correct else f'fabricated title "{t}"'))
         for y in bad.get("years") or []:
@@ -128,6 +140,22 @@ class Work:
             self.rules.append((re.compile(re.escape(f)), f'wrong citation text "{f}": {self.cite_as()}'))
         self.missing_id = bool(bad.get("missing_id")) and bool(self.correct) and bool(
             self.correct.get("arxiv") or self.correct.get("doi"))
+        prose = w.get("prose") or {}
+        names = prose.get("names") or []
+        self.names_rx = re.compile("|".join(rf"(?<![\w-]){loose(n)}(?![\w-])" for n in names)) if names else None
+        self.prose_rules: list[tuple[re.Pattern, str]] = []
+        for t in bad.get("titles") or []:
+            if self.correct_title and fold(t) in self.correct_title:
+                continue  # a short form of the real title is a name, not a wrong title
+            self.prose_rules.append((re.compile(loose(t)), f'described by a title it does not have, "{t}": '
+                                                               f'{self.cite_as()}'))
+        # author lists and initials are specific enough to check across a section; a bare "X et al." is not
+        for a in [x for x in bad.get("authors") or [] if re.search(r"[,;&]", x)] + list(bad.get("fragments") or []):
+            self.prose_rules.append((re.compile(rf"(?<![\w-]){loose(a)}(?!\w)"), f'wrong citation text "{a}": '
+                                                                                f'{self.cite_as()}'))
+        for phrase in prose.get("phrases") or []:
+            self.prose_rules.append((re.compile(loose(phrase), re.I), f'"{phrase}" does not describe the real work: '
+                                                                     f'{self.cite_as()}'))
 
     def cite_as(self) -> str:
         c = self.correct
@@ -170,6 +198,37 @@ class Errata:
         return list(found.values())
 
 
+def sections(lines: list[str]):
+    """(start, end) line ranges from one Markdown heading to the next; headings inside code fences don't count."""
+    start, fenced = 0, False
+    for i, line in enumerate(lines):
+        if FENCE.match(line):
+            fenced = not fenced
+        elif not fenced and HEADING.match(line) and i > start:
+            yield start, i
+            start = i
+    yield start, len(lines)
+
+
+def check_prose(path: Path, rel: str, errata: Errata) -> list[Finding]:
+    lines = path.read_text(encoding="utf-8", errors="replace").split("\n")
+    out: list[Finding] = []
+    for a, b in sections(lines):
+        block = "\n".join(lines[a:b])
+        found = {w.key: w for w in errata.about(block)}
+        found.update({w.key: w for w in errata.works if w.names_rx and w.names_rx.search(block)})
+        for w in found.values():
+            if w.all:
+                for n in range(a, b):
+                    if w in errata.about(lines[n]) or (w.names_rx and w.names_rx.search(lines[n])):
+                        out.append(Finding(rel, n + 1, w.key, w.tags, "mentions a fabricated work: remove it"))
+                continue
+            for rx, msg in w.prose_rules:
+                for m in rx.finditer(block):
+                    out.append(Finding(rel, a + block.count("\n", 0, m.end()) + 1, w.key, w.tags, msg))
+    return out
+
+
 def check_markdown(path: Path, rel: str, errata: Errata) -> list[Finding]:
     lines = path.read_text(encoding="utf-8", errors="replace").split("\n")
     out: list[Finding] = []
@@ -178,7 +237,7 @@ def check_markdown(path: Path, rel: str, errata: Errata) -> list[Finding]:
         window = f"{prev} {cur}" if prev else cur
         wide = fold(f"{window} {lines[n]}" if n < len(lines) else window)  # a correct title may wrap onto the next line
         start = len(prev) + 1 if prev else 0  # a fragment is reported on the line where it ends
-        works = errata.about(window)
+        works = errata.about(f"{window} {lines[n]}" if n < len(lines) else window)
         here = {w.key for w in errata.about(cur)} if any(w.all for w in works) else set()
         for w in works:
             seen = set()
@@ -269,6 +328,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("paths", nargs="*", default=["docs/v3"])
     ap.add_argument("--manifest", default=str(MANIFEST))
     ap.add_argument("--summary", action="store_true", help="print counts by file and by class after the findings")
+    ap.add_argument("--prose", action="store_true", help="also check how Markdown prose describes each work")
     a = ap.parse_args(argv)
     try:
         errata = Errata(json.loads(Path(a.manifest).read_text(encoding="utf-8")))
@@ -279,7 +339,15 @@ def main(argv: list[str] | None = None) -> int:
     findings: list[Finding] = []
     for f in targets:
         rel = str(f.relative_to(ROOT)) if f.is_relative_to(ROOT) else str(f)
-        findings += check_citations_json(f, rel, errata) if f.name == "citations.json" else check_markdown(f, rel, errata)
+        if f.name == "citations.json":
+            findings += check_citations_json(f, rel, errata)
+            continue
+        findings += check_markdown(f, rel, errata)
+        if a.prose:
+            findings += check_prose(f, rel, errata)
+    seen: set[tuple] = set()
+    findings = [x for x in findings if (x.path, x.line, x.key, x.message) not in seen
+                and not seen.add((x.path, x.line, x.key, x.message))]
     for x in findings:
         print(x)
     if a.summary:

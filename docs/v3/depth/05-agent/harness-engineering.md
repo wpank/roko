@@ -6,8 +6,8 @@
 
 **Parent:** [05-AGENT](../../05-AGENT.md)
 
-**Source:** Lee, S. Y. et al. (2026). "Meta-Harness: Harness Engineering for
-LLM Agents." arXiv:2603.28052.
+**Source:** Lee, Y. et al. (2026). "Meta-Harness: End-to-End Optimization of
+Model Harnesses." arXiv:2603.28052.
 
 ---
 
@@ -20,7 +20,7 @@ on a weaker model often outperforms a worse harness on a stronger model.
 
 The key paper:
 
-> Lee, S. Y. et al. (2026). "Meta-Harness: Harness Engineering for LLM Agents."
+> Lee, Y. et al. (2026). "Meta-Harness: End-to-End Optimization of Model Harnesses."
 > arXiv:2603.28052.
 
 ### Benchmark evidence
@@ -251,8 +251,8 @@ runtime. Harness improvements benefit all models simultaneously.
 
 ## 10. Citations
 
-1. Lee, S. Y. et al. (2026). "Meta-Harness: Harness Engineering for LLM
-   Agents." arXiv:2603.28052. -- Six principles, benchmark evidence.
+1. Lee, Y. et al. (2026). "Meta-Harness: End-to-End Optimization of Model
+   Harnesses." arXiv:2603.28052. -- Six principles, benchmark evidence.
 2. Chen et al. (2026). "HarnessX." arXiv:2606.14249. -- Extended
    framework, composition rules, transfer analysis.
 3. arXiv:2605.27922. "Harness-Bench." -- Standardized harness evaluation.

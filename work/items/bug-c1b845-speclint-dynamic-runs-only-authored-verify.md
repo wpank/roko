@@ -2,7 +2,7 @@
 id = "bug-c1b845"
 kind = "bug"
 title = "speclint --dynamic runs only authored verify steps on the base, so SQ06 and HF3 ignore pinned acceptance tests"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "golden-path"
@@ -11,6 +11,7 @@ subsystem = ["benchmarks/viabilitybench/speclint"]
 created = 2026-09-30
 updated = 2026-09-30
 last_verified = 2026-09-30
+last_verified_rev = "e12249d1e"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-specq's report)"
 anchors = ["benchmarks/viabilitybench/speclint/dynamic.py"]
@@ -20,6 +21,12 @@ links = { depends_on = [], blocks = [], related = ["bug-019f02", "gap-d14a43"], 
 
 [[verify]]
 command = "grep -qw 'def test_dynamic_mode_runs_pinned_accept_tests' benchmarks/viabilitybench/speclint/tests/test_dynamic.py && benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/speclint/tests/test_dynamic.py -k test_dynamic_mode_runs_pinned_accept_tests -q"
+
+[closed]
+at = 2026-09-30
+commit = "e12249d1e"
+by = "wk-specq"
+evidence = "speclint/dynamic.py runs each well-formed [task.accept] test first, as the Graph path's pinned step does (copy src over dest, run runner, exactly count passes via the same awk), and HF3 treats pinned tests as expecting red. Verify passes: test_dynamic_mode_runs_pinned_accept_tests (red accept-only task, HF3 for an accept test green on the base, exact-count failure); it failed on BASE 0b84bc9fa. speclint tests: 90 pass."
 +++
 
 ## Problem

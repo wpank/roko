@@ -59,7 +59,8 @@ Checked on `work/bug-8da8ba` (`26947cd62`, not merged at BASE `2a9312985`): `pla
 - Depends on bug-8da8ba (`ModelCallJournal`), which is in Rust batch 3.
 - `plan_runner.rs` is a hot file: coordinate with other Graph workers.
 - bug-3ea1f5 (the Path A failure reward) touches the same learning path but different files.
-- Implemented on `work/bug-f81e9b` at `75a76d62c`; cargo verification deferred to the batch check.
+- Implemented on `work/bug-f81e9b` at `6a5e1e3af` (`75a76d62c` plus a test fix); cargo verification deferred to the
+  batch check.
   The run journals each outcome in the learning WAL before applying it: `ModelCallJournal::observe_task_outcome`,
   and `observe_override_outcome`, whose dampened weight the WAL entry now records. It saves through the journal
   at the end. `RunConfig::from_roko_config` loads the router with `load_recovered_router`, which runs the

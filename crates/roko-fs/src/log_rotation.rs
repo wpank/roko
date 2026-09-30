@@ -16,6 +16,12 @@
 //! Rotation never splits a JSONL record. The rename-then-recreate sequence
 //! is atomic at the filesystem level: the old file is renamed (preserving
 //! all complete lines), and a new empty file is created at the original path.
+//!
+//! # Secrets
+//!
+//! The append functions are the shared boundary for roko's JSONL records, so
+//! they redact the process's known secrets from each record's strings
+//! ([`roko_core::obs::scrub_secrets_in_jsonl`]) before writing it.
 
 use std::collections::BTreeSet;
 use std::io::Write;
@@ -59,12 +65,15 @@ pub async fn rotate_if_needed(path: &Path, max_mb: u64) -> std::io::Result<Optio
 /// `line` may omit its trailing newline; one is added when necessary. The
 /// size check, optional rotation, append, flush, and data sync are one locked
 /// operation, so a record cannot be stranded in an archived generation by a
-/// concurrent lifecycle rotation.
+/// concurrent lifecycle rotation. The process's secrets are redacted from the
+/// record first (see the module docs).
 pub fn append_jsonl_line_sync(
     path: &Path,
     line: &[u8],
     max_mb: u64,
 ) -> std::io::Result<Option<RotationResult>> {
+    let line = scrub_record(line);
+    let line = line.as_ref();
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -98,6 +107,8 @@ pub fn append_jsonl_line_relaxed_sync(
     line: &[u8],
     max_mb: u64,
 ) -> std::io::Result<Option<RotationResult>> {
+    let line = scrub_record(line);
+    let line = line.as_ref();
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -113,6 +124,15 @@ pub fn append_jsonl_line_relaxed_sync(
         file.write_all(b"\n")?;
     }
     Ok(rotation)
+}
+
+/// `line` with the process's secrets redacted from its JSONL records. Bytes
+/// that are not UTF-8 are written as they are.
+fn scrub_record(line: &[u8]) -> std::borrow::Cow<'_, [u8]> {
+    match std::str::from_utf8(line).map(roko_core::obs::scrub_secrets_in_jsonl) {
+        Ok(std::borrow::Cow::Owned(scrubbed)) => std::borrow::Cow::Owned(scrubbed.into_bytes()),
+        _ => std::borrow::Cow::Borrowed(line),
+    }
 }
 
 /// Atomically retain only the newest `max_lines` complete records in a live

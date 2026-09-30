@@ -9,8 +9,8 @@ size = "L"
 goal = "release"
 subsystem = ["roko-fs/observability"]
 created = 2026-09-14
-updated = 2026-09-29
-last_verified = 2026-09-29
+updated = 2026-09-30
+last_verified = 2026-09-30
 last_verified_rev = "a17d9d766"
 source = "tmp/archive/tool-audit-2026-09-21/10-FINDINGS-REGISTER.md#register"
 discovered_from = "audit:tmp/archive/tool-audit-2026-09-21/10-FINDINGS-REGISTER.md#register"
@@ -150,6 +150,8 @@ through a scrubber (`crates/roko-cli/src/share.rs::scrub_share_text`,
 - The test must be hermetic: a temp `HOME`, the mock provider only, and no network.
 - It overlaps with any item that changes the Graph persistence writers (`runner/persist.rs`,
   `graph_task_dispatch.rs` feedback writes), so avoid running it in parallel with those.
+
+- 2026-09-30 (wk-canary): Implemented on `work/gap-5f4852` at `551a339e1`. `cargo test -p roko-cli --test secret_canary` passes in the worktree (11 tests); the new plan-run test found the canary in 8 files at `8a88c6267` (episodes, efficiency, gate-failures, post-gate-reflections, neuro/knowledge.jsonl, the file log `roko.log.*`, activities.jsonl, retry-feedback.json) and finds none now. Option B: `roko_core::obs::install_secret_scrubber`, installed once by `RunScrubber::install` in `main`. Persistence scrubs literal secrets only, from JSON strings (`scrub_secrets_in_json[l]`), since the built-in heuristics also match ids such as `mask-the-...`. Every `.env` value of 8+ characters counts as a secret, so a non-secret setting kept in a `.env` file is redacted from records too. Not covered: config secrets other than provider `api_key_env` (provider `extra_headers`, file secrets, `serve.auth.api_key`). Batch check pending. Re-run after merging batch 12a (telemetry2) at `09e0a93ff`: still passes; batch 12b (model-truth) not yet covered.
 
 ## Original notes
 

@@ -759,6 +759,14 @@ fn resolve_runtime_layers_with_context(
     }
     config.interpolate_env_vars();
     config.resolve_file_secrets();
+    // The process's secret scrubber (when one is installed) also redacts the
+    // keys this config's providers read.
+    crate::obs::add_secret_env_values(
+        config
+            .providers
+            .values()
+            .filter_map(|provider| provider.api_key_env.as_deref()),
+    );
 
     // Post-merge provider reference validation.
     // When strict_validation is enabled in config, dangling model->provider

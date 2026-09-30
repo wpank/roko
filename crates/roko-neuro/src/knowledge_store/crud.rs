@@ -302,7 +302,8 @@ impl KnowledgeStore {
         for entry in &entries {
             let mut line = serde_json::to_string(&entry).context("serialize knowledge entry")?;
             line.push('\n');
-            file.write_all(line.as_bytes())
+            // Entries distilled from agent output can quote a secret.
+            file.write_all(roko_core::obs::scrub_secrets_in_jsonl(&line).as_bytes())
                 .context("append knowledge entry")?;
         }
         file.flush().context("flush knowledge entry")?;

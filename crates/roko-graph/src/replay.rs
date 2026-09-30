@@ -107,7 +107,11 @@ impl ActivityRecorder {
     /// Append a completed Activity node execution to the JSONL file.
     ///
     /// The write is followed by an immediate flush so the record is durable
-    /// even if the process is interrupted mid-run.
+    /// even if the process is interrupted mid-run. The process's secrets are
+    /// redacted from the record's strings first
+    /// ([`roko_core::obs::scrub_secrets_in_jsonl`]), so a replayed output
+    /// carries the redaction instead of the secret; signal ids stay as
+    /// recorded.
     ///
     /// # Errors
     /// Returns an `std::io::Error` if the write or flush fails.
@@ -127,6 +131,7 @@ impl ActivityRecorder {
         };
         let line = serde_json::to_string(&entry)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        let line = roko_core::obs::scrub_secrets_in_jsonl(&line);
         self.writer.write_all(line.as_bytes())?;
         self.writer.write_all(b"\n")?;
         self.writer.flush()?;

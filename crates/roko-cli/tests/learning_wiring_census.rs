@@ -46,7 +46,6 @@ const S01_COMPONENTS: &[&str] = &[
 /// It only shrinks. The census fails when one of them is wired, so take it
 /// off the list then.
 const EXPECTED_MISSING: &[&str] = &[
-    "sink.error_pattern",
     "sink.section_effect",
     "store.decision_writer",
     "store.exposure_writer",
@@ -176,16 +175,21 @@ async fn production_census(
     config: &roko_core::config::schema::RokoConfig,
     cascade_router: Option<&Arc<CascadeRouter>>,
 ) -> WiringReport {
-    let feedback = build_graph_feedback_context(workdir, config, cascade_router);
-    let config = Arc::new(config.clone());
+    let shared_config = Arc::new(config.clone());
     let factory = roko_cli::dispatch::SharedAgentFactory::new(
-        Arc::clone(&config),
+        Arc::clone(&shared_config),
         None,
         cascade_router.cloned(),
         None,
     )
     .await;
-    GraphTaskDispatcher::new(Arc::new(factory), config, workdir.to_path_buf())
+    let feedback = build_graph_feedback_context(
+        workdir,
+        config,
+        cascade_router,
+        factory.error_pattern_store(),
+    );
+    GraphTaskDispatcher::new(Arc::new(factory), shared_config, workdir.to_path_buf())
         .with_feedback(feedback)
         .wiring_report()
 }

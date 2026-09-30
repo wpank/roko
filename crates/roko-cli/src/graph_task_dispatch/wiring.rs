@@ -121,9 +121,9 @@ impl GraphTaskDispatcher {
             component(
                 "sink.error_pattern",
                 WiringKind::Sink,
-                false,
-                "nothing on the Graph path writes the error-pattern store prompts read \
-                 (`learn/error-patterns.json`); verify failures go to `gate-failures.jsonl`",
+                has_sink("error_patterns"),
+                "`error_patterns` sink on the feedback facade: failures of the agent's work \
+                 feed the error-pattern store prompts read (`learn/error-patterns.json`)",
             ),
             component(
                 "sink.section_effect",

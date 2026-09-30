@@ -920,6 +920,7 @@ async fn run_graph_plan_body(
         workdir,
         &roko_config,
         graph_run_config.cascade_router.as_ref(),
+        shared_factory.error_pattern_store(),
     );
     let holdout_experiment = graph_feedback.holdout_experiment.clone();
 
@@ -1546,7 +1547,8 @@ async fn run_graph_plan_body(
 
 /// The learning and feedback wiring of a Graph plan run under `workdir`: the
 /// feedback facade ([`build_graph_feedback_facade`]) and every learning store
-/// a task attempt's feedback writes.
+/// a task attempt's feedback writes. `error_patterns` is the dispatch
+/// factory's error-pattern store, which prompts read.
 ///
 /// It builds the same feedback infrastructure that Runner-v2 used, so Graph
 /// engine runs produce episodes, efficiency events, playbook outcomes,
@@ -1558,6 +1560,7 @@ pub fn build_graph_feedback_context(
     workdir: &Path,
     config: &roko_core::config::schema::RokoConfig,
     cascade_router: Option<&Arc<roko_learn::cascade_router::CascadeRouter>>,
+    error_patterns: &Arc<std::sync::RwLock<roko_learn::error_pattern_store::ErrorPatternStore>>,
 ) -> crate::graph_task_dispatch::GraphFeedbackContext {
     let graph_layout = RokoLayout::for_project(workdir);
     let graph_learn_dir = graph_layout.learn_dir();
@@ -1619,6 +1622,7 @@ pub fn build_graph_feedback_context(
             config,
             cascade_router,
             shared_daimon_state.as_ref(),
+            error_patterns,
         )),
         efficiency_path: Some(graph_learn_dir.join("efficiency.jsonl")),
         costs_path: Some(graph_learn_dir.join("costs.jsonl")),
@@ -1684,14 +1688,16 @@ fn graph_daimon_state(
 
 /// The feedback facade of a Graph plan run: the sinks each settled task
 /// attempt fans out to, in order (episodes, hindsight, verified knowledge,
-/// routing when there is a cascade router, and the plan-completion dream,
-/// daimon, theta and delta sinks). `daimon_state` is the state dispatch
-/// modulates, persisted when a plan completes.
+/// error patterns, routing when there is a cascade router, and the
+/// plan-completion dream, daimon, theta and delta sinks). `daimon_state` is
+/// the state dispatch modulates, persisted when a plan completes;
+/// `error_patterns` is the store dispatch formats into prompts.
 pub fn build_graph_feedback_facade(
     workdir: &Path,
     config: &roko_core::config::schema::RokoConfig,
     cascade_router: Option<&Arc<roko_learn::cascade_router::CascadeRouter>>,
     daimon_state: Option<&Arc<std::sync::Mutex<roko_daimon::DaimonState>>>,
+    error_patterns: &Arc<std::sync::RwLock<roko_learn::error_pattern_store::ErrorPatternStore>>,
 ) -> Arc<crate::runtime_feedback::FeedbackFacade> {
     let graph_layout = RokoLayout::for_project(workdir);
     let graph_learn_dir = graph_layout.learn_dir();
@@ -1712,6 +1718,14 @@ pub fn build_graph_feedback_facade(
         // progression included) under `.roko/neuro/`.
         .with_sink(std::sync::Arc::new(
             crate::runtime_feedback::VerifiedKnowledgeSink::for_workdir(workdir),
+        ))
+        // A failure of the agent's work goes into the error-pattern store
+        // dispatch formats into prompts, and to `learn/error-patterns.json`.
+        .with_sink(std::sync::Arc::new(
+            crate::runtime_feedback::ErrorPatternSink::new(
+                std::sync::Arc::clone(error_patterns),
+                graph_learn_dir.join("error-patterns.json"),
+            ),
         ));
     if let Some(cascade) = cascade_router {
         facade = facade.with_sink(std::sync::Arc::new(

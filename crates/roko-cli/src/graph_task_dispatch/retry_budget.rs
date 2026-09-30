@@ -11,8 +11,9 @@
 //! Suggestions stay within `[gates] adaptive_min_retries..=adaptive_max_retries`,
 //! and a rung with under five observations suggests their midpoint. The task
 //! gets its likeliest-to-fail rung's suggestion. A task with no such step
-//! keeps the default budget. While the model ladder routes tasks, one without
-//! a `model_hint` gets at least enough retries to climb it (gap-460230).
+//! keeps the default budget. While the model ladder routes tasks, one that no
+//! `model_hint` or `preferred_model` pins gets at least enough retries to
+//! climb it (gap-460230).
 //! `plan run --max-retries` overrides all of this.
 
 use std::collections::BTreeSet;
@@ -55,9 +56,9 @@ pub(crate) struct TaskRetryBudgets {
     thresholds: Option<AdaptiveThresholds>,
     /// Ids of the tasks that author `max_retries`.
     authored: BTreeSet<String>,
-    /// Least budget of a task that does not author `max_retries` and has no
-    /// `model_hint`: `0`, or what climbing the model ladder takes while it
-    /// routes tasks.
+    /// Least budget of a task that does not author `max_retries` and whose
+    /// model is not pinned: `0`, or what climbing the model ladder takes
+    /// while it routes tasks.
     ladder_min_retries: u32,
 }
 
@@ -97,7 +98,8 @@ impl TaskRetryBudgets {
     /// Give every task that does not author `max_retries` at least
     /// `min_retries`: two attempts on each rung the model ladder lets it climb
     /// (gap-460230). An authored budget is still kept exactly, and a task
-    /// whose `model_hint` pins its model never climbs, so it keeps its own.
+    /// whose `model_hint` or `preferred_model` pins its model never climbs,
+    /// so it keeps its own.
     #[must_use]
     pub(crate) fn with_ladder_min_retries(mut self, min_retries: u32) -> Self {
         self.ladder_min_retries = min_retries;
@@ -113,7 +115,8 @@ impl TaskRetryBudgets {
             };
         }
         let budget = self.suggested(task);
-        if task.model_hint.is_none() && budget.max_retries < self.ladder_min_retries {
+        let pinned = task.model_hint.is_some() || task.hints.preferred_model.is_some();
+        if !pinned && budget.max_retries < self.ladder_min_retries {
             return RetryBudget {
                 max_retries: self.ladder_min_retries,
                 source: RetryBudgetSource::Ladder,
@@ -368,6 +371,12 @@ command = "true"
         let mut pinned = task("STRUCTURAL");
         pinned.model_hint = Some("claude-sonnet-4-6".to_string());
         assert_eq!(budgets.for_task(&pinned).source, RetryBudgetSource::Default);
+        let mut preferred = task("STRUCTURAL");
+        preferred.hints.preferred_model = Some("claude-sonnet-4-6".to_string());
+        assert_eq!(
+            budgets.for_task(&preferred).source,
+            RetryBudgetSource::Default
+        );
         let gates = GatesConfig {
             adaptive_min_retries: 6,
             adaptive_max_retries: 8,

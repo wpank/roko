@@ -789,6 +789,14 @@ impl RoutingLadder {
         let rungs = self.config.role_rungs(role);
         rungs.get(index).map(|rung| rung.name.as_str())
     }
+
+    /// Whether `name` names a rung on `role`'s ladder, as a task's `rung`
+    /// hint must to move its start rung.
+    #[must_use]
+    pub fn has_rung(&self, role: &str, name: &str) -> bool {
+        let rungs = self.config.role_rungs(role);
+        rungs.iter().any(|rung| rung.name == name)
+    }
 }
 
 /// The model name dispatch runs for a rung's model, or why the rung cannot

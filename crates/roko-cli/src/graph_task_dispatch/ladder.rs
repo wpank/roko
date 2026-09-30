@@ -77,10 +77,19 @@ impl GraphTaskDispatcher {
         let role = task.role.as_deref().unwrap_or("implementer");
         let (record, last_chance) = match plan.source {
             ModelChoiceSource::Ladder { rung } => {
-                let reason = if step == 0 {
-                    LadderReason::Start
-                } else {
+                // A `rung` hint that names one of the task's rungs replaced
+                // its start rung (gap-dbf2a6).
+                let hinted = task
+                    .hints
+                    .rung
+                    .as_deref()
+                    .is_some_and(|hint| ladder.has_rung(role, hint));
+                let reason = if step > 0 {
                     LadderReason::Escalated
+                } else if hinted {
+                    LadderReason::Hint
+                } else {
+                    LadderReason::Start
                 };
                 let record = AttemptLadder {
                     rung: ladder.rung_name(role, rung).map(str::to_string),
@@ -328,7 +337,7 @@ printf '%s\n' '{"type":"result","session_id":"sess-l","model":"claude-sonnet-4-6
     /// Two agent-blamed failures on a rung move the task one rung up, and a
     /// provider failure does not count. On its top rung the task stays, and
     /// its last failed attempt there exhausts the ladder once. A pinned task
-    /// never moves.
+    /// never moves, and a `rung` hint picks the start rung.
     #[tokio::test]
     async fn two_failed_attempts_escalate_one_rung() {
         let temp = tempdir().expect("tempdir");
@@ -348,6 +357,11 @@ printf '%s\n' '{"type":"result","session_id":"sess-l","model":"claude-sonnet-4-6
         pinned.id = "T-PIN".to_string();
         pinned.model_hint = Some("cheap-model".to_string());
         let pinned_spec = make_spec(&pinned);
+        let mut hinted = task.clone();
+        hinted.id = "T-HINT".to_string();
+        hinted.hints.rung = Some("top".to_string());
+        let mut hinted_spec = make_spec(&hinted);
+        hinted_spec.max_retries = 1;
         let ctx = CellContext::new().with_run_id(RUN.to_string());
 
         std::fs::write(temp.path().join("fail-once"), "").expect("fail the first call");
@@ -363,9 +377,13 @@ printf '%s\n' '{"type":"result","session_id":"sess-l","model":"claude-sonnet-4-6
                 .await
                 .expect_err("every pinned attempt fails");
         }
+        dispatcher
+            .dispatch(&hinted_spec, Vec::new(), &ctx)
+            .await
+            .expect_err("the hinted attempt fails");
         assert_eq!(
             called_models(&temp),
-            [CHEAP, CHEAP, CHEAP, TOP, TOP, CHEAP, CHEAP, CHEAP]
+            [CHEAP, CHEAP, CHEAP, TOP, TOP, CHEAP, CHEAP, CHEAP, TOP]
         );
         assert_eq!(dispatcher.ladder_step(&spec, &task), 1);
         assert_eq!(dispatcher.ladder_step(&pinned_spec, &pinned), 0);
@@ -390,6 +408,7 @@ printf '%s\n' '{"type":"result","session_id":"sess-l","model":"claude-sonnet-4-6
                 ("agent", "", "pinned", false),
                 ("agent", "", "pinned", false),
                 ("agent", "", "pinned", false),
+                ("agent", "top", "hint", false),
             ]
         );
         let diagnoses: Vec<String> = hub

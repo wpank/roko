@@ -32,7 +32,7 @@ _0 more open · 18 unchecked (`TRIAGE.md`) · `goal = "truth"`_
 - **P2** [gap-5a6e01](items/gap-5a6e01-turn-caps-and-timeouts-set-from-each.md) Turn caps and timeouts set from each tier's p95 over successful tasks · size M · verified 2026-09-30
 - **P2** [gap-6daad9](items/gap-6daad9-plan-runner-injects-no-cellresources-so-rich.md) plan_runner injects no CellResources, so --rich-topology still stops at every gate · size S · verified 2026-09-30
 
-_0 more open · 31 unchecked (`TRIAGE.md`) · `goal = "golden-path"`_
+_0 more open · 34 unchecked (`TRIAGE.md`) · `goal = "golden-path"`_
 
 ## 5. Proof: the pilot benchmark and a record of the work
 

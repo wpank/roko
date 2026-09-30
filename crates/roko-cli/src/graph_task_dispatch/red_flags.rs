@@ -802,7 +802,10 @@ printf '%s\n' '{{"type":"result","session_id":"s","model":"claude-sonnet-4-6","t
     async fn the_pre_verify_screen_runs_post_dispatch_check() {
         // A reviewer, whose contract forbids file writes, changes a file.
         let temp = tempdir().expect("tempdir");
-        commit_repo(temp.path(), &[("src/lib.rs", "pub fn one() -> u8 {\n    1\n}\n")]);
+        commit_repo(
+            temp.path(),
+            &[("src/lib.rs", "pub fn one() -> u8 {\n    1\n}\n")],
+        );
         let writes = provider("printf '// reviewed\\n' >> src/lib.rs", "Looks right.", 10);
         let (dispatcher, mut task) =
             make_test_dispatcher(&temp, &writes, no_auto_fix, GraphFeedbackContext::default())
@@ -824,8 +827,7 @@ printf '%s\n' '{{"type":"result","session_id":"s","model":"claude-sonnet-4-6","t
         let credential = format!("ghp_{}", "a".repeat(36));
         let leaks = provider(":", &format!("Pushed with {credential}."), 10);
         let (dispatcher, mut task) =
-            make_test_dispatcher(&temp, &leaks, no_auto_fix, GraphFeedbackContext::default())
-                .await;
+            make_test_dispatcher(&temp, &leaks, no_auto_fix, GraphFeedbackContext::default()).await;
         let marker = temp.path().join("verify-ran");
         task.verify = vec![verify_step(
             "structural",

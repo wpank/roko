@@ -3,13 +3,14 @@ id = "bug-809e22"
 kind = "bug"
 title = "The streaming dispatch path records no diff base, so its attempts' changed_files stay empty"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p2"
 goal = "golden-path"
 size = "S"
 subsystem = ["roko-cli/graph_task_dispatch"]
 created = 2026-09-30
 updated = 2026-09-30
+last_verified = 2026-09-30
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-tamper's report, branch work/gap-b72761 at 7531304ca)"
 anchors = ["crates/roko-cli/src/graph_task_dispatch/streaming.rs", "crates/roko-cli/src/graph_task_dispatch.rs"]
@@ -46,3 +47,12 @@ Check each attempt's diff for tampering and scope (epic spec-9230a9): a streamed
 ## Notes
 
 - Build on gap-b72761's branch.
+- **wk-tamper (2026-09-30):** Implemented on `work/bug-809e22` at `81de82626`; cargo verification deferred to the
+  batch check. `streaming.rs` has two one-line changes. It calls `record_diff_base(&attempt_key, &lease.path, None)`
+  right after minting the attempt key, where the batch path makes its call; the streaming `TaskLease` has no base
+  revision, so the base is a snapshot. The success outcome now takes `changed_files: self.take_changed_files(..)`.
+  The screen keeps each attempt's changed paths when it computes the diff. They are kept in `diff_snapshot.rs`,
+  keyed by attempt and replacing the task's earlier attempts, because the base is forgotten once verify passes. The
+  screen now computes the diff before its other checks, so a rejected attempt still reports what it changed. Test:
+  `streaming_attempts_record_their_diff_base_and_changed_files`. A streamed attempt that changes nothing is now
+  rejected as `pre_verify:no_changes`, and one that changes `src/lib.rs` reports it in `changed_files`.

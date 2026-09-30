@@ -1442,6 +1442,12 @@ const DYNAMIC_MAP_SECTIONS: &[&str] = &[
     "tools.profiles",
 ];
 
+/// Dynamic map sections whose entries are structs that deny unknown fields
+/// (`ProviderConfig`, `ModelProfile`). Loading strips an unknown key inside
+/// one of their entries, as it does anywhere else; serde itself ignores or
+/// collects unknown keys in the other sections' entries.
+const STRICT_ENTRY_SECTIONS: &[&str] = &["providers", "models"];
+
 /// Whether the dotted `path` names a dynamic map section.
 fn is_dynamic_section(path: &str) -> bool {
     !path.is_empty()
@@ -2012,7 +2018,7 @@ fn is_likely_enum_table(schema: &toml::Value, input: &toml::Value) -> bool {
 ///
 /// Returns `Some(key)` when the distance is at most 2 edits and the key is
 /// at least 3 characters long (to avoid spurious suggestions for short keys).
-fn find_nearest_key<'a>(input: &str, candidates: &[&'a str]) -> Option<&'a str> {
+pub fn find_nearest_key<'a>(input: &str, candidates: &[&'a str]) -> Option<&'a str> {
     if input.len() < 3 {
         return None;
     }
@@ -2684,8 +2690,9 @@ fn deserialize_migrated_toml(text: &str) -> Result<RokoConfig, String> {
 /// Recursively remove keys from `input` that are absent in `schema`.
 ///
 /// Dynamic map sections (providers, models, etc.) are walked using the
-/// sentinel template value so user-defined map keys are preserved while
-/// extra fields within each value are stripped.
+/// sentinel template value so user-defined map keys are preserved. Inside a
+/// provider or model entry ([`STRICT_ENTRY_SECTIONS`]) extra fields are
+/// stripped too, as they are in every fixed section.
 fn strip_unknown_fields(input: &mut toml::Value, schema: &toml::Value, prefix: &str) {
     let Some(input_table) = input.as_table_mut() else {
         return;
@@ -2696,8 +2703,16 @@ fn strip_unknown_fields(input: &mut toml::Value, schema: &toml::Value, prefix: &
     if is_dynamic {
         let value_schema = schema.as_table().and_then(|t| t.values().next()).cloned();
         if let Some(ref vs) = value_schema {
-            for (_key, val) in input_table.iter_mut() {
-                strip_unknown_fields(val, vs, prefix);
+            let strict = STRICT_ENTRY_SECTIONS.contains(&prefix);
+            for (key, val) in input_table.iter_mut() {
+                // A strict section's entry is a plain table below the section
+                // (`providers.<name>`), stripped against the template.
+                let entry_prefix = if strict {
+                    format!("{prefix}.{key}")
+                } else {
+                    prefix.to_string()
+                };
+                strip_unknown_fields(val, vs, &entry_prefix);
             }
         }
         return;
@@ -3007,6 +3022,63 @@ max_agent_usd = 2.0
         assert!(loaded.diagnostics().iter().any(|diagnostic| {
             diagnostic.key == "future_section" && diagnostic.message.contains("unknown")
         }));
+    }
+
+    /// bug-ab8118: a misspelled key inside a `[providers.*]` or `[models.*]`
+    /// entry is diagnosed and stripped like one in any other section, so the
+    /// load succeeds and keeps the entry's other keys.
+    #[test]
+    fn a_typo_inside_a_provider_or_model_entry_is_handled_like_any_other() {
+        const TEXT: &str = r#"schema_version = 2
+config_version = 2
+
+[agent]
+default_efort = "high"
+
+[providers.local]
+kind = "openai_compat"
+base_ulr = "http://localhost:11434/v1"
+api_key_env = "LOCAL_KEY"
+
+[models.local-model]
+provider = "local"
+slug = "llama3"
+contxt_window = 8192
+"#;
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("roko.toml"), TEXT).expect("write config");
+        let options = LoadOptions {
+            merge_global: false,
+            apply_env_overrides: false,
+            apply_hierarchical_env: false,
+            strict_validation: false,
+        };
+
+        let loaded = load_config_validated_with_options(dir.path(), &options)
+            .expect("a typo in any section leaves the load working");
+
+        let unknown: Vec<&str> = loaded
+            .diagnostics()
+            .iter()
+            .filter(|diagnostic| diagnostic.message.contains("unknown"))
+            .map(|diagnostic| diagnostic.key.as_str())
+            .collect();
+        for key in [
+            "agent.default_efort",
+            "providers.local.base_ulr",
+            "models.local-model.contxt_window",
+        ] {
+            assert!(unknown.contains(&key), "{key}: {unknown:?}");
+        }
+        let config = loaded.config();
+        assert_eq!(
+            config.providers["local"].api_key_env.as_deref(),
+            Some("LOCAL_KEY")
+        );
+        assert_eq!(config.models["local-model"].slug, "llama3");
+        // The global config's loader strips the same keys.
+        let global = deserialize_migrated_toml(TEXT).expect("the global loader strips them too");
+        assert!(global.providers.contains_key("local"));
     }
 
     #[test]

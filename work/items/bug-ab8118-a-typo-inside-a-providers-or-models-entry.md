@@ -3,13 +3,15 @@ id = "bug-ab8118"
 kind = "bug"
 title = "A typo inside a [providers.*] or [models.*] entry fails the whole config load, where a typo elsewhere is stripped with a warning"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p3"
 goal = "release"
 size = "S"
 subsystem = ["roko-core/config"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-09-30
+last_verified = 2026-09-30
+last_verified_rev = "94a72dcfc"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-onboard's report)"
 anchors = ["crates/roko-core/src/config/provider.rs::ProviderConfig", "crates/roko-core/src/config/provider.rs::ModelProfile", "crates/roko-core/src/config/loader.rs::strip_unknown_fields"]
@@ -51,3 +53,11 @@ Stripping matches the rest of the loader. Then add `a_typo_inside_a_provider_or_
 
 - [ ] A typo inside a provider or model entry is handled like a typo anywhere else.
 - [ ] The `[[verify]]` command passes.
+
+## Notes
+
+- 2026-09-30 (wk-childenv): Implemented on `work/bug-17f0e4` at `3b6af343f`; cargo verification deferred to the batch
+  check. Cause: `strip_unknown_fields` recursed into each dynamic-map entry with the section's own prefix, so no key
+  inside an entry was checked. Only `providers` and `models` entries are now stripped (their structs deny unknown
+  fields); profiles, roles and tool profiles are left alone because serde collects or ignores their extra keys. The
+  `--config <path>` path in roko-cli (`Config::from_file`) parses with serde directly and still fails on such a typo.

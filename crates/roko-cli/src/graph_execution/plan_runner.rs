@@ -3105,7 +3105,7 @@ mod tests {
     }
 
     /// Workspace config whose only role in use is disabled, so the task
-    /// completes without dispatching a provider.
+    /// fails without dispatching a provider (bug-a843d4).
     const DISABLED_ROLE_CONFIG: &str = r#"
 [agent]
 default_model = "claude-sonnet-4-6"
@@ -3127,19 +3127,19 @@ enabled = false
         let dir = tempfile::tempdir().expect("tempdir");
         std::fs::write(dir.path().join("roko.toml"), DISABLED_ROLE_CONFIG).expect("config");
         std::fs::write(dir.path().join("README.md"), "# hub test\n").expect("readme");
-        let plan_dir = dir.path().join("plans").join("01-skipped");
+        let plan_dir = dir.path().join("plans").join("01-disabled");
         std::fs::create_dir_all(&plan_dir).expect("plan dir");
         std::fs::write(
             plan_dir.join("tasks.toml"),
             r#"[meta]
-plan = "01-skipped"
+plan = "01-disabled"
 max_parallel = 1
 skip_enrichment = true
 
 [[task]]
 id = "T1"
 title = "Disabled-role task"
-description = "Completes without dispatch because its role is disabled."
+description = "Fails without dispatch because its role is disabled."
 role = "researcher"
 status = "ready"
 tier = "focused"
@@ -3184,16 +3184,15 @@ files = ["README.md"]
             .as_ref()
             .expect("PlanSetLoaded reached the hub");
         assert_eq!(plan_set.plans.len(), 1);
-        assert_eq!(plan_set.plans[0].plan_id, "01-skipped");
+        assert_eq!(plan_set.plans[0].plan_id, "01-disabled");
         // PlanStarted/PlanCompleted landed in the same hub.
         assert!(snapshot.plan_set_complete());
-        // gap-29a84b: the disabled-role task ran no verify step, so the plan
-        // is unverified, not succeeded.
-        assert_ne!(snapshot.plans["01-skipped"].phase, "completed");
+        // bug-a843d4: the disabled-role task failed, so the plan failed.
+        assert_eq!(snapshot.plans["01-disabled"].phase, "failed");
         assert_eq!(exit_code, EXIT_FAILURE);
         assert_eq!(
-            crate::graph_checkpoint::canonical_checkpoint_status(dir.path(), "01-skipped"),
-            Some(GraphCheckpointStatus::Unverified)
+            crate::graph_checkpoint::canonical_checkpoint_status(dir.path(), "01-disabled"),
+            Some(GraphCheckpointStatus::Failed)
         );
     }
 
@@ -3254,7 +3253,7 @@ skip_enrichment = true
 [[task]]
 id = "T1"
 title = "Disabled-role task"
-description = "Completes without dispatch because its role is disabled."
+description = "Fails without dispatch because its role is disabled."
 role = "researcher"
 status = "ready"
 tier = "focused"

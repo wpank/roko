@@ -2,14 +2,16 @@
 id = "bug-1f098f"
 kind = "bug"
 title = "Whitepaper PDF drops the space before the status tag in figure 2's step-9 chips"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p3"
 goal = "whitepaper"
 size = "S"
 subsystem = ["docs/whitepaper"]
 created = 2026-09-30
 updated = 2026-09-30
+last_verified = 2026-09-30
+last_verified_rev = "e6db226ee"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "wk-wp-figures report on gap-daa246 (2026-09-30)"
 anchors = ["docs/whitepaper/figures/fig2-golden-path.svg"]
@@ -19,6 +21,12 @@ links = { depends_on = [], blocks = [], related = ["gap-daa246", "gap-08d9b2"], 
 
 [[verify]]
 command = "! grep -q '<tspan[^>]*> · ' docs/whitepaper/figures/fig2-golden-path.svg && python3 tools/status_matrix.py --check"
+
+[closed]
+at = 2026-09-30
+commit = "e6db226ee"
+by = "commit trailer"
+evidence = "In fig2-golden-path.svg, step 9's two chips now end their name text with the space and start the tag <tspan> at the dot; data-row and data-tag are unchanged. Proven by the item's verify (with status_matrix.py --check), and by build.sh rebuilt into a scratch directory: page 7 of the PDF shows \"merge queue · ORPHANED\" and \"whole-plan gate · MISSING\", and pdftotext reads them the same. A no-break space was tried first and librsvg dropped it too. docs/whitepaper/figures/README.md now tells figure editors to put the space before a <tspan>, never at its start."
 +++
 
 ## Problem
@@ -44,6 +52,10 @@ Found while checking gap-daa246's build: `build.sh` renders 32 pages, and every 
 
 ## Done when
 
-- [ ] Both chips render with the space in the PDF.
-- [ ] `python3 tools/status_matrix.py --check` still passes.
-- [ ] The `[[verify]]` command passes.
+- [x] Both chips render with the space in the PDF.
+- [x] `python3 tools/status_matrix.py --check` still passes.
+- [x] The `[[verify]]` command passes.
+
+## Notes
+
+- **`&#160;` does not work.** librsvg 2.63.2 drops a no-break space at the start of a `<tspan>` as well as a plain space, so the PDF still read "merge queue· ORPHANED". The fix moves the space before the `<tspan>`, where librsvg keeps it (Figure 1's "records under `.roko/`" already relies on that).

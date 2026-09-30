@@ -2,14 +2,16 @@
 id = "bug-4862cf"
 kind = "bug"
 title = "The rich-topology gate adapter uses GatesConfig::default(), not the run's [gates]"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p2"
 goal = "golden-path"
 size = "S"
 subsystem = ["roko-cli/runner/gate_adapter"]
 created = 2026-09-30
 updated = 2026-09-30
+last_verified = 2026-09-30
+last_verified_rev = "a4298a644"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-integrate's report, checked on work/spec-f830c4 at 8268c7498)"
 anchors = ["crates/roko-cli/src/runner/gate_adapter.rs"]
@@ -19,6 +21,12 @@ links = { depends_on = ["spec-f830c4"], blocks = [], related = ["spec-f830c4", "
 
 [[verify]]
 command = "grep -rqw 'fn rich_topology_gates_use_the_runs_gates_config' crates/roko-cli/src/ && cargo test -p roko-cli --lib rich_topology_gates_use_the_runs_gates_config"
+
+[closed]
+at = 2026-09-30
+commit = "a4298a644"
+by = "wk-integrate"
+evidence = "Fixed by 7920e6141 (plan_cell_resources gives the gate adapter the run's [gates]). rich_topology_gates_use_the_runs_gates_config (roko-cli lib, a4298a644) passes: the run's [gates] reaches the gate pipeline and its max_rung bounds it."
 +++
 
 ## Problem

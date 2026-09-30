@@ -3,13 +3,15 @@ id = "bug-69a002"
 kind = "bug"
 title = "The guard's secret-read check misses git grep, ag/ack, reads through find or xargs and brace globs, and judges a search after cd from the wrong directory"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p3"
 goal = "release"
 size = "S"
 subsystem = ["roko-agent/claude_cli_guard", "roko-std/sandbox"]
 created = 2026-09-30
 updated = 2026-09-30
+last_verified = 2026-09-30
+last_verified_rev = "4cf2e329b"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-guard2's report)"
 anchors = ["crates/roko-agent/src/claude_cli_guard.py", "crates/roko-std/src/tool/builtin/sandbox.rs"]
@@ -48,3 +50,10 @@ The content check in `claude_cli_guard.py`, and `refuse_key_file_in_command` in 
 
 - [ ] Each form is refused when it would read a secret.
 - [ ] The `[[verify]]` command passes.
+
+## Notes
+
+- Premise held at 4cf2e329b: `git grep`, `ag`, `ack`, `find . -exec cat {} +`, `ls | xargs cat` and `cat roko.{toml,lock}` all passed over a secret-holding `roko.toml`, and `cd src && grep -r x ..` was judged from the call's directory.
+- Changes: `git grep` (after `-C`, over its paths and pathspecs), `ag` and `ack` count as recursive searches with their own option tables and filters. A read (cat, head, grep, cp and the like) of a list the guard cannot see is judged by where the list comes from: find's starting points or fd's paths, else the call's directory for `xargs` and `parallel`, unless a find name test or an fd pattern or `-e` leaves `roko.toml` out. Brace expansions are expanded before a word is judged. A command after a literal `cd`/`pushd` is judged where it runs, and a word is resolved against each `cd` target as well; `cd -` and `cd $X` stay unknown.
+- Not done: roko-std's `refuse_key_file_in_command` (the `bash` tool) has none of these checks, nor bug-41bea4's; porting them to Rust is left for a follow-up item.
+- The guard's scratch suites, old and new (reach cases and a mirror of `settings_hook_refuses_every_search_that_reaches_a_secret`), pass under python 3.12 and 3.9, and a fuzz of odd commands finds no crash. Implemented on `work/bug-7830f5` at `2a211b515`; cargo verification deferred to the batch check.

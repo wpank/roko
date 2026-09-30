@@ -761,13 +761,23 @@ fn resolve_runtime_layers_with_context(
     config.interpolate_env_vars();
     config.resolve_file_secrets();
     // The process's secret scrubber (when one is installed) also redacts the
-    // keys this config's providers read.
+    // keys this config's providers read, and the secrets the config holds:
+    // secret fields such as serve.auth.api_key, header values and file
+    // secrets.
     crate::obs::add_secret_env_values(
         config
             .providers
             .values()
             .filter_map(|provider| provider.api_key_env.as_deref()),
     );
+    if crate::obs::secret_scrubber().is_some() {
+        let secrets = config_secret_values(&config);
+        crate::obs::add_secret_values(
+            secrets
+                .iter()
+                .map(|(field, value)| (field.as_str(), value.as_str())),
+        );
+    }
 
     // Post-merge provider reference validation.
     // When strict_validation is enabled in config, dangling model->provider
@@ -2152,12 +2162,19 @@ fn is_secret_key(key: &str) -> bool {
 /// path.
 #[must_use]
 pub fn secret_fields(value: &toml::Value) -> Vec<String> {
-    let mut fields = Vec::new();
-    collect_secret_fields(value, "", &mut fields);
+    let mut fields: Vec<String> = Vec::new();
+    visit_secrets(value, "", &mut |field, _| {
+        // The strings of one array share a field.
+        if fields.last().is_none_or(|last| last != field) {
+            fields.push(field.to_string());
+        }
+    });
     fields
 }
 
-fn collect_secret_fields(value: &toml::Value, path: &str, fields: &mut Vec<String>) {
+/// Call `found` with the dotted field and the value of each secret under
+/// `value`, at dotted `path` ([`secret_fields`]).
+fn visit_secrets(value: &toml::Value, path: &str, found: &mut dyn FnMut(&str, &str)) {
     let Some(table) = value.as_table() else {
         return;
     };
@@ -2169,24 +2186,24 @@ fn collect_secret_fields(value: &toml::Value, path: &str, fields: &mut Vec<Strin
         };
         match child {
             toml::Value::String(text) if is_secret_key(key) && is_literal_secret(text) => {
-                fields.push(child_path);
+                found(&child_path, text);
             }
             // An array of strings under a secret name; tables in it, such as
             // the hashed `serve.auth.api_keys`, hold no secret.
             toml::Value::Array(items) if is_secret_key(key) => {
-                if items
-                    .iter()
-                    .any(|item| item.as_str().is_some_and(is_literal_secret))
-                {
-                    fields.push(child_path);
+                for text in items.iter().filter_map(toml::Value::as_str) {
+                    if is_literal_secret(text) {
+                        found(&child_path, text);
+                    }
                 }
             }
             toml::Value::Table(headers) if key.eq_ignore_ascii_case("extra_headers") => {
                 for (name, header) in headers {
                     if !name.to_ascii_lowercase().ends_with("_file")
-                        && header.as_str().is_some_and(is_literal_secret)
+                        && let Some(text) = header.as_str()
+                        && is_literal_secret(text)
                     {
-                        fields.push(format!("{child_path}.{name}"));
+                        found(&format!("{child_path}.{name}"), text);
                     }
                 }
             }
@@ -2197,19 +2214,40 @@ fn collect_secret_fields(value: &toml::Value, path: &str, fields: &mut Vec<Strin
                         && crate::child_env::is_secret_env_name(name)
                         && is_literal_secret(text)
                     {
-                        fields.push(format!("{child_path}.{name}"));
+                        found(&format!("{child_path}.{name}"), text);
                     }
                 }
             }
-            toml::Value::Table(_) => collect_secret_fields(child, &child_path, fields),
+            toml::Value::Table(_) => visit_secrets(child, &child_path, found),
             toml::Value::Array(items) => {
                 for item in items {
-                    collect_secret_fields(item, &child_path, fields);
+                    visit_secrets(item, &child_path, found);
                 }
             }
             _ => {}
         }
     }
+}
+
+/// The secrets a resolved config holds, as (field, value) pairs: the
+/// [`secret_fields`] of its effective values, with references expanded and
+/// file secrets read. A header value such as `Bearer <token>` adds the
+/// credential alone as well, which a log may show without the scheme.
+fn config_secret_values(config: &RokoConfig) -> Vec<(String, String)> {
+    let Ok(tree) = toml::Value::try_from(config) else {
+        return Vec::new();
+    };
+    let mut secrets = Vec::new();
+    visit_secrets(&tree, "", &mut |field, value| {
+        secrets.push((field.to_string(), value.to_string()));
+        if field.contains(".extra_headers.")
+            && let Some((scheme, credential)) = value.split_once(' ')
+            && scheme.chars().all(|c| c.is_ascii_alphabetic())
+        {
+            secrets.push((field.to_string(), credential.to_string()));
+        }
+    });
+    secrets
 }
 
 /// Whether a config string is a literal secret: not empty, and not an
@@ -4395,6 +4433,59 @@ max_concurrent_plans = 3
         assert!(agent_env.contains(&rust_log), "{agent_env:?}");
         let shown = serialize_effective_redacted(&config).expect("serialize");
         assert!(!shown.contains("sk-test"), "{shown}");
+    }
+
+    /// bug-5a6636: the process scrubber learned only the keys providers read
+    /// through `api_key_env`, so a header value, a file secret or
+    /// `serve.auth.api_key` reached records and logs unredacted.
+    #[test]
+    fn the_scrubber_knows_every_config_secret() {
+        let _scrubber_guard = crate::obs::scrub::PROCESS_SCRUBBER_LOCK.lock();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let secret_file = dir.path().join("header.secret");
+        std::fs::write(&secret_file, "file-secret-5a6636\n").expect("write secret file");
+        // A key file may hold literal secrets.
+        std::fs::create_dir_all(dir.path().join(".roko")).expect("create .roko");
+        let path = dir.path().join(".roko").join("config.toml");
+        let config = format!(
+            "[serve.auth]\napi_key = \"serve-key-5a6636\"\n\n\
+             [providers.x]\nkind = \"openai_compat\"\nbase_url = \"https://x.invalid/v1\"\n\n\
+             [providers.x.extra_headers]\nAuthorization = \"Bearer header-token-5a6636\"\n\
+             token_file = \"{}\"\n\n\
+             [agent]\nenv = [[\"GITHUB_TOKEN\", \"agent-token-5a6636\"], \
+             [\"RUST_LOG\", \"plain-setting-5a6636\"]]\n",
+            secret_file.display()
+        );
+        std::fs::write(&path, config).expect("write config");
+        let opts = LoadOptions {
+            merge_global: false,
+            apply_env_overrides: false,
+            apply_hierarchical_env: false,
+            strict_validation: false,
+        };
+
+        let scrubber = std::sync::Arc::new(crate::obs::LogScrubber::new());
+        let previous = crate::obs::install_secret_scrubber(Some(std::sync::Arc::clone(&scrubber)));
+        let loaded = load_config_file(&path, &opts);
+        crate::obs::install_secret_scrubber(previous);
+        loaded.expect("a key file may hold secrets");
+
+        let record = "serve-key-5a6636 Bearer header-token-5a6636 header-token-5a6636 \
+                      file-secret-5a6636 agent-token-5a6636 plain-setting-5a6636";
+        let scrubbed = scrubber.scrub_literals(record);
+        for secret in [
+            "serve-key-5a6636",
+            "header-token-5a6636",
+            "file-secret-5a6636",
+            "agent-token-5a6636",
+        ] {
+            assert!(!scrubbed.contains(secret), "{scrubbed}");
+        }
+        assert!(
+            scrubbed.contains("[REDACTED:serve.auth.api_key]"),
+            "{scrubbed}"
+        );
+        assert!(scrubbed.contains("plain-setting-5a6636"), "{scrubbed}");
     }
 
     /// Dotted paths of every table in `value` below `prefix`.

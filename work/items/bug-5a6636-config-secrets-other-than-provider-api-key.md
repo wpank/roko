@@ -3,22 +3,24 @@ id = "bug-5a6636"
 kind = "bug"
 title = "Config secrets other than provider api_key_env (extra_headers, file secrets, serve.auth.api_key) aren't added to the log scrubber"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p2"
 goal = "release"
 size = "S"
 subsystem = ["roko-agent/safety/scrub"]
 created = 2026-09-30
 updated = 2026-09-30
+last_verified = 2026-09-30
+last_verified_rev = "4cf2e329b"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-canary's report)"
-anchors = ["crates/roko-agent/src/safety/scrub.rs"]
+anchors = ["crates/roko-core/src/config/loader.rs", "crates/roko-core/src/obs/scrub.rs"]
 lane = "rust-cold"
 parent = "spec-ba7bea"
 links = { depends_on = [], blocks = [], related = ["gap-0e2c40", "bug-cef888", "bug-7830f5"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
-command = "grep -rqw 'fn the_scrubber_knows_every_config_secret' crates/roko-agent/src/ && cargo test -p roko-agent --lib the_scrubber_knows_every_config_secret"
+command = "grep -rqw 'fn the_scrubber_knows_every_config_secret' crates/roko-core/src/ && cargo test -p roko-core --lib the_scrubber_knows_every_config_secret"
 +++
 
 ## Problem
@@ -46,3 +48,9 @@ The scrubber's construction from config.
 
 - [ ] Every config secret is redacted from records and logs.
 - [ ] The `[[verify]]` command passes.
+
+## Notes
+
+- Premise held at 4cf2e329b, at other anchors: roko-agent's `safety/scrub.rs` no longer holds the process scrubber. gap-5f4852 moved it to roko-core's `obs/scrub.rs`, which roko-fs's `RunScrubber::install` fills at startup, and the loader added only providers' `api_key_env` values (`resolve_runtime_layers_with_context`). The anchors and the `[[verify]]` now point at roko-core, where the test lives.
+- Change: after resolving a config, the loader adds every secret it holds to the installed scrubber, the fields `secret_fields` finds in the effective config (secret-named fields such as `serve.auth.api_key`, provider header values with file secrets read, `agent.env` credentials), each under its field; a `Bearer <token>` header adds the token alone too. `roko_core::obs::add_secret_values` does the adding; `secret_fields` and the new list share one walk (`visit_secrets`).
+- Implemented on `work/bug-7830f5` at `8d94db4ed`; cargo verification deferred to the batch check.

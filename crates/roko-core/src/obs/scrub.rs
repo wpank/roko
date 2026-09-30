@@ -250,6 +250,10 @@ impl Default for LogScrubber {
 
 static SECRET_SCRUBBER: RwLock<Option<Arc<LogScrubber>>> = RwLock::new(None);
 
+/// Serializes the tests that swap the process's secret scrubber.
+#[cfg(test)]
+pub(crate) static PROCESS_SCRUBBER_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+
 /// Install `scrubber` as the process's secret scrubber and return the one it
 /// replaces. roko installs one at startup
 /// (`roko_fs::observability::RunScrubber::install`); a test that installs
@@ -276,6 +280,23 @@ pub fn add_secret_env_values<'a>(names: impl IntoIterator<Item = &'a str>) {
         if let Ok(value) = std::env::var(name)
             && value.len() >= MIN_SECRET_LEN
             && let Err(error) = scrubber.add_literal_value(&value, name)
+        {
+            tracing::warn!(name, %error, "secret scrubber: failed to add a secret value");
+        }
+    }
+}
+
+/// Add `secrets`, `(name, value)` pairs such as the secrets a config holds,
+/// to the process's secret scrubber, each value redacted under its name.
+/// Values shorter than [`MIN_SECRET_LEN`] are skipped, and so is everything
+/// when no scrubber is installed.
+pub fn add_secret_values<'a>(secrets: impl IntoIterator<Item = (&'a str, &'a str)>) {
+    let Some(scrubber) = secret_scrubber() else {
+        return;
+    };
+    for (name, value) in secrets {
+        if value.len() >= MIN_SECRET_LEN
+            && let Err(error) = scrubber.add_literal_value(value, name)
         {
             tracing::warn!(name, %error, "secret scrubber: failed to add a secret value");
         }
@@ -713,9 +734,6 @@ mod tests {
         );
     }
 
-    /// Serializes the tests that swap the process's secret scrubber.
-    static PROCESS_SCRUBBER_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
-
     #[test]
     fn process_scrubber_scrubs_records_and_restores() {
         let _guard = PROCESS_SCRUBBER_LOCK.lock();
@@ -741,6 +759,15 @@ mod tests {
             add_secret_env_values(["PATH"]);
             assert_eq!(scrub_secrets(&path), "[REDACTED:PATH]");
         }
+        // So does a config's secret, under its field; a short value does not.
+        add_secret_values([
+            ("serve.auth.api_key", "config-secret-5a6636"),
+            ("x", "tiny"),
+        ]);
+        assert_eq!(
+            scrub_secrets("config-secret-5a6636 tiny"),
+            "[REDACTED:serve.auth.api_key] tiny"
+        );
 
         install_secret_scrubber(previous);
         if secret_scrubber().is_none() {

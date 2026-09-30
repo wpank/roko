@@ -227,7 +227,8 @@ impl JwksProvider {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ServeAuthConfig {
-    /// Whether `/api/*` routes require an `X-Api-Key` header.
+    /// Whether `/api/*` routes require an `X-Api-Key` header. On by default
+    /// ([`ServeAuthConfig::default`]).
     #[serde(default)]
     pub enabled: bool,
     /// Shared API key expected in `X-Api-Key` (legacy single-key mode).

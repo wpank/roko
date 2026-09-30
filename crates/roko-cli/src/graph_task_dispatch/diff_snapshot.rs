@@ -268,6 +268,23 @@ impl AttemptDiff {
         Some(String::from_utf8_lossy(&patch).into_owned())
     }
 
+    /// The `declared` paths that exist in the working tree but that git
+    /// ignores, so no diff can show a change to them. Globs are skipped.
+    pub(super) async fn ignored_on_disk(&self, declared: &[String]) -> Vec<String> {
+        let mut ignored = Vec::new();
+        for path in declared.iter().map(|path| path.trim()) {
+            if path.is_empty() || path.contains('*') || !self.workdir.join(path).exists() {
+                continue;
+            }
+            // `check-ignore` exits 0 only for an ignored path.
+            let args = ["check-ignore", "--quiet", "--", path];
+            if git_bytes(&self.workdir, &args, None, 1024).await.is_some() {
+                ignored.push(path.to_string());
+            }
+        }
+        ignored
+    }
+
     /// Text of `blob`, or `None` when it is binary, too large, or unreadable.
     pub(super) async fn blob_text(&self, blob: &str) -> Option<String> {
         let (bytes, truncated) =

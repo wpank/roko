@@ -388,6 +388,23 @@ impl InFlightTasks {
         self.changed
             .send_modify(|generation| *generation = generation.wrapping_add(1));
     }
+
+    /// Wait until an attempt of `key` (`"{plan_id}/{task_id}"`) begins to
+    /// settle a step that failed beside its siblings.
+    #[cfg(test)]
+    pub(crate) async fn settling_began(&self, key: &str) {
+        let mut changed = self.changed.subscribe();
+        while !self
+            .attempts
+            .lock()
+            .values()
+            .any(|attempt| attempt.key == key && attempt.settling)
+        {
+            if changed.changed().await.is_err() {
+                return;
+            }
+        }
+    }
 }
 
 /// Siblings blamed for a failure: whose files hold every located error.

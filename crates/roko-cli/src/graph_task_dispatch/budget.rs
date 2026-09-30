@@ -401,7 +401,7 @@ mod tests {
 
     use super::*;
     use crate::graph_task_dispatch::tests::{
-        STREAMS_THEN_TIMES_OUT_PROVIDER, batch_ctx, make_batch_dispatcher,
+        STREAMS_THEN_TIMES_OUT_PROVIDER, TIMEOUT_SECS_UNDER_LOAD, batch_ctx, make_batch_dispatcher,
         make_scripted_batch_dispatcher, make_spec, make_task_def,
     };
 
@@ -657,6 +657,7 @@ mod tests {
 
     /// The first `costs.jsonl` record, once the background writer lands it.
     async fn first_cost_record(path: &Path) -> serde_json::Value {
+        crate::background_writes::settled(path.parent().unwrap_or(path)).await;
         for _ in 0..600 {
             if let Some(record) = std::fs::read_to_string(path)
                 .unwrap_or_default()
@@ -672,46 +673,56 @@ mod tests {
 
     #[tokio::test]
     async fn a_timed_out_attempt_settles_the_spend_it_streamed() {
-        let temp = tempdir().expect("tempdir");
-        let costs_path = temp.path().join("costs.jsonl");
-        let (dispatcher, mut task) =
-            make_scripted_batch_dispatcher(&temp, STREAMS_THEN_TIMES_OUT_PROVIDER, |_| {}).await;
-        let dispatcher = dispatcher.with_feedback(GraphFeedbackContext {
-            costs_path: Some(costs_path.clone()),
-            ..GraphFeedbackContext::default()
-        });
-        task.timeout_secs = 1;
-        let spec = make_spec(&task);
-
-        let error = dispatcher
-            .dispatch(&spec, Vec::new(), &batch_ctx())
-            .await
-            .expect_err("the attempt runs out of time");
-        assert!(
-            matches!(&error, RokoError::Agent { message, .. } if message == "timed out after 1000 ms"),
-            "got {error:?}"
-        );
-
         // Sonnet per million: $3 in, $15 out.
         let streamed_usd = (1_000.0 * 3.0 + 200.0 * 15.0) / 1e6;
-        let plan_spent = dispatcher.plan_budget_snapshot(&spec.plan_id).spent_usd;
-        assert!(
-            (plan_spent - streamed_usd).abs() < 1e-6,
-            "plan ledger settled {plan_spent}"
-        );
-        let task_spent = dispatcher
-            .task_spend
-            .tasks
-            .lock()
-            .get(&format!("{}/{}", spec.plan_id, task.id))
-            .copied();
-        assert_eq!(task_spent, Some(usd_to_micro_usd(streamed_usd)));
+        for timeout_secs in TIMEOUT_SECS_UNDER_LOAD {
+            let temp = tempdir().expect("tempdir");
+            let costs_path = temp.path().join("costs.jsonl");
+            let (dispatcher, mut task) =
+                make_scripted_batch_dispatcher(&temp, STREAMS_THEN_TIMES_OUT_PROVIDER, |_| {})
+                    .await;
+            let dispatcher = dispatcher.with_feedback(GraphFeedbackContext {
+                costs_path: Some(costs_path.clone()),
+                ..GraphFeedbackContext::default()
+            });
+            task.timeout_secs = timeout_secs;
+            let spec = make_spec(&task);
 
-        let record = first_cost_record(&costs_path).await;
-        assert_eq!(record["success"], false, "{record}");
-        assert_eq!(record["input_tokens"], 1_000, "{record}");
-        assert_eq!(record["output_tokens"], 200, "{record}");
-        let recorded_usd = record["cost_usd"].as_f64().expect("cost_usd");
-        assert!((recorded_usd - streamed_usd).abs() < 1e-6, "{record}");
+            let expected = format!("timed out after {} ms", timeout_secs * 1_000);
+            let error = dispatcher
+                .dispatch(&spec, Vec::new(), &batch_ctx())
+                .await
+                .expect_err("the attempt runs out of time");
+            assert!(
+                matches!(&error, RokoError::Agent { message, .. } if *message == expected),
+                "got {error:?}"
+            );
+
+            let plan_spent = dispatcher.plan_budget_snapshot(&spec.plan_id).spent_usd;
+            if plan_spent <= 0.0 {
+                // The provider ran out of time before its message arrived.
+                continue;
+            }
+            assert!(
+                (plan_spent - streamed_usd).abs() < 1e-6,
+                "plan ledger settled {plan_spent}"
+            );
+            let task_spent = dispatcher
+                .task_spend
+                .tasks
+                .lock()
+                .get(&format!("{}/{}", spec.plan_id, task.id))
+                .copied();
+            assert_eq!(task_spent, Some(usd_to_micro_usd(streamed_usd)));
+
+            let record = first_cost_record(&costs_path).await;
+            assert_eq!(record["success"], false, "{record}");
+            assert_eq!(record["input_tokens"], 1_000, "{record}");
+            assert_eq!(record["output_tokens"], 200, "{record}");
+            let recorded_usd = record["cost_usd"].as_f64().expect("cost_usd");
+            assert!((recorded_usd - streamed_usd).abs() < 1e-6, "{record}");
+            return;
+        }
+        panic!("no provider streamed its message before its time ran out");
     }
 }

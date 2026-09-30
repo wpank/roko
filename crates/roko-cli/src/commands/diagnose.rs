@@ -891,6 +891,9 @@ fn describe_task(
             };
             let verdict = match task.gate_verdict {
                 Some(TaskGateVerdict::Passed) => "; its verify steps passed",
+                Some(TaskGateVerdict::AlreadySatisfied) => {
+                    "; it changed nothing, and its verify steps passed on the tree as it was"
+                }
                 Some(TaskGateVerdict::Unverified) => "; it has no verify steps",
                 Some(TaskGateVerdict::ForcedAccept) => {
                     "; its verify steps failed and it was force-accepted, so a resume runs it again"

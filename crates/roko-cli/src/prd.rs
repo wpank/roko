@@ -2540,6 +2540,7 @@ const KNOWN_META_FIELDS: &[&str] = &[
     "failure_policy",
     "workspace_rungs",
     "verify",
+    "approval",
 ];
 
 /// Required field names for the `[meta]` section.

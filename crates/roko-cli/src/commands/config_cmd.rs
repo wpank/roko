@@ -592,39 +592,7 @@ pub(crate) fn cmd_provider_add(workdir: &Path, name: &str, dry_run: bool) -> Res
         }
     };
 
-    // Generate TOML snippet
-    let kind = entry.kind.label();
-    let env_var = if entry.api_key_env.is_empty() {
-        String::new()
-    } else {
-        format!("api_key = \"${{{}}}\"", entry.api_key_env)
-    };
-
-    let models_toml: Vec<String> = entry
-        .models
-        .iter()
-        .map(|m| {
-            format!(
-                "[models.{slug}]\nprovider = \"{name}\"\nmodel = \"{slug}\"\ncontext_window = {ctx}\nmax_output = {max_out}\nsupports_tools = {tools}\ncost_input_per_m = {ci}\ncost_output_per_m = {co}",
-                slug = m.slug.replace('/', "_"),
-                name = name,
-                ctx = m.context_window,
-                max_out = m.max_output,
-                tools = m.supports_tools,
-                ci = m.cost_input_per_m,
-                co = m.cost_output_per_m,
-            )
-        })
-        .collect();
-
-    let toml_snippet = format!(
-        "[providers.{name}]\nkind = \"{kind}\"\nbase_url = \"{base_url}\"\n{env_var}\n\n{models}",
-        name = name,
-        kind = kind,
-        base_url = entry.base_url,
-        env_var = env_var,
-        models = models_toml.join("\n\n"),
-    );
+    let toml_snippet = provider_add_snippet(name, entry);
 
     if dry_run {
         println!("# Add this to your roko.toml:\n");
@@ -658,6 +626,50 @@ pub(crate) fn cmd_provider_add(workdir: &Path, name: &str, dry_run: bool) -> Res
     }
 
     Ok(())
+}
+
+/// The `roko.toml` stanza `roko config providers add <name>` appends for
+/// catalog `entry`: `[providers.<name>]`, then a `[models.*]` table per
+/// catalog model, in the keys `ProviderConfig` and `ModelProfile` read
+/// (`api_key_env`, `slug`). A model's table is named after its slug, with
+/// `/` turned into `_`; its `slug` stays the one the API expects.
+fn provider_add_snippet(
+    name: &str,
+    entry: &roko_core::provider_catalog::ProviderCatalogEntry,
+) -> String {
+    let mut lines = vec![
+        format!("[providers.{name}]"),
+        format!("kind = {}", toml_string(entry.kind.label())),
+        format!("base_url = {}", toml_string(entry.base_url)),
+    ];
+    if !entry.api_key_env.is_empty() {
+        lines.push(format!("api_key_env = {}", toml_string(entry.api_key_env)));
+    }
+    for model in entry.models {
+        let key = toml_string(&model_table_key(model.slug));
+        // `{:?}` keeps a whole cost a float (`3.0`, not `3`).
+        let (input, output) = (model.cost_input_per_m, model.cost_output_per_m);
+        lines.push(String::new());
+        lines.push(format!("[models.{key}]"));
+        lines.push(format!("provider = {}", toml_string(name)));
+        lines.push(format!("slug = {}", toml_string(model.slug)));
+        lines.push(format!("context_window = {}", model.context_window));
+        lines.push(format!("max_output = {}", model.max_output));
+        lines.push(format!("supports_tools = {}", model.supports_tools));
+        lines.push(format!("cost_input_per_m = {input:?}"));
+        lines.push(format!("cost_output_per_m = {output:?}"));
+    }
+    lines.join("\n")
+}
+
+/// The `[models.*]` key `roko config providers add` gives a catalog model.
+fn model_table_key(slug: &str) -> String {
+    slug.replace('/', "_")
+}
+
+/// `text` as a quoted, escaped TOML string, usable as a value or a key.
+fn toml_string(text: &str) -> String {
+    toml::Value::String(text.to_string()).to_string()
 }
 
 pub(crate) async fn cmd_provider_list(workdir: &Path) -> Result<()> {
@@ -3842,4 +3854,34 @@ mod config_scope_tests {
     // now destructure all fields explicitly. If a field were added to
     // ConfigCmd::Export/Set/Discover and not consumed, rustc would warn
     // about unused variables.
+
+    // ── providers add ──────────────────────────────────────────────
+
+    /// bug-e2cfdf: the stanza `roko config providers add` writes loads with
+    /// the real config types, for every catalog provider.
+    #[test]
+    fn providers_add_snippet_parses_for_every_catalog_provider() {
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Stanza {
+            providers: IndexMap<String, ProviderConfig>,
+            models: IndexMap<String, ModelProfile>,
+        }
+
+        for entry in roko_core::provider_catalog::catalog() {
+            let snippet = provider_add_snippet(entry.id, entry);
+            let stanza: Stanza = toml::from_str(&snippet)
+                .unwrap_or_else(|error| panic!("{}: {error}\n{snippet}", entry.id));
+            let provider = &stanza.providers[entry.id];
+            assert_eq!(provider.kind, entry.kind, "{}", entry.id);
+            let key_env = Some(entry.api_key_env).filter(|env| !env.is_empty());
+            assert_eq!(provider.api_key_env.as_deref(), key_env, "{}", entry.id);
+            assert_eq!(stanza.models.len(), entry.models.len(), "{}", entry.id);
+            for model in entry.models {
+                let profile = &stanza.models[&model_table_key(model.slug)];
+                assert_eq!(profile.slug, model.slug, "{}", entry.id);
+                assert_eq!(profile.provider, entry.id, "{}", entry.id);
+            }
+        }
+    }
 }

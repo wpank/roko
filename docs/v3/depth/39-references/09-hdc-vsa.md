@@ -22,7 +22,7 @@ Binding, bundling, permutation. 10,000-dimensional binary vectors provide suffic
 **[Kleyko et al., 2022]** *A Survey on Hyperdimensional Computing aka Vector Symbolic Architectures.* ACM Computing Surveys, 55(6), Article 130.
 Covers all VSA families. Validates BSC selection and capacity bounds.
 
-**[Neubert, Schubert & Protzel, 2022]** *Vector Symbolic Architectures as a Computing Framework.* Proceedings of the IEEE. arXiv:2106.05268.
+**[Kleyko et al., 2022]** *Vector Symbolic Architectures as a Computing Framework.* Proceedings of the IEEE. arXiv:2106.05268.
 BSC hardware: FPGA/ASIC implementations achieving sub-microsecond operations.
 
 ---
@@ -90,7 +90,7 @@ Synchronous binary code updates for continuous data arrival.
 
 ## Approximate Nearest Neighbor
 
-**[Malkov & Yashunin, 2020]** *HNSW Graphs.* IEEE TPAMI 2020.
+**[Malkov & Yashunin, 2020]** *Efficient and Robust Approximate Nearest Neighbor Search Using Hierarchical Navigable Small World Graphs.* IEEE TPAMI 2020.
 O(log N) search at 95--99% recall for billion-scale binary vectors. Production search infrastructure.
 
 **[Zhang et al., 2023]** *SPFresh: Incremental In-Place Update.* SIGMOD 2023.
@@ -107,13 +107,13 @@ HRR theory using circular convolution. Theoretical ancestor of BSC.
 
 ## HDC Frameworks (2024--2025)
 
-**[Rahimi et al., 2024]** *HDC: A Framework for Stochastic Computation and Symbolic AI.* Journal of Big Data.
+**[Heddes et al., 2024]** *HDC: A Framework for Stochastic Computation and Symbolic AI.* Journal of Big Data.
 Unified HDC as general-purpose computation substrate. Validates BSC for knowledge representation.
 
-**[Anonymous, 2024]** *FLASH: Adaptive Encoder for HDC.* Frontiers in AI.
+**[Hernández-Cano et al., 2024]** *Hyperdimensional computing with holographic and adaptive encoder.* Frontiers in AI.
 Gradient-descent encoder learning. Bridges fixed and learned encoding phases.
 
-**[Anonymous, 2024]** *HPVM-HDC: Heterogeneous Programming System.* arXiv:2410.15179.
+**[Arbore et al., 2024]** *HPVM-HDC: A Heterogeneous Programming System for Accelerating Hyperdimensional Computing.* arXiv:2410.15179.
 Unified CPU/GPU/FPGA execution model.
 
 **[Anonymous, 2025]** *Hyperdimensional Computing in Biomedical Sciences.* PMC review.
@@ -129,7 +129,7 @@ HDC for distributional modeling, regression, and classification.
 
 ## 2026 Addition: PathHD
 
-**[PathHD, 2026]** *PathHD: Path-based Hyperdimensional Computing.* arXiv (2026).
+**[Liu et al., 2026]** *Encoder-Free Knowledge-Graph Reasoning with LLMs via Hyperdimensional Path Retrieval.* arXiv (2026).
 Path-based encoding extends standard HDC with sequential structure preservation. Applicable to encoding temporal patterns in agent episode sequences where order matters for knowledge retrieval.
 
 ---

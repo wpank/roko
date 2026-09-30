@@ -105,7 +105,7 @@ Order: 1 and 2 now. Then 3 → 4 → 5 → 6 → 7, one at a time, because they 
 - [x] bug-50caf2: PlanGateCell gates the process working directory as attempt 0 (existing item)
 - [ ] gap-4ec59f: Worktree Isolation: Flip Default and Add Startup Repair (existing item)
 - [x] gap-af00b1: Integration tests C3 and C4: per-task commits on a plan branch, and a whole-plan gate that catches
-- [ ] gap-0d64d5: Golden-path step 10: an opt-in hold that shows each task's diff and waits for approval before it merges
+- [x] gap-0d64d5: Golden-path step 10: an opt-in hold that shows each task's diff and waits for approval before it merges
 - [x] bug-aaa924: The delivery regression check builds the workspace from a cold target dir on every delivery
 - [x] bug-453481: Delivery merges the branch head instead of the verified commit_oid, so later commits land unverified
 - [x] bug-207f35: GitMergeBackend still merges in, and auto-commits, the checkout it is given
@@ -113,8 +113,8 @@ Order: 1 and 2 now. Then 3 → 4 → 5 → 6 → 7, one at a time, because they 
 - [x] bug-8835bc: A failed rich-topology plan gate never fails its task: PlanGateCell returns Ok, and the gate's success edge is EdgeCondition::Success
 - [x] gap-6daad9: plan_runner injects no CellResources, so --rich-topology still stops at every gate
 - [x] bug-8cf581: Each delivery's regression checkout gets a new temporary path, so workspace crates rebuild every delivery and leave stale artifacts
-- [ ] bug-4862cf: The rich-topology gate adapter uses GatesConfig::default(), not the run's [gates]
-- [ ] bug-9c5973: Each rich-topology rung request re-runs the gate pipeline up to that rung, so compile runs three times per gate
+- [x] bug-4862cf: The rich-topology gate adapter uses GatesConfig::default(), not the run's [gates]
+- [x] bug-9c5973: Each rich-topology rung request re-runs the gate pipeline up to that rung, so compile runs three times per gate
       tasks that break together
 - [ ] The epic's `[[verify]]` command (tests C3 and C4) passes on the merged branch.
 

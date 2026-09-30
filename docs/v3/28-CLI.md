@@ -800,6 +800,18 @@ roko plan resume [--workdir <path>]
 roko plan cancel [--plan-id <id>] [--workdir <path>]
 ```
 
+#### `roko plan review`
+
+Approve or reject a task that a running plan holds for review. A plan holds each verified task when its
+`tasks.toml` sets `[meta] approval = "per_task"`, which needs `--worktree-per-task` and the default topology. The
+held task's diff is in `.roko/state/review-holds/<plan>/<task>.json` and on `GET /api/plans/:id/tasks/:task_id/diff`.
+Approval merges the task into its plan branch. A rejection fails the attempt, and the note is the next attempt's
+feedback. `POST /api/plans/:id/tasks/:task_id/review` records the same decision.
+
+```
+roko plan review <plan-id> <task-id> (--approve | --reject) [--note <text>] [--workdir <path>]
+```
+
 #### `roko plan retry`
 
 Retry failed tasks in a plan.

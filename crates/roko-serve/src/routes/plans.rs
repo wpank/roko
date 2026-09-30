@@ -1326,6 +1326,30 @@ async fn list_reviews(
     let mut reviews = Vec::new();
 
     for task in &plan.tasks {
+        // A Graph attempt held for approval (gap-0d64d5).
+        if let Some(hold) = graph_review_hold(&state.workdir, &id, &task.id) {
+            let files = parse_diff_output(
+                hold["numstat"].as_str().unwrap_or_default(),
+                hold["patch"].as_str().unwrap_or_default(),
+            );
+            reviews.push(json!({
+                "task_id": task.id,
+                "description": task.description,
+                "status": "awaiting_approval",
+                "attempt_key": hold["attempt_key"],
+                "branch": hold["branch"],
+                "diff_summary": format!(
+                    "{} files changed, {} insertions(+), {} deletions(-)",
+                    files.len(),
+                    files.iter().map(|f| f.additions).sum::<u32>(),
+                    files.iter().map(|f| f.deletions).sum::<u32>()
+                ),
+                "gate_results": Vec::<Value>::new(),
+                "files_changed": files.iter().map(|f| f.path.clone()).collect::<Vec<_>>(),
+            }));
+            continue;
+        }
+
         // Detect agent branches: convention is `agent/<name>/<task_id>`.
         let branch = find_agent_branch(&state.workdir, &task.id).await;
 
@@ -1420,6 +1444,32 @@ async fn submit_review(
         )));
     }
 
+    // A held Graph attempt (gap-0d64d5): the plan run waiting on it reads
+    // the decision and merges or fails the attempt itself.
+    if let Some(hold) = graph_review_hold(&state.workdir, &id, &task_id) {
+        let decision = match body.decision.as_str() {
+            "approve" => "approved",
+            "reject" => "rejected",
+            _ => "skipped",
+        };
+        let attempt_key = hold["attempt_key"].as_str().unwrap_or_default();
+        record_review(
+            &state.workdir,
+            &id,
+            &task_id,
+            decision,
+            &body.comment,
+            Some(attempt_key),
+        )
+        .await;
+        return Ok(Json(json!({
+            "task_id": task_id,
+            "status": decision,
+            "attempt_key": attempt_key,
+            "held": true,
+        })));
+    }
+
     let branch = find_agent_branch(&state.workdir, &task_id).await;
 
     let result = match body.decision.as_str() {
@@ -1431,7 +1481,15 @@ async fn submit_review(
             };
 
             // Record the review in the state directory.
-            record_review(&state.workdir, &id, &task_id, "approved", &body.comment).await;
+            record_review(
+                &state.workdir,
+                &id,
+                &task_id,
+                "approved",
+                &body.comment,
+                None,
+            )
+            .await;
 
             json!({
                 "task_id": task_id,
@@ -1467,7 +1525,15 @@ async fn submit_review(
                 }
             }
 
-            record_review(&state.workdir, &id, &task_id, "rejected", &body.comment).await;
+            record_review(
+                &state.workdir,
+                &id,
+                &task_id,
+                "rejected",
+                &body.comment,
+                None,
+            )
+            .await;
 
             json!({
                 "task_id": task_id,
@@ -1477,7 +1543,15 @@ async fn submit_review(
             })
         }
         "skip" => {
-            record_review(&state.workdir, &id, &task_id, "skipped", &body.comment).await;
+            record_review(
+                &state.workdir,
+                &id,
+                &task_id,
+                "skipped",
+                &body.comment,
+                None,
+            )
+            .await;
             json!({ "task_id": task_id, "status": "skipped" })
         }
         _ => unreachable!("validated above"),
@@ -1488,8 +1562,11 @@ async fn submit_review(
 
 /// `GET /api/plans/:id/tasks/:task_id/diff` — structured diff for a task.
 ///
-/// Finds the agent branch and runs `git diff` against main. Returns per-file
-/// diff entries with path, status, additions, deletions, and unified patch.
+/// A Graph attempt held for review (gap-0d64d5) returns the change it waits
+/// with; otherwise a Graph run's recorded result: the task's accepted
+/// attempt commit against its parent. Without either, the legacy agent
+/// branch against main. Returns per-file diff entries with path, status,
+/// additions, deletions, and unified patch.
 async fn task_diff(
     State(state): State<Arc<AppState>>,
     Path((id, task_id)): Path<(String, String)>,
@@ -1505,29 +1582,54 @@ async fn task_diff(
         )));
     }
 
+    if let Some(hold) = graph_review_hold(&state.workdir, &id, &task_id) {
+        let files = parse_diff_output(
+            hold["numstat"].as_str().unwrap_or_default(),
+            hold["patch"].as_str().unwrap_or_default(),
+        );
+        return Ok(Json(diff_response(
+            &task_id,
+            &files,
+            json!({
+                "source": "review_hold",
+                "status": "awaiting_approval",
+                "attempt_key": hold["attempt_key"],
+                "branch": hold["branch"],
+                "base": hold["base"],
+            }),
+        )));
+    }
+
+    if let Some((commit, plan_branch)) = graph_task_commit(&state.workdir, &id, &task_id) {
+        let base = format!("{commit}^");
+        let files = git_range_diff(&state.workdir, &[&base, &commit]).await?;
+        return Ok(Json(diff_response(
+            &task_id,
+            &files,
+            json!({
+                "source": "graph",
+                "branch": plan_branch,
+                "base": base,
+                "commit": commit,
+            }),
+        )));
+    }
+
     let branch = find_agent_branch(&state.workdir, &task_id)
         .await
         .ok_or_else(|| {
-            ApiError::not_found(format!("no agent branch found for task '{task_id}'"))
+            ApiError::not_found(format!(
+                "no recorded result or agent branch found for task '{task_id}'"
+            ))
         })?;
 
     let files = parse_git_diff(&state.workdir, &branch).await?;
 
-    Ok(Json(json!({
-        "task_id": task_id,
-        "branch": branch,
-        "base": "main",
-        "file_count": files.len(),
-        "total_additions": files.iter().map(|f| f.additions).sum::<u32>(),
-        "total_deletions": files.iter().map(|f| f.deletions).sum::<u32>(),
-        "files": files.iter().map(|f| json!({
-            "path": f.path,
-            "status": f.status,
-            "additions": f.additions,
-            "deletions": f.deletions,
-            "patch": f.patch,
-        })).collect::<Vec<_>>(),
-    })))
+    Ok(Json(diff_response(
+        &task_id,
+        &files,
+        json!({ "branch": branch, "base": "main" }),
+    )))
 }
 
 // ── Review helpers ──────────────────────────────────────────────────
@@ -1597,31 +1699,48 @@ struct DiffFile {
     patch: String,
 }
 
-/// Parse `git diff --numstat` + `git diff` into structured per-file entries.
+/// Parse `git diff --numstat` + `git diff` of `main...{branch}` into
+/// structured per-file entries.
 async fn parse_git_diff(
     workdir: &std::path::Path,
     branch: &str,
 ) -> Result<Vec<DiffFile>, ApiError> {
+    git_range_diff(workdir, &[&format!("main...{branch}")]).await
+}
+
+/// `git diff --numstat` and `git diff` of `range` (read-only) in `workdir`,
+/// as structured per-file entries.
+async fn git_range_diff(
+    workdir: &std::path::Path,
+    range: &[&str],
+) -> Result<Vec<DiffFile>, ApiError> {
     // Get numstat for additions/deletions counts.
     let numstat = tokio::process::Command::new("git")
-        .args(["diff", "--numstat", &format!("main...{branch}")])
+        .args(["diff", "--no-color", "--no-ext-diff", "--numstat"])
+        .args(range)
         .current_dir(workdir)
         .output()
         .await
         .map_err(|e| ApiError::internal(format!("git diff --numstat: {e}")))?;
 
-    let numstat_str = String::from_utf8_lossy(&numstat.stdout);
-
     // Get the full diff for patches.
     let full_diff = tokio::process::Command::new("git")
-        .args(["diff", &format!("main...{branch}")])
+        .args(["diff", "--no-color", "--no-ext-diff"])
+        .args(range)
         .current_dir(workdir)
         .output()
         .await
         .map_err(|e| ApiError::internal(format!("git diff: {e}")))?;
 
-    let full_diff_str = String::from_utf8_lossy(&full_diff.stdout);
+    Ok(parse_diff_output(
+        &String::from_utf8_lossy(&numstat.stdout),
+        &String::from_utf8_lossy(&full_diff.stdout),
+    ))
+}
 
+/// Per-file entries from `git diff --numstat` output and the matching
+/// unified diff.
+fn parse_diff_output(numstat_str: &str, full_diff_str: &str) -> Vec<DiffFile> {
     // Parse per-file patches from the full diff.
     let mut file_patches: std::collections::HashMap<String, String> =
         std::collections::HashMap::new();
@@ -1674,7 +1793,86 @@ async fn parse_git_diff(
         });
     }
 
-    Ok(files)
+    files
+}
+
+/// The review hold of `task_id` in `plan_id`: a verified Graph attempt
+/// waiting for approval before it is accepted, with what it changed
+/// (gap-0d64d5). The plan run writes it and removes it once decided.
+fn graph_review_hold(workdir: &std::path::Path, plan_id: &str, task_id: &str) -> Option<Value> {
+    let path = roko_fs::RokoLayout::for_project(workdir).review_hold(plan_id, task_id);
+    serde_json::from_slice(&std::fs::read(path).ok()?).ok()
+}
+
+/// The commit a Graph run recorded for `task_id`'s last accepted attempt
+/// in `plan_id`, and the plan branch it went onto: the
+/// `workspace.attempt_commit` and `workspace.plan_branch` tags of the task's
+/// last output in the plan's activity log
+/// (`.roko/state/graph/<plan>/activities.jsonl`).
+fn graph_task_commit(
+    workdir: &std::path::Path,
+    plan_id: &str,
+    task_id: &str,
+) -> Option<(String, Option<String>)> {
+    let safe_plan: String = plan_id
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.') {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let activities = roko_fs::RokoLayout::for_project(workdir)
+        .state_dir()
+        .join("graph")
+        .join(safe_plan)
+        .join("activities.jsonl");
+    let log = std::fs::read_to_string(activities).ok()?;
+    log.lines()
+        .rev()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .flat_map(|entry| match entry.get("signals") {
+            Some(Value::Array(signals)) => signals.clone(),
+            _ => Vec::new(),
+        })
+        .find_map(|signal| {
+            let tags = signal.get("tags")?;
+            if tags.get("task_id")?.as_str()? != task_id {
+                return None;
+            }
+            let commit = tags.get("workspace.attempt_commit")?.as_str()?;
+            let is_commit = commit.len() >= 40 && commit.bytes().all(|b| b.is_ascii_hexdigit());
+            is_commit.then(|| {
+                let branch = tags
+                    .get("workspace.plan_branch")
+                    .and_then(Value::as_str)
+                    .map(ToOwned::to_owned);
+                (commit.to_string(), branch)
+            })
+        })
+}
+
+/// A task diff response for `files`.
+fn diff_response(task_id: &str, files: &[DiffFile], extra: Value) -> Value {
+    let mut response = json!({
+        "task_id": task_id,
+        "file_count": files.len(),
+        "total_additions": files.iter().map(|f| f.additions).sum::<u32>(),
+        "total_deletions": files.iter().map(|f| f.deletions).sum::<u32>(),
+        "files": files.iter().map(|f| json!({
+            "path": f.path,
+            "status": f.status,
+            "additions": f.additions,
+            "deletions": f.deletions,
+            "patch": f.patch,
+        })).collect::<Vec<_>>(),
+    });
+    if let (Some(response), Value::Object(extra)) = (response.as_object_mut(), extra) {
+        response.extend(extra);
+    }
+    response
 }
 
 /// Merge an agent branch into the current branch.
@@ -1694,27 +1892,32 @@ async fn merge_branch(workdir: &std::path::Path, branch: &str) -> bool {
     matches!(output, Ok(o) if o.status.success())
 }
 
-/// Record a review decision to `.roko/state/reviews.jsonl`.
+/// Record a review decision to `.roko/state/reviews.jsonl`, naming the held
+/// attempt it decides when there is one (gap-0d64d5).
 async fn record_review(
     workdir: &std::path::Path,
     plan_id: &str,
     task_id: &str,
     decision: &str,
     comment: &str,
+    attempt_key: Option<&str>,
 ) {
-    let reviews_path = workdir.join(".roko").join("state").join("reviews.jsonl");
+    let reviews_path = roko_fs::RokoLayout::for_project(workdir).reviews_log();
     if let Err(err) = tokio::fs::create_dir_all(reviews_path.parent().unwrap_or(workdir)).await {
         tracing::warn!(path = %reviews_path.display(), error = %err, "failed to create reviews state directory");
         return;
     }
 
-    let entry = serde_json::json!({
+    let mut entry = serde_json::json!({
         "plan_id": plan_id,
         "task_id": task_id,
         "decision": decision,
         "comment": comment,
         "timestamp": chrono::Utc::now().to_rfc3339(),
     });
+    if let Some(attempt_key) = attempt_key {
+        entry["attempt_key"] = Value::from(attempt_key);
+    }
 
     let mut line = serde_json::to_string(&entry).unwrap_or_default();
     line.push('\n');
@@ -4689,6 +4892,130 @@ mod tests {
 
         assert_eq!(err.status, axum::http::StatusCode::CONFLICT);
         assert_eq!(err.code, "conflict");
+    }
+
+    /// Run git in `dir` and return its trimmed stdout.
+    fn run_git(dir: &std::path::Path, args: &[&str]) -> String {
+        let output = std::process::Command::new("git")
+            .current_dir(dir)
+            .args(args)
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_INDEX_FILE")
+            .output()
+            .expect("run git");
+        assert!(
+            output.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    }
+
+    /// gap-0d64d5: a Graph task's diff is the result its run recorded (the
+    /// accepted attempt commit against its parent); an attempt held for
+    /// review shows the change it waits with, and a decision on it is
+    /// recorded for that attempt instead of merging anything.
+    #[tokio::test]
+    async fn task_diff_reads_the_graph_task_result() {
+        let (dir, state) = test_state_with_runtime(recording_runtime_for_plan("plan-a"));
+        let repo = dir.path();
+        run_git(repo, &["init", "--quiet", "-b", "main"]);
+        for (key, value) in [
+            ("user.name", "Operator"),
+            ("user.email", "operator@example.test"),
+            ("commit.gpgsign", "false"),
+        ] {
+            run_git(repo, &["config", key, value]);
+        }
+        std::fs::write(repo.join("README.md"), "base\n").expect("write");
+        run_git(repo, &["add", "-A"]);
+        run_git(repo, &["commit", "--quiet", "-m", "base"]);
+        std::fs::write(repo.join("README.md"), "base\nmore\n").expect("write");
+        std::fs::write(repo.join("feature.txt"), "feature\n").expect("write");
+        run_git(repo, &["add", "-A"]);
+        run_git(repo, &["commit", "--quiet", "-m", "roko: plan-a/T1"]);
+        let commit = run_git(repo, &["rev-parse", "HEAD"]);
+        let graph = repo.join(".roko/state/graph/plan-a");
+        std::fs::create_dir_all(&graph).expect("graph state");
+        let record = json!({
+            "graph_id": "plan-a",
+            "run_id": "run-1",
+            "node_id": "T1",
+            "tick": 1,
+            "signals": [{ "tags": {
+                "plan_id": "plan-a",
+                "task_id": "T1",
+                "workspace.attempt_commit": commit,
+                "workspace.plan_branch": "roko/plan/plan-a",
+            }}],
+        });
+        std::fs::write(graph.join("activities.jsonl"), format!("{record}\n")).expect("log");
+
+        let Json(diff) = task_diff(
+            State(Arc::clone(&state)),
+            Path(("plan-a".to_string(), "T1".to_string())),
+        )
+        .await
+        .expect("the task's diff");
+        assert_eq!(diff["source"], "graph", "{diff}");
+        assert_eq!(diff["commit"], commit.as_str());
+        assert_eq!(diff["branch"], "roko/plan/plan-a");
+        let files = diff["files"].as_array().expect("files");
+        let paths: Vec<&str> = files.iter().filter_map(|f| f["path"].as_str()).collect();
+        assert_eq!(paths, ["README.md", "feature.txt"], "{diff}");
+        assert_eq!(diff["total_additions"], 2);
+        assert!(
+            files[1]["patch"]
+                .as_str()
+                .is_some_and(|p| p.contains("+feature"))
+        );
+
+        // An attempt held for review: the diff is the one it waits with.
+        let hold_path = roko_fs::RokoLayout::for_project(repo).review_hold("plan-a", "T1");
+        std::fs::create_dir_all(hold_path.parent().expect("hold dir")).expect("hold dir");
+        let hold = json!({
+            "plan_id": "plan-a",
+            "task_id": "T1",
+            "attempt_key": "run-1:plan-a:T1:2",
+            "branch": "roko/attempt/attempt-1",
+            "base": commit,
+            "numstat": "1\t0\tnext.txt\n",
+            "patch": "diff --git a/next.txt b/next.txt\nnew file mode 100644\n--- /dev/null\n+++ b/next.txt\n@@ -0,0 +1 @@\n+next\n",
+        });
+        std::fs::write(&hold_path, hold.to_string()).expect("hold");
+        let Json(held) = task_diff(
+            State(Arc::clone(&state)),
+            Path(("plan-a".to_string(), "T1".to_string())),
+        )
+        .await
+        .expect("the held diff");
+        assert_eq!(held["source"], "review_hold", "{held}");
+        assert_eq!(held["status"], "awaiting_approval");
+        assert_eq!(held["files"][0]["path"], "next.txt");
+        assert_eq!(held["files"][0]["status"], "added");
+
+        // A decision on the held attempt is recorded for it; nothing merges.
+        let Json(reply) = submit_review(
+            State(Arc::clone(&state)),
+            Path(("plan-a".to_string(), "T1".to_string())),
+            ValidJson(ReviewDecision {
+                decision: "reject".to_string(),
+                comment: "keep it smaller".to_string(),
+            }),
+        )
+        .await
+        .expect("review");
+        assert_eq!(reply["status"], "rejected");
+        assert_eq!(reply["held"], true);
+        let log = std::fs::read_to_string(roko_fs::RokoLayout::for_project(repo).reviews_log())
+            .expect("review log");
+        let entry: Value =
+            serde_json::from_str(log.lines().last().expect("an entry")).expect("json");
+        assert_eq!(entry["attempt_key"], "run-1:plan-a:T1:2");
+        assert_eq!(entry["decision"], "rejected");
+        assert_eq!(entry["comment"], "keep it smaller");
+        assert_eq!(run_git(repo, &["rev-parse", "HEAD"]), commit);
     }
 
     fn recording_runtime_for_plan(plan_id: &str) -> Arc<RecordingRuntime> {

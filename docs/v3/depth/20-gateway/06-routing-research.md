@@ -29,10 +29,10 @@ work.
 
 ---
 
-## 2. Router-R1 (Chen et al. 2025)
+## 2. Router-R1 (Zhang et al. 2025)
 
-**"Router-R1: Teaching LLMs Multi-Round LLM Routing"**
-Zijun Chen, Mao Zheng, Wanjun Zhong, Jiahai Wang. arXiv:2507.02849, 2025.
+**"Router-R1: Teaching LLMs Multi-Round Routing and Aggregation via Reinforcement Learning"**
+Haozhen Zhang, Tao Feng, Jiaxuan You. arXiv:2506.09033, 2025.
 
 ### Key Insight
 
@@ -58,8 +58,8 @@ metadata could be enriched with a lightweight reasoning step in future work.
 
 ## 3. xRouter (Qian et al. 2025)
 
-**"xRouter: Routing LLMs for Multi-Turn Conversations"**
-Yaxin Qian, Shuai Zhang, Yang Liu. arXiv:2505.24093, 2025.
+**"xRouter: Training Cost-Aware LLMs Orchestration System via Reinforcement Learning"**
+Cheng Qian, Zuxin Liu, Shirley Kokane, et al. arXiv:2510.08439, 2025.
 
 ### Key Insight
 
@@ -86,8 +86,8 @@ cross-turn signals that a trajectory-aware router could consume.
 
 ## 4. IRT-Router (Song et al. 2025)
 
-**"IRT-Router: Routing LLMs Using Item Response Theory"**
-Zhiyuan Song, Rui Wang, Qi Zhang, Xuanjing Huang. arXiv:2506.18809, 2025.
+**"IRT-Router: Effective and Interpretable Multi-LLM Routing via Item Response Theory"**
+Wei Song, Zhenya Huang, Cheng Cheng, et al. arXiv:2506.01048, 2025.
 
 ### Key Insight
 
@@ -115,8 +115,8 @@ jointly estimated with model capability.
 
 ## 5. BEST-Route (Ding et al. 2025)
 
-**"BEST-Route: Bayesian Estimation via Subspace Testing for LLM Routing"**
-Shuowei Ding, Yilin Feng, Daniel Fu. arXiv:2506.09781, 2025.
+**"BEST-Route: Adaptive LLM Routing with Test-Time Optimal Compute"**
+Dujian Ding, Ankur Mallick, Shaokun Zhang, et al. arXiv:2506.22716, 2025.
 
 ### Key Insight
 
@@ -143,10 +143,10 @@ decomposition.
 
 ---
 
-## 6. Unified Routing/Cascading Framework (Dekoninck & Everts 2025)
+## 6. Unified Routing/Cascading Framework (Dekoninck et al. 2025)
 
-**"LLM Routing and Cascading: A Unified Framework"**
-Jasper Dekoninck, Florian Everts. arXiv:2503.04655, 2025.
+**"A Unified Approach to Routing and Cascading for LLMs"**
+Jasper Dekoninck, Maximilian Baader, Martin Vechev. arXiv:2410.10347, 2025.
 
 ### Key Insight
 

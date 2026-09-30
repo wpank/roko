@@ -283,7 +283,7 @@ Process supervision outperforms outcome supervision for mathematical
 reasoning. Best-of-N selection with process rewards outperformed majority
 voting by 8%.
 
-### AgentPRM (2026)
+### AgentPRM (Xi et al. 2026)
 
 Extended process rewards to agent tool-use settings. Per-step rewards
 provide 10x richer signal. Key insight: not all tool calls contribute

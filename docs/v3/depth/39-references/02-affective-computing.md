@@ -28,9 +28,6 @@ Anticipatory SCRs precede conscious awareness in the Iowa Gambling Task. Somatic
 **[Bechara & Damasio, 2005]** *The Somatic Marker Hypothesis: A Neural Theory of Economic Decision.* Games and Economic Behavior, 52, 336--372.
 Formal integration with economic decision theory. Validates PAD-modulated tier routing for cost-sensitive decisions.
 
-**[Cabrera-Paniagua & Rubilar-Torrealba, 2023]** *Autonomous Stock Market Agents with Somatic Markers.* Journal of Ambient Intelligence and Humanized Computing.
-Agents with somatic markers achieve higher Sharpe ratios. Punishment signals triggered by drawdowns reduce position sizes. Direct validation.
-
 ---
 
 ## Mood-Congruent Memory
@@ -71,19 +68,19 @@ Three-layer temporal affect: emotion (seconds), mood (hours), personality (lifet
 
 ## Affect in Agent Systems
 
-**[Zhang et al., 2024]** *Self-Emotion Changes ~50% of Agent Decisions in Social Simulation.* SIGDIAL 2024.
+**[Zhang et al., 2024]** *Self-Emotion Blended Dialogue Generation in Social Simulation Agents.* SIGDIAL 2024.
 Self-emotion changes ~50% of agent decisions. Demonstrates affect as a primary behavioral driver, not decorative.
 
 **[Gadanho, 2003]** *Learning Behavior-Selection by Emotions and Cognition.* JMLR, 4, 385--412.
 ALEC architecture: 40% fewer collisions vs cognition alone. Validates combined Daimon + cognitive loop.
 
-**[Barthet et al., 2022]** *Go-Blend: Affect-Driven Reinforcement Learning.* IEEE Transactions on Affective Computing.
+**[Barthet et al., 2022]** *Play with Emotion: Affect-Driven Reinforcement Learning.* 2022 10th International Conference on Affective Computing and Intelligent Interaction (ACII).
 Affect modulates RL exploration-exploitation. Informs affect-energy coupling in CorticalState.
 
 **[Seligman, 1972]** *Learned Helplessness.* Annual Review of Medicine, 23, 407--412.
 Learned helplessness from repeated failure. Dominance < -0.3 for 200+ ticks triggers burnout alert.
 
-**[Van den Broek, 2023]** *Emotion Contagion in Multi-Agent Systems.* Autonomous Agents and Multi-Agent Systems.
+**[van Haeringen et al., 2023]** *Emotion contagion in agent-based simulations of crowds: a systematic review.* Autonomous Agents and Multi-Agent Systems.
 Anger spreads competitively. Arousal contagion capped at +0.3 per sync cycle in Collectives.
 
 ---
@@ -97,15 +94,12 @@ REM depotentiates emotional charge while preserving content. Dream cycles reduce
 
 ## Emotional RAG
 
-**[Zhang et al., 2024b]** *Emotional RAG.* arXiv:2410.23041.
+**[Huang et al., 2024b]** *Emotional RAG.* arXiv:2410.23041.
 Emotion-tagged retrieval outperforms non-emotional retrieval across three datasets. Validates PAD vectors on every NeuroStore entry.
 
 ---
 
 ## Surveys and Frameworks (2025)
-
-**[Yin et al., 2025]** *Emotions in Artificial Intelligence.* arXiv:2505.01462.
-Teleology-driven unification: affect is adaptive and goal-directed. Validates the Daimon as goal-directed, not cosmetic.
 
 **[Anonymous, 2025]** *Intelligent Agents with Emotional Intelligence.* arXiv:2511.20657.
 Emotional intelligence identified as architecturally vital for agent systems.
@@ -113,7 +107,7 @@ Emotional intelligence identified as architecturally vital for agent systems.
 **[Anonymous, 2025]** *Emotions in the Loop.* arXiv:2505.01542.
 Affect integrated into interaction loops. Validates Daimon-in-the-loop design.
 
-**[Anonymous, 2025]** *Affective Computing and Emotional Data: Challenges in Privacy Regulations.* arXiv:2509.20153.
+**[Fabiano, 2025]** *Affective Computing and Emotional Data: Challenges in Privacy Regulations.* arXiv:2509.20153.
 Privacy implications under the EU AI Act. Informs compliance requirements for the Daimon.
 
 ---

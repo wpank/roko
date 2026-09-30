@@ -138,8 +138,8 @@ terminal_enabled = false
 cors_origins = []
 
 [serve.auth]
-enabled = false
-api_key = ""
+enabled = true      # the default
+# api_key: set ROKO__SERVE__AUTH__API_KEY in .roko/.env, never here
 privy_app_id = ""   # optional, for Privy JWT dashboard auth
 
 [[serve.auth.api_keys]]

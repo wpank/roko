@@ -27,12 +27,17 @@
 //!   ([`roko_gate::analyze_diff`]): "no changes". Other roles, refactors
 //!   (role `refactorer`) and tasks without `files` are exempt. When a
 //!   declared file that git ignores exists on disk, the rejection says so:
-//!   no diff can show a change to it.
+//!   no diff can show a change to it. An attempt that changed nothing, at a
+//!   task with authored verify steps, is judged by them first: when they
+//!   pass on the unchanged tree, the task's work was already there, as on a
+//!   `--fresh` rerun of a finished task, and the attempt settles as already
+//!   satisfied (gap-9eb1e1).
 //!
-//! A rejection costs no compile or test run. It settles like a failed verify
-//! step, `gate_failed` and blamed on the agent, so no learner credits it; the
-//! verdict's `failure_class.rung` names the check (`pre_verify:<check>`), and
-//! its message is the next attempt's feedback.
+//! A rejection costs no compile or test run, except the verify steps of an
+//! unchanged tree. It settles like a failed verify step, `gate_failed` and
+//! blamed on the agent, so no learner credits it; the verdict's
+//! `failure_class.rung` names the check (`pre_verify:<check>`), and its
+//! message is the next attempt's feedback.
 
 use std::path::Component;
 
@@ -65,13 +70,37 @@ struct Rejection {
     check: &'static str,
     /// What was wrong and what to do instead.
     message: String,
+    /// The attempt left the working tree as it found it: the task's own
+    /// verify steps decide first whether its work was already there
+    /// (gap-9eb1e1).
+    unchanged_tree: bool,
+}
+
+/// What the screen made of an attempt it did not reject.
+#[derive(Debug)]
+pub(super) enum Screened {
+    /// Nothing stops the attempt.
+    Clear,
+    /// The attempt changed nothing, but the task has authored verify steps:
+    /// they run on the tree as it is, and settle it
+    /// ([`GraphTaskDispatcher::settle_unchanged_tree`]).
+    UnchangedTree(UnchangedTree),
+}
+
+/// A "no changes" rejection that waits for the task's verify steps.
+#[derive(Debug)]
+pub(super) struct UnchangedTree {
+    rejection: Rejection,
+    /// Findings recorded without blocking, for the rejection's feedback.
+    notes: Vec<String>,
 }
 
 impl GraphTaskDispatcher {
     /// Screen an attempt the provider reported as successful, before its
     /// verify steps run. A rejection is an `Err`, a verify failure of gate
     /// `pre_verify:<check>`, and its message is left as the next attempt's
-    /// feedback.
+    /// feedback. An attempt that changed nothing, at a task with authored
+    /// verify steps, is left to them ([`Screened::UnchangedTree`]).
     #[allow(clippy::too_many_arguments)]
     pub(super) async fn screen_attempt(
         &self,
@@ -82,7 +111,7 @@ impl GraphTaskDispatcher {
         attempt_key: &str,
         attempt_number: u32,
         progress_tx: Option<&tokio::sync::mpsc::Sender<GraphTaskEvent>>,
-    ) -> Result<()> {
+    ) -> Result<Screened> {
         let role = task.role.as_deref().unwrap_or("implementer");
         // First, so the attempt's changed files are kept whatever the screen
         // decides (`take_changed_files`).
@@ -106,11 +135,50 @@ impl GraphTaskDispatcher {
                 None => no_changes_red_flag(task, role, diff, attempt_number).await,
             };
         }
-        let Some(Rejection { check, message }) = rejection else {
-            return Ok(());
+        let Some(rejection) = rejection else {
+            return Ok(Screened::Clear);
         };
-        let gate = format!("{PRE_VERIFY_GATE_PREFIX}{check}");
-        let mut message = format!("Rejected before its verify steps ran ({gate}). {message}");
+        if rejection.unchanged_tree {
+            tracing::info!(
+                plan_id = %spec.plan_id,
+                task_id = %task.id,
+                attempt = attempt_number,
+                "attempt changed nothing; its verify steps decide whether it was already done"
+            );
+            return Ok(Screened::UnchangedTree(UnchangedTree { rejection, notes }));
+        }
+        let lead = "Rejected before its verify steps ran";
+        let error = self
+            .reject_attempt(
+                spec,
+                task,
+                attempt_number,
+                progress_tx,
+                lead,
+                &rejection,
+                &notes,
+            )
+            .await;
+        Err(error)
+    }
+
+    /// Reject an attempt: its message, led by `lead` and followed by
+    /// `notes`, is logged, shown on the TUI and the progress channel, and left
+    /// as the next attempt's feedback. Returns the verify failure it settles
+    /// as.
+    #[allow(clippy::too_many_arguments)]
+    async fn reject_attempt(
+        &self,
+        spec: &TaskExecutionSpec,
+        task: &TaskDef,
+        attempt_number: u32,
+        progress_tx: Option<&tokio::sync::mpsc::Sender<GraphTaskEvent>>,
+        lead: &str,
+        rejection: &Rejection,
+        notes: &[String],
+    ) -> RokoError {
+        let gate = format!("{PRE_VERIFY_GATE_PREFIX}{}", rejection.check);
+        let mut message = format!("{lead} ({gate}). {}", rejection.message);
         if !notes.is_empty() {
             message.push_str("\n\nAlso recorded, not blocking:\n");
             message.push_str(&notes.join("\n"));
@@ -121,7 +189,7 @@ impl GraphTaskDispatcher {
             attempt = attempt_number,
             %gate,
             reason = %message,
-            "attempt rejected before its verify steps"
+            "attempt rejected by the pre-verify screen"
         );
         if let Some(tui) = &self.tui_bridge {
             tui.gate_result_with_output(&spec.plan_id, &task.id, &gate, false, Some(&message));
@@ -129,7 +197,7 @@ impl GraphTaskDispatcher {
         if let Some(progress_tx) = progress_tx {
             let _ = progress_tx
                 .send(GraphTaskEvent::Progress {
-                    message: format!("rejected before verify: {gate}"),
+                    message: format!("rejected by the pre-verify screen: {gate}"),
                     completed: None,
                     total: None,
                 })
@@ -143,7 +211,73 @@ impl GraphTaskDispatcher {
                 attempt_number.saturating_add(1),
             );
         }
-        Err(RokoError::Verify { gate, message })
+        RokoError::Verify { gate, message }
+    }
+
+    /// Settle an attempt that changed nothing, once its verify steps have run
+    /// on the tree it left (`verified`).
+    ///
+    /// A pass means the task's work was already there, as on a `--fresh`
+    /// rerun of a finished task: the attempt settles as
+    /// [`TaskGateVerdict::AlreadySatisfied`], neither a learning success nor
+    /// a failure, and the task completes (gap-9eb1e1). Anything else rejects
+    /// the attempt as `pre_verify:no_changes`, with how its steps ended.
+    pub(super) async fn settle_unchanged_tree(
+        &self,
+        spec: &TaskExecutionSpec,
+        task: &TaskDef,
+        attempt_number: u32,
+        progress_tx: Option<&tokio::sync::mpsc::Sender<GraphTaskEvent>>,
+        unchanged: UnchangedTree,
+        verified: Result<TaskGateVerdict>,
+    ) -> Result<TaskGateVerdict> {
+        let how_they_ended = match verified {
+            Ok(TaskGateVerdict::Passed) => {
+                tracing::info!(
+                    plan_id = %spec.plan_id,
+                    task_id = %task.id,
+                    attempt = attempt_number,
+                    "attempt changed nothing, and its verify steps pass on the unchanged tree: \
+                     the task was already satisfied"
+                );
+                if let Some(progress_tx) = progress_tx {
+                    let message = "already satisfied: the verify steps pass on the unchanged tree";
+                    let _ = progress_tx
+                        .send(GraphTaskEvent::Progress {
+                            message: message.to_string(),
+                            completed: None,
+                            total: None,
+                        })
+                        .await;
+                }
+                return Ok(TaskGateVerdict::AlreadySatisfied);
+            }
+            Ok(verdict) => format!("they settled as `{}`", verdict.as_str()),
+            Err(RokoError::Verify { message, .. }) => message,
+            Err(error) => error.to_string(),
+        };
+        let UnchangedTree {
+            mut rejection,
+            notes,
+        } = unchanged;
+        rejection.message.push_str(
+            "\n\nIts verify steps, run on the unchanged tree to see whether the task was \
+             already done, did not pass: ",
+        );
+        rejection.message.push_str(&how_they_ended);
+        let lead = "Rejected after its verify steps ran on the unchanged tree";
+        let error = self
+            .reject_attempt(
+                spec,
+                task,
+                attempt_number,
+                progress_tx,
+                lead,
+                &rejection,
+                &notes,
+            )
+            .await;
+        Err(error)
     }
 
     /// The role's post-dispatch safety check, the one ACP runs
@@ -214,6 +348,7 @@ impl GraphTaskDispatcher {
             .join("\n");
         Some(Rejection {
             check: "safety",
+            unchanged_tree: false,
             message: format!(
                 "Safety: the attempt broke its role's post-dispatch contract:\n{violations}\n\
                  Keep credentials out of the output, and change only what the `{role}` role \
@@ -270,6 +405,7 @@ impl GraphTaskDispatcher {
         if !tamper.is_empty() {
             return Some(Rejection {
                 check: "tamper",
+                unchanged_tree: false,
                 message: format!(
                     "Tampering: the task's changes weaken or edit what checks it:\n{}\nRestore \
                      them. Tests, verify scripts, pinned acceptance tests and gate \
@@ -281,6 +417,7 @@ impl GraphTaskDispatcher {
         (!scope.is_empty() && self.config.gates.diff_scope == DiffScope::Enforce).then(|| {
             Rejection {
                 check: "scope",
+                unchanged_tree: false,
                 message: format!(
                     "Out of scope: the task changed paths its files do not name \
                      ([gates] diff_scope = \"enforce\"):\n{}\nChange only {}, and undo the rest.",
@@ -404,6 +541,7 @@ fn output_red_flag(
     {
         return Some(Rejection {
             check: "overlong_output",
+            unchanged_tree: false,
             message: format!(
                 "Red flag, overlong output: the attempt reported {output_tokens} output tokens, \
                  more than the {cap} allowed for role `{role}` ([gates] max_output_tokens). \
@@ -417,6 +555,7 @@ fn output_red_flag(
     let output = dispatch.result.output.body.as_text().unwrap_or_default();
     malformed_product(output).map(|problem| Rejection {
         check: "malformed_output",
+        unchanged_tree: false,
         message: format!(
             "Red flag, malformed output: the {role}'s output is its product, and {problem}. \
              Answer with the complete, well-formed result."
@@ -530,6 +669,20 @@ async fn no_changes_red_flag(
         // A declared file git ignores may well have changed on disk: no diff
         // shows it, and the rejection must not claim the tree is untouched.
         let ignored = diff.ignored_on_disk(&task.files).await;
+        if ignored.is_empty() && !task.verify.is_empty() {
+            // The task's own verify steps may show its work was already
+            // there, as on a `--fresh` rerun of a finished task: the screen
+            // leaves the attempt to them (gap-9eb1e1).
+            return Some(Rejection {
+                check: "no_changes",
+                message: format!(
+                    "Red flag, no changes: the task names files to change ({files}), and its \
+                     attempts have left the working tree as they found it. Make the change the \
+                     task asks for."
+                ),
+                unchanged_tree: true,
+            });
+        }
         if !ignored.is_empty() {
             let (which, them) = if ignored.len() == 1 {
                 ("is", "it")
@@ -538,6 +691,7 @@ async fn no_changes_red_flag(
             };
             return Some(Rejection {
                 check: "no_changes",
+                unchanged_tree: false,
                 message: format!(
                     "Red flag, no changes: the task names {}, which {which} gitignored, so \
                      roko's diff and delivery cannot see changes to {them}. The task's work must \
@@ -548,6 +702,7 @@ async fn no_changes_red_flag(
         }
         return Some(Rejection {
             check: "no_changes",
+            unchanged_tree: false,
             message: format!(
                 "Red flag, no changes: the task names files to change ({files}), and its \
                  attempts have left the working tree as they found it. Make the change the \
@@ -560,6 +715,7 @@ async fn no_changes_red_flag(
         .all_added_are_forbidden
         .then(|| Rejection {
             check: "no_changes",
+            unchanged_tree: false,
             message: format!(
                 "Red flag, no changes: every line the task added to {files} is a stub, such as \
                  `todo!()`, `unimplemented!()` or a bare `Ok(())`. Replace the stubs with the \
@@ -589,7 +745,8 @@ mod tests {
     use super::*;
     use crate::graph_task_dispatch::diff_snapshot::tests::commit_repo;
     use crate::graph_task_dispatch::tests::{
-        VERIFY_PROVIDER, make_spec, make_test_dispatcher, no_auto_fix, verify_step,
+        VERIFY_PROVIDER, jsonl_rows_where, make_spec, make_test_dispatcher, no_auto_fix,
+        verify_step,
     };
 
     /// A fake Claude CLI that answers with `text` (JSON-escaped) and reports
@@ -640,11 +797,11 @@ printf '%s\n' '{{"type":"result","session_id":"s","model":"claude-sonnet-4-6","t
         )
         .await;
         let marker = temp.path().join("verify-ran");
+        // Without authored verify steps nothing can show the task's work was
+        // already there, so the screen rejects the attempt before any step
+        // runs. Authored steps get the say first
+        // (`a_fresh_rerun_of_a_satisfied_task_is_not_rejected_as_no_changes`).
         task.files = vec!["src/lib.rs".to_string()];
-        task.verify = vec![verify_step(
-            "structural",
-            &format!("touch {}", marker.display()),
-        )];
 
         let (gate, message) = rejected(&dispatcher, &task, &marker).await;
         assert_eq!(gate, "pre_verify:no_changes");
@@ -658,6 +815,10 @@ printf '%s\n' '{{"type":"result","session_id":"s","model":"claude-sonnet-4-6","t
 
         // A task without `files`, like a non-implementer role, is exempt.
         task.files.clear();
+        task.verify = vec![verify_step(
+            "structural",
+            &format!("touch {}", marker.display()),
+        )];
         let outputs = dispatcher
             .dispatch(&make_spec(&task), Vec::new(), &CellContext::new())
             .await
@@ -667,6 +828,86 @@ printf '%s\n' '{{"type":"result","session_id":"s","model":"claude-sonnet-4-6","t
             Some(TaskGateVerdict::Passed)
         );
         assert!(marker.exists(), "its verify step ran");
+    }
+
+    /// gap-9eb1e1: an attempt that changes nothing, at a task whose work is
+    /// already in the tree, as on a `--fresh` rerun of a finished task, is
+    /// settled by the task's verify steps. They pass, so the task was already
+    /// satisfied: its own outcome, which teaches no learner. On a tree
+    /// without the work they fail, and the attempt is rejected as before.
+    #[tokio::test]
+    async fn a_fresh_rerun_of_a_satisfied_task_is_not_rejected_as_no_changes() {
+        let done = "pub fn one() -> u8 {\n    1\n}\npub fn two() -> u8 {\n    one() + one()\n}\n";
+        let temp = tempdir().expect("tempdir");
+        commit_repo(temp.path(), &[("src/lib.rs", done)]);
+        let runs_dir = temp.path().join(".roko/runs");
+        let feedback = GraphFeedbackContext {
+            runs_dir: Some(runs_dir.clone()),
+            ..GraphFeedbackContext::default()
+        };
+        let (dispatcher, mut task) =
+            make_test_dispatcher(&temp, VERIFY_PROVIDER, no_auto_fix, feedback).await;
+        let marker = temp.path().join("verify-ran");
+        task.files = vec!["src/lib.rs".to_string()];
+        task.verify = vec![verify_step(
+            "structural",
+            &format!(
+                "grep -q 'pub fn two' src/lib.rs && touch {}",
+                marker.display()
+            ),
+        )];
+        let ctx = CellContext::new().with_run_id("fresh-rerun".to_string());
+        let outputs = dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &ctx)
+            .await
+            .expect("the task's work was already there");
+        assert_eq!(
+            TaskGateVerdict::from_signals(&outputs),
+            Some(TaskGateVerdict::AlreadySatisfied)
+        );
+        assert!(marker.exists(), "its verify step passed");
+        // Closing the run's writer flushes its lines.
+        drop(dispatcher);
+        let verdicts = jsonl_rows_where(
+            &runs_dir.join("fresh-rerun").join("attempts.jsonl"),
+            1,
+            |row| row["schema_version"] == "roko.verdict/1",
+        )
+        .await;
+        let verdict = &verdicts[0];
+        assert_eq!(verdict["outcome"], "already_satisfied");
+        assert_eq!(verdict["gate_verdict"], "already_satisfied");
+        assert_eq!(verdict["blame"], "none");
+        assert!(verdict["learning_label"].is_null(), "{verdict}");
+
+        // Without the work, the verify steps fail on the unchanged tree, and
+        // the attempt is rejected for changing nothing.
+        let temp = tempdir().expect("tempdir");
+        commit_repo(
+            temp.path(),
+            &[("src/lib.rs", "pub fn one() -> u8 {\n    1\n}\n")],
+        );
+        let (dispatcher, mut task) = make_test_dispatcher(
+            &temp,
+            VERIFY_PROVIDER,
+            no_auto_fix,
+            GraphFeedbackContext::default(),
+        )
+        .await;
+        let marker = temp.path().join("verify-ran");
+        task.files = vec!["src/lib.rs".to_string()];
+        task.verify = vec![verify_step(
+            "structural",
+            &format!(
+                "grep -q 'pub fn two' src/lib.rs && touch {}",
+                marker.display()
+            ),
+        )];
+        let (gate, message) = rejected(&dispatcher, &task, &marker).await;
+        assert_eq!(gate, "pre_verify:no_changes");
+        assert!(message.contains("as they found it"), "{message}");
+        assert!(message.contains("did not pass"), "{message}");
+        assert!(message.contains("grep -q 'pub fn two'"), "{message}");
     }
 
     #[tokio::test]

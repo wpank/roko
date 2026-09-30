@@ -142,7 +142,7 @@ pub struct AdvancedRedTeamConfig {
 
 ## 9. Defensive Countermeasures
 
-Constitutional Classifiers (Anthropic 2025, arXiv:2501.18837) provide the
+Constitutional Classifiers (Sharma et al. 2025, arXiv:2501.18837) provide the
 defensive layer: dual-layer input + output classifiers reduce jailbreak success
 from 86% baseline to 4.4%.
 
@@ -171,7 +171,7 @@ The Daimon's affect engine interacts with threat simulation in two ways:
 | Damasio (1994) | Somatic markers for threat salience |
 | MITRE ATLAS v5.1.0 (2025) | AI/ML adversarial threat taxonomy |
 | Perez et al. (2022, EMNLP) | LM-based red teaming strategies |
-| Anthropic (2025), arXiv:2501.18837 | Constitutional Classifiers |
+| Sharma et al. (2025), arXiv:2501.18837 | Constitutional Classifiers |
 | FIRST, CVSS v4.0 (2023) | Vulnerability scoring framework |
 
 ---

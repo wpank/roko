@@ -13,7 +13,7 @@
 **[Bryan, 2024]** *ERC-8004: Agent Identity.* Ethereum EIPs.
 Agent identity standard. ERC-721 soulbound with capabilityList bitmask, domainStakes, reputationTracks, teeAttestation, systemPromptHash (ventriloquist defense), tier classification, and slashHistory. Grounds the Korai Passport in `roko-chain`.
 
-**[Bryan, 2024]** *ERC-8001: Agent Coordination Framework.* Ethereum EIPs (Final).
+**[Bryan, 2025]** *ERC-8001: Agent Coordination Framework.* Ethereum EIPs (Final).
 Protocol-level primitives for on-chain multi-agent interaction. Provides the coordination substrate for the Identity Economy.
 
 **[Parikh & Ross, 2025]** *ERC-8033: Agent Council Oracles.* Ethereum EIPs (Draft).
@@ -52,7 +52,7 @@ Tool interaction protocol for LLMs. Standardizes resources, tools, prompts, and 
 
 ## Micropayments
 
-**[Cloudflare/Linux Foundation, 2025]** *x402: HTTP 402 Payment Required Protocol.* 2025.
+**[Coinbase & Cloudflare, 2025]** *x402: HTTP 402 Payment Required Protocol.* 2025.
 Machine-to-machine micropayments at < $0.001/transaction. Sub-second USDC settlement on Base. Enables the self-funding economic cycle: agent earns from knowledge, spends on compute, produces value, earns more. Grounds the payments subsystem in `roko-chain` and `roko-serve`.
 
 ---
@@ -91,7 +91,7 @@ Smart contracts as self-enforcing digital agreements. The Policy trait enforces 
 
 ## Agent Data Exchange
 
-**[Phan-Ba et al., 2025]** *Agent Data Protocol (ADP).* arXiv:2510.24702.
+**[Song et al., 2025]** *Agent Data Protocol (ADP).* arXiv:2510.24702.
 Structured protocol for agent data exchange. Provides wire format for structured data between agents.
 
 ---

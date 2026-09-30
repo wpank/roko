@@ -394,7 +394,7 @@ impl GraphTaskDispatcher {
                     let path = eff_path.clone();
                     let plan_id = spec.plan_id.clone();
                     let task_id = task.id.clone();
-                    tokio::spawn(async move {
+                    crate::background_writes::spawn(&eff_path, async move {
                         if let Err(error) = append_jsonl_line_async(path, line).await {
                             tracing::warn!(
                                 plan_id = %plan_id,
@@ -457,7 +457,7 @@ impl GraphTaskDispatcher {
                     let path = costs_path.clone();
                     let plan_id = spec.plan_id.clone();
                     let task_id = task.id.clone();
-                    tokio::spawn(async move {
+                    crate::background_writes::spawn(&costs_path, async move {
                         if let Err(error) = append_jsonl_line_async(path, line).await {
                             tracing::warn!(
                                 plan_id = %plan_id,
@@ -551,7 +551,9 @@ impl GraphTaskDispatcher {
     /// Publish an attempt's settlement through the feedback facade as
     /// [`FeedbackEvent::AttemptSettled`]. The facade delivers one settlement
     /// per attempt. First, the T0 reflex rule that served the attempt, if
-    /// one did, learns from it ([`Self::credit_reflex_rule`]).
+    /// one did, learns from it ([`Self::credit_reflex_rule`]), and the
+    /// settlement counts toward the task's standing on the model ladder
+    /// (gap-460230).
     pub(super) async fn publish_settlement(
         &self,
         spec: &TaskExecutionSpec,
@@ -559,6 +561,7 @@ impl GraphTaskDispatcher {
         settled: &SettledAttempt,
     ) {
         self.credit_reflex_rule(spec, task, settled).await;
+        self.note_ladder_outcome(spec, task, settled);
         let Some(facade) = &self.feedback.feedback_facade else {
             return;
         };

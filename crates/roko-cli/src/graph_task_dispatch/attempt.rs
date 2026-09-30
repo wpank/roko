@@ -303,6 +303,7 @@ impl AttemptContext {
         verdict.executed = executed_model(model_requested, dispatch, self.failover);
         verdict.cost.source = cost_source(dispatch);
         verdict.helpers = self.helpers;
+        verdict.isolation = dispatch.map(agent_isolation).unwrap_or_default();
         verdict.output_sha256 = dispatch
             .and_then(|dispatch| dispatch.result.output.body.as_text().ok())
             .map(sha256_hex);
@@ -575,6 +576,22 @@ pub(super) fn reported_turns(dispatch: &crate::dispatch_v2::AgentResultDispatch)
     })
 }
 
+/// How `dispatch`'s agent run was isolated from the invoking user's own
+/// configuration: the isolation tags a Claude CLI run puts on its output
+/// ([`ClaudeIsolation::tags`](roko_agent::claude_cli_agent::ClaudeIsolation::tags)).
+/// Empty for an agent that reports none (gap-751ac9).
+fn agent_isolation(
+    dispatch: &crate::dispatch_v2::AgentResultDispatch,
+) -> std::collections::BTreeMap<String, String> {
+    roko_agent::claude_cli_agent::ClaudeIsolation::TAG_KEYS
+        .iter()
+        .filter_map(|key| {
+            let value = dispatch.result.output.tag(key)?;
+            Some(((*key).to_string(), value.to_string()))
+        })
+        .collect()
+}
+
 /// Where the attempt's priced usage came from (S01 §4.4); gap-ad0d39 prices
 /// it. CLI agents report their own usage.
 fn cost_source(dispatch: Option<&crate::dispatch_v2::AgentResultDispatch>) -> CostSource {
@@ -716,6 +733,44 @@ mod tests {
             .expect("episodes");
         assert_eq!(episodes.len(), 1);
         assert_eq!(episodes[0].extra["attempt_key"], key.as_str());
+    }
+
+    /// A Claude CLI attempt's verdict states how its run was kept apart from
+    /// the invoking user's configuration (gap-751ac9): the isolation tags
+    /// this machine gives every Claude run.
+    #[tokio::test]
+    async fn attempt_records_carry_the_claude_isolation_settings() {
+        let temp = tempdir().expect("tempdir");
+        let roko = temp.path().join(".roko");
+        let feedback = GraphFeedbackContext {
+            runs_dir: Some(roko.join("runs")),
+            ..GraphFeedbackContext::default()
+        };
+        let (dispatcher, task) =
+            make_test_dispatcher(&temp, VERIFY_PROVIDER, no_auto_fix, feedback).await;
+        let ctx = CellContext::new().with_run_id(RUN.to_string());
+        dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &ctx)
+            .await
+            .expect("the attempt completes");
+        drop(dispatcher);
+
+        let attempts = jsonl_rows(&roko.join("runs").join(RUN).join("attempts.jsonl"), 2).await;
+        let verdict = &attempts[1];
+        let expected: serde_json::Map<String, serde_json::Value> =
+            roko_agent::claude_cli_agent::ClaudeIsolation::new(temp.path())
+                .tags()
+                .into_iter()
+                .map(|(key, value)| (key.to_string(), serde_json::Value::String(value)))
+                .collect();
+        assert_eq!(
+            verdict["isolation"],
+            serde_json::Value::Object(expected),
+            "{verdict}"
+        );
+        assert_eq!(verdict["isolation"]["setting_sources"], "none");
+        assert_eq!(verdict["isolation"]["auto_memory"], "off");
+        assert_eq!(verdict["isolation"]["config_dir"], "user");
     }
 
     /// The gate row agrees with the attempt's dispatch row on the turns

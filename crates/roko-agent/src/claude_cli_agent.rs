@@ -254,11 +254,24 @@ impl ClaudeIsolation {
         ISOLATION_ENV
     }
 
+    /// The keys of [`tags`](Self::tags). A Graph attempt's verdict copies
+    /// them from the run's output (gap-751ac9).
+    pub const TAG_KEYS: &'static [&'static str] = &[
+        "setting_sources",
+        "mcp_servers",
+        "auto_memory",
+        "config_dir",
+        "shell_snapshot",
+    ];
+
     /// What the run loads, as `(tag, value)` pairs. [`ClaudeCliAgent`] tags
     /// its output with them, and every spawn logs them with the MCP config
     /// it passes. `setting_sources` is `none` or the `--setting-sources`
     /// list; `mcp_servers` is `roko` (only those Roko passes) or `managed`
-    /// (the managed MCP config's); `shell_snapshot` is always `user`.
+    /// (the managed MCP config's); `auto_memory` is `off` while
+    /// [`ISOLATION_ENV`] switches it off; `config_dir` is `user`, since the
+    /// config directory is left alone ([`env`](Self::env)); `shell_snapshot`
+    /// is always `user`.
     #[must_use]
     pub fn tags(&self) -> Vec<(&'static str, String)> {
         let setting_sources: &str = if self.setting_sources.trim().is_empty() {
@@ -271,9 +284,19 @@ impl ClaudeIsolation {
         } else {
             "roko"
         };
+        let auto_memory = if self
+            .env()
+            .contains(&("CLAUDE_CODE_DISABLE_AUTO_MEMORY", "1"))
+        {
+            "off"
+        } else {
+            "on"
+        };
         vec![
             ("setting_sources", setting_sources.to_string()),
             ("mcp_servers", mcp_servers.to_string()),
+            ("auto_memory", auto_memory.to_string()),
+            ("config_dir", "user".to_string()),
             ("shell_snapshot", "user".to_string()),
         ]
     }
@@ -2677,6 +2700,7 @@ printf '%s\n' '{{"type":"content_block_delta","delta":{{"text":"ok"}}}}'
             result.output.body.as_text().unwrap_or("unknown")
         );
         assert_eq!(result.output.tag("mcp_servers"), Some("managed"));
+        assert_eq!(result.output.tag("auto_memory"), Some("off"));
         assert_eq!(result.output.tag("shell_snapshot"), Some("user"));
 
         // With one, Claude Code would refuse to start: the run fails with

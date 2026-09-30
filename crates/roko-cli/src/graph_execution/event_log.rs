@@ -39,7 +39,7 @@ use roko_core::dashboard_snapshot::PlanSetEntry;
 use roko_core::obs::LogScrubber;
 use roko_runtime::event_bus::Envelope;
 use serde::Serialize;
-use sha2::{Digest as _, Sha256};
+use sha2::{Digest, Sha256};
 use tokio::sync::broadcast::error::{RecvError, TryRecvError};
 use tokio::sync::oneshot;
 

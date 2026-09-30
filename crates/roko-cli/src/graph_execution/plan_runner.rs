@@ -936,10 +936,20 @@ async fn run_graph_plan_body(
     // learning wiring census inspects the same object graph.
     let graph_layout = RokoLayout::for_project(workdir);
     let graph_learn_dir = graph_layout.learn_dir();
+    // Routing outcomes are journaled in the learning WAL until the run saves
+    // the router at its end, so a crash keeps them (bug-dfb28f).
+    let cascade_journal = graph_run_config.cascade_router.as_ref().map(|_| {
+        Arc::new(
+            roko_learn::model_call_feedback::ModelCallJournal::for_snapshot(
+                &graph_layout.cascade_router_path(),
+            ),
+        )
+    });
     let graph_feedback = build_graph_feedback_context(
         workdir,
         &roko_config,
         graph_run_config.cascade_router.as_ref(),
+        cascade_journal.as_ref(),
         shared_factory.error_pattern_store(),
     );
     let holdout_experiment = graph_feedback.holdout_experiment.clone();
@@ -1424,17 +1434,18 @@ async fn run_graph_plan_body(
     //
     // Save learned routing state (confidence stats, LinUCB weights, Pareto
     // frontier) so that force_backend override outcomes and all other
-    // routing observations survive across runs. Without this, in-memory
-    // learning accumulated during plan execution was lost on exit.
-    if let Some(cascade) = &graph_run_config.cascade_router {
-        let cascade_path = graph_layout.cascade_router_path();
-        if let Err(err) = cascade.save(&cascade_path) {
-            tracing::warn!(
-                path = %cascade_path.display(),
-                error = %err,
-                "failed to persist cascade router state (non-fatal)"
-            );
-        }
+    // routing observations survive across runs. Saving through the run's
+    // journal truncates it once the snapshot holds its observations, so a
+    // later load does not replay them again (bug-dfb28f). If the save fails,
+    // the journal keeps them for that load.
+    if let (Some(cascade), Some(journal)) = (&graph_run_config.cascade_router, &cascade_journal)
+        && let Err(err) = journal.save(cascade)
+    {
+        tracing::warn!(
+            path = %journal.snapshot_path().display(),
+            error = %err,
+            "failed to persist cascade router state (non-fatal)"
+        );
     }
 
     // ── Persist holdout experiment state ────────────────────────────
@@ -1574,7 +1585,8 @@ async fn run_graph_plan_body(
 
 /// The learning and feedback wiring of a Graph plan run under `workdir`: the
 /// feedback facade ([`build_graph_feedback_facade`]) and every learning store
-/// a task attempt's feedback writes. `error_patterns` is the dispatch
+/// a task attempt's feedback writes. `cascade_journal` is the journal the run
+/// saves `cascade_router` through; `error_patterns` is the dispatch
 /// factory's error-pattern store, which prompts read.
 ///
 /// It builds the same feedback infrastructure that Runner-v2 used, so Graph
@@ -1587,6 +1599,7 @@ pub fn build_graph_feedback_context(
     workdir: &Path,
     config: &roko_core::config::schema::RokoConfig,
     cascade_router: Option<&Arc<roko_learn::cascade_router::CascadeRouter>>,
+    cascade_journal: Option<&Arc<roko_learn::model_call_feedback::ModelCallJournal>>,
     error_patterns: &Arc<std::sync::RwLock<roko_learn::error_pattern_store::ErrorPatternStore>>,
 ) -> crate::graph_task_dispatch::GraphFeedbackContext {
     let graph_layout = RokoLayout::for_project(workdir);
@@ -1648,6 +1661,7 @@ pub fn build_graph_feedback_context(
             workdir,
             config,
             cascade_router,
+            cascade_journal,
             shared_daimon_state.as_ref(),
             error_patterns,
         )),
@@ -1716,13 +1730,15 @@ fn graph_daimon_state(
 /// The feedback facade of a Graph plan run: the sinks each settled task
 /// attempt fans out to, in order (episodes, hindsight, verified knowledge,
 /// error patterns, routing when there is a cascade router, and the
-/// plan-completion dream, daimon, theta and delta sinks). `daimon_state` is
-/// the state dispatch modulates, persisted when a plan completes;
-/// `error_patterns` is the store dispatch formats into prompts.
+/// plan-completion dream, daimon, theta and delta sinks). The routing sink
+/// journals its observations in `cascade_journal`, when there is one;
+/// `daimon_state` is the state dispatch modulates, persisted when a plan
+/// completes; `error_patterns` is the store dispatch formats into prompts.
 pub fn build_graph_feedback_facade(
     workdir: &Path,
     config: &roko_core::config::schema::RokoConfig,
     cascade_router: Option<&Arc<roko_learn::cascade_router::CascadeRouter>>,
+    cascade_journal: Option<&Arc<roko_learn::model_call_feedback::ModelCallJournal>>,
     daimon_state: Option<&Arc<std::sync::Mutex<roko_daimon::DaimonState>>>,
     error_patterns: &Arc<std::sync::RwLock<roko_learn::error_pattern_store::ErrorPatternStore>>,
 ) -> Arc<crate::runtime_feedback::FeedbackFacade> {
@@ -1755,9 +1771,11 @@ pub fn build_graph_feedback_facade(
             ),
         ));
     if let Some(cascade) = cascade_router {
-        facade = facade.with_sink(std::sync::Arc::new(
-            crate::runtime_feedback::RoutingObservationSink::new(cascade.clone()),
-        ));
+        let mut routing = crate::runtime_feedback::RoutingObservationSink::new(cascade.clone());
+        if let Some(journal) = cascade_journal {
+            routing = routing.with_journal(Arc::clone(journal));
+        }
+        facade = facade.with_sink(std::sync::Arc::new(routing));
     }
 
     // ── #143: Dream consolidation trigger on plan completion ────────

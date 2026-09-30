@@ -3,13 +3,14 @@ id = "bug-dfb28f"
 kind = "bug"
 title = "Graph runs save the cascade router only when the run ends, so a crash loses the run's routing learning"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p2"
 goal = "cybernetic"
 size = "S"
 subsystem = ["roko-cli/graph-execution", "roko-learn/cascade-router"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-09-30
+last_verified = 2026-09-30
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (16:47, wk-router's report on bug-8da8ba, branch work/bug-8da8ba)"
 anchors = ["crates/roko-cli/src/graph_execution/plan_runner.rs:1556", "crates/roko-cli/src/runtime_feedback/routing.rs::RoutingObservationSink", "crates/roko-cli/src/graph_execution/feedback.rs", "crates/roko-learn/src/model_call_feedback.rs"]
@@ -58,3 +59,11 @@ Checked on `work/bug-8da8ba` (`26947cd62`, not merged at BASE `2a9312985`): `pla
 - Depends on bug-8da8ba (`ModelCallJournal`), which is in Rust batch 3.
 - `plan_runner.rs` is a hot file: coordinate with other Graph workers.
 - bug-3ea1f5 (the Path A failure reward) touches the same learning path but different files.
+- Implemented on `work/bug-f81e9b` at `6a5e1e3af` (`75a76d62c` plus a test fix); cargo verification deferred to the
+  batch check.
+  The run journals each outcome in the learning WAL before applying it: `ModelCallJournal::observe_task_outcome`,
+  and `observe_override_outcome`, whose dampened weight the WAL entry now records. It saves through the journal
+  at the end. `RunConfig::from_roko_config` loads the router with `load_recovered_router`, which runs the
+  `LearningRuntime` WAL recovery first.
+- Not journaled: per-category stats, which the snapshot does not persist either. Also not journaled: the routing
+  sink of the receipt settler (`graph_execution/feedback.rs`), because `build_settler` has no production caller.

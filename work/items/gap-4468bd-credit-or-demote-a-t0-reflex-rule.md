@@ -3,13 +3,14 @@ id = "gap-4468bd"
 kind = "gap"
 title = "Credit or demote a T0 reflex rule only from the settled attempt record, after verify"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p2"
 goal = "truth"
 size = "M"
 subsystem = ["roko-cli/graph-task-dispatch", "roko-learn"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-09-30
+last_verified = 2026-09-30
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (16:10, wk-gtd-split's report on bug-94151f)"
 anchors = ["crates/roko-cli/src/graph_task_dispatch.rs", "crates/roko-learn/src/reflex_store.rs::record_gate_pass_for", "crates/roko-learn/src/reflex_store.rs::record_gate_fail_for"]
@@ -68,3 +69,11 @@ Steps:
 
 - Keep the path behind `t0_reflexes`.
 - `graph_task_dispatch.rs` is a hot file. Start after the dispatch-file split (gap-c8e1f1) has merged.
+- Implemented on `work/bug-f81e9b` at `150380a73`; cargo verification deferred to the batch check.
+  A reflex hit now opens an attempt that carries the rule (`AttemptContext::served_by_reflex`) and settles it
+  unverified. `publish_settlement`, which every settlement passes through, calls `credit_reflex_rule`: label 1
+  calls `record_gate_pass_for`, label 0 calls `record_gate_fail_for`, and no label changes nothing. The test is in
+  `graph_task_dispatch/reflex_credit.rs`.
+- Design choice: eligibility stays with bug-b4c565, which serves a reflex only to tasks that no verify step or
+  workspace rung checks (`work/gap-3506f1b`). Those attempts settle unverified, so no rule is credited in
+  production until a reflex serves a verified attempt (Option A).

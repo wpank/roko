@@ -62,6 +62,7 @@ mod helper_calls;
 mod inert_settings;
 mod prompt_experiment;
 mod red_flags;
+mod reflex_credit;
 mod retry_budget;
 mod retry_feedback;
 mod routing_context;
@@ -671,6 +672,14 @@ impl TaskDispatcher for GraphTaskDispatcher {
                 );
                 // Settle the budget reservation at zero cost (no LLM call).
                 budget_reservation.settle(0.0)?;
+                // The rule serves this attempt, and only the attempt's settled
+                // record credits or demotes it (`reflex_credit`). Unverified,
+                // it teaches the rule nothing.
+                let mut attempt = self.open_attempt(spec, &task, ctx);
+                attempt.served_by_reflex(rule_id);
+                let settlement = Settlement::verified(&Ok(TaskGateVerdict::Unverified));
+                let settled = attempt.settle(settlement, "", None);
+                self.publish_settlement(spec, &task, &settled).await;
                 let output_signal = Signal::builder(Kind::AgentOutput)
                     .body(Body::text(cached_output))
                     .build();

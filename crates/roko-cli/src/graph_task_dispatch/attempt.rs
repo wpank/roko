@@ -3,11 +3,12 @@
 //! Each dispatch that reaches prompt assembly opens one attempt
 //! ([`GraphTaskDispatcher::open_attempt`]): it mints the attempt's durable
 //! [`AttemptKey`] and writes the `roko.attempt_open/1` line before the prompt
-//! is assembled. The attempt then settles once ([`AttemptContext::settle`]
-//! consumes it): its `roko.verdict/1` record goes to the run's
-//! `attempts.jsonl`, and dispatch publishes it through the feedback facade as
-//! [`FeedbackEvent::AttemptSettled`]. The attempt's efficiency, cost and
-//! episode rows carry the same key.
+//! is assembled. A dispatch that a T0 reflex rule serves in place of the
+//! provider opens one as well. The attempt then settles once
+//! ([`AttemptContext::settle`] consumes it): its `roko.verdict/1` record goes
+//! to the run's `attempts.jsonl`, and dispatch publishes it through the
+//! feedback facade as [`FeedbackEvent::AttemptSettled`]. The attempt's
+//! efficiency, cost and episode rows carry the same key.
 //!
 //! Ordinals are 1-based and durable. A run's attempts of a task continue from
 //! the highest ordinal its `attempts.jsonl` holds, so a resumed run never
@@ -19,7 +20,8 @@
 //!
 //! Learners read only the verdict's learning label
 //! ([`SettledAttempt::learning_success`]): an attempt without one updates no
-//! learner.
+//! learner. That includes the T0 reflex rule that served an attempt
+//! (`reflex_credit`).
 
 use roko_learn::telemetry::records::b3_digest;
 use roko_learn::telemetry::{
@@ -214,6 +216,7 @@ impl AttemptBook {
             },
             failover: FailoverChain::default(),
             helpers: None,
+            reflex_rule: None,
             run,
         }
     }
@@ -231,6 +234,8 @@ pub(super) struct AttemptContext {
     failover: FailoverChain,
     /// The attempt's helper model calls, once they settled.
     helpers: Option<HelperCallsUsage>,
+    /// The T0 reflex rule that served the attempt in place of the provider.
+    reflex_rule: Option<uuid::Uuid>,
     run: Arc<RunAttempts>,
 }
 
@@ -259,6 +264,13 @@ impl AttemptContext {
     /// The attempt's helper model calls settled with `usage` (bug-62e3f4).
     pub(super) fn record_helper_calls(&mut self, usage: HelperCallsUsage) {
         self.helpers = (usage.calls > 0).then_some(usage);
+    }
+
+    /// The T0 reflex rule `rule_id` served the attempt in place of the
+    /// provider. The attempt's learning label alone credits or demotes the
+    /// rule once it settles (gap-4468bd).
+    pub(super) fn served_by_reflex(&mut self, rule_id: uuid::Uuid) {
+        self.reflex_rule = Some(rule_id);
     }
 
     /// Settle the attempt: build its verdict record, queue it for the run's
@@ -298,6 +310,7 @@ impl AttemptContext {
         SettledAttempt {
             verdict: Arc::new(verdict),
             failure_reason,
+            reflex_rule: self.reflex_rule,
         }
     }
 }
@@ -381,6 +394,9 @@ pub(super) struct SettledAttempt {
     /// Class-prefixed failure reason (`"verify: …"`) for episodes and
     /// prompt-experiment settlement.
     pub(super) failure_reason: Option<String>,
+    /// The T0 reflex rule that served the attempt, which its learning label
+    /// credits or demotes ([`GraphTaskDispatcher::credit_reflex_rule`]).
+    pub(super) reflex_rule: Option<uuid::Uuid>,
 }
 
 impl SettledAttempt {

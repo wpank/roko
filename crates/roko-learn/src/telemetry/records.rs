@@ -296,6 +296,9 @@ impl AttemptIdentity {
 pub enum GateVerdictTag {
     /// Every authored verify step passed.
     Passed,
+    /// Every authored verify step passed on a tree the attempt left
+    /// unchanged: the task's work was already there.
+    AlreadySatisfied,
     /// The task declares no verify steps.
     Unverified,
     /// A judge accepted a failed verification. Only legacy checkpoints
@@ -309,6 +312,7 @@ impl GateVerdictTag {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Passed => "passed",
+            Self::AlreadySatisfied => "already_satisfied",
             Self::Unverified => "unverified",
             Self::ForcedAccept => "forced_accept",
         }
@@ -319,6 +323,7 @@ impl GateVerdictTag {
     pub fn parse(value: &str) -> Option<Self> {
         match value {
             "passed" => Some(Self::Passed),
+            "already_satisfied" => Some(Self::AlreadySatisfied),
             "unverified" => Some(Self::Unverified),
             "forced_accept" => Some(Self::ForcedAccept),
             _ => None,
@@ -334,6 +339,10 @@ pub enum AttemptOutcome {
     Passed,
     /// A verify rung failed.
     GateFailed,
+    /// The attempt changed nothing, and every verify step passed on the tree
+    /// it left: the task's work was done before it ran (gap-9eb1e1). Neither
+    /// a learning success nor a failure.
+    AlreadySatisfied,
     /// The task has no verify steps, so nothing checked the result.
     Unverified,
     /// A judge accepted a failed verification (legacy checkpoints only).
@@ -370,7 +379,9 @@ impl AttemptOutcome {
     #[must_use]
     pub const fn blame(self, first_token_seen: bool) -> Blame {
         match self {
-            Self::Passed | Self::Unverified | Self::ForcedAccept => Blame::None,
+            Self::Passed | Self::AlreadySatisfied | Self::Unverified | Self::ForcedAccept => {
+                Blame::None
+            }
             Self::GateFailed | Self::TurnCap => Blame::Agent,
             Self::Timeout if first_token_seen => Blame::Agent,
             Self::Timeout | Self::ProviderError | Self::ProviderExhausted => Blame::Infra,
@@ -388,6 +399,7 @@ impl From<GateVerdictTag> for AttemptOutcome {
     fn from(verdict: GateVerdictTag) -> Self {
         match verdict {
             GateVerdictTag::Passed => Self::Passed,
+            GateVerdictTag::AlreadySatisfied => Self::AlreadySatisfied,
             GateVerdictTag::Unverified => Self::Unverified,
             GateVerdictTag::ForcedAccept => Self::ForcedAccept,
         }
@@ -1286,6 +1298,7 @@ mod tests {
         let cases = [
             (O::Passed, false, Blame::None, Some(1)),
             (O::GateFailed, false, Blame::Agent, Some(0)),
+            (O::AlreadySatisfied, false, Blame::None, None),
             (O::Unverified, false, Blame::None, None),
             (O::ForcedAccept, false, Blame::None, None),
             (O::TurnCap, true, Blame::Agent, Some(0)),
@@ -1320,6 +1333,7 @@ mod tests {
     fn gate_verdict_wire_values_match_the_graph_tag() {
         for verdict in [
             GateVerdictTag::Passed,
+            GateVerdictTag::AlreadySatisfied,
             GateVerdictTag::Unverified,
             GateVerdictTag::ForcedAccept,
         ] {

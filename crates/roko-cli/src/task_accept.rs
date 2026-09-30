@@ -263,6 +263,18 @@ pub fn is_pinned_command(command: &str) -> bool {
     command.starts_with(STEP_HEADER)
 }
 
+/// The sha256 a generated acceptance step checks its pinned copy against: the value of the
+/// `roko_pinned=` line [`pinned_verify_step`] writes. `None` for any other command.
+#[must_use]
+pub fn pinned_sha256(command: &str) -> Option<&str> {
+    if !is_pinned_command(command) {
+        return None;
+    }
+    command
+        .lines()
+        .find_map(|line| line.strip_prefix("roko_pinned='")?.strip_suffix('\''))
+}
+
 /// A verify command as a prompt shows it (gap-1b5636). A generated acceptance step shows only its
 /// header line, `# roko accept: <task> <src> -> <dest> (exactly <count> passing tests)`; the rest
 /// is the harness's hash check and copy. Any other command shows in full.
@@ -911,5 +923,18 @@ command = "true"
                 "{output:?}"
             );
         }
+    }
+
+    #[test]
+    fn pinned_sha256_reads_back_the_hash_a_step_checks() {
+        let fx = fixture();
+        let mut task = demo_task();
+        pin_task(&fx.store, &fx.workdir, "accept-demo", &fx.plan_dir, &mut task).expect("pin");
+        assert_eq!(
+            pinned_sha256(&task.verify[0].command),
+            Some(sha256_hex(PINNED_TEST.as_bytes()).as_str())
+        );
+        // The task's own step is not a pinned one.
+        assert_eq!(pinned_sha256(&task.verify[1].command), None);
     }
 }

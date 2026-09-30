@@ -1929,7 +1929,10 @@ fn resolve_mcp_config(workdir: &Path, config: &Config) -> Option<PathBuf> {
 
     match workspace_mcp_config(workdir) {
         Some(Ok((path, _))) => {
-            tracing::debug!("MCP config from the workspace's .mcp.json: {}", path.display());
+            tracing::debug!(
+                "MCP config from the workspace's .mcp.json: {}",
+                path.display()
+            );
             Some(path)
         }
         Some(Err(err)) => {
@@ -2066,7 +2069,10 @@ mod tests {
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(output.status.success(), "{stdout}\n{stderr}");
-        assert!(stdout.contains("1 passed"), "the child test did not run: {stdout}");
+        assert!(
+            stdout.contains("1 passed"),
+            "the child test did not run: {stdout}"
+        );
     }
 
     #[test]

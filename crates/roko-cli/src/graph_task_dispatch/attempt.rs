@@ -25,9 +25,10 @@
 
 use roko_learn::telemetry::records::b3_digest;
 use roko_learn::telemetry::{
-    AttemptFailureClass, AttemptIdentity, AttemptKey, AttemptOpenRecord, AttemptOrdinals,
-    AttemptTiming, AttemptVerdictRecord, CostSource, ExecutedModel, GateVerdictTag,
-    HelperCallsUsage, TelemetryEvent, TelemetryWriter, TelemetryWriterConfig, TelemetryWriterStats,
+    AttemptFailureClass, AttemptIdentity, AttemptKey, AttemptLadder, AttemptOpenRecord,
+    AttemptOrdinals, AttemptTiming, AttemptVerdictRecord, Blame, CostSource, ExecutedModel,
+    GateVerdictTag, HelperCallsUsage, TelemetryEvent, TelemetryWriter, TelemetryWriterConfig,
+    TelemetryWriterStats,
 };
 use sha2::Digest;
 
@@ -205,6 +206,8 @@ impl AttemptBook {
         open.task_spec_hash = Some(task_spec_hash.clone());
         open.role = Some(task.role.as_deref().unwrap_or("implementer").to_string());
         open.max_retries = Some(spec.max_retries);
+        // Learned tier limits group attempts by it (gap-5a6e01).
+        open.tier = Some(task.tier_class().label().to_string());
         run.submit(open);
         AttemptContext {
             key,
@@ -216,6 +219,7 @@ impl AttemptBook {
             },
             failover: FailoverChain::default(),
             helpers: None,
+            ladder: None,
             reflex_rule: None,
             run,
         }
@@ -234,6 +238,9 @@ pub(super) struct AttemptContext {
     failover: FailoverChain,
     /// The attempt's helper model calls, once they settled.
     helpers: Option<HelperCallsUsage>,
+    /// Where the attempt stands on the model ladder, and whether it is the
+    /// task's last chance there (gap-460230).
+    ladder: Option<(AttemptLadder, bool)>,
     /// The T0 reflex rule that served the attempt in place of the provider.
     reflex_rule: Option<uuid::Uuid>,
     run: Arc<RunAttempts>,
@@ -264,6 +271,13 @@ impl AttemptContext {
     /// The attempt's helper model calls settled with `usage` (bug-62e3f4).
     pub(super) fn record_helper_calls(&mut self, usage: HelperCallsUsage) {
         self.helpers = (usage.calls > 0).then_some(usage);
+    }
+
+    /// The attempt runs where `ladder` says on the model ladder. With
+    /// `last_chance` it is the task's last attempt and no rung is left above
+    /// it, so an agent-blamed failure exhausts the ladder (gap-460230).
+    pub(super) fn record_ladder(&mut self, ladder: AttemptLadder, last_chance: bool) {
+        self.ladder = Some((ladder, last_chance));
     }
 
     /// The T0 reflex rule `rule_id` served the attempt in place of the
@@ -303,6 +317,11 @@ impl AttemptContext {
         verdict.executed = executed_model(model_requested, dispatch, self.failover);
         verdict.cost.source = cost_source(dispatch);
         verdict.helpers = self.helpers;
+        let agent_failed = verdict.blame == Blame::Agent;
+        verdict.ladder = self.ladder.map(|(mut ladder, last_chance)| {
+            ladder.exhausted = last_chance && agent_failed;
+            ladder
+        });
         verdict.output_sha256 = dispatch
             .and_then(|dispatch| dispatch.result.output.body.as_text().ok())
             .map(sha256_hex);

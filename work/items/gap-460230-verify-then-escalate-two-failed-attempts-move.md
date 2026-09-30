@@ -3,16 +3,18 @@ id = "gap-460230"
 kind = "gap"
 title = "Verify-then-escalate: two failed attempts move a task one rung up the ladder"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p1"
 goal = "golden-path"
 size = "M"
 subsystem = ["roko-cli/graph_task_dispatch", "roko-cli/dispatch"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-09-30
+last_verified = 2026-09-30
+last_verified_rev = "b128de876"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e5"
 discovered_from = "tmp/cybernetic-harness/tldr/04-FRONTIER-PLANS-CHEAP-EXECUTES.md (step 8, design rule 5); specs/S04-self-model-routing.md §4.4 (baseline H4-B1)"
-anchors = ["crates/roko-cli/src/graph_task_dispatch.rs::GraphTaskDispatcher::dispatch", "crates/roko-cli/src/graph_task_dispatch/streaming.rs::dispatch_streaming", "crates/roko-cli/src/graph_task_dispatch/retry_feedback.rs::NextAttempt", "crates/roko-cli/src/graph_task_dispatch/retry_budget.rs::TaskRetryBudgets", "crates/roko-cli/src/dispatch/model_routing.rs::ModelRouter::route"]
+anchors = ["crates/roko-cli/src/graph_task_dispatch.rs::GraphTaskDispatcher::dispatch", "crates/roko-cli/src/graph_task_dispatch/streaming.rs::dispatch_streaming", "crates/roko-cli/src/graph_task_dispatch/retry_feedback.rs::NextAttempt", "crates/roko-cli/src/graph_task_dispatch/retry_budget.rs::TaskRetryBudgets", "crates/roko-cli/src/dispatch/model_routing.rs::ModelRouter::route", "crates/roko-cli/src/graph_task_dispatch/ladder.rs::GraphTaskDispatcher::note_ladder_outcome"]
 lane = "rust-hot"
 parent = "spec-98f76d"
 links = { depends_on = ["gap-9cbf35", "gap-96f7ed"], blocks = [], related = ["gap-b62e95", "bug-35379d"], supersedes = [], duplicate_of = "" }
@@ -84,3 +86,4 @@ turn-cap stop with a raised cap. None of this changes the model.
 - Out of scope (S04.T12): low-confidence escalation, D11's "deepen verification before escalating", a learned start.
 - **Hot file:** `graph_task_dispatch.rs`.
 - **Decided 2026-09-29 (Will):** while the ladder is on, tasks without an authored `max_retries` get 5 retries, so two escalations fit (D11).
+- 2026-09-30 (wk-tiers): implemented on `work/gap-460230` at `af0cb7f42`: `graph_task_dispatch/ladder.rs`, with the standing in `retry_feedback.rs` and the retry floor in `retry_budget.rs`. Both `[[verify]]` tests pass in the worktree, and `two_failed_attempts_escalate_one_rung_when_streaming` covers the streaming path; workspace verification is deferred to the batch check. A task with a `model_hint` never climbs, so it keeps its own retry budget, and `--model` turns the floor off. Batch 16 (`c0be49aa8`, after merging gap-0f3980): an attempt that a `rung` hint (gap-dbf2a6) started records `hint`, and a `preferred_model` pins the model like a `model_hint`.

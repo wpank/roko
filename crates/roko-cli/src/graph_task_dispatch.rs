@@ -60,6 +60,7 @@ mod failover;
 mod feedback;
 mod helper_calls;
 mod inert_settings;
+mod ladder;
 mod prompt_experiment;
 mod red_flags;
 mod reflex_credit;
@@ -98,12 +99,14 @@ use routing_context::{
 use supervision::SupervisedAttempt;
 use tui_forward::forward_live_event_to_tui;
 use turn_policy::{
-    TurnCapRetry, base_attempt_timeout_ms, is_express_task, provider_failure_outcome,
-    provider_failure_reason, raised_attempt_timeout_ms, raised_turn_cap, task_turn_limit,
+    TurnCapRetry, base_attempt_timeout_ms_with, is_express_task, provider_failure_outcome,
+    provider_failure_reason, raised_attempt_timeout_ms, raised_turn_cap, task_turn_limit_with,
     timeout_resume_note, turn_cap_resume_note, verify_failure_reason,
 };
 use watchdog::{StallWatch, WatchedAttempt};
 
+#[cfg(test)]
+use turn_policy::task_turn_limit;
 #[cfg(test)]
 use verification::published_gate_output;
 
@@ -187,6 +190,9 @@ pub struct GraphTaskDispatcher {
     /// cloned into every `DispatchContext` to avoid repeated blocking I/O
     /// (filesystem reads + `git` subprocess spawns) on the Tokio reactor.
     static_prompt_cache: std::sync::OnceLock<(String, String, String)>,
+    /// Turn caps and timeouts learned per tier from the workspace's settled
+    /// attempts, read on the first dispatch (gap-5a6e01).
+    learned_tier_limits: std::sync::OnceLock<roko_learn::tier_limits::LearnedTierLimits>,
     /// T0 reflex store. When set and `[learning] t0_reflexes` is on, each
     /// dispatch of a task that no verify step checks (neither its own nor a
     /// workspace rung) looks for a matching reflex rule before invoking the
@@ -265,6 +271,7 @@ impl GraphTaskDispatcher {
             agg_tokens_out: AtomicU64::new(0),
             agg_dispatch_count: AtomicU64::new(0),
             static_prompt_cache: std::sync::OnceLock::new(),
+            learned_tier_limits: std::sync::OnceLock::new(),
             reflex_store: None,
             retrieval_ctx: parking_lot::Mutex::new(HashMap::new()),
             task_spend: GraphTaskSpendLedger::default(),
@@ -420,6 +427,7 @@ impl GraphTaskDispatcher {
             &self.config.gates,
             &tasks_toml,
         )
+        .with_ladder_min_retries(self.ladder_min_retries())
     }
 
     /// This process's index of the attempt of `task_key` that
@@ -848,7 +856,12 @@ impl TaskDispatcher for GraphTaskDispatcher {
         // A CLI `--model` override (`cli_model_override`) takes precedence over
         // express routing so manual experiments are not silently replaced.
         let express_active = is_express_task(&self.config, &task);
-        let mut max_turns = task_turn_limit(&self.config, &task, express_active);
+        let mut max_turns = task_turn_limit_with(
+            &self.config,
+            Some(self.learned_tier_limits()),
+            &task,
+            express_active,
+        );
         // The last attempt stopped at its turn cap with partial work on disk:
         // raise the cap and tell the agent to resume, never rerun the same cap.
         let turn_cap_resume = self.turn_cap_retries.lock().remove(&task_spend_key);
@@ -978,6 +991,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
             .experiment_store_path
             .as_deref()
             .and_then(|store| prompt_experiment::context(store, &attempt.key));
+        let ladder_step = self.ladder_step(spec, &task);
         let mut dispatch_ctx = DispatchContext {
             plan_id: spec.plan_id.clone(),
             role: role.to_string(),
@@ -994,6 +1008,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
                 budget_reservation.routing_budget_usd(),
             ),
             attempt: attempt_number,
+            ladder_step,
             prompt_experiment: prompt_experiment.clone(),
             gate_feedback: prior_gate_feedback,
             routing_context: Some(routing_ctx),
@@ -1011,6 +1026,7 @@ impl TaskDispatcher for GraphTaskDispatcher {
         };
         let prompt_assembly_latency_ms = prompt_assembly_started.elapsed().as_millis() as u64;
         attempt.prompt_assembled();
+        self.record_attempt_ladder(&mut attempt, spec, &task, &dispatch_plan, ladder_step);
 
         // ── RAG-10/11: Retrieval outcome telemetry (pre-gate) ────────────
         //
@@ -1081,7 +1097,8 @@ impl TaskDispatcher for GraphTaskDispatcher {
         }
 
         let contract = effective_agent_contract(role, &task, &self.config);
-        let base_timeout_ms = base_attempt_timeout_ms(&self.config, spec);
+        let base_timeout_ms =
+            base_attempt_timeout_ms_with(&self.config, Some(self.learned_tier_limits()), spec);
         // The last attempt ran out of time with partial work on disk: give
         // this one half again as long (bounded) and tell it to resume, never
         // rerun the budget that already ran out.

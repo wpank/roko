@@ -30,20 +30,22 @@ pub(super) fn is_express_task(
     config.conductor.express_mode && task.tier_class() == roko_core::task::TaskTier::Mechanical
 }
 
-/// Provider turn cap for one Graph task dispatch.
-///
-/// Every task gets its tier's `[pipeline.<tier>] max_turns` (unknown tiers
-/// read as focused, so the cap is never unbounded); express dispatch
-/// lowers it further to [`EXPRESS_MAX_TURNS`]. The provider adapter decides
-/// how the cap binds (`ProviderAdapter::turn_cap_enforcement`), and agent
-/// construction warns when a provider can treat it only as advisory.
+/// [`task_turn_limit_with`] without learned tier limits.
+#[cfg(test)]
 pub(super) fn task_turn_limit(config: &RokoConfig, task: &TaskDef, express_active: bool) -> u32 {
     task_turn_limit_with(config, None, task, express_active)
 }
 
-/// [`task_turn_limit`] with the workspace's learned tier limits: with
-/// `[pipeline] learned_limits = "on"`, a tier with enough history gets its
-/// learned cap instead of `[pipeline.<tier>] max_turns` (gap-5a6e01).
+/// Provider turn cap for one Graph task dispatch.
+///
+/// Every task gets its tier's `[pipeline.<tier>] max_turns` (unknown tiers
+/// read as focused, so the cap is never unbounded). With the workspace's
+/// `learned` tier limits and `[pipeline] learned_limits = "on"`, a tier with
+/// enough history gets its learned cap instead (gap-5a6e01). Express
+/// dispatch lowers the cap further to [`EXPRESS_MAX_TURNS`]. The provider
+/// adapter decides how the cap binds (`ProviderAdapter::turn_cap_enforcement`),
+/// and agent construction warns when a provider can treat it only as
+/// advisory.
 pub(super) fn task_turn_limit_with(
     config: &RokoConfig,
     learned: Option<&LearnedTierLimits>,
@@ -98,16 +100,17 @@ pub(super) fn turn_cap_resume_note(previous: TurnCapRetry, cap: u32) -> String {
 /// timeout.
 const MAX_TIMEOUT_ESCALATION: u64 = 4;
 
-/// Wall-clock budget of one Graph task attempt, in ms: the task's authored
-/// `timeout_secs`, else `timeouts.agent_dispatch_secs`.
+/// [`base_attempt_timeout_ms_with`] without learned tier limits.
+#[cfg(test)]
 pub(super) fn base_attempt_timeout_ms(config: &RokoConfig, spec: &TaskExecutionSpec) -> u64 {
     base_attempt_timeout_ms_with(config, None, spec)
 }
 
-/// [`base_attempt_timeout_ms`] with the workspace's learned tier limits: an
-/// authored `timeout_secs` always wins; otherwise, with `[pipeline]
-/// learned_limits = "on"`, a tier with enough history gets its learned
-/// timeout (gap-5a6e01).
+/// Wall-clock budget of one Graph task attempt, in ms: the task's authored
+/// `timeout_secs`, which always wins; else, with the workspace's `learned`
+/// tier limits and `[pipeline] learned_limits = "on"`, the learned timeout of
+/// a tier with enough history (gap-5a6e01); else
+/// `timeouts.agent_dispatch_secs`.
 pub(super) fn base_attempt_timeout_ms_with(
     config: &RokoConfig,
     learned: Option<&LearnedTierLimits>,
@@ -125,6 +128,26 @@ pub(super) fn base_attempt_timeout_ms_with(
     learned
         .and_then(|learned| learned.applied(tier).timeout_ms)
         .unwrap_or(configured)
+}
+
+impl GraphTaskDispatcher {
+    /// The workspace's learned tier limits (gap-5a6e01), read on the first
+    /// dispatch from the settled attempts under the feedback `runs_dir` and
+    /// the tiers in its `costs_path`. None without a runs directory.
+    pub(super) fn learned_tier_limits(&self) -> &LearnedTierLimits {
+        self.learned_tier_limits.get_or_init(|| {
+            self.feedback
+                .runs_dir
+                .as_deref()
+                .map_or_else(LearnedTierLimits::default, |runs_dir| {
+                    LearnedTierLimits::load(
+                        &self.config,
+                        runs_dir,
+                        self.feedback.costs_path.as_deref(),
+                    )
+                })
+        })
+    }
 }
 
 /// Timeout for the attempt after one that ran out of `timeout_ms`: half
@@ -524,6 +547,83 @@ mod tests {
         }
         assert_eq!(task_turn_limit(&config, &focused, false), 60);
         assert_eq!(base_attempt_timeout_ms(&config, &spec), 600_000);
+    }
+
+    /// gap-5a6e01: dispatch learns its tier limits from the settled attempts
+    /// under its runs directory, so with `learned_limits = "on"` a focused
+    /// task gets its tier's learned turn cap; its own open line names the
+    /// tier for the next run to learn from.
+    #[tokio::test]
+    async fn dispatch_reads_learned_tier_limits_from_its_runs() {
+        use roko_core::config::gates::LearnedLimitsMode;
+        use roko_learn::telemetry::records::ATTEMPTS_FILE;
+        use roko_learn::telemetry::{
+            AttemptIdentity, AttemptKey, AttemptOpenRecord, AttemptOutcome, AttemptVerdictRecord,
+            Stamped, TelemetryRecord,
+        };
+
+        fn stamped<T: TelemetryRecord>(record: T) -> String {
+            serde_json::to_string(&Stamped {
+                schema_version: T::SCHEMA.to_string(),
+                record_id: String::new(),
+                seq: 0,
+                ts: String::new(),
+                record,
+            })
+            .expect("serialize line")
+        }
+
+        // 40 focused passes, half at 20 turns and half at 40: the p95 times
+        // 1.25 is 50 turns.
+        let temp = tempdir().expect("tempdir");
+        let runs_dir = temp.path().join(".roko/runs");
+        let history: Vec<String> = (1..=40)
+            .flat_map(|ordinal| {
+                let key = AttemptKey::new("history", "plan", "T", ordinal);
+                let mut open = AttemptOpenRecord::new(AttemptIdentity::new(&key), 1_000);
+                open.tier = Some("focused".to_string());
+                let mut verdict = AttemptVerdictRecord::settle(
+                    AttemptIdentity::new(&key),
+                    AttemptOutcome::Passed,
+                    true,
+                );
+                verdict.executed.turns = Some(if ordinal % 2 == 0 { 20 } else { 40 });
+                [stamped(open), stamped(verdict)]
+            })
+            .collect();
+        std::fs::create_dir_all(runs_dir.join("history")).expect("history run");
+        std::fs::write(
+            runs_dir.join("history").join(ATTEMPTS_FILE),
+            history.join("\n"),
+        )
+        .expect("write history");
+
+        let (dispatcher, task) = make_batch_dispatcher(&temp, 0.01, |config| {
+            config.pipeline.learned_limits = LearnedLimitsMode::On;
+        })
+        .await;
+        let dispatcher = dispatcher.with_feedback(GraphFeedbackContext {
+            runs_dir: Some(runs_dir.clone()),
+            ..GraphFeedbackContext::default()
+        });
+        let ctx = batch_ctx().with_run_id("now".to_string());
+        dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &ctx)
+            .await
+            .expect("dispatch");
+        let args = std::fs::read_to_string(temp.path().join("provider-args"))
+            .expect("the provider recorded its arguments");
+        assert!(args.contains("--max-turns 50"), "provider args: {args}");
+
+        dispatcher.close_run_attempts("now");
+        let lines = std::fs::read_to_string(runs_dir.join("now").join(ATTEMPTS_FILE))
+            .expect("this run's attempt log");
+        let open: serde_json::Value = lines
+            .lines()
+            .filter_map(|line| serde_json::from_str(line).ok())
+            .find(|line: &serde_json::Value| line["schema_version"] == "roko.attempt_open/1")
+            .expect("an open line");
+        assert_eq!(open["tier"], "focused");
     }
 
     #[test]

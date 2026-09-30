@@ -718,6 +718,41 @@ impl AttemptOpenRecord {
     }
 }
 
+/// Why an attempt ran on its model, with respect to the model ladder
+/// (`[routing.ladder]`, gap-460230).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LadderReason {
+    /// The start rung of the task's role and tier.
+    Start,
+    /// The rung the task's `rung` hint names.
+    Hint,
+    /// A rung above the start, after agent-blamed failures.
+    Escalated,
+    /// `--model` or a `model_hint` pinned the model; the ladder never moves
+    /// it.
+    Pinned,
+}
+
+/// Where an attempt stood on the model ladder (gap-460230).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AttemptLadder {
+    /// Name of the rung that supplied the model; `None` when pinned.
+    #[serde(default)]
+    pub rung: Option<String>,
+    /// Index of that rung among the task's rungs, cheapest first.
+    #[serde(default)]
+    pub index: Option<u32>,
+    /// Rungs the task had climbed above its start rung.
+    pub step: u32,
+    /// Why the attempt ran on its model.
+    pub reason: LadderReason,
+    /// The agent's work failed the task's last attempt on its top rung: the
+    /// ladder is exhausted, and the task needs a split or a replan.
+    #[serde(default)]
+    pub exhausted: bool,
+}
+
 /// `roko.verdict/1` (S01 §5.5): the one settled record per attempt. Not
 /// [`crate::verdict_scorer::VerdictRecord`], which is one gate's pass or fail
 /// held in memory for routing penalties.
@@ -763,6 +798,10 @@ pub struct AttemptVerdictRecord {
     /// when it made none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub helpers: Option<HelperCallsUsage>,
+    /// Where the attempt stood on the model ladder; `None` when the ladder
+    /// is off or did not route the attempt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ladder: Option<AttemptLadder>,
     /// `sha256` of the provider request.
     #[serde(default)]
     pub request_sha256: Option<String>,
@@ -803,6 +842,7 @@ impl AttemptVerdictRecord {
             usage: AttemptUsage::default(),
             cost: AttemptCost::default(),
             helpers: None,
+            ladder: None,
             request_sha256: None,
             output_sha256: None,
             diff_sha256: None,

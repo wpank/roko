@@ -3,13 +3,15 @@ id = "gap-191ecd"
 kind = "gap"
 title = "The task prompt's Verification Commands list only the task's own steps, not the workspace rungs that will also run"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p2"
 goal = "truth"
 size = "S"
 subsystem = ["roko-cli/dispatch/prompt_builder"]
 created = 2026-09-30
 updated = 2026-09-30
+last_verified = 2026-09-30
+last_verified_rev = "b128de876"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-gates's report, checked on work/bug-5b43a9 at 7b25c478b)"
 anchors = ["crates/roko-cli/src/dispatch/prompt_builder.rs", "crates/roko-cli/src/task_parser.rs::TaskDef"]
@@ -46,3 +48,4 @@ The Verification Commands section in `prompt_builder.rs`, and `TaskDef::build_pr
 ## Notes
 
 - Build on the gates branch.
+- 2026-09-30 (wk-gates): Implemented on `work/gap-3506f1b` at `6f29511f4`; cargo verification deferred to the batch check. `plan_dispatch` plans the prompt from the task with every step it will run, its own and then its plan's rungs (`prompt_task`), so both prompt sections that list verify commands (`# Verify` and "Verification Commands") show the rungs. They show each rung by its command, not its name, since those sections list commands only. Routing reads no verify step, so only the prompt changes.

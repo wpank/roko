@@ -329,8 +329,9 @@ impl GraphTaskDispatcher {
             })
             .collect();
         // The task's own verify steps, then the workspace rungs that run
-        // after them (`verification::attempt_verify_steps`).
-        let gates = &self.config.gates;
+        // after them unless its plan opts out
+        // (`verification::attempt_verify_steps`).
+        let rungs = self.plan_rungs(spec);
         AttemptDiffPolicy {
             task_files: task.files.clone(),
             verify_scripts: task
@@ -338,7 +339,7 @@ impl GraphTaskDispatcher {
                 .iter()
                 .filter(|step| !crate::task_accept::is_pinned_step(step))
                 .map(|step| step.command.as_str())
-                .chain(gates.required_rungs().map(|rung| rung.command.as_str()))
+                .chain(rungs.map(|rung| rung.command.as_str()))
                 .flat_map(scripts_run_by)
                 .collect(),
             pinned_tests,

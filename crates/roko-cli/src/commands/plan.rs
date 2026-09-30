@@ -2011,12 +2011,16 @@ fn validate_before_run(plans_dir: &Path, workdir: &Path) -> Option<i32> {
     }
 }
 
-/// `plan validate --json` output with the `--spec-quality` report added.
+/// `plan validate --json` output: the report, with the `--spec-quality`
+/// report when asked for and the workspace rungs when there are any.
 #[derive(serde::Serialize)]
-struct ValidateJsonWithSpecQuality<'a> {
+struct ValidateJson<'a> {
     #[serde(flatten)]
     report: &'a plan_validate::ValidationReport,
-    spec_quality: &'a roko_gate::spec_quality::SpecQualityReport,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    spec_quality: Option<&'a roko_gate::spec_quality::SpecQualityReport>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    workspace_rungs: Option<&'a plan_validate::WorkspaceRungs>,
 }
 
 /// The `tasks.toml` files `plan validate` lints: `dir` itself when it is one, otherwise every one
@@ -2058,16 +2062,19 @@ pub(crate) fn cmd_plan_validate(
     spec_quality: bool,
 ) -> Result<i32> {
     let config_path = workdir.join("roko.toml");
-    let models = if config_path.is_file() {
+    let config = if config_path.is_file() {
         let config_text = std::fs::read_to_string(&config_path)
             .with_context(|| format!("read {}", config_path.display()))?;
         let config: RokoConfig = toml::from_str(&config_text)
             .map_err(|error| anyhow!(error))
             .with_context(|| format!("parse {}", config_path.display()))?;
-        Some(crate::commands::config_cmd::configured_models(&config))
+        Some(config)
     } else {
         None
     };
+    let models = config
+        .as_ref()
+        .map(crate::commands::config_cmd::configured_models);
 
     let report =
         plan_validate::validate_plans_dir_with_workdir(dir, models.as_ref(), Some(workdir))?;
@@ -2086,18 +2093,26 @@ pub(crate) fn cmd_plan_validate(
     let spec_report = spec_quality
         .then(|| roko_gate::spec_quality::lint_files(&validated_tasks_files(dir), workdir));
 
+    // The workspace rungs every plan task runs after its own verify steps.
+    let rungs = config
+        .as_ref()
+        .map(|config| plan_validate::workspace_rungs(dir, &config.gates))
+        .transpose()?
+        .filter(|rungs| !rungs.rungs.is_empty());
+
     if json_output {
-        if let Some(spec_quality) = &spec_report {
-            let output = ValidateJsonWithSpecQuality {
-                report: &report,
-                spec_quality,
-            };
-            println!("{}", serde_json::to_string_pretty(&output)?);
-        } else {
-            println!("{}", plan_validate::render_json(&report)?);
-        }
+        let output = ValidateJson {
+            report: &report,
+            spec_quality: spec_report.as_ref(),
+            workspace_rungs: rungs.as_ref(),
+        };
+        println!("{}", serde_json::to_string_pretty(&output)?);
     } else {
         let mut text = plan_validate::render_text(&report);
+        if let Some(rungs) = &rungs {
+            text.push_str("\n\n");
+            text.push_str(&plan_validate::render_rungs_text(rungs));
+        }
         if !overlaps.is_empty() {
             text.push_str("\n\ncrate overlaps detected:\n");
             for overlap in &overlaps {

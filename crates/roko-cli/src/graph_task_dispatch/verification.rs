@@ -6,9 +6,9 @@ use super::*;
 
 impl GraphTaskDispatcher {
     /// Run a task's verify steps, its authored `[[task.verify]]` steps and
-    /// then the workspace's required `[[gates.rungs]]`
-    /// ([`attempt_verify_steps`]), and settle every gate-dependent learning
-    /// record for this attempt.
+    /// then the workspace's required `[[gates.rungs]]` unless its plan opts
+    /// out ([`attempt_verify_steps`]), and settle every gate-dependent
+    /// learning record for this attempt.
     ///
     /// Shared by the batch and streaming dispatch paths so both reach the same
     /// verdict. The pre-verify screen (`red_flags`) goes first: an attempt
@@ -48,7 +48,7 @@ impl GraphTaskDispatcher {
             progress_tx,
         )
         .await?;
-        let steps = attempt_verify_steps(task, &self.config.gates);
+        let steps = self.verify_steps(spec, task);
         if !steps.is_empty() {
             let payload = GatePayload::in_dir(&effective_workdir)
                 .with_label(format!("{}/{}", spec.plan_id, task.id))
@@ -87,18 +87,21 @@ impl GraphTaskDispatcher {
             let total_steps = u32::try_from(steps.len()).unwrap_or(u32::MAX);
 
             for (i, (step_label, step)) in steps.iter().enumerate() {
+                // How feedback and events quote the step: a pinned acceptance
+                // step by its header line, not its generated script.
+                let shown = crate::task_accept::prompt_command(&step.command);
                 // Fail fast: once a step has failed (or P4-03 declared the
                 // attempt doomed), report later steps as skipped instead of
                 // paying for, say, a full compile after a cheap grep failed.
                 if promise_terminated || !failures.is_empty() {
-                    skipped_steps.push(format!("{step_label} (`{}`)", step.command));
+                    skipped_steps.push(format!("{step_label} (`{shown}`)"));
                     continue;
                 }
 
                 if let Some(progress_tx) = progress_tx {
                     let _ = progress_tx
                         .send(GraphTaskEvent::Progress {
-                            message: format!("verify: {}", step.command),
+                            message: format!("verify: {shown}"),
                             completed: Some(u32::try_from(i).unwrap_or(u32::MAX)),
                             total: Some(total_steps),
                         })
@@ -197,7 +200,7 @@ impl GraphTaskDispatcher {
                         &task.id,
                         step_label,
                         verdict.passed,
-                        Some(&published_gate_output(&step.command, &verdict)),
+                        Some(&published_gate_output(shown, &verdict)),
                     );
                 }
 
@@ -285,8 +288,7 @@ impl GraphTaskDispatcher {
 
                     timed_out |= roko_gate::verdict_timed_out(&verdict);
                     failures.push(format!(
-                        "{step_label} (`{cmd}`): {fail_msg}\n{detail_snippet}",
-                        cmd = step.command,
+                        "{step_label} (`{shown}`): {fail_msg}\n{detail_snippet}"
                     ));
                 }
             }
@@ -335,8 +337,9 @@ impl GraphTaskDispatcher {
                         let mut retry_skipped: Vec<String> = Vec::new();
                         let mut retry_timed_out = false;
                         for (i, (step_label, step)) in steps.iter().enumerate() {
+                            let shown = crate::task_accept::prompt_command(&step.command);
                             if !retry_failures.is_empty() {
-                                retry_skipped.push(format!("{step_label} (`{}`)", step.command));
+                                retry_skipped.push(format!("{step_label} (`{shown}`)"));
                                 continue;
                             }
                             // P2-TUI-4: Notify the TUI of the post-fix re-run.
@@ -374,7 +377,7 @@ impl GraphTaskDispatcher {
                                     &task.id,
                                     step_label,
                                     retry_verdict.passed,
-                                    Some(&published_gate_output(&step.command, &retry_verdict)),
+                                    Some(&published_gate_output(shown, &retry_verdict)),
                                 );
                             }
                             if !retry_verdict.passed {
@@ -391,8 +394,7 @@ impl GraphTaskDispatcher {
                                     .unwrap_or_default();
                                 retry_timed_out |= roko_gate::verdict_timed_out(&retry_verdict);
                                 retry_failures.push(format!(
-                                    "{step_label} (`{cmd}`): {fail_msg}\n{detail_snippet}",
-                                    cmd = step.command,
+                                    "{step_label} (`{shown}`): {fail_msg}\n{detail_snippet}"
                                 ));
                             }
                         }
@@ -1121,14 +1123,70 @@ async fn verify_compile_permit(
     .ok()
 }
 
+impl GraphTaskDispatcher {
+    /// Whether `spec`'s plan runs the workspace's `[[gates.rungs]]`: its
+    /// `[meta] workspace_rungs`, read once per plan from
+    /// `<plan_dir>/tasks.toml`. An unreadable file counts as on.
+    pub(super) fn plan_runs_workspace_rungs(&self, spec: &TaskExecutionSpec) -> bool {
+        let mut plans = self.workspace_rung_plans.lock();
+        if let Some(runs) = plans.get(&spec.plan_id) {
+            return *runs;
+        }
+        let runs = self
+            .read_plan_meta(spec)
+            .is_none_or(|meta| meta.runs_workspace_rungs());
+        if !runs {
+            tracing::info!(
+                plan_id = %spec.plan_id,
+                "plan sets workspace_rungs = false: its tasks run only their own verify steps"
+            );
+        }
+        plans.insert(spec.plan_id.clone(), runs);
+        runs
+    }
+
+    /// The workspace rungs a task of `spec`'s plan faces: the required
+    /// `[[gates.rungs]]`, none when the plan opts out.
+    pub(super) fn plan_rungs(
+        &self,
+        spec: &TaskExecutionSpec,
+    ) -> impl Iterator<Item = &roko_core::config::GateRungConfig> {
+        let runs = self.plan_runs_workspace_rungs(spec);
+        self.config.gates.required_rungs().filter(move |_| runs)
+    }
+
+    /// The verify steps an attempt at `task` runs, labelled
+    /// ([`attempt_verify_steps`]).
+    pub(super) fn verify_steps(
+        &self,
+        spec: &TaskExecutionSpec,
+        task: &TaskDef,
+    ) -> Vec<(String, crate::task_parser::VerifyStep)> {
+        attempt_verify_steps(task, self.plan_rungs(spec))
+    }
+
+    /// `task` as its prompt shows it: with every verify step that will judge
+    /// it, its own and then the workspace rungs, so the agent sees each check.
+    pub(super) fn prompt_task(&self, spec: &TaskExecutionSpec, task: &TaskDef) -> TaskDef {
+        let mut prompt_task = task.clone();
+        prompt_task.verify = self
+            .verify_steps(spec, task)
+            .into_iter()
+            .map(|(_, step)| step)
+            .collect();
+        prompt_task
+    }
+}
+
 /// The verify steps an attempt at `task` runs, each with its label: the
 /// task's authored `[[task.verify]]` steps (`verify[i]` or `verify[i:phase]`),
-/// then every required workspace rung from `[[gates.rungs]]` (`rung[name]`)
-/// whose command no authored step already runs. `roko run` authors its task's
-/// steps from the same rungs, so they never run twice there either.
-fn attempt_verify_steps(
+/// then each of `rungs`, the workspace's `[[gates.rungs]]` that its plan runs
+/// (`rung[name]`), whose command no authored step already runs. `roko run`
+/// authors its task's steps from the same rungs, so they never run twice
+/// there either.
+fn attempt_verify_steps<'a>(
     task: &TaskDef,
-    gates: &roko_core::config::GatesConfig,
+    rungs: impl IntoIterator<Item = &'a roko_core::config::GateRungConfig>,
 ) -> Vec<(String, crate::task_parser::VerifyStep)> {
     let mut steps: Vec<_> = task
         .verify
@@ -1136,7 +1194,7 @@ fn attempt_verify_steps(
         .enumerate()
         .map(|(index, step)| (verify_step_label(index, &step.phase), step.clone()))
         .collect();
-    for rung in gates.required_rungs() {
+    for rung in rungs {
         let command = rung.command.trim();
         if !task.verify.iter().any(|s| s.command.trim() == command) {
             steps.push((rung_step_label(&rung.name), rung.into()));
@@ -1290,7 +1348,8 @@ mod tests {
 
     use super::*;
     use crate::graph_task_dispatch::tests::{
-        VERIFY_PROVIDER, make_spec, make_test_dispatcher, no_auto_fix, verify_step,
+        VERIFY_PROVIDER, batch_ctx, make_batch_dispatcher, make_spec, make_test_dispatcher,
+        no_auto_fix, verify_step,
     };
 
     // ─── Verify verdict tests ───────────────────────────────────────────────
@@ -1857,5 +1916,206 @@ printf '%s\n' '{"type":"result","session_id":"s","model":"claude-sonnet-4-6","to
             Some(TaskGateVerdict::Passed)
         );
         assert!(!docs_ran.exists(), "an optional rung never runs");
+    }
+
+    /// A plan dir holding a `tasks.toml` whose `[meta]` opts out of the
+    /// workspace rungs, and a spec of `task` in it.
+    fn opted_out_spec(temp: &tempfile::TempDir, task: &TaskDef) -> TaskExecutionSpec {
+        let plan_dir = temp.path().join("plans/opted-out");
+        std::fs::create_dir_all(&plan_dir).expect("plan dir");
+        std::fs::write(
+            plan_dir.join("tasks.toml"),
+            r#"
+[meta]
+plan = "opted-out"
+workspace_rungs = false
+
+[[task]]
+id = "T-STREAM"
+title = "Streaming graph task"
+"#,
+        )
+        .expect("tasks.toml");
+        let mut spec = make_spec(task);
+        spec.plan_id = "opted-out".to_string();
+        spec.plan_dir = plan_dir.display().to_string();
+        spec
+    }
+
+    /// A plan with `[meta] workspace_rungs = false` keeps its tasks to their
+    /// own verify steps; a plan without it still runs the workspace rungs.
+    #[tokio::test]
+    async fn a_plan_can_opt_out_of_the_workspace_rungs() {
+        let temp = tempdir().expect("tempdir");
+        let (dispatcher, mut task) = make_test_dispatcher(
+            &temp,
+            VERIFY_PROVIDER,
+            |config| {
+                no_auto_fix(config);
+                config.gates.custom_rungs = vec![rung("lint", "exit 3", true)];
+            },
+            GraphFeedbackContext::default(),
+        )
+        .await;
+        task.verify = vec![verify_step("structural", "true")];
+        let opted_out = opted_out_spec(&temp, &task);
+
+        let outputs = dispatcher
+            .dispatch(&opted_out, Vec::new(), &CellContext::new())
+            .await
+            .expect("the opted-out plan's task skips the failing rung");
+        assert_eq!(
+            TaskGateVerdict::from_signals(&outputs),
+            Some(TaskGateVerdict::Passed)
+        );
+
+        let error = dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &CellContext::new())
+            .await
+            .expect_err("another plan runs the failing rung");
+        let RokoError::Verify { message, .. } = error else {
+            panic!("expected a verify failure, got {error}");
+        };
+        assert!(message.contains("rung[lint] (`exit 3`)"), "{message}");
+    }
+
+    /// A reflex serves only a task that no verify step checks, so a task the
+    /// workspace rungs check is dispatched, and its rungs run, even when a
+    /// reflex rule matches it.
+    #[tokio::test]
+    async fn a_reflex_pass_still_runs_the_workspace_rungs() {
+        use roko_learn::reflex_store::{PromotionCandidate, ReflexAction, ReflexCondition};
+
+        let store_dir = tempdir().expect("tempdir");
+        let reflexes = ReflexStore::open(store_dir.path().join("reflexes.jsonl"));
+        // A wildcard rule matches every task.
+        let promoted = reflexes.try_promote(
+            &PromotionCandidate {
+                episode_id: "episode-reflex".to_string(),
+                condition: ReflexCondition::default(),
+                action: ReflexAction {
+                    tool: "respond".to_string(),
+                    args: "cached reflex output".to_string(),
+                },
+            },
+            3,
+        );
+        assert!(promoted);
+        let temp = tempdir().expect("tempdir");
+        let rung_ran = temp.path().join("rung-ran");
+        let check = rung("check", &format!("touch {}", rung_ran.display()), true);
+        let (dispatcher, task) = make_batch_dispatcher(&temp, 0.01, |config| {
+            no_auto_fix(config);
+            config.learning.t0_reflexes = true;
+            config.gates.custom_rungs = vec![check];
+        })
+        .await;
+        let dispatcher = dispatcher.with_reflex_store(reflexes);
+        assert!(task.verify.is_empty(), "only the rung checks the task");
+
+        let outputs = dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &batch_ctx())
+            .await
+            .expect("the task passes its rung");
+        assert_eq!(
+            outputs[0].body.as_text().expect("output text"),
+            "batch-output",
+            "the agent ran, not the reflex"
+        );
+        assert!(rung_ran.exists(), "the workspace rung ran");
+        assert_eq!(
+            TaskGateVerdict::from_signals(&outputs),
+            Some(TaskGateVerdict::Passed)
+        );
+    }
+
+    /// Provider that saves its prompt (argv, which carries the system prompt,
+    /// then stdin) to `prompt.txt` in its working directory.
+    const PROMPT_LOG_PROVIDER: &str = r#"#!/bin/sh
+set -eu
+input="$(cat)"
+printf '%s\n---\n%s\n' "$*" "$input" > prompt.txt
+printf '%s\n' '{"type":"content_block_delta","delta":{"text":"done"}}'
+printf '%s\n' '{"type":"result","session_id":"s","model":"claude-sonnet-4-6","total_cost_usd":0.01,"usage":{"input_tokens":5,"output_tokens":10}}'
+"#;
+
+    /// The prompt shows every check that will judge the task: its own verify
+    /// steps, then the workspace rungs it faces, and no rung its plan opts out
+    /// of.
+    #[tokio::test]
+    async fn task_prompts_list_the_workspace_rungs() {
+        let temp = tempdir().expect("tempdir");
+        let (dispatcher, mut task) = make_test_dispatcher(
+            &temp,
+            PROMPT_LOG_PROVIDER,
+            |config| {
+                no_auto_fix(config);
+                config.gates.custom_rungs = vec![rung("lint", "true # the lint rung", true)];
+            },
+            GraphFeedbackContext::default(),
+        )
+        .await;
+        task.verify = vec![verify_step("structural", "true # the own step")];
+        let prompt = || std::fs::read_to_string(temp.path().join("prompt.txt")).expect("prompt");
+
+        dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &CellContext::new())
+            .await
+            .expect("the task and its rung pass");
+        let text = prompt();
+        let own = text.find("true # the own step").expect("own step");
+        let lint = text.find("true # the lint rung").expect("rung");
+        assert!(own < lint, "rung after own steps:\n{text}");
+
+        let opted_out = opted_out_spec(&temp, &task);
+        dispatcher
+            .dispatch(&opted_out, Vec::new(), &CellContext::new())
+            .await
+            .expect("the task passes its own step");
+        let text = prompt();
+        assert!(text.contains("true # the own step"), "{text}");
+        assert!(!text.contains("the lint rung"), "opted out:\n{text}");
+    }
+
+    /// A pinned acceptance step is quoted by its header line, not its
+    /// generated script, in the failure and skipped-step lines that become
+    /// retry feedback.
+    #[tokio::test]
+    async fn pinned_steps_are_quoted_by_their_header_in_feedback() {
+        let temp = tempdir().expect("tempdir");
+        let (dispatcher, mut task) = make_test_dispatcher(
+            &temp,
+            VERIFY_PROVIDER,
+            no_auto_fix,
+            GraphFeedbackContext::default(),
+        )
+        .await;
+        let pinned = |name: &str, script: &str| crate::task_parser::VerifyStep {
+            fail_msg: Some(format!("the pinned acceptance test {name} failed")),
+            ..verify_step("test", &format!("# roko accept: {name}\n{script}"))
+        };
+        task.verify = vec![
+            pinned("one.sh", "roko_first_script_line=1\nexit 1"),
+            pinned("two.sh", "roko_second_script_line=1\nexit 0"),
+        ];
+
+        let error = dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &CellContext::new())
+            .await
+            .expect_err("the first pinned step fails");
+        let RokoError::Verify { message, .. } = error else {
+            panic!("expected a verify failure, got {error}");
+        };
+        assert!(
+            message.contains("verify[0:test] (`# roko accept: one.sh`): the pinned"),
+            "{message}"
+        );
+        assert!(
+            message.contains("verify[1:test] (`# roko accept: two.sh`)"),
+            "{message}"
+        );
+        for script in ["roko_first_script_line", "roko_second_script_line"] {
+            assert!(!message.contains(script), "{script}:\n{message}");
+        }
     }
 }

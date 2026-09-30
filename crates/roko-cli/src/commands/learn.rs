@@ -1,6 +1,7 @@
 //! learn command handlers.
 
 use crate::*;
+use anyhow::Context as _;
 use std::collections::HashSet;
 
 /// Format a cost value for human display.
@@ -60,6 +61,7 @@ pub(crate) async fn dispatch_learn(cli: &Cli, cmd: LearnCmd) -> Result<i32> {
             outer.or(inner).unwrap_or_else(|| resolve_workdir(cli))
         }
         LearnCmd::Inspect { subsystem } => inspect_workdir(cli, subsystem),
+        LearnCmd::Telemetry { cmd: sub } => telemetry_workdir(cli, sub),
         LearnCmd::Tune { workdir, .. } => workdir.clone().unwrap_or_else(|| resolve_workdir(cli)),
     };
     let _lock =
@@ -188,6 +190,7 @@ pub(crate) async fn dispatch_learn(cli: &Cli, cmd: LearnCmd) -> Result<i32> {
             let wd = inspect_workdir(cli, &subsystem);
             cmd_learn_inspect(&wd, &subsystem, json).await
         }
+        LearnCmd::Telemetry { cmd: sub } => cmd_learn_telemetry(cli, sub, json),
         LearnCmd::Tune {
             subsystem,
             dry_run,
@@ -201,6 +204,310 @@ pub(crate) async fn dispatch_learn(cli: &Cli, cmd: LearnCmd) -> Result<i32> {
             cmd_learn_inspect_legacy(&wd, &subsystem, json).await
         }
     }
+}
+
+// ── Telemetry command ───────────────────────────────────────────────
+
+/// `roko learn telemetry`: read-only checks and reports over the attempt
+/// records in `.roko/runs/` (S01 P0-13). Neither subcommand writes a file.
+#[derive(Debug, clap::Subcommand)]
+pub(crate) enum TelemetryCmd {
+    /// Check a run's records: schema validity, join coverage of the efficiency,
+    /// cost and episode rows, duplicate settlements, seq ordering and the
+    /// cost-source mix. Exits non-zero when a check fails.
+    Check {
+        /// Run to check, a directory under .roko/runs (default: the latest run).
+        #[arg(long)]
+        run: Option<String>,
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<std::path::PathBuf>,
+    },
+    /// Report routing outcomes per decision source: settled attempts, pass
+    /// rate (label 1), labels 0 and null, and how often the served model
+    /// differed from the requested one.
+    RouteReport {
+        /// Report one run, a directory under .roko/runs (default: the latest run).
+        #[arg(long, conflicts_with = "since")]
+        run: Option<String>,
+        /// Report every run's verdicts written at or after this date
+        /// (YYYY-MM-DD, or an RFC 3339 time).
+        #[arg(long)]
+        since: Option<String>,
+        /// List the attempt keys behind each number.
+        #[arg(long)]
+        explain: bool,
+        /// Working directory (default: cwd).
+        #[arg(long)]
+        workdir: Option<std::path::PathBuf>,
+    },
+}
+
+/// Working directory of a `roko learn telemetry` subcommand.
+fn telemetry_workdir(cli: &Cli, cmd: &TelemetryCmd) -> PathBuf {
+    match cmd {
+        TelemetryCmd::Check { workdir, .. } | TelemetryCmd::RouteReport { workdir, .. } => {
+            workdir.clone().unwrap_or_else(|| resolve_workdir(cli))
+        }
+    }
+}
+
+/// `roko learn telemetry check|route-report`.
+fn cmd_learn_telemetry(cli: &Cli, cmd: TelemetryCmd, json: bool) -> Result<i32> {
+    let layout = roko_fs::RokoLayout::for_project(&telemetry_workdir(cli, &cmd));
+    match cmd {
+        TelemetryCmd::Check { run, .. } => telemetry_check(&layout, run.as_deref(), json),
+        TelemetryCmd::RouteReport {
+            run,
+            since,
+            explain,
+            ..
+        } => telemetry_route_report(&layout, run.as_deref(), since.as_deref(), explain, json),
+    }
+}
+
+/// Every run directory under `.roko/runs` with attempt records, with the
+/// time its `attempts.jsonl` last changed.
+fn telemetry_runs(layout: &roko_fs::RokoLayout) -> Result<Vec<(PathBuf, std::time::SystemTime)>> {
+    let runs_dir = layout.runs_dir();
+    let entries = match std::fs::read_dir(&runs_dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => {
+            return Err(error).with_context(|| format!("read {}", runs_dir.display()));
+        }
+    };
+    let mut runs = Vec::new();
+    for entry in entries {
+        let run_dir = entry
+            .with_context(|| format!("read {}", runs_dir.display()))?
+            .path();
+        let attempts = roko_learn::telemetry::RunFile::Attempts.path_in(&run_dir);
+        if let Ok(modified) = std::fs::metadata(&attempts).and_then(|meta| meta.modified()) {
+            runs.push((run_dir, modified));
+        }
+    }
+    Ok(runs)
+}
+
+/// The directory of run `run`, or of the run whose attempts changed last.
+fn telemetry_run_dir(layout: &roko_fs::RokoLayout, run: Option<&str>) -> Result<PathBuf> {
+    if let Some(run) = run {
+        let run_dir = layout.run_dir(run);
+        anyhow::ensure!(
+            run_dir.is_dir(),
+            "no run `{run}` under {}",
+            layout.runs_dir().display()
+        );
+        return Ok(run_dir);
+    }
+    telemetry_runs(layout)?
+        .into_iter()
+        .max_by_key(|(_, modified)| *modified)
+        .map(|(run_dir, _)| run_dir)
+        .with_context(|| {
+            format!(
+                "no run under {} has attempt records",
+                layout.runs_dir().display()
+            )
+        })
+}
+
+/// `roko learn telemetry check`: exits non-zero when a check fails.
+fn telemetry_check(layout: &roko_fs::RokoLayout, run: Option<&str>, json: bool) -> Result<i32> {
+    use roko_learn::telemetry::report::{LegacyRows, RunRecords, check};
+
+    let records = RunRecords::load(&telemetry_run_dir(layout, run)?)?;
+    let legacy = LegacyRows::load(layout, &records.run_id)?;
+    let report = check(&records, &legacy);
+    let failures = report.failures();
+    let passed = failures.is_empty();
+    if json {
+        let document = serde_json::json!({
+            "passed": passed,
+            "failures": failures,
+            "report": report,
+        });
+        println!("{}", serde_json::to_string_pretty(&document)?);
+    } else {
+        print!("{}", render_telemetry_check(&report, &failures));
+    }
+    Ok(if passed { EXIT_SUCCESS } else { EXIT_FAILURE })
+}
+
+/// The text form of a `check` report.
+fn render_telemetry_check(
+    report: &roko_learn::telemetry::report::CheckReport,
+    failures: &[String],
+) -> String {
+    use std::fmt::Write as _;
+
+    let mut out = String::new();
+    let _ = writeln!(out, "run {}", report.run_id);
+    let _ = writeln!(
+        out,
+        "  attempts     {} opened, {} settled, {} abandoned",
+        report.attempts_opened, report.attempts_settled, report.attempts_abandoned
+    );
+    let _ = writeln!(out, "  decisions    {}", report.decisions);
+    let sources: Vec<String> = report
+        .cost_sources
+        .iter()
+        .map(|(source, count)| format!("{source} {count}"))
+        .collect();
+    let sources = if sources.is_empty() {
+        "none".to_string()
+    } else {
+        sources.join(", ")
+    };
+    let _ = writeln!(out, "  cost.source  {sources}");
+    for coverage in &report.coverage {
+        let orphans = if coverage.orphans.is_empty() {
+            String::new()
+        } else {
+            format!(
+                ", {} row(s) with no settled attempt",
+                coverage.orphans.len()
+            )
+        };
+        let _ = writeln!(
+            out,
+            "  join         {:<24} {}/{} settled attempts{orphans}",
+            coverage.file, coverage.joined, coverage.verdicts
+        );
+    }
+    if failures.is_empty() {
+        let _ = writeln!(out, "PASS");
+    } else {
+        let _ = writeln!(out, "FAIL ({})", failures.len());
+        for failure in failures {
+            let _ = writeln!(out, "  - {failure}");
+        }
+    }
+    out
+}
+
+/// `roko learn telemetry route-report`: one run (`--run`, else the latest),
+/// or every run's verdicts since a date (`--since`).
+fn telemetry_route_report(
+    layout: &roko_fs::RokoLayout,
+    run: Option<&str>,
+    since: Option<&str>,
+    explain: bool,
+    json: bool,
+) -> Result<i32> {
+    use roko_learn::telemetry::report::{RunRecords, route_report};
+
+    let since = since.map(parse_telemetry_since).transpose()?;
+    let run_dirs: Vec<PathBuf> = if run.is_none() && since.is_some() {
+        telemetry_runs(layout)?
+            .into_iter()
+            .map(|(run_dir, _)| run_dir)
+            .collect()
+    } else {
+        vec![telemetry_run_dir(layout, run)?]
+    };
+    let runs = run_dirs
+        .iter()
+        .map(|run_dir| RunRecords::load(run_dir))
+        .collect::<Result<Vec<_>, _>>()?;
+    let report = route_report(&runs, since);
+    if json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        print!("{}", render_route_report(&report, explain));
+    }
+    Ok(EXIT_SUCCESS)
+}
+
+/// `--since`: an RFC 3339 time, or a date meaning its midnight UTC.
+fn parse_telemetry_since(value: &str) -> Result<chrono::DateTime<chrono::Utc>> {
+    if let Ok(time) = chrono::DateTime::parse_from_rfc3339(value) {
+        return Ok(time.with_timezone(&chrono::Utc));
+    }
+    chrono::NaiveDate::parse_from_str(value, "%Y-%m-%d")
+        .ok()
+        .and_then(|date| date.and_hms_opt(0, 0, 0))
+        .map(|midnight| midnight.and_utc())
+        .with_context(|| format!("--since {value}: expected YYYY-MM-DD or an RFC 3339 time"))
+}
+
+/// The text form of a route report (S01 §7 criterion 4): one row per
+/// decision source; `--explain` lists the attempt keys behind each number.
+fn render_route_report(
+    report: &roko_learn::telemetry::report::RouteReport,
+    explain: bool,
+) -> String {
+    use std::fmt::Write as _;
+
+    let fraction = |part: usize, whole: usize| {
+        if whole == 0 {
+            "n/a".to_string()
+        } else {
+            format!("{:.2} ({part}/{whole})", part as f64 / whole as f64)
+        }
+    };
+    let mut out = String::new();
+    let _ = writeln!(
+        out,
+        "route report: {} run(s), {} settled attempt(s), {} with a route decision",
+        report.runs.len(),
+        report.attempts(),
+        report.decisions
+    );
+    let _ = writeln!(
+        out,
+        "{:<12} {:>4}  {:<14} {:>7} {:>10}  {:<17} {:<17} masked",
+        "source",
+        "n",
+        "pass rate",
+        "label 0",
+        "label null",
+        "served!=requested",
+        "iota(pick!=dflt)",
+    );
+    for row in &report.rows {
+        let masked = row
+            .masked
+            .as_ref()
+            .map_or_else(|| "n/a".to_string(), |keys| keys.len().to_string());
+        let _ = writeln!(
+            out,
+            "{:<12} {:>4}  {:<14} {:>7} {:>10}  {:<17} {:<17} {masked}",
+            row.source,
+            row.attempts.len(),
+            fraction(row.passed.len(), row.attempts.len()),
+            row.failed.len(),
+            row.unlabeled.len(),
+            row.model_mismatch.len(),
+            fraction(row.pick_not_default.len(), row.with_default.len()),
+        );
+        if explain {
+            for (what, keys) in [
+                ("label 1", &row.passed),
+                ("label 0", &row.failed),
+                ("label null", &row.unlabeled),
+                ("served!=requested", &row.model_mismatch),
+                ("pick!=default", &row.pick_not_default),
+            ] {
+                if !keys.is_empty() {
+                    let _ = writeln!(out, "    {what}: {}", keys.join(", "));
+                }
+            }
+        }
+    }
+    if report.decisions == 0 && report.attempts() > 0 {
+        let _ = writeln!(
+            out,
+            "note: no route decision records (S01 P0-8), so every attempt is under `{}` and iota is n/a",
+            roko_learn::telemetry::report::UNKNOWN_SOURCE
+        );
+    }
+    let _ = writeln!(
+        out,
+        "note: masked is n/a until route decisions record the router's own proposal"
+    );
+    out
 }
 
 // ── Inspect command ─────────────────────────────────────────────────
@@ -2473,6 +2780,69 @@ async fn cmd_learn_role_costs(workdir: &std::path::Path, json: bool) -> Result<i
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// S01 P0-13: `roko learn telemetry check|route-report` parse, and
+    /// `route-report --help` prints help.
+    #[test]
+    fn learn_telemetry_route_report_parses() {
+        use clap::Parser as _;
+        use clap::error::ErrorKind;
+
+        let cli = Cli::try_parse_from([
+            "roko",
+            "learn",
+            "telemetry",
+            "route-report",
+            "--run",
+            "graph-a-1",
+            "--explain",
+        ])
+        .expect("parse learn telemetry route-report");
+        assert!(matches!(
+            cli.command,
+            Some(Command::Learn {
+                cmd: LearnCmd::Telemetry {
+                    cmd: TelemetryCmd::RouteReport {
+                        run: Some(ref run),
+                        since: None,
+                        explain: true,
+                        workdir: None,
+                    },
+                },
+            }) if run == "graph-a-1"
+        ));
+        let cli = Cli::try_parse_from(["roko", "learn", "telemetry", "check"])
+            .expect("parse learn telemetry check");
+        assert!(matches!(
+            cli.command,
+            Some(Command::Learn {
+                cmd: LearnCmd::Telemetry {
+                    cmd: TelemetryCmd::Check {
+                        run: None,
+                        workdir: None
+                    },
+                },
+            })
+        ));
+        let help = Cli::try_parse_from(["roko", "learn", "telemetry", "route-report", "--help"])
+            .expect_err("--help prints help instead of parsing");
+        assert_eq!(help.kind(), ErrorKind::DisplayHelp);
+        let conflict = Cli::try_parse_from([
+            "roko",
+            "learn",
+            "telemetry",
+            "route-report",
+            "--run",
+            "graph-a-1",
+            "--since",
+            "2026-09-29",
+        ])
+        .expect_err("--run and --since conflict");
+        assert_eq!(conflict.kind(), ErrorKind::ArgumentConflict);
+        let since = parse_telemetry_since("2026-09-29").expect("a date");
+        assert_eq!(since.to_rfc3339(), "2026-09-29T00:00:00+00:00");
+        assert!(parse_telemetry_since("yesterday").is_err());
+    }
 
     #[test]
     fn display_cost_uses_unknown_for_zero_usage() {

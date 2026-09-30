@@ -17,29 +17,38 @@ From the repository root, with the pinned venv (see the benchmark README, "Tests
 
 ```bash
 PY=benchmarks/viabilitybench/.venv/bin/python
-$PY benchmarks/viabilitybench/ci/verify_verifiers.py --families f1,f4 --levels 1-5 --seeds 2    # 20 cells: the item's verify
-$PY benchmarks/viabilitybench/ci/verify_verifiers.py --families f1,f4 --levels 1-5 --seeds 10   # 100 cells: S08 §7.1
+$PY benchmarks/viabilitybench/ci/verify_verifiers.py --families f1,f4 --levels 1-5 --seeds 2    # 40 cells: the item's verify
+$PY benchmarks/viabilitybench/ci/verify_verifiers.py --families f1,f4 --levels 1-5 --seeds 10   # 200 cells: S08 §7.1
 $PY benchmarks/viabilitybench/ci/verify_verifiers.py --families pl --seeds 3                    # the plan-level slice
 $PY -m pytest benchmarks/viabilitybench/ci/test_ci.py -q
 ```
 
+The workflow `.github/workflows/viabilitybench-ci.yml` runs the first, third and fourth of these on every change
+under `benchmarks/viabilitybench/` (gap-44632a), offline and with no repository secret. The 200-cell run stays
+manual, before a pilot.
+
 Without `--families`, every family found under `families/` is checked, and without `--seeds`, seeds 1 to 10 are
-checked. Without `--secret-file`, the CI uses a throwaway secret in a private temporary directory. `--scratch DIR`
-keeps every tree for inspection, and `--json PATH` writes every judgement. `vb ci` (S08 §5.7) is meant to wrap this.
+checked. Without `--latents`, each family is checked under every latent it builds: F1 and F4 build v1 and v2, the
+flipped convention of S08 §4.6's `convention_flip` (gap-98516b). A family that does not build a latent that
+`--latents` names is not green. Without `--secret-file`, the CI uses a throwaway secret in a private temporary
+directory. `--scratch DIR` keeps every tree for inspection, and `--json PATH` writes every judgement. `vb ci` (S08
+§5.7) is meant to wrap this.
 
 ## What a green cell means
 
 A task family is a directory with F1's and F4's interface:
 
-- `gen.py --level L --seed S --out DIR --workdir W`;
+- `gen.py --level L --seed S --out DIR --workdir W --latent V`;
 - `hidden.py --task DIR/task.json --workdir TREE --secret-file PATH`;
-- `reference/solutions.py`, with `KINDS` and `apply(kind, workdir, task)`.
+- `reference/solutions.py`, with `KINDS`, `apply(kind, workdir, task)` and `LATENTS`, the latents it builds
+  (`("v1",)` when it has none).
 
 It joins the CI on its own, under the prefix of its directory name (`f1` for `f1_pyconv`).
 
-For each cell (family, level, seed), the CI does four things:
+For each cell (family, latent, level, seed), the CI does four things. A latent other than v1 shows in the cell's
+name, as in `F4-l1-0001@v2`.
 
-1. It materializes the instance.
+1. It materializes the instance, and checks that the manifest's `latent_version` is the latent asked for.
 2. It applies every solution kind to a copy of the workdir and runs the visible check there as an agent would, with
    bytecode on.
 3. It judges the solved tree twice, as the census does:
@@ -76,12 +85,14 @@ a wrong verdict. `test_ci.py` shows which breakages turn a cell red:
 
 ## Timing
 
-Measured on 2026-09-29, with a load average of about 20 on 14 cores:
+Measured on 2026-09-29, with a load average of about 20 on 14 cores. The rows marked "v1 only" ran before latent v2
+doubled the F1 and F4 cells; the row after them ran on 2026-09-30, with a load average of about 17:
 
 | Run | Cells | Time |
 |---|---|---|
-| `--families f1,f4 --seeds 2` | 20 | 24 s |
-| `--families f1,f4 --seeds 10` | 100 | 137 s |
+| `--families f1,f4 --seeds 2`, v1 only | 20 | 24 s |
+| `--families f1,f4 --seeds 10`, v1 only | 100 | 137 s |
+| `--families f1,f4 --seeds 2` | 40 | 46 s |
 | `--families pl --seeds 3` | 18 | 21 s |
 | `test_ci.py` | — | 25 s |
 

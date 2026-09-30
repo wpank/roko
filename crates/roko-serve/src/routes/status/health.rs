@@ -81,15 +81,14 @@ pub async fn health(State(state): State<Arc<AppState>>) -> (axum::http::StatusCo
         "unhealthy": providers_unhealthy,
     });
 
-    // Determine overall system status: "ok" / "degraded" / "unhealthy"
-    let status = if (providers_total > 0 && providers_healthy == 0 && providers_degraded == 0)
-        || (jwks_configured && jwks_health.fail_closed)
-    {
+    // Determine overall system status: "ok" / "degraded" / "unhealthy".
+    // Missing or stale Privy keys only degrade the server: they stop JWT
+    // sign-in, while API keys and every other route keep working, so an
+    // identity-provider outage must not fail a liveness probe (find-a1284b).
+    let jwks_impaired = jwks_configured && (jwks_health.fail_closed || jwks_health.stale);
+    let status = if providers_total > 0 && providers_healthy == 0 && providers_degraded == 0 {
         "unhealthy"
-    } else if providers_unhealthy > 0
-        || providers_degraded > 0
-        || (jwks_configured && jwks_health.stale)
-    {
+    } else if providers_unhealthy > 0 || providers_degraded > 0 || jwks_impaired {
         "degraded"
     } else {
         "ok"

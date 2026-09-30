@@ -139,6 +139,9 @@ unsafe_public_cors = false
 
 [serve]
 terminal_enabled = false
+terminal_commands = []            # command lines a session may run instead of the login shell
+terminal_max_sessions = 8         # open PTY sessions; 0 lifts the cap
+terminal_session_ttl_secs = 28800 # PTY lifetime (8 h); 0 lifts it
 cors_origins = []
 
 [serve.auth]
@@ -975,16 +978,29 @@ Always public (no `/api/` prefix, no auth).
 
 ### 8.39 Terminal
 
-Disabled by default (`serve.terminal_enabled = false`). When enabled on
-non-loopback, requires auth.
+Disabled by default (`serve.terminal_enabled = false`). When enabled, the
+routes require auth even on a loopback bind, and creating, deleting or writing
+to a session over REST also needs the `terminal:write` scope and the
+`agent:spawn` permission.
+
+The defaults are the safe choice, and each opt-out is an explicit `[serve]` key:
+
+- A session runs the login shell. `POST /api/terminal/sessions` refuses a
+  `command` (403) unless `terminal_commands` lists that exact command line.
+- A request's `workdir` must resolve, symlinks included, inside the workspace
+  root; a relative path is taken from the root (400 otherwise).
+- At most `terminal_max_sessions` (8) PTYs are open at once; one more is
+  refused (429 over REST, a closed socket over WebSocket). `0` lifts the cap.
+- A session is closed `terminal_session_ttl_secs` (8 hours) after it started,
+  attached or not; a background reaper checks every minute. `0` lifts it.
 
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/api/terminal/sessions` | List PTY sessions |
-| POST | `/api/terminal/sessions` | Create PTY session |
-| GET | `/api/terminal/sessions/{id}` | Session details |
-| DELETE | `/api/terminal/sessions/{id}` | Kill session |
-| GET | `/api/terminal/sessions/{id}/stream` | WebSocket PTY stream |
+| POST | `/api/terminal/sessions` | Create a PTY session (`cols`, `rows`, optional `command` and `workdir`) |
+| DELETE | `/api/terminal/sessions/{id}` | Kill a session |
+| POST | `/api/terminal/sessions/{id}/input` | Write input to a session (256 KiB body cap) |
+| GET | `/ws/terminal/{id}` | WebSocket PTY stream; reattaches to `{id}` or starts a login-shell session |
 
 ### 8.40 Miscellaneous
 

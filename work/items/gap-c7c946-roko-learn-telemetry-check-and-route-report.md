@@ -2,14 +2,16 @@
 id = "gap-c7c946"
 kind = "gap"
 title = "roko learn telemetry: check and route-report over the attempt records (S01.P0-13)"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p2"
 goal = "truth"
 size = "S"
 subsystem = ["roko-learn/telemetry", "roko-cli/commands"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-09-30
+last_verified = 2026-09-30
+last_verified_rev = "4b887d475"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e4"
 discovered_from = "tmp/cybernetic-harness/specs/S01-instrumentation.md (P0-13, P0-13b, §5.9, §7 criteria 2 and 4)"
 anchors = ["crates/roko-learn/src/telemetry/report.rs", "crates/roko-cli/src/commands/learn.rs::dispatch_learn", "crates/roko-cli/src/main.rs::LearnCmd"]
@@ -22,6 +24,11 @@ command = "grep -rqw 'fn route_report_counts_labels_by_source' crates/roko-learn
 
 [[verify]]
 command = "grep -rqw 'fn learn_telemetry_route_report_parses' crates/roko-cli/src/ && cargo test -p roko-cli --bin roko learn_telemetry_route_report_parses"
+
+[closed]
+at = 2026-09-30
+by = "coordinator (session 7622b882)"
+evidence = "Merged in 9313e49f0 (batch 12a). Verify: learn telemetry route-report counts labels by source (route_report_counts_labels_by_source passes in roko-learn lib, batch 12a gate); cargo test -p roko-cli --bin roko learn_telemetry_route_report_parses on the batch-13 tree: 1 passed."
 +++
 
 ## Problem
@@ -79,3 +86,5 @@ Nothing exists at `41c7ffbd6`.
 
 - Registering the variant in `main.rs` (S01.P0-13b) touches a hot file, so batch it with other `main.rs` edits.
 - If gap-0d0e81 has already moved `LearnCmd` into `commands/learn.rs`, this item touches no hot file.
+- Implemented on `work/gap-8cb382` at `2fe908bfc`; cargo verification deferred to the batch check. On the branch, both verify tests pass.
+- Graph dispatch records no routing source per attempt: route decisions have no writer yet (S01 P0-8). Until then route-report files every attempt under `unknown`. ι appears once decisions name a default, and masked stays n/a until they record the router's own proposal.

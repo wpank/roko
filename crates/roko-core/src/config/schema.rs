@@ -1486,7 +1486,11 @@ impl RokoConfig {
     fn write_example_webhooks(out: &mut String, _c: &Self) {
         let _ = writeln!(out, "\n# -- Webhooks --");
         let _ = writeln!(out, "[webhooks.github]");
-        let _ = writeln!(out, "secret = \"change-me\"");
+        // Agents can read roko.toml, so the loader refuses a secret in it.
+        let _ = writeln!(
+            out,
+            "# secret: set ROKO__WEBHOOKS__GITHUB__SECRET in .roko/.env instead"
+        );
         let _ = writeln!(out, "\n# -- GitHub integration --");
         let _ = writeln!(out, "# [github]");
         let _ = writeln!(out, "# owner = \"my-org\"");

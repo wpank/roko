@@ -19,6 +19,7 @@ import pytest
 
 import agent_env
 import caps
+import disturb
 import faultproxy
 import layout
 import ledger
@@ -27,7 +28,7 @@ import mini_loop
 import provider
 import validate
 import vb
-from common import canary, hmac_seed, repo
+from common import canary, hmac_seed, repo, sandbox
 from stub_provider import StubServer, bash, scripted
 
 TOY_FAMILY = layout.DRIVER_DIR / "testdata" / "toy_family"
@@ -204,6 +205,38 @@ def test_materialize_renders_real_family_instances(tmp_path, capsys):
     with pytest.raises(materialize.MaterializeError, match="not the pristine tree"):
         materialize.materialize(family_dir=drifting, instance_id="F1-l1-0001", workdir=tmp_path / "late",
                                 private_dir=tmp_path / "late.private")
+
+
+def test_hidden_suite_runs_agent_code_without_the_secret_file(places, tmp_path):
+    """gap-8c3752: the census opens the secret file for hidden.py, which runs the agent's code: here F4's migration
+    script, planted to read the secret file and the private task.json. The truth suite starts it through
+    common.sandbox, so on a host with a sandbox both reads fail, and the record names the sandbox."""
+    evidence = tmp_path / "evidence.txt"
+    run_dir = places["results"] / "TEST-SANDBOX" / "run-1"
+    task_json = run_dir / "private" / "F4-l1-0001.s1" / materialize.TASK_DIR / "task.json"
+    snoop = ("mkdir -p scripts && cat > scripts/migrate_prefix.sh <<'EOF'\n"  # the name is split: no command names it
+             f"for f in '{places['secret'].parent}/sec''ret' '{task_json}'; do\n"
+             f"  printf 'read %s\\n' \"$f\" >> '{evidence}'\n"
+             f"  cat \"$f\" >> '{evidence}' 2>&1\n"
+             "done\nEOF")
+    stream = tmp_path / "f4.toml"
+    stream.write_text('schema_version = "vb.stream/1"\n[stream]\nid = "f4-sandbox"\nspec_variant = "precise"\n'
+                      'families = { F4 = "families/f4_kvtool" }\ninstances = ["F4-l1-0001"]\n')
+    with StubServer(scripted({"": [bash(snoop, "Plant the script."), bash("echo VB_SUBMIT")]})) as stub:
+        assert vb.main(["run", "--experiment", "TEST-SANDBOX", "--run-id", "run-1", "--stream", str(stream),
+                        "--arm", "cheap_direct", "--model", "gpt-oss-120b", "--provider-url", stub.url,
+                        "--results", str(places["results"]), "--work", str(places["work"]),
+                        "--secret-file", str(places["secret"])]) == 0
+    [record] = read_jsonl(run_dir / "records.jsonl")
+    assert validate.validate("run-record", record) == [] and record["vs"]["sandbox"] == sandbox.KIND
+    seen = evidence.read_text()
+    assert f"read {places['secret']}" in seen and f"read {task_json}" in seen  # control: hidden.py ran the script
+    value = next(line for line in places["secret"].read_text().splitlines() if not line.startswith("#"))
+    if sandbox.KIND == "none":  # no sandbox on this host: the record says so, and the reads succeed
+        assert value in seen
+        return
+    assert value not in seen and '"instance_id"' not in seen and seen.count("Operation not permitted") >= 4
+    assert record["execution"]["status"] == "completed" and record["provenance"]["canary_places"] == []
 
 
 def test_runaway_agent_is_killed_within_30_calls(places):
@@ -440,6 +473,138 @@ def test_proxy_caps_meter_check_and_bundle(places, tmp_path, monkeypatch):
     flags = read_jsonl(drifted / "errors.jsonl")
     assert sorted(flag["task"] for flag in flags) == ["F1-l1-0001.s1", "F1-l1-0002.s1"]
     assert all(flag["stage"] == "meter check" and "±5%" in flag["error"] for flag in flags)
+
+
+
+def test_vb_run_applies_the_chosen_disturbance_profile(places, tmp_path, monkeypatch):
+    # gap-15bb83: a vb.disturbance/1 spec picks H6's hooks and the stream positions they cover. A budget cut covers
+    # position 1, a fault profile position 2, and a harder mix serves level 5 first from position 2 on. Each record
+    # names the hooks that covered it, and each attempt the fault the proxy injected into its calls.
+    monkeypatch.setattr(mini_loop.time, "sleep", lambda seconds: None)
+    stream = tmp_path / "mixed.toml"
+    stream.write_text('schema_version = "vb.stream/1"\n\n[stream]\nid = "mixed"\nspec_variant = "precise"\n'
+                      'families = { F1 = "driver/testdata/toy_family" }\n'
+                      'instances = ["F1-l1-0001", "F1-l2-0001", "F1-l5-0001", "F1-l1-0002"]\n')
+    spec = tmp_path / "h6.toml"
+    spec.write_text('schema_version = "vb.disturbance/1"\n\n'
+                    '[[disturbance]]\nkind = "budget_cut"\nend_at = 1\n\n'
+                    '[[disturbance]]\nkind = "provider_fault"\nstart_at = 2\nend_at = 2\nseed = 3\n'
+                    'params = { name = "http_5xx", p = 1.0 }\n\n'
+                    '[[disturbance]]\nkind = "harder_mix"\nstart_at = 2\nparams = { levels = [5] }\n')
+
+    def run(spec_path: Path, *extra: str) -> int:
+        return vb.main(["run", "--experiment", "TEST-OFFLINE", "--run-id", "run-1", "--stream", str(stream),
+                        "--arm", "cheap_direct", "--model", "gpt-oss-120b", "--seeds", "1", "--provider-url", stub.url,
+                        "--disturbance", str(spec_path), "--results", str(places["results"]), "--work",
+                        str(places["work"]), "--secret-file", str(places["secret"]), *extra])
+
+    with StubServer(lambda body: bash("echo VB_SUBMIT")) as stub:
+        # A spec the run cannot apply is refused before anything runs.
+        refused = {"model_swap": 'kind = "model_swap"', "convention_flip": 'kind = "convention_flip"',
+                   "no proxy": 'kind = "provider_fault"\nparams = { name = "http_5xx", p = 1.0 }'}
+        for name, table in refused.items():
+            bad = tmp_path / f"{name.replace(' ', '_')}.toml"
+            bad.write_text(f'schema_version = "vb.disturbance/1"\n\n[[disturbance]]\n{table}\n')
+            assert run(bad) == 2, name  # the toy family renders no latent v2; provider_fault needs the proxy
+        assert not places["results"].exists()
+        assert run(spec, "--proxy") == 0
+    out = run_dir(places)
+    base = vb.load_stream(str(stream)).order(1)
+    level = {instance: int(instance.split("-l")[1][0]) for instance in base}
+    order = json.loads((out / "order-1.json").read_text())["order"]
+    assert order == base[:1] + [i for i in base[1:] if level[i] == 5] + [i for i in base[1:] if level[i] != 5]
+    assert order != base  # seed 1 puts the level-5 instance last; the harder mix moves it to position 2
+    rows = {record["stream"]["position"]: record for record in read_jsonl(out / "records.jsonl")}
+    assert {position: row["stream"]["perturbations_active"] for position, row in rows.items()} == {
+        1: ["budget_cut"], 2: ["harder_mix", "provider_fault"], 3: ["harder_mix"], 4: ["harder_mix"]}
+    assert [attempt["fault_injected"] for attempt in rows[2]["execution"]["attempts"]] == ["http_5xx"]
+    assert rows[2]["execution"]["status"] == "infra_error"  # every call of that task met a 500
+    assert all(attempt["fault_injected"] is None for position in (1, 3, 4)
+               for attempt in rows[position]["execution"]["attempts"])
+    faulted = {row["task"] for row in read_jsonl(out / "proxy.jsonl") if row["fault_injected"] == "http_5xx"}
+    assert faulted == {f"{order[1]}.s1"}
+    # The budget cut halved the first task's caps, so its attempt reserved less than an uncut one.
+    reserved = {row["attempt_key"].split("/")[1].split(":")[0]: row["reserved_usd"]
+                for row in read_jsonl(out / "ledger.jsonl")}
+    assert reserved[f"{order[0]}.s1"] < reserved[f"{order[2]}.s1"]
+    config = json.loads((out / "manifest.json").read_text())["config"]
+    assert [(one["kind"], one["params"]) for one in config["disturbances"]] == [
+        ("budget_cut", {"factor": 0.5}), ("provider_fault", {"name": "http_5xx", "p": 1.0}),
+        ("harder_mix", {"levels": [5]})]
+    assert [one.kind for one in disturb.load(spec)] == ["budget_cut", "provider_fault", "harder_mix"]
+
+
+def test_convention_flip_renders_a_v2_latent(places, tmp_path):
+    # gap-98516b: F1 and F4 render latent v2, so a convention_flip spec runs. The tasks from its start_at on are
+    # rendered with the flipped convention, the earlier ones with v1, and each record says which it got.
+    stream = tmp_path / "flip.toml"
+    stream.write_text('schema_version = "vb.stream/1"\n\n[stream]\nid = "flip"\nspec_variant = "precise"\n'
+                      'families = { F1 = "families/f1_pyconv", F4 = "families/f4_kvtool" }\n'
+                      'instances = ["F1-l1-0001", "F4-l1-0001", "F1-l2-0001", "F4-l2-0001"]\n')
+    spec = tmp_path / "flip-spec.toml"
+    spec.write_text('schema_version = "vb.disturbance/1"\n\n[[disturbance]]\nkind = "convention_flip"\nstart_at = 3\n')
+    with StubServer(lambda body: bash("echo VB_SUBMIT")) as stub:
+        assert vb.main(["run", "--experiment", "TEST-FLIP", "--run-id", "run-1", "--stream", str(stream), "--arm",
+                        "cheap_direct", "--model", "gpt-oss-120b", "--seeds", "1", "--provider-url", stub.url,
+                        "--disturbance", str(spec), "--results", str(places["results"]), "--work",
+                        str(places["work"]), "--secret-file", str(places["secret"])]) == 0
+    out = places["results"] / "TEST-FLIP" / "run-1"
+    records = read_jsonl(out / "records.jsonl")
+    assert all(validate.validate("run-record", record) == [] for record in records)
+    rows = {record["stream"]["position"]: record for record in records}
+    assert {position: (row["task"]["latent_version"], row["stream"]["perturbations_active"])
+            for position, row in rows.items()} == {1: ("v1", []), 2: ("v1", []), 3: ("v2", ["convention_flip"]),
+                                                   4: ("v2", ["convention_flip"])}
+    assert all(row["vs"]["label"] == 0 and row["vs"]["checks"]["hidden"] == 0 for row in records), \
+        "the truth suite judged every task, v2 ones included, and the agent solved none"
+    # Each task's generator stated the convention it rendered: v1's before the flip, v2's from it on.
+    stated = {("F1", "v1"): "ERROR_CODES", ("F1", "v2"): "app/registry.toml", ("F4", "v1"): "--apply",
+              ("F4", "v2"): "--yes"}
+    for row in records:
+        family, latent = row["task"]["family"], row["task"]["latent_version"]
+        manifest = out / "private" / f"{row['task']['instance_id']}.s1" / materialize.TASK_DIR / "task.json"
+        recoverability = json.dumps(json.loads(manifest.read_text())["recoverability"])
+        other = "v2" if latent == "v1" else "v1"
+        assert stated[family, latent] in recoverability and stated[family, other] not in recoverability, row["task"]
+    config = json.loads((out / "manifest.json").read_text())["config"]
+    assert [(one["kind"], one["start_at"], one["params"]) for one in config["disturbances"]] == [
+        ("convention_flip", 3, {"latent": "v2"})]
+
+
+def test_flaky_verify_is_injected_through_the_visible_verify_wrapper(places, tmp_path):
+    # gap-4e8795: in a run with flaky_verify, the direct loop runs the agent's commands through the visible-verify
+    # wrapper. At the position the disturbance covers (p = 1), each run of the visible check fails as a killed check
+    # would; elsewhere p is 0 and the wrapper only counts. The census's own rerun never meets a flake.
+    visible = "python3 -m unittest discover -s tests/visible"
+    script = [bash(CORRECT, "Implement clamp."), bash(visible, "Run the visible check."),
+              bash(f"{visible} && echo again", "Once more."), bash("git status --short", "Look."),
+              bash("echo VB_SUBMIT")]
+    spec = tmp_path / "flaky.toml"
+    spec.write_text('schema_version = "vb.disturbance/1"\n\n[[disturbance]]\nkind = "flaky_verify"\nstart_at = 2\n'
+                    'end_at = 2\nseed = 11\nparams = { p = 1.0 }\n')
+    with StubServer(scripted({"": script})) as stub:
+        assert run_vb(places, stub.url, "--disturbance", str(spec), "--transcripts") == 0
+    out = run_dir(places)
+    rows = {record["stream"]["position"]: record for record in read_jsonl(out / "records.jsonl")}
+    assert {position: row["stream"]["perturbations_active"] for position, row in rows.items()} == {
+        1: [], 2: ["flaky_verify"]}
+    seen = [(row["visible"]["verify_runs"], row["visible"]["flake_injected"],
+             [flake["run"] for flake in row["visible"]["flakes"]]) for _, row in sorted(rows.items())]
+    assert seen == [(2, False, []), (2, True, [1, 2])]
+    for position, row in rows.items():
+        assert validate.validate("run-record", row) == []
+        # The census reran the visible check itself: the flakes never reached the label.
+        assert (row["visible"]["passed"], row["vs"]["label"]) == (True, 1), position
+        observed = [event for event in json.loads((out / row["provenance"]["transcript_ref"]).read_text())
+                    if "returncode" in event]
+        codes = {event["command"]: event["returncode"] for event in observed}
+        assert codes["git status --short"] == 0, "commands that run no visible check pass straight through"
+        flaked = position == 2
+        assert [codes[visible], codes[f"{visible} && echo again"]] == ([137, 137] if flaked else [0, 0])
+        assert ("Killed" in json.dumps(observed)) == flaked
+    config = json.loads((out / "manifest.json").read_text())["config"]
+    assert [(one["kind"], one["seed"], one["params"]) for one in config["disturbances"]] == [
+        ("flaky_verify", 11, {"p": 1.0})]
 
 
 def test_agent_env_is_an_allowlist(tmp_path, monkeypatch):

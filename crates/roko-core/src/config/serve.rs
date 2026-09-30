@@ -97,6 +97,22 @@ pub struct ServeConfig {
     /// Disabled by default because the terminal is shell access.
     #[serde(default)]
     pub terminal_enabled: bool,
+    /// Command lines `POST /api/terminal/sessions` may run in place of the
+    /// login shell, matched exactly once runs of whitespace are collapsed.
+    ///
+    /// Empty by default: a session request that names a `command` is refused
+    /// and every session runs the login shell. Listing a command is the
+    /// explicit opt-in for running it directly.
+    #[serde(default)]
+    pub terminal_commands: Vec<String>,
+    /// Most PTY sessions that may be open at once; creating one more is
+    /// refused. `0` removes the cap.
+    #[serde(default = "default_terminal_max_sessions")]
+    pub terminal_max_sessions: usize,
+    /// Seconds a PTY session may live, attached or not, before the server
+    /// closes it. `0` lets sessions live until they exit or are deleted.
+    #[serde(default = "default_terminal_session_ttl_secs")]
+    pub terminal_session_ttl_secs: u64,
     /// Automatically orchestrate follow-up work when publish events arrive.
     #[serde(default = "default_true")]
     pub auto_orchestrate: bool,
@@ -143,6 +159,9 @@ impl Default for ServeConfig {
             port: None,
             share_ttl_days: default_share_ttl_days(),
             terminal_enabled: false,
+            terminal_commands: Vec::new(),
+            terminal_max_sessions: default_terminal_max_sessions(),
+            terminal_session_ttl_secs: default_terminal_session_ttl_secs(),
             auto_orchestrate: true,
             auth: ServeAuthConfig::default(),
             deploy: ServeDeployConfig::default(),
@@ -157,6 +176,14 @@ impl Default for ServeConfig {
 
 fn default_share_ttl_days() -> u64 {
     7
+}
+
+fn default_terminal_max_sessions() -> usize {
+    8
+}
+
+fn default_terminal_session_ttl_secs() -> u64 {
+    8 * 60 * 60
 }
 
 /// Enforcement behaviour for scope-based permission checks.
@@ -217,8 +244,8 @@ pub struct ServeAuthConfig {
     /// rejected.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub privy_app_id: Option<String>,
-    /// Additional issuer-bound JWKS endpoints. An empty list uses Privy's
-    /// built-in endpoint for backwards compatibility.
+    /// Issuer-bound JWKS endpoints. An empty list uses Privy's per-app
+    /// endpoint for `privy_app_id`; a non-empty list replaces it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub jwks_providers: Vec<JwksProvider>,
     /// Privy workspace / org ID that the JWT `org_id` claim must match.
@@ -421,6 +448,25 @@ mod tests {
     #[test]
     fn default_share_ttl_days_is_seven() {
         assert_eq!(ServeConfig::default().share_ttl_days, 7);
+    }
+
+    #[test]
+    fn terminal_defaults_refuse_commands_and_bound_sessions() {
+        let cfg = ServeConfig::default();
+        assert!(!cfg.terminal_enabled);
+        assert!(cfg.terminal_commands.is_empty());
+        assert_eq!(cfg.terminal_max_sessions, 8);
+        assert_eq!(cfg.terminal_session_ttl_secs, 8 * 60 * 60);
+
+        let cfg: ServeConfig = toml::from_str(concat!(
+            "terminal_commands = [\"htop\"]\n",
+            "terminal_max_sessions = 0\n",
+            "terminal_session_ttl_secs = 0\n",
+        ))
+        .expect("parse terminal settings");
+        assert_eq!(cfg.terminal_commands, vec!["htop".to_string()]);
+        assert_eq!(cfg.terminal_max_sessions, 0);
+        assert_eq!(cfg.terminal_session_ttl_secs, 0);
     }
 
     #[test]

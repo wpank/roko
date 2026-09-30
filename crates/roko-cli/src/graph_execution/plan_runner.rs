@@ -693,6 +693,18 @@ pub struct GraphPlanRunParams {
 /// `roko_graph::topology::ProductionPlanTopology` (when `rich_topology` is
 /// true), and runs them through the GraphEngine with the default cell registry.
 pub async fn run_graph_plan(params: GraphPlanRunParams) -> anyhow::Result<i32> {
+    run_graph_plan_in_run(params, None).await
+}
+
+/// [`run_graph_plan`] for a caller whose run already has an id: a single
+/// plan's fresh checkpoint takes `run_id`, so the run's attempt records and
+/// manifest land in the caller's own `.roko/runs/<run_id>/` (`roko run`,
+/// bug-ccc7c4). A resumed checkpoint keeps its recorded run, a set of several
+/// plans mints one run per plan, and a `--log-file` run mints its own.
+pub async fn run_graph_plan_in_run(
+    params: GraphPlanRunParams,
+    run_id: Option<String>,
+) -> anyhow::Result<i32> {
     // `--log-file`: delegates entirely to `event_log::run_recorded`, which is
     // responsible for publishing its own terminal events.
     if params.log_file.is_some() {
@@ -702,17 +714,28 @@ pub async fn run_graph_plan(params: GraphPlanRunParams) -> anyhow::Result<i32> {
     // Resolve the hub early so `DashboardEvent::RunCompleted` is published on
     // every exit path, including the early `?` returns in the body (plan load,
     // config validation, provider preflight, extension start-up, checkpoint).
-    let hub_sender = params
+    // The body, `status.json` and `RunCompleted` share it; a caller without a
+    // hub gets a private one.
+    let mut params = params;
+    let hub = params
         .state_hub
-        .as_ref()
-        .map(|hub| hub.sender())
-        .unwrap_or_else(|| crate::state_hub::shared_state_hub().sender());
+        .get_or_insert_with(crate::state_hub::shared_state_hub)
+        .clone();
+    let hub_sender = hub.sender();
+    // `.roko/state/status.json` shows the live run to `roko status` and the
+    // evidence collector's status sampling (gap-568056).
+    let status = crate::runner::status_file::GraphStatusWriter::spawn(
+        &hub,
+        RokoLayout::for_project(&params.workdir).state_dir(),
+        super::event_log::evidence_run_id()
+            .or_else(|| run_id.clone())
+            .unwrap_or_else(|| format!("graph-{}", uuid::Uuid::new_v4())),
+    );
 
     // Ensure a consistent interrupt handle: if the caller passed None, create
     // one now and put it back so the body and this wrapper share the same
     // Arc<AtomicU8>.  Clone *after* the insert so both ends observe the same
     // stop flag.
-    let mut params = params;
     if params.interrupt.is_none() {
         params.interrupt = Some(PlanRunInterruptHandle::default());
     }
@@ -723,7 +746,7 @@ pub async fn run_graph_plan(params: GraphPlanRunParams) -> anyhow::Result<i32> {
         .clone();
     let run_start = Instant::now();
 
-    let result = run_graph_plan_body(params).await;
+    let result = run_graph_plan_body(params, run_id).await;
 
     let outcome = graph_run_outcome(&result, &interrupt_handle);
     hub_sender.publish(roko_core::DashboardEvent::RunCompleted {
@@ -733,6 +756,7 @@ pub async fn run_graph_plan(params: GraphPlanRunParams) -> anyhow::Result<i32> {
         surviving_agent_ids: vec![],
         surviving_agent_pids: vec![],
     });
+    status.finish(outcome).await;
 
     result
 }
@@ -763,7 +787,10 @@ fn graph_run_outcome(
     }
 }
 
-async fn run_graph_plan_body(params: GraphPlanRunParams) -> anyhow::Result<i32> {
+async fn run_graph_plan_body(
+    params: GraphPlanRunParams,
+    run_id: Option<String>,
+) -> anyhow::Result<i32> {
     use roko_graph::cells::TaskDispatcher;
 
     let GraphPlanRunParams {
@@ -799,6 +826,14 @@ async fn run_graph_plan_body(params: GraphPlanRunParams) -> anyhow::Result<i32> 
     let workdir: &Path = &workdir;
     let resume_plan: Option<PathBuf> = resume_plan;
     let log_file: Option<PathBuf> = log_file;
+    // Each task's plan gate judges the worktree its attempt ran in, never the
+    // shared working tree (bug-50caf2), so the rich topology needs them.
+    if rich_topology && !worktree_per_task {
+        anyhow::bail!(
+            "--rich-topology needs --worktree-per-task: each task's plan gate judges the \
+             worktree its attempt ran in, never the shared working tree"
+        );
+    }
 
     let run_start = std::time::Instant::now();
     let plans = crate::runner::plan_loader::load_plans(plans_dir)?;
@@ -861,6 +896,9 @@ async fn run_graph_plan_body(params: GraphPlanRunParams) -> anyhow::Result<i32> 
     .await?;
 
     let roko_config = Arc::new(roko_config);
+    // S01 P0-2: the harness build and config fingerprint every checkpoint
+    // run's manifest records.
+    let run_manifests = super::run_manifest::RunManifests::capture(workdir, &roko_config);
     let prompt_cache = Arc::new(crate::dispatch::PromptCache::load(workdir));
     let mut shared_factory = crate::dispatch::SharedAgentFactory::new(
         Arc::clone(&roko_config),
@@ -894,193 +932,16 @@ async fn run_graph_plan_body(params: GraphPlanRunParams) -> anyhow::Result<i32> 
 
     // ── Learning/feedback subsystem wiring ─────────────────────────────
     //
-    // Build the same feedback infrastructure that Runner-v2 uses, so Graph
-    // engine runs produce episodes, efficiency events, playbook outcomes,
-    // routing observations, experiment settlements, and daimon feedback.
+    // The learning sinks and stores every settled task attempt feeds; the
+    // learning wiring census inspects the same object graph.
     let graph_layout = RokoLayout::for_project(workdir);
     let graph_learn_dir = graph_layout.learn_dir();
-    let _ = std::fs::create_dir_all(&graph_learn_dir);
-
-    // ── #144: Construct daimon state early so it can be shared between
-    //    the feedback facade (for plan-completion persistence) and the
-    //    GraphFeedbackContext (for dispatch-time affect modulation). ───────
-    let affect_path = workdir.join(".roko").join("daimon").join("affect.json");
-    let shared_daimon_state: Option<std::sync::Arc<std::sync::Mutex<roko_daimon::DaimonState>>> = {
-        let dims_vec = &roko_config.daimon.strategy_space.dimensions;
-        if dims_vec.len() == 8 {
-            // SAFETY: len == 8 is checked above, so try_into() is infallible here.
-            let dims: [String; 8] = dims_vec
-                .clone()
-                .try_into()
-                .expect("dims_vec has exactly 8 elements (checked above)");
-            let def = roko_daimon::StrategySpaceDefinition {
-                domain: roko_config.daimon.strategy_space.domain.clone(),
-                dimensions: dims,
-            };
-            let mut s = roko_daimon::DaimonState::load_or_new(&affect_path);
-            let _ = s.configure_strategy_space(def);
-            Some(std::sync::Arc::new(std::sync::Mutex::new(s)))
-        } else {
-            tracing::warn!(
-                dims = dims_vec.len(),
-                "daimon strategy_space.dimensions must have exactly 8 entries; skipping"
-            );
-            None
-        }
-    };
-
-    let graph_episodes_path = graph_layout.root_episodes_path();
-    let graph_feedback_facade = {
-        let mut facade = crate::runtime_feedback::FeedbackFacade::new()
-            .with_sink(std::sync::Arc::new(
-                crate::runtime_feedback::EpisodeSink::at(&graph_episodes_path),
-            ))
-            // Reads back the failed episode the episode sink just wrote, so
-            // it must follow it.
-            .with_sink(std::sync::Arc::new(
-                crate::runtime_feedback::HindsightSink::new(
-                    &graph_episodes_path,
-                    graph_learn_dir.join(roko_learn::hindsight::DEFAULT_ADJUSTMENTS_FILE),
-                ),
-            ))
-            // Gate-verified attempts grow durable knowledge (tier
-            // progression included) under `.roko/neuro/`.
-            .with_sink(std::sync::Arc::new(
-                crate::runtime_feedback::VerifiedKnowledgeSink::for_workdir(workdir),
-            ));
-        if let Some(cascade) = &graph_run_config.cascade_router {
-            facade = facade.with_sink(std::sync::Arc::new(
-                crate::runtime_feedback::RoutingObservationSink::new(cascade.clone()),
-            ));
-        }
-
-        // ── #143: Dream consolidation trigger on plan completion ────────
-        facade = facade.with_sink(std::sync::Arc::new(
-            crate::runtime_feedback::DreamConsolidationSink::new(
-                workdir.to_path_buf(),
-                roko_config.learning.dream_on_completion,
-                roko_config.learning.dreams.trigger_on_plan_complete,
-            ),
-        ));
-
-        // ── #144: Daimon affect persistence on plan completion ──────────
-        if let Some(ref daimon) = shared_daimon_state {
-            facade = facade.with_sink(std::sync::Arc::new(
-                crate::runtime_feedback::DaimonPersistenceSink::new(
-                    affect_path.clone(),
-                    std::sync::Arc::clone(daimon),
-                ),
-            ));
-        }
-
-        // ── Theta reflection on plan completion ─────────────────────────
-        //
-        // Runs a five-phase reflective cycle (gamma summary, affect update,
-        // calibration check, progress assessment, meta-cognition) after each
-        // plan completes. Lightweight and synchronous (no LLM calls).
-        let shared_cortical =
-            std::sync::Arc::new(roko_runtime::heartbeat::CorticalState::default());
-        let shared_theta = std::sync::Arc::new(std::sync::Mutex::new(
-            roko_runtime::theta_consumer::ThetaConsumer::default(),
-        ));
-        facade = facade.with_sink(std::sync::Arc::new(
-            crate::runtime_feedback::ThetaReflectionSink::new(
-                std::sync::Arc::clone(&shared_theta),
-                std::sync::Arc::clone(&shared_cortical),
-            ),
-        ));
-
-        // ── Delta consolidation on plan completion ──────────────────────
-        //
-        // Tracks episode counts and checks trigger conditions for a dream
-        // consolidation cycle (NREM replay, REM imagination, integration).
-        // Bridges roko_runtime::delta_consumer into the feedback pipeline.
-        let shared_delta = std::sync::Arc::new(std::sync::Mutex::new(
-            roko_runtime::delta_consumer::DeltaConsumer::default(),
-        ));
-        facade = facade.with_sink(std::sync::Arc::new(
-            crate::runtime_feedback::DeltaConsolidationSink::new(
-                std::sync::Arc::clone(&shared_delta),
-                std::sync::Arc::clone(&shared_cortical),
-            ),
-        ));
-
-        std::sync::Arc::new(facade)
-    };
-
-    // ── P0-04: CodingOracle ─────────────────────────────────────────────
-    //
-    // Persists across the plan run, accumulating build/test observations
-    // for predictive gate feedback. Mirrors Runner-v2's CodingOracle.
-    let coding_oracle = std::sync::Arc::new(roko_learn::oracles::coding::CodingOracle::new());
-
-    // ── P1-01: GateGamingDetector ────────────────────────────────────
-    //
-    // Flags when agents game the gate system by passing gates at an
-    // increasing rate while delivering lower-quality outputs. Alerts are
-    // appended to a JSONL file on disk.
-    let gate_gaming_detector = std::sync::Arc::new(tokio::sync::Mutex::new(
-        roko_learn::GateGamingDetector::new(graph_learn_dir.join("gate-gaming-alerts.jsonl")),
-    ));
-
-    // ── P1-04: HoldoutExperiment ─────────────────────────────────────
-    //
-    // Deterministic 80/20 train/holdout split for detecting overfitting
-    // in learned routing. Learning updates are gated behind the holdout
-    // partition check.
-    let holdout_experiment = std::sync::Arc::new(tokio::sync::Mutex::new(
-        roko_learn::HoldoutExperiment::load_or_new(
-            graph_learn_dir.join("holdout-state.json"),
-        )
-        .unwrap_or_else(|err| {
-            tracing::warn!(error = %err, "failed to load holdout experiment state; starting fresh");
-            roko_learn::HoldoutExperiment::new(
-                graph_learn_dir.join("holdout-state.json"),
-            )
-        }),
-    ));
-
-    // ── P2-01: ShadowRunner ─────────────────────────────────────────
-    //
-    // Records shadow dispatch decisions (infrastructure-only; no actual
-    // shadow task spawn). Uses the configured default model as the
-    // shadow alternative.
-    let shadow_runner = std::sync::Arc::new(roko_learn::shadow::ShadowRunner::new(
-        roko_learn::shadow::ShadowConfig {
-            model_slug: roko_config.agent.default_model.clone(),
-            prompt_variant: None,
-            label: "graph-shadow".to_string(),
-        },
-        graph_learn_dir.join("shadow-results.jsonl"),
-    ));
-
-    let graph_feedback = crate::graph_task_dispatch::GraphFeedbackContext {
-        feedback_facade: Some(graph_feedback_facade),
-        efficiency_path: Some(graph_learn_dir.join("efficiency.jsonl")),
-        costs_path: Some(graph_learn_dir.join("costs.jsonl")),
-        playbook_dir: Some(graph_learn_dir.join("playbooks")),
-        // Reuse the daimon state constructed above so the feedback facade
-        // persistence sink and dispatch-time modulation share the same
-        // mutable state (#144).
-        daimon_state: shared_daimon_state,
-        experiment_store_path: Some(graph_learn_dir.join("experiments.json")),
-        gate_failures_path: Some(graph_layout.gate_failures_path()),
-        post_gate_reflection_path: Some(graph_learn_dir.join("post-gate-reflections.json")),
-        replan_on_gate_failure: roko_config.learning.replan_on_gate_failure,
-        coding_oracle: Some(coding_oracle),
-        gate_gaming_detector: Some(gate_gaming_detector),
-        holdout_experiment: Some(holdout_experiment.clone()),
-        shadow_runner: Some(shadow_runner),
-        eval_generation_enabled: true,
-        // P2-LRN-6 Loop 1: Gate threshold EMA updates after each task's
-        // verify sequence. Uses the canonical workspace path so the TUI,
-        // serve, and `roko learn gates` all read from the same file.
-        gate_thresholds_path: Some(graph_layout.gate_thresholds_path()),
-        // RAG-10: retrieval outcome JSONL for gate-pass correlation telemetry.
-        retrieval_outcomes_path: Some(graph_learn_dir.join("retrieval-outcomes.jsonl")),
-        // S01: every attempt's open line and verdict, per checkpoint run.
-        runs_dir: Some(graph_layout.runs_dir()),
-    };
+    let graph_feedback = build_graph_feedback_context(
+        workdir,
+        &roko_config,
+        graph_run_config.cascade_router.as_ref(),
+    );
+    let holdout_experiment = graph_feedback.holdout_experiment.clone();
 
     // ── TUI vs inline progress decision ──────────────────────────────
     //
@@ -1164,6 +1025,8 @@ async fn run_graph_plan_body(params: GraphPlanRunParams) -> anyhow::Result<i32> 
     .with_live_agent_output(live_agent_output);
 
     // ── Per-task worktree isolation (opt-in via --worktree-per-task) ──
+    let mut workspace_provider: Option<Arc<dyn roko_graph::workspace::ExecutionWorkspaceProvider>> =
+        None;
     if worktree_per_task {
         use crate::orchestrator::worktree::{WorktreeConfig, WorktreeManager};
         let worktree_manager = WorktreeManager::new(WorktreeConfig {
@@ -1173,14 +1036,18 @@ async fn run_graph_plan_body(params: GraphPlanRunParams) -> anyhow::Result<i32> 
             max_live: None,
             idle_ttl: std::time::Duration::from_hours(1),
         });
-        let workspace_provider = Arc::new(
+        let provider = Arc::new(
             crate::graph_execution::WorktreeExecutionWorkspaceProvider::new(worktree_manager),
         );
         if !quiet && !json {
             tracing::info!("per-task worktree isolation enabled (--worktree-per-task)");
         }
-        dispatcher_builder = dispatcher_builder.with_workspace_provider(workspace_provider);
+        dispatcher_builder = dispatcher_builder.with_workspace_provider(provider.clone());
+        workspace_provider = Some(provider);
     }
+    // The same provider settles the worktrees the rich topology's executors
+    // hand on to their gates.
+    let cell_resources = plan_cell_resources(rich_topology, workspace_provider);
 
     let graph_task_dispatcher = Arc::new(dispatcher_builder);
     // `[conductor] max_agents` caps concurrently executing tasks across
@@ -1340,6 +1207,7 @@ async fn run_graph_plan_body(params: GraphPlanRunParams) -> anyhow::Result<i32> 
         max_retries,
         max_tasks,
         rich_topology,
+        cell_resources: &cell_resources,
         quiet,
         json,
         launch_tui,
@@ -1351,6 +1219,8 @@ async fn run_graph_plan_body(params: GraphPlanRunParams) -> anyhow::Result<i32> 
         graph_event_logger: graph_event_logger.as_ref(),
         shared_pause_flag: &shared_pause_flag,
         interrupt: &interrupt,
+        run_manifests: &run_manifests,
+        caller_run_id: run_id.as_deref(),
     };
     let mut scheduler = super::plan_set::PlanSetScheduler::new(
         &plan_order,
@@ -1570,10 +1440,11 @@ async fn run_graph_plan_body(params: GraphPlanRunParams) -> anyhow::Result<i32> 
     //
     // Save holdout state so overfitting detection survives across runs
     // and partition assignments remain stable. Mirrors Runner-v2 cleanup.
-    if let Ok(exp) = holdout_experiment.try_lock() {
-        if let Err(err) = exp.save() {
-            tracing::warn!(error = %err, "failed to persist holdout experiment state (non-fatal)");
-        }
+    if let Some(holdout) = &holdout_experiment
+        && let Ok(exp) = holdout.try_lock()
+        && let Err(err) = exp.save()
+    {
+        tracing::warn!(error = %err, "failed to persist holdout experiment state (non-fatal)");
     }
 
     // ── Persist run metrics (backlog #169) ──────────────────────────
@@ -1698,6 +1569,236 @@ async fn run_graph_plan_body(params: GraphPlanRunParams) -> anyhow::Result<i32> 
     })
 }
 
+// ── Learning and feedback wiring ──────────────────────────────────────────
+
+/// The learning and feedback wiring of a Graph plan run under `workdir`: the
+/// feedback facade ([`build_graph_feedback_facade`]) and every learning store
+/// a task attempt's feedback writes.
+///
+/// It builds the same feedback infrastructure that Runner-v2 used, so Graph
+/// engine runs produce episodes, efficiency events, playbook outcomes,
+/// routing observations, experiment settlements, and daimon feedback.
+/// [`run_graph_plan`] wires its dispatcher with it, and the learning wiring
+/// census (`tests/learning_wiring_census.rs`, S01 §4.8) inspects the same
+/// object graph through `GraphTaskDispatcher::wiring_report`.
+pub fn build_graph_feedback_context(
+    workdir: &Path,
+    config: &roko_core::config::schema::RokoConfig,
+    cascade_router: Option<&Arc<roko_learn::cascade_router::CascadeRouter>>,
+) -> crate::graph_task_dispatch::GraphFeedbackContext {
+    let graph_layout = RokoLayout::for_project(workdir);
+    let graph_learn_dir = graph_layout.learn_dir();
+    let _ = std::fs::create_dir_all(&graph_learn_dir);
+
+    // #144: one daimon state, shared by the feedback facade (plan-completion
+    // persistence) and dispatch (affect modulation).
+    let shared_daimon_state = graph_daimon_state(workdir, config);
+
+    // ── P0-04: CodingOracle ─────────────────────────────────────────────
+    //
+    // Persists across the plan run, accumulating build/test observations
+    // for predictive gate feedback. Mirrors Runner-v2's CodingOracle.
+    let coding_oracle = std::sync::Arc::new(roko_learn::oracles::coding::CodingOracle::new());
+
+    // ── P1-01: GateGamingDetector ────────────────────────────────────
+    //
+    // Flags when agents game the gate system by passing gates at an
+    // increasing rate while delivering lower-quality outputs. Alerts are
+    // appended to a JSONL file on disk.
+    let gate_gaming_detector = std::sync::Arc::new(tokio::sync::Mutex::new(
+        roko_learn::GateGamingDetector::new(graph_learn_dir.join("gate-gaming-alerts.jsonl")),
+    ));
+
+    // ── P1-04: HoldoutExperiment ─────────────────────────────────────
+    //
+    // Deterministic 80/20 train/holdout split for detecting overfitting
+    // in learned routing. Learning updates are gated behind the holdout
+    // partition check.
+    let holdout_experiment = std::sync::Arc::new(tokio::sync::Mutex::new(
+        roko_learn::HoldoutExperiment::load_or_new(
+            graph_learn_dir.join("holdout-state.json"),
+        )
+        .unwrap_or_else(|err| {
+            tracing::warn!(error = %err, "failed to load holdout experiment state; starting fresh");
+            roko_learn::HoldoutExperiment::new(
+                graph_learn_dir.join("holdout-state.json"),
+            )
+        }),
+    ));
+
+    // ── P2-01: ShadowRunner ─────────────────────────────────────────
+    //
+    // Records shadow dispatch decisions (infrastructure-only; no actual
+    // shadow task spawn). Uses the configured default model as the
+    // shadow alternative.
+    let shadow_runner = std::sync::Arc::new(roko_learn::shadow::ShadowRunner::new(
+        roko_learn::shadow::ShadowConfig {
+            model_slug: config.agent.default_model.clone(),
+            prompt_variant: None,
+            label: "graph-shadow".to_string(),
+        },
+        graph_learn_dir.join("shadow-results.jsonl"),
+    ));
+
+    crate::graph_task_dispatch::GraphFeedbackContext {
+        feedback_facade: Some(build_graph_feedback_facade(
+            workdir,
+            config,
+            cascade_router,
+            shared_daimon_state.as_ref(),
+        )),
+        efficiency_path: Some(graph_learn_dir.join("efficiency.jsonl")),
+        costs_path: Some(graph_learn_dir.join("costs.jsonl")),
+        playbook_dir: Some(graph_learn_dir.join("playbooks")),
+        // Reuse the daimon state constructed above so the feedback facade
+        // persistence sink and dispatch-time modulation share the same
+        // mutable state (#144).
+        daimon_state: shared_daimon_state,
+        experiment_store_path: Some(graph_learn_dir.join("experiments.json")),
+        gate_failures_path: Some(graph_layout.gate_failures_path()),
+        post_gate_reflection_path: Some(graph_learn_dir.join("post-gate-reflections.json")),
+        replan_on_gate_failure: config.learning.replan_on_gate_failure,
+        coding_oracle: Some(coding_oracle),
+        gate_gaming_detector: Some(gate_gaming_detector),
+        holdout_experiment: Some(holdout_experiment),
+        shadow_runner: Some(shadow_runner),
+        eval_generation_enabled: true,
+        // P2-LRN-6 Loop 1: Gate threshold EMA updates after each task's
+        // verify sequence. Uses the canonical workspace path so the TUI,
+        // serve, and `roko learn gates` all read from the same file.
+        gate_thresholds_path: Some(graph_layout.gate_thresholds_path()),
+        // RAG-10: retrieval outcome JSONL for gate-pass correlation telemetry.
+        retrieval_outcomes_path: Some(graph_learn_dir.join("retrieval-outcomes.jsonl")),
+        // S01: every attempt's open line and verdict, per checkpoint run.
+        runs_dir: Some(graph_layout.runs_dir()),
+    }
+}
+
+/// Where a workspace's daimon affect state persists.
+fn daimon_affect_path(workdir: &Path) -> PathBuf {
+    workdir.join(".roko").join("daimon").join("affect.json")
+}
+
+/// #144: the daimon state a plan run shares between the feedback facade and
+/// dispatch; `None` unless `[daimon] strategy_space.dimensions` has exactly
+/// 8 entries.
+fn graph_daimon_state(
+    workdir: &Path,
+    config: &roko_core::config::schema::RokoConfig,
+) -> Option<Arc<std::sync::Mutex<roko_daimon::DaimonState>>> {
+    let dims_vec = &config.daimon.strategy_space.dimensions;
+    if dims_vec.len() == 8 {
+        // SAFETY: len == 8 is checked above, so try_into() is infallible here.
+        let dims: [String; 8] = dims_vec
+            .clone()
+            .try_into()
+            .expect("dims_vec has exactly 8 elements (checked above)");
+        let def = roko_daimon::StrategySpaceDefinition {
+            domain: config.daimon.strategy_space.domain.clone(),
+            dimensions: dims,
+        };
+        let mut s = roko_daimon::DaimonState::load_or_new(&daimon_affect_path(workdir));
+        let _ = s.configure_strategy_space(def);
+        Some(std::sync::Arc::new(std::sync::Mutex::new(s)))
+    } else {
+        tracing::warn!(
+            dims = dims_vec.len(),
+            "daimon strategy_space.dimensions must have exactly 8 entries; skipping"
+        );
+        None
+    }
+}
+
+/// The feedback facade of a Graph plan run: the sinks each settled task
+/// attempt fans out to, in order (episodes, hindsight, verified knowledge,
+/// routing when there is a cascade router, and the plan-completion dream,
+/// daimon, theta and delta sinks). `daimon_state` is the state dispatch
+/// modulates, persisted when a plan completes.
+pub fn build_graph_feedback_facade(
+    workdir: &Path,
+    config: &roko_core::config::schema::RokoConfig,
+    cascade_router: Option<&Arc<roko_learn::cascade_router::CascadeRouter>>,
+    daimon_state: Option<&Arc<std::sync::Mutex<roko_daimon::DaimonState>>>,
+) -> Arc<crate::runtime_feedback::FeedbackFacade> {
+    let graph_layout = RokoLayout::for_project(workdir);
+    let graph_learn_dir = graph_layout.learn_dir();
+    let graph_episodes_path = graph_layout.root_episodes_path();
+    let mut facade = crate::runtime_feedback::FeedbackFacade::new()
+        .with_sink(std::sync::Arc::new(
+            crate::runtime_feedback::EpisodeSink::at(&graph_episodes_path),
+        ))
+        // Reads back the failed episode the episode sink just wrote, so
+        // it must follow it.
+        .with_sink(std::sync::Arc::new(
+            crate::runtime_feedback::HindsightSink::new(
+                &graph_episodes_path,
+                graph_learn_dir.join(roko_learn::hindsight::DEFAULT_ADJUSTMENTS_FILE),
+            ),
+        ))
+        // Gate-verified attempts grow durable knowledge (tier
+        // progression included) under `.roko/neuro/`.
+        .with_sink(std::sync::Arc::new(
+            crate::runtime_feedback::VerifiedKnowledgeSink::for_workdir(workdir),
+        ));
+    if let Some(cascade) = cascade_router {
+        facade = facade.with_sink(std::sync::Arc::new(
+            crate::runtime_feedback::RoutingObservationSink::new(cascade.clone()),
+        ));
+    }
+
+    // ── #143: Dream consolidation trigger on plan completion ────────
+    facade = facade.with_sink(std::sync::Arc::new(
+        crate::runtime_feedback::DreamConsolidationSink::new(
+            workdir.to_path_buf(),
+            config.learning.dream_on_completion,
+            config.learning.dreams.trigger_on_plan_complete,
+        ),
+    ));
+
+    // ── #144: Daimon affect persistence on plan completion ──────────
+    if let Some(daimon) = daimon_state {
+        facade = facade.with_sink(std::sync::Arc::new(
+            crate::runtime_feedback::DaimonPersistenceSink::new(
+                daimon_affect_path(workdir),
+                std::sync::Arc::clone(daimon),
+            ),
+        ));
+    }
+
+    // ── Theta reflection on plan completion ─────────────────────────
+    //
+    // Runs a five-phase reflective cycle (gamma summary, affect update,
+    // calibration check, progress assessment, meta-cognition) after each
+    // plan completes. Lightweight and synchronous (no LLM calls).
+    let shared_cortical = std::sync::Arc::new(roko_runtime::heartbeat::CorticalState::default());
+    let shared_theta = std::sync::Arc::new(std::sync::Mutex::new(
+        roko_runtime::theta_consumer::ThetaConsumer::default(),
+    ));
+    facade = facade.with_sink(std::sync::Arc::new(
+        crate::runtime_feedback::ThetaReflectionSink::new(
+            std::sync::Arc::clone(&shared_theta),
+            std::sync::Arc::clone(&shared_cortical),
+        ),
+    ));
+
+    // ── Delta consolidation on plan completion ──────────────────────
+    //
+    // Tracks episode counts and checks trigger conditions for a dream
+    // consolidation cycle (NREM replay, REM imagination, integration).
+    // Bridges roko_runtime::delta_consumer into the feedback pipeline.
+    let shared_delta = std::sync::Arc::new(std::sync::Mutex::new(
+        roko_runtime::delta_consumer::DeltaConsumer::default(),
+    ));
+    facade = facade.with_sink(std::sync::Arc::new(
+        crate::runtime_feedback::DeltaConsolidationSink::new(
+            std::sync::Arc::clone(&shared_delta),
+            std::sync::Arc::clone(&shared_cortical),
+        ),
+    ));
+
+    std::sync::Arc::new(facade)
+}
+
 // ── Running the plans of a set ────────────────────────────────────────────
 
 /// How often the plan-set driver and each running plan poll for stop
@@ -1714,6 +1815,9 @@ struct PlanRunContext<'a> {
     max_retries: Option<u32>,
     max_tasks: usize,
     rich_topology: bool,
+    /// Services the cells of each plan's graph run with (see
+    /// [`plan_cell_resources`]).
+    cell_resources: &'a roko_graph::cell::CellResources,
     quiet: bool,
     json: bool,
     launch_tui: bool,
@@ -1727,6 +1831,48 @@ struct PlanRunContext<'a> {
     graph_event_logger: Option<&'a Arc<dyn roko_graph::events::GraphEventSink>>,
     shared_pause_flag: &'a Arc<AtomicBool>,
     interrupt: &'a PlanRunInterruptHandle,
+    /// Each checkpoint run's `manifest.json` (S01 §5.1).
+    run_manifests: &'a super::run_manifest::RunManifests,
+    /// The run id the caller already gave this run (`roko run`); a single
+    /// plan's fresh checkpoint takes it.
+    caller_run_id: Option<&'a str>,
+}
+
+/// Services the cells of a plan's graph run with (gap-6daad9). The rich
+/// topology's `plan.gate` cells run the gates, and settle the worktree each
+/// task executor hands on through `workspaces`, the provider the executors
+/// acquire them from. The default topology needs neither.
+fn plan_cell_resources(
+    rich_topology: bool,
+    workspaces: Option<Arc<dyn roko_graph::workspace::ExecutionWorkspaceProvider>>,
+) -> roko_graph::cell::CellResources {
+    if !rich_topology {
+        return roko_graph::cell::CellResources::default();
+    }
+    roko_graph::cell::CellResources {
+        gates: Some(Arc::new(crate::runner::gate_adapter::default_gate_adapter())),
+        workspaces,
+    }
+}
+
+/// The context a plan's graph runs in: its checkpoint run, the run's shared
+/// pause flag, and the cell services.
+fn plan_cell_context(
+    run_id: &str,
+    pause_flag: &Arc<AtomicBool>,
+    resources: &roko_graph::cell::CellResources,
+) -> roko_graph::cell::CellContext {
+    roko_graph::cell::CellContext::new()
+        .with_run_id(run_id.to_string())
+        .with_pause_flag(Arc::clone(pause_flag))
+        .with_resources(resources.clone())
+}
+
+/// Close checkpoint run `run_id`'s attempt log, then record in its manifest
+/// that it ended with `status` and how many attempts it opened and settled.
+fn close_run_manifest(ctx: &PlanRunContext<'_>, run_id: &str, status: GraphCheckpointStatus) {
+    let writer = ctx.graph_task_dispatcher.close_run_attempts(run_id);
+    ctx.run_manifests.close(run_id, status, writer);
 }
 
 /// Operator controls the plan-set driver routes to one running plan.
@@ -1905,7 +2051,6 @@ async fn run_one_plan(
     plan: &crate::runner::plan_loader::Plan,
     control: &PlanControl,
 ) -> anyhow::Result<PlanRunResult> {
-    use roko_graph::cell::CellContext;
     use roko_graph::cells::TaskExecutorCell;
     use roko_graph::convert::{PlanTaskInfo, plan_to_graph};
     use roko_graph::engine::GraphEngine;
@@ -2035,7 +2180,7 @@ async fn run_one_plan(
             }
         }
     };
-    let mut checkpoint = crate::graph_checkpoint::prepare_graph_checkpoint(
+    let mut checkpoint = crate::graph_checkpoint::prepare_graph_checkpoint_for_run(
         ctx.workdir,
         ctx.resume_plan,
         &plan.id,
@@ -2043,8 +2188,11 @@ async fn run_one_plan(
         &graph,
         ctx.fresh,
         ctx.force_resume,
+        ctx.caller_run_id.filter(|_| ctx.plan_count == 1),
     )?;
     let run_id = checkpoint.run_id().to_string();
+    // A new run's manifest, or one more invocation of a resumed run.
+    ctx.run_manifests.open(&run_id, &plan.id);
     let replayed_entries = checkpoint.replayed_entries();
     ctx.graph_task_dispatcher
         .attach_plan_budget_checkpoint(&plan.id, checkpoint.take_cost_ledger())?;
@@ -2094,9 +2242,7 @@ async fn run_one_plan(
     }
     // P2-TUI-3: Wire the shared pause flag into CellContext so cells can
     // check it between turns and yield when the TUI sends Pause.
-    let cell_ctx = CellContext::new()
-        .with_run_id(run_id.clone())
-        .with_pause_flag(Arc::clone(ctx.shared_pause_flag));
+    let cell_ctx = plan_cell_context(&run_id, ctx.shared_pause_flag, ctx.cell_resources);
 
     // Validate before running.
     let issues = engine.validate();
@@ -2112,6 +2258,7 @@ async fn run_one_plan(
             tracing::error!(plan_id = %plan.id, issue, "validation error");
         }
         graph_tui_bridge.plan_completed(&plan.id, false);
+        close_run_manifest(ctx, &run_id, GraphCheckpointStatus::Failed);
         checkpoint.finish(false)?;
         return Ok(PlanRunResult::failed(tasks.len()));
     }
@@ -2256,6 +2403,7 @@ async fn run_one_plan(
             was_cancelled_by_tui,
         );
         checkpoint.record_task_outcomes(&TaskOutcomeSummary::default())?;
+        close_run_manifest(ctx, &run_id, plan_checkpoint_status(outcome));
         checkpoint.finish_with_status(plan_checkpoint_status(outcome))?;
         return Ok(PlanRunResult {
             outcome,
@@ -2393,6 +2541,7 @@ async fn run_one_plan(
             }
         }
     }
+    close_run_manifest(ctx, &run_id, plan_checkpoint_status(outcome));
     checkpoint.finish_with_status(plan_checkpoint_status(outcome))?;
     Ok(PlanRunResult {
         outcome,
@@ -2664,6 +2813,31 @@ files = ["README.md"]
             crate::graph_checkpoint::canonical_checkpoint_status(dir.path(), "01-skipped"),
             Some(GraphCheckpointStatus::Unverified)
         );
+    }
+
+    /// gap-568056: a Graph run keeps `.roko/state/status.json` current and
+    /// leaves its terminal status there, with this process as the writer.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_graph_run_writes_status_json() {
+        let dir = disabled_role_plan_set(&[("a", "a.txt", &[]), ("b", "b.txt", &[])], "");
+        let (exit_code, _, _) = run_plan_set(dir.path(), Some(1), None).await;
+
+        let state_dir = RokoLayout::for_project(dir.path()).state_dir();
+        let read = crate::runner::status_file::read_runner_status(&state_dir);
+        assert!(read.is_live(), "{read:?}");
+        let status = read.status().expect("status.json after a Graph run");
+        let expected_phase = if exit_code == EXIT_SUCCESS {
+            "completed"
+        } else {
+            "failed"
+        };
+        assert_eq!(status.phase, expected_phase);
+        assert_eq!(status.last_event, "run_completed");
+        assert_eq!(status.pid, std::process::id());
+        assert!(!status.run_id.is_empty());
+        assert_eq!((status.total_plans, status.completed_plans), (2, 2));
+        assert_eq!((status.total_tasks, status.finished_tasks), (2, 2));
+        assert_eq!((status.active_agents, status.running_tasks), (0, 0));
     }
 
     /// A workspace with [`DISABLED_ROLE_CONFIG`] plus `extra_config`, and one
@@ -3190,6 +3364,74 @@ max_retries = 0
         );
     }
 
+    /// S01 P0-2: a plan run writes its checkpoint run's manifest (harness
+    /// build, config fingerprint, one invocation) and closes it with the
+    /// run's attempt counts; resuming the run records a second invocation.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn graph_plan_run_writes_run_manifest() {
+        use roko_learn::telemetry::RunProvenanceManifest;
+
+        let dir = verified_plan_set(&[("a", "a.txt", &[])], "");
+        let (exit_code, _, _) = run_plan_set(dir.path(), Some(1), None).await;
+        assert_eq!(exit_code, EXIT_SUCCESS);
+
+        let runs_dir = dir.path().join(".roko/runs");
+        let run_dirs: Vec<PathBuf> = std::fs::read_dir(&runs_dir)
+            .expect("read .roko/runs")
+            .map(|entry| entry.expect("run directory").path())
+            .collect();
+        assert_eq!(run_dirs.len(), 1, "one run, one directory: {run_dirs:?}");
+        let run_dir = &run_dirs[0];
+        let manifest = RunProvenanceManifest::load(run_dir)
+            .expect("read the manifest")
+            .expect("the run wrote a manifest");
+        let run_id = run_dir.file_name().and_then(|name| name.to_str());
+        assert_eq!(Some(manifest.run_id.as_str()), run_id);
+        assert_eq!(manifest.kind, "plan_run");
+        assert_eq!(manifest.plan_ids, ["a"]);
+        assert_eq!(manifest.harness.sha, env!("ROKO_GIT_HASH"));
+        assert_eq!(
+            manifest.harness.rustc.as_deref(),
+            Some(env!("ROKO_RUSTC_VERSION"))
+        );
+        assert!(
+            manifest.config.hash.starts_with("b3:"),
+            "{}",
+            manifest.config.hash
+        );
+        assert_eq!(manifest.config.hash.len(), 3 + 64);
+        let invocation = &manifest.invocations[..];
+        assert_eq!(invocation.len(), 1);
+        assert_eq!((invocation[0].inv, invocation[0].resumed), (1, false));
+        assert_eq!(invocation[0].pid, std::process::id());
+        let closed = manifest.closed.as_ref().expect("the run closed");
+        assert_eq!(closed.status, "succeeded");
+        let counts = (
+            closed.attempts_opened,
+            closed.attempts_settled,
+            closed.abandoned,
+        );
+        assert_eq!(counts, (1, 1, 0));
+
+        // The second run resumes the checkpoint: same run, one more
+        // invocation, and no new attempt for the replayed task.
+        run_plan_set(dir.path(), Some(1), None).await;
+        let resumed = RunProvenanceManifest::load(run_dir)
+            .expect("read the manifest")
+            .expect("the manifest is still there");
+        assert_eq!(resumed.run_id, manifest.run_id);
+        assert_eq!(resumed.config.hash, manifest.config.hash);
+        let invocations: Vec<(u32, bool)> = resumed
+            .invocations
+            .iter()
+            .map(|invocation| (invocation.inv, invocation.resumed))
+            .collect();
+        assert_eq!(invocations, [(1, false), (2, true)]);
+        let closed = resumed.closed.as_ref().expect("the resumed run closed");
+        assert_eq!(closed.attempts_opened, 1);
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_stop_requested_before_the_run_starts_no_plan() {
         let dir = disabled_role_plan_set(&[("a", "a.txt", &[]), ("b", "b.txt", &[])], "");
@@ -3387,5 +3629,215 @@ max_retries = 0
         stopped_rx
             .try_recv()
             .expect("TUI thread joined before drop returned");
+    }
+
+    /// Stands in for a rich-topology task executor under
+    /// `--worktree-per-task`: runs its attempt in a worktree from `provider`
+    /// and hands that worktree on to the task's gate.
+    struct HandsOnItsWorktree {
+        provider: Arc<crate::graph_execution::WorktreeExecutionWorkspaceProvider>,
+    }
+
+    #[async_trait::async_trait]
+    impl roko_graph::Cell for HandsOnItsWorktree {
+        fn cell_id(&self) -> &'static str {
+            "task-executor"
+        }
+
+        fn cell_name(&self) -> &'static str {
+            "HandsOnItsWorktree"
+        }
+
+        async fn execute(
+            &self,
+            _input: Vec<roko_core::Signal>,
+            ctx: &roko_graph::cell::CellContext,
+        ) -> roko_core::error::Result<Vec<roko_core::Signal>> {
+            use roko_graph::workspace::ExecutionWorkspaceProvider as _;
+            let lease = self
+                .provider
+                .acquire(&roko_graph::workspace::WorkspaceAttemptId {
+                    plan_id: "rich".to_string(),
+                    task_id: "T1".to_string(),
+                    attempt: 0,
+                })
+                .await
+                .map_err(|error| roko_core::RokoError::Invalid(error.to_string()))?;
+            std::fs::write(lease.path.join("feature.txt"), "feature\n")?;
+            let mut output = vec![
+                roko_core::Signal::builder(roko_core::Kind::AgentOutput)
+                    .body(roko_core::Body::text("done"))
+                    .build(),
+            ];
+            roko_graph::cells::TaskAttempt {
+                plan_id: "rich".to_string(),
+                task_id: "T1".to_string(),
+                run_id: ctx.run_id.clone(),
+                attempt: 1,
+                workspace: Some(lease.path.clone()),
+                lease: Some(lease),
+                ..roko_graph::cells::TaskAttempt::default()
+            }
+            .stamp(&mut output);
+            roko_graph::cells::task_executor::TaskGateVerdict::Passed.stamp(&mut output);
+            Ok(output)
+        }
+    }
+
+    fn git_in(dir: &Path, args: &[&str]) {
+        let output = std::process::Command::new("git")
+            .current_dir(dir)
+            .args(args)
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_INDEX_FILE")
+            .output()
+            .expect("run git");
+        assert!(
+            output.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    /// gap-6daad9: a rich-topology plan runs with the gates and the run's
+    /// workspace provider, so its gate cells run: the gate judges the
+    /// worktree the executor handed on (here the compile rung fails, on a
+    /// manifest cargo cannot parse), fails its task, and keeps that worktree
+    /// for post-mortem instead of accepting it. The default topology gets
+    /// neither service.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn rich_topology_gates_run_with_cell_resources() {
+        use roko_graph::engine::{GraphEngine, NodeStatus};
+
+        let repo = tempfile::tempdir().expect("repo");
+        git_in(repo.path(), &["init", "-b", "main"]);
+        for (key, value) in [
+            ("user.email", "operator@example.test"),
+            ("user.name", "Operator"),
+            ("commit.gpgsign", "false"),
+        ] {
+            git_in(repo.path(), &["config", key, value]);
+        }
+        // A manifest cargo cannot parse fails the compile rung at once.
+        std::fs::write(repo.path().join("Cargo.toml"), "not a manifest [\n").expect("manifest");
+        git_in(repo.path(), &["add", "Cargo.toml"]);
+        git_in(repo.path(), &["commit", "-m", "base"]);
+        let worktrees = tempfile::tempdir().expect("worktrees");
+        let provider = Arc::new(
+            crate::graph_execution::WorktreeExecutionWorkspaceProvider::new(
+                crate::orchestrator::worktree::WorktreeManager::new(
+                    crate::orchestrator::worktree::WorktreeConfig {
+                        repo_root: repo.path().to_path_buf(),
+                        base_branch: "HEAD".to_string(),
+                        worktrees_root: worktrees.path().to_path_buf(),
+                        max_live: None,
+                        idle_ttl: Duration::from_secs(3600),
+                    },
+                ),
+            ),
+        );
+
+        let resources = plan_cell_resources(true, Some(provider.clone()));
+        assert!(resources.gates.is_some() && resources.workspaces.is_some());
+        let default_topology = plan_cell_resources(false, Some(provider.clone()));
+        assert!(default_topology.gates.is_none() && default_topology.workspaces.is_none());
+
+        let task = roko_graph::TopologyTaskInfo {
+            task_id: "T1".to_string(),
+            title: "Add the feature".to_string(),
+            description: None,
+            role: Some("implementer".to_string()),
+            tier: "focused".to_string(),
+            model_hint: None,
+            files: vec!["feature.txt".to_string()],
+            depends_on: Vec::new(),
+            timeout_secs: 60,
+            max_retries: 0,
+            domain: None,
+            sequence: 0,
+            full_config_json: serde_json::json!({"id": "T1"}),
+        };
+        let (graph, _) = roko_graph::ProductionPlanTopology::new("rich", "plans/rich", 1)
+            .build(&[task])
+            .expect("topology");
+        let mut registry = roko_graph::default_registry();
+        roko_graph::register_topology_cells(&mut registry);
+        let executor_provider = provider.clone();
+        registry.register("task-executor", move |_config| {
+            Box::new(HandsOnItsWorktree {
+                provider: executor_provider.clone(),
+            })
+        });
+        let engine = GraphEngine::new(graph, registry).with_allow_test_stubs(true);
+        let pause = Arc::new(AtomicBool::new(false));
+
+        let output = engine
+            .execute(&plan_cell_context("rich-run", &pause, &resources))
+            .await
+            .expect("the plan runs");
+
+        let gate = output
+            .node_results
+            .iter()
+            .find(|result| result.node_id == "task.T1.gate")
+            .expect("the gate ran");
+        let error = gate.error.clone().unwrap_or_default();
+        assert_eq!(gate.status, NodeStatus::Failed, "{error}");
+        assert!(error.contains("failed the plan gate"), "{error}");
+        assert!(error.contains("compile"), "{error}");
+        assert!(!output.success);
+        // Kept, not accepted: the worktree is still there, and no plan branch
+        // was made.
+        let kept = provider
+            .manager()
+            .get_attempt("rich", "T1", 0)
+            .expect("the worktree is kept");
+        assert!(kept.path.join("feature.txt").is_file());
+        let plan_branch = std::process::Command::new("git")
+            .current_dir(repo.path())
+            .args(["rev-parse", "--verify", "--quiet", "roko/plan/rich"])
+            .output()
+            .expect("git rev-parse");
+        assert!(
+            !plan_branch.status.success(),
+            "a failed attempt was accepted"
+        );
+    }
+
+    /// The rich topology's gates judge each attempt's own worktree, so a run
+    /// without per-task worktrees is refused before anything starts.
+    #[tokio::test]
+    async fn rich_topology_needs_worktree_per_task() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let error = run_graph_plan(GraphPlanRunParams {
+            plans_dir: dir.path().join("plans"),
+            workdir: dir.path().to_path_buf(),
+            quiet: true,
+            json: false,
+            resume_plan: None,
+            fresh: false,
+            force_resume: false,
+            max_retries: None,
+            max_tasks: 0,
+            budget_override: None,
+            no_budget: true,
+            cli_model_override: None,
+            dangerously_skip_permissions: false,
+            log_file: None,
+            worktree_per_task: false,
+            rich_topology: true,
+            no_tui: true,
+            state_hub: None,
+            interrupt: None,
+            max_parallel_plans: None,
+            fail_fast: false,
+            only_plans: None,
+            live_agent_output: crate::graph_task_dispatch::LiveAgentOutput::ToolSteps,
+        })
+        .await
+        .expect_err("the rich topology needs per-task worktrees");
+
+        assert!(error.to_string().contains("--worktree-per-task"), "{error}");
     }
 }

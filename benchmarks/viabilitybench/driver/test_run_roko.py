@@ -31,6 +31,7 @@ import run_roko
 import validate
 import vb
 from common import canary, hmac_seed
+from stub_provider import StubServer
 
 TOY_FAMILY = layout.DRIVER_DIR / "testdata" / "toy_family"
 TOY_STREAM = str(layout.DRIVER_DIR / "testdata" / "toy_stream.toml")
@@ -84,6 +85,46 @@ extensions = {"roko.gate.verdict@1": {"value": {"verdicts": {"T01": "passed"}}}}
 (roko / "state" / "graph" / slug / "checkpoint.json").write_text(json.dumps(
     {"schema_version": 3, "plan_id": slug, "status": behaviour["status"], "extensions": extensions}))
 sys.exit(0 if succeeded else 1)
+'''
+
+RETRYING_ROKO = r'''#!__PYTHON__
+"""A stand-in for roko's `plan run` that retries as roko does: each of its three attempts is one conversation with the
+provider its roko.toml names, extended call by call until the metering proxy refuses a call, then a failed episode."""
+import datetime, json, os, sys, tomllib, urllib.error, urllib.request
+from pathlib import Path
+
+args = sys.argv[1:]
+if args == ["--version"]:
+    print("roko 0.1.0 (git 0fa4e0fa4e)")
+    sys.exit(0)
+if "validate" in args:
+    sys.exit(0)
+repo, slug = Path(args[args.index("--repo") + 1]), Path(args[args.index("run") + 1]).name
+config = tomllib.loads(Path(os.environ["ROKO_CONFIG"]).read_text())
+[provider], [model] = config["providers"].values(), config["models"]
+roko = repo / ".roko"
+(roko / "state" / "graph" / slug).mkdir(parents=True)
+for attempt in range(3):  # every attempt starts over from the same first prompt
+    messages, failure = [{"role": "system", "content": "You implement tasks. " * 20},
+                         {"role": "user", "content": "Fix clamp. " * 40}], None
+    for _ in range(10):
+        request = urllib.request.Request(provider["base_url"] + "/chat/completions", data=json.dumps(
+            {"model": model, "messages": messages}).encode(), headers={
+            "Content-Type": "application/json", "Authorization": "Bearer " + os.environ[provider["api_key_env"]]})
+        try:
+            reply = json.loads(urllib.request.build_opener(urllib.request.ProxyHandler({})).open(request).read())
+        except urllib.error.HTTPError as err:
+            failure = f"provider: http {err.code}"
+            break
+        messages += [reply["choices"][0]["message"], {"role": "user", "content": "tool output " * 170}]
+    now = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+    with open(roko / "episodes.jsonl", "a") as handle:
+        handle.write(json.dumps({"task_id": "T01", "model": model, "backend": "cerebras", "success": False,
+                                 "turns": 1, "completed_at": now, "failure_reason": failure,
+                                 "extra": {"plan_id": slug}}) + "\n")
+(roko / "state" / "graph" / slug / "checkpoint.json").write_text(json.dumps(
+    {"plan_id": slug, "status": "failed", "extensions": {}}))
+sys.exit(1)
 '''
 
 
@@ -372,6 +413,35 @@ def test_attempts_ending_in_the_same_second_get_their_own_usage():
     assert problems == [] and [(attempt.calls_known, attempt.usage_unknown) for attempt in attempts] == [
         (True, False), (False, True), (False, True)]
 
+
+def test_the_roko_arm_enforces_the_per_attempt_input_cap(places, tmp_path):
+    # gap-806e37: Roko has no per-attempt input cap, so the metering proxy holds each attempt to the arm's
+    # input_tokens_per_attempt. It sees no attempts, so it draws them as conversations: calls that extend each other.
+    # This roko's three attempts each extend one conversation from the same first prompt until a call could pass the
+    # cap; the proxy refuses that call, and the next attempt, sent afresh, gets a budget of its own.
+    binary = tmp_path / "bin" / "roko"
+    binary.parent.mkdir()
+    binary.write_text(RETRYING_ROKO.replace("__PYTHON__", sys.executable))
+    binary.chmod(0o755)
+    arm = arm_with(tmp_path, binary)
+    arm.write_text(arm.read_text().replace("input_tokens_per_attempt = 150000", "input_tokens_per_attempt = 3000"))
+    with StubServer(lambda body: "Done.") as stub:
+        assert run_vb(places, arm, stub.url, "--proxy") == 0
+        served = len(stub.requests)
+    out = places["results"] / "TEST-ROKO" / "run-1"
+    rows = read_jsonl(out / "proxy.jsonl")
+    assert [(row["conversation"], row["refused"]) for row in rows] == [
+        (conversation, refused) for conversation in (1, 2, 3) for refused in (None, None, "attempt_input_cap")]
+    assert served == 6  # a refused call never reaches the provider
+    for conversation in (1, 2, 3):  # no attempt's metered input passes the cap
+        billed = [row["usage"]["tokens_in"] + row["usage"]["tokens_cache_read"] for row in rows
+                  if row["conversation"] == conversation and row["usage"]]
+        assert 0 < sum(billed) <= 3000
+    [record] = read_jsonl(out / "records.jsonl")
+    attempts = record["execution"]["attempts"]
+    assert [(attempt["calls"], attempt["ended_by"]) for attempt in attempts] == [(3, "attempt_input_tokens")] * 3
+    assert record["execution"]["status"] == "failed" and validate.validate("run-record", record) == []
+
 def test_plan_slice_records_carry_queue_waits_and_class_costs(places, tmp_path):
     # gap-04e8e2: the fake roko records two attempts with their dispatch times, and the metering proxy's log holds
     # their calls, one of them rate limited. The record carries the queue wait, each attempt's class and busy time,
@@ -514,3 +584,47 @@ def test_real_roko_run_against_a_fake_provider(places, tmp_path):
     assert {request["model"] for request in stub.requests} == {PIN}
     [attempt] = record["execution"]["attempts"]
     assert attempt["model_dispatched"] == PIN and attempt["checks"] == [] and attempt["roko_build"]
+
+
+FLAKY = 'schema_version = "vb.disturbance/1"\n\n[[disturbance]]\nkind = "flaky_verify"\nparams = { p = 1.0 }\n'
+
+
+def test_emitted_plan_runs_its_check_through_the_verify_wrapper(tmp_path):
+    # gap-4e8795: in a run with flaky_verify, the verify step and the gate rung both run the visible check through
+    # the visible-verify wrapper, and nothing else changes.
+    task = toy_task(tmp_path)
+    wrapper = "/runs/_home/F1-l1-0001.s1/.vb-bin/vb-verify"
+    emitted = planemit.emit(plan_spec(task, verify_wrapper=wrapper), task.workdir)
+    command = f"{wrapper} 'python3 -m unittest discover -s tests/visible'"
+    assert emitted.visible_command == command
+    [step] = tomllib.loads(emitted.tasks_text)["task"][0]["verify"]
+    [rung] = tomllib.loads(emitted.config_text)["gates"]["rungs"]
+    assert step["command"] == rung["command"] == command
+
+
+@real_roko
+def test_real_roko_gate_meets_the_flaky_verify_wrapper(places, tmp_path):
+    # gap-4e8795: with p = 1, every run of the visible check through the wrapper fails as a killed check, so each of
+    # Roko's attempts fails its gate. The record lists the flakes, and the census's own rerun still passes the fix.
+    spec = tmp_path / "flaky.toml"
+    spec.write_text(FLAKY)
+    stub = ToolStub()
+    try:
+        assert run_vb(places, arm_with(tmp_path, REAL_ROKO), stub.url, "--disturbance", str(spec),
+                      "--transcripts") == 0
+    finally:
+        stub.server.shutdown()
+    out = places["results"] / "TEST-ROKO" / "run-1"
+    [record] = read_jsonl(out / "records.jsonl")
+    assert validate.validate("run-record", record) == []
+    [emitted] = [event for event in json.loads((out / record["provenance"]["transcript_ref"]).read_text())
+                 if event.get("event") == "emit"]
+    # Named by PATH, so no host path enters Roko's prompt, which shows its verify command (A4).
+    assert tomllib.loads(emitted["tasks_toml"])["task"][0]["verify"][0]["command"] == (
+        "vb-verify 'python3 -m unittest discover -s tests/visible'")
+    assert (record["execution"]["status"], record["execution"]["reason"]) == ("failed", "gate_failed")
+    assert len(record["execution"]["attempts"]) == 3  # max_retries = 2: every attempt met a flake
+    visible = record["visible"]
+    assert visible["flake_injected"] and visible["verify_runs"] >= 3
+    assert [flake["run"] for flake in visible["flakes"]] == list(range(1, visible["verify_runs"] + 1))
+    assert visible["passed"] and record["stream"]["perturbations_active"] == ["flaky_verify"]

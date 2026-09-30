@@ -81,8 +81,8 @@ after the P0/P1 fixes (W12 Phase B).
 - [x] gap-09e478: Dogfood session evidence bundle (existing item)
 - [x] bug-652bb7: Field capture can snapshot a resumed run twice, and the rollup's by-run table is not in date order
 - [x] bug-469537: Field snapshots record absolute home-directory paths, so they cannot be published as they are
-- [ ] gap-568056: Graph runs write no .roko/state/status.json, so roko status and evidence status sampling see no live run
-- [ ] bug-4c4eea: The --log-file event log copies agent output verbatim, so evidence bundles hold raw agent text
+- [x] gap-568056: Graph runs write no .roko/state/status.json, so roko status and evidence status sampling see no live run
+- [x] bug-4c4eea: The --log-file event log copies agent output verbatim, so evidence bundles hold raw agent text
 - [ ] The epic's `[[verify]]` command (the rollup test, with `DEFINITIONS.md` present) passes on the merged branch.
 
 ## Notes

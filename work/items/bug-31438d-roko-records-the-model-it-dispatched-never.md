@@ -2,14 +2,16 @@
 id = "bug-31438d"
 kind = "bug"
 title = "Roko records the model it dispatched, never the model the provider reports serving"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p1"
 goal = "truth"
 size = "M"
 subsystem = ["roko-cli/graph_task_dispatch", "roko-core/usage"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-09-30
+last_verified = 2026-09-30
+last_verified_rev = "6f8286d48"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (20:01, wk-bench-rokoarm's report on gap-b7ab99)"
 anchors = ["crates/roko-cli/src/graph_task_dispatch/feedback.rs:151", "crates/roko-core/src/usage.rs::UsageObservation", "crates/roko-agent/src/translate/openai.rs::parse_usage_observation", "crates/roko-cli/src/runtime_feedback/episodes.rs::EpisodeSink"]
@@ -19,6 +21,11 @@ links = { depends_on = [], blocks = [], related = ["bug-35379d", "gap-c4f364", "
 
 [[verify]]
 command = "grep -rqw 'fn records_carry_the_provider_reported_model' crates/roko-cli/src/ && cargo test -p roko-cli --lib records_carry_the_provider_reported_model"
+
+[closed]
+at = 2026-09-30
+by = "coordinator (session 7622b882)"
+evidence = "Merged in 6f8286d48. Records carry the model the provider reports serving (model_reported), next to the dispatched one. Batch 12b gate on the merged tree (MAIN 6f8286d48 has the same crates and Cargo.lock as gated b0ede92d7): check, nightly fmt and clippy -p roko-cli -p roko-agent -p roko-learn -p roko-serve --no-deps -D warnings clean; lib tests pass: roko-cli 3167, roko-agent 2262, roko-learn 1200, roko-serve 977 (two load flakes, a_timed_out_attempt_reports_the_usage_it_streamed and a_timed_out_attempt_is_resumed_with_an_escalated_timeout, pass alone); cargo test -p roko-cli --test learning_wiring_census: 2 passed. Verify: records_carry_the_provider_reported_model passes (roko-cli lib)."
 +++
 
 ## Problem
@@ -67,3 +74,9 @@ At BASE (4315add32), the reported model is parsed into `UsageObservation.model` 
 ## Notes
 
 - gap-c4f364 records reported models for the benchmark's Claude Code arm. This item is Roko's own records.
+- Implemented on `work/bug-31438d` at `b0cf98b3d` (feedback.rs rows at `06bdb71be`); cargo verification deferred to the batch check. `records_carry_the_provider_reported_model` and the other tests it adds (targeted `cargo test` passed at the branch head). Root cause: `roko-agent/src/tool_loop/agent_wrapper.rs::attach_model` overwrote `usage_obs.model` with the configured slug, and the tool loop never read the response's `model`, so even the verdict's `executed.model_reported` was the dispatched model. Changes:
+  - roko's tool loop reads each response's `model` (`ToolLoopTurnTrace.model`, `BackendResponse::extract_model`); `usage_obs.model` is the last one named, and the configured slug stays apart, on the output's `model` tag.
+  - The verdict's `executed` gains `model_dispatched`, `models_reported` and `model_mismatch`.
+  - Episodes (`extra.model_reported`, `extra.model_mismatch`) carry it, and so do cost and efficiency rows (`roko_learn::efficiency::ExecutedRow`).
+  - A substitution is logged at WARN and priced by the model that served, unknown (0) when that model has no price. `served_model::same_model` treats dated snapshots and provider prefixes as the same model. Under `--model` a substitution fails the attempt with a non-retryable `model_substituted` error after it is recorded.
+  - Not done: the CLI adapters (Claude CLI, Codex, Cursor, Gemini native) still fill `usage_obs.model` with the configured slug when the CLI names none. The streaming dispatch path warns and prices but does not fail a pin. The bridge's `model_call` rows still name only the dispatched slug.

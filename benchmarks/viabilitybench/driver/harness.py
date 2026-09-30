@@ -6,6 +6,7 @@ arm therefore adds an arm file and, if its harness is new, one module with `run_
 
 A runner:
 - works in `ctx.workdir` only, and starts every agent process with `ctx.agent_env` (`agent_env.build`);
+- when `ctx.verify_wrapper` is set, runs its visible checks through it (`vb_verify`, S08 §4.6 `flaky_verify`);
 - appends one ledger row per attempt it dispatched (`ctx.ledger`), when the attempt ends, even on failure;
 - returns when the agent has ended its session (status `completed`) or a cap stopped it (`aborted_cap`, `timeout`),
   or with `infra_error` when the harness itself failed;
@@ -57,6 +58,8 @@ class TaskContext:
     # The manifest's public parts, which the spec already states; plan-emitting arms need them (planemit).
     visible_verify: tuple[str, ...] = ()
     files_in_scope: tuple[str, ...] = ()
+    # The visible-verify wrapper the arm's visible checks go through (`vb_verify`); None unless the run is flaky.
+    verify_wrapper: Path | None = None
 
     @property
     def chain_key(self) -> str:
@@ -83,6 +86,7 @@ class Attempt:
     ended_by: str = ""
     tree: str | None = None  # the tree hash of the workdir when the attempt ended
     cost: ledger.Cost | None = None
+    fault_injected: str | None = None  # the fault the metering proxy injected into its calls, if any (S08 §4.6)
 
     def reported_usage(self) -> dict | None:
         return None if self.usage_unknown else self.usage
@@ -91,7 +95,7 @@ class Attempt:
         cost = self.cost or ledger.Cost(None, None, "unknown")
         return {"emitter": "vb-driver", "attempt_key": self.attempt_key, "model_requested": self.model_requested,
                 "model_reported": self.model_reported, "provider": self.provider, "turns": self.turns,
-                "usage": self.reported_usage(), "fault_injected": None, "calls": self.calls,
+                "usage": self.reported_usage(), "fault_injected": self.fault_injected, "calls": self.calls,
                 "ended_by": self.ended_by, "tree": self.tree, "api_equiv_usd": cost.api_equiv_usd,
                 "reserved_usd": round(self.reserved_usd, 6)}
 

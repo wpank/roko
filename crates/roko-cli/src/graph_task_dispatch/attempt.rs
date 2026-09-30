@@ -24,11 +24,13 @@
 use roko_learn::telemetry::records::b3_digest;
 use roko_learn::telemetry::{
     AttemptFailureClass, AttemptIdentity, AttemptKey, AttemptOpenRecord, AttemptOrdinals,
-    AttemptTiming, AttemptVerdictRecord, CostSource, ExecutedModel, GateVerdictTag, TelemetryEvent,
-    TelemetryWriter, TelemetryWriterConfig,
+    AttemptTiming, AttemptVerdictRecord, CostSource, ExecutedModel, GateVerdictTag,
+    HelperCallsUsage, TelemetryEvent, TelemetryWriter, TelemetryWriterConfig, TelemetryWriterStats,
 };
 use sha2::Digest;
 
+use super::failover::FailoverChain;
+use super::served_model::{ServedModel, is_cli_backend};
 use super::*;
 
 /// Attempt state of one run: its durable ordinals and its telemetry writer.
@@ -80,16 +82,11 @@ impl RunAttempts {
             tracing::debug!("attempt telemetry record dropped: the writer's channel is full");
         }
     }
-}
 
-impl Drop for RunAttempts {
-    /// Close the writer and wait for its queued lines, so a run's last
-    /// verdicts reach disk before the process exits.
-    fn drop(&mut self) {
-        let Some(writer) = self.writer.take() else {
-            return;
-        };
-        let stats = writer.close();
+    /// Close the writer, wait for its queued lines, and return its final
+    /// counters; `None` when it never started or is already closed.
+    fn close(&mut self) -> Option<TelemetryWriterStats> {
+        let stats = self.writer.take()?.close();
         if stats.dropped > 0 || stats.write_errors > 0 {
             tracing::warn!(
                 dropped = stats.dropped,
@@ -97,6 +94,15 @@ impl Drop for RunAttempts {
                 "attempt telemetry lost records"
             );
         }
+        Some(stats)
+    }
+}
+
+impl Drop for RunAttempts {
+    /// Close the writer and wait for its queued lines, so a run's last
+    /// verdicts reach disk before the process exits.
+    fn drop(&mut self) {
+        let _ = self.close();
     }
 }
 
@@ -142,6 +148,25 @@ impl AttemptBook {
         Arc::clone(run)
     }
 
+    /// Close run `run_id`'s writer once no attempt of the run is open, and
+    /// return its final counters. `None` when this process opened no attempt
+    /// of the run, or one is still open: that attempt keeps the writer until
+    /// it settles, and dropping the last of them closes it.
+    fn close(&self, run_id: &str) -> Option<TelemetryWriterStats> {
+        let mut run = {
+            let mut runs = self.runs.lock();
+            let run = runs.remove(run_id)?;
+            match Arc::try_unwrap(run) {
+                Ok(run) => run,
+                Err(run) => {
+                    runs.insert(run_id.to_string(), run);
+                    return None;
+                }
+            }
+        };
+        run.close()
+    }
+
     /// Open the next attempt of `task` in run `run_id`: mint its key and
     /// write its `attempt_open` line under `runs_dir`, when there is one.
     pub(super) fn open(
@@ -176,6 +201,8 @@ impl AttemptBook {
                 attempt_started_at: Some(started_at),
                 ..AttemptTiming::default()
             },
+            failover: FailoverChain::default(),
+            helpers: None,
             run,
         }
     }
@@ -189,6 +216,10 @@ pub(super) struct AttemptContext {
     identity: AttemptIdentity,
     task_spec_hash: String,
     timing: AttemptTiming,
+    /// The models provider failover passed over.
+    failover: FailoverChain,
+    /// The attempt's helper model calls, once they settled.
+    helpers: Option<HelperCallsUsage>,
     run: Arc<RunAttempts>,
 }
 
@@ -206,6 +237,17 @@ impl AttemptContext {
     /// The provider call returned.
     pub(super) fn dispatch_ended(&mut self) {
         self.timing.dispatch_ended_at = Some(now_ms());
+    }
+
+    /// Provider failover passed over `failover`'s models before the one
+    /// that ran (bug-35379d).
+    pub(super) fn record_failover(&mut self, failover: FailoverChain) {
+        self.failover = failover;
+    }
+
+    /// The attempt's helper model calls settled with `usage` (bug-62e3f4).
+    pub(super) fn record_helper_calls(&mut self, usage: HelperCallsUsage) {
+        self.helpers = (usage.calls > 0).then_some(usage);
     }
 
     /// Settle the attempt: build its verdict record, queue it for the run's
@@ -235,8 +277,9 @@ impl AttemptContext {
         // Neither path sees the first token's time yet (S01 P0-5).
         verdict.timing.ttft_source = Some("unavailable".to_string());
         verdict.timing.settled_at = Some(now_ms());
-        verdict.executed = executed_model(model_requested, dispatch);
+        verdict.executed = executed_model(model_requested, dispatch, self.failover);
         verdict.cost.source = cost_source(dispatch);
+        verdict.helpers = self.helpers;
         verdict.output_sha256 = dispatch
             .and_then(|dispatch| dispatch.result.output.body.as_text().ok())
             .map(sha256_hex);
@@ -387,6 +430,16 @@ impl GraphTaskDispatcher {
         )
     }
 
+    /// Close run `run_id`'s attempt log once its plan has finished: wait
+    /// until every queued line is on disk, so the run's `attempts.jsonl` is
+    /// complete, and return the writer's final counters (the run manifest
+    /// records what it dropped). `None` when this process opened no attempt
+    /// of the run, or an attempt of it is still in flight. A later attempt
+    /// of the run reopens the log where it left off.
+    pub fn close_run_attempts(&self, run_id: &str) -> Option<TelemetryWriterStats> {
+        self.attempts.close(run_id)
+    }
+
     /// Settle `attempt`, which the harness failed after its open line with
     /// `error` (S01 §4.3), and publish its verdict, so the attempt does not
     /// read as abandoned. `routed` is the model dispatch asked for and the
@@ -448,26 +501,28 @@ fn failure_class(
     Some(class)
 }
 
-/// The model that ran: the provider's own report of it, else the model the
-/// bridge launched, which after failover is not the requested one.
-/// bug-35379d records the failover chain.
+/// The model that ran: the one the bridge launched, which after failover
+/// is not the requested one, and the one the provider reported serving,
+/// which is `None` when it named none (bug-31438d). `failover` lists the
+/// models passed over first (bug-35379d).
 fn executed_model(
     model_requested: &str,
     dispatch: Option<&crate::dispatch_v2::AgentResultDispatch>,
+    failover: FailoverChain,
 ) -> ExecutedModel {
     let mut executed = ExecutedModel {
         model_requested: (!model_requested.is_empty()).then(|| model_requested.to_string()),
+        failover_chain: failover.models,
+        failover_reason: failover.reason,
         ..ExecutedModel::default()
     };
     if let Some(dispatch) = dispatch {
-        let reported = dispatch
-            .result
-            .usage_obs
-            .as_ref()
-            .and_then(|usage| usage.model.clone());
+        let served = ServedModel::of(dispatch);
         executed.provider = Some(dispatch.target.provider_id.clone());
-        executed.model_reported =
-            Some(reported.unwrap_or_else(|| dispatch.target.model_slug.clone()));
+        executed.model_dispatched = Some(dispatch.target.model_slug.clone());
+        executed.model_reported = served.reported;
+        executed.models_reported = served.all_reported;
+        executed.model_mismatch = served.mismatch;
         executed.turns = dispatch.events.iter().rev().find_map(|event| match event {
             roko_agent::AgentRuntimeEvent::TurnCompleted { num_turns, .. } => *num_turns,
             _ => None,
@@ -485,15 +540,7 @@ fn cost_source(dispatch: Option<&crate::dispatch_v2::AgentResultDispatch>) -> Co
     let Some(usage) = dispatch.result.usage_obs.as_ref() else {
         return CostSource::Unknown;
     };
-    let cli_backend = matches!(
-        dispatch.target.provider_kind,
-        roko_core::ProviderKind::ClaudeCli
-            | roko_core::ProviderKind::CodexCli
-            | roko_core::ProviderKind::GeminiCli
-            | roko_core::ProviderKind::CursorCli
-            | roko_core::ProviderKind::CursorAcp
-    );
-    CostSource::from_usage_source(&usage.source, cli_backend)
+    CostSource::from_usage_source(&usage.source, is_cli_backend(dispatch.target.provider_kind))
 }
 
 fn sha256_hex(text: &str) -> String {

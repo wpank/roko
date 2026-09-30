@@ -739,7 +739,7 @@ roko plan run <plans-dir> [--engine graph] [--workdir <path>]
 | `--screenshot-dir <path>` | auto | Directory for screenshot timeline. |
 | `--batch-size <n>` | -- | Pause for review after every N plan completions. |
 | `--worktree-per-task` | false | Run each task in an isolated git worktree. |
-| `--rich-topology` | false | Use the 11-node-per-task production topology. |
+| `--rich-topology` | false | Use the 11-node-per-task production topology. Each task's gate runs in the worktree its attempt ran in, so this needs `--worktree-per-task`. |
 
 ```bash
 roko plan run plans/                            # Run all plans

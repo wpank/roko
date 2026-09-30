@@ -43,6 +43,7 @@ benchmarks/viabilitybench/
   driver/vb.py                                              # vb run | estimate | materialize | ledger | report
   driver/{mini_loop, run_roko, planemit, run_cli}.py        # the runners: direct loop, Roko arm, Claude Code arm
   driver/{ledger, faultproxy, secret}.py                    # the run ledger, the metering and fault proxy, the secret
+  driver/{disturb, vb_verify}.py                            # H6's disturbances, and the visible-verify wrapper
   driver/{materialize, harness, provider, stub_provider, agent_env, caps, archive, census, records, layout}.py
   analysis/{metrics, passk, report}.py                      # vb report
   ci/{verify_verifiers, determinism, leak_check}.py         # verifier CI
@@ -88,7 +89,10 @@ $PY benchmarks/viabilitybench/driver/vb.py run --experiment PILOT-A --stream pil
 - **Isolation.** Each (task, seed) gets a fresh workdir under `$VB_WORK` (default `~/vb-work/<run_id>/`). The task
   manifest, which holds the canary, and the pristine bundle live in the run's `private/` directory, never in a
   workdir. Agent processes get an allowlisted environment (`agent_env.py`): no `VB_*` variables, no provider keys, a
-  per-task HOME. Agents can read the driver's own start-up environment (`ps -E`, `/proc`), so once its checks pass,
+  per-task HOME. The truth suites and the census's visible re-run run the agent's code through
+  `families/common/sandbox.py`. On macOS, `sandbox-exec` denies that code the secret file and the task's private
+  directory. Elsewhere there is no confinement yet, and the run record says so (`vs.sandbox`, gap-8c3752). Agents can
+  read the driver's own start-up environment (`ps -E`, `/proc`), so once its checks pass,
   `vb run` starts itself again with an allowlisted environment (`agent_env.exec_scrubbed`). Every other process of
   your user stays readable (`ps -E -ax`), so run the benchmark from a session that exports no credential.
 - **Label.** The driver commits the final tree as c_i with `families/common/repo.export_tree`, never with git in the
@@ -129,6 +133,9 @@ $PY benchmarks/viabilitybench/driver/vb.py run --experiment PILOT-A --stream pil
   need `driver/fingerprint.py` and its golden vectors, which this tree does not have.
 - **The metering and fault proxy** (`faultproxy.py`, S08 §4.11) meters every model call independently of the
   client and injects provider faults. The Roko arm reads its log, `proxy.jsonl`, when the run directory holds one.
+- **Disturbances** (`vb run --disturbance SPEC.toml`, `disturb.py`, S08 §4.6) apply H6's hooks to stream positions.
+  `flaky_verify` routes every arm's visible checks through the visible-verify wrapper (`vb_verify.py`), which fails
+  some of them at random; the census's own rerun never meets a flake.
 - **The report.** `vb report --experiment <id>` writes `metrics.json` and prints the VS rate, $/VS, pass^k and false
   greens of each arm (of each model, for an arm that ran more than one), every false green with its run id, and the
   excluded runs. `--bundle` writes the summary bundle for `reports/`, and `--check` holds bundles to their manifests

@@ -477,7 +477,9 @@ pub struct PromptRun<'a> {
 ///
 /// The prompt becomes a one-task plan in `.roko/runs/<run_id>/` (never under
 /// `plans/`): an `implementer` task whose verify steps are the workspace
-/// gates (see [`prompt_verify_steps`]). [`run_graph_plan`] executes it with
+/// gates (see [`prompt_verify_steps`]). The Graph run takes the same run id,
+/// so its attempt records and manifest share that directory.
+/// [`run_graph_plan`] executes it with
 /// the provider dispatch, failover, safety contracts, budget, checkpoints,
 /// and per-task episodes, efficiency, and cost records of `roko plan run`.
 /// The run then settles one `workflow_complete` episode carrying the gate
@@ -491,10 +493,10 @@ pub struct PromptRun<'a> {
 /// override is not a plan task role, or no gate can verify the change; and
 /// when the Graph engine cannot start the run.
 pub async fn run_prompt(run: PromptRun<'_>) -> Result<WorkflowRunReport> {
+    use crate::graph_execution::GraphPlanRunParams;
     use crate::graph_execution::plan_runner::{
-        PlanRunInterruptHandle, install_plan_run_signal_handlers,
+        PlanRunInterruptHandle, install_plan_run_signal_handlers, run_graph_plan_in_run,
     };
-    use crate::graph_execution::{GraphPlanRunParams, run_graph_plan};
 
     let (_config, model_config, selection) =
         resolve_workflow_model_selection(run.workdir, run.overrides)?;
@@ -543,31 +545,36 @@ pub async fn run_prompt(run: PromptRun<'_>) -> Result<WorkflowRunReport> {
     let interrupt = PlanRunInterruptHandle::default();
     let _signals = install_plan_run_signal_handlers(interrupt.clone())?;
     let started = std::time::Instant::now();
-    let exit_code = run_graph_plan(GraphPlanRunParams {
-        plans_dir: run_dir.clone(),
-        workdir: run.workdir.to_path_buf(),
-        quiet: run.quiet,
-        json: false,
-        resume_plan: None,
-        fresh: false,
-        force_resume: false,
-        max_retries: run.max_retries,
-        max_tasks: 0,
-        budget_override: None,
-        no_budget: false,
-        cli_model_override,
-        dangerously_skip_permissions: false,
-        log_file: None,
-        worktree_per_task: false,
-        rich_topology: false,
-        no_tui: true,
-        state_hub: Some(hub.clone()),
-        interrupt: Some(interrupt),
-        max_parallel_plans: None,
-        fail_fast: false,
-        only_plans: None,
-        live_agent_output: crate::graph_task_dispatch::LiveAgentOutput::ToolSteps,
-    })
+    // The Graph run takes this run's id, so its attempt records and manifest
+    // land in `run_dir` beside the plan (bug-ccc7c4).
+    let exit_code = run_graph_plan_in_run(
+        GraphPlanRunParams {
+            plans_dir: run_dir.clone(),
+            workdir: run.workdir.to_path_buf(),
+            quiet: run.quiet,
+            json: false,
+            resume_plan: None,
+            fresh: false,
+            force_resume: false,
+            max_retries: run.max_retries,
+            max_tasks: 0,
+            budget_override: None,
+            no_budget: false,
+            cli_model_override,
+            dangerously_skip_permissions: false,
+            log_file: None,
+            worktree_per_task: false,
+            rich_topology: false,
+            no_tui: true,
+            state_hub: Some(hub.clone()),
+            interrupt: Some(interrupt),
+            max_parallel_plans: None,
+            fail_fast: false,
+            only_plans: None,
+            live_agent_output: crate::graph_task_dispatch::LiveAgentOutput::ToolSteps,
+        },
+        Some(run_id.clone()),
+    )
     .await?;
     let duration = started.elapsed();
 
@@ -616,22 +623,14 @@ pub async fn run_prompt(run: PromptRun<'_>) -> Result<WorkflowRunReport> {
     Ok(report)
 }
 
-/// Verify steps for a prompt run: the workspace's declared gate rungs
+/// Verify steps for a prompt run: the workspace's required gate rungs
 /// (`[[gates.rungs]]`, which legacy `[[gate]]` entries migrate into), else
 /// the compile check of a Cargo or Go workspace. Empty when neither exists.
+/// Plan tasks run the workspace's rungs after their own steps, skipping any
+/// whose command a step already runs, so these rungs run once.
 fn prompt_verify_steps(workdir: &Path, gates: &roko_core::config::GatesConfig) -> Vec<VerifyStep> {
     if gates.has_custom_rungs() {
-        return gates
-            .effective_rungs()
-            .into_iter()
-            .filter(|rung| rung.required && !rung.command.trim().is_empty())
-            .map(|rung| VerifyStep {
-                phase: rung.name,
-                command: rung.command,
-                fail_msg: None,
-                timeout_ms: rung.timeout_secs.saturating_mul(1_000),
-            })
-            .collect();
+        return gates.required_rungs().map(VerifyStep::from).collect();
     }
     let compile = if workdir.join("Cargo.toml").is_file() {
         "cargo check --workspace"
@@ -675,6 +674,7 @@ fn prompt_tasks_file(
             skip_enrichment: true,
             source_prd: None,
             failure_policy: None,
+            workspace_rungs: None,
         },
         tasks: vec![TaskDef {
             id: "T1".to_string(),
@@ -1018,6 +1018,100 @@ mod tests {
     use super::*;
     use roko_runtime::workflow_contract::WorkflowConfig;
     use tempfile::TempDir;
+
+    /// bug-ccc7c4: `roko run` keeps one directory under `.roko/runs`. Its
+    /// one-task plan, the Graph run's attempt records and the run manifest
+    /// all live in `.roko/runs/<run_id>/`, named by the run id the report
+    /// carries.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn roko_run_uses_one_run_directory() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let tmp = TempDir::new().expect("tempdir");
+        let provider = tmp.path().join("fake-provider.sh");
+        std::fs::write(
+            &provider,
+            r#"#!/bin/sh
+set -eu
+cat >/dev/null
+printf '%s\n' '{"type":"content_block_delta","delta":{"text":"done"}}'
+printf '%s\n' '{"type":"result","session_id":"run","model":"claude-sonnet-4-6","total_cost_usd":0.0,"usage":{"input_tokens":1,"output_tokens":1},"is_error":false}'
+"#,
+        )
+        .expect("provider script");
+        std::fs::set_permissions(&provider, std::fs::Permissions::from_mode(0o755))
+            .expect("make provider executable");
+        std::fs::write(
+            tmp.path().join("roko.toml"),
+            format!(
+                r#"
+[agent]
+default_model = "run-model"
+command = {provider:?}
+bare_mode = false
+
+[providers.run-cli]
+kind = "claude_cli"
+command = {provider:?}
+
+[models.run-model]
+provider = "run-cli"
+slug = "claude-sonnet-4-6"
+context_window = 200000
+
+[gates]
+sibling_settle_secs = 0
+
+[[gates.rungs]]
+name = "check"
+command = "true"
+"#,
+                provider = provider.display().to_string()
+            ),
+        )
+        .expect("roko.toml");
+        std::fs::write(tmp.path().join("README.md"), "# roko run\n").expect("README");
+
+        let report = run_prompt(PromptRun {
+            prompt: "Say done",
+            workdir: tmp.path(),
+            tier: "focused",
+            overrides: &CliOverrides::default(),
+            max_retries: Some(0),
+            quiet: true,
+            state_hub: None,
+        })
+        .await
+        .expect("roko run completes");
+
+        let layout = roko_fs::RokoLayout::for_project(tmp.path());
+        let run_dir = layout.run_dir(&report.run_id);
+        let run_dirs: Vec<std::path::PathBuf> = std::fs::read_dir(layout.runs_dir())
+            .expect("read .roko/runs")
+            .map(|entry| entry.expect("run directory").path())
+            .collect();
+        assert_eq!(run_dirs, [run_dir.clone()], "one run, one directory");
+        assert!(run_dir.join("tasks.toml").is_file(), "the run's plan");
+        let attempts = std::fs::read_to_string(run_dir.join("attempts.jsonl"))
+            .expect("the Graph run's attempt records are in the run's directory");
+        let lines: Vec<serde_json::Value> = attempts
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("an attempt record"))
+            .collect();
+        let schemas: Vec<&str> = lines
+            .iter()
+            .map(|line| line["schema_version"].as_str().unwrap_or_default())
+            .collect();
+        assert_eq!(schemas, ["roko.attempt_open/1", "roko.verdict/1"]);
+        for line in &lines {
+            assert_eq!(line["run_id"], report.run_id.as_str(), "{line}");
+        }
+        let manifest = roko_learn::telemetry::RunProvenanceManifest::load(&run_dir)
+            .expect("read the manifest")
+            .expect("the run's manifest");
+        assert_eq!(manifest.run_id, report.run_id);
+    }
 
     #[test]
     fn prompt_verify_steps_prefer_declared_rungs_then_workspace_kind() {

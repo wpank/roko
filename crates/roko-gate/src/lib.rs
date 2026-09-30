@@ -131,7 +131,7 @@ pub mod rung_selector;
 pub mod shell;
 /// Statistical Process Control extensions: CUSUM, EWMA Control Chart, BOCPD (GATE-01).
 pub mod spc;
-/// Static spec-quality score for task specs: speclint's `sq-1` rules (S07.7).
+/// Static spec-quality score for task specs: speclint's `sq-2` rules (S07.7).
 pub mod spec_quality;
 pub mod symbol_gate;
 pub mod test_gate;
@@ -158,7 +158,7 @@ pub use compile_errors::{
     CompileError, CompileErrorSummary, ErrorCategory, FailureClass, GateFailureAction,
     GateFailureClassification, GateFailureKind, GateFailureRecord, GateRetryPolicy,
     classify_error_code, classify_gate_failure, parse_cargo_json, parse_plain_stderr,
-    render_failure_classification, structured_gate_failure,
+    render_failure_classification, structured_gate_failure, verdict_timed_out,
 };
 pub use composition::{FallbackGate, ParallelGate, VotingGate};
 pub use diff_gate::{DiffAnalysis, DiffGate, DiffPayload, analyze_diff};

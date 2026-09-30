@@ -64,6 +64,9 @@ match, so the attempts fail as `no_proxy_traffic`.
   is priced from the snapshot by the model the provider reported. A billed request without usage leaves the
   attempt's cost unknown, never 0; an attempt whose requests were all unbilled (refused, faulted or failed) cost $0.
 - An attempt whose window saw no request is `no_proxy_traffic`, which makes the task `infra_error`.
+- Roko has no per-attempt input cap, so the proxy holds each attempt to the arm's `input_tokens_per_attempt`
+  (`PROXY_CAPS`; the proxy draws attempts as conversations, gap-806e37). An attempt whose calls it refused there ends
+  `attempt_input_tokens`, the direct loop's name for that cap.
 
 **Status.**
 - `completed`: the Graph checkpoint says the plan succeeded with a `passed` gate verdict. This is Roko's reported
@@ -113,6 +116,7 @@ import ledger
 import planemit
 from common import repo
 
+PROXY_CAPS = ("input_tokens_per_attempt",)  # arm caps that `vb run` has the metering proxy hold for this runner
 PROMPT_VERSION = planemit.TEMPLATE_VERSION  # Roko's own prompt is in its binary, recorded per attempt as roko_build
 PROMPT_SHA256 = planemit.TEMPLATE_SHA256
 DEFAULT_BINARY = "target/debug/roko"  # relative to the repository root, like the arm file's [roko] binary
@@ -203,7 +207,8 @@ def run_task(ctx: harness.TaskContext) -> harness.TaskOutcome:
             context_window=int(settings.get("context_window", 128_000)), max_output=ctx.caps.max_output_tokens,
             max_retries=max_retries, max_turns=ctx.caps.turns_per_attempt, tier=settings.get("tier", "focused"),
             skip_enrichment=bool(settings.get("skip_enrichment", True)),
-            verify_timeout_s=int(ctx.caps.command_timeout_s)), ctx.workdir)
+            verify_timeout_s=int(ctx.caps.command_timeout_s),
+            verify_wrapper=_wrapper_command(ctx)), ctx.workdir)
         transcript.append({"event": "emit", "slug": emitted.slug, "tasks_toml": emitted.tasks_text,
                            "roko_toml": emitted.config_text})
         env = _roko_env(ctx, api_key_env, emitted.config_path)
@@ -428,6 +433,8 @@ def _meter_from_proxy(attempts: list[RokoAttempt], evidence: Evidence, model: st
         served = {row.get("model_reported") for row in billed}
         usages = [_proxy_usage(row.get("usage")) for row in billed]
         attempt.calls, attempt.calls_known = len(window), True
+        if not attempt.checks and any(row.get("refused") == "attempt_input_cap" for row in window):
+            attempt.ended_by = "attempt_input_tokens"  # the proxy refused its calls at the per-attempt cap
         attempt.model_reported = served.pop() if len(served) == 1 else None
         attempt.usage_unknown = any(usage is None for usage in usages)
         if not attempt.usage_unknown:
@@ -493,6 +500,16 @@ def _status(ran: Ran, evidence: Evidence, problems: list[str]) -> tuple[str, str
         last = str(evidence.episodes[-1].get("failure_reason") or "") if evidence.episodes else ""
         return "failed", "gate_failed" if last.startswith("verify:") else f"roko: {last[:200] or 'plan failed'}"
     return "infra_error", f"roko exited {ran.returncode} with the plan {state or 'unrecorded'}"
+
+
+def _wrapper_command(ctx: harness.TaskContext) -> str | None:
+    """How the plan names the visible-verify wrapper: by name when the agent's PATH finds it, so no path of the host
+    enters Roko's prompt (the verify command is rendered into it, A4); else by its path."""
+    if ctx.verify_wrapper is None:
+        return None
+    wrapper = Path(ctx.verify_wrapper)
+    found = shutil.which(wrapper.name, path=ctx.agent_env.get("PATH"))
+    return wrapper.name if found and Path(found).absolute() == wrapper.absolute() else str(wrapper)
 
 
 def _roko_env(ctx: harness.TaskContext, api_key_env: str, config_path: Path) -> dict[str, str]:

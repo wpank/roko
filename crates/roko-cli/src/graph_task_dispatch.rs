@@ -193,6 +193,10 @@ pub struct GraphTaskDispatcher {
     /// `[meta] skip_enrichment` per plan id, read once from the plan's
     /// `tasks.toml`.
     skip_enrichment_plans: parking_lot::Mutex<HashMap<String, bool>>,
+    /// Whether each plan's tasks run the workspace's `[[gates.rungs]]`
+    /// (`[meta] workspace_rungs`), per plan id, read once from the plan's
+    /// `tasks.toml`.
+    workspace_rung_plans: parking_lot::Mutex<HashMap<String, bool>>,
     /// Tasks (`"{plan_id}/{task_id}"`) whose last attempt stopped at its turn
     /// cap; the next attempt raises the cap and resumes the partial work.
     turn_cap_retries: parking_lot::Mutex<HashMap<String, TurnCapRetry>>,
@@ -255,6 +259,7 @@ impl GraphTaskDispatcher {
             retrieval_ctx: parking_lot::Mutex::new(HashMap::new()),
             task_spend: GraphTaskSpendLedger::default(),
             skip_enrichment_plans: parking_lot::Mutex::new(HashMap::new()),
+            workspace_rung_plans: parking_lot::Mutex::new(HashMap::new()),
             turn_cap_retries: parking_lot::Mutex::new(HashMap::new()),
             timeout_retries: parking_lot::Mutex::new(HashMap::new()),
             task_attempts: parking_lot::Mutex::new(HashMap::new()),
@@ -476,6 +481,19 @@ impl GraphTaskDispatcher {
         Some(HelperAgent::new(agent, target))
     }
 
+    /// The `[meta]` of `spec`'s plan, from `<plan_dir>/tasks.toml`; `None`
+    /// when the file is missing or unreadable.
+    fn read_plan_meta(&self, spec: &TaskExecutionSpec) -> Option<crate::task_parser::TaskMeta> {
+        let plan_dir = Path::new(&spec.plan_dir);
+        [plan_dir.to_path_buf(), self.workdir.join(plan_dir)]
+            .into_iter()
+            .filter(|_| !spec.plan_dir.trim().is_empty())
+            .map(|dir| dir.join("tasks.toml"))
+            .find(|path| path.is_file())
+            .and_then(|path| crate::task_parser::TasksFile::parse(&path).ok())
+            .map(|tasks| tasks.meta)
+    }
+
     /// Whether the plan's `[meta] skip_enrichment` is set, read once per plan
     /// from `<plan_dir>/tasks.toml`. An unreadable file counts as `false`.
     fn plan_skips_enrichment(&self, spec: &TaskExecutionSpec) -> bool {
@@ -483,14 +501,9 @@ impl GraphTaskDispatcher {
         if let Some(skip) = plans.get(&spec.plan_id) {
             return *skip;
         }
-        let plan_dir = Path::new(&spec.plan_dir);
-        let skip = [plan_dir.to_path_buf(), self.workdir.join(plan_dir)]
-            .into_iter()
-            .filter(|_| !spec.plan_dir.trim().is_empty())
-            .map(|dir| dir.join("tasks.toml"))
-            .find(|path| path.is_file())
-            .and_then(|path| crate::task_parser::TasksFile::parse(&path).ok())
-            .is_some_and(|tasks| tasks.meta.skip_enrichment);
+        let skip = self
+            .read_plan_meta(spec)
+            .is_some_and(|meta| meta.skip_enrichment);
         if skip {
             tracing::info!(
                 plan_id = %spec.plan_id,

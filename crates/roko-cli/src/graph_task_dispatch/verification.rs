@@ -6,9 +6,9 @@ use super::*;
 
 impl GraphTaskDispatcher {
     /// Run a task's verify steps, its authored `[[task.verify]]` steps and
-    /// then the workspace's required `[[gates.rungs]]`
-    /// ([`attempt_verify_steps`]), and settle every gate-dependent learning
-    /// record for this attempt.
+    /// then the workspace's required `[[gates.rungs]]` unless its plan opts
+    /// out ([`attempt_verify_steps`]), and settle every gate-dependent
+    /// learning record for this attempt.
     ///
     /// Shared by the batch and streaming dispatch paths so both reach the same
     /// verdict. The pre-verify screen (`red_flags`) goes first: an attempt
@@ -48,7 +48,7 @@ impl GraphTaskDispatcher {
             progress_tx,
         )
         .await?;
-        let steps = attempt_verify_steps(task, &self.config.gates);
+        let steps = self.verify_steps(spec, task);
         if !steps.is_empty() {
             let payload = GatePayload::in_dir(&effective_workdir)
                 .with_label(format!("{}/{}", spec.plan_id, task.id))
@@ -1130,14 +1130,58 @@ async fn verify_compile_permit(
     .ok()
 }
 
+impl GraphTaskDispatcher {
+    /// Whether `spec`'s plan runs the workspace's `[[gates.rungs]]`: its
+    /// `[meta] workspace_rungs`, read once per plan from
+    /// `<plan_dir>/tasks.toml`. An unreadable file counts as on.
+    pub(super) fn plan_runs_workspace_rungs(&self, spec: &TaskExecutionSpec) -> bool {
+        let mut plans = self.workspace_rung_plans.lock();
+        if let Some(runs) = plans.get(&spec.plan_id) {
+            return *runs;
+        }
+        let runs = self
+            .read_plan_meta(spec)
+            .is_none_or(|meta| meta.runs_workspace_rungs());
+        if !runs {
+            tracing::info!(
+                plan_id = %spec.plan_id,
+                "plan sets workspace_rungs = false: its tasks run only their own verify steps"
+            );
+        }
+        plans.insert(spec.plan_id.clone(), runs);
+        runs
+    }
+
+    /// The workspace rungs a task of `spec`'s plan faces: the required
+    /// `[[gates.rungs]]`, none when the plan opts out.
+    pub(super) fn plan_rungs(
+        &self,
+        spec: &TaskExecutionSpec,
+    ) -> impl Iterator<Item = &roko_core::config::GateRungConfig> {
+        let runs = self.plan_runs_workspace_rungs(spec);
+        self.config.gates.required_rungs().filter(move |_| runs)
+    }
+
+    /// The verify steps an attempt at `task` runs, labelled
+    /// ([`attempt_verify_steps`]).
+    pub(super) fn verify_steps(
+        &self,
+        spec: &TaskExecutionSpec,
+        task: &TaskDef,
+    ) -> Vec<(String, crate::task_parser::VerifyStep)> {
+        attempt_verify_steps(task, self.plan_rungs(spec))
+    }
+}
+
 /// The verify steps an attempt at `task` runs, each with its label: the
 /// task's authored `[[task.verify]]` steps (`verify[i]` or `verify[i:phase]`),
-/// then every required workspace rung from `[[gates.rungs]]` (`rung[name]`)
-/// whose command no authored step already runs. `roko run` authors its task's
-/// steps from the same rungs, so they never run twice there either.
-fn attempt_verify_steps(
+/// then each of `rungs`, the workspace's `[[gates.rungs]]` that its plan runs
+/// (`rung[name]`), whose command no authored step already runs. `roko run`
+/// authors its task's steps from the same rungs, so they never run twice
+/// there either.
+fn attempt_verify_steps<'a>(
     task: &TaskDef,
-    gates: &roko_core::config::GatesConfig,
+    rungs: impl IntoIterator<Item = &'a roko_core::config::GateRungConfig>,
 ) -> Vec<(String, crate::task_parser::VerifyStep)> {
     let mut steps: Vec<_> = task
         .verify
@@ -1145,7 +1189,7 @@ fn attempt_verify_steps(
         .enumerate()
         .map(|(index, step)| (verify_step_label(index, &step.phase), step.clone()))
         .collect();
-    for rung in gates.required_rungs() {
+    for rung in rungs {
         let command = rung.command.trim();
         if !task.verify.iter().any(|s| s.command.trim() == command) {
             steps.push((rung_step_label(&rung.name), rung.into()));
@@ -1867,4 +1911,66 @@ printf '%s\n' '{"type":"result","session_id":"s","model":"claude-sonnet-4-6","to
         );
         assert!(!docs_ran.exists(), "an optional rung never runs");
     }
+
+    /// A plan dir holding a `tasks.toml` whose `[meta]` opts out of the
+    /// workspace rungs, and a spec of `task` in it.
+    fn opted_out_spec(temp: &tempfile::TempDir, task: &TaskDef) -> TaskExecutionSpec {
+        let plan_dir = temp.path().join("plans/opted-out");
+        std::fs::create_dir_all(&plan_dir).expect("plan dir");
+        std::fs::write(
+            plan_dir.join("tasks.toml"),
+            r#"
+[meta]
+plan = "opted-out"
+workspace_rungs = false
+
+[[task]]
+id = "T-STREAM"
+title = "Streaming graph task"
+"#,
+        )
+        .expect("tasks.toml");
+        let mut spec = make_spec(task);
+        spec.plan_id = "opted-out".to_string();
+        spec.plan_dir = plan_dir.display().to_string();
+        spec
+    }
+
+    /// A plan with `[meta] workspace_rungs = false` keeps its tasks to their
+    /// own verify steps; a plan without it still runs the workspace rungs.
+    #[tokio::test]
+    async fn a_plan_can_opt_out_of_the_workspace_rungs() {
+        let temp = tempdir().expect("tempdir");
+        let (dispatcher, mut task) = make_test_dispatcher(
+            &temp,
+            VERIFY_PROVIDER,
+            |config| {
+                no_auto_fix(config);
+                config.gates.custom_rungs = vec![rung("lint", "exit 3", true)];
+            },
+            GraphFeedbackContext::default(),
+        )
+        .await;
+        task.verify = vec![verify_step("structural", "true")];
+        let opted_out = opted_out_spec(&temp, &task);
+
+        let outputs = dispatcher
+            .dispatch(&opted_out, Vec::new(), &CellContext::new())
+            .await
+            .expect("the opted-out plan's task skips the failing rung");
+        assert_eq!(
+            TaskGateVerdict::from_signals(&outputs),
+            Some(TaskGateVerdict::Passed)
+        );
+
+        let error = dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &CellContext::new())
+            .await
+            .expect_err("another plan runs the failing rung");
+        let RokoError::Verify { message, .. } = error else {
+            panic!("expected a verify failure, got {error}");
+        };
+        assert!(message.contains("rung[lint] (`exit 3`)"), "{message}");
+    }
+
 }

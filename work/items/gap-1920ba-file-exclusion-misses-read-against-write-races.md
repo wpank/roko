@@ -93,3 +93,9 @@ Steps for Option A:
 - Tests to restructure: `a_verify_failure_beside_an_editing_sibling_is_rerun_once_it_settles` and
   `a_verify_failure_left_in_a_sibling_file_blames_the_sibling` assume a step runs while a sibling edits. Once
   whole-project steps wait, the settle path covers only edits that start after the step does.
+- 2026-09-30, from wk-taskdef (gap-0f3980, not merged yet):
+  - `VerifyStep` is free for a `scope` field.
+  - `TaskDef` gains `hints: roko_core::TaskHints`. Any new `TaskDef` literal needs `hints: Default::default()` once
+    gap-0f3980 lands.
+  - The `tasks.toml` keys `exclusive_files` (an `Option<bool>`; `None` means true) and `parallel_group` parse into
+    `task.hints`. If the scheduler starts reading either, drop it from `TaskDef::unused_hints()` (PLAN_039).

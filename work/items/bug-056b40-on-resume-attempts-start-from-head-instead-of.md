@@ -3,13 +3,14 @@ id = "bug-056b40"
 kind = "bug"
 title = "On resume, attempts start from HEAD instead of the plan branch, and retained attempt worktrees aren't re-attached"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p2"
 goal = "golden-path"
 size = "M"
 subsystem = ["roko-cli/orchestrator/worktree", "roko-cli/graph_execution"]
 created = 2026-09-30
 updated = 2026-09-30
+last_verified = 2026-09-30
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-integrate's report, branch work/bug-50caf2 at f0445319f)"
 anchors = ["crates/roko-cli/src/orchestrator/worktree/mod.rs", "crates/roko-cli/src/graph_execution/delivery.rs"]
@@ -50,3 +51,7 @@ Integration and a whole-plan check (epic spec-a0e40a): a resumed run redoes or c
 ## Notes
 
 - Build on bug-50caf2's branch.
+- 2026-09-30 (wk-integrate): Implemented on `work/spec-f830c4` at `6bcb0ffe2`; cargo verification deferred to the batch check.
+  - `run_one_plan` calls `WorktreeManager::begin_plan_run(plan, run)` before the plan's first attempt. When the plan branch's tip names the run (a resumed run), the plan's attempts start from that tip until one is accepted in this process.
+  - Each attempt checkout records the run that made it (`roko-run` in its administrative directory). `create_for_attempt` re-attaches a checkout the same run kept instead of refusing its branch; one another run kept is still refused, and removing it is left to the operator.
+  - Test: `a_resumed_run_starts_attempts_from_the_plan_branch`; canary C3 (gap-af00b1) kills a run mid-task and resumes it through the binary.

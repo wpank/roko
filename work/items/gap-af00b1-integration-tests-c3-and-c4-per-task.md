@@ -3,13 +3,14 @@ id = "gap-af00b1"
 kind = "gap"
 title = "Integration tests C3 and C4: per-task commits on a plan branch, and a whole-plan gate that catches tasks that break together"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p1"
 goal = "golden-path"
 size = "M"
 subsystem = ["roko-cli/tests"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-09-30
+last_verified = 2026-09-30
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e6"
 discovered_from = "tmp/cybernetic-harness/workstreams/assessment/W8-roko-as-executor.md (canaries C3 and C4)"
 anchors = ["crates/roko-cli/tests/plan_branch_integration.rs"]
@@ -74,3 +75,7 @@ Checked at `41c7ffbd6`: no test covers merging or a plan-level verify on the Gra
 - W8's C4 also covers two lints (red-on-base, overlapping concurrent `files`). gap-b3fa0a and gap-a8d786 test those.
 - Fake provider only, no network, under a minute per test. No hot file: write it while the fixes land, merge it
   last, and use gap-3aa9cb's shared provider if it has landed.
+- 2026-09-30 (wk-integrate): Implemented on `work/spec-f830c4` at `0f2bd9610`; cargo verification deferred to the batch check.
+  - `tests/plan_branch_integration.rs`: both canaries run the built binary with `--worktree-per-task` over a scripted provider that acts on its task's title (the line after `# Task Request`). `cargo test -p roko-cli --test plan_branch_integration`: 2 passed in about 7 s.
+  - C3 also kills the run while the second task's provider works and resumes it with `--resume-plan` (it relies on bug-056b40). Its operator-checkout comparison leaves out `plans/INDEX.md`, which roko rewrites after every successful mutating command (`finish_with_index_rebuild` in `main.rs`).
+  - Not done: the by-hand check that reverting gap-3b5361's commit step or gap-60233f's gate makes C3 or C4 fail.

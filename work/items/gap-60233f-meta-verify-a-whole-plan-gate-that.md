@@ -3,13 +3,14 @@ id = "gap-60233f"
 kind = "gap"
 title = "[meta] verify: a whole-plan gate that runs on the integrated result"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p1"
 goal = "golden-path"
 size = "M"
 subsystem = ["roko-cli/graph_execution", "roko-cli/task_parser"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-09-30
+last_verified = 2026-09-30
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e6"
 discovered_from = "tmp/cybernetic-harness/workstreams/assessment/W8-roko-as-executor.md (G4, canary C4); evidence/field/CASES.md (CASE-006)"
 anchors = ["crates/roko-cli/src/task_parser.rs::TaskMeta", "crates/roko-cli/src/graph_execution/plan_runner.rs::run_one_plan", "crates/roko-cli/src/graph_execution/plan_runner.rs::plan_outcome", "crates/roko-cli/src/graph_execution/plan_verify.rs"]
@@ -76,3 +77,9 @@ No existing item covers this (assessment W8: "not filed").
 - Hot file: `plan_runner.rs`. Waits for spec-f830c4 (the integrated tree) and the portal session's branches.
 - Keep the default cheap: affected crates only, never `cargo test --workspace`. spec-1ced1d's impact scoping could
   refine that set later.
+- 2026-09-30 (wk-integrate): Implemented on `work/spec-f830c4` at `7f7a58f0e`; cargo verification deferred to the batch check.
+  - `[meta] verify` takes task-style verify steps (`TaskMeta.verify`). `prd.rs` and `plan_generator.rs` list it as a known meta field, and `validate_against_schema` rejects a step without a command.
+  - Without it, a plan in a Cargo workspace gets `plan_verify::default_plan_verify` over `PlanFootprint.affects`: `cargo fmt -p … -- --check`, `cargo clippy -p … --no-deps -- -D warnings` and `cargo test -p …`. When the package graph is unknown: fmt and clippy over the workspace, and no tests. Other projects get no default.
+  - Under `--worktree-per-task` the steps are the delivery's regression check on the plan's merge into the batch branch; otherwise `check_plan_in_place` runs them in the working tree once every task passed. A failure fails the plan, is recorded in the checkpoint (`roko.plan.verify@1`, or the batch receipt), and `roko plan status` shows it (`plan check:`; JSON `plan_check_failure`).
+  - Tests: `meta_verify_failure_fails_a_plan_whose_tasks_passed` (both modes), `default_meta_verify_covers_the_touched_crates`, `plan_verify_stops_at_the_first_failed_step`; canary C4 (gap-af00b1).
+  - Not done: `plan validate` does not warn about a non-Rust plan without `[meta] verify` (`plan_validate.rs` belongs to another worker).

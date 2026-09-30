@@ -9,7 +9,7 @@ size = "L"
 goal = "features"
 subsystem = ["roko-cli/runner"]
 created = 2026-09-21
-updated = 2026-09-29
+updated = 2026-09-30
 last_verified = 2026-09-29
 last_verified_rev = "a17d9d766"
 source = "tmp/backlog/archive/404-batch-branch-integration.md##404 — Batch Branch Integration"
@@ -161,6 +161,11 @@ Steps (Option A):
   never checked out. It does not need `PlanMerger`, whose `GitMergeBackend` still merges in and auto-commits its
   workdir (bug-207f35). Before step 4 wires delivery in, fix bug-453481 (delivery merges the branch head, not
   `commit_oid`) and bug-aaa924 (the regression builds from a cold target dir).
+- 2026-09-30 (wk-integrate): Implemented on `work/spec-f830c4` at `8268c7498`; cargo verification deferred to the batch check.
+  - Under `--worktree-per-task` the run opens `roko/batch/<run-id>` at `HEAD` by compare-and-swap; a resumed run continues the branch its checkpoint records (`roko.batch@1`). Every plan's attempts start from the batch, and each plan whose tasks all passed is delivered into it by `CliCompletionDeliveryService` with `GitDeliveryBackend`: a plumbing merge of the plan branch's verified tip, then the regression check in a separate checkout. Deliveries run one at a time; a failed regression takes the merge back out of the batch (`7f7a58f0e`). The receipt is kept in the plan's checkpoint (`roko.delivery@1`), and a resumed delivery continues from it.
+  - `--promote <branch>` (only with `--worktree-per-task`) merges the batch into that branch once every plan succeeded, parks the result at `refs/roko/delivered/run-<id>` when the branch is checked out, and tags `roko/run/<id>`. It never pushes. Plan and attempt branches are kept.
+  - In the worktree: `cargo check -p roko-cli -p roko-graph --lib --tests --bins` clean; nightly rustfmt clean. Tests: `batch_branch_merges_plan_in_temp_worktree`, `batch_branch_is_created_at_head_and_continued_on_resume`, `promotion_moves_the_target_and_tags_the_run`, `a_resumed_delivery_continues_after_its_merge`, `a_worktree_run_delivers_each_plan_into_its_batch_branch`; canaries C3 and C4 (gap-af00b1) run it through the binary.
+  - Left: after a resume from a `Merged` receipt, a failed regression cannot take the merge back out; the promotion result is logged but not recorded in a checkpoint; the `--worktree-per-task` refusal message for parallel plans is stale.
 
 ## Original notes
 

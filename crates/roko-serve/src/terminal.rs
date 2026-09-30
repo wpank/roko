@@ -7,6 +7,13 @@
 //! WebSocket closes, the PTY keeps running and output accumulates in a
 //! per-session scrollback ring buffer. A reconnecting client receives the
 //! buffered scrollback before live data resumes.
+//!
+//! Safe by default (`[serve]` in `roko.toml`):
+//! - a session runs the login shell; a request's `command` is refused unless
+//!   `terminal_commands` lists it;
+//! - a request's `workdir` must resolve inside the workspace root;
+//! - at most `terminal_max_sessions` PTYs (8) are open at once, and each is
+//!   closed after `terminal_session_ttl_secs` (8 hours). `0` lifts either.
 
 use std::collections::{HashMap, VecDeque};
 use std::io::{Read, Write};
@@ -33,6 +40,7 @@ use uuid::Uuid;
 
 use crate::command_events::{CommandEvent, CommandOutputStream};
 use crate::state::AppState;
+use roko_core::config::ServeConfig;
 use roko_core::config::schema::RokoConfig;
 use roko_core::obs::LogScrubber;
 
@@ -45,6 +53,9 @@ const TERMINAL_GRACE_PERIOD: Duration = Duration::from_secs(60);
 
 /// Maximum number of output chunks kept in the per-session scrollback ring.
 const SCROLLBACK_CHUNKS: usize = 512;
+
+/// How often the background reaper closes expired sessions.
+const SESSION_REAP_INTERVAL: Duration = Duration::from_secs(60);
 
 /// Body size cap for the terminal session input endpoint.
 ///
@@ -71,6 +82,8 @@ pub(crate) struct PtySession {
     zdotdir: Option<std::path::PathBuf>,
     /// When the last WebSocket client disconnected (None = currently attached).
     disconnected_at: Option<Instant>,
+    /// When the PTY was spawned; `serve.terminal_session_ttl_secs` counts from here.
+    created_at: Instant,
     /// Per-session scrollback ring buffer — shared with the PTY reader thread.
     scrollback: Arc<Mutex<VecDeque<Vec<u8>>>>,
     /// Live output subscribers (WebSocket bridge tasks subscribe here).
@@ -83,6 +96,21 @@ pub(crate) struct PtySession {
     /// Terminal dimensions at creation. Stored for future resize logic.
     #[allow(dead_code)]
     spawn_rows: u16,
+}
+
+impl PtySession {
+    /// Why this session is due to be reaped, if it is: its grace period after
+    /// a disconnect ran out, or it outlived `ttl`.
+    fn expiry(&self, ttl: Option<Duration>) -> Option<&'static str> {
+        let detached = self.disconnected_at.map(|at| at.elapsed());
+        if detached.is_some_and(|idle| idle > TERMINAL_GRACE_PERIOD) {
+            Some("grace period expired")
+        } else if ttl.is_some_and(|ttl| self.created_at.elapsed() > ttl) {
+            Some("session lifetime expired")
+        } else {
+            None
+        }
+    }
 }
 
 /// Persisted terminal state written to `.roko/workspaces/{id}/terminal.state`.
@@ -128,7 +156,11 @@ pub struct CreateSessionRequest {
     pub cols: u16,
     #[serde(default = "default_rows")]
     pub rows: u16,
+    /// Command line to run instead of the login shell. Refused unless
+    /// `serve.terminal_commands` lists it.
     pub command: Option<String>,
+    /// Starting directory. It must resolve inside the workspace root; a
+    /// relative path is taken from the root.
     pub workdir: Option<String>,
 }
 
@@ -147,6 +179,44 @@ pub struct SendInputRequest {
 
 const TERMINAL_DISABLED_ERROR: &str = "Terminal disabled";
 const TERMINAL_DISABLED_HINT: &str = "Set serve.terminal_enabled=true or use --enable-terminal";
+const TERMINAL_COMMAND_HINT: &str = "Omit `command` to run the login shell, or list the exact \
+     command line in serve.terminal_commands";
+
+/// Session limits from `[serve]`: how many PTYs may be open at once and how
+/// long each may live. `None` means no limit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct TerminalLimits {
+    max_sessions: Option<usize>,
+    ttl: Option<Duration>,
+}
+
+impl TerminalLimits {
+    fn from_serve_config(serve: &ServeConfig) -> Self {
+        Self {
+            max_sessions: (serve.terminal_max_sessions > 0).then_some(serve.terminal_max_sessions),
+            ttl: (serve.terminal_session_ttl_secs > 0)
+                .then(|| Duration::from_secs(serve.terminal_session_ttl_secs)),
+        }
+    }
+}
+
+/// A new PTY was refused because `serve.terminal_max_sessions` are open.
+#[derive(Debug)]
+pub(crate) struct SessionLimitReached {
+    max: usize,
+}
+
+impl std::fmt::Display for SessionLimitReached {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "terminal session limit reached: {} sessions are open (serve.terminal_max_sessions)",
+            self.max
+        )
+    }
+}
+
+impl std::error::Error for SessionLimitReached {}
 
 #[derive(Clone, Debug, Default)]
 struct PtyServerEnv {
@@ -302,6 +372,7 @@ pub struct SessionManager {
     sess_generation: AtomicU64,
     command_event_emitter: TerminalCommandEventEmitter,
     server_env: Mutex<PtyServerEnv>,
+    limits: Mutex<TerminalLimits>,
 }
 
 impl SessionManager {
@@ -313,7 +384,27 @@ impl SessionManager {
             sess_generation: AtomicU64::new(0),
             command_event_emitter: TerminalCommandEventEmitter::new(),
             server_env: Mutex::new(PtyServerEnv::default()),
+            limits: Mutex::new(TerminalLimits::from_serve_config(&ServeConfig::default())),
         }
+    }
+
+    /// Apply the session cap and lifetime from `config.serve`.
+    pub(crate) fn configure_limits_from_config(&self, config: &RokoConfig) {
+        *self.limits.lock() = TerminalLimits::from_serve_config(&config.serve);
+    }
+
+    /// Refuse a new PTY while `serve.terminal_max_sessions` are open.
+    ///
+    /// Expired sessions are reaped first so they do not hold a slot.
+    fn ensure_session_capacity(&self) -> anyhow::Result<()> {
+        self.reap_expired();
+        let Some(max) = self.limits.lock().max_sessions else {
+            return Ok(());
+        };
+        if self.sessions.lock().len() >= max {
+            return Err(SessionLimitReached { max }.into());
+        }
+        Ok(())
     }
 
     /// Mark a session as disconnected (WebSocket closed). The PTY remains alive
@@ -340,25 +431,24 @@ impl SessionManager {
         }
     }
 
-    /// Reap sessions whose grace period has expired. Called lazily from
-    /// `attach_session` and `list_sessions`.
+    /// Reap sessions whose grace period has expired, and sessions older than
+    /// `serve.terminal_session_ttl_secs` whether attached or not. Called
+    /// lazily from `attach_session`, `list_sessions` and session creation,
+    /// and every minute by the reaper that `start_session_reaper` starts.
     pub fn reap_expired(&self) {
-        let expired_ids: Vec<String> = {
+        let ttl = self.limits.lock().ttl;
+        let expired: Vec<(String, &'static str)> = {
             let sessions = self.sessions.lock();
             sessions
                 .iter()
-                .filter_map(|(id, s)| {
-                    s.disconnected_at
-                        .filter(|t| t.elapsed() > TERMINAL_GRACE_PERIOD)
-                        .map(|_| id.clone())
-                })
+                .filter_map(|(id, s)| s.expiry(ttl).map(|reason| (id.clone(), reason)))
                 .collect()
         };
 
-        for id in &expired_ids {
+        for (id, reason) in &expired {
             let removed = self.sessions.lock().remove(id);
             if let Some(session) = removed {
-                self.finish_session(id, session, "grace period expired");
+                self.finish_session(id, session, reason);
             }
             self.session_info.lock().remove(id);
         }
@@ -495,6 +585,7 @@ impl SessionManager {
         command: Option<&str>,
         workdir: Option<&str>,
     ) -> anyhow::Result<(u64, mpsc::Receiver<Vec<u8>>)> {
+        self.ensure_session_capacity()?;
         let pty_system = NativePtySystem::default();
         let size = PtySize {
             rows,
@@ -607,6 +698,7 @@ impl SessionManager {
                 sess_generation: sess_gen,
                 zdotdir: zdotdir_path,
                 disconnected_at: None,
+                created_at: Instant::now(),
                 scrollback: scrollback.clone(),
                 subscribers: subscribers.clone(),
                 spawn_workdir: wd.clone(),
@@ -710,6 +802,7 @@ impl SessionManager {
         command: Option<&str>,
         workdir: Option<&str>,
     ) -> anyhow::Result<(String, Box<dyn Read + Send>, u64)> {
+        self.ensure_session_capacity()?;
         let pty_system = NativePtySystem::default();
         let size = PtySize {
             rows,
@@ -818,6 +911,7 @@ impl SessionManager {
                 sess_generation: sess_gen,
                 zdotdir: zdotdir_path,
                 disconnected_at: None,
+                created_at: Instant::now(),
                 scrollback: Arc::new(Mutex::new(VecDeque::new())),
                 subscribers: Arc::new(Mutex::new(Vec::new())),
                 spawn_workdir: wd.clone(),
@@ -956,11 +1050,32 @@ pub async fn create_session(
     State(state): State<Arc<AppState>>,
     Json(req): Json<CreateSessionRequest>,
 ) -> impl IntoResponse {
+    let config = state.load_roko_config();
+    let command = match allowed_command(req.command.as_deref(), &config.serve.terminal_commands) {
+        Ok(command) => command,
+        Err(error) => {
+            return (
+                axum::http::StatusCode::FORBIDDEN,
+                Json(serde_json::json!({ "error": error, "hint": TERMINAL_COMMAND_HINT })),
+            )
+                .into_response();
+        }
+    };
+    let workdir = match resolve_session_workdir(&state.workdir, req.workdir.as_deref()) {
+        Ok(workdir) => workdir,
+        Err(error) => {
+            return (
+                axum::http::StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": error })),
+            )
+                .into_response();
+        }
+    };
     match state.terminal_sessions.create_session(
         req.cols,
         req.rows,
-        req.command.as_deref(),
-        req.workdir.as_deref(),
+        command.as_deref(),
+        workdir.as_deref(),
     ) {
         Ok((id, _reader, _sess_gen)) => {
             let info = state
@@ -971,12 +1086,93 @@ pub async fn create_session(
                 .cloned();
             Json(serde_json::json!({ "id": id, "session": info })).into_response()
         }
-        Err(e) => (
-            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": e.to_string()})),
-        )
-            .into_response(),
+        Err(e) => {
+            let status = if e.is::<SessionLimitReached>() {
+                axum::http::StatusCode::TOO_MANY_REQUESTS
+            } else {
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR
+            };
+            (status, Json(serde_json::json!({"error": e.to_string()}))).into_response()
+        }
     }
+}
+
+/// The command a session request may run: `None` (the login shell) when the
+/// request names none, or the request's command line with whitespace
+/// collapsed when `allowed` (`serve.terminal_commands`) lists it exactly.
+fn allowed_command(requested: Option<&str>, allowed: &[String]) -> Result<Option<String>, String> {
+    let Some(requested) = requested else {
+        return Ok(None);
+    };
+    let requested = collapse_whitespace(requested);
+    let listed = allowed
+        .iter()
+        .any(|entry| collapse_whitespace(entry) == requested);
+    if listed && !requested.is_empty() {
+        Ok(Some(requested))
+    } else {
+        Err(format!("{requested:?} is not in serve.terminal_commands"))
+    }
+}
+
+/// `command` with each run of whitespace collapsed to one space, the way the
+/// PTY spawn splits it into a program and arguments.
+fn collapse_whitespace(command: &str) -> String {
+    command.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Resolve a session's starting directory, which must stay inside `root`.
+///
+/// `None` or a blank value keeps the default, the workspace root. A relative
+/// path is taken from `root`. The directory must exist and, with symlinks
+/// resolved, be `root` or lie below it.
+fn resolve_session_workdir(
+    root: &std::path::Path,
+    requested: Option<&str>,
+) -> Result<Option<String>, String> {
+    let Some(requested) = requested.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    let root = root
+        .canonicalize()
+        .map_err(|error| format!("resolve the workspace root: {error}"))?;
+    let resolved = root
+        .join(requested)
+        .canonicalize()
+        .map_err(|error| format!("workdir {requested:?} does not resolve: {error}"))?;
+    if !resolved.starts_with(&root) {
+        return Err(format!("workdir {requested:?} is outside the workspace"));
+    }
+    if !resolved.is_dir() {
+        return Err(format!("workdir {requested:?} is not a directory"));
+    }
+    Ok(Some(resolved.to_string_lossy().into_owned()))
+}
+
+/// Start a background task that reaps expired sessions every minute, so a
+/// session past its grace period or `serve.terminal_session_ttl_secs` is
+/// closed even when no request arrives to reap it lazily.
+///
+/// The task holds only a weak reference to the state and stops when the
+/// state is dropped or the server is cancelled.
+pub(crate) fn start_session_reaper(state: &Arc<AppState>) {
+    let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+        return;
+    };
+    let state = Arc::downgrade(state);
+    runtime.spawn(async move {
+        let mut tick = tokio::time::interval(SESSION_REAP_INTERVAL);
+        loop {
+            tick.tick().await;
+            let Some(state) = state.upgrade() else {
+                break;
+            };
+            if state.cancel.is_cancelled() {
+                break;
+            }
+            state.terminal_sessions.reap_expired();
+        }
+    });
 }
 
 pub async fn list_sessions(State(state): State<Arc<AppState>>) -> impl IntoResponse {
@@ -1433,6 +1629,7 @@ mod tests {
                     sess_generation: 0,
                     zdotdir: Some(zdotdir.clone()),
                     disconnected_at: Some(Instant::now() - Duration::from_secs(120)),
+                    created_at: Instant::now() - Duration::from_secs(120),
                     scrollback: scrollback.clone(),
                     subscribers: subscribers.clone(),
                     spawn_workdir: tempdir.path().to_path_buf(),
@@ -1553,5 +1750,171 @@ mod tests {
 
         // Clean up
         manager.destroy_session(test_id);
+    }
+
+    #[test]
+    fn allowed_command_refuses_commands_not_listed() {
+        assert_eq!(allowed_command(None, &[]), Ok(None));
+        assert!(allowed_command(Some("/bin/sh"), &[]).is_err());
+        assert!(allowed_command(Some("htop -d 5"), &["htop".to_string()]).is_err());
+        assert!(allowed_command(Some("   "), &[String::new()]).is_err());
+        assert_eq!(
+            allowed_command(Some("  htop   -d 5 "), &["htop -d 5".to_string()]),
+            Ok(Some("htop -d 5".to_string()))
+        );
+    }
+
+    #[test]
+    fn session_workdir_must_stay_inside_the_workspace() {
+        let workspace = tempfile::tempdir().expect("create tempdir");
+        let root = workspace.path().canonicalize().expect("canonical root");
+        std::fs::create_dir_all(root.join("sub").join("dir")).expect("create subdir");
+        std::fs::write(root.join("file.txt"), "x").expect("write file");
+
+        assert_eq!(resolve_session_workdir(&root, None), Ok(None));
+        assert_eq!(resolve_session_workdir(&root, Some("  ")), Ok(None));
+        let nested = root.join("sub").join("dir");
+        assert_eq!(
+            resolve_session_workdir(&root, Some("sub/dir")),
+            Ok(Some(nested.to_string_lossy().into_owned()))
+        );
+        assert_eq!(
+            resolve_session_workdir(&root, nested.to_str()),
+            Ok(Some(nested.to_string_lossy().into_owned()))
+        );
+        for refused in ["..", "sub/../..", "/", "missing", "file.txt"] {
+            assert!(
+                resolve_session_workdir(&root, Some(refused)).is_err(),
+                "{refused} must be refused"
+            );
+        }
+
+        #[cfg(unix)]
+        {
+            let elsewhere = tempfile::tempdir().expect("create second tempdir");
+            std::os::unix::fs::symlink(elsewhere.path(), root.join("escape")).expect("symlink");
+            assert!(resolve_session_workdir(&root, Some("escape")).is_err());
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn session_cap_refuses_new_sessions_until_one_closes() -> anyhow::Result<()> {
+        let tempdir = tempfile::tempdir()?;
+        let manager = SessionManager::new(tempdir.path().to_path_buf());
+        *manager.limits.lock() = TerminalLimits {
+            max_sessions: Some(1),
+            ttl: None,
+        };
+
+        let (first, _first_reader, _) = manager.create_session(80, 24, Some("/bin/sleep 5"), None)?;
+        let Err(refused) = manager.create_session(80, 24, Some("/bin/sleep 5"), None) else {
+            panic!("a second session must be refused while the cap is reached");
+        };
+        assert!(refused.is::<SessionLimitReached>(), "{refused}");
+        let attach = manager.attach_session("ws-over-cap", 80, 24, Some("/bin/sleep 5"), None);
+        assert!(
+            matches!(attach, AttachResult::Failed(_)),
+            "a WebSocket attach must not create a session past the cap"
+        );
+
+        manager.destroy_session(&first);
+        let (second, _second_reader, _) =
+            manager.create_session(80, 24, Some("/bin/sleep 5"), None)?;
+        manager.destroy_session(&second);
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sessions_past_their_lifetime_are_reaped_even_when_attached() -> anyhow::Result<()> {
+        let tempdir = tempfile::tempdir()?;
+        let manager = SessionManager::new(tempdir.path().to_path_buf());
+        *manager.limits.lock() = TerminalLimits {
+            max_sessions: None,
+            ttl: Some(Duration::from_secs(60)),
+        };
+
+        let (id, _reader, _) = manager.create_session(80, 24, Some("/bin/sleep 5"), None)?;
+        manager.reap_expired();
+        assert!(
+            manager.sessions.lock().contains_key(&id),
+            "a session younger than its lifetime must survive a reap"
+        );
+
+        if let Some(session) = manager.sessions.lock().get_mut(&id) {
+            session.created_at = Instant::now() - Duration::from_secs(120);
+        }
+        manager.reap_expired();
+        assert!(
+            !manager.sessions.lock().contains_key(&id),
+            "a session older than its lifetime must be reaped"
+        );
+        let events = manager.command_events(&id);
+        assert!(
+            events.iter().any(|event| matches!(
+                event,
+                CommandEvent::Cancelled {
+                    reason: Some(reason),
+                    ..
+                } if reason == "session lifetime expired"
+            )),
+            "cancelled event missing from {events:?}"
+        );
+        Ok(())
+    }
+
+    async fn post_session(
+        state: &Arc<AppState>,
+        body: serde_json::Value,
+    ) -> (axum::http::StatusCode, serde_json::Value) {
+        use http_body_util::BodyExt as _;
+        use tower::ServiceExt as _;
+
+        let request = axum::http::Request::post("/api/terminal/sessions")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(body.to_string()))
+            .expect("build request");
+        let response = routes()
+            .with_state(Arc::clone(state))
+            .oneshot(request)
+            .await
+            .expect("response");
+        let status = response.status();
+        let bytes = response
+            .into_body()
+            .collect()
+            .await
+            .expect("collect body")
+            .to_bytes();
+        let body = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+        (status, body)
+    }
+
+    #[tokio::test]
+    async fn create_route_refuses_unlisted_commands_and_outside_workdirs() {
+        let workspace = tempfile::tempdir().expect("create tempdir");
+        let state = Arc::new(
+            AppState::new(
+                workspace.path().to_path_buf(),
+                Arc::new(crate::runtime::NoOpRuntime),
+                RokoConfig::default(),
+                Arc::new(crate::deploy::manual::ManualBackend::default()),
+            )
+            .expect("create state"),
+        );
+
+        let (status, body) =
+            post_session(&state, serde_json::json!({ "command": "/bin/sh -c id" })).await;
+        assert_eq!(status, axum::http::StatusCode::FORBIDDEN, "{body}");
+        assert_eq!(body["hint"], TERMINAL_COMMAND_HINT);
+
+        let (status, body) = post_session(&state, serde_json::json!({ "workdir": "/" })).await;
+        assert_eq!(status, axum::http::StatusCode::BAD_REQUEST, "{body}");
+
+        assert!(
+            state.terminal_sessions.list_sessions().is_empty(),
+            "a refused request must not leave a session behind"
+        );
     }
 }

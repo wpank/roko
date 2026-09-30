@@ -422,6 +422,7 @@ pub fn build_router(
 
     // Terminal routes always require auth + scope when enabled, even on loopback.
     let terminal = if terminal_enabled {
+        crate::terminal::start_session_reaper(&state);
         crate::terminal::routes()
             .layer(axum::middleware::from_fn_with_state(
                 Arc::clone(&state),

@@ -1077,6 +1077,7 @@ impl AppState {
         let terminal_workdir = workdir.clone();
         let terminal_sessions = crate::terminal::SessionManager::new(terminal_workdir);
         terminal_sessions.configure_server_env_from_config(&roko_config);
+        terminal_sessions.configure_limits_from_config(&roko_config);
 
         let runtime_event_logger =
             Arc::new(roko_runtime::JsonlLogger::from_roko_dir(layout.root()));

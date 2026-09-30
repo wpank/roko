@@ -282,6 +282,10 @@ max_iterations = 5
 |-------|------|---------|-------------|
 | `port` | Option\<u16\> | None | Override port (falls back to `server.port`) |
 | `auto_orchestrate` | bool | true | Auto-start orchestration on plan execution |
+| `terminal_enabled` | bool | false | Expose the PTY terminal routes |
+| `terminal_commands` | Vec\<String\> | `[]` | Command lines a terminal session may run instead of the login shell; any other `command` is refused |
+| `terminal_max_sessions` | usize | 8 | Most PTY sessions open at once; `0` lifts the cap |
+| `terminal_session_ttl_secs` | u64 | 28800 | Seconds a PTY session may live, attached or not; `0` lifts the limit |
 
 ### `[serve.auth]` -- ServeAuthConfig
 

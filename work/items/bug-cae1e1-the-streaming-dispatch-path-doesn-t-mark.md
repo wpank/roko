@@ -2,7 +2,7 @@
 id = "bug-cae1e1"
 kind = "bug"
 title = "The streaming dispatch path doesn't mark retries in the routing context and ignores preferred_provider"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "golden-path"
@@ -11,7 +11,7 @@ subsystem = ["roko-cli/graph_task_dispatch/streaming"]
 created = 2026-09-30
 updated = 2026-09-30
 last_verified = 2026-09-30
-last_verified_rev = "7490cb94b"
+last_verified_rev = "8768576d9"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-taskdef's report, checked on work/gap-0f3980 at b27c02717)"
 anchors = ["crates/roko-cli/src/graph_task_dispatch/streaming.rs", "crates/roko-cli/src/graph_task_dispatch/routing_context.rs"]
@@ -21,6 +21,11 @@ links = { depends_on = ["gap-0f3980"], blocks = [], related = ["gap-0f3980", "ga
 
 [[verify]]
 command = "grep -rqw 'fn streaming_dispatch_marks_retries_and_honours_preferred_provider' crates/roko-cli/src/ && cargo test -p roko-cli --lib streaming_dispatch_marks_retries_and_honours_preferred_provider"
+
+[closed]
+at = 2026-09-30
+by = "coordinator (session 7622b882)"
+evidence = "Merged in 8768576d9. dispatch_streaming marks the routing context and its feedback copy with mark_attempt, and both dispatch paths pick the model through GraphTaskDispatcher::dispatch_model_key, so streamed attempts honour preferred_provider. Batch 20a gate on 41194c6b3 (MAIN has the same code): cargo check --workspace --tests, nightly fmt and clippy -p roko-cli -D warnings clean; roko-cli lib 3255 passed (the one failure, gap-1920ba's a_scoped_verify_runs_beside_a_sibling_editing_elsewhere, races a 3 s wall clock and is being fixed on work/gap-1920ba-flake). Verify: streaming_dispatch_marks_retries_and_honours_preferred_provider passes (5/5 alone per wk-taskdef); graph_task_dispatch::streaming:: 12/12."
 +++
 
 ## Problem

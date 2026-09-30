@@ -238,7 +238,9 @@ accept an unauthenticated callback.
 
 After a credential is validated, the middleware checks whether the caller's scope
 is sufficient for the requested route. A static `ROUTE_SCOPE_MANIFEST` in the
-middleware maps every mutating route prefix to a required scope.
+middleware maps every mutating route prefix to a required scope. A prefix matches
+only at a path-segment boundary: `/api/run` covers `/api/run/...` but not
+`/api/runs`, which has its own entry.
 
 ### 5.1 Scope Hierarchy
 
@@ -259,19 +261,21 @@ and `"read"`.
 |--------------|---------------|
 | `/api/api-keys` | `admin` |
 | `/api/agent-tokens` | `admin` |
+| `/api/relay-tokens` | `admin` |
 | `/api/secrets` | `admin` |
 | `/api/config` | `admin` |
 | `/api/registries` | `admin` |
 | `/api/events/ingest` | `agent:write` |
 | `/api/agents` | `agent:write` |
-| `/api/relay` | `agent:write` |
+| `/relay` | `agent:write` |
 | `/api/plans` | `plan:write` |
 | `/api/prd` | `plan:write` |
 | `/api/terminal` | `terminal:write` |
+| `/ws/terminal` (GET too: the upgrade opens a shell) | `terminal:write` |
 | `/api/deployments` | `write` |
 | `/api/jobs` | `write` |
 | `/api/run` | `write` |
-| All GET/HEAD/OPTIONS | `read` |
+| All other GET/HEAD/OPTIONS | `read` |
 
 Extension routes registered by plugins at startup are checked against the same
 scope vocabulary via `register_extension_route_scopes`. Unclassified mutating

@@ -2457,6 +2457,8 @@ mod tests {
             ("/api/secrets/ns/key/test", "admin"),
             ("/api/config", "admin"),
             ("/api/config/reload", "admin"),
+            ("/api/relay-tokens", "admin"),
+            ("/api/relay-tokens/tok-1", "admin"),
             // agent:write
             ("/api/agents/register", "agent:write"),
             ("/api/agents/create", "agent:write"),

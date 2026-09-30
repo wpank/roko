@@ -2,7 +2,7 @@
 id = "bug-17f0e4"
 kind = "bug"
 title = "Unknown roko subcommands run as agent prompts instead of failing"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "release"
@@ -10,7 +10,7 @@ subsystem = ["roko-cli/cli"]
 created = 2026-09-28
 updated = 2026-09-30
 last_verified = 2026-09-30
-last_verified_rev = "94a72dcfc"
+last_verified_rev = "41228d7b2"
 source = "local-audit-2026-09-26"
 discovered_from = "audit:local-defect-review-2026-09-26 (untracked design notes)"
 anchors = ["crates/roko-cli/src/main.rs:411", "crates/roko-cli/src/main.rs:3638"]
@@ -18,6 +18,11 @@ links = { depends_on = [], blocks = [], related = [], supersedes = [], duplicate
 
 [[verify]]
 command = "grep -rqw 'fn cli_rejects_unknown_single_word_command' crates/roko-cli/ && cargo test -p roko-cli --bin roko cli_rejects_unknown_single_word_command"
+
+[closed]
+at = 2026-09-30
+by = "coordinator (session 7622b882)"
+evidence = "Merged in 2cb2fc282 (batch 17). A single unrecognised word is refused as an unknown subcommand, with a nested or nearest-command suggestion and 'roko run <word>' for one-word prompts. Verify: cargo test -p roko-cli --bin roko cli_rejects_unknown_single_word_command on the batch-17 tree (same code as MAIN): 1 passed; batch-17 gate clean (see the batch's other closures)."
 +++
 
 The top-level `Cli` takes a positional one-shot `prompt: Option<String>` (`main.rs:412`) next to its subcommands, so an unknown or mistyped first word (e.g. a stale `roko dream run` from docs) is treated as a prompt and starts an agent run.

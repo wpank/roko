@@ -1389,10 +1389,13 @@ mod tests {
                 Some(&json!(false))
             );
         }
-        // A TaskMetric cannot say "unknown", so none is written.
-        let metrics = fs::read_to_string(tmp.path().join(".roko/learn/task-metrics.jsonl"))
-            .unwrap_or_default();
-        assert!(metrics.trim().is_empty(), "task metrics written: {metrics}");
+        // A TaskMetric cannot say "unknown", so none is written, and the cost
+        // ledger gets no $0 rows either.
+        for file in ["task-metrics.jsonl", "costs.jsonl"] {
+            let path = tmp.path().join(".roko/learn").join(file);
+            let records = fs::read_to_string(&path).unwrap_or_default();
+            assert!(records.trim().is_empty(), "{file} has records: {records}");
+        }
     }
 
     /// A repo whose `add` subtracts, graded by `test_calc.py`.

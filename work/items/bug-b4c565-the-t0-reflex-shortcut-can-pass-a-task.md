@@ -3,13 +3,15 @@ id = "bug-b4c565"
 kind = "bug"
 title = "The T0 reflex shortcut can pass a task without running the workspace rungs"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p2"
 goal = "truth"
 size = "S"
 subsystem = ["roko-cli/graph_task_dispatch"]
 created = 2026-09-30
 updated = 2026-09-30
+last_verified = 2026-09-30
+last_verified_rev = "b128de876"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-gates's report, checked on work/bug-5b43a9 at 7b25c478b)"
 anchors = ["crates/roko-cli/src/graph_task_dispatch.rs"]
@@ -46,3 +48,4 @@ The reflex path in `graph_task_dispatch.rs`.
 ## Notes
 
 - Build on the gates branch.
+- 2026-09-30 (wk-gates): Implemented on `work/gap-3506f1b` at `48232c4ec`; cargo verification deferred to the batch check. The reflex shortcut now serves only a task that no verify step checks: neither its own steps nor its plan's workspace rungs. A task the rungs check is dispatched and its rungs run. Running the rungs on a reflex's cached output instead would pass a task on a tree the reflex never changed, and a failing rung would repeat the same reflex on every retry.

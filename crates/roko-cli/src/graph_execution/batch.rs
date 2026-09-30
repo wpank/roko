@@ -6,7 +6,8 @@
 //! attempts start from the batch, and each plan whose tasks all passed is
 //! delivered into it: [`CliCompletionDeliveryService`] merges the plan
 //! branch's verified tip by plumbing and runs the regression check on the
-//! merge in a temporary checkout. Deliveries run one at a time, since the
+//! merge in the repository's regression checkout, never the operator's.
+//! Deliveries run one at a time, since the
 //! batch has one tip, so a plan sees every plan delivered before it started.
 //!
 //! Nothing here checks out, merges or commits in the operator's checkout. The
@@ -409,6 +410,8 @@ mod tests {
         ] {
             git(path, &["config", key, value]);
         }
+        // Roko's state, the regression checkout included, stays out of git.
+        std::fs::write(path.join(".git/info/exclude"), ".roko/\n").expect("exclude");
         std::fs::write(path.join("shared.txt"), "base\n").expect("write");
         git(path, &["add", "-A"]);
         git(path, &["commit", "--quiet", "-m", "base"]);
@@ -439,9 +442,10 @@ mod tests {
     }
 
     /// spec-f830c4: finished plans are merged into the run's batch branch, the
-    /// second by a real merge, and each merge's regression check runs in a
-    /// temporary checkout. The operator's checkout, uncommitted edit and all,
-    /// and the plan branches stay as they were.
+    /// second by a real merge, and each merge's regression check runs in the
+    /// repository's regression checkout, never the operator's. The
+    /// operator's checkout, uncommitted edit and all, and the plan branches
+    /// stay as they were.
     #[tokio::test]
     async fn batch_branch_merges_plan_in_temp_worktree() {
         let repo = repo_with_plan_branches();
@@ -494,15 +498,13 @@ mod tests {
             files.contains("plan-a.txt") && files.contains("plan-b.txt"),
             "{files}"
         );
-        // Each regression ran in a temporary checkout, since removed.
+        // Each regression ran in the regression checkout (bug-8cf581).
         let checkouts = std::fs::read_to_string(&ran_in).expect("ran");
+        let regression_checkout = super::super::delivery::regression_checkout_path(path)
+            .canonicalize()
+            .expect("canonical");
         for checkout in checkouts.lines().map(PathBuf::from) {
-            assert!(
-                !checkout.starts_with(path.canonicalize().expect("canonical")),
-                "{}",
-                checkout.display()
-            );
-            assert!(!checkout.exists());
+            assert_eq!(checkout, regression_checkout);
         }
         // The operator's checkout never moved.
         assert_eq!(git(path, &["rev-parse", "HEAD"]), head);

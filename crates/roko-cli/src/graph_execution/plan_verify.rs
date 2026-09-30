@@ -3,8 +3,9 @@
 //! A task's verify steps check that task. Once every task of a plan has
 //! passed, the plan's `[meta] verify` steps check the plan's integrated
 //! result: under `--worktree-per-task` the merge of its branch into the run's
-//! batch branch, in a temporary checkout (the delivery's regression check,
-//! see [`super::batch`]); otherwise the shared working tree its tasks edited.
+//! batch branch, in the repository's regression checkout (the delivery's
+//! regression check, see [`super::batch`]); otherwise the shared working tree
+//! its tasks edited.
 //! A plan whose tasks all passed but whose check fails does not succeed.
 //!
 //! A plan without `[meta] verify` in a Cargo workspace checks formatting,

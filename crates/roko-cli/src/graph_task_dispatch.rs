@@ -570,6 +570,9 @@ impl GraphTaskDispatcher {
         task: &TaskDef,
         dispatch_ctx: &mut DispatchContext,
     ) -> Result<crate::dispatch::RunnerDispatchPlan> {
+        // The prompt shows every check that will judge the task: its own
+        // verify steps, then the workspace rungs it faces.
+        let task = &self.prompt_task(spec, task);
         match self.factory.dispatcher().plan(task, dispatch_ctx) {
             Err(error) if dispatch_ctx.prompt_experiment.is_some() => {
                 tracing::warn!(

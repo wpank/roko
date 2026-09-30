@@ -1171,6 +1171,18 @@ impl GraphTaskDispatcher {
     ) -> Vec<(String, crate::task_parser::VerifyStep)> {
         attempt_verify_steps(task, self.plan_rungs(spec))
     }
+
+    /// `task` as its prompt shows it: with every verify step that will judge
+    /// it, its own and then the workspace rungs, so the agent sees each check.
+    pub(super) fn prompt_task(&self, spec: &TaskExecutionSpec, task: &TaskDef) -> TaskDef {
+        let mut prompt_task = task.clone();
+        prompt_task.verify = self
+            .verify_steps(spec, task)
+            .into_iter()
+            .map(|(_, step)| step)
+            .collect();
+        prompt_task
+    }
 }
 
 /// The verify steps an attempt at `task` runs, each with its label: the
@@ -2022,6 +2034,54 @@ title = "Streaming graph task"
             TaskGateVerdict::from_signals(&outputs),
             Some(TaskGateVerdict::Passed)
         );
+    }
+
+    /// Provider that saves its prompt (argv, which carries the system prompt,
+    /// then stdin) to `prompt.txt` in its working directory.
+    const PROMPT_LOG_PROVIDER: &str = r#"#!/bin/sh
+set -eu
+input="$(cat)"
+printf '%s\n---\n%s\n' "$*" "$input" > prompt.txt
+printf '%s\n' '{"type":"content_block_delta","delta":{"text":"done"}}'
+printf '%s\n' '{"type":"result","session_id":"s","model":"claude-sonnet-4-6","total_cost_usd":0.01,"usage":{"input_tokens":5,"output_tokens":10}}'
+"#;
+
+    /// The prompt shows every check that will judge the task: its own verify
+    /// steps, then the workspace rungs it faces, and no rung its plan opts out
+    /// of.
+    #[tokio::test]
+    async fn task_prompts_list_the_workspace_rungs() {
+        let temp = tempdir().expect("tempdir");
+        let (dispatcher, mut task) = make_test_dispatcher(
+            &temp,
+            PROMPT_LOG_PROVIDER,
+            |config| {
+                no_auto_fix(config);
+                config.gates.custom_rungs = vec![rung("lint", "true # the lint rung", true)];
+            },
+            GraphFeedbackContext::default(),
+        )
+        .await;
+        task.verify = vec![verify_step("structural", "true # the own step")];
+        let prompt = || std::fs::read_to_string(temp.path().join("prompt.txt")).expect("prompt");
+
+        dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &CellContext::new())
+            .await
+            .expect("the task and its rung pass");
+        let text = prompt();
+        let own = text.find("true # the own step").expect("own step");
+        let lint = text.find("true # the lint rung").expect("rung");
+        assert!(own < lint, "rung after own steps:\n{text}");
+
+        let opted_out = opted_out_spec(&temp, &task);
+        dispatcher
+            .dispatch(&opted_out, Vec::new(), &CellContext::new())
+            .await
+            .expect("the task passes its own step");
+        let text = prompt();
+        assert!(text.contains("true # the own step"), "{text}");
+        assert!(!text.contains("the lint rung"), "opted out:\n{text}");
     }
 
 }

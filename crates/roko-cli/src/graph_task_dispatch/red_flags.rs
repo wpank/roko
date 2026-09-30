@@ -328,13 +328,18 @@ impl GraphTaskDispatcher {
                 text: std::fs::read_to_string(plan_dir_on_disk.join(&entry.src)).ok(),
             })
             .collect();
+        // The task's own verify steps, then the workspace rungs that run
+        // after them (`verification::attempt_verify_steps`).
+        let gates = &self.config.gates;
         AttemptDiffPolicy {
             task_files: task.files.clone(),
             verify_scripts: task
                 .verify
                 .iter()
                 .filter(|step| !crate::task_accept::is_pinned_step(step))
-                .flat_map(|step| scripts_run_by(&step.command))
+                .map(|step| step.command.as_str())
+                .chain(gates.required_rungs().map(|rung| rung.command.as_str()))
+                .flat_map(scripts_run_by)
                 .collect(),
             pinned_tests,
             accept_dirs: plan_dir_in_tree
@@ -747,6 +752,55 @@ printf '%s\n' '{{"type":"result","session_id":"s","model":"claude-sonnet-4-6","t
         assert!(
             !message.contains("src/lib.rs"),
             "the task's own change is not a finding: {message}"
+        );
+    }
+
+    /// A workspace rung checks the task as its own verify steps do, so
+    /// editing a script the rung runs is tampering too.
+    #[tokio::test]
+    async fn editing_a_workspace_rung_script_is_tampering() {
+        let temp = tempdir().expect("tempdir");
+        commit_repo(
+            temp.path(),
+            &[
+                ("src/lib.rs", "pub fn one() -> u8 {\n    1\n}\n"),
+                ("scripts/lint.sh", "exit 1\n"),
+            ],
+        );
+        let tamper = provider(
+            "printf 'pub fn two() -> u8 {\\n    one() + one()\\n}\\n' >> src/lib.rs\n\
+             printf 'exit 0\\n' > scripts/lint.sh",
+            "done",
+            10,
+        );
+        let (dispatcher, mut task) = make_test_dispatcher(
+            &temp,
+            &tamper,
+            |config| {
+                no_auto_fix(config);
+                config.gates.custom_rungs = vec![roko_core::config::GateRungConfig {
+                    name: "lint".to_string(),
+                    command: "sh scripts/lint.sh".to_string(),
+                    timeout_secs: 10,
+                    required: true,
+                    parallel_with: Vec::new(),
+                }];
+            },
+            GraphFeedbackContext::default(),
+        )
+        .await;
+        let marker = temp.path().join("verify-ran");
+        task.files = vec!["src/lib.rs".to_string()];
+        task.verify = vec![verify_step(
+            "structural",
+            &format!("touch {}", marker.display()),
+        )];
+
+        let (gate, message) = rejected(&dispatcher, &task, &marker).await;
+        assert_eq!(gate, "pre_verify:tamper");
+        assert!(
+            message.contains("verify_script_edited `scripts/lint.sh`"),
+            "{message}"
         );
     }
 

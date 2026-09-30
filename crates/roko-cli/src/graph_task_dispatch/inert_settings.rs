@@ -66,11 +66,6 @@ pub fn graph_engine_inert_settings(config: &RokoConfig) -> Vec<InertGraphSetting
             LEGACY_GATES,
         ),
         (
-            gates.custom_rungs != default_gates.custom_rungs,
-            "gates.rungs",
-            LEGACY_GATES,
-        ),
-        (
             gates.max_rung != default_gates.max_rung,
             "gates.max_rung",
             LEGACY_GATES,
@@ -242,6 +237,14 @@ mod tests {
         config.budget.max_task_usd = 2.0;
         config.gates.write_eval_artifacts = true;
         config.gates.adaptive_max_retries = 8;
+        // Every plan task runs the workspace's required rungs.
+        config.gates.custom_rungs = vec![roko_core::config::GateRungConfig {
+            name: "test".to_string(),
+            command: "cargo test".to_string(),
+            timeout_secs: 300,
+            required: true,
+            parallel_with: Vec::new(),
+        }];
         let keys = graph_engine_inert_settings(&config)
             .iter()
             .map(|setting| setting.key)

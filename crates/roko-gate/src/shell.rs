@@ -216,7 +216,8 @@ impl Verify for ShellGate {
                 terminate_child_process_group(child_pid).await;
                 let reason = format!("timed out after {} ms", self.timeout_ms);
                 let classification =
-                    structured_gate_failure(&self.name, &reason, reason.clone(), elapsed);
+                    structured_gate_failure(&self.name, &reason, reason.clone(), elapsed)
+                        .timed_out();
                 Verdict::fail(&self.name, reason)
                     .with_error_digest(render_failure_classification(&classification))
                     .with_duration(elapsed)
@@ -327,6 +328,7 @@ mod tests {
         assert_eq!(classification.gate, "shell:false");
         assert_eq!(classification.summary, v.reason);
         assert_eq!(classification.duration_ms, Some(v.duration_ms));
+        assert!(!crate::compile_errors::verdict_timed_out(&v));
     }
 
     #[tokio::test]
@@ -353,6 +355,11 @@ mod tests {
         let v = gate.verify(&empty_signal(), &Context::at(0)).await;
         assert!(!v.passed);
         assert!(v.reason.contains("timed out"));
+        assert!(
+            crate::compile_errors::verdict_timed_out(&v),
+            "the digest records the timeout: {:?}",
+            v.error_digest
+        );
     }
 
     #[cfg(unix)]

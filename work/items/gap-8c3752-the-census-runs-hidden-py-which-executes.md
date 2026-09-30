@@ -2,14 +2,16 @@
 id = "gap-8c3752"
 kind = "gap"
 title = "The census runs hidden.py, which executes agent code, without the sandbox agents get"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
+last_verified = 2026-09-30
+last_verified_rev = "f112c23d2"
 severity = "p2"
 goal = "proof"
 size = "S"
 subsystem = ["benchmarks/viabilitybench/driver"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-09-30
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (16:47, wk-bench-f4's report on gap-9e7079)"
 anchors = ["benchmarks/viabilitybench/driver/census.py", "benchmarks/viabilitybench/families/f4_kvtool/hidden.py"]
@@ -19,6 +21,12 @@ links = { depends_on = [], blocks = [], related = ["gap-a8a160", "gap-9e7079", "
 
 [[verify]]
 command = "grep -qw 'def test_hidden_suite_runs_agent_code_without_the_secret_file' benchmarks/viabilitybench/driver/test_driver.py && benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/driver/test_driver.py -k test_hidden_suite_runs_agent_code_without_the_secret_file -q"
+
+[closed]
+at = 2026-09-30
+commit = "f112c23d2"
+by = "wk-bench-fix2"
+evidence = "families/common/sandbox.py (common-1.2.0): F4's migration runs, F1's probes, the toy suite's clamp and the census's visible re-run start the agent's code through sandbox.command, which on macOS wraps it in sandbox-exec denying every file operation on the secret file and DIR (the directory of task.json); verdicts carry `sandbox`, kept as vs.sandbox in run records; other hosts have no confinement yet and record 'none'; the network is left to gap-0bd49a. The [[verify]] command passes: test_hidden_suite_runs_agent_code_without_the_secret_file (a planted F4 script's reads of the secret file and task.json during the census all fail with EPERM; the run completes with no canary place; vs.sandbox = sandbox-exec). Verifier CI 20/20 green with references sandboxed; benchmarks/viabilitybench: 330 passed, 4 skipped."
 +++
 
 ## Problem
@@ -47,5 +55,31 @@ At BASE no driver file uses a sandbox: no `sandbox-exec`, `bwrap` or container. 
 
 ## Done when
 
-- [ ] Agent code run by any truth suite can't read the secret file or the private task directory.
-- [ ] The `[[verify]]` command passes.
+- [x] Agent code run by any truth suite can't read the secret file or the private task directory (on macOS; other hosts have no confinement yet and the record says so, see Notes).
+- [x] The `[[verify]]` command passes.
+
+## Notes
+
+- **Done 2026-09-30 (wk-bench-fix2): plan steps 1–4, with the network left out.** The split between trusted and
+  untrusted code, as the plan asked:
+  - `families/common/sandbox.py` (common-1.2.0) starts the agent's code so that every file operation on the secret
+    file and on DIR, the directory of `task.json`, fails.
+  - On macOS it uses `sandbox-exec`, with an allow-default profile and resolved paths. The profile needs resolved
+    paths: with `/tmp/…` instead of `/private/tmp/…`, a read got through in testing.
+  - F4's migration runs, F1's probes (step 2) and the toy suite's clamp go through it, and so does the census's
+    visible re-run.
+  - Each verdict carries `sandbox`, which the record keeps as `vs.sandbox` (step 3).
+  - The census keeps the rest of the arms' confinement: an agent environment, the task's tree as cwd, and timeouts.
+- **Evidence:**
+  - `test_hidden_suite_runs_agent_code_without_the_secret_file`: a real F4 task whose planted migration script reads
+    the secret file and `task.json` during the census. Every read fails with EPERM ("Operation not permitted": the
+    sandbox, not the file mode), and the run completes with no canary place.
+  - `test_common`'s sandbox test, and test_secret's stasher, which now records "denied: Operation not permitted".
+  - The verifier CI is 20/20 green with the references sandboxed, and the suite gives 330 passed.
+- **Not covered:**
+  - Linux has no confinement. Bubblewrap needs unprivileged user namespaces, which Ubuntu's AppArmor restricts, and
+    it isn't built. The kind there is "none", and every record says so.
+  - The network isn't limited (gap-0bd49a, Will's decision).
+  - The plan slice's own census (`slicekit`) runs agent code unconfined, but it holds no HMAC secret.
+  - Apple marks `sandbox-exec` deprecated, though it works on 26.4.
+  - A side effect: code in the sandbox can't start setuid programs such as `ps`. No reference needs one.

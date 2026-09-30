@@ -938,6 +938,33 @@ pub fn prepare_graph_checkpoint(
     fresh: bool,
     force_resume: bool,
 ) -> Result<PreparedGraphCheckpoint> {
+    prepare_graph_checkpoint_for_run(
+        workdir,
+        requested_path,
+        plan_id,
+        plan_count,
+        graph,
+        fresh,
+        force_resume,
+        None,
+    )
+}
+
+/// [`prepare_graph_checkpoint`] for a caller whose run already has an id: a
+/// fresh checkpoint is named `run_id` instead of a minted
+/// `graph-<plan>-<uuid>`, so the run keeps one id and one directory under
+/// `.roko/runs` (`roko run` passes its own, bug-ccc7c4). A resumed
+/// checkpoint keeps the run it recorded.
+pub fn prepare_graph_checkpoint_for_run(
+    workdir: &Path,
+    requested_path: Option<&Path>,
+    plan_id: &str,
+    plan_count: usize,
+    graph: &Graph,
+    fresh: bool,
+    force_resume: bool,
+    run_id: Option<&str>,
+) -> Result<PreparedGraphCheckpoint> {
     let paths = resolve_checkpoint_paths(workdir, requested_path, plan_id, plan_count)?;
     let identity = GraphIdentity::of(workdir, graph)?;
 
@@ -968,7 +995,7 @@ pub fn prepare_graph_checkpoint(
                 }
                 if !paths.activities.is_file() || !paths.costs.is_file() {
                     archive_checkpoint_files(&paths)?;
-                    return create_fresh_checkpoint(paths, plan_id, identity.current);
+                    return create_fresh_checkpoint(paths, plan_id, identity.current, run_id);
                 }
                 let mut cost_ledger = match GraphCostLedgerCheckpoint::load(
                     paths.costs.clone(),
@@ -978,7 +1005,7 @@ pub fn prepare_graph_checkpoint(
                     Ok(cost_ledger) => cost_ledger,
                     Err(_) if force_resume => {
                         archive_checkpoint_files(&paths)?;
-                        return create_fresh_checkpoint(paths, plan_id, identity.current);
+                        return create_fresh_checkpoint(paths, plan_id, identity.current, run_id);
                     }
                     Err(error) => return Err(error),
                 };
@@ -1014,7 +1041,7 @@ pub fn prepare_graph_checkpoint(
         archive_checkpoint_files(&paths)?;
     }
 
-    create_fresh_checkpoint(paths, plan_id, identity.current)
+    create_fresh_checkpoint(paths, plan_id, identity.current, run_id)
 }
 
 /// Reopen a validated checkpoint for another run of the same plan graph.
@@ -1063,6 +1090,7 @@ fn create_fresh_checkpoint(
     paths: GraphCheckpointPaths,
     plan_id: &str,
     fingerprint: String,
+    run_id: Option<&str>,
 ) -> Result<PreparedGraphCheckpoint> {
     let parent = paths
         .manifest
@@ -1070,7 +1098,10 @@ fn create_fresh_checkpoint(
         .context("Graph checkpoint manifest has no parent directory")?;
     std::fs::create_dir_all(parent)
         .with_context(|| format!("create Graph checkpoint directory {}", parent.display()))?;
-    let run_id = format!("graph-{plan_id}-{}", uuid::Uuid::new_v4());
+    let run_id = run_id.map_or_else(
+        || format!("graph-{plan_id}-{}", uuid::Uuid::new_v4()),
+        str::to_string,
+    );
     let activity_log = paths
         .activities
         .file_name()

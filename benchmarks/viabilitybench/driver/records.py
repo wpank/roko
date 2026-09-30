@@ -118,7 +118,8 @@ def build(*, experiment_id: str, run_id: str, arm_id: str, seed: int, head: tupl
                     "exit_codes": result.visible_exit_codes},
         "vs": {"label": result.label, "unknown": result.unknown, "checks": result.checks,
                "truth_suite_version": manifest["truth_suite"]["version"], "failed": failed,
-               "verifier_version": (result.hidden_output or {}).get("verifier_version")},
+               "verifier_version": (result.hidden_output or {}).get("verifier_version"),
+               "sandbox": (result.hidden_output or {}).get("sandbox")},  # gap-8c3752: how the agent's code was held
         "costs": {**_costs(outcome.attempts, billed), "by_class": _by_class(attempts)},
         "provenance": {"final_commit": final.commit if final else None,
                        "workdir_archive": f"archives/{archived.tarball.name}" if archived else None,

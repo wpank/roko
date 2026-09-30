@@ -53,7 +53,14 @@ use serde::{Deserialize, Serialize};
 use super::outcome::RunnerDispatchError;
 use super::prompt_cache::PromptCache;
 use super::{DispatchContext, PromptExperimentContext};
+use crate::task_accept;
 use crate::task_parser::TaskDef;
+
+/// Printed under a list of verify steps that includes a pinned acceptance test (gap-1b5636). The
+/// list shows such a step by its header line alone; the rest of it is the harness's plumbing.
+const PINNED_STEP_NOTE: &str = "The harness runs each `# roko accept:` step itself: it copies the \
+     pinned test over its destination, so edits to that copy are lost, and requires exactly the \
+     stated number of passing tests.";
 
 /// Maximum tokens an assembled prompt may emit before deterministic
 /// dropping kicks in. Roughly mirrors a 200K-context-window providers'
@@ -124,7 +131,8 @@ pub struct PromptContext {
     pub files_in_scope: Vec<String>,
     /// Acceptance criteria (from `task.acceptance`).
     pub acceptance_criteria: Vec<String>,
-    /// `task.verify` shell commands.
+    /// `task.verify` shell commands as prompts show them: a pinned acceptance step by its header
+    /// line only ([`task_accept::prompt_command`]).
     pub verify_commands: Vec<String>,
     /// Declared-scope impact warning included before implementation.
     pub impact_context: String,
@@ -257,7 +265,7 @@ impl PromptContext {
             verify_commands: task
                 .verify
                 .iter()
-                .map(|step| step.command.clone())
+                .map(|step| task_accept::prompt_command(&step.command).to_string())
                 .collect(),
             impact_context,
             gate_feedback: ctx.gate_feedback.clone(),
@@ -1308,7 +1316,17 @@ fn build_runner_context(
             .map(|v| format!("- `{v}`"))
             .collect::<Vec<_>>()
             .join("\n");
-        parts.push(format!("# Verify\nAfter editing, run:\n{list}"));
+        let pinned = ctx
+            .verify_commands
+            .iter()
+            .map(String::as_str)
+            .any(task_accept::is_pinned_command);
+        let note = if pinned {
+            format!("\n{PINNED_STEP_NOTE}")
+        } else {
+            String::new()
+        };
+        parts.push(format!("# Verify\nAfter editing, run:\n{list}{note}"));
     }
 
     if !ctx.impact_context.is_empty() {
@@ -1959,7 +1977,11 @@ impl PromptAssembler {
             user_prompt.push_str("\n## Verification Commands\n");
             for step in &task.verify {
                 user_prompt.push_str("- ");
-                user_prompt.push_str(&step.command);
+                user_prompt.push_str(task_accept::prompt_command(&step.command));
+                user_prompt.push('\n');
+            }
+            if task.verify.iter().any(task_accept::is_pinned_step) {
+                user_prompt.push_str(PINNED_STEP_NOTE);
                 user_prompt.push('\n');
             }
         }
@@ -3686,5 +3708,76 @@ mod tests {
             res_limits.prd_excerpt,
             impl_limits.prd_excerpt
         );
+    }
+
+    /// gap-1b5636: both verify listings show a pinned acceptance step by its header line and a
+    /// note, never the generated script; authored steps stay verbatim.
+    #[test]
+    fn pinned_accept_steps_show_only_their_header() {
+        let entry = task_accept::AcceptFile {
+            src: "accept/x.test.ts".into(),
+            dest: "apps/portal/src/x.test.ts".into(),
+            runner: "cd apps/portal && node scripts/vitest-min.mjs {dest} {count}".into(),
+            count: 16,
+            timeout_ms: None,
+        };
+        let pinned = task_accept::PinnedAccept {
+            stored: PathBuf::from("/accept-store/p/t/accept/x.test.ts"),
+            sha256: "ab".repeat(32),
+        };
+        let step = task_accept::pinned_verify_step("t", &entry, &pinned);
+        let header = step
+            .command
+            .lines()
+            .next()
+            .expect("a header line")
+            .to_string();
+        assert_eq!(
+            header,
+            concat!(
+                "# roko accept: t accept/x.test.ts -> apps/portal/src/x.test.ts ",
+                "(exactly 16 passing tests)"
+            )
+        );
+        let mut t = task();
+        t.verify.insert(0, step);
+
+        let pctx = PromptContext::from_task(&t, &ctx());
+        let p = PromptAssembler::minimal().assemble(&t, &pctx).unwrap();
+        for (section, prompt) in [
+            ("# Verify", &p.system_prompt),
+            ("## Verification Commands", &p.user_prompt),
+        ] {
+            assert!(prompt.contains(section), "{section} missing: {prompt}");
+            assert!(prompt.contains(&header), "{section}: no header: {prompt}");
+            assert!(
+                prompt.contains(PINNED_STEP_NOTE),
+                "{section}: no note: {prompt}"
+            );
+            assert!(
+                prompt.contains("cargo test"),
+                "{section}: authored step: {prompt}"
+            );
+            for plumbing in [
+                "roko_pinned=",
+                "/accept-store/",
+                "sha256sum",
+                "vitest-min.mjs",
+            ] {
+                assert!(
+                    !prompt.contains(plumbing),
+                    "{section}: {plumbing} leaked: {prompt}"
+                );
+            }
+        }
+
+        // Without a pinned step the note stays out.
+        let plain = task();
+        let plain_ctx = PromptContext::from_task(&plain, &ctx());
+        let p = PromptAssembler::minimal()
+            .assemble(&plain, &plain_ctx)
+            .unwrap();
+        assert!(!p.system_prompt.contains(PINNED_STEP_NOTE));
+        assert!(!p.user_prompt.contains(PINNED_STEP_NOTE));
     }
 }

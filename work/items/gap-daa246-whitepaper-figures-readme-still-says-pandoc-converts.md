@@ -2,14 +2,16 @@
 id = "gap-daa246"
 kind = "gap"
 title = "Whitepaper figures README still says pandoc converts the SVGs, which build.sh now does"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p3"
 goal = "whitepaper"
 size = "S"
 subsystem = ["docs/whitepaper"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-09-30
+last_verified = 2026-09-30
+last_verified_rev = "dd9ac4d93"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (16:47, wk-wp-publish's report on gap-8117a8, branch work/gap-8117a8)"
 anchors = ["docs/whitepaper/figures/README.md", "docs/whitepaper/build.sh"]
@@ -19,6 +21,12 @@ links = { depends_on = [], blocks = [], related = ["gap-8117a8", "gap-d1d92c"], 
 
 [[verify]]
 command = "! grep -q 'pandoc converts each SVG' docs/whitepaper/figures/README.md && grep -qF 'build.sh' docs/whitepaper/figures/README.md"
+
+[closed]
+at = 2026-09-30
+commit = "dd9ac4d93"
+by = "commit trailer"
+evidence = "The Rendering section of docs/whitepaper/figures/README.md now describes build.sh: it checks for pandoc, tectonic and rsvg-convert, converts figures/*.svg with rsvg-convert --format pdf in its temporary work directory, points the LaTeX at the PDFs through its Lua filter, and runs pandoc with implicit figures off. Proven by the item's verify, and by build.sh run into a scratch directory: 32 pages, each figure included once, and each caption printed once."
 +++
 
 ## Problem
@@ -44,5 +52,5 @@ Rewrite the paragraph: `build.sh` converts `figures/*.svg` with `rsvg-convert --
 
 ## Done when
 
-- [ ] The "Rendering" section describes what `build.sh` does.
-- [ ] The `[[verify]]` command passes.
+- [x] The "Rendering" section describes what `build.sh` does.
+- [x] The `[[verify]]` command passes.

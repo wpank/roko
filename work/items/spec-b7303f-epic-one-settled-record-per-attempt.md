@@ -15,7 +15,7 @@ discovered_from = "tmp/cybernetic-harness/tldr/05-GAPS-AND-PROPOSALS.md (P0 #4);
 anchors = ["crates/roko-cli/src/graph_task_dispatch/feedback.rs::GraphTaskDispatcher::emit_feedback", "crates/roko-cli/src/runtime_feedback/mod.rs::FeedbackEvent", "crates/roko-learn/src/routing_log.rs::RoutingDecisionLog", "crates/roko-cli/tests/learning_wiring_census.rs"]
 doc = "tmp/cybernetic-harness/workstreams/PLAN.md"
 lane = "rust-hot"
-links = { depends_on = ["gap-528762", "gap-96f7ed", "bug-c34782", "bug-35379d", "gap-ad0d39", "bug-690dc6", "gap-8cb382", "gap-1f2661", "gap-c7c946", "gap-3c430e", "bug-b72a37", "gap-4468bd", "gap-8f6206", "bug-ccc7c4", "bug-55fd84", "bug-31438d", "bug-62e3f4", "bug-2379dc", "bug-92f655", "bug-220385", "bug-ad5487", "bug-b2dd44", "bug-c65bfe", "gap-751ac9", "bug-0ba3d9", "bug-d5fb74"], blocks = [], related = ["gap-7a8474", "bug-f9ae3e", "spec-e9d7ec"], supersedes = [], duplicate_of = "" }
+links = { depends_on = ["gap-528762", "gap-96f7ed", "bug-c34782", "bug-35379d", "gap-ad0d39", "bug-690dc6", "gap-8cb382", "gap-1f2661", "gap-c7c946", "gap-3c430e", "bug-b72a37", "gap-4468bd", "gap-8f6206", "bug-ccc7c4", "bug-55fd84", "bug-31438d", "bug-62e3f4", "bug-2379dc", "bug-92f655", "bug-220385", "bug-ad5487", "bug-b2dd44", "bug-c65bfe", "gap-751ac9", "bug-0ba3d9", "bug-d5fb74", "bug-aa2044"], blocks = [], related = ["gap-7a8474", "bug-f9ae3e", "spec-e9d7ec"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "grep -rqw 'fn loop_census_fixture_settles_one_record_per_attempt' crates/roko-cli/tests/ && cargo test -p roko-cli --test learning_wiring_census"
@@ -91,14 +91,14 @@ and state digests). The census lists them in `EXPECTED_MISSING`, and E17 files t
 - [ ] bug-35379d: Provider failover silently runs a different model and records it as if it had been chosen (existing item)
 - [ ] gap-ad0d39: Cost records miss Claude per-model usage and reasoning tokens, and price unknown models as Sonnet (existing item)
 - [x] bug-690dc6: Timed-out and errored agent runs are recorded at $0 with no tokens (existing item; fix merged in `d4be4e872`)
-- [ ] gap-8cb382: Run manifest with a config fingerprint for every plan run (S01.P0-2)
-- [ ] gap-1f2661: Wiring census: a fixture proves every learning loop reads the settled attempt record (S01.P0-11, S01.P0-12)
+- [x] gap-8cb382: Run manifest with a config fingerprint for every plan run (S01.P0-2)
+- [x] gap-1f2661: Wiring census: a fixture proves every learning loop reads the settled attempt record (S01.P0-11, S01.P0-12)
 - [ ] gap-c7c946: roko learn telemetry: check and route-report over the attempt records (S01.P0-13)
 - [x] gap-3c430e: Specs S01, S05, S06 and S08 disagree on token classes, the audit hash, a decision-point name and a budget-line name
 - [ ] bug-b72a37: OpenAI-compatible providers price cached input tokens twice
 - [ ] gap-4468bd: Credit or demote a T0 reflex rule only from the settled attempt record, after verify
 - [x] gap-8f6206: Learning consumers read the settled verdict's learning label instead of succeeded (S01.P0-3)
-- [ ] bug-ccc7c4: roko run now writes a second run directory under .roko/runs beside its own
+- [x] bug-ccc7c4: roko run now writes a second run directory under .roko/runs beside its own
 - [ ] bug-55fd84: Episodes record turns = 1 for dispatches on providers that report no turn count
 - [ ] bug-31438d: Roko records the model it dispatched, never the model the provider reports serving
 - [ ] bug-62e3f4: Episodes, costs.json and efficiency.jsonl leave out the three helper calls after each failed gate
@@ -111,6 +111,7 @@ and state digests). The census lists them in `EXPECTED_MISSING`, and E17 files t
 - [ ] gap-751ac9: Graph attempts keep no durable record of their Claude Code isolation settings; the invocation is only debug-logged
 - [ ] bug-0ba3d9: Attempt records leave inv null: with_inv is called only in tests
 - [ ] bug-d5fb74: A run resumed under a different build keeps the first invocation's harness and config in its manifest
+- [ ] bug-aa2044: Stalled attempts record no cost: the watchdog drops the provider before it reports usage
 - [ ] The epic's `[[verify]]` command passes on the merged branch: the census fixture shows, for every attempt, a row
       with the attempt key, verdict, executed model and cost source.
 

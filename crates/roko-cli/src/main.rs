@@ -1555,6 +1555,11 @@ enum LearnCmd {
         #[arg(long)]
         workdir: Option<PathBuf>,
     },
+    /// Check a run's attempt records, or report routing outcomes from them (read-only).
+    Telemetry {
+        #[command(subcommand)]
+        cmd: commands::learn::TelemetryCmd,
+    },
     /// (deprecated: use `roko learn inspect`) Tune adaptive thresholds and model routing parameters.
     #[command(hide = true)]
     Tune {
@@ -1999,7 +2004,7 @@ enum PlanCmd {
         /// critical path, and dangling dependency references.
         #[arg(long)]
         dag: bool,
-        /// Score each task's spec with the speclint rules (`sq-1`): score,
+        /// Score each task's spec with the speclint rules (`sq-2`): score,
         /// band, rule scores and hard fails. With `--strict`, a hard fail
         /// exits 1.
         #[arg(long)]

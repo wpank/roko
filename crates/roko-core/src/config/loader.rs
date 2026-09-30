@@ -4483,7 +4483,10 @@ max_concurrent_plans = 3
             "[serve.auth]\napi_key = \"sk-ba8d42\"\n",
             false,
         );
-        assert!(config.serve.auth.enabled, "a key-file table with only api_key");
+        assert!(
+            config.serve.auth.enabled,
+            "a key-file table with only api_key"
+        );
         assert_eq!(config.serve.auth.api_key, "sk-ba8d42");
 
         // roko.toml tables that set other auth fields but not `enabled`.
@@ -4513,7 +4516,10 @@ max_concurrent_plans = 3
         unsafe { std::env::remove_var("ROKO__SERVE__AUTH__API_KEY") };
         assert!(from_env.serve.auth.enabled, "env-only key");
         assert_eq!(from_env.serve.auth.api_key, "sk-ba8d42-env");
-        assert!(partial_with_env.serve.auth.enabled, "env key over a partial table");
+        assert!(
+            partial_with_env.serve.auth.enabled,
+            "env key over a partial table"
+        );
         assert_eq!(partial_with_env.serve.auth.api_key, "sk-ba8d42-env");
 
         // An explicit opt-out still turns auth off.

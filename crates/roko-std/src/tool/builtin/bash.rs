@@ -53,9 +53,10 @@ pub fn tool_def() -> ToolDef {
 
 // Command-level safety (denylist, path confinement) is enforced by the
 // SafetyLayer's `BashPolicy` before this handler is invoked. Provider key
-// files are the exception: the handler refuses a command that names one
-// itself, with the same `refuse_key_file_in_command` SafetyLayer runs, so
-// the block holds whichever dispatcher runs it, as for the file tools.
+// files and roko configs holding a secret are the exception: the handler
+// refuses a command that names one, or searches or lists a tree that holds
+// one, itself, with the same `refuse_key_file_in_command` SafetyLayer runs,
+// so the block holds whichever dispatcher runs it, as for the file tools.
 
 /// Handler for `bash` (§36.20).
 ///

@@ -21,6 +21,7 @@ use tower_http::cors::{AllowOrigin, CorsLayer};
 use crate::error::ApiError;
 use crate::rbac::{Permission, Role, enforce_permission};
 use crate::routes::auth::{AgentCapability, AgentCredentialClaims, parse_rfc3339};
+use crate::routes::route_permissions::opens_interactive_session;
 use crate::state::AppState;
 
 static UNSAFE_PUBLIC_CORS_WARNING: OnceLock<()> = OnceLock::new();
@@ -1270,8 +1271,11 @@ pub(crate) const SCOPE_WRITE_UNCLASSIFIED: &str = "write:unclassified";
 
 /// Determine the required scope for a given HTTP method and path.
 ///
-/// Read-only methods (`GET`, `HEAD`, `OPTIONS`) always return `"read"`.
-/// Mutating methods are classified in priority order:
+/// Read-only methods (`GET`, `HEAD`, `OPTIONS`) return `"read"`, except on a
+/// route whose GET opens an interactive session (a WebSocket shell, see
+/// `route_permissions::opens_interactive_session`): that GET is classified
+/// like a mutation, so `/ws/terminal` needs `terminal:write`. Mutating
+/// methods are classified in priority order:
 ///
 /// 1. [`ROUTE_SCOPE_MANIFEST`] — static first-party route prefixes.
 /// 2. Extension route registry populated by [`register_extension_route_scopes`]
@@ -1282,8 +1286,8 @@ pub(crate) const SCOPE_WRITE_UNCLASSIFIED: &str = "write:unclassified";
 /// The static manifest takes precedence over extension routes so that a
 /// misconfigured plugin cannot downgrade scope requirements for core routes.
 pub(crate) fn required_scope_for(method: &Method, path: &str) -> &'static str {
-    // Read-only methods always pass.
-    if method == Method::GET || method == Method::HEAD || method == Method::OPTIONS {
+    // Read-only methods pass, unless the GET opens an interactive session.
+    if is_read_only_method(method) && !opens_interactive_session(path) {
         return "read";
     }
     // Middleware on the nested API router can observe `/registries/...`
@@ -1310,6 +1314,11 @@ pub(crate) fn required_scope_for(method: &Method, path: &str) -> &'static str {
     // 3. Fail-closed: any unclassified mutating route gets the sentinel scope
     //    which behaves as "write" at runtime but is detectable by the CI guard.
     SCOPE_WRITE_UNCLASSIFIED
+}
+
+/// `GET`, `HEAD` and `OPTIONS`: methods that read rather than change state.
+fn is_read_only_method(method: &Method) -> bool {
+    matches!(*method, Method::GET | Method::HEAD | Method::OPTIONS)
 }
 
 /// Check whether the caller's scope is sufficient for the required scope.
@@ -1383,8 +1392,9 @@ pub async fn require_scope(
         return Ok(next.run(req).await);
     }
 
-    // Read-only methods bypass scope checks.
-    if method == Method::GET || method == Method::HEAD || method == Method::OPTIONS {
+    // Read-only methods bypass scope checks, except a GET that opens an
+    // interactive session: `required_scope_for` classifies it like a mutation.
+    if is_read_only_method(&method) && !opens_interactive_session(&path) {
         return Ok(next.run(req).await);
     }
 

@@ -979,9 +979,10 @@ Always public (no `/api/` prefix, no auth).
 ### 8.39 Terminal
 
 Disabled by default (`serve.terminal_enabled = false`). When enabled, the
-routes require auth even on a loopback bind, and creating, deleting or writing
-to a session over REST also needs the `terminal:write` scope and the
-`agent:spawn` permission.
+routes require auth even on a loopback bind. Creating, deleting or writing to a
+session, and opening `/ws/terminal/{id}`, also need the `terminal:write` scope
+and the `agent:spawn` permission: the WebSocket upgrade is a GET, but it starts
+a shell, so it is not treated as a read.
 
 The defaults are the safe choice, and each opt-out is an explicit `[serve]` key:
 

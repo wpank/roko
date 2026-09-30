@@ -151,9 +151,9 @@ providers. This removes the checklist's circular `budget` gate (W10 rec 2).
 - [x] gap-44632a: No CI workflow runs the ViabilityBench verifier CI in benchmarks/viabilitybench/ci/
 - [x] gap-a6abd5: S08 §5.2's heading still gives the task manifest as DIR/.vb/task.json
 - [ ] gap-29ac83: The benchmark has no sandbox on Linux, so records there say sandbox: none
-- [ ] gap-4e8795: flaky_verify needs a visible-verify wrapper, and no arm has one
+- [x] gap-4e8795: flaky_verify needs a visible-verify wrapper, and no arm has one
 - [ ] gap-8bdf5e: model_swap needs served-model checks, in records and run_roko, that accept a declared swap
-- [ ] gap-98516b: F1 and F4 render latent v1 only, so the convention_flip disturbance is refused
+- [x] gap-98516b: F1 and F4 render latent v1 only, so the convention_flip disturbance is refused
 - [ ] The epic's `[[verify]]` command passes: the pilot page is committed, and `report.py --check` accepts its
       bundle.
 

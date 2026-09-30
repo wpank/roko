@@ -30,7 +30,11 @@ measure that setup rather than Claude Code (W10). Every session gets:
   killed before its first turn and ends `infra_error` (reason `web_tools`). Any web request that reaches the
   transcript anyway makes the census mark the run `leak_suspected` (`census`, place `web`);
 - `--no-session-persistence`, and `--dangerously-skip-permissions`, since the agent may edit and run anything in its
-  workdir, as in the direct loop.
+  workdir, as in the direct loop;
+- in a run with `flaky_verify` (S08 §4.6), `CLAUDE_CODE_SHELL_PREFIX` naming the visible-verify wrapper
+  (`ctx.verify_wrapper`, `vb_verify`). Claude Code 2.1.282 runs each shell command as `'<prefix>' '<command>'` (read
+  from its bundle, and played by the tests' fake claude; no live session has run it yet), and the wrapper runs it as
+  bash would, so a command that runs the task's visible check can meet an injected flake.
 Its environment is the task's agent environment plus those variables, and `ANTHROPIC_BASE_URL` for a loopback
 `--provider-url`, so an offline run cannot reach the API. No `VB_*` variable and no provider key reach it. Its parent
 runs scrubbed too: `vb run`, and the probe below, start themselves again with an allowlisted environment
@@ -128,7 +132,8 @@ FIXED_FLAGS = ("--print", "--verbose", "--output-format", "stream-json", "--sett
 WORKDIR_FLAG = "--add-dir"  # followed by the workdir, whose own CLAUDE.md files then load
 FIXED_ENV = {"CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1", "CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD": "1",
              "DISABLE_AUTOUPDATER": "1"}
-CLI_ENV = ("CLAUDE_CONFIG_DIR", "CLAUDE_SECURESTORAGE_CONFIG_DIR", "ANTHROPIC_BASE_URL", *FIXED_ENV)
+SHELL_PREFIX_ENV = "CLAUDE_CODE_SHELL_PREFIX"  # the visible-verify wrapper, in a run with flaky_verify
+CLI_ENV = ("CLAUDE_CONFIG_DIR", "CLAUDE_SECURESTORAGE_CONFIG_DIR", "ANTHROPIC_BASE_URL", SHELL_PREFIX_ENV, *FIXED_ENV)
 SETTINGS = {"disableAllHooks": True}  # plus deny rules, which name this host's paths
 DENY_TOOLS = ("Read", "Edit")
 INSTRUCTION_FILES = ("CLAUDE.md", "CLAUDE.local.md")
@@ -336,6 +341,8 @@ def build_invocation(ctx: harness.TaskContext, cli: CliConfig) -> Invocation:
         env["CLAUDE_SECURESTORAGE_CONFIG_DIR"] = ""
     if ctx.endpoint.offline:  # a loopback --provider-url: a real claude must not reach the API either
         env["ANTHROPIC_BASE_URL"] = ctx.endpoint.base_url
+    if ctx.verify_wrapper is not None:
+        env[SHELL_PREFIX_ENV] = str(ctx.verify_wrapper)
     agent_env.check({name: value for name, value in env.items() if name not in CLI_ENV})
     return Invocation(argv=argv, env=env, config_dir=config_dir, config_dir_sha256=config_dir_digest(config_dir))
 

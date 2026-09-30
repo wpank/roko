@@ -68,6 +68,9 @@ pub struct ToolLoopTurnTrace {
     pub reasoning: Option<String>,
     /// Token usage reported for this backend turn.
     pub usage: Usage,
+    /// Model the provider reported serving this turn, when the response
+    /// named one ([`BackendResponse::extract_model`]).
+    pub model: Option<String>,
 }
 
 pub mod agent_wrapper;
@@ -1104,6 +1107,7 @@ impl ToolLoop {
             };
             merge_session_state(&mut session, self.backend.extract_session(&response));
             let turn_reasoning = response.extract_reasoning();
+            let turn_model = response.extract_model();
             let mut turn_usage = response.extract_usage();
 
             // Compute cost from model profile pricing when the provider did not
@@ -1216,6 +1220,7 @@ impl ToolLoop {
                     tool_results: Vec::new(),
                     reasoning: turn_reasoning,
                     usage: turn_usage,
+                    model: turn_model,
                 });
                 let finish_reason_raw = response.extract_finish_reason_raw();
                 let hit_length_limit = finish_reason_raw
@@ -1295,6 +1300,7 @@ impl ToolLoop {
                 tool_results: tool_results.clone(),
                 reasoning: turn_reasoning.clone(),
                 usage: turn_usage,
+                model: turn_model,
             });
 
             // Fire on_turn callback with a snapshot of this iteration.

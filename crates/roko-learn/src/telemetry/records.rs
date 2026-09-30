@@ -511,14 +511,49 @@ pub struct AttemptTiming {
 pub struct ExecutedModel {
     /// Provider that served the final turn.
     pub provider: Option<String>,
-    /// Model the dispatcher asked for.
+    /// Model the dispatcher asked for: routing's plan, before any failover.
     pub model_requested: Option<String>,
-    /// Model the provider reported running.
+    /// Model the provider bridge launched: the requested one, or the
+    /// failover candidate that replaced it. Legacy rows name it `model`.
+    pub model_dispatched: Option<String>,
+    /// Model the provider reported serving; `None` when its responses named
+    /// none, never the configured slug.
     pub model_reported: Option<String>,
+    /// Every model the provider named, in order, when its responses
+    /// disagreed; `model_reported` is the last of them.
+    pub models_reported: Vec<String>,
+    /// The provider reported serving another model than the one launched
+    /// (a dated snapshot of it, such as `gpt-4o-2024-08-06`, is the same).
+    pub model_mismatch: bool,
     /// Models tried before the one that ran, in order.
     pub failover_chain: Vec<String>,
-    /// Agent turns taken.
+    /// Why the first model of `failover_chain`, the planned one, did not run.
+    pub failover_reason: Option<String>,
+    /// Agent turns taken: the Claude CLI's `num_turns`, or the model calls
+    /// of roko's tool loop. `None` when the agent did not report a count.
     pub turns: Option<u32>,
+}
+
+/// Helper model calls one attempt made outside its agent run: after a failed
+/// gate, a quality judgement, an error diagnosis and a gate reflection on the
+/// cheap helper model (`helpers`, bug-62e3f4). [`AttemptUsage`] and
+/// [`AttemptCost`] cover the agent run alone.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct HelperCallsUsage {
+    /// Completed helper calls.
+    pub calls: u32,
+    /// Input tokens, as the provider reported them.
+    pub tokens_in: u64,
+    /// Output tokens.
+    pub tokens_out: u64,
+    /// Input read from the prompt cache.
+    pub tokens_cache_read: u64,
+    /// Priced cost of the calls, in USD.
+    pub cost_usd: f64,
+    /// Calls that used tokens but have no price, so `cost_usd` leaves them
+    /// out.
+    pub unpriced_calls: u32,
 }
 
 /// Token usage of one attempt in five disjoint classes (S01 §4.4): no token
@@ -697,6 +732,10 @@ pub struct AttemptVerdictRecord {
     /// Cost, with its source.
     #[serde(default)]
     pub cost: AttemptCost,
+    /// Helper model calls the attempt made outside its agent run; `None`
+    /// when it made none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub helpers: Option<HelperCallsUsage>,
     /// `sha256` of the provider request.
     #[serde(default)]
     pub request_sha256: Option<String>,
@@ -736,6 +775,7 @@ impl AttemptVerdictRecord {
             executed: ExecutedModel::default(),
             usage: AttemptUsage::default(),
             cost: AttemptCost::default(),
+            helpers: None,
             request_sha256: None,
             output_sha256: None,
             diff_sha256: None,

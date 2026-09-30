@@ -1343,7 +1343,8 @@ mod tests {
 
     use super::*;
     use crate::graph_task_dispatch::tests::{
-        VERIFY_PROVIDER, make_spec, make_test_dispatcher, no_auto_fix, verify_step,
+        VERIFY_PROVIDER, batch_ctx, make_batch_dispatcher, make_spec, make_test_dispatcher,
+        no_auto_fix, verify_step,
     };
 
     // ─── Verify verdict tests ───────────────────────────────────────────────
@@ -1971,6 +1972,56 @@ title = "Streaming graph task"
             panic!("expected a verify failure, got {error}");
         };
         assert!(message.contains("rung[lint] (`exit 3`)"), "{message}");
+    }
+
+    /// A reflex serves only a task that no verify step checks, so a task the
+    /// workspace rungs check is dispatched, and its rungs run, even when a
+    /// reflex rule matches it.
+    #[tokio::test]
+    async fn a_reflex_pass_still_runs_the_workspace_rungs() {
+        use roko_learn::reflex_store::{PromotionCandidate, ReflexAction, ReflexCondition};
+
+        let store_dir = tempdir().expect("tempdir");
+        let reflexes = ReflexStore::open(store_dir.path().join("reflexes.jsonl"));
+        // A wildcard rule matches every task.
+        let promoted = reflexes.try_promote(
+            &PromotionCandidate {
+                episode_id: "episode-reflex".to_string(),
+                condition: ReflexCondition::default(),
+                action: ReflexAction {
+                    tool: "respond".to_string(),
+                    args: "cached reflex output".to_string(),
+                },
+            },
+            3,
+        );
+        assert!(promoted);
+        let temp = tempdir().expect("tempdir");
+        let rung_ran = temp.path().join("rung-ran");
+        let check = rung("check", &format!("touch {}", rung_ran.display()), true);
+        let (dispatcher, task) = make_batch_dispatcher(&temp, 0.01, |config| {
+            no_auto_fix(config);
+            config.learning.t0_reflexes = true;
+            config.gates.custom_rungs = vec![check];
+        })
+        .await;
+        let dispatcher = dispatcher.with_reflex_store(reflexes);
+        assert!(task.verify.is_empty(), "only the rung checks the task");
+
+        let outputs = dispatcher
+            .dispatch(&make_spec(&task), Vec::new(), &batch_ctx())
+            .await
+            .expect("the task passes its rung");
+        assert_eq!(
+            outputs[0].body.as_text().expect("output text"),
+            "batch-output",
+            "the agent ran, not the reflex"
+        );
+        assert!(rung_ran.exists(), "the workspace rung ran");
+        assert_eq!(
+            TaskGateVerdict::from_signals(&outputs),
+            Some(TaskGateVerdict::Passed)
+        );
     }
 
 }

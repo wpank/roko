@@ -182,10 +182,11 @@ pub struct GraphTaskDispatcher {
     /// (filesystem reads + `git` subprocess spawns) on the Tokio reactor.
     static_prompt_cache: std::sync::OnceLock<(String, String, String)>,
     /// T0 reflex store. When set and `[learning] t0_reflexes` is on, each
-    /// dispatch of a task without verify steps checks for a matching reflex
-    /// rule before invoking the LLM. A match bypasses the agent call entirely
-    /// and returns the rule's cached output (zero-cost repeated decisions),
-    /// stamped unverified. No gate runs, so the rule earns no gate pass.
+    /// dispatch of a task that no verify step checks (neither its own nor a
+    /// workspace rung) looks for a matching reflex rule before invoking the
+    /// LLM. A match bypasses the agent call entirely and returns the rule's
+    /// cached output (zero-cost repeated decisions), stamped unverified. No
+    /// gate runs, so the rule earns no gate pass.
     reflex_store: Option<ReflexStore>,
     /// Per-task spend across attempts, enforcing `budget.max_task_usd` and
     /// `budget.max_task_retry_usd`.
@@ -345,11 +346,11 @@ impl GraphTaskDispatcher {
     /// Attach the T0 reflex store for pre-dispatch reflex checks.
     ///
     /// With `[learning] t0_reflexes` on (off by default), each `dispatch` of
-    /// a task without verify steps checks whether any rule matches the task's
-    /// role, file extensions, and title before invoking the LLM. A match
-    /// bypasses the agent call and returns the rule's cached output
-    /// (`action.args`), stamped unverified. No gate runs, so the rule is not
-    /// credited with a gate pass.
+    /// a task that no verify step checks (neither its own nor a workspace
+    /// rung) looks for a rule that matches the task's role, file extensions,
+    /// and title before invoking the LLM. A match bypasses the agent call and
+    /// returns the rule's cached output (`action.args`), stamped unverified.
+    /// No gate runs, so the rule is not credited with a gate pass.
     #[must_use]
     pub fn with_reflex_store(mut self, store: ReflexStore) -> Self {
         self.reflex_store = Some(store);
@@ -645,13 +646,11 @@ impl TaskDispatcher for GraphTaskDispatcher {
         // served from the T0 store without an LLM round-trip.
         //
         // Reflexes skip the provider *and* the verify steps, so they only
-        // serve tasks that author no verification: a verify-bearing task must
-        // earn its pass from its own gates.
-        if let Some(reflex_store) = self
-            .reflex_store
-            .as_ref()
-            .filter(|_| self.config.learning.t0_reflexes && task.verify.is_empty())
-        {
+        // serve tasks that no verify step checks: a task with its own steps,
+        // or one the workspace rungs check, must earn its pass from them.
+        if let Some(reflex_store) = self.reflex_store.as_ref().filter(|_| {
+            self.config.learning.t0_reflexes && self.verify_steps(spec, &task).is_empty()
+        }) {
             let file_exts: Vec<String> = task
                 .files
                 .iter()

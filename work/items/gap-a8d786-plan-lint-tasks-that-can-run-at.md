@@ -3,13 +3,15 @@ id = "gap-a8d786"
 kind = "gap"
 title = "Plan lint: tasks that can run at the same time must not share files"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p2"
 goal = "golden-path"
 size = "S"
 subsystem = ["roko-cli/plan_policy"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-09-30
+last_verified = 2026-09-30
+last_verified_rev = "8a88c6267"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e8"
 discovered_from = "tmp/cybernetic-harness/tldr/research/B2-dag-worktrees-merge.md (intra-plan write-set check, proposed item W3)"
 anchors = ["crates/roko-cli/src/plan_policy.rs::validate_plan_budgets"]
@@ -70,3 +72,13 @@ Checked at `41c7ffbd6`: no overlap rule in `plan_policy.rs` or `plan_validate.rs
 
 - Waits for gap-439794, so that the lint and the runtime agree on what "overlap" means.
 - Tasks without `files` declare nothing. Leave them to find-d1a883 (footprints trust declared files).
+- Implemented on `work/gap-a8d786` at `81b944eed`; cargo verification deferred to the batch check.
+  - `PLAN_CONCURRENT_OVERLAP` is reported from `validate_plan_budgets` when `max_parallel > 1`, using the engine's
+    own rule (`roko_graph::exclusion::first_overlap`, now public). `plan validate` shows it as an error.
+    `load_plan` only logs it (`PlanPolicyViolation::is_advisory`), because the engine already runs such tasks one
+    at a time. The generated-plan budget rejects it like its other findings.
+  - Not done: the warning for `max_parallel = 1` plans. `plan validate` maps every policy finding to an error, and
+    `plan_validate.rs` was being edited in another worktree. gap-272448's auto `max_parallel` should also count as
+    "can run together" once it lands.
+  - Offenders at `8a88c6267`, all archived plans: architecture-core-queue (8 pairs),
+    architecture-production-residuals (1), self-dev-extras (1), self-dev-ux (217).

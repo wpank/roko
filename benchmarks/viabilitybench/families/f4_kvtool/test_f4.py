@@ -17,11 +17,13 @@ import importlib.util
 import json
 import math
 import os
+import re
 import shutil
 import signal
 import subprocess
 import sys
 import time
+import tomllib
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -238,6 +240,11 @@ def test_f4_kvtool_v2_quirks(tmp_path):
     assert statuses[-1] == 0 and len(statuses) == math.ceil(len(sources) / 2) - 1
     assert instance.kvstore.load(str(store))["entries"] == instance.expected_entries(doc["entries"], plan.src,
                                                                                      plan.dst)
+    # An unanswered question outlasts every arm's wait for a command, so the agent sees a hang, but gives up well
+    # within the census's 600 s rerun of the visible check. 120 s is Claude Code's default Bash timeout.
+    wait = int(re.search(r"^ANSWER_WAIT_S = (\d+)", (workdir / "bin/kvtool").read_text(), re.MULTILINE)[1])
+    arms = [tomllib.loads(path.read_text())["caps"] for path in (HERE.parents[1] / "arms").glob("*.toml")]
+    assert arms and max([120, *(caps.get("command_timeout_s", 0) for caps in arms)]) < wait < 600
 
 
 # --- the ladder and the naive scripts ------------------------------------------------------------------------------

@@ -70,4 +70,4 @@ jobs:
       - name: Check docs/v3 against the audited citation errata
         run: |
           python3 -m unittest tools.docs_integrity.test_check_citation_errata
-          python3 tools/docs_integrity/check_citation_errata.py
+          python3 tools/docs_integrity/check_citation_errata.py --prose

@@ -3,13 +3,14 @@ id = "gap-212b75"
 kind = "gap"
 title = "docs/v3 prose still describes routing papers (BEST-Route, xRouter, Router-R1) under invented titles, and the CLEAR-framework sections cite a fabricated work"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p2"
 goal = "release"
 size = "M"
 subsystem = ["docs/v3"]
 created = 2026-09-30
 updated = 2026-09-30
+last_verified = 2026-09-30
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-rp-cite's report)"
 anchors = ["docs/v3/20-GATEWAY.md", "docs/v3/depth/20-gateway/06-routing-research.md", "docs/v3/depth/06-composition/distributed-context-engineering.md", "docs/v3/depth/06-composition/token-budget-management.md", "tools/docs_integrity/citation_errata.json"]
@@ -44,3 +45,19 @@ The files above. The checker's data file is `tools/docs_integrity/citation_errat
 
 - [ ] No docs/v3 prose names or describes a work that doesn't exist, or under a title it doesn't have.
 - [ ] The `[[verify]]` command passes.
+
+## Notes
+
+- 2026-09-30 (wk-rp-cite): reread against the real abstracts (DataCite, arXiv). The routing prose in `20-GATEWAY.md`,
+  `depth/20-gateway/06-routing-research.md`, `depth/05-agent/*dual-process-routing.md` and
+  `depth/08-learning/self-improvement-frameworks.md` now describes Router-R1, xRouter, IRT-Router, BEST-Route and
+  cascade routing as their papers do, and the unsupported numbers are gone. CLEAR is real (Mehta 2025,
+  arXiv:2511.14136); the audit's I1 rested on the invented title, so the sections now cite it and its manifest record is
+  I0.
+- `check_citation_errata.py --prose` checks each Markdown section that names a work for its wrong titles, author lists
+  and the phrases in the work's `prose` field. At `286c5e53a` it reported 20 errata in the four verify files and 73 in
+  docs/v3 (33 of them without `--prose`); all are 0 now. The run also caught Meta-Harness (a wrong title and author in 9 files), the RSI survey,
+  AI4AI-Bench, PooL, the bacterial-luminescence paper and ActPlane's invented "execution planes"; those are fixed.
+- Follow-up: `depth/05-agent/harness-engineering.md` builds on "six harness principles" attributed to Meta-Harness, but
+  the real paper (an outer-loop search over harness code) does not describe principles in its abstract; the section
+  needs a reading of the full paper.

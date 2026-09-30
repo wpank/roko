@@ -68,6 +68,7 @@ mod routing_context;
 mod served_model;
 mod sibling_settle;
 mod streaming;
+mod supervision;
 mod tui_forward;
 mod turn_policy;
 mod verification;
@@ -79,6 +80,7 @@ pub use feedback::GraphFeedbackContext;
 pub use inert_settings::{InertGraphSetting, graph_engine_inert_settings};
 pub(crate) use retry_budget::TaskRetryBudgets;
 pub use streaming::streaming_event_channel_capacity;
+pub use supervision::{ConductorStop, ConductorTicker, SUPERVISION_INTERVAL};
 pub use wiring::{WiringComponent, WiringKind, WiringReport};
 
 use attempt::{AttemptBook, SettledAttempt, Settlement, first_token_seen};
@@ -92,6 +94,7 @@ use routing_context::{
     build_routing_context, dream_routing_bias, effective_agent_contract, select_cheap_model_key,
     upstream_outputs,
 };
+use supervision::SupervisedAttempt;
 use tui_forward::forward_live_event_to_tui;
 use turn_policy::{
     TurnCapRetry, base_attempt_timeout_ms, is_express_task, provider_failure_outcome,
@@ -224,6 +227,9 @@ pub struct GraphTaskDispatcher {
     /// The tree each task started from, which the pre-verify screen
     /// (`red_flags`) diffs its attempts against.
     diff_bases: diff_snapshot::DiffBases,
+    /// The run's conductor, which supervises running attempts (see
+    /// [`Self::with_conductor`]).
+    conductor: Option<supervision::GraphConductor>,
 }
 
 impl GraphTaskDispatcher {
@@ -263,6 +269,7 @@ impl GraphTaskDispatcher {
             attempts: AttemptBook::default(),
             in_flight: sibling_settle::InFlightTasks::default(),
             diff_bases: diff_snapshot::DiffBases::default(),
+            conductor: None,
         }
     }
 
@@ -1127,13 +1134,14 @@ impl TaskDispatcher for GraphTaskDispatcher {
             );
         }
 
-        // ── Live output tap and stall watchdog ─────────────────────────
+        // ── Live output tap, stall watchdog and conductor ──────────────
         //
         // The agent's live output feeds the TUI, when a bridge and a
-        // live-output setting are configured, and the attempt's stall
-        // watchdog (`[conductor] silence_timeout_secs`, `task_stall_secs`).
-        // `forward_dispatch_events_to_tui` still publishes the screened
-        // transcript after `run_bridge_with_failover` returns (§4).
+        // live-output setting are configured, the attempt's stall watchdog
+        // (`[conductor] silence_timeout_secs`, `task_stall_secs`) and the
+        // run's conductor. `forward_dispatch_events_to_tui` still publishes
+        // the screened transcript after `run_bridge_with_failover` returns
+        // (§4).
         let watched_key = attempt.key.attempt_key();
         let watched = WatchedAttempt {
             agent_id: &pre_dispatch_agent_id,
@@ -1142,25 +1150,35 @@ impl TaskDispatcher for GraphTaskDispatcher {
             attempt_key: &watched_key,
         };
         let stall_watch = self.stall_watch();
-        request.live_output =
-            self.live_output_tap(&watched, stall_watch.as_ref().map(StallWatch::progress));
+        let supervised = self.supervise_attempt(&watched);
+        request.live_output = self.live_output_tap(
+            &watched,
+            stall_watch.as_ref().map(StallWatch::progress),
+            supervised.as_ref().map(SupervisedAttempt::feed),
+        );
 
         attempt.dispatch_started();
         let started_at = Instant::now();
         // The planned model is a preference: an unusable or out-of-usage
         // provider fails over; `dispatch.target` names the model that ran.
-        // While it runs, heartbeats keep the TUI's elapsed-time counter live,
-        // and the stall watchdog cancels an attempt that goes silent, which
-        // then fails like a provider error and retries under `max_retries`.
+        // While it runs, heartbeats keep the TUI's elapsed-time counter live.
+        // The stall watchdog cancels an attempt that goes silent and the
+        // conductor one it restarts; either then fails like a provider error
+        // and retries under `max_retries`.
         let dispatch_result = self
             .run_watched(
                 self.run_bridge_with_failover(spec, &task.id, request),
                 stall_watch,
+                supervised.as_ref(),
                 &watched,
             )
             .await
-            .unwrap_or_else(|stalled| Err(stalled.error(&watched)));
+            .unwrap_or_else(|interrupted| Err(interrupted.error(&watched)));
         attempt.dispatch_ended();
+        if let Some(supervised) = supervised {
+            supervised
+                .end(matches!(&dispatch_result, Ok((dispatch, _)) if dispatch.result.success));
+        }
         let (mut dispatch, failover) = match dispatch_result {
             Ok(dispatched) => dispatched,
             Err(error) => {

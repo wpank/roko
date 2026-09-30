@@ -213,8 +213,12 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
             attempt_key: &attempt_key,
         };
         let stall_watch = self.stall_watch();
-        request.live_output =
-            self.live_output_tap(&watched, stall_watch.as_ref().map(StallWatch::progress));
+        let supervised = self.supervise_attempt(&watched);
+        request.live_output = self.live_output_tap(
+            &watched,
+            stall_watch.as_ref().map(StallWatch::progress),
+            supervised.as_ref().map(SupervisedAttempt::feed),
+        );
 
         // ── Provider invocation ──────────────────────────────────────────
         attempt.dispatch_started();
@@ -222,22 +226,24 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
             .run_watched(
                 self.factory.run_shared_agent_bridge(request),
                 stall_watch,
+                supervised.as_ref(),
                 &watched,
             )
             .await;
         attempt.dispatch_ended();
         let mut dispatch_result = match watched_result {
             Ok(dispatch_result) => dispatch_result,
-            // The stall watchdog cancelled the provider call: the attempt
-            // ends timed out, and the engine retries it.
-            Err(stalled) => {
-                let error = stalled.error(&watched);
+            // The stall watchdog or the conductor cancelled the provider
+            // call: the attempt ends timed out or cancelled, and the engine
+            // retries it.
+            Err(interrupted) => {
+                let error = interrupted.error(&watched);
                 let settlement = Settlement::provider_failure(&error.to_string(), false);
                 let settled = attempt.settle(settlement, &dispatch_plan.model.slug, None);
                 self.publish_settlement(spec, &task, &settled).await;
-                let stalled_outcome = TaskDispatchOutcome {
+                let interrupted_outcome = TaskDispatchOutcome {
                     attempt_id: attempt_id.clone(),
-                    outcome: TaskDispatchOutcomeKind::TimedOut,
+                    outcome: interrupted.outcome(),
                     provider_id: "graph-task-executor".to_string(),
                     model: String::new(),
                     input_tokens: None,
@@ -248,17 +254,20 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
                     output: Vec::new(),
                 };
                 let _ = recorder
-                    .record_terminal(&attempt_id, &stalled_outcome)
+                    .record_terminal(&attempt_id, &interrupted_outcome)
                     .await;
                 let _ = event_tx
                     .send(GraphTaskEvent::AttemptTerminal {
                         attempt_id,
-                        outcome: TaskDispatchOutcomeKind::TimedOut,
+                        outcome: interrupted.outcome(),
                     })
                     .await;
                 return Err(error);
             }
         };
+        if let Some(supervised) = supervised {
+            supervised.end(matches!(&dispatch_result, Ok(dispatch) if dispatch.result.success));
+        }
         // A model the provider substituted is priced by the model that
         // served (bug-31438d). This path runs no failover, and a `--model`
         // pin fails only the batch path's attempt.

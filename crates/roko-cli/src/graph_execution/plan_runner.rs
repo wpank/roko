@@ -1049,7 +1049,36 @@ async fn run_graph_plan_body(
     // hand on to their gates.
     let cell_resources = plan_cell_resources(rich_topology, workspace_provider);
 
+    // ── Conductor supervision (spec-a0403b) ───────────────────────────
+    //
+    // The run's conductor watches each running attempt's live output, and
+    // the ticker evaluates it every `SUPERVISION_INTERVAL`: a `Restart`
+    // cancels that attempt, which retries; a `Fail` stops the run the way
+    // SIGTERM does, and the run returns an error naming the watcher. With
+    // `[conductor] silence_timeout_secs` and `task_stall_secs` both 0 there
+    // is no conductor and no ticker.
+    if let (Some(conductor), Some(ring)) = (
+        graph_run_config.conductor.clone(),
+        graph_run_config.conductor_ring.clone(),
+    ) {
+        dispatcher_builder = dispatcher_builder.with_conductor(conductor, ring);
+    }
     let graph_task_dispatcher = Arc::new(dispatcher_builder);
+    let conductor_stop = Arc::new(parking_lot::Mutex::new(
+        None::<crate::graph_task_dispatch::ConductorStop>,
+    ));
+    let _conductor_ticker = graph_task_dispatcher.spawn_conductor_ticker(
+        crate::graph_task_dispatch::SUPERVISION_INTERVAL,
+        {
+            let conductor_stop = Arc::clone(&conductor_stop);
+            let interrupt = interrupt.clone();
+            move |stop| {
+                tracing::error!(%stop, "the conductor is stopping the plan run");
+                *conductor_stop.lock() = Some(stop);
+                interrupt.request(PlanRunInterrupt::Terminate);
+            }
+        },
+    );
     // `[conductor] max_agents` caps concurrently executing tasks across
     // every plan of the run.
     let task_dispatcher: Arc<dyn TaskDispatcher> =
@@ -1340,6 +1369,10 @@ async fn run_graph_plan_body(
             Some("plan finished — re-run to apply".into()),
         );
         let _ = tui_ack_tx.try_send(ack);
+    }
+    // A conductor `Fail` stopped the run: it fails, naming the watcher.
+    if let Some(stop) = conductor_stop.lock().take() {
+        return Err(anyhow!("{stop}"));
     }
     if let Some(error) = first_error {
         return Err(error);

@@ -11,7 +11,7 @@
 //!   [`DiagnosisSummary`], once per silence;
 //! - silent for `[conductor] task_stall_secs`: it drops the dispatch future,
 //!   which cancels the provider call, publishes a diagnosis saying so, and the
-//!   attempt fails as stalled ([`AttemptStalled::error`]), so the Graph engine
+//!   attempt fails as stalled ([`AttemptInterrupted::error`]), so the Graph engine
 //!   retries it under the task's `max_retries`.
 //!
 //! `0` turns a threshold off, and with both off nothing is watched. The hard
@@ -35,6 +35,7 @@ use roko_agent::live_output::{LiveAgentEvent, LiveOutput};
 use roko_core::config::schema::ConductorConfig;
 use roko_core::{DiagnosisSeverity, DiagnosisSummary};
 
+use super::supervision::{AttemptFeed, ConductorRestart, SupervisedAttempt};
 use super::*;
 
 /// How often a running attempt's [`StallWatch`] is checked. The thresholds
@@ -196,27 +197,40 @@ pub(super) struct WatchedAttempt<'a> {
     pub(super) attempt_key: &'a str,
 }
 
-/// An attempt [`GraphTaskDispatcher::run_watched`] cancelled because it
-/// stalled.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct AttemptStalled {
-    /// How long it had been silent.
-    pub(super) silent_for: Duration,
+/// Why [`GraphTaskDispatcher::run_watched`] ended an attempt before its
+/// provider call did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum AttemptInterrupted {
+    /// The stall watchdog cancelled it after this long without progress.
+    Stalled(Duration),
+    /// The conductor restarted it.
+    Restarted(ConductorRestart),
 }
 
-impl AttemptStalled {
-    /// The error the cancelled attempt fails with: a timeout, which the Graph
-    /// engine retries under the task's `max_retries`.
-    pub(super) fn error(self, attempt: &WatchedAttempt<'_>) -> RokoError {
-        RokoError::Timeout {
-            operation: format!(
-                "agent for {}/{} stalled: no progress for {}s, so the stall watchdog cancelled \
-                 the attempt ([conductor] task_stall_secs)",
-                attempt.plan_id,
-                attempt.task_id,
-                self.silent_for.as_secs()
-            ),
-            timeout_ms: u64::try_from(self.silent_for.as_millis()).unwrap_or(u64::MAX),
+impl AttemptInterrupted {
+    /// The error the attempt fails with, which the Graph engine retries under
+    /// the task's `max_retries`: a timeout for a stall.
+    pub(super) fn error(&self, attempt: &WatchedAttempt<'_>) -> RokoError {
+        match self {
+            Self::Stalled(silent_for) => RokoError::Timeout {
+                operation: format!(
+                    "agent for {}/{} stalled: no progress for {}s, so the stall watchdog \
+                     cancelled the attempt ([conductor] task_stall_secs)",
+                    attempt.plan_id,
+                    attempt.task_id,
+                    silent_for.as_secs()
+                ),
+                timeout_ms: u64::try_from(silent_for.as_millis()).unwrap_or(u64::MAX),
+            },
+            Self::Restarted(restart) => restart.error(),
+        }
+    }
+
+    /// How the streaming path reports the attempt's end.
+    pub(super) const fn outcome(&self) -> TaskDispatchOutcomeKind {
+        match self {
+            Self::Stalled(_) => TaskDispatchOutcomeKind::TimedOut,
+            Self::Restarted(_) => TaskDispatchOutcomeKind::Cancelled,
         }
     }
 }
@@ -284,34 +298,40 @@ impl GraphTaskDispatcher {
 
     /// The live-output channel for an attempt's dispatch request, when
     /// anything reads it: the TUI, when both [`Self::with_tui_bridge`] and
-    /// [`Self::with_live_agent_output`] are set, or the attempt's stall watch,
-    /// through `progress`. Spawns the tap that reads it, which ends when the
-    /// dispatch drops its end.
+    /// [`Self::with_live_agent_output`] are set, the attempt's stall watch,
+    /// through `progress`, or the run's conductor, through `feed`. Spawns the
+    /// tap that reads it, which ends when the dispatch drops its end.
     ///
-    /// The watchdog asks the provider boundary for unscreened text, reasoning
-    /// and tool results as well, to tell a model that is thinking from a tool
-    /// that is running. They stay in the tap: the TUI still gets them only
-    /// under [`LiveAgentOutput::Trusted`].
+    /// The watchdog and the conductor ask the provider boundary for
+    /// unscreened text, reasoning and tool results as well: the watchdog to
+    /// tell a model that is thinking from a tool that is running, the
+    /// conductor to see the agent's messages. They stay in the tap: the TUI
+    /// still gets them only under [`LiveAgentOutput::Trusted`].
     pub(super) fn live_output_tap(
         &self,
         attempt: &WatchedAttempt<'_>,
         progress: Option<AttemptProgress>,
+        feed: Option<AttemptFeed>,
     ) -> Option<LiveOutput> {
         let tui = self.tui_bridge.clone().zip(self.live_agent_output);
-        if tui.is_none() && progress.is_none() {
+        if tui.is_none() && progress.is_none() && feed.is_none() {
             return None;
         }
         let forward_unscreened = matches!(tui, Some((_, LiveAgentOutput::Trusted)));
-        let trusted = forward_unscreened || progress.is_some();
+        let trusted = forward_unscreened || progress.is_some() || feed.is_some();
         let (sink, mut events) =
             tokio::sync::mpsc::channel::<LiveAgentEvent>(LIVE_OUTPUT_CHANNEL_CAPACITY);
         let agent_id = attempt.agent_id.to_string();
         let plan_id = attempt.plan_id.to_string();
         let task_id = attempt.task_id.to_string();
+        let mut feed = feed;
         tokio::spawn(async move {
             while let Some(event) = events.recv().await {
                 if let Some(progress) = &progress {
                     progress.observe(&event);
+                }
+                if let Some(feed) = feed.as_mut() {
+                    feed.push_live(&event);
                 }
                 if let Some((tui, _)) = &tui
                     && (forward_unscreened || matches!(event, LiveAgentEvent::ToolStep { .. }))
@@ -326,15 +346,17 @@ impl GraphTaskDispatcher {
     /// Drive an attempt's provider `dispatch` to its end, publishing a TUI
     /// heartbeat every [`AGENT_HEARTBEAT_INTERVAL`] so the dashboard's
     /// elapsed-time counter stays live, and checking `watch` every
-    /// [`STALL_CHECK_INTERVAL`]. A stalled attempt returns
-    /// [`AttemptStalled`]; `dispatch` is dropped with it, which cancels the
-    /// provider call.
+    /// [`STALL_CHECK_INTERVAL`]. An attempt that stalls, or that the
+    /// conductor restarts through `supervised`, returns
+    /// [`AttemptInterrupted`]; `dispatch` is dropped with it, which cancels
+    /// the provider call.
     pub(super) async fn run_watched<T>(
         &self,
         dispatch: impl Future<Output = T>,
         mut watch: Option<StallWatch>,
+        supervised: Option<&SupervisedAttempt>,
         attempt: &WatchedAttempt<'_>,
-    ) -> std::result::Result<T, AttemptStalled> {
+    ) -> std::result::Result<T, AttemptInterrupted> {
         let started_at = Instant::now();
         let mut heartbeat = tokio::time::interval(AGENT_HEARTBEAT_INTERVAL);
         heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -343,10 +365,17 @@ impl GraphTaskDispatcher {
         let mut stall_check = tokio::time::interval(STALL_CHECK_INTERVAL);
         stall_check.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         stall_check.tick().await;
-        tokio::pin!(dispatch);
+        let restarted = async {
+            match supervised {
+                Some(supervised) => supervised.restarted().await,
+                None => std::future::pending().await,
+            }
+        };
+        tokio::pin!(dispatch, restarted);
         loop {
             tokio::select! {
                 result = &mut dispatch => return Ok(result),
+                restart = &mut restarted => return Err(AttemptInterrupted::Restarted(restart)),
                 _ = heartbeat.tick() => {
                     if let Some(tui) = &self.tui_bridge {
                         tui.agent_heartbeat(
@@ -374,7 +403,7 @@ impl GraphTaskDispatcher {
         &self,
         watch: &mut StallWatch,
         attempt: &WatchedAttempt<'_>,
-    ) -> Option<AttemptStalled> {
+    ) -> Option<AttemptInterrupted> {
         let (silent_for, cancelled) = match watch.check(Instant::now()) {
             StallCheck::Healthy => return None,
             StallCheck::Silent(silent_for) => (silent_for, false),
@@ -393,7 +422,7 @@ impl GraphTaskDispatcher {
         if let Some(tui) = &self.tui_bridge {
             tui.diagnosis(diagnosis);
         }
-        cancelled.then_some(AttemptStalled { silent_for })
+        cancelled.then_some(AttemptInterrupted::Stalled(silent_for))
     }
 }
 
@@ -551,10 +580,7 @@ mod tests {
         );
         assert_ne!(silent.id, cancelled.id);
 
-        let error = AttemptStalled {
-            silent_for: secs(300),
-        }
-        .error(&attempt);
+        let error = AttemptInterrupted::Stalled(secs(300)).error(&attempt);
         assert!(matches!(error, RokoError::Timeout { .. }));
         assert!(error.to_string().contains("p1/T01 stalled"), "{error}");
     }
@@ -562,6 +588,12 @@ mod tests {
     /// A Claude CLI stand-in that reports progress once and then goes silent
     /// until `sleep` ends. Each launch appends a line to `launches`.
     fn silent_provider_script(dir: &Path, launches: &Path) -> PathBuf {
+        provider_script(dir, launches, 1)
+    }
+
+    /// [`silent_provider_script`] sending the same message `messages` times
+    /// before it goes silent, as an agent in a loop might.
+    fn provider_script(dir: &Path, launches: &Path, messages: usize) -> PathBuf {
         let script = dir.join("fake-claude.sh");
         std::fs::write(
             &script,
@@ -570,7 +602,11 @@ mod tests {
 set -eu
 cat >/dev/null
 echo launched >> '{}'
-printf '%s\n' '{{"type":"assistant","message":{{"id":"msg-1","content":[{{"type":"text","text":"reading the task"}}]}}}}'
+i=0
+while [ "$i" -lt {messages} ]; do
+  printf '%s\n' '{{"type":"assistant","message":{{"id":"msg-1","content":[{{"type":"text","text":"reading the task"}}]}}}}'
+  i=$((i + 1))
+done
 exec sleep 60
 "#,
                 launches.display()
@@ -634,6 +670,114 @@ exec sleep 60
             "max_retries": max_retries,
         })
         .to_string()
+    }
+
+    /// The diagnoses published on the hub so far.
+    fn drain_diagnoses(
+        events: &mut tokio::sync::broadcast::Receiver<
+            roko_runtime::event_bus::Envelope<DashboardEvent>,
+        >,
+    ) -> Vec<DiagnosisSummary> {
+        let mut diagnoses = Vec::new();
+        loop {
+            match events.try_recv() {
+                Ok(envelope) => {
+                    if let DashboardEvent::Diagnosis { summary } = envelope.payload {
+                        diagnoses.push(summary);
+                    }
+                }
+                Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => {}
+                Err(_) => return diagnoses,
+            }
+        }
+    }
+
+    /// A live cell for the task of [`stalled_task_json`].
+    fn stalled_task_cell(
+        dispatcher: Arc<GraphTaskDispatcher>,
+        max_retries: u32,
+    ) -> roko_graph::cells::TaskExecutorCell {
+        let cell_config = toml::Value::Table(toml::map::Map::from_iter([
+            ("plan_id".to_string(), toml::Value::String("p1".to_string())),
+            (
+                "title".to_string(),
+                toml::Value::String(STALLED_TASK_TITLE.to_string()),
+            ),
+            ("timeout_secs".to_string(), toml::Value::Integer(60)),
+            (
+                "max_retries".to_string(),
+                toml::Value::Integer(i64::from(max_retries)),
+            ),
+            (
+                "task_def_json".to_string(),
+                toml::Value::String(stalled_task_json(max_retries)),
+            ),
+        ]));
+        roko_graph::cells::TaskExecutorCell::live(cell_config, dispatcher)
+    }
+
+    /// The run's conductor restarts an attempt whose agent repeats itself
+    /// (the ghost-turn watcher of the default watchers), the task retries
+    /// under its `max_retries`, and each restart reaches the dashboard.
+    #[tokio::test]
+    async fn conductor_restart_retries_a_looping_task() {
+        let temp = tempdir().expect("tempdir");
+        let launches = temp.path().join("launches.log");
+        let script = provider_script(temp.path(), &launches, 4);
+        let mut config = watched_config(&script);
+        // Supervised, with the stall watchdog far behind the conductor.
+        config.conductor.silence_timeout_secs = 30;
+        config.conductor.task_stall_secs = 60;
+        let config = Arc::new(config);
+        let hub = crate::state_hub::shared_state_hub();
+        let mut hub_events = hub.subscribe_events();
+        let factory =
+            Arc::new(SharedAgentFactory::new(Arc::clone(&config), None, None, None).await);
+        let dispatcher = Arc::new(
+            GraphTaskDispatcher::new(factory, Arc::clone(&config), temp.path().to_path_buf())
+                .with_tui_bridge(TuiBridge::new(hub.sender()))
+                .with_conductor(
+                    Arc::new(roko_conductor::Conductor::from_config(&config.conductor)),
+                    crate::runner::conductor_adapter::ConductorRing::new(),
+                ),
+        );
+        let failed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let _ticker = dispatcher
+            .spawn_conductor_ticker(Duration::from_millis(200), {
+                let failed = Arc::clone(&failed);
+                move |_| failed.store(true, std::sync::atomic::Ordering::SeqCst)
+            })
+            .expect("the dispatcher is supervised");
+
+        let started = Instant::now();
+        let error = stalled_task_cell(dispatcher, 1)
+            .execute(
+                Vec::new(),
+                &CellContext::new().with_cell_id("T01".to_string()),
+            )
+            .await
+            .expect_err("a task that loops on every attempt fails");
+
+        assert!(error.to_string().contains("ghost-turn"), "{error}");
+        assert!(started.elapsed() < secs(30), "{:?}", started.elapsed());
+        let launched = std::fs::read_to_string(&launches).expect("launch log");
+        assert_eq!(
+            launched.lines().count(),
+            2,
+            "one retry under max_retries = 1"
+        );
+        assert!(
+            !failed.load(std::sync::atomic::Ordering::SeqCst),
+            "a restart does not stop the run"
+        );
+        let restarts = drain_diagnoses(&mut hub_events)
+            .iter()
+            .filter(|d| {
+                d.subject == "p1/T01"
+                    && d.intervention_taken.as_deref() == Some("restarted attempt")
+            })
+            .count();
+        assert_eq!(restarts, 2);
     }
 
     /// The streaming path cancels a stalled attempt the same way and ends it
@@ -703,23 +847,8 @@ exec sleep 60
             GraphTaskDispatcher::new(factory, Arc::clone(&config), temp.path().to_path_buf())
                 .with_tui_bridge(TuiBridge::new(hub.sender())),
         );
-        let cell_config = toml::Value::Table(toml::map::Map::from_iter([
-            ("plan_id".to_string(), toml::Value::String("p1".to_string())),
-            (
-                "title".to_string(),
-                toml::Value::String(STALLED_TASK_TITLE.to_string()),
-            ),
-            ("timeout_secs".to_string(), toml::Value::Integer(60)),
-            ("max_retries".to_string(), toml::Value::Integer(1)),
-            (
-                "task_def_json".to_string(),
-                toml::Value::String(stalled_task_json(1)),
-            ),
-        ]));
-        let cell = roko_graph::cells::TaskExecutorCell::live(cell_config, dispatcher);
-
         let started = Instant::now();
-        let error = cell
+        let error = stalled_task_cell(dispatcher, 1)
             .execute(
                 Vec::new(),
                 &CellContext::new().with_cell_id("T01".to_string()),
@@ -742,18 +871,7 @@ exec sleep 60
             "the stalled attempt is retried once under max_retries = 1"
         );
 
-        let mut diagnoses = Vec::new();
-        loop {
-            match hub_events.try_recv() {
-                Ok(envelope) => {
-                    if let DashboardEvent::Diagnosis { summary } = envelope.payload {
-                        diagnoses.push(summary);
-                    }
-                }
-                Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => {}
-                Err(_) => break,
-            }
-        }
+        let diagnoses = drain_diagnoses(&mut hub_events);
         let warnings = diagnoses
             .iter()
             .filter(|d| d.severity == DiagnosisSeverity::Warn && d.subject == "p1/T01")
@@ -793,13 +911,13 @@ exec sleep 60
         };
 
         let unwatched = dispatcher
-            .live_output_tap(&attempt, None)
+            .live_output_tap(&attempt, None, None)
             .expect("the TUI reads live output");
         assert!(!unwatched.trusted, "without the watchdog nothing changes");
 
         let watch = StallWatch::new(thresholds(1, 2));
         let live = dispatcher
-            .live_output_tap(&attempt, Some(watch.progress()))
+            .live_output_tap(&attempt, Some(watch.progress()), None)
             .expect("the watchdog reads live output");
         assert!(live.trusted);
         live.sink

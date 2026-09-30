@@ -1428,7 +1428,10 @@ mod tests {
     fn graph_text_maps_to_a_turn_that_is_meaningful_unless_empty() {
         let meaningful = |signal: Signal| {
             assert!(matches!(signal.kind, Kind::Custom(ref k) if k == GHOST_TURN_KIND));
-            signal.body.as_json::<serde_json::Value>().expect("json body")["output_meaningful"]
+            signal
+                .body
+                .as_json::<serde_json::Value>()
+                .expect("json body")["output_meaningful"]
                 .as_bool()
                 .expect("output_meaningful")
         };
@@ -1497,7 +1500,12 @@ mod tests {
             attempt_id: "run-1/plan-1/task-1/1".into(),
         })
         .expect("should map");
-        let ghost_run = vec![started.clone(), graph_text(""), graph_text(""), graph_text("")];
+        let ghost_run = vec![
+            started.clone(),
+            graph_text(""),
+            graph_text(""),
+            graph_text(""),
+        ];
         let eval = Conductor::default().evaluate_full(&ghost_run, &Context::now());
         assert!(
             matches!(eval.decision, ConductorDecision::Restart { ref watcher, .. } if watcher == "ghost-turn"),

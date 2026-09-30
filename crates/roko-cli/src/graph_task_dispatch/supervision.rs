@@ -5,7 +5,7 @@
 //! [`ConductorRing`] while its provider runs: its start, and the messages and
 //! tool calls of its live output, each tagged with its attempt key
 //! ([`ATTEMPT_TAG`]). The plan host runs [`GraphConductor::tick`] every
-//! [`SUPERVISION_INTERVAL`] ([`GraphTaskDispatcher::supervise_conductor`]),
+//! [`SUPERVISION_INTERVAL`] ([`GraphTaskDispatcher::spawn_conductor_ticker`]),
 //! which evaluates the conductor over each running attempt's own signals and
 //! acts on the decision:
 //!
@@ -37,6 +37,7 @@ use crate::runner::conductor_adapter::{
     ATTEMPT_TAG, ConductorRing, graph_task_event_to_signal, graph_text_turn_signal,
 };
 
+use super::watchdog::StallThresholds;
 use super::*;
 
 /// How often the plan host runs [`GraphConductor::tick`].
@@ -173,7 +174,13 @@ impl GraphConductor {
             .running
             .lock()
             .iter()
-            .map(|(key, attempt)| (key.clone(), attempt.plan_id.clone(), attempt.task_id.clone()))
+            .map(|(key, attempt)| {
+                (
+                    key.clone(),
+                    attempt.plan_id.clone(),
+                    attempt.task_id.clone(),
+                )
+            })
             .collect();
         if running.is_empty() {
             return None;
@@ -280,6 +287,68 @@ impl GraphConductor {
     }
 }
 
+/// Stops the conductor ticker when dropped.
+#[derive(Debug)]
+pub struct ConductorTicker {
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for ConductorTicker {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+impl GraphTaskDispatcher {
+    /// Supervise running attempts with the run's `conductor`, which reads the
+    /// signals they feed into `ring`, unless `[conductor]
+    /// silence_timeout_secs` and `task_stall_secs` are both 0, which turns
+    /// Graph supervision off. The plan host ticks it
+    /// ([`Self::spawn_conductor_ticker`]).
+    #[must_use]
+    pub fn with_conductor(mut self, conductor: Arc<Conductor>, ring: ConductorRing) -> Self {
+        if StallThresholds::from_config(&self.config.conductor).is_enabled() {
+            self.conductor = Some(GraphConductor::new(conductor, ring));
+        }
+        self
+    }
+
+    /// Register an attempt whose provider is about to run with the conductor,
+    /// if there is one.
+    pub(super) fn supervise_attempt(
+        &self,
+        attempt: &WatchedAttempt<'_>,
+    ) -> Option<SupervisedAttempt> {
+        self.conductor.as_ref().map(|conductor| {
+            conductor.supervise(attempt.plan_id, attempt.task_id, attempt.attempt_key)
+        })
+    }
+
+    /// Tick the conductor every `interval` until the returned handle drops.
+    /// A `Fail` goes to `on_stop`, once, and ends the ticking. `None` without
+    /// [`Self::with_conductor`].
+    pub fn spawn_conductor_ticker(
+        &self,
+        interval: Duration,
+        on_stop: impl FnOnce(ConductorStop) + Send + 'static,
+    ) -> Option<ConductorTicker> {
+        let conductor = self.conductor.clone()?;
+        let tui = self.tui_bridge.clone();
+        let task = tokio::spawn(async move {
+            let mut ticks = tokio::time::interval(interval);
+            ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                ticks.tick().await;
+                if let Some(stop) = conductor.tick(tui.as_ref()) {
+                    on_stop(stop);
+                    return;
+                }
+            }
+        });
+        Some(ConductorTicker { task })
+    }
+}
+
 /// Publish a conductor intervention as a dashboard diagnosis.
 fn publish_intervention(
     tui: Option<&TuiBridge>,
@@ -337,10 +406,13 @@ impl SupervisedAttempt {
     /// Resolves once the conductor restarts this attempt, with the reason.
     pub(super) async fn restarted(&self) -> ConductorRestart {
         self.cancel.cancelled().await;
-        self.restart.get().cloned().unwrap_or_else(|| ConductorRestart {
-            watcher: "conductor".to_string(),
-            reason: "restart requested".to_string(),
-        })
+        self.restart
+            .get()
+            .cloned()
+            .unwrap_or_else(|| ConductorRestart {
+                watcher: "conductor".to_string(),
+                reason: "restart requested".to_string(),
+            })
     }
 
     /// The provider call ended, successfully when `succeeded`. If the
@@ -421,6 +493,7 @@ mod tests {
     use roko_core::{Body, Context, React};
 
     use super::*;
+    use crate::graph_task_dispatch::tests::make_bare_dispatcher;
 
     /// A watcher that fires at `severity` on any stream that has a message.
     struct FiresOnMessages {
@@ -438,7 +511,10 @@ mod tests {
 
     impl React for FiresOnMessages {
         fn decide(&self, stream: &[Signal], _ctx: &Context) -> Vec<Signal> {
-            if !stream.iter().any(|signal| matches!(signal.kind, Kind::Custom(_))) {
+            if !stream
+                .iter()
+                .any(|signal| matches!(signal.kind, Kind::Custom(_)))
+            {
                 return Vec::new();
             }
             vec![
@@ -496,7 +572,11 @@ mod tests {
             });
         }
 
-        assert_eq!(conductor.tick(None), None, "a restart does not stop the run");
+        assert_eq!(
+            conductor.tick(None),
+            None,
+            "a restart does not stop the run"
+        );
         let restart = tokio::time::timeout(Duration::from_secs(1), looping.restarted())
             .await
             .expect("the looping attempt is restarted");
@@ -506,7 +586,10 @@ mod tests {
             "{}",
             restart.error()
         );
-        assert!(!working.cancel.is_cancelled(), "the other task keeps running");
+        assert!(
+            !working.cancel.is_cancelled(),
+            "the other task keeps running"
+        );
         assert_eq!(
             attempt_signals(&conductor, "run-1/p1/T01/1"),
             0,
@@ -540,12 +623,82 @@ mod tests {
         );
 
         attempt.feed().push_live(&text("hello"));
-        let stop = conductor.tick(None).expect("a critical finding stops the run");
+        let stop = conductor
+            .tick(None)
+            .expect("a critical finding stops the run");
         assert_eq!(stop.watcher, "fires-on-messages");
-        assert_eq!((stop.plan_id.as_str(), stop.task_id.as_str()), ("p1", "T01"));
+        assert_eq!(
+            (stop.plan_id.as_str(), stop.task_id.as_str()),
+            ("p1", "T01")
+        );
         let message = stop.to_string();
         assert!(message.contains("fires-on-messages"), "{message}");
         assert!(message.contains("the agent said something"), "{message}");
+    }
+
+    fn watched() -> WatchedAttempt<'static> {
+        WatchedAttempt {
+            agent_id: "p1/T01",
+            plan_id: "p1",
+            task_id: "T01",
+            attempt_key: "run-1/p1/T01/1",
+        }
+    }
+
+    #[tokio::test]
+    async fn conductor_ticker_stops_the_run_naming_the_watcher() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let dispatcher = make_bare_dispatcher(RokoConfig::default(), temp.path())
+            .await
+            .with_conductor(
+                Arc::new(Conductor::with_watchers(vec![Box::new(FiresOnMessages {
+                    severity: "critical",
+                })])),
+                ConductorRing::with_capacity(64),
+            );
+        let (stop_tx, stop_rx) = tokio::sync::oneshot::channel();
+        let _ticker = dispatcher
+            .spawn_conductor_ticker(Duration::from_millis(50), move |stop| {
+                let _ = stop_tx.send(stop);
+            })
+            .expect("the dispatcher is supervised");
+        let attempt = dispatcher
+            .supervise_attempt(&watched())
+            .expect("the dispatcher is supervised");
+        attempt.feed().push_live(&text("hello"));
+
+        let stop = tokio::time::timeout(Duration::from_secs(5), stop_rx)
+            .await
+            .expect("the ticker stops the run")
+            .expect("the stop is handed over");
+        assert_eq!(stop.watcher, "fires-on-messages");
+        assert!(
+            stop.to_string().contains("the agent said something"),
+            "{stop}"
+        );
+    }
+
+    #[tokio::test]
+    async fn with_both_thresholds_off_nothing_is_supervised() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let mut config = RokoConfig::default();
+        config.conductor.silence_timeout_secs = 0;
+        config.conductor.task_stall_secs = 0;
+        let dispatcher = make_bare_dispatcher(config, temp.path())
+            .await
+            .with_conductor(Arc::new(Conductor::default()), ConductorRing::new());
+
+        assert!(dispatcher.stall_watch().is_none());
+        assert!(dispatcher.supervise_attempt(&watched()).is_none());
+        assert!(
+            dispatcher
+                .spawn_conductor_ticker(SUPERVISION_INTERVAL, |_| {})
+                .is_none()
+        );
+        assert!(
+            dispatcher.live_output_tap(&watched(), None, None).is_none(),
+            "no TUI, no watchdog and no conductor: no live output"
+        );
     }
 
     #[test]

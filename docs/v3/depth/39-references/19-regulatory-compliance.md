@@ -49,9 +49,6 @@ Content provenance tracking standard for establishing the origin and modificatio
 
 ## DeFi-Specific Compliance
 
-**[Zbandut et al., 2025]** *Vault Disclosure Requirements for Agent-Operated DeFi Strategies.* 2025.
-Emerging disclosure requirements for agent-operated DeFi vaults. Identifies transparency obligations for autonomous agents managing pooled assets.
-
 ---
 
 ## Trust and Liability
@@ -63,7 +60,7 @@ Legal analysis of trust and liability in autonomous agent systems. Examines how 
 
 ## Affective Data Privacy
 
-**[Anonymous, 2025]** *Affective Computing and Emotional Data: Challenges in Privacy Regulations.* arXiv:2509.20153.
+**[Fabiano, 2025]** *Affective Computing and Emotional Data: Challenges in Privacy Regulations.* arXiv:2509.20153.
 Privacy implications of emotion-aware AI under the EU AI Act. The Daimon's affect state could constitute sensitive personal data in regulated domains. Informs compliance requirements for Daimon deployment.
 
 ---

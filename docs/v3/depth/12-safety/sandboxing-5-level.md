@@ -244,7 +244,7 @@ canonical workspace, not at disposable attempt worktrees. This prevents:
 
 | Paper | Contribution |
 |---|---|
-| ActPlane (2025, arXiv:2606.25189) | Layered execution planes for LLM agents |
+| ActPlane (Zheng et al. 2025, arXiv:2606.25189) | Layered execution planes for LLM agents |
 | Saltzer & Schroeder (1975) | Principle of least privilege |
 | Provos (2003) | Preventing Privilege Escalation (systrace) |
 | Watson et al. (2010) | Capsicum -- capability-based sandboxing |

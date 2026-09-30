@@ -1186,7 +1186,7 @@ under non-death framing, organized by research domain.
 - **Grasse (1959)** -- "La reconstruction du nid." _Insectes Sociaux_ 6. Stigmergy.
 - **Rogers (1988)** -- "Does Biology Constrain Culture?" _American Anthropologist_ 90(4). Rogers' Paradox.
 - **Enquist et al. (2007)** -- "Critical Social Learning." _American Anthropologist_ 109(4). Resolves Rogers' Paradox.
-- **Bhatt et al. (2023)** -- "Learning Few-Shot Imitation as Cultural Transmission." _Nature Communications_ 14, 7536.
+- **Bhoopchand et al. (2023)** -- "Learning Few-Shot Imitation as Cultural Transmission." _Nature Communications_ 14, 7536.
 - **Bourahla et al. (2022)** -- "Knowledge Transmission Across Generations." _AAMAS_, pp. 163-171.
 - **Perez et al. (2024)** -- "Artificial Generational Intelligence." arXiv:2406.00392.
 - **Woolley et al. (2010)** -- "Evidence for a Collective Intelligence Factor." _Science_ 330(6004).
@@ -1216,13 +1216,12 @@ under non-death framing, organized by research domain.
 
 ### 15.11 Affective Computing
 
-- **Cabrera-Paniagua & Rubilar-Torrealba (2023)** -- "Autonomous Stock Market Agents with Somatic Markers." _JAIHC._
 - **March (1991)** -- "Exploration and Exploitation in Organizational Learning." _Organization Science_ 2(1).
 
 ### 15.12 AI Safety
 
 - **Orseau & Armstrong (2016)** -- "Safely Interruptible Agents." _UAI._ Agent deletion as safe interruption.
-- **Debenedetti et al. (2025)** -- "CaMeL." arXiv:2503.18813.
+- **Debenedetti et al. (2025)** -- "Defeating Prompt Injections by Design." arXiv:2503.18813.
 
 ### 15.13 Distributed Systems
 

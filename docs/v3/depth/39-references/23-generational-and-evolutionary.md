@@ -27,14 +27,8 @@ The genome is ~1000x smaller than brain connectivity information, yet organisms 
 
 ## Cultural and Vertical Transmission
 
-**[Bhatt et al., 2023]** *Few-Shot Imitation as Cultural Transmission.* Working paper.
+**[Bhoopchand et al., 2023]** *Learning few-shot imitation as cultural transmission.* Working paper.
 Cultural transmission produces cumulative learning across agent populations. Few-shot imitation enables cross-agent learning.
-
-**[Bourahla et al., 2022]** *Vertical Transmission Enables Agents to Exceed Performance Ceilings.* Working paper.
-Inter-generational knowledge transfer enables exceeding individual ceilings. Grounds NeuroStore backup/restore as the mechanism for vertical knowledge inheritance.
-
-**[Perez et al., 2024]** *Pure Imitation Leads to Stagnation.* AGI 2024.
-Novelty requires mixing inheritance and exploration. Pure imitation without innovation leads to convergence. Motivates the 15% contrarian retrieval mandate and anti-proletarianization.
 
 ---
 
@@ -43,7 +37,7 @@ Novelty requires mixing inheritance and exploration. Pure imitation without inno
 **[Mouret & Clune, 2015]** *Illuminating Search Spaces by Mapping Elites (MAP-Elites).* arXiv:1504.04909.
 Quality-diversity algorithm maintaining high-performing diverse solutions across feature space. Grounds the EvoSkills skill library -- maintaining a diverse repertoire of strategies, not just the single best.
 
-**[GVU, 2024]** *Genome Value Update: Quality-Diversity for Robust Multi-Strategy Evolution.* Working paper.
+**[GVU, 2024]** *Self-Improving AI Agents through Self-Play.* Working paper.
 Quality-diversity framework for evolving robust multi-strategy systems. Extends MAP-Elites with genome-level value tracking.
 
 ---

@@ -12,13 +12,13 @@
 **[Zhang et al., 2026]** *ACE: Agentic Context Engineering.* ICLR 2026. arXiv:2510.04618.
 Generator-Reflector-Curator cycle; +10.6% on AppWorld. Three-role architecture maps to Roko's compose-verify-persist loop.
 
-**[Samsung Research, 2025]** *CSO: Context State Object Architecture.* arXiv:2511.03728.
+**[Vijayvargiya & Lokesh, 2025]** *Efficient On-Device Agents via Adaptive Context Management.* arXiv:2511.03728.
 Structured compression: 6x initial reduction, 10--25x growth rate reduction. Grounds structured context in `roko-compose`.
 
-**[Kang et al., 2025]** *ACON: Agentic Context Compression.* arXiv:2510.00615.
+**[Kang et al., 2025]** *ACON: Optimizing Context Compression for Long-horizon LLM Agents.* arXiv:2510.00615.
 Failure-driven compression: 26--54% peak token reduction. Learns which compressions preserve task-relevant information.
 
-**[Lindenbauer et al., 2025]** *Observation Masking in Agent Context.* NeurIPS 2025.
+**[Lindenbauer et al., 2025]** *The Complexity Trap: Simple Observation Masking Is as Efficient as LLM Summarization for Agent Context Management.* NeurIPS 2025.
 T0 suppression: halves cost while matching summarization quality. Validates the T0 probe approach.
 
 ---
@@ -38,7 +38,7 @@ RAG architecture foundation. Roko's per-tick context assembly is structural RAG.
 **[Sarthi et al., 2024]** *RAPTOR: Recursive Abstractive Processing for Tree-Organized Retrieval.* ICLR 2024.
 Hierarchical retrieval via recursive summarization. Informs multi-tier knowledge retrieval.
 
-**[Gutierrez, Yang & Yu, 2024]** *HippoRAG: Neurobiologically-Inspired Long-Term Memory.* arXiv:2405.14831.
+**[Gutierrez et al., 2024]** *HippoRAG: Neurobiologically-Inspired Long-Term Memory.* arXiv:2405.14831.
 Hippocampal-inspired pattern separation and completion. Informs NeuroStore retrieval.
 
 ---
@@ -48,7 +48,7 @@ Hippocampal-inspired pattern separation and completion. Informs NeuroStore retri
 **[Liu et al., 2024]** *Lost in the Middle.* TACL 2024. arXiv:2307.03172.
 U-shaped attention: models attend most to beginning and end. Grounds position-based prompt assembly.
 
-**[Du et al., 2025]** *Context Length Hurts: Even Whitespace Degrades Performance.* EMNLP 2025.
+**[Du et al., 2025]** *Context Length Alone Hurts LLM Performance Despite Perfect Retrieval.* EMNLP 2025.
 13.9--85% degradation from unnecessary context. Mandates aggressive compression.
 
 **[Shi et al., 2023]** *Large Language Models Can Be Easily Distracted by Irrelevant Context.* ICML 2023.
@@ -84,34 +84,34 @@ Compression evaluation methodology. Informs quality metrics.
 
 ## 2026 Additions: PEEK, VISTA, ECS, Scroll, ACE extensions
 
-**[PEEK, 2026]** *PEEK: Orientation Cache for Agents.* arXiv:2605.19932.
+**[Gu et al., 2026]** *PEEK: Context Map as an Orientation Cache for Long-Context LLM Agents.* arXiv:2605.19932.
 Constant-token orientation cache with Distiller/Cartographer/Evictor. 93--145 fewer iterations, 1.7--5.8x lower cost. Target for 10th SystemPromptBuilder layer.
 
-**[VISTA, 2026]** *VISTA: Proprioceptive Context Dashboard.* arXiv:2606.30005.
+**[VISTA, 2026]** *LLM Agents Are Latent Context Managers: Eliciting Self-Managed Context via State Proprioception.* arXiv:2606.30005.
 Proprioceptive context dashboard for agents. Informs self-awareness context injection alongside Named Surfaces.
 
-**[ECS, 2026]** *ECS: Entropic Context Shaping.* arXiv:2601.11585.
+**[Kim, 2026]** *ECS: Entropic Context Shaping.* arXiv:2601.11585.
 Entropy-based context shaping provides information-theoretic context management.
 
-**[Scroll, 2026]** *Scroll: Context as Executable Environment.* arXiv:2608.21690.
+**[Lin et al., 2026]** *Scroll: Context as Executable Environment.* arXiv:2608.21690.
 Context window as executable environment. Frontier design for context management.
 
-**[TACO, 2026]** *TACO: Self-Evolving Compression Rules for Terminal Output.* arXiv:2604.19572.
+**[Ren et al., 2026]** *A Self-Evolving Framework for Efficient Terminal Agents via Observational Context Compression.* arXiv:2604.19572.
 Self-evolving compression for terminal output. Informs gate output compression.
 
-**[Arbiter, 2026]** *Arbiter: System Prompt Interference Detection.* arXiv:2603.08993.
+**[Mason, 2026]** *Arbiter: Detecting Interference in LLM Agent System Prompts.* arXiv:2603.08993.
 Detecting interference between system prompt components. Informs 9-layer prompt quality assurance.
 
-**[Li et al., 2025]** *NAACL 2025 Prompt Compression Survey.* arXiv:2410.12388.
+**[Li et al., 2025]** *Prompt Compression for Large Language Models: A Survey.* arXiv:2410.12388.
 Comprehensive survey of prompt compression techniques.
 
-**[Chain of Draft, 2025]** *Chain of Draft.* Zoom Research. arXiv:2502.18600.
+**[Xu et al., 2025]** *Chain of Draft.* arXiv:2502.18600.
 5-word intermediate reasoning steps. Ultra-compact reasoning format.
 
-**[RECOMP, 2024]** *RECOMP.* ICLR 2024. arXiv:2310.04408.
+**[Xu et al., 2024]** *RECOMP.* ICLR 2024. arXiv:2310.04408.
 Compressing retrieved documents before generation.
 
-**[Promptomatix, 2025]** *Promptomatix.* arXiv:2507.14241.
+**[Murthy et al., 2025]** *Promptomatix: An Automatic Prompt Optimization Framework for Large Language Models.* arXiv:2507.14241.
 Prompt optimization framework for structured prompts.
 
 ---

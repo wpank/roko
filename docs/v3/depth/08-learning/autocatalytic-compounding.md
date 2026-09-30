@@ -181,7 +181,7 @@ subsets). This applies when groups of subsystems form emergent coalitions:
 the cascade router + provider health + cost normalization form a "routing
 coalition" that is more than the sum of its parts.
 
-### 4.3 Polya Urn Model (Loreto & Tria 2014)
+### 4.3 Polya Urn Model (Tria et al. 2014)
 
 The Polya urn model for innovation predicts that the rate of discovery
 accelerates as the knowledge base grows: each new discovery opens adjacent
@@ -467,8 +467,8 @@ requisite connectivity.
   Selection in Evolution*. Oxford University Press.
 - Hu, S. et al. (2025). Automated Design of Agentic Systems. *ICLR 2025*.
 - Chen, T. et al. (2023). EvoSkills: Emergent Skill Evolution for
-  Open-World Robot Learning. arXiv:2306.09536.
-- Loreto, V. & Tria, F. (2014). The Dynamics of Innovation: Polya Urn
-  Models Revisited. arXiv:1401.4420.
+  Open-World Robot Learning.
+- Tria, F., Loreto, V., Servedio, V.D.P. & Strogatz, S.H. (2014). The Dynamics of
+  Correlated Novelties. *Scientific Reports* 4, 5890. doi:10.1038/srep05890.
 - Wang, G. et al. (2023). Voyager: An Open-Ended Embodied Agent with
   Large Language Models. *NeurIPS 2023 (Oral)*.

@@ -221,7 +221,7 @@ agent applies a self-critique prompt ("Does this hypothesis describe how to
 do something harmful?"). The CA self-critique is fast (single forward pass)
 and catches obvious cases.
 
-Reference: **Constitutional Classifiers (Anthropic 2025, arXiv:2501.18837)**:
+Reference: **Constitutional Classifiers (Sharma et al. 2025, arXiv:2501.18837)**:
 Against 10,000 jailbreak prompts on Claude 3.5 Sonnet, baseline success rate
 = 86%. With Constitutional Classifiers: **4.4%** -- a >95% reduction.
 
@@ -428,7 +428,7 @@ cooldown_cycles = 3
 | Grasse (1959), Insectes Sociaux | Stigmergy: indirect coordination with evaporation |
 | Selective-FD, Nature Communications (2023) | Share only high-confidence predictions |
 | Anthropic, Constitutional AI | Self-critique as first-line safety filter |
-| Anthropic (2025), arXiv:2501.18837 | Constitutional Classifiers: >95% jailbreak reduction |
+| Sharma et al. (2025), arXiv:2501.18837 | Constitutional Classifiers: >95% jailbreak reduction |
 | Filevich et al. (2015), J. Neuroscience | Lucid dreaming: metacognition applied to dream monitoring |
 | Lin et al. (2025), arXiv:2504.13171 | Query predictability determines sleep-time effectiveness |
 | "Time Can Invalidate Algorithmic Recourse," FAccT (2025) | Temporal invalidation in non-stationary environments |

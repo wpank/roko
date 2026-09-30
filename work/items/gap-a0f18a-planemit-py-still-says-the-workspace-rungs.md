@@ -3,13 +3,15 @@ id = "gap-a0f18a"
 kind = "gap"
 title = "planemit.py still says the workspace rungs are inert, and plan validate doesn't list which rungs will run"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p3"
 goal = "truth"
 size = "S"
 subsystem = ["benchmarks/viabilitybench/driver", "roko-cli/plan_validate"]
 created = 2026-09-30
 updated = 2026-09-30
+last_verified = 2026-09-30
+last_verified_rev = "b128de876"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-gates's report, checked on work/bug-5b43a9 at 7b25c478b)"
 anchors = ["benchmarks/viabilitybench/driver/planemit.py", "crates/roko-cli/src/plan_validate.rs"]
@@ -44,3 +46,7 @@ Honest verdicts (epic spec-e9d7ec): the benchmark and users should know which ch
 
 - [ ] Both are true.
 - [ ] The `[[verify]]` command passes.
+
+## Notes
+
+- 2026-09-30 (wk-gates): Implemented on `work/gap-3506f1b` at `1cb14e268`; cargo verification deferred to the batch check. The Roko arm's one rung is its visible check, the same command as its verify step, so plan run skips it as a duplicate and the check runs once per attempt, which is what the arm wants. `roko plan validate` prints the rungs after its diagnostics (name, command, and whether each runs), then the plans that opt out; `--json` adds `workspace_rungs` when the workspace declares any. The driver's `test_run_roko.py` passes (10 passed, 3 skipped that need a built roko).

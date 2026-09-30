@@ -11,7 +11,7 @@ subsystem = ["roko-cli/graph_task_dispatch"]
 created = 2026-09-29
 updated = 2026-09-30
 last_verified = 2026-09-30
-last_verified_rev = "8a88c6267"
+last_verified_rev = "b128de876"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (20:01, wk-bench-rokoarm's report on gap-b7ab99)"
 anchors = ["crates/roko-cli/src/graph_task_dispatch/inert_settings.rs::graph_engine_inert_settings", "crates/roko-cli/src/graph_task_dispatch/verification.rs::settle_task_verification", "crates/roko-cli/src/run.rs::prompt_verify_steps", "crates/roko-core/src/config/gates.rs::GatesConfig"]
@@ -79,3 +79,4 @@ There are two options:
 - Found: the task prompt's "Verification Commands" (`dispatch/prompt_builder.rs`) lists only `task.verify`, so an agent is not told about the rungs that gate it. The T0 reflex path (`graph_task_dispatch.rs`, `task.verify.is_empty()`) can serve a task without running the rungs. A workspace rung that already fails fails every plan task, since Graph verification filters no pre-existing failures (gap-161be1).
 - 2026-09-30 (wk-gates): the `run.rs` part is implemented at `93d7e2f13`, after merging batch 12a; cargo verification deferred to the batch check. `prompt_verify_steps` builds `roko run`'s steps from the same `GatesConfig::required_rungs` and `VerifyStep::from` that plan tasks use, so the two cannot drift; behaviour is unchanged. The pre-verify tamper screen (`red_flags.rs::attempt_diff_policy`) now also protects the scripts that rungs run, since plan tasks run the rungs (test `editing_a_workspace_rung_script_is_tampering`). Still open, as follow-ups rather than this item's Done when: the plan opt-out and the T0 reflex check need `graph_task_dispatch.rs` (held for batch 12b), and `plan validate` listing the rungs needs `plan_validate.rs`.
 - 2026-09-30 (wk-gates): the fix adds a per-plan opt-out, `[meta] workspace_rungs = false`, because a rung that already fails on the base would otherwise fail every task (gap-161be1).
+- 2026-09-30 (wk-gates): the plan opt-out is implemented on `work/gap-3506f1b` at `2d1fdf93b` (docs at `1cb14e268`); cargo verification deferred to the batch check. A plan with `[meta] workspace_rungs = false` keeps its tasks to their own verify steps. The dispatcher reads the key once per plan through the `<plan_dir>/tasks.toml` reader it already used for `skip_enrichment` (now `read_plan_meta`), so `plan_runner.rs` needed no change. Verification and the tamper screen use it through `plan_rungs`, and so do the reflex check (bug-b4c565) and the prompt (gap-191ecd). Test `a_plan_can_opt_out_of_the_workspace_rungs`. `plan validate` lists the rungs (gap-a0f18a). Everything this item's Done when asks for is now on the branch.

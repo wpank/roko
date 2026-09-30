@@ -1895,8 +1895,13 @@ async fn run_claude_cli_via_agent(
         return Err(anyhow::anyhow!("cancelled"));
     }
 
+    // Claude's permission checks stay on unless the workspace opts out with
+    // `runner.dangerously_skip_permissions`.
+    let skip_permissions = roko_core::config::loader::load_config_unified(workdir)
+        .is_ok_and(|config| config.runner.dangerously_skip_permissions);
     let mut agent = ClaudeCliAgent::new(CLAUDE_CLI_BIN, workdir, model_slug)
-        .with_settings_json(build_settings_json());
+        .with_settings_json(build_settings_json())
+        .with_dangerously_skip_permissions(skip_permissions);
     if let Some(mcp_path) = mcp_config {
         agent = agent.with_mcp_config(mcp_path);
     }

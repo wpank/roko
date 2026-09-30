@@ -422,6 +422,7 @@ pub fn build_router(
 
     // Terminal routes always require auth + scope when enabled, even on loopback.
     let terminal = if terminal_enabled {
+        crate::terminal::start_session_reaper(&state);
         crate::terminal::routes()
             .layer(axum::middleware::from_fn_with_state(
                 Arc::clone(&state),
@@ -2138,6 +2139,48 @@ mod tests {
             StatusCode::SERVICE_UNAVAILABLE,
             "GET /relay/health without auth"
         );
+        assert_eq!(body["code"], "agent_relay_not_configured");
+    }
+
+    /// A member-level `agent:write` key may mutate `/relay/*`: RBAC applies
+    /// the declared `AgentSpawn` row instead of the `ConfigEdit` catch-all
+    /// that only admins hold (bug-928add).
+    #[tokio::test]
+    async fn relay_mutation_uses_declared_agent_spawn_permission() {
+        let plaintext = "relay-agent-writer";
+        let mut config = RokoConfig::default();
+        config.serve.auth.enabled = true;
+        config.serve.auth.api_keys = vec![roko_core::config::ApiKeyEntry {
+            name: "relay-writer".into(),
+            key_hash: middleware::hash_api_key(plaintext),
+            scope: "agent:write".into(),
+            created_at: chrono::Utc::now().to_rfc3339(),
+            expires_at: None,
+            last_used_at: None,
+            previous_key_hashes: Vec::new(),
+        }];
+        let (_dir, app) = build_test_router(config);
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("/relay/agents")
+            .header("X-Api-Key", plaintext)
+            .header("Content-Type", "application/json")
+            .body(Body::from("{}"))
+            .expect("build request");
+        let response = app.oneshot(req).await.expect("oneshot");
+        let status = response.status();
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .expect("collect body")
+            .to_bytes();
+        let body: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
+        assert_ne!(status, StatusCode::FORBIDDEN, "RBAC denied: {body}");
+        // No relay is configured in tests, so the request reaches the proxy
+        // and stops there.
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
         assert_eq!(body["code"], "agent_relay_not_configured");
     }
 

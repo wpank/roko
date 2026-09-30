@@ -407,6 +407,10 @@ pub struct ChatAgentSession {
     pub provider_base_url: Option<String>,
     /// Env var name for the provider's API key (e.g. `ANTHROPIC_API_KEY`).
     pub provider_api_key_env: Option<String>,
+    /// Run Claude with `--dangerously-skip-permissions`. Mirrors the
+    /// workspace's `runner.dangerously_skip_permissions`, which is off by
+    /// default, so skipping Claude's permission checks is an explicit opt-in.
+    pub dangerously_skip_permissions: bool,
 }
 
 impl ChatAgentSession {
@@ -465,6 +469,7 @@ impl ChatAgentSession {
             timeout,
             provider_base_url,
             provider_api_key_env,
+            dangerously_skip_permissions: config.runner.dangerously_skip_permissions,
         })
     }
 
@@ -1010,7 +1015,8 @@ impl ChatAgentSession {
         )
         .with_effort(&self.effort)
         .with_bare_mode(false)
-        .with_credential_scrub(self.credential_scrub());
+        .with_credential_scrub(self.credential_scrub())
+        .with_dangerously_skip_permissions(self.dangerously_skip_permissions);
 
         if !self.system_prompt.is_empty() {
             agent = agent.with_system_prompt(&self.system_prompt);
@@ -1209,6 +1215,7 @@ impl ChatAgentSession {
             timeout: self.timeout,
             provider_base_url: self.provider_base_url.clone(),
             provider_api_key_env: self.provider_api_key_env.clone(),
+            dangerously_skip_permissions: self.dangerously_skip_permissions,
         }
     }
 }
@@ -1251,7 +1258,9 @@ fn build_streaming_command(session: &ChatAgentSession, program: &Path) -> TokioC
         cmd.arg("--resume").arg(resume);
     }
 
-    cmd.arg("--dangerously-skip-permissions");
+    if session.dangerously_skip_permissions {
+        cmd.arg("--dangerously-skip-permissions");
+    }
     cmd.arg("--max-turns")
         .arg(OperatingFrequency::Theta.turn_limit().to_string());
 
@@ -2058,6 +2067,7 @@ mod tests {
             timeout: Some(Duration::from_secs(30)),
             provider_base_url: None,
             provider_api_key_env: None,
+            dangerously_skip_permissions: false,
         }
     }
 
@@ -2078,6 +2088,7 @@ mod tests {
             timeout: Some(Duration::from_secs(5)),
             provider_base_url: None,
             provider_api_key_env: None,
+            dangerously_skip_permissions: false,
         }
     }
 
@@ -2183,6 +2194,29 @@ mod tests {
         assert_eq!(env_values(&chat_env, workdir_claude_md), ["1"]);
         // A variable the request sets itself wins over the isolation's.
         assert_eq!(env_values(&dispatch.env, workdir_claude_md), ["0"]);
+    }
+
+    /// `roko chat` skips Claude's permission checks only when the workspace
+    /// opts in with `runner.dangerously_skip_permissions`, on both the
+    /// streaming turn and the `ClaudeCliAgent` path.
+    #[test]
+    fn chat_skips_permissions_only_when_configured() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut session = streaming_test_session(tmp.path().to_path_buf());
+        for enabled in [false, true] {
+            session.dangerously_skip_permissions = enabled;
+            let streaming = build_streaming_command(&session, Path::new("claude"));
+            let skips = streaming
+                .as_std()
+                .get_args()
+                .any(|arg| arg == "--dangerously-skip-permissions");
+            assert_eq!(skips, enabled, "streaming turn");
+            let debug = agent_debug(&session);
+            assert!(
+                debug.contains(&format!("dangerously_skip_permissions: {enabled}")),
+                "{debug}"
+            );
+        }
     }
 
     #[test]

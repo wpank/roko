@@ -179,7 +179,9 @@ async fn run_agent_capture_impl(
             extra_args,
             effort: Some(opts.effort.unwrap_or("medium").to_string()),
             bare_mode: true,
-            dangerously_skip_permissions: true,
+            // Provider permission checks stay on unless the workspace opts
+            // out with `runner.dangerously_skip_permissions`.
+            dangerously_skip_permissions: routing_config.runner.dangerously_skip_permissions,
             name: format!("{}:{model}", resolved.provider_kind.label()),
             role: opts.role.map(str::to_string),
         },

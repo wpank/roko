@@ -333,7 +333,10 @@ impl ClaudeCliAgent {
             credential_scrub: CredentialScrub::for_kind(ProviderKind::ClaudeCli),
             mcp_config: None,
             resume: None,
-            dangerously_skip_permissions: true,
+            // Safe by default: Claude's own permission checks stay on unless
+            // the caller opts out, normally from
+            // `runner.dangerously_skip_permissions`.
+            dangerously_skip_permissions: false,
             timeout_ms: DEFAULT_REQUEST_TIMEOUT_MS,
             resource_limits: None,
             name: format!("claude-cli:{model}"),
@@ -486,7 +489,10 @@ impl ClaudeCliAgent {
         self
     }
 
-    /// Toggle `--dangerously-skip-permissions` for role-gated policy.
+    /// Toggle `--dangerously-skip-permissions`. Off unless a caller turns it
+    /// on; callers pass the workspace's `runner.dangerously_skip_permissions`
+    /// (or a role-gated policy), so skipping Claude's permission checks is
+    /// always an explicit choice.
     #[must_use]
     pub const fn with_dangerously_skip_permissions(mut self, enabled: bool) -> Self {
         self.dangerously_skip_permissions = enabled;
@@ -2691,7 +2697,8 @@ printf '%s\n' '{{"type":"content_block_delta","delta":{{"text":"hello"}}}}'
             .with_system_prompt("system guidance")
             .with_allowed_tools("Read,Edit")
             .with_resume("session-123")
-            .with_bare_mode(true);
+            .with_bare_mode(true)
+            .with_dangerously_skip_permissions(true);
 
         let result = agent.run(&prompt("hi there"), &Context::now()).await;
         assert!(result.success);
@@ -2724,6 +2731,42 @@ printf '%s\n' '{{"type":"content_block_delta","delta":{{"text":"hello"}}}}'
 
         let prompt_text = fs::read_to_string(&capture_prompt).unwrap();
         assert_eq!(prompt_text, "hi there");
+    }
+
+    #[tokio::test]
+    async fn new_agent_keeps_claude_permission_checks_on() {
+        let tmp = tempdir().unwrap();
+        let capture_args = tmp.path().join("args.txt");
+        let script = tmp.path().join("claude-fake.sh");
+        let script_body = format!(
+            r#"#!/bin/sh
+set -eu
+args_file="{args_file}"
+printf '%s\n' "$@" > "$args_file"
+cat >/dev/null
+printf '%s\n' '{{"type":"content_block_delta","delta":{{"text":"ok"}}}}'
+"#,
+            args_file = capture_args.display(),
+        );
+        fs::write(&script, script_body).unwrap();
+        #[cfg(unix)]
+        {
+            let mut perms = fs::metadata(&script).unwrap().permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&script, perms).unwrap();
+        }
+
+        // No opt-in: the default constructor must not skip permissions.
+        let agent = ClaudeCliAgent::new(&script, tmp.path(), "claude-test-model");
+        let result = agent.run(&prompt("x"), &Context::now()).await;
+        assert!(
+            result.success,
+            "{}",
+            result.output.body.as_text().unwrap_or("unknown")
+        );
+
+        let args_text = fs::read_to_string(&capture_args).unwrap();
+        assert!(!args_text.contains("--dangerously-skip-permissions"));
     }
 
     #[tokio::test]

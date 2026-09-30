@@ -154,6 +154,7 @@ async fn start_bench_run(
         kind: BenchRunKind::Manual,
         overrides: body.overrides.clone(),
         label: body.label.clone(),
+        simulated: body.overrides.strategy.is_simulated(),
         status: BenchRunStatus::Running,
         started_at,
         finished_at: None,
@@ -168,21 +169,25 @@ async fn start_bench_run(
         tracing::warn!(error = %e, "failed to save initial bench run");
     }
 
-    // Add index entry.
-    let index_entry = BenchRunIndexEntry {
-        id: run_id.clone(),
-        suite_id: suite.id.clone(),
-        suite_name: suite.name.clone(),
-        status: BenchRunStatus::Running,
-        started_at,
-        finished_at: None,
-        label: body.label.clone(),
-        model: body.overrides.model.clone(),
-        pass_rate: None,
-        total_cost_usd: None,
-    };
-    if let Err(err) = bench::append_index_entry(&state.workdir, &index_entry).await {
-        tracing::warn!(error = %err, "failed to append bench run index entry");
+    // Add index entry. The index feeds the run list, the pareto frontier and
+    // the cost summary, so a simulated (Demo) run never enters it; its run
+    // file, marked `simulated`, is still readable by id.
+    if !run.simulated {
+        let index_entry = BenchRunIndexEntry {
+            id: run_id.clone(),
+            suite_id: suite.id.clone(),
+            suite_name: suite.name.clone(),
+            status: BenchRunStatus::Running,
+            started_at,
+            finished_at: None,
+            label: body.label.clone(),
+            model: body.overrides.model.clone(),
+            pass_rate: None,
+            total_cost_usd: None,
+        };
+        if let Err(err) = bench::append_index_entry(&state.workdir, &index_entry).await {
+            tracing::warn!(error = %err, "failed to append bench run index entry");
+        }
     }
 
     // Publish start event.
@@ -232,6 +237,9 @@ async fn execute_bench_run(
 
     // Build a CostTable from the live config for accurate cost estimation.
     let cost_table = CostTable::from_config_with_defaults(&state.roko_config.load().models);
+    // A Demo run's tokens and cost are simulated: it stays out of the index
+    // (update_index_entry would add it) and out of regression checks.
+    let simulated = overrides.strategy.is_simulated();
 
     let bench_workdir = match scaffold_bench_workdir(&suite, &run_id).await {
         Ok(path) => path,
@@ -252,20 +260,24 @@ async fn execute_bench_run(
                 }
             }
 
-            let failed_index_entry = BenchRunIndexEntry {
-                id: run_id.clone(),
-                suite_id: suite.id.clone(),
-                suite_name: suite.name.clone(),
-                status: BenchRunStatus::Failed,
-                started_at,
-                finished_at: Some(finished_at),
-                label: label.clone(),
-                model: overrides.model.clone(),
-                pass_rate: None,
-                total_cost_usd: None,
-            };
-            if let Err(err) = bench::update_index_entry(&state.workdir, &failed_index_entry).await {
-                tracing::warn!(error = %err, run_id = %run_id, "failed to update index for failed bench run");
+            if !simulated {
+                let failed_index_entry = BenchRunIndexEntry {
+                    id: run_id.clone(),
+                    suite_id: suite.id.clone(),
+                    suite_name: suite.name.clone(),
+                    status: BenchRunStatus::Failed,
+                    started_at,
+                    finished_at: Some(finished_at),
+                    label: label.clone(),
+                    model: overrides.model.clone(),
+                    pass_rate: None,
+                    total_cost_usd: None,
+                };
+                if let Err(err) =
+                    bench::update_index_entry(&state.workdir, &failed_index_entry).await
+                {
+                    tracing::warn!(error = %err, run_id = %run_id, "failed to update index for failed bench run");
+                }
             }
 
             state.active_bench_runs.write().await.remove(&run_id);
@@ -521,22 +533,24 @@ async fn execute_bench_run(
     }
 
     // Update index entry.
-    let index_entry = BenchRunIndexEntry {
-        id: run_id.clone(),
-        suite_id: suite.id.clone(),
-        suite_name: suite.name.clone(),
-        status: BenchRunStatus::Completed,
-        started_at,
-        finished_at: Some(finished_at),
-        label,
-        model: overrides.model.clone(),
-        // A run with no graded task has no pass rate. Leaving it unset keeps
-        // the run off the pareto frontier instead of plotting it at 0%.
-        pass_rate: (summary.passed + summary.failed > 0).then_some(summary.pass_rate),
-        total_cost_usd: Some(summary.total_cost_usd),
-    };
-    if let Err(err) = bench::update_index_entry(&state.workdir, &index_entry).await {
-        tracing::warn!(error = %err, run_id = %run_id, "failed to update bench run index at completion");
+    if !simulated {
+        let index_entry = BenchRunIndexEntry {
+            id: run_id.clone(),
+            suite_id: suite.id.clone(),
+            suite_name: suite.name.clone(),
+            status: BenchRunStatus::Completed,
+            started_at,
+            finished_at: Some(finished_at),
+            label,
+            model: overrides.model.clone(),
+            // A run with no graded task has no pass rate. Leaving it unset
+            // keeps the run off the pareto frontier instead of plotting it at 0%.
+            pass_rate: (summary.passed + summary.failed > 0).then_some(summary.pass_rate),
+            total_cost_usd: Some(summary.total_cost_usd),
+        };
+        if let Err(err) = bench::update_index_entry(&state.workdir, &index_entry).await {
+            tracing::warn!(error = %err, run_id = %run_id, "failed to update bench run index at completion");
+        }
     }
 
     // Publish completion event.
@@ -549,7 +563,9 @@ async fn execute_bench_run(
     //
     // Convert current bench results into TaskMetric records and compare
     // against a baseline computed from prior completed bench runs.
-    run_bench_regression(&state, &run_id, &suite.id, &results, &overrides).await;
+    if !simulated {
+        run_bench_regression(&state, &run_id, &suite.id, &results, &overrides).await;
+    }
 
     // Clean up handle.
     state.active_bench_runs.write().await.remove(&run_id);
@@ -644,6 +660,7 @@ async fn start_matrix_run(
             kind: BenchRunKind::Manual,
             overrides: lane_config.overrides.clone(),
             label: lane_config.label.clone(),
+            simulated: lane_config.overrides.strategy.is_simulated(),
             status: BenchRunStatus::Running,
             started_at: lane_started_at,
             finished_at: None,
@@ -656,21 +673,23 @@ async fn start_matrix_run(
             tracing::warn!(error = %e, lane_id = %run_id, "failed to save initial lane bench run");
         }
 
-        // Add index entry for this lane.
-        let index_entry = BenchRunIndexEntry {
-            id: run_id.clone(),
-            suite_id: suite.id.clone(),
-            suite_name: suite.name.clone(),
-            status: BenchRunStatus::Running,
-            started_at: lane_started_at,
-            finished_at: None,
-            label: lane_config.label.clone(),
-            model: lane_config.overrides.model.clone(),
-            pass_rate: None,
-            total_cost_usd: None,
-        };
-        if let Err(err) = bench::append_index_entry(&state.workdir, &index_entry).await {
-            tracing::warn!(error = %err, lane_id = %run_id, "failed to append lane index entry");
+        // Add index entry for this lane, unless its figures are simulated.
+        if !run.simulated {
+            let index_entry = BenchRunIndexEntry {
+                id: run_id.clone(),
+                suite_id: suite.id.clone(),
+                suite_name: suite.name.clone(),
+                status: BenchRunStatus::Running,
+                started_at: lane_started_at,
+                finished_at: None,
+                label: lane_config.label.clone(),
+                model: lane_config.overrides.model.clone(),
+                pass_rate: None,
+                total_cost_usd: None,
+            };
+            if let Err(err) = bench::append_index_entry(&state.workdir, &index_entry).await {
+                tracing::warn!(error = %err, lane_id = %run_id, "failed to append lane index entry");
+            }
         }
 
         // Publish per-lane start event.
@@ -1200,7 +1219,10 @@ async fn bench_regression_report(
     let baseline_metrics: Vec<TaskMetric> = runs
         .iter()
         .filter(|run| {
-            run.id != run_id && run.suite_id == suite_id && run.status == BenchRunStatus::Completed
+            run.id != run_id
+                && run.suite_id == suite_id
+                && run.status == BenchRunStatus::Completed
+                && !run.simulated
         })
         .flat_map(|run| {
             let model = run.overrides.model.as_deref().unwrap_or("unknown");
@@ -2094,6 +2116,7 @@ mod tests {
             kind: BenchRunKind::Manual,
             overrides: overrides.clone(),
             label: None,
+            simulated: false,
             status: BenchRunStatus::Completed,
             started_at: 1_700_000_000,
             finished_at: Some(1_700_000_100),
@@ -2124,6 +2147,88 @@ mod tests {
             .expect("the stored run gives the check a baseline");
         assert!(report.sufficient_data);
         assert!(report.has_regressions, "{report:?}");
+    }
+
+    fn bench_state() -> (tempfile::TempDir, Arc<AppState>) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let deploy_backend = Arc::from(
+            crate::deploy::create_backend("manual", None, None, None).expect("manual backend"),
+        );
+        let state = AppState::new(
+            dir.path().to_path_buf(),
+            Arc::new(crate::runtime::NoOpRuntime),
+            roko_core::config::schema::RokoConfig::default(),
+            deploy_backend,
+        )
+        .expect("AppState::new");
+        (dir, Arc::new(state))
+    }
+
+    /// Start a smoke-suite run through the handler, wait until it is done,
+    /// and return its id.
+    async fn run_smoke_bench(state: &Arc<AppState>, strategy: &str, model: &str) -> String {
+        let request: StartBenchRequest = serde_json::from_value(json!({
+            "suite_id": "smoke",
+            "overrides": { "model": model, "strategy": strategy }
+        }))
+        .expect("bench request");
+        let response = start_bench_run(State(Arc::clone(state)), Json(request))
+            .await
+            .expect("start bench run")
+            .into_response();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("response body");
+        let started: Value = serde_json::from_slice(&body).expect("JSON body");
+        let run_id = started["id"].as_str().expect("run id").to_string();
+
+        // execute_bench_run drops the run's handle as its last step.
+        for _ in 0..1_500 {
+            if !state.active_bench_runs.read().await.contains_key(&run_id) {
+                return run_id;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        panic!("bench run {run_id} did not finish");
+    }
+
+    #[tokio::test]
+    async fn demo_bench_runs_stay_out_of_the_index() {
+        let (_dir, state) = bench_state();
+        let demo_id = run_smoke_bench(&state, "demo", "demo-model").await;
+        let real_id = run_smoke_bench(&state, "minimal", "real-model").await;
+
+        // The demo run is stored and readable by id, marked simulated...
+        let demo = bench::load_bench_run(&state.workdir, &demo_id)
+            .await
+            .expect("load demo run")
+            .expect("demo run stored");
+        assert!(demo.simulated);
+        assert_eq!(demo.status, BenchRunStatus::Completed);
+        let real = bench::load_bench_run(&state.workdir, &real_id)
+            .await
+            .expect("load real run")
+            .expect("real run stored");
+        assert!(!real.simulated);
+
+        // ...but only the measured run is indexed, so the run list, the
+        // pareto frontier and the cost summary never see demo figures.
+        let indexed: Vec<String> = bench::load_index_entries(&state.workdir)
+            .await
+            .into_iter()
+            .map(|entry| entry.id)
+            .collect();
+        assert_eq!(indexed, vec![real_id]);
+        let frontier = bench::compute_pareto_frontier(&state.workdir).await;
+        assert!(frontier.iter().all(|point| point.run_id != demo_id));
+        let Json(costs) = cost_summary(State(Arc::clone(&state))).await;
+        let models: Vec<&str> = costs["models"]
+            .as_array()
+            .expect("models")
+            .iter()
+            .filter_map(|row| row["model"].as_str())
+            .collect();
+        assert_eq!(models, vec!["real-model"]);
     }
 
     #[test]

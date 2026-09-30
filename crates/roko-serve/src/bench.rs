@@ -163,6 +163,14 @@ pub enum BenchStrategy {
     Demo,
 }
 
+impl BenchStrategy {
+    /// Whether runs with this strategy report simulated tokens and cost
+    /// rather than measured ones. Only [`BenchStrategy::Demo`] does.
+    pub const fn is_simulated(self) -> bool {
+        matches!(self, Self::Demo)
+    }
+}
+
 #[allow(clippy::trivially_copy_pass_by_ref)]
 fn is_default_bench_strategy(strategy: &BenchStrategy) -> bool {
     matches!(strategy, BenchStrategy::Minimal)
@@ -402,6 +410,12 @@ pub struct BenchRun {
     /// Optional label.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
+    /// Whether the run's tokens and cost were simulated (the Demo strategy).
+    /// A simulated run is stored so it can be read by id, but it never
+    /// enters the index, so the run list, the pareto frontier, the cost
+    /// summary and regression baselines leave it out.
+    #[serde(default)]
+    pub simulated: bool,
     /// Run status.
     pub status: BenchRunStatus,
     /// When the run started — serialized as ISO 8601.

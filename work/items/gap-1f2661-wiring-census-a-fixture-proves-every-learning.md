@@ -2,15 +2,16 @@
 id = "gap-1f2661"
 kind = "gap"
 title = "Wiring census: a fixture proves every learning loop reads the settled attempt record (S01.P0-11, S01.P0-12)"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p1"
 goal = "truth"
 size = "M"
 subsystem = ["roko-cli/tests", "roko-cli/graph_execution"]
 created = 2026-09-29
-updated = 2026-09-29
-last_verified = 2026-09-29
+updated = 2026-09-30
+last_verified = 2026-09-30
+last_verified_rev = "a8159e1ec"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e4"
 discovered_from = "tmp/cybernetic-harness/specs/S01-instrumentation.md (P0-11, P0-12, §4.8, §5.8, §7)"
 anchors = ["crates/roko-cli/tests/learning_wiring_census.rs", "crates/roko-cli/src/graph_execution/plan_runner.rs::run_graph_plan_body"]
@@ -20,6 +21,11 @@ links = { depends_on = ["gap-96f7ed"], blocks = [], related = ["gap-cd3529"], su
 
 [[verify]]
 command = "grep -rqw 'fn loop_census_fixture_settles_one_record_per_attempt' crates/roko-cli/tests/ && grep -rqw 'fn graph_dispatcher_production_wiring_census' crates/roko-cli/tests/ && cargo test -p roko-cli --test learning_wiring_census"
+
+[closed]
+at = 2026-09-30
+by = "coordinator (session 7622b882)"
+evidence = "Merged in 9313e49f0. Batch 12a gate on the merged tree (MAIN a8159e1ec has the same tree as gated 265acb18b): cargo check --workspace --tests, nightly fmt --check (after the coordinator's rustfmt commits a3509fc46 and 6144df24b) and clippy -p roko-cli -p roko-learn -p roko-core -p roko-agent -p roko-gate -p roko-serve --no-deps -D warnings clean; lib tests pass: roko-cli 3133, roko-core 1938, roko-learn 1196, roko-serve 958, roko-gate 689, roko-agent 2257 (its one failure, a_timed_out_attempt_reports_the_usage_it_streamed, is a load flake at load 77 that passes alone). Verify: cargo test -p roko-cli --test learning_wiring_census on the merged tree: 2 passed (loop_census_fixture_settles_one_record_per_attempt, graph_dispatcher_production_wiring_census)."
 +++
 
 ## Problem

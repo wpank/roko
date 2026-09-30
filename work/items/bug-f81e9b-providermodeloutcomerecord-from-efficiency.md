@@ -2,15 +2,16 @@
 id = "bug-f81e9b"
 kind = "bug"
 title = "ProviderModelOutcomeRecord::from_efficiency_event reads the efficiency row's outcome, which carries no learning label"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "cybernetic"
 size = "S"
 subsystem = ["roko-learn/provider_model_outcome"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-09-30
 last_verified = 2026-09-30
+last_verified_rev = "a8159e1ec"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-settle's report on gap-88c547, branch work/gap-88c547 at 24b23580d)"
 anchors = ["crates/roko-learn/src/provider_model_outcome.rs"]
@@ -20,6 +21,11 @@ links = { depends_on = ["gap-88c547"], blocks = [], related = ["gap-88c547", "ga
 
 [[verify]]
 command = "grep -rqw 'fn outcome_records_carry_the_settled_learning_label' crates/roko-learn/src/ && cargo test -p roko-learn --lib outcome_records_carry_the_settled_learning_label"
+
+[closed]
+at = 2026-09-30
+by = "coordinator (session 7622b882)"
+evidence = "Merged in a5f1d160f. from_efficiency_event now records an outcome only for rows with a gate verdict (and bench rows), so Graph dispatch rows no longer count as failed provider outcomes in serve's projection. Batch 12a gate on the merged tree (MAIN a8159e1ec has the same tree as gated 265acb18b): cargo check --workspace --tests, nightly fmt --check (after the coordinator's rustfmt commits a3509fc46 and 6144df24b) and clippy -p roko-cli -p roko-learn -p roko-core -p roko-agent -p roko-gate -p roko-serve --no-deps -D warnings clean; lib tests pass: roko-cli 3133, roko-core 1938, roko-learn 1196, roko-serve 958, roko-gate 689, roko-agent 2257 (its one failure, a_timed_out_attempt_reports_the_usage_it_streamed, is a load flake at load 77 that passes alone). Verify: outcome_records_carry_the_settled_learning_label passes (roko-learn lib)."
 +++
 
 ## Problem

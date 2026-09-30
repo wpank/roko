@@ -2,7 +2,7 @@
 id = "bug-f3969d"
 kind = "bug"
 title = "InFlightTasks keeps every ended attempt for the life of the process"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p3"
 goal = "tooling"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/graph_task_dispatch"]
 created = 2026-09-30
 updated = 2026-09-30
 last_verified = 2026-09-30
+last_verified_rev = "a8159e1ec"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-tamper's report, branch work/gap-b72761 at 7531304ca)"
 anchors = ["crates/roko-cli/src/graph_task_dispatch/sibling_settle.rs"]
@@ -20,6 +21,11 @@ links = { depends_on = ["gap-b72761"], blocks = [], related = ["gap-b72761"], su
 
 [[verify]]
 command = "grep -rqw 'fn in_flight_tasks_forget_settled_attempts' crates/roko-cli/src/ && cargo test -p roko-cli --lib in_flight_tasks_forget_settled_attempts"
+
+[closed]
+at = 2026-09-30
+by = "coordinator (session 7622b882)"
+evidence = "Merged in 77809b4b4. Batch 12a gate on the merged tree (MAIN a8159e1ec has the same tree as gated 265acb18b): cargo check --workspace --tests, nightly fmt --check (after the coordinator's rustfmt commits a3509fc46 and 6144df24b) and clippy -p roko-cli -p roko-learn -p roko-core -p roko-agent -p roko-gate -p roko-serve --no-deps -D warnings clean; lib tests pass: roko-cli 3133, roko-core 1938, roko-learn 1196, roko-serve 958, roko-gate 689, roko-agent 2257 (its one failure, a_timed_out_attempt_reports_the_usage_it_streamed, is a load flake at load 77 that passes alone). Verify: in_flight_tasks_forget_settled_attempts passes (roko-cli lib)."
 +++
 
 ## Problem

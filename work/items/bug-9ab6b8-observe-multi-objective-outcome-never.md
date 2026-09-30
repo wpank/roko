@@ -2,7 +2,7 @@
 id = "bug-9ab6b8"
 kind = "bug"
 title = "observe_multi_objective_outcome never advances stage_tracking or refreshes the Pareto frontier"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "cybernetic"
@@ -11,6 +11,7 @@ subsystem = ["roko-learn/cascade_router"]
 created = 2026-09-30
 updated = 2026-09-30
 last_verified = 2026-09-30
+last_verified_rev = "a8159e1ec"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-router2's report, branch work/bug-f68404 at 732728ee8)"
 anchors = ["crates/roko-learn/src/cascade_router.rs"]
@@ -20,6 +21,11 @@ links = { depends_on = [], blocks = [], related = ["bug-f68404", "bug-605a8a"], 
 
 [[verify]]
 command = "grep -rqw 'fn multi_objective_observations_advance_the_stage_and_the_frontier' crates/roko-learn/src/ && cargo test -p roko-learn --lib multi_objective_observations_advance_the_stage_and_the_frontier"
+
+[closed]
+at = 2026-09-30
+by = "coordinator (session 7622b882)"
+evidence = "Merged in a5f1d160f. Batch 12a gate on the merged tree (MAIN a8159e1ec has the same tree as gated 265acb18b): cargo check --workspace --tests, nightly fmt --check (after the coordinator's rustfmt commits a3509fc46 and 6144df24b) and clippy -p roko-cli -p roko-learn -p roko-core -p roko-agent -p roko-gate -p roko-serve --no-deps -D warnings clean; lib tests pass: roko-cli 3133, roko-core 1938, roko-learn 1196, roko-serve 958, roko-gate 689, roko-agent 2257 (its one failure, a_timed_out_attempt_reports_the_usage_it_streamed, is a load flake at load 77 that passes alone). Verify: multi_objective_observations_advance_the_stage_and_the_frontier passes (roko-learn lib)."
 +++
 
 ## Problem

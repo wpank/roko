@@ -2539,6 +2539,7 @@ const KNOWN_META_FIELDS: &[&str] = &[
     "skip_enrichment",
     "failure_policy",
     "workspace_rungs",
+    "verify",
 ];
 
 /// Required field names for the `[meta]` section.

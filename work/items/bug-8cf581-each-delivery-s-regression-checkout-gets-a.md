@@ -3,13 +3,14 @@ id = "bug-8cf581"
 kind = "bug"
 title = "Each delivery's regression checkout gets a new temporary path, so workspace crates rebuild every delivery and leave stale artifacts"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p2"
 goal = "golden-path"
 size = "S"
 subsystem = ["roko-cli/graph_execution/delivery"]
 created = 2026-09-30
 updated = 2026-09-30
+last_verified = 2026-09-30
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-integrate's report, checked on work/bug-453481 at 2eeda438d)"
 anchors = ["crates/roko-cli/src/graph_execution/delivery.rs"]
@@ -42,3 +43,10 @@ Integration and a whole-plan check (epic spec-a0e40a): deliveries are slow, and 
 
 - [ ] Consecutive deliveries reuse one checkout path, and the target directory doesn't grow per delivery.
 - [ ] The `[[verify]]` command passes.
+
+## Notes
+
+- 2026-09-30 (wk-integrate): Implemented on `work/spec-f830c4` at `3584ddee4`; cargo verification deferred to the batch check.
+  - Every delivery's regression runs in `.roko/state/regression-checkout`, reset to the merge commit (`checkout --detach --force`, then `clean -ffd`). An exclusive lock on `regression-checkout.lock` serializes it across processes. Anything else at that path is left alone, and the delivery fails saying so.
+  - Tests: `regression_checkouts_reuse_a_stable_path`; `regression_runs_in_a_separate_checkout_of_the_merge` (was `…_temporary_…`) and `batch_branch_merges_plan_in_temp_worktree` now expect that path.
+  - The target dir's growth was not measured; the stable path is what lets Cargo reuse the previous build.

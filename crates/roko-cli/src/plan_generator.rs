@@ -245,6 +245,7 @@ const KNOWN_META_FIELDS: &[&str] = &[
     "skip_enrichment",
     "failure_policy",
     "workspace_rungs",
+    "verify",
 ];
 
 #[allow(dead_code)]

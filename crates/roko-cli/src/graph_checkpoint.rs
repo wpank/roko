@@ -72,6 +72,10 @@ pub const TASK_OUTCOME_EXTENSION: &str = "roko.task.outcome@1";
 /// branch (spec-f830c4).
 pub const BATCH_EXTENSION: &str = "roko.batch@1";
 
+/// Known extension namespace for the plan's whole-plan check (`[meta]
+/// verify`, gap-60233f) when it ran in the shared working tree.
+pub const PLAN_VERIFY_EXTENSION: &str = "roko.plan.verify@1";
+
 /// Lifecycle state persisted beside a Graph Activity recording.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -776,6 +780,16 @@ impl PreparedGraphCheckpoint {
         Ok(())
     }
 
+    /// Record the plan's whole-plan check (gap-60233f) under
+    /// [`PLAN_VERIFY_EXTENSION`]. The next terminal write persists it.
+    pub fn record_plan_verify(&mut self, value: serde_json::Value) -> Result<()> {
+        self.manifest.extensions.insert(
+            PLAN_VERIFY_EXTENSION.to_string(),
+            host_extension(PLAN_VERIFY_EXTENSION, value)?,
+        );
+        Ok(())
+    }
+
     /// The delivery receipt an earlier process of this checkpoint recorded
     /// with [`Self::record_batch_delivery`], if any.
     #[must_use]
@@ -1467,6 +1481,35 @@ pub fn recorded_batch_branch(workdir: &Path, plan_id: &str) -> Option<String> {
     manifest["extensions"][BATCH_EXTENSION]["value"]["branch"]
         .as_str()
         .map(ToOwned::to_owned)
+}
+
+/// Why plan `plan_id`'s whole-plan check failed, as its checkpoint recorded
+/// it: the failed `[meta] verify` step in the shared working tree, or the
+/// failed delivery into the run's batch branch, whose regression check runs
+/// those steps. `None` when it passed or never ran.
+#[must_use]
+pub fn recorded_plan_check_failure(workdir: &Path, plan_id: &str) -> Option<String> {
+    let manifest = workdir
+        .join(".roko/state/graph")
+        .join(safe_plan_component(plan_id))
+        .join("checkpoint.json");
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(manifest).ok()?).ok()?;
+    let extensions = &manifest["extensions"];
+    let verify = &extensions[PLAN_VERIFY_EXTENSION]["value"]["failure"];
+    if let Some(command) = verify["command"].as_str() {
+        let output = verify["output"].as_str().unwrap_or_default();
+        return Some(format!("`{command}` failed: {output}"));
+    }
+    let batch = &extensions[BATCH_EXTENSION]["value"];
+    match batch["state"].as_str() {
+        Some("delivered") | None => None,
+        Some(state) => Some(format!(
+            "delivery into {} ended {state}: {}",
+            batch["branch"].as_str().unwrap_or("the batch branch"),
+            batch["error"].as_str().unwrap_or("no reason recorded")
+        )),
+    }
 }
 
 /// Last status recorded in `plan_id`'s canonical checkpoint under

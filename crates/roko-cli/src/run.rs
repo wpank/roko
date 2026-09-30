@@ -677,6 +677,7 @@ fn prompt_tasks_file(
             source_prd: None,
             failure_policy: None,
             workspace_rungs: None,
+            verify: Vec::new(),
         },
         tasks: vec![TaskDef {
             id: "T1".to_string(),

@@ -1040,6 +1040,27 @@ async fn run_graph_plan_body(
     .with_tui_bridge(dispatcher_tui_bridge)
     .with_live_agent_output(live_agent_output);
 
+    // ── Whole-plan checks (gap-60233f) ──
+    // Each plan's `[meta] verify`, or the default for a Cargo workspace,
+    // runs on the plan's integrated result once its tasks all passed.
+    let rust_workspace = workdir.join("Cargo.toml").is_file();
+    let cargo = if rust_workspace && plans.iter().any(|plan| plan.tasks.meta.verify.is_empty()) {
+        super::plan_set::CargoWorkspace::load(workdir).await
+    } else {
+        None
+    };
+    let plan_checks: HashMap<String, Vec<crate::task_parser::VerifyStep>> = plans
+        .iter()
+        .map(|plan| {
+            let footprint = rust_workspace
+                .then(|| super::plan_set::PlanFootprint::of(plan, workdir, cargo.as_ref()));
+            (
+                plan.id.clone(),
+                super::plan_verify::plan_verify_steps(plan, footprint.as_ref()),
+            )
+        })
+        .collect();
+
     // ── Batch integration (spec-f830c4) ──
     // Under --worktree-per-task every plan whose tasks all passed is
     // delivered into one batch branch, and every plan's attempts start from
@@ -1071,6 +1092,9 @@ async fn run_graph_plan_body(
     // ── Per-task worktree isolation (opt-in via --worktree-per-task) ──
     let mut workspace_provider: Option<Arc<dyn roko_graph::workspace::ExecutionWorkspaceProvider>> =
         None;
+    // The attempt checkouts' manager, which each plan tells its run
+    // (bug-056b40).
+    let mut worktrees: Option<crate::orchestrator::worktree::WorktreeManager> = None;
     if worktree_per_task {
         use crate::orchestrator::worktree::{WorktreeConfig, WorktreeManager};
         let worktree_manager = WorktreeManager::new(WorktreeConfig {
@@ -1082,6 +1106,7 @@ async fn run_graph_plan_body(
             max_live: None,
             idle_ttl: std::time::Duration::from_hours(1),
         });
+        worktrees = Some(worktree_manager.clone());
         let provider = Arc::new(
             crate::graph_execution::WorktreeExecutionWorkspaceProvider::new(worktree_manager),
         );
@@ -1093,7 +1118,7 @@ async fn run_graph_plan_body(
     }
     // The same provider settles the worktrees the rich topology's executors
     // hand on to their gates.
-    let cell_resources = plan_cell_resources(rich_topology, workspace_provider);
+    let cell_resources = plan_cell_resources(rich_topology, &roko_config.gates, workspace_provider);
 
     // ── Conductor supervision (spec-a0403b) ───────────────────────────
     //
@@ -1285,6 +1310,8 @@ async fn run_graph_plan_body(
         worktree_per_task,
         cell_resources: &cell_resources,
         batch: batch.as_ref(),
+        plan_checks: &plan_checks,
+        worktrees: worktrees.as_ref(),
         quiet,
         json,
         launch_tui,
@@ -1682,6 +1709,16 @@ async fn run_graph_plan_body(
                 plan_count, total_tasks, total_cost_usd,
             );
         }
+        // Name the plans that did not succeed, such as one whose delivery
+        // into the batch branch failed its regression check (spec-f830c4).
+        let failed_plans = plan_outcomes
+            .iter()
+            .filter(|(_, succeeded)| !**succeeded)
+            .map(|(plan_id, _)| plan_id.as_str())
+            .collect::<Vec<_>>();
+        if !failed_plans.is_empty() {
+            println!("Plans that did not succeed: {}", failed_plans.join(", "));
+        }
     }
 
     Ok(match stopped_by {
@@ -1964,6 +2001,10 @@ struct PlanRunContext<'a> {
     cell_resources: &'a roko_graph::cell::CellResources,
     /// The run's batch branch, under `--worktree-per-task` (spec-f830c4).
     batch: Option<&'a super::batch::BatchIntegration>,
+    /// Each plan's whole-plan check (gap-60233f), by plan id.
+    plan_checks: &'a HashMap<String, Vec<crate::task_parser::VerifyStep>>,
+    /// The attempt checkouts' manager, under `--worktree-per-task`.
+    worktrees: Option<&'a crate::orchestrator::worktree::WorktreeManager>,
     quiet: bool,
     json: bool,
     launch_tui: bool,
@@ -1985,18 +2026,22 @@ struct PlanRunContext<'a> {
 }
 
 /// Services the cells of a plan's graph run with (gap-6daad9). The rich
-/// topology's `plan.gate` cells run the gates, and settle the worktree each
-/// task executor hands on through `workspaces`, the provider the executors
-/// acquire them from. The default topology needs neither.
+/// topology's `plan.gate` cells run the gates, with the run's `[gates]`,
+/// and settle the worktree each task executor hands on through `workspaces`,
+/// the provider the executors acquire them from. The default topology needs
+/// neither.
 fn plan_cell_resources(
     rich_topology: bool,
+    gates: &roko_core::config::GatesConfig,
     workspaces: Option<Arc<dyn roko_graph::workspace::ExecutionWorkspaceProvider>>,
 ) -> roko_graph::cell::CellResources {
     if !rich_topology {
         return roko_graph::cell::CellResources::default();
     }
     roko_graph::cell::CellResources {
-        gates: Some(Arc::new(crate::runner::gate_adapter::default_gate_adapter())),
+        gates: Some(Arc::new(
+            crate::runner::gate_adapter::default_gate_adapter().with_gates_config(gates.clone()),
+        )),
         workspaces,
     }
 }
@@ -2361,6 +2406,25 @@ async fn run_one_plan(
         ctx.graph_task_dispatcher
             .attach_run_invocation(&run_id, inv);
     }
+    // A resumed run's attempts continue from the plan branch its earlier
+    // process accepted work onto, and re-attach the checkouts it kept
+    // (bug-056b40).
+    if let Some(worktrees) = ctx.worktrees {
+        match worktrees.begin_plan_run(&plan.id, &run_id).await {
+            Ok(Some(tip)) => tracing::info!(
+                plan_id = %plan.id,
+                %run_id,
+                %tip,
+                "resumed run: the plan's attempts start from its plan branch"
+            ),
+            Ok(None) => {}
+            Err(error) => tracing::warn!(
+                plan_id = %plan.id,
+                %error,
+                "could not read the plan branch; the plan's attempts start from the run's base"
+            ),
+        }
+    }
     let replayed_entries = checkpoint.replayed_entries();
     ctx.graph_task_dispatcher
         .attach_plan_budget_checkpoint(&plan.id, checkpoint.take_cost_ledger())?;
@@ -2619,11 +2683,25 @@ async fn run_one_plan(
         interrupted_by.is_some(),
         was_cancelled_by_tui,
     );
-    // spec-f830c4: a plan whose tasks all passed is delivered into the run's
-    // batch branch, and succeeds only when that delivery does.
+    // A plan whose tasks all passed is checked as a whole (gap-60233f): under
+    // --worktree-per-task by its delivery into the run's batch branch, whose
+    // regression check runs its steps on the merge (spec-f830c4); otherwise
+    // in the shared working tree. It succeeds only when that check passes.
+    let plan_checks = ctx.plan_checks.get(&plan.id).map_or(&[][..], Vec::as_slice);
     let outcome = match ctx.batch {
         Some(batch) if outcome.succeeded() => {
-            deliver_plan_to_batch(batch, plan, &mut checkpoint, graph_tui_bridge).await?
+            deliver_plan_to_batch(batch, plan, plan_checks, &mut checkpoint, graph_tui_bridge)
+                .await?
+        }
+        None if outcome.succeeded() && !plan_checks.is_empty() => {
+            check_plan_in_place(
+                ctx.workdir,
+                plan,
+                plan_checks,
+                &mut checkpoint,
+                graph_tui_bridge,
+            )
+            .await?
         }
         _ => outcome,
     };
@@ -2756,6 +2834,7 @@ async fn run_one_plan(
 async fn deliver_plan_to_batch(
     batch: &super::batch::BatchIntegration,
     plan: &crate::runner::plan_loader::Plan,
+    checks: &[crate::task_parser::VerifyStep],
     checkpoint: &mut crate::graph_checkpoint::PreparedGraphCheckpoint,
     graph_tui_bridge: &crate::runner::graph_tui_bridge::GraphTuiBridge,
 ) -> anyhow::Result<PlanOutcome> {
@@ -2766,9 +2845,12 @@ async fn deliver_plan_to_batch(
         );
         return Ok(PlanOutcome::Succeeded);
     };
+    // The regression check is the plan's whole-plan check (gap-60233f).
+    let backend = super::delivery::GitDeliveryBackend::new(batch.repo().to_path_buf())
+        .with_regression_steps(checks.iter().map(|step| step.command.clone()).collect());
     let service = super::delivery::CliCompletionDeliveryService::with_store(
         batch.store().clone(),
-        Arc::new(plan_regression_backend(batch.repo(), plan)),
+        Arc::new(backend),
     );
     let request = batch.request(&plan.id, verified);
     let receipt = match batch
@@ -2813,18 +2895,40 @@ async fn deliver_plan_to_batch(
     Ok(PlanOutcome::Failed)
 }
 
-/// The delivery backend for `plan` in `repo`: its regression check runs
-/// `cargo check` over a Cargo workspace, and nothing elsewhere.
-fn plan_regression_backend(
-    repo: &Path,
-    _plan: &crate::runner::plan_loader::Plan,
-) -> super::delivery::GitDeliveryBackend {
-    let steps = if repo.join("Cargo.toml").is_file() {
-        vec!["cargo check --workspace --quiet".to_string()]
-    } else {
-        Vec::new()
-    };
-    super::delivery::GitDeliveryBackend::new(repo.to_path_buf()).with_regression_steps(steps)
+/// Run `plan`'s whole-plan check (gap-60233f) in the shared working tree at
+/// `workdir`, which its tasks edited, and record it in the plan's
+/// checkpoint. The plan succeeds only when the check passes. `Err` only when
+/// the checkpoint cannot record it.
+async fn check_plan_in_place(
+    workdir: &Path,
+    plan: &crate::runner::plan_loader::Plan,
+    checks: &[crate::task_parser::VerifyStep],
+    checkpoint: &mut crate::graph_checkpoint::PreparedGraphCheckpoint,
+    graph_tui_bridge: &crate::runner::graph_tui_bridge::GraphTuiBridge,
+) -> anyhow::Result<PlanOutcome> {
+    let result = super::plan_verify::run_plan_verify(workdir, checks).await;
+    let commands: Vec<&str> = checks.iter().map(|step| step.command.as_str()).collect();
+    checkpoint.record_plan_verify(serde_json::json!({
+        "passed": result.is_ok(),
+        "steps": commands,
+        "failure": result.as_ref().err(),
+    }))?;
+    match result {
+        Ok(()) => {
+            tracing::info!(plan_id = %plan.id, steps = checks.len(), "plan check passed");
+            Ok(PlanOutcome::Succeeded)
+        }
+        Err(failure) => {
+            tracing::error!(
+                plan_id = %plan.id,
+                step = %failure.command,
+                output = %failure.output,
+                "plan check failed: its tasks passed, but not together"
+            );
+            graph_tui_bridge.error(&format!("plan '{}': [meta] verify {failure}", plan.id));
+            Ok(PlanOutcome::Failed)
+        }
+    }
 }
 
 /// How `output` left the plan's tasks that did not complete. Helper nodes of
@@ -4264,9 +4368,10 @@ max_retries = 0
             ),
         );
 
-        let resources = plan_cell_resources(true, Some(provider.clone()));
+        let gates = roko_core::config::GatesConfig::default();
+        let resources = plan_cell_resources(true, &gates, Some(provider.clone()));
         assert!(resources.gates.is_some() && resources.workspaces.is_some());
-        let default_topology = plan_cell_resources(false, Some(provider.clone()));
+        let default_topology = plan_cell_resources(false, &gates, Some(provider.clone()));
         assert!(default_topology.gates.is_none() && default_topology.workspaces.is_none());
 
         let task = roko_graph::TopologyTaskInfo {
@@ -4380,8 +4485,9 @@ printf '%s\n' '{"type":"result","session_id":"sess-batch","model":"claude-sonnet
 "#;
 
     /// A committed repository with `WRITES_NAMED_FILE_AGENT` configured as the
-    /// provider, and one plan per name whose one task writes `<name>.txt`.
-    fn repo_with_file_plans(names: &[&str]) -> tempfile::TempDir {
+    /// provider, and one plan per name whose one task writes `<name>.txt`,
+    /// each with `meta_verify` as its `[meta] verify` step when given.
+    fn repo_with_file_plans(names: &[&str], meta_verify: Option<&str>) -> tempfile::TempDir {
         use std::os::unix::fs::PermissionsExt as _;
 
         let dir = tempfile::tempdir().expect("tempdir");
@@ -4399,6 +4505,9 @@ printf '%s\n' '{"type":"result","session_id":"sess-batch","model":"claude-sonnet
         )
         .expect("config");
         std::fs::write(repo.join(".gitignore"), ".roko/\n").expect("gitignore");
+        let meta_verify = meta_verify
+            .map(|command| format!("\n[[meta.verify]]\ncommand = {command:?}\n"))
+            .unwrap_or_default();
         for (index, name) in names.iter().enumerate() {
             let plan_id = format!("{:02}-{name}", index + 1);
             let plan_dir = repo.join("plans").join(&plan_id);
@@ -4406,7 +4515,7 @@ printf '%s\n' '{"type":"result","session_id":"sess-batch","model":"claude-sonnet
             std::fs::write(
                 plan_dir.join("tasks.toml"),
                 format!(
-                    "[meta]\nplan = \"{plan_id}\"\nmax_parallel = 1\nskip_enrichment = true\n\n\
+                    "[meta]\nplan = \"{plan_id}\"\nmax_parallel = 1\nskip_enrichment = true\n{meta_verify}\n\
                      [[task]]\nid = \"T1\"\ntitle = \"Write {name}.txt\"\n\
                      description = \"Write {name}.txt.\"\nrole = \"implementer\"\n\
                      status = \"ready\"\ntier = \"focused\"\nfiles = [\"{name}.txt\"]\n\n\
@@ -4474,7 +4583,7 @@ printf '%s\n' '{"type":"result","session_id":"sess-batch","model":"claude-sonnet
     /// never changes the operator's checkout.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_worktree_run_delivers_each_plan_into_its_batch_branch() {
-        let dir = repo_with_file_plans(&["alpha", "beta"]);
+        let dir = repo_with_file_plans(&["alpha", "beta"], None);
         let repo = dir.path();
         let head = git_stdout(repo, &["rev-parse", "HEAD"]);
         git_in(repo, &["branch", "release", "main"]);
@@ -4525,5 +4634,52 @@ printf '%s\n' '{"type":"result","session_id":"sess-batch","model":"claude-sonnet
         );
         assert_eq!(git_stdout(repo, &["status", "--porcelain"]), "");
         assert!(!repo.join("alpha.txt").exists());
+    }
+
+    /// gap-60233f: a plan whose tasks all passed but whose `[meta] verify`
+    /// fails does not succeed, whether the check runs in the shared working
+    /// tree or as the regression of its delivery into the batch branch, which
+    /// then keeps its old tip. The checkpoint records why, for
+    /// `roko plan status`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn meta_verify_failure_fails_a_plan_whose_tasks_passed() {
+        for worktree_per_task in [false, true] {
+            let dir = repo_with_file_plans(&["alpha"], Some("test -f together.txt"));
+            let repo = dir.path();
+            let head = git_stdout(repo, &["rev-parse", "HEAD"]);
+            let params = GraphPlanRunParams {
+                worktree_per_task,
+                ..worktree_run_params(repo)
+            };
+
+            let exit_code = run_graph_plan_in_run(params, Some("run-check".into()))
+                .await
+                .expect("run the plan");
+
+            let mode = if worktree_per_task {
+                "worktree"
+            } else {
+                "shared tree"
+            };
+            assert_ne!(exit_code, EXIT_SUCCESS, "{mode}");
+            assert_eq!(
+                crate::graph_checkpoint::canonical_checkpoint_status(repo, "01-alpha"),
+                Some(GraphCheckpointStatus::Failed),
+                "{mode}"
+            );
+            let failure = crate::graph_checkpoint::recorded_plan_check_failure(repo, "01-alpha")
+                .unwrap_or_else(|| panic!("{mode}: no recorded plan check failure"));
+            assert!(
+                failure.contains("test -f together.txt"),
+                "{mode}: {failure}"
+            );
+            if worktree_per_task {
+                assert_eq!(
+                    git_stdout(repo, &["rev-parse", "roko/batch/run-check"]),
+                    head,
+                    "the failed plan was taken back out of the batch"
+                );
+            }
+        }
     }
 }

@@ -743,7 +743,10 @@ max_turns = 0
         let cfg =
             RokoConfig::from_toml("[pipeline]\nlearned_limits = \"on\"\n").expect("config parses");
         assert_eq!(cfg.pipeline.learned_limits, LearnedLimitsMode::On);
-        assert_eq!(cfg.pipeline.focused, defaults.focused, "bands keep defaults");
+        assert_eq!(
+            cfg.pipeline.focused, defaults.focused,
+            "bands keep defaults"
+        );
         assert!(RokoConfig::from_toml("[pipeline]\nlearned_limits = \"sometimes\"\n").is_err());
     }
 

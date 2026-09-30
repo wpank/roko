@@ -1741,7 +1741,9 @@ verify = [{{ phase = "compile", command = "cargo check -p roko-cli" }}]
                 assert_eq!(oversized[0].severity, Severity::Warning);
                 assert_eq!(oversized[0].task_id.as_deref(), Some("T1"));
                 assert!(
-                    oversized[0].message.contains("raise its tier to integrative"),
+                    oversized[0]
+                        .message
+                        .contains("raise its tier to integrative"),
                     "{}",
                     oversized[0].message
                 );

@@ -117,7 +117,11 @@ pub(super) fn base_attempt_timeout_ms_with(
         return spec.timeout_secs.saturating_mul(1_000);
     }
     let tier = roko_core::task::TaskTier::parse(&spec.tier).unwrap_or_default();
-    let configured = config.timeouts.agent_dispatch_secs.max(1).saturating_mul(1_000);
+    let configured = config
+        .timeouts
+        .agent_dispatch_secs
+        .max(1)
+        .saturating_mul(1_000);
     learned
         .and_then(|learned| learned.applied(tier).timeout_ms)
         .unwrap_or(configured)

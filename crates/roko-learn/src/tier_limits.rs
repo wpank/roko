@@ -69,7 +69,11 @@ impl TierLimits {
     pub fn configured(config: &RokoConfig, tier: TaskTier) -> Self {
         Self {
             max_turns: config.pipeline.max_turns_for_tier(tier),
-            timeout_ms: config.timeouts.agent_dispatch_secs.max(1).saturating_mul(1_000),
+            timeout_ms: config
+                .timeouts
+                .agent_dispatch_secs
+                .max(1)
+                .saturating_mul(1_000),
         }
     }
 }
@@ -91,8 +95,10 @@ pub fn suggest(
     tier: TaskTier,
     configured: TierLimits,
 ) -> SuggestedLimits {
-    let mut of_tier: Vec<&TierAttempt> =
-        attempts.iter().filter(|attempt| attempt.tier == tier).collect();
+    let mut of_tier: Vec<&TierAttempt> = attempts
+        .iter()
+        .filter(|attempt| attempt.tier == tier)
+        .collect();
     of_tier.sort_by_key(|attempt| attempt.settled_at);
     let recent = &of_tier[of_tier.len().saturating_sub(WINDOW)..];
     let passed: Vec<&TierAttempt> = of_tier
@@ -108,7 +114,10 @@ pub fn suggest(
         hits.count() * 10 > recent.len()
     };
     let max_turns = learned_limit(
-        passed.iter().filter_map(|attempt| attempt.turns).map(u64::from),
+        passed
+            .iter()
+            .filter_map(|attempt| attempt.turns)
+            .map(u64::from),
         u64::from(configured.max_turns),
         reached(AttemptOutcome::TurnCap),
         1,
@@ -369,7 +378,11 @@ mod tests {
             suggest(&passes[..19], focused, CONFIGURED),
             SuggestedLimits::default()
         );
-        assert!(suggest(&passes[..20], focused, CONFIGURED).max_turns.is_some());
+        assert!(
+            suggest(&passes[..20], focused, CONFIGURED)
+                .max_turns
+                .is_some()
+        );
 
         // A learned limit stays within [0.5×, 2×] of the configured one.
         let quick = vec![attempt(focused, Passed, 2, 1_000); 30];

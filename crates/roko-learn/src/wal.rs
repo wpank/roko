@@ -335,6 +335,8 @@ pub const SEGMENTS_DIR: &str = "wal";
 /// saved snapshot holds its entries, so the segment stays bounded however
 /// long the writer runs (bug-7a2630). The lock tells an opener that the
 /// entries are a live writer's to save, not orphans to replay (bug-84de98).
+/// The writer releases the lock when it drops the segment, rather than
+/// leaving that to the file's close (bug-779ae7).
 #[derive(Debug)]
 pub struct WalSegment {
     path: PathBuf,
@@ -401,6 +403,11 @@ impl Drop for WalSegment {
         if self.entry_count == 0 {
             let _ = std::fs::remove_file(&self.path);
         }
+        // Closing the file does not release the lock while another process
+        // shares the open file: any child process forked while the segment
+        // was open does, until its exec. An opener would then skip the gone
+        // writer's entries as a live writer's (bug-779ae7).
+        let _ = self.file.unlock();
     }
 }
 
@@ -664,6 +671,36 @@ mod tests {
             orphan.remove().unwrap();
         }
         assert_eq!(std::fs::read_dir(&segments).unwrap().count(), 0);
+    }
+
+    /// bug-779ae7: a child process that shares a segment's open file (one
+    /// forked while the segment was open, until its exec) does not keep the
+    /// segment locked once its writer drops it.
+    #[cfg(unix)]
+    #[test]
+    fn a_dropped_writers_segment_is_an_orphan_while_a_child_shares_its_file() {
+        let dir = TempDir::new().unwrap();
+        let segments = dir.path().join(SEGMENTS_DIR);
+        let entry = WalEntry::GateThresholdUpdate {
+            rung: 1,
+            passed: true,
+            ts_ms: 1,
+        };
+        let mut segment = WalSegment::create(&segments).unwrap();
+        segment.append(&entry).unwrap();
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .stdin(segment.file.try_clone().unwrap())
+            .spawn()
+            .unwrap();
+
+        drop(segment);
+        let orphans = orphaned_segments(&segments);
+        child.kill().unwrap();
+        child.wait().unwrap();
+        let orphans = orphans.unwrap();
+        assert_eq!(orphans.len(), 1, "the writer is gone");
+        assert_eq!(orphans[0].entries().len(), 1);
     }
 
     #[test]

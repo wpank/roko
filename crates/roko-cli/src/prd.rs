@@ -35,6 +35,7 @@ use crate::workspace_paths::{
 };
 use anyhow::{Context as _, Result, anyhow};
 use indexmap::IndexMap;
+use roko_core::config::routing::LadderConfig;
 use roko_core::config::schema::{ModelProfile, RokoConfig};
 use roko_core::io::atomic_write_str;
 use roko_core::{Body, Kind, Provenance, Signal, Store};
@@ -281,8 +282,9 @@ async fn regenerate_old_format_plan(
         "Regenerate the plan at {path} from the source plan document above. \
          Rewrite tasks.toml in place with full modern metadata: tier, \
          max_loc, files, allowed_tools, denied_tools, mcp_servers, depends_on, \
-         [task.context], and [[task.verify]]. Do NOT set model_hint — the runtime \
-         selects models automatically. Preserve the status of any task \
+         [task.context], and [[task.verify]]. Do NOT set model_hint: each task's tier \
+         and role pick its model. Set `rung` only when a task needs more than its \
+         tier's start rung. Preserve the status of any task \
          that is already marked done in the existing file. Do not create new plan \
          directories.\n\n## Existing tasks.toml\n\n```toml\n{existing}\n```",
         path = tasks_path.display(),
@@ -1358,6 +1360,8 @@ async fn generate_plan_from_prd_with_outcome(
         let spend = AuthoringSpend::generation(workdir_ref, slug, live);
 
         let resolved = crate::load_resolved_config(workdir_ref)?;
+        // Generated `rung` hints must name a rung of this ladder.
+        let ladder = crate::plan_validate::workspace_ladder(workdir_ref);
         // Callers that pass no model (the serve runtime, auto-plan on
         // promote) plan with the planner model.
         let planner_model = match model {
@@ -1452,7 +1456,9 @@ async fn generate_plan_from_prd_with_outcome(
              - Every task has `id`, `title`, `description`, `status = \"ready\"`, `role`, and `tier`\n\
              - `files` lists only real paths that exist in the codebase (no placeholders)\n\
              - `depends_on` only references task ids defined in this same plan\n\
-             - No `model_hint` field (the runtime selects the model automatically)\n\
+             - No `model_hint` field: `tier` and `role` pick each task's model; add `rung` \
+               (for example `rung = \"strong\"`) only when a task needs more than its tier's \
+               start rung\n\
              - No `mcp_servers` field unless the task genuinely requires an MCP server\n\
              - Every `[[task.verify]]` entry has `phase` and `command`\n\
              - Output ONLY a fenced ```toml block followed optionally by a fenced \
@@ -1652,6 +1658,7 @@ async fn generate_plan_from_prd_with_outcome(
                     slug,
                     &resolved.config.models,
                     resolved.config.agent.model.as_deref(),
+                    &ladder,
                 )
                 .map_err(|e| format!("{e:#}"))?;
                 let parsed = TasksFile::parse_str(&validated).map_err(|error| {
@@ -2566,6 +2573,33 @@ const KNOWN_TASK_FIELDS: &[&str] = &[
     "accept",
     "domain",
     "gate_rung",
+    // `roko_core::TaskHints`
+    "category",
+    "complexity_band",
+    "reasoning_level",
+    "speed_priority",
+    "preferred_model",
+    "preferred_provider",
+    "escalate_on_retry",
+    "rung",
+    "quality_profile",
+    "test_invariants",
+    "context_weight",
+    "skills",
+    "example_pattern",
+    "context_files",
+    "plan_section",
+    "types_to_define",
+    "formulas",
+    "imports",
+    "research_before_edit",
+    "parallel_group",
+    "exclusive_files",
+    "tags",
+    "dependency_tags",
+    "fixture_keys",
+    "sidecar_requirements",
+    "integration_surfaces",
 ];
 
 /// Required field names for each `[[task]]`.
@@ -2686,7 +2720,8 @@ fn strsim_distance(a: &str, b: &str) -> usize {
 /// 1. TOML syntax.
 /// 2. Required fields in `[meta]` and `[[task]]`.
 /// 3. Unknown / misspelled fields (with suggested corrections applied).
-/// 4. `model_hint` values validated against the config model table.
+/// 4. `model_hint` values stripped, and `rung` hints kept only when they name
+///    one of the task's `ladder` rungs.
 /// 5. `meta.plan` matched against the expected slug.
 ///
 /// On fixable issues the TOML is patched and a warning is logged to stderr.
@@ -2696,6 +2731,7 @@ fn validate_and_fix_generated_plan(
     slug: &str,
     _models: &IndexMap<String, roko_core::config::schema::ModelProfile>,
     _default_model: Option<&str>,
+    ladder: &LadderConfig,
 ) -> Result<String> {
     // 0. Deterministic repair before parsing.
     let repaired = crate::task_parser::repair_toml(toml_str);
@@ -2867,14 +2903,35 @@ fn validate_and_fix_generated_plan(
                         }
                     }
 
-                    // Always strip model_hint from generated plans — the runtime
-                    // picks the best model via cascade routing.
+                    // Always strip model_hint from generated plans: a model
+                    // name ties the plan to one provider, while the tier and
+                    // role pick a model on this workspace's routing ladder.
                     if let Some(hint_val) = task.remove("model_hint") {
                         let hint = hint_val.as_str().unwrap_or("<unknown>");
                         eprintln!(
                             "info: {task_id_label}: removing model_hint '{hint}' \
-                             (runtime will select via cascade routing)"
+                             (tier and role pick the model; a task that needs a \
+                             stronger one names a `rung`)"
                         );
+                    }
+
+                    // gap-dbf2a6: keep a `rung` hint that names one of the
+                    // task's ladder rungs; drop any other.
+                    if let Some(rung_val) = task.get("rung").cloned() {
+                        let role = task
+                            .get("role")
+                            .and_then(toml::Value::as_str)
+                            .unwrap_or("implementer");
+                        if !rung_val
+                            .as_str()
+                            .is_some_and(|rung| ladder.has_rung(role, rung))
+                        {
+                            task.remove("rung");
+                            eprintln!(
+                                "warning: {task_id_label}: removing rung {rung_val}: no rung of \
+                                 the routing ladder has that name"
+                            );
+                        }
                     }
 
                     // Validate [[task.verify]] sub-entries.
@@ -3980,7 +4037,13 @@ role = "implementer"
 tier = "mechanical"
 depends_on = ["T1"]
 "#;
-        let result = validate_and_fix_generated_plan(toml, "my-plan", &empty_models(), None);
+        let result = validate_and_fix_generated_plan(
+            toml,
+            "my-plan",
+            &empty_models(),
+            None,
+            &LadderConfig::default(),
+        );
         assert!(result.is_ok(), "expected Ok, got: {result:?}");
     }
 
@@ -3999,8 +4062,14 @@ status = "pending"
 role = "implementer"
 tier = "focused"
 "#;
-        let result =
-            validate_and_fix_generated_plan(toml, "my-plan", &empty_models(), None).unwrap();
+        let result = validate_and_fix_generated_plan(
+            toml,
+            "my-plan",
+            &empty_models(),
+            None,
+            &LadderConfig::default(),
+        )
+        .unwrap();
         let parsed: toml::Value = toml::from_str(&result).unwrap();
         assert_eq!(
             parsed["meta"]["plan"].as_str().unwrap(),
@@ -4024,8 +4093,14 @@ status = "pending"
 role = "implementer"
 tier = "focused"
 "#;
-        let result =
-            validate_and_fix_generated_plan(toml, "correct-slug", &empty_models(), None).unwrap();
+        let result = validate_and_fix_generated_plan(
+            toml,
+            "correct-slug",
+            &empty_models(),
+            None,
+            &LadderConfig::default(),
+        )
+        .unwrap();
         let parsed: toml::Value = toml::from_str(&result).unwrap();
         assert_eq!(parsed["meta"]["plan"].as_str().unwrap(), "correct-slug");
     }
@@ -4049,7 +4124,14 @@ tier = "focused"
 pha = "test"
 command = "cargo test"
 "#;
-        let result = validate_and_fix_generated_plan(toml, "test", &empty_models(), None).unwrap();
+        let result = validate_and_fix_generated_plan(
+            toml,
+            "test",
+            &empty_models(),
+            None,
+            &LadderConfig::default(),
+        )
+        .unwrap();
         let parsed: toml::Value = toml::from_str(&result).unwrap();
         let verify = parsed["task"][0]["verify"][0].as_table().unwrap();
         assert!(
@@ -4076,9 +4158,14 @@ tier = "focused"
 model_hint = "gpt-nonexistent"
 "#;
         let models = sample_models();
-        let result =
-            validate_and_fix_generated_plan(toml, "test", &models, Some("claude-sonnet-4-6"))
-                .unwrap();
+        let result = validate_and_fix_generated_plan(
+            toml,
+            "test",
+            &models,
+            Some("claude-sonnet-4-6"),
+            &LadderConfig::default(),
+        )
+        .unwrap();
         let parsed: toml::Value = toml::from_str(&result).unwrap();
         assert!(
             parsed["task"][0].get("model_hint").is_none(),
@@ -4103,12 +4190,73 @@ tier = "focused"
 model_hint = "haiku"
 "#;
         let models = sample_models();
-        let result = validate_and_fix_generated_plan(toml, "test", &models, None).unwrap();
+        let result =
+            validate_and_fix_generated_plan(toml, "test", &models, None, &LadderConfig::default())
+                .unwrap();
         let parsed: toml::Value = toml::from_str(&result).unwrap();
         assert!(
             parsed["task"][0].get("model_hint").is_none(),
             "model_hint aliases should be removed so runtime selects"
         );
+    }
+
+    /// gap-dbf2a6: a generated plan keeps a `rung` hint that names one of
+    /// the task's ladder rungs, drops any other, and still loses
+    /// `model_hint`.
+    #[test]
+    fn generated_plan_keeps_its_rung_hint() {
+        let toml = r#"
+[meta]
+plan = "test"
+total = 3
+status = "pending"
+
+[[task]]
+id = "T1"
+title = "Rework the parser's error recovery"
+status = "pending"
+role = "implementer"
+tier = "mechanical"
+rung = "strong"
+model_hint = "claude-opus-4-6"
+
+[[task]]
+id = "T2"
+title = "Rename a helper"
+status = "pending"
+role = "implementer"
+tier = "mechanical"
+rung = "stronk"
+
+[[task]]
+id = "T3"
+title = "Document the parser"
+status = "pending"
+role = "scribe"
+tier = "focused"
+rung = "docs"
+"#;
+        let mut ladder = LadderConfig::default();
+        ladder
+            .roles
+            .push(roko_core::config::routing::LadderRoleConfig {
+                role: "scribe".to_string(),
+                rungs: Some(vec![roko_core::config::routing::LadderRung {
+                    name: "docs".to_string(),
+                    model: "gpt-4o-mini".to_string(),
+                }]),
+                ..Default::default()
+            });
+        let result =
+            validate_and_fix_generated_plan(toml, "test", &empty_models(), None, &ladder).unwrap();
+        let plan = TasksFile::parse_str(&result).expect("the fixed plan parses");
+        let rungs: Vec<Option<&str>> = plan
+            .tasks
+            .iter()
+            .map(|task| task.hints.rung.as_deref())
+            .collect();
+        assert_eq!(rungs, [Some("strong"), None, Some("docs")]);
+        assert_eq!(plan.tasks[0].model_hint, None);
     }
 
     #[test]
@@ -4121,7 +4269,13 @@ status = "pending"
 role = "implementer"
 tier = "focused"
 "#;
-        let result = validate_and_fix_generated_plan(toml, "test", &empty_models(), None);
+        let result = validate_and_fix_generated_plan(
+            toml,
+            "test",
+            &empty_models(),
+            None,
+            &LadderConfig::default(),
+        );
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
         assert!(msg.contains("[meta] section is missing"), "msg: {msg}");
@@ -4135,7 +4289,13 @@ plan = "test"
 total = 0
 status = "pending"
 "#;
-        let result = validate_and_fix_generated_plan(toml, "test", &empty_models(), None);
+        let result = validate_and_fix_generated_plan(
+            toml,
+            "test",
+            &empty_models(),
+            None,
+            &LadderConfig::default(),
+        );
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
         assert!(msg.contains("[[task]] array is missing"), "msg: {msg}");
@@ -4152,7 +4312,13 @@ status = "pending"
 [[task]]
 id = "T1"
 "#;
-        let result = validate_and_fix_generated_plan(toml, "test", &empty_models(), None);
+        let result = validate_and_fix_generated_plan(
+            toml,
+            "test",
+            &empty_models(),
+            None,
+            &LadderConfig::default(),
+        );
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
         assert!(msg.contains("missing required field 'title'"), "msg: {msg}");
@@ -4167,7 +4333,13 @@ id = "T1"
     #[test]
     fn validate_rejects_invalid_toml_syntax() {
         let toml = "this is not valid toml {{{}}}";
-        let result = validate_and_fix_generated_plan(toml, "test", &empty_models(), None);
+        let result = validate_and_fix_generated_plan(
+            toml,
+            "test",
+            &empty_models(),
+            None,
+            &LadderConfig::default(),
+        );
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
         assert!(msg.contains("invalid TOML"), "msg: {msg}");
@@ -4188,7 +4360,14 @@ stat = "pending"
 role = "implementer"
 tier = "focused"
 "#;
-        let result = validate_and_fix_generated_plan(toml, "test", &empty_models(), None).unwrap();
+        let result = validate_and_fix_generated_plan(
+            toml,
+            "test",
+            &empty_models(),
+            None,
+            &LadderConfig::default(),
+        )
+        .unwrap();
         let parsed: toml::Value = toml::from_str(&result).unwrap();
         let task = parsed["task"][0].as_table().unwrap();
         assert!(
@@ -4218,9 +4397,14 @@ files = ["crates/<relevant-lib>/src/lib.rs"]
 phase = "build"
 command = "cargo check -p <crate>"
 "#;
-        let result =
-            validate_and_fix_generated_plan(toml, "btc-funding-alert-cli", &empty_models(), None)
-                .unwrap();
+        let result = validate_and_fix_generated_plan(
+            toml,
+            "btc-funding-alert-cli",
+            &empty_models(),
+            None,
+            &LadderConfig::default(),
+        )
+        .unwrap();
         assert!(
             !result.contains("<relevant-lib>"),
             "placeholder <relevant-lib> should be replaced"
@@ -4261,8 +4445,14 @@ command = "cargo check -p <binary-crate>"
 phase = "test"
 command = "cargo test -p <crate> -- <test_name>"
 "#;
-        let result =
-            validate_and_fix_generated_plan(toml, "my-cool-tool", &empty_models(), None).unwrap();
+        let result = validate_and_fix_generated_plan(
+            toml,
+            "my-cool-tool",
+            &empty_models(),
+            None,
+            &LadderConfig::default(),
+        )
+        .unwrap();
         // <binary-crate> and <crate> replaced with slug.
         assert!(
             !result.contains("<binary-crate>"),

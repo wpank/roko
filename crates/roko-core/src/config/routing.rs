@@ -213,7 +213,7 @@ pub struct LadderRoleConfig {
 }
 
 /// `[routing.ladder]`: the model rung a plan task without a `model_hint`
-/// starts on, by its role and tier.
+/// starts on, by its role and tier, or by its `rung` hint.
 ///
 /// On by default, with DECISIONS D11's executor cascade (gpt-oss-120b, then
 /// GLM-4.7, then gpt-5.4-mini) and Sonnet as the last rung. A rung whose
@@ -305,15 +305,17 @@ impl LadderConfig {
     /// model `runnable` accepts. `None` when the ladder is off or no rung is
     /// left for the task.
     ///
-    /// The start rung is named by the role's `start`, else the ladder's
-    /// `start`, else D11; a name that matches no rung means the first rung.
-    /// When that rung cannot run, the task starts on the next runnable rung
-    /// above it, else the nearest one below.
+    /// The start rung is the task's `rung_hint` when that names one of its
+    /// rungs, else the one named by the role's `start`, else the ladder's
+    /// `start`, else D11; a start name that matches no rung means the first
+    /// rung. When that rung cannot run, the task starts on the next runnable
+    /// rung above it, else the nearest one below.
     #[must_use]
     pub fn resolve(
         &self,
         role: &str,
         tier: TaskTier,
+        rung_hint: Option<&str>,
         runnable: impl Fn(&str) -> bool,
     ) -> Option<ResolvedLadder<'_>> {
         if !self.enabled {
@@ -327,8 +329,12 @@ impl LadderConfig {
             .filter(|(_, rung)| runnable(&rung.model))
             .map(|(index, _)| index)
             .collect();
-        let name = self.start_name(entry, tier);
-        let named = rungs.iter().position(|rung| rung.name == name).unwrap_or(0);
+        let named = rung_hint
+            .and_then(|hint| rungs.iter().position(|rung| rung.name == hint))
+            .unwrap_or_else(|| {
+                let name = self.start_name(entry, tier);
+                rungs.iter().position(|rung| rung.name == name).unwrap_or(0)
+            });
         let start = usable
             .iter()
             .copied()
@@ -339,6 +345,15 @@ impl LadderConfig {
             usable,
             start,
         })
+    }
+
+    /// Whether `name` names one of the rungs a task in `role` climbs (its
+    /// role's own rungs, else the ladder's), as a task's `rung` hint must.
+    #[must_use]
+    pub fn has_rung(&self, role: &str, name: &str) -> bool {
+        self.rungs_for(self.role_entry(role))
+            .iter()
+            .any(|rung| rung.name == name)
     }
 
     /// Every rung of the ladder and of its role overrides.
@@ -576,7 +591,7 @@ mod tests {
 
     fn start_model(ladder: &LadderConfig, role: &str, tier: TaskTier) -> Option<String> {
         ladder
-            .resolve(role, tier, |_| true)
+            .resolve(role, tier, None, |_| true)
             .map(|resolved| resolved.start_rung().model.clone())
     }
 
@@ -624,7 +639,9 @@ mod tests {
         // router's Sonnet default did.
         for tier in TaskTier::ALL {
             let resolved = ladder
-                .resolve("implementer", tier, |model| model == "claude-sonnet-4-6")
+                .resolve("implementer", tier, None, |model| {
+                    model == "claude-sonnet-4-6"
+                })
                 .expect("the top rung runs");
             assert_eq!(resolved.start, 3);
             assert_eq!(resolved.usable, [3]);
@@ -632,18 +649,18 @@ mod tests {
         // A skipped start rung moves up to the next runnable rung, else down.
         let no_cheap = |model: &str| model != "gpt-oss-120b";
         let resolved = ladder
-            .resolve("implementer", TaskTier::Mechanical, no_cheap)
+            .resolve("implementer", TaskTier::Mechanical, None, no_cheap)
             .expect("ladder");
         assert_eq!(resolved.start_rung().name, "mid");
         let only_cheap = |model: &str| model == "gpt-oss-120b";
         let resolved = ladder
-            .resolve("implementer", TaskTier::Architectural, only_cheap)
+            .resolve("implementer", TaskTier::Architectural, None, only_cheap)
             .expect("ladder");
         assert_eq!(resolved.start_rung().name, "cheap");
         // No runnable rung, or the ladder turned off: the router decides.
         assert!(
             ladder
-                .resolve("implementer", TaskTier::Focused, |_| false)
+                .resolve("implementer", TaskTier::Focused, None, |_| false)
                 .is_none()
         );
         let off = LadderConfig {
@@ -651,9 +668,89 @@ mod tests {
             ..LadderConfig::default()
         };
         assert!(
-            off.resolve("implementer", TaskTier::Focused, |_| true)
+            off.resolve("implementer", TaskTier::Focused, None, |_| true)
                 .is_none()
         );
+    }
+
+    /// gap-dbf2a6: a task's `rung` hint replaces its tier's start rung, and a
+    /// hinted rung that cannot run moves up like any start rung. A name that
+    /// matches none of the task's rungs is ignored; plan validate rejects it.
+    #[test]
+    fn rung_hint_sets_the_start_rung() {
+        fn hinted_start(
+            ladder: &LadderConfig,
+            role: &str,
+            tier: TaskTier,
+            rung: Option<&str>,
+            runnable: impl Fn(&str) -> bool,
+        ) -> Option<String> {
+            ladder
+                .resolve(role, tier, rung, runnable)
+                .map(|resolved| resolved.start_rung().name.clone())
+        }
+
+        let ladder = LadderConfig::default();
+        let start = |tier, rung| hinted_start(&ladder, "implementer", tier, rung, |_| true);
+        assert_eq!(start(TaskTier::Mechanical, None).as_deref(), Some("cheap"));
+        assert_eq!(
+            start(TaskTier::Mechanical, Some("strong")).as_deref(),
+            Some("strong")
+        );
+        // A hint may also start a task below its tier's start rung.
+        assert_eq!(
+            start(TaskTier::Architectural, Some("mid")).as_deref(),
+            Some("mid")
+        );
+        assert_eq!(
+            start(TaskTier::Mechanical, Some("stronk")).as_deref(),
+            Some("cheap")
+        );
+        let no_strong = |model: &str| model != "gpt-5.4-mini";
+        assert_eq!(
+            hinted_start(
+                &ladder,
+                "implementer",
+                TaskTier::Mechanical,
+                Some("strong"),
+                no_strong
+            )
+            .as_deref(),
+            Some("top")
+        );
+        assert!(ladder.has_rung("implementer", "strong"));
+        assert!(!ladder.has_rung("implementer", "stronk"));
+
+        // A role with its own rungs takes hints by its own rung names.
+        let mut with_scribe = ladder.clone();
+        with_scribe.roles.push(LadderRoleConfig {
+            role: "scribe".to_string(),
+            rungs: Some(vec![
+                LadderRung {
+                    name: "docs".to_string(),
+                    model: "gpt-4o-mini".to_string(),
+                },
+                LadderRung {
+                    name: "careful".to_string(),
+                    model: "claude-sonnet-4-6".to_string(),
+                },
+            ]),
+            ..LadderRoleConfig::default()
+        });
+        assert_eq!(
+            hinted_start(
+                &with_scribe,
+                "scribe",
+                TaskTier::Mechanical,
+                Some("careful"),
+                |_| true
+            )
+            .as_deref(),
+            Some("careful")
+        );
+        assert!(with_scribe.has_rung("scribe", "careful"));
+        assert!(!with_scribe.has_rung("scribe", "strong"));
+        assert!(with_scribe.has_rung("implementer", "strong"));
     }
 
     #[test]

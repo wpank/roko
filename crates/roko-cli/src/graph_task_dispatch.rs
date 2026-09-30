@@ -865,12 +865,12 @@ impl TaskDispatcher for GraphTaskDispatcher {
         }
 
         // ── W10: Enrichment pipeline ─────────────────────────────────────
-        let routing_ctx = build_routing_context(role, &task, &self.feedback.daimon_state);
+        let mut routing_ctx = build_routing_context(role, &task, &self.feedback.daimon_state);
         // Clone before the move into DispatchContext so emit_feedback can pass
         // the real dispatch-time context to the routing observation sink.
         // This ensures force_backend override outcomes are recorded with the
         // correct task category, complexity, and role rather than fallback defaults.
-        let routing_ctx_for_feedback = routing_ctx.clone();
+        let mut routing_ctx_for_feedback = routing_ctx.clone();
 
         // Load persisted dream routing advice once; both the cross-cut
         // arbitration and the P1-18 dream bias read it. Plans that skip
@@ -931,6 +931,11 @@ impl TaskDispatcher for GraphTaskDispatcher {
                 "graph dispatch: injecting gate feedback from previous attempt"
             );
         }
+
+        // gap-b62e95: the router and its observations know a retry from a
+        // first attempt. (The dream bias above keeps the first attempt's band.)
+        routing_context::mark_attempt(&mut routing_ctx, &task, attempt_number);
+        routing_context::mark_attempt(&mut routing_ctx_for_feedback, &task, attempt_number);
 
         let (cached_workspace_map, cached_workspace_context, cached_cfactor_context) =
             self.static_prompt_cache.get_or_init(|| {
@@ -1091,7 +1096,17 @@ impl TaskDispatcher for GraphTaskDispatcher {
             prompt.push_str(&timeout_resume_note(previous_ms, timeout_ms));
         }
         let mut request = AgentDispatchRequest {
-            model_key: dispatch_plan.model.slug.clone(),
+            // A task's `preferred_provider` picks which provider's entry runs
+            // the routed model; `--model` and express mode keep theirs.
+            model_key: if dispatch_plan.forced {
+                dispatch_plan.model.slug.clone()
+            } else {
+                routing_context::preferred_provider_model(
+                    &self.config,
+                    &dispatch_plan.model.slug,
+                    task.hints.preferred_provider.as_deref(),
+                )
+            },
             prompt,
             system_prompt: dispatch_plan.prompt.system_prompt.clone(),
             workdir: effective_workdir.clone(),
@@ -1600,6 +1615,7 @@ printf '%s\n' '{"type":"result","session_id":"sess-1","model":"claude-sonnet-4-6
             estimated_minutes: None,
             crates_touched: None,
             sequence: 0,
+            hints: Default::default(),
         };
         let config = toml::Value::Table(toml::map::Map::from_iter([
             ("plan_id".to_string(), toml::Value::String("p1".to_string())),
@@ -1791,6 +1807,7 @@ printf '%s\n' '{"type":"result","session_id":"sess-v1","model":"claude-sonnet-4-
             estimated_minutes: None,
             crates_touched: None,
             sequence: 0,
+            hints: Default::default(),
         };
 
         (dispatcher, task)
@@ -1843,6 +1860,7 @@ printf '%s\n' '{"type":"result","session_id":"sess-v1","model":"claude-sonnet-4-
             estimated_minutes: None,
             crates_touched: None,
             sequence: 0,
+            hints: Default::default(),
         }
     }
 
@@ -2078,6 +2096,63 @@ printf '%s\n' '{{"type":"result","session_id":"sess-b","model":"claude-sonnet-4-
                 assert_eq!(counts(), (3, 3), "no rule is consulted by default");
             }
         }
+    }
+
+    /// gap-b62e95: the retry of a task whose verify step failed routes, and
+    /// is recorded, as a retry after a failure; its first attempt is not.
+    #[tokio::test]
+    async fn routing_context_marks_retry_after_failure() {
+        /// `(iteration, has_prior_failure)` of each settled attempt's
+        /// routing context, in order.
+        #[derive(Debug, Default)]
+        struct RoutingContexts(parking_lot::Mutex<Vec<(u32, bool)>>);
+
+        #[async_trait::async_trait]
+        impl crate::runtime_feedback::FeedbackSink for RoutingContexts {
+            fn name(&self) -> &'static str {
+                "routing-contexts"
+            }
+
+            async fn on_event(&self, event: &FeedbackEvent) -> anyhow::Result<()> {
+                if let FeedbackEvent::TaskCompleted {
+                    routing_context: Some(routing),
+                    ..
+                } = event
+                {
+                    self.0
+                        .lock()
+                        .push((routing.iteration, routing.has_prior_failure));
+                }
+                Ok(())
+            }
+        }
+
+        let temp = tempdir().expect("tempdir");
+        let (dispatcher, mut task) = make_batch_dispatcher(&temp, 0.01, no_auto_fix).await;
+        let contexts = Arc::new(RoutingContexts::default());
+        let dispatcher = dispatcher.with_feedback(GraphFeedbackContext {
+            feedback_facade: Some(Arc::new(
+                crate::runtime_feedback::FeedbackFacade::new().with_sink(contexts.clone()),
+            )),
+            ..GraphFeedbackContext::default()
+        });
+        // The verify step fails once, then passes.
+        task.verify = vec![verify_step(
+            "structural",
+            "test -f retried || { touch retried; exit 1; }",
+        )];
+        let spec = make_spec(&task);
+        let error = dispatcher
+            .dispatch(&spec, Vec::new(), &batch_ctx())
+            .await
+            .expect_err("the first attempt fails its verify step");
+        assert!(matches!(error, RokoError::Verify { .. }), "{error}");
+        dispatcher
+            .dispatch(&spec, Vec::new(), &batch_ctx())
+            .await
+            .expect("the retry passes");
+
+        assert_eq!(*contexts.0.lock(), [(0, false), (1, true)]);
     }
 
     /// Every record file a Graph attempt writes, under `workdir/.roko`.

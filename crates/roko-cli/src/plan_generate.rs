@@ -182,7 +182,7 @@ You are a task decomposition engine for software projects. Your job is to take a
 2. **Precise context**: For each task, specify EXACTLY which files and line ranges to read. Not "read the crate" — "read lines 40-80 of src/lib.rs".
 3. **Single-owner executable verification**: Give each task exactly one focused command that proves its observable outcome. Combine structural assertions into that command when necessary. Do not repeat equivalent compile/test/clippy commands across tasks; the runner and release lane own broader validation.
 4. **Dependency ordering**: Types before implementations. Implementations before wiring. Wiring before tests.
-5. **Model hints**: NEVER set `model_hint`. The runtime selects the right model based on the task `tier`. Hardcoded model names break across providers.
+5. **Model hints**: NEVER set `model_hint`. The task's `tier` and `role` pick its model on the runtime's routing ladder; set `rung` only when a task needs more than its tier's start rung. Hardcoded model names break across providers.
 
 ## Task tiers
 
@@ -294,9 +294,11 @@ Each role has a default tool permission set. Tasks can further restrict via `all
 
 ## Model hints
 
-**NEVER set `model_hint`.** The runtime's model-selection chain (cascade router, project config, budget pressure) picks the right model automatically. Setting model_hint hardcodes a provider-specific model name that breaks when users run non-Claude providers.
+**NEVER set `model_hint`.** Setting model_hint hardcodes a provider-specific model name that breaks when users run non-Claude providers.
 
-Always omit the `model_hint` field entirely. The task `tier` field (mechanical/focused/integrative/architectural) already tells the runtime what capability level is needed.
+Always omit the `model_hint` field entirely. Set `tier` (mechanical/focused/integrative/architectural) and `role`: together they pick the task's start rung on the runtime's routing ladder, a list of models from cheapest to strongest.
+
+Set `rung` only when a task needs more than its tier's start rung, for example a small change that is hard to get right: `rung = "strong"`. The default ladder's rungs, cheapest first, are `cheap`, `mid`, `strong` and `top`. A rung names a capability level, not a model, so the plan stays portable.
 
 ## Before generating tasks, you MUST:
 
@@ -338,7 +340,7 @@ Before finalizing, verify your tasks against:
 - [ ] No task requires reading more than 3 files
 - [ ] Anti-patterns are specific (not generic "be careful")
 - [ ] Dependencies form a DAG (no cycles)
-- [ ] `model_hint` is NEVER set — runtime selects models from `tier`
+- [ ] `model_hint` is NEVER set, and `rung` is set only where a task needs more than its tier's start rung
 
 ## File Path Rules
 
@@ -587,7 +589,8 @@ pub fn build_regeneration_prompt(workdir: &Path, existing_tasks_toml: &str) -> S
          - `allowed_tools`, `denied_tools`, and `mcp_servers` (per-task tool/MCP constraints)\n\
          - `[task.context]` with read_files, symbols, anti_patterns\n\
          - exactly one focused `[[task.verify]]` command per task\n\
-         Do NOT set `model_hint` — the runtime selects models automatically from the task tier.\n\n\
+         Do NOT set `model_hint`: the task's tier and role pick its model. Set `rung` only when a \
+         task needs more than its tier's start rung.\n\n\
          ## Existing tasks.toml:\n\n```toml\n{existing_tasks_toml}\n```"
     );
     prompt
@@ -1035,6 +1038,10 @@ mod tests {
 
         assert!(prompt.contains("## Model hints"));
         assert!(prompt.contains("NEVER set `model_hint`"));
+        // gap-dbf2a6: a task that needs a stronger start names a ladder rung.
+        assert!(
+            prompt.contains("Set `rung` only when a task needs more than its tier's start rung")
+        );
         // Must NOT contain hardcoded model names that break non-Claude providers.
         assert!(!prompt.contains("claude-haiku-4-5"));
         assert!(!prompt.contains("claude-sonnet-4-6"));

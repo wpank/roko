@@ -307,6 +307,7 @@ fn map_load_config_error(err: LoadConfigError) -> ApiError {
         | LoadConfigError::InvariantViolation { .. }
         | LoadConfigError::Migration { .. }
         | LoadConfigError::SecretInConfig { .. }
+        | LoadConfigError::SecretReference { .. }
         | LoadConfigError::GlobalConfigRead { .. }
         | LoadConfigError::GlobalConfigParse { .. } => ApiError::bad_request(err.to_string()),
     }
@@ -521,6 +522,18 @@ fn mask_secret_fields(value: &mut Value) {
     mask_secret_field(value, &["deploy"], "railway_api_token");
     mask_secret_field(value, &["chain"], "wallet_key");
     mask_secret_field(value, &["webhooks", "github"], "secret");
+    // An agent variable named like a credential: the loader expands a
+    // ${VAR} reference there into the secret itself.
+    if let Some(pairs) = value.pointer_mut("/agent/env").and_then(Value::as_array_mut) {
+        for pair in pairs {
+            if let Some([Value::String(name), secret]) =
+                pair.as_array_mut().map(Vec::as_mut_slice)
+                && roko_core::child_env::is_secret_env_name(name)
+            {
+                *secret = Value::String("***".to_string());
+            }
+        }
+    }
     if let Some(providers) = value.get_mut("providers").and_then(|v| v.as_object_mut()) {
         for (_name, provider) in providers.iter_mut() {
             if let Some(obj) = provider.as_object_mut() {
@@ -901,6 +914,7 @@ mod tests {
     #[test]
     fn mask_secret_fields_redacts_extended_secrets() {
         let mut value = serde_json::json!({
+            "agent": { "env": [["OPENAI_API_KEY", "sk-x"], ["RUST_LOG", "debug"]] },
             "chain": { "wallet_key": "0xdeadbeef" },
             "webhooks": { "github": { "secret": "ghsecret" } },
             "providers": {
@@ -921,6 +935,8 @@ mod tests {
             "Set `ROKO__WEBHOOKS__GITHUB__SECRET` in .roko/.env or the environment."
         );
         assert_eq!(value["providers"]["anthropic"]["api_key"], "****");
+        assert_eq!(value["agent"]["env"][0][1], "***");
+        assert_eq!(value["agent"]["env"][1][1], "debug");
     }
 
     #[tokio::test]

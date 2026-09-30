@@ -13,10 +13,7 @@ use std::path::{Component, Path, PathBuf};
 /// Two paths overlap when they name the same file, or when one names a
 /// directory that holds the other.
 #[must_use]
-pub fn first_overlap<'a>(
-    wanted: &'a [String],
-    held: &'a [String],
-) -> Option<(&'a str, &'a str)> {
+pub fn first_overlap<'a>(wanted: &'a [String], held: &'a [String]) -> Option<(&'a str, &'a str)> {
     wanted.iter().find_map(|path| {
         held.iter()
             .find(|other| overlaps(path, other))

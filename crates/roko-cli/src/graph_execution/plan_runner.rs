@@ -3307,9 +3307,8 @@ max_retries = 0
 
         let narrow = tempfile::tempdir().expect("tempdir");
         fake_provider_workspace(narrow.path(), 0.0, "");
-        let lock = IDS.map(|id| {
-            format!("mkdir lock.d && sleep 0.5 && rmdir lock.d && touch {id}.verified")
-        });
+        let lock = IDS
+            .map(|id| format!("mkdir lock.d && sleep 0.5 && rmdir lock.d && touch {id}.verified"));
         let tasks: Vec<(&str, &[&str], &str)> = IDS
             .iter()
             .zip(&lock)

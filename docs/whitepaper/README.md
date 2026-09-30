@@ -85,7 +85,7 @@ Line 1 of every section file (`NN-*.md` and `appendix-*.md`) is its status heade
 
 ### Status tags
 
-- Write a tag as `TAG@<sha>`, e.g. `PARTIAL@ed0c33bd5`: the tag in capitals, `@`, and a short sha of at least 7 hex
+- Write a tag as `TAG@<sha>`, e.g. `PARTIAL@41228d7b2`: the tag in capitals, `@`, and a short sha of at least 7 hex
   digits (use the 9 that `git log --oneline` prints). The commit must be an ancestor of HEAD.
 - Take tags from the status matrix (the appendix, rendered from `data/mechanisms.toml`) at its pinned commit, never
   from older notes: several mechanisms moved in the merges of 2026-09-29.

@@ -3,17 +3,17 @@ The section's draft diagram, kept as the plain-text form of fig2-golden-path.svg
 
 PLAN         1  Author               PARTIAL
 frontier     2  Compile the spec     PARTIAL
-model        3  Size and split       MISSING     <-- split or replan, from 8
+model        3  Size and split       PARTIAL     <-- split or replan, from 8
                     |
                     v
-EXECUTE      4  Route                MISSING     <-- retry or one rung up, from 8
-cheapest     5  Schedule             PARTIAL
+EXECUTE      4  Route                PARTIAL     <-- retry or one rung up, from 8
+cheapest     5  Schedule             WIRED
 capable      6  Isolate              PARTIAL
 model        7  Verify               PARTIAL     --> fail: 8, pass: 9
              8  Recover              PARTIAL
                     |
                     v
-INTEGRATE    9  Integrate            ORPHANED, MISSING
+INTEGRATE    9  Integrate            WIRED
             10  Review               MISSING
                     |
                     v

@@ -8,11 +8,10 @@
 //! own out of a provider CLI's inherited environment; see
 //! [`CredentialScrub`].
 
-use std::collections::{BTreeSet, HashMap};
-use std::ffi::{OsStr, OsString};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use roko_core::child_env::{self, CredentialScrub};
+use roko_core::child_env::CredentialScrub;
 use serde::{Deserialize, Serialize};
 use tokio::process::Command;
 
@@ -77,22 +76,7 @@ pub fn apply_agent_env(cmd: &mut Command, env: &AgentEnv) {
 /// the agent does not own, names roko loaded from its `.env` files, and
 /// roko's own credentials. Variables set explicitly on `cmd` stay.
 pub fn apply_credential_scrub(cmd: &mut Command, scrub: &CredentialScrub) {
-    let explicit: BTreeSet<OsString> = cmd
-        .as_std()
-        .get_envs()
-        .filter(|(_, value)| value.is_some())
-        .map(|(name, _)| name.to_os_string())
-        .collect();
-    let inherited: Vec<String> = std::env::vars_os()
-        .filter_map(|(name, _)| name.into_string().ok())
-        .filter(|name| !explicit.contains(OsStr::new(name)))
-        .collect();
-    for name in scrub.names_to_strip(
-        inherited.iter().map(String::as_str),
-        child_env::startup_dotenv(),
-    ) {
-        cmd.env_remove(name);
-    }
+    scrub.apply(cmd.as_std_mut());
 }
 
 /// Variable names `text` refers to as `${NAME}` or `${NAME:-default}`, in

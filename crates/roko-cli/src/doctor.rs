@@ -1,11 +1,12 @@
 //! `roko doctor` bootstrap diagnostics for self-hosted workspaces.
 
-use crate::auth_detect::{AuthMethod, detect_auth_from_config};
+use crate::auth_detect::{AuthMethod, detect_auth_from_config, version_probe};
 use crate::config::{ConfigPaths, resolve_paths};
 use crate::{Config, load_resolved_config};
 use anyhow::{Context as _, Result};
 use reqwest::Url;
 use roko_core::agent::ProviderKind;
+use roko_core::child_env::CredentialScrub;
 use roko_core::config::provider::{ProviderConfig, ProviderNetworkPolicy};
 use roko_execution::diagnostics::{
     DiagnosticCheckId, DiagnosticFinding, DiagnosticRequest, DiagnosticService, DiagnosticSeverity,
@@ -860,7 +861,11 @@ fn check_serve_auth(loaded_config: &LoadedConfig) -> DoctorCheck {
                 .as_ref()
                 .map(|path| path.display().to_string()),
             url: None,
-            fix: Some("roko config set serve.auth.api_key <your-key>".to_string()),
+            fix: Some(
+                "roko config set serve.auth.api_key <your-key> \
+                 (stores ROKO__SERVE__AUTH__API_KEY in .roko/.env)"
+                    .to_string(),
+            ),
         };
     }
 
@@ -1882,8 +1887,7 @@ fn check_harness_providers(loaded_config: &LoadedConfig) -> Vec<DoctorCheck> {
         match provider.kind {
             ProviderKind::Hermes => {
                 let binary = provider.command.as_deref().unwrap_or("hermes");
-                let available = std::process::Command::new(binary)
-                    .arg("--version")
+                let available = version_probe(binary, &CredentialScrub::for_kind(provider.kind))
                     .output()
                     .map(|o| o.status.success())
                     .unwrap_or(false);
@@ -1911,8 +1915,7 @@ fn check_harness_providers(loaded_config: &LoadedConfig) -> Vec<DoctorCheck> {
             }
             ProviderKind::OpenClaw => {
                 let binary = provider.command.as_deref().unwrap_or("openclaw");
-                let available = std::process::Command::new(binary)
-                    .arg("--version")
+                let available = version_probe(binary, &CredentialScrub::for_kind(provider.kind))
                     .output()
                     .map(|o| o.status.success())
                     .unwrap_or(false);

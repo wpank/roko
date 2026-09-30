@@ -209,6 +209,7 @@ async fn run_command(
         args,
         config.resource_limits.as_ref(),
         config.timeout,
+        &config.credential_scrub,
     )
     .await
     .map_err(|error| match error {

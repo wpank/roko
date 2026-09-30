@@ -2155,6 +2155,10 @@ The legacy Runner-v2 engine has been removed. --engine legacy is accepted but ex
         ///   playbook, modulation, safety, experiment) -> [Compose] ->
         ///   [TaskExecutor] -> [Gate] -> [SuccessBoundary]
         ///
+        /// Each task's [Gate] runs the compile, lint and test rungs in the
+        /// worktree its attempt ran in, and accepts the attempt onto the plan
+        /// branch when they pass, so this needs `--worktree-per-task`.
+        ///
         /// Note: enricher cells are currently passthrough stubs. The richer
         /// topology does not yet add runtime value over the simple converter,
         /// but makes the structure available for incremental implementation of

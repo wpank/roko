@@ -430,16 +430,18 @@ mod tests {
         assert_eq!(body["jwks"]["fail_closed"], true);
     }
 
+    /// Privy keys that cannot be fetched stop JWT sign-in, not the server:
+    /// liveness stays 200 and the JWKS state is reported as degraded.
     #[tokio::test]
-    async fn health_is_unhealthy_when_configured_jwks_is_fail_closed() {
+    async fn health_stays_live_when_configured_jwks_is_fail_closed() {
         let (_dir, state) = test_state();
         let mut config = (*state.load_roko_config()).clone();
         config.serve.auth.privy_app_id = Some("app-id".to_string());
         state.store_roko_config(config);
 
         let response = health::health(State(state)).await;
-        assert_eq!(response.0, axum::http::StatusCode::SERVICE_UNAVAILABLE);
-        assert_eq!(response.1.0["status"], "unhealthy");
+        assert_eq!(response.0, axum::http::StatusCode::OK);
+        assert_eq!(response.1.0["status"], "degraded");
         assert_eq!(response.1.0["jwks"]["configured"], true);
         assert_eq!(response.1.0["jwks"]["fail_closed"], true);
     }

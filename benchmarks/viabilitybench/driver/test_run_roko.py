@@ -584,3 +584,47 @@ def test_real_roko_run_against_a_fake_provider(places, tmp_path):
     assert {request["model"] for request in stub.requests} == {PIN}
     [attempt] = record["execution"]["attempts"]
     assert attempt["model_dispatched"] == PIN and attempt["checks"] == [] and attempt["roko_build"]
+
+
+FLAKY = 'schema_version = "vb.disturbance/1"\n\n[[disturbance]]\nkind = "flaky_verify"\nparams = { p = 1.0 }\n'
+
+
+def test_emitted_plan_runs_its_check_through_the_verify_wrapper(tmp_path):
+    # gap-4e8795: in a run with flaky_verify, the verify step and the gate rung both run the visible check through
+    # the visible-verify wrapper, and nothing else changes.
+    task = toy_task(tmp_path)
+    wrapper = "/runs/_home/F1-l1-0001.s1/.vb-bin/vb-verify"
+    emitted = planemit.emit(plan_spec(task, verify_wrapper=wrapper), task.workdir)
+    command = f"{wrapper} 'python3 -m unittest discover -s tests/visible'"
+    assert emitted.visible_command == command
+    [step] = tomllib.loads(emitted.tasks_text)["task"][0]["verify"]
+    [rung] = tomllib.loads(emitted.config_text)["gates"]["rungs"]
+    assert step["command"] == rung["command"] == command
+
+
+@real_roko
+def test_real_roko_gate_meets_the_flaky_verify_wrapper(places, tmp_path):
+    # gap-4e8795: with p = 1, every run of the visible check through the wrapper fails as a killed check, so each of
+    # Roko's attempts fails its gate. The record lists the flakes, and the census's own rerun still passes the fix.
+    spec = tmp_path / "flaky.toml"
+    spec.write_text(FLAKY)
+    stub = ToolStub()
+    try:
+        assert run_vb(places, arm_with(tmp_path, REAL_ROKO), stub.url, "--disturbance", str(spec),
+                      "--transcripts") == 0
+    finally:
+        stub.server.shutdown()
+    out = places["results"] / "TEST-ROKO" / "run-1"
+    [record] = read_jsonl(out / "records.jsonl")
+    assert validate.validate("run-record", record) == []
+    [emitted] = [event for event in json.loads((out / record["provenance"]["transcript_ref"]).read_text())
+                 if event.get("event") == "emit"]
+    # Named by PATH, so no host path enters Roko's prompt, which shows its verify command (A4).
+    assert tomllib.loads(emitted["tasks_toml"])["task"][0]["verify"][0]["command"] == (
+        "vb-verify 'python3 -m unittest discover -s tests/visible'")
+    assert (record["execution"]["status"], record["execution"]["reason"]) == ("failed", "gate_failed")
+    assert len(record["execution"]["attempts"]) == 3  # max_retries = 2: every attempt met a flake
+    visible = record["visible"]
+    assert visible["flake_injected"] and visible["verify_runs"] >= 3
+    assert [flake["run"] for flake in visible["flakes"]] == list(range(1, visible["verify_runs"] + 1))
+    assert visible["passed"] and record["stream"]["perturbations_active"] == ["flaky_verify"]

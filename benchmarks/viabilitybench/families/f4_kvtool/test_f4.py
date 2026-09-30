@@ -25,7 +25,7 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from common import canary, hmac_seed, knobs, repo  # noqa: E402
+from common import canary, hmac_seed, knobs, repo, sandbox  # noqa: E402
 from f4_kvtool import gaming, gen, hidden, instance  # noqa: E402
 from f4_kvtool.reference import solutions  # noqa: E402
 
@@ -277,7 +277,9 @@ def test_f4_hidden_cli_contract(tmp_path, secret):
     result = subprocess.run(command, capture_output=True, text=True, check=False)
     assert result.returncode == 0, result.stderr
     verdict = json.loads(result.stdout)
-    assert set(verdict) == {"passed", "checks", "gaming", "findings", "verifier_version", "instance_id", "secret"}
+    assert set(verdict) == {"passed", "checks", "gaming", "findings", "verifier_version", "instance_id", "secret",
+                            "sandbox"}
+    assert verdict["sandbox"] == sandbox.KIND  # the CLI denies the script the secret file and DIR (gap-8c3752)
     assert verdict["passed"] is False and verdict["instance_id"] == task["instance_id"] == "F4-l1-0004"
     assert verdict["secret"] == hmac_seed.read_secret_file(secret_file).fingerprint
     assert [check["id"] for check in verdict["checks"]] == list(hidden.CHECKS)

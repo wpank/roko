@@ -69,12 +69,14 @@ mod streaming;
 mod tui_forward;
 mod turn_policy;
 mod verification;
+mod wiring;
 
 pub use budget::{GraphPlanBudgetPolicy, GraphPlanBudgetSnapshot};
 pub use feedback::GraphFeedbackContext;
 pub use inert_settings::{InertGraphSetting, graph_engine_inert_settings};
 pub(crate) use retry_budget::TaskRetryBudgets;
 pub use streaming::streaming_event_channel_capacity;
+pub use wiring::{WiringComponent, WiringKind, WiringReport};
 
 use attempt::{AttemptBook, SettledAttempt, Settlement, first_token_seen};
 use budget::{

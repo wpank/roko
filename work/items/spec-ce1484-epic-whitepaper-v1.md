@@ -15,7 +15,7 @@ discovered_from = "tmp/cybernetic-harness/workstreams/PLAN.md (§1, the author's
 anchors = ["docs/whitepaper/README.md", "tools/paperlint.py"]
 doc = "tmp/cybernetic-harness/workstreams/PLAN.md"
 lane = "paper"
-links = { depends_on = ["dec-2cd76a", "gap-0191eb", "gap-af0b57", "gap-35a614", "gap-353d57", "gap-370d3c", "gap-4161ea", "gap-ac4646", "gap-e8cb4d", "gap-424bf8", "gap-29a64e", "gap-2aad7d", "gap-c19902", "gap-ec516e", "gap-d1d92c", "gap-8d2c79", "gap-8117a8", "bug-7a6da3", "gap-9cb0b9", "gap-fcea53", "gap-65ed57", "gap-274092", "gap-daa246", "gap-4471d1", "gap-08d9b2"], blocks = [], related = ["spec-567e52", "spec-f2463d", "spec-ae5f94", "gap-cdf3fc"], supersedes = [], duplicate_of = "" }
+links = { depends_on = ["dec-2cd76a", "gap-0191eb", "gap-af0b57", "gap-35a614", "gap-353d57", "gap-370d3c", "gap-4161ea", "gap-ac4646", "gap-e8cb4d", "gap-424bf8", "gap-29a64e", "gap-2aad7d", "gap-c19902", "gap-ec516e", "gap-d1d92c", "gap-8d2c79", "gap-8117a8", "bug-7a6da3", "gap-9cb0b9", "gap-fcea53", "gap-65ed57", "gap-274092", "gap-daa246", "gap-4471d1", "gap-08d9b2", "bug-1f098f"], blocks = [], related = ["spec-567e52", "spec-f2463d", "spec-ae5f94", "gap-cdf3fc"], supersedes = [], duplicate_of = "" }
 
 [[verify]]
 command = "test -f tools/paperlint.py && python3 tools/paperlint.py --strict --require-status reviewed docs/whitepaper && grep -q '^Verdict: accept' docs/whitepaper/REVIEW.md"
@@ -108,9 +108,10 @@ This is the implementation plan, in order.
 - [x] gap-fcea53: Whitepaper: re-pin the status matrix at a post-merge commit before the whitepaper-v1 tag
 - [x] gap-65ed57: Whitepaper §10: name the closest partial matches from the D13 prior-art search
 - [x] gap-274092: paperlint: scope the status-tag rule and the claims-ledger skip so the companion lints correctly
-- [ ] gap-daa246: Whitepaper figures README still says pandoc converts the SVGs, which build.sh now does
+- [x] gap-daa246: Whitepaper figures README still says pandoc converts the SVGs, which build.sh now does
 - [x] gap-4471d1: Re-check the 16 learning loops at a post-merge commit and refreeze B5 for whitepaper §5.2
 - [ ] gap-08d9b2: Whitepaper: final matrix re-pin right before the whitepaper-v1 tag
+- [x] bug-1f098f: Whitepaper PDF drops the space before the status tag in figure 2's step-9 chips
 - [ ] The epic's `[[verify]]` command passes: strict paperlint over `docs/whitepaper/` with every section reviewed,
       and a review verdict of "accept".
 

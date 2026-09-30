@@ -629,15 +629,7 @@ impl CliRuntime for RokoCliRuntime {
             });
         }
 
-        let default_model = self
-            .config
-            .agent
-            .model
-            .as_deref()
-            .unwrap_or("claude-opus-4-5")
-            .to_string();
-
-        let source = crate::plan_authoring::starter_plan_source(slug, title, &default_model);
+        let source = crate::plan_authoring::starter_plan_source(slug, title);
         let report = crate::plan_authoring::validate_plan_source(
             workdir,
             slug,

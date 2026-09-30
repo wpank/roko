@@ -16,7 +16,7 @@ use crate::orchestrator::{ReplanStrategy, detect_cycle_nodes};
 use crate::task_accept::TaskAccept;
 use anyhow::{Context as _, Result};
 use roko_agent::safety::contract::{AgentContract, ContractLoadMode, RoleCapabilities};
-use roko_core::{OperatingFrequency, TaskDomain, TaskTier};
+use roko_core::{OperatingFrequency, TaskDomain, TaskHints, TaskTier};
 use roko_gate::AcceptanceContract;
 use roko_std::denied_tools_for_role;
 use serde::{Deserialize, Deserializer, Serialize};
@@ -145,6 +145,10 @@ pub struct TaskDef {
     /// execute in the order they were authored, not alphabetically.
     #[serde(default)]
     pub sequence: usize,
+    /// Optional routing, gate, prompt and scheduling hints, each a top-level
+    /// `[[task]]` key (`category`, `complexity_band`, `rung`, ...).
+    #[serde(flatten)]
+    pub hints: TaskHints,
 }
 
 impl TaskDef {
@@ -161,6 +165,51 @@ impl TaskDef {
         self.accept
             .as_ref()
             .is_some_and(|accept| !accept.files.is_empty())
+    }
+
+    /// The task's `types_to_define`, `formulas`, `imports`,
+    /// `example_pattern` and `test_invariants` as a `## Specification`
+    /// prompt section, or an empty string when it sets none of them.
+    #[must_use]
+    pub fn specification_section(&self) -> String {
+        let hints = &self.hints;
+        let body = roko_compose::templates::format_enhancements(
+            &roko_compose::templates::TaskEnhancements {
+                types_to_define: hints.types_to_define.clone().unwrap_or_default(),
+                formulas: hints.formulas.clone().unwrap_or_default(),
+                imports: hints.imports.clone().unwrap_or_default(),
+                example_pattern: hints.example_pattern.clone(),
+                test_invariants: hints.test_invariants.clone().unwrap_or_default(),
+            },
+        );
+        if body.is_empty() {
+            return String::new();
+        }
+        format!("\n## Specification\n{}\n", body.trim_end())
+    }
+
+    /// The hints this task sets that `plan run` parses but does not act on
+    /// yet, by `tasks.toml` key.
+    #[must_use]
+    pub fn unused_hints(&self) -> Vec<&'static str> {
+        let hints = &self.hints;
+        [
+            ("quality_profile", hints.quality_profile.is_some()),
+            ("context_weight", hints.context_weight.is_some()),
+            ("skills", hints.skills.is_some()),
+            ("plan_section", hints.plan_section.is_some()),
+            ("research_before_edit", hints.research_before_edit.is_some()),
+            ("parallel_group", hints.parallel_group.is_some()),
+            ("exclusive_files", hints.exclusive_files.is_some()),
+            ("tags", hints.tags.is_some()),
+            ("dependency_tags", hints.dependency_tags.is_some()),
+            ("fixture_keys", hints.fixture_keys.is_some()),
+            ("sidecar_requirements", hints.sidecar_requirements.is_some()),
+            ("integration_surfaces", hints.integration_surfaces.is_some()),
+        ]
+        .into_iter()
+        .filter_map(|(key, set)| set.then_some(key))
+        .collect()
     }
 }
 
@@ -218,10 +267,13 @@ struct TaskDefSerde {
     pub estimated_minutes: Option<u32>,
     #[serde(default)]
     pub crates_touched: Option<Vec<String>>,
+    #[serde(flatten)]
+    pub hints: TaskHints,
 }
 
 impl From<TaskDefSerde> for TaskDef {
     fn from(raw: TaskDefSerde) -> Self {
+        let context = with_context_files(raw.context, raw.hints.context_files.as_deref());
         let mut task = Self {
             id: raw.id,
             title: raw.title,
@@ -240,7 +292,7 @@ impl From<TaskDefSerde> for TaskDef {
             depends_on: raw.depends_on,
             depends_on_plan: raw.depends_on_plan,
             split_into: raw.split_into,
-            context: raw.context,
+            context,
             verify: raw.verify,
             timeout_secs: raw.timeout_secs.unwrap_or(0),
             max_retries: raw.max_retries,
@@ -251,10 +303,35 @@ impl From<TaskDefSerde> for TaskDef {
             estimated_minutes: raw.estimated_minutes,
             crates_touched: raw.crates_touched,
             sequence: 0, // stamped by TasksFile::parse_str after deserialization
+            hints: raw.hints,
         };
         task.apply_role_tool_defaults();
         task
     }
+}
+
+/// `context` with each of a task's `context_files` added to its `read_files`
+/// (`why = "context"`), unless it is listed there already. Re-reading a
+/// serialized task adds nothing.
+fn with_context_files(
+    context: Option<TaskContext>,
+    context_files: Option<&[String]>,
+) -> Option<TaskContext> {
+    let paths = context_files.unwrap_or_default();
+    if paths.is_empty() {
+        return context;
+    }
+    let mut context = context.unwrap_or_default();
+    for path in paths {
+        if !context.read_files.iter().any(|file| file.path == *path) {
+            context.read_files.push(ReadFile {
+                path: path.clone(),
+                lines: None,
+                why: default_why(),
+            });
+        }
+    }
+    Some(context)
 }
 
 /// Structural validation issue detected in a `tasks.toml` file.
@@ -311,6 +388,14 @@ pub enum TaskQualityWarning {
     TooManyTasks {
         /// Total task count in the plan.
         task_count: usize,
+    },
+    /// Task sets hints that `plan run` parses but does not act on yet
+    /// ([`TaskDef::unused_hints`]).
+    UnusedHints {
+        /// Task identifier being checked.
+        task_id: String,
+        /// The hints' `tasks.toml` keys.
+        fields: Vec<&'static str>,
     },
 }
 
@@ -379,6 +464,11 @@ impl std::fmt::Display for TaskQualityWarning {
                     "plan has {task_count} tasks (>20); consider splitting it"
                 )
             }
+            Self::UnusedHints { task_id, fields } => write!(
+                f,
+                "{task_id}: sets {}, which plan run parses but does not act on yet",
+                fields.join(", ")
+            ),
         }
     }
 }
@@ -629,6 +719,8 @@ impl TaskDef {
                 }
             }
         }
+
+        prompt.push_str(&self.specification_section());
 
         // Verification info for the agent
         if !self.verify.is_empty() {
@@ -1002,6 +1094,14 @@ impl TasksFile {
             if task.verify.is_empty() && !task.has_accept_tests() {
                 warnings.push(TaskQualityWarning::MissingVerify {
                     task_id: task.id.clone(),
+                });
+            }
+
+            let fields = task.unused_hints();
+            if !fields.is_empty() {
+                warnings.push(TaskQualityWarning::UnusedHints {
+                    task_id: task.id.clone(),
+                    fields,
                 });
             }
         }
@@ -1944,6 +2044,154 @@ command = "cargo check -p roko-cli"
         assert!(rendered.contains("replan_strategy = \"decompose\""));
     }
 
+    /// gap-0f3980: every field of `roko_core::Task` parses from `tasks.toml`
+    /// into `TaskDef`, as its own field or a hint, and survives the JSON a
+    /// Graph node carries. The `Task` literal lists every field, so a field
+    /// added to `Task` breaks this test until it is set here, and then fails
+    /// it until `TaskDef` or `TaskHints` reads it.
+    #[test]
+    fn parses_every_task_routing_field() {
+        use roko_core::task::{
+            Task, TaskCategory, TaskComplexityBand, TaskContextWeight, TaskQualityProfile,
+            TaskReasoningLevel, TaskSpeedPriority, TaskStatus,
+        };
+
+        let strings = |values: &[&str]| -> Option<Vec<String>> {
+            Some(values.iter().map(|value| (*value).to_string()).collect())
+        };
+        let authored = Task {
+            id: "T01".into(),
+            title: "Check the parser".into(),
+            status: TaskStatus::Pending,
+            files: vec!["crates/roko-cli/src/task_parser.rs".into()],
+            role: Some("implementer".into()),
+            acceptance: vec!["every hint parses".into()],
+            depends_on: vec![],
+            parallel_group: Some("parsers".into()),
+            exclusive_files: false,
+            estimated_minutes: Some(15),
+            types_to_define: strings(&["pub struct TaskHints"]),
+            formulas: strings(&["retries = 2 * (k + 1) - 1"]),
+            test_invariants: strings(&["INV-7"]),
+            imports: strings(&["roko_core::TaskHints"]),
+            example_pattern: Some("crates/roko-core/src/task.rs".into()),
+            context_files: strings(&["crates/roko-core/src/task.rs"]),
+            plan_section: Some("## Parsing".into()),
+            skills: strings(&["serde"]),
+            category: Some(TaskCategory::Verification),
+            reasoning_level: Some(TaskReasoningLevel::High),
+            speed_priority: Some(TaskSpeedPriority::Accuracy),
+            quality_profile: Some(TaskQualityProfile::Hardened),
+            context_weight: Some(TaskContextWeight::Deep),
+            research_before_edit: Some(true),
+            tags: strings(&["parser"]),
+            dependency_tags: strings(&["serde"]),
+            fixture_keys: strings(&["plans"]),
+            sidecar_requirements: strings(&["none"]),
+            integration_surfaces: strings(&["plan run"]),
+            complexity_band: Some(TaskComplexityBand::Complex),
+            preferred_model: Some("claude-opus-4-1".into()),
+            preferred_provider: Some("anthropic".into()),
+            escalate_on_retry: Some(true),
+            domain: Some(TaskDomain::Code),
+        };
+        let authored_json = serde_json::to_value(&authored).expect("serialize Task");
+        let authored_fields = authored_json.as_object().expect("a Task is an object");
+        assert!(
+            authored_fields.values().all(|value| !value.is_null()),
+            "set every Task field: {authored_json}"
+        );
+
+        let task_table = toml::to_string(&authored).expect("Task as TOML");
+        let content = format!("[meta]\nplan = \"hints\"\n\n[[task]]\n{task_table}");
+        let file = TasksFile::parse_str(&content).expect("parse every Task field");
+        let parsed = file.tasks[0].clone();
+        let parsed_json = serde_json::to_value(&parsed).expect("serialize TaskDef");
+        for (key, value) in authored_fields {
+            assert_eq!(parsed_json.get(key), Some(value), "Task field `{key}`");
+        }
+        assert_eq!(parsed.hints.category, Some(TaskCategory::Verification));
+        assert_eq!(parsed.hints.exclusive_files, Some(false));
+        // A rewritten tasks.toml (plan regeneration) keeps them too.
+        let rewritten = toml::to_string(&file).expect("write tasks.toml");
+        let from_toml = TasksFile::parse_str(&rewritten).expect("read the rewrite");
+        assert_eq!(from_toml.tasks[0].hints, parsed.hints);
+
+        // `context_files` join the files to read, once, however often the
+        // task is serialized and read back.
+        let read_files = |task: &TaskDef| -> Vec<(String, String)> {
+            let context = task.context.as_ref().expect("context");
+            context
+                .read_files
+                .iter()
+                .map(|file| (file.path.clone(), file.why.clone()))
+                .collect()
+        };
+        let expected = vec![(
+            "crates/roko-core/src/task.rs".to_string(),
+            "context".to_string(),
+        )];
+        assert_eq!(read_files(&parsed), expected);
+        let reread: TaskDef = serde_json::from_value(parsed_json.clone()).expect("read back");
+        assert_eq!(read_files(&reread), expected);
+        assert_eq!(serde_json::to_value(&reread).unwrap(), parsed_json);
+
+        // A task without hints parses as before and serializes no hint keys.
+        let plain = TasksFile::parse_str(
+            "[meta]\nplan = \"hints\"\n\n[[task]]\nid = \"T02\"\ntitle = \"Plain\"\n",
+        )
+        .expect("parse a plain task")
+        .tasks
+        .remove(0);
+        assert_eq!(plain.hints, TaskHints::default());
+        assert!(plain.context.is_none());
+        assert_eq!(
+            serde_json::to_value(TaskHints::default()).unwrap(),
+            serde_json::json!({})
+        );
+    }
+
+    /// gap-0f3980: the specification hints become a prompt section, and a
+    /// task without them gets none.
+    #[test]
+    fn specification_hints_reach_the_task_prompt() {
+        let task = TasksFile::parse_str(
+            r#"
+[meta]
+plan = "hints"
+
+[[task]]
+id = "T1"
+title = "Add the hint struct"
+types_to_define = ["pub struct TaskHints"]
+example_pattern = "crates/roko-core/src/task.rs"
+test_invariants = ["an empty task sets no hint"]
+"#,
+        )
+        .expect("parse")
+        .tasks
+        .remove(0);
+        let prompt = task.build_prompt("hints", Path::new("/nonexistent"));
+        assert!(
+            prompt.contains(
+                "\n## Specification\n### Types to Define\n- pub struct TaskHints\n\n\
+                 ### Example Pattern\ncrates/roko-core/src/task.rs\n\n\
+                 ### Test Invariants\n- an empty task sets no hint\n"
+            ),
+            "{prompt}"
+        );
+        assert!(!prompt.contains("### Formulas"), "{prompt}");
+
+        let mut plain = task.clone();
+        plain.hints = TaskHints::default();
+        assert!(plain.specification_section().is_empty());
+        assert!(
+            !plain
+                .build_prompt("hints", Path::new("/nonexistent"))
+                .contains("## Specification")
+        );
+    }
+
     #[test]
     fn effective_model_by_tier() {
         let task = TaskDef {
@@ -1975,6 +2223,7 @@ command = "cargo check -p roko-cli"
             estimated_minutes: None,
             crates_touched: None,
             sequence: 0,
+            hints: TaskHints::default(),
         };
         assert_eq!(task.effective_model("fallback", None), "claude-haiku-4-5");
 
@@ -2038,6 +2287,7 @@ command = "cargo check -p roko-cli"
             estimated_minutes: None,
             crates_touched: None,
             sequence: 0,
+            hints: TaskHints::default(),
         };
         assert_eq!(task.operating_frequency(), OperatingFrequency::Gamma);
     }
@@ -2073,6 +2323,7 @@ command = "cargo check -p roko-cli"
             estimated_minutes: None,
             crates_touched: None,
             sequence: 0,
+            hints: TaskHints::default(),
         };
         assert_eq!(reactive.operating_frequency(), OperatingFrequency::Gamma);
 
@@ -2105,6 +2356,7 @@ command = "cargo check -p roko-cli"
             estimated_minutes: None,
             crates_touched: None,
             sequence: 0,
+            hints: TaskHints::default(),
         };
         assert_eq!(reflective.operating_frequency(), OperatingFrequency::Delta);
 
@@ -2137,6 +2389,7 @@ command = "cargo check -p roko-cli"
             estimated_minutes: None,
             crates_touched: None,
             sequence: 0,
+            hints: TaskHints::default(),
         };
         assert_eq!(
             deliberative.operating_frequency(),
@@ -2502,6 +2755,7 @@ depends_on = []
                 estimated_minutes: None,
                 crates_touched: None,
                 sequence: 0,
+                hints: TaskHints::default(),
             });
         }
 
@@ -2574,6 +2828,7 @@ depends_on = ["other-plan:T3"]
             estimated_minutes: None,
             crates_touched: None,
             sequence: 0,
+            hints: TaskHints::default(),
         };
         let original = "Original task prompt";
         let error_msg = "compilation failed: undefined symbol";
@@ -2616,6 +2871,7 @@ depends_on = ["other-plan:T3"]
             estimated_minutes: None,
             crates_touched: None,
             sequence: 0,
+            hints: TaskHints::default(),
         };
         let original = "Original prompt";
         let long_error = "x".repeat(5000);

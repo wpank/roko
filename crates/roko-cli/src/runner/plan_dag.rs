@@ -627,6 +627,7 @@ mod tests {
             estimated_minutes: Some(10),
             crates_touched: None,
             sequence: 0,
+            hints: Default::default(),
         }];
 
         Plan {

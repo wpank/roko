@@ -3,13 +3,15 @@ id = "gap-dbf2a6"
 kind = "gap"
 title = "Plan hints pin a ladder rung instead of a model name, and generated plans keep their hints"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p2"
 goal = "golden-path"
 size = "S"
 subsystem = ["roko-cli/task_parser", "roko-cli/prd", "roko-cli/plan_generate"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-09-30
+last_verified = 2026-09-30
+last_verified_rev = "b128de876"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e5"
 discovered_from = "tmp/cybernetic-harness/tldr/research/B1-plan-authoring.md (model_hint row: generated plans lose their hints)"
 anchors = ["crates/roko-cli/src/task_parser.rs::TaskDefSerde", "crates/roko-cli/src/prd.rs::validate_and_fix_generated_plan", "crates/roko-cli/src/plan_generate.rs::PLAN_GENERATOR_SYSTEM_PROMPT", "crates/roko-cli/src/plan_authoring.rs::starter_plan_source", "crates/roko-cli/src/plan_validate.rs", "crates/roko-core/src/config/routing.rs"]
@@ -76,3 +78,11 @@ Checked at `41c7ffbd6`: as described above. No `rung` key exists.
 - The 425 existing hints keep working; converting them is not part of this item.
 - E8.2 (gap-2623b2) replaces the three generator prompts with one. If it lands first, make step 5's change there.
 - gap-0f3980 also adds fields to `TaskDefSerde`; agree on placement if both are in flight.
+- Implemented on `work/gap-0f3980` at `abab08a23`; cargo verification deferred to the batch check. Both verify tests
+  pass there in a targeted run.
+- The hint is `TaskHints.rung`, flattened into `TaskDef` beside gap-0f3980's hints, not a separate field.
+  `LadderConfig::resolve(role, tier, rung_hint, runnable)` and `RoutingLadder::start(role, tier, rung_hint)` take it.
+- `plan validate` (with a workdir): PLAN_040 error for a rung that names none of the task's ladder rungs; PLAN_041
+  warning for `model_hint` or `preferred_model` on a task the ladder would route.
+- `plan_generator.rs::DefaultPlanGenerator` (not `roko prd plan`) still strips `model_hint` and keeps unknown keys; it
+  was not changed.

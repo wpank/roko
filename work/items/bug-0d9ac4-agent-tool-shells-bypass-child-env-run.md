@@ -9,9 +9,9 @@ goal = "release"
 size = "M"
 subsystem = ["roko-std/tools", "roko-acp/tools"]
 created = 2026-09-29
-updated = 2026-09-29
-last_verified = 2026-09-29
-last_verified_rev = "33e107da1"
+updated = 2026-09-30
+last_verified = 2026-09-30
+last_verified_rev = "2ba58d8f4"
 source = "session:roko-b6 2026-09-29 direct-implementation batch"
 discovered_from = "merge:fix/hermetic-child-env dc99a9e81"
 anchors = ["crates/roko-std/src/tool/builtin/run_tests.rs", "crates/roko-std/src/tool/builtin/bash.rs", "crates/roko-acp/src/builtin_tools.rs::exec_bash"]
@@ -103,3 +103,8 @@ Checked at `33e107da1`:
 - bug-0eb8e2 covers the non-tool spawns (MCP servers, probes, git hooks). Keep the helper shared between the two
   items.
 - 2026-09-29 (wk-guard2): 9b1d46be4 (the merge of bug-62e7e6's guard work) adds a `refuse_key_file_in_command` check to roko-std's `crates/roko-std/src/tool/builtin/bash.rs` (:15, :55, :86), next to the `env_clear` this item is about. Rebase any fix onto 9b1d46be4 or later.
+- 2026-09-30 (wk-childenv): Implemented on `work/bug-0d9ac4` at `74ad452f7` (roko-std `bash` and `run_tests` and ACP's
+  `bash` start from `child_env::apply_gate_env`; merged in batch 13) and on `work/bug-0d9ac4b` at `7a2b2c2bc`
+  (`[agent] env_passthrough` reaches every tool-loop `ToolContext`); cargo verification deferred to the batch check.
+  wk-canary's `agent_tool_shells_exclude_provider_keys` (`work/gap-5f4852`) is the live proof asked for above. It is
+  ignored only because that branch was cut before `74ad452f7`; un-ignore it once both branches are merged.

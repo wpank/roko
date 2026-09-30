@@ -3,13 +3,15 @@ id = "gap-585bd2"
 kind = "gap"
 title = "Every implementer is offered the 17 chain tools, transfer and swap included, whatever the task domain"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p2"
 goal = "release"
 size = "M"
 subsystem = ["roko-std/tools", "roko-cli/graph_task_dispatch"]
 created = 2026-09-29
 updated = 2026-09-30
+last_verified = 2026-09-30
+last_verified_rev = "2ba58d8f4"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (20:01, wk-bench-rokoarm's report on gap-b7ab99)"
 anchors = ["crates/roko-std/src/roles.rs::compose_profile", "crates/roko-std/src/roles.rs::domain_profile", "crates/roko-std/src/tool/handlers.rs::chain_handler_for", "crates/roko-cli/src/task_parser.rs::TaskDef", "crates/roko-cli/Cargo.toml"]
@@ -71,3 +73,7 @@ At BASE (4315add32), the role-based deny lists (`denied_tools_for_role`) are the
 - `project.default_domain` is currently dropped when roko.toml is loaded (bug-12153c). A default taken from it depends on that fix.
 - Don't turn off the `chain` feature as the fix: the profile decides exposure, not the build.
 - 2026-09-30 (wk-guard2): `compose_profile`'s allowlist is deliberately not applied wholesale. It lists builtins only, and its exclusions would deny `write_file` to smart-contract and report tasks. Only domain tool ownership (the chain tools) is enforced, and plan step 3 (counting the offered tools in the dispatch record) is skipped.
+- 2026-09-30 (wk-childenv): Implemented on `work/bug-0d9ac4` at `af5bbe617` (domain profiles own tool prefixes; Graph
+  dispatch's contract denies other domains' tools; merged in batch 13) and on `work/bug-0d9ac4b` at `2ba58d8f4`
+  (`effective_agent_contract` takes `project.default_domain` through `TaskDef::effective_domain`); cargo verification
+  deferred to the batch check. bug-12153c is done, so the project default now applies.

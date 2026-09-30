@@ -3,13 +3,14 @@ id = "bug-f3969d"
 kind = "bug"
 title = "InFlightTasks keeps every ended attempt for the life of the process"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p3"
 goal = "tooling"
 size = "S"
 subsystem = ["roko-cli/graph_task_dispatch"]
 created = 2026-09-30
 updated = 2026-09-30
+last_verified = 2026-09-30
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-tamper's report, branch work/gap-b72761 at 7531304ca)"
 anchors = ["crates/roko-cli/src/graph_task_dispatch/sibling_settle.rs"]
@@ -42,3 +43,12 @@ Hygiene (epic spec-9a3131): unbounded growth in a long-lived process. p3, becaus
 
 - [ ] The ended list stays bounded however many attempts run.
 - [ ] The `[[verify]]` command passes.
+
+## Notes
+
+- **wk-tamper (2026-09-30):** Implemented on `work/gap-6d172d` at `1db85d74a`; cargo verification deferred to the
+  batch check. `InFlightTasks` tracks the windows `mark()` opens and `release()` closes. Each attempt end forgets the
+  ended attempts no open window overlaps, then keeps at most `MAX_ENDED` (4096), the last to end. `diff_snapshot`
+  releases a task's window when its base is forgotten (the task passed) or replaced, or when the snapshot fails.
+  The title overstates it: production builds one dispatcher per `run_graph_plan` call, so the list lived for a run,
+  not the process. A task that never passes keeps its window open, which is what the cap is for.

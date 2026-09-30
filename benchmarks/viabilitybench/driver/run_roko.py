@@ -24,38 +24,50 @@ stub's, and a network endpoint is refused before Roko starts. The agent environm
 `~/.roko/.env` loads and no learned state crosses seeds, along with PATH, TMPDIR, locale and a git identity. Nothing
 else of the driver's environment reaches Roko. At 33e107da1, Roko needed nothing under HOME and wrote nothing there.
 
-**The model check** (W10 rec 5, bug-35379d). Every record Roko writes must name the pinned model and the arm's
-provider:
-- each episode (`.roko/episodes.jsonl`, one per dispatch, with the model Roko dispatched);
-- the cost rows (`.roko/learn/costs.jsonl`);
-- every model-call and efficiency row (`.roko/learn/efficiency.jsonl`), auxiliary calls included;
-- S01's `roko.verdict/1` lines (`.roko/runs/*/attempts.jsonl`, gap-528762), once Roko writes them. These carry the
-  executed and provider-reported model and the failover chain.
+**The model check** (W10 rec 5, bug-35379d, bug-31438d). Every record Roko writes must name the pinned model and the
+arm's provider, as the model it dispatched and, when the provider reported one, as the model that served:
+- each episode (`.roko/episodes.jsonl`, one per dispatch): `model` and `backend`, and in `extra` the served
+  `model_reported`, Roko's own `model_mismatch` mark and a failover's `substituted_from`;
+- the cost rows (`.roko/learn/costs.jsonl`), the agent run's and each helper call's (role `helper`);
+- every model-call and efficiency row (`.roko/learn/efficiency.jsonl`), helper calls included;
+- S01's `roko.verdict/1` lines (`.roko/runs/*/attempts.jsonl`, gap-528762): `executed.model_requested`,
+  `model_dispatched`, `model_reported`, `models_reported`, `model_mismatch` and `failover_chain`.
+
+A null `model_reported` is no evidence either way, and a dated snapshot of the pin is the pin (`records.same_model`).
+Each row belongs to the attempt its S01 attempt key names (`<run>:<plan>:<task>:<n>`; a helper call's efficiency row
+is `<key>/helper-<i>`), and attempts are numbered by their episodes' keys, whatever order the rows are in. An older
+Roko's rows carry no key: its episodes and dispatch cost rows count in file order, its efficiency rows by `/a<n>`.
 
 The failure kinds:
-- `model_mismatch`: a record names another model or provider.
-- `model_unverified`: an attempt has no episode, or Roko left no records or unreadable ones.
+- `model_mismatch`: a record names another model or provider, or a failover.
+- `model_unverified`: an attempt has no episode, Roko left no records or unreadable ones, or its episodes' attempt
+  keys repeat or name only some attempts.
 - `extra_attempts`: Roko made more attempts than the plan allows.
 
 Any of them makes the task `infra_error`. The report excludes and counts it, and the census never labels it a
 success. Roko's records live in the agent's workdir, so a hostile agent could edit them. Only the proxy's log is out
 of the agent's reach.
 
-**What Roko does not record.** Checked at 33e107da1 against a loopback fake:
-- the model the provider reports: the fake answered glm-4.7, and every record still said gpt-oss-120b;
-- the three auxiliary calls it makes after each failed gate (quality rating, error diagnosis, reflection). Episodes
-  and the Graph `costs.json` leave these out, and `efficiency.jsonl` missed the last one.
+**What Roko records of an attempt.** Checked at b0ede92d7 against a loopback fake:
+- its turns, the tool loop's model calls. `extra.turns_unknown` marks a count the agent never reported, and the
+  attempt's `turns` is then null, not 0 (bug-55fd84);
+- the helper calls it makes after a failed gate (quality rating, error diagnosis, reflection): `extra.helper_calls`,
+  and a cost row and an efficiency row each (bug-62e3f4). The attempt waits for them before it writes its episode;
+- the served model: the helper calls' rows name it, but the agent run's streamed calls leave it null. So an
+  attempt's `model_reported` is null and its cost unknown (null) unless S01 verdicts or the metering proxy supply
+  them. Roko's own token counts stay in each attempt's `roko_usage`, for diagnosis only. Roko's USD is never used.
 
-So `model_reported` is null and the cost is unknown (null) unless S01 verdicts or the metering proxy supply them.
-Roko's own token counts stay in each attempt's `roko_usage`, for diagnosis only. Roko's USD is never used.
+An attempt's `roko_calls` is its turns plus its helper calls, None when either is unknown. Without the proxy it is
+also the attempt's `calls`; with the proxy, `calls` is the proxy's count and `roko_calls` stays beside it, so the
+record shows where the two disagree (a helper call still running when the attempt settled counts only in the proxy).
 
 **The proxy** (gap-e003ec, `faultproxy.py`). `vb run` routes Roko through it on every billed network run, and on any
 run with `--proxy`. Roko gets the proxy's loopback URL and a placeholder key, and the proxy sends the real one, from
 the driver's key file. When `<run_dir>/proxy.jsonl` exists, its rows for this task are the meter. The driver sets
 the proxy's active task to the task key before each task (`proxy.configure(task=key)`); rows without that key never
 match, so the attempts fail as `no_proxy_traffic`.
-- Requests are assigned to attempts by `ts`, in `ordinal` order. An attempt owns the requests up to its episode, so
-  its auxiliary calls, made after that, usually count toward the next attempt; the last attempt owns the rest. The
+- Requests are assigned to attempts by `ts`, in `ordinal` order. An attempt owns the requests up to its episode, its
+  helper calls included, since Roko waits for them before it writes the episode; the last attempt owns the rest. The
   proxy stamps each request to the microsecond, as Roko stamps its episodes, so attempts that end within one second
   keep their own requests (bug-09fac4). With whole-second stamps on either side (an older proxy log), an attempt that
   ended in the same second as the one before cannot be told apart from it. Task totals are exact either way.
@@ -114,6 +126,7 @@ import harness
 import layout
 import ledger
 import planemit
+import records
 from common import repo
 
 PROXY_CAPS = ("input_tokens_per_attempt",)  # arm caps that `vb run` has the metering proxy hold for this runner
@@ -125,8 +138,9 @@ VALIDATE_TIMEOUT_S = 120.0
 OUTPUT_CHARS = 20_000  # of each of Roko's stdout and stderr kept in the transcript, head and tail
 EVIDENCE_MAX_BYTES = 50_000_000
 BUILD = re.compile(r"\bgit ([0-9a-f]{7,40})\b")
-ATTEMPT_ID = re.compile(r"/a(\d+)(?:/|$)")
+ATTEMPT_ID = re.compile(r"/a(\d+)(?:/|$)")  # an older Roko's attempt ids, from 0
 VERDICT_SCHEMA = "roko.verdict/1"
+HELPER_ROLE = "helper"  # the role of a helper call's cost and efficiency rows (bug-62e3f4)
 
 
 class RunnerError(RuntimeError):
@@ -146,13 +160,16 @@ class RokoAttempt(harness.Attempt):
     started_at: str | None = None  # the attempt's busy time (module docstring, "Process measures")
     finished_at: str | None = None
     queue_wait_s: float | None = None  # rate-limit waits in its proxy window; None without the proxy
+    helper_calls: int | None = None  # helper model calls after its gate (bug-62e3f4); None when Roko does not say
+    roko_calls: int | None = None  # its model calls by Roko's records: turns plus helper calls; None if unknown
 
     def as_record(self) -> dict:
         record = super().as_record()
         record.update(model_dispatched=self.model_dispatched, gate_verdict=self.gate_verdict,
                       roko_usage=self.roko_usage, roko_build=self.roko_build, checks=list(self.checks),
                       task_id=self.task_id, cost_class=self.cost_class, started_at=self.started_at,
-                      finished_at=self.finished_at, queue_wait_s=self.queue_wait_s)
+                      finished_at=self.finished_at, queue_wait_s=self.queue_wait_s, helper_calls=self.helper_calls,
+                      roko_calls=self.roko_calls)
         if not self.calls_known:
             record["calls"] = None
         return record
@@ -289,7 +306,8 @@ def read_evidence(workspace: Path, slug: str, *, proxy_rows: list[dict] | None =
     def this_plan(row: dict) -> bool:
         return (row.get("extra") or {}).get("plan_id", row.get("plan_id")) == slug
 
-    episodes = [row for row in rows("episodes.jsonl") if this_plan(row) and row.get("task_id") == planemit.TASK_ID]
+    episodes = _attempt_order([row for row in rows("episodes.jsonl")
+                               if this_plan(row) and row.get("task_id") == planemit.TASK_ID])
     verdicts = []
     runs = root / "runs"
     if runs.is_dir() and not runs.is_symlink():
@@ -311,58 +329,98 @@ def read_evidence(workspace: Path, slug: str, *, proxy_rows: list[dict] | None =
 def settle(evidence: Evidence, *, chain_key: str, model: str, provider: str, snapshot: ledger.Snapshot,
            reserved_usd: float, max_attempts: int, roko_build: str | None = None
            ) -> tuple[list[RokoAttempt], list[str]]:
-    """One attempt per episode, each checked against the pin and priced from a meter; the problems found."""
+    """One attempt per episode, numbered by its attempt key, each checked against the pin and priced from a meter; the
+    problems found."""
+    ordinals = [_ordinal((episode.get("extra") or {}).get("attempt_key")) for episode in evidence.episodes]
+    keyed = bool(ordinals) and all(ordinals) and len(set(ordinals)) == len(ordinals)
     attempts = []
-    for number, episode in enumerate(evidence.episodes, 1):
+    for position, episode in enumerate(evidence.episodes, 1):
+        extra = episode.get("extra") or {}
+        number = ordinals[position - 1] if keyed else position
         passed = episode.get("success") is True
         dispatched, before = episode.get("model") or None, attempts[-1].model_dispatched if attempts else None
+        turns = None if extra.get("turns_unknown") is True or not _count(episode.get("turns")) else episode["turns"]
+        # A keyed episode (bug-62e3f4's Roko) names its helper calls whenever it made some; an older one never does.
+        helpers = extra["helper_calls"] if _count(extra.get("helper_calls")) else 0 if "attempt_key" in extra else None
+        roko_calls = None if turns is None or helpers is None else turns + helpers
         attempts.append(RokoAttempt(
             number=number, attempt_key=f"{chain_key}:{number}", model_requested=model,
-            provider=str(episode.get("backend") or provider), reserved_usd=reserved_usd,
-            turns=episode.get("turns") if isinstance(episode.get("turns"), int) else None, usage_unknown=True,
+            provider=str(episode.get("backend") or provider), reserved_usd=reserved_usd, turns=turns,
+            calls=roko_calls or 0, calls_known=roko_calls is not None, usage_unknown=True,
             ended_by="gate_passed" if passed else "gate_failed", model_dispatched=dispatched,
             gate_verdict="passed" if passed else None, roko_usage=_roko_usage(episode), roko_build=roko_build,
             task_id=str(episode.get("task_id") or planemit.TASK_ID),
-            cost_class="execute" if number == 1 else "escalate" if dispatched and before and dispatched != before
-            else "retry", **_episode_span(episode)))
+            cost_class="execute" if position == 1 else "escalate" if dispatched and before and dispatched != before
+            else "retry", helper_calls=helpers, roko_calls=roko_calls, **_episode_span(episode)))
+    by_number = {attempt.number: attempt for attempt in attempts}
     problems: list[str] = []
 
     def flag(kind: str, detail: str, number: int | None = None) -> None:
         problems.append(f"{kind}: {detail}")
-        if number is not None and 1 <= number <= len(attempts):
-            attempt = attempts[number - 1]
+        attempt = by_number.get(number)
+        if attempt is not None:
             attempt.checks += [kind] if kind not in attempt.checks else []
             attempt.ended_by = kind
 
+    def where(number: int | None) -> str:
+        return f"attempt {number}" if number else "a run record"
+
     def expect(found: object, wanted: str, what: str, number: int | None) -> None:
         if found not in (None, "") and found != wanted:
-            where = f"attempt {number}" if number else "a run record"
-            flag("model_mismatch", f"{where}: {what} is {found!r}, not {wanted!r}", number)
+            flag("model_mismatch", f"{where(number)}: {what} is {found!r}, not {wanted!r}", number)
 
-    for attempt in attempts:
+    def served(row: dict, what: str, number: int | None) -> None:
+        """The served-model fields a record carries (bug-31438d, bug-35379d): the model the provider reported, every
+        model it named, Roko's own mismatch mark, and the planned model a failover replaced. A null report is no
+        evidence either way."""
+        named = row.get("models_reported") if isinstance(row.get("models_reported"), list) else []
+        for reported in dict.fromkeys([row.get("model_reported"), *named]):
+            if isinstance(reported, str) and reported and not records.same_model(model, reported):
+                flag("model_mismatch", f"{where(number)}: {what} says the provider served {reported!r}, not "
+                                       f"{model!r}", number)
+        if row.get("model_mismatch") is True:
+            flag("model_mismatch", f"{where(number)}: {what} marks the served model as another than the one "
+                                   "launched", number)
+        replaced = row.get("substituted_from") or row.get("failover_chain")
+        if replaced:
+            flag("model_mismatch", f"{where(number)}: {what} records a failover from {replaced!r}", number)
+
+    if evidence.episodes and not keyed and any(ordinals):
+        flag("model_unverified", "Roko's episodes name attempt keys for only some attempts, or name one twice")
+    for attempt, episode in zip(attempts, evidence.episodes):
         expect(attempt.model_dispatched, model, "the dispatched model", attempt.number)
         expect(attempt.provider, provider, "the provider", attempt.number)
+        served(episode.get("extra") or {}, "its episode", attempt.number)
         if attempt.model_dispatched is None:
             flag("model_unverified", f"attempt {attempt.number}: its episode names no model", attempt.number)
-    for number, row in enumerate(evidence.cost_rows, 1):
-        expect(row.get("model"), model, "the cost row's model", number)
-        expect(row.get("provider"), provider, "the cost row's provider", number)
+    dispatch_rows = 0
+    for row in evidence.cost_rows:
+        helper = row.get("role") == HELPER_ROLE
+        dispatch_rows += not helper
+        number = _ordinal(row.get("attempt_key")) or (None if helper else dispatch_rows)  # unkeyed: one per attempt
+        what = "a helper call's cost row" if helper else "the cost row"
+        expect(row.get("model"), model, f"{what}'s model", number)
+        expect(row.get("provider"), provider, f"{what}'s provider", number)
+        served(row, what, number)
     for row in evidence.efficiency:
-        match = ATTEMPT_ID.search(str(row.get("attempt_id") or ""))
-        number = int(match[1]) + 1 if match else None
+        match = ATTEMPT_ID.search(str(row.get("attempt_id") or ""))  # an older Roko's `.../a<n-1>/...`
+        number = _ordinal(row.get("attempt_key")) or _ordinal(row.get("attempt_id")) or (
+            int(match[1]) + 1 if match else None)
+        what = "a helper call's efficiency row" if row.get("role") == HELPER_ROLE else "an efficiency row"
         for key in ("model", "resolved_model"):
-            expect(row.get(key), model, f"an efficiency row's {key}", number)
-        expect(row.get("provider") or row.get("backend"), provider, "an efficiency row's provider", number)
+            expect(row.get(key), model, f"{what}'s {key}", number)
+        expect(row.get("provider") or row.get("backend"), provider, f"{what}'s provider", number)
+        served(row, what, number)
     for verdict in evidence.verdicts:
-        number = verdict.get("attempt") if isinstance(verdict.get("attempt"), int) else None
+        number = _ordinal(verdict.get("attempt_key")) or (
+            verdict.get("attempt") if isinstance(verdict.get("attempt"), int) else None)
         executed = verdict.get("executed") or {}
-        for key in ("model_requested", "model_reported"):
+        for key in ("model_requested", "model_dispatched"):
             expect(executed.get(key), model, f"S01's executed {key}", number)
         expect(executed.get("provider"), provider, "S01's executed provider", number)
-        if executed.get("failover_chain"):
-            flag("model_mismatch", f"S01 records a failover through {executed['failover_chain']}", number)
-        if number and number <= len(attempts):
-            _meter_from_verdict(attempts[number - 1], verdict)
+        served(executed, "S01's verdict", number)
+        if number in by_number:
+            _meter_from_verdict(by_number[number], verdict)
     if evidence.unreadable:
         flag("model_unverified", f"unreadable Roko records: {', '.join(evidence.unreadable[:5])}")
     if not attempts:
@@ -604,6 +662,29 @@ def _jsonl(path: Path) -> tuple[list[dict], list[str]]:
     return rows, bad
 
 
+def _ordinal(key: object) -> int | None:
+    """The attempt number of an S01 attempt key, `<run>:<plan>:<task>:<n>` with n from 1, or of a helper call's row id
+    under it (`<key>/helper-<i>`); None for anything else."""
+    if not isinstance(key, str):
+        return None
+    parts = key.split("/", 1)[0].split(":")
+    if len(parts) != 4 or not all(parts[:3]) or not parts[3].isdigit() or int(parts[3]) < 1:
+        return None
+    return int(parts[3])
+
+
+def _attempt_order(episodes: list[dict]) -> list[dict]:
+    """Episodes by their attempt keys' numbers when each names its own, else in file order."""
+    ordinals = [_ordinal((episode.get("extra") or {}).get("attempt_key")) for episode in episodes]
+    if not all(ordinals) or len(set(ordinals)) != len(ordinals):
+        return episodes
+    return [episode for _, episode in sorted(zip(ordinals, episodes), key=lambda pair: pair[0])]
+
+
+def _count(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
 def _roko_usage(episode: dict) -> dict | None:
     usage = episode.get("usage")
     if not isinstance(usage, dict):
@@ -615,6 +696,8 @@ def _roko_usage(episode: dict) -> dict | None:
 def _attempt_event(attempt: RokoAttempt, episode: dict) -> dict:
     return {"event": "attempt", "attempt": attempt.number, "model_dispatched": attempt.model_dispatched,
             "provider": attempt.provider, "success": episode.get("success"), "checks": attempt.checks,
+            "turns": attempt.turns, "helper_calls": attempt.helper_calls, "roko_calls": attempt.roko_calls,
+            "calls": attempt.calls if attempt.calls_known else None,
             "failure_reason": _clip(str(episode.get("failure_reason") or ""))}
 
 

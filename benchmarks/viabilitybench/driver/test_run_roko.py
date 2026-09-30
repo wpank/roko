@@ -315,6 +315,119 @@ def test_pinned_run_records_attempts_and_leaves_only_the_agents_tree(places, tmp
     assert env["ROKO_CONFIG"] != "/elsewhere/roko.toml" and env["HOME"].startswith(str(places["work"]))
 
 
+SLUG = "vb-86da757b9e"
+CHAIN = f"graph-{SLUG}-38dae924-f80f-44f4-b0a1-91c1a85589c3:{SLUG}:T01"  # Roko's chain key: <run>:<plan>:<task>
+
+
+def model_truth_records(workspace: Path, order: tuple[int, ...] = (1, 2, 3), helpers: tuple[int, ...] = (2, 2, 0),
+                        changes: dict | None = None) -> run_roko.Evidence:
+    """Write Roko's records for three attempts, two failed gates and a pass, in the shape Roko writes since
+    bug-31438d (b0ede92d7, read off a real run against the ToolStub), and read them back. Episodes go to the file in
+    `order`. `changes` maps (file, attempt, role) to fields to change in that row: file is episode, cost, efficiency
+    or verdict, and role is implementer or helper."""
+    changes = changes or {}
+
+    def row(file: str, number: int, role: str, fields: dict) -> dict:
+        return {**fields, **changes.get((file, number, role), {})}
+
+    episodes, costs, efficiency, verdicts = {}, [], [], []
+    for number, helper_count in zip((1, 2, 3), helpers):
+        key, passed = f"{CHAIN}:{number}", number == 3
+        extra = {"plan_id": SLUG, "attempt_key": key, "model_reported": None, "model_mismatch": False,
+                 "outcome": "passed" if passed else "gate_failed", "learning_label": int(passed),
+                 "initial_model": PIN, "successful_model": PIN}
+        if helper_count:
+            extra.update(helper_calls=helper_count, helper_cost_usd=0.000775, helper_tokens_in=2000,
+                         helper_tokens_out=100)
+        episodes[number] = row("episode", number, "implementer", {
+            "task_id": "T01", "model": PIN, "backend": "cerebras", "success": passed, "turns": 3,
+            "completed_at": f"2026-09-30T07:46:0{number}.730513Z", "duration_secs": 0.057,
+            "failure_reason": None if passed else "verify: 1/1 verify step(s) failed", "extra": extra})
+        efficiency += [{"kind": "model_call", "role": "dispatch_v2", "model": PIN, "provider": "cerebras"}] * 3
+        for index in range(1, helper_count + 1):
+            served = {"attempt_key": key, "model": PIN, "role": "helper", "model_reported": PIN,
+                      "model_mismatch": False}
+            costs.append(row("cost", number, "helper", {**served, "provider": "cerebras", "plan_id": SLUG,
+                                                        "task_id": "T01", "success": True}))
+            efficiency.append(row("efficiency", number, "helper", {
+                **served, "attempt_id": f"{key}/helper-{index}", "resolved_model": PIN, "backend": "cerebras"}))
+        costs.append(row("cost", number, "implementer", {
+            "attempt_key": key, "outcome": extra["outcome"], "learning_label": int(passed), "model": PIN,
+            "provider": "cerebras", "role": "implementer", "plan_id": SLUG, "task_id": "T01", "success": passed,
+            "model_reported": None, "model_mismatch": False}))
+        efficiency.append(row("efficiency", number, "implementer", {
+            "attempt_key": key, "attempt_id": key, "role": "implementer", "model": PIN, "resolved_model": PIN,
+            "backend": "cerebras", "model_reported": None, "model_mismatch": False, "turn_number": 3}))
+        verdicts.append(row("verdict", number, "implementer", {
+            "schema_version": run_roko.VERDICT_SCHEMA, "plan_id": SLUG, "task_id": "T01", "attempt": number,
+            "attempt_key": key, "inv": None, "outcome": extra["outcome"],
+            "executed": {"provider": "cerebras", "model_requested": PIN, "model_dispatched": PIN,
+                         "model_reported": None, "models_reported": [], "model_mismatch": False,
+                         "failover_chain": [], "failover_reason": None, "turns": 3},
+            **({"helpers": {"calls": helper_count, "tokens_in": 2000, "tokens_out": 100}} if helper_count else {})}))
+    roko = workspace / ".roko"
+    for relpath, rows in (("episodes.jsonl", [episodes[number] for number in order]), ("learn/costs.jsonl", costs),
+                          ("learn/efficiency.jsonl", efficiency),
+                          (f"runs/graph-{SLUG}-38dae924/attempts.jsonl", verdicts)):
+        (roko / relpath).parent.mkdir(parents=True, exist_ok=True)
+        (roko / relpath).write_text("".join(json.dumps(line) + "\n" for line in rows))
+    return run_roko.read_evidence(workspace, SLUG)
+
+
+def test_run_roko_reads_the_model_truth_fields(tmp_path):
+    # gap-dad97b: since bug-31438d, Roko's records name each attempt by its S01 attempt key, report the served model,
+    # a failover and an unreported turn count, and record helper calls as rows of their own. The runner numbers
+    # attempts by key, whatever order the rows are in, counts turns plus helper calls, and checks every model field.
+    attempts, problems = settle(model_truth_records(tmp_path / "clean", order=(2, 3, 1)))
+    assert problems == []
+    assert [(a.number, a.gate_verdict, a.turns, a.helper_calls, a.roko_calls, a.calls, a.calls_known)
+            for a in attempts] == [(1, None, 3, 2, 5, 5, True), (2, None, 3, 2, 5, 5, True),
+                                   (3, "passed", 3, 0, 3, 3, True)]
+    assert [a.attempt_key for a in attempts] == [f"run-1/F1-l1-0001.s1:{number}" for number in (1, 2, 3)]
+    assert attempts[0].as_record()["roko_calls"] == 5 and attempts[2].as_record()["helper_calls"] == 0
+
+    # A turn count the agent never reported is unknown, not 0 turns; so is that attempt's call count.
+    unknown = {("episode", 2, "implementer"): {"turns": 0, "extra": {
+        "plan_id": SLUG, "attempt_key": f"{CHAIN}:2", "turns_unknown": True, "helper_calls": 2}}}
+    attempts, problems = settle(model_truth_records(tmp_path / "unknown", changes=unknown))
+    assert problems == [] and [(a.turns, a.roko_calls, a.as_record()["calls"]) for a in attempts] == [
+        (3, 5, 5), (None, None, None), (3, 3, 3)]
+
+    # Every served-model field counts, on the attempt its key names: the episode's report and Roko's own mismatch mark,
+    # a helper call's cost row, a failover on an efficiency row, and the models a verdict saw.
+    cases = [  # (the attempt flagged, the change)
+        (2, {("episode", 2, "implementer"): {"extra": {"plan_id": SLUG, "attempt_key": f"{CHAIN}:2",
+                                                       "model_reported": "glm-4.7", "model_mismatch": True}}}),
+        (1, {("cost", 1, "helper"): {"model_reported": "glm-4.7", "model_mismatch": True}}),
+        (3, {("efficiency", 3, "implementer"): {"substituted_from": "qwen-3-235b",
+                                                 "substitution_reason": "rate limited"}}),
+        # this verdict's `attempt` says 3, but its key names attempt 1, and the key decides
+        (1, {("verdict", 1, "implementer"): {"attempt": 3, "executed": {
+            "provider": "cerebras", "model_requested": PIN, "model_dispatched": PIN, "model_reported": "glm-4.7",
+            "models_reported": [PIN, "glm-4.7"], "model_mismatch": True, "turns": 3}}}),
+    ]
+    for case, (flagged, change) in enumerate(cases):
+        attempts, problems = settle(model_truth_records(tmp_path / f"case{case}", changes=change))
+        assert problems and all(problem.startswith(f"model_mismatch: attempt {flagged}:") for problem in problems)
+        assert [a.checks for a in attempts] == [["model_mismatch"] if a.number == flagged else [] for a in attempts]
+    # A dated snapshot of the pin is the pin, and a null report is no evidence either way.
+    dated = {("cost", 2, "helper"): {"model_reported": f"{PIN}-2025-08-05"}}
+    assert settle(model_truth_records(tmp_path / "dated", changes=dated))[1] == []
+
+    # With the proxy metering, its count of each attempt's calls is the meter; Roko's own stays beside it.
+    usage = {"tokens_in": 1000, "tokens_cache_read": 0, "tokens_out": 50, "tokens_reasoning": 0}
+    found = model_truth_records(tmp_path / "proxied")
+    found.proxy_rows = [{"task": "F1-l1-0001.s1", "ordinal": ordinal, "ts": f"2026-09-30T07:46:0{second}.5Z",
+                         "model_requested": PIN, "model_reported": PIN, "usage": usage, "usage_source": "reported"}
+                        for ordinal, second in enumerate([1] * 5 + [2] * 4 + [3] * 3, 1)]
+    attempts, problems = settle(found)
+    assert problems == [] and [(a.calls, a.roko_calls) for a in attempts] == [(5, 5), (4, 5), (3, 3)]
+
+    # Attempt keys that repeat, or name only some attempts, cannot say which record is whose.
+    twice = {("episode", 3, "implementer"): {"extra": {"plan_id": SLUG, "attempt_key": f"{CHAIN}:2"}}}
+    assert "model_unverified" in settle(model_truth_records(tmp_path / "twice", changes=twice))[1][0]
+
+
 def test_attempt_reservations_are_all_or_nothing(tmp_path):
     budget = tmp_path / "budget.toml"
     budget.write_text('schema_version = "vb.budget/1"\nsource = "test"\n[programme]\ntotal_usd = 10\n'

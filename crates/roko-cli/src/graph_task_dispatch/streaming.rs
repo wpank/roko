@@ -104,10 +104,10 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
         }
 
         // ── W10: Enrichment pipeline (streaming) ─────────────────────────
-        let routing_ctx = build_routing_context(role, &task, &self.feedback.daimon_state);
+        let mut routing_ctx = build_routing_context(role, &task, &self.feedback.daimon_state);
         // Clone before the move into DispatchContext so emit_feedback can pass
         // the real dispatch-time context to the routing observation sink.
-        let routing_ctx_for_feedback = routing_ctx.clone();
+        let mut routing_ctx_for_feedback = routing_ctx.clone();
 
         let (cached_workspace_map, cached_workspace_context, cached_cfactor_context) =
             self.static_prompt_cache.get_or_init(|| {
@@ -138,6 +138,12 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
         // The tree the task starts from, before its agent runs, for the
         // pre-verify screen's diff (`red_flags`).
         self.record_diff_base(&attempt_key, &lease.path, None).await;
+        // bug-cae1e1: as on the batch path, the router and its observations
+        // know a retry from a first attempt.
+        let attempt_number = self.next_retry_attempt(&spec.plan_id, &task.id).attempt;
+        routing_context::mark_attempt(&mut routing_ctx, &task, attempt_number);
+        routing_context::mark_attempt(&mut routing_ctx_for_feedback, &task, attempt_number);
+
         let prompt_experiment = self
             .feedback
             .experiment_store_path
@@ -175,7 +181,7 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
         let contract = effective_agent_contract(role, &task, &self.config);
         let timeout_ms = base_attempt_timeout_ms(&self.config, spec);
         let request = AgentDispatchRequest {
-            model_key: dispatch_plan.model.slug.clone(),
+            model_key: self.dispatch_model_key(&dispatch_plan, &task),
             prompt: dispatch_plan.prompt.user_prompt.clone(),
             system_prompt: dispatch_plan.prompt.system_prompt.clone(),
             workdir: lease.path.clone(),
@@ -793,6 +799,105 @@ printf '%s\n' '{"type":"result","session_id":"s","model":"claude-opus-4-6","tota
             }
         }
         assert_eq!(terminal, vec![TaskDispatchOutcomeKind::Failed]);
+    }
+
+    /// bug-cae1e1: like the batch path, the streaming path routes a retry of
+    /// a task whose verify step failed as a retry after a failure, and runs
+    /// the task's model on its `preferred_provider`.
+    #[tokio::test]
+    async fn streaming_dispatch_marks_retries_and_honours_preferred_provider() {
+        use std::os::unix::fs::PermissionsExt;
+
+        use crate::graph_task_dispatch::tests::{
+            RoutingContextLog, cli_provider, make_bare_dispatcher, make_task_def, model,
+        };
+
+        let temp = tempdir().expect("tempdir");
+        let mut config = RokoConfig::default();
+        config.providers.clear();
+        config.models.clear();
+        config.agent.bare_mode = false;
+        no_auto_fix(&mut config);
+        // Two CLI providers serve the same model; each notes when it runs.
+        for provider in ["default-cli", "preferred-cli"] {
+            let script = temp.path().join(format!("{provider}.sh"));
+            std::fs::write(
+                &script,
+                format!(
+                    r#"#!/bin/sh
+set -eu
+cat >/dev/null
+printf '%s\n' {provider} >> "$(dirname -- "$0")/ran"
+printf '%s\n' '{{"type":"content_block_delta","delta":{{"text":"done"}}}}'
+printf '%s\n' '{{"type":"result","session_id":"s","model":"claude-sonnet-4-6","total_cost_usd":0.01,"usage":{{"input_tokens":5,"output_tokens":10}}}}'
+"#
+                ),
+            )
+            .expect("write script");
+            let mut permissions = std::fs::metadata(&script).expect("metadata").permissions();
+            permissions.set_mode(0o755);
+            std::fs::set_permissions(&script, permissions).expect("chmod");
+            config.providers.insert(
+                provider.to_string(),
+                cli_provider(&script.display().to_string()),
+            );
+            config.models.insert(
+                format!("sonnet-{provider}"),
+                model(provider, "claude-sonnet-4-6", None),
+            );
+        }
+        config.agent.default_model = "sonnet-default-cli".to_string();
+        let contexts = Arc::new(RoutingContextLog::default());
+        let dispatcher = make_bare_dispatcher(config, temp.path())
+            .await
+            .with_feedback(RoutingContextLog::feedback(&contexts));
+        let mut task = make_task_def("focused");
+        task.model_hint = Some("sonnet-default-cli".to_string());
+        task.hints.preferred_provider = Some("preferred-cli".to_string());
+        // The verify step fails once, then passes.
+        task.verify = vec![verify_step(
+            "structural",
+            "test -f retried || { touch retried; exit 1; }",
+        )];
+        let spec = make_spec(&task);
+        let lease = TaskLease {
+            path: temp.path().to_path_buf(),
+            fingerprint: "fp".to_string(),
+        };
+        let cell = CellContext::new().with_cell_id("T-RETRY".to_string());
+
+        let (event_tx, _events) = tokio::sync::mpsc::channel(streaming_event_channel_capacity());
+        let error = dispatcher
+            .dispatch_streaming(
+                &spec,
+                Vec::new(),
+                &cell,
+                &lease,
+                event_tx,
+                &NoopAttemptRecorder,
+            )
+            .await
+            .expect_err("the first attempt fails its verify step");
+        assert!(matches!(error, RokoError::Verify { .. }), "{error}");
+        let (event_tx, _events) = tokio::sync::mpsc::channel(streaming_event_channel_capacity());
+        dispatcher
+            .dispatch_streaming(
+                &spec,
+                Vec::new(),
+                &cell,
+                &lease,
+                event_tx,
+                &NoopAttemptRecorder,
+            )
+            .await
+            .expect("the retry passes");
+
+        assert_eq!(contexts.marks(), [(0, false), (1, true)]);
+        let ran = std::fs::read_to_string(temp.path().join("ran")).expect("a provider ran");
+        assert_eq!(
+            ran.lines().collect::<Vec<_>>(),
+            ["preferred-cli", "preferred-cli"]
+        );
     }
 
     #[tokio::test]

@@ -2,7 +2,7 @@
 id = "gap-a8d786"
 kind = "gap"
 title = "Plan lint: tasks that can run at the same time must not share files"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "golden-path"
@@ -11,7 +11,7 @@ subsystem = ["roko-cli/plan_policy"]
 created = 2026-09-29
 updated = 2026-09-30
 last_verified = 2026-09-30
-last_verified_rev = "8a88c6267"
+last_verified_rev = "626e182a9"
 source = "tmp/cybernetic-harness/workstreams/PLAN.md#e8"
 discovered_from = "tmp/cybernetic-harness/tldr/research/B2-dag-worktrees-merge.md (intra-plan write-set check, proposed item W3)"
 anchors = ["crates/roko-cli/src/plan_policy.rs::validate_plan_budgets"]
@@ -21,6 +21,11 @@ links = { depends_on = ["gap-439794"], blocks = [], related = ["gap-272448", "fi
 
 [[verify]]
 command = "grep -rqw 'fn concurrent_tasks_sharing_a_file_are_flagged' crates/roko-cli/src/ && cargo test -p roko-cli --lib concurrent_tasks_sharing_a_file_are_flagged"
+
+[closed]
+at = 2026-09-30
+by = "coordinator (session 7622b882)"
+evidence = "Merged in 626e182a9. plan validate flags tasks that can run at the same time and share files. Batch 16c gate on 7902e44a3 (MAIN 626e182a9 has the same code): cargo check --workspace --tests, nightly fmt and clippy -p roko-cli -p roko-core -p roko-graph --keep-going -D warnings clean; lib tests pass: roko-cli 3221 (three known flakes: the turn_policy 1 s test and the verification efficiency wait pass alone; the routing crash-recovery test is a separate WAL-lock flake handed to wk-settle), roko-core 1953, roko-graph 474. Verify: its test passes in that run and its static checks pass on MAIN."
 +++
 
 ## Problem

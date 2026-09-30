@@ -2,7 +2,7 @@
 id = "gap-1920ba"
 kind = "gap"
 title = "File exclusion misses read-against-write races: a whole-project verify reads a sibling's half-written file"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "golden-path"
@@ -11,7 +11,7 @@ subsystem = ["roko-graph", "roko-cli/graph-task-dispatch"]
 created = 2026-09-29
 updated = 2026-09-30
 last_verified = 2026-09-30
-last_verified_rev = "f712a8e7a"
+last_verified_rev = "626e182a9"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (16:10, wk-scheduler's report on gap-439794, branch work/gap-4d835d)"
 anchors = ["crates/roko-graph/src/exclusion.rs", "crates/roko-graph/src/engine.rs::execute_ready_queue", "crates/roko-cli/src/graph_task_dispatch/sibling_settle.rs"]
@@ -21,6 +21,11 @@ links = { depends_on = [], blocks = [], related = ["gap-439794", "gap-4f3063", "
 
 [[verify]]
 command = "grep -rqw 'fn a_whole_project_verify_never_runs_while_a_sibling_edits' crates/roko-cli/src/ && cargo test -p roko-cli --lib a_whole_project_verify_never_runs_while_a_sibling_edits"
+
+[closed]
+at = 2026-09-30
+by = "coordinator (session 7622b882)"
+evidence = "Merged in 626e182a9. VerifyStep.scope (declared, or inferred from the command) decides what a verify step reads: a step waits, up to sibling_settle_secs, only for siblings editing files inside its scope, and a verifying attempt never counts as an editor. Batch 16c gate on 7902e44a3 (MAIN 626e182a9 has the same code): cargo check --workspace --tests, nightly fmt and clippy -p roko-cli -p roko-core -p roko-graph --keep-going -D warnings clean; lib tests pass: roko-cli 3221 (three known flakes: the turn_policy 1 s test and the verification efficiency wait pass alone; the routing crash-recovery test is a separate WAL-lock flake handed to wk-settle), roko-core 1953, roko-graph 474. Verify: its test passes in that run and its static checks pass on MAIN."
 +++
 
 ## Problem

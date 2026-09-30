@@ -18,7 +18,7 @@ use super::{
     AcceptedWorktree, AttemptAcceptance, OperationLifecycle, PlanRun, WorktreeError,
     WorktreeHandle, WorktreeManager, format_branch_name,
 };
-use crate::runner::merge::{MergeTree, merge_tree_result};
+use crate::runner::merge::{MergeTree, git_command, merge_tree_result};
 
 /// Identity of the commits acceptance writes: the harness, not the operator,
 /// whose identity the managed git commands cannot read (they ignore the
@@ -480,4 +480,86 @@ fn with_trailers(
          {RUN_TRAILER}{run_id}\n\
          Roko-Verdict: {verdict}\n"
     )
+}
+
+/// What an attempt's checkout changed, for a person to review before the
+/// attempt is accepted (gap-0d64d5).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ReviewDiff {
+    /// The commit the checkout is on, which the change is relative to.
+    pub base: String,
+    /// `git diff --numstat` of the change.
+    pub numstat: String,
+    /// The change as a unified diff.
+    pub patch: String,
+}
+
+/// What `checkout` changed since its `HEAD`, new files included and the
+/// config copies roko put there left out, as [`WorktreeManager::accept_attempt`]
+/// would commit it. The diff is built in a temporary index, so the
+/// checkout's own index and files stay as they are.
+///
+/// # Errors
+///
+/// Returns [`WorktreeError::GitFailed`] when a git command fails, or
+/// [`WorktreeError::IoError`] when the temporary index cannot be made.
+pub async fn attempt_review_diff(checkout: &Path) -> Result<ReviewDiff, WorktreeError> {
+    let scratch = tempfile::tempdir()?;
+    let index = scratch.path().join("index");
+    let git = |args: &[&str]| {
+        let mut command = git_command(checkout);
+        command.args(args).env("GIT_INDEX_FILE", &index);
+        command
+    };
+    let run = |mut command: tokio::process::Command| async move {
+        let output = command.output().await?;
+        if !output.status.success() {
+            return Err(WorktreeError::GitFailed {
+                stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+            });
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    };
+
+    let base = run(git(&["rev-parse", "--verify", "HEAD^{commit}"]))
+        .await?
+        .trim()
+        .to_string();
+    run(git(&["read-tree", &base])).await?;
+    let mut excludes = Vec::new();
+    for dir in ISOLATION_DIRS {
+        let tracked = git(&["cat-file", "-e", &format!("{base}:{dir}")])
+            .output()
+            .await?
+            .status
+            .success();
+        if !tracked {
+            excludes.push(format!(":(exclude){dir}"));
+        }
+    }
+    let mut add = vec!["add", "--all", "--", "."];
+    add.extend(excludes.iter().map(String::as_str));
+    run(git(&add)).await?;
+    let numstat = run(git(&[
+        "diff",
+        "--cached",
+        "--no-color",
+        "--no-ext-diff",
+        "--numstat",
+        base.as_str(),
+    ]))
+    .await?;
+    let patch = run(git(&[
+        "diff",
+        "--cached",
+        "--no-color",
+        "--no-ext-diff",
+        base.as_str(),
+    ]))
+    .await?;
+    Ok(ReviewDiff {
+        base,
+        numstat,
+        patch,
+    })
 }

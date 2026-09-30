@@ -25,6 +25,7 @@
 //! - §15.9 Prune stale git metadata ([`WorktreeManager::prune`])
 
 mod acceptance;
+pub use acceptance::{ReviewDiff, attempt_review_diff};
 mod cleanup;
 mod creation_journal;
 mod git_ops;

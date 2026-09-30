@@ -32,7 +32,7 @@ from common import hmac_seed, knobs, mutate  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
 FAMILY = "F4"
-GENERATOR_VERSION = "f4-1.1.0"  # 1.1: latent v2; v1 instances are unchanged
+GENERATOR_VERSION = "f4-1.1.1"  # 1.1: latent v2, v1 instances unchanged; 1.1.1: kvtool 2.0 waits 150 s, not 900
 TRUTH_SUITE = {"id": "f4-truth", "version": "1.1.0"}
 LATENTS = ("v1", "v2")  # kvtool's convention: v1 dry-runs unless --apply; v2 writes by default but needs --yes
 LADDER = knobs.load_ladder(HERE / "ladder.toml")

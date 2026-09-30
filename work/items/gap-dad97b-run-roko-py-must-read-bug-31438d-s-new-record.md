@@ -2,14 +2,16 @@
 id = "gap-dad97b"
 kind = "gap"
 title = "run_roko.py must read bug-31438d's new record fields: turns_unknown, model_reported, substitution, attempt_key and helper rows"
-status = "open"
-triage = "unverified"
+status = "done"
+triage = "verified"
 severity = "p2"
 goal = "proof"
 size = "M"
 subsystem = ["benchmarks/viabilitybench/driver"]
 created = 2026-09-29
 updated = 2026-09-30
+last_verified = 2026-09-30
+last_verified_rev = "f0443e7ff"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-model-truth's report on branch work/bug-31438d at ee6a541ef)"
 anchors = ["benchmarks/viabilitybench/driver/run_roko.py"]
@@ -19,6 +21,12 @@ links = { depends_on = ["bug-31438d"], blocks = [], related = ["bug-31438d", "bu
 
 [[verify]]
 command = "grep -qw 'def test_run_roko_reads_the_model_truth_fields' benchmarks/viabilitybench/driver/test_run_roko.py && benchmarks/viabilitybench/.venv/bin/python -m pytest benchmarks/viabilitybench/driver/test_run_roko.py -k test_run_roko_reads_the_model_truth_fields -q"
+
+[closed]
+at = 2026-09-30
+commit = "f0443e7ff"
+by = "wk-bench-fix1"
+evidence = "f0443e7ff: run_roko numbers attempts by their S01 attempt keys (<run>:<plan>:<task>:<n>; helper rows <key>/helper-<i>), falling back to file order and /a<n> for an older Roko's unkeyed rows; role 'helper' cost and efficiency rows are their attempt's helper calls; extra.turns_unknown makes turns null; model_reported (null is no evidence; dated snapshots match via records.same_model), models_reported, model_mismatch and substituted_from/failover_chain are checked on episodes, cost rows, efficiency rows and verdicts, flagging model_mismatch on the attempt the key names; repeated or partial keys are model_unverified. Each attempt records helper_calls and roko_calls = turns + helper calls, its calls count without the proxy and beside the proxy's count with it. Verify passes (test_run_roko_reads_the_model_truth_fields, fixtures in the shape Roko b0ede92d7 wrote in a real run against the ToolStub). The real-roko tests pass on both the b0ede92d7 binary and MAIN's 33e107da1 one; full bench suite 368 passed, 2 skipped."
 +++
 
 ## Problem

@@ -174,11 +174,16 @@ single source of truth for API key resolution across all CLI paths:
 |----------|--------|-------|
 | 1 | `--api-key` CLI flag | `CLI flag (--api-key)` |
 | 2 | `ROKO_API_KEY` env var | `ROKO_API_KEY env var` |
-| 3 | `serve.auth.api_key` in `roko.toml` | `roko.toml [serve.auth]` |
+| 3 | `serve.auth.api_key` in the loaded config | `serve.auth.api_key (ROKO__SERVE__AUTH__API_KEY)` |
 | 4 | `~/.roko/credentials.json` | `~/.roko/credentials.json (roko login)` |
 
 The first non-empty source wins. Empty strings and whitespace-only values are
 treated as absent.
+
+Source 3 comes from the `ROKO__SERVE__AUTH__API_KEY` variable, which
+`roko config set serve.auth.api_key <key>` stores in `.roko/.env`, or from a
+`${VAR}` reference in the field. It never comes from a literal in `roko.toml`:
+agents can read that file, and roko refuses to load it while it holds a secret.
 
 ### 5.1 Auth Method Selection
 

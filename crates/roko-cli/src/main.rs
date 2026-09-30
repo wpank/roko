@@ -2889,7 +2889,13 @@ enum ConfigCmd {
         #[arg(long)]
         workdir: Option<PathBuf>,
     },
-    /// Set a dotted key (e.g. `agent.command = ollama`) in the chosen layer.
+    /// Set a dotted key (e.g. `agent.command = ollama`) in the global or
+    /// project config.
+    ///
+    /// A secret key such as `serve.auth.api_key` goes to the project's
+    /// `.roko/.env` instead, as its `ROKO__` variable
+    /// (`ROKO__SERVE__AUTH__API_KEY`), whatever the flags, and is removed
+    /// from the config files agents can read.
     Set {
         /// Dotted key path.
         key: String,

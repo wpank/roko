@@ -54,3 +54,6 @@ The routing-context construction in `streaming.rs`, compared with the batch path
   `GraphTaskDispatcher::dispatch_model_key` (routing_context.rs).
 - The streaming `DispatchContext.attempt` stays 0: nothing in routing reads it, and gap-460230 adds its ladder step on
   that line.
+- The test checks the provider named by each attempt's terminal receipt, not a log the fake providers write: after the
+  failed gate, the helper calls (bug-62e3f4) run on the cheap helper model (`select_cheap_model_key`), which here is the
+  other provider. Helpers are their own cost line, so they don't follow the task's `preferred_provider`.

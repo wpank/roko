@@ -803,7 +803,7 @@ printf '%s\n' '{"type":"result","session_id":"s","model":"claude-opus-4-6","tota
 
     /// bug-cae1e1: like the batch path, the streaming path routes a retry of
     /// a task whose verify step failed as a retry after a failure, and runs
-    /// the task's model on its `preferred_provider`.
+    /// the task's own agent on its `preferred_provider`.
     #[tokio::test]
     async fn streaming_dispatch_marks_retries_and_honours_preferred_provider() {
         use std::os::unix::fs::PermissionsExt;
@@ -812,28 +812,49 @@ printf '%s\n' '{"type":"result","session_id":"s","model":"claude-opus-4-6","tota
             RoutingContextLog, cli_provider, make_bare_dispatcher, make_task_def, model,
         };
 
+        /// The provider each attempt's terminal receipt names: the one that
+        /// ran the task's agent, never one a helper call used.
+        #[derive(Default)]
+        struct TerminalProviders(parking_lot::Mutex<Vec<String>>);
+
+        #[async_trait::async_trait]
+        impl ProviderAttemptRecorder for TerminalProviders {
+            async fn record_start(&self, _id: &str, _spec: &TaskExecutionSpec) -> Result<()> {
+                Ok(())
+            }
+            async fn record_terminal(
+                &self,
+                _id: &str,
+                outcome: &TaskDispatchOutcome,
+            ) -> Result<()> {
+                self.0.lock().push(outcome.provider_id.clone());
+                Ok(())
+            }
+            async fn has_terminal_evidence(&self, _id: &str) -> bool {
+                false
+            }
+            async fn has_started_evidence(&self, _id: &str) -> bool {
+                false
+            }
+        }
+
+        const PROVIDER: &str = r#"#!/bin/sh
+set -eu
+cat >/dev/null
+printf '%s\n' '{"type":"content_block_delta","delta":{"text":"done"}}'
+printf '%s\n' '{"type":"result","session_id":"s","model":"claude-sonnet-4-6","total_cost_usd":0.01,"usage":{"input_tokens":5,"output_tokens":10}}'
+"#;
+
         let temp = tempdir().expect("tempdir");
         let mut config = RokoConfig::default();
         config.providers.clear();
         config.models.clear();
         config.agent.bare_mode = false;
         no_auto_fix(&mut config);
-        // Two CLI providers serve the same model; each notes when it runs.
+        // Two CLI providers serve the same model.
         for provider in ["default-cli", "preferred-cli"] {
             let script = temp.path().join(format!("{provider}.sh"));
-            std::fs::write(
-                &script,
-                format!(
-                    r#"#!/bin/sh
-set -eu
-cat >/dev/null
-printf '%s\n' {provider} >> "$(dirname -- "$0")/ran"
-printf '%s\n' '{{"type":"content_block_delta","delta":{{"text":"done"}}}}'
-printf '%s\n' '{{"type":"result","session_id":"s","model":"claude-sonnet-4-6","total_cost_usd":0.01,"usage":{{"input_tokens":5,"output_tokens":10}}}}'
-"#
-                ),
-            )
-            .expect("write script");
+            std::fs::write(&script, PROVIDER).expect("write script");
             let mut permissions = std::fs::metadata(&script).expect("metadata").permissions();
             permissions.set_mode(0o755);
             std::fs::set_permissions(&script, permissions).expect("chmod");
@@ -865,39 +886,25 @@ printf '%s\n' '{{"type":"result","session_id":"s","model":"claude-sonnet-4-6","t
             fingerprint: "fp".to_string(),
         };
         let cell = CellContext::new().with_cell_id("T-RETRY".to_string());
+        let recorder = TerminalProviders::default();
 
         let (event_tx, _events) = tokio::sync::mpsc::channel(streaming_event_channel_capacity());
         let error = dispatcher
-            .dispatch_streaming(
-                &spec,
-                Vec::new(),
-                &cell,
-                &lease,
-                event_tx,
-                &NoopAttemptRecorder,
-            )
+            .dispatch_streaming(&spec, Vec::new(), &cell, &lease, event_tx, &recorder)
             .await
             .expect_err("the first attempt fails its verify step");
         assert!(matches!(error, RokoError::Verify { .. }), "{error}");
         let (event_tx, _events) = tokio::sync::mpsc::channel(streaming_event_channel_capacity());
         dispatcher
-            .dispatch_streaming(
-                &spec,
-                Vec::new(),
-                &cell,
-                &lease,
-                event_tx,
-                &NoopAttemptRecorder,
-            )
+            .dispatch_streaming(&spec, Vec::new(), &cell, &lease, event_tx, &recorder)
             .await
             .expect("the retry passes");
 
         assert_eq!(contexts.marks(), [(0, false), (1, true)]);
-        let ran = std::fs::read_to_string(temp.path().join("ran")).expect("a provider ran");
-        assert_eq!(
-            ran.lines().collect::<Vec<_>>(),
-            ["preferred-cli", "preferred-cli"]
-        );
+        // Both attempts ran on the preferred provider. The helper calls after
+        // the failed gate run on the cheap helper model instead, as their own
+        // cost line (`select_cheap_model_key`).
+        assert_eq!(*recorder.0.lock(), ["preferred-cli", "preferred-cli"]);
     }
 
     #[tokio::test]

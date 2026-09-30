@@ -117,17 +117,27 @@ pub trait DeliveryBackend: Send + Sync + std::fmt::Debug {
 pub struct GitDeliveryBackend {
     workdir: PathBuf,
     regression_command: Vec<String>,
+    /// Where the regression's cargo builds (`CARGO_TARGET_DIR`): outside its
+    /// temporary checkout, so the build output outlives it and the next
+    /// delivery starts warm.
+    regression_target_dir: PathBuf,
 }
 
 impl GitDeliveryBackend {
     /// Create a git-backed delivery backend for the repository at `workdir`.
+    ///
+    /// The regression builds into the target dir gates use: the process's
+    /// `CARGO_TARGET_DIR` when set, else `workdir`'s own `target/`.
     #[must_use]
     pub fn new(workdir: PathBuf) -> Self {
+        let regression_target_dir =
+            shared_target_dir(&workdir, std::env::var_os("CARGO_TARGET_DIR"));
         Self {
             workdir,
             regression_command: ["cargo", "check", "--workspace", "--quiet"]
                 .map(String::from)
                 .into(),
+            regression_target_dir,
         }
     }
 
@@ -137,6 +147,14 @@ impl GitDeliveryBackend {
     #[must_use]
     pub fn with_regression_command(mut self, command: Vec<String>) -> Self {
         self.regression_command = command;
+        self
+    }
+
+    /// Replace the regression's target dir. A relative dir is taken from
+    /// `workdir`, never from the temporary checkout.
+    #[must_use]
+    pub fn with_regression_target_dir(mut self, target_dir: PathBuf) -> Self {
+        self.regression_target_dir = shared_target_dir(&self.workdir, Some(target_dir.into()));
         self
     }
 
@@ -261,9 +279,11 @@ impl GitDeliveryBackend {
         }
         scratch.cleanup_required = true;
 
+        // Only the build output is shared: the sources are the checkout's.
         let output = tokio::process::Command::new(program)
             .args(args)
             .current_dir(&scratch.checkout)
+            .env("CARGO_TARGET_DIR", &self.regression_target_dir)
             .kill_on_drop(true)
             .output()
             .await
@@ -289,6 +309,17 @@ async fn resolve_commit(workdir: &Path, rev: &str) -> Result<String, String> {
     )
     .await
     .map(|oid| oid.trim().to_string())
+}
+
+/// The target dir a build of `workdir` shares with gates and earlier
+/// deliveries: `configured` (a `CARGO_TARGET_DIR` value) when set, relative
+/// to `workdir` if it is relative, else `workdir`'s own `target/`.
+fn shared_target_dir(workdir: &Path, configured: Option<std::ffi::OsString>) -> PathBuf {
+    match configured.filter(|dir| !dir.is_empty()).map(PathBuf::from) {
+        Some(dir) if dir.is_absolute() => dir,
+        Some(dir) => workdir.join(dir),
+        None => workdir.join("target"),
+    }
 }
 
 /// The commit `request` verified, resolved in `workdir`: `request.commit_oid`
@@ -1504,5 +1535,62 @@ mod tests {
             assert!(summary.contains(reason), "{commit_oid}: {summary}");
             assert_eq!(git(path, &["for-each-ref"]), refs, "{commit_oid}");
         }
+    }
+
+    /// bug-aaa924: the regression builds into a target dir that is outside
+    /// its temporary checkout and outlives it, so later deliveries start
+    /// warm; by default the one gates use.
+    #[tokio::test]
+    async fn regression_checkout_reuses_a_warm_target_dir() {
+        let repo = diverged_repo();
+        let path = repo.path();
+        git(path, &["checkout", "--quiet", "-b", "work"]);
+        let record = tempfile::tempdir().unwrap();
+        let (seen, ran_in) = (record.path().join("seen"), record.path().join("ran-in"));
+        let script = format!(
+            "printf '%s\\n' \"$CARGO_TARGET_DIR\" >> '{}' && pwd -P > '{}'",
+            seen.display(),
+            ran_in.display()
+        );
+        let shared = record.path().join("shared-target");
+        let backend = GitDeliveryBackend::new(path.to_path_buf())
+            .with_regression_command(vec!["sh".into(), "-c".into(), script])
+            .with_regression_target_dir(shared.clone());
+        let merge = git(path, &["rev-parse", "roko/plan-a"]);
+        let request = git_request("d-git-warm", path);
+
+        for _ in 0..2 {
+            let outcome = backend.run_regression(&request, &merge).await;
+            assert!(outcome.passed, "{}", outcome.summary);
+        }
+
+        let seen = std::fs::read_to_string(&seen).unwrap();
+        let expected = format!("{}\n", shared.display());
+        assert_eq!(
+            seen,
+            expected.repeat(2),
+            "each delivery shares one target dir"
+        );
+        let ran_in = PathBuf::from(std::fs::read_to_string(&ran_in).unwrap().trim());
+        assert!(
+            !shared.starts_with(&ran_in),
+            "the target dir is inside the checkout"
+        );
+
+        // By default: the configured CARGO_TARGET_DIR, else the checkout's own.
+        let workdir = Path::new("/repo");
+        assert_eq!(shared_target_dir(workdir, None), workdir.join("target"));
+        assert_eq!(
+            shared_target_dir(workdir, Some("".into())),
+            workdir.join("target")
+        );
+        assert_eq!(
+            shared_target_dir(workdir, Some("/t".into())),
+            PathBuf::from("/t")
+        );
+        assert_eq!(
+            shared_target_dir(workdir, Some("out".into())),
+            workdir.join("out")
+        );
     }
 }

@@ -652,6 +652,10 @@ pub struct GraphPlanRunParams {
     pub log_file: Option<PathBuf>,
     pub worktree_per_task: bool,
     pub rich_topology: bool,
+    /// With `worktree_per_task`: once every plan is delivered into the run's
+    /// batch branch, promote the batch into this branch and tag the run
+    /// `roko/run/<run-id>` (spec-f830c4). Never pushes.
+    pub promote: Option<String>,
     pub no_tui: bool,
     /// Hub that receives every dashboard event of this run (plan set,
     /// lifecycle, agent, and gate events). `None` creates a private
@@ -810,6 +814,7 @@ async fn run_graph_plan_body(
         log_file,
         worktree_per_task,
         rich_topology,
+        promote,
         no_tui,
         state_hub,
         interrupt,
@@ -1024,6 +1029,34 @@ async fn run_graph_plan_body(
     .with_tui_bridge(dispatcher_tui_bridge)
     .with_live_agent_output(live_agent_output);
 
+    // ── Batch integration (spec-f830c4) ──
+    // Under --worktree-per-task every plan whose tasks all passed is
+    // delivered into one batch branch, and every plan's attempts start from
+    // it. A resumed run continues the batch an earlier process recorded.
+    let batch = if worktree_per_task {
+        let resumed = if resume_plan.is_some() {
+            let plan_ids: Vec<&str> = plans.iter().map(|plan| plan.id.as_str()).collect();
+            super::batch::resumed_batch_run(workdir, &plan_ids).await
+        } else {
+            None
+        };
+        let batch_run = resumed
+            .or_else(|| run_id.clone())
+            .unwrap_or_else(super::batch::new_batch_run_id);
+        let batch = super::batch::BatchIntegration::open(workdir, &batch_run)
+            .await
+            .map_err(|error| anyhow!("open the run's batch branch: {error}"))?;
+        if !quiet && !json {
+            tracing::info!(
+                branch = batch.branch(),
+                "finished plans are delivered into the run's batch branch"
+            );
+        }
+        Some(batch)
+    } else {
+        None
+    };
+
     // ── Per-task worktree isolation (opt-in via --worktree-per-task) ──
     let mut workspace_provider: Option<Arc<dyn roko_graph::workspace::ExecutionWorkspaceProvider>> =
         None;
@@ -1031,7 +1064,9 @@ async fn run_graph_plan_body(
         use crate::orchestrator::worktree::{WorktreeConfig, WorktreeManager};
         let worktree_manager = WorktreeManager::new(WorktreeConfig {
             repo_root: workdir.to_path_buf(),
-            base_branch: "HEAD".to_string(),
+            base_branch: batch
+                .as_ref()
+                .map_or_else(|| "HEAD".to_string(), |batch| batch.branch().to_string()),
             worktrees_root: workdir.join(".roko").join("worktrees"),
             max_live: None,
             idle_ttl: std::time::Duration::from_hours(1),
@@ -1208,6 +1243,7 @@ async fn run_graph_plan_body(
         max_tasks,
         rich_topology,
         cell_resources: &cell_resources,
+        batch: batch.as_ref(),
         quiet,
         json,
         launch_tui,
@@ -1363,6 +1399,46 @@ async fn run_graph_plan_body(
                 reason.label()
             ),
         );
+    }
+
+    // spec-f830c4: with --promote, a run whose plans were all delivered
+    // promotes its batch into the target branch and tags it.
+    if let (Some(batch), Some(target)) = (batch.as_ref(), promote.as_deref()) {
+        if all_succeeded {
+            match batch.promote(target).await {
+                Ok(promotion) if promotion.moved => tracing::info!(
+                    batch = batch.branch(),
+                    target,
+                    commit = %promotion.commit,
+                    tag = %promotion.tag,
+                    "run promoted"
+                ),
+                Ok(promotion) => {
+                    tracing::warn!(
+                        batch = batch.branch(),
+                        target,
+                        tag = %promotion.tag,
+                        summary = %promotion.summary,
+                        "run not promoted: its target is checked out"
+                    );
+                    graph_tui_bridge.log_event("graph.run_promotion_parked", &promotion.summary);
+                }
+                Err(error) => {
+                    all_succeeded = false;
+                    tracing::error!(batch = batch.branch(), target, %error, "run promotion failed");
+                    graph_tui_bridge.error(&format!(
+                        "promoting {} into {target} failed: {error}",
+                        batch.branch()
+                    ));
+                }
+            }
+        } else {
+            tracing::warn!(
+                batch = batch.branch(),
+                target,
+                "not every plan was delivered, so the run was not promoted"
+            );
+        }
     }
 
     let plan_outcome_labels = plan_execution_order
@@ -1818,6 +1894,8 @@ struct PlanRunContext<'a> {
     /// Services the cells of each plan's graph run with (see
     /// [`plan_cell_resources`]).
     cell_resources: &'a roko_graph::cell::CellResources,
+    /// The run's batch branch, under `--worktree-per-task` (spec-f830c4).
+    batch: Option<&'a super::batch::BatchIntegration>,
     quiet: bool,
     json: bool,
     launch_tui: bool,
@@ -2429,6 +2507,14 @@ async fn run_one_plan(
         interrupted_by.is_some(),
         was_cancelled_by_tui,
     );
+    // spec-f830c4: a plan whose tasks all passed is delivered into the run's
+    // batch branch, and succeeds only when that delivery does.
+    let outcome = match ctx.batch {
+        Some(batch) if outcome.succeeded() => {
+            deliver_plan_to_batch(batch, plan, &mut checkpoint, graph_tui_bridge).await?
+        }
+        _ => outcome,
+    };
 
     // ── Graph TUI bridge: final status diff + PlanCompleted ──
     // Emit any transitions (Running→Complete/Failed/Skipped, or
@@ -2548,6 +2634,85 @@ async fn run_one_plan(
         output_count,
         tasks: task_verdicts,
     })
+}
+
+/// Deliver `plan`, whose tasks all passed, into the run's batch branch
+/// (spec-f830c4): merge its verified plan-branch tip into the batch, run the
+/// regression check on the merge, and record the delivery in the plan's
+/// checkpoint. The plan succeeds only when the delivery does. `Err` only when
+/// the checkpoint cannot record it.
+async fn deliver_plan_to_batch(
+    batch: &super::batch::BatchIntegration,
+    plan: &crate::runner::plan_loader::Plan,
+    checkpoint: &mut crate::graph_checkpoint::PreparedGraphCheckpoint,
+    graph_tui_bridge: &crate::runner::graph_tui_bridge::GraphTuiBridge,
+) -> anyhow::Result<PlanOutcome> {
+    let Some(verified) = super::batch::plan_branch_tip(batch.repo(), &plan.id).await else {
+        tracing::info!(
+            plan_id = %plan.id,
+            "no attempt of the plan was accepted, so it has nothing to deliver"
+        );
+        return Ok(PlanOutcome::Succeeded);
+    };
+    let service = super::delivery::CliCompletionDeliveryService::with_store(
+        batch.store().clone(),
+        Arc::new(plan_regression_backend(batch.repo(), plan)),
+    );
+    let request = batch.request(&plan.id, verified);
+    let receipt = match batch
+        .deliver(&service, request, checkpoint.recorded_delivery())
+        .await
+    {
+        Ok(receipt) => receipt,
+        Err(error) => {
+            tracing::error!(plan_id = %plan.id, %error, "plan could not be delivered");
+            graph_tui_bridge.error(&format!(
+                "plan '{}' could not be delivered into {}: {error}",
+                plan.id,
+                batch.branch()
+            ));
+            return Ok(PlanOutcome::Failed);
+        }
+    };
+    checkpoint.record_batch_delivery(batch.record(&receipt), &receipt)?;
+    if receipt.state.is_success() {
+        tracing::info!(
+            plan_id = %plan.id,
+            batch = batch.branch(),
+            merge_commit = receipt.merge_commit.as_deref().unwrap_or_default(),
+            "plan delivered into the run's batch branch"
+        );
+        return Ok(PlanOutcome::Succeeded);
+    }
+    let reason = receipt.error.as_deref().unwrap_or("no reason recorded");
+    tracing::error!(
+        plan_id = %plan.id,
+        batch = batch.branch(),
+        state = ?receipt.state,
+        reason,
+        "plan was not delivered into the run's batch branch"
+    );
+    graph_tui_bridge.error(&format!(
+        "plan '{}' was not delivered into {} ({:?}): {reason}",
+        plan.id,
+        batch.branch(),
+        receipt.state
+    ));
+    Ok(PlanOutcome::Failed)
+}
+
+/// The delivery backend for `plan` in `repo`: its regression check runs
+/// `cargo check` over a Cargo workspace, and nothing elsewhere.
+fn plan_regression_backend(
+    repo: &Path,
+    _plan: &crate::runner::plan_loader::Plan,
+) -> super::delivery::GitDeliveryBackend {
+    let steps = if repo.join("Cargo.toml").is_file() {
+        vec!["cargo check --workspace --quiet".to_string()]
+    } else {
+        Vec::new()
+    };
+    super::delivery::GitDeliveryBackend::new(repo.to_path_buf()).with_regression_steps(steps)
 }
 
 /// How `output` left the plan's tasks that did not complete. Helper nodes of
@@ -2785,6 +2950,7 @@ files = ["README.md"]
             log_file: None,
             worktree_per_task: false,
             rich_topology: false,
+            promote: None,
             no_tui: true,
             state_hub: Some(hub.clone()),
             interrupt: None,
@@ -2990,6 +3156,7 @@ max_retries = 0
             log_file: None,
             worktree_per_task: false,
             rich_topology: false,
+            promote: None,
             no_tui: true,
             state_hub: Some(hub.clone()),
             interrupt,
@@ -3827,6 +3994,7 @@ max_retries = 0
             log_file: None,
             worktree_per_task: false,
             rich_topology: true,
+            promote: None,
             no_tui: true,
             state_hub: None,
             interrupt: None,
@@ -3839,5 +4007,164 @@ max_retries = 0
         .expect_err("the rich topology needs per-task worktrees");
 
         assert!(error.to_string().contains("--worktree-per-task"), "{error}");
+    }
+
+    /// A scripted provider: it writes `<name>.txt` for the "Write <name>.txt"
+    /// its prompt names, in the directory it runs in.
+    const WRITES_NAMED_FILE_AGENT: &str = r#"#!/bin/sh
+set -eu
+prompt="$(cat) $*"
+name=$(printf '%s' "$prompt" | sed -n 's/.*Write \([a-z]*\)\.txt.*/\1/p' | head -n 1)
+printf '%s\n' "$name" > "$name.txt"
+printf '%s\n' '{"type":"content_block_delta","delta":{"text":"wrote the file"}}'
+printf '%s\n' '{"type":"result","session_id":"sess-batch","model":"claude-sonnet-4-6","total_cost_usd":0.01,"usage":{"input_tokens":5,"output_tokens":10}}'
+"#;
+
+    /// A committed repository with `WRITES_NAMED_FILE_AGENT` configured as the
+    /// provider, and one plan per name whose one task writes `<name>.txt`.
+    fn repo_with_file_plans(names: &[&str]) -> tempfile::TempDir {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let repo = dir.path();
+        let agent = repo.join("agent.sh");
+        std::fs::write(&agent, WRITES_NAMED_FILE_AGENT).expect("agent");
+        std::fs::set_permissions(&agent, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        std::fs::write(
+            repo.join("roko.toml"),
+            format!(
+                "[agent]\ndefault_model = \"fake\"\n\n[providers.fake]\nkind = \"claude_cli\"\n\
+                 command = \"{}\"\n\n[models.fake]\nprovider = \"fake\"\nslug = \"claude-sonnet-4-6\"\n",
+                agent.display()
+            ),
+        )
+        .expect("config");
+        std::fs::write(repo.join(".gitignore"), ".roko/\n").expect("gitignore");
+        for (index, name) in names.iter().enumerate() {
+            let plan_id = format!("{:02}-{name}", index + 1);
+            let plan_dir = repo.join("plans").join(&plan_id);
+            std::fs::create_dir_all(&plan_dir).expect("plan dir");
+            std::fs::write(
+                plan_dir.join("tasks.toml"),
+                format!(
+                    "[meta]\nplan = \"{plan_id}\"\nmax_parallel = 1\nskip_enrichment = true\n\n\
+                     [[task]]\nid = \"T1\"\ntitle = \"Write {name}.txt\"\n\
+                     description = \"Write {name}.txt.\"\nrole = \"implementer\"\n\
+                     status = \"ready\"\ntier = \"focused\"\nfiles = [\"{name}.txt\"]\n\n\
+                     [[task.verify]]\nphase = \"structural\"\ncommand = \"test -f {name}.txt\"\n"
+                ),
+            )
+            .expect("tasks.toml");
+        }
+        git_in(repo, &["init", "-b", "main"]);
+        for (key, value) in [
+            ("user.email", "operator@example.test"),
+            ("user.name", "Operator"),
+            ("commit.gpgsign", "false"),
+        ] {
+            git_in(repo, &["config", key, value]);
+        }
+        git_in(repo, &["add", "-A"]);
+        git_in(repo, &["commit", "-m", "fixture"]);
+        dir
+    }
+
+    fn git_stdout(dir: &Path, args: &[&str]) -> String {
+        let output = std::process::Command::new("git")
+            .current_dir(dir)
+            .args(args)
+            .output()
+            .expect("run git");
+        assert!(output.status.success(), "git {args:?}");
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    }
+
+    fn worktree_run_params(repo: &Path) -> GraphPlanRunParams {
+        GraphPlanRunParams {
+            plans_dir: repo.join("plans"),
+            workdir: repo.to_path_buf(),
+            quiet: true,
+            json: false,
+            resume_plan: None,
+            fresh: false,
+            force_resume: false,
+            max_retries: None,
+            max_tasks: 0,
+            budget_override: None,
+            no_budget: true,
+            cli_model_override: None,
+            dangerously_skip_permissions: false,
+            log_file: None,
+            worktree_per_task: true,
+            rich_topology: false,
+            promote: None,
+            no_tui: true,
+            state_hub: None,
+            interrupt: None,
+            max_parallel_plans: None,
+            fail_fast: false,
+            only_plans: None,
+            live_agent_output: crate::graph_task_dispatch::LiveAgentOutput::ToolSteps,
+        }
+    }
+
+    /// spec-f830c4: a `--worktree-per-task` run of two plans delivers each
+    /// into the run's batch branch, the second starting from the first's
+    /// work, records the delivery in each plan's checkpoint, promotes the
+    /// batch into `--promote`'s branch with a `roko/run/<run-id>` tag, and
+    /// never changes the operator's checkout.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_worktree_run_delivers_each_plan_into_its_batch_branch() {
+        let dir = repo_with_file_plans(&["alpha", "beta"]);
+        let repo = dir.path();
+        let head = git_stdout(repo, &["rev-parse", "HEAD"]);
+        git_in(repo, &["branch", "release", "main"]);
+        let params = GraphPlanRunParams {
+            promote: Some("release".to_string()),
+            ..worktree_run_params(repo)
+        };
+
+        let exit_code = run_graph_plan_in_run(params, Some("run-e2e".into()))
+            .await
+            .expect("run the plans");
+
+        assert_eq!(exit_code, EXIT_SUCCESS);
+        let batch = "roko/batch/run-e2e";
+        let files = git_stdout(repo, &["ls-tree", "--name-only", batch]);
+        assert!(
+            files.contains("alpha.txt") && files.contains("beta.txt"),
+            "{files}"
+        );
+        // beta's work was built on alpha's: the batch only fast-forwarded.
+        let beta_plan = git_stdout(repo, &["rev-parse", "roko/plan/02-beta"]);
+        assert_eq!(git_stdout(repo, &["rev-parse", batch]), beta_plan);
+        for plan_id in ["01-alpha", "02-beta"] {
+            let manifest: serde_json::Value = serde_json::from_slice(
+                &std::fs::read(
+                    repo.join(".roko/state/graph")
+                        .join(plan_id)
+                        .join("checkpoint.json"),
+                )
+                .expect("checkpoint"),
+            )
+            .expect("checkpoint json");
+            let record = &manifest["extensions"]["roko.batch@1"]["value"];
+            assert_eq!(record["branch"], batch, "{plan_id}: {record}");
+            assert_eq!(record["state"], "delivered", "{plan_id}: {record}");
+        }
+        // Promoted: `release` is the batch, and the run is tagged.
+        assert_eq!(git_stdout(repo, &["rev-parse", "release"]), beta_plan);
+        assert_eq!(
+            git_stdout(repo, &["rev-parse", "roko/run/run-e2e^{commit}"]),
+            beta_plan
+        );
+        // The operator's checkout never moved.
+        assert_eq!(git_stdout(repo, &["rev-parse", "HEAD"]), head);
+        assert_eq!(
+            git_stdout(repo, &["symbolic-ref", "--short", "HEAD"]),
+            "main"
+        );
+        assert_eq!(git_stdout(repo, &["status", "--porcelain"]), "");
+        assert!(!repo.join("alpha.txt").exists());
     }
 }

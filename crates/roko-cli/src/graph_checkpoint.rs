@@ -67,6 +67,10 @@ pub const DELIVERY_EXTENSION: &str = roko_graph::delivery::DELIVERY_EXTENSION_KE
 /// Known extension namespace for the tasks the last run did not complete.
 pub const TASK_OUTCOME_EXTENSION: &str = "roko.task.outcome@1";
 
+/// Known extension namespace for the plan's delivery into its run's batch
+/// branch (spec-f830c4).
+pub const BATCH_EXTENSION: &str = "roko.batch@1";
+
 /// Lifecycle state persisted beside a Graph Activity recording.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -688,6 +692,39 @@ impl PreparedGraphCheckpoint {
             host_extension(TASK_OUTCOME_EXTENSION, value)?,
         );
         Ok(())
+    }
+
+    /// Record how the plan was delivered into its run's batch branch
+    /// (spec-f830c4): `batch` under [`BATCH_EXTENSION`], and the whole
+    /// `receipt` under [`DELIVERY_EXTENSION`] so a resume can continue that
+    /// delivery. The next terminal write persists them.
+    pub fn record_batch_delivery(
+        &mut self,
+        batch: serde_json::Value,
+        receipt: &roko_graph::delivery::CompletionDeliveryReceiptV1,
+    ) -> Result<()> {
+        let mut delivery = roko_graph::delivery::delivery_extension_value(receipt);
+        delivery["receipt"] =
+            serde_json::to_value(receipt).context("serialize delivery receipt")?;
+        for (key, value) in [(DELIVERY_EXTENSION, delivery), (BATCH_EXTENSION, batch)] {
+            self.manifest
+                .extensions
+                .insert(key.to_string(), host_extension(key, value)?);
+        }
+        Ok(())
+    }
+
+    /// The delivery receipt an earlier process of this checkpoint recorded
+    /// with [`Self::record_batch_delivery`], if any.
+    #[must_use]
+    pub fn recorded_delivery(&self) -> Option<roko_graph::delivery::CompletionDeliveryReceiptV1> {
+        let receipt = self
+            .manifest
+            .extensions
+            .get(DELIVERY_EXTENSION)?
+            .value
+            .get("receipt")?;
+        serde_json::from_value(receipt.clone()).ok()
     }
 
     /// Decode the persisted [`GATE_VERDICT_EXTENSION`] summary, if any.
@@ -1353,6 +1390,21 @@ fn write_manifest_atomic(path: &Path, manifest: &GraphCheckpointManifest) -> Res
         .with_context(|| format!("write Graph checkpoint {}", temporary.display()))?;
     std::fs::rename(&temporary, path)
         .with_context(|| format!("commit Graph checkpoint {}", path.display()))
+}
+
+/// The batch branch recorded in plan `plan_id`'s checkpoint under
+/// [`BATCH_EXTENSION`] (spec-f830c4), if any.
+#[must_use]
+pub fn recorded_batch_branch(workdir: &Path, plan_id: &str) -> Option<String> {
+    let manifest = workdir
+        .join(".roko/state/graph")
+        .join(safe_plan_component(plan_id))
+        .join("checkpoint.json");
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(manifest).ok()?).ok()?;
+    manifest["extensions"][BATCH_EXTENSION]["value"]["branch"]
+        .as_str()
+        .map(ToOwned::to_owned)
 }
 
 /// Last status recorded in `plan_id`'s canonical checkpoint under

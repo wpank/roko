@@ -2165,6 +2165,13 @@ The legacy Runner-v2 engine has been removed. --engine legacy is accepted but ex
         /// each enricher cell type. Only applies to the Graph engine.
         #[arg(long)]
         rich_topology: bool,
+        /// After every plan is delivered into the run's batch branch
+        /// (`roko/batch/<run-id>`), promote the batch into BRANCH and tag it
+        /// `roko/run/<run-id>`. Never pushes. A BRANCH checked out anywhere,
+        /// such as your own checkout's, is not moved: the promotion is parked
+        /// at `refs/roko/delivered/run-<run-id>` for you to fast-forward.
+        #[arg(long, value_name = "BRANCH", requires = "worktree_per_task")]
+        promote: Option<String>,
         /// Run up to N plans of a plan set at the same time.
         ///
         /// Plans start in execution order once their `depends_on_plan`

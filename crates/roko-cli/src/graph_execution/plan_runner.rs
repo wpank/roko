@@ -939,9 +939,11 @@ async fn run_graph_plan_body(
     // Routing outcomes are journaled in the learning WAL until the run saves
     // the router at its end, so a crash keeps them (bug-dfb28f).
     let cascade_journal = graph_run_config.cascade_router.as_ref().map(|_| {
-        Arc::new(roko_learn::model_call_feedback::ModelCallJournal::for_snapshot(
-            &graph_layout.cascade_router_path(),
-        ))
+        Arc::new(
+            roko_learn::model_call_feedback::ModelCallJournal::for_snapshot(
+                &graph_layout.cascade_router_path(),
+            ),
+        )
     });
     let graph_feedback = build_graph_feedback_context(
         workdir,

@@ -185,8 +185,11 @@ async fn production_census(
         None,
     )
     .await;
-    let journal = cascade_router
-        .map(|_| Arc::new(ModelCallJournal::for_learn_dir(&workdir.join(".roko/learn"))));
+    let journal = cascade_router.map(|_| {
+        Arc::new(ModelCallJournal::for_learn_dir(
+            &workdir.join(".roko/learn"),
+        ))
+    });
     let feedback = build_graph_feedback_context(
         workdir,
         config,

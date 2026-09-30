@@ -661,18 +661,10 @@ impl GraphTaskDispatcher {
                     // Update efficiency gate_passed if we wrote one.
                     if let Some(eff_path) = &self.feedback.efficiency_path {
                         // P3-02: Propagate actual turn count from the
-                        // dispatch that preceded this gate failure.
-                        let gate_turn_number = dispatch
-                            .events
-                            .iter()
-                            .rev()
-                            .find_map(|ev| match ev {
-                                roko_agent::AgentRuntimeEvent::TurnCompleted {
-                                    num_turns, ..
-                                } => *num_turns,
-                                _ => None,
-                            })
-                            .unwrap_or(1);
+                        // dispatch that preceded this gate failure; 0 marked
+                        // unknown when it reported none (bug-ad5487).
+                        let gate_turns = super::attempt::reported_turns(dispatch);
+                        let gate_turn_number = gate_turns.unwrap_or(0);
                         let gate_event = roko_learn::efficiency::AgentEfficiencyEvent {
                             agent_id: format!("{}/{}", spec.plan_id, task.id),
                             role: task.role.as_deref().unwrap_or("implementer").to_string(),
@@ -711,7 +703,10 @@ impl GraphTaskDispatcher {
                         };
                         let row = AttemptKeyed {
                             attempt_key: attempt_key.to_string(),
-                            row: &gate_event,
+                            row: roko_learn::efficiency::TurnsRow {
+                                row: &gate_event,
+                                turns_unknown: gate_turns.is_none(),
+                            },
                         };
                         if let Ok(line) = serde_json::to_string(&row) {
                             let path = eff_path.clone();
@@ -972,17 +967,10 @@ impl GraphTaskDispatcher {
             // steps passed so readers that filter by gate_passed == Some(true)
             // see the correct pass count.
             if let Some(eff_path) = &self.feedback.efficiency_path {
-                let gate_turn_number = dispatch
-                    .events
-                    .iter()
-                    .rev()
-                    .find_map(|ev| match ev {
-                        roko_agent::AgentRuntimeEvent::TurnCompleted { num_turns, .. } => {
-                            *num_turns
-                        }
-                        _ => None,
-                    })
-                    .unwrap_or(1);
+                // The attempt's reported turns; 0 marked unknown when it
+                // reported none (bug-ad5487).
+                let gate_turns = super::attempt::reported_turns(dispatch);
+                let gate_turn_number = gate_turns.unwrap_or(0);
                 let gate_pass_event = roko_learn::efficiency::AgentEfficiencyEvent {
                     agent_id: format!("{}/{}", spec.plan_id, task.id),
                     role: task.role.as_deref().unwrap_or("implementer").to_string(),
@@ -1023,7 +1011,10 @@ impl GraphTaskDispatcher {
                 };
                 let row = AttemptKeyed {
                     attempt_key: attempt_key.to_string(),
-                    row: &gate_pass_event,
+                    row: roko_learn::efficiency::TurnsRow {
+                        row: &gate_pass_event,
+                        turns_unknown: gate_turns.is_none(),
+                    },
                 };
                 if let Ok(line) = serde_json::to_string(&row) {
                     let path = eff_path.clone();

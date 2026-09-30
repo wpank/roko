@@ -248,9 +248,11 @@ fn process_is_alive(pid: u32) -> bool {
 /// StateHub.
 ///
 /// The phase is `dispatch` while an agent runs, `gate` while a task's verify
-/// steps run, and `idle` otherwise; once the run ends it is `completed`,
-/// `failed` or `cancelled`. Graph runs publish no merge events, so there is
-/// no `merge` phase.
+/// steps run, and `idle` otherwise; [`finish`](Self::finish) makes it
+/// `completed`, `failed` or `cancelled`. Graph runs publish no merge events,
+/// so there is no `merge` phase. The fold takes no `RunCompleted` event as
+/// the end of the run: `roko serve` runs share one hub, so the event may
+/// belong to another run.
 #[derive(Debug)]
 pub struct GraphRunStatus {
     run_id: String,
@@ -360,10 +362,6 @@ impl GraphRunStatus {
             DashboardEvent::GateResult {
                 plan_id, task_id, ..
             } => ("gate_result", plan_id.as_str(), task_id.as_str()),
-            DashboardEvent::RunCompleted { outcome, .. } => {
-                self.outcome = Some(terminal_phase(outcome));
-                ("run_completed", "", "")
-            }
             _ => return false,
         };
         if !plan_id.is_empty() {
@@ -377,12 +375,12 @@ impl GraphRunStatus {
         true
     }
 
-    /// End the run. Its terminal phase comes from its `RunCompleted` event
-    /// when one was folded, else from `outcome` (`succeeded`, `failed` or
-    /// `cancelled`; a failure when unknown).
-    pub fn finish(&mut self, outcome: Option<&str>) {
+    /// End the run with its outcome label (`succeeded`, `failed` or
+    /// `cancelled`, as the run's `RunCompleted` event carries it). Only the
+    /// first call counts.
+    pub fn finish(&mut self, outcome: &str) {
         if self.outcome.is_none() {
-            self.outcome = Some(terminal_phase(outcome.unwrap_or("failed")));
+            self.outcome = Some(terminal_phase(outcome));
             self.last_event = "run_completed".to_string();
         }
     }
@@ -445,11 +443,10 @@ fn terminal_phase(outcome: &str) -> &'static str {
 ///
 /// [`spawn`](Self::spawn) subscribes to the run's hub and writes the starting
 /// status at once. While the run goes on, a status an event changed is
-/// written within a second, an unchanged one is rewritten every five seconds
-/// (so `updated_at_ms` is a heartbeat), and the terminal status is written as
-/// soon as the run's `RunCompleted` event arrives. [`finish`](Self::finish)
-/// writes the final status and leaves the file in place with its terminal
-/// phase. Dropping an unfinished writer stops it without a final write.
+/// written within a second, and an unchanged one is rewritten every five
+/// seconds (so `updated_at_ms` is a heartbeat). [`finish`](Self::finish)
+/// writes the terminal status and leaves the file in place. Dropping an
+/// unfinished writer stops it without a final write.
 pub struct GraphStatusWriter {
     stop: Option<oneshot::Sender<String>>,
     task: Option<tokio::task::JoinHandle<()>>,
@@ -478,25 +475,19 @@ impl GraphStatusWriter {
                     biased;
                     outcome = &mut stopped => break outcome.ok(),
                     _ = ticks.tick() => {
-                        if !dirty && written_at.elapsed() < heartbeat {
-                            continue;
+                        if dirty || written_at.elapsed() >= heartbeat {
+                            write_status_immediate(&state_dir, &status.to_file());
+                            written_at = Instant::now();
+                            dirty = false;
                         }
                     }
-                    received = events.recv(), if open => {
-                        match received {
-                            Ok(envelope) => dirty |= status.apply(&envelope.payload),
-                            // A missed event may have changed the status.
-                            Err(RecvError::Lagged(_)) => dirty = true,
-                            Err(RecvError::Closed) => open = false,
-                        }
-                        if !(dirty && status.is_finished()) {
-                            continue;
-                        }
-                    }
+                    received = events.recv(), if open => match received {
+                        Ok(envelope) => dirty |= status.apply(&envelope.payload),
+                        // A missed event may have changed the status.
+                        Err(RecvError::Lagged(_)) => dirty = true,
+                        Err(RecvError::Closed) => open = false,
+                    },
                 }
-                write_status_immediate(&state_dir, &status.to_file());
-                written_at = Instant::now();
-                dirty = false;
             };
             // Fold what was published before the stop request.
             loop {
@@ -508,7 +499,7 @@ impl GraphStatusWriter {
                     Err(TryRecvError::Empty | TryRecvError::Closed) => break,
                 }
             }
-            status.finish(outcome.as_deref());
+            status.finish(outcome.as_deref().unwrap_or("failed"));
             write_status_immediate(&state_dir, &status.to_file());
         });
         Self {
@@ -517,9 +508,8 @@ impl GraphStatusWriter {
         }
     }
 
-    /// Fold the events published so far, write the final status and stop.
-    /// `outcome` is the run's `RunCompleted` outcome label, used when that
-    /// event did not reach the writer.
+    /// Fold the events published so far, write the terminal status for the
+    /// run's outcome label (see [`GraphRunStatus::finish`]) and stop.
     pub async fn finish(mut self, outcome: &str) {
         if let Some(stop) = self.stop.take() {
             let _ = stop.send(outcome.to_string());
@@ -744,11 +734,14 @@ mod tests {
         assert_eq!((file.running_tasks, file.finished_tasks), (0, 1));
         assert_eq!((file.active_plans, file.completed_plans), (0, 1));
 
-        assert!(status.apply(&run_completed("failed")));
+        // Another run's completion on a shared hub does not end this one.
+        assert!(!status.apply(&run_completed("succeeded")));
+        assert!(!status.is_finished());
+        status.finish("failed");
         assert!(status.is_finished());
-        // Neither later events nor the caller's outcome change a finished run.
+        // Neither later events nor a second outcome change a finished run.
         assert!(!status.apply(&agent_spawned("p2", "T1")));
-        status.finish(Some("succeeded"));
+        status.finish("succeeded");
         let file = status.to_file();
         assert_eq!(file.phase, "failed");
         assert_eq!(file.current_phase, "failed");
@@ -780,7 +773,7 @@ mod tests {
         assert_eq!(dispatching.plan_id, "p1");
         assert_eq!(dispatching.active_agents, 1);
 
-        // No RunCompleted reached the writer, so the caller's outcome ends it.
+        // `finish` ends the run with the caller's outcome.
         writer.finish("cancelled").await;
         let end = read_runner_status(&state_dir);
         let end = end.status().expect("final status");
@@ -791,17 +784,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn graph_status_writer_writes_the_terminal_status_at_once() {
+    async fn another_runs_completion_does_not_end_the_status() {
         let dir = tempfile::tempdir().expect("tempdir");
         let hub = crate::state_hub::shared_state_hub();
         let writer = GraphStatusWriter::spawn(&hub, dir.path().to_path_buf(), "run-8".to_string());
 
-        hub.sender().publish(run_completed("succeeded"));
-        let end = wait_for_phase(dir.path(), "completed").await;
-        assert_eq!(end.run_id, "run-8");
-        // The run's own outcome wins over the one `finish` is given.
+        // Runs that `roko serve` starts share one hub.
+        let sender = hub.sender();
+        sender.publish(run_completed("succeeded"));
+        sender.publish(agent_spawned("p1", "T1"));
+        let running = wait_for_phase(dir.path(), "dispatch").await;
+        assert_eq!(running.run_id, "run-8");
         writer.finish("failed").await;
         let read = read_runner_status(dir.path());
-        assert_eq!(read.status().expect("final status").phase, "completed");
+        assert_eq!(read.status().expect("final status").phase, "failed");
     }
 }

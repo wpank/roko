@@ -309,12 +309,18 @@ class GraphBundleScenarios(GraphRunCase):
         for bundle in (first, resumed, fresh):
             self.assert_validates(bundle)
             self.assert_one_lifecycle(bundle, "succeeded")
-            self.assertEqual(read_jsonl(bundle / "status-samples.jsonl"), [])
+            # The run's own status.json revisions are sampled (gap-568056),
+            # never the stale file of the old run.
+            run_id = read_json(bundle / "manifest.json")["run_id"]
+            samples = read_jsonl(bundle / "status-samples.jsonl")
+            self.assertTrue(samples, "the Graph run wrote no status.json revision")
+            self.assertEqual({sample["source_run_id"] for sample in samples}, {run_id})
+            self.assertEqual(samples[-1]["status"]["phase"], "completed")
             sources = read_json(bundle / "filtered-logs" / "index.json")["sources"]
             events_log = [source for source in sources if source["source"].endswith(".roko/events.jsonl")]
             self.assertEqual([source["lines_selected"] for source in events_log], [0])
             sampling = read_json(bundle / "summary.json")["collection"]["status_sampling"]
-            self.assertEqual(sampling["state"], "skipped")
+            self.assertEqual(sampling["state"], "sampled")
 
 
 class FastWrapper(GraphRunCase):

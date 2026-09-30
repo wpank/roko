@@ -175,9 +175,7 @@ impl RunEventLog {
             std::fs::create_dir_all(parent)?;
         }
         let out = BufWriter::new(File::create(path)?);
-        let run_id = std::env::var("ROKO_EVIDENCE_RUN_ID")
-            .ok()
-            .filter(|id| !id.trim().is_empty())
+        let run_id = evidence_run_id()
             .unwrap_or_else(|| format!("graph-{}", uuid::Uuid::new_v4()));
         let writer = EventLogWriter {
             out,
@@ -207,6 +205,16 @@ impl RunEventLog {
             None => Ok(()),
         }
     }
+}
+
+/// The evidence collector's run id (`ROKO_EVIDENCE_RUN_ID`) when a run is
+/// recorded under `scripts/run_evidence.py`. The run's `--log-file` lines and
+/// its `status.json` carry it, so the collector can tell them from other
+/// runs' records.
+pub(crate) fn evidence_run_id() -> Option<String> {
+    std::env::var("ROKO_EVIDENCE_RUN_ID")
+        .ok()
+        .filter(|id| !id.trim().is_empty())
 }
 
 /// One hub event.

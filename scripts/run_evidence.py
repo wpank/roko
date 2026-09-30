@@ -3783,7 +3783,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             "status_samples": status_sampler.samples,
             "status_parse_errors": status_sampler.parse_errors,
             # Recorded as skipped, never as sampled, when the runner wrote no
-            # status revision (the Graph engine does not write status.json).
+            # status revision. Graph runs write status.json (gap-568056); a
+            # command that runs no plan does not.
             "status_sampling": (
                 {"state": "sampled", "reason": None}
                 if status_sampler.samples

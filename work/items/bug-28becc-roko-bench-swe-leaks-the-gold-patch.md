@@ -27,3 +27,12 @@ Three defects in `roko bench swe`:
 Fix: strip `patch` (and hidden test commands) from what the agent sees, treat an empty test command as an error, and make gold mode opt-in and never recorded as learning.
 
 Re-verified 2026-09-29: unchanged. The gold default is declared at main.rs:1694.
+
+## Notes
+
+- **wk-honestbench (2026-09-30):** Implemented on `work/bug-28becc` at `10f8a0fd3`; cargo verification deferred to the
+  batch check (`cargo test -p roko-cli --lib bench::tests::swe_`, 4 tests; two of them need `python3`, as the old
+  gold test did).
+- **Still open, `main.rs` only:** `--agent-mode` still defaults to `gold` (`crates/roko-cli/src/main.rs:1695`); that
+  file was out of scope for this branch. A bare run is now a labeled control that writes no learning state and
+  appends to `.roko/bench/controls.jsonl`. Dropping `default_value_t` so the flag is required finishes "opt-in".

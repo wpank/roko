@@ -2202,16 +2202,15 @@ fn dispatch_events_from_result(
     events
 }
 
-/// Turns the provider reported (the Claude CLI tags its output with
-/// `num_turns`), or one when it did not say.
+/// Turns the agent reported: the Claude CLI's `num_turns`, or the model
+/// calls roko's tool loop made, both tagged `num_turns` on the output.
+/// `None` when the agent did not say (the Codex and Gemini CLIs): an
+/// unreported count is unknown, not one.
 fn reported_num_turns(result: &AgentResult) -> Option<u32> {
-    Some(
-        result
-            .output
-            .tag("num_turns")
-            .and_then(|turns| turns.parse().ok())
-            .unwrap_or(1),
-    )
+    result
+        .output
+        .tag("num_turns")
+        .and_then(|turns| turns.parse().ok())
 }
 
 /// Convert a [`roko_agent::tool_loop::StreamEvent`] into a local [`StreamChunk`].

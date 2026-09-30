@@ -28,3 +28,12 @@ When the planned provider is blocked or reports usage exhaustion, `run_bridge_wi
 Fix: record the planned model, the substitute and the reason on every attempt record; keep substituted attempts out of router credit, or credit them explicitly; allow failover to be switched off per run.
 
 2026-09-29: re-verified at d9e79e9d8. Unchanged: substitution is still only logged (failover_model WARN at graph_task_dispatch.rs:4971, formerly ~4600); no record field for the planned model or substitution reason and no per-run opt-out.
+
+## Notes
+
+- Implemented on `work/bug-31438d` at `480f463bf` (feedback.rs rows at `06bdb71be`); cargo verification deferred to the batch check. `failover_records_planned_and_substitute_model` (targeted `cargo test` passed at the branch head). Changes:
+  - `run_bridge_with_failover` returns a `FailoverChain`: the refused model keys, the planned one first, and why the planned one did not run.
+  - The verdict's `executed.failover_chain` and `failover_reason` carry it, and `model_dispatched` names the substitute.
+  - Episodes get `extra.substituted_from`, `failover_chain` and `failover_reason`; cost and efficiency rows get `substituted_from` and `substitution_reason`.
+  - Router credit (at `c50d36be2`): `RoutingObservationSink` skips attempts whose verdict has a failover chain, so a substitute is never credited as the router's pick (test `a_failover_substitute_earns_no_router_credit`). wk-settle's gap-8f6206 rewrote the start of `on_event`; when merging, keep their label check and put this guard after it.
+  - Not done: a per-run failover switch. `RoutingConfig` is wk-tiers' (gap-9cbf35) and the plan runner is wk-telemetry2's. A `--model` pin already disables failover.

@@ -47,6 +47,8 @@ pub struct ToolLoopAgent {
     metrics_sink: Arc<dyn MetricsSink>,
     cancel_token: Arc<dyn CancelToken>,
     correlation: CorrelationEnvelope,
+    /// `[agent] env_passthrough`: variables tool commands may inherit.
+    env_passthrough: Vec<String>,
 }
 
 /// Provider-facing format used for the initial structured message history.
@@ -89,6 +91,7 @@ impl ToolLoopAgent {
             metrics_sink: Arc::new(NoopMetricsSink),
             cancel_token: Arc::new(NeverCancel),
             correlation: CorrelationEnvelope::empty(),
+            env_passthrough: Vec::new(),
         }
     }
 
@@ -206,6 +209,15 @@ impl ToolLoopAgent {
         self
     }
 
+    /// Let the commands the agent's tool calls run (`bash`, `run_tests`)
+    /// inherit the variables matching `patterns` (`[agent] env_passthrough`)
+    /// besides what the gate policy admits.
+    #[must_use]
+    pub fn with_env_passthrough(mut self, patterns: Vec<String>) -> Self {
+        self.env_passthrough = patterns;
+        self
+    }
+
     /// Build a [`ToolExecutionContextFactory`] from the agent's configured
     /// sinks, cancel token, capabilities, and correlation data.
     fn context_factory(&self) -> ToolExecutionContextFactory {
@@ -217,7 +229,8 @@ impl ToolLoopAgent {
             .with_metrics_sink(Arc::clone(&self.metrics_sink))
             .with_cancel_token(Arc::clone(&self.cancel_token))
             .with_correlation(self.correlation.clone())
-            .with_taint_level(CamelTaintLevel::External);
+            .with_taint_level(CamelTaintLevel::External)
+            .with_env_passthrough(self.env_passthrough.clone());
         if let Some(ref root) = self.immune_root_path {
             factory = factory.with_immune_root(root);
         }
@@ -785,6 +798,16 @@ mod tests {
             "backend error: server error"
         );
         assert_eq!(result.output.tag("stop_reason"), Some("backend_error"));
+    }
+
+    #[test]
+    fn tool_loop_agent_hands_env_passthrough_to_its_tool_context() {
+        let agent = ToolLoopAgent::new(make_tool_loop(Arc::new(ErrorBackend)))
+            .with_env_passthrough(vec!["DATABASE_URL".to_string()]);
+
+        let ctx = agent.build_tool_context();
+
+        assert_eq!(ctx.env_passthrough, ["DATABASE_URL"]);
     }
 
     /// Calls the echo tool on every turn but the last, and names

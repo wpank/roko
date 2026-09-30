@@ -172,7 +172,7 @@ impl StreamingTaskDispatcher for GraphTaskDispatcher {
             Err(error) => return Err(self.fail_attempt(spec, &task, attempt, None, error).await),
         };
         attempt.prompt_assembled();
-        let contract = effective_agent_contract(role, &task);
+        let contract = effective_agent_contract(role, &task, &self.config);
         let timeout_ms = base_attempt_timeout_ms(&self.config, spec);
         let request = AgentDispatchRequest {
             model_key: dispatch_plan.model.slug.clone(),

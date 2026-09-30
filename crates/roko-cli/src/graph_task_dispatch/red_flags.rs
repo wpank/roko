@@ -180,7 +180,7 @@ impl GraphTaskDispatcher {
         let exact_secret = scrub::high_confidence_secret(output);
         let (blocks, recorded): (Vec<SafetyViolation>, Vec<SafetyViolation>) =
             SafetyLayer::from_config(&self.config)
-                .with_contract(effective_agent_contract(role, task))
+                .with_contract(effective_agent_contract(role, task, &self.config))
                 .post_dispatch_check(&spec.plan_id, &task.id, role, output, &changed_files)
                 .into_iter()
                 .partition(|violation| {

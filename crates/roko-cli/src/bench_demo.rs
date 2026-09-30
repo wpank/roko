@@ -167,8 +167,15 @@ async fn run_bench_inline(workdir: &Path, tasks: &[BenchTask], real_dispatch: bo
     term.push_blank()?;
 
     let naive = run_mode_inline(&mut term, &theme, workdir, tasks, "naive", real_dispatch).await?;
-    let optimized =
-        run_mode_inline(&mut term, &theme, workdir, tasks, "optimized", real_dispatch).await?;
+    let optimized = run_mode_inline(
+        &mut term,
+        &theme,
+        workdir,
+        tasks,
+        "optimized",
+        real_dispatch,
+    )
+    .await?;
 
     // Comparison table
     term.push_separator()?;
@@ -750,7 +757,11 @@ mod tests {
                 naive.duration_s > opt.duration_s,
                 "optimized should be faster"
             );
-            assert_eq!(naive.cache_hit_rate, Some(0.0), "naive should have no cache");
+            assert_eq!(
+                naive.cache_hit_rate,
+                Some(0.0),
+                "naive should have no cache"
+            );
             assert!(
                 opt.cache_hit_rate.is_some_and(|rate| rate > 0.0),
                 "optimized should have cache hits"
@@ -800,7 +811,10 @@ mod tests {
             }),
         );
         assert!(!answered.simulated);
-        assert_eq!(answered.passed, None, "no gate ran, so the task did not pass");
+        assert_eq!(
+            answered.passed, None,
+            "no gate ran, so the task did not pass"
+        );
         assert_eq!(answered.cost_usd, None, "cost was not measured");
         assert_eq!(answered.cache_hit_rate, None);
         assert_eq!((answered.input_tokens, answered.output_tokens), (120, 40));

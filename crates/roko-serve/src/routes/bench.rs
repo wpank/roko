@@ -1548,9 +1548,7 @@ async fn grade_task(
     match run_check(check, workspace).await {
         CheckRun::Passed => TaskGrade::Pass,
         CheckRun::Failed(detail) => TaskGrade::Fail(detail),
-        CheckRun::NotRun(reason) => {
-            TaskGrade::Ungraded(format!("the check did not run: {reason}"))
-        }
+        CheckRun::NotRun(reason) => TaskGrade::Ungraded(format!("the check did not run: {reason}")),
     }
 }
 
@@ -1975,15 +1973,19 @@ mod tests {
         scaffold_task_dirs(run_dir, &suite, "test-run")
             .await
             .expect("scaffold learnable tasks");
-        let grades = suite.tasks.iter().enumerate().map(|(idx, task)| async move {
-            let dirs = TaskDirs::new(run_dir, idx, &task.id);
-            let check = task_check(LEARNABLE_SUITE_ID, &task.id);
-            assert!(check.is_some(), "{} has no check", task.id);
-            let baseline = run_baseline_check(check.as_ref(), &dirs.baseline).await;
-            edit(&task.id, &dirs.workspace);
-            let grade = grade_task(check.as_ref(), baseline, &dirs.workspace).await;
-            (task.id.clone(), grade)
-        });
+        let grades = suite
+            .tasks
+            .iter()
+            .enumerate()
+            .map(|(idx, task)| async move {
+                let dirs = TaskDirs::new(run_dir, idx, &task.id);
+                let check = task_check(LEARNABLE_SUITE_ID, &task.id);
+                assert!(check.is_some(), "{} has no check", task.id);
+                let baseline = run_baseline_check(check.as_ref(), &dirs.baseline).await;
+                edit(&task.id, &dirs.workspace);
+                let grade = grade_task(check.as_ref(), baseline, &dirs.workspace).await;
+                (task.id.clone(), grade)
+            });
         futures::future::join_all(grades).await
     }
 

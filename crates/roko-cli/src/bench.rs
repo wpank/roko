@@ -1142,9 +1142,18 @@ mod tests {
         let instance = create_builtin_smoke_dataset(tmp.path()).unwrap().remove(0);
         assert!(payload.contains(&instance.instance_id));
         assert!(payload.contains(&instance.problem_statement));
-        assert!(!payload.contains("diff --git"), "gold patch leaked: {payload}");
-        assert!(!payload.contains("return a + b"), "gold patch leaked: {payload}");
-        assert!(!payload.contains(&instance.test_cmd), "test command leaked: {payload}");
+        assert!(
+            !payload.contains("diff --git"),
+            "gold patch leaked: {payload}"
+        );
+        assert!(
+            !payload.contains("return a + b"),
+            "gold patch leaked: {payload}"
+        );
+        assert!(
+            !payload.contains(&instance.test_cmd),
+            "test command leaked: {payload}"
+        );
         let fields: Value = serde_json::from_str(&payload).unwrap();
         assert!(fields.get("patch").is_none());
         assert!(fields.get("test_cmd").is_none());

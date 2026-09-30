@@ -3,14 +3,16 @@
 An instance is (level, seed), with id `F4-l<level>-<seed>`. Everything public about it is drawn from
 `surface_stream("F4", id)`: the knobs, the key namespaces, the exemplar scripts and the module names (`plan`). The
 hidden stores are drawn at audit time from `hidden_stream(secret, "F4", id)` (`hidden_cases`), so they exist nowhere
-while an agent works. Both are deterministic: the same inputs give the same instance and the same cases.
+while an agent works. Both are deterministic: the same inputs give the same instance and the same cases. The latent
+(`LATENTS`, gen.py's `--latent`) changes only kvtool's convention and the texts that describe it, so both latents
+share the plan and the hidden stores.
 
 The migration renames every key that starts with `plan.src` so that it starts with `plan.dst` instead. From
 k_quirks = 3 on, `plan.dst` extends `plan.src` (`user:` -> `user:v2:`): the colliding prefixes of S08's ℓ5
 hardening, where a second run renames the renamed keys again unless the script excludes them.
 
 API:
-    FAMILY, GENERATOR_VERSION, TRUTH_SUITE, LADDER, kvstore (template/lib/kvstore.py: the store format)
+    FAMILY, GENERATOR_VERSION, TRUTH_SUITE, LATENTS, LADDER, kvstore (template/lib/kvstore.py: the store format)
     plan(level: int, seed: int) -> Plan
     visible_store(plan: Plan) -> dict                         # the store document of data/store.db
     hidden_cases(plan: Plan, secret: Secret) -> list[Case]    # stores with a write lease: kvtool gets interrupted
@@ -30,8 +32,9 @@ from common import hmac_seed, knobs, mutate  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
 FAMILY = "F4"
-GENERATOR_VERSION = "f4-1.0.0"
-TRUTH_SUITE = {"id": "f4-truth", "version": "1.0.0"}
+GENERATOR_VERSION = "f4-1.1.0"  # 1.1: latent v2; v1 instances are unchanged
+TRUTH_SUITE = {"id": "f4-truth", "version": "1.1.0"}
+LATENTS = ("v1", "v2")  # kvtool's convention: v1 dry-runs unless --apply; v2 writes by default but needs --yes
 LADDER = knobs.load_ladder(HERE / "ladder.toml")
 
 NAMESPACES = ("user", "acct", "sess", "cart", "order", "inv", "cfg", "flag", "job", "tenant", "org", "team", "quota",

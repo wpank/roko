@@ -207,7 +207,8 @@ def run_task(ctx: harness.TaskContext) -> harness.TaskOutcome:
             context_window=int(settings.get("context_window", 128_000)), max_output=ctx.caps.max_output_tokens,
             max_retries=max_retries, max_turns=ctx.caps.turns_per_attempt, tier=settings.get("tier", "focused"),
             skip_enrichment=bool(settings.get("skip_enrichment", True)),
-            verify_timeout_s=int(ctx.caps.command_timeout_s)), ctx.workdir)
+            verify_timeout_s=int(ctx.caps.command_timeout_s),
+            verify_wrapper=_wrapper_command(ctx)), ctx.workdir)
         transcript.append({"event": "emit", "slug": emitted.slug, "tasks_toml": emitted.tasks_text,
                            "roko_toml": emitted.config_text})
         env = _roko_env(ctx, api_key_env, emitted.config_path)
@@ -499,6 +500,16 @@ def _status(ran: Ran, evidence: Evidence, problems: list[str]) -> tuple[str, str
         last = str(evidence.episodes[-1].get("failure_reason") or "") if evidence.episodes else ""
         return "failed", "gate_failed" if last.startswith("verify:") else f"roko: {last[:200] or 'plan failed'}"
     return "infra_error", f"roko exited {ran.returncode} with the plan {state or 'unrecorded'}"
+
+
+def _wrapper_command(ctx: harness.TaskContext) -> str | None:
+    """How the plan names the visible-verify wrapper: by name when the agent's PATH finds it, so no path of the host
+    enters Roko's prompt (the verify command is rendered into it, A4); else by its path."""
+    if ctx.verify_wrapper is None:
+        return None
+    wrapper = Path(ctx.verify_wrapper)
+    found = shutil.which(wrapper.name, path=ctx.agent_env.get("PATH"))
+    return wrapper.name if found and Path(found).absolute() == wrapper.absolute() else str(wrapper)
 
 
 def _roko_env(ctx: harness.TaskContext, api_key_env: str, config_path: Path) -> dict[str, str]:

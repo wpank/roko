@@ -27,7 +27,7 @@ import leak_check  # noqa: E402
 import verify_verifiers  # noqa: E402
 from common import canary, hmac_seed  # noqa: E402
 
-ONE_CELL = ["--levels", "1", "--seeds", "1"]
+ONE_CELL = ["--latents", "v1", "--levels", "1", "--seeds", "1"]
 ALWAYS_PASS = '''#!/usr/bin/env python3
 """A broken truth suite: it passes every tree."""
 import json
@@ -185,6 +185,22 @@ def test_determinism_names_where_two_verdicts_differ():
     assert determinism.main(["--", sys.executable, "-c", "print('no JSON here')"]) == 2
 
 
+def test_every_latent_of_f1_and_f4_is_judged(tmp_path, secret_file, capsys):
+    # gap-98516b: without --latents, each family's cells cover every latent it builds, v1 and v2 for F1 and F4.
+    code, result = run_ci(tmp_path, "--families", "f1,f4", "--levels", "1", "--seeds", "1", "--secret-file",
+                          str(secret_file))
+    assert [(cell["cell"], cell["latent"], cell["problems"]) for cell in result["cells"]] == [
+        ("F1-l1-0001", "v1", []), ("F1-l1-0001@v2", "v2", []), ("F4-l1-0001", "v1", []),
+        ("F4-l1-0001@v2", "v2", [])]
+    assert code == 0 and result["latents"] == ["v1", "v2"]
+    assert "latents v1,v2; levels 1; seeds 1" in capsys.readouterr().out
+    # A latent that a family does not build turns the CI red; it is not skipped.
+    code, result = run_ci(tmp_path, "--families", "f4", "--latents", "v9", *ONE_CELL[2:], "--secret-file",
+                          str(secret_file))
+    assert code == 1
+    assert [cell["problems"] for cell in result["cells"]] == [["f4 builds no latent v9; it builds v1, v2"]]
+
+
 def test_plan_slice_cells_are_green(tmp_path, secret_file):
     code, result = run_ci(tmp_path, "--families", "pl", "--seeds", "1", "--secret-file", str(secret_file))
     assert [problem for cell in result["cells"] for problem in cell["problems"]] == []
@@ -203,7 +219,12 @@ def test_families_levels_and_seeds_are_parsed(tmp_path):
         with pytest.raises(ValueError):
             verify_verifiers.numbers(bad)
     assert verify_verifiers._ranges([1, 2, 3, 5, 7, 8]) == "1-3,5,7-8"
-    for args in (["--families", "f9"], ["--family", "f4"], ["--family", f"f4={tmp_path}"], ["--seeds", "0"]):
+    assert verify_verifiers.latents("v1, v2,v1") == ["v1", "v2"]
+    for bad in ("", ",", "v 2"):
+        with pytest.raises(ValueError):
+            verify_verifiers.latents(bad)
+    for args in (["--families", "f9"], ["--family", "f4"], ["--family", f"f4={tmp_path}"], ["--seeds", "0"],
+                 ["--latents", ","]):
         with pytest.raises(SystemExit) as exited:
             verify_verifiers.main(args)
         assert exited.value.code == 2, args

@@ -470,14 +470,17 @@ pub fn is_key_file(path: &Path) -> bool {
 /// Whether agents must be kept away from `path`, a roko config file that
 /// holds a secret such as `serve.auth.api_key`.
 ///
-/// A secret is a value `roko config show` would redact
-/// ([`config_text_holds_secrets`]). Besides `~/.roko/config.toml`, a key
-/// file whatever it holds, roko reads
-/// its config from the project `roko.toml` (in the workdir or an ancestor),
-/// from the file `ROKO_CONFIG` names, and from the legacy
-/// `~/.config/roko/config.toml`. Agents may read those while they hold no
-/// secret; a secret kept in `ROKO__*` variables in `.roko/.env` (for example
-/// `ROKO__SERVE__AUTH__API_KEY`) leaves them readable.
+/// A secret is a literal in a secret-named field, a provider header or an
+/// agent variable ([`crate::config::loader::secret_fields`], through
+/// [`config_text_holds_secrets`]). Besides `~/.roko/config.toml`, a key file
+/// whatever it holds, roko reads its config from the project `roko.toml` (in
+/// the workdir or an ancestor), from the file `ROKO_CONFIG` names, and from
+/// the legacy `~/.config/roko/config.toml`. Agents may read those while they
+/// hold no secret; a secret kept in `ROKO__*` variables in `.roko/.env` (for
+/// example `ROKO__SERVE__AUTH__API_KEY`) leaves them readable. The loader
+/// refuses such a file ([`crate::config::LoadConfigError::SecretInConfig`]),
+/// so a secret sits there only if it is added while roko runs, and this check
+/// covers the file tools, not a command that reads the whole project.
 #[must_use]
 pub fn is_config_with_secrets(path: &Path) -> bool {
     let roko_config = std::env::var_os("ROKO_CONFIG").map(PathBuf::from);
@@ -843,6 +846,7 @@ mod tests {
             "[chain]\nwallet_key = \"0xabc\"\n",
             "[platforms.chat]\nkind = \"discord\"\ntoken = \"literal\"\n",
             "[providers.x.extra_headers]\nX-Org = \"org-1\"\n",
+            "[agent]\nenv = [[\"OPENAI_API_KEY\", \"sk-x\"]]\n",
             "[serve.auth\napi_key = \"sk-serve-test\"\n",
         ] {
             write(&project, text);
@@ -854,6 +858,9 @@ mod tests {
             "[providers.x]\napi_key_env = \"X_API_KEY\"\n",
             "[platforms.chat]\nkind = \"discord\"\ntoken = { env = \"DISCORD_TOKEN\" }\n",
             "[agent]\nmax_tokens_per_turn = 4096\n",
+            "[providers.x.extra_headers]\nAuthorization = \"Bearer ${X_API_KEY}\"\n",
+            "[providers.x.extra_headers]\ntoken_file = \"/run/secrets/x\"\n",
+            "[agent]\nenv = [[\"RUST_LOG\", \"debug\"]]\n",
             "",
         ] {
             write(&project, text);

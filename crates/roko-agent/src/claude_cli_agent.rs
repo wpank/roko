@@ -1815,6 +1815,11 @@ mod tests {
             "rm $(find . -name '*.o')",
             "fd -e rs -x rm",
             "fd -X rm",
+            // A delete that xargs runs, whatever feeds it.
+            "ls | xargs rm",
+            "xargs rm < list.txt",
+            "xargs -a list.txt rm",
+            "ls *.tmp | xargs unlink",
             // Commands that ssh and parallel run.
             "ssh host rm -rf /srv/app",
             "ssh -p 22 host 'cd app && git stash'",
@@ -1845,6 +1850,8 @@ mod tests {
             "find . -name '*.rs' | wc -l",
             "find . -name x | wc -l; rm tmp.txt",
             "fd -e rs -x wc -l",
+            "xargs cat < list.txt",
+            "git ls-files -z | xargs -0 git rm --cached",
             "ssh host ls -la",
             "ssh -l git host uptime",
             "parallel echo ::: a b",

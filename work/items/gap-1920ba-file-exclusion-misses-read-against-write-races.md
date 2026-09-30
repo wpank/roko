@@ -3,13 +3,15 @@ id = "gap-1920ba"
 kind = "gap"
 title = "File exclusion misses read-against-write races: a whole-project verify reads a sibling's half-written file"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p2"
 goal = "golden-path"
 size = "M"
 subsystem = ["roko-graph", "roko-cli/graph-task-dispatch"]
 created = 2026-09-29
-updated = 2026-09-29
+updated = 2026-09-30
+last_verified = 2026-09-30
+last_verified_rev = "8a88c6267"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (16:10, wk-scheduler's report on gap-439794, branch work/gap-4d835d)"
 anchors = ["crates/roko-graph/src/exclusion.rs", "crates/roko-graph/src/engine.rs::execute_ready_queue", "crates/roko-cli/src/graph_task_dispatch/sibling_settle.rs"]
@@ -66,3 +68,28 @@ Steps for Option A:
 - [ ] A whole-project verify step never runs while a sibling that shares the tree is mid-edit.
 - [ ] Tasks that don't verify the whole project still run in parallel.
 - [ ] The `[[verify]]` command passes. If Option B or C is chosen, move the test and the verify command to the crate that holds the fix.
+
+## Notes
+
+- 2026-09-30, checked at `8a88c6267` (wk-scheduler, design agreed with the coordinator). The premise holds: engine
+  exclusion (`exclusion.rs`) covers only declared write sets, and `sibling_settle` repairs a failed verify step only
+  after the fact.
+- Deferred. Start only after these have landed:
+  - wk-tamper's `sibling_settle.rs` changes (gap-6d172d, batch 13);
+  - batch 12's `graph_task_dispatch.rs`;
+  - wk-gates' `verification.rs` work.
+  Agree the `VerifyStep` field with wk-taskdef first; the coordinator will tell it to expect the question.
+- Design:
+  - Only a whole-project verify step waits for siblings that are mid-edit. A crate- or path-scoped step runs at once.
+  - A step's scope comes from a `scope` on `VerifyStep`. Failing that, it comes from its command, conservatively:
+    `cargo test -p X` scopes to `crates/X`, and an unknown command counts as whole-project.
+  - An attempt that is verifying never counts as an editor: a `verifying` flag beside `settling` in
+    `InFlightAttempt`, which `begin_settle` and `settled` also honour.
+  - New edits wait for a running whole-project step. That wait goes where an attempt starts, in
+    `graph_task_dispatch.rs`.
+- Rejected: a blanket wait before every verify step, bounded by `sibling_settle_secs` (600 s by default). It would
+  hold every parallel plan behind its siblings' agent turns, giving up makespan for a race that only whole-project
+  reads can hit.
+- Tests to restructure: `a_verify_failure_beside_an_editing_sibling_is_rerun_once_it_settles` and
+  `a_verify_failure_left_in_a_sibling_file_blames_the_sibling` assume a step runs while a sibling edits. Once
+  whole-project steps wait, the settle path covers only edits that start after the step does.

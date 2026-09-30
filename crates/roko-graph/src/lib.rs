@@ -52,7 +52,7 @@ pub mod delivery;
 pub mod engine;
 pub mod error;
 pub mod events;
-mod exclusion;
+pub mod exclusion;
 pub mod fingerprint;
 pub mod hot;
 pub mod loader;

@@ -172,6 +172,15 @@ impl PlanPolicyViolation {
             message: message.into(),
         }
     }
+
+    /// Whether the plan may still run with this finding. Tasks that could run
+    /// together but write overlapping files (`PLAN_CONCURRENT_OVERLAP`) run
+    /// safely one after the other, so that finding is for the plan's author,
+    /// not a reason to refuse the run.
+    #[must_use]
+    pub fn is_advisory(&self) -> bool {
+        self.code == "PLAN_CONCURRENT_OVERLAP"
+    }
 }
 
 impl fmt::Display for PlanPolicyViolation {
@@ -387,6 +396,54 @@ pub fn validate_plan_budgets(
         }
     }
 
+    // With one task at a time no two tasks run together, whatever they write.
+    if tasks.meta.max_parallel > 1 {
+        issues.extend(concurrent_overlaps(tasks));
+    }
+
+    issues
+}
+
+/// `PLAN_CONCURRENT_OVERLAP`: two tasks that can run at the same time, because
+/// neither depends on the other, declare overlapping `files`.
+///
+/// Overlap is the Graph engine's own rule (`roko_graph::exclusion`): the same
+/// path, or a directory and a path inside it. The engine runs such tasks one
+/// after the other, so the plan gives up parallelism its author meant to have.
+/// A task without `files` declares nothing and is never flagged.
+fn concurrent_overlaps(tasks: &TasksFile) -> Vec<PlanPolicyViolation> {
+    let dependency_map = tasks
+        .tasks
+        .iter()
+        .map(|task| (task.id.as_str(), task.depends_on.as_slice()))
+        .collect::<HashMap<_, _>>();
+    let mut issues = Vec::new();
+    for (index, first) in tasks.tasks.iter().enumerate() {
+        for second in &tasks.tasks[index + 1..] {
+            let overlap = roko_graph::exclusion::first_overlap(&first.files, &second.files);
+            let Some((first_path, second_path)) = overlap else {
+                continue;
+            };
+            if depends_on_transitively(&dependency_map, &first.id, &second.id)
+                || depends_on_transitively(&dependency_map, &second.id, &first.id)
+            {
+                continue;
+            }
+            let (first_id, second_id) = (&first.id, &second.id);
+            let paths = if first_path == second_path {
+                format!("both write `{first_path}`")
+            } else {
+                format!("write the overlapping paths `{first_path}` and `{second_path}`")
+            };
+            issues.push(PlanPolicyViolation::plan(
+                "PLAN_CONCURRENT_OVERLAP",
+                format!(
+                    "tasks {first_id} and {second_id} can run at the same time and {paths}; \
+                     make one depend on the other, or give them disjoint files"
+                ),
+            ));
+        }
+    }
     issues
 }
 
@@ -1077,5 +1134,62 @@ mod tests {
                 .iter()
                 .any(|issue| issue.code == "PLAN_FRAGMENTED_OWNERSHIP")
         );
+    }
+
+    /// Two tasks, T1 and T2, that both write `src/lib.rs`, in a plan that
+    /// runs two tasks at a time.
+    fn two_writers_of_one_file() -> TasksFile {
+        let mut second = task();
+        second.id = "T2".into();
+        let mut plan = tasks(task());
+        plan.meta.total = 2;
+        plan.meta.max_parallel = 2;
+        plan.tasks.push(second);
+        plan
+    }
+
+    fn flags_concurrent_overlap(plan: &TasksFile) -> bool {
+        validate_plan_budgets(plan, PlanExecutionPolicy::normal())
+            .iter()
+            .any(|issue| issue.code == "PLAN_CONCURRENT_OVERLAP")
+    }
+
+    /// gap-a8d786: tasks that neither depends on can run at the same time.
+    /// When their files overlap, the finding names both tasks and the path,
+    /// and it leaves the plan runnable.
+    #[test]
+    fn concurrent_tasks_sharing_a_file_are_flagged() {
+        let mut plan = two_writers_of_one_file();
+        let issues = validate_plan_budgets(&plan, PlanExecutionPolicy::normal());
+        let overlaps = issues
+            .iter()
+            .filter(|issue| issue.code == "PLAN_CONCURRENT_OVERLAP")
+            .collect::<Vec<_>>();
+        assert_eq!(overlaps.len(), 1, "{issues:?}");
+        let message = &overlaps[0].message;
+        assert!(message.contains("T1 and T2"), "{message}");
+        assert!(message.contains("`src/lib.rs`"), "{message}");
+        assert!(overlaps[0].is_advisory());
+
+        // A directory covers the files below it, as in the Graph engine.
+        plan.tasks[1].files = vec!["src".into()];
+        assert!(flags_concurrent_overlap(&plan));
+        plan.tasks[1].files = vec!["src/lib".into()];
+        assert!(!flags_concurrent_overlap(&plan));
+    }
+
+    /// The same two tasks are not flagged once one depends on the other, or
+    /// when the plan runs one task at a time.
+    #[test]
+    fn serial_tasks_sharing_a_file_are_not_flagged() {
+        let mut plan = two_writers_of_one_file();
+        assert!(flags_concurrent_overlap(&plan));
+
+        plan.tasks[1].depends_on = vec!["T1".into()];
+        assert!(!flags_concurrent_overlap(&plan), "T2 runs after T1");
+
+        plan.tasks[1].depends_on.clear();
+        plan.meta.max_parallel = 1;
+        assert!(!flags_concurrent_overlap(&plan), "one task at a time");
     }
 }

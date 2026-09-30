@@ -3,13 +3,17 @@
 //! A node's [`Node::exclusive`](crate::types::Node::exclusive) paths are the
 //! files and directories it writes in a working tree shared with other nodes.
 //! The engine's ready-queue scheduler never runs two nodes whose paths overlap
-//! at the same time.
+//! at the same time, and `roko plan validate` flags plan tasks that could.
 
 use std::path::{Component, Path, PathBuf};
 
 /// The first path in `wanted` that overlaps a path in `held`, together with
 /// the path it overlaps.
-pub(crate) fn first_overlap<'a>(
+///
+/// Two paths overlap when they name the same file, or when one names a
+/// directory that holds the other.
+#[must_use]
+pub fn first_overlap<'a>(
     wanted: &'a [String],
     held: &'a [String],
 ) -> Option<(&'a str, &'a str)> {

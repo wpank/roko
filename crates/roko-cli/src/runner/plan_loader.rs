@@ -12,7 +12,7 @@ use anyhow::{Context, Result, bail};
 use roko_fs::RokoLayout;
 use tracing::info;
 
-use crate::plan_policy::{PlanExecutionPolicy, validate_plan_context};
+use crate::plan_policy::{PlanExecutionPolicy, PlanPolicyViolation, validate_plan_context};
 use crate::task_parser::TasksFile;
 
 /// A loaded plan ready for execution.
@@ -85,8 +85,17 @@ pub fn load_plan(dir: &Path) -> Result<Plan> {
 
     let workdir = find_workspace_root(dir);
     if let Some(workdir) = workdir.as_deref() {
-        let policy_issues =
-            validate_plan_context(&tasks, workdir, dir, PlanExecutionPolicy::for_environment());
+        let (advisory, policy_issues): (Vec<_>, Vec<_>) =
+            validate_plan_context(&tasks, workdir, dir, PlanExecutionPolicy::for_environment())
+                .into_iter()
+                .partition(PlanPolicyViolation::is_advisory);
+        for issue in &advisory {
+            tracing::warn!(
+                plan = %tasks_path.display(),
+                %issue,
+                "plan policy finding; the plan still runs"
+            );
+        }
         if !policy_issues.is_empty() {
             let details = policy_issues
                 .iter()
@@ -839,5 +848,56 @@ files = ["crates/my-cli/src/main.rs", "crates/my-cli/Cargo.toml"]
         // Cargo.toml should have [[bin]] section.
         let cargo = fs::read_to_string(tmp.path().join("crates/my-cli/Cargo.toml")).unwrap();
         assert!(cargo.contains("[[bin]]"));
+    }
+
+    /// gap-a8d786: two tasks that can run together and write the same file
+    /// earn `PLAN_CONCURRENT_OVERLAP`, but the plan still loads: the engine
+    /// runs such tasks one after the other.
+    #[test]
+    fn load_plan_keeps_a_plan_whose_concurrent_tasks_share_a_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        fs::create_dir_all(tmp.path().join(".roko")).unwrap();
+        let plan_dir = tmp.path().join("overlap-plan");
+        write_tasks_toml(
+            &plan_dir,
+            r#"
+[meta]
+plan = "overlap-plan"
+max_parallel = 2
+
+[[task]]
+id = "T1"
+title = "Write the parser"
+role = "implementer"
+files = ["src/parser.rs"]
+
+[[task.verify]]
+command = "test -f src/parser.rs"
+
+[[task]]
+id = "T2"
+title = "Document the parser"
+role = "implementer"
+files = ["src/parser.rs"]
+
+[[task.verify]]
+command = "grep -q '///' src/parser.rs"
+"#,
+        );
+
+        let plan = load_plan(&plan_dir).unwrap();
+        assert_eq!(plan.tasks.tasks.len(), 2);
+        let issues = validate_plan_context(
+            &plan.tasks,
+            tmp.path(),
+            &plan_dir,
+            PlanExecutionPolicy::normal(),
+        );
+        assert!(
+            issues
+                .iter()
+                .any(|issue| issue.code == "PLAN_CONCURRENT_OVERLAP"),
+            "{issues:?}"
+        );
     }
 }

@@ -3,13 +3,15 @@ id = "bug-02e264"
 kind = "bug"
 title = "After roko init, roko config providers add anthropic appends a duplicate [models.\"claude-sonnet-4-6\"] table, and the file stops parsing"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p2"
 goal = "release"
 size = "S"
 subsystem = ["roko-cli/commands/config_cmd"]
 created = 2026-09-30
 updated = 2026-09-30
+last_verified = 2026-09-30
+last_verified_rev = "5809020f8"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (wk-childenv's report, checked on work/bug-17f0e4 at 6b332b25f)"
 anchors = ["crates/roko-cli/src/commands/config_cmd.rs"]
@@ -42,3 +44,12 @@ The stanza rendering and appending in `config_cmd.rs`'s `providers add`.
 
 - [ ] `providers add` after `init` leaves a config that loads.
 - [ ] The `[[verify]]` command passes.
+
+## Notes
+
+- 2026-09-30 (wk-childenv): Implemented on `work/bug-02e264` at `f76bb5f10`; cargo verification deferred to the batch
+  check. Instead of editing with `toml_edit`, `providers add` parses roko.toml read-only first: an existing
+  `[providers.<name>]` means already configured, and a catalog model the file already holds (by table key or slug) is
+  left out of the appended stanza and reported as kept. Only tables the file lacks are appended, so no table is
+  defined twice, and the file's comments and layout are untouched. A roko.toml that does not parse is now an error
+  rather than being appended to.

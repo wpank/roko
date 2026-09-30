@@ -1760,17 +1760,23 @@ pub struct ConductorConfig {
     #[serde(default)]
     pub watchers: WatcherThresholds,
 
-    // ── Live supervisor intervention thresholds ─────────────────────────
+    // ── Live supervision thresholds ─────────────────────────────────────
     //
-    // These govern the conductor supervision loop (Branch 4c in event_loop).
-    // Each threshold maps a signal condition to an intervention type.
-    /// Seconds of agent silence before a Nudge is emitted (default 180).
+    // `silence_timeout_secs` and `task_stall_secs` drive the Graph
+    // dispatcher's per-attempt stall watchdog. An agent is silent while it
+    // waits on its model without reporting progress: silence starts counting
+    // once the attempt has reported something, and pauses while a tool call
+    // it made runs. `0` turns a threshold off; with both off a Graph run is
+    // not supervised at all. The hard `timeout_secs` stays the outer bound.
+    /// Seconds of agent silence before its task gets a warning diagnosis
+    /// (default 180; 0 = off).
     #[serde(default = "default_silence_timeout_secs")]
     pub silence_timeout_secs: u64,
     /// Consecutive compile failures before a ForceAdvance (default 3).
     #[serde(default = "default_compile_fail_threshold")]
     pub compile_fail_threshold: u32,
-    /// Seconds of task stall (no progress after nudge) before cancel+retry (default 300).
+    /// Seconds of agent silence before the attempt is cancelled and retried
+    /// under its task's `max_retries` (default 300; 0 = off).
     #[serde(default = "default_task_stall_secs")]
     pub task_stall_secs: u64,
     /// Context window usage percentage that triggers a warning (default 80).

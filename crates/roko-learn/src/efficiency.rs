@@ -270,6 +270,18 @@ impl AgentEfficiencyEvent {
         f64::from(self.tools_used) / f64::from(self.tools_available)
     }
 
+    /// Whether `cost_usd` was measured, with the semantics of
+    /// `roko_core::Usage::has_known_cost`: it is known when non-zero, or when
+    /// no tokens were consumed (a confirmed free turn). A token-consuming
+    /// event recorded at `0.0` (a bench run of an external agent, say) has
+    /// an unknown cost that must never be averaged in as $0.
+    #[must_use]
+    pub fn has_known_cost(&self) -> bool {
+        self.cost_usd.abs() > f64::EPSILON
+            || (self.input_tokens + self.output_tokens + self.cache_write_tokens == 0
+                && self.cache_read_tokens == 0)
+    }
+
     /// Compute cost savings from caching.
     pub fn cache_savings_usd(&self) -> f64 {
         self.cost_usd_without_cache - self.cost_usd
@@ -1987,6 +1999,16 @@ mod tests {
     }
 
     // ── Compute helpers ─────────────────────────────────────────────
+
+    #[test]
+    fn has_known_cost_reads_a_zero_after_tokens_as_unknown() {
+        let mut event = AgentEfficiencyEvent::default_event();
+        assert!(event.has_known_cost(), "no tokens at $0 is a confirmed free turn");
+        event.input_tokens = 10;
+        assert!(!event.has_known_cost(), "tokens at $0 were never priced");
+        event.cost_usd = 0.01;
+        assert!(event.has_known_cost());
+    }
 
     #[test]
     fn efficiency_role_profiles_empty_input() {

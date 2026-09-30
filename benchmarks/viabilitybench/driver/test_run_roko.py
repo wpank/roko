@@ -23,10 +23,12 @@ from pathlib import Path
 import pytest
 
 import agent_env
+import census
 import layout
 import ledger
 import materialize
 import planemit
+import records
 import run_roko
 import validate
 import vb
@@ -127,6 +129,42 @@ for attempt in range(3):  # every attempt starts over from the same first prompt
 sys.exit(1)
 '''
 
+SERVED_ROKO = r'''#!__PYTHON__
+"""A stand-in for roko's `plan run` that makes two calls to the provider its roko.toml names, then records one
+passed attempt as Roko does since bug-31438d: the model it dispatched, and the model the provider said served."""
+import datetime, json, os, sys, tomllib, urllib.request
+from pathlib import Path
+
+args = sys.argv[1:]
+if args == ["--version"]:
+    print("roko 0.1.0 (git b0ede92d7)")
+    sys.exit(0)
+if "validate" in args:
+    sys.exit(0)
+repo, slug = Path(args[args.index("--repo") + 1]), Path(args[args.index("run") + 1]).name
+config = tomllib.loads(Path(os.environ["ROKO_CONFIG"]).read_text())
+[provider], [model] = config["providers"].values(), config["models"]
+served = []
+for turn in range(2):
+    request = urllib.request.Request(provider["base_url"] + "/chat/completions", data=json.dumps(
+        {"model": model, "messages": [{"role": "user", "content": "Implement clamp, step %d." % turn}]}).encode(),
+        headers={"Content-Type": "application/json",
+                 "Authorization": "Bearer " + os.environ[provider["api_key_env"]]})
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    served.append(json.loads(opener.open(request).read())["model"])
+(repo / "calc" / "ops.py").write_text("def clamp(value, low, high):\n    return max(low, min(value, high))\n")
+roko, now = repo / ".roko", datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+(roko / "state" / "graph" / slug).mkdir(parents=True)
+key = "graph-%s-1:%s:T01:1" % (slug, slug)
+(roko / "episodes.jsonl").write_text(json.dumps({
+    "task_id": "T01", "model": model, "backend": "cerebras", "success": True, "turns": 2, "completed_at": now,
+    "extra": {"plan_id": slug, "attempt_key": key, "model_reported": served[-1],
+              "model_mismatch": served[-1] != model}}) + "\n")
+(roko / "state" / "graph" / slug / "checkpoint.json").write_text(json.dumps(
+    {"plan_id": slug, "status": "succeeded", "extensions": {"roko.gate.verdict@1": {"value": {"verdicts": {
+        "T01": "passed"}}}}}))
+'''
+
 
 @pytest.fixture
 def places(tmp_path: Path) -> dict[str, Path]:
@@ -187,9 +225,9 @@ def evidence(models: list[str], **changes: object) -> run_roko.Evidence:
                                 "checkpoint": None, "proxy_rows": None, **changes})
 
 
-def settle(found: run_roko.Evidence) -> tuple[list[run_roko.RokoAttempt], list[str]]:
+def settle(found: run_roko.Evidence, swap: str | None = None) -> tuple[list[run_roko.RokoAttempt], list[str]]:
     return run_roko.settle(found, chain_key="run-1/F1-l1-0001.s1", model=PIN, provider="cerebras",
-                           snapshot=ledger.load_snapshot(), reserved_usd=0.1, max_attempts=3)
+                           snapshot=ledger.load_snapshot(), reserved_usd=0.1, max_attempts=3, swap=swap)
 
 
 def test_emitted_plan_has_explicit_rungs_and_no_hidden_checks(tmp_path):
@@ -426,6 +464,69 @@ def test_run_roko_reads_the_model_truth_fields(tmp_path):
     # Attempt keys that repeat, or name only some attempts, cannot say which record is whose.
     twice = {("episode", 3, "implementer"): {"extra": {"plan_id": SLUG, "attempt_key": f"{CHAIN}:2"}}}
     assert "model_unverified" in settle(model_truth_records(tmp_path / "twice", changes=twice))[1][0]
+
+
+def test_a_declared_model_swap_passes_the_model_checks(places, tmp_path):
+    # gap-8bdf5e: a model_swap disturbance has the metering proxy send another model (glm-4.7) in place of the pin, and
+    # declares it. The model checks accept exactly that served model on the tasks it covers and mark the attempts it
+    # served `model_swapped`; any other model, a swap nobody declared, or a failover is still a mismatch.
+    swap = "glm-4.7"
+    served = {("cost", number, "helper"): {"model_reported": swap, "model_mismatch": True} for number in (1, 2)}
+    served[("verdict", 2, "implementer")] = {"executed": {
+        "provider": "cerebras", "model_requested": PIN, "model_dispatched": PIN, "model_reported": swap,
+        "models_reported": [], "model_mismatch": True, "turns": 3}}
+    found = model_truth_records(tmp_path / "swapped", changes=served)
+    attempts, problems = settle(found, swap=swap)
+    assert problems == [] and [a.model_swapped for a in attempts] == [True, True, False]
+    assert attempts[0].as_record()["model_swapped"] is True and "model_swapped" not in attempts[2].as_record()
+    for undeclared in (None, "kimi-k2.6"):  # no swap declared for the task, or another model declared
+        attempts, problems = settle(found, swap=undeclared)
+        assert problems and all(problem.startswith("model_mismatch") for problem in problems)
+        assert [a.checks for a in attempts] == [["model_mismatch"], ["model_mismatch"], []]
+    failover = {("episode", 3, "implementer"): {"extra": {"plan_id": SLUG, "attempt_key": f"{CHAIN}:3",
+                                                          "substituted_from": "qwen-3-235b"}}}
+    assert "model_mismatch" in settle(model_truth_records(tmp_path / "failover", changes=failover), swap=swap)[1][0]
+
+    # The proxy's log names the swap it made: a swapped row passes only when this task declared that swap.
+    usage = {"tokens_in": 1000, "tokens_cache_read": 0, "tokens_out": 50, "tokens_reasoning": 0}
+    row = {"task": "F1-l1-0001.s1", "ordinal": 1, "ts": "2026-09-29T15:00:00.5Z", "model_requested": PIN,
+           "model_swap": swap, "model_reported": swap, "usage": usage, "usage_source": "reported"}
+    attempts, problems = settle(evidence([PIN], proxy_rows=[row]), swap=swap)
+    assert problems == [] and (attempts[0].model_reported, attempts[0].model_swapped) == (swap, True)
+    assert "no model_swap declared" in settle(evidence([PIN], proxy_rows=[row]))[1][0]
+    served_elsewhere = [{**row, "model_swap": None, "model_reported": "kimi-k2.6"}]
+    assert "kimi-k2.6" in settle(evidence([PIN], proxy_rows=served_elsewhere), swap=swap)[1][0]
+
+    # records.final_status, which every arm's record goes through, accepts the declared swap and nothing else.
+    outcome = run_roko.harness.TaskOutcome("completed", "gate_passed", [run_roko.harness.Attempt(
+        number=1, attempt_key="run-1/k:1", model_requested=PIN, provider="cerebras", reserved_usd=0.1,
+        model_reported=swap)], [], "", "")
+    result = census.CensusResult(completion=1, visible_clean=1, hidden=1, integrity=1)
+    assert records.final_status(outcome, result, model_swap=swap) == "completed"
+    assert records.final_status(outcome, result) == records.final_status(outcome, result, "kimi-k2.6") == \
+        "infra_error"
+
+    # End to end: the proxy swaps the model of every call of the task, a Roko that records the model the provider
+    # reported sees glm-4.7, and the task still counts, as a swap.
+    binary = tmp_path / "bin" / "roko"
+    binary.parent.mkdir()
+    binary.write_text(SERVED_ROKO.replace("__PYTHON__", sys.executable))
+    binary.chmod(0o755)
+    spec = tmp_path / "swap.toml"
+    spec.write_text(f'schema_version = "vb.disturbance/1"\n\n[[disturbance]]\nkind = "model_swap"\n'
+                    f'params = {{ to = "{swap}" }}\n')
+    with StubServer(lambda body: "Done.") as stub:
+        assert run_vb(places, arm_with(tmp_path, binary), stub.url, "--proxy", "--disturbance", str(spec)) == 0
+        sent = [request["model"] for request in stub.requests]
+    out = places["results"] / "TEST-ROKO" / "run-1"
+    [record] = read_jsonl(out / "records.jsonl")
+    assert validate.validate("run-record", record) == [] and sent == [swap, swap]
+    assert (record["execution"]["status"], record["vs"]["label"]) == ("completed", 1), record["execution"]["reason"]
+    [attempt] = record["execution"]["attempts"]
+    assert (attempt["model_dispatched"], attempt["model_reported"], attempt["model_swapped"]) == (PIN, swap, True)
+    assert record["stream"]["perturbations_active"] == ["model_swap"]
+    assert {(row["model_requested"], row["model_swap"], row["model_reported"])
+            for row in read_jsonl(out / "proxy.jsonl")} == {(PIN, swap, swap)}
 
 
 def test_attempt_reservations_are_all_or_nothing(tmp_path):

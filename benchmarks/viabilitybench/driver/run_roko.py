@@ -34,6 +34,10 @@ arm's provider, as the model it dispatched and, when the provider reported one, 
   `model_dispatched`, `model_reported`, `models_reported`, `model_mismatch` and `failover_chain`.
 
 A null `model_reported` is no evidence either way, and a dated snapshot of the pin is the pin (`records.same_model`).
+A task that a `model_swap` disturbance covers declares the model the proxy serves in place of the pin
+(`ctx.model_swap`, gap-8bdf5e): that model is accepted wherever a record names a served model, Roko's own mismatch
+mark included, and the attempts it served are marked `model_swapped`. The proxy's log names each swap it made
+(`model_swap`), and a swap no disturbance declared is a mismatch. Roko's failover is never a declared swap.
 Each row belongs to the attempt its S01 attempt key names (`<run>:<plan>:<task>:<n>`; a helper call's efficiency row
 is `<key>/helper-<i>`), and attempts are numbered by their episodes' keys, whatever order the rows are in. An older
 Roko's rows carry no key: its episodes and dispatch cost rows count in file order, its efficiency rows by `/a<n>`.
@@ -162,6 +166,7 @@ class RokoAttempt(harness.Attempt):
     queue_wait_s: float | None = None  # rate-limit waits in its proxy window; None without the proxy
     helper_calls: int | None = None  # helper model calls after its gate (bug-62e3f4); None when Roko does not say
     roko_calls: int | None = None  # its model calls by Roko's records: turns plus helper calls; None if unknown
+    model_swapped: bool = False  # a record says the declared swap's model served it (model_swap, gap-8bdf5e)
 
     def as_record(self) -> dict:
         record = super().as_record()
@@ -170,6 +175,8 @@ class RokoAttempt(harness.Attempt):
                       task_id=self.task_id, cost_class=self.cost_class, started_at=self.started_at,
                       finished_at=self.finished_at, queue_wait_s=self.queue_wait_s, helper_calls=self.helper_calls,
                       roko_calls=self.roko_calls)
+        if self.model_swapped:
+            record["model_swapped"] = True
         if not self.calls_known:
             record["calls"] = None
         return record
@@ -247,7 +254,7 @@ def run_task(ctx: harness.TaskContext) -> harness.TaskOutcome:
         attempts, problems = settle(evidence, chain_key=ctx.chain_key, model=ctx.model,
                                     provider=ctx.endpoint.provider, snapshot=ctx.snapshot,
                                     reserved_usd=task_bound / (max_retries + 1), max_attempts=max_retries + 1,
-                                    roko_build=build)
+                                    roko_build=build, swap=ctx.model_swap)
         transcript += [_attempt_event(attempt, episode) for attempt, episode in zip(attempts, evidence.episodes)]
         transcript.append({"event": "check", "problems": problems})
         status, reason = _status(ran, evidence, problems)
@@ -327,10 +334,11 @@ def read_evidence(workspace: Path, slug: str, *, proxy_rows: list[dict] | None =
 
 
 def settle(evidence: Evidence, *, chain_key: str, model: str, provider: str, snapshot: ledger.Snapshot,
-           reserved_usd: float, max_attempts: int, roko_build: str | None = None
+           reserved_usd: float, max_attempts: int, roko_build: str | None = None, swap: str | None = None
            ) -> tuple[list[RokoAttempt], list[str]]:
     """One attempt per episode, numbered by its attempt key, each checked against the pin and priced from a meter; the
-    problems found."""
+    problems found. `swap` is the model a declared `model_swap` has the proxy serve in place of the pin: a record
+    that says it served is marked `model_swapped`, not a mismatch."""
     ordinals = [_ordinal((episode.get("extra") or {}).get("attempt_key")) for episode in evidence.episodes]
     keyed = bool(ordinals) and all(ordinals) and len(set(ordinals)) == len(ordinals)
     attempts = []
@@ -369,16 +377,24 @@ def settle(evidence: Evidence, *, chain_key: str, model: str, provider: str, sna
         if found not in (None, "") and found != wanted:
             flag("model_mismatch", f"{where(number)}: {what} is {found!r}, not {wanted!r}", number)
 
+    def is_swap(reported: object) -> bool:
+        """Whether `reported` is the declared swap's model, and not the pin; marks the attempt it served."""
+        return bool(swap and isinstance(reported, str) and records.same_model(swap, reported)
+                    and not records.same_model(model, reported))
+
     def served(row: dict, what: str, number: int | None) -> None:
         """The served-model fields a record carries (bug-31438d, bug-35379d): the model the provider reported, every
         model it named, Roko's own mismatch mark, and the planned model a failover replaced. A null report is no
-        evidence either way."""
+        evidence either way, and the declared swap's model is a swap, not a mismatch."""
         named = row.get("models_reported") if isinstance(row.get("models_reported"), list) else []
         for reported in dict.fromkeys([row.get("model_reported"), *named]):
-            if isinstance(reported, str) and reported and not records.same_model(model, reported):
+            if is_swap(reported):
+                if number in by_number:
+                    by_number[number].model_swapped = True
+            elif isinstance(reported, str) and reported and not records.same_model(model, reported):
                 flag("model_mismatch", f"{where(number)}: {what} says the provider served {reported!r}, not "
                                        f"{model!r}", number)
-        if row.get("model_mismatch") is True:
+        if row.get("model_mismatch") is True and not is_swap(row.get("model_reported")):
             flag("model_mismatch", f"{where(number)}: {what} marks the served model as another than the one "
                                    "launched", number)
         replaced = row.get("substituted_from") or row.get("failover_chain")
@@ -428,7 +444,7 @@ def settle(evidence: Evidence, *, chain_key: str, model: str, provider: str, sna
     if len(attempts) > max_attempts:
         flag("extra_attempts", f"Roko made {len(attempts)} attempts; the plan allows {max_attempts}")
     if evidence.proxy_rows is not None:
-        _meter_from_proxy(attempts, evidence, model, flag)
+        _meter_from_proxy(attempts, evidence, model, flag, swap)
     for attempt in attempts:
         if attempt.cost is None:  # the proxy has already priced an attempt that billed nothing
             attempt.cost = ledger.price(attempt.reported_usage(), snapshot.row(attempt.model_reported))
@@ -454,7 +470,8 @@ def _meter_from_verdict(attempt: RokoAttempt, verdict: dict) -> None:
         attempt.usage_unknown = False
 
 
-def _meter_from_proxy(attempts: list[RokoAttempt], evidence: Evidence, model: str, flag) -> None:
+def _meter_from_proxy(attempts: list[RokoAttempt], evidence: Evidence, model: str, flag,
+                      swap: str | None = None) -> None:
     """Assign the proxy's requests to attempts by time and meter each attempt from them (module docstring).
 
     Times compare to the microsecond when every stamp has one. With a whole-second stamp anywhere, they compare in
@@ -475,10 +492,20 @@ def _meter_from_proxy(attempts: list[RokoAttempt], evidence: Evidence, model: st
             windows[index].append(row)
     for position, (attempt, window) in enumerate(zip(attempts, windows)):
         for row in window:
-            for key in ("model_requested", "model_reported"):
-                if row.get(key) and row[key] != model:
-                    flag("model_mismatch", f"attempt {attempt.number}: the proxy saw {key} {row[key]!r}, not "
-                                           f"{model!r}", attempt.number)
+            reported, sent = row.get("model_reported"), row.get("model_swap")
+            if row.get("model_requested") and row["model_requested"] != model:
+                flag("model_mismatch", f"attempt {attempt.number}: the proxy saw model_requested "
+                                       f"{row['model_requested']!r}, not {model!r}", attempt.number)
+            if sent and sent != swap:
+                flag("model_mismatch", f"attempt {attempt.number}: the proxy sent {sent!r} in place of {model!r}, "
+                                       "which no model_swap declared for this task", attempt.number)
+            if not reported or records.same_model(model, reported):
+                continue
+            if swap and records.same_model(swap, reported):
+                attempt.model_swapped = True
+            else:
+                flag("model_mismatch", f"attempt {attempt.number}: the proxy saw model_reported {reported!r}, not "
+                                       f"{model!r}", attempt.number)
         if not window:
             if not rows or position == 0 or ends[position] is None or ends[position] != ends[position - 1]:
                 flag("no_proxy_traffic", f"attempt {attempt.number}: the metering proxy saw no request",

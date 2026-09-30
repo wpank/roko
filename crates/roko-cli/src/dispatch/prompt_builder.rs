@@ -3726,7 +3726,12 @@ mod tests {
             sha256: "ab".repeat(32),
         };
         let step = task_accept::pinned_verify_step("t", &entry, &pinned);
-        let header = step.command.lines().next().expect("a header line").to_string();
+        let header = step
+            .command
+            .lines()
+            .next()
+            .expect("a header line")
+            .to_string();
         assert_eq!(
             header,
             concat!(
@@ -3745,17 +3750,33 @@ mod tests {
         ] {
             assert!(prompt.contains(section), "{section} missing: {prompt}");
             assert!(prompt.contains(&header), "{section}: no header: {prompt}");
-            assert!(prompt.contains(PINNED_STEP_NOTE), "{section}: no note: {prompt}");
-            assert!(prompt.contains("cargo test"), "{section}: authored step: {prompt}");
-            for plumbing in ["roko_pinned=", "/accept-store/", "sha256sum", "vitest-min.mjs"] {
-                assert!(!prompt.contains(plumbing), "{section}: {plumbing} leaked: {prompt}");
+            assert!(
+                prompt.contains(PINNED_STEP_NOTE),
+                "{section}: no note: {prompt}"
+            );
+            assert!(
+                prompt.contains("cargo test"),
+                "{section}: authored step: {prompt}"
+            );
+            for plumbing in [
+                "roko_pinned=",
+                "/accept-store/",
+                "sha256sum",
+                "vitest-min.mjs",
+            ] {
+                assert!(
+                    !prompt.contains(plumbing),
+                    "{section}: {plumbing} leaked: {prompt}"
+                );
             }
         }
 
         // Without a pinned step the note stays out.
         let plain = task();
         let plain_ctx = PromptContext::from_task(&plain, &ctx());
-        let p = PromptAssembler::minimal().assemble(&plain, &plain_ctx).unwrap();
+        let p = PromptAssembler::minimal()
+            .assemble(&plain, &plain_ctx)
+            .unwrap();
         assert!(!p.system_prompt.contains(PINNED_STEP_NOTE));
         assert!(!p.user_prompt.contains(PINNED_STEP_NOTE));
     }

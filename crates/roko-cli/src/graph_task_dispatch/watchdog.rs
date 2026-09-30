@@ -500,7 +500,9 @@ mod tests {
         watch.progress().observe_at(&text("working"), t0);
         assert_eq!(watch.check(t0 + secs(11)), StallCheck::Silent(secs(11)));
 
-        watch.progress().observe_at(&text("still working"), t0 + secs(12));
+        watch
+            .progress()
+            .observe_at(&text("still working"), t0 + secs(12));
         assert_eq!(watch.check(t0 + secs(13)), StallCheck::Healthy);
         assert_eq!(watch.check(t0 + secs(22)), StallCheck::Silent(secs(10)));
         assert_eq!(
@@ -619,6 +621,70 @@ exec sleep 60
         config
     }
 
+    const STALLED_TASK_TITLE: &str = "Stall after the first message";
+
+    /// A task with a 60 s timeout for [`silent_provider_script`].
+    fn stalled_task_json(max_retries: u32) -> String {
+        serde_json::json!({
+            "id": "T01",
+            "title": STALLED_TASK_TITLE,
+            "role": "implementer",
+            "model_hint": "graph-model",
+            "timeout_secs": 60,
+            "max_retries": max_retries,
+        })
+        .to_string()
+    }
+
+    /// The streaming path cancels a stalled attempt the same way and ends it
+    /// `TimedOut`.
+    #[tokio::test]
+    async fn streaming_dispatch_ends_a_stalled_attempt_timed_out() {
+        let temp = tempdir().expect("tempdir");
+        let script = silent_provider_script(temp.path(), &temp.path().join("launches.log"));
+        let config = Arc::new(watched_config(&script));
+        let factory =
+            Arc::new(SharedAgentFactory::new(Arc::clone(&config), None, None, None).await);
+        let dispatcher =
+            GraphTaskDispatcher::new(factory, Arc::clone(&config), temp.path().to_path_buf());
+        let spec = TaskExecutionSpec {
+            plan_id: "p1".to_string(),
+            title: STALLED_TASK_TITLE.to_string(),
+            timeout_secs: 60,
+            task_def_json: stalled_task_json(0),
+            ..TaskExecutionSpec::default()
+        };
+        let lease = TaskLease {
+            path: temp.path().to_path_buf(),
+            fingerprint: "test-fingerprint".to_string(),
+        };
+        let (event_tx, mut event_rx) =
+            tokio::sync::mpsc::channel(streaming_event_channel_capacity());
+
+        let started = Instant::now();
+        let error = dispatcher
+            .dispatch_streaming(
+                &spec,
+                Vec::new(),
+                &CellContext::new().with_cell_id("T01".to_string()),
+                &lease,
+                event_tx,
+                &roko_graph::cells::NoopAttemptRecorder,
+            )
+            .await
+            .expect_err("a stalled attempt fails");
+
+        assert!(matches!(error, RokoError::Timeout { .. }), "{error}");
+        assert!(started.elapsed() < secs(30), "{:?}", started.elapsed());
+        let mut terminal = None;
+        while let Ok(event) = event_rx.try_recv() {
+            if let GraphTaskEvent::AttemptTerminal { outcome, .. } = event {
+                terminal = Some(outcome);
+            }
+        }
+        assert_eq!(terminal, Some(TaskDispatchOutcomeKind::TimedOut));
+    }
+
     /// A task whose agent reports progress and then goes silent is cancelled
     /// after `task_stall_secs`, long before its `timeout_secs`, and retried
     /// under its `max_retries`; the dashboard (and so `--log-file`) gets a
@@ -637,24 +703,18 @@ exec sleep 60
             GraphTaskDispatcher::new(factory, Arc::clone(&config), temp.path().to_path_buf())
                 .with_tui_bridge(TuiBridge::new(hub.sender())),
         );
-        let task_def_json = serde_json::json!({
-            "id": "T01",
-            "title": "Stall after the first message",
-            "role": "implementer",
-            "model_hint": "graph-model",
-            "timeout_secs": 60,
-            "max_retries": 1,
-        })
-        .to_string();
         let cell_config = toml::Value::Table(toml::map::Map::from_iter([
             ("plan_id".to_string(), toml::Value::String("p1".to_string())),
             (
                 "title".to_string(),
-                toml::Value::String("Stall after the first message".to_string()),
+                toml::Value::String(STALLED_TASK_TITLE.to_string()),
             ),
             ("timeout_secs".to_string(), toml::Value::Integer(60)),
             ("max_retries".to_string(), toml::Value::Integer(1)),
-            ("task_def_json".to_string(), toml::Value::String(task_def_json)),
+            (
+                "task_def_json".to_string(),
+                toml::Value::String(stalled_task_json(1)),
+            ),
         ]));
         let cell = roko_graph::cells::TaskExecutorCell::live(cell_config, dispatcher);
 

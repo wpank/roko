@@ -71,6 +71,7 @@ mod streaming;
 mod tui_forward;
 mod turn_policy;
 mod verification;
+mod watchdog;
 mod wiring;
 
 pub use budget::{GraphPlanBudgetPolicy, GraphPlanBudgetSnapshot};
@@ -97,6 +98,7 @@ use turn_policy::{
     provider_failure_reason, raised_attempt_timeout_ms, raised_turn_cap, task_turn_limit,
     timeout_resume_note, turn_cap_resume_note, verify_failure_reason,
 };
+use watchdog::{StallWatch, WatchedAttempt};
 
 #[cfg(test)]
 use verification::published_gate_output;
@@ -1125,72 +1127,39 @@ impl TaskDispatcher for GraphTaskDispatcher {
             );
         }
 
-        // ── Live output forwarder ──────────────────────────────────────
+        // ── Live output tap and stall watchdog ─────────────────────────
         //
-        // When both a TUI bridge and a live-output setting are configured,
-        // create a bounded channel, attach it to the request so the immune
-        // boundary can push events while the agent runs, and spawn a task
-        // that forwards each event to the TUI before screening completes.
+        // The agent's live output feeds the TUI, when a bridge and a
+        // live-output setting are configured, and the attempt's stall
+        // watchdog (`[conductor] silence_timeout_secs`, `task_stall_secs`).
         // `forward_dispatch_events_to_tui` still publishes the screened
         // transcript after `run_bridge_with_failover` returns (§4).
-        if let (Some(tui), Some(live_setting)) = (&self.tui_bridge, &self.live_agent_output) {
-            let (live_tx, mut live_rx) =
-                tokio::sync::mpsc::channel::<roko_agent::live_output::LiveAgentEvent>(64);
-            let trusted = matches!(live_setting, LiveAgentOutput::Trusted);
-            request.live_output = Some(roko_agent::live_output::LiveOutput {
-                sink: live_tx,
-                trusted,
-            });
-            let tui_clone = tui.clone();
-            let agent_id_clone = pre_dispatch_agent_id.clone();
-            let plan_id_clone = spec.plan_id.clone();
-            let task_id_clone = task.id.clone();
-            tokio::spawn(async move {
-                while let Some(event) = live_rx.recv().await {
-                    forward_live_event_to_tui(
-                        &tui_clone,
-                        &agent_id_clone,
-                        &plan_id_clone,
-                        &task_id_clone,
-                        event,
-                    );
-                }
-            });
-        }
+        let watched_key = attempt.key.attempt_key();
+        let watched = WatchedAttempt {
+            agent_id: &pre_dispatch_agent_id,
+            plan_id: &spec.plan_id,
+            task_id: &task.id,
+            attempt_key: &watched_key,
+        };
+        let stall_watch = self.stall_watch();
+        request.live_output =
+            self.live_output_tap(&watched, stall_watch.as_ref().map(StallWatch::progress));
 
         attempt.dispatch_started();
         let started_at = Instant::now();
         // The planned model is a preference: an unusable or out-of-usage
         // provider fails over; `dispatch.target` names the model that ran.
-        //
-        // T04: Drive the dispatch future through a select loop so we can emit
-        // periodic `agent_heartbeat` events while waiting.  This keeps the
-        // elapsed-time counter live on the TUI even though the transcript is
-        // only available after the immune boundary screens the final result.
-        let dispatch_result = {
-            let mut heartbeat = tokio::time::interval(AGENT_HEARTBEAT_INTERVAL);
-            heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-            // Consume the immediate first tick so we don't fire at t=0.
-            heartbeat.tick().await;
-            let dispatch_future = self.run_bridge_with_failover(spec, &task.id, request);
-            tokio::pin!(dispatch_future);
-            loop {
-                tokio::select! {
-                    result = &mut dispatch_future => { break result; }
-                    _ = heartbeat.tick() => {
-                        let elapsed_ms = started_at.elapsed().as_millis() as u64;
-                        if let Some(tui) = &self.tui_bridge {
-                            tui.agent_heartbeat(
-                                &pre_dispatch_agent_id,
-                                &spec.plan_id,
-                                &task.id,
-                                elapsed_ms,
-                            );
-                        }
-                    }
-                }
-            }
-        };
+        // While it runs, heartbeats keep the TUI's elapsed-time counter live,
+        // and the stall watchdog cancels an attempt that goes silent, which
+        // then fails like a provider error and retries under `max_retries`.
+        let dispatch_result = self
+            .run_watched(
+                self.run_bridge_with_failover(spec, &task.id, request),
+                stall_watch,
+                &watched,
+            )
+            .await
+            .unwrap_or_else(|stalled| Err(stalled.error(&watched)));
         attempt.dispatch_ended();
         let (mut dispatch, failover) = match dispatch_result {
             Ok(dispatched) => dispatched,

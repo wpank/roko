@@ -235,6 +235,10 @@ mod tests {
         config
             .models
             .insert("glm-4.7".to_string(), model("glm-4.7", (0.60, 2.20)));
+        // The mock API answers without SSE. The stall watchdog would attach
+        // live output, over which the tool loop streams, so keep it off.
+        config.conductor.silence_timeout_secs = 0;
+        config.conductor.task_stall_secs = 0;
         config
     }
 

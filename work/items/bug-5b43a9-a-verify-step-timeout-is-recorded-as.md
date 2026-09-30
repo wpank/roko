@@ -3,13 +3,15 @@ id = "bug-5b43a9"
 kind = "bug"
 title = "A verify-step timeout is recorded as a permanent failure, and roko diagnose counts no timed-out attempt"
 status = "open"
-triage = "unverified"
+triage = "verified"
 severity = "p2"
 goal = "truth"
 size = "S"
 subsystem = ["roko-cli/gates", "roko-cli/diagnose"]
 created = 2026-09-29
 updated = 2026-09-29
+last_verified = 2026-09-30
+last_verified_rev = "8a88c6267"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "tmp/cybernetic-harness/workstreams/PROGRESS.md (16:47, wk-evidence's report on gap-09e478)"
 anchors = ["crates/roko-cli/src/runner/gate_report.rs::classify_failure_kind", "crates/roko-cli/src/commands/diagnose.rs::mentions_timeout", "crates/roko-cli/src/runner/gate_dispatch.rs:1498"]
@@ -53,3 +55,10 @@ Observed by wk-evidence while building gap-09e478 (its last note). Which branch 
 
 - [ ] A verify-step timeout is recorded as a timeout in `gate-failures.jsonl` and counted by `roko diagnose`.
 - [ ] The `[[verify]]` command passes.
+
+## Notes
+
+- 2026-09-30 (wk-gates): Implemented on `work/bug-5b43a9` at `7a2a1f6b6`; cargo verification deferred to the batch check.
+- Pinned at `8a88c6267`: the record comes from the Graph path, `graph_task_dispatch/verification.rs` (the W13 block), not from `runner/gate_report.rs::classify_failure_kind`, whose legacy pipeline no plan-run path calls. The step's authored `fail_msg` (the evidence fixture's `verify failed`) replaces its own `timed out after 1500 ms` reason in the failure text, so `roko_gate::classify_gate_failure` saw an unknown failure and returned `permanent`. Without a `fail_msg` it would have said `transient`. The episode reason, which diagnose read, has the same text.
+- `timeout` is a new `roko_gate::GateFailureKind` variant (retryable, as the evidence validator expects). `AttemptOutcome::Timeout` could not be reused there: roko-gate does not depend on roko-learn, and S01 §4.3 keeps a verify-step timeout as `gate_failed{rung}` (`timeout` is the task timeout), so the attempt's outcome stays `gate_failed`. ShellGate marks the classification in its timeout verdict's digest, and `roko_gate::verdict_timed_out` reads it.
+- Left as found: the retry prompt and the episode reason still show the authored `fail_msg` without saying the step timed out. The other gates with timeouts (compile, clippy, test, verify-chain, integration, property-test, generated-test) still classify them as `transient`; none is on the plan-run verify path.

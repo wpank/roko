@@ -19,12 +19,19 @@
 //! `[agent] env_passthrough`): an exact name (`DATABASE_URL`) or a prefix
 //! ending in `*` (`AWS_*`). A passthrough match wins over every exclusion.
 //!
+//! The commands agents run through roko's own tools (`bash`, `run_tests`, ACP's
+//! `bash`) follow the gate policy, as verify steps do. [`apply_gate_env`],
+//! [`CredentialScrub::apply`] and [`apply_credential_scrub_from`] put either
+//! policy on a [`Command`].
+//!
 //! Keeping keys out of a child's environment is moot while the child can read
 //! the files they come from, so this module also lists those files: see
 //! [`key_file_paths`] and [`is_key_file`].
 
 use std::collections::BTreeSet;
+use std::ffi::{OsStr, OsString};
 use std::path::{Component, Path, PathBuf};
+use std::process::Command;
 use std::sync::OnceLock;
 
 use crate::agent::ProviderKind;
@@ -424,6 +431,93 @@ impl CredentialScrub {
     }
 }
 
+// ---- Commands --------------------------------------------------------------
+
+/// roko's own environment: what a child inherits from in production.
+/// Variables whose names are not Unicode are left out.
+#[must_use]
+pub fn process_env() -> Vec<(String, OsString)> {
+    std::env::vars_os()
+        .filter_map(|(name, value)| Some((name.into_string().ok()?, value)))
+        .collect()
+}
+
+/// Give `cmd` the variables of `inherited` that [`gate_env`] admits, in place
+/// of the environment it would inherit. Variables already set on `cmd` stay.
+///
+/// Gate commands start this way, and so do the commands agents run through
+/// roko's own tools: both run code an agent wrote. `inherited` is roko's own
+/// environment ([`process_env`]) in production; tests pass their own.
+/// `passthrough` is `[gates] env_passthrough` for gates and
+/// `[agent] env_passthrough` for tool commands.
+pub fn apply_gate_env(
+    cmd: &mut Command,
+    inherited: impl IntoIterator<Item = (String, OsString)>,
+    passthrough: &[String],
+) {
+    let explicit = explicit_env(cmd);
+    cmd.env_clear();
+    cmd.envs(gate_env(inherited, passthrough, startup_dotenv()));
+    restore_env(cmd, explicit);
+}
+
+impl CredentialScrub {
+    /// Remove from `cmd` the variables of roko's own environment this policy
+    /// strips. Variables set explicitly on `cmd` stay.
+    pub fn apply(&self, cmd: &mut Command) {
+        let explicit: BTreeSet<OsString> = cmd
+            .get_envs()
+            .filter(|(_, value)| value.is_some())
+            .map(|(name, _)| name.to_os_string())
+            .collect();
+        let inherited: Vec<String> = std::env::vars_os()
+            .filter_map(|(name, _)| name.into_string().ok())
+            .filter(|name| !explicit.contains(OsStr::new(name)))
+            .collect();
+        for name in self.names_to_strip(inherited.iter().map(String::as_str), startup_dotenv()) {
+            cmd.env_remove(name);
+        }
+    }
+}
+
+/// Give `cmd` the variables of `inherited` that `scrub` keeps, in place of
+/// the environment it would inherit. Variables already set on `cmd` stay,
+/// a credential too: the caller chose to pass it.
+///
+/// `inherited` is roko's own environment ([`process_env`]) in production;
+/// tests pass their own.
+pub fn apply_credential_scrub_from(
+    cmd: &mut Command,
+    scrub: &CredentialScrub,
+    inherited: impl IntoIterator<Item = (String, OsString)>,
+) {
+    let explicit = explicit_env(cmd);
+    let dotenv = startup_dotenv();
+    let kept = inherited
+        .into_iter()
+        .filter(|(name, _)| !scrub.strips(name, dotenv));
+    cmd.env_clear();
+    cmd.envs(kept);
+    restore_env(cmd, explicit);
+}
+
+/// The variables set or removed on `cmd` so far, which `env_clear` forgets.
+fn explicit_env(cmd: &Command) -> Vec<(OsString, Option<OsString>)> {
+    cmd.get_envs()
+        .map(|(name, value)| (name.to_os_string(), value.map(OsStr::to_os_string)))
+        .collect()
+}
+
+/// Set or remove again the variables [`explicit_env`] recorded.
+fn restore_env(cmd: &mut Command, explicit: Vec<(OsString, Option<OsString>)>) {
+    for (name, value) in explicit {
+        match value {
+            Some(value) => cmd.env(name, value),
+            None => cmd.env_remove(name),
+        };
+    }
+}
+
 // ---- Key files -------------------------------------------------------------
 
 /// Files in a `.roko` directory that hold provider keys or roko credentials:
@@ -744,6 +838,87 @@ mod tests {
         assert!(scrub.strips("ANTHROPIC_API_KEY", &DotenvNames::new()));
         assert!(scrub.strips("OPENAI_API_KEY", &DotenvNames::new()));
         assert!(!scrub.strips("PATH", &DotenvNames::new()));
+    }
+
+    fn os_parent(items: &[(&str, &str)]) -> Vec<(String, OsString)> {
+        items
+            .iter()
+            .map(|(name, value)| ((*name).to_string(), OsString::from(*value)))
+            .collect()
+    }
+
+    fn command_env(cmd: &Command) -> Vec<(String, Option<String>)> {
+        let mut env: Vec<_> = cmd
+            .get_envs()
+            .map(|(name, value)| {
+                (
+                    name.to_string_lossy().into_owned(),
+                    value.map(|value| value.to_string_lossy().into_owned()),
+                )
+            })
+            .collect();
+        env.sort();
+        env
+    }
+
+    fn set(name: &str, value: &str) -> (String, Option<String>) {
+        (name.to_string(), Some(value.to_string()))
+    }
+
+    #[test]
+    fn gate_env_on_a_command_replaces_the_inherited_env() {
+        let mut cmd = Command::new("true");
+        cmd.env("CARGO_BUILD_JOBS", "2");
+        apply_gate_env(
+            &mut cmd,
+            os_parent(&[
+                ("PATH", "/usr/bin:/bin"),
+                ("CARGO_HOME", "/home/dev/.cargo"),
+                ("OPENAI_API_KEY", "sk-test-not-real"),
+                ("MY_SECRET_TOKEN", "tok-test-not-real"),
+                ("DATABASE_URL", "postgres://db"),
+            ]),
+            &patterns(&["DATABASE_URL"]),
+        );
+        assert_eq!(
+            command_env(&cmd),
+            vec![
+                set("CARGO_BUILD_JOBS", "2"),
+                set("CARGO_HOME", "/home/dev/.cargo"),
+                set("DATABASE_URL", "postgres://db"),
+                set("PATH", "/usr/bin:/bin"),
+            ]
+        );
+    }
+
+    #[test]
+    fn credential_scrub_on_a_command_keeps_other_variables_and_explicit_ones() {
+        let mut cmd = Command::new("true");
+        cmd.env("MCP_SERVER_SETTING", "from-config");
+        cmd.env("PERPLEXITY_API_KEY", "named-in-the-config");
+        apply_credential_scrub_from(
+            &mut cmd,
+            &CredentialScrub::default(),
+            os_parent(&[
+                ("PATH", "/usr/bin:/bin"),
+                ("GITHUB_TOKEN", "ghp_test"),
+                ("OPENAI_API_KEY", "sk-test-not-real"),
+                ("ANTHROPIC_API_KEY", "sk-ant-test-not-real"),
+                ("ROKO_SERVE_AUTH_API_KEY", "serve-test-not-real"),
+                ("PERPLEXITY_API_KEY", "pplx-inherited"),
+            ]),
+        );
+        // A blocklist: a shell `GITHUB_TOKEN` stays, provider keys and
+        // roko's own credentials go, and a value set on the command wins.
+        assert_eq!(
+            command_env(&cmd),
+            vec![
+                set("GITHUB_TOKEN", "ghp_test"),
+                set("MCP_SERVER_SETTING", "from-config"),
+                set("PATH", "/usr/bin:/bin"),
+                set("PERPLEXITY_API_KEY", "named-in-the-config"),
+            ]
+        );
     }
 
     #[test]

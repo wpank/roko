@@ -20,6 +20,7 @@ use roko_core::agent::ProviderKind;
 use roko_core::config::DEFAULT_TTFT_TIMEOUT_MS;
 use roko_core::config::schema::{ModelProfile, ProviderConfig};
 use roko_core::tool::aliases::{canonical_names, claude_of_canonical};
+use roko_std::roles::CHAIN_TOOL_PREFIX;
 use serde_json::Value;
 use std::path::PathBuf;
 
@@ -285,8 +286,11 @@ fn render_claude_tool_policy(tools: &[String]) -> String {
         .filter_map(|name| {
             if let Some(alias) = claude_of_canonical(name) {
                 Some(alias.to_string())
-            } else if canonical_names().any(|canonical| canonical == name) {
-                // Roko-only canonical tools cannot be executed by Claude CLI.
+            } else if canonical_names().any(|canonical| canonical == name)
+                || name.starts_with(CHAIN_TOOL_PREFIX)
+            {
+                // Roko-only tools, the canonical builtins and the chain
+                // tools, cannot be executed by Claude CLI.
                 None
             } else {
                 // Preserve MCP/plugin names and already-native Claude names.
@@ -306,6 +310,19 @@ mod tests {
 
     fn prompt(text: &str) -> Signal {
         Signal::builder(Kind::Prompt).body(Body::text(text)).build()
+    }
+
+    #[test]
+    fn chain_tools_never_reach_the_claude_tool_flags() {
+        let tools = [
+            "bash".to_string(),
+            "chain.transfer".to_string(),
+            "mcp__github__create_pr".to_string(),
+        ];
+        assert_eq!(
+            render_claude_tool_policy(&tools),
+            "Bash,mcp__github__create_pr"
+        );
     }
 
     fn write_script(path: &std::path::Path, body: &str) {

@@ -175,8 +175,7 @@ impl RunEventLog {
             std::fs::create_dir_all(parent)?;
         }
         let out = BufWriter::new(File::create(path)?);
-        let run_id = evidence_run_id()
-            .unwrap_or_else(|| format!("graph-{}", uuid::Uuid::new_v4()));
+        let run_id = evidence_run_id().unwrap_or_else(|| format!("graph-{}", uuid::Uuid::new_v4()));
         let writer = EventLogWriter {
             out,
             run_id,

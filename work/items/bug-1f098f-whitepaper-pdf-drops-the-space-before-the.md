@@ -26,7 +26,7 @@ command = "! grep -q '<tspan[^>]*> · ' docs/whitepaper/figures/fig2-golden-path
 at = 2026-09-30
 commit = "e6db226ee"
 by = "commit trailer"
-evidence = "In fig2-golden-path.svg, step 9's two chips now end their name text with the space and start the tag <tspan> at the dot; data-row and data-tag are unchanged. Proven by the item's verify (with status_matrix.py --check), and by build.sh rebuilt into a scratch directory: page 7 of the PDF shows \"merge queue · ORPHANED\" and \"whole-plan gate · MISSING\", and pdftotext reads them the same. A no-break space was tried first and librsvg dropped it too."
+evidence = "In fig2-golden-path.svg, step 9's two chips now end their name text with the space and start the tag <tspan> at the dot; data-row and data-tag are unchanged. Proven by the item's verify (with status_matrix.py --check), and by build.sh rebuilt into a scratch directory: page 7 of the PDF shows \"merge queue · ORPHANED\" and \"whole-plan gate · MISSING\", and pdftotext reads them the same. A no-break space was tried first and librsvg dropped it too. docs/whitepaper/figures/README.md now tells figure editors to put the space before a <tspan>, never at its start."
 +++
 
 ## Problem

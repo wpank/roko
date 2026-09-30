@@ -45,7 +45,9 @@ background, so it stays readable on a dark page.
 
 The SVGs use SVG 1.1 shapes, patterns, markers and a CSS `<style>` block: no scripts, no web fonts, and no CSS
 variables or media queries, so browsers and librsvg draw them alike. Text is Helvetica or a metric-compatible
-substitute (Arial, Liberation Sans, Arimo); boxes leave room for a slightly wider face.
+substitute (Arial, Liberation Sans, Arimo); boxes leave room for a slightly wider face. When a `<tspan>` follows
+other text, put the space before the `<tspan>`, never at its start: librsvg drops a `<tspan>`'s leading space, even
+a no-break `&#160;`, so the PDF runs the words together (bug-1f098f).
 
 `docs/whitepaper/build.sh` makes the PDF, and stops unless `pandoc`, `tectonic` and `rsvg-convert` (from librsvg)
 are installed. It copies `figures/` into its temporary work directory and converts each `figures/*.svg` there with

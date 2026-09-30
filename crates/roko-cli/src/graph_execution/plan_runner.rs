@@ -1181,6 +1181,7 @@ async fn run_graph_plan_body(
         max_retries,
         max_tasks,
         rich_topology,
+        worktree_per_task,
         quiet,
         json,
         launch_tui,
@@ -1788,6 +1789,8 @@ struct PlanRunContext<'a> {
     max_retries: Option<u32>,
     max_tasks: usize,
     rich_topology: bool,
+    /// `--worktree-per-task`: each task writes its own checkout.
+    worktree_per_task: bool,
     quiet: bool,
     json: bool,
     launch_tui: bool,
@@ -1986,6 +1989,19 @@ async fn run_admitted_plan(
 /// A plan that cannot be converted or validated still gets a terminal
 /// PlanCompleted. `Err` is reserved for checkpoint and budget-ledger
 /// failures, which stop the whole run.
+/// With `--worktree-per-task` each task writes its own checkout, so no two
+/// tasks share a tree: drop the exclusive paths that keep tasks writing the
+/// same files apart, and let them run together (gap-19e596). The paths are
+/// not part of the checkpoint identity.
+fn drop_exclusion_for_worktrees(graph: &mut roko_graph::Graph, worktree_per_task: bool) {
+    if !worktree_per_task {
+        return;
+    }
+    for node in graph.inner.node_weights_mut() {
+        node.exclusive.clear();
+    }
+}
+
 async fn run_one_plan(
     ctx: &PlanRunContext<'_>,
     plan: &crate::runner::plan_loader::Plan,
@@ -2125,6 +2141,7 @@ async fn run_one_plan(
             }
         }
     };
+    drop_exclusion_for_worktrees(&mut graph, ctx.worktree_per_task);
     let mut checkpoint = crate::graph_checkpoint::prepare_graph_checkpoint_for_run(
         ctx.workdir,
         ctx.resume_plan,
@@ -3691,5 +3708,70 @@ max_retries = 0
         stopped_rx
             .try_recv()
             .expect("TUI thread joined before drop returned");
+    }
+
+    /// gap-19e596: with per-task worktrees no two tasks share a tree, so the
+    /// plan graph keeps no exclusive paths, in the simple and in the rich
+    /// topology. In a shared tree each task keeps the files it declares.
+    #[test]
+    fn worktree_per_task_clears_exclusive_paths() {
+        let plan_task = |id: &str| roko_graph::convert::PlanTaskInfo {
+            title: format!("Task {id}"),
+            description: None,
+            role: Some("implementer".to_string()),
+            tier: "focused".to_string(),
+            model_hint: None,
+            files: vec!["src/lib.rs".to_string()],
+            depends_on: Vec::new(),
+            depends_on_plan: Vec::new(),
+            timeout_secs: 60,
+            max_retries: 0,
+            domain: None,
+            sequence: 0,
+            full_config_json: serde_json::Value::Null,
+        };
+        let topology_task = |id: &str| roko_graph::TopologyTaskInfo {
+            task_id: id.to_string(),
+            title: format!("Task {id}"),
+            description: None,
+            role: Some("implementer".to_string()),
+            tier: "focused".to_string(),
+            model_hint: None,
+            files: vec!["src/lib.rs".to_string()],
+            depends_on: Vec::new(),
+            timeout_secs: 60,
+            max_retries: 0,
+            domain: None,
+            sequence: 0,
+            full_config_json: serde_json::Value::Null,
+        };
+        let simple = roko_graph::convert::plan_to_graph(
+            "p",
+            "plans/p",
+            &[
+                ("T1".to_string(), plan_task("T1")),
+                ("T2".to_string(), plan_task("T2")),
+            ],
+            2,
+        )
+        .expect("simple topology");
+        let (rich, _) = roko_graph::ProductionPlanTopology::new("p", "plans/p", 2)
+            .build(&[topology_task("T1"), topology_task("T2")])
+            .expect("rich topology");
+
+        let holds_paths = |graph: &roko_graph::Graph| {
+            graph
+                .inner
+                .node_weights()
+                .any(|node| !node.exclusive.is_empty())
+        };
+        for graph in [simple, rich] {
+            let mut shared = graph.clone();
+            drop_exclusion_for_worktrees(&mut shared, false);
+            assert!(holds_paths(&shared));
+            let mut isolated = graph;
+            drop_exclusion_for_worktrees(&mut isolated, true);
+            assert!(!holds_paths(&isolated));
+        }
     }
 }

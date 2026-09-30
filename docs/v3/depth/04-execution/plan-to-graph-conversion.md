@@ -52,7 +52,9 @@ pub fn plan_to_graph(
      one after the other even when both are ready. The task that waits holds
      no `max_concurrent_nodes` slot, and the engine logs which running task
      it waits for. A task with no `files` never waits. The paths are left
-     out of the plan fingerprint, so checkpoints still resume.
+     out of the plan fingerprint, so checkpoints still resume. Under
+     `--worktree-per-task` each task writes its own checkout, so the run
+     clears every node's `exclusive` paths.
 
 3. **Add edges.** For each task's `depends_on` list, a directed `Edge` is
    created from the dependency to the dependent. Unknown dependency IDs

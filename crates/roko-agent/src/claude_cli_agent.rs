@@ -10,9 +10,9 @@
 use crate::agent::{Agent, AgentResult};
 use crate::mcp::workspace_mcp_config;
 use crate::process::{
-    GRACE_STDIN_CLOSE_MS, ResourceLimits, apply_credential_scrub, benign_stderr_warn_once,
-    classify_benign_stderr, config_file_env_names, confined_command, kill_tree,
-    register_spawned_pid, set_process_group, unregister_pid,
+    GRACE_STDIN_CLOSE_MS, KillTreeOnDrop, ResourceLimits, apply_credential_scrub,
+    benign_stderr_warn_once, classify_benign_stderr, config_file_env_names, confined_command,
+    kill_tree, register_spawned_pid, set_process_group, unregister_pid,
 };
 use crate::provider::error_classify::{ATTEMPT_TIMEOUT_MARKER, detect_provider_exhaustion};
 use crate::tool_loop::{StreamEvent, StreamEventKind};
@@ -1164,6 +1164,10 @@ impl ClaudeCliAgent {
             }
         };
         let pid = child.id();
+        // `kill_on_drop` kills only `claude`: a run dropped by a cancel or the
+        // stall watchdog kills its tool subprocesses through this guard,
+        // declared after `child` so it drops first (bug-739dcc).
+        let mut tree_guard = KillTreeOnDrop::new(pid);
         if track_pids()
             && let Some(pid) = pid
         {
@@ -1176,6 +1180,7 @@ impl ClaudeCliAgent {
             && let Err(e) = stdin.write_all(prompt_text.as_bytes()).await
         {
             let _ = kill_tree(&mut child, Duration::from_millis(GRACE_STDIN_CLOSE_MS)).await;
+            tree_guard.disarm();
             if track_pids()
                 && let Some(pid) = pid
             {
@@ -1312,6 +1317,7 @@ impl ClaudeCliAgent {
             Ok(status) => status,
             Err(reason) => {
                 let _ = kill_tree(&mut child, Duration::from_millis(GRACE_STDIN_CLOSE_MS)).await;
+                tree_guard.disarm();
                 if track_pids()
                     && let Some(pid) = pid
                 {
@@ -1334,6 +1340,8 @@ impl ClaudeCliAgent {
                 return self.failure_with_stream_usage(input, &reason, started, &stream_usage);
             }
         };
+        // Tool subprocesses can still hold the output pipes open.
+        tree_guard.root_reaped();
         if track_pids()
             && let Some(pid) = pid
         {
@@ -1344,6 +1352,7 @@ impl ClaudeCliAgent {
 
         let stdout = stdout_handle.await.unwrap_or_default();
         let stderr = stderr_handle.await.unwrap_or_default();
+        tree_guard.disarm();
         let wall_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
         let stream_usage = Self::parse_stream_usage(&stdout, &self.model)
             .merge(Self::parse_stream_usage(&stderr, &self.model));
@@ -3020,6 +3029,62 @@ sleep 30
             UsageSource::Estimated,
             "a killed run's usage is partial"
         );
+    }
+
+    /// Dropping a run's future, which is how a cancel or the stall watchdog
+    /// stops it, kills the subprocesses `claude` started, not only `claude`
+    /// (bug-739dcc). One ignores SIGTERM, so the kill escalates to SIGKILL.
+    #[tokio::test]
+    #[cfg(unix)]
+    #[allow(unsafe_code)]
+    async fn cancelling_a_claude_run_kills_its_tool_subprocesses() {
+        let tmp = tempdir().unwrap();
+        let script = tmp.path().join("claude-fake.sh");
+        let pids = tmp.path().join("tool.pids");
+        let script_body = format!(
+            "#!/bin/sh\ncat >/dev/null\nsleep 30 &\necho $! >> '{pids}'\n\
+             (trap '' TERM; exec sleep 30) &\necho $! >> '{pids}'\nwait\n",
+            pids = pids.display()
+        );
+        fs::write(&script, script_body).unwrap();
+        let mut perms = fs::metadata(&script).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&script, perms).unwrap();
+
+        let agent = ClaudeCliAgent::new(&script, tmp.path(), "claude-sonnet-4-6");
+        let run = tokio::spawn(async move {
+            let ctx = Context::now();
+            agent.run(&prompt("build it"), &ctx).await
+        });
+        let mut tool_pids: Vec<i32> = Vec::new();
+        for _ in 0..400 {
+            tool_pids = fs::read_to_string(&pids)
+                .unwrap_or_default()
+                .lines()
+                .filter_map(|line| line.trim().parse().ok())
+                .collect();
+            if tool_pids.len() == 2 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        assert_eq!(tool_pids.len(), 2, "the fake claude started its tools");
+
+        run.abort();
+        assert!(run.await.expect_err("the run is cancelled").is_cancelled());
+
+        for pid in tool_pids {
+            let mut alive = true;
+            for _ in 0..200 {
+                // SAFETY: signal 0 only checks that `pid` exists.
+                alive = unsafe { libc::kill(pid, 0) } == 0;
+                if !alive {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            assert!(!alive, "tool subprocess {pid} outlived its cancelled run");
+        }
     }
 
     #[tokio::test]

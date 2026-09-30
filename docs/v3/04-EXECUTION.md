@@ -651,10 +651,11 @@ first attempts `reclaim_idle()`. If still over budget, it returns
 
 ## 11. Merge Queue
 
-> **Status (2026-09-29, at `7c556bc0a`): ORPHANED.** The merge queue served Runner-v2,
-> whose event loop was deleted on 2026-09-06 (`6b5da8616`), and nothing re-attached it.
-> On Graph runs nothing merges: `MergeQueue` and `PlanMerger`
-> (`crates/roko-cli/src/runner/merge.rs`) are constructed only in tests.
+> **Status (2026-09-30): ORPHANED.** The merge queue served Runner-v2,
+> whose event loop was deleted on 2026-09-06 (`6b5da8616`), and nothing re-attached it:
+> only tests construct `MergeQueue`, and `PlanMerger` was deleted (gap-3505fb). Graph runs
+> under `--worktree-per-task` deliver each finished plan into the run's batch branch with
+> git plumbing instead (`crates/roko-cli/src/graph_execution/batch.rs`, `delivery.rs`).
 
 The merge queue serializes plan merges to prevent file conflicts.
 

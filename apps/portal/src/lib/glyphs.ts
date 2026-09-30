@@ -14,6 +14,7 @@ export type GlyphState =
   | 'active'
   | 'unverified'
   | 'accepted'
+  | 'unchecked'
   | 'failed'
   | 'queued'
   | 'pending'
@@ -37,13 +38,16 @@ export interface GlyphDef {
  *   --state-done, --state-active, --state-accepted (amber, NOT green),
  *   --state-failed, --state-queued, --state-pending, --state-skipped.
  * `unverified` is a running plan in amber: a task was accepted despite failing
- * checks, or every task is dispatched and only checks remain.
+ * checks or finished unchecked, or every task is dispatched and only checks
+ * remain. `unchecked` is a task that finished without a verify step judging it:
+ * amber too, since green means verified.
  */
 export const GLYPHS: Record<GlyphState, GlyphDef> = {
   done:     { glyph: '✓', token: 'var(--state-done)',     label: 'done'     },
   active:   { glyph: '►', token: 'var(--state-active)',   label: 'active'   },
   unverified: { glyph: '▷', token: 'var(--state-accepted)', label: 'running, not verified' },
   accepted: { glyph: '⚠', token: 'var(--state-accepted)', label: 'accepted' },
+  unchecked: { glyph: '?', token: 'var(--state-accepted)', label: 'done, not verified' },
   failed:   { glyph: '✗', token: 'var(--state-failed)',   label: 'failed'   },
   queued:   { glyph: '◌', token: 'var(--state-queued)',   label: 'queued'   },
   pending:  { glyph: '·', token: 'var(--state-pending)',  label: 'pending'  },
@@ -60,6 +64,7 @@ export const GLYPHS: Record<GlyphState, GlyphDef> = {
  *   passed               → done
  *   failed               → failed
  *   accepted_with_failures → accepted  (NEVER done — amber, not green)
+ *   unverified           → unchecked (NEVER done — amber, not green)
  *   skipped              → skipped
  *   cancelled            → skipped
  *   pending              → pending
@@ -75,6 +80,8 @@ export function glyphStateForTask(status: TaskStatus | 'pending'): GlyphState {
     case 'accepted_with_failures':
       // Must map to accepted (amber), not done (green). See tokens.css §1.
       return 'accepted';
+    case 'unverified':
+      return 'unchecked';
     case 'skipped':
       return 'skipped';
     case 'cancelled':

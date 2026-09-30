@@ -1457,12 +1457,12 @@ fn render_plan_tasks(
                 ),
                 match task.status {
                     TaskStatus::Done => theme.badge_complete(),
-                    TaskStatus::AcceptedWithFailures => Style::default()
+                    TaskStatus::AcceptedWithFailures | TaskStatus::Unverified => Style::default()
                         .fg(theme.warning)
                         .add_modifier(Modifier::BOLD),
                     TaskStatus::Failed | TaskStatus::Blocked => theme.badge_failed(),
                     TaskStatus::Active => theme.badge_running(),
-                    TaskStatus::Pending => theme.badge_pending(),
+                    TaskStatus::Pending | TaskStatus::Skipped => theme.badge_pending(),
                 }
                 .bg(bg),
             ),
@@ -1778,9 +1778,11 @@ fn task_status_icon(task: &TaskEntry, theme: &Theme) -> (&'static str, Color) {
     match task.status {
         TaskStatus::Done => ("\u{2713}", theme.success),
         TaskStatus::AcceptedWithFailures => ("\u{26a0}", theme.warning),
+        TaskStatus::Unverified => ("?", theme.warning),
         TaskStatus::Active => ("\u{25b6}", theme.warning),
         TaskStatus::Failed | TaskStatus::Blocked => ("\u{2717}", theme.danger),
         TaskStatus::Pending => ("\u{25cb}", theme.muted),
+        TaskStatus::Skipped => ("\u{2298}", theme.muted),
     }
 }
 

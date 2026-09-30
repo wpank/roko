@@ -771,8 +771,8 @@ fn render_task_subtree(lines: &mut Vec<Line<'static>>, plan: &PlanEntry, indent:
             TaskStatus::Done => Theme::SAGE,
             TaskStatus::Active => Theme::WARNING,
             TaskStatus::Failed => Theme::EMBER,
-            TaskStatus::AcceptedWithFailures => Theme::WARNING,
-            TaskStatus::Blocked => Theme::TEXT_GHOST,
+            TaskStatus::AcceptedWithFailures | TaskStatus::Unverified => Theme::WARNING,
+            TaskStatus::Blocked | TaskStatus::Skipped => Theme::TEXT_GHOST,
             TaskStatus::Pending => Theme::TEXT_DIM,
         };
 
@@ -800,8 +800,10 @@ fn task_icon(status: &TaskStatus) -> (&'static str, Color) {
         TaskStatus::Active => ("\u{25b6}", Theme::WARNING), // ►
         TaskStatus::Failed => ("\u{2717}", Theme::EMBER), // ✗
         TaskStatus::AcceptedWithFailures => ("\u{26a0}", Theme::WARNING), // ⚠
+        TaskStatus::Unverified => ("?", Theme::WARNING),
         TaskStatus::Blocked => ("\u{25cb}", Theme::TEXT_GHOST), // ○
-        TaskStatus::Pending => ("\u{00b7}", Theme::TEXT_DIM), // ·
+        TaskStatus::Skipped => ("\u{2298}", Theme::TEXT_GHOST), // ⊘
+        TaskStatus::Pending => ("\u{00b7}", Theme::TEXT_DIM),   // ·
     }
 }
 

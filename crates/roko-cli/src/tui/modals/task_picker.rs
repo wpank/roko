@@ -85,6 +85,8 @@ pub fn render_task_picker(
                     TaskStatus::Active => theme.info(),
                     TaskStatus::Failed => theme.danger(),
                     TaskStatus::AcceptedWithFailures => theme.warning(),
+                    TaskStatus::Unverified => theme.warning(),
+                    TaskStatus::Skipped => theme.muted(),
                     TaskStatus::Blocked => theme.warning(),
                     TaskStatus::Pending => theme.muted(),
                 }

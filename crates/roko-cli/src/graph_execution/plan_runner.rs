@@ -2609,7 +2609,9 @@ async fn run_one_plan(
         tokio::time::sleep(PLAN_WATCH_INTERVAL).await;
         // Emit incremental TaskStarted/TaskCompleted events for any node whose
         // status changed since the last tick. Filter to real tasks only (the
-        // rich topology adds helper nodes absent from `node_titles`).
+        // rich topology adds helper nodes absent from `node_titles`). A
+        // completed task is reported with the gate verdict of its recorded
+        // output (bug-7e1b6b).
         let current_statuses: HashMap<String, roko_graph::engine::NodeStatus> = flow_handle
             .status()
             .node_statuses
@@ -2621,6 +2623,7 @@ async fn run_one_plan(
             &previous_statuses,
             &current_statuses,
             &node_titles,
+            || checkpoint.recorded_gate_verdicts(),
         );
         previous_statuses = current_statuses;
     }
@@ -2721,6 +2724,7 @@ async fn run_one_plan(
         &previous_statuses,
         &final_statuses,
         &node_titles,
+        || output.gate_verdicts.clone(),
     );
     // Say why each task that did not run was held back; a resume runs them
     // and the failed tasks again.

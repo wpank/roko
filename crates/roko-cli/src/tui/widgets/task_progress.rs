@@ -393,7 +393,14 @@ pub fn render_task_progress(frame: &mut Frame<'_>, area: Rect, state: &TuiState,
                     .fg(Theme::WARNING)
                     .add_modifier(Modifier::BOLD),
             ),
+            TaskRowStatus::Unverified => (
+                "?",
+                Style::default()
+                    .fg(Theme::WARNING)
+                    .add_modifier(Modifier::BOLD),
+            ),
             TaskRowStatus::Pending => ("\u{25cb}", Style::default().fg(Theme::TEXT_DIM)),
+            TaskRowStatus::Skipped => ("\u{2298}", Style::default().fg(Theme::TEXT_GHOST)),
         };
 
         // Active tasks get a subtle background highlight; selected items keep the stronger one.

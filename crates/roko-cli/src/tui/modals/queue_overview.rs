@@ -110,6 +110,8 @@ pub fn render_queue_overview(
             TaskStatus::Active => theme.info(),
             TaskStatus::Failed => theme.danger(),
             TaskStatus::AcceptedWithFailures => theme.warning(),
+            TaskStatus::Unverified => theme.warning(),
+            TaskStatus::Skipped => theme.muted(),
             TaskStatus::Blocked => theme.warning(),
             TaskStatus::Pending => theme.muted(),
         };

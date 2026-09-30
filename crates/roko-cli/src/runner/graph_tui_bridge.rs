@@ -6,11 +6,13 @@
 //! lifecycle transitions to `DashboardEvent` publications so the TUI can
 //! observe Graph engine plan runs the same way regardless of flags.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use roko_core::dashboard_snapshot::TASK_OUTCOME_ACCEPTED_WITH_FAILURES;
+use roko_core::dashboard_snapshot::{
+    TASK_OUTCOME_ACCEPTED_WITH_FAILURES, TASK_OUTCOME_PASSED, TASK_OUTCOME_UNVERIFIED,
+};
 use roko_core::{LensScope, ObservableEvent, Signal, TelemetryEventSink};
 use roko_graph::cells::task_executor::TaskGateVerdict;
 use roko_graph::engine::{GraphOutput, NodeStatus};
@@ -145,6 +147,7 @@ impl GraphTuiBridge {
     // ── Node-level events (post-execution) ───────────────────────────
 
     /// Emit `TaskCompleted` after a graph node finishes (success or failure).
+    /// Without a gate verdict, a completed node is reported as unverified.
     ///
     /// Also updates the ETA estimate and publishes a `CriticalPathEtaUpdated`
     /// event so the TUI progress card shows a live remaining-time estimate.
@@ -153,7 +156,7 @@ impl GraphTuiBridge {
     }
 
     /// Emit `TaskCompleted` with an outcome that honours the node's gate
-    /// verdict, so a forced accept is never reported as a clean pass.
+    /// verdict: only a `passed` verdict is reported as a pass.
     pub fn node_completed_with_verdict(
         &self,
         plan_id: &str,
@@ -206,6 +209,10 @@ impl GraphTuiBridge {
     /// Poll a live `FlowHandle` and emit events for any nodes whose status
     /// has changed since the last poll.
     ///
+    /// Each completed node is reported with its gate verdict, looked up in
+    /// the map `gate_verdicts` returns (bug-7e1b6b). It is called once, and
+    /// only when some node finished since the last poll.
+    ///
     /// Returns the new status map for the next polling cycle.
     ///
     /// Completions are always published before starts so that, when a
@@ -218,6 +225,7 @@ impl GraphTuiBridge {
         previous: &HashMap<String, NodeStatus>,
         current: &HashMap<String, NodeStatus>,
         node_titles: &HashMap<String, String>,
+        gate_verdicts: impl FnOnce() -> BTreeMap<String, TaskGateVerdict>,
     ) -> Vec<(String, NodeStatus)> {
         // Collect transitions into two buckets so we can emit in the right
         // order regardless of HashMap iteration order.
@@ -239,11 +247,17 @@ impl GraphTuiBridge {
             }
         }
 
+        let verdicts = if completions.is_empty() {
+            BTreeMap::new()
+        } else {
+            gate_verdicts()
+        };
         let mut changes = Vec::new();
         // Emit completions first: in a serial DAG a node completing in this
         // tick is always the cause of any successor starting in the same tick.
         for (node_id, new_status) in completions {
-            self.node_completed(plan_id, node_id, new_status);
+            let verdict = verdicts.get(node_id).copied();
+            self.node_completed_with_verdict(plan_id, node_id, new_status, verdict);
             changes.push((node_id.clone(), new_status));
         }
         for (node_id, new_status) in starts {
@@ -270,14 +284,16 @@ impl GraphTuiBridge {
 
 /// Dashboard outcome for a finished node.
 ///
-/// A completed node whose gate verdict is a forced accept is reported as
-/// accepted-with-failures, never as `passed`.
+/// Only a completed node whose gate verdict is `passed` is reported as
+/// passed. A forced accept is accepted-with-failures, and a node that
+/// completed without a verify step judging it is unverified (bug-7e1b6b).
 fn node_outcome(status: NodeStatus, verdict: Option<TaskGateVerdict>) -> &'static str {
     match (status, verdict) {
+        (NodeStatus::Complete, Some(TaskGateVerdict::Passed)) => TASK_OUTCOME_PASSED,
         (NodeStatus::Complete, Some(TaskGateVerdict::ForcedAccept)) => {
             TASK_OUTCOME_ACCEPTED_WITH_FAILURES
         }
-        (NodeStatus::Complete, _) => "passed",
+        (NodeStatus::Complete, Some(TaskGateVerdict::Unverified) | None) => TASK_OUTCOME_UNVERIFIED,
         (NodeStatus::Failed, _) => "failed",
         (NodeStatus::Skipped, _) => "skipped",
         (NodeStatus::ConditionSkipped, _) => "condition-skipped",
@@ -482,10 +498,13 @@ mod tests {
             outcomes.get("T02").map(String::as_str),
             Some(TASK_OUTCOME_ACCEPTED_WITH_FAILURES)
         );
-        assert_eq!(
-            node_outcome(NodeStatus::Complete, Some(TaskGateVerdict::Unverified)),
-            "passed"
-        );
+        // bug-7e1b6b: a task no verify step judged is unverified, not passed.
+        for verdict in [Some(TaskGateVerdict::Unverified), None] {
+            assert_eq!(
+                node_outcome(NodeStatus::Complete, verdict),
+                TASK_OUTCOME_UNVERIFIED
+            );
+        }
     }
 
     #[test]
@@ -538,7 +557,8 @@ mod tests {
         .into_iter()
         .collect();
 
-        let changes = bridge.poll_status_changes("plan-1", &previous, &current, &titles);
+        let changes =
+            bridge.poll_status_changes("plan-1", &previous, &current, &titles, BTreeMap::new);
         assert_eq!(changes.len(), 2);
 
         let mut events = Vec::new();
@@ -547,6 +567,57 @@ mod tests {
         }
         // T01: Pending→Running = TaskStarted, T02: Running→Complete = TaskCompleted.
         assert_eq!(events.len(), 2);
+    }
+
+    /// bug-7e1b6b: each task that finishes is reported with the outcome its
+    /// gate verdict earns, so only a verified pass counts as passed.
+    #[test]
+    fn poll_reports_each_completion_with_its_gate_verdict() {
+        let (hub, bridge) = make_bridge();
+        let mut sub = hub.subscribe_events_from(0);
+        let running: HashMap<String, NodeStatus> = ["T1", "T2", "T3", "T4"]
+            .into_iter()
+            .map(|id| (id.to_string(), NodeStatus::Running))
+            .collect();
+        let finished: HashMap<String, NodeStatus> = [
+            ("T1", NodeStatus::Complete),
+            ("T2", NodeStatus::Complete),
+            ("T3", NodeStatus::Failed),
+            ("T4", NodeStatus::Skipped),
+        ]
+        .into_iter()
+        .map(|(id, status)| (id.to_string(), status))
+        .collect();
+        let verdicts = || BTreeMap::from([("T1".to_string(), TaskGateVerdict::Passed)]);
+
+        // Nothing finished yet: the verdicts are not read.
+        bridge.poll_status_changes("plan-1", &running, &running, &HashMap::new(), || {
+            panic!("no node finished")
+        });
+        bridge.poll_status_changes("plan-1", &running, &finished, &HashMap::new(), verdicts);
+
+        let mut outcomes = BTreeMap::new();
+        while let Ok(envelope) = sub.live.try_recv() {
+            if let roko_core::DashboardEvent::TaskCompleted {
+                task_id, outcome, ..
+            } = envelope.payload
+            {
+                outcomes.insert(task_id, outcome);
+            }
+        }
+        let outcomes: Vec<_> = outcomes
+            .iter()
+            .map(|(id, o)| (id.as_str(), o.as_str()))
+            .collect();
+        assert_eq!(
+            outcomes,
+            [
+                ("T1", "passed"),
+                ("T2", TASK_OUTCOME_UNVERIFIED),
+                ("T3", "failed"),
+                ("T4", "skipped"),
+            ]
+        );
     }
 
     #[test]

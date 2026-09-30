@@ -39,6 +39,7 @@ describe('glyphStateForTask', () => {
       ['passed',                 'done'],
       ['failed',                 'failed'],
       ['accepted_with_failures', 'accepted'],
+      ['unverified',             'unchecked'],
       ['skipped',                'skipped'],
       ['cancelled',              'skipped'],
       ['pending',                'pending'],

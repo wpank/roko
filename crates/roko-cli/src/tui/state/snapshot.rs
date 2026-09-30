@@ -1348,6 +1348,8 @@ fn snapshot_task_status(task: &roko_core::dashboard_snapshot::TaskState) -> Task
         Some(TaskOutcomeClass::Failed) => TaskStatus::Failed,
         Some(TaskOutcomeClass::AcceptedWithFailures) => TaskStatus::AcceptedWithFailures,
         Some(TaskOutcomeClass::Passed) => TaskStatus::Done,
+        Some(TaskOutcomeClass::Unverified) => TaskStatus::Unverified,
+        Some(TaskOutcomeClass::Skipped) => TaskStatus::Skipped,
         None => TaskStatus::from(task.phase.as_str()),
     }
 }

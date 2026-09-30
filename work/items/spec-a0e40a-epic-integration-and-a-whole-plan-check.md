@@ -113,8 +113,8 @@ Order: 1 and 2 now. Then 3 → 4 → 5 → 6 → 7, one at a time, because they 
 - [x] bug-8835bc: A failed rich-topology plan gate never fails its task: PlanGateCell returns Ok, and the gate's success edge is EdgeCondition::Success
 - [x] gap-6daad9: plan_runner injects no CellResources, so --rich-topology still stops at every gate
 - [x] bug-8cf581: Each delivery's regression checkout gets a new temporary path, so workspace crates rebuild every delivery and leave stale artifacts
-- [ ] bug-4862cf: The rich-topology gate adapter uses GatesConfig::default(), not the run's [gates]
-- [ ] bug-9c5973: Each rich-topology rung request re-runs the gate pipeline up to that rung, so compile runs three times per gate
+- [x] bug-4862cf: The rich-topology gate adapter uses GatesConfig::default(), not the run's [gates]
+- [x] bug-9c5973: Each rich-topology rung request re-runs the gate pipeline up to that rung, so compile runs three times per gate
       tasks that break together
 - [ ] The epic's `[[verify]]` command (tests C3 and C4) passes on the merged branch.
 

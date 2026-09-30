@@ -2,7 +2,7 @@
 id = "gap-9eb1e1"
 kind = "gap"
 title = "A --fresh rerun of a task whose correct output is already in the tree fails as pre_verify:no_changes"
-status = "open"
+status = "done"
 triage = "verified"
 severity = "p2"
 goal = "golden-path"
@@ -11,6 +11,7 @@ subsystem = ["roko-cli/graph_task_dispatch"]
 created = 2026-09-30
 updated = 2026-09-30
 last_verified = 2026-09-30
+last_verified_rev = "8ad7daa10"
 source = "tmp/cybernetic-harness/workstreams/PROGRESS.md"
 discovered_from = "wk-runstate report on gap-568056 (2026-09-30)"
 anchors = ["crates/roko-cli/src/graph_task_dispatch/red_flags.rs"]
@@ -20,6 +21,11 @@ links = { depends_on = [], blocks = [], related = ["gap-b72761"], supersedes = [
 
 [[verify]]
 command = "grep -rqw 'fn a_fresh_rerun_of_a_satisfied_task_is_not_rejected_as_no_changes' crates/roko-cli/src/ && cargo test -p roko-cli --lib a_fresh_rerun_of_a_satisfied_task_is_not_rejected_as_no_changes"
+
+[closed]
+at = 2026-09-30
+by = "coordinator (session 7622b882)"
+evidence = "Merged in 8ad7daa10. An attempt that changes nothing at a task with authored verify steps runs them on the unchanged tree; a pass settles as the new AlreadySatisfied verdict (no blame, null learning label, counted apart from passed), a failure is still rejected as pre_verify:no_changes with the verify summary. Batch 18: gated together with taskdef's branch on 2d93c11db (check, clippy -p roko-cli -p roko-graph -p roko-learn -D warnings clean; lib tests roko-cli 3247 with failures only in taskdef's new streaming test (sent back) and the two writer/WAL flakes fixed by bug-779ae7, roko-graph 476, roko-learn 1204; --test attempt_diff_canary (C5) 2 passed), then re-checked without taskdef on 31285d1c4 (same code as MAIN): cargo check --workspace --tests and nightly fmt clean; the items' tests pass. Verify: a_fresh_rerun_of_a_satisfied_task_is_not_rejected_as_no_changes passes; C5 (with a --fresh rerun expecting already_satisfied) passes."
 +++
 
 ## Problem

@@ -236,6 +236,9 @@ pub struct GraphTaskDispatcher {
     /// The run's conductor, which supervises running attempts (see
     /// [`Self::with_conductor`]).
     conductor: Option<supervision::GraphConductor>,
+    /// Plans whose verified tasks wait for a person's approval before they
+    /// are accepted (gap-0d64d5, [`Self::hold_for_approval`]).
+    approval_plans: parking_lot::Mutex<std::collections::HashSet<String>>,
 }
 
 impl GraphTaskDispatcher {
@@ -277,6 +280,7 @@ impl GraphTaskDispatcher {
             in_flight: sibling_settle::InFlightTasks::default(),
             diff_bases: diff_snapshot::DiffBases::default(),
             conductor: None,
+            approval_plans: parking_lot::Mutex::default(),
         }
     }
 
@@ -387,6 +391,18 @@ impl GraphTaskDispatcher {
         checkpoint: GraphCostLedgerCheckpoint,
     ) -> Result<()> {
         self.budget_ledger.attach_checkpoint(plan_id, checkpoint)
+    }
+
+    /// Hold each verified task of `plan_id` for a person's approval before
+    /// it is accepted onto the plan branch (gap-0d64d5, `[meta] approval =
+    /// "per_task"`). See [`Self::await_review`].
+    pub fn hold_for_approval(&self, plan_id: &str) {
+        self.approval_plans.lock().insert(plan_id.to_string());
+    }
+
+    /// Whether `plan_id`'s verified tasks wait for approval.
+    fn holds_for_approval(&self, plan_id: &str) -> bool {
+        self.approval_plans.lock().contains(plan_id)
     }
 
     /// Keep `plan_id`'s pending retry feedback in `path`, beside its Graph
@@ -1469,7 +1485,15 @@ impl TaskDispatcher for GraphTaskDispatcher {
                 handed_on = Some(lease.clone());
             } else {
                 accepted = self
-                    .accept_attempt(spec, &task, &settled, verdict, provider.as_ref(), lease)
+                    .accept_attempt(
+                        spec,
+                        &task,
+                        &settled,
+                        verdict,
+                        provider.as_ref(),
+                        lease,
+                        ctx,
+                    )
                     .await?;
             }
         }

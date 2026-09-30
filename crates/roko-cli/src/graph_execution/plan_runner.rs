@@ -848,6 +848,22 @@ async fn run_graph_plan_body(
     // Pin planner-written acceptance tests outside the working tree and run
     // them first, before anything is dispatched (gap-d14a43).
     crate::task_accept::pin_plans(&mut plans, workdir)?;
+    // A plan that holds each verified task for a person's approval
+    // (gap-0d64d5) needs per-task worktrees: the hold sits between a task's
+    // verified attempt and its acceptance onto the plan branch. The rich
+    // topology's plan gate accepts on its own, so it cannot hold.
+    let held_plans: Vec<String> = plans
+        .iter()
+        .filter(|plan| plan.tasks.meta.holds_each_task_for_approval())
+        .map(|plan| plan.id.clone())
+        .collect();
+    if !held_plans.is_empty() && (!worktree_per_task || rich_topology) {
+        anyhow::bail!(
+            "plan(s) {} hold each task for approval ([meta] approval = \"per_task\"), which \
+             needs --worktree-per-task and the default topology",
+            held_plans.join(", ")
+        );
+    }
     // Validate the complete selected set before initializing extensions or
     // launching a provider. This makes missing, incomplete, and cyclic
     // cross-plan dependencies fail closed without partially executing the
@@ -1135,6 +1151,9 @@ async fn run_graph_plan_body(
         dispatcher_builder = dispatcher_builder.with_conductor(conductor, ring);
     }
     let graph_task_dispatcher = Arc::new(dispatcher_builder);
+    for plan_id in &held_plans {
+        graph_task_dispatcher.hold_for_approval(plan_id);
+    }
     let conductor_stop = Arc::new(parking_lot::Mutex::new(
         None::<crate::graph_task_dispatch::ConductorStop>,
     ));
@@ -4501,6 +4520,37 @@ max_retries = 0
             !plan_branch.status.success(),
             "a failed attempt was accepted"
         );
+    }
+
+    /// gap-0d64d5: a plan that holds its tasks for approval needs per-task
+    /// worktrees and the default topology, whose acceptance the hold sits
+    /// before; otherwise the run is refused before anything starts.
+    #[tokio::test]
+    async fn approval_needs_worktrees_and_the_default_topology() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let plan_dir = dir.path().join("plans").join("01-held");
+        std::fs::create_dir_all(&plan_dir).expect("plan dir");
+        std::fs::write(
+            plan_dir.join("tasks.toml"),
+            "[meta]\nplan = \"01-held\"\napproval = \"per_task\"\n\n[[task]]\nid = \"T1\"\n\
+             title = \"Write held.txt\"\nfiles = [\"held.txt\"]\n\n[[task.verify]]\n\
+             phase = \"structural\"\n\
+             command = \"test -f held.txt\"\n",
+        )
+        .expect("tasks.toml");
+        for (worktree_per_task, rich_topology) in [(false, false), (true, true)] {
+            let error = run_graph_plan(GraphPlanRunParams {
+                worktree_per_task,
+                rich_topology,
+                ..worktree_run_params(dir.path())
+            })
+            .await
+            .expect_err("the run is refused");
+            assert!(
+                error.to_string().contains("hold each task for approval"),
+                "{error}"
+            );
+        }
     }
 
     /// The rich topology's gates judge each attempt's own worktree, so a run

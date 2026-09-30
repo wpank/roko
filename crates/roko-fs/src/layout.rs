@@ -160,6 +160,25 @@ impl RokoLayout {
         self.root.join("state")
     }
 
+    /// `.roko/state/reviews.jsonl` — review decisions (approve, reject,
+    /// skip) on tasks, one JSON object per line, newest last.
+    #[must_use]
+    pub fn reviews_log(&self) -> PathBuf {
+        self.state_dir().join("reviews.jsonl")
+    }
+
+    /// `.roko/state/review-holds/<plan>/<task>.json` — a verified attempt
+    /// of `task_id` held for a person's approval before it is accepted,
+    /// with what it changed (gap-0d64d5). It exists only while the attempt
+    /// waits. Characters outside `[A-Za-z0-9._-]` in either id become `_`.
+    #[must_use]
+    pub fn review_hold(&self, plan_id: &str, task_id: &str) -> PathBuf {
+        self.state_dir()
+            .join("review-holds")
+            .join(path_component(plan_id))
+            .join(format!("{}.json", path_component(task_id)))
+    }
+
     /// `.roko/config/` — config.toml, presets.
     #[must_use]
     pub fn config_dir(&self) -> PathBuf {
@@ -700,6 +719,26 @@ impl RokoLayout {
         let temporary = self.root.join("VERSION.tmp");
         tokio::fs::write(&temporary, version.as_u32().to_string()).await?;
         tokio::fs::rename(temporary, self.version_file()).await
+    }
+}
+
+/// `id` as one path component: characters outside `[A-Za-z0-9._-]` become
+/// `_`, and an empty or dot-only result becomes `_`.
+fn path_component(id: &str) -> String {
+    let safe: String = id
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.') {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if safe.is_empty() || safe.chars().all(|character| character == '.') {
+        "_".to_string()
+    } else {
+        safe
     }
 }
 

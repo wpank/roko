@@ -2246,6 +2246,28 @@ The legacy Runner-v2 engine has been removed. --engine legacy is accepted but ex
         #[arg(long)]
         workdir: Option<PathBuf>,
     },
+    /// Approve or reject a task held for review (`[meta] approval =
+    /// "per_task"`). The plan run holding it merges the task on approval; a
+    /// rejection fails the attempt, and the note is the next attempt's
+    /// feedback.
+    Review {
+        /// Plan id.
+        plan_id: String,
+        /// Task id.
+        task_id: String,
+        /// Approve the task's held attempt.
+        #[arg(long, conflicts_with = "reject", required_unless_present = "reject")]
+        approve: bool,
+        /// Reject the task's held attempt.
+        #[arg(long)]
+        reject: bool,
+        /// The reviewer's note, which a rejected task's next attempt gets.
+        #[arg(long, default_value = "")]
+        note: String,
+        /// Working directory.
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
     /// Regenerate an existing plan from its source PRD / plan extract.
     Regenerate {
         /// Path to the plan directory (containing tasks.toml).
@@ -2333,6 +2355,7 @@ impl PlanCmd {
             | Self::Resume { .. }
             | Self::Cancel { .. }
             | Self::Retry { .. }
+            | Self::Review { .. }
             | Self::Status { .. } => false,
             Self::Run { dry_run, .. } | Self::Regenerate { dry_run, .. } => !dry_run,
             Self::Create { .. } | Self::Generate { .. } | Self::Shorthand(_) => true,

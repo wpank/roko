@@ -533,6 +533,80 @@ def test_vb_run_applies_the_chosen_disturbance_profile(places, tmp_path, monkeyp
         ("harder_mix", {"levels": [5]})]
     assert [one.kind for one in disturb.load(spec)] == ["budget_cut", "provider_fault", "harder_mix"]
 
+
+def test_convention_flip_renders_a_v2_latent(places, tmp_path):
+    # gap-98516b: F1 and F4 render latent v2, so a convention_flip spec runs. The tasks from its start_at on are
+    # rendered with the flipped convention, the earlier ones with v1, and each record says which it got.
+    stream = tmp_path / "flip.toml"
+    stream.write_text('schema_version = "vb.stream/1"\n\n[stream]\nid = "flip"\nspec_variant = "precise"\n'
+                      'families = { F1 = "families/f1_pyconv", F4 = "families/f4_kvtool" }\n'
+                      'instances = ["F1-l1-0001", "F4-l1-0001", "F1-l2-0001", "F4-l2-0001"]\n')
+    spec = tmp_path / "flip-spec.toml"
+    spec.write_text('schema_version = "vb.disturbance/1"\n\n[[disturbance]]\nkind = "convention_flip"\nstart_at = 3\n')
+    with StubServer(lambda body: bash("echo VB_SUBMIT")) as stub:
+        assert vb.main(["run", "--experiment", "TEST-FLIP", "--run-id", "run-1", "--stream", str(stream), "--arm",
+                        "cheap_direct", "--model", "gpt-oss-120b", "--seeds", "1", "--provider-url", stub.url,
+                        "--disturbance", str(spec), "--results", str(places["results"]), "--work",
+                        str(places["work"]), "--secret-file", str(places["secret"])]) == 0
+    out = places["results"] / "TEST-FLIP" / "run-1"
+    records = read_jsonl(out / "records.jsonl")
+    assert all(validate.validate("run-record", record) == [] for record in records)
+    rows = {record["stream"]["position"]: record for record in records}
+    assert {position: (row["task"]["latent_version"], row["stream"]["perturbations_active"])
+            for position, row in rows.items()} == {1: ("v1", []), 2: ("v1", []), 3: ("v2", ["convention_flip"]),
+                                                   4: ("v2", ["convention_flip"])}
+    assert all(row["vs"]["label"] == 0 and row["vs"]["checks"]["hidden"] == 0 for row in records), \
+        "the truth suite judged every task, v2 ones included, and the agent solved none"
+    # Each task's generator stated the convention it rendered: v1's before the flip, v2's from it on.
+    stated = {("F1", "v1"): "ERROR_CODES", ("F1", "v2"): "app/registry.toml", ("F4", "v1"): "--apply",
+              ("F4", "v2"): "--yes"}
+    for row in records:
+        family, latent = row["task"]["family"], row["task"]["latent_version"]
+        manifest = out / "private" / f"{row['task']['instance_id']}.s1" / materialize.TASK_DIR / "task.json"
+        recoverability = json.dumps(json.loads(manifest.read_text())["recoverability"])
+        other = "v2" if latent == "v1" else "v1"
+        assert stated[family, latent] in recoverability and stated[family, other] not in recoverability, row["task"]
+    config = json.loads((out / "manifest.json").read_text())["config"]
+    assert [(one["kind"], one["start_at"], one["params"]) for one in config["disturbances"]] == [
+        ("convention_flip", 3, {"latent": "v2"})]
+
+
+def test_flaky_verify_is_injected_through_the_visible_verify_wrapper(places, tmp_path):
+    # gap-4e8795: in a run with flaky_verify, the direct loop runs the agent's commands through the visible-verify
+    # wrapper. At the position the disturbance covers (p = 1), each run of the visible check fails as a killed check
+    # would; elsewhere p is 0 and the wrapper only counts. The census's own rerun never meets a flake.
+    visible = "python3 -m unittest discover -s tests/visible"
+    script = [bash(CORRECT, "Implement clamp."), bash(visible, "Run the visible check."),
+              bash(f"{visible} && echo again", "Once more."), bash("git status --short", "Look."),
+              bash("echo VB_SUBMIT")]
+    spec = tmp_path / "flaky.toml"
+    spec.write_text('schema_version = "vb.disturbance/1"\n\n[[disturbance]]\nkind = "flaky_verify"\nstart_at = 2\n'
+                    'end_at = 2\nseed = 11\nparams = { p = 1.0 }\n')
+    with StubServer(scripted({"": script})) as stub:
+        assert run_vb(places, stub.url, "--disturbance", str(spec), "--transcripts") == 0
+    out = run_dir(places)
+    rows = {record["stream"]["position"]: record for record in read_jsonl(out / "records.jsonl")}
+    assert {position: row["stream"]["perturbations_active"] for position, row in rows.items()} == {
+        1: [], 2: ["flaky_verify"]}
+    seen = [(row["visible"]["verify_runs"], row["visible"]["flake_injected"],
+             [flake["run"] for flake in row["visible"]["flakes"]]) for _, row in sorted(rows.items())]
+    assert seen == [(2, False, []), (2, True, [1, 2])]
+    for position, row in rows.items():
+        assert validate.validate("run-record", row) == []
+        # The census reran the visible check itself: the flakes never reached the label.
+        assert (row["visible"]["passed"], row["vs"]["label"]) == (True, 1), position
+        observed = [event for event in json.loads((out / row["provenance"]["transcript_ref"]).read_text())
+                    if "returncode" in event]
+        codes = {event["command"]: event["returncode"] for event in observed}
+        assert codes["git status --short"] == 0, "commands that run no visible check pass straight through"
+        flaked = position == 2
+        assert [codes[visible], codes[f"{visible} && echo again"]] == ([137, 137] if flaked else [0, 0])
+        assert ("Killed" in json.dumps(observed)) == flaked
+    config = json.loads((out / "manifest.json").read_text())["config"]
+    assert [(one["kind"], one["seed"], one["params"]) for one in config["disturbances"]] == [
+        ("flaky_verify", 11, {"p": 1.0})]
+
+
 def test_agent_env_is_an_allowlist(tmp_path, monkeypatch):
     for name, value in {"VB_SECRET_FILE": "/somewhere", "CEREBRAS_API_KEY": FAKE_KEY, "OPENAI_API_KEY": FAKE_KEY,
                         "GITHUB_TOKEN": FAKE_KEY, "ROKO_CONFIG": "/x/roko.toml"}.items():

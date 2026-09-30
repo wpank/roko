@@ -287,7 +287,8 @@ pub(crate) async fn run_anthropic_tool_loop(
         Arc::new(AcpToolCancelToken(cancel_token.clone())),
     )
     .with_immune_root(workdir)
-    .with_taint_level(CamelTaintLevel::External);
+    .with_taint_level(CamelTaintLevel::External)
+    .with_env_passthrough(roko_config.agent.env_passthrough.clone());
     tool_context.allowed_tools = allowed_tools;
 
     let output = tool_loop
@@ -698,6 +699,7 @@ pub(crate) async fn run_openai_compat_cognitive_task(
             tool_capabilities,
             None, // single-agent chat path: all tools allowed
             role,
+            &roko_config.agent.env_passthrough,
             cancel_token.clone(),
             event_sender.clone(),
         )
@@ -975,6 +977,8 @@ pub(crate) async fn run_openai_compat_builtin_tool_loop(
     allowed_tools: Option<Vec<String>>,
     // Agent role for AgentContract builtin tool permission checks.
     role: &str,
+    // `[agent] env_passthrough`: variables the `bash` tool may inherit.
+    env_passthrough: &[String],
     cancel_token: CancelToken,
     event_sender: mpsc::Sender<CognitiveEvent>,
 ) -> Result<bool> {
@@ -1052,7 +1056,8 @@ pub(crate) async fn run_openai_compat_builtin_tool_loop(
         Arc::new(AcpToolCancelToken(cancel_token.clone())),
     )
     .with_immune_root(workdir)
-    .with_taint_level(CamelTaintLevel::External);
+    .with_taint_level(CamelTaintLevel::External)
+    .with_env_passthrough(env_passthrough.to_vec());
     tool_context.allowed_tools = allowed_tools;
 
     let output = tool_loop

@@ -3,6 +3,7 @@
 //! Parses `cargo check --message-format=json` output and classifies errors
 //! into categories that agents can act on programmatically.
 
+use roko_core::Verdict;
 use serde::{Deserialize, Serialize};
 
 /// Category of compile error.
@@ -90,20 +91,27 @@ pub enum GateFailureKind {
     Resource,
     /// The verification contract/script/plan shape needs repair before retrying.
     Structural,
+    /// The gate ran out of time before its check finished.
+    ///
+    /// A re-run with more time, or a faster check, may pass.
+    Timeout,
 }
 
 impl GateFailureKind {
     /// Whether this failure kind can be retried automatically.
     #[must_use]
     pub const fn is_retryable(&self) -> bool {
-        matches!(self, Self::Transient | Self::Permanent | Self::Structural)
+        matches!(
+            self,
+            Self::Transient | Self::Permanent | Self::Structural | Self::Timeout
+        )
     }
 
     /// Cooldown before retry, in seconds.
     #[must_use]
     pub const fn retry_cooldown_secs(&self) -> u64 {
         match self {
-            Self::Transient => 2,
+            Self::Transient | Self::Timeout => 2,
             Self::Permanent | Self::Resource => 0,
             Self::Structural => 5,
         }
@@ -233,6 +241,31 @@ impl GateFailureClassification {
         self.duration_ms = Some(duration_ms);
         self
     }
+
+    /// Record that the gate ran out of time.
+    ///
+    /// The failure is a [`GateFailureKind::Timeout`], whatever its output says.
+    #[must_use]
+    pub fn timed_out(mut self) -> Self {
+        self.failure_kind = GateFailureKind::Timeout;
+        self.retry_policy = GateRetryPolicy::from(&self.failure_kind);
+        self
+    }
+}
+
+/// Whether `verdict` failed because its gate ran out of time.
+///
+/// Its error digest is a failure classification of kind
+/// [`GateFailureKind::Timeout`], as [`crate::ShellGate`] records a command it
+/// stopped at its timeout.
+#[must_use]
+pub fn verdict_timed_out(verdict: &Verdict) -> bool {
+    !verdict.passed
+        && verdict
+            .error_digest
+            .as_deref()
+            .and_then(|digest| serde_json::from_str::<GateFailureClassification>(digest).ok())
+            .is_some_and(|classification| classification.failure_kind == GateFailureKind::Timeout)
 }
 
 /// Summary of all compile errors from a build.
@@ -1035,6 +1068,36 @@ error[E0308]: mismatched types
         );
         assert_eq!(structural.failure_kind, GateFailureKind::Structural);
         assert!(structural.retry_policy.regenerate_verify);
+    }
+
+    #[test]
+    fn a_gate_that_ran_out_of_time_is_a_timeout_whatever_its_output_says() {
+        // An authored `fail_msg` can stand in for the gate's own reason.
+        let timed_out = classify_gate_failure("graph-verify", "verify failed").timed_out();
+        assert_eq!(timed_out.failure_kind, GateFailureKind::Timeout);
+        assert!(timed_out.retry_policy.retryable);
+        assert!(!timed_out.retry_policy.generate_reflection);
+        let record =
+            GateFailureRecord::from_classification("plan", "T1", "graph-verify", 5, &timed_out);
+        let json = serde_json::to_value(&record).expect("serialize");
+        assert_eq!(json["failure_kind"], "timeout");
+
+        let timed_out_digest = render_failure_classification(&timed_out);
+        let failed = |digest: String| {
+            Verdict::fail("verify[0]", "timed out after 1500 ms").with_error_digest(digest)
+        };
+        assert!(verdict_timed_out(&failed(timed_out_digest.clone())));
+        // A timeout the output only mentions is not the gate's own.
+        let mentioned = classify_gate_failure("graph-verify", "timed out after 1500 ms");
+        assert_eq!(mentioned.failure_kind, GateFailureKind::Transient);
+        assert!(!verdict_timed_out(&failed(render_failure_classification(
+            &mentioned
+        ))));
+        assert!(!verdict_timed_out(&failed(
+            "not a classification".to_string()
+        )));
+        let passed = Verdict::pass("verify[0]").with_error_digest(timed_out_digest);
+        assert!(!verdict_timed_out(&passed));
     }
 
     #[test]

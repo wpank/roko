@@ -16,6 +16,14 @@
 //! That is the contract `scripts/run_evidence.py --require-events` checks for
 //! `./dev.sh fast`. A `log.lagged` line counts events the recorder missed
 //! because it fell behind the hub's broadcast buffer.
+//!
+//! The log holds no agent or gate output text, because evidence bundles keep
+//! derived data only. Each text field is replaced by its size and hash:
+//! `agent_output` gives `content_bytes`, `content_lines` and `content_sha256`
+//! (plus `stream_kind` for a TUI stream record), and streamed gate and task
+//! output lines are replaced the same way. A `gate_result` also keeps
+//! `output_text_excerpt`, the redacted last 240 bytes of its output, which
+//! end with how a failed step ended (`✗ timed out after 600000 ms`).
 
 use std::collections::BTreeMap;
 use std::fs::File;
@@ -28,13 +36,16 @@ use anyhow::{Context as _, anyhow};
 use chrono::{DateTime, Utc};
 use roko_core::DashboardEvent;
 use roko_core::dashboard_snapshot::PlanSetEntry;
+use roko_core::obs::LogScrubber;
 use roko_runtime::event_bus::Envelope;
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 use tokio::sync::broadcast::error::{RecvError, TryRecvError};
 use tokio::sync::oneshot;
 
 use super::plan_runner::{GraphPlanRunParams, PlanRunInterrupt, run_graph_plan};
 use crate::exit_codes::EXIT_SUCCESS;
+use crate::runner::tui_bridge::STREAM_RECORD_PREFIX;
 use crate::runner::types::{RunOutcome, RunnerEvent};
 use crate::state_hub::StateHub;
 
@@ -164,13 +175,11 @@ impl RunEventLog {
             std::fs::create_dir_all(parent)?;
         }
         let out = BufWriter::new(File::create(path)?);
-        let run_id = std::env::var("ROKO_EVIDENCE_RUN_ID")
-            .ok()
-            .filter(|id| !id.trim().is_empty())
-            .unwrap_or_else(|| format!("graph-{}", uuid::Uuid::new_v4()));
+        let run_id = evidence_run_id().unwrap_or_else(|| format!("graph-{}", uuid::Uuid::new_v4()));
         let writer = EventLogWriter {
             out,
             run_id,
+            scrubber: output_scrubber(),
             started_at: Utc::now(),
             resumed,
             wrote_start: false,
@@ -195,6 +204,16 @@ impl RunEventLog {
             None => Ok(()),
         }
     }
+}
+
+/// The evidence collector's run id (`ROKO_EVIDENCE_RUN_ID`) when a run is
+/// recorded under `scripts/run_evidence.py`. The run's `--log-file` lines and
+/// its `status.json` carry it, so the collector can tell them from other
+/// runs' records.
+pub(crate) fn evidence_run_id() -> Option<String> {
+    std::env::var("ROKO_EVIDENCE_RUN_ID")
+        .ok()
+        .filter(|id| !id.trim().is_empty())
 }
 
 /// One hub event.
@@ -245,6 +264,8 @@ struct RunEndLine<'a> {
 struct EventLogWriter {
     out: BufWriter<File>,
     run_id: String,
+    /// Redacts gate output excerpts.
+    scrubber: LogScrubber,
     started_at: DateTime<Utc>,
     resumed: bool,
     wrote_start: bool,
@@ -274,7 +295,7 @@ impl EventLogWriter {
                     _ => {}
                 }
                 self.events += 1;
-                let event = serde_json::to_value(event).unwrap_or_default();
+                let event = logged_event(event, &self.scrubber);
                 let kind = event
                     .get("type")
                     .and_then(serde_json::Value::as_str)
@@ -375,6 +396,115 @@ fn write_line<T: Serialize>(
 
 fn unix_millis(at: DateTime<Utc>) -> u64 {
     u64::try_from(at.timestamp_millis()).unwrap_or(0)
+}
+
+// ── Output scrubbing ─────────────────────────────────────────────────────
+
+/// How much of a gate's output the log keeps, in bytes: its redacted tail,
+/// which holds the closing `✗` line the evidence collector reads timeouts
+/// from.
+const GATE_OUTPUT_EXCERPT_BYTES: usize = 240;
+
+/// `event` as it is logged: its JSON, with every agent, gate and task output
+/// text replaced by derived fields (see the module docs).
+fn logged_event(event: &DashboardEvent, scrubber: &LogScrubber) -> serde_json::Value {
+    let mut value = serde_json::to_value(event).unwrap_or_default();
+    if let Some(fields) = value.as_object_mut() {
+        match event {
+            DashboardEvent::AgentOutput { content, .. } => {
+                replace_with_digest(fields, "content", content);
+                if let Some(kind) = stream_record_kind(content) {
+                    fields.insert("stream_kind".to_string(), serde_json::json!(kind));
+                }
+            }
+            DashboardEvent::GateResult {
+                output_text: Some(text),
+                ..
+            } => {
+                replace_with_digest(fields, "output_text", text);
+                fields.insert(
+                    "output_text_excerpt".to_string(),
+                    serde_json::json!(gate_output_excerpt(text, scrubber)),
+                );
+            }
+            DashboardEvent::GateOutputLine { line, .. } => {
+                replace_with_digest(fields, "line", line);
+            }
+            DashboardEvent::TaskOutputAppended { lines, .. } => {
+                replace_with_digest(fields, "lines", &lines.join("\n"));
+            }
+            _ => {}
+        }
+    }
+    value
+}
+
+/// Replace the text field `name` by `<name>_bytes`, `<name>_lines` and
+/// `<name>_sha256`.
+fn replace_with_digest(
+    fields: &mut serde_json::Map<String, serde_json::Value>,
+    name: &str,
+    text: &str,
+) {
+    fields.remove(name);
+    fields.insert(format!("{name}_bytes"), serde_json::json!(text.len()));
+    fields.insert(
+        format!("{name}_lines"),
+        serde_json::json!(text.lines().count()),
+    );
+    fields.insert(
+        format!("{name}_sha256"),
+        serde_json::json!(sha256_hex(text)),
+    );
+}
+
+fn sha256_hex(text: &str) -> String {
+    format!("{:x}", Sha256::digest(text.as_bytes()))
+}
+
+/// The `kind` (`text`, `tool_start`, `tool_result`, ...) of a TUI stream
+/// record, when `content` is one.
+fn stream_record_kind(content: &str) -> Option<String> {
+    let record = content.strip_prefix(STREAM_RECORD_PREFIX)?;
+    let record: serde_json::Value = serde_json::from_str(record).ok()?;
+    record.get("kind")?.as_str().map(str::to_string)
+}
+
+/// The redacted last [`GATE_OUTPUT_EXCERPT_BYTES`] of a gate's output,
+/// marked with a leading `…` when cut. Redaction runs first, so a cut never
+/// leaves part of a secret the scrubber would have matched whole.
+fn gate_output_excerpt(text: &str, scrubber: &LogScrubber) -> String {
+    let redacted = scrubber.scrub(text.trim_end());
+    let mut start = redacted.len().saturating_sub(GATE_OUTPUT_EXCERPT_BYTES);
+    while !redacted.is_char_boundary(start) {
+        start += 1;
+    }
+    if start == 0 {
+        redacted
+    } else {
+        format!("…{}", &redacted[start..])
+    }
+}
+
+/// The scrubber for gate output excerpts: the built-in secret patterns,
+/// `<secret name>=<value>` assignments, and the value of every
+/// secret-named environment variable, which is what the evidence collector's
+/// own redaction covers.
+fn output_scrubber() -> LogScrubber {
+    let scrubber = LogScrubber::new();
+    let _ = scrubber.add_pattern_with_replacement(
+        r"(?i)((?:api[_-]?key|password|private[_-]?key|secret|token)\s*[=:]\s*)[^\s,;]+",
+        "${1}[REDACTED]",
+    );
+    for (name, value) in std::env::vars_os() {
+        if let (Ok(name), Ok(value)) = (name.into_string(), value.into_string())
+            && value.len() >= 8
+            && roko_core::child_env::is_secret_env_name(&name)
+        {
+            let _ = scrubber.add_literal_value(&value, &name);
+        }
+    }
+    scrubber
 }
 
 #[cfg(test)]
@@ -481,5 +611,149 @@ mod tests {
         let lines = read_lines(&path);
         assert_eq!(lines[1]["outcome"], "cancelled");
         assert_eq!(lines[1]["exit_code"], 143);
+    }
+
+    /// The `event` objects of the log's `dashboard.<kind>` lines.
+    fn logged_events<'a>(lines: &'a [serde_json::Value], kind: &str) -> Vec<&'a serde_json::Value> {
+        let line_type = format!("dashboard.{kind}");
+        lines
+            .iter()
+            .filter(|line| line["type"] == line_type)
+            .map(|line| &line["event"])
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn log_file_never_copies_agent_output_text() {
+        const CANARY: &str = "canary-4c4eea: text only the agent printed";
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("events.jsonl");
+        let hub = crate::state_hub::shared_state_hub();
+        let log = RunEventLog::open(&path, &hub, false).expect("open log");
+
+        let sender = hub.sender();
+        sender.publish(DashboardEvent::AgentOutput {
+            agent_id: "a1".to_string(),
+            plan_id: "p1".to_string(),
+            task_id: "T1".to_string(),
+            attempt: 2,
+            content: CANARY.to_string(),
+        });
+        let record = serde_json::json!({
+            "kind": "tool_result",
+            "payload": {"tool_id": "call-1", "output": CANARY},
+        });
+        let record = format!("{STREAM_RECORD_PREFIX}{record}");
+        sender.publish(DashboardEvent::AgentOutput {
+            agent_id: "a1".to_string(),
+            plan_id: "p1".to_string(),
+            task_id: "T1".to_string(),
+            attempt: 2,
+            content: record.clone(),
+        });
+        sender.publish(DashboardEvent::TaskOutputAppended {
+            task_id: "T1".to_string(),
+            lines: vec![CANARY.to_string(), CANARY.to_string()],
+        });
+        sender.publish(DashboardEvent::GateOutputLine {
+            plan_id: "p1".to_string(),
+            task_id: "T1".to_string(),
+            gate: "verify[0]".to_string(),
+            line: CANARY.to_string(),
+        });
+        log.finish(&Ok(0)).await.expect("finish log");
+
+        let raw = std::fs::read_to_string(&path).expect("read log");
+        assert!(
+            !raw.contains("canary-4c4eea"),
+            "the log copied output text:\n{raw}"
+        );
+        let lines = read_lines(&path);
+
+        let outputs = logged_events(&lines, "agent_output");
+        assert_eq!(outputs.len(), 2);
+        let plain = outputs[0];
+        assert!(plain.get("content").is_none());
+        assert_eq!(plain["content_sha256"], sha256_hex(CANARY));
+        assert_eq!(plain["content_bytes"], CANARY.len());
+        assert_eq!(plain["content_lines"], 1);
+        assert_eq!(plain["agent_id"], "a1");
+        assert_eq!(plain["plan_id"], "p1");
+        assert_eq!(plain["task_id"], "T1");
+        assert_eq!(plain["attempt"], 2);
+        assert!(plain.get("stream_kind").is_none());
+        let streamed = outputs[1];
+        assert!(streamed.get("content").is_none());
+        assert_eq!(streamed["content_sha256"], sha256_hex(&record));
+        assert_eq!(streamed["stream_kind"], "tool_result");
+
+        let [appended] = logged_events(&lines, "task_output_appended")[..] else {
+            panic!("one task_output_appended line");
+        };
+        assert!(appended.get("lines").is_none());
+        assert_eq!(appended["lines_lines"], 2);
+        assert_eq!(
+            appended["lines_sha256"],
+            sha256_hex(&format!("{CANARY}\n{CANARY}"))
+        );
+        let [gate_line] = logged_events(&lines, "gate_output_line")[..] else {
+            panic!("one gate_output_line line");
+        };
+        assert!(gate_line.get("line").is_none());
+        assert_eq!(gate_line["line_sha256"], sha256_hex(CANARY));
+        assert_eq!(gate_line["gate"], "verify[0]");
+    }
+
+    #[tokio::test]
+    async fn gate_output_is_logged_as_a_redacted_tail() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("events.jsonl");
+        let hub = crate::state_hub::shared_state_hub();
+        let log = RunEventLog::open(&path, &hub, false).expect("open log");
+
+        let early: String = (1..=50).map(|n| format!("early output {n}\n")).collect();
+        let output = format!(
+            "$ ./check.sh\n{early}export OPENAI_API_KEY=sk-proj-abcdefghijklmnopqrstuvwxyz0123\n\
+             password=hunter2hunter2\n✗ timed out after 600000 ms"
+        );
+        let sender = hub.sender();
+        sender.publish(DashboardEvent::GateResult {
+            plan_id: "p1".to_string(),
+            task_id: "T1".to_string(),
+            gate: "verify[0:test]".to_string(),
+            passed: false,
+            output_text: Some(output.clone()),
+        });
+        sender.publish(DashboardEvent::GateResult {
+            plan_id: "p1".to_string(),
+            task_id: "T2".to_string(),
+            gate: "verify[0]".to_string(),
+            passed: true,
+            output_text: None,
+        });
+        log.finish(&Ok(1)).await.expect("finish log");
+
+        let lines = read_lines(&path);
+        let [failed, passed] = logged_events(&lines, "gate_result")[..] else {
+            panic!("two gate_result lines");
+        };
+        assert!(failed.get("output_text").is_none());
+        assert_eq!(failed["output_text_sha256"], sha256_hex(&output));
+        assert_eq!(failed["output_text_bytes"], output.len());
+        assert_eq!(failed["output_text_lines"], output.lines().count());
+        let excerpt = failed["output_text_excerpt"].as_str().expect("excerpt");
+        let tail = excerpt.strip_prefix('…').expect("leading …");
+        assert_eq!(tail.len(), GATE_OUTPUT_EXCERPT_BYTES);
+        assert!(tail.ends_with("timed out after 600000 ms"), "{excerpt}");
+        assert!(!excerpt.contains("early output 1\n"), "{excerpt}");
+        for secret in ["sk-proj-", "hunter2"] {
+            assert!(!excerpt.contains(secret), "{secret} in {excerpt}");
+        }
+        assert!(excerpt.contains("[REDACTED"), "{excerpt}");
+        assert!(passed["output_text"].is_null());
+        assert!(passed.get("output_text_excerpt").is_none());
+
+        let short = gate_output_excerpt("$ true\nok\n", &output_scrubber());
+        assert_eq!(short, "$ true\nok");
     }
 }

@@ -243,6 +243,7 @@ const KNOWN_META_FIELDS: &[&str] = &[
     "max_parallel",
     "estimated_total_minutes",
     "skip_enrichment",
+    "workspace_rungs",
 ];
 
 #[allow(dead_code)]

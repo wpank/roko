@@ -94,7 +94,7 @@ serialized default config lacks.
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `sandbox_level` | RunnerSandboxLevel | `"restrict"` | Live enforcement: `none`, `observe`, `restrict`, `isolate`, or `quarantine` |
-| `dangerously_skip_permissions` | bool | false | Skip permission checks (rejected in strict/shared config) |
+| `dangerously_skip_permissions` | bool | false | Run agents without the provider's own permission checks (Claude `--dangerously-skip-permissions`, the Codex and Gemini bypass modes). Off by default, and nothing turns it on by itself: `roko plan run`, the direct agent flows (`roko prd`, `plan generate`, `research`, `do`), `roko chat`, template dispatch in `roko serve` and the legacy ACP pipeline read this key, and the other spawn paths never skip. Rejected in strict/shared config |
 
 ---
 
@@ -282,6 +282,10 @@ max_iterations = 5
 |-------|------|---------|-------------|
 | `port` | Option\<u16\> | None | Override port (falls back to `server.port`) |
 | `auto_orchestrate` | bool | true | Auto-start orchestration on plan execution |
+| `terminal_enabled` | bool | false | Expose the PTY terminal routes |
+| `terminal_commands` | Vec\<String\> | `[]` | Command lines a terminal session may run instead of the login shell; any other `command` is refused |
+| `terminal_max_sessions` | usize | 8 | Most PTY sessions open at once; `0` lifts the cap |
+| `terminal_session_ttl_secs` | u64 | 28800 | Seconds a PTY session may live, attached or not; `0` lifts the limit |
 
 ### `[serve.auth]` -- ServeAuthConfig
 

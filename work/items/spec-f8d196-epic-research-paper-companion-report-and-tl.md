@@ -92,7 +92,7 @@ This is the implementation plan.
 - [x] gap-42d749: Companion telemetry leftovers: scripts hard-code the repo path, and the E3 rating sheets still cite the freeze file
 - [x] gap-02a66e: Research paper: D.12 and §5.4 pick up S09 v1.3's visible-test condition for the plan-level slice
 - [x] gap-4ec886: Companion report leftovers: stale review and outline notes, bibliography gloss and fields, and E10 at 1.28x budget
-- [ ] gap-5ad744: Companion leftovers: armstrong2003making has no institution, ledger_classify_commits.py misreads --json OUT, and E10 has 28 words of headroom
+- [x] gap-5ad744: Companion leftovers: armstrong2003making has no institution, ledger_classify_commits.py misreads --json OUT, and E10 has 28 words of headroom
 - [x] gap-7ee870: Research paper: re-pin status tags to the whitepaper matrix at its new pin
 - [x] gap-00cc7f: TL;DR: re-pin tags and refresh statements to the whitepaper matrix after the 2026-09-29 merges
 - [x] gap-6e9e14: Research paper appendices A and B: re-pin as-built tags to the merged benchmark and spec-quality code

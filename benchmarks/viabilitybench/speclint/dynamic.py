@@ -1,23 +1,27 @@
 #!/usr/bin/env python3
 """speclint dynamic mode: the red-on-base check behind SQ06 and HF3 (S07.2).
 
-``speclint.py plans/ --dynamic`` runs each implementer task's verify steps twice on a clean checkout
-of the base commit and passes the task's ``red_on_base`` to :func:`speclint.score_task`:
+``speclint.py plans/ --dynamic`` runs each implementer task's pinned acceptance tests and verify
+steps twice on a clean checkout of the base commit and passes the task's ``red_on_base`` to
+:func:`speclint.score_task`:
 
 - ``fail``: the same step fails on the base in both runs. SQ06 = 1.
-- ``pass``: every step passes on the base in both runs. HF3, unless every step declares
-  ``expect = "pass_on_base"``. No plan declares ``expect`` yet (S07.8 adds it), so every
-  implementer task is expected to fail on the base.
+- ``pass``: every step passes on the base in both runs. HF3, unless the task pins no acceptance
+  test and every step declares ``expect = "pass_on_base"``. No plan declares ``expect`` yet (S07.8
+  adds it), so every implementer task is expected to fail on the base.
 - ``unknown``: the runs disagree, a step times out or cannot start, a ``pass_on_base`` step
   fails, or the plan has no known base. SQ06 scores 0 and the record lists HF3 and SQ06 under
   ``unknown``.
 
-Tasks that are not implementers, or have no verify step, are not run. A run stops at its first
-failing step, as ``plan run`` does. Each step runs as ``bash -o pipefail -c <command>`` in the
-workspace root of the base checkout, for at most 120 s (``--timeout``), or for its ``timeout_ms``
-when that is shorter. Every record gets ``mode = "dynamic"`` and a ``red_on_base_detail``: the
-base and why it was chosen, the outcome (a key of :data:`OUTCOMES`), the reason, and each run's
-steps with their exit codes.
+Tasks that are not implementers, or have neither a pinned acceptance test nor a verify step, are
+not run. A task's ``[task.accept]`` tests run first, as ``plan run`` runs them: each copies the
+plan's ``src`` over its ``dest``, runs its ``runner`` and must report exactly ``count`` passing tests
+(:func:`accept_steps`). A run stops at its first failing step, as ``plan run`` does. Each step runs
+as ``bash -o pipefail -c <command>`` in the workspace root of the base checkout, for at most 120 s
+(``--timeout``), or for its ``timeout_ms`` when that is shorter. Every record gets ``mode =
+"dynamic"`` and a ``red_on_base_detail``: the base and why it was chosen, the outcome (a key of
+:data:`OUTCOMES`), the reason, and each run's steps with their exit codes; a pinned test's step also
+names its ``accept`` source.
 
 The base. With ``--base REV`` every plan is checked against REV. Without it, a plan that has not
 run is checked against HEAD, and the rest are ``unknown``: archived plans, and plans whose
@@ -40,6 +44,7 @@ from __future__ import annotations
 
 import os
 import posixpath
+import shlex
 import shutil
 import signal
 import subprocess
@@ -82,6 +87,25 @@ _GIT_REDIRECTS = (
 )
 _TAIL_LINES = 5
 _TAIL_CHARS = 400
+
+# How a pinned acceptance step counts the passing tests its runner reported: a verbatim copy of
+# task_accept.rs PASSED_COUNT_AWK (test_passed_count_awk_matches_task_accept keeps them equal).
+PASSED_COUNT_AWK = r"""BEGIN { esc = sprintf("%c", 27); total = 0; seen = 0; ran = "" }
+{ line = $0; gsub(esc "\\[[0-9;]*[A-Za-z]", "", line); gsub(/\r/, "", line) }
+line ~ /^[ \t]*Test (Files|Suites):?[ \t]/ { next }
+line ~ /test result: / || line ~ /^[ \t]*Tests:?[ \t]/ || line ~ /[0-9]+ passed.* in [0-9.]+m?s/ {
+  n = split(line, w, /[^A-Za-z0-9]+/)
+  for (i = 2; i <= n; i++) if (w[i] == "passed" && w[i - 1] ~ /^[0-9]+$/) { total += w[i - 1]; seen = 1 }
+  next
+}
+line ~ /^[^A-Za-z0-9]*pass [0-9]+[ \t]*$/ { n = split(line, w, /[^A-Za-z0-9]+/); total += (w[n] == "" ? w[n - 1] : w[n]); seen = 1; next }
+line ~ /^Ran [0-9]+ tests? in / { split(line, w, " "); ran = w[2]; next }
+line ~ /^OK( |$)/ && ran != "" {
+  skipped = 0
+  if (match(line, /skipped=[0-9]+/)) skipped = substr(line, RSTART + 8, RLENGTH - 8)
+  total += ran - skipped; seen = 1; ran = ""
+}
+END { if (seen) print total; else print "none" }"""
 
 
 class CheckError(Exception):
@@ -350,15 +374,65 @@ class Check:
         }
 
 
+def accept_steps(task: dict, plan_source: str) -> list[dict]:
+    """The steps that run a task's `[task.accept]` tests, which ``plan run`` puts before its own.
+
+    Each is the Graph path's pinned step (task_accept.rs ``pinned_verify_step``) with the plan's
+    ``src`` in place of the pinned copy, since the base has no pin store and no hash to check. It
+    copies ``src`` over ``dest``, runs ``runner`` from the workspace root and requires exactly
+    ``count`` passing tests. ``plan_source`` is the plan's directory as the workspace root sees it.
+    """
+    steps = []
+    for test in speclint.accept_tests(task):
+        src = speclint._str(test.get("src")).strip()
+        dest = speclint._str(test.get("dest")).strip()
+        count = test["count"]
+        runner = speclint._str(test.get("runner")).replace("{dest}", '"$roko_dest"').replace("{count}", str(count))
+        lines = [
+            f"# roko accept (speclint --dynamic): {src} -> {dest} (exactly {count} passing tests)",
+            f"roko_src={shlex.quote(posixpath.normpath(posixpath.join(plan_source, src)))}",
+            f'roko_dest="$PWD"/{shlex.quote(dest)}',
+            'mkdir -p "$(dirname "$roko_dest")" && cp -f "$roko_src" "$roko_dest" || exit 1',
+            "roko_log=$(mktemp) || exit 1",
+            "{ " + runner,
+            '} 2>&1 | tee "$roko_log"',
+            "roko_rc=$?",
+            f"roko_passed=$(awk '{PASSED_COUNT_AWK}' \"$roko_log\")",
+            'rm -f "$roko_log"',
+            'if [ "$roko_rc" -ne 0 ]; then',
+            '  echo "roko accept: $roko_src failed: its runner exited with status $roko_rc" >&2',
+            "  exit 1",
+            "fi",
+            f'if [ "$roko_passed" != "{count}" ]; then',
+            f'  echo "roko accept: $roko_src must pass exactly {count} tests; the runner reported $roko_passed" >&2',
+            "  exit 1",
+            "fi",
+        ]
+        steps.append({"command": "\n".join(lines), "timeout_ms": test.get("timeout_ms"), "accept": src})
+    return steps
+
+
 def check_task(task: dict, trees: BaseTrees, sha: str, plan_dir: Path | None, cap: float) -> Check:
-    """Run a task's verify steps on the base, twice, and classify the result."""
-    steps = speclint._tables(task.get("verify"))
+    """Run a task's pinned acceptance tests, then its verify steps, on the base, twice, and classify the result."""
+    plan_dir = plan_dir or trees.root
+    missing = [
+        speclint._str(test.get("src")).strip()
+        for test in speclint.accept_tests(task)
+        if not (plan_dir / speclint._str(test.get("src")).strip()).is_file()
+    ]
+    if missing:
+        return Check("unknown", "error", "pinned acceptance test missing from the plan: " + ", ".join(missing), base=sha)
+    plan_source = plan_dir.relative_to(trees.root).as_posix() if plan_dir.is_relative_to(trees.root) else plan_dir.as_posix()
+    steps = accept_steps(task, plan_source) + speclint._tables(task.get("verify"))
     runs: list[list[dict]] = []
     for _ in range(RUNS):
         cwd = trees.reset(sha, plan_dir)
         results: list[dict] = []
         for number, step in enumerate(steps, 1):
-            result = {"step": number, **run_step(speclint._str(step.get("command")), cwd, step_timeout(step, cap))}
+            result: dict = {"step": number}
+            if "accept" in step:
+                result["accept"] = step["accept"]
+            result.update(run_step(speclint._str(step.get("command")), cwd, step_timeout(step, cap)))
             if "tail" in result:
                 result["tail"] = result["tail"].replace(str(trees.scratch), "$SCRATCH")
             results.append(result)
@@ -436,7 +510,7 @@ def lint(
                 if role != "implementer":
                     checks[key] = Check("unknown", "not_run", f"not run: a {role} task")
                     continue
-                if not speclint._tables(task.get("verify")):
+                if not speclint._tables(task.get("verify")) and not speclint.accept_tests(task):
                     checks[key] = Check("unknown", "not_run", "not run: no verify step")
                     continue
                 if plan_base is None:

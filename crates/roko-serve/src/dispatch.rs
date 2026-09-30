@@ -2031,7 +2031,9 @@ fn build_agent(
             extra_args: Vec::new(),
             effort: None,
             bare_mode: roko_config.agent.bare_mode,
-            dangerously_skip_permissions: true,
+            // Provider permission checks stay on unless the workspace opts
+            // out with `runner.dangerously_skip_permissions`.
+            dangerously_skip_permissions: roko_config.runner.dangerously_skip_permissions,
             name: String::new(),
             pre_discovered_mcp_tools: None,
             pre_discovered_mcp_runtime: None,

@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import sys
 import time
 from pathlib import Path
@@ -67,6 +68,8 @@ FAKE_CLAUDE = r'''#!/usr/bin/env python3
 """A stand-in for `claude -p --output-format stream-json`: note what it was given, then play one scenario."""
 import json
 import os
+import shlex
+import subprocess
 import sys
 import time
 
@@ -148,6 +151,14 @@ for path, text in CONFIG["files"].items():
 assistant(1, served, {"type": "tool_use", "id": "toolu_1", "name": "Write", "input": {"file_path": "calc/ops.py"}})
 emit({"type": "user", "parent_tool_use_id": None,
       "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_1", "content": "ok"}]}})
+if scenario == "verify":  # the Bash tool runs the visible check, wrapped as Claude Code 2.1.282 wraps its commands
+    command = "eval " + shlex.quote(CONFIG["visible"]) + " < /dev/null && pwd -P >| " + shlex.quote(os.devnull)
+    prefix = os.environ.get("CLAUDE_CODE_SHELL_PREFIX")
+    line = shlex.quote(prefix) + " " + shlex.quote(command) if prefix else command
+    ran = subprocess.run(["bash", "-c", line], capture_output=True, text=True)
+    with open(CONFIG["log"], "a") as handle:
+        handle.write(json.dumps({"bash": {"line": line, "returncode": ran.returncode,
+                                          "output": ran.stdout + ran.stderr}}) + "\n")
 assistant(2, served, {"type": "text", "text": "Done."})
 emit(CONFIG["result"])
 '''
@@ -172,7 +183,8 @@ def fake_claude(places: dict[str, Path], scenario: str) -> tuple[Path, Path]:
     log, config = places["tmp"] / f"claude-{scenario}.jsonl", places["tmp"] / f"claude-{scenario}.json"
     needles = [*secret.load(places["secret"]).needles, canary.RELEASE_CANARY, "vb.task/1"]
     config.write_text(json.dumps({"scenario": scenario, "log": str(log), "result": RESULT, "needles": needles,
-                                  "files": {"calc/ops.py": CORRECT}, "hidden_url": HIDDEN_URL}))
+                                  "files": {"calc/ops.py": CORRECT}, "hidden_url": HIDDEN_URL,
+                                  "visible": "python3 -m unittest discover -s tests/visible"}))
     program = places["bin"] / "claude"
     program.write_text(FAKE_CLAUDE.replace("__CONFIG__", repr(str(config))))
     program.chmod(0o755)
@@ -559,6 +571,27 @@ def test_fd_claude_cannot_fetch_the_hidden_suites(places, scenario):
         assert canary.RELEASE_CANARY not in transcript and "vb-canary-" not in transcript
         assert execution[0] == "leak_suspected" and record["provenance"]["canary_places"] == ["web"]
         assert record["provenance"]["canary_hits"] == 1
+
+
+@pytest.mark.parametrize("p, flaked", [(1.0, True), (0.0, False)])
+def test_flaky_verify_reaches_claude_code_through_its_shell_prefix(places, p, flaked):
+    # gap-4e8795: in a run with flaky_verify, Claude Code's shell commands run through the visible-verify wrapper
+    # (CLAUDE_CODE_SHELL_PREFIX). Its run of the visible check fails as a killed check with p = 1, and passes through
+    # untouched with p = 0; the census's own rerun passes either way.
+    program, log = fake_claude(places, "verify")
+    spec = places["tmp"] / "flaky.toml"
+    spec.write_text(f'schema_version = "vb.disturbance/1"\n\n[[disturbance]]\nkind = "flaky_verify"\n'
+                    f'params = {{ p = {p} }}\n')
+    assert run_vb(places, arm_file(places, program), "--disturbance", str(spec)) == 0
+    [record] = read_jsonl(run_dir(places) / "records.jsonl")
+    assert validate.validate("run-record", record) == [] and record["vs"]["label"] == 1
+    assert (record["visible"]["verify_runs"], record["visible"]["flake_injected"]) == (1, flaked)
+    assert [flake["run"] for flake in record["visible"]["flakes"]] == ([1] if flaked else [])
+    [session] = [line for line in read_jsonl(log) if "env" in line]
+    [ran] = [line["bash"] for line in read_jsonl(log) if "bash" in line]
+    assert session["env"]["CLAUDE_CODE_SHELL_PREFIX"].endswith("/.vb-bin/vb-verify")
+    assert ran["line"].startswith(shlex.quote(session["env"]["CLAUDE_CODE_SHELL_PREFIX"]) + " ")
+    assert (ran["returncode"], "Killed" in ran["output"]) == ((137, True) if flaked else (0, False)), ran
 
 
 def test_a_budget_refusal_starts_no_session(places):

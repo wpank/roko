@@ -104,9 +104,20 @@
       "properties": {
         "passed": {"type": "boolean"},
         "clean_rerun": {"type": "boolean"},
-        "flake_injected": {"type": "boolean"},
+        "flake_injected": {"type": "boolean", "description": "S08 §4.6 flaky_verify: the visible-verify wrapper failed at least one of the arm's own visible check runs on purpose. passed and clean_rerun are the census's rerun, which no flake reaches"},
         "commands": {"type": "array", "items": {"type": "string"}},
-        "exit_codes": {"type": "array", "items": {"type": "integer"}}
+        "exit_codes": {"type": "array", "items": {"type": "integer"}},
+        "verify_runs": {"type": ["integer", "null"], "description": "how many times the arm ran a visible check through the visible-verify wrapper; null when the run had none (no flaky_verify)"},
+        "flakes": {
+          "type": "array",
+          "description": "every failure the wrapper injected, by the number of the visible check run it failed",
+          "items": {
+            "type": "object",
+            "required": ["run"],
+            "additionalProperties": false,
+            "properties": {"run": {"type": "integer"}, "at": {"type": ["string", "null"]}}
+          }
+        }
       }
     },
     "vs": {

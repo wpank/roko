@@ -82,6 +82,7 @@ impl FeedbackSink for RoutingObservationSink {
             outcome,
             model_source,
             routing_context,
+            settled,
             ..
         } = event
         else {
@@ -92,6 +93,14 @@ impl FeedbackSink for RoutingObservationSink {
         let Some(succeeded) = event.learning_success() else {
             return Ok(());
         };
+        // Provider failover ran a model the router did not pick: crediting
+        // it would teach the router a choice it never made (bug-35379d).
+        if settled
+            .as_ref()
+            .is_some_and(|settled| !settled.executed.failover_chain.is_empty())
+        {
+            return Ok(());
+        }
 
         let ctx = match routing_context {
             Some(ctx) => ctx.clone(),
@@ -351,6 +360,46 @@ mod tests {
             r.total_observations() >= 1,
             "observe_multi_objective should advance the LinUCB observation counter",
         );
+    }
+
+    /// An attempt that provider failover ran on a substitute is not the
+    /// router's pick, so it earns the substitute no credit (bug-35379d).
+    #[tokio::test]
+    async fn a_failover_substitute_earns_no_router_credit() {
+        use roko_learn::telemetry::{AttemptIdentity, AttemptKey};
+
+        let r = router();
+        let sink = RoutingObservationSink::new(r.clone());
+        let mut verdict = AttemptVerdictRecord::settle(
+            AttemptIdentity::new(&AttemptKey::new("run", "p", "t", 1)),
+            AttemptOutcome::Passed,
+            true,
+        );
+        verdict.executed.failover_chain = vec!["gpt-5".into()];
+        let event = FeedbackEvent::TaskCompleted {
+            turns: 0,
+            failure_reason: None,
+            settled: Some(Arc::new(verdict)),
+            plan_id: "p".into(),
+            task_id: "t".into(),
+            outcome: outcome(true),
+            model_source: ModelChoiceSource::Router,
+            succeeded: true,
+            routing_context: Some(test_routing_context()),
+            prompt_text: None,
+            cache_read_tokens: 0,
+            knowledge_ids: vec![],
+            playbook_ids: vec![],
+            initial_model: String::new(),
+        };
+        sink.on_event(&event).await.unwrap();
+
+        let trials = r
+            .confidence_snapshot()
+            .get("claude-sonnet-4-6")
+            .map_or(0, |(trials, _)| *trials);
+        assert_eq!(trials, 0, "the substitute is not credited");
+        assert_eq!(r.total_observations(), 0, "LinUCB is not updated");
     }
 
     /// gap-9cbf35: a ladder rung's settled outcome teaches the router like

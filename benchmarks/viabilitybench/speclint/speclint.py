@@ -13,9 +13,9 @@ repo (decision D4; ``$VB_RESULTS`` defaults to ``~/.roko-bench/viability``). Sta
 no model calls. Records are deterministic apart from ``ts``.
 
 Static mode cannot run anything, so SQ06 (red on base) scores 0 and HF3 is not evaluated; both are
-listed under ``unknown`` in every record. ``--dynamic`` first runs each implementer task's verify
-steps on a clean checkout of the base commit and passes the task's ``red_on_base`` to
-:func:`score_task` (``dynamic.py``, S07.2)::
+listed under ``unknown`` in every record. ``--dynamic`` first runs each implementer task's pinned
+acceptance tests and verify steps on a clean checkout of the base commit and passes the task's
+``red_on_base`` to :func:`score_task` (``dynamic.py``, S07.2)::
 
     python3 benchmarks/viabilitybench/speclint/speclint.py plans/ --dynamic [--base REV]
 
@@ -1181,8 +1181,10 @@ def score_task(task: dict, ctx: PlanContext, red_on_base: str = "unknown") -> di
     if vacuous:
         hard.append("HF2")
         detail["HF2"] = vacuous
-    expects_red = role == "implementer" and not (
-        steps and all(_str(s.get("expect")) == "pass_on_base" for s in steps)
+    # A pinned acceptance test is written to fail on the base, so a task with one expects red even
+    # when each of its own steps declares pass_on_base.
+    expects_red = role == "implementer" and (
+        bool(accept) or not (steps and all(_str(s.get("expect")) == "pass_on_base" for s in steps))
     )
     if red_on_base == "pass" and expects_red:
         hard.append("HF3")

@@ -38,6 +38,33 @@ struct ProviderRefusal {
     definitive: bool,
 }
 
+/// The models failover passed over before the one that ran (bug-35379d).
+/// Empty when the planned model ran.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(super) struct FailoverChain {
+    /// Refused model keys, in order: the planned model first.
+    pub(super) models: Vec<String>,
+    /// Why the planned model did not run.
+    pub(super) reason: Option<String>,
+}
+
+impl FailoverChain {
+    fn of(refusals: &[ProviderRefusal]) -> Self {
+        Self {
+            models: refusals
+                .iter()
+                .map(|refusal| refusal.model_key.clone())
+                .collect(),
+            reason: refusals.first().map(|refusal| {
+                format!(
+                    "`{}` on `{}`: {}",
+                    refusal.model_key, refusal.provider_id, refusal.reason
+                )
+            }),
+        }
+    }
+}
+
 /// Provider kinds that serve the same model family over another transport.
 fn same_family_kinds(
     kind: roko_core::agent::ProviderKind,
@@ -95,12 +122,15 @@ impl GraphTaskDispatcher {
     /// retry is burned. An explicit `--model` override is a pin and never
     /// fails over. When nothing usable remains the attempt fails with a
     /// non-retryable error that says how to recover.
+    ///
+    /// Returns the dispatch with the models failover passed over, which the
+    /// attempt's records carry beside the one that ran.
     pub(super) async fn run_bridge_with_failover(
         &self,
         spec: &TaskExecutionSpec,
         task_id: &str,
         mut request: AgentDispatchRequest,
-    ) -> Result<crate::dispatch_v2::AgentResultDispatch> {
+    ) -> Result<(crate::dispatch_v2::AgentResultDispatch, FailoverChain)> {
         let pinned = self.cli_model_override.is_some();
         let mut candidate = DispatchCandidate {
             model_key: request.model_key.clone(),
@@ -139,7 +169,7 @@ impl GraphTaskDispatcher {
                 message: error.to_string(),
             })?;
             if dispatch.result.success {
-                return Ok(dispatch);
+                return Ok((dispatch, FailoverChain::of(&refusals)));
             }
             let Some(exhaustion) = dispatch
                 .result
@@ -149,7 +179,7 @@ impl GraphTaskDispatcher {
                 .ok()
                 .and_then(roko_agent::provider::error_classify::detect_provider_exhaustion)
             else {
-                return Ok(dispatch);
+                return Ok((dispatch, FailoverChain::of(&refusals)));
             };
 
             let cooldown_ms = i64::try_from(
@@ -522,7 +552,10 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
-    use crate::graph_task_dispatch::tests::make_task_def;
+    use crate::graph_task_dispatch::tests::{
+        final_turn, jsonl_rows_where, make_spec, make_task_def, recording_feedback,
+        spawn_openai_mock, tool_call_turn,
+    };
 
     // ─── Provider failover on usage exhaustion ──────────────────────────────
 
@@ -554,96 +587,6 @@ exit 1
 
     fn invocations(calls: &Path) -> usize {
         std::fs::read_to_string(calls).map_or(0, |log| log.lines().count())
-    }
-
-    /// Serve canned OpenAI-compatible chat responses, one per connection,
-    /// capturing each request body.
-    fn spawn_openai_mock(
-        responses: Vec<serde_json::Value>,
-    ) -> (String, Arc<parking_lot::Mutex<Vec<serde_json::Value>>>) {
-        use std::io::{Read, Write};
-
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind mock server");
-        let base_url = format!("http://{}/v1", listener.local_addr().expect("mock addr"));
-        let captured = Arc::new(parking_lot::Mutex::new(Vec::new()));
-        let requests = Arc::clone(&captured);
-        std::thread::spawn(move || {
-            for response in responses {
-                let Ok((mut stream, _)) = listener.accept() else {
-                    return;
-                };
-                let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(10)));
-                let mut buf = Vec::new();
-                let mut chunk = [0_u8; 8192];
-                let body_start = loop {
-                    let n = stream.read(&mut chunk).unwrap_or(0);
-                    if n == 0 {
-                        return;
-                    }
-                    buf.extend_from_slice(&chunk[..n]);
-                    if let Some(pos) = buf.windows(4).position(|window| window == b"\r\n\r\n") {
-                        break pos + 4;
-                    }
-                };
-                let headers = String::from_utf8_lossy(&buf[..body_start]).to_ascii_lowercase();
-                let length = headers
-                    .lines()
-                    .find_map(|line| line.strip_prefix("content-length:"))
-                    .and_then(|value| value.trim().parse::<usize>().ok())
-                    .unwrap_or(0);
-                while buf.len() < body_start + length {
-                    let n = stream.read(&mut chunk).unwrap_or(0);
-                    if n == 0 {
-                        break;
-                    }
-                    buf.extend_from_slice(&chunk[..n]);
-                }
-                let end = buf.len().min(body_start + length);
-                requests.lock().push(
-                    serde_json::from_slice(&buf[body_start..end])
-                        .unwrap_or(serde_json::Value::Null),
-                );
-                let body = response.to_string();
-                let wire = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                    body.len()
-                );
-                let _ = stream.write_all(wire.as_bytes());
-            }
-        });
-        (base_url, captured)
-    }
-
-    fn tool_call_turn(id: &str, name: &str, arguments: serde_json::Value) -> serde_json::Value {
-        serde_json::json!({
-            "id": format!("chatcmpl-{id}"),
-            "choices": [{
-                "index": 0,
-                "message": {
-                    "role": "assistant",
-                    "content": "",
-                    "tool_calls": [{
-                        "id": id,
-                        "type": "function",
-                        "function": { "name": name, "arguments": arguments.to_string() }
-                    }]
-                },
-                "finish_reason": "tool_calls"
-            }],
-            "usage": { "prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15 }
-        })
-    }
-
-    fn final_turn(text: &str) -> serde_json::Value {
-        serde_json::json!({
-            "id": "chatcmpl-final",
-            "choices": [{
-                "index": 0,
-                "message": { "role": "assistant", "content": text },
-                "finish_reason": "stop"
-            }],
-            "usage": { "prompt_tokens": 12, "completion_tokens": 3, "total_tokens": 15 }
-        })
     }
 
     /// `claude_cli` (fake script) plus two OpenAI-compatible fallbacks: one
@@ -881,6 +824,94 @@ exit 1
                 .all(|request| request["model"] == "api-model-1"),
             "every API turn names the fallback model"
         );
+    }
+
+    /// A task planned for an exhausted provider runs on a fallback: the
+    /// attempt's verdict, episode, cost and efficiency rows name the planned
+    /// model, why it did not run, and the model that did.
+    #[tokio::test]
+    async fn failover_records_planned_and_substitute_model() {
+        let temp = tempdir().expect("tempdir");
+        let workdir = temp.path().join("work");
+        std::fs::create_dir_all(&workdir).expect("workdir");
+        let calls = temp.path().join("claude-calls.log");
+        let claude = temp.path().join("fake-claude.sh");
+        session_limit_claude(&claude, &calls);
+        let mut answer = final_turn("fallback finished");
+        answer["model"] = serde_json::json!("api-model-1");
+        let (base_url, _requests) = spawn_openai_mock(vec![answer]);
+        let config = Arc::new(failover_config(&claude, &base_url, &["api-model"]));
+        let health = Arc::new(
+            roko_learn::provider_health::ProviderHealthRegistry::load_or_new(
+                &temp.path().join("provider-health.json"),
+            ),
+        );
+        let factory = Arc::new(
+            SharedAgentFactory::new(Arc::clone(&config), None, None, None)
+                .await
+                .with_health_registry(health),
+        );
+        let dispatcher = GraphTaskDispatcher::new(factory, Arc::clone(&config), workdir.clone())
+            .with_feedback(recording_feedback(&workdir));
+        let task = TaskDef {
+            id: "T08".to_string(),
+            title: "Implement with failover".to_string(),
+            model_hint: Some("claude-sonnet-4-6".to_string()),
+            timeout_secs: 30,
+            ..make_task_def("focused")
+        };
+        let spec = make_spec(&task);
+        let run = "graph-failover-run";
+        dispatcher
+            .dispatch(
+                &spec,
+                Vec::new(),
+                &CellContext::new().with_run_id(run.to_string()),
+            )
+            .await
+            .expect("the fallback runs the task");
+        drop(dispatcher);
+        assert_eq!(invocations(&calls), 1);
+
+        let verdicts = jsonl_rows_where(
+            &workdir.join(".roko/runs").join(run).join("attempts.jsonl"),
+            1,
+            |row| row["schema_version"] == "roko.verdict/1",
+        )
+        .await;
+        let executed = &verdicts[0]["executed"];
+        let planned = executed["model_requested"].as_str().expect("planned model");
+        assert_eq!(executed["failover_chain"], serde_json::json!([planned]));
+        let reason = executed["failover_reason"]
+            .as_str()
+            .expect("failover reason");
+        assert!(reason.contains("session limit"), "{reason}");
+        assert!(reason.contains("claude_cli"), "{reason}");
+        assert_eq!(executed["provider"], "mock_api");
+        assert_eq!(executed["model_dispatched"], "api-model-1");
+        assert_eq!(executed["model_reported"], "api-model-1");
+        assert_eq!(executed["model_mismatch"], false);
+
+        let episodes = roko_learn::episode_logger::EpisodeLogger::read_all(
+            &workdir.join(".roko/episodes.jsonl"),
+        )
+        .await
+        .expect("episodes");
+        assert_eq!(episodes.len(), 1);
+        assert_eq!(episodes[0].model, "api-model-1");
+        assert_eq!(episodes[0].extra["substituted_from"], planned);
+        assert_eq!(episodes[0].extra["failover_reason"], reason);
+        let costs = jsonl_rows_where(&workdir.join(".roko/learn/costs.jsonl"), 1, |_| true).await;
+        assert_eq!(costs[0]["model"], "api-model-1");
+        assert_eq!(costs[0]["substituted_from"], planned);
+        assert_eq!(costs[0]["substitution_reason"], reason);
+        let efficiency =
+            jsonl_rows_where(&workdir.join(".roko/learn/efficiency.jsonl"), 1, |row| {
+                row["schema"] == roko_learn::efficiency::AGENT_EFFICIENCY_EVENT_SCHEMA
+            })
+            .await;
+        assert_eq!(efficiency[0]["model"], "api-model-1");
+        assert_eq!(efficiency[0]["substituted_from"], planned);
     }
 
     #[tokio::test]

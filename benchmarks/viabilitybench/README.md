@@ -43,6 +43,7 @@ benchmarks/viabilitybench/
   driver/vb.py                                              # vb run | estimate | materialize | ledger | report
   driver/{mini_loop, run_roko, planemit, run_cli}.py        # the runners: direct loop, Roko arm, Claude Code arm
   driver/{ledger, faultproxy, secret}.py                    # the run ledger, the metering and fault proxy, the secret
+  driver/{disturb, vb_verify}.py                            # H6's disturbances, and the visible-verify wrapper
   driver/{materialize, harness, provider, stub_provider, agent_env, caps, archive, census, records, layout}.py
   analysis/{metrics, passk, report}.py                      # vb report
   ci/{verify_verifiers, determinism, leak_check}.py         # verifier CI
@@ -132,6 +133,9 @@ $PY benchmarks/viabilitybench/driver/vb.py run --experiment PILOT-A --stream pil
   need `driver/fingerprint.py` and its golden vectors, which this tree does not have.
 - **The metering and fault proxy** (`faultproxy.py`, S08 §4.11) meters every model call independently of the
   client and injects provider faults. The Roko arm reads its log, `proxy.jsonl`, when the run directory holds one.
+- **Disturbances** (`vb run --disturbance SPEC.toml`, `disturb.py`, S08 §4.6) apply H6's hooks to stream positions.
+  `flaky_verify` routes every arm's visible checks through the visible-verify wrapper (`vb_verify.py`), which fails
+  some of them at random; the census's own rerun never meets a flake.
 - **The report.** `vb report --experiment <id>` writes `metrics.json` and prints the VS rate, $/VS, pass^k and false
   greens of each arm (of each model, for an arm that ran more than one), every false green with its run id, and the
   excluded runs. `--bundle` writes the summary bundle for `reports/`, and `--check` holds bundles to their manifests

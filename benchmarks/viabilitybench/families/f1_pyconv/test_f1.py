@@ -72,8 +72,8 @@ def census(task_path: Path, instance: gen.Instance, final: Path, scratch: Path, 
             "vs": int(visible and first["passed"] and integrity)}
 
 
-def run_cell(level: int, seed: int, root: Path, secret_file: Path) -> dict:
-    task_path = gen.generate(level, seed, root / "instance")
+def run_cell(level: int, seed: int, root: Path, secret_file: Path, latent: str = "v1") -> dict:
+    task_path = gen.generate(level, seed, root / "instance", latent=latent)
     instance = gen.load_instance(task_path)
     verdicts = {}
     for kind in solutions.KINDS:
@@ -106,15 +106,22 @@ def cell_problems(cell: dict) -> list[str]:
     return [f"{cell['cell']}: {problem}" for problem in problems]
 
 
-def run_cells(levels, seeds, root: Path, secret_file: Path) -> list[dict]:
+def run_cells(levels, seeds, root: Path, secret_file: Path, latent: str = "v1") -> list[dict]:
     jobs = [(level, seed) for level in levels for seed in seeds]
     with ThreadPoolExecutor(max_workers=WORKERS) as pool:
-        return list(pool.map(lambda job: run_cell(*job, root / f"l{job[0]}-s{job[1]}", secret_file), jobs))
+        return list(pool.map(lambda job: run_cell(*job, root / f"l{job[0]}-s{job[1]}", secret_file, latent), jobs))
 
 
 def test_f1_cells_green_on_two_seeds(tmp_path: Path, secret_file: Path) -> None:
     cells = run_cells(knobs.LEVELS, (1, 2), tmp_path, secret_file)
     assert len(cells) == 10
+    assert [problem for cell in cells for problem in cell_problems(cell)] == []
+
+
+def test_f1_v2_cells_green_on_two_seeds(tmp_path: Path, secret_file: Path) -> None:
+    """Latent v2, the convention flip (gap-98516b): the same cells hold under the changed convention."""
+    cells = run_cells(knobs.LEVELS, (1, 2), tmp_path, secret_file, latent="v2")
+    assert len(cells) == 10 and {cell["task"]["latent_version"] for cell in cells} == {"v2"}
     assert [problem for cell in cells for problem in cell_problems(cell)] == []
 
 
@@ -195,8 +202,9 @@ def test_generation_is_deterministic_and_seeds_vary_the_surface(tmp_path: Path) 
         with pytest.raises(gen.GenError, match="where the agent would read the manifest"):
             gen.generate(1, 1, out, workdir=workdir)
     assert gen.main(["--level", "1", "--seed", "1", "--out", str(tmp_path / "d"), "--latent", "v1"]) == 0
+    assert gen.main(["--level", "1", "--seed", "1", "--out", str(tmp_path / "e"), "--latent", "v2"]) == 0
     with pytest.raises(SystemExit):
-        gen.main(["--level", "1", "--seed", "1", "--out", str(tmp_path / "e"), "--latent", "v2"])
+        gen.main(["--level", "1", "--seed", "1", "--out", str(tmp_path / "f"), "--latent", "v3"])
 
 
 def test_no_canary_reaches_the_agent_and_every_source_carries_one(instances: dict[int, Path]) -> None:
@@ -274,9 +282,39 @@ def test_truth_suite_and_detector_catch_near_misses(tmp_path: Path, secret_file:
                                          "    left = charge.amount_cents\n")) >= {"over_refund.raises"}
 
 
+def test_v2_holds_the_new_error_to_the_flipped_convention(tmp_path: Path, secret_file: Path) -> None:
+    """Under v2 the repo shows the new convention, and the truth suite fails a new error that follows v1's."""
+    task_path = gen.generate(4, 2, tmp_path / "instance", latent="v2")
+    instance = gen.load_instance(task_path)
+    plan, workdir = instance.plan, task_path.parent / gen.REPO_DIR
+    assert (instance.task["latent_version"], plan.registry_path) == ("v2", gen.V2_REGISTRY)
+    assert gen.V2_REGISTRY in instance.task["files_in_scope"] and not (workdir / "app/error_codes.py").exists()
+    evidence = {path for item in instance.task["recoverability"] for path in item["evidence"] if "#" not in path}
+    text = "\n".join((workdir / path).read_text(encoding="utf-8") for path in sorted(evidence))
+    assert '"E-' in text and '{self.code}: ' in text and "ERROR_CODES" not in text and "[{self.code}]" not in text
+    home, code = plan.path(plan.new_error_home), plan.new_error_code
+
+    def failed(name: str, *edits: tuple[str, str, str]) -> set[str]:
+        work = tmp_path / name
+        repo.export_tree(workdir, work)
+        solutions.apply("reference", work, instance.task)
+        for path, old, new in edits:
+            text = (work / path).read_text(encoding="utf-8")
+            assert old in text, (path, old)
+            (work / path).write_text(text.replace(old, new), encoding="utf-8")
+        return {check["id"] for check in run_hidden(task_path, work, secret_file)["checks"] if not check["passed"]}
+
+    assert failed("reference") == set()
+    assert failed("v1-message", (home, '"{self.code}: refund', '"[{self.code}] refund')) == {"error.message_format"}
+    assert failed("unregistered", (gen.V2_REGISTRY, f'"{code}" = ', f'"E-0000" = ')) >= {"error.code_registered"}
+    v1_code = code.replace("-", "")
+    assert failed("v1-code", *((path, code, v1_code) for path in (home, gen.V2_REGISTRY, "docs/errors.md"))) >= {
+        "error.code_registered", "error.docs_row"}
+
+
 def test_repo_wide_pytest_skips_the_template() -> None:
     result = subprocess.run([sys.executable, "-m", "pytest", "--collect-only", "-q", str(FAMILY_DIR)],
                             capture_output=True, text=True, timeout=120, check=False)
     assert result.returncode == 0, result.stdout + result.stderr
-    assert "9 tests collected" in result.stdout, result.stdout
+    assert "11 tests collected" in result.stdout, result.stdout
     assert "f1_pyconv/template" not in result.stdout and "f1_pyconv/reference" not in result.stdout

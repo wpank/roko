@@ -5,10 +5,12 @@ S08 SC1, §6 T5 and §7.1; work item gap-7ee7c2. Stdlib only, Python 3.11 or new
 A bug in a verifier turns silently into wrong VS labels, so no pilot spends money until this is green for F1 and F4.
 
 Usage, from the repository root:
-    verify_verifiers.py [--families f1,f4,pl] [--levels 1-5] [--seeds 10] [--secret-file PATH] [--workers N]
-                        [--family NAME=DIR ...] [--scratch DIR] [--json PATH]
+    verify_verifiers.py [--families f1,f4,pl] [--latents v1,v2] [--levels 1-5] [--seeds 10] [--secret-file PATH]
+                        [--workers N] [--family NAME=DIR ...] [--scratch DIR] [--json PATH]
 
 - `--families`: the families to check; by default every family found under `families/`.
+- `--latents`: the latent versions to render (S08 §4.6 `convention_flip`); by default every latent each family
+  builds. A task family that does not build a latent named here is not green.
 - `--levels`: a range or a list; default 1-5.
 - `--seeds N`: seeds 1 to N, default 10 (S08 SC1); `--seeds A-B` or a list names them instead.
 - `--secret-file`: the 0600 secret file hidden.py draws its cases with; by default a throwaway one in a private
@@ -19,13 +21,14 @@ Usage, from the repository root:
 - `--json PATH`: write every judgement as JSON.
 
 **Task families.** A directory under `families/` is a task family when it has the interface F1 and F4 share:
-- `gen.py --level L --seed S --out DIR --workdir W` writes DIR/task.json and DIR/pristine.json, whose bundle path
-  is relative to DIR;
+- `gen.py --level L --seed S --out DIR --workdir W --latent V` writes DIR/task.json, whose `latent_version` is V, and
+  DIR/pristine.json, whose bundle path is relative to DIR;
 - `hidden.py --task DIR/task.json --workdir TREE --secret-file PATH` prints one JSON verdict with a boolean `passed`,
   a list of `checks` and a `gaming` object, and exits 0 whatever the verdict;
-- `reference/solutions.py` has `KINDS` and `apply(kind, workdir, task)`.
+- `reference/solutions.py` has `KINDS` and `apply(kind, workdir, task)`, and `LATENTS`, the latents gen.py builds and
+  apply() solves (`("v1",)` when it has none).
 Its name is the directory's prefix (`f1` for `f1_pyconv`), so F2–F8 join as they are built. A cell is
-(family, level, seed). For each cell the CI:
+(family, latent, level, seed), and a latent other than v1 shows in its name (`F4-l1-0001@v2`). For each cell the CI:
 1. materializes the instance with gen.py, as the driver does, and scans the fresh workdir for leaks;
 2. for each kind in KINDS, copies the workdir, applies the solution, runs the visible check there as an agent
    would (with bytecode on, so caches are left behind), and scans the solved tree for leaks;
@@ -42,8 +45,8 @@ VS = 1 when the visible check passes, the truth suite passes, and no integrity f
 A cell is green when every kind gets its expected verdict, the two judgements agree (`determinism.compare`), and
 no tree holds a canary or the secret (`leak_check.scan`).
 
-**The plan-level slice** (`pl`, `families/plan_slice/`) has no levels. Its cells are (feature, seed), and each is
-judged twice by `slicekit.py selftest`, which requires that:
+**The plan-level slice** (`pl`, `families/plan_slice/`) has no levels and no latents. Its cells are (feature, seed),
+and each is judged twice by `slicekit.py selftest`, which requires that:
 - the reference is verified;
 - the stub fails both suites;
 - every reference that is one task short fails the hidden suite.
@@ -85,6 +88,9 @@ GEN_TIMEOUT_S, APPLY_TIMEOUT_S, VISIBLE_TIMEOUT_S, HIDDEN_TIMEOUT_S, SELFTEST_TI
 # directory, so a replaced family never mixes with the real one.
 KINDS_SCRIPT = ("import json, sys; from importlib import import_module; sys.path.insert(0, sys.argv[1]); "
                 "print(json.dumps(list(import_module(sys.argv[2] + '.reference.solutions').KINDS)))")
+LATENTS_SCRIPT = ("import json, sys; from importlib import import_module; sys.path.insert(0, sys.argv[1]); "
+                  "print(json.dumps(list(getattr(import_module(sys.argv[2] + '.reference.solutions'), 'LATENTS', "
+                  "['v1']))))")
 APPLY_SCRIPT = ("import json, sys; from importlib import import_module; sys.path.insert(0, sys.argv[1]); "
                 "task = json.loads(open(sys.argv[4], encoding='utf-8').read()); "
                 "solutions = import_module(sys.argv[2] + '.reference.solutions'); "
@@ -135,6 +141,14 @@ def numbers(text: str) -> list[int]:
     return sorted(values)
 
 
+def latents(text: str) -> list[str]:
+    """'v1,v2' -> ['v1', 'v2']."""
+    names = list(dict.fromkeys(name.strip() for name in text.split(",") if name.strip()))
+    if not names or not all(name.isidentifier() for name in names):
+        raise ValueError(f"not a list of latent versions: {text!r}")
+    return names
+
+
 def seeds(text: str) -> list[int]:
     """'10' -> seeds 1 to 10; otherwise a range or a list, as for `numbers`."""
     if text.strip().isdigit():
@@ -180,33 +194,44 @@ def select_families(names: str | None, overrides: list[str]) -> dict[str, Family
 
 
 def family_kinds(family: Family, ctx: Context) -> list[str]:
-    done = _run([sys.executable, "-B", "-c", KINDS_SCRIPT, str(family.directory.parent), family.directory.name],
+    return _solutions_names(family, ctx, KINDS_SCRIPT, "KINDS", "solution names")
+
+
+def family_latents(family: Family, ctx: Context) -> list[str]:
+    return _solutions_names(family, ctx, LATENTS_SCRIPT, "LATENTS", "latent versions")
+
+
+def _solutions_names(family: Family, ctx: Context, script: str, name: str, what: str) -> list[str]:
+    done = _run([sys.executable, "-B", "-c", script, str(family.directory.parent), family.directory.name],
                 ctx.scratch, ctx.env(ctx.scratch / f"{family.name}-home"), APPLY_TIMEOUT_S)
     if done.returncode != 0:
-        raise CellError(f"{family.name}: reference/solutions.py gives no KINDS: {_tail(done.stderr)}")
-    kinds = json.loads(done.stdout)
-    if not isinstance(kinds, list) or not kinds or not all(isinstance(kind, str) and kind for kind in kinds):
-        raise CellError(f"{family.name}: KINDS is not a list of solution names: {kinds!r}")
-    return kinds
+        raise CellError(f"{family.name}: reference/solutions.py gives no {name}: {_tail(done.stderr)}")
+    names = json.loads(done.stdout)
+    if not isinstance(names, list) or not names or not all(isinstance(item, str) and item for item in names):
+        raise CellError(f"{family.name}: {name} is not a list of {what}: {names!r}")
+    return names
 
 
-def judge_task_cell(family: Family, kinds: list[str], level: int, seed: int, ctx: Context) -> dict:
-    """Materialize cell (level, seed) of `family`, then judge every solution kind on it."""
-    label = f"{family.name}-l{level}-s{seed}"
+def judge_task_cell(family: Family, kinds: list[str], latent: str, level: int, seed: int, ctx: Context) -> dict:
+    """Materialize cell (latent, level, seed) of `family`, then judge every solution kind on it."""
+    suffix = "" if latent == "v1" else f"@{latent}"
+    label = f"{family.name}-l{level}-s{seed}{suffix}"
     root = ctx.scratch / label
-    result = {"family": family.name, "cell": label, "level": level, "seed": seed, "kinds": {}, "leaks": {},
-              "errors": []}
+    result = {"family": family.name, "cell": label, "latent": latent, "level": level, "seed": seed, "kinds": {},
+              "leaks": {}, "errors": []}
     try:
         root.mkdir(parents=True)
         private, workdir = root / "private", root / "work"
         made = _run([sys.executable, "-B", str(family.directory / "gen.py"), "--level", str(level), "--seed",
-                     str(seed), "--out", str(private), "--workdir", str(workdir)], root, ctx.env(root / "home"),
-                    GEN_TIMEOUT_S)
+                     str(seed), "--out", str(private), "--workdir", str(workdir), "--latent", latent], root,
+                    ctx.env(root / "home"), GEN_TIMEOUT_S)
         if made.returncode != 0:
             raise CellError(f"gen.py exited {made.returncode}: {_tail(made.stderr)}")
         task_path = private / "task.json"
         task = json.loads(task_path.read_text(encoding="utf-8"))
-        result["cell"] = task["instance_id"]
+        result["cell"] = task["instance_id"] + suffix
+        if task.get("latent_version") != latent:
+            raise CellError(f"gen.py --latent {latent} wrote a manifest of latent {task.get('latent_version')!r}")
         doc = json.loads((private / "pristine.json").read_text(encoding="utf-8"))
         pristine = repo.Pristine.from_json(doc | {"bundle": str(private / doc["bundle"])})
         if not task.get("visible_verify") or not task.get("visible_test_hashes"):
@@ -415,19 +440,24 @@ def slice_cell_problems(result: dict) -> list[str]:
 # --- running and reporting ----------------------------------------------------------------------------------------
 
 
-def run_cells(families: dict[str, Family], levels: list[int], seed_list: list[int], ctx: Context,
-              workers: int) -> tuple[list[dict], dict[str, list[str]]]:
-    """Every cell's judgement, in family, level and seed order; and each task family's solution kinds."""
+def run_cells(families: dict[str, Family], levels: list[int], seed_list: list[int], ctx: Context, workers: int,
+              latent_list: list[str] | None = None) -> tuple[list[dict], dict[str, list[str]]]:
+    """Every cell's judgement, in family, latent, level and seed order; and each task family's solution kinds.
+    `latent_list` None means every latent each family builds."""
     broken, jobs, kinds = [], [], {}
     for family in families.values():
         try:
             if family.is_slice:
                 jobs += [(judge_slice_cell, family, feature, seed) for feature in slice_features(family, ctx)
                          for seed in seed_list]
-            else:
-                kinds[family.name] = family_kinds(family, ctx)
-                jobs += [(judge_task_cell, family, kinds[family.name], level, seed) for level in levels
-                         for seed in seed_list]
+                continue
+            kinds[family.name] = family_kinds(family, ctx)
+            built = family_latents(family, ctx)
+            missing = [latent for latent in latent_list or [] if latent not in built]
+            if missing:
+                raise CellError(f"{family.name} builds no latent {', '.join(missing)}; it builds {', '.join(built)}")
+            jobs += [(judge_task_cell, family, kinds[family.name], latent, level, seed)
+                     for latent in latent_list or built for level in levels for seed in seed_list]
         except (CellError, OSError, ValueError) as err:
             broken.append({"family": family.name, "cell": family.name, "errors": [str(err)], "problems": [str(err)]})
     # Higher levels have bigger repos and more hidden cases: start them first, so no big cell starts last.
@@ -522,6 +552,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.allow_abbrev = False  # `--secret VALUE` must not pass for --secret-file (common/hmac_seed)
     parser.add_argument("--families", default=None, help="comma-separated names (default: every family)")
+    parser.add_argument("--latents", type=latents, default=None,
+                        help="comma-separated latent versions (default: every latent each family builds)")
     parser.add_argument("--levels", type=numbers, default=numbers("1-5"), help="a range or a list (default 1-5)")
     parser.add_argument("--seeds", type=seeds, default=seeds("10"), help="N for seeds 1 to N, or a range or a list")
     parser.add_argument("--secret-file", type=Path, default=None, metavar="PATH",
@@ -551,19 +583,21 @@ def main(argv: list[str] | None = None) -> int:
         scratch.mkdir(parents=True, exist_ok=True)
         ctx = Context(secret_file=Path(secret_file).absolute(), secret=leak_check.secret_bytes(secret),
                       scratch=scratch, keep=args.scratch is not None)
-        results, kinds = run_cells(families, args.levels, args.seeds, ctx, args.workers)
+        results, kinds = run_cells(families, args.levels, args.seeds, ctx, args.workers, args.latents)
     seconds = time.monotonic() - started
     green = {name: sum(1 for cell in results if cell["family"] == name and not cell["problems"]) for name in families}
     total = {name: sum(1 for cell in results if cell["family"] == name) for name in families}
-    print(f"verifier CI: families {', '.join(families)}; levels {_ranges(args.levels)}; seeds {_ranges(args.seeds)}; "
-          f"secret {secret.fingerprint}{'' if args.secret_file else ' (throwaway)'}")
+    judged = sorted({cell["latent"] for cell in results if "latent" in cell})
+    print(f"verifier CI: families {', '.join(families)}; latents {','.join(judged) or '-'}; levels "
+          f"{_ranges(args.levels)}; seeds {_ranges(args.seeds)}; secret {secret.fingerprint}"
+          f"{'' if args.secret_file else ' (throwaway)'}")
     print("\n".join(report(families, results, kinds)))
     print(f"verifier CI: {sum(green.values())} of {len(results)} cells green ("
           + ", ".join(f"{name} {green[name]}/{total[name]}" for name in families) + f") in {seconds:.1f} s")
     if args.json is not None:
         document = {"schema_version": "vb.verifier_ci/1", "families": {name: str(family.directory)
                                                                         for name, family in families.items()},
-                    "levels": args.levels, "seeds": args.seeds, "secret": secret.fingerprint,
+                    "latents": judged, "levels": args.levels, "seeds": args.seeds, "secret": secret.fingerprint,
                     "seconds": round(seconds, 1), "green": sum(green.values()), "cells": results}
         args.json.write_text(json.dumps(document, indent=1, ensure_ascii=False) + "\n", encoding="utf-8")
     return 0 if results and all(not cell["problems"] for cell in results) else 1
